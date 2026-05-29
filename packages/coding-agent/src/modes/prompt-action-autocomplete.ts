@@ -7,6 +7,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { formatKeyHints, type KeybindingsManager } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
+import type { DollarMentionAgent, DollarMentionSkill } from "../session/dollar-mentions";
 import { applyEmojiCompletion, getEmojiSuggestions, isEmojiPrefix, tryEmojiInlineReplace } from "./emoji-autocomplete";
 import {
 	applyInternalUrlCompletion,
@@ -27,7 +28,13 @@ interface PromptActionAutocompleteItem extends AutocompleteItem {
 	execute: (prefix: string) => void;
 }
 
+interface DollarMentionAutocompleteOptions {
+	skills: readonly DollarMentionSkill[];
+	agents: readonly DollarMentionAgent[];
+}
+
 interface PromptActionAutocompleteOptions {
+	dollarMentions?: DollarMentionAutocompleteOptions;
 	commands: SlashCommand[];
 	basePath: string;
 	keybindings: KeybindingsManager;
@@ -93,15 +100,69 @@ function getPromptActionPrefix(textBeforeCursor: string): string | null {
 	return textBeforeCursor.slice(hashIndex);
 }
 
+function getDollarMentionPrefix(textBeforeCursor: string): string | null {
+	const dollarIndex = textBeforeCursor.lastIndexOf("$");
+	if (dollarIndex === -1) return null;
+	if (dollarIndex > 0 && !/[\s([{<"'`]/.test(textBeforeCursor[dollarIndex - 1] ?? "")) return null;
+
+	const query = textBeforeCursor.slice(dollarIndex + 1);
+	if (query.startsWith("{") || /[\s]/.test(query)) {
+		return null;
+	}
+
+	return textBeforeCursor.slice(dollarIndex);
+}
+
+function buildDollarMentionItems(
+	prefix: string,
+	options: DollarMentionAutocompleteOptions | undefined,
+): AutocompleteItem[] {
+	if (!options) return [];
+	const query = prefix.slice(1).toLowerCase();
+	const candidates: Array<AutocompleteItem & { score: number }> = [];
+
+	for (const skill of options.skills) {
+		const value = `$skill:${skill.name}`;
+		const searchable = `skill ${skill.name} ${skill.description}`.toLowerCase();
+		if (!fuzzyMatch(query, searchable)) continue;
+		candidates.push({
+			value,
+			label: `skill:${skill.name}`,
+			description: skill.description ? `Skill — ${skill.description}` : "Skill",
+			score: fuzzyScore(query, searchable),
+		});
+	}
+
+	for (const agent of options.agents) {
+		const value = `$agent:${agent.name}`;
+		const searchable = `agent ${agent.name} ${agent.description}`.toLowerCase();
+		if (!fuzzyMatch(query, searchable)) continue;
+		candidates.push({
+			value,
+			label: `agent:${agent.name}`,
+			description: agent.description ? `Agent — ${agent.description}` : "Agent",
+			score: fuzzyScore(query, searchable),
+		});
+	}
+
+	return candidates.sort((a, b) => b.score - a.score).map(({ score: _score, ...item }) => item);
+}
+
 export class PromptActionAutocompleteProvider implements AutocompleteProvider {
+	#dollarMentions?: DollarMentionAutocompleteOptions;
 	#baseProvider: CombinedAutocompleteProvider;
 	#actions: PromptActionDefinition[];
 
-	constructor(commands: SlashCommand[], basePath: string, actions: PromptActionDefinition[]) {
+	constructor(
+		commands: SlashCommand[],
+		basePath: string,
+		actions: PromptActionDefinition[],
+		dollarMentions?: DollarMentionAutocompleteOptions,
+	) {
 		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath);
 		this.#actions = actions;
+		this.#dollarMentions = dollarMentions;
 	}
-
 	async getSuggestions(
 		lines: string[],
 		cursorLine: number,
@@ -110,6 +171,13 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
 		const promptActionPrefix = getPromptActionPrefix(textBeforeCursor);
+		const dollarMentionPrefix = getDollarMentionPrefix(textBeforeCursor);
+		if (dollarMentionPrefix) {
+			const items = buildDollarMentionItems(dollarMentionPrefix, this.#dollarMentions);
+			if (items.length > 0) {
+				return { items, prefix: dollarMentionPrefix };
+			}
+		}
 		if (promptActionPrefix) {
 			const query = promptActionPrefix.slice(1).toLowerCase();
 			const items = this.#actions
@@ -180,6 +248,19 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 
 		if (isInternalUrlPrefix(prefix)) {
 			return applyInternalUrlCompletion(lines, cursorLine, cursorCol, item, prefix);
+		}
+
+		if (prefix.startsWith("$")) {
+			const currentLine = lines[cursorLine] || "";
+			const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
+			const afterCursor = currentLine.slice(cursorCol);
+			const newLines = [...lines];
+			newLines[cursorLine] = beforePrefix + item.value + afterCursor;
+			return {
+				lines: newLines,
+				cursorLine,
+				cursorCol: beforePrefix.length + item.value.length,
+			};
 		}
 
 		if (isEmojiPrefix(prefix)) {
@@ -256,5 +337,5 @@ export function createPromptActionAutocompleteProvider(
 		},
 	];
 
-	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions);
+	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions, options.dollarMentions);
 }

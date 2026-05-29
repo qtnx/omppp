@@ -177,9 +177,11 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 };
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
+import workflowTriggerReminder from "../prompts/system/workflow-trigger.md" with { type: "text" };
 import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { deobfuscateSessionContext, type SecretObfuscator } from "../secrets/obfuscator";
 import { invalidateHostMetadata } from "../ssh/connection-manager";
+import { discoverAgents } from "../task/discovery";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -213,6 +215,7 @@ import { extractFileMentions, generateFileMentionMessages } from "../utils/file-
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AuthStorage } from "./auth-storage";
 import type { ClientBridge, ClientBridgePermissionOption, ClientBridgePermissionOutcome } from "./client-bridge";
+import { buildDollarMentionContextMessages } from "./dollar-mentions";
 import {
 	type BashExecutionMessage,
 	type CompactionSummaryMessage,
@@ -4136,6 +4139,31 @@ export class AgentSession {
 			timestamp: Date.now(),
 		};
 	}
+	async #buildDollarMentionContextMessages(text: string): Promise<CustomMessage[]> {
+		if (!text.includes("$")) return [];
+		const agents = text.includes("$agent:") ? (await discoverAgents(this.sessionManager.getCwd())).agents : [];
+		return buildDollarMentionContextMessages(text, { skills: this.#skills, agents });
+	}
+
+	/**
+	 * When the user mentions "workflow" and the workflow tool is enabled, inject a
+	 * just-in-time reminder so the agent authors and runs a dynamic workflow for the
+	 * task instead of waiting to be told to. Hidden context message (display: false).
+	 */
+	#buildWorkflowTriggerMessages(text: string): CustomMessage[] {
+		if (this.settings.get("workflow.enabled") !== true) return [];
+		if (!/\bworkflows?\b/i.test(text)) return [];
+		return [
+			{
+				role: "custom",
+				customType: "workflow-trigger",
+				content: workflowTriggerReminder,
+				display: false,
+				attribution: "agent",
+				timestamp: Date.now(),
+			},
+		];
+	}
 
 	/**
 	 * Send a prompt to the agent.
@@ -4237,6 +4265,10 @@ export class AgentSession {
 		const eagerTodoPrelude =
 			!options?.synthetic && !hasPendingUserDirective ? this.#createEagerTodoPrelude(expandedText) : undefined;
 
+		const dollarMentionMessages = options?.synthetic
+			? []
+			: await this.#buildDollarMentionContextMessages(expandedText);
+		const workflowTriggerMessages = options?.synthetic ? [] : this.#buildWorkflowTriggerMessages(expandedText);
 		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 		if (options?.images) {
 			userContent.push(...options.images);
@@ -4254,9 +4286,14 @@ export class AgentSession {
 		}
 
 		try {
+			const prependMessages = [
+				...dollarMentionMessages,
+				...workflowTriggerMessages,
+				...(eagerTodoPrelude ? [eagerTodoPrelude.message] : []),
+			];
 			await this.#promptWithMessage(message, expandedText, {
 				...options,
-				prependMessages: eagerTodoPrelude ? [eagerTodoPrelude.message] : undefined,
+				prependMessages: prependMessages.length > 0 ? prependMessages : undefined,
 				appendMessages: keywordNotices.length > 0 ? keywordNotices : undefined,
 			});
 		} finally {
@@ -4630,36 +4667,40 @@ export class AgentSession {
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
 	async #queueSteer(text: string, images?: ImageContent[]): Promise<void> {
+		const dollarMentionMessages = await this.#buildDollarMentionContextMessages(text);
 		const displayText = text || (images && images.length > 0 ? "[Image]" : "");
 		this.#steeringMessages.push({ text: displayText });
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images && images.length > 0) {
 			content.push(...images);
 		}
-		this.agent.steer({
-			role: "user",
+		const message = {
+			role: "user" as const,
 			content,
-			attribution: "user",
+			attribution: "user" as const,
 			timestamp: Date.now(),
-		});
+		};
+		this.agent.steer(dollarMentionMessages.length > 0 ? [...dollarMentionMessages, message] : message);
 	}
 
 	/**
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
 	async #queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
+		const dollarMentionMessages = await this.#buildDollarMentionContextMessages(text);
 		const displayText = text || (images && images.length > 0 ? "[Image]" : "");
 		this.#followUpMessages.push({ text: displayText });
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images && images.length > 0) {
 			content.push(...images);
 		}
-		this.agent.followUp({
-			role: "user",
+		const message = {
+			role: "user" as const,
 			content,
-			attribution: "user",
+			attribution: "user" as const,
 			timestamp: Date.now(),
-		});
+		};
+		this.agent.followUp(dollarMentionMessages.length > 0 ? [...dollarMentionMessages, message] : message);
 		// When fully idle AND the session is in a resumable assistant-ended state,
 		// schedule an immediate continue so the queued follow-up is delivered
 		// without waiting for the next user turn. We gate on isStreaming (model

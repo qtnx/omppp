@@ -10,6 +10,7 @@ import { expandEmoticons } from "../../modes/emoji-autocomplete";
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
 import type { InteractiveModeContext } from "../../modes/types";
 import type { AgentSessionEvent } from "../../session/agent-session";
+import type { DollarMentionAgent } from "../../session/dollar-mentions";
 import { SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "../../session/messages";
 import { executeBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
@@ -708,10 +709,15 @@ export class InputController {
 		}
 	}
 
-	createAutocompleteProvider(commands: SlashCommand[], basePath: string): AutocompleteProvider {
+	createAutocompleteProvider(
+		commands: SlashCommand[],
+		basePath: string,
+		agents: readonly DollarMentionAgent[] = [],
+	): AutocompleteProvider {
 		return createPromptActionAutocompleteProvider({
 			commands,
 			basePath,
+			dollarMentions: { skills: this.ctx.session.skills, agents },
 			keybindings: this.ctx.keybindings,
 			copyCurrentLine: () => this.handleCopyCurrentLine(),
 			copyPrompt: () => this.handleCopyPrompt(),
