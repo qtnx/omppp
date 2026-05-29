@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Agent, type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentMessage, type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { SimpleStreamOptions } from "@oh-my-pi/pi-ai";
 import { z } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -45,6 +45,28 @@ describe("Agent", () => {
 
 		expect(hasQueuedFollowUp).toBe(true);
 		expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
+	});
+
+	it("continue() should process grouped follow-up messages in one turn", async () => {
+		const mock = createMockModel({
+			handler: context => ({ content: [`Processed ${context.messages.length}`] }),
+		});
+		const agent = new Agent({ streamFn: mock.stream });
+		const grouped: AgentMessage[] = [
+			{ role: "user", content: [{ type: "text", text: "Skill context" }], timestamp: Date.now() },
+			{ role: "user", content: [{ type: "text", text: "Queued follow-up" }], timestamp: Date.now() + 1 },
+		];
+
+		agent.replaceMessages([
+			{ role: "user", content: [{ type: "text", text: "Initial" }], timestamp: Date.now() - 10 },
+			createAssistantMessage([{ type: "text", text: "Initial response" }]),
+		]);
+		agent.followUp(grouped);
+
+		await agent.continue();
+
+		expect(mock.calls[0]?.context.messages.slice(-2).map(message => message.role)).toEqual(["user", "user"]);
+		expect(agent.state.messages.slice(-3).map(message => message.role)).toEqual(["user", "user", "assistant"]);
 	});
 
 	it("continue() should keep one-at-a-time steering semantics from assistant tail", async () => {

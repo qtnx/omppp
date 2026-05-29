@@ -270,8 +270,8 @@ export class Agent {
 	#abortController?: AbortController;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
-	#steeringQueue: AgentMessage[] = [];
-	#followUpQueue: AgentMessage[] = [];
+	#steeringQueue: AgentMessage[][] = [];
+	#followUpQueue: AgentMessage[][] = [];
 	#steeringMode: "all" | "one-at-a-time";
 	#followUpMode: "all" | "one-at-a-time";
 	#interruptMode: "immediate" | "wait";
@@ -685,16 +685,16 @@ export class Agent {
 	 * Queue a steering message to interrupt the agent mid-run.
 	 * Delivered after current tool execution, skips remaining tools.
 	 */
-	steer(m: AgentMessage) {
-		this.#steeringQueue.push(m);
+	steer(m: AgentMessage | AgentMessage[]) {
+		this.#steeringQueue.push(Array.isArray(m) ? m : [m]);
 	}
 
 	/**
 	 * Queue a follow-up message to be processed after the agent finishes.
 	 * Delivered only when agent has no more tool calls or steering messages.
 	 */
-	followUp(m: AgentMessage) {
-		this.#followUpQueue.push(m);
+	followUp(m: AgentMessage | AgentMessage[]) {
+		this.#followUpQueue.push(Array.isArray(m) ? m : [m]);
 	}
 
 	clearSteeringQueue() {
@@ -719,11 +719,11 @@ export class Agent {
 			if (this.#steeringQueue.length > 0) {
 				const first = this.#steeringQueue[0];
 				this.#steeringQueue = this.#steeringQueue.slice(1);
-				return [first];
+				return first ?? [];
 			}
 			return [];
 		}
-		const steering = this.#steeringQueue.slice();
+		const steering = this.#steeringQueue.flat();
 		this.#steeringQueue = [];
 		return steering;
 	}
@@ -733,11 +733,11 @@ export class Agent {
 			if (this.#followUpQueue.length > 0) {
 				const first = this.#followUpQueue[0];
 				this.#followUpQueue = this.#followUpQueue.slice(1);
-				return [first];
+				return first ?? [];
 			}
 			return [];
 		}
-		const followUp = this.#followUpQueue.slice();
+		const followUp = this.#followUpQueue.flat();
 		this.#followUpQueue = [];
 		return followUp;
 	}
@@ -747,7 +747,7 @@ export class Agent {
 	 * Used by dequeue keybinding.
 	 */
 	popLastSteer(): AgentMessage | undefined {
-		return this.#steeringQueue.pop();
+		return this.#steeringQueue.pop()?.at(-1);
 	}
 
 	/**
@@ -755,7 +755,7 @@ export class Agent {
 	 * Used by dequeue keybinding.
 	 */
 	popLastFollowUp(): AgentMessage | undefined {
-		return this.#followUpQueue.pop();
+		return this.#followUpQueue.pop()?.at(-1);
 	}
 
 	clearMessages() {
