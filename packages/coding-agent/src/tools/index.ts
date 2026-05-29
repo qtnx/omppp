@@ -25,6 +25,7 @@ import type { AgentOutputManager } from "../task/output-manager";
 import type { DiscoverableTool, DiscoverableToolSearchIndex } from "../tool-discovery/tool-index";
 import type { EventBus } from "../utils/event-bus";
 import { WebSearchTool } from "../web/search";
+import { WorkflowTool } from "../workflow";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
 import { AstEditTool } from "./ast-edit";
@@ -67,6 +68,7 @@ export * from "../lsp";
 export * from "../session/streaming-output";
 export * from "../task";
 export * from "../web/search";
+export * from "../workflow";
 export * from "./ask";
 export * from "./ast-edit";
 export * from "./ast-grep";
@@ -317,6 +319,7 @@ export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
 	task: s => TaskTool.create(s),
+	workflow: s => WorkflowTool.create(s),
 	job: JobTool.createIf,
 	irc: IrcTool.createIf,
 	todo: s => new TodoTool(s),
@@ -448,6 +451,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			const maxDepth = session.settings.get("task.maxRecursionDepth") ?? 2;
 			const currentDepth = session.taskDepth ?? 0;
 			return maxDepth < 0 || currentDepth < maxDepth;
+		}
+		if (name === "workflow") {
+			return session.settings.get("workflow.enabled") === true && (session.taskDepth ?? 0) === 0;
 		}
 		return true;
 	};

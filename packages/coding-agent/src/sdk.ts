@@ -173,7 +173,7 @@ type AsyncResultEntry = {
 
 type AsyncResultJobDetails = {
 	jobId: string;
-	type?: "bash" | "task";
+	type?: "bash" | "task" | "workflow";
 	label?: string;
 	durationMs?: number;
 };

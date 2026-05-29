@@ -2760,6 +2760,44 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"workflow.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tasks",
+			label: "Workflow Orchestration",
+			description:
+				"Enable the workflow tool: deterministic multi-subagent orchestration scripts. The model only runs a workflow when you explicitly ask; spawned agents can consume significant tokens.",
+		},
+	},
+
+	"workflow.maxConcurrency": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "tasks",
+			label: "Workflow Max Concurrency",
+			description: "Concurrent agent() cap per workflow. 0 = auto (min(16, cores-2)).",
+			options: [
+				{ value: "0", label: "Auto" },
+				{ value: "2", label: "2" },
+				{ value: "4", label: "4" },
+				{ value: "8", label: "8" },
+				{ value: "16", label: "16" },
+			],
+		},
+	},
+
+	"workflow.tokenBudget": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "tasks",
+			label: "Workflow Token Budget",
+			description: "Hard ceiling on subagent output tokens per workflow. 0 = no budget (budget.total is null).",
+		},
+	},
+
 	"task.maxRuntimeMs": {
 		type: "number",
 		default: 0,

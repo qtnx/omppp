@@ -8,7 +8,7 @@ const DEFAULT_MAX_RUNNING_JOBS = 15;
 
 export interface AsyncJob {
 	id: string;
-	type: "bash" | "task";
+	type: "bash" | "task" | "workflow";
 	status: "running" | "completed" | "failed" | "cancelled";
 	startTime: number;
 	label: string;
@@ -111,7 +111,7 @@ export class AsyncJobManager {
 	}
 
 	register(
-		type: "bash" | "task",
+		type: "bash" | "task" | "workflow",
 		label: string,
 		run: (ctx: {
 			jobId: string;

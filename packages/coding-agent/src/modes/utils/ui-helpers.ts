@@ -115,12 +115,12 @@ export class UiHelpers {
 						const details = (
 							message as CustomMessage<{
 								jobId?: string;
-								type?: "bash" | "task";
+								type?: "bash" | "task" | "workflow";
 								label?: string;
 								durationMs?: number;
 								jobs?: Array<{
 									jobId?: string;
-									type?: "bash" | "task";
+									type?: "bash" | "task" | "workflow";
 									label?: string;
 									durationMs?: number;
 								}>;

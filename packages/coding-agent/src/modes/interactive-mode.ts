@@ -82,6 +82,7 @@ import { getRecentSessions } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
 import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
+import { discoverAgents } from "../task/discovery";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
@@ -92,6 +93,8 @@ import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
 import { popTerminalTitle, pushTerminalTitle, setSessionTerminalTitle } from "../utils/title-generator";
+import { renderWorkflowTree } from "../workflow/render";
+import { WORKFLOW_PROGRESS_CHANNEL, type WorkflowProgressFrame } from "../workflow/types";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { CustomEditor } from "./components/custom-editor";
@@ -339,6 +342,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#pendingModelSwitch: { model: Model; thinkingLevel?: ThinkingLevel } | undefined;
 	#planModeHasEntered = false;
 	#planReviewContainer: Container | undefined;
+	#workflowFrames: WorkflowProgressFrame[] = [];
+	#workflowPanel: Container | undefined;
 	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
 	mcpManager?: import("../mcp").MCPManager;
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
@@ -387,6 +392,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
 					this.#handleLspStartupEvent(data as LspStartupEvent);
+				}),
+			);
+			this.#eventBusUnsubscribers.push(
+				eventBus.on(WORKFLOW_PROGRESS_CHANNEL, data => {
+					this.#workflowFrames.push(data as WorkflowProgressFrame);
+					if (this.#workflowPanel) this.#renderWorkflowsPanel();
 				}),
 			);
 		}
@@ -660,6 +671,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async refreshSlashCommandState(cwd?: string): Promise<void> {
 		const basePath = cwd ?? this.sessionManager.getCwd();
 		const fileCommands = await loadSlashCommands({ cwd: basePath });
+		const { agents } = await discoverAgents(basePath);
 		this.fileSlashCommands = new Set(fileCommands.map(cmd => cmd.name));
 		const fileSlashCommands: SlashCommand[] = fileCommands.map(cmd => ({
 			name: cmd.name,
@@ -668,6 +680,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const autocompleteProvider = this.#inputController.createAutocompleteProvider(
 			[...this.#pendingSlashCommands, ...fileSlashCommands],
 			basePath,
+			agents,
 		);
 		this.editor.setAutocompleteProvider(autocompleteProvider);
 		this.session.setSlashCommands(fileCommands);
@@ -1643,6 +1656,27 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#planReviewContainer = planReviewContainer;
 		this.ui.requestRender();
+	}
+
+	#renderWorkflowsPanel(): void {
+		const existing = this.#workflowPanel;
+		const panel = existing ?? new Container();
+		panel.clear();
+		panel.addChild(new Spacer(1));
+		panel.addChild(new DynamicBorder());
+		panel.addChild(new Text(theme.bold(theme.fg("accent", "Workflows")), 1, 1));
+		panel.addChild(new Spacer(1));
+		panel.addChild(
+			new Markdown(`\`\`\`\n${renderWorkflowTree(this.#workflowFrames)}\n\`\`\``, 1, 1, getMarkdownTheme()),
+		);
+		panel.addChild(new DynamicBorder());
+		if (!existing) this.chatContainer.addChild(panel);
+		this.#workflowPanel = panel;
+		this.ui.requestRender();
+	}
+
+	showWorkflowsDashboard(): void {
+		this.#renderWorkflowsPanel();
 	}
 
 	#getEditorTerminalPath(): string | null {
@@ -2672,6 +2706,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#omfgController.dispose();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#planReviewContainer = undefined;
+		this.#workflowPanel = undefined;
 	}
 
 	handleClearCommand(): Promise<void> {

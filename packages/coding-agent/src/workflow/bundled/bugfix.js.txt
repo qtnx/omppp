@@ -1,0 +1,37 @@
+export const meta = {
+	name: "bugfix",
+	description: "Reproduce-first bug fixer: reproduce, root-cause, fix, regression-test.",
+	whenToUse: "When the user asks to fix a specific bug and wants a thorough, verified fix.",
+	phases: ["reproduce", "root-cause", "fix", "verify"],
+};
+
+const REPORT = {
+	properties: { rootCause: { type: "string" }, plan: { type: "string" } },
+	optionalProperties: { files: { elements: { type: "string" } } },
+};
+
+phase("reproduce");
+const repro = await agent("Reproduce this bug and describe the exact failing command/output. Bug: " + args.bug, {
+	label: "reproduce",
+	agentType: "quick_task",
+});
+
+phase("root-cause");
+const diagnosis = await agent(
+	"Given this reproduction, find the root cause. Cite files and lines. Reproduction:\n" + repro,
+	{ label: "root-cause", schema: REPORT, agentType: "task" },
+);
+
+phase("fix");
+const fix = await agent("Implement the fix and a regression test. Root cause: " + JSON.stringify(diagnosis), {
+	label: "fix",
+	agentType: "task",
+});
+
+phase("verify");
+const verdict = await agent(
+	"Verify the fix resolves the original reproduction and the regression test passes. Fix summary:\n" + fix,
+	{ label: "verify", agentType: "reviewer" },
+);
+
+return "Root cause: " + (diagnosis && diagnosis.rootCause) + "\nFix:\n" + fix + "\nVerification:\n" + verdict;

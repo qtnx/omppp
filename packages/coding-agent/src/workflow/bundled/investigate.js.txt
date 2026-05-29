@@ -1,0 +1,37 @@
+export const meta = {
+	name: "investigate",
+	description: "Root-cause investigation: gather, hypothesize in parallel, refute, report.",
+	whenToUse: "When the user asks why something happens or wants a grounded cross-file explanation.",
+	phases: ["gather", "hypothesize", "verify"],
+};
+
+phase("gather");
+const evidence = await agent("Gather all relevant evidence for: " + args.question, {
+	label: "gather",
+	agentType: "explore",
+});
+
+phase("hypothesize");
+const ANGLES = ["data-flow", "config", "concurrency"];
+const hypotheses = await parallel(
+	ANGLES.map(
+		angle => () =>
+			agent("Propose a root-cause hypothesis from the " + angle + " angle. Evidence:\n" + evidence, {
+				label: angle,
+				agentType: "task",
+			}),
+	),
+);
+
+phase("verify");
+const verdicts = await parallel(
+	hypotheses.filter(Boolean).map(
+		h => () =>
+			agent("Try to REFUTE this hypothesis with evidence. If it survives, say so. Hypothesis:\n" + h, {
+				label: "refute",
+				agentType: "reviewer",
+			}),
+	),
+);
+
+return "Question: " + args.question + "\nSurviving analysis:\n" + verdicts.filter(Boolean).join("\n---\n");
