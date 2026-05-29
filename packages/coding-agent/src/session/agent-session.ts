@@ -213,6 +213,7 @@ import { type EditMode, resolveEditMode } from "../utils/edit-mode";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { buildNamedToolChoice } from "../utils/tool-choice";
+import { assessTopicRelevance } from "../utils/topic-relevance";
 import type { AuthStorage } from "./auth-storage";
 import type { ClientBridge, ClientBridgePermissionOption, ClientBridgePermissionOutcome } from "./client-bridge";
 import { buildDollarMentionContextMessages } from "./dollar-mentions";
@@ -245,7 +246,7 @@ export type AgentSessionEvent =
 	| AgentEvent
 	| {
 			type: "auto_compaction_start";
-			reason: "threshold" | "overflow" | "idle" | "incomplete";
+			reason: "threshold" | "overflow" | "idle" | "incomplete" | "topic-switch";
 			action: "context-full" | "handoff" | "shake";
 	  }
 	| {
@@ -4260,6 +4261,12 @@ export class AgentSession {
 			return;
 		}
 
+		// After a long idle gap, an unrelated new request shouldn't drag the prior
+		// topic's context along. Classify relatedness and compact when it changed.
+		if (!options?.synthetic) {
+			await this.#maybeCompactStaleContext(expandedText);
+		}
+
 		// Skip eager todo prelude when the user has already queued a directive
 		const hasPendingUserDirective = this.#toolChoiceQueue.inspect().includes("user-force");
 		const eagerTodoPrelude =
@@ -6066,6 +6073,101 @@ export class AgentSession {
 	}
 
 	/**
+	 * Detect an idle topic switch before a new user turn. After a long idle gap,
+	 * classify whether `request` still relates to the prior context with the smol
+	 * model; when it does not, compact the stale context (keeping a summary) so the
+	 * unrelated request doesn't carry the old topic's tokens. Fails open: any
+	 * missing prerequisite, classifier error, or timeout leaves the turn untouched.
+	 */
+	async #maybeCompactStaleContext(request: string): Promise<void> {
+		const cfg = this.settings.getGroup("compaction");
+		if (!cfg.topicSwitchEnabled || cfg.strategy === "off") return;
+		if (this.isStreaming || this.isCompacting) return;
+
+		const idleSeconds = this.#idleSecondsSinceLastActivity();
+		if (idleSeconds === undefined || idleSeconds < cfg.topicSwitchIdleSeconds) return;
+		if (this.#estimateContextTokens().tokens < cfg.topicSwitchMinContextTokens) return;
+		if (this.#modelRegistry.getAvailable().length === 0) return;
+
+		const digest = this.#buildTopicDigest();
+		if (!digest) return;
+
+		const verdict = await assessTopicRelevance(request, digest, this.#modelRegistry, this.settings, {
+			sessionId: this.sessionId,
+			currentModel: this.model,
+			metadataResolver: provider => this.agent.metadataForProvider(provider),
+		});
+		if (verdict !== "unrelated") return;
+
+		// Re-check after the network round-trip; state may have changed meanwhile.
+		if (this.isStreaming || this.isCompacting) return;
+		logger.debug("topic-switch: compacting stale context", { idleSeconds });
+		await this.#runAutoCompaction("topic-switch", false, false, false);
+	}
+
+	/**
+	 * Seconds since the most recent message in the active context, or undefined
+	 * when there is no prior activity. Message timestamps are persisted, so this
+	 * survives session resume (resuming a days-old session counts as idle).
+	 */
+	#idleSecondsSinceLastActivity(): number | undefined {
+		const messages = this.messages;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const ts = messages[i]?.timestamp;
+			if (typeof ts === "number" && ts > 0) {
+				return Math.max(0, (Date.now() - ts) / 1000);
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * Build a cheap digest of what the session has been about for the
+	 * topic-relevance classifier: session title, the most recent compaction
+	 * summary, and the last few user requests — never the full transcript.
+	 */
+	#buildTopicDigest(): string | undefined {
+		const parts: string[] = [];
+		const title = this.sessionManager.getSessionName();
+		if (title) parts.push(`Title: ${title}`);
+
+		const branch = this.sessionManager.getBranch();
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (entry?.type === "compaction") {
+				const summary = entry.shortSummary ?? entry.summary;
+				if (summary) parts.push(`Prior summary: ${summary}`);
+				break;
+			}
+		}
+
+		const recentRequests: string[] = [];
+		const messages = this.messages;
+		for (let i = messages.length - 1; i >= 0 && recentRequests.length < 3; i--) {
+			const msg = messages[i];
+			if (msg.role !== "user") continue;
+			const text = this.#extractMessageText(msg.content).slice(0, 500).trim();
+			if (text) recentRequests.push(text);
+		}
+		if (recentRequests.length > 0) {
+			recentRequests.reverse();
+			parts.push(`Recent requests:\n${recentRequests.map(t => `- ${t}`).join("\n")}`);
+		}
+
+		const digest = parts.join("\n\n").trim();
+		return digest.length > 0 ? digest : undefined;
+	}
+
+	#extractMessageText(content: string | (TextContent | ImageContent)[]): string {
+		if (typeof content === "string") return content;
+		let text = "";
+		for (const block of content) {
+			if (block.type === "text") text += text ? ` ${block.text}` : block.text;
+		}
+		return text;
+	}
+
+	/**
 	 * Cancel in-progress branch summarization.
 	 */
 	abortBranchSummary(): void {
@@ -7185,7 +7287,7 @@ export class AgentSession {
 	 * @returns true when a deferred handoff was scheduled. Inline runs always return false.
 	 */
 	async #runAutoCompaction(
-		reason: "overflow" | "threshold" | "idle" | "incomplete",
+		reason: "overflow" | "threshold" | "idle" | "incomplete" | "topic-switch",
 		willRetry: boolean,
 		deferred = false,
 		allowDefer = true,
@@ -7193,7 +7295,7 @@ export class AgentSession {
 	): Promise<boolean> {
 		const compactionSettings = this.settings.getGroup("compaction");
 		if (compactionSettings.strategy === "off") return false;
-		if (reason !== "idle" && !compactionSettings.enabled) return false;
+		if (reason !== "idle" && reason !== "topic-switch" && !compactionSettings.enabled) return false;
 		const generation = this.#promptGeneration;
 		const shouldAutoContinue = options.autoContinue !== false && compactionSettings.autoContinue !== false;
 		// Shake runs inline (cheap, no remote LLM). On overflow recovery, if shake
@@ -7212,6 +7314,7 @@ export class AgentSession {
 			reason !== "overflow" &&
 			reason !== "incomplete" &&
 			reason !== "idle" &&
+			reason !== "topic-switch" &&
 			compactionSettings.strategy === "handoff"
 		) {
 			this.#schedulePostPromptTask(
@@ -7229,7 +7332,9 @@ export class AgentSession {
 		// LLM call would hit the same overflow. "incomplete" is an output-side problem,
 		// so a handoff request on the existing context is still viable.
 		let action: "context-full" | "handoff" =
-			compactionSettings.strategy === "handoff" && reason !== "overflow" ? "handoff" : "context-full";
+			compactionSettings.strategy === "handoff" && reason !== "overflow" && reason !== "topic-switch"
+				? "handoff"
+				: "context-full";
 		await this.#emitSessionEvent({ type: "auto_compaction_start", reason, action });
 		// Abort any older auto-compaction before installing this run's controller.
 		this.#autoCompactionAbortController?.abort();
@@ -7521,7 +7626,7 @@ export class AgentSession {
 			};
 			await this.#emitSessionEvent({ type: "auto_compaction_end", action, result, aborted: false, willRetry });
 
-			if (!willRetry && reason !== "idle" && shouldAutoContinue) {
+			if (!willRetry && reason !== "idle" && reason !== "topic-switch" && shouldAutoContinue) {
 				this.#scheduleAutoContinuePrompt(generation);
 			}
 

@@ -656,7 +656,9 @@ export class EventController {
 					? "Response incomplete, "
 					: event.reason === "idle"
 						? "Idle "
-						: "";
+						: event.reason === "topic-switch"
+							? "Topic changed, "
+							: "";
 		const actionLabel =
 			event.action === "handoff"
 				? "Auto-handoff"
