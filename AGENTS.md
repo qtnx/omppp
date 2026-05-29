@@ -201,6 +201,12 @@ For the bash tool specifically:
 - NEVER commit unless asked.
 - Never use `tsc`/`npx tsc` — always `bun check`.
 
+### Building a local binary
+
+Compile a standalone binary with `bun --cwd=packages/coding-agent run build` → `packages/coding-agent/dist/omp`. To replace a globally linked dev `omp`, overwrite the launcher at its real path (e.g. `~/.bun/bin/omp`) with a copy of `dist/omp` (`bun link` installs a symlink to `src/cli.ts`; replacing the file with the compiled binary is a clean cutover, reversible by re-linking).
+
+**Native sentinel gotcha.** The binary embeds the prebuilt native addon from `packages/natives/native/*.node` (via `embed-native.ts`). If that `.node` predates the current crate, the compiled binary fails at startup with `does not expose the @oh-my-pi/pi-natives@<ver> version sentinel __piNativesV<ver>`. Fix: rebuild the native first (`bun --cwd=packages/natives run build`), then rebuild the binary. The runtime extracts the embedded `.node` to `~/.omp/natives/<version>/`; a stale file there is loaded in preference and blocks re-extraction, so delete `~/.omp/natives/<version>` after rebuilding. Validate with `dist/omp --version && dist/omp --smoke-test`.
+
 ## Testing Guidance
 
 Test the contract the system exposes — not the easiest internal detail to assert.
