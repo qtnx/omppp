@@ -243,6 +243,15 @@ export interface AgentDefinition {
 	filePath?: string;
 }
 
+export interface ReviewGateProgress {
+	stage: "capturing-diff" | "reviewing" | "fixing";
+	iteration: number;
+	maxIterations: number;
+	reviewerAgent: string;
+	fixerAgent: string;
+	current?: AgentProgress;
+}
+
 /** Progress tracking for a single agent */
 export interface AgentProgress {
 	index: number;
@@ -311,6 +320,8 @@ export interface AgentProgress {
 	 * `extractedToolData.task` after that.
 	 */
 	inflightTaskDetails?: TaskToolDetails;
+	/** Live review-gate activity for this completed implementer while reviewer/fixer subagents run. */
+	reviewGate?: ReviewGateProgress;
 }
 
 /** Result from a single agent execution */

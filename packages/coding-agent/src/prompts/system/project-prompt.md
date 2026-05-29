@@ -42,7 +42,7 @@ Working directory layout (sorted by mtime, recent first; depth ≤ 3):
 <workspace-roots>
 This session spans multiple tagged working directories. Use the matching root for each task; paths are absolute.
 Use tagged roots intentionally:{{#each workspaceRoots}} `{{tag}}` means `{{path}}`{{#unless @last}},{{/unless}}{{/each}}.
-When running shell/build/test commands for a non-current root, pass that root tag or path as the tool `cwd` (for example `cwd: "fe"`). To persistently switch the session working directory, run `/move <tag>` (for example `/move fe`) before relying on relative paths.
+When running shell/build/test commands for a non-current root, pass that root tag or path as the tool `cwd` (for example `cwd: "fe"`). For LSP or other cwd-bound operations, `/move <tag>` persistently switches the active cwd; run `/move fe` before using relative LSP paths in the frontend root.
 {{#each workspaceRoots}}
 - [{{tag}}]{{#if primary}} (primary cwd){{/if}} {{path}}{{#if branch}} — branch `{{branch}}`{{/if}}
 {{#if tree}}

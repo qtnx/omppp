@@ -994,6 +994,7 @@ export class CommandController {
 			await this.ctx.sessionManager.flush();
 			await this.ctx.sessionManager.moveTo(resolvedPath);
 			await this.ctx.applyCwdChange(resolvedPath);
+			await this.ctx.session.refreshBaseSystemPrompt();
 
 			this.ctx.chatContainer.addChild(new Spacer(1));
 			this.ctx.chatContainer.addChild(

@@ -34,6 +34,7 @@ import {
 	type AgentProgress,
 	type AgentSource,
 	getTaskSchema,
+	type ReviewGateProgress,
 	type SingleResult,
 	type TaskParams,
 	type TaskToolDetails,
@@ -1040,6 +1041,55 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				}
 
 				const gateConfig = reviewGateConfig;
+				const buildParentProgress = (): AgentProgress => {
+					const existing = progressMap.get(index);
+					return {
+						index,
+						id: result.id,
+						agent: result.agent,
+						agentSource: result.agentSource,
+						status: "running",
+						task: result.task,
+						assignment: result.assignment,
+						description: result.description,
+						lastIntent: result.lastIntent,
+						recentTools: existing?.recentTools ?? [],
+						recentOutput: existing?.recentOutput ?? [],
+						toolCount: existing?.toolCount ?? 0,
+						tokens: result.tokens,
+						contextTokens: result.contextTokens,
+						contextWindow: result.contextWindow,
+						cost: result.usage?.cost.total ?? existing?.cost ?? 0,
+						durationMs: result.durationMs,
+						modelOverride: result.modelOverride,
+						resolvedModel: result.resolvedModel,
+						extractedToolData: result.extractedToolData,
+						retryFailure: result.retryFailure,
+					};
+				};
+
+				const publishReviewGateProgress = (
+					stage: ReviewGateProgress["stage"],
+					iteration: number,
+					current?: AgentProgress,
+				): void => {
+					const base = progressMap.get(index) ?? buildParentProgress();
+					const reviewGate: ReviewGateProgress = {
+						stage,
+						iteration,
+						maxIterations: gateConfig.maxFixIterations + 1,
+						reviewerAgent: gateConfig.reviewerAgent.name,
+						fixerAgent: gateConfig.fixerAgent.name,
+						...(current ? { current: structuredClone(current) } : {}),
+					};
+					progressMap.set(index, {
+						...structuredClone(base),
+						status: "running",
+						reviewGate,
+					});
+					emitProgress();
+				};
+
 				const runGateSubagent = async (
 					gateAgent: AgentDefinition,
 					role: "review" | "fix",
@@ -1053,6 +1103,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						activeModelPattern: parentActiveModelPattern,
 						fallbackModelPattern: this.session.getModelString?.(),
 					});
+					const stage: ReviewGateProgress["stage"] = role === "review" ? "reviewing" : "fixing";
+					publishReviewGateProgress(stage, request.iteration);
 					const gateId = `${task.id}-${role}-${request.iteration}`;
 					return runSubprocess({
 						cwd: this.session.cwd,
@@ -1062,7 +1114,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						assignment: task.assignment.trim(),
 						context: sharedContext,
 						planReference,
-						description: task.description,
+						description: `Review gate ${role === "review" ? "reviewer" : "fixer"} pass ${request.iteration}`,
 						index,
 						id: gateId,
 						taskDepth,
@@ -1077,6 +1129,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						enableLsp: subagentLspEnabled,
 						signal,
 						eventBus: this.session.eventBus,
+						onProgress: progress => publishReviewGateProgress(stage, request.iteration, progress),
 						authStorage: this.session.authStorage,
 						modelRegistry: this.session.modelRegistry,
 						settings: this.session.settings,

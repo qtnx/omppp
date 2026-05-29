@@ -666,6 +666,25 @@ function renderAgentProgress(
 		}: ${truncateToWidth(replaceTabs(progress.retryFailure.errorMessage), 80)}`;
 		lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg("error", summary)}`);
 	}
+	if (progress.reviewGate) {
+		const gate = progress.reviewGate;
+		const stageLabel =
+			gate.stage === "capturing-diff" ? "capturing diff" : gate.stage === "reviewing" ? "reviewing" : "fixing";
+		const actor = gate.stage === "fixing" ? gate.fixerAgent : gate.reviewerAgent;
+		let gateLine = `${continuePrefix}${theme.tree.hook} ${theme.fg(
+			"dim",
+			`Review gate: ${stageLabel} ${gate.iteration}/${gate.maxIterations}`,
+		)}${theme.sep.dot}${theme.fg("dim", actor)}`;
+		if (gate.current?.resolvedModel) {
+			gateLine += `${theme.sep.dot}${theme.fg("dim", truncateToWidth(gate.current.resolvedModel, 30))}`;
+		}
+		lines.push(gateLine);
+		if (gate.current) {
+			for (const line of renderAgentProgress(gate.current, true, expanded, theme, spinnerFrame)) {
+				lines.push(`${continuePrefix}${line}`);
+			}
+		}
+	}
 
 	// Render extracted tool data inline (e.g., review findings)
 	if (progress.extractedToolData) {
@@ -863,7 +882,8 @@ function formatReviewGateLine(reviewGate: ReviewGateResult, theme: Theme): strin
 	const { color } = reviewGateOutcomeStyle(reviewGate.outcome, theme);
 	const reviewCount = reviewGate.iterations.length;
 	const parts: string[] = [`${theme.fg("dim", "Review gate:")} ${theme.fg(color, reviewGate.outcome)}`];
-
+	parts.push(theme.fg("dim", `reviewer ${reviewGate.reviewerAgent}`));
+	parts.push(theme.fg("dim", `fixer ${reviewGate.fixerAgent}`));
 	if (reviewCount > 0) {
 		const reviewLabel = reviewCount === 1 ? "review" : "reviews";
 		parts.push(theme.fg("dim", `${reviewCount} ${reviewLabel}`));

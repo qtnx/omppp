@@ -259,9 +259,8 @@ describe("buildSystemPrompt — <workspace-roots> block", () => {
 		expect(text).toContain("[fe] /srv/web-wt — branch `omp/feat-x`");
 		expect(text).toContain("- index.ts");
 		expect(text).toContain("Use tagged roots intentionally: `be` means `/srv/api-wt`, `fe` means `/srv/web-wt`.");
-		expect(text).toContain(
-			"When running shell/build/test commands for a non-current root, pass that root tag or path as the tool `cwd`",
-		);
+		expect(text).toContain("For LSP or other cwd-bound operations");
+		expect(text).toContain("`/move <tag>` persistently switches the active cwd");
 	});
 
 	test("omits the block entirely when there are no roots", async () => {

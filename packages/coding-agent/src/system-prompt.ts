@@ -3,6 +3,7 @@
  */
 
 import * as os from "node:os";
+import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { $env, getGpuCachePath, getProjectDir, hasFsCode, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
@@ -229,6 +230,8 @@ export async function resolvePromptInput(input: string | undefined, description:
 export interface LoadContextFilesOptions {
 	/** Working directory to start walking up from. Default: getProjectDir() */
 	cwd?: string;
+	/** Additional tagged workspace roots whose context files should also be loaded. */
+	workspaceRoots?: readonly WorkspaceRoot[];
 }
 
 function dedupeExactContextFiles(
@@ -243,19 +246,10 @@ function dedupeExactContextFiles(
 	return contextFiles.filter((file, index) => lastIndexByContent.get(file.content) === index);
 }
 
-/**
- * Load all project context files using the capability API.
- * Returns {path, content, depth} entries for all discovered context files.
- * Files are sorted by depth (descending) so files closer to cwd appear last/more prominent.
- */
-export async function loadProjectContextFiles(
-	options: LoadContextFilesOptions = {},
+async function loadProjectContextFilesForCwd(
+	cwd: string,
 ): Promise<Array<{ path: string; content: string; depth?: number }>> {
-	const resolvedCwd = options.cwd ?? getProjectDir();
-
-	const result = await loadCapability(contextFileCapability.id, { cwd: resolvedCwd });
-
-	// Convert ContextFile items and preserve depth info
+	const result = await loadCapability(contextFileCapability.id, { cwd });
 	const files = result.items.map(item => {
 		const contextFile = item as ContextFile;
 		return {
@@ -264,16 +258,43 @@ export async function loadProjectContextFiles(
 			depth: contextFile.depth,
 		};
 	});
-
-	// Sort by depth (descending): higher depth (farther from cwd) comes first,
-	// so files closer to cwd appear later and are more prominent
 	files.sort((a, b) => {
 		const depthA = a.depth ?? -1;
 		const depthB = b.depth ?? -1;
 		return depthB - depthA;
 	});
+	return files;
+}
 
-	return dedupeExactContextFiles(files);
+/**
+ * Load all project context files using the capability API.
+ * Returns {path, content, depth} entries for all discovered context files.
+ * Files are sorted by depth (descending) so files closer to cwd appear last/more prominent.
+ *
+ * When workspaceRoots are supplied, additional roots are loaded first and the
+ * current cwd is loaded last so context nearest the active root wins on dedupe.
+ */
+export async function loadProjectContextFiles(
+	options: LoadContextFilesOptions = {},
+): Promise<Array<{ path: string; content: string; depth?: number }>> {
+	const resolvedCwd = path.resolve(options.cwd ?? getProjectDir());
+	if (!options.workspaceRoots || options.workspaceRoots.length === 0) {
+		return dedupeExactContextFiles(await loadProjectContextFilesForCwd(resolvedCwd));
+	}
+
+	const otherRootCwds = options.workspaceRoots
+		.map(root => path.resolve(root.path))
+		.filter(rootCwd => rootCwd !== resolvedCwd);
+	const contextCwds = [...new Set([...otherRootCwds, resolvedCwd])];
+	const contextFileGroups = await Promise.all(
+		contextCwds.map(contextCwd => loadProjectContextFilesForCwd(contextCwd)),
+	);
+	const merged = contextFileGroups.flat();
+	const lastIndexByPath = new Map<string, number>();
+	for (const [index, file] of merged.entries()) {
+		lastIndexByPath.set(file.path, index);
+	}
+	return dedupeExactContextFiles(merged.filter((file, index) => lastIndexByPath.get(file.path) === index));
 }
 
 /**
@@ -451,7 +472,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	});
 	const contextFilesPromise = providedContextFiles
 		? Promise.resolve(providedContextFiles)
-		: logger.time("loadProjectContextFiles", loadProjectContextFiles, { cwd: resolvedCwd });
+		: logger.time("loadProjectContextFiles", loadProjectContextFiles, {
+				cwd: resolvedCwd,
+				workspaceRoots,
+			});
 	const workspaceTreePromise =
 		providedWorkspaceTree !== undefined
 			? Promise.resolve(providedWorkspaceTree)

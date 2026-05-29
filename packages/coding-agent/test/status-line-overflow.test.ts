@@ -26,13 +26,18 @@ afterAll(() => {
 });
 
 /** Minimal SegmentContext factory — only path/git fields matter for these tests. */
-function createCtx(overrides?: { pathMaxLength?: number; branch?: string | null }): SegmentContext {
+function createCtx(overrides?: {
+	pathMaxLength?: number;
+	branch?: string | null;
+	workspaceRoots?: Array<{ tag: string; path: string; primary: boolean }>;
+}): SegmentContext {
 	return {
 		session: {
 			state: {},
 			isFastModeEnabled: () => false,
 			modelRegistry: { isUsingOAuth: () => false },
 			sessionManager: undefined,
+			workspaceRoots: overrides?.workspaceRoots ?? [],
 		} as unknown as SegmentContext["session"],
 		width: 120,
 		options: {
@@ -154,6 +159,22 @@ describe("path segment truncation at varying maxLength", () => {
 		const rendered = renderSegment("path", createCtx({ pathMaxLength: 4 }));
 		expect(rendered.visible).toBe(true);
 		expect(visibleWidth(rendered.content)).toBeGreaterThan(0);
+	});
+
+	it("prefixes the active workspace root tag when cwd is inside a tagged root", () => {
+		const workspaceRoot = path.join(tmpDir, "frontend");
+		fs.mkdirSync(path.join(workspaceRoot, "src"), { recursive: true });
+		setProjectDir(path.join(workspaceRoot, "src"));
+
+		const rendered = renderSegment(
+			"path",
+			createCtx({
+				workspaceRoots: [{ tag: "fe", path: workspaceRoot, primary: false }],
+			}),
+		);
+
+		expect(rendered.visible).toBe(true);
+		expect(rendered.content).toContain("[fe]/src");
 	});
 });
 

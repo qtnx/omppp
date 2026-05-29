@@ -42,6 +42,29 @@ export interface WorkspaceRoot {
 	tree?: string;
 }
 
+function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
+	const relative = path.relative(rootPath, candidatePath);
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export function findWorkspaceRootForPath(
+	inputPath: string,
+	workspaceRoots: readonly WorkspaceRoot[] | undefined,
+): WorkspaceRoot | null {
+	if (!workspaceRoots || workspaceRoots.length === 0) return null;
+	const resolvedPath = path.resolve(inputPath);
+	let bestMatch: WorkspaceRoot | null = null;
+	let bestLength = -1;
+	for (const root of workspaceRoots) {
+		const rootPath = path.resolve(root.path);
+		if (!isPathWithinRoot(rootPath, resolvedPath)) continue;
+		if (rootPath.length <= bestLength) continue;
+		bestMatch = root;
+		bestLength = rootPath.length;
+	}
+	return bestMatch;
+}
+
 /**
  * Resolve a user/model-facing workspace-root reference.
  *
@@ -67,8 +90,7 @@ export function resolveWorkspaceRootReference(
 	const suffix = slashIndex === -1 ? "" : normalizedInput.slice(slashIndex + 1);
 	if (suffix.length === 0) return rootPath;
 	const candidatePath = path.resolve(rootPath, suffix);
-	const relative = path.relative(rootPath, candidatePath);
-	if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+	if (!isPathWithinRoot(rootPath, candidatePath)) return null;
 	return candidatePath;
 }
 

@@ -204,4 +204,25 @@ describe("task renderer: nested live rendering", () => {
 		expect(text).not.toContain("ctx");
 		expect(text).not.toContain("Σ");
 	});
+
+	it("renders live review-gate reviewer activity under the task", async () => {
+		const parent = makeRunningProgress({
+			id: "4-Parent",
+			reviewGate: {
+				stage: "reviewing",
+				iteration: 1,
+				maxIterations: 3,
+				reviewerAgent: "reviewer",
+				fixerAgent: "task",
+				current: makeRunningSubProgress("4-Parent-review-1", "Review gate reviewer pass 1"),
+			},
+		} as Partial<AgentProgress>);
+
+		const text = await render(parent);
+
+		expect(text).toContain("Review gate: reviewing 1/3");
+		expect(text).toContain("reviewer");
+		expect(text).toContain("Review gate reviewer pass 1");
+		expect(text).toContain("4-Parent-review-1");
+	});
 });

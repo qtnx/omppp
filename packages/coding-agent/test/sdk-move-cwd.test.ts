@@ -69,4 +69,56 @@ describe("createAgentSession cwd after /move", () => {
 			await session.dispose();
 		}
 	});
+
+	it("refreshes the system prompt against the moved workspace root context", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-move-prompt-${Snowflake.next()}-`));
+		tempDirs.push(tempDir);
+		const cwdA = path.join(tempDir, "cwd-a");
+		const cwdB = path.join(tempDir, "cwd-b");
+		const cwdBNested = path.join(cwdB, "apps", "web");
+		fs.mkdirSync(cwdA, { recursive: true });
+		fs.mkdirSync(cwdBNested, { recursive: true });
+		fs.writeFileSync(path.join(cwdA, "AGENTS.md"), "Backend root context");
+		fs.writeFileSync(path.join(cwdBNested, "AGENTS.md"), "Frontend nested context");
+
+		const sessionManager = SessionManager.create(cwdA, path.join(tempDir, "sessions"));
+		const { session } = await createAgentSession({
+			cwd: cwdA,
+			agentDir: tempDir,
+			sessionManager,
+			settings: Settings.isolated({
+				"async.enabled": false,
+				"bash.autoBackground.enabled": false,
+				"bashInterceptor.enabled": false,
+			}),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: ["bash"],
+			workspaceRoots: [
+				{ tag: "be", path: cwdA, primary: true },
+				{ tag: "fe", path: cwdB, primary: false },
+			],
+		});
+
+		try {
+			const initialPromptText = session.systemPrompt.join("\n");
+			expect(initialPromptText).toContain("Backend root context");
+			expect(initialPromptText).not.toContain("Frontend nested context");
+
+			await sessionManager.moveTo(cwdBNested);
+			await session.refreshBaseSystemPrompt();
+
+			const promptText = session.systemPrompt.join("\n");
+			expect(promptText).toContain(cwdBNested);
+			expect(promptText).toContain("Backend root context");
+			expect(promptText).toContain("Frontend nested context");
+		} finally {
+			await session.dispose();
+		}
+	});
 });

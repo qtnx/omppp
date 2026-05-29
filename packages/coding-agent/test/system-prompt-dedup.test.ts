@@ -104,6 +104,27 @@ describe("SYSTEM.md prompt assembly", () => {
 		expect(discoveredFiles[0]?.path).toBe(path.join(appDir, "AGENTS.md"));
 	});
 
+	it("loads context files from additional workspace roots", async () => {
+		const projectDir = path.join(tempDir, "project");
+		const backendDir = path.join(projectDir, "backend");
+		const frontendDir = path.join(projectDir, "frontend");
+		fs.mkdirSync(backendDir, { recursive: true });
+		fs.mkdirSync(frontendDir, { recursive: true });
+		fs.writeFileSync(path.join(backendDir, "AGENTS.md"), "Backend context");
+		fs.writeFileSync(path.join(frontendDir, "AGENTS.md"), "Frontend context");
+
+		const contextFiles = await loadProjectContextFiles({
+			cwd: backendDir,
+			workspaceRoots: [
+				{ tag: "be", path: backendDir, primary: true },
+				{ tag: "fe", path: frontendDir, primary: false },
+			],
+		});
+
+		expect(contextFiles.some(file => file.path === path.join(backendDir, "AGENTS.md"))).toBe(true);
+		expect(contextFiles.some(file => file.path === path.join(frontendDir, "AGENTS.md"))).toBe(true);
+	});
+
 	it("keeps distinct context entries when their contents differ", async () => {
 		const farPath = path.join(tempDir, "far", "AGENTS.md");
 		const nearPath = path.join(tempDir, "near", "CLAUDE.md");

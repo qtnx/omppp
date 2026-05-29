@@ -777,6 +777,42 @@ describe("task review gate", () => {
 		}
 	});
 
+	it("streams reviewer agent progress while the review gate is running", async () => {
+		mockAgents();
+		mockIsolation();
+		mockSessionQueue([{ role: "implementer" }, { role: "reviewer", verdict: correctVerdict() }]);
+		const updates: Array<{
+			details?: {
+				progress?: Array<{
+					reviewGate?: {
+						stage: string;
+						iteration: number;
+						current?: { agent: string; id: string; status: string };
+					};
+				}>;
+			};
+		}> = [];
+
+		const tool = await TaskTool.create(
+			createSession({
+				...reviewGateSettings(),
+				"task.isolation.mode": "none",
+			}),
+		);
+		await tool.execute("call-review-progress", TASK_PARAMS, undefined, update => {
+			updates.push(update);
+		});
+
+		const reviewProgress = updates
+			.flatMap(update => update.details?.progress ?? [])
+			.map(progress => progress.reviewGate)
+			.find(gate => gate?.stage === "reviewing" && gate.current?.agent === REVIEWER_AGENT);
+
+		expect(reviewProgress?.iteration).toBe(1);
+		expect(reviewProgress?.current?.id).toEndWith("-review-1");
+		expect(reviewProgress?.current?.status).toBe("running");
+	});
+
 	it("honors task max concurrency when non-isolated review gates are enabled", async () => {
 		mockAgents();
 		mockIsolation();

@@ -526,9 +526,11 @@ export async function discoverSkills(
 export async function discoverContextFiles(
 	cwd?: string,
 	_agentDir?: string,
+	workspaceRoots?: WorkspaceRoot[],
 ): Promise<Array<{ path: string; content: string; depth?: number }>> {
 	return await loadContextFilesInternal({
 		cwd: cwd ?? getProjectDir(),
+		workspaceRoots,
 	});
 }
 
@@ -920,7 +922,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// session-context build, tool creation, MCP discovery, and extension discovery.
 	const contextFilesPromise = options.contextFiles
 		? Promise.resolve(options.contextFiles)
-		: logger.time("discoverContextFiles", discoverContextFiles, cwd, agentDir);
+		: logger.time("discoverContextFiles", discoverContextFiles, cwd, agentDir, options.workspaceRoots);
 	contextFilesPromise.catch(() => {});
 	const promptTemplatesPromise = options.promptTemplates
 		? Promise.resolve(options.promptTemplates)
@@ -1668,6 +1670,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			toolNames: string[],
 			tools: Map<string, AgentTool>,
 		): Promise<BuildSystemPromptResult> => {
+			const currentCwd = sessionManager.getCwd();
+			const usingInitialCwd = currentCwd === cwd;
+			const promptContextFilesPromise = usingInitialCwd
+				? Promise.resolve(contextFiles)
+				: logger.time("discoverContextFiles", discoverContextFiles, currentCwd, agentDir, options.workspaceRoots);
+			const promptWorkspaceTreePromise = usingInitialCwd
+				? workspaceTreePromise
+				: logger.time("buildWorkspaceTree", () =>
+						buildWorkspaceTree(currentCwd, { timeoutMs: STARTUP_SCAN_DEADLINE_MS }),
+					);
 			toolContextStore.setToolNames(toolNames);
 			const discoverableMCPTools: DiscoverableTool[] = mcpDiscoveryEnabled
 				? filterBySource(collectDiscoverableTools(tools.values()), "mcp")
@@ -1711,9 +1723,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				appendPrompt = parts.join("\n\n");
 			}
 			const defaultPrompt = await buildSystemPromptInternal({
-				cwd,
+				cwd: currentCwd,
 				skills,
-				contextFiles,
+				contextFiles: await promptContextFilesPromise,
 				tools: promptTools,
 				toolNames,
 				rules: rulebookRules,
@@ -1726,7 +1738,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				mcpDiscoveryServerSummaries: discoverableToolSummary.servers.map(formatDiscoverableToolServerSummary),
 				eagerTasks,
 				secretsEnabled,
-				workspaceTree: workspaceTreePromise,
+				workspaceTree: promptWorkspaceTreePromise,
 				memoryRootEnabled: memoryBackend.id === "local",
 				workspaceRoots: options.workspaceRoots,
 			});

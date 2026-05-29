@@ -6,6 +6,7 @@ import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePath
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
 import { shortenPath } from "../../../tools/render-utils";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
+import { findWorkspaceRootForPath } from "../../../workspace-roots";
 import { sanitizeStatusText } from "../../shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./context-thresholds";
 import type { RenderedSegment, SegmentContext, StatusLineSegment, StatusLineSegmentId } from "./types";
@@ -184,20 +185,29 @@ const pathSegment: StatusLineSegment = {
 	id: "path",
 	render(ctx) {
 		const opts = ctx.options.path ?? {};
-
 		const projectDir = getProjectDir();
-		const { scratch, relative } = classifyProjectDir(projectDir);
-		let pwd = projectDir;
+		const workspaceRoot = findWorkspaceRootForPath(projectDir, ctx.session.workspaceRoots);
+		let pwd: string;
+		let showScratchIcon = false;
 
-		if (opts.stripWorkPrefix !== false) {
-			if (scratch) {
-				if (relative) pwd = relative;
-			} else {
-				pwd = stripDisplayRoot(pwd);
+		if (workspaceRoot) {
+			const rootPath = path.resolve(workspaceRoot.path);
+			const relativeWithinRoot = path.relative(rootPath, projectDir).replaceAll("\\", "/");
+			pwd = relativeWithinRoot ? `[${workspaceRoot.tag}]/${relativeWithinRoot}` : `[${workspaceRoot.tag}]`;
+		} else {
+			const { scratch, relative } = classifyProjectDir(projectDir);
+			showScratchIcon = scratch && opts.stripWorkPrefix !== false;
+			pwd = projectDir;
+			if (opts.stripWorkPrefix !== false) {
+				if (scratch) {
+					if (relative) pwd = relative;
+				} else {
+					pwd = stripDisplayRoot(pwd);
+				}
 			}
-		}
-		if (opts.abbreviate !== false) {
-			pwd = shortenPath(pwd);
+			if (opts.abbreviate !== false) {
+				pwd = shortenPath(pwd);
+			}
 		}
 
 		const maxLen = opts.maxLength ?? 40;
@@ -207,7 +217,6 @@ const pathSegment: StatusLineSegment = {
 			pwd = `${ellipsis}${pwd.slice(-sliceLen)}`;
 		}
 
-		const showScratchIcon = scratch && opts.stripWorkPrefix !== false;
 		const icon = showScratchIcon ? theme.icon.scratchFolder : theme.icon.folder;
 		const content = withIcon(icon, pwd);
 		return { content: theme.fg("statusLinePath", content), visible: true };

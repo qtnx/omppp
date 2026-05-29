@@ -1052,6 +1052,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			// Reload plugin/capability caches so the next prompt sees commands and
 			// capabilities scoped to the new cwd.
 			await runtime.reloadPlugins();
+			await runtime.session.refreshBaseSystemPrompt();
 			await runtime.notifyTitleChanged?.();
 			await runtime.output(`Session moved to ${runtime.sessionManager.getCwd()}.`);
 			return commandConsumed();
