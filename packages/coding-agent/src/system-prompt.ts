@@ -16,6 +16,7 @@ import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { shortenPath } from "./tools/render-utils";
+import type { WorkspaceRoot } from "./workspace-roots";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
 interface AlwaysApplyRule {
@@ -363,6 +364,8 @@ export interface BuildSystemPromptOptions {
 	workspaceTree?: WorkspaceTree | Promise<WorkspaceTree>;
 	/** Whether the local memory://root summary is active. */
 	memoryRootEnabled?: boolean;
+	/** Tagged workspace roots (--be/--fe/--add-dir) to list in the prompt. */
+	workspaceRoots?: WorkspaceRoot[];
 }
 
 /** Result of building provider-facing system prompt messages. */
@@ -396,6 +399,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		secretsEnabled = false,
 		workspaceTree: providedWorkspaceTree,
 		memoryRootEnabled = false,
+		workspaceRoots,
 	} = options;
 	const resolvedCwd = cwd ?? getProjectDir();
 
@@ -560,6 +564,13 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		contextFiles,
 		agentsMdSearch: { files: agentsMdFiles },
 		workspaceTree,
+		workspaceRoots: (workspaceRoots ?? []).map(root => ({
+			tag: root.tag,
+			path: shortenPath(root.path.replace(/\\/g, "/")),
+			branch: root.branch ?? "",
+			primary: root.primary,
+			tree: root.tree ?? "",
+		})),
 		skills: filteredSkills,
 		rules: rules ?? [],
 		alwaysApplyRules: injectedAlwaysApplyRules,

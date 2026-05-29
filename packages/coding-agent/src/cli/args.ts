@@ -49,6 +49,11 @@ export interface Args {
 	noTitle?: boolean;
 	autoApprove?: boolean;
 	approvalMode?: "always-ask" | "write" | "yolo";
+	be?: string;
+	fe?: string;
+	worktree?: string | true;
+	noWorktree?: boolean;
+	addDirs?: string[];
 	messages: string[];
 	fileArgs: string[];
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
@@ -228,6 +233,22 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			} else {
 				result.listModels = true;
 			}
+		} else if (arg === "--be" && i + 1 < args.length) {
+			result.be = args[++i];
+		} else if (arg === "--fe" && i + 1 < args.length) {
+			result.fe = args[++i];
+		} else if (arg === "--worktree" || arg === "-w") {
+			const next = args[i + 1];
+			if (next && !next.startsWith("-") && !next.startsWith("@")) {
+				result.worktree = args[++i];
+			} else {
+				result.worktree = true;
+			}
+		} else if (arg === "--no-worktree") {
+			result.noWorktree = true;
+		} else if (arg === "--add-dir" && i + 1 < args.length) {
+			result.addDirs = result.addDirs ?? [];
+			result.addDirs.push(args[++i]);
 		} else if (arg.startsWith("@")) {
 			result.fileArgs.push(arg.slice(1)); // Remove @ prefix
 		} else if (!arg.startsWith("-")) {
@@ -319,6 +340,13 @@ ${chalk.bold("Available Tools (default-enabled unless noted):")}
 
 ${chalk.bold("Plugin Options:")}
   --plugin-dir <path>        Load plugin from directory (repeatable)
+
+${chalk.bold("Workspace Options:")}
+  --be <repo>                Backend repo; creates a tagged worktree (see --worktree)
+  --fe <repo>                Frontend repo; creates a tagged worktree (see --worktree)
+  --worktree, -w <name>      Worktree name for --be/--fe (auto-generated if omitted)
+  --no-worktree              Tag --be/--fe repos in place without creating worktrees
+  --add-dir <path>           Extra working directory, tagged by basename (repeatable)
 
 ${chalk.bold("Useful Commands:")}
   omp agents unpack           - Export bundled subagents to ~/.omp/agent/agents (default)

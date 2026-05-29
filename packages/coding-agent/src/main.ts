@@ -71,6 +71,7 @@ import { AUTO_THINKING } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";
 import { getChangelogPath, getNewEntries, parseChangelog } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
+import { resolveWorkspaceRoots, type WorkspaceRoot } from "./workspace-roots";
 
 async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
 	if (!settings.get("startup.checkUpdate")) {
@@ -731,6 +732,18 @@ export async function runRootCommand(
 
 	const notifs: (InteractiveModeNotify | null)[] = [];
 
+	// Resolve multi-root workspace flags (--be/--fe/--worktree/--add-dir). When a
+	// primary root is produced (e.g. a freshly created worktree), adopt it as the
+	// session cwd before any cwd-dependent setup below reads getProjectDir().
+	const workspaceRootsResult = await logger.time("resolveWorkspaceRoots", resolveWorkspaceRoots, parsedArgs);
+	const workspaceRoots: WorkspaceRoot[] = workspaceRootsResult.roots;
+	if (workspaceRootsResult.primaryCwd) {
+		setProjectDir(workspaceRootsResult.primaryCwd);
+	}
+	for (const notice of workspaceRootsResult.notices) {
+		notifs.push({ kind: "warn", message: notice });
+	}
+
 	// Create AuthStorage and ModelRegistry upfront
 	const authStorage = await logger.time("discoverModels", deps.discoverAuthStorage ?? discoverAuthStorage);
 	const modelRegistry = new ModelRegistry(authStorage);
@@ -973,6 +986,9 @@ export async function runRootCommand(
 	sessionOptions.modelRegistry = modelRegistry;
 	sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
 	sessionOptions.settings = settingsInstance;
+	if (workspaceRoots.length > 0) {
+		sessionOptions.workspaceRoots = workspaceRoots;
+	}
 
 	// OTEL: register the global OTLP trace exporter when an OTLP endpoint is
 	// configured via env, then switch on the agent loop's telemetry so its

@@ -246,8 +246,8 @@ function validateTaskModeParams(simpleMode: TaskSimpleMode, params: TaskParams):
 
 /**
  * Build a per-task failed-result envelope used to short-circuit task execution
- * when the review gate is misconfigured (enabled but isolation is not active).
- * No subagent spawns, no isolation work, no patches.
+ * when the review gate is misconfigured. No subagent spawns, no isolation work,
+ * no patches.
  */
 function buildReviewGateConfigError(
 	params: TaskParams,
@@ -726,16 +726,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const agentReviewGate = effectiveAgent.reviewGate;
 		const reviewGateEnabled =
 			agentReviewGate?.enabled ?? this.session.settings.get("task.reviewGate.enabled") === true;
-		if (reviewGateEnabled && !isIsolated) {
-			return buildReviewGateConfigError(
-				params,
-				projectAgentsDir,
-				agentName,
-				agent.source,
-				simpleMode,
-				"Review gate is enabled but task isolation is not active. Set `task.isolation.mode` to a non-none value and invoke `task` with `isolated: true`.",
-			);
-		}
 
 		// Apply per-agent model override from settings (highest priority)
 		const agentModelOverrides = this.session.settings.get("task.agentModelOverrides");
@@ -753,7 +743,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// Resolve reviewer/fixer agents up front when the review gate is active so
 		// we can fail fast on a missing agent before any subagent or isolation work.
 		let reviewGateConfig: ReviewGateConfig | undefined;
-		if (reviewGateEnabled && isIsolated) {
+		if (reviewGateEnabled) {
 			const reviewerName =
 				agentReviewGate?.reviewerAgent ?? this.session.settings.get("task.reviewGate.reviewerAgent") ?? "";
 			const fixerName = agentReviewGate?.fixerAgent ?? this.session.settings.get("task.reviewGate.fixerAgent") ?? "";
@@ -866,17 +856,22 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 		let repoRoot: string | null = null;
 		let baseline: WorktreeBaseline | null = null;
-		if (isIsolated) {
+		if (isIsolated || reviewGateConfig) {
 			try {
 				repoRoot = await getRepoRoot(this.session.cwd);
-				baseline = await captureBaseline(repoRoot);
+				if (isIsolated) {
+					baseline = await captureBaseline(repoRoot);
+				}
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
+				const prefix = isIsolated
+					? "Isolated task execution requires a git repository."
+					: "Task review gate requires a git repository.";
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Isolated task execution requires a git repository. ${message}`,
+							text: `${prefix} ${message}`,
 						},
 					],
 					details: {
@@ -1033,24 +1028,48 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				});
 			}
 			emitProgress();
+			const runReviewGateForTask = async (
+				task: (typeof tasksWithUniqueIds)[number],
+				index: number,
+				result: SingleResult,
+				captureDelta: () => Promise<DeltaPatchResult>,
+				worktree?: string,
+			): Promise<{ result: SingleResult; acceptedDelta?: DeltaPatchResult }> => {
+				if (!reviewGateConfig || result.exitCode !== 0 || result.aborted) {
+					return { result };
+				}
 
-			const runTask = async (task: (typeof tasksWithUniqueIds)[number], index: number) => {
-				if (!isIsolated) {
+				const gateConfig = reviewGateConfig;
+				const runGateSubagent = async (
+					gateAgent: AgentDefinition,
+					role: "review" | "fix",
+					request: { promptText: string; iteration: number },
+				): Promise<SingleResult> => {
+					const explicitGateModel = role === "review" ? gateConfig.reviewerModel : undefined;
+					const gateModelOverride = resolveAgentModelPatterns({
+						settingsOverride: explicitGateModel ?? agentModelOverrides[gateAgent.name],
+						agentModel: explicitGateModel ?? gateAgent.model,
+						settings: this.session.settings,
+						activeModelPattern: parentActiveModelPattern,
+						fallbackModelPattern: this.session.getModelString?.(),
+					});
+					const gateId = `${task.id}-${role}-${request.iteration}`;
 					return runSubprocess({
 						cwd: this.session.cwd,
-						agent: effectiveAgent,
-						task: renderSubagentUserPrompt(task.assignment, simpleMode),
+						...(worktree ? { worktree } : {}),
+						agent: gateAgent,
+						task: request.promptText,
 						assignment: task.assignment.trim(),
 						context: sharedContext,
 						planReference,
 						description: task.description,
 						index,
-						id: task.id,
+						id: gateId,
 						taskDepth,
-						modelOverride,
+						modelOverride: gateModelOverride,
 						parentActiveModelPattern,
-						thinkingLevel: thinkingLevelOverride,
-						outputSchema: effectiveOutputSchema,
+						thinkingLevel: gateAgent.thinkingLevel,
+						outputSchema: gateAgent.output,
 						sessionFile,
 						persistArtifacts: !!artifactsDir,
 						artifactsDir: effectiveArtifactsDir,
@@ -1058,20 +1077,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						enableLsp: subagentLspEnabled,
 						signal,
 						eventBus: this.session.eventBus,
-						onProgress: progress => {
-							progressMap.set(index, {
-								...structuredClone(progress),
-							});
-							emitProgress();
-						},
 						authStorage: this.session.authStorage,
 						modelRegistry: this.session.modelRegistry,
 						settings: this.session.settings,
 						mcpManager,
 						contextFiles,
 						skills: availableSkills,
-						autoloadSkills: resolvedAutoloadSkills,
+						autoloadSkills: undefined,
 						workspaceTree: this.session.workspaceTree,
+						workspaceRoots: this.session.workspaceRoots,
 						promptTemplates,
 						localProtocolOptions,
 						parentArtifactManager,
@@ -1080,6 +1094,128 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						parentTelemetry: this.session.getTelemetry?.(),
 						parentEvalSessionId,
 					});
+				};
+
+				const gateOutcome = await runReviewGate({
+					config: gateConfig,
+					assignment: task.assignment.trim(),
+					description: task.description,
+					captureDelta,
+					runReviewer: request => runGateSubagent(gateConfig.reviewerAgent, "review", request),
+					runFixer: request => runGateSubagent(gateConfig.fixerAgent, "fix", request),
+					signal,
+				});
+
+				if (!gateOutcome.passed) {
+					const failureReason = gateOutcome.result.failureReason ?? "Review gate blocked the task.";
+					const combinedStderr = result.stderr ? `${result.stderr}\n${failureReason}` : failureReason;
+					return {
+						result: {
+							...result,
+							exitCode: 1,
+							error: failureReason,
+							stderr: combinedStderr,
+							reviewGate: gateOutcome.result,
+						},
+					};
+				}
+
+				return {
+					result: { ...result, reviewGate: gateOutcome.result },
+					acceptedDelta: gateOutcome.acceptedDelta,
+				};
+			};
+
+			const runTask = async (task: (typeof tasksWithUniqueIds)[number], index: number) => {
+				if (!isIsolated) {
+					const taskStart = Date.now();
+					try {
+						let taskBaseline: WorktreeBaseline | undefined;
+						if (reviewGateConfig) {
+							if (!repoRoot) {
+								throw new Error("Review gate repository root not initialized.");
+							}
+							taskBaseline = await captureBaseline(repoRoot);
+						}
+
+						const result = await runSubprocess({
+							cwd: this.session.cwd,
+							agent: effectiveAgent,
+							task: renderSubagentUserPrompt(task.assignment, simpleMode),
+							assignment: task.assignment.trim(),
+							context: sharedContext,
+							description: task.description,
+							index,
+							id: task.id,
+							taskDepth,
+							modelOverride,
+							parentActiveModelPattern,
+							thinkingLevel: thinkingLevelOverride,
+							outputSchema: effectiveOutputSchema,
+							sessionFile,
+							persistArtifacts: !!artifactsDir,
+							artifactsDir: effectiveArtifactsDir,
+							contextFile: contextFilePath,
+							enableLsp: subagentLspEnabled,
+							signal,
+							eventBus: this.session.eventBus,
+							onProgress: progress => {
+								progressMap.set(index, {
+									...structuredClone(progress),
+								});
+								emitProgress();
+							},
+							authStorage: this.session.authStorage,
+							modelRegistry: this.session.modelRegistry,
+							settings: this.session.settings,
+							mcpManager: MCPManager.instance(),
+							contextFiles,
+							skills: availableSkills,
+							autoloadSkills: resolvedAutoloadSkills,
+							workspaceTree: this.session.workspaceTree,
+							workspaceRoots: this.session.workspaceRoots,
+							promptTemplates,
+							localProtocolOptions,
+							parentArtifactManager,
+							parentHindsightSessionState: this.session.getHindsightSessionState?.(),
+							parentTelemetry: this.session.getTelemetry?.(),
+							parentEvalSessionId,
+						});
+
+						if (reviewGateConfig && taskBaseline) {
+							if (!repoRoot) {
+								throw new Error("Review gate repository root not initialized.");
+							}
+							const reviewRepoRoot = repoRoot;
+							const baselineForReview = taskBaseline;
+							const gated = await runReviewGateForTask(task, index, result, () =>
+								captureDeltaPatch(reviewRepoRoot, baselineForReview),
+							);
+							return gated.result;
+						}
+
+						return result;
+					} catch (err) {
+						const message = err instanceof Error ? err.message : String(err);
+						const assignment = task.assignment.trim();
+						return {
+							index,
+							id: task.id,
+							agent: agent.name,
+							agentSource: agent.source,
+							task: renderSubagentUserPrompt(assignment, simpleMode),
+							assignment,
+							description: task.description,
+							exitCode: 1,
+							output: "",
+							stderr: message,
+							truncated: false,
+							durationMs: Date.now() - taskStart,
+							tokens: 0,
+							modelOverride,
+							error: message,
+						};
+					}
 				}
 
 				const taskStart = Date.now();
@@ -1130,6 +1266,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						skills: availableSkills,
 						autoloadSkills: resolvedAutoloadSkills,
 						workspaceTree: this.session.workspaceTree,
+						workspaceRoots: this.session.workspaceRoots,
 						promptTemplates,
 						localProtocolOptions,
 						parentArtifactManager,
@@ -1139,86 +1276,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						parentEvalSessionId,
 					});
 
-					let cachedDelta: DeltaPatchResult | undefined;
-					if (reviewGateConfig && result.exitCode === 0 && !result.aborted) {
-						const gateConfig = reviewGateConfig;
-						const runGateSubagent = async (
-							gateAgent: AgentDefinition,
-							role: "review" | "fix",
-							request: { promptText: string; iteration: number },
-						): Promise<SingleResult> => {
-							const explicitGateModel = role === "review" ? gateConfig.reviewerModel : undefined;
-							const gateModelOverride = resolveAgentModelPatterns({
-								settingsOverride: explicitGateModel ?? agentModelOverrides[gateAgent.name],
-								agentModel: explicitGateModel ?? gateAgent.model,
-								settings: this.session.settings,
-								activeModelPattern: parentActiveModelPattern,
-								fallbackModelPattern: this.session.getModelString?.(),
-							});
-							const gateId = `${task.id}-${role}-${request.iteration}`;
-							return runSubprocess({
-								cwd: this.session.cwd,
-								worktree: isolationDir,
-								agent: gateAgent,
-								task: request.promptText,
-								assignment: task.assignment.trim(),
-								context: sharedContext,
-								description: task.description,
-								index,
-								id: gateId,
-								taskDepth,
-								modelOverride: gateModelOverride,
-								parentActiveModelPattern,
-								thinkingLevel: gateAgent.thinkingLevel,
-								outputSchema: gateAgent.output,
-								sessionFile,
-								persistArtifacts: !!artifactsDir,
-								artifactsDir: effectiveArtifactsDir,
-								contextFile: contextFilePath,
-								enableLsp: subagentLspEnabled,
-								signal,
-								eventBus: this.session.eventBus,
-								authStorage: this.session.authStorage,
-								modelRegistry: this.session.modelRegistry,
-								settings: this.session.settings,
-								mcpManager: MCPManager.instance(),
-								contextFiles,
-								skills: availableSkills,
-								autoloadSkills: undefined,
-								workspaceTree: this.session.workspaceTree,
-								promptTemplates,
-								localProtocolOptions,
-								parentArtifactManager,
-								parentHindsightSessionState: this.session.getHindsightSessionState?.(),
-								parentTelemetry: this.session.getTelemetry?.(),
-								parentEvalSessionId,
-							});
-						};
-
-						const gateOutcome = await runReviewGate({
-							config: gateConfig,
-							assignment: task.assignment.trim(),
-							description: task.description,
-							captureDelta: () => captureDeltaPatch(isolationDir, taskBaseline),
-							runReviewer: request => runGateSubagent(gateConfig.reviewerAgent, "review", request),
-							runFixer: request => runGateSubagent(gateConfig.fixerAgent, "fix", request),
-							signal,
-						});
-
-						if (!gateOutcome.passed) {
-							const failureReason = gateOutcome.result.failureReason ?? "Review gate blocked the task.";
-							const combinedStderr = result.stderr ? `${result.stderr}\n${failureReason}` : failureReason;
-							return {
-								...result,
-								exitCode: 1,
-								error: failureReason,
-								stderr: combinedStderr,
-								reviewGate: gateOutcome.result,
-							};
-						}
-						result = { ...result, reviewGate: gateOutcome.result };
-						cachedDelta = gateOutcome.acceptedDelta;
-					}
+					const gated = await runReviewGateForTask(
+						task,
+						index,
+						result,
+						() => captureDeltaPatch(isolationDir, taskBaseline),
+						isolationDir,
+					);
+					result = gated.result;
+					const cachedDelta = gated.acceptedDelta;
 					if (mergeMode === "branch" && result.exitCode === 0) {
 						try {
 							if (reviewGateConfig && !cachedDelta) {

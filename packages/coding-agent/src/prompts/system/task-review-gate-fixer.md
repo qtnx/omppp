@@ -1,9 +1,8 @@
 ## Review Gate — Fix Blocking Findings
 
-A reviewer just inspected the isolated diff for the assignment below and flagged
-blocking findings. You are running **inside the same isolated worktree** that
-produced that diff. Resolve the blockers in place; the gate will re-review your
-changes.
+A reviewer just inspected the scoped diff for the assignment below and flagged
+blocking findings. You are running in the same task context that produced that
+diff. Resolve the blockers in place; the gate will re-review your changes.
 
 ### Original Assignment
 
@@ -56,14 +55,17 @@ speculative refactors that risk another cycle.
 
 You MUST:
 1. Address every blocking finding above and **only** those findings.
-2. Stay inside this worktree; do not touch files unrelated to the listed blockers.
-3. Preserve the original assignment's behaviour — your fixes must not undo or contradict it.
-4. Yield when the blockers are resolved, with a one-paragraph summary of each fix in `result.data`.
+2. Stay within the files and line ranges cited by the blocking findings unless a
+   minimal adjacent edit is required.
+3. Assume other agents may be editing nearby files at the same time; keep your edits in the scoped files unless a blocking finding requires a minimal adjacent change.
+4. Preserve the original assignment's behaviour — your fixes must not undo or contradict it.
+5. Yield when the blockers are resolved, with a one-paragraph summary of each fix in `result.data`.
 
 You NEVER:
 - Expand scope, refactor adjacent code, rename APIs, or add features the assignment did not ask for.
 - Suppress or relax tests, assertions, or types to make findings "go away".
 - Fix the non-blocking findings listed above; the gate intentionally ignores them.
+- Touch files outside the scoped findings just because they are related or convenient.
 - Apply cosmetic churn (formatting passes, import reordering, comment rewrites) that pollutes the diff.
 
 ### Critical

@@ -45,6 +45,7 @@ import { getChangelogPath, parseChangelog } from "../../utils/changelog";
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
+import { resolveWorkspaceRootReference } from "../../workspace-roots";
 
 function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown: string): void {
 	ctx.chatContainer.addChild(new Spacer(1));
@@ -975,7 +976,8 @@ export class CommandController {
 		}
 
 		const cwd = this.ctx.sessionManager.getCwd();
-		const resolvedPath = resolveToCwd(unquoted, cwd);
+		const resolvedPath =
+			resolveWorkspaceRootReference(unquoted, this.ctx.session.workspaceRoots) ?? resolveToCwd(unquoted, cwd);
 
 		try {
 			const stat = await fs.stat(resolvedPath);

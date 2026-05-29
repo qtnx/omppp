@@ -163,10 +163,10 @@ export interface ReviewData {
 }
 
 /**
- * Outcome of the review gate that wraps an isolated subagent.
+ * Outcome of the review gate that wraps an implementation subagent.
  *
- * - `passed`: reviewer approved; isolated changes were merged into the parent.
- * - `blocked`: reviewer reported blocking findings the gate refused to merge.
+ * - `passed`: reviewer approved the task diff.
+ * - `blocked`: reviewer reported blocking findings the gate refused to accept.
  * - `failed`: reviewer/fixer infrastructure errored (non-zero exit, missing diff, etc.).
  * - `skipped`: gate was disabled, or the original task produced no diff to review.
  */
@@ -192,12 +192,6 @@ export interface ReviewGateIteration {
 }
 
 /**
- * Aggregated review-gate result attached to a `SingleResult`. Present only when
- * the gate was enabled for the isolated task. The `iterations` array preserves
- * the full review-fix history; `finalReview` mirrors the last iteration's
- * structured review for quick UI consumption.
- */
-/**
  * Agent-local review-gate policy declared in agent frontmatter.
  *
  * When present on the selected agent, it overrides the global `task.reviewGate.*`
@@ -214,6 +208,12 @@ export interface AgentReviewGatePolicy {
 	requireCorrectVerdict?: boolean;
 }
 
+/**
+ * Aggregated review-gate result attached to a `SingleResult`. Present only when
+ * the gate was enabled for the task. The `iterations` array preserves the full
+ * review-fix history; `finalReview` mirrors the last iteration's structured
+ * review for quick UI consumption.
+ */
 export interface ReviewGateResult {
 	enabled: boolean;
 	outcome: ReviewGateOutcome;
@@ -365,8 +365,8 @@ export interface SingleResult {
 	/** Output metadata for agent:// URL integration */
 	outputMeta?: { lineCount: number; charCount: number };
 	/**
-	 * Outcome of the isolated review gate when enabled via `task.reviewGate.*`.
-	 * Absent when the gate was disabled or did not run (e.g. non-isolated tasks).
+	 * Outcome of the review gate when enabled via agent policy or `task.reviewGate.*`.
+	 * Absent when the gate was disabled or did not run.
 	 */
 	reviewGate?: ReviewGateResult;
 }

@@ -210,19 +210,36 @@ export interface AutocompleteProvider {
 	trySyncInlineReplace?(textBeforeCursor: string): { replaceLen: number; insert: string } | null;
 }
 
+export interface WorkspaceAutocompleteRoot {
+	tag: string;
+	path: string;
+}
+
+export interface CombinedAutocompleteProviderOptions {
+	workspaceRoots?: readonly WorkspaceAutocompleteRoot[];
+}
+
 // Combined provider that handles both slash commands and file paths.
 export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	#commands: (SlashCommand | AutocompleteItem)[];
 	#basePath: string;
+	#workspaceRoots: WorkspaceAutocompleteRoot[];
 	// Intentionally separate from pi-natives cache: this cache is a local,
 	// per-directory readdir fast-path for prefix completions. Global fuzzy
 	// discovery continues to use native fuzzyFind + shared scan cache.
 	#dirCache: Map<string, { entries: fs.Dirent[]; timestamp: number }> = new Map();
 	readonly #DIR_CACHE_TTL = 2000; // 2 seconds
 
-	constructor(commands: (SlashCommand | AutocompleteItem)[] = [], basePath: string = getProjectDir()) {
+	constructor(
+		commands: (SlashCommand | AutocompleteItem)[] = [],
+		basePath: string = getProjectDir(),
+		options?: CombinedAutocompleteProviderOptions,
+	) {
 		this.#commands = commands;
 		this.#basePath = basePath;
+		this.#workspaceRoots = (options?.workspaceRoots ?? [])
+			.filter(root => root.tag.length > 0)
+			.map(root => ({ tag: root.tag, path: path.resolve(root.path) }));
 	}
 
 	async getSuggestions(
@@ -237,6 +254,12 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const atPrefix = this.#extractAtPrefix(textBeforeCursor);
 		if (atPrefix) {
 			const { rawPrefix, isQuotedPrefix } = parsePathPrefix(atPrefix);
+			const scopedWorkspaceItems = await this.#getWorkspaceScopedFileSuggestions(rawPrefix, isQuotedPrefix);
+			if (scopedWorkspaceItems) {
+				if (scopedWorkspaceItems.length === 0) return null;
+				return { items: scopedWorkspaceItems, prefix: atPrefix };
+			}
+			const workspaceRootItems = this.#getWorkspaceRootSuggestions(rawPrefix, isQuotedPrefix);
 			// Recursive fuzzy walks rooted outside the project (e.g. `@../`,
 			// `@~/`, `@/abs`) can be huge — a parent dir full of sibling
 			// projects blows past several seconds of latency. Outside cwd,
@@ -244,7 +267,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			// (matches Claude Code's behavior). Inside cwd we keep the
 			// fuzzy-then-prefix flow.
 			if (rawPrefix.length > 0 && this.#isOutsideCwd(rawPrefix)) {
-				const items = await this.#getFileSuggestions(atPrefix);
+				const items = this.#mergeSuggestions(workspaceRootItems, await this.#getFileSuggestions(atPrefix));
 				if (items.length === 0) return null;
 				return { items, prefix: atPrefix };
 			}
@@ -252,15 +275,16 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				rawPrefix.length > 0
 					? await this.#getFuzzyFileSuggestions(rawPrefix, { isQuotedPrefix })
 					: await this.#getFileSuggestions("@");
-			if (suggestions.length === 0 && rawPrefix.length > 0) {
-				const fallback = await this.#getFileSuggestions(atPrefix);
+			const items = this.#mergeSuggestions(workspaceRootItems, suggestions);
+			if (items.length === 0 && rawPrefix.length > 0) {
+				const fallback = this.#mergeSuggestions(workspaceRootItems, await this.#getFileSuggestions(atPrefix));
 				if (fallback.length === 0) return null;
 				return { items: fallback, prefix: atPrefix };
 			}
-			if (suggestions.length === 0) return null;
+			if (items.length === 0) return null;
 
 			return {
-				items: suggestions,
+				items,
 				prefix: atPrefix,
 			};
 		}
@@ -550,6 +574,56 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		return `${displayBase}${relativePath}`;
 	}
 
+	#mergeSuggestions(first: AutocompleteItem[], second: AutocompleteItem[]): AutocompleteItem[] {
+		if (first.length === 0) return second;
+		if (second.length === 0) return first;
+		const seen = new Set<string>();
+		const merged: AutocompleteItem[] = [];
+		for (const item of [...first, ...second]) {
+			if (seen.has(item.value)) continue;
+			seen.add(item.value);
+			merged.push(item);
+		}
+		return merged;
+	}
+
+	#getWorkspaceRootSuggestions(rawPrefix: string, isQuotedPrefix: boolean): AutocompleteItem[] {
+		if (this.#workspaceRoots.length === 0 || rawPrefix.includes("/")) return [];
+		const query = rawPrefix.toLowerCase();
+		return this.#workspaceRoots
+			.filter(root => root.tag.toLowerCase().startsWith(query))
+			.map(root => {
+				const completionPath = `${root.tag}/`;
+				return {
+					value: buildCompletionValue(completionPath, {
+						isDirectory: true,
+						isAtPrefix: true,
+						isQuotedPrefix,
+					}),
+					label: completionPath,
+					description: root.path,
+				};
+			});
+	}
+
+	async #getWorkspaceScopedFileSuggestions(
+		rawPrefix: string,
+		isQuotedPrefix: boolean,
+	): Promise<AutocompleteItem[] | null> {
+		if (this.#workspaceRoots.length === 0) return null;
+		const slashIndex = rawPrefix.indexOf("/");
+		if (slashIndex === -1) return null;
+		const tag = rawPrefix.slice(0, slashIndex);
+		const root = this.#workspaceRoots.find(candidate => candidate.tag === tag);
+		if (!root) return null;
+		const rootPrefix = rawPrefix.slice(slashIndex + 1);
+		const prefix = isQuotedPrefix ? `@"${rootPrefix}` : `@${rootPrefix}`;
+		return this.#getFileSuggestions(prefix, {
+			basePath: root.path,
+			displayPrefix: `${root.tag}/`,
+		});
+	}
+
 	async #getCachedDirEntries(searchDir: string): Promise<fs.Dirent[]> {
 		const now = Date.now();
 		const cached = this.#dirCache.get(searchDir);
@@ -583,7 +657,11 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	}
 
 	// Get file/directory suggestions for a given path prefix
-	async #getFileSuggestions(prefix: string): Promise<AutocompleteItem[]> {
+	async #getFileSuggestions(
+		prefix: string,
+		options?: { basePath?: string; displayPrefix?: string },
+	): Promise<AutocompleteItem[]> {
+		const basePath = options?.basePath ?? this.#basePath;
 		try {
 			let searchDir: string;
 			let searchPrefix: string;
@@ -609,7 +687,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				if (rawPrefix.startsWith("~") || expandedPrefix.startsWith("/")) {
 					searchDir = expandedPrefix;
 				} else {
-					searchDir = path.join(this.#basePath, expandedPrefix);
+					searchDir = path.join(basePath, expandedPrefix);
 				}
 				searchPrefix = "";
 			} else if (rawPrefix.endsWith("/")) {
@@ -617,7 +695,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				if (rawPrefix.startsWith("~") || expandedPrefix.startsWith("/")) {
 					searchDir = expandedPrefix;
 				} else {
-					searchDir = path.join(this.#basePath, expandedPrefix);
+					searchDir = path.join(basePath, expandedPrefix);
 				}
 				searchPrefix = "";
 			} else {
@@ -627,7 +705,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				if (rawPrefix.startsWith("~") || expandedPrefix.startsWith("/")) {
 					searchDir = dir;
 				} else {
-					searchDir = path.join(this.#basePath, dir);
+					searchDir = path.join(basePath, dir);
 				}
 				searchPrefix = file;
 			}
@@ -693,7 +771,8 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				}
 
 				const pathValue = isDirectory ? `${relativePath}/` : relativePath;
-				const value = buildCompletionValue(pathValue, {
+				const completionPath = options?.displayPrefix ? `${options.displayPrefix}${pathValue}` : pathValue;
+				const value = buildCompletionValue(completionPath, {
 					isDirectory,
 					isAtPrefix,
 					isQuotedPrefix,

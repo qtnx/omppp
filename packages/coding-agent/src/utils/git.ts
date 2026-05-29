@@ -339,7 +339,7 @@ function buildDiffArgs(options: DiffOptions): string[] {
 	if (options.stat) args.push("--stat");
 	if (options.numstat) args.push("--numstat");
 	if (options.noIndex) {
-		args.push("--no-index", options.noIndex.left, options.noIndex.right);
+		args.push("--no-index", "--", options.noIndex.left, options.noIndex.right);
 		return args;
 	}
 	if (options.base) {
@@ -888,7 +888,8 @@ export async function readTree(
 	treeish: string,
 	options: Pick<CommandOptions, "env" | "signal"> = {},
 ): Promise<void> {
-	await runEffect(cwd, ["read-tree", treeish], options);
+	const args = treeish ? ["read-tree", treeish] : ["read-tree", "--empty"];
+	await runEffect(cwd, args, options);
 }
 
 /** Write the current index as a tree and return its object id. */
@@ -1119,11 +1120,17 @@ export const worktree = {
 		cwd: string,
 		worktreePath: string,
 		refName: string,
-		options: { detach?: boolean; signal?: AbortSignal } = {},
+		options: { detach?: boolean; newBranch?: boolean; startPoint?: string; signal?: AbortSignal } = {},
 	): Promise<void> {
 		const args = ["worktree", "add"];
 		if (options.detach) args.push("--detach");
-		args.push(worktreePath, refName);
+		if (options.newBranch) {
+			// Create branch `refName` (at `startPoint`, default HEAD) and check it out in the new worktree.
+			args.push("-b", refName, worktreePath);
+			if (options.startPoint) args.push(options.startPoint);
+		} else {
+			args.push(worktreePath, refName);
+		}
 		await runEffect(cwd, args, { signal: options.signal });
 	},
 

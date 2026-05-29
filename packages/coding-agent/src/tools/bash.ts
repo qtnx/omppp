@@ -23,6 +23,7 @@ import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/str
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock } from "../tui/output-block";
 import { getSixelLineMask } from "../utils/sixel";
+import { resolveWorkspaceRootReference } from "../workspace-roots";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { applyBashFixups } from "./bash-command-fixup";
@@ -693,7 +694,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			cwd = await expandInternalUrls(cwd, { ...internalUrlOptions, noEscape: true });
 		}
 
-		const commandCwd = cwd ? resolveToCwd(cwd, this.session.cwd) : this.session.cwd;
+		const commandCwd = cwd
+			? (resolveWorkspaceRootReference(cwd, this.session.workspaceRoots) ?? resolveToCwd(cwd, this.session.cwd))
+			: this.session.cwd;
 		let cwdStat: fs.Stats;
 		try {
 			cwdStat = await fs.promises.stat(commandCwd);

@@ -62,6 +62,29 @@ describe("tool path root alias", () => {
 		expect(() => resolveToCwd("@local://PLAN.md", tempDir)).toThrow("internal scheme");
 	});
 
+	it("runs bash in a tagged workspace root when cwd is a root tag", async () => {
+		const workspaceRoot = path.join(tempDir, "fe-root");
+		await fs.mkdir(workspaceRoot, { recursive: true });
+		await Bun.write(path.join(workspaceRoot, "marker.txt"), "from-workspace-root\n");
+		const tools = await createTools(
+			createTestSession(tempDir, {
+				workspaceRoots: [{ tag: "fe", path: workspaceRoot, primary: false }],
+			}),
+		);
+		const tool = tools.find(entry => entry.name === "bash");
+		expect(tool).toBeDefined();
+		if (!tool) throw new Error("Missing bash tool");
+
+		const result = await tool.execute("bash-workspace-root-cwd", {
+			command: "pwd && printf '\\n' && printf '%s' \"$(< marker.txt)\"",
+			cwd: "fe",
+		});
+		const text = getText(result);
+
+		expect(text).toContain(workspaceRoot);
+		expect(text).toContain("from-workspace-root");
+	});
+
 	it("searches from cwd when path is slash", async () => {
 		const tools = await createTools(createTestSession(tempDir));
 		const tool = tools.find(entry => entry.name === "search");

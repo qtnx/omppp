@@ -171,6 +171,47 @@ describe("CombinedAutocompleteProvider", () => {
 			expect(values.some(value => value.endsWith("nested.ts"))).toBe(false);
 		});
 	});
+
+	describe("workspace root aliases", () => {
+		let rootDir: string;
+		let baseDir: string;
+		let backendDir: string;
+
+		beforeEach(() => {
+			rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-workspace-roots-"));
+			baseDir = path.join(rootDir, "cwd");
+			backendDir = path.join(rootDir, "backend");
+			fs.mkdirSync(path.join(baseDir), { recursive: true });
+			fs.mkdirSync(path.join(backendDir, "src"), { recursive: true });
+			fs.writeFileSync(path.join(backendDir, "src", "api.ts"), "export {};\n");
+		});
+
+		afterEach(() => {
+			fs.rmSync(rootDir, { recursive: true, force: true });
+		});
+
+		it("suggests tagged roots at @", async () => {
+			const provider = new CombinedAutocompleteProvider([], baseDir, {
+				workspaceRoots: [{ tag: "be", path: backendDir }],
+			});
+			const line = "@";
+			const result = await provider.getSuggestions([line], 0, line.length);
+
+			const values = result?.items.map(item => item.value) ?? [];
+			expect(values).toContain("@be/");
+		});
+
+		it("completes files inside a tagged root", async () => {
+			const provider = new CombinedAutocompleteProvider([], baseDir, {
+				workspaceRoots: [{ tag: "be", path: backendDir }],
+			});
+			const line = "@be/src/a";
+			const result = await provider.getSuggestions([line], 0, line.length);
+
+			const values = result?.items.map(item => item.value) ?? [];
+			expect(values).toContain("@be/src/api.ts");
+		});
+	});
 	describe("dot-slash path completion", () => {
 		let baseDir: string;
 

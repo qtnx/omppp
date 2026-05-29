@@ -70,6 +70,23 @@ function sanitizeMentionPath(rawPath: string): string | null {
 	return cleaned.length > 0 ? cleaned : null;
 }
 
+type WorkspaceMentionRoot = {
+	tag: string;
+	path: string;
+	primary?: boolean;
+};
+
+type ResolvedMentionPath = {
+	displayPath: string;
+	absolutePath: string;
+};
+
+type WorkspaceScopedMention = {
+	tag: string;
+	rootPath: string;
+	query: string;
+};
+
 type MentionCandidate = {
 	path: string;
 	pathLower: string;
@@ -116,7 +133,29 @@ async function listMentionCandidates(cwd: string): Promise<MentionCandidate[]> {
 	return candidates;
 }
 
-async function resolveMentionPath(
+function isInsideRoot(rootPath: string, candidatePath: string): boolean {
+	const relative = path.relative(rootPath, candidatePath);
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function resolveWorkspaceScopedMention(
+	filePath: string,
+	workspaceRoots: readonly WorkspaceMentionRoot[] | undefined,
+): WorkspaceScopedMention | null {
+	if (!workspaceRoots || workspaceRoots.length === 0) return null;
+	const slashIndex = filePath.indexOf("/");
+	const tag = slashIndex === -1 ? filePath : filePath.slice(0, slashIndex);
+	if (tag.length === 0) return null;
+	const root = workspaceRoots.find(candidate => candidate.tag === tag);
+	if (!root) return null;
+	return {
+		tag,
+		rootPath: path.resolve(root.path),
+		query: slashIndex === -1 ? "." : filePath.slice(slashIndex + 1),
+	};
+}
+
+async function resolveMentionPathWithinRoot(
 	filePath: string,
 	cwd: string,
 	getMentionCandidates: () => Promise<MentionCandidate[]>,
@@ -155,9 +194,41 @@ async function resolveMentionPath(
 		return null;
 	}
 
-	const best = scored[0];
+	return scored[0]?.candidate.path ?? null;
+}
 
-	return best?.candidate.path ?? null;
+async function resolveMentionPath(
+	filePath: string,
+	cwd: string,
+	getMentionCandidates: () => Promise<MentionCandidate[]>,
+	workspaceRoots: readonly WorkspaceMentionRoot[] | undefined,
+): Promise<ResolvedMentionPath | null> {
+	const scoped = resolveWorkspaceScopedMention(filePath, workspaceRoots);
+	if (scoped) {
+		let scopedCandidatesPromise: Promise<MentionCandidate[]> | null = null;
+		const getScopedCandidates = (): Promise<MentionCandidate[]> => {
+			scopedCandidatesPromise ??= listMentionCandidates(scoped.rootPath);
+			return scopedCandidatesPromise;
+		};
+		const resolvedRelativePath = await resolveMentionPathWithinRoot(
+			scoped.query,
+			scoped.rootPath,
+			getScopedCandidates,
+		);
+		if (!resolvedRelativePath) return null;
+		const absolutePath = path.resolve(resolveReadPath(resolvedRelativePath, scoped.rootPath));
+		if (!isInsideRoot(scoped.rootPath, absolutePath)) return null;
+
+		const normalizedRelative = resolvedRelativePath.replaceAll("\\", "/");
+		return {
+			displayPath: normalizedRelative === "." ? scoped.tag : `${scoped.tag}/${normalizedRelative}`,
+			absolutePath,
+		};
+	}
+
+	const resolvedPath = await resolveMentionPathWithinRoot(filePath, cwd, getMentionCandidates);
+	if (!resolvedPath) return null;
+	return { displayPath: resolvedPath, absolutePath: path.resolve(resolveReadPath(resolvedPath, cwd)) };
 }
 
 function buildTextOutput(textContent: string): { output: string; lineCount: number } {
@@ -278,7 +349,12 @@ export function extractFileMentions(text: string): string[] {
 export async function generateFileMentionMessages(
 	filePaths: string[],
 	cwd: string,
-	options?: { autoResizeImages?: boolean; useHashLines?: boolean; snapshotStore?: SnapshotStore },
+	options?: {
+		autoResizeImages?: boolean;
+		useHashLines?: boolean;
+		snapshotStore?: SnapshotStore;
+		workspaceRoots?: readonly WorkspaceMentionRoot[];
+	},
 ): Promise<AgentMessage[]> {
 	if (filePaths.length === 0) return [];
 
@@ -292,16 +368,17 @@ export async function generateFileMentionMessages(
 	};
 
 	for (const filePath of filePaths) {
-		const resolvedPath = await resolveMentionPath(filePath, cwd, getMentionCandidates);
+		const resolvedPath = await resolveMentionPath(filePath, cwd, getMentionCandidates, options?.workspaceRoots);
 		if (!resolvedPath) {
 			continue;
 		}
-		const absolutePath = resolveReadPath(resolvedPath, cwd);
+		const absolutePath = resolvedPath.absolutePath;
+		const displayPath = resolvedPath.displayPath;
 		try {
 			const stat = await Bun.file(absolutePath).stat();
 			if (stat.isDirectory()) {
 				const { output, lineCount } = await buildDirectoryListing(absolutePath);
-				files.push({ path: resolvedPath, content: output, lineCount });
+				files.push({ path: displayPath, content: output, lineCount });
 				continue;
 			}
 
@@ -310,7 +387,7 @@ export async function generateFileMentionMessages(
 			if (mimeType) {
 				if (stat.size > MAX_AUTO_READ_IMAGE_BYTES) {
 					files.push({
-						path: resolvedPath,
+						path: displayPath,
 						content: `(skipped auto-read: too large, ${formatBytes(stat.size)})`,
 						byteSize: stat.size,
 						skippedReason: "tooLarge",
@@ -340,13 +417,13 @@ export async function generateFileMentionMessages(
 					}
 				}
 
-				files.push({ path: resolvedPath, content: dimensionNote ?? "", image });
+				files.push({ path: displayPath, content: dimensionNote ?? "", image });
 				continue;
 			}
 
 			if (stat.size > MAX_AUTO_READ_TEXT_BYTES) {
 				files.push({
-					path: resolvedPath,
+					path: displayPath,
 					content: `(skipped auto-read: too large, ${formatBytes(stat.size)})`,
 					byteSize: stat.size,
 					skippedReason: "tooLarge",
@@ -360,9 +437,9 @@ export async function generateFileMentionMessages(
 			let { output, lineCount } = buildTextOutput(normalized);
 			if (snapshotStore) {
 				const tag = snapshotStore.record(absolutePath, normalized);
-				output = `${formatHashlineHeader(resolvedPath, tag)}\n${formatNumberedLines(output)}`;
+				output = `${formatHashlineHeader(displayPath, tag)}\n${formatNumberedLines(output)}`;
 			}
-			files.push({ path: resolvedPath, content: output, lineCount });
+			files.push({ path: displayPath, content: output, lineCount });
 		} catch {
 			// File doesn't exist or isn't readable - skip silently
 		}

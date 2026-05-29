@@ -78,4 +78,22 @@ describe("generateFileMentionMessages path resolution", () => {
 		const shortQuery = await generateFileMentionMessages(["ab"], cwd);
 		expect(shortQuery).toHaveLength(0);
 	});
+
+	test("resolves tagged workspace root mentions", async () => {
+		const cwd = await createTempDir();
+		const backend = await createTempDir();
+		await fs.mkdir(path.join(backend, "src"), { recursive: true });
+		await Bun.write(path.join(backend, "src", "api.ts"), "export const source = 'backend';\n");
+
+		const messages = await generateFileMentionMessages(["be/src/api.ts"], cwd, {
+			workspaceRoots: [{ tag: "be", path: backend, primary: false }],
+		});
+		expect(messages).toHaveLength(1);
+		const message = messages[0];
+		if (!message || message.role !== "fileMention") {
+			throw new Error("expected file mention message");
+		}
+		expect(message.files[0]?.path).toBe("be/src/api.ts");
+		expect(message.files[0]?.content).toContain("backend");
+	});
 });

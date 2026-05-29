@@ -4,6 +4,7 @@ import {
 	CombinedAutocompleteProvider,
 	getKeybindings,
 	type SlashCommand,
+	type WorkspaceAutocompleteRoot,
 } from "@oh-my-pi/pi-tui";
 import { formatKeyHints, type KeybindingsManager } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
@@ -38,6 +39,7 @@ interface PromptActionAutocompleteOptions {
 	commands: SlashCommand[];
 	basePath: string;
 	keybindings: KeybindingsManager;
+	workspaceRoots?: readonly WorkspaceAutocompleteRoot[];
 	copyCurrentLine: () => void;
 	copyPrompt: () => void;
 	undo: (prefix: string) => void;
@@ -158,8 +160,9 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		basePath: string,
 		actions: PromptActionDefinition[],
 		dollarMentions?: DollarMentionAutocompleteOptions,
+		workspaceRoots?: readonly WorkspaceAutocompleteRoot[],
 	) {
-		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath);
+		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath, { workspaceRoots });
 		this.#actions = actions;
 		this.#dollarMentions = dollarMentions;
 	}
@@ -337,5 +340,11 @@ export function createPromptActionAutocompleteProvider(
 		},
 	];
 
-	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions, options.dollarMentions);
+	return new PromptActionAutocompleteProvider(
+		options.commands,
+		options.basePath,
+		actions,
+		options.dollarMentions,
+		options.workspaceRoots,
+	);
 }

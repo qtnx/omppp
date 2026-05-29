@@ -213,6 +213,7 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 					contextFiles: this.session.contextFiles,
 					skills: this.session.skills,
 					workspaceTree: this.session.workspaceTree,
+					workspaceRoots: this.session.workspaceRoots,
 					promptTemplates: this.session.promptTemplates,
 					localProtocolOptions: {
 						getArtifactsDir: this.session.getArtifactsDir ?? (() => null),

@@ -162,6 +162,7 @@ import { queueResolveHandler } from "./tools/resolve";
 import { ttsTool } from "./tools/tts";
 import { EventBus } from "./utils/event-bus";
 import { buildNamedToolChoice } from "./utils/tool-choice";
+import type { WorkspaceRoot } from "./workspace-roots";
 import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
 type AsyncResultEntry = {
@@ -296,6 +297,8 @@ export interface CreateAgentSessionOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-built workspace tree (skips re-scanning; passed by parents to subagents). */
 	workspaceTree?: WorkspaceTree;
+	/** Tagged workspace roots (--be/--fe/--add-dir). Surfaced in the prompt and forwarded to subagents. */
+	workspaceRoots?: WorkspaceRoot[];
 	/** Prompt templates. Default: discovered from cwd/.omp/prompts/ + agentDir/prompts/ */
 	promptTemplates?: PromptTemplate[];
 	/** File-based slash commands. Default: discovered from commands/ directories */
@@ -1237,6 +1240,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			skipPythonPreflight: options.skipPythonPreflight,
 			contextFiles,
 			workspaceTree: resolvedWorkspaceTree,
+			workspaceRoots: options.workspaceRoots,
 			skills,
 			eventBus,
 			outputSchema: options.outputSchema,
@@ -1724,6 +1728,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				secretsEnabled,
 				workspaceTree: workspaceTreePromise,
 				memoryRootEnabled: memoryBackend.id === "local",
+				workspaceRoots: options.workspaceRoots,
 			});
 
 			if (options.systemPrompt === undefined) {
@@ -2068,6 +2073,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			scopedModels: options.scopedModels,
 			promptTemplates,
 			slashCommands,
+			workspaceRoots: options.workspaceRoots,
 			extensionRunner,
 			customCommands: customCommandsResult.commands,
 			skills,

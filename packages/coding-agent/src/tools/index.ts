@@ -26,6 +26,7 @@ import type { DiscoverableTool, DiscoverableToolSearchIndex } from "../tool-disc
 import type { EventBus } from "../utils/event-bus";
 import { WebSearchTool } from "../web/search";
 import { WorkflowTool } from "../workflow";
+import type { WorkspaceRoot } from "../workspace-roots";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
 import { AstEditTool } from "./ast-edit";
@@ -129,6 +130,8 @@ export interface ToolSession {
 	contextFiles?: ContextFileEntry[];
 	/** Pre-loaded workspace tree (forwarded to subagents to skip re-scanning) */
 	workspaceTree?: WorkspaceTree;
+	/** Tagged workspace roots (--be/--fe/--add-dir), forwarded to subagents. */
+	workspaceRoots?: WorkspaceRoot[];
 	/** Pre-loaded skills */
 	skills?: Skill[];
 	/** Pre-loaded prompt templates */

@@ -372,6 +372,17 @@
 - Linked the sticky `Todos` panel to the live `SessionObserverRegistry` so pending todos that have an in-flight subagent doing their work light up green with an animated spinner — the same `theme.spinnerFrames` ("status" preset) the `task` tool uses for its agent rows — instead of staying greyed out as if nothing is happening. A new exported `todoMatchesAnyDescription(content, descriptions)` does case- and whitespace-insensitive equality first with a 6-char minimum-overlap substring fallback in either direction, so "Sonnet #2: shallow bug scan" and a subagent description of "Sonnet #2" still link up. Completed todos now render with `theme.status.success` (✔ / `\uf00c` / `[ok]` per symbol preset, still wrapped in the `success` colour so themed palettes can keep their purple/green/whatever) and in_progress rows render with `theme.status.running`, matching the `task` tool's icon vocabulary. The spinner interval only ticks while at least one visible open todo has a matched active subagent, and self-stops once subagents finish, so plain in_progress todos do not animate forever in the absence of subagent activity.
 - Extracted the top-level CLI command table from `src/cli.ts` into a side-effect-free `src/cli-commands.ts` so test code can introspect the registered subcommands without triggering the entrypoint's top-level await.
 
+### Added
+
+- Added multi-root workspace flags. `--be <repo>` / `--fe <repo>` resolve a git repository and create an isolated worktree on a fresh `omp/<name>` branch checked out from the repo's origin default branch (best-effort `git fetch`), tagging each root as `be`/`fe`. `--worktree <name>` names the worktree (auto-generated via the two-word task-name generator when omitted); `--no-worktree` instead tags the repos in place on their current branch. `--add-dir <path>` (repeatable) tags an additional existing directory by its basename. The first repo (`--be` before `--fe`, else the first `--add-dir`) becomes the session's primary cwd; every root is surfaced to the model in a new `<workspace-roots>` system-prompt block (tag, absolute path, branch, and a bounded directory tree for non-primary roots), forwarded to subagents, available to `@` file mentions/autocomplete through tagged aliases such as `@be/src/api.ts`, usable as `bash.cwd` tags such as `cwd: "fe"`, and accepted by `/move <tag>` for persistent cwd switches. Worktrees live under `~/.omp/wt/` and are cleanable via `omp worktree clear`; reusing the same `--worktree` name is idempotent and never touches the user's main checkout, so a dirty tree is safe.
+
+### Fixed
+
+- Fixed `task` and `heavy_task` review gates so they can review and run fixer cycles in the original task context when task isolation is disabled, instead of failing before the implementer runs.
+- Fixed the missing-git-repository diagnostic for task review gates so non-isolated gates no longer report the stale "isolated task execution" helper message.
+- Fixed task review-gate diff capture in unborn git repositories (git init with no commits) so baseline untracked files are compared against an empty tree instead of failing with `fatal: Not a valid object name`.
+- Fixed task diff capture for untracked files whose path begins with `-` by passing an explicit `--` separator to `git diff --no-index`.
+
 ## [15.5.11] - 2026-05-29
 
 ### Added

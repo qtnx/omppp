@@ -214,6 +214,7 @@ import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import { assessTopicRelevance } from "../utils/topic-relevance";
+import type { WorkspaceRoot } from "../workspace-roots";
 import type { AuthStorage } from "./auth-storage";
 import type { ClientBridge, ClientBridgePermissionOption, ClientBridgePermissionOutcome } from "./client-bridge";
 import { buildDollarMentionContextMessages } from "./dollar-mentions";
@@ -292,6 +293,8 @@ export interface AsyncJobSnapshot {
 
 export type { ShakeMode, ShakeResult };
 
+type AutoCompactionOutcome = "aborted" | "compacted" | "deferred" | "failed" | "skipped";
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -308,6 +311,8 @@ export interface AgentSessionConfig {
 	promptTemplates?: PromptTemplate[];
 	/** File-based slash commands for expansion */
 	slashCommands?: FileSlashCommand[];
+	/** Tagged workspace roots available to @file mentions and prompt context. */
+	workspaceRoots?: WorkspaceRoot[];
 	/** Extension runner (created in main.ts with wrapped tools) */
 	extensionRunner?: ExtensionRunner;
 	/** Loaded skills (already discovered by SDK) */
@@ -813,6 +818,7 @@ export class AgentSession {
 	readonly settings: Settings;
 	readonly yieldQueue: YieldQueue;
 	fileSnapshotStore?: InMemorySnapshotStore;
+	readonly workspaceRoots: readonly WorkspaceRoot[];
 
 	#powerAssertion: MacOSPowerAssertion | undefined;
 
@@ -1094,6 +1100,7 @@ export class AgentSession {
 			this.#thinkingLevel = config.thinkingLevel;
 		}
 		this.#promptTemplates = config.promptTemplates ?? [];
+		this.workspaceRoots = config.workspaceRoots ?? [];
 		this.#slashCommands = config.slashCommands ?? [];
 		this.#extensionRunner = config.extensionRunner;
 		this.#skills = config.skills ?? [];
@@ -1909,7 +1916,7 @@ export class AgentSession {
 
 			const compactionTask = this.#checkCompaction(msg);
 			this.#trackPostPromptTask(compactionTask);
-			const compactionDeferredHandoff = await compactionTask;
+			const compactionDeferredHandoff = (await compactionTask) === true;
 			// Check for incomplete todos only after a final assistant stop, not intermediate tool-use turns.
 			const hasToolCalls = msg.content.some(content => content.type === "toolCall");
 			if (hasToolCalls) {
@@ -4441,6 +4448,7 @@ export class AgentSession {
 					autoResizeImages: this.settings.get("images.autoResize"),
 					useHashLines: resolveFileDisplayMode(this).hashLines,
 					snapshotStore: getFileSnapshotStore(this),
+					workspaceRoots: this.workspaceRoots,
 				});
 				messages.push(...fileMentionMessages);
 			}
@@ -6353,12 +6361,15 @@ export class AgentSession {
 	 * Called after agent_end and before prompt submission.
 	 *
 	 * Four cases (in order):
-	 * 1. Input overflow + promotion: promote to larger model, retry without maintenance.
-	 * 2. Input overflow + no promotion target: run context maintenance, auto-retry on same model.
+	 * 1. Input overflow + compaction enabled: drop the dead turn, run context
+	 *    maintenance, auto-retry on the same model.
+	 * 2. Input overflow + compaction disabled: promote to a larger-context model so
+	 *    the retry has room (no-op when no promotion target exists).
 	 * 3. Output incomplete (stopReason === "length", e.g. `response.incomplete`): the
 	 *    model burned its output budget without producing an actionable deliverable
-	 *    (reasoning-only or truncated). Drop the dead turn, try promotion, otherwise
-	 *    run compaction/handoff and retry.
+	 *    (reasoning-only or truncated). Same recovery class as overflow — compact when
+	 *    enabled, otherwise promote. Unlike overflow, the input is fine, so handoff
+	 *    strategy can run.
 	 * 4. Threshold: context over threshold, run context maintenance (no auto-retry).
 	 *
 	 * @param assistantMessage The assistant message to check
@@ -6397,6 +6408,8 @@ export class AgentSession {
 		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
 		const errorIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
+		const compactionSettings = this.settings.getGroup("compaction");
+		const compactionEnabled = compactionSettings.enabled && compactionSettings.strategy !== "off";
 		if (sameModel && !errorIsFromBeforeCompaction && isContextOverflow(assistantMessage, contextWindow)) {
 			// Remove the error message from agent state (it IS saved to session for history,
 			// but we don't want it in context for the retry)
@@ -6405,18 +6418,18 @@ export class AgentSession {
 				this.agent.replaceMessages(messages.slice(0, -1));
 			}
 
-			// Try context promotion first - switch to a larger model and retry without compacting
-			const promoted = await this.#tryContextPromotion(assistantMessage);
-			if (promoted) {
-				// Retry on the promoted (larger) model without compacting
-				this.#scheduleAgentContinue({ delayMs: 100, generation });
-				return false;
+			if (compactionEnabled) {
+				const outcome = await this.#runAutoCompaction("overflow", true, false, allowDefer, { autoContinue });
+				if (outcome === "compacted" || outcome === "deferred" || outcome === "aborted") {
+					return false;
+				}
 			}
 
-			// No promotion target available fall through to compaction
-			const compactionSettings = this.settings.getGroup("compaction");
-			if (compactionSettings.enabled && compactionSettings.strategy !== "off") {
-				await this.#runAutoCompaction("overflow", true, false, allowDefer, { autoContinue });
+			// No compaction path is available; promote to a larger model if possible
+			// so the retry has enough room instead of failing immediately.
+			const promoted = await this.#tryContextPromotion(assistantMessage);
+			if (promoted) {
+				this.#scheduleAgentContinue({ delayMs: 100, generation });
 			}
 			return false;
 		}
@@ -6424,13 +6437,24 @@ export class AgentSession {
 		// Case 3: Output-side incomplete — `response.incomplete` from OpenAI Responses
 		// (and Codex) maps to stopReason === "length". The model burned its
 		// `max_output_tokens` budget on reasoning/text and emitted no actionable
-		// deliverable. Same recovery class as overflow: promotion if available,
-		// otherwise compaction/handoff. Unlike overflow, the *input* is fine, so we
-		// allow the handoff strategy to actually run.
+		// deliverable. Same recovery class as overflow: compact when context
+		// maintenance is enabled, otherwise promote if a larger model is available.
+		// Unlike overflow, the *input* is fine, so handoff strategy can run.
 		if (sameModel && !errorIsFromBeforeCompaction && assistantMessage.stopReason === "length") {
 			const messages = this.agent.state.messages;
 			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 				this.agent.replaceMessages(messages.slice(0, -1));
+			}
+
+			if (compactionEnabled) {
+				logger.debug("Compaction triggered by response.incomplete (length stop)", {
+					model: `${assistantMessage.provider}/${assistantMessage.model}`,
+					strategy: compactionSettings.strategy,
+				});
+				const outcome = await this.#runAutoCompaction("incomplete", true, false, allowDefer, { autoContinue });
+				if (outcome === "compacted" || outcome === "deferred" || outcome === "aborted") {
+					return false;
+				}
 			}
 
 			const promoted = await this.#tryContextPromotion(assistantMessage);
@@ -6441,26 +6465,15 @@ export class AgentSession {
 				this.#scheduleAgentContinue({ delayMs: 100, generation });
 				return false;
 			}
-
-			const incompleteCompactionSettings = this.settings.getGroup("compaction");
-			if (incompleteCompactionSettings.enabled && incompleteCompactionSettings.strategy !== "off") {
-				logger.debug("Compaction triggered by response.incomplete (length stop, no promotion target)", {
-					model: `${assistantMessage.provider}/${assistantMessage.model}`,
-					strategy: incompleteCompactionSettings.strategy,
-				});
-				await this.#runAutoCompaction("incomplete", true, false, allowDefer, { autoContinue });
-			} else {
-				// Neither promotion nor compaction is available — surface the dead-end so
-				// the user understands why the turn yielded with nothing.
-				logger.warn("response.incomplete with no recovery path (promotion + compaction both unavailable)", {
-					model: `${assistantMessage.provider}/${assistantMessage.model}`,
-				});
-			}
+			// Neither compaction nor promotion is available — surface the dead-end so
+			// the user understands why the turn yielded with nothing.
+			logger.warn("response.incomplete with no recovery path (promotion + compaction both unavailable)", {
+				model: `${assistantMessage.provider}/${assistantMessage.model}`,
+			});
 			return false;
 		}
 
-		const compactionSettings = this.settings.getGroup("compaction");
-		if (!compactionSettings.enabled || compactionSettings.strategy === "off") return false;
+		if (!compactionEnabled) return false;
 
 		// Case 4: Threshold - turn succeeded but context is getting large
 		// Skip if this was an error (non-overflow errors don't have usage data)
@@ -6471,11 +6484,8 @@ export class AgentSession {
 			contextTokens = Math.max(0, contextTokens - pruneResult.tokensSaved);
 		}
 		if (shouldCompact(contextTokens, contextWindow, compactionSettings)) {
-			// Try promotion first — if a larger model is available, switch instead of compacting
-			const promoted = await this.#tryContextPromotion(assistantMessage);
-			if (!promoted) {
-				return await this.#runAutoCompaction("threshold", false, false, allowDefer, { autoContinue });
-			}
+			const outcome = await this.#runAutoCompaction("threshold", false, false, allowDefer, { autoContinue });
+			return outcome === "deferred";
 		}
 		return false;
 	}
@@ -7277,14 +7287,12 @@ export class AgentSession {
 	 * Internal: Run auto-compaction with events.
 	 *
 	 * @param allowDefer If true (default), threshold-driven handoff strategy is allowed to
-	 *   schedule itself as a deferred post-prompt task and return `true` immediately. The
-	 *   caller MUST treat that as "compaction will happen async — do not also schedule
-	 *   `agent.continue()` for this turn", otherwise the deferred handoff races a fresh
-	 *   streaming turn (the symptom: "Auto-handoff" loader + assistant message still
-	 *   streaming). Callers on a path that is about to start a new agent turn (e.g.
-	 *   the pre-prompt check in `#promptWithMessage`) pass `false` to force inline
-	 *   execution so the handoff completes before the new turn begins.
-	 * @returns true when a deferred handoff was scheduled. Inline runs always return false.
+	 *   schedule itself as a deferred post-prompt task. The caller MUST treat
+	 *   `"deferred"` as "compaction will happen async — do not also schedule
+	 *   `agent.continue()` for this turn", otherwise the deferred handoff races a
+	 *   fresh streaming turn. Callers on a path that is about to start a new agent
+	 *   turn pass `false` to force inline execution.
+	 * @returns The observed maintenance outcome.
 	 */
 	async #runAutoCompaction(
 		reason: "overflow" | "threshold" | "idle" | "incomplete" | "topic-switch",
@@ -7292,10 +7300,10 @@ export class AgentSession {
 		deferred = false,
 		allowDefer = true,
 		options: { autoContinue?: boolean } = {},
-	): Promise<boolean> {
+	): Promise<AutoCompactionOutcome> {
 		const compactionSettings = this.settings.getGroup("compaction");
-		if (compactionSettings.strategy === "off") return false;
-		if (reason !== "idle" && reason !== "topic-switch" && !compactionSettings.enabled) return false;
+		if (compactionSettings.strategy === "off") return "skipped";
+		if (reason !== "idle" && reason !== "topic-switch" && !compactionSettings.enabled) return "skipped";
 		const generation = this.#promptGeneration;
 		const shouldAutoContinue = options.autoContinue !== false && compactionSettings.autoContinue !== false;
 		// Shake runs inline (cheap, no remote LLM). On overflow recovery, if shake
@@ -7303,7 +7311,7 @@ export class AgentSession {
 		// the oversized input still gets resolved.
 		if (compactionSettings.strategy === "shake") {
 			const outcome = await this.#runAutoShake(reason, willRetry, generation, shouldAutoContinue);
-			if (outcome !== "fallback") return false;
+			if (outcome !== "fallback") return "compacted";
 		}
 		// "overflow" and "incomplete" force inline execution because they are recovery
 		// paths the caller wants resolved before scheduling the next turn. "idle" is
@@ -7325,7 +7333,7 @@ export class AgentSession {
 				},
 				{ generation },
 			);
-			return true;
+			return "deferred";
 		}
 
 		// "overflow" forces context-full because the input itself is broken — a handoff
@@ -7359,7 +7367,7 @@ export class AgentSession {
 							aborted: true,
 							willRetry: false,
 						});
-						return false;
+						return "aborted";
 					}
 					logger.warn("Auto-handoff returned no document; falling back to context-full maintenance", {
 						reason,
@@ -7372,12 +7380,19 @@ export class AgentSession {
 						action,
 						result: undefined,
 						aborted: false,
-						willRetry: false,
+						willRetry,
 					});
-					if (!autoCompactionSignal.aborted && reason !== "idle" && shouldAutoContinue) {
+					if (willRetry) {
+						this.#scheduleAgentContinue({ delayMs: 100, generation });
+					} else if (
+						!autoCompactionSignal.aborted &&
+						reason !== "idle" &&
+						reason !== "topic-switch" &&
+						shouldAutoContinue
+					) {
 						this.#scheduleAutoContinuePrompt(generation);
 					}
-					return false;
+					return "compacted";
 				}
 			}
 
@@ -7390,7 +7405,7 @@ export class AgentSession {
 					willRetry: false,
 					skipped: true,
 				});
-				return false;
+				return "skipped";
 			}
 
 			const availableModels = this.#modelRegistry.getAvailable();
@@ -7403,7 +7418,7 @@ export class AgentSession {
 					willRetry: false,
 					skipped: true,
 				});
-				return false;
+				return "skipped";
 			}
 
 			const pathEntries = this.sessionManager.getBranch();
@@ -7425,7 +7440,7 @@ export class AgentSession {
 						shouldContinue: () => this.agent.hasQueuedMessages(),
 					});
 				}
-				return false;
+				return "skipped";
 			}
 
 			let hookCompaction: CompactionResult | undefined;
@@ -7449,7 +7464,7 @@ export class AgentSession {
 						aborted: true,
 						willRetry: false,
 					});
-					return false;
+					return "aborted";
 				}
 
 				if (hookResult?.compaction) {
@@ -7585,7 +7600,7 @@ export class AgentSession {
 					aborted: true,
 					willRetry: false,
 				});
-				return false;
+				return "aborted";
 			}
 
 			this.sessionManager.appendCompaction(
@@ -7657,6 +7672,7 @@ export class AgentSession {
 					shouldContinue: () => this.agent.hasQueuedMessages(),
 				});
 			}
+			return "compacted";
 		} catch (error) {
 			if (autoCompactionSignal.aborted) {
 				await this.#emitSessionEvent({
@@ -7666,7 +7682,7 @@ export class AgentSession {
 					aborted: true,
 					willRetry: false,
 				});
-				return false;
+				return "aborted";
 			}
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			await this.#emitSessionEvent({
@@ -7682,12 +7698,13 @@ export class AgentSession {
 							? `Incomplete response recovery failed: ${errorMessage}`
 							: `Auto-compaction failed: ${errorMessage}`,
 			});
+			return "failed";
 		} finally {
 			if (this.#autoCompactionAbortController === autoCompactionAbortController) {
 				this.#autoCompactionAbortController = undefined;
 			}
 		}
-		return false;
+		return "failed";
 	}
 
 	/**
@@ -7701,7 +7718,7 @@ export class AgentSession {
 	 * the oversized input still gets resolved. Returns `"handled"` otherwise.
 	 */
 	async #runAutoShake(
-		reason: "overflow" | "threshold" | "idle" | "incomplete",
+		reason: "overflow" | "threshold" | "idle" | "incomplete" | "topic-switch",
 		willRetry: boolean,
 		generation: number,
 		autoContinue: boolean,

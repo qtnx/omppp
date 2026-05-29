@@ -719,6 +719,7 @@ export class InputController {
 			basePath,
 			dollarMentions: { skills: this.ctx.session.skills, agents },
 			keybindings: this.ctx.keybindings,
+			workspaceRoots: this.ctx.session.workspaceRoots,
 			copyCurrentLine: () => this.handleCopyCurrentLine(),
 			copyPrompt: () => this.handleCopyPrompt(),
 			undo: prefix => this.ctx.editor.undoPastTransientText(prefix),

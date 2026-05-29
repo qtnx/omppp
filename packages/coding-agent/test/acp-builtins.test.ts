@@ -1,4 +1,8 @@
 import { describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../src/config/settings";
 import type { AgentSession } from "../src/session/agent-session";
 import type { SessionManager } from "../src/session/session-manager";
@@ -399,6 +403,25 @@ describe("session lifecycle commands", () => {
 		expect(fakeSessionManager._movedTo).toBe("/tmp");
 		expect(output[0]).toContain("/tmp");
 		expect(notified).toBe(true);
+	});
+
+	it("/move: accepts a workspace root tag", async () => {
+		const { output, fakeSessionManager, runtime } = createRuntime();
+		const originalProjectDir = getProjectDir();
+		const feRoot = await fs.mkdtemp(path.join(os.tmpdir(), "acp-move-fe-root-"));
+		try {
+			(runtime.session as { workspaceRoots: unknown }).workspaceRoots = [
+				{ tag: "fe", path: feRoot, primary: false },
+			];
+
+			const result = await executeAcpBuiltinSlashCommand("/move fe", runtime);
+			expect(result).toEqual({ consumed: true });
+			expect(fakeSessionManager._movedTo).toBe(feRoot);
+			expect(output[0]).toContain(feRoot);
+		} finally {
+			setProjectDir(originalProjectDir);
+			await fs.rm(feRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("/move: refuses while streaming", async () => {

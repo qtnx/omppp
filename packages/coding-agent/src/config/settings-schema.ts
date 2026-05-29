@@ -2868,8 +2868,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tasks",
 			label: "Review Gate",
-			description:
-				"After an isolated subagent finishes, review its diff and only merge changes when the reviewer approves",
+			description: "After a subagent finishes, review its task diff and fail the task unless the reviewer approves",
 		},
 	},
 
@@ -2879,7 +2878,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tasks",
 			label: "Review Gate Reviewer",
-			description: "Agent name used to review isolated subagent diffs",
+			description: "Agent name used to review subagent task diffs",
 		},
 	},
 
@@ -2889,7 +2888,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tasks",
 			label: "Review Gate Fixer",
-			description: "Agent name used to address blocking review findings inside the isolated worktree",
+			description: "Agent name used to address blocking review findings in the same task context",
 		},
 	},
 

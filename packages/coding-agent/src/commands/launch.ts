@@ -49,6 +49,23 @@ export default class Index extends Command {
 		"allow-home": Flags.boolean({
 			description: "Allow starting in ~ without auto-switching to a temp dir",
 		}),
+		be: Flags.string({
+			description: "Backend repo path; creates a tagged worktree (see --worktree)",
+		}),
+		fe: Flags.string({
+			description: "Frontend repo path; creates a tagged worktree (see --worktree)",
+		}),
+		worktree: Flags.string({
+			char: "w",
+			description: "Worktree name for --be/--fe repos (auto-generated if omitted)",
+		}),
+		"no-worktree": Flags.boolean({
+			description: "Tag --be/--fe repos in place without creating worktrees",
+		}),
+		"add-dir": Flags.string({
+			description: "Additional working directory, tagged by basename (repeatable)",
+			multiple: true,
+		}),
 		mode: Flags.string({
 			description: "Output mode: text (default), json, rpc, or rpc-ui",
 			options: ["text", "json", "rpc", "acp", "rpc-ui"],

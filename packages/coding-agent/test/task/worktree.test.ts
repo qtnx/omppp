@@ -136,6 +136,46 @@ describe("worktree isolation helpers", () => {
 		expect(await runGit(repo, ["stash", "list"])).toBe("");
 	});
 
+	it("captures task deltas in an unborn repository with baseline untracked files", async () => {
+		const repo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-unborn-"));
+		tempDirs.push(repo);
+		await runGit(repo, ["init"]);
+		await fs.writeFile(
+			path.join(repo, "stats_utils.py"),
+			"from collections.abc import Sequence\n\n\ndef median(values: Sequence[float]) -> float:\n\treturn 0.0\n",
+		);
+		const baseline = await captureBaseline(repo);
+
+		await fs.writeFile(
+			path.join(repo, "stats_utils.py"),
+			"from collections.abc import Sequence\n\n\ndef median(values: Sequence[float]) -> float:\n\treturn 0.0\n\n\ndef mean(values: Sequence[float]) -> float:\n\treturn 0.0\n",
+		);
+
+		const delta = await captureDeltaPatch(repo, baseline);
+
+		expect(delta.nestedPatches).toEqual([]);
+		expect(delta.rootPatch).toContain("stats_utils.py");
+		expect(delta.rootPatch).toContain("+def mean(values: Sequence[float]) -> float:");
+		expect(delta.rootPatch).not.toContain("+def median(values: Sequence[float]) -> float:");
+	});
+
+	it("captures baseline untracked files whose paths begin with a dash", async () => {
+		const { repo } = await createGitRepo();
+		await fs.writeFile(path.join(repo, "-stats.py"), "def median() -> float:\n\treturn 0.0\n");
+		const baseline = await captureBaseline(repo);
+
+		await fs.writeFile(
+			path.join(repo, "-stats.py"),
+			"def median() -> float:\n\treturn 0.0\n\n\ndef mean() -> float:\n\treturn 0.0\n",
+		);
+
+		const delta = await captureDeltaPatch(repo, baseline);
+
+		expect(delta.rootPatch).toContain("-stats.py");
+		expect(delta.rootPatch).toContain("+def mean() -> float:");
+		expect(delta.rootPatch).not.toContain("+def median() -> float:");
+	});
+
 	it("subtracts baseline dirty state even when the task commits it", async () => {
 		const { repo } = await createGitRepo();
 		await fs.writeFile(path.join(repo, "merged.txt"), "baseline dirty change\n");

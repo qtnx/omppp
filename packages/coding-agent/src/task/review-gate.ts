@@ -1,19 +1,18 @@
 /**
- * Hard review gate that wraps an isolated subagent.
+ * Hard review gate that wraps an implementation subagent.
  *
- * Sits between the implementation subagent and the final patch/branch capture:
- * spawns a reviewer agent against the current isolated diff, optionally loops
- * through a fixer agent when blocking findings surface, and refuses to merge
- * when the gate stays blocked. Designed to be invoked only for isolated tasks
- * (`task.isolation.mode !== "none"` + `isolated: true`); the caller MUST
- * short-circuit before isolation work when the gate is enabled but the call
- * is non-isolated.
+ * Runs after the implementation subagent regardless of task isolation: spawns a
+ * reviewer agent against the current task diff, optionally loops through a fixer
+ * agent when blocking findings surface, and refuses the task when the gate stays
+ * blocked. In isolated mode it sits before final patch/branch capture; in
+ * non-isolated mode it reviews a diff captured directly from the task's own
+ * working tree.
  *
  * The gate never calls `captureDeltaPatch` itself. Instead, the caller passes a
- * `captureDelta` closure that returns the current isolated delta (root +
- * nested patches). The gate composes the diff text shown to the reviewer from
- * that delta, and on `passed` returns the accepted delta back to the caller so
- * the final patch capture can reuse it without re-running git plumbing.
+ * `captureDelta` closure that returns the current task delta (root + nested
+ * patches). The gate composes the diff text shown to the reviewer from that
+ * delta, and on `passed` returns the accepted delta back to the caller so
+ * isolated final patch capture can reuse it without re-running git plumbing.
  *
  * Errors thrown by `captureDelta` fail the gate closed with a clear
  * `Review gate diff capture failed: ...` failure reason. The gate never
@@ -59,16 +58,16 @@ export interface ReviewGateOptions {
 	/** Optional task description, surfaced to the reviewer/fixer for context. */
 	description?: string;
 	/**
-	 * Capture the current isolated delta (root + nested patches). The gate
-	 * composes the reviewer-facing diff text from the returned `DeltaPatchResult`
-	 * and, on a passing iteration, threads the accepted delta back to the caller
-	 * via `ReviewGateRunResult.acceptedDelta` so the final patch write can reuse
-	 * it. The gate fails closed when this throws.
+	 * Capture the current task delta (root + nested patches). The gate composes
+	 * the reviewer-facing diff text from the returned `DeltaPatchResult` and, on
+	 * a passing iteration, threads the accepted delta back to the caller via
+	 * `ReviewGateRunResult.acceptedDelta` so isolated final patch writes can
+	 * reuse it. The gate fails closed when this throws.
 	 */
 	captureDelta: () => Promise<DeltaPatchResult>;
-	/** Invoke the reviewer agent. Caller binds isolation/context. */
+	/** Invoke the reviewer agent. Caller binds working tree/context. */
 	runReviewer: (request: ReviewGateRunRequest) => Promise<SingleResult>;
-	/** Invoke the fixer agent inside the same isolation dir. */
+	/** Invoke the fixer agent in the same working tree/context as the reviewed task. */
 	runFixer: (request: ReviewGateRunRequest) => Promise<SingleResult>;
 	signal?: AbortSignal;
 }
@@ -79,8 +78,8 @@ export interface ReviewGateRunResult {
 	result: ReviewGateResult;
 	/**
 	 * Delta captured for the final accepted reviewer pass. Populated only when
-	 * `passed === true`; reused by the caller to avoid recapturing the patch
-	 * after the gate has already inspected the worktree.
+	 * `passed === true`; reused by isolated callers to avoid recapturing the
+	 * patch after the gate has already inspected the task diff.
 	 */
 	acceptedDelta?: DeltaPatchResult;
 }

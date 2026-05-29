@@ -23,6 +23,7 @@ import { resolveMemoryBackend } from "../memory-backend";
 import type { InteractiveModeContext } from "../modes/types";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
+import { resolveWorkspaceRootReference } from "../workspace-roots";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
 import { createMarketplaceManager } from "./helpers/marketplace-manager";
@@ -1031,7 +1032,9 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handle: async (command, runtime) => {
 			if (runtime.session.isStreaming) return usage("Cannot move while streaming.", runtime);
 			if (!command.args) return usage("Usage: /move <path>", runtime);
-			const resolvedPath = path.resolve(runtime.cwd, command.args);
+			const resolvedPath =
+				resolveWorkspaceRootReference(command.args, runtime.session.workspaceRoots) ??
+				path.resolve(runtime.cwd, command.args);
 			let isDirectory: boolean;
 			try {
 				isDirectory = (await fs.stat(resolvedPath)).isDirectory();

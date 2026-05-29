@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
@@ -270,8 +273,31 @@ function mockIsolation(options: { captureError?: Error; captureResults?: DeltaPa
 
 	return { captureDeltaPatch, commitToBranch, cleanupIsolation };
 }
+async function initUnbornStatsRepo(): Promise<string> {
+	const repo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-review-gate-unborn-"));
+	const proc = Bun.spawn(["git", "init"], {
+		cwd: repo,
+		stderr: "pipe",
+		stdout: "pipe",
+		windowsHide: true,
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if ((exitCode ?? 0) !== 0) {
+		await fs.rm(repo, { recursive: true, force: true });
+		throw new Error(stderr.trim() || stdout.trim() || "git init failed");
+	}
+	await fs.writeFile(
+		path.join(repo, "stats_utils.py"),
+		"from collections.abc import Sequence\n\n\ndef median(values: Sequence[float]) -> float:\n\treturn 0.0\n",
+	);
+	return repo;
+}
 
-function createSession(overrides: Partial<Record<string, unknown>> = {}): ToolSession {
+function createSession(overrides: Partial<Record<string, unknown>> = {}, cwd = "/tmp"): ToolSession {
 	const modelRegistry = {
 		authStorage: undefined,
 		refresh: async () => {},
@@ -286,7 +312,7 @@ function createSession(overrides: Partial<Record<string, unknown>> = {}): ToolSe
 	} as Parameters<typeof Settings.isolated>[0]);
 
 	return {
-		cwd: "/tmp",
+		cwd,
 		hasUI: false,
 		settings,
 		getSessionFile: () => null,
@@ -649,12 +675,12 @@ describe("task review gate", () => {
 		expect(firstResult(result).exitCode).toBe(0);
 	});
 
-	it("returns a clear configuration error and skips isolation work when reviewGate is enabled without isolation", async () => {
+	it("runs the gate in the original task context when isolation is disabled", async () => {
 		mockAgents();
 		const isolation = mockIsolation();
-		const { trace } = mockSessionQueue([
-			// Even if scripts are staged, the gate should refuse to run.
+		const { trace, calls } = mockSessionQueue([
 			{ role: "implementer" },
+			{ role: "reviewer", verdict: correctVerdict() },
 		]);
 
 		const tool = await TaskTool.create(
@@ -663,15 +689,146 @@ describe("task review gate", () => {
 				"task.isolation.mode": "none",
 			}),
 		);
-		const result = await tool.execute("call-config-error", { ...TASK_PARAMS, isolated: false });
+		const result = await tool.execute("call-non-isolated-gate", TASK_PARAMS);
 
-		// No subagent should be spawned and no isolation work should be attempted.
-		expect(trace).toEqual([]);
-		expect(isolation.captureDeltaPatch).not.toHaveBeenCalled();
+		expect(trace.map(t => t.role)).toEqual(["implementer", "reviewer"]);
+		expect(calls().map(call => call.cwd)).toEqual(["/tmp", "/tmp"]);
+		expect(isolation.captureDeltaPatch).toHaveBeenCalledTimes(1);
 		expect(isolation.commitToBranch).not.toHaveBeenCalled();
 		expect(isolation.cleanupIsolation).not.toHaveBeenCalled();
 		const single = firstResult(result);
-		expect(single.exitCode).not.toBe(0);
-		expect(single.error ?? single.stderr).toMatch(/review.?gate|isolation/i);
+		expect(single.exitCode).toBe(0);
+		expect(single.reviewGate?.outcome).toBe("passed");
+	});
+	it("reports missing git repository without labeling non-isolated review gate as isolated execution", async () => {
+		mockAgents();
+		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-review-gate-no-git-"));
+		try {
+			const tool = await TaskTool.create(
+				createSession(
+					{
+						...reviewGateSettings(),
+						"task.isolation.mode": "none",
+					},
+					cwd,
+				),
+			);
+
+			const result = await tool.execute("call-no-git-review-gate", TASK_PARAMS);
+			const message = result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(message).toBe("Task review gate requires a git repository. Git repository not found.");
+			expect(message).not.toContain("isolated task execution");
+			expect(result.details?.results).toEqual([]);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+	it("reviews non-isolated task diffs in an unborn repository", async () => {
+		mockAgents();
+		const repo = await initUnbornStatsRepo();
+		const trace: RoleScript["role"][] = [];
+		let reviewerPrompt = "";
+		try {
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+				const agentName = options.agentDisplayName ?? "unknown";
+				const role: RoleScript["role"] = agentName === REVIEWER_AGENT ? "reviewer" : "implementer";
+				const session = createScriptedSession(role === "reviewer" ? { role, verdict: correctVerdict() } : { role });
+				const originalPrompt = session.prompt.bind(session);
+				session.prompt = async (text: string, promptOptions?: PromptOptions) => {
+					trace.push(role);
+					if (role === "implementer") {
+						await fs.writeFile(
+							path.join(repo, "stats_utils.py"),
+							"from collections.abc import Sequence\n\n\ndef median(values: Sequence[float]) -> float:\n\treturn 0.0\n\n\ndef mean(values: Sequence[float]) -> float:\n\treturn 0.0\n",
+						);
+					} else {
+						reviewerPrompt = text;
+					}
+					return originalPrompt(text, promptOptions);
+				};
+				return {
+					session,
+					extensionsResult: {} as unknown as LoadExtensionsResult,
+					setToolUIContext: () => {},
+					eventBus: new EventBus(),
+				} satisfies CreateAgentSessionResult;
+			});
+
+			const tool = await TaskTool.create(
+				createSession(
+					{
+						...reviewGateSettings(),
+						"task.isolation.mode": "none",
+					},
+					repo,
+				),
+			);
+			const result = await tool.execute("call-unborn-review-gate", TASK_PARAMS);
+			const single = firstResult(result);
+
+			expect(trace).toEqual(["implementer", "reviewer"]);
+			expect(single.exitCode).toBe(0);
+			expect(single.reviewGate?.outcome).toBe("passed");
+			expect(reviewerPrompt).toContain("+def mean(values: Sequence[float]) -> float:");
+			expect(reviewerPrompt).not.toContain("fatal: Not a valid object name");
+		} finally {
+			await fs.rm(repo, { recursive: true, force: true });
+		}
+	});
+
+	it("honors task max concurrency when non-isolated review gates are enabled", async () => {
+		mockAgents();
+		mockIsolation();
+		const trace: RoleScript["role"][] = [];
+		const bothImplementersStarted = Promise.withResolvers<void>();
+		let implementerStarts = 0;
+
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+			const agentName = options.agentDisplayName ?? "unknown";
+			const role: RoleScript["role"] = agentName === REVIEWER_AGENT ? "reviewer" : "implementer";
+			const session = createScriptedSession(role === "reviewer" ? { role, verdict: correctVerdict() } : { role });
+			const originalPrompt = session.prompt.bind(session);
+			session.prompt = async (text: string, promptOptions?: PromptOptions) => {
+				trace.push(role);
+				if (role === "implementer") {
+					implementerStarts += 1;
+					if (implementerStarts === 2) {
+						bothImplementersStarted.resolve();
+					}
+					await Promise.race([
+						bothImplementersStarted.promise,
+						Bun.sleep(100).then(() => {
+							throw new Error("Second implementer did not start before the first review gate ran.");
+						}),
+					]);
+				}
+				return originalPrompt(text, promptOptions);
+			};
+			return {
+				session,
+				extensionsResult: {} as unknown as LoadExtensionsResult,
+				setToolUIContext: () => {},
+				eventBus: new EventBus(),
+			} satisfies CreateAgentSessionResult;
+		});
+
+		const tool = await TaskTool.create(
+			createSession({
+				...reviewGateSettings(),
+				"task.isolation.mode": "none",
+				"task.maxConcurrency": 2,
+			}),
+		);
+		const result = await tool.execute("call-non-isolated-concurrent-gate", {
+			...TASK_PARAMS,
+			tasks: [
+				{ id: "FixBugOne", description: "Fix first bug", assignment: "Implement the first fix." },
+				{ id: "FixBugTwo", description: "Fix second bug", assignment: "Implement the second fix." },
+			],
+		});
+
+		expect(trace.slice(0, 2)).toEqual(["implementer", "implementer"]);
+		expect(result.details?.results.map(single => single.exitCode)).toEqual([0, 0]);
 	});
 });
