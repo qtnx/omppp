@@ -64,6 +64,8 @@ function toFrontmatter(agent: AgentDefinition): Record<string, unknown> {
 	if (agent.thinkingLevel) frontmatter.thinkingLevel = agent.thinkingLevel;
 	if (agent.output !== undefined) frontmatter.output = agent.output;
 	if (agent.blocking) frontmatter.blocking = true;
+	if (agent.autoloadSkills && agent.autoloadSkills.length > 0) frontmatter.autoloadSkills = agent.autoloadSkills;
+	if (agent.reviewGate) frontmatter.reviewGate = agent.reviewGate;
 
 	return frontmatter;
 }

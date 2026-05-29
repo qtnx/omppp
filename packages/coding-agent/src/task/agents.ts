@@ -10,14 +10,16 @@ import designerMd from "../prompts/agents/designer.md" with { type: "text" };
 import exploreMd from "../prompts/agents/explore.md" with { type: "text" };
 // Embed agent markdown files at build time
 import agentFrontmatterTemplate from "../prompts/agents/frontmatter.md" with { type: "text" };
+import heavyTaskMd from "../prompts/agents/heavy_task.md" with { type: "text" };
 import librarianMd from "../prompts/agents/librarian.md" with { type: "text" };
 import oracleMd from "../prompts/agents/oracle.md" with { type: "text" };
-
 import planMd from "../prompts/agents/plan.md" with { type: "text" };
+import quickTaskMd from "../prompts/agents/quick_task.md" with { type: "text" };
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
+import workflowSubagentMd from "../prompts/agents/workflow-subagent.md" with { type: "text" };
 
-import type { AgentDefinition, AgentSource } from "./types";
+import type { AgentDefinition, AgentReviewGatePolicy, AgentSource } from "./types";
 
 interface AgentFrontmatter {
 	name: string;
@@ -27,6 +29,7 @@ interface AgentFrontmatter {
 	model?: string | string[];
 	thinkingLevel?: string;
 	blocking?: boolean;
+	reviewGate?: AgentReviewGatePolicy;
 }
 
 interface EmbeddedAgentDef {
@@ -49,13 +52,43 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "librarian.md", template: librarianMd },
 	{ fileName: "oracle.md", template: oracleMd },
 	{
+		fileName: "heavy_task.md",
+		frontmatter: {
+			name: "heavy_task",
+			description:
+				"High-accuracy implementer for heavy feature work with a strict review gate and concrete deliverables",
+			spawns: "*",
+			model: ["pi/task", "pi/slow"],
+			thinkingLevel: Effort.High,
+			reviewGate: {
+				enabled: true,
+				reviewerAgent: "reviewer",
+				reviewerModel: ["openai-codex/gpt-5.5:xhigh"],
+				fixerAgent: "task",
+				maxFixIterations: 2,
+				failOnPriorities: [0, 1],
+				requireCorrectVerdict: true,
+			},
+		},
+		template: heavyTaskMd,
+	},
+	{
 		fileName: "task.md",
 		frontmatter: {
 			name: "task",
-			description: "General-purpose subagent with full capabilities for delegated multi-step tasks",
+			description: "Medium-complexity implementer for routine feature work with a lighter review gate",
 			spawns: "*",
 			model: "pi/task",
 			thinkingLevel: Effort.Medium,
+			reviewGate: {
+				enabled: true,
+				reviewerAgent: "reviewer",
+				reviewerModel: ["openai-codex/gpt-5.5:high"],
+				fixerAgent: "task",
+				maxFixIterations: 1,
+				failOnPriorities: [0, 1],
+				requireCorrectVerdict: true,
+			},
 		},
 		template: taskMd,
 	},
@@ -63,11 +96,23 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 		fileName: "quick_task.md",
 		frontmatter: {
 			name: "quick_task",
-			description: "Low-reasoning agent for strictly mechanical updates or data collection only",
+			description:
+				"Fast implementer for light mechanical work; optimized for speed and parallel execution with no review gate",
 			model: "pi/smol",
 			thinkingLevel: Effort.Minimal,
+			reviewGate: {
+				enabled: false,
+			},
 		},
-		template: taskMd,
+		template: quickTaskMd,
+	},
+	{
+		fileName: "workflow-subagent.md",
+		frontmatter: {
+			name: "workflow-subagent",
+			description: "Internal subagent for workflow script orchestration.",
+		},
+		template: workflowSubagentMd,
 	},
 ];
 

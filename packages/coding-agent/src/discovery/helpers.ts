@@ -16,6 +16,7 @@ import { invalidate as invalidateFsCache, readDirEntries, readFile } from "../ca
 import { parseRuleConditionAndScope, type Rule, type RuleFrontmatter } from "../capability/rule";
 import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
+import type { AgentReviewGatePolicy } from "../task/types";
 import { parseThinkingLevel } from "../thinking";
 
 import { buildPluginDirRoot } from "./plugin-dir-roots";
@@ -201,6 +202,48 @@ export function parseModelList(value: unknown): string[] | undefined {
 	const normalized = parsed.map(entry => entry.trim()).filter(Boolean);
 	return normalized.length > 0 ? normalized : undefined;
 }
+function parseReviewGatePolicy(value: unknown): AgentReviewGatePolicy | undefined {
+	if (typeof value === "boolean") {
+		return { enabled: value };
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+
+	const record = value as Record<string, unknown>;
+	const enabled = parseBoolean(record.enabled);
+	if (enabled === undefined) {
+		return undefined;
+	}
+
+	const reviewerAgent =
+		typeof record.reviewerAgent === "string" ? record.reviewerAgent.trim() || undefined : undefined;
+	const reviewerModel = parseModelList(record.reviewerModel);
+	const fixerAgent = typeof record.fixerAgent === "string" ? record.fixerAgent.trim() || undefined : undefined;
+	const maxFixIterations =
+		typeof record.maxFixIterations === "number" &&
+		Number.isInteger(record.maxFixIterations) &&
+		record.maxFixIterations >= 0
+			? record.maxFixIterations
+			: undefined;
+	const failOnPriorities = Array.isArray(record.failOnPriorities)
+		? record.failOnPriorities.filter(
+				(priority): priority is number =>
+					typeof priority === "number" && Number.isInteger(priority) && priority >= 0 && priority <= 3,
+			)
+		: undefined;
+	const requireCorrectVerdict = parseBoolean(record.requireCorrectVerdict);
+
+	return {
+		enabled,
+		reviewerAgent,
+		reviewerModel,
+		fixerAgent,
+		maxFixIterations,
+		failOnPriorities: failOnPriorities && failOnPriorities.length > 0 ? failOnPriorities : undefined,
+		requireCorrectVerdict,
+	};
+}
 
 /** Parsed agent fields from frontmatter (excludes source/filePath/systemPrompt) */
 export interface ParsedAgentFields {
@@ -213,6 +256,7 @@ export interface ParsedAgentFields {
 	thinkingLevel?: ThinkingLevel;
 	autoloadSkills?: string[];
 	blocking?: boolean;
+	reviewGate?: AgentReviewGatePolicy;
 }
 
 /**
@@ -268,7 +312,8 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
 		?.map(s => s.trim())
 		.filter(Boolean);
-	return { name, description, tools, spawns, model, output, thinkingLevel, blocking, autoloadSkills };
+	const reviewGate = parseReviewGatePolicy(frontmatter.reviewGate);
+	return { name, description, tools, spawns, model, output, thinkingLevel, blocking, autoloadSkills, reviewGate };
 }
 
 async function globIf(

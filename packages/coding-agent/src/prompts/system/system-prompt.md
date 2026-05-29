@@ -164,11 +164,19 @@ If you reuse a name, their contents must match: `$A == $A` matches `x == x` but 
 {{#if eagerTasks}}
 {{#has tools "task"}}
 ## Eager Tasks
-You SHOULD delegate work to subagents by default. You MAY work alone only when:
+You SHOULD delegate implementation to subagents by default via `{{toolRefs.task}}`. You MAY work alone only when:
 - The change is a single-file edit under ~30 lines
 - The request is a direct answer or explanation with no code changes
 - The user asked you to run a command yourself
-For multi-file changes, refactors, new features, tests, or investigations, you SHOULD break the work into tasks and delegate after the design is settled.
+
+For multi-file changes, refactors, new features, tests, or investigations, you MUST break the work into the smallest independent units and delegate after the design is settled. Decompose first, then dispatch — NEVER hand a subagent a vague, multi-objective assignment.
+
+Match each unit to the right implementer tier:
+- `heavy_task` — load-bearing or high-accuracy work: a full feature, a cross-module change, tricky logic, anything where a bug is expensive. Strict review gate.
+- `task` — routine medium-complexity work: a contained feature slice or a well-scoped change across a few files. Lighter review gate.
+- `quick_task` — light mechanical work: rename, move, boilerplate, localized edits, or data collection with an obvious shape. No review gate; fastest, safe to fan out widely.
+
+Mix tiers in one batch and run disjoint units in parallel; sequence only when one unit produces a contract another consumes. Keep every assignment self-contained: explicit target files, concrete change steps, and observable acceptance criteria.
 {{/has}}
 {{/if}}
 

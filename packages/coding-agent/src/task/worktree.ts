@@ -381,8 +381,9 @@ export async function commitToBranch(
 	taskId: string,
 	description: string | undefined,
 	commitMessage?: (diff: string) => Promise<string | null>,
+	capturedDelta?: DeltaPatchResult,
 ): Promise<CommitToBranchResult | null> {
-	const { rootPatch, nestedPatches } = await captureDeltaPatch(isolationDir, baseline);
+	const { rootPatch, nestedPatches } = capturedDelta ?? (await captureDeltaPatch(isolationDir, baseline));
 	if (!rootPatch.trim() && nestedPatches.length === 0) return null;
 
 	const repoRoot = baseline.root.repoRoot;

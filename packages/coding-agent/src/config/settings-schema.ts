@@ -1304,6 +1304,52 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
+
+	// Topic-switch compaction: after a long idle gap, classify whether the next
+	// user request is still related to the prior conversation; compact when it isn't.
+	"compaction.topicSwitchEnabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			label: "Topic-Switch Compaction",
+			description:
+				"After a long idle gap, use the fast model to detect an unrelated new request and compact the stale context",
+		},
+	},
+
+	"compaction.topicSwitchIdleSeconds": {
+		type: "number",
+		default: 1800,
+		ui: {
+			tab: "context",
+			label: "Topic-Switch Idle Threshold",
+			description: "Minimum idle time before a new request is checked for a topic switch",
+			options: [
+				{ value: "600", label: "10 minutes" },
+				{ value: "1800", label: "30 minutes" },
+				{ value: "3600", label: "1 hour" },
+				{ value: "10800", label: "3 hours" },
+				{ value: "86400", label: "1 day" },
+			],
+		},
+	},
+
+	"compaction.topicSwitchMinContextTokens": {
+		type: "number",
+		default: 30000,
+		ui: {
+			tab: "context",
+			label: "Topic-Switch Minimum Context",
+			description: "Skip the topic-switch check when the context is smaller than this",
+			options: [
+				{ value: "15000", label: "15K tokens" },
+				{ value: "30000", label: "30K tokens" },
+				{ value: "50000", label: "50K tokens" },
+				{ value: "100000", label: "100K tokens" },
+			],
+		},
+	},
 	// Branch summaries
 	"branchSummary.enabled": {
 		type: "boolean",
@@ -2816,6 +2862,74 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"task.reviewGate.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			label: "Review Gate",
+			description:
+				"After an isolated subagent finishes, review its diff and only merge changes when the reviewer approves",
+		},
+	},
+
+	"task.reviewGate.reviewerAgent": {
+		type: "string",
+		default: "reviewer",
+		ui: {
+			tab: "tasks",
+			label: "Review Gate Reviewer",
+			description: "Agent name used to review isolated subagent diffs",
+		},
+	},
+
+	"task.reviewGate.fixerAgent": {
+		type: "string",
+		default: "task",
+		ui: {
+			tab: "tasks",
+			label: "Review Gate Fixer",
+			description: "Agent name used to address blocking review findings inside the isolated worktree",
+		},
+	},
+
+	"task.reviewGate.maxFixIterations": {
+		type: "number",
+		default: 2,
+		ui: {
+			tab: "tasks",
+			label: "Review Gate Fix Iterations",
+			description: "How many review-then-fix cycles to run before failing the gate",
+			options: [
+				{ value: "0", label: "Review only", description: "No fix attempts" },
+				{ value: "1", label: "1 attempt" },
+				{ value: "2", label: "2 attempts", description: "Default" },
+				{ value: "3", label: "3 attempts" },
+				{ value: "5", label: "5 attempts" },
+			],
+		},
+	},
+
+	"task.reviewGate.failOnPriorities": {
+		type: "array",
+		default: [0, 1] as number[],
+		ui: {
+			tab: "tasks",
+			label: "Review Gate Blocking Priorities",
+			description: "Finding priorities (0-3) that block the gate; lower numbers are more severe",
+		},
+	},
+
+	"task.reviewGate.requireCorrectVerdict": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tasks",
+			label: "Require Correct Verdict",
+			description: "Block merging unless the reviewer's overall verdict is 'correct'",
+		},
+	},
+
 	"task.disabledAgents": {
 		type: "array",
 		default: [] as string[],
@@ -3325,6 +3439,9 @@ export interface CompactionSettings {
 	idleEnabled: boolean;
 	idleThresholdTokens: number;
 	idleTimeoutSeconds: number;
+	topicSwitchEnabled: boolean;
+	topicSwitchIdleSeconds: number;
+	topicSwitchMinContextTokens: number;
 }
 
 export interface ContextPromotionSettings {

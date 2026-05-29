@@ -109,4 +109,40 @@ describe("parseAgentFields", () => {
 		expect(fields).toBeDefined();
 		expect(fields?.autoloadSkills).toBeUndefined();
 	});
+
+	test("parses reviewGate policy from frontmatter", () => {
+		const fields = parseAgentFields({
+			name: "heavy_task",
+			description: "desc",
+			reviewGate: {
+				enabled: true,
+				reviewerAgent: "reviewer",
+				reviewerModel: "openai-codex/gpt-5.5:xhigh",
+				fixerAgent: "task",
+				maxFixIterations: 3,
+				failOnPriorities: [0, 1],
+				requireCorrectVerdict: true,
+			},
+		});
+
+		expect(fields).toBeDefined();
+		expect(fields?.reviewGate).toEqual({
+			enabled: true,
+			reviewerAgent: "reviewer",
+			reviewerModel: ["openai-codex/gpt-5.5:xhigh"],
+			fixerAgent: "task",
+			maxFixIterations: 3,
+			failOnPriorities: [0, 1],
+			requireCorrectVerdict: true,
+		});
+	});
+
+	test("parses a boolean reviewGate as enable/disable shorthand", () => {
+		expect(parseAgentFields({ name: "quick_task", description: "desc", reviewGate: false })?.reviewGate).toEqual({
+			enabled: false,
+		});
+		expect(parseAgentFields({ name: "heavy_task", description: "desc", reviewGate: true })?.reviewGate).toEqual({
+			enabled: true,
+		});
+	});
 });

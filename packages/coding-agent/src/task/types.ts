@@ -162,6 +162,70 @@ export interface ReviewData {
 	summary?: ReviewSummary;
 }
 
+/**
+ * Outcome of the review gate that wraps an isolated subagent.
+ *
+ * - `passed`: reviewer approved; isolated changes were merged into the parent.
+ * - `blocked`: reviewer reported blocking findings the gate refused to merge.
+ * - `failed`: reviewer/fixer infrastructure errored (non-zero exit, missing diff, etc.).
+ * - `skipped`: gate was disabled, or the original task produced no diff to review.
+ */
+export type ReviewGateOutcome = "passed" | "blocked" | "failed" | "skipped";
+
+/**
+ * One review-then-fix cycle inside the review gate. Each iteration records the
+ * reviewer verdict and findings, and (when a fixer ran) the fixer's exit state.
+ * The final iteration's `fixer*` fields stay undefined when the gate did not
+ * dispatch a fixer (either passed on this iteration, or hit `maxFixIterations`).
+ */
+export interface ReviewGateIteration {
+	iteration: number;
+	reviewerExitCode: number;
+	reviewerAborted: boolean;
+	reviewerError?: string;
+	summary?: ReviewSummary;
+	findings: ReviewFinding[];
+	blockingFindings: ReviewFinding[];
+	fixerExitCode?: number;
+	fixerAborted?: boolean;
+	fixerError?: string;
+}
+
+/**
+ * Aggregated review-gate result attached to a `SingleResult`. Present only when
+ * the gate was enabled for the isolated task. The `iterations` array preserves
+ * the full review-fix history; `finalReview` mirrors the last iteration's
+ * structured review for quick UI consumption.
+ */
+/**
+ * Agent-local review-gate policy declared in agent frontmatter.
+ *
+ * When present on the selected agent, it overrides the global `task.reviewGate.*`
+ * defaults for that agent invocation. This lets bundled/native agents opt into
+ * strict, light, or disabled review behavior without requiring user config.
+ */
+export interface AgentReviewGatePolicy {
+	enabled: boolean;
+	reviewerAgent?: string;
+	reviewerModel?: string[];
+	fixerAgent?: string;
+	maxFixIterations?: number;
+	failOnPriorities?: number[];
+	requireCorrectVerdict?: boolean;
+}
+
+export interface ReviewGateResult {
+	enabled: boolean;
+	outcome: ReviewGateOutcome;
+	reviewerAgent: string;
+	fixerAgent: string;
+	failOnPriorities: number[];
+	maxFixIterations: number;
+	iterations: ReviewGateIteration[];
+	finalReview?: ReviewData;
+	failureReason?: string;
+}
+
 /** Agent definition (bundled or discovered) */
 export interface AgentDefinition {
 	name: string;
@@ -174,6 +238,7 @@ export interface AgentDefinition {
 	output?: unknown;
 	blocking?: boolean;
 	autoloadSkills?: string[];
+	reviewGate?: AgentReviewGatePolicy;
 	source: AgentSource;
 	filePath?: string;
 }
@@ -299,6 +364,11 @@ export interface SingleResult {
 	};
 	/** Output metadata for agent:// URL integration */
 	outputMeta?: { lineCount: number; charCount: number };
+	/**
+	 * Outcome of the isolated review gate when enabled via `task.reviewGate.*`.
+	 * Absent when the gate was disabled or did not run (e.g. non-isolated tasks).
+	 */
+	reviewGate?: ReviewGateResult;
 }
 
 /** Tool details for TUI rendering */

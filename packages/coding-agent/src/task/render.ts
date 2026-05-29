@@ -30,7 +30,7 @@ import {
 } from "../tools/review";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine } from "../tui";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
-import type { AgentProgress, SingleResult, TaskItem, TaskParams, TaskToolDetails } from "./types";
+import type { AgentProgress, ReviewGateResult, SingleResult, TaskItem, TaskParams, TaskToolDetails } from "./types";
 
 /**
  * Get status icon for agent state.
@@ -843,6 +843,48 @@ function renderFindings(
 	return lines;
 }
 
+function reviewGateOutcomeStyle(
+	outcome: ReviewGateResult["outcome"],
+	theme: Theme,
+): { color: "success" | "warning" | "error" | "dim"; icon: string } {
+	switch (outcome) {
+		case "passed":
+			return { color: "success", icon: theme.status.success };
+		case "blocked":
+			return { color: "warning", icon: theme.status.warning };
+		case "failed":
+			return { color: "error", icon: theme.status.error };
+		case "skipped":
+			return { color: "dim", icon: theme.status.pending };
+	}
+}
+
+function formatReviewGateLine(reviewGate: ReviewGateResult, theme: Theme): string {
+	const { color } = reviewGateOutcomeStyle(reviewGate.outcome, theme);
+	const reviewCount = reviewGate.iterations.length;
+	const parts: string[] = [`${theme.fg("dim", "Review gate:")} ${theme.fg(color, reviewGate.outcome)}`];
+
+	if (reviewCount > 0) {
+		const reviewLabel = reviewCount === 1 ? "review" : "reviews";
+		parts.push(theme.fg("dim", `${reviewCount} ${reviewLabel}`));
+	}
+
+	if (reviewGate.outcome === "blocked") {
+		const lastIteration = reviewGate.iterations[reviewGate.iterations.length - 1];
+		const blockingCount = lastIteration?.blockingFindings.length ?? 0;
+		if (blockingCount > 0) {
+			const findingLabel = blockingCount === 1 ? "blocking finding" : "blocking findings";
+			parts.push(theme.fg("dim", `${blockingCount} ${findingLabel}`));
+		}
+	}
+
+	if (reviewGate.outcome === "failed" && reviewGate.failureReason) {
+		parts.push(theme.fg("dim", truncateToWidth(replaceTabs(reviewGate.failureReason), 80)));
+	}
+
+	return parts.join(theme.sep.dot);
+}
+
 /**
  * Render final result for a single agent.
  */
@@ -911,6 +953,12 @@ function renderAgentResult(result: SingleResult, isLast: boolean, expanded: bool
 			`${continuePrefix}${theme.fg("error", theme.status.aborted)} ${theme.fg("dim", truncateToWidth(replaceTabs(result.abortReason), 80))}`,
 		);
 	}
+
+	if (result.reviewGate) {
+		const { color, icon } = reviewGateOutcomeStyle(result.reviewGate.outcome, theme);
+		lines.push(`${continuePrefix}${theme.fg(color, icon)} ${formatReviewGateLine(result.reviewGate, theme)}`);
+	}
+
 	// Check for review result (yield with review schema + report_finding)
 	const completeData = result.extractedToolData?.yield as Array<{ data: unknown }> | undefined;
 	const reportFindingData = normalizeReportFindings(result.extractedToolData?.report_finding);
