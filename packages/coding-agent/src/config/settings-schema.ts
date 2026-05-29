@@ -1359,6 +1359,28 @@ export const SETTINGS_SCHEMA = {
 
 	"branchSummary.reserveTokens": { type: "number", default: 16384 },
 
+	// Live learning (separate from memory backends): learns only from explicit
+	// user complain/reminder/guideline messages after each completed turn.
+	"learning.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			label: "Live Learning",
+			description: "Learn durable user guidelines from complain/reminder messages after each turn",
+		},
+	},
+
+	"learning.minConfidence": { type: "number", default: 0.7 },
+
+	"learning.classifierTimeoutMs": { type: "number", default: 8000 },
+
+	"learning.writerTimeoutMs": { type: "number", default: 15000 },
+
+	"learning.maxUserMessageChars": { type: "number", default: 4000 },
+
+	"learning.maxEntriesPerScope": { type: "number", default: 40 },
+
 	// Memories
 	// Legacy local-memory enable flag kept only for back-compat migration.
 	// Hidden from UI — users should use `memory.backend` instead.
@@ -3453,6 +3475,15 @@ export interface RetrySettings {
 	maxDelayMs: number;
 }
 
+export interface LearningSettings {
+	enabled: boolean;
+	minConfidence: number;
+	classifierTimeoutMs: number;
+	writerTimeoutMs: number;
+	maxUserMessageChars: number;
+	maxEntriesPerScope: number;
+}
+
 export interface MemoriesSettings {
 	enabled: boolean;
 	maxRolloutsPerStartup: number;
@@ -3569,6 +3600,7 @@ export interface GroupTypeMap {
 	compaction: CompactionSettings;
 	contextPromotion: ContextPromotionSettings;
 	retry: RetrySettings;
+	learning: LearningSettings;
 	memories: MemoriesSettings;
 	branchSummary: BranchSummarySettings;
 	skills: SkillsSettings;

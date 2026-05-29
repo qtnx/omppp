@@ -7,9 +7,19 @@
 import * as os from "node:os";
 import type { ExecutorOptions } from "../task/executor";
 import { Semaphore } from "../task/parallel";
-import type { AgentDefinition, SingleResult } from "../task/types";
+import type { AgentDefinition, AgentProgress, SingleResult } from "../task/types";
 import { computeCacheKey, type WorkflowJournal } from "./journal";
-import { MAX_WORKFLOW_AGENTS, type WorkflowAgentOpts, type WorkflowProgressFrame } from "./types";
+import {
+	MAX_WORKFLOW_AGENTS,
+	type WorkflowAgentOpts,
+	type WorkflowAgentState,
+	type WorkflowProgressFrame,
+} from "./types";
+
+type AgentFrameUpdate = Omit<
+	Extract<WorkflowProgressFrame, { kind: "agent" }>,
+	"kind" | "runId" | "index" | "label" | "phaseTitle" | "agentId"
+>;
 
 /** Concurrent agent() cap per workflow: min(16, cores-2), floored at 2. */
 export function workflowConcurrency(): number {
@@ -50,6 +60,27 @@ export class WorkflowBudgetError extends Error {
 		super(`Workflow token budget exhausted: spent ${spent} >= budget ${total}. Further agent() calls are blocked.`);
 		this.name = "WorkflowBudgetError";
 	}
+}
+
+function workflowStateForProgress(status: AgentProgress["status"]): WorkflowAgentState {
+	switch (status) {
+		case "completed":
+			return "done";
+		case "failed":
+		case "aborted":
+			return "error";
+		default:
+			return "start";
+	}
+}
+
+function withTerminalProgressStatus(
+	progress: AgentProgress | undefined,
+	status: AgentProgress["status"],
+): AgentProgress | undefined {
+	if (!progress) return undefined;
+	if (progress.status === status) return progress;
+	return { ...progress, status };
 }
 
 export class WorkflowRun {
@@ -149,14 +180,20 @@ export class WorkflowRun {
 		const agentId = await this.#opts.allocateId(label);
 		const startedAt = Date.now();
 		const agent = this.#opts.resolveAgent(opts.agentType);
-		this.#opts.emit({
-			kind: "agent",
-			runId: this.runId,
-			index,
-			label,
-			phaseTitle,
+		let latestProgress: AgentProgress | undefined;
+		const emitAgent = (frame: AgentFrameUpdate): void => {
+			this.#opts.emit({
+				kind: "agent",
+				runId: this.runId,
+				index,
+				label,
+				phaseTitle,
+				agentId,
+				...frame,
+			});
+		};
+		emitAgent({
 			state: "start",
-			agentId,
 			model: opts.model,
 		});
 
@@ -165,55 +202,57 @@ export class WorkflowRun {
 				cwd: this.cwd,
 				agent,
 				task: prompt,
+				assignment: prompt,
+				description: label,
 				index,
 				id: agentId,
 				modelOverride: opts.model,
 				outputSchema: opts.schema,
 				signal: this.signal,
+				onProgress: progress => {
+					const cloned = structuredClone(progress);
+					latestProgress = cloned;
+					emitAgent({
+						state: workflowStateForProgress(cloned.status),
+						model: cloned.resolvedModel ?? opts.model,
+						progress: cloned,
+					});
+				},
 			});
 
 			const tokens = result.usage?.output ?? 0;
 			this.#tokensSpent += tokens;
 			if (result.aborted) {
-				this.#opts.emit({
-					kind: "agent",
-					runId: this.runId,
-					index,
-					label,
-					phaseTitle,
+				const progress = withTerminalProgressStatus(latestProgress, "aborted");
+				emitAgent({
 					state: "error",
-					agentId,
+					model: result.resolvedModel ?? progress?.resolvedModel ?? opts.model,
 					error: "aborted",
 					durationMs: Date.now() - startedAt,
+					progress,
 				});
 				return null;
 			}
 			if (this.#opts.journal && typeof result.output === "string") {
 				await this.#opts.journal.recordResult(cacheKey, agentId, result.output);
 			}
-			this.#opts.emit({
-				kind: "agent",
-				runId: this.runId,
-				index,
-				label,
-				phaseTitle,
+			const progress = withTerminalProgressStatus(latestProgress, "completed");
+			emitAgent({
 				state: "done",
-				agentId,
+				model: result.resolvedModel ?? progress?.resolvedModel ?? opts.model,
 				tokens,
 				durationMs: Date.now() - startedAt,
+				progress,
 			});
 			return result.output;
 		} catch (error) {
-			this.#opts.emit({
-				kind: "agent",
-				runId: this.runId,
-				index,
-				label,
-				phaseTitle,
+			const progress = withTerminalProgressStatus(latestProgress, "failed");
+			emitAgent({
 				state: "error",
-				agentId,
+				model: progress?.resolvedModel ?? opts.model,
 				error: error instanceof Error ? error.message : String(error),
 				durationMs: Date.now() - startedAt,
+				progress,
 			});
 			throw error;
 		} finally {

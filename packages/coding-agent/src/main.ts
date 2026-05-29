@@ -108,8 +108,9 @@ const HOST_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"task.maxRecursionDepth",
 	"task.disabledAgents",
 	"task.agentModelOverrides",
-	// Memory subsystems are off-by-default for RPC/ACP hosts; embedders that want
-	// memory should opt in explicitly through their own settings layer.
+	// Local context-retention subsystems are off-by-default for RPC/ACP hosts;
+	// embedders that want them should opt in explicitly through their own settings layer.
+	"learning.enabled",
 	"memory.backend",
 	"memories.enabled",
 ];

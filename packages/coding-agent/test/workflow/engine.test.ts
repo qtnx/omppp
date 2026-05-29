@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import type { AgentDefinition, SingleResult } from "../../src/task/types";
+import type { AgentDefinition, AgentProgress, SingleResult } from "../../src/task/types";
 import { WorkflowRun, workflowConcurrency } from "../../src/workflow/engine";
-import { MAX_WORKFLOW_AGENTS } from "../../src/workflow/types";
+import { MAX_WORKFLOW_AGENTS, type WorkflowProgressFrame } from "../../src/workflow/types";
 
 function makeRun(opts: {
 	concurrency?: number;
@@ -67,5 +67,75 @@ describe("WorkflowRun.spawn", () => {
 		const run = makeRun({ runSubprocess: async () => ({ output: "ok" }) });
 		await expect(run.spawn("x", { isolation: "worktree" })).rejects.toThrow(/not yet supported/);
 		await expect(run.spawn("y", { isolation: "remote" as never })).rejects.toThrow(/not yet supported/);
+	});
+
+	it("emits task-style progress frames from subagent progress callbacks", async () => {
+		const frames: WorkflowProgressFrame[] = [];
+		const progress: AgentProgress = {
+			index: 1,
+			id: "0-Discovery",
+			agent: "workflow-subagent",
+			agentSource: "bundled",
+			status: "running",
+			task: "inspect workflow ui",
+			assignment: "inspect workflow ui",
+			description: "Discovery agent",
+			currentTool: "read",
+			currentToolArgs: "packages/coding-agent/src/workflow/render.ts",
+			lastIntent: "Inspect workflow renderer",
+			recentTools: [],
+			recentOutput: [],
+			toolCount: 1,
+			tokens: 17,
+			cost: 0,
+			durationMs: 5,
+			resolvedModel: "anthropic/claude-sonnet-4",
+		};
+		const run = new WorkflowRun({
+			runId: "t1",
+			cwd: process.cwd(),
+			concurrency: 1,
+			budgetTotal: null,
+			signal: new AbortController().signal,
+			allocateId: async label => `0-${label}`,
+			emit: frame => frames.push(frame),
+			resolveAgent: () => ({ name: "workflow-subagent" }) as AgentDefinition,
+			runSubprocess: async options => {
+				options.onProgress?.(progress);
+				return {
+					index: options.index,
+					id: options.id,
+					agent: "workflow-subagent",
+					agentSource: "bundled",
+					task: options.task,
+					assignment: options.assignment,
+					description: options.description,
+					exitCode: 0,
+					output: "ok",
+					stderr: "",
+					truncated: false,
+					durationMs: 10,
+					tokens: 17,
+					resolvedModel: "anthropic/claude-sonnet-4",
+					usage: { output: 17 } as never,
+				} satisfies SingleResult;
+			},
+		});
+
+		await run.spawn("inspect workflow ui", { label: "Discovery agent" });
+
+		const liveFrame = frames.find(
+			(frame): frame is Extract<WorkflowProgressFrame, { kind: "agent" }> =>
+				frame.kind === "agent" && frame.progress?.currentTool === "read",
+		);
+		expect(liveFrame?.progress?.resolvedModel).toBe("anthropic/claude-sonnet-4");
+		expect(liveFrame?.progress?.lastIntent).toBe("Inspect workflow renderer");
+
+		const doneFrame = frames.find(
+			(frame): frame is Extract<WorkflowProgressFrame, { kind: "agent" }> =>
+				frame.kind === "agent" && frame.state === "done",
+		);
+		expect(doneFrame?.model).toBe("anthropic/claude-sonnet-4");
+		expect(doneFrame?.progress?.status).toBe("completed");
 	});
 });

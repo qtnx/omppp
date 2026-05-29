@@ -373,6 +373,14 @@
 			"types": "./src/mcp/transports/*.ts",
 			"import": "./src/mcp/transports/*.ts"
 		},
+		"./learnings": {
+			"types": "./src/learnings/index.ts",
+			"import": "./src/learnings/index.ts"
+		},
+		"./learnings/*": {
+			"types": "./src/learnings/*.ts",
+			"import": "./src/learnings/*.ts"
+		},
 		"./memories": {
 			"types": "./src/memories/index.ts",
 			"import": "./src/memories/index.ts"

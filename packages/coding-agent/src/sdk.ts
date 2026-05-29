@@ -85,6 +85,7 @@ import {
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
+import { buildLearningDeveloperInstructions, startLearningStartupTask } from "./learnings";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
 import { discoverAndLoadMCPTools, MCPManager, type MCPToolsLoadResult } from "./mcp";
 import { resolveMemoryBackend } from "./memory-backend";
@@ -1701,12 +1702,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const promptTools = buildSystemPromptToolMetadata(tools, {
 				search_tool_bm25: { description: renderSearchToolBm25Description(discoverableToolsForDesc) },
 			});
+			const learningInstructions = await buildLearningDeveloperInstructions(agentDir, settings);
 			const memoryBackend = resolveMemoryBackend(settings);
 			const memoryInstructions = await memoryBackend.buildDeveloperInstructions(agentDir, settings, session);
 
-			// Build combined append prompt: memory instructions + MCP server instructions
+			// Build combined append prompt: live learning + memory instructions + MCP server instructions
+			const appendParts = [learningInstructions, memoryInstructions].filter((part): part is string => !!part);
+
 			const serverInstructions = mcpManager?.getServerInstructions();
-			let appendPrompt: string | undefined = memoryInstructions ?? undefined;
+			let appendPrompt: string | undefined = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 			if (serverInstructions && serverInstructions.size > 0) {
 				const parts: string[] = [];
 				if (appendPrompt) parts.push(appendPrompt);
@@ -2226,6 +2230,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 		}
 
+		logger.time("startLearningStartupTask", () =>
+			Promise.resolve(
+				startLearningStartupTask({
+					session,
+					settings,
+					modelRegistry,
+					agentDir,
+					taskDepth,
+				}),
+			),
+		);
 		logger.time("startMemoryStartupTask", () =>
 			Promise.resolve(
 				resolveMemoryBackend(settings).start({

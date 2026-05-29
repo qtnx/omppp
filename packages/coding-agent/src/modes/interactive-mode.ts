@@ -1666,9 +1666,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		panel.addChild(new DynamicBorder());
 		panel.addChild(new Text(theme.bold(theme.fg("accent", "Workflows")), 1, 1));
 		panel.addChild(new Spacer(1));
-		panel.addChild(
-			new Markdown(`\`\`\`\n${renderWorkflowTree(this.#workflowFrames)}\n\`\`\``, 1, 1, getMarkdownTheme()),
-		);
+		panel.addChild(new Text(renderWorkflowTree(this.#workflowFrames, { theme, expanded: false }), 1, 1));
 		panel.addChild(new DynamicBorder());
 		if (!existing) this.chatContainer.addChild(panel);
 		this.#workflowPanel = panel;

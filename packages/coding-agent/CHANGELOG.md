@@ -374,7 +374,13 @@
 
 ### Added
 
+- Added live learning for user-authored complain/reminder/guideline messages. When `learning.enabled` is on, the fast `smol` role classifies the latest user message after each completed turn, the `plan` role rewrites durable repo/global guidelines, and the next turn receives the stored guidance without depending on the memory backend.
+
 - Added multi-root workspace flags. `--be <repo>` / `--fe <repo>` resolve a git repository and create an isolated worktree on a fresh `omp/<name>` branch checked out from the repo's origin default branch (best-effort `git fetch`), tagging each root as `be`/`fe`. `--worktree <name>` names the worktree (auto-generated via the two-word task-name generator when omitted); `--no-worktree` instead tags the repos in place on their current branch. `--add-dir <path>` (repeatable) tags an additional existing directory by its basename. The first repo (`--be` before `--fe`, else the first `--add-dir`) becomes the session's primary cwd; every root is surfaced to the model in a new `<workspace-roots>` system-prompt block (tag, absolute path, branch, and a bounded directory tree for non-primary roots), forwarded to subagents, available to `@` file mentions/autocomplete through tagged aliases such as `@be/src/api.ts`, usable as `bash.cwd` tags such as `cwd: "fe"`, and accepted by `/move <tag>` for persistent cwd switches. Worktrees live under `~/.omp/wt/` and are cleanable via `omp worktree clear`; reusing the same `--worktree` name is idempotent and never touches the user's main checkout, so a dirty tree is safe.
+
+### Changed
+
+- Updated the workflow progress panel to render workflow agents with the task subagent UI, including agent name, resolved model, task-style status, and latest tool activity.
 
 ### Fixed
 

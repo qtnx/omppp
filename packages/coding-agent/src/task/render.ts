@@ -65,6 +65,8 @@ function appendAgentStats(
 		cost: number;
 		resolvedModel?: string;
 		showResolvedModelBadge?: boolean;
+		agent?: string;
+		showAgentName?: boolean;
 	},
 	theme: Theme,
 ): string {
@@ -84,6 +86,9 @@ function appendAgentStats(
 	}
 	if (opts.resolvedModel && opts.showResolvedModelBadge) {
 		line += `${theme.sep.dot}${theme.fg("dim", truncateToWidth(replaceTabs(opts.resolvedModel), 30))}`;
+	}
+	if (opts.agent && opts.showAgentName) {
+		line += `${theme.sep.dot}${theme.fg("dim", truncateToWidth(replaceTabs(opts.agent), 30))}`;
 	}
 	return line;
 }
@@ -568,26 +573,37 @@ export function renderCall(
 }
 
 /**
+ * Options for rendering streaming progress for a single agent.
+ */
+export interface RenderAgentProgressOptions {
+	showResolvedModelBadge?: boolean;
+	showAgentName?: boolean;
+}
+
+/**
  * Render streaming progress for a single agent.
  */
-function renderAgentProgress(
+export function renderAgentProgress(
 	progress: AgentProgress,
 	isLast: boolean,
 	expanded: boolean,
 	theme: Theme,
 	spinnerFrame?: number,
+	options?: RenderAgentProgressOptions,
 ): string[] {
 	const lines: string[] = [];
 	const prefix = isLast ? theme.fg("dim", theme.tree.last) : theme.fg("dim", theme.tree.branch);
 	const continuePrefix = isLast ? "   " : `${theme.fg("dim", theme.tree.vertical)}  `;
 
 	const icon = getStatusIcon(progress.status, theme, spinnerFrame);
-	const iconColor =
-		progress.status === "completed"
-			? "success"
-			: progress.status === "failed" || progress.status === "aborted"
-				? "error"
-				: "accent";
+	let iconColor: "success" | "error" | "accent";
+	if (progress.status === "completed") {
+		iconColor = "success";
+	} else if (progress.status === "failed" || progress.status === "aborted") {
+		iconColor = "error";
+	} else {
+		iconColor = "accent";
+	}
 
 	// Main status line: id: description [status] · stats · ⟨agent⟩
 	const description = progress.description?.trim();
@@ -608,15 +624,18 @@ function renderAgentProgress(
 		statusLine += ` ${formatBadge(statusLabel, iconColor, theme)}`;
 	}
 
-	const showBadge = settings.get("task.showResolvedModelBadge");
+	const renderOptions = {
+		showResolvedModelBadge: options?.showResolvedModelBadge ?? settings.get("task.showResolvedModelBadge"),
+		showAgentName: options?.showAgentName ?? false,
+	};
 	if (progress.status === "running") {
 		if (!description) {
 			const taskPreview = truncateToWidth(progress.assignment ?? progress.task, 40);
 			statusLine += ` ${theme.fg("muted", taskPreview)}`;
 		}
-		statusLine = appendAgentStats(statusLine, { ...progress, showResolvedModelBadge: showBadge }, theme);
+		statusLine = appendAgentStats(statusLine, { ...progress, ...renderOptions }, theme);
 	} else if (progress.status === "completed") {
-		statusLine = appendAgentStats(statusLine, { ...progress, showResolvedModelBadge: showBadge }, theme);
+		statusLine = appendAgentStats(statusLine, { ...progress, ...renderOptions }, theme);
 	}
 
 	lines.push(statusLine);
@@ -668,8 +687,14 @@ function renderAgentProgress(
 	}
 	if (progress.reviewGate) {
 		const gate = progress.reviewGate;
-		const stageLabel =
-			gate.stage === "capturing-diff" ? "capturing diff" : gate.stage === "reviewing" ? "reviewing" : "fixing";
+		let stageLabel: string;
+		if (gate.stage === "capturing-diff") {
+			stageLabel = "capturing diff";
+		} else if (gate.stage === "reviewing") {
+			stageLabel = "reviewing";
+		} else {
+			stageLabel = "fixing";
+		}
 		const actor = gate.stage === "fixing" ? gate.fixerAgent : gate.reviewerAgent;
 		let gateLine = `${continuePrefix}${theme.tree.hook} ${theme.fg(
 			"dim",
@@ -680,7 +705,7 @@ function renderAgentProgress(
 		}
 		lines.push(gateLine);
 		if (gate.current) {
-			for (const line of renderAgentProgress(gate.current, true, expanded, theme, spinnerFrame)) {
+			for (const line of renderAgentProgress(gate.current, true, expanded, theme, spinnerFrame, options)) {
 				lines.push(`${continuePrefix}${line}`);
 			}
 		}
