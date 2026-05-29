@@ -72,6 +72,12 @@ Parallel when tasks touch disjoint files or are independent refactors/tests.
 {{#if spawningDisabled}}
 Agent spawning is disabled for this context.
 {{else}}
+Prefer delegating implementation here. Decompose the work into the smallest independent units, dispatch each to the most fitting agent, and run disjoint units in parallel. Pick the implementer tier per unit:
+- `heavy_task` — load-bearing or high-accuracy work: a full feature, a cross-module change, tricky logic, anything where a bug is expensive. Strict built-in review gate.
+- `task` — routine medium-complexity work: a contained feature slice or a well-scoped change across a few files. Lighter built-in review gate.
+- `quick_task` — light mechanical work: rename, move, boilerplate, localized edits, or data collection with an obvious shape. No review gate; fastest, and safe to fan out widely.
+Mix tiers in one batch; only escalate a unit's tier when its blast radius or required accuracy demands it.
+
 {{#list agents join="\n"}}
 # {{name}}{{#if readOnly}} — READ-ONLY (no edit/write/exec tools){{/if}}
 {{description}}
