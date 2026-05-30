@@ -24,6 +24,7 @@ import {
 	resolveSeedsForScope,
 	summarizeMentalModel,
 } from "../../hindsight";
+import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../../learnings";
 import { resolveMemoryBackend } from "../../memory-backend";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
@@ -46,6 +47,12 @@ import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 import { resolveWorkspaceRootReference } from "../../workspace-roots";
+
+const LEARNING_CLEAR_SCOPE_LABELS = {
+	all: "All",
+	global: "Global",
+	repo: "Repo",
+} as const;
 
 function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown: string): void {
 	ctx.chatContainer.addChild(new Spacer(1));
@@ -641,6 +648,60 @@ export class CommandController {
 		}
 
 		this.ctx.showError("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|mm ...>");
+	}
+
+	async handleLearningCommand(text: string): Promise<void> {
+		const argumentText = text.slice(9).trim();
+		const parts = argumentText.split(/\s+/).filter(Boolean);
+		const action = parts[0]?.toLowerCase() || "view";
+		const agentDir = this.ctx.settings.getAgentDir();
+		const cwd = this.ctx.sessionManager.getCwd();
+
+		if (action === "view") {
+			const payload = await buildLearningDeveloperInstructions(agentDir, this.ctx.settings, cwd);
+			if (!payload) {
+				this.ctx.showWarning("Live learning payload is empty (learning disabled or no learning available).");
+				return;
+			}
+			showMarkdownPanel(this.ctx, "Live Learning Injection Payload", payload);
+			return;
+		}
+
+		if (action === "logs") {
+			const logText = replaceTabs(await getLearningLogText());
+			if (!logText) {
+				this.ctx.showWarning("No recent live-learning log entries found.");
+				return;
+			}
+			showMarkdownPanel(this.ctx, "Live Learning Logs", ["```", logText, "```"].join("\n"));
+			return;
+		}
+
+		if (action === "reset" || action === "clear") {
+			const scopeText = (parts[1] ?? "all").toLowerCase();
+			switch (scopeText) {
+				case "all":
+				case "global":
+				case "repo":
+					try {
+						await clearLearningData(agentDir, cwd, scopeText);
+						await this.ctx.session.refreshBaseSystemPrompt();
+						this.ctx.showStatus(
+							`${LEARNING_CLEAR_SCOPE_LABELS[scopeText]} live learning cleared and system prompt refreshed.`,
+						);
+					} catch (error) {
+						this.ctx.showError(
+							`Live learning clear failed: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+					return;
+				default:
+					this.ctx.showError("Usage: /learning clear [repo|global|all]");
+					return;
+			}
+		}
+
+		this.ctx.showError("Usage: /learning <view|logs|clear|reset> [repo|global|all]");
 	}
 
 	async #handleMentalModelsSubcommand(argumentText: string): Promise<void> {

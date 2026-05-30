@@ -7,7 +7,7 @@ import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { type SessionInitEntry, SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getSessionsDir, Snowflake } from "@oh-my-pi/pi-utils";
 
 function createTtsrRule(name: string): Rule {
@@ -90,6 +90,39 @@ describe("createAgentSession session storage isolation", () => {
 
 			expect(sessionFile.startsWith(path.join(agentDir, "sessions"))).toBe(true);
 			expect(sessionFile.startsWith(getSessionsDir())).toBe(false);
+		} finally {
+			await session.dispose();
+		}
+	});
+	it("persists root system prompt metadata for new root sessions", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-root-prompt-${Snowflake.next()}-`));
+		tempDirs.push(tempDir);
+		const cwd = path.join(tempDir, `project-${Snowflake.next()}`);
+		const agentDir = path.join(tempDir, "agent");
+		fs.mkdirSync(cwd, { recursive: true });
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settings: Settings.isolated(),
+			systemPrompt: ["# Root prompt\n\nUse Markdown."],
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		try {
+			const init = session.sessionManager
+				.getEntries()
+				.find((entry): entry is SessionInitEntry => entry.type === "session_init");
+			expect(init).toBeDefined();
+			expect(init?.task).toBe("Root interactive session");
+			expect(init?.systemPrompt).toBe("# Root prompt\n\nUse Markdown.");
+			expect(init?.tools).toContain("read");
 		} finally {
 			await session.dispose();
 		}

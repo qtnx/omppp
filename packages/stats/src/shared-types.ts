@@ -202,3 +202,70 @@ export interface BehaviorDashboardStats {
 	byModel: BehaviorModelStats[];
 	behaviorSeries: BehaviorTimeSeriesPoint[];
 }
+
+export interface SessionStatsAggregate {
+	sessionFile: string;
+	folder: string;
+	totalRequests: number;
+	failedRequests: number;
+	totalInputTokens: number;
+	totalOutputTokens: number;
+	totalCacheReadTokens: number;
+	totalCacheWriteTokens: number;
+	totalTokens: number;
+	totalCost: number;
+	totalPremiumRequests: number;
+	avgDuration: number | null;
+	avgTtft: number | null;
+	firstTimestamp: number;
+	lastTimestamp: number;
+	models: string[];
+}
+
+export interface SessionSummary {
+	id: string;
+	path: string;
+	title?: string;
+	cwd: string;
+	created: number;
+	modified: number;
+	size: number;
+	depth: number;
+	parentPath?: string;
+	parentTaskId?: string;
+	agentName?: string;
+	task?: string;
+	firstUserMessage?: string;
+	messageCount: number;
+	userMessageCount: number;
+	assistantMessageCount: number;
+	toolResultCount: number;
+	subagentCount: number;
+	stats?: SessionStatsAggregate;
+}
+
+export interface SessionListResponse {
+	sessions: SessionSummary[];
+	total: number;
+}
+
+export interface TraceNode {
+	id: string;
+	parentId: string | null;
+	type: string;
+	role?: string;
+	timestamp?: number;
+	title: string;
+	preview: string;
+	entry: unknown;
+	children: TraceNode[];
+	subtraces: SessionTrace[];
+}
+
+export interface SessionTrace {
+	summary: SessionSummary;
+	nodes: TraceNode[];
+	flatEntryCount: number;
+	orphanSubtraces: SessionTrace[];
+	truncatedSubtraces: boolean;
+}

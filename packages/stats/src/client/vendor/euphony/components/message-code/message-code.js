@@ -1,0 +1,10 @@
+import{b as e,v as t,i as s,n,a as r,x as a,w as i}from"../../chunks/third-party.js";import{p as c}from"../../chunks/prismjs.js";import{g as o,a as p}from"../../chunks/harmony-types.js";import{p as h}from"../../chunks/css-inline.js";import{c as g}from"../../chunks/css/message-code.js";function l(e){const t=e.replace(/\r\n/g,"\n").trim();return/^```[^\n]*\n([\s\S]*?)\n```$/.exec(t)?.[1]??e}function u(e){const t=l(e).replace(/\r\n/g,"\n"),s=t.split("\n"),n=s.findIndex(e=>"*** Begin Patch"===e||"@@"===e||e.startsWith("@@ "));return n>=0?s.slice(n).join("\n"):t}function d(e){const t=u(e).trim();return!(!t.startsWith("*** Begin Patch")||!t.includes("*** End Patch"))||t.startsWith("@@")}function m(e){return e.startsWith("+")&&!e.startsWith("+++")?"patch-line-add":e.startsWith("-")&&!e.startsWith("---")?"patch-line-delete":"patch-line"}function f(t){if(!d(t))return null;const s=u(t).replace(/\r\n/g,"\n").split("\n");return e`<pre class="message-pre patch-pre"><code>${s.map(t=>e`<div class=${m(t)}><span class="patch-text">${t}</span></div>`)}</code></pre>`}var $=Object.defineProperty,y=Object.getOwnPropertyDescriptor,j=(e,t,s,n)=>{for(var r,a=n>1?void 0:n?y(t,s):t,i=e.length-1;i>=0;i--)(r=e[i])&&(a=(n?r(t,s,a):r(a))||a);return n&&a&&$(t,s,a),a};let v=class extends r{constructor(){super(),this.message=null}firstUpdated(){}willUpdate(e){if(e.has("message")&&this.message){const e=o(this.message.content);if("code"!==e)throw new Error(`Invalid message type, expect code, but got: ${e}`)}}async initData(){}getHighlightedCode(t,s){if(!s)return e`${t}`;if(!(s in c.languages))return e`${t}`;const n=c.languages[s],r=c.highlight(t,n,s);return e`${a(r)}`}render(){if(!this.message)return e``;const t=p(this.message.content),s=f(t.text);return e`
+      <div class="message-content">
+        ${s??e`
+          <pre class="message-pre"><code>${this.getHighlightedCode(t.text,t.language)}</code></pre>
+        `}
+      </div>
+    `}};v.styles=[s`
+      ${t(g)}
+      ${t(h)}
+    `],j([n({attribute:!1})],v.prototype,"message",2),v=j([i("euphony-message-code")],v);export{v as EuphonyMessageCode};

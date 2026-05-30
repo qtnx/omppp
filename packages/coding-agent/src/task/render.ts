@@ -921,6 +921,9 @@ function formatReviewGateLine(reviewGate: ReviewGateResult, theme: Theme): strin
 			const findingLabel = blockingCount === 1 ? "blocking finding" : "blocking findings";
 			parts.push(theme.fg("dim", `${blockingCount} ${findingLabel}`));
 		}
+		if (reviewGate.failureReason) {
+			parts.push(theme.fg("dim", truncateToWidth(replaceTabs(reviewGate.failureReason), 80)));
+		}
 	}
 
 	if (reviewGate.outcome === "failed" && reviewGate.failureReason) {
@@ -940,26 +943,42 @@ function renderAgentResult(result: SingleResult, isLast: boolean, expanded: bool
 
 	const { warning: missingCompleteWarning, rest: outputWithoutWarning } = extractMissingYieldWarning(result.output);
 	const aborted = result.aborted ?? false;
-	const mergeFailed = !aborted && result.exitCode === 0 && !!result.error;
-	const success = !aborted && result.exitCode === 0 && !result.error;
+	const reviewBlocked = result.reviewGate?.outcome === "blocked";
+	const mergeFailed = !aborted && !reviewBlocked && result.exitCode === 0 && !!result.error;
+	const success = !aborted && !reviewBlocked && result.exitCode === 0 && !result.error;
 	const needsWarning = Boolean(missingCompleteWarning) && success;
-	const icon = aborted
-		? theme.status.aborted
-		: needsWarning
-			? theme.status.warning
-			: success
-				? theme.status.success
-				: theme.status.error;
-	const iconColor = needsWarning ? "warning" : success ? "success" : mergeFailed ? "warning" : "error";
-	const statusText = aborted
-		? "aborted"
-		: needsWarning
-			? "warning"
-			: success
-				? "done"
-				: mergeFailed
-					? "merge failed"
-					: "failed";
+	let icon = theme.status.error;
+	if (aborted) {
+		icon = theme.status.aborted;
+	} else if (reviewBlocked || needsWarning) {
+		icon = theme.status.warning;
+	} else if (success) {
+		icon = theme.status.success;
+	}
+
+	let iconColor: "success" | "warning" | "error";
+	if (reviewBlocked || needsWarning || mergeFailed) {
+		iconColor = "warning";
+	} else if (success) {
+		iconColor = "success";
+	} else {
+		iconColor = "error";
+	}
+
+	let statusText: string;
+	if (aborted) {
+		statusText = "aborted";
+	} else if (reviewBlocked) {
+		statusText = "review blocked";
+	} else if (needsWarning) {
+		statusText = "warning";
+	} else if (success) {
+		statusText = "done";
+	} else if (mergeFailed) {
+		statusText = "merge failed";
+	} else {
+		statusText = "failed";
+	}
 
 	// Main status line: id: description [status] · stats · ⟨agent⟩
 	const description = result.description?.trim();

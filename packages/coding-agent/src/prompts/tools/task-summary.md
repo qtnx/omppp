@@ -1,5 +1,5 @@
 <task-summary>
-<header>{{successCount}}/{{totalCount}} succeeded{{#if hasCancelledNote}} ({{cancelledCount}} cancelled){{/if}} [{{duration}}]</header>
+<header>{{successCount}}/{{totalCount}} succeeded{{statusNotes}} [{{duration}}]</header>
 
 {{#each summaries}}
 <agent id="{{id}}" agent="{{agent}}">

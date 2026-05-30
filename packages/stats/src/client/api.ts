@@ -6,6 +6,8 @@ import type {
 	ModelDashboardStats,
 	OverviewStats,
 	RequestDetails,
+	SessionListResponse,
+	SessionTrace,
 } from "./types";
 
 const API_BASE = "/api";
@@ -62,4 +64,19 @@ export async function getBehaviorDashboardStats(range = "24h"): Promise<Behavior
 	const res = await fetch(`${API_BASE}/stats/behavior?range=${encodeURIComponent(range)}`);
 	if (!res.ok) throw new Error("Failed to fetch behavior stats");
 	return res.json() as Promise<BehaviorDashboardStats>;
+}
+
+export async function getSessions(query = "", limit = 100): Promise<SessionListResponse> {
+	const params = new URLSearchParams({ limit: String(limit) });
+	if (query.trim()) params.set("query", query.trim());
+	const res = await fetch(`${API_BASE}/sessions?${params.toString()}`);
+	if (!res.ok) throw new Error("Failed to fetch sessions");
+	return res.json() as Promise<SessionListResponse>;
+}
+
+export async function getSessionTrace(path: string): Promise<SessionTrace> {
+	const params = new URLSearchParams({ path });
+	const res = await fetch(`${API_BASE}/sessions/trace?${params.toString()}`);
+	if (!res.ok) throw new Error("Failed to fetch session trace");
+	return res.json() as Promise<SessionTrace>;
 }

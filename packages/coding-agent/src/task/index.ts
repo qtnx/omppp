@@ -76,6 +76,38 @@ function renderSubagentUserPrompt(assignment: string, simpleMode: TaskSimpleMode
 		independentMode: simpleMode === "independent",
 	});
 }
+
+function isReviewGateBlockedResult(result: SingleResult): boolean {
+	return result.reviewGate?.outcome === "blocked";
+}
+
+function isTaskResultAccepted(result: SingleResult): boolean {
+	return result.exitCode === 0 && !result.error && !result.aborted && !isReviewGateBlockedResult(result);
+}
+
+function formatSummaryStatus(result: SingleResult): string {
+	if (result.aborted) {
+		return "cancelled";
+	}
+	if (isReviewGateBlockedResult(result)) {
+		return "review blocked";
+	}
+	if (result.exitCode === 0 && result.error) {
+		return "merge failed";
+	}
+	if (result.exitCode === 0) {
+		return "completed";
+	}
+	return `failed (exit ${result.exitCode})`;
+}
+
+function formatReviewBlockedPreview(result: SingleResult): string {
+	const base = result.output.trim() || result.stderr.trim();
+	const reason = result.reviewGate?.failureReason?.trim();
+	const feedback = reason ? `Review gate blocked: ${reason}` : "Review gate blocked.";
+	return base ? `${base}\n\n${feedback}` : feedback;
+}
+
 function createUsageTotals(): Usage {
 	return {
 		input: 0,
@@ -1160,7 +1192,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				});
 
 				if (!gateOutcome.passed) {
-					const failureReason = gateOutcome.result.failureReason ?? "Review gate blocked the task.";
+					if (gateOutcome.result.outcome === "blocked" && isTaskResultAccepted(result)) {
+						return {
+							result: {
+								...result,
+								reviewGate: gateOutcome.result,
+							},
+						};
+					}
+
+					const failureReason = gateOutcome.result.failureReason ?? "Review gate failed the task.";
 					const combinedStderr = result.stderr ? `${result.stderr}\n${failureReason}` : failureReason;
 					return {
 						result: {
@@ -1338,7 +1379,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					);
 					result = gated.result;
 					const cachedDelta = gated.acceptedDelta;
-					if (mergeMode === "branch" && result.exitCode === 0) {
+					const reviewBlocked = isReviewGateBlockedResult(result);
+					if (mergeMode === "branch" && result.exitCode === 0 && !reviewBlocked) {
 						try {
 							if (reviewGateConfig && !cachedDelta) {
 								const reason = "Review gate passed without an accepted delta.";
@@ -1381,7 +1423,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							return { ...result, error: `Merge failed: ${msg}` };
 						}
 					}
-					if (result.exitCode === 0) {
+					if (result.exitCode === 0 && !reviewBlocked) {
 						try {
 							const delta = cachedDelta ?? (await captureDeltaPatch(isolationDir, taskBaseline));
 							const patchPath = path.join(effectiveArtifactsDir, `${task.id}.patch`);
@@ -1491,7 +1533,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					if (mergeMode === "branch") {
 						// Branch mode: merge task branches sequentially
 						const branchEntries = results
-							.filter(r => r.branchName && r.exitCode === 0 && !r.aborted)
+							.filter(r => r.branchName && isTaskResultAccepted(r))
 							.map(r => ({ branchName: r.branchName!, taskId: r.id, description: r.description }));
 
 						if (branchEntries.length === 0) {
@@ -1524,8 +1566,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						}
 					} else {
 						// Patch mode: combine and apply patches
-						const patchesInOrder = results.map(result => result.patchPath).filter(Boolean) as string[];
-						const missingPatch = results.some(result => !result.patchPath);
+						const applicableResults = results.filter(result => !isReviewGateBlockedResult(result));
+						const patchesInOrder = applicableResults.map(result => result.patchPath).filter(Boolean) as string[];
+						const missingPatch = applicableResults.some(result => !result.patchPath);
 						if (missingPatch) {
 							changesApplied = false;
 							hadAnyChanges = false;
@@ -1589,7 +1632,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			if (isIsolated && repoRoot && (mergeMode === "branch" || changesApplied !== false)) {
 				const allNestedPatches = results
 					.filter(r => {
-						if (!r.nestedPatches || r.nestedPatches.length === 0 || r.exitCode !== 0 || r.aborted) {
+						if (!r.nestedPatches || r.nestedPatches.length === 0 || !isTaskResultAccepted(r)) {
 							return false;
 						}
 						if (mergeMode !== "branch") {
@@ -1625,19 +1668,31 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 			// Build final output - match plugin format
 			const cancelledCount = results.filter(r => r.aborted).length;
-			const successCount = results.filter(r => r.exitCode === 0 && !r.error && !r.aborted).length;
+			const reviewBlockedCount = results.filter(isReviewGateBlockedResult).length;
+			const successCount = results.filter(isTaskResultAccepted).length;
 			const totalDuration = Date.now() - startTime;
+			const statusNotes = [
+				reviewBlockedCount > 0 ? `${reviewBlockedCount} review-blocked` : "",
+				aborted && cancelledCount > 0 ? `${cancelledCount} cancelled` : "",
+			]
+				.filter(Boolean)
+				.join(", ");
+
+			if (reviewBlockedCount > 0) {
+				const blockedLabel = reviewBlockedCount === 1 ? "task was" : "tasks were";
+				const locationNote = isIsolated
+					? "Their patches were not applied."
+					: "Their changes remain in the working tree for follow-up fixes.";
+				mergeSummary += `\n\n<system-notification>${reviewBlockedCount} review-blocked ${blockedLabel} withheld by the review gate. ${locationNote}</system-notification>`;
+			}
 
 			const summaries = results.map(r => {
-				const status = r.aborted
-					? "cancelled"
-					: r.exitCode === 0 && r.error
-						? "merge failed"
-						: r.exitCode === 0
-							? "completed"
-							: `failed (exit ${r.exitCode})`;
-				const output = r.output.trim() || r.stderr.trim() || "(no output)";
-				const outputCharCount = r.outputMeta?.charCount ?? output.length;
+				const reviewBlocked = isReviewGateBlockedResult(r);
+				const status = formatSummaryStatus(r);
+				const output = reviewBlocked
+					? formatReviewBlockedPreview(r)
+					: r.output.trim() || r.stderr.trim() || "(no output)";
+				const outputCharCount = reviewBlocked ? output.length : (r.outputMeta?.charCount ?? output.length);
 				const fullOutputThreshold = 5000;
 				let preview = output;
 				let truncated = false;
@@ -1653,12 +1708,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					id: r.id,
 					preview,
 					truncated,
-					meta: r.outputMeta
-						? {
-								lineCount: r.outputMeta.lineCount,
-								charSize: formatBytes(r.outputMeta.charCount),
-							}
-						: undefined,
+					meta:
+						!reviewBlocked && r.outputMeta
+							? {
+									lineCount: r.outputMeta.lineCount,
+									charSize: formatBytes(r.outputMeta.charCount),
+								}
+							: undefined,
 				};
 			});
 
@@ -1666,8 +1722,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const summary = prompt.render(taskSummaryTemplate, {
 				successCount,
 				totalCount: results.length,
-				cancelledCount,
-				hasCancelledNote: aborted && cancelledCount > 0,
+				statusNotes: statusNotes ? ` (${statusNotes})` : "",
 				duration: formatDuration(totalDuration),
 				summaries,
 				outputIds,

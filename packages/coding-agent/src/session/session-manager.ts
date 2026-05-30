@@ -27,6 +27,12 @@ import {
 	Snowflake,
 	toError,
 } from "@oh-my-pi/pi-utils";
+import {
+	normalizePersistedWorkspaceRoots,
+	type PersistedWorkspaceRoot,
+	serializeWorkspaceRoots,
+	type WorkspaceRoot,
+} from "../workspace-roots";
 import { ArtifactManager } from "./artifacts";
 import {
 	type BlobPutResult,
@@ -66,6 +72,8 @@ export interface SessionHeader {
 	timestamp: string;
 	cwd: string;
 	parentSession?: string;
+	/** Tagged workspace roots available when the session is resumed. */
+	workspaceRoots?: PersistedWorkspaceRoot[];
 }
 
 export interface NewSessionOptions {
@@ -3185,6 +3193,40 @@ export class SessionManager {
 	getHeader(): SessionHeader | null {
 		const h = this.#fileEntries.find(e => e.type === "session");
 		return h ? (h as SessionHeader) : null;
+	}
+
+	getWorkspaceRoots(): PersistedWorkspaceRoot[] {
+		return normalizePersistedWorkspaceRoots(this.getHeader()?.workspaceRoots);
+	}
+
+	setWorkspaceRoots(roots: readonly WorkspaceRoot[]): void {
+		const header = this.getHeader();
+		if (!header) return;
+		const serialized = serializeWorkspaceRoots(roots);
+		const previous = normalizePersistedWorkspaceRoots(header.workspaceRoots);
+		const unchanged =
+			previous.length === serialized.length &&
+			previous.every((root, index) => {
+				const nextRoot = serialized[index];
+				return (
+					nextRoot !== undefined &&
+					root.tag === nextRoot.tag &&
+					root.path === nextRoot.path &&
+					root.sourceRepo === nextRoot.sourceRepo &&
+					root.branch === nextRoot.branch &&
+					root.primary === nextRoot.primary
+				);
+			});
+		if (unchanged) return;
+		if (serialized.length === 0) {
+			delete header.workspaceRoots;
+		} else {
+			header.workspaceRoots = serialized;
+		}
+		this.#needsFullRewriteOnNextPersist = true;
+		if (this.persist && this.#sessionFile && this.storage.existsSync(this.#sessionFile)) {
+			this.#rewriteFile().catch(() => {});
+		}
 	}
 
 	/**

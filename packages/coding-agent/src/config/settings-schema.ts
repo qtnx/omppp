@@ -1373,9 +1373,19 @@ export const SETTINGS_SCHEMA = {
 
 	"learning.minConfidence": { type: "number", default: 0.7 },
 
+	"learning.classifierModels": {
+		type: "array",
+		default: EMPTY_STRING_ARRAY,
+		ui: {
+			tab: "interaction",
+			label: "Live Learning Classifier Chain",
+			description: "Ordered model/role fallback chain for live-learning classification",
+		},
+	},
+
 	"learning.classifierTimeoutMs": { type: "number", default: 8000 },
 
-	"learning.writerTimeoutMs": { type: "number", default: 15000 },
+	"learning.writerTimeoutMs": { type: "number", default: 60000 },
 
 	"learning.maxUserMessageChars": { type: "number", default: 4000 },
 
@@ -2890,7 +2900,8 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tasks",
 			label: "Review Gate",
-			description: "After a subagent finishes, review its task diff and fail the task unless the reviewer approves",
+			description:
+				"After a subagent finishes, review its task diff and block merge/application unless the reviewer approves",
 		},
 	},
 
@@ -2920,7 +2931,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tasks",
 			label: "Review Gate Fix Iterations",
-			description: "How many review-then-fix cycles to run before failing the gate",
+			description: "How many review-then-fix cycles to run before blocking the gate",
 			options: [
 				{ value: "0", label: "Review only", description: "No fix attempts" },
 				{ value: "1", label: "1 attempt" },
@@ -3478,6 +3489,7 @@ export interface RetrySettings {
 export interface LearningSettings {
 	enabled: boolean;
 	minConfidence: number;
+	classifierModels: string[];
 	classifierTimeoutMs: number;
 	writerTimeoutMs: number;
 	maxUserMessageChars: number;

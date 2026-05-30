@@ -19,6 +19,7 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../extensibility/plugins/marketplace";
+import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../learnings";
 import { resolveMemoryBackend } from "../memory-backend";
 import type { InteractiveModeContext } from "../modes/types";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
@@ -66,6 +67,12 @@ function parseShakeMode(args: string): ShakeMode | { error: string } {
 	if (verb === "images") return "images";
 	return { error: `Unknown /shake mode "${verb}". Use elide or images.` };
 }
+
+const LEARNING_CLEAR_SCOPE_LABELS = {
+	all: "All",
+	global: "Global",
+	repo: "Repo",
+} as const;
 
 const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
@@ -994,6 +1001,62 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleMemoryCommand(command.text);
+		},
+	},
+	{
+		name: "learning",
+		description: "Inspect and operate live learning",
+		acpDescription: "Manage live learning",
+		acpInputHint: "<subcommand>",
+		subcommands: [
+			{ name: "view", description: "Show current live-learning injection payload" },
+			{ name: "logs", description: "Show recent live-learning log entries" },
+			{ name: "clear repo", description: "Clear repository-scoped live learnings" },
+			{ name: "clear global", description: "Clear global live learnings" },
+			{ name: "clear all", description: "Clear repository and global live learnings" },
+			{ name: "reset", description: "Alias for clear all" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const parts = command.args.trim().split(/\s+/).filter(Boolean);
+			const verb = parts[0]?.toLowerCase() || "view";
+			switch (verb) {
+				case "view": {
+					const payload = await buildLearningDeveloperInstructions(
+						runtime.settings.getAgentDir(),
+						runtime.settings,
+						runtime.cwd,
+					);
+					await runtime.output(payload || "Live learning payload is empty.");
+					return commandConsumed();
+				}
+				case "logs": {
+					const logText = await getLearningLogText();
+					await runtime.output(logText || "No recent live-learning log entries found.");
+					return commandConsumed();
+				}
+				case "clear":
+				case "reset": {
+					const scopeText = (parts[1] ?? "all").toLowerCase();
+					switch (scopeText) {
+						case "all":
+						case "global":
+						case "repo":
+							await clearLearningData(runtime.settings.getAgentDir(), runtime.cwd, scopeText);
+							await runtime.session.refreshBaseSystemPrompt();
+							await runtime.output(`${LEARNING_CLEAR_SCOPE_LABELS[scopeText]} live learning cleared.`);
+							return commandConsumed();
+						default:
+							return usage("Usage: /learning clear [repo|global|all]", runtime);
+					}
+				}
+				default:
+					return usage("Usage: /learning <view|logs|clear|reset> [repo|global|all]", runtime);
+			}
+		},
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleLearningCommand(command.text);
 		},
 	},
 	{

@@ -13,6 +13,7 @@ import type {
 	ModelPerformancePoint,
 	ModelStats,
 	ModelTimeSeriesPoint,
+	SessionStatsAggregate,
 	TimeSeriesPoint,
 	UserMessageLink,
 	UserMessageStats,
@@ -710,6 +711,77 @@ export function getMessageById(id: number): MessageStats | null {
 	const stmt = db.prepare("SELECT * FROM messages WHERE id = ?");
 	const row = stmt.get(id);
 	return row ? rowToMessageStats(row) : null;
+}
+
+interface SessionAggregateRow {
+	session_file: string;
+	folder: string;
+	total_requests: number;
+	failed_requests: number;
+	total_input_tokens: number;
+	total_output_tokens: number;
+	total_cache_read_tokens: number;
+	total_cache_write_tokens: number;
+	total_tokens: number;
+	total_cost: number;
+	total_premium_requests: number;
+	avg_duration: number | null;
+	avg_ttft: number | null;
+	first_timestamp: number;
+	last_timestamp: number;
+	models: string | null;
+}
+
+function rowToSessionStatsAggregate(row: SessionAggregateRow): SessionStatsAggregate {
+	return {
+		sessionFile: row.session_file,
+		folder: row.folder,
+		totalRequests: row.total_requests,
+		failedRequests: row.failed_requests,
+		totalInputTokens: row.total_input_tokens,
+		totalOutputTokens: row.total_output_tokens,
+		totalCacheReadTokens: row.total_cache_read_tokens,
+		totalCacheWriteTokens: row.total_cache_write_tokens,
+		totalTokens: row.total_tokens,
+		totalCost: row.total_cost,
+		totalPremiumRequests: row.total_premium_requests,
+		avgDuration: row.avg_duration,
+		avgTtft: row.avg_ttft,
+		firstTimestamp: row.first_timestamp,
+		lastTimestamp: row.last_timestamp,
+		models: row.models ? row.models.split("\n").filter(Boolean) : [],
+	};
+}
+
+export function getSessionAggregates(): Map<string, SessionStatsAggregate> {
+	const aggregates = new Map<string, SessionStatsAggregate>();
+	if (!db) return aggregates;
+	const stmt = db.prepare(`
+		SELECT
+			session_file,
+			MIN(folder) AS folder,
+			COUNT(*) AS total_requests,
+			SUM(CASE WHEN stop_reason = 'error' THEN 1 ELSE 0 END) AS failed_requests,
+			SUM(input_tokens) AS total_input_tokens,
+			SUM(output_tokens) AS total_output_tokens,
+			SUM(cache_read_tokens) AS total_cache_read_tokens,
+			SUM(cache_write_tokens) AS total_cache_write_tokens,
+			SUM(total_tokens) AS total_tokens,
+			SUM(cost_total) AS total_cost,
+			SUM(premium_requests) AS total_premium_requests,
+			AVG(duration) AS avg_duration,
+			AVG(ttft) AS avg_ttft,
+			MIN(timestamp) AS first_timestamp,
+			MAX(timestamp) AS last_timestamp,
+			GROUP_CONCAT(DISTINCT provider || '/' || model) AS models
+		FROM messages
+		GROUP BY session_file
+	`);
+	for (const row of stmt.all() as SessionAggregateRow[]) {
+		const aggregate = rowToSessionStatsAggregate(row);
+		aggregates.set(aggregate.sessionFile, aggregate);
+	}
+	return aggregates;
 }
 
 /**

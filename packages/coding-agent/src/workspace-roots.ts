@@ -36,10 +36,29 @@ export interface WorkspaceRoot {
 	sourceRepo?: string;
 	/** Branch checked out in this root, when known. */
 	branch?: string;
-	/** True for the session's primary cwd. */
+	/** True for the session's current cwd root. */
 	primary: boolean;
 	/** Pre-rendered bounded directory tree (non-primary roots only). */
 	tree?: string;
+}
+
+/** Session-safe workspace-root metadata. Trees are regenerated on resume. */
+export interface PersistedWorkspaceRoot {
+	tag: string;
+	path: string;
+	sourceRepo?: string;
+	branch?: string;
+	primary: boolean;
+}
+
+export function serializeWorkspaceRoots(roots: readonly WorkspaceRoot[]): PersistedWorkspaceRoot[] {
+	return roots.map(root => ({
+		tag: root.tag,
+		path: root.path,
+		sourceRepo: root.sourceRepo,
+		branch: root.branch,
+		primary: root.primary,
+	}));
 }
 
 function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
@@ -151,6 +170,74 @@ async function resolveStartPoint(repoRoot: string, tag: string, notices: string[
 
 function errText(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
+}
+
+function toOptionalString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+export function normalizePersistedWorkspaceRoots(value: unknown): PersistedWorkspaceRoot[] {
+	if (!Array.isArray(value)) return [];
+	const roots: PersistedWorkspaceRoot[] = [];
+	for (const item of value) {
+		if (!item || typeof item !== "object") continue;
+		const record = item as Record<string, unknown>;
+		const tag = toOptionalString(record.tag);
+		const rootPath = toOptionalString(record.path);
+		if (!tag || !rootPath) continue;
+		roots.push({
+			tag,
+			path: rootPath,
+			sourceRepo: toOptionalString(record.sourceRepo),
+			branch: toOptionalString(record.branch),
+			primary: record.primary === true,
+		});
+	}
+	return roots;
+}
+
+function selectPrimaryRootIndex(roots: readonly WorkspaceRoot[], activeCwd: string): number {
+	const activeRoot = findWorkspaceRootForPath(activeCwd, roots);
+	if (activeRoot) {
+		const activeIndex = roots.indexOf(activeRoot);
+		if (activeIndex >= 0) return activeIndex;
+	}
+	const storedPrimaryIndex = roots.findIndex(root => root.primary);
+	return storedPrimaryIndex >= 0 ? storedPrimaryIndex : 0;
+}
+
+async function populateWorkspaceRootTrees(roots: WorkspaceRoot[]): Promise<void> {
+	await Promise.all(
+		roots
+			.filter(root => !root.primary && root.tree === undefined)
+			.map(async root => {
+				try {
+					const tree = await buildWorkspaceTree(root.path, { timeoutMs: ROOT_TREE_TIMEOUT_MS });
+					root.tree = tree.rendered || undefined;
+				} catch (err) {
+					logger.debug("Failed to build workspace tree for root", { path: root.path, error: errText(err) });
+				}
+			}),
+	);
+}
+
+export async function hydrateWorkspaceRoots(value: unknown, activeCwd: string): Promise<WorkspaceRoot[]> {
+	const persistedRoots = normalizePersistedWorkspaceRoots(value);
+	if (persistedRoots.length === 0) return [];
+
+	const roots = persistedRoots.map(root => ({
+		tag: root.tag,
+		path: path.resolve(expandTilde(root.path)),
+		sourceRepo: root.sourceRepo ? path.resolve(expandTilde(root.sourceRepo)) : undefined,
+		branch: root.branch,
+		primary: root.primary,
+	}));
+	const primaryIndex = selectPrimaryRootIndex(roots, activeCwd);
+	for (let i = 0; i < roots.length; i++) {
+		roots[i]!.primary = i === primaryIndex;
+	}
+	await populateWorkspaceRootTrees(roots);
+	return roots;
 }
 
 /** Resolve a repo-tagged root, creating an isolated worktree on a fresh branch. */
@@ -268,20 +355,7 @@ export async function resolveWorkspaceRoots(parsed: Args): Promise<ResolveWorksp
 		pushRoot({ tag: uniqueTag(path.basename(resolved), roots), path: resolved, primary: roots.length === 0 });
 	}
 
-	// Build bounded trees for non-primary roots so the model sees their layout.
-	// The primary root's tree is already rendered as the main <workspace-tree>.
-	await Promise.all(
-		roots
-			.filter(root => !root.primary)
-			.map(async root => {
-				try {
-					const tree = await buildWorkspaceTree(root.path, { timeoutMs: ROOT_TREE_TIMEOUT_MS });
-					root.tree = tree.rendered || undefined;
-				} catch (err) {
-					logger.debug("Failed to build workspace tree for root", { path: root.path, error: errText(err) });
-				}
-			}),
-	);
+	await populateWorkspaceRootTrees(roots);
 
 	const primary = roots.find(root => root.primary) ?? null;
 	return { roots, primaryCwd: primary?.path ?? null, notices };

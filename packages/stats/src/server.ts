@@ -15,6 +15,7 @@ import {
 	syncAllSessions,
 } from "./aggregator";
 import embeddedClientArchiveTxt from "./embedded-client.generated.txt";
+import { getSessionTrace, listSessions } from "./sessions";
 
 const getEmbeddedClientArchive = (() => {
 	const txt = embeddedClientArchiveTxt.replaceAll(/[\s\r\n]/g, "").trim();
@@ -173,6 +174,31 @@ async function handleApi(req: Request): Promise<Response> {
 
 	// Stats reads are DB-only; explicit /api/sync does the expensive session scan.
 	const range = url.searchParams.get("range");
+
+	if (path === "/api/sessions") {
+		const limit = url.searchParams.get("limit");
+		const offset = url.searchParams.get("offset");
+		const sessions = await listSessions({
+			query: url.searchParams.get("query"),
+			limit: limit ? Number(limit) : undefined,
+			offset: offset ? Number(offset) : undefined,
+			includeSubagents: url.searchParams.get("includeSubagents") === "1",
+		});
+		return Response.json(sessions);
+	}
+
+	if (path === "/api/sessions/trace") {
+		const sessionPath = url.searchParams.get("path");
+		if (!sessionPath) return new Response("Missing session path", { status: 400 });
+		const maxDepth = url.searchParams.get("maxDepth");
+		const maxSubtraces = url.searchParams.get("maxSubtraces");
+		const trace = await getSessionTrace(sessionPath, {
+			maxDepth: maxDepth ? Number(maxDepth) : undefined,
+			maxSubtraces: maxSubtraces ? Number(maxSubtraces) : undefined,
+		});
+		if (!trace) return new Response("Not Found", { status: 404 });
+		return Response.json(trace);
+	}
 
 	if (path === "/api/stats") {
 		const stats = await getDashboardStats(range);

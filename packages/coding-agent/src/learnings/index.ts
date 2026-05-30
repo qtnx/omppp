@@ -1,13 +1,18 @@
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import type { AssistantMessage, Model, Tool, UserMessage } from "@oh-my-pi/pi-ai";
-import { clampThinkingLevelForModel, completeSimple, Effort } from "@oh-my-pi/pi-ai";
-import { getAgentDbPath, logger, prompt } from "@oh-my-pi/pi-utils";
+import { completeSimple, Effort } from "@oh-my-pi/pi-ai";
+import { APP_NAME, getAgentDbPath, getLogPath, getLogsDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { resolveRoleSelection } from "../config/model-resolver";
+import { resolveModelOverride, resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
+import agentWriterSystemPrompt from "../prompts/learnings/agent-writer-system.md" with { type: "text" };
 import classifyTemplate from "../prompts/learnings/classify.md" with { type: "text" };
 import injectionTemplate from "../prompts/learnings/injection.md" with { type: "text" };
 import writeTemplate from "../prompts/learnings/write.md" with { type: "text" };
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
+import * as taskExecutor from "../task/executor";
+import type { AgentDefinition, SingleResult } from "../task/types";
 import {
 	clearLearningData as clearLearningDataInDb,
 	closeLearningDb,
@@ -22,6 +27,7 @@ import {
 interface LearningRuntimeConfig {
 	enabled: boolean;
 	minConfidence: number;
+	classifierModels: string[];
 	classifierTimeoutMs: number;
 	writerTimeoutMs: number;
 	maxUserMessageChars: number;
@@ -36,20 +42,51 @@ interface LearningDecision {
 	reason: string;
 }
 
+type WriterAgentDecision =
+	| {
+			action: "store";
+			content: string;
+	  }
+	| {
+			action: "skip";
+			reason?: string;
+	  };
+type LearningWriteResult =
+	| {
+			status: "store";
+			content: string;
+	  }
+	| {
+			status: "skip" | "failed";
+	  };
+
 const DEFAULTS: LearningRuntimeConfig = {
 	enabled: false,
 	minConfidence: 0.7,
+	classifierModels: [],
 	classifierTimeoutMs: 8_000,
-	writerTimeoutMs: 15_000,
+	writerTimeoutMs: 60_000,
 	maxUserMessageChars: 4_000,
 	maxEntriesPerScope: 40,
 };
 
 const DECISION_TOOL_NAME = "record_learning_decision";
-const WRITER_TOOL_NAME = "record_learning";
+const DEFAULT_CLASSIFIER_ROLES = ["smol", "default"] as const;
 const CLASSIFIER_MAX_TOKENS = 128;
 const REASONING_CLASSIFIER_MAX_TOKENS = 1024;
-const WRITER_MAX_TOKENS = 1024;
+const SECRET_PATTERNS = [
+	/(?:sk|pk|rk|tok|key|secret|token|password)[-_A-Za-z0-9]{12,}/g,
+	/[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g,
+	/(?:AKIA|ASIA)[A-Z0-9]{16}/g,
+];
+const LEARNING_LOG_LINE_LIMIT = 50;
+const LEARNING_LOG_TAIL_BYTES = 512 * 1024;
+const LEARNING_LOG_MARKER = "live-learning:";
+const LEARNING_LOG_FILE_LIMIT = 3;
+const LEARNING_LOG_FILE_PATTERN = new RegExp(`^${escapeRegExp(APP_NAME)}\\.\\d{4}-\\d{2}-\\d{2}\\.log$`);
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 const decisionTool: Tool = {
 	name: DECISION_TOOL_NAME,
@@ -69,17 +106,28 @@ const decisionTool: Tool = {
 	},
 };
 
-const writerTool: Tool = {
-	name: WRITER_TOOL_NAME,
-	description: "Return the durable learning guideline to store.",
-	parameters: {
-		type: "object",
-		properties: {
-			content: { type: "string" },
-		},
-		required: ["content"],
-		additionalProperties: false,
+const LEARNING_WRITER_OUTPUT_SCHEMA = {
+	type: "object",
+	additionalProperties: false,
+	properties: {
+		action: { type: "string", enum: ["store", "skip"] },
+		content: { type: "string" },
+		reason: { type: "string" },
+		source: { type: "string", enum: ["latest_user_message", "session_history"] },
+		evidence: { type: "string" },
 	},
+	required: ["action"],
+} as const;
+
+const LEARNING_WRITER_AGENT: AgentDefinition = {
+	name: "learning-writer",
+	description: "Writes durable live-learning entries from user complaints and reminders",
+	systemPrompt: agentWriterSystemPrompt,
+	tools: ["read"],
+	model: ["pi/plan", "pi/default"],
+	thinkingLevel: Effort.High,
+	output: LEARNING_WRITER_OUTPUT_SCHEMA,
+	source: "bundled",
 };
 
 export function startLearningStartupTask(options: {
@@ -91,14 +139,27 @@ export function startLearningStartupTask(options: {
 }): void {
 	const { session, settings, modelRegistry, agentDir, taskDepth } = options;
 	const config = loadLearningConfig(settings);
-	if (!config.enabled) return;
-	if (taskDepth > 0) return;
+	const cwd = session.sessionManager.getCwd();
+	if (!config.enabled) {
+		logger.debug("live-learning: disabled", { cwd });
+		return;
+	}
+	if (taskDepth > 0) {
+		logger.debug("live-learning: skipped subagent", { cwd, taskDepth, sessionId: session.sessionId });
+		return;
+	}
+
+	logger.debug("live-learning: attached", { cwd, sessionId: session.sessionId });
 
 	let queue = Promise.resolve();
 	session.subscribe(event => {
 		if (event.type !== "agent_end") return;
 		const userText = extractLatestUserText(event);
-		if (!userText) return;
+		if (!userText) {
+			logger.debug("live-learning: no latest user message", { cwd, sessionId: session.sessionId });
+			return;
+		}
+		logger.debug("live-learning: candidate", { cwd, sessionId: session.sessionId, chars: userText.length });
 		queue = queue
 			.then(async () => {
 				const stored = await processLearningFromUserMessage({
@@ -112,7 +173,11 @@ export function startLearningStartupTask(options: {
 				if (stored) await session.refreshBaseSystemPrompt?.();
 			})
 			.catch(error => {
-				logger.debug("live-learning: processing failed", { error: String(error) });
+				logger.debug("live-learning: processing failed", {
+					cwd,
+					sessionId: session.sessionId,
+					error: String(error),
+				});
 			});
 	});
 }
@@ -120,12 +185,13 @@ export function startLearningStartupTask(options: {
 export async function buildLearningDeveloperInstructions(
 	agentDir: string,
 	settings: Settings,
+	cwd = settings.getCwd(),
 ): Promise<string | undefined> {
 	const config = loadLearningConfig(settings);
 	if (!config.enabled) return undefined;
 	const db = openLearningDb(getAgentDbPath(agentDir));
 	try {
-		const entries = listLearningEntries(db, settings.getCwd(), config.maxEntriesPerScope);
+		const entries = listLearningEntries(db, cwd, config.maxEntriesPerScope);
 		if (entries.length === 0) return undefined;
 		const global = entries.filter(entry => entry.scope === "global");
 		const repo = entries.filter(entry => entry.scope === "repo");
@@ -154,6 +220,49 @@ export async function clearLearningData(
 	}
 }
 
+export async function getLearningLogText(maxLines = LEARNING_LOG_LINE_LIMIT): Promise<string> {
+	const lineLimit = Math.max(1, Math.floor(maxLines));
+	const logPaths = await listRecentLogPaths();
+	const learningLines: string[] = [];
+	for (let i = logPaths.length - 1; i >= 0; i--) {
+		learningLines.push(...(await readLearningLogLines(logPaths[i])));
+	}
+	return learningLines.slice(-lineLimit).join("\n");
+}
+
+async function listRecentLogPaths(): Promise<string[]> {
+	try {
+		const logsDir = getLogsDir();
+		const entries = await fs.readdir(logsDir, { withFileTypes: true });
+		const datedPaths = entries
+			.filter(entry => entry.isFile() && LEARNING_LOG_FILE_PATTERN.test(entry.name))
+			.map(entry => path.join(logsDir, entry.name))
+			.sort((left, right) => path.basename(right).localeCompare(path.basename(left)));
+		const logPaths = datedPaths.slice(0, LEARNING_LOG_FILE_LIMIT);
+		return logPaths.length > 0 ? logPaths : [getLogPath()];
+	} catch (error) {
+		if (isEnoent(error)) return [getLogPath()];
+		throw error;
+	}
+}
+
+async function readLearningLogLines(logPath: string): Promise<string[]> {
+	try {
+		const file = Bun.file(logPath);
+		const size = file.size;
+		const start = Math.max(0, size - LEARNING_LOG_TAIL_BYTES);
+		const text = start > 0 ? await file.slice(start, size).text() : await file.text();
+		const lines = text.split("\n");
+		if (start > 0 && lines.length > 0) {
+			lines.shift();
+		}
+		return lines.filter(line => line.includes(LEARNING_LOG_MARKER));
+	} catch (error) {
+		if (isEnoent(error)) return [];
+		throw error;
+	}
+}
+
 async function processLearningFromUserMessage(options: {
 	userText: string;
 	session: AgentSession;
@@ -163,8 +272,9 @@ async function processLearningFromUserMessage(options: {
 	config: LearningRuntimeConfig;
 }): Promise<boolean> {
 	const { userText, session, settings, modelRegistry, agentDir, config } = options;
-	const cwd = settings.getCwd();
+	const cwd = session.sessionManager.getCwd();
 	const sanitizedUserText = redactSecrets(userText).trim();
+	const sessionId = session.sessionId;
 	if (!sanitizedUserText) return false;
 	const boundedUserText = truncateChars(sanitizedUserText, config.maxUserMessageChars);
 	const decision = await classifyLearning({
@@ -175,15 +285,43 @@ async function processLearningFromUserMessage(options: {
 		modelRegistry,
 		config,
 	});
-	if (!decision?.store) return false;
-	if (decision.confidence < config.minConfidence) return false;
+	if (!decision) {
+		logger.debug("live-learning: classifier unavailable", { cwd, sessionId });
+		return false;
+	}
+	const decisionLogContext = {
+		cwd,
+		sessionId,
+		scope: decision.scope,
+		trigger: decision.trigger,
+		confidence: decision.confidence,
+	};
+	logger.debug("live-learning: classifier verdict", {
+		cwd,
+		sessionId,
+		store: decision.store,
+		scope: decision.scope,
+		trigger: decision.trigger,
+		confidence: decision.confidence,
+	});
+	if (!decision.store) {
+		logger.debug("live-learning: classifier skipped", decisionLogContext);
+		return false;
+	}
+	if (decision.confidence < config.minConfidence) {
+		logger.debug("live-learning: confidence below threshold", {
+			...decisionLogContext,
+			minConfidence: config.minConfidence,
+		});
+		return false;
+	}
 
 	const db = openLearningDb(getAgentDbPath(agentDir));
 	try {
 		const existing = listLearningEntries(db, cwd, config.maxEntriesPerScope).filter(
 			entry => entry.scope === decision.scope,
 		);
-		const content = await writeLearning({
+		const writeResult = await writeLearning({
 			userText: boundedUserText,
 			decision,
 			existing,
@@ -192,16 +330,20 @@ async function processLearningFromUserMessage(options: {
 			modelRegistry,
 			config,
 		});
-		if (!content) return false;
-		return upsertLearning(db, {
+		if (writeResult.status !== "store") {
+			return false;
+		}
+		const stored = upsertLearning(db, {
 			scope: decision.scope,
 			cwd,
-			content,
+			content: writeResult.content,
 			sourceMessageHash: learningMessageHash(boundedUserText),
 			trigger: decision.trigger,
 			confidence: decision.confidence,
 			nowSec: unixNow(),
 		});
+		logger.debug(stored ? "live-learning: stored" : "live-learning: store no-op", decisionLogContext);
+		return stored;
 	} finally {
 		closeLearningDb(db);
 	}
@@ -215,36 +357,101 @@ async function classifyLearning(options: {
 	modelRegistry: ModelRegistry;
 	config: LearningRuntimeConfig;
 }): Promise<LearningDecision | undefined> {
-	const model = resolveLearningModel(
-		["smol", "default"],
-		options.modelRegistry,
-		options.settings,
-		options.session.model,
-	);
-	if (!model) return undefined;
-	const apiKey = await options.modelRegistry.getApiKey(model, options.session.sessionId);
-	if (!apiKey) return undefined;
+	const { userText, cwd, session, settings, modelRegistry, config } = options;
+	const sessionId = session.sessionId;
+	const models = resolveLearningClassifierModels(modelRegistry, settings, config, session.model);
+	if (models.length === 0) {
+		logger.debug("live-learning: classifier model unavailable", {
+			cwd,
+			sessionId,
+		});
+		return undefined;
+	}
 	const input = prompt.render(classifyTemplate, {
-		cwd: options.cwd,
-		user_message: options.userText,
+		cwd,
+		user_message: userText,
 	});
-	const response = await completeSimple(
-		model,
-		{
-			messages: [{ role: "user", content: input, timestamp: Date.now() }],
-			tools: [decisionTool],
-		},
-		{
-			apiKey,
-			maxTokens: model.reasoning ? REASONING_CLASSIFIER_MAX_TOKENS : CLASSIFIER_MAX_TOKENS,
-			disableReasoning: true,
-			toolChoice: { type: "tool", name: DECISION_TOOL_NAME },
-			metadata: options.session.agent?.metadataForProvider(model.provider),
-			signal: AbortSignal.timeout(options.config.classifierTimeoutMs),
-		},
-	);
-	if (response.stopReason === "error") return undefined;
-	return parseLearningDecision(extractToolArguments(response.content, DECISION_TOOL_NAME));
+	for (const model of models) {
+		const modelId = formatModelId(model);
+		const decision = await classifyLearningWithModel({
+			model,
+			modelId,
+			input,
+			cwd,
+			session,
+			modelRegistry,
+			config,
+		});
+		if (decision) return decision;
+	}
+	return undefined;
+}
+
+async function classifyLearningWithModel(options: {
+	model: Model;
+	modelId: string;
+	input: string;
+	cwd: string;
+	session: AgentSession;
+	modelRegistry: ModelRegistry;
+	config: LearningRuntimeConfig;
+}): Promise<LearningDecision | undefined> {
+	const { model, modelId, input, cwd, session, modelRegistry, config } = options;
+	const sessionId = session.sessionId;
+	try {
+		const apiKey = await modelRegistry.getApiKey(model, sessionId);
+		if (!apiKey) {
+			logger.debug("live-learning: classifier api key unavailable", {
+				cwd,
+				sessionId,
+				model: modelId,
+			});
+			return undefined;
+		}
+
+		const response = await completeSimple(
+			model,
+			{
+				systemPrompt: [input],
+				messages: [{ role: "user", content: input, timestamp: Date.now() }],
+				tools: [decisionTool],
+			},
+			{
+				apiKey,
+				maxTokens: model.reasoning ? REASONING_CLASSIFIER_MAX_TOKENS : CLASSIFIER_MAX_TOKENS,
+				disableReasoning: true,
+				toolChoice: { type: "tool", name: DECISION_TOOL_NAME },
+				metadata: session.agent?.metadataForProvider(model.provider),
+				signal: AbortSignal.timeout(config.classifierTimeoutMs),
+			},
+		);
+		if (response.stopReason === "error") {
+			logger.debug("live-learning: classifier response error", {
+				cwd,
+				sessionId,
+				model: modelId,
+				error: response.errorMessage,
+			});
+			return undefined;
+		}
+		const decision = parseLearningDecisionFromContent(response.content);
+		if (decision) return decision;
+		logger.debug("live-learning: classifier response invalid", {
+			cwd,
+			sessionId,
+			model: modelId,
+			stopReason: response.stopReason,
+		});
+		return undefined;
+	} catch (error) {
+		logger.debug("live-learning: classifier request failed", {
+			cwd,
+			sessionId,
+			model: modelId,
+			error: String(error),
+		});
+		return undefined;
+	}
 }
 
 async function writeLearning(options: {
@@ -255,59 +462,150 @@ async function writeLearning(options: {
 	settings: Settings;
 	modelRegistry: ModelRegistry;
 	config: LearningRuntimeConfig;
-}): Promise<string | undefined> {
-	const model = resolveLearningModel(
-		["plan", "default"],
-		options.modelRegistry,
-		options.settings,
-		options.session.model,
-	);
-	if (!model) return undefined;
-	const apiKey = await options.modelRegistry.getApiKey(model, options.session.sessionId);
-	if (!apiKey) return undefined;
+}): Promise<LearningWriteResult> {
+	const { userText, decision, existing, session, settings, modelRegistry, config } = options;
+	const cwd = session.sessionManager.getCwd();
+	const sessionId = session.sessionId;
 	const input = prompt.render(writeTemplate, {
-		scope: options.decision.scope,
-		trigger: options.decision.trigger,
-		reason: options.decision.reason,
-		existing_learnings: renderExistingLearnings(options.existing),
-		user_message: options.userText,
+		scope: decision.scope,
+		trigger: decision.trigger,
+		reason: decision.reason,
+		existing_learnings: renderExistingLearnings(existing),
+		user_message: userText,
 	});
-	const response = await completeSimple(
-		model,
-		{
-			messages: [{ role: "user", content: input, timestamp: Date.now() }],
-			tools: [writerTool],
-		},
-		{
-			apiKey,
-			maxTokens: WRITER_MAX_TOKENS,
-			reasoning: clampThinkingLevelForModel(model, Effort.Low),
-			toolChoice: { type: "tool", name: WRITER_TOOL_NAME },
-			metadata: options.session.agent?.metadataForProvider(model.provider),
-			signal: AbortSignal.timeout(options.config.writerTimeoutMs),
-		},
-	);
-	if (response.stopReason === "error") return undefined;
-	const args = extractToolArguments(response.content, WRITER_TOOL_NAME);
-	const raw = typeof args?.content === "string" ? args.content : undefined;
-	if (!raw) return undefined;
-	const content = redactSecrets(raw).trim();
-	if (!content) return undefined;
-	return truncateChars(content, 800);
+	const signal = AbortSignal.timeout(config.writerTimeoutMs);
+	const result = await taskExecutor.runSubprocess({
+		cwd: session.sessionManager.getCwd(),
+		agent: LEARNING_WRITER_AGENT,
+		task: input,
+		index: 0,
+		id: "learning-writer",
+		modelOverride: ["pi/plan", "pi/default"],
+		parentActiveModelPattern: session.model ? formatModelId(session.model) : undefined,
+		thinkingLevel: Effort.High,
+		outputSchema: LEARNING_WRITER_OUTPUT_SCHEMA,
+		taskDepth: 0,
+		enableLsp: false,
+		signal,
+		contextFile: session.sessionManager.getSessionFile() ?? undefined,
+		modelRegistry,
+		settings,
+	});
+	if (result.exitCode !== 0) {
+		logger.debug("live-learning: writer agent failed", {
+			cwd,
+			sessionId,
+			scope: decision.scope,
+			trigger: decision.trigger,
+			error: writerFailureMessage(result),
+			exitCode: result.exitCode,
+			aborted: result.aborted,
+			abortReason: result.abortReason,
+			durationMs: result.durationMs,
+			resolvedModel: result.resolvedModel,
+			retryFailure: result.retryFailure,
+		});
+		return { status: "failed" };
+	}
+	const writerDecision = parseWriterAgentDecision(result.output);
+	if (!writerDecision) {
+		logger.debug("live-learning: writer agent response invalid", {
+			cwd,
+			sessionId,
+			scope: decision.scope,
+			trigger: decision.trigger,
+			output: truncateChars(result.output, 500),
+		});
+		return { status: "failed" };
+	}
+	if (writerDecision.action === "skip") {
+		logger.debug("live-learning: writer agent skipped", {
+			cwd,
+			sessionId,
+			scope: decision.scope,
+			trigger: decision.trigger,
+			reason: writerDecision.reason,
+		});
+		return { status: "skip" };
+	}
+	return { status: "store", content: truncateChars(writerDecision.content, 800) };
 }
 
-function resolveLearningModel(
-	roles: readonly string[],
+function writerFailureMessage(result: SingleResult): string {
+	const message =
+		result.stderr ||
+		result.error ||
+		result.abortReason ||
+		result.retryFailure?.errorMessage ||
+		result.output ||
+		"Unknown writer agent failure";
+	return truncateChars(message, 500);
+}
+
+function parseWriterAgentDecision(output: string): WriterAgentDecision | undefined {
+	try {
+		const parsed: unknown = JSON.parse(output);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+		const writerOutput = parsed as { action?: unknown; content?: unknown; reason?: unknown };
+		if (writerOutput.action === "skip") {
+			const reason = typeof writerOutput.reason === "string" ? redactSecrets(writerOutput.reason).trim() : "";
+			return reason ? { action: "skip", reason } : { action: "skip" };
+		}
+		if (writerOutput.action !== "store") return undefined;
+		if (typeof writerOutput.content !== "string") return undefined;
+		const content = redactSecrets(writerOutput.content).trim();
+		return content ? { action: "store", content } : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function resolveLearningClassifierModels(
 	modelRegistry: ModelRegistry,
 	settings: Settings,
+	config: LearningRuntimeConfig,
 	currentModel?: Model,
+): Model[] {
+	const models: Model[] = [];
+	if (config.classifierModels.length > 0) {
+		for (const pattern of config.classifierModels) {
+			pushModelIfUnique(models, resolveConfiguredClassifierModel(pattern, modelRegistry, settings));
+		}
+	} else {
+		const available = modelRegistry.getAvailable();
+		for (const role of DEFAULT_CLASSIFIER_ROLES) {
+			pushModelIfUnique(models, resolveRoleSelection([role], settings, available, modelRegistry)?.model);
+		}
+	}
+	pushModelIfUnique(models, currentModel);
+	pushModelIfUnique(models, modelRegistry.getAll()[0]);
+	return models;
+}
+
+function resolveConfiguredClassifierModel(
+	pattern: string,
+	modelRegistry: ModelRegistry,
+	settings: Settings,
 ): Model | undefined {
 	const available = modelRegistry.getAvailable();
 	return (
-		resolveRoleSelection(roles, settings, available, modelRegistry)?.model ??
-		currentModel ??
-		modelRegistry.getAll()[0]
+		resolveRoleSelection([pattern], settings, available, modelRegistry)?.model ??
+		resolveModelOverride([pattern], modelRegistry, settings).model
 	);
+}
+
+function pushModelIfUnique(models: Model[], model: Model | undefined): void {
+	if (!model) return;
+	if (models.some(candidate => isSameModel(candidate, model))) return;
+	models.push(model);
+}
+
+function isSameModel(left: Model, right: Model): boolean {
+	return left.provider === right.provider && left.id === right.id;
+}
+
+function formatModelId(model: Model): string {
+	return `${model.provider}/${model.id}`;
 }
 
 function extractLatestUserText(event: Extract<AgentSessionEvent, { type: "agent_end" }>): string | undefined {
@@ -338,11 +636,37 @@ function extractToolArguments(
 ): Record<string, unknown> | undefined {
 	for (const content of contentBlocks) {
 		if (content.type !== "toolCall" || content.name !== toolName) continue;
-		if (!content.arguments || typeof content.arguments !== "object" || Array.isArray(content.arguments))
+		if (!content.arguments || typeof content.arguments !== "object" || Array.isArray(content.arguments)) {
 			return undefined;
+		}
 		return content.arguments as Record<string, unknown>;
 	}
 	return undefined;
+}
+
+function parseLearningDecisionFromContent(contentBlocks: AssistantMessage["content"]): LearningDecision | undefined {
+	return parseLearningDecision(
+		extractToolArguments(contentBlocks, DECISION_TOOL_NAME) ?? extractJsonArguments(contentBlocks),
+	);
+}
+
+function extractJsonArguments(contentBlocks: AssistantMessage["content"]): Record<string, unknown> | undefined {
+	const text = extractAssistantText(contentBlocks).trim();
+	if (!text.startsWith("{") || !text.endsWith("}")) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(text);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+		return parsed as Record<string, unknown>;
+	} catch {
+		return undefined;
+	}
+}
+
+function extractAssistantText(contentBlocks: AssistantMessage["content"]): string {
+	return contentBlocks
+		.filter(content => content.type === "text")
+		.map(content => content.text)
+		.join("\n");
 }
 
 function parseLearningDecision(args: Record<string, unknown> | undefined): LearningDecision | undefined {
@@ -380,12 +704,7 @@ function truncateChars(text: string, maxChars: number): string {
 
 function redactSecrets(input: string): string {
 	let out = input;
-	const patterns = [
-		/(?:sk|pk|rk|tok|key|secret|token|password)[-_A-Za-z0-9]{12,}/g,
-		/[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g,
-		/(?:AKIA|ASIA)[A-Z0-9]{16}/g,
-	];
-	for (const pattern of patterns) {
+	for (const pattern of SECRET_PATTERNS) {
 		out = out.replace(pattern, "[REDACTED]");
 	}
 	return out;
@@ -395,6 +714,7 @@ function loadLearningConfig(settings: Settings): LearningRuntimeConfig {
 	return {
 		enabled: settings.get("learning.enabled") ?? DEFAULTS.enabled,
 		minConfidence: settings.get("learning.minConfidence") ?? DEFAULTS.minConfidence,
+		classifierModels: settings.get("learning.classifierModels") ?? DEFAULTS.classifierModels,
 		classifierTimeoutMs: settings.get("learning.classifierTimeoutMs") ?? DEFAULTS.classifierTimeoutMs,
 		writerTimeoutMs: settings.get("learning.writerTimeoutMs") ?? DEFAULTS.writerTimeoutMs,
 		maxUserMessageChars: settings.get("learning.maxUserMessageChars") ?? DEFAULTS.maxUserMessageChars,

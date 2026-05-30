@@ -421,7 +421,7 @@ describe("task review gate", () => {
 		expect(firstResult(result).exitCode).toBe(0);
 	});
 
-	it("fails the task without applying patches or branch merge when blocking findings persist past maxFixIterations", async () => {
+	it("reports persistent blocking findings as review-blocked feedback without failing the task execution", async () => {
 		mockAgents();
 		const isolation = mockIsolation();
 		const { trace } = mockSessionQueue([
@@ -446,8 +446,41 @@ describe("task review gate", () => {
 		expect(isolation.commitToBranch).not.toHaveBeenCalled();
 		expect(isolation.cleanupIsolation).toHaveBeenCalledTimes(1);
 		const single = firstResult(result);
-		expect(single?.exitCode).not.toBe(0);
-		expect(single?.error ?? single?.stderr ?? "").toMatch(/review|finding/i);
+		expect(single.exitCode).toBe(0);
+		expect(single.error).toBeUndefined();
+		expect(single.patchPath).toBeUndefined();
+		expect(single.reviewGate?.outcome).toBe("blocked");
+		expect(single.reviewGate?.failureReason ?? "").toMatch(/reviewer verdict incorrect|blocking review finding/i);
+		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+		expect(text).toContain("<status>review blocked</status>");
+		expect(text).toMatch(/Review gate blocked:/);
+		expect(text).toMatch(/Reviewer verdict incorrect|blocking review finding/i);
+	});
+
+	it("does not commit a review-blocked branch-mode task as an approved branch", async () => {
+		mockAgents();
+		const isolation = mockIsolation();
+		const { trace } = mockSessionQueue([
+			{ role: "implementer" },
+			{ role: "reviewer", verdict: incorrectVerdict(), findings: [p1Finding()] },
+		]);
+
+		const tool = await TaskTool.create(
+			createSession({
+				...reviewGateSettings({ "task.reviewGate.maxFixIterations": 0 }),
+				"task.isolation.merge": "branch",
+			}),
+		);
+		const result = await tool.execute("call-branch-blocked", { ...TASK_PARAMS, isolated: true });
+
+		expect(trace.map(t => t.role)).toEqual(["implementer", "reviewer"]);
+		expect(isolation.captureDeltaPatch).toHaveBeenCalledTimes(1);
+		expect(isolation.commitToBranch).not.toHaveBeenCalled();
+		const single = firstResult(result);
+		expect(single.exitCode).toBe(0);
+		expect(single.branchName).toBeUndefined();
+		expect(single.reviewGate?.outcome).toBe("blocked");
+		expect(result.content[0]?.type === "text" ? result.content[0].text : "").toContain("Review gate blocked:");
 	});
 
 	it("captures the patch when only a P2 finding is reported and failOnPriorities=[0,1]", async () => {

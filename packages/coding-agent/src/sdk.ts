@@ -163,7 +163,7 @@ import { queueResolveHandler } from "./tools/resolve";
 import { ttsTool } from "./tools/tts";
 import { EventBus } from "./utils/event-bus";
 import { buildNamedToolChoice } from "./utils/tool-choice";
-import type { WorkspaceRoot } from "./workspace-roots";
+import { hydrateWorkspaceRoots, type WorkspaceRoot } from "./workspace-roots";
 import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
 type AsyncResultEntry = {
@@ -908,6 +908,24 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	if (!options.modelRegistry) {
 		modelRegistry.refreshInBackground();
 	}
+	const sessionManager =
+		options.sessionManager ??
+		logger.time("sessionManager", () =>
+			SessionManager.create(cwd, SessionManager.getDefaultSessionDir(cwd, agentDir)),
+		);
+	const workspaceRoots =
+		options.workspaceRoots && options.workspaceRoots.length > 0
+			? options.workspaceRoots
+			: await logger.time(
+					"hydrateWorkspaceRoots",
+					hydrateWorkspaceRoots,
+					sessionManager.getWorkspaceRoots(),
+					sessionManager.getCwd(),
+				);
+	if (workspaceRoots.length > 0) {
+		sessionManager.setWorkspaceRoots(workspaceRoots);
+	}
+
 	// Kick off workspace tree discovery early. The native workspace scan returns
 	// both the rendered-tree input and the AGENTS.md directory-context index, so
 	// startup does not perform a second recursive filesystem search. Subagents
@@ -923,7 +941,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// session-context build, tool creation, MCP discovery, and extension discovery.
 	const contextFilesPromise = options.contextFiles
 		? Promise.resolve(options.contextFiles)
-		: logger.time("discoverContextFiles", discoverContextFiles, cwd, agentDir, options.workspaceRoots);
+		: logger.time("discoverContextFiles", discoverContextFiles, cwd, agentDir, workspaceRoots);
 	contextFilesPromise.catch(() => {});
 	const promptTemplatesPromise = options.promptTemplates
 		? Promise.resolve(options.promptTemplates)
@@ -955,11 +973,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		setPreferredImageProvider(imageProvider);
 	}
 
-	const sessionManager =
-		options.sessionManager ??
-		logger.time("sessionManager", () =>
-			SessionManager.create(cwd, SessionManager.getDefaultSessionDir(cwd, agentDir)),
-		);
 	const providerSessionId = options.providerSessionId ?? sessionManager.getSessionId();
 	const modelApiKeyAvailability = new Map<string, boolean>();
 	const getModelAvailabilityKey = (candidate: Model): string =>
@@ -1243,7 +1256,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			skipPythonPreflight: options.skipPythonPreflight,
 			contextFiles,
 			workspaceTree: resolvedWorkspaceTree,
-			workspaceRoots: options.workspaceRoots,
+			workspaceRoots,
 			skills,
 			eventBus,
 			outputSchema: options.outputSchema,
@@ -1675,7 +1688,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const usingInitialCwd = currentCwd === cwd;
 			const promptContextFilesPromise = usingInitialCwd
 				? Promise.resolve(contextFiles)
-				: logger.time("discoverContextFiles", discoverContextFiles, currentCwd, agentDir, options.workspaceRoots);
+				: logger.time("discoverContextFiles", discoverContextFiles, currentCwd, agentDir, workspaceRoots);
 			const promptWorkspaceTreePromise = usingInitialCwd
 				? workspaceTreePromise
 				: logger.time("buildWorkspaceTree", () =>
@@ -1702,7 +1715,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const promptTools = buildSystemPromptToolMetadata(tools, {
 				search_tool_bm25: { description: renderSearchToolBm25Description(discoverableToolsForDesc) },
 			});
-			const learningInstructions = await buildLearningDeveloperInstructions(agentDir, settings);
+			const learningInstructions = await buildLearningDeveloperInstructions(agentDir, settings, currentCwd);
 			const memoryBackend = resolveMemoryBackend(settings);
 			const memoryInstructions = await memoryBackend.buildDeveloperInstructions(agentDir, settings, session);
 
@@ -1744,7 +1757,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				secretsEnabled,
 				workspaceTree: promptWorkspaceTreePromise,
 				memoryRootEnabled: memoryBackend.id === "local",
-				workspaceRoots: options.workspaceRoots,
+				workspaceRoots,
 			});
 
 			if (options.systemPrompt === undefined) {
@@ -2061,7 +2074,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (hasExistingSession) {
 			agent.replaceMessages(existingSession.messages);
 		} else {
-			// Save initial model, thinking level, and service tier for new sessions so they can be restored on resume.
+			// Save initial model, thinking level, service tier, and root prompt metadata for new sessions
+			// so they can be restored or inspected from persisted session logs.
 			if (model) {
 				sessionManager.appendModelChange(`${model.provider}/${model.id}`);
 			}
@@ -2072,6 +2086,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			if (initialServiceTier) {
 				sessionManager.appendServiceTierChange(initialServiceTier);
+			}
+			const isSubagent = (options.taskDepth ?? 0) > 0 || options.parentTaskPrefix !== undefined;
+			if (!isSubagent && systemPrompt.length > 0) {
+				sessionManager.appendSessionInit({
+					systemPrompt: systemPrompt.join("\n\n"),
+					task: "Root interactive session",
+					tools: initialTools.map(tool => tool.name),
+				});
 			}
 		}
 
@@ -2089,7 +2111,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			scopedModels: options.scopedModels,
 			promptTemplates,
 			slashCommands,
-			workspaceRoots: options.workspaceRoots,
+			workspaceRoots,
 			extensionRunner,
 			customCommands: customCommandsResult.commands,
 			skills,

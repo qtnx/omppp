@@ -2,6 +2,11 @@ import { afterEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { getBundledModel } from "@oh-my-pi/pi-ai";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import { parseArgs } from "../src/cli/args";
@@ -55,6 +60,14 @@ const EMPTY_TREE = {
 	totalLines: 0,
 	agentsMdFiles: [] as string[],
 };
+
+function textOf(result: { content?: ReadonlyArray<{ type: string; text?: string }> }): string {
+	const blocks = result.content ?? [];
+	for (const block of blocks) {
+		if (block.type === "text" && typeof block.text === "string") return block.text;
+	}
+	return "";
+}
 
 describe("parseArgs — workspace flags", () => {
 	test("parses --be/--fe/--worktree as a named worktree", () => {
@@ -271,5 +284,114 @@ describe("buildSystemPrompt — <workspace-roots> block", () => {
 			workspaceTree: EMPTY_TREE,
 		});
 		expect(systemPrompt.join("\n")).not.toContain("<workspace-roots>");
+	});
+});
+
+describe("session resume — workspace roots", () => {
+	test("restores be/fe roots so tools can run from a tagged cwd after reopening the session", async () => {
+		await withTempDir(async dir => {
+			const be = path.join(dir, "be");
+			const fe = path.join(dir, "fe");
+			await fs.mkdir(be, { recursive: true });
+			await fs.mkdir(fe, { recursive: true });
+
+			const sessionDir = path.join(dir, "sessions");
+			const model = getBundledModel("openai", "gpt-4o-mini");
+			const firstSettings = Settings.isolated({
+				"async.enabled": false,
+				"bash.autoBackground.enabled": false,
+				"bashInterceptor.enabled": false,
+			});
+			const firstManager = SessionManager.create(be, sessionDir);
+			const workspaceRoots: WorkspaceRoot[] = [
+				{ tag: "be", path: be, primary: true },
+				{ tag: "fe", path: fe, primary: false },
+			];
+
+			const { session: firstSession } = await createAgentSession({
+				cwd: be,
+				agentDir: dir,
+				sessionManager: firstManager,
+				settings: firstSettings,
+				model,
+				workspaceRoots,
+				disableExtensionDiscovery: true,
+				skills: [],
+				rules: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+				toolNames: ["bash"],
+			});
+
+			const firstHeader = firstManager.getHeader() as { workspaceRoots?: WorkspaceRoot[] } | null;
+			expect(firstHeader?.workspaceRoots?.map(root => [root.tag, root.path, root.primary])).toEqual([
+				["be", be, true],
+				["fe", fe, false],
+			]);
+			firstManager.appendMessage({
+				role: "assistant",
+				content: [{ type: "text", text: "seed response" }],
+				api: model.api,
+				provider: model.provider,
+				stopReason: "stop",
+				timestamp: Date.now(),
+				model: model.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+			});
+			await firstManager.flush();
+			const sessionFile = firstManager.getSessionFile();
+			expect(sessionFile).toBeTruthy();
+			await firstSession.dispose();
+
+			const resumedManager = await SessionManager.open(sessionFile!, sessionDir);
+			const resumedSettings = Settings.isolated({
+				"async.enabled": false,
+				"bash.autoBackground.enabled": false,
+				"bashInterceptor.enabled": false,
+			});
+			const { session: resumedSession } = await createAgentSession({
+				cwd: be,
+				agentDir: dir,
+				sessionManager: resumedManager,
+				settings: resumedSettings,
+				model,
+				disableExtensionDiscovery: true,
+				skills: [],
+				rules: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+				toolNames: ["bash"],
+			});
+
+			try {
+				expect(resumedSession.workspaceRoots.map(root => root.tag)).toEqual(["be", "fe"]);
+				const bash = resumedSession.getToolByName("bash");
+				if (!bash) throw new Error("Expected bash tool");
+
+				const result = await bash.execute(
+					"resume-fe-cwd",
+					{ command: 'bun -e "console.log(process.cwd())"', cwd: "fe" },
+					undefined,
+					undefined,
+					{ settings: resumedSettings } as AgentToolContext,
+				);
+				expect(textOf(result)).toContain(fe);
+			} finally {
+				await resumedSession.dispose();
+			}
+		});
 	});
 });

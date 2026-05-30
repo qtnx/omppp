@@ -19,6 +19,7 @@ import { ModelsTable } from "./components/ModelsTable";
 import { RequestDetail } from "./components/RequestDetail";
 import { RequestList } from "./components/RequestList";
 import { StatsGrid } from "./components/StatsGrid";
+import { TracesView } from "./components/TracesView";
 import type {
 	BehaviorDashboardStats,
 	CostDashboardStats,
@@ -28,7 +29,7 @@ import type {
 	TimeRange,
 } from "./types";
 
-type Tab = "overview" | "requests" | "errors" | "models" | "costs" | "behavior";
+type Tab = "overview" | "traces" | "requests" | "errors" | "models" | "costs" | "behavior";
 
 export default function App() {
 	const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
@@ -130,6 +131,8 @@ export default function App() {
 						</div>
 					</div>
 				)}
+
+				{activeTab === "traces" && <TracesView onSelectRequest={setSelectedRequest} />}
 
 				{activeTab === "requests" && (
 					<div className="h-[calc(100vh-140px)] animate-fade-in">

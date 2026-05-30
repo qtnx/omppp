@@ -2735,6 +2735,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleMemoryCommand(text);
 	}
 
+	handleLearningCommand(text: string): Promise<void> {
+		return this.#commandController.handleLearningCommand(text);
+	}
+
 	async handleSTTToggle(): Promise<void> {
 		if (!settings.get("stt.enabled")) {
 			this.showWarning("Speech-to-text is disabled. Enable it in settings: stt.enabled");
