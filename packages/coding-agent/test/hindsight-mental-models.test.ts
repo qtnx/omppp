@@ -27,7 +27,7 @@ afterEach(() => {
 // matching). Tag derivation MUST stay disciplined per scoping mode.
 
 describe("resolveSeedsForScope", () => {
-	it("global scoping emits only seeds whose scopes include 'global', and never project-tagged ones", () => {
+	it("global scoping emits only seeds whose scopes include 'global'", () => {
 		const scope: BankScope = { bankId: "omp" };
 		const seeds = resolveSeedsForScope(scope, "global");
 		expect(seeds.length).toBeGreaterThan(0);
@@ -40,21 +40,22 @@ describe("resolveSeedsForScope", () => {
 		expect(userPrefs?.tags).toEqual([]);
 	});
 
-	it("per-project-tagged scoping bakes the scope's retainTags into projectTagged seeds and leaves untagged seeds bare", () => {
+	it("per-project-tagged scoping bakes the scope's retainTags into projectTagged seeds and isolates their ids", () => {
 		const scope: BankScope = {
 			bankId: "omp",
 			retainTags: ["project:omp"],
 			recallTags: ["project:omp"],
-			recallTagsMatch: "any",
+			recallTagsMatch: "all_strict",
 		};
 		const seeds = resolveSeedsForScope(scope, "per-project-tagged");
-		const projectConv = seeds.find(s => s.id === "project-conventions");
-		const userPrefs = seeds.find(s => s.id === "user-preferences");
+		const projectConv = seeds.find(s => s.id === "project-conventions--omp");
+		const userPrefs = seeds.find(s => s.id === "user-preferences--omp");
 		expect(projectConv).toBeDefined();
 		expect(projectConv?.tags).toEqual(["project:omp"]);
-		// user-preferences is intentionally untagged so the refresh reads the
-		// whole bank, not just the project subset.
-		expect(userPrefs?.tags).toEqual([]);
+		expect(userPrefs).toBeDefined();
+		expect(userPrefs?.tags).toEqual(["project:omp"]);
+		expect(seeds.some(s => s.id === "project-conventions")).toBe(false);
+		expect(seeds.some(s => s.id === "user-preferences")).toBe(false);
 	});
 
 	it("per-project scoping yields project-conventions but the scope carries no tags so the seed is untagged", () => {
@@ -233,6 +234,80 @@ describe("loadMentalModelsBlock", () => {
 		vi.spyOn(HindsightApiCtor.prototype, "listMentalModels").mockRejectedValue(new Error("boom"));
 		const api = new HindsightApiCtor({ baseUrl: "http://localhost:8888" });
 		const block = await loadMentalModelsBlock(api, "b");
+		expect(block).toBeUndefined();
+	});
+
+	it("excludes mental models tagged for a different project when rendering a shared bank", async () => {
+		vi.spyOn(HindsightApiCtor.prototype, "listMentalModels").mockResolvedValue({
+			items: [
+				{
+					id: "user-preferences",
+					bank_id: "b",
+					name: "User Preferences",
+					content: "legacy global preference",
+				},
+				{
+					id: "user-preferences--current",
+					bank_id: "b",
+					name: "User Preferences",
+					tags: ["project:current"],
+					content: "current repo preference",
+				},
+				{
+					id: "project-conventions--other",
+					bank_id: "b",
+					name: "Project Conventions",
+					tags: ["project:other"],
+					content: "other repo convention",
+				},
+				{
+					id: "project-conventions--current",
+					bank_id: "b",
+					name: "Project Conventions",
+					tags: ["project:current"],
+					content: "current repo convention",
+				},
+			],
+		});
+		const api = new HindsightApiCtor({ baseUrl: "http://localhost:8888" });
+		const block = await loadMentalModelsBlock(api, "b", MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT, {
+			bankId: "b",
+			retainTags: ["project:current"],
+			recallTags: ["project:current"],
+			recallTagsMatch: "all_strict",
+		});
+
+		expect(block).toContain("current repo preference");
+		expect(block).toContain("current repo convention");
+		expect(block).not.toContain("legacy global preference");
+		expect(block).not.toContain("other repo convention");
+	});
+
+	it("excludes legacy untagged built-in mental models from tagged shared banks", async () => {
+		vi.spyOn(HindsightApiCtor.prototype, "listMentalModels").mockResolvedValue({
+			items: [
+				{
+					id: "project-conventions",
+					bank_id: "b",
+					name: "Project Conventions",
+					content: "legacy repo convention with no project tag",
+				},
+				{
+					id: "user-preferences",
+					bank_id: "b",
+					name: "User Preferences",
+					content: "prefers concise prose",
+				},
+			],
+		});
+		const api = new HindsightApiCtor({ baseUrl: "http://localhost:8888" });
+		const block = await loadMentalModelsBlock(api, "b", MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT, {
+			bankId: "b",
+			retainTags: ["project:current"],
+			recallTags: ["project:current"],
+			recallTagsMatch: "all_strict",
+		});
+
 		expect(block).toBeUndefined();
 	});
 });

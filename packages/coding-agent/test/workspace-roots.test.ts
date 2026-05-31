@@ -3,9 +3,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
-import { getBundledModel } from "@oh-my-pi/pi-ai";
+import { clearCustomApis, getBundledModel } from "@oh-my-pi/pi-ai";
+import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
@@ -17,6 +19,7 @@ import { resolveWorkspaceRoots } from "../src/workspace-roots";
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	clearCustomApis();
 });
 
 async function withTempDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
@@ -359,13 +362,40 @@ describe("session resume — workspace roots", () => {
 				"bash.autoBackground.enabled": false,
 				"bashInterceptor.enabled": false,
 			});
+			registerMockApi();
+			const scriptedModel = createMockModel({
+				responses: [
+					{
+						content: [
+							{
+								type: "toolCall",
+								name: "bash",
+								arguments: { command: 'bun -e "console.log(\\"first:\\" + process.cwd())"', cwd: "fe" },
+							},
+						],
+					},
+					{
+						content: [
+							{
+								type: "toolCall",
+								name: "bash",
+								arguments: { command: 'bun -e "console.log(\\"second:\\" + process.cwd())"', cwd: "be" },
+							},
+						],
+					},
+					{ content: ["done"] },
+				],
+			});
+			const authStorage = await AuthStorage.create(path.join(dir, "auth.db"));
+			authStorage.setRuntimeApiKey("mock", "test-key");
 			const { session: resumedSession } = await createAgentSession({
 				cwd: be,
 				agentDir: dir,
 				sessionManager: resumedManager,
 				settings: resumedSettings,
-				model,
+				model: scriptedModel.model,
 				disableExtensionDiscovery: true,
+				authStorage,
 				skills: [],
 				rules: [],
 				contextFiles: [],
@@ -389,8 +419,28 @@ describe("session resume — workspace roots", () => {
 					{ settings: resumedSettings } as AgentToolContext,
 				);
 				expect(textOf(result)).toContain(fe);
+				const executedToolNames: string[] = [];
+				const unsubscribe = resumedSession.subscribe(event => {
+					if (event.type === "tool_execution_end") {
+						executedToolNames.push(event.toolName);
+					}
+				});
+
+				const promptDone = await Promise.race([
+					resumedSession.prompt("run two workspace-root tool calls"),
+					Bun.sleep(5000).then(() => "timeout" as const),
+				]);
+				expect(promptDone).not.toBe("timeout");
+				unsubscribe();
+				expect(scriptedModel.calls).toHaveLength(3);
+				expect(executedToolNames).toEqual(["bash", "bash"]);
+				const persistedToolResults = resumedManager
+					.getEntries()
+					.filter(entry => entry.type === "message" && entry.message.role === "toolResult");
+				expect(persistedToolResults).toHaveLength(2);
 			} finally {
 				await resumedSession.dispose();
+				authStorage.close();
 			}
 		});
 	});

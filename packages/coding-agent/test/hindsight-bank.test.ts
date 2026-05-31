@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
-import { computeBankScope, deriveBankId, ensureBankMission } from "@oh-my-pi/pi-coding-agent/hindsight/bank";
+import {
+	computeBankScope,
+	deriveBankId,
+	ensureBankMission,
+	resolveBankScope,
+} from "@oh-my-pi/pi-coding-agent/hindsight/bank";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
+import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 
 const baseConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig => ({
 	hindsightApiUrl: "http://localhost:8888",
@@ -86,12 +92,12 @@ describe("computeBankScope", () => {
 	});
 
 	describe("scoping=per-project-tagged", () => {
-		it("keeps the base bank id and emits project tags with `any` match", () => {
+		it("keeps the base bank id and emits strict project tags", () => {
 			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "/work/proj")).toEqual({
 				bankId: "omp",
 				retainTags: ["project:proj"],
 				recallTags: ["project:proj"],
-				recallTagsMatch: "any",
+				recallTagsMatch: "all_strict",
 			});
 		});
 
@@ -106,6 +112,33 @@ describe("computeBankScope", () => {
 			expect(scope.retainTags).toEqual(["project:unknown"]);
 			expect(scope.recallTags).toEqual(["project:unknown"]);
 		});
+	});
+});
+
+describe("resolveBankScope", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("uses the primary git checkout rather than the current worktree directory", async () => {
+		vi.spyOn(git.repo, "primaryRoot").mockResolvedValue("/repos/oh-my-pi");
+
+		const scope = await resolveBankScope(
+			baseConfig({ scoping: "per-project-tagged" }),
+			"/tmp/omp-worktrees/oh-my-pi-feature-a",
+		);
+
+		expect(scope.retainTags).toEqual(["project:oh-my-pi"]);
+		expect(scope.recallTags).toEqual(["project:oh-my-pi"]);
+	});
+
+	it("falls back to the cwd basename outside git repositories", async () => {
+		vi.spyOn(git.repo, "primaryRoot").mockResolvedValue(null);
+
+		const scope = await resolveBankScope(baseConfig({ scoping: "per-project-tagged" }), "/scratch/no-repo");
+
+		expect(scope.retainTags).toEqual(["project:no-repo"]);
+		expect(scope.recallTags).toEqual(["project:no-repo"]);
 	});
 });
 

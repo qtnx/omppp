@@ -3452,6 +3452,78 @@ export class AuthStorage {
 		return true;
 	}
 
+	/**
+	 * Resolve the canonical request API key for a freshly-refreshed OAuth
+	 * credential, mirroring {@link AuthStorage.#tryOAuthCredential}'s derivation:
+	 * custom OAuth providers may shape their own key, structured-key providers
+	 * (GitHub Copilot, Gemini) return JSON metadata, and everyone else uses the
+	 * raw access token. Keeping this in sync is what makes the force-refresh
+	 * retry usable by non-Codex providers, not just Codex's raw-access form.
+	 */
+	async #resolveRefreshedOAuthApiKey(provider: Provider, credential: OAuthCredential): Promise<string | undefined> {
+		const customProvider = getOAuthProvider(provider);
+		if (customProvider) {
+			return customProvider.getApiKey ? customProvider.getApiKey(credential) : credential.access;
+		}
+		const result = await getOAuthApiKey(provider as OAuthProvider, { [provider]: credential });
+		return result?.apiKey;
+	}
+
+	/**
+	 * Force-refresh the OAuth credential whose current API key matches {@link apiKey}
+	 * and return its freshly-minted request API key (raw access token for Codex,
+	 * structured JSON for providers that need request-time metadata).
+	 *
+	 * Recovers from a stale/invalidated *access* token (e.g. Codex's
+	 * "Encountered invalidated oauth token for user, failing request") while the
+	 * *refresh* token is still valid: minting a new access token lets the SAME
+	 * account serve the retry instead of rotating to a sibling whose cached token
+	 * may be just as stale. Mirrors {@link AuthStorage.invalidateCredentialMatching}'s
+	 * matching loop.
+	 *
+	 * Returns the new API key on success, or `undefined` when no credential
+	 * matches, the match is not OAuth, or the force-refresh fails — in which case
+	 * the caller falls back to {@link AuthStorage.invalidateCredentialMatching} +
+	 * rotation. The matched row is never disabled here; a dead refresh token is
+	 * handled by the caller's fallback path.
+	 */
+	async refreshCredentialMatching(
+		provider: string,
+		apiKey: string,
+		options?: InvalidateCredentialMatchingOptions,
+	): Promise<string | undefined> {
+		// Reload first so a cross-process refresh-token rotation is reflected: we
+		// must force-refresh from the latest persisted refresh token, not a stale
+		// in-memory one that a peer (another omp process or the codex CLI) has
+		// already superseded. This subsumes invalidateCredentialMatching's
+		// no-match reload.
+		await this.reload();
+		const stored = this.#getStoredCredentials(provider);
+		let matched: { id: number; type: AuthCredential["type"] } | undefined;
+		for (const entry of stored) {
+			if (await this.#credentialMatchesApiKey(entry.credential, apiKey)) {
+				matched = { id: entry.id, type: entry.credential.type };
+				break;
+			}
+		}
+		if (!matched || matched.type !== "oauth") {
+			return undefined;
+		}
+		const matchedId = matched.id;
+		try {
+			await this.forceRefreshCredentialById(matchedId, options?.signal);
+			const refreshedEntry = this.#getStoredCredentials(provider).find(entry => entry.id === matchedId);
+			if (!refreshedEntry || refreshedEntry.credential.type !== "oauth") return undefined;
+			return await this.#resolveRefreshedOAuthApiKey(provider as Provider, refreshedEntry.credential);
+		} catch (error) {
+			logger.debug("Force-refresh of matched credential failed; falling back to rotation", {
+				provider,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return undefined;
+		}
+	}
+
 	// ─── Auth Broker integration ────────────────────────────────────────────
 
 	/**

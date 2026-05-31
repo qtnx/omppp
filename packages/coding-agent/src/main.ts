@@ -28,7 +28,6 @@ import { processFileArguments } from "./cli/file-processor";
 import { buildInitialMessage } from "./cli/initial-message";
 import { runListModelsCommand } from "./cli/list-models";
 import { selectSession } from "./cli/session-picker";
-import { findConfigFile } from "./config";
 import { ModelRegistry, ModelsConfigFile } from "./config/model-registry";
 import { resolveCliModel, resolveModelRoleValue, resolveModelScope, type ScopedModel } from "./config/model-resolver";
 import { getDefault, type SettingPath, Settings, settings } from "./config/settings";
@@ -66,6 +65,7 @@ import type { AgentSession } from "./session/agent-session";
 import type { AuthStorage } from "./session/auth-storage";
 import { resolveResumableSession, type SessionInfo, SessionManager } from "./session/session-manager";
 import { resolvePromptInput } from "./system-prompt";
+import { applySystemPromptOverlay, loadAutoDiscoveredSystemPromptOverlay } from "./system-prompt-overrides";
 import { initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { AUTO_THINKING } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";
@@ -514,34 +514,6 @@ async function maybeAutoChdir(parsed: Args): Promise<void> {
 	}
 }
 
-/** Discover SYSTEM.md file if no CLI system prompt was provided */
-function discoverSystemPromptFile(): string | undefined {
-	// Check project-local first (.omp/SYSTEM.md, .pi/SYSTEM.md legacy)
-	const projectPath = findConfigFile("SYSTEM.md", { user: false });
-	if (projectPath) {
-		return projectPath;
-	}
-	// If not found, check SYSTEM.md file in the global directory.
-	const globalPath = findConfigFile("SYSTEM.md", { user: true });
-	if (globalPath) {
-		return globalPath;
-	}
-	return undefined;
-}
-
-/** Discover APPEND_SYSTEM.md file if no CLI append system prompt was provided */
-function discoverAppendSystemPromptFile(): string | undefined {
-	const projectPath = findConfigFile("APPEND_SYSTEM.md", { user: false });
-	if (projectPath) {
-		return projectPath;
-	}
-	const globalPath = findConfigFile("APPEND_SYSTEM.md", { user: true });
-	if (globalPath) {
-		return globalPath;
-	}
-	return undefined;
-}
-
 async function buildSessionOptions(
 	parsed: Args,
 	scopedModels: ScopedModel[],
@@ -554,11 +526,12 @@ async function buildSessionOptions(
 		autoApprove: parsed.autoApprove ?? false,
 	};
 
-	// Auto-discover SYSTEM.md if no CLI system prompt provided
-	const systemPromptSource = parsed.systemPrompt ?? discoverSystemPromptFile();
-	const resolvedSystemPrompt = await resolvePromptInput(systemPromptSource, "system prompt");
-	const appendPromptSource = parsed.appendSystemPrompt ?? discoverAppendSystemPromptFile();
-	const resolvedAppendPrompt = await resolvePromptInput(appendPromptSource, "append system prompt");
+	const explicitSystemPrompt =
+		parsed.systemPrompt !== undefined ? await resolvePromptInput(parsed.systemPrompt, "system prompt") : undefined;
+	const explicitAppendPrompt =
+		parsed.appendSystemPrompt !== undefined
+			? await resolvePromptInput(parsed.appendSystemPrompt, "append system prompt")
+			: undefined;
 
 	if (sessionManager) {
 		options.sessionManager = sessionManager;
@@ -662,14 +635,19 @@ async function buildSessionOptions(
 	// API key from CLI - set in authStorage
 	// (handled by caller before createAgentSession)
 
-	// System prompt
-	if (resolvedSystemPrompt && resolvedAppendPrompt) {
-		options.systemPrompt = defaultPrompt => [resolvedSystemPrompt, resolvedAppendPrompt, ...defaultPrompt.slice(1)];
-	} else if (resolvedSystemPrompt) {
-		options.systemPrompt = defaultPrompt => [resolvedSystemPrompt, ...defaultPrompt.slice(1)];
-	} else if (resolvedAppendPrompt) {
-		options.systemPrompt = defaultPrompt => [...defaultPrompt, resolvedAppendPrompt];
-	}
+	// System prompt overlays are resolved on each rebuild so editing .omp/SYSTEM.md
+	// or .omp/APPEND_SYSTEM.md can take effect in an existing idle session.
+	const getPromptCwd = () => sessionManager?.getCwd() ?? options.cwd ?? getProjectDir();
+	options.systemPrompt = async defaultPrompt => {
+		const overlay = await loadAutoDiscoveredSystemPromptOverlay(getPromptCwd());
+		if (explicitSystemPrompt) {
+			overlay.systemPrompt = { path: "<cli>", content: explicitSystemPrompt, hash: "" };
+		}
+		if (explicitAppendPrompt) {
+			overlay.appendPrompt = { path: "<cli>", content: explicitAppendPrompt, hash: "" };
+		}
+		return applySystemPromptOverlay(defaultPrompt, overlay);
+	};
 
 	// Tools
 	if (parsed.noTools) {

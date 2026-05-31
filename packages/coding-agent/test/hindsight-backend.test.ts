@@ -14,6 +14,7 @@ import { hindsightBackend, reloadMentalModelsForSession } from "@oh-my-pi/pi-cod
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 
 interface FakeSessionDeps {
 	sessionId: string | null;
@@ -115,6 +116,27 @@ describe("hindsightBackend.start", () => {
 
 		expect(session.getHindsightSessionState()).toBeDefined();
 		expect(session.getHindsightSessionState()?.bankId).toBeTruthy();
+	});
+
+	it("scopes tagged memory by primary git checkout instead of worktree directory", async () => {
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.mentalModelsEnabled": false,
+		});
+		vi.spyOn(git.repo, "primaryRoot").mockResolvedValue("/repos/oh-my-pi");
+		const session = makeFakeSession({ sessionId: "s-worktree", cwd: "/tmp/worktrees/oh-my-pi-feature" });
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+
+		expect(session.getHindsightSessionState()?.retainTags).toEqual(["project:oh-my-pi"]);
+		expect(session.getHindsightSessionState()?.recallTags).toEqual(["project:oh-my-pi"]);
 	});
 
 	it("rekeys state when the same AgentSession gets a new session id (resume/switch)", async () => {
@@ -431,6 +453,7 @@ describe("hindsightBackend first-turn injection", () => {
 					id: "user-preferences",
 					bank_id: state!.bankId,
 					name: "User Preferences",
+					tags: ["project:tmp"],
 					content: "prefers concise prose",
 				},
 			],

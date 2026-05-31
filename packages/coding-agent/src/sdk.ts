@@ -268,7 +268,7 @@ export interface CreateAgentSessionOptions {
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 
 	/** System prompt blocks. Array replaces default, function receives default blocks and returns final blocks. */
-	systemPrompt?: string[] | ((defaultPrompt: string[]) => string[]);
+	systemPrompt?: string[] | ((defaultPrompt: string[]) => string[] | Promise<string[]>);
 	/** Optional provider-facing session identifier for prompt caches and sticky auth selection.
 	 * Keeps persisted session files isolated while reusing provider-side caches. */
 	providerSessionId?: string;
@@ -1767,7 +1767,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				return { systemPrompt: options.systemPrompt };
 			}
 			return {
-				systemPrompt: options.systemPrompt(defaultPrompt.systemPrompt),
+				systemPrompt: await options.systemPrompt(defaultPrompt.systemPrompt),
 			};
 		};
 
@@ -2033,6 +2033,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							});
 							if (!switched) return undefined;
 							return modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
+						}
+						// Genuine auth failure (e.g. Codex's "invalidated oauth token" → 401).
+						// The access token is dead but the refresh token is almost always
+						// still valid, so first try to recover the SAME account by minting a
+						// fresh access token. Only fall back to invalidate+rotate when the
+						// force-refresh genuinely fails (no match / dead refresh token).
+						const refreshedKey = await modelRegistry.authStorage.refreshCredentialMatching(provider, oldKey, {
+							signal: streamOptions?.signal,
+							sessionId: agent.sessionId,
+						});
+						if (refreshedKey && refreshedKey !== oldKey) {
+							logger.debug("Retrying provider request after force-refreshing credential", {
+								provider,
+								error: message,
+							});
+							return refreshedKey;
 						}
 						await modelRegistry.authStorage.invalidateCredentialMatching(provider, oldKey, {
 							signal: streamOptions?.signal,

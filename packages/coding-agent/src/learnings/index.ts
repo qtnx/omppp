@@ -29,6 +29,7 @@ interface LearningRuntimeConfig {
 	minConfidence: number;
 	classifierModels: string[];
 	classifierTimeoutMs: number;
+	writerModels: string[];
 	writerTimeoutMs: number;
 	maxUserMessageChars: number;
 	maxEntriesPerScope: number;
@@ -65,6 +66,7 @@ const DEFAULTS: LearningRuntimeConfig = {
 	minConfidence: 0.7,
 	classifierModels: [],
 	classifierTimeoutMs: 8_000,
+	writerModels: [],
 	writerTimeoutMs: 60_000,
 	maxUserMessageChars: 4_000,
 	maxEntriesPerScope: 40,
@@ -72,6 +74,7 @@ const DEFAULTS: LearningRuntimeConfig = {
 
 const DECISION_TOOL_NAME = "record_learning_decision";
 const DEFAULT_CLASSIFIER_ROLES = ["smol", "default"] as const;
+const DEFAULT_WRITER_MODELS: string[] = ["pi/plan", "pi/default"];
 const CLASSIFIER_MAX_TOKENS = 128;
 const REASONING_CLASSIFIER_MAX_TOKENS = 1024;
 const SECRET_PATTERNS = [
@@ -124,7 +127,7 @@ const LEARNING_WRITER_AGENT: AgentDefinition = {
 	description: "Writes durable live-learning entries from user complaints and reminders",
 	systemPrompt: agentWriterSystemPrompt,
 	tools: ["read"],
-	model: ["pi/plan", "pi/default"],
+	model: DEFAULT_WRITER_MODELS,
 	thinkingLevel: Effort.High,
 	output: LEARNING_WRITER_OUTPUT_SCHEMA,
 	source: "bundled",
@@ -473,6 +476,7 @@ async function writeLearning(options: {
 		existing_learnings: renderExistingLearnings(existing),
 		user_message: userText,
 	});
+	const writerModels = config.writerModels.length > 0 ? config.writerModels : DEFAULT_WRITER_MODELS;
 	const signal = AbortSignal.timeout(config.writerTimeoutMs);
 	const result = await taskExecutor.runSubprocess({
 		cwd: session.sessionManager.getCwd(),
@@ -480,7 +484,7 @@ async function writeLearning(options: {
 		task: input,
 		index: 0,
 		id: "learning-writer",
-		modelOverride: ["pi/plan", "pi/default"],
+		modelOverride: writerModels,
 		parentActiveModelPattern: session.model ? formatModelId(session.model) : undefined,
 		thinkingLevel: Effort.High,
 		outputSchema: LEARNING_WRITER_OUTPUT_SCHEMA,
@@ -716,6 +720,7 @@ function loadLearningConfig(settings: Settings): LearningRuntimeConfig {
 		minConfidence: settings.get("learning.minConfidence") ?? DEFAULTS.minConfidence,
 		classifierModels: settings.get("learning.classifierModels") ?? DEFAULTS.classifierModels,
 		classifierTimeoutMs: settings.get("learning.classifierTimeoutMs") ?? DEFAULTS.classifierTimeoutMs,
+		writerModels: settings.get("learning.writerModels") ?? DEFAULTS.writerModels,
 		writerTimeoutMs: settings.get("learning.writerTimeoutMs") ?? DEFAULTS.writerTimeoutMs,
 		maxUserMessageChars: settings.get("learning.maxUserMessageChars") ?? DEFAULTS.maxUserMessageChars,
 		maxEntriesPerScope: settings.get("learning.maxEntriesPerScope") ?? DEFAULTS.maxEntriesPerScope,

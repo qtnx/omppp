@@ -310,6 +310,17 @@
 - Removed the `/orchestrate` slash command; orchestration is now triggered by the `orchestrate` keyword (see Added) so the contract rides alongside the user's own prompt instead of replacing it.
 - Removed the sticky Todos panel all-done drop/collapse animation; completed todo state now stays visible until the next explicit todo update changes it.
 
+- `omp plugin install` now accepts GitHub/GitLab/Bitbucket shorthand (`github:user/repo`, `gitlab:user/repo`, …) and full git URLs (`https://github.com/user/repo`, `git@github.com:user/repo`, …) in addition to npm specs and marketplace refs.
+### Added
+
+- Added an auto-summary of each completed turn so a session left open is self-explanatory at a glance. When the agent finishes a run, a one-line past-tense recap of what it did (e.g. `✔ Fixed OAuth token rotation and added tests`) is appended to the transcript in the foreground, or folded into the desktop completion notification (replacing the bare "Complete") when the session is backgrounded. Summaries are produced by the smol/commit model via a forced `set_summary` tool call and are gated to turns that actually used tools — pure-chat turns are skipped. Toggle with the new `completion.summarize` setting (default on).
+- Added the `learning.writerModels` setting — an ordered model/role fallback chain for the live-learning writer agent, paralleling `learning.classifierModels`. When unset it keeps the previous `pi/plan` → `pi/default` default chain.
+- Added live reload for `.omp/SYSTEM.md` and `.omp/APPEND_SYSTEM.md` prompt overlays, a `/reload-prompt` command, and `/restart` self-resume support so running TUI sessions can apply prompt-overlay edits or a replaced binary without manually exiting first.
+
+### Fixed
+
+- Fixed Hindsight per-project-tagged memory scoping so recall/reflect and mental-model injection require the current `project:<repo>` tag, while resolving that repo identity through Git's primary checkout so sibling worktrees share memory without leaking unrelated repositories.
+
 ## [15.5.15] - 2026-05-30
 
 ### Changed

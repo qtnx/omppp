@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/utils/oauth";
+import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import type { SettingPath, SettingValue } from "../config/settings";
@@ -40,6 +41,7 @@ import type {
 	SlashCommandResult,
 	SlashCommandRuntime,
 	SlashCommandSpec,
+	SubcommandDef,
 	TuiSlashCommandRuntime,
 } from "./types";
 
@@ -52,6 +54,56 @@ function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
 	ctx.updateEditorTopBorder();
 	ctx.ui.requestRender();
+}
+
+function buildArgumentCompletions(subcommands: SubcommandDef[]): (prefix: string) => AutocompleteItem[] | null {
+	return (argumentPrefix: string) => {
+		if (argumentPrefix.includes(" ")) return null;
+		const lower = argumentPrefix.toLowerCase();
+		const matches = subcommands
+			.filter(s => s.name.startsWith(lower))
+			.map(s => ({
+				value: `${s.name} `,
+				label: s.name,
+				description: s.description,
+				hint: s.usage,
+			}));
+		return matches.length > 0 ? matches : null;
+	};
+}
+
+function buildSubcommandInlineHint(subcommands: SubcommandDef[]): (argumentText: string) => string | null {
+	return (argumentText: string) => {
+		const trimmed = argumentText.trimStart();
+		const spaceIndex = trimmed.indexOf(" ");
+
+		if (spaceIndex === -1) {
+			const prefix = trimmed.toLowerCase();
+			if (prefix.length === 0) return null;
+			const match = subcommands.find(s => s.name.startsWith(prefix));
+			if (!match) return null;
+			const remaining = match.name.slice(prefix.length);
+			return remaining + (match.usage ? ` ${match.usage}` : "");
+		}
+
+		const subName = trimmed.slice(0, spaceIndex).toLowerCase();
+		const afterSub = trimmed.slice(spaceIndex + 1);
+		const sub = subcommands.find(s => s.name === subName);
+		if (!sub?.usage) return null;
+
+		if (afterSub.length > 0) {
+			const usageParts = sub.usage.split(" ");
+			const inputParts = afterSub.trim().split(/\s+/);
+			const remaining = usageParts.slice(inputParts.length);
+			return remaining.length > 0 ? remaining.join(" ") : null;
+		}
+
+		return sub.usage;
+	};
+}
+
+function buildStaticInlineHint(hint: string): (argumentText: string) => string | null {
+	return (argumentText: string) => (argumentText.trim().length === 0 ? hint : null);
 }
 
 const shutdownHandlerTui = (_command: ParsedSlashCommand, runtime: TuiSlashCommandRuntime): SlashCommandResult => {
@@ -1132,6 +1184,13 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "restart",
+		description: "Restart the application and resume this session",
+		handleTui: async (_command, runtime) => {
+			await runtime.ctx.restart();
+		},
+	},
+	{
 		name: "exit",
 		description: "Exit the application",
 		handleTui: shutdownHandlerTui,
@@ -1646,6 +1705,22 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "reload-prompt",
+		description: "Reload SYSTEM.md and APPEND_SYSTEM.md prompt overlays",
+		acpDescription: "Reload system prompt overlays",
+		handle: async (_command, runtime) => {
+			await runtime.session.refreshBaseSystemPrompt();
+			await runtime.output("System prompt reloaded.");
+			return commandConsumed();
+		},
+		handleTui: async (_command, runtime) => {
+			await runtime.ctx.session.refreshBaseSystemPrompt();
+			refreshStatusLine(runtime.ctx);
+			runtime.ctx.showStatus("System prompt reloaded.");
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "reload-plugins",
 		description: "Reload all plugins (skills, commands, hooks, tools, agents, MCP)",
 		acpDescription: "Reload all plugins",
@@ -1734,6 +1809,28 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 		inlineHint: command.inlineHint,
 	}),
 );
+
+export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<
+	BuiltinSlashCommand & {
+		getArgumentCompletions?: (prefix: string) => AutocompleteItem[] | null;
+		getInlineHint?: (argumentText: string) => string | null;
+	}
+> = BUILTIN_SLASH_COMMAND_DEFS.map(cmd => {
+	if (cmd.subcommands) {
+		return {
+			...cmd,
+			getArgumentCompletions: buildArgumentCompletions(cmd.subcommands),
+			getInlineHint: buildSubcommandInlineHint(cmd.subcommands),
+		};
+	}
+	if (cmd.inlineHint) {
+		return {
+			...cmd,
+			getInlineHint: buildStaticInlineHint(cmd.inlineHint),
+		};
+	}
+	return cmd;
+});
 
 /**
  * Unified registry exposed for cross-mode tooling. Each spec carries at least

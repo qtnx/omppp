@@ -1,7 +1,8 @@
 import { INTENT_FIELD } from "@oh-my-pi/pi-agent-core";
 import { calculatePromptTokens } from "@oh-my-pi/pi-agent-core/compaction/compaction";
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
-import { type Component, Loader, TERMINAL, Text } from "@oh-my-pi/pi-tui";
+import { type Component, Loader, replaceTabs, TERMINAL, Text, TruncatedText } from "@oh-my-pi/pi-tui";
+import { logger } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -19,6 +20,7 @@ import type { PlanApprovalDetails } from "../../plan-mode/approved-plan";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { isSilentAbort, readPendingDisplayTag } from "../../session/messages";
 import type { ResolveToolDetails } from "../../tools/resolve";
+import { collectTurnSummaryContext, generateTurnSummary } from "../../utils/turn-summary-generator";
 import { interruptHint } from "../shared";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
@@ -638,6 +640,7 @@ export class EventController {
 		this.ctx.ui.requestRender();
 		this.#scheduleIdleCompaction();
 		this.sendCompletionNotification();
+		this.#emitTurnSummaryLine().catch(() => {});
 	}
 
 	async #handleAutoCompactionStart(
@@ -838,7 +841,7 @@ export class EventController {
 		return lastAssistant?.usage ? calculatePromptTokens(lastAssistant.usage) : 0;
 	}
 
-	sendCompletionNotification(): void {
+	sendCompletionNotification(summary?: string): void {
 		if (this.ctx.isBackgrounded === false) return;
 		const notify = settings.get("completion.notify");
 		if (notify === "off") return;
@@ -850,13 +853,76 @@ export class EventController {
 		const last = this.ctx.session.getLastAssistantMessage?.();
 		if (last?.stopReason === "aborted" || last?.stopReason === "error") return;
 
-		const sessionName = this.ctx.sessionManager.getSessionName();
+		const title = this.ctx.sessionManager.getSessionName();
+		const body = summary?.trim() || "Complete";
 		TERMINAL.sendNotification({
-			title: sessionName || "Oh My Pi",
-			body: "Complete",
+			title: title || "Oh My Pi",
+			body,
 			type: "completion",
 			actions: "focus",
 		});
+	}
+
+	/**
+	 * Generate a one-line summary of the just-completed turn, or `undefined` when
+	 * summarization is disabled, the turn was aborted/errored, the turn did no
+	 * tool work, or no summary model is available. Never throws.
+	 */
+	async #maybeGenerateTurnSummary(): Promise<string | undefined> {
+		try {
+			if (settings.get("completion.summarize") === "off") return undefined;
+			const last = this.ctx.session.getLastAssistantMessage?.();
+			if (last?.stopReason === "aborted" || last?.stopReason === "error") return undefined;
+			const context = collectTurnSummaryContext(this.ctx.session.agent.state.messages);
+			if (!context) return undefined;
+			const summary = await generateTurnSummary(
+				context,
+				this.ctx.session.modelRegistry,
+				this.ctx.settings,
+				this.ctx.session.sessionId,
+				this.ctx.session.model,
+				provider => this.ctx.session.agent.metadataForProvider(provider),
+			);
+			return summary ?? undefined;
+		} catch (err) {
+			logger.debug("turn-summary: generation failed", {
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return undefined;
+		}
+	}
+
+	/**
+	 * Foreground surface: append the turn summary as a persistent one-line entry in
+	 * the transcript so a user returning to an open session can see what the agent
+	 * just did. The background surface enriches the completion notification instead.
+	 */
+	async #emitTurnSummaryLine(): Promise<void> {
+		if (this.ctx.isBackgrounded) return;
+		// `agent_end` can fire between steered/queued turns; only summarize once the
+		// agent has truly gone idle awaiting the user, mirroring handleBackgroundEvent.
+		if (this.ctx.session.isStreaming || this.ctx.session.queuedMessageCount > 0) return;
+		const sessionId = this.ctx.session.sessionId;
+		const summary = await this.#maybeGenerateTurnSummary();
+		if (!summary) return;
+		// The model call is async; bail if the session advanced or started a new turn
+		// so we never append a stale summary to a different/streaming transcript.
+		if (this.ctx.isBackgrounded) return;
+		if (this.ctx.session.sessionId !== sessionId) return;
+		if (this.ctx.session.isStreaming || this.ctx.session.queuedMessageCount > 0) return;
+		this.#appendTurnSummaryLine(summary);
+	}
+
+	#appendTurnSummaryLine(summary: string): void {
+		const clean = replaceTabs(summary)
+			.replace(/[\r\n]+/g, " ")
+			.replace(/\s+/g, " ")
+			.trim();
+		if (!clean) return;
+		const line = `${theme.fg("success", theme.status.success)} ${theme.fg("muted", clean)}`;
+		this.ctx.chatContainer.addChild(new Text("", 0, 0));
+		this.ctx.chatContainer.addChild(new TruncatedText(line, 1, 0));
+		this.ctx.ui.requestRender();
 	}
 
 	async handleBackgroundEvent(event: AgentSessionEvent): Promise<void> {
@@ -866,7 +932,8 @@ export class EventController {
 		if (this.ctx.session.queuedMessageCount > 0 || this.ctx.session.isStreaming) {
 			return;
 		}
-		this.sendCompletionNotification();
+		const summary = await this.#maybeGenerateTurnSummary();
+		this.sendCompletionNotification(summary);
 		await this.ctx.shutdown();
 	}
 }

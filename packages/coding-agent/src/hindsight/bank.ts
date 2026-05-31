@@ -3,13 +3,14 @@
  *
  * Three scoping modes (`HindsightConfig.scoping`):
  *   - `global`              — single shared bank, no per-project filter.
- *   - `per-project`         — one bank per cwd basename, hard isolation.
- *   - `per-project-tagged`  — single shared bank, retains carry a `project:<name>`
- *                              tag and recall filters on it but still surfaces
- *                              untagged ("global") memories alongside.
+ *   - `per-project`         — one bank per resolved project identity, hard isolation.
+ *   - `per-project-tagged`  — single shared bank, retains carry a `project:<repo>`
+ *                              tag and recall/reflect require that exact tag.
+ *                              Use `global` scoping for intentionally shared memory;
+ *                              tagged mode is hard project isolation.
  *
  * The base bank id is `bankIdPrefix-bankId` (default `omp`). Per-project mode
- * appends `-<project>`; tagged mode leaves the bank untouched and uses tags.
+ * appends `-<repo>`; tagged mode leaves the bank untouched and uses tags.
  *
  * Mission setup is idempotent at module level — a missionsSet keeps track of
  * banks we've already POSTed to so each session boundary doesn't fire a fresh
@@ -19,6 +20,7 @@
 
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
+import * as git from "../utils/git";
 import type { HindsightApi } from "./client";
 import type { HindsightConfig } from "./config";
 
@@ -39,7 +41,7 @@ export interface BankScope {
 	retainTags?: string[];
 	/** Tags filter for recall/reflect. Undefined when scoping does not use tags. */
 	recallTags?: string[];
-	/** Match mode for `recallTags`. Defaults to `any` so untagged ("global") memories surface too. */
+	/** Match mode for `recallTags`. Tagged project scoping uses strict matching to avoid cross-repo bleed. */
 	recallTagsMatch?: RecallTagsMatch;
 }
 
@@ -55,9 +57,26 @@ function projectLabel(directory: string): string {
 	if (!directory) return UNKNOWN_PROJECT;
 	return path.basename(directory) || UNKNOWN_PROJECT;
 }
+async function projectDirectoryForScope(cwd: string): Promise<string> {
+	try {
+		return (await git.repo.primaryRoot(cwd)) ?? cwd;
+	} catch {
+		return cwd;
+	}
+}
 
 /**
- * Resolve the active bank target plus optional tag scoping.
+ * Resolve the active bank target from the current working directory. Git
+ * worktrees of the same repository share the primary checkout root, so their
+ * Hindsight scope stays stable across branch-specific worktree directories.
+ */
+export async function resolveBankScope(config: HindsightConfig, cwd: string): Promise<BankScope> {
+	return computeBankScope(config, await projectDirectoryForScope(cwd));
+}
+
+/**
+ * Resolve the active bank target plus optional tag scoping from an already
+ * chosen project identity directory.
  *
  * Always returns a non-empty `bankId`. Tag fields are populated only for
  * `per-project-tagged`.
@@ -75,9 +94,10 @@ export function computeBankScope(config: HindsightConfig, directory: string): Ba
 				bankId: base,
 				retainTags: [tag],
 				recallTags: [tag],
-				// `any` keeps untagged "global" memories visible alongside the
-				// project-tagged ones; flip to `*_strict` to harden isolation.
-				recallTagsMatch: "any",
+				// Hard isolation: Hindsight's non-strict modes can surface
+				// untagged memories from older/global retains, which contaminates
+				// the current repo with unrelated project context.
+				recallTagsMatch: "all_strict",
 			};
 		}
 	}

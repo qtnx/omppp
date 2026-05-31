@@ -1069,6 +1069,18 @@ export const SETTINGS_SCHEMA = {
 		ui: { tab: "interaction", label: "Completion Notification", description: "Notify when the agent completes" },
 	},
 
+	"completion.summarize": {
+		type: "enum",
+		values: ["on", "off"] as const,
+		default: "on",
+		ui: {
+			tab: "interaction",
+			label: "Completion Summary",
+			description:
+				"Summarize what the agent did in one line when a turn completes (foreground: shown in the transcript; background: added to the desktop notification). Uses the smol model; only runs for turns that used tools.",
+		},
+	},
+
 	"ask.timeout": {
 		type: "number",
 		default: 0,
@@ -1385,6 +1397,16 @@ export const SETTINGS_SCHEMA = {
 
 	"learning.classifierTimeoutMs": { type: "number", default: 8000 },
 
+	"learning.writerModels": {
+		type: "array",
+		default: EMPTY_STRING_ARRAY,
+		ui: {
+			tab: "interaction",
+			label: "Live Learning Writer Chain",
+			description: "Ordered model/role fallback chain for the live-learning writer agent",
+		},
+	},
+
 	"learning.writerTimeoutMs": { type: "number", default: 60000 },
 
 	"learning.maxUserMessageChars": { type: "number", default: 4000 },
@@ -1651,7 +1673,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "memory",
 			label: "Hindsight Scoping",
 			description:
-				"global = one shared bank; per-project = isolated bank per cwd; per-project-tagged = shared bank with project tags so global + project memories merge on recall",
+				"global = one shared bank; per-project = isolated bank per resolved repo; per-project-tagged = shared bank with strict repo tags",
 			options: [
 				{
 					value: "global",
@@ -1661,13 +1683,13 @@ export const SETTINGS_SCHEMA = {
 				{
 					value: "per-project",
 					label: "Per project",
-					description: "Isolated bank per cwd basename — projects cannot see each other's memories",
+					description: "Isolated bank per resolved repo identity — worktrees of the same repo share memory",
 				},
 				{
 					value: "per-project-tagged",
 					label: "Per project (tagged)",
 					description:
-						"Shared bank, retains tagged with project:<cwd>. Recall surfaces project + untagged global memories together",
+						"Shared bank, retains tagged with project:<repo>. Recall/reflect require the current repo tag",
 				},
 			],
 			condition: "hindsightActive",
@@ -3491,6 +3513,7 @@ export interface LearningSettings {
 	minConfidence: number;
 	classifierModels: string[];
 	classifierTimeoutMs: number;
+	writerModels: string[];
 	writerTimeoutMs: number;
 	maxUserMessageChars: number;
 	maxEntriesPerScope: number;

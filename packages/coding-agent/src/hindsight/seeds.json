@@ -6,7 +6,7 @@
 			"name": "User Preferences",
 			"source_query": "What does the user prefer in coding style, tooling, communication, and review? Capture only durable preferences expressed across sessions, not one-off requests.",
 			"scopes": ["global", "per-project", "per-project-tagged"],
-			"projectTagged": false,
+			"projectTagged": true,
 			"max_tokens": 600,
 			"trigger": { "mode": "delta", "refresh_after_consolidation": true }
 		},

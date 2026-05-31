@@ -1,6 +1,6 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
-import { type BankScope, ensureBankMission } from "./bank";
+import { type BankScope, ensureBankMission, type RecallTagsMatch } from "./bank";
 import type { HindsightApi, MemoryItemInput } from "./client";
 import type { HindsightConfig } from "./config";
 import {
@@ -42,7 +42,7 @@ export interface HindsightSessionStateOptions {
 	retainTags?: string[];
 	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
 	recallTags?: string[];
-	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
+	recallTagsMatch?: RecallTagsMatch;
 	config: HindsightConfig;
 	session: AgentSession;
 	missionsSet: Set<string>;
@@ -195,7 +195,7 @@ export class HindsightSessionState {
 	retainTags?: string[];
 	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
 	recallTags?: string[];
-	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
+	recallTagsMatch?: RecallTagsMatch;
 	config: HindsightConfig;
 	session: AgentSession;
 	missionsSet: Set<string>;
@@ -231,6 +231,14 @@ export class HindsightSessionState {
 		this.hasRecalledForFirstTurn = options.hasRecalledForFirstTurn ?? false;
 		this.aliasOf = options.aliasOf;
 		this.retainQueue = new HindsightRetainQueue(this);
+	}
+
+	#bankScope(): BankScope {
+		const scope: BankScope = { bankId: this.bankId };
+		if (this.retainTags !== undefined) scope.retainTags = this.retainTags;
+		if (this.recallTags !== undefined) scope.recallTags = this.recallTags;
+		if (this.recallTagsMatch !== undefined) scope.recallTagsMatch = this.recallTagsMatch;
+		return scope;
 	}
 
 	setSessionId(sessionId: string): void {
@@ -414,7 +422,12 @@ export class HindsightSessionState {
 	}
 
 	async refreshMentalModelsSnippet(): Promise<void> {
-		const snippet = await loadMentalModelsBlock(this.client, this.bankId, this.config.mentalModelMaxRenderChars);
+		const snippet = await loadMentalModelsBlock(
+			this.client,
+			this.bankId,
+			this.config.mentalModelMaxRenderChars,
+			this.#bankScope(),
+		);
 		this.mentalModelsSnippet = snippet;
 		this.mentalModelsLoadedAt = Date.now();
 	}

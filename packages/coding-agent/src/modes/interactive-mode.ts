@@ -47,6 +47,7 @@ import {
 	setProjectDir,
 } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { type BinaryUpdateDetector, createInstalledBinaryUpdateDetector } from "../binary-update-detector";
 import { reset as resetCapabilities } from "../capability";
 import { KeybindingsManager } from "../config/keybindings";
 import { MODEL_ROLES, type ModelRole } from "../config/model-registry";
@@ -61,7 +62,7 @@ import type {
 	ExtensionWidgetOptions,
 } from "../extensibility/extensions";
 import type { CompactOptions } from "../extensibility/extensions/types";
-import { BUILTIN_SLASH_COMMANDS, loadSlashCommands } from "../extensibility/slash-commands";
+import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { Goal, GoalModeState } from "../goals/state";
 import { resolveLocalUrlToPath } from "../internal-urls";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
@@ -80,9 +81,12 @@ import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext, SessionManager } from "../session/session-manager";
 import { getRecentSessions } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
+import { BUILTIN_SLASH_COMMANDS } from "../slash-commands/builtin-registry";
 import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
+import { loadAutoDiscoveredSystemPromptOverlay } from "../system-prompt-overrides";
 import { discoverAgents } from "../task/discovery";
+import { resolveOmpCommand } from "../task/omp-command";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
@@ -330,6 +334,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#pendingSlashCommands: SlashCommand[] = [];
 	#cleanupUnsubscribe?: () => void;
+	#binaryUpdateDetector: BinaryUpdateDetector | undefined;
+	#binaryUpdateInterval: NodeJS.Timeout | undefined;
+	#promptOverlaySignature: string | undefined;
+	#promptOverlayInterval: NodeJS.Timeout | undefined;
 	readonly #version: string;
 	readonly #changelogMarkdown: string | undefined;
 	#planModePreviousTools: string[] | undefined;
@@ -383,6 +391,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.keybindings = KeybindingsManager.inMemory();
 		this.agent = session.agent;
 		this.#version = version;
+		this.#binaryUpdateDetector = createInstalledBinaryUpdateDetector(version);
 		this.#changelogMarkdown = changelogMarkdown;
 		this.#toolUiContextSetter = setToolUIContext;
 		this.lspServers = lspServers;
@@ -663,10 +672,83 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		});
 
+		this.#startPromptOverlayWatcher();
+		this.#startBinaryUpdateWatcher();
+
 		// Initial top border update
 		this.updateEditorTopBorder();
 	}
 
+	#hasActiveSessionWork(): boolean {
+		return (
+			this.session.isStreaming ||
+			this.session.queuedMessageCount > 0 ||
+			this.session.isCompacting ||
+			this.session.hasPostPromptWork
+		);
+	}
+
+	#startPromptOverlayWatcher(): void {
+		if (this.#promptOverlayInterval) return;
+
+		const check = async () => {
+			if (this.#isShuttingDown || this.#hasActiveSessionWork()) {
+				return;
+			}
+
+			let signature: string;
+			try {
+				signature = (await loadAutoDiscoveredSystemPromptOverlay(this.sessionManager.getCwd())).signature;
+			} catch (error) {
+				logger.debug("Failed to check system prompt overlays", { error: String(error) });
+				return;
+			}
+
+			if (this.#promptOverlaySignature === undefined) {
+				this.#promptOverlaySignature = signature;
+				return;
+			}
+			if (this.#promptOverlaySignature === signature) return;
+
+			this.#promptOverlaySignature = signature;
+			await this.session.refreshBaseSystemPrompt();
+			this.statusLine.invalidate();
+			this.updateEditorTopBorder();
+			this.ui.requestRender();
+			this.showStatus("System prompt reloaded.");
+		};
+
+		this.#promptOverlayInterval = setInterval(() => {
+			void check();
+		}, 2_000);
+		this.#promptOverlayInterval.unref();
+		void check();
+	}
+
+	#startBinaryUpdateWatcher(): void {
+		if (!this.#binaryUpdateDetector || this.#binaryUpdateInterval) return;
+
+		const check = async () => {
+			if (this.#isShuttingDown || this.#hasActiveSessionWork()) {
+				return;
+			}
+
+			const notice = await this.#binaryUpdateDetector?.check();
+			if (!notice) return;
+
+			const versionLabel =
+				notice.installedVersion && notice.installedVersion !== notice.currentVersion
+					? ` ${notice.installedVersion}`
+					: "";
+			this.showWarning(`Installed ${APP_NAME}${versionLabel} binary changed. Run /restart to apply it.`);
+		};
+
+		this.#binaryUpdateInterval = setInterval(() => {
+			void check();
+		}, 30_000);
+		this.#binaryUpdateInterval.unref();
+		void check();
+	}
 	/** Reload slash commands and autocomplete for the provided working directory. */
 	async refreshSlashCommandState(cwd?: string): Promise<void> {
 		const basePath = cwd ?? this.sessionManager.getCwd();
@@ -2338,6 +2420,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#sttController.dispose();
 			this.#sttController = undefined;
 		}
+		if (this.#promptOverlayInterval) {
+			clearInterval(this.#promptOverlayInterval);
+			this.#promptOverlayInterval = undefined;
+		}
+		if (this.#binaryUpdateInterval) {
+			clearInterval(this.#binaryUpdateInterval);
+			this.#binaryUpdateInterval = undefined;
+		}
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#extensionUiController.clearHookWidgets();
 		for (const unsubscribe of this.#eventBusUnsubscribers) {
@@ -2366,7 +2456,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
-	async shutdown(): Promise<void> {
+	async #finishProcessExit(options: { printResumeHint: boolean; beforeQuit?: () => void }): Promise<void> {
 		if (this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
 
@@ -2398,14 +2488,51 @@ export class InteractiveMode implements InteractiveModeContext {
 		popTerminalTitle();
 		this.stop();
 
-		// Print resumption hint if this is a persisted session
-		const sessionId = this.sessionManager.getSessionId();
-		const sessionFile = this.sessionManager.getSessionFile();
-		if (sessionId && sessionFile) {
-			process.stderr.write(`\n${chalk.dim(`Resume this session with ${APP_NAME} --resume ${sessionId}`)}\n`);
+		options.beforeQuit?.();
+
+		if (options.printResumeHint) {
+			const sessionId = this.sessionManager.getSessionId();
+			const sessionFile = this.sessionManager.getSessionFile();
+			if (sessionId && sessionFile) {
+				process.stderr.write(`\n${chalk.dim(`Resume this session with ${APP_NAME} --resume ${sessionId}`)}\n`);
+			}
 		}
 
 		await postmortem.quit(0);
+	}
+
+	async shutdown(): Promise<void> {
+		await this.#finishProcessExit({ printResumeHint: true });
+	}
+
+	async restart(): Promise<void> {
+		if (this.#hasActiveSessionWork()) {
+			this.showWarning("Wait for the current response to finish before restarting.");
+			return;
+		}
+
+		const sessionId = this.sessionManager.getSessionId();
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionId || !sessionFile) {
+			this.showWarning("Cannot restart because this session is not persisted.");
+			return;
+		}
+
+		const command = resolveOmpCommand();
+		const cwd = this.sessionManager.getCwd();
+		await this.#finishProcessExit({
+			printResumeHint: false,
+			beforeQuit: () => {
+				const child = Bun.spawn([command.cmd, ...command.args, "--resume", sessionId], {
+					cwd,
+					env: Bun.env,
+					stdin: "inherit",
+					stdout: "inherit",
+					stderr: "inherit",
+				});
+				child.unref();
+			},
+		});
 	}
 
 	async checkShutdownRequested(): Promise<void> {

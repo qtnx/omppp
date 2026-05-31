@@ -7,6 +7,7 @@ import {
 	loadProjectContextFiles,
 	loadSystemPromptFiles,
 } from "@oh-my-pi/pi-coding-agent/system-prompt";
+import { createAutoDiscoveredSystemPromptOverride } from "@oh-my-pi/pi-coding-agent/system-prompt-overrides";
 import { cleanupTempHome } from "./helpers/temp-home-cleanup";
 
 function escapeRegExp(text: string): string {
@@ -144,5 +145,42 @@ describe("SYSTEM.md prompt assembly", () => {
 
 		expect(promptText).toContain("Root context instructions");
 		expect(promptText).toContain("Near context instructions");
+	});
+
+	it("re-reads auto-discovered SYSTEM.md overlays on every prompt rebuild", async () => {
+		const projectDir = path.join(tempDir, "project");
+		const systemDir = path.join(projectDir, ".omp");
+		const systemPath = path.join(systemDir, "SYSTEM.md");
+		fs.mkdirSync(systemDir, { recursive: true });
+		fs.writeFileSync(systemPath, "First project prompt");
+
+		const applyOverlay = createAutoDiscoveredSystemPromptOverride(() => projectDir);
+		expect(await applyOverlay(["embedded prompt", "project block"])).toEqual([
+			"First project prompt",
+			"project block",
+		]);
+
+		fs.writeFileSync(systemPath, "Second project prompt");
+		expect(await applyOverlay(["embedded prompt", "project block"])).toEqual([
+			"Second project prompt",
+			"project block",
+		]);
+	});
+
+	it("picks up APPEND_SYSTEM.md created after the session started", async () => {
+		const projectDir = path.join(tempDir, "project");
+		const systemDir = path.join(projectDir, ".omp");
+		const appendPath = path.join(systemDir, "APPEND_SYSTEM.md");
+
+		const applyOverlay = createAutoDiscoveredSystemPromptOverride(() => projectDir);
+		expect(await applyOverlay(["embedded prompt", "project block"])).toEqual(["embedded prompt", "project block"]);
+
+		fs.mkdirSync(systemDir, { recursive: true });
+		fs.writeFileSync(appendPath, "Append instructions");
+		expect(await applyOverlay(["embedded prompt", "project block"])).toEqual([
+			"embedded prompt",
+			"project block",
+			"Append instructions",
+		]);
 	});
 });

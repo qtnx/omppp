@@ -282,6 +282,7 @@ describe("live learnings runtime", () => {
 		const writerOptions = writerSpy.mock.calls[0]?.[0];
 		expect(writerOptions?.agent.name).toBe("learning-writer");
 		expect(writerOptions?.agent.tools).toEqual(["read"]);
+		expect(writerOptions?.modelOverride).toEqual(["pi/plan", "pi/default"]);
 		expect(writerOptions?.contextFile).toBe(path.join(fx.agentDir, "sessions", "session-1.jsonl"));
 		expect(writerOptions?.task).toContain("Preserve only facts that are explicitly present in the user message.");
 		expect(writerOptions?.task).toContain("Do not add details, causes, scope, or examples the user did not state.");
@@ -306,6 +307,56 @@ describe("live learnings runtime", () => {
 			"live-learning: stored",
 			expect.objectContaining({ cwd: fx.cwd, scope: "repo", trigger: "complaint" }),
 		);
+	});
+
+	test("routes the writer agent through the configured learning.writerModels chain", async () => {
+		const fx = await createFixture({ "learning.writerModels": ["openai/plan-model", "openai/smol-model"] });
+		vi.spyOn(logger, "debug").mockImplementation(() => {});
+		vi.spyOn(ai, "completeSimple").mockResolvedValueOnce(
+			toolUseMessage([
+				{
+					type: "toolCall",
+					id: "decision-writer-model",
+					name: "record_learning_decision",
+					arguments: {
+						store: true,
+						scope: "repo",
+						trigger: "guideline",
+						confidence: 0.95,
+						reason: "User set a durable guideline.",
+					},
+				},
+			]),
+		);
+		const writerSpy = vi
+			.spyOn(taskExecutor, "runSubprocess")
+			.mockResolvedValueOnce(agentWriterResult("Always rebuild the global omp binary after applying a fix."));
+
+		startLearningStartupTask({
+			session: fx.session,
+			settings: fx.settings,
+			modelRegistry: fx.modelRegistry,
+			agentDir: fx.agentDir,
+			taskDepth: 0,
+		});
+
+		fx.emit({
+			type: "agent_end",
+			messages: [
+				{
+					role: "user",
+					content: "Sau khi fix xong thì luôn rebuild lại global omp binary.",
+					attribution: "user",
+					timestamp: Date.now(),
+				},
+			],
+		});
+
+		await waitFor(() => {
+			expect(writerSpy).toHaveBeenCalledTimes(1);
+		});
+
+		expect(writerSpy.mock.calls[0]?.[0]?.modelOverride).toEqual(["openai/plan-model", "openai/smol-model"]);
 	});
 
 	test("lets the writer agent reject a false-positive classifier decision", async () => {

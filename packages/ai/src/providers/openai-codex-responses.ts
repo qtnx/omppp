@@ -133,6 +133,26 @@ const CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX = "Codex websocket transport error"
 const CODEX_RETRYABLE_EVENT_CODES = new Set(["model_error", "server_error", "internal_error"]);
 const CODEX_RETRYABLE_EVENT_MESSAGE =
 	/processing your request|retry your request|temporar(?:y|ily)|overloaded|service.?unavailable|internal error|server error/i;
+/**
+ * Codex/ChatGPT OAuth-token rejections (error codes + the verbatim
+ * "Encountered invalidated oauth token for user, failing request" message).
+ * These signal a dead *access* token while the refresh token is usually still
+ * valid, so they must drive credential rotation rather than surface as a hard
+ * failure. They carry no HTTP 401 status on the stream event, so we detect and
+ * tag them explicitly (see {@link createCodexProviderStreamError}).
+ */
+const CODEX_AUTH_ERROR_CODES = new Set([
+	"invalid_token",
+	"invalid_oauth_token",
+	"oauth_token_invalid",
+	"token_expired",
+	"token_revoked",
+	"invalid_authentication",
+	"invalid_api_key",
+	"unauthorized",
+]);
+const CODEX_AUTH_ERROR_MESSAGE =
+	/oauth[ _-]?token|invalid[ _-]?(?:access[ _-]?|authentication[ _-]?)?token|token[ _-]?(?:expired|revoked|invalidated)|invalid[ _-]?authentication|\bunauthorized\b/i;
 const CODEX_PROVIDER_SESSION_STATE_KEY = "openai-codex-responses";
 const X_CODEX_TURN_STATE_HEADER = "x-codex-turn-state";
 const X_MODELS_ETAG_HEADER = "x-models-etag";
@@ -2637,7 +2657,12 @@ async function openCodexSseEventStream(
 		const info = await parseCodexError(response);
 		const error = new Error(info.friendlyMessage || info.message);
 		(error as { headers?: Headers; status?: number }).headers = response.headers;
-		(error as { headers?: Headers; status?: number }).status = response.status;
+		// An OAuth-token rejection can come back wrapped in a non-401 status
+		// (e.g. 403/5xx) with the invalidation phrasing in the body. Normalize
+		// it to 401 so credential rotation engages just like the in-stream path.
+		const isAuthTokenError = CODEX_AUTH_ERROR_MESSAGE.test(info.raw || info.message);
+		(error as { headers?: Headers; status?: number }).status =
+			isAuthTokenError && response.status !== 401 ? 401 : response.status;
 		throw error;
 	}
 	if (!response.body) {
@@ -2935,12 +2960,14 @@ function getString(value: unknown): string | undefined {
 class CodexProviderStreamError extends Error {
 	readonly retryable: boolean;
 	readonly code?: string;
+	readonly status?: number;
 
-	constructor(message: string, retryable: boolean, code?: string) {
+	constructor(message: string, retryable: boolean, code?: string, status?: number) {
 		super(message);
 		this.name = "CodexProviderStreamError";
 		this.retryable = retryable;
 		this.code = code;
+		this.status = status;
 	}
 }
 
@@ -2955,6 +2982,17 @@ function isRetryableCodexFailureEvent(rawEvent: Record<string, unknown>): boolea
 	return !!message && CODEX_RETRYABLE_EVENT_MESSAGE.test(message);
 }
 
+function isCodexAuthErrorEvent(rawEvent: Record<string, unknown>): boolean {
+	const response = asRecord(rawEvent.response);
+	const error = asRecord(rawEvent.error) ?? (response ? asRecord(response.error) : null);
+	const code = getString(error?.code) ?? getString(error?.type) ?? getString(rawEvent.code);
+	if (code && CODEX_AUTH_ERROR_CODES.has(code.toLowerCase())) {
+		return true;
+	}
+	const message = getString(error?.message) ?? getString(rawEvent.message) ?? getString(response?.message);
+	return !!message && CODEX_AUTH_ERROR_MESSAGE.test(message);
+}
+
 function createCodexProviderStreamError(rawEvent: Record<string, unknown>): CodexProviderStreamError {
 	const code = getString(rawEvent.code) ?? "";
 	const message = getString(rawEvent.message) ?? "";
@@ -2962,7 +3000,17 @@ function createCodexProviderStreamError(rawEvent: Record<string, unknown>): Code
 		typeof rawEvent.type === "string" && rawEvent.type === "error"
 			? formatCodexErrorEvent(rawEvent, code, message)
 			: (formatCodexFailure(rawEvent) ?? "Codex response failed");
-	return new CodexProviderStreamError(formattedMessage, isRetryableCodexFailureEvent(rawEvent), code || undefined);
+	// OAuth-token rejections (e.g. "Encountered invalidated oauth token for
+	// user, failing request") arrive as in-stream error events with no HTTP
+	// status attached. Tag them 401 so streamSimple's onAuthError hook rotates
+	// to a sibling credential instead of surfacing a hard failure.
+	const status = isCodexAuthErrorEvent(rawEvent) ? 401 : undefined;
+	return new CodexProviderStreamError(
+		formattedMessage,
+		isRetryableCodexFailureEvent(rawEvent),
+		code || undefined,
+		status,
+	);
 }
 
 function isRetryableCodexProviderError(error: unknown): boolean {

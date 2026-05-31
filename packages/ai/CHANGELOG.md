@@ -86,6 +86,10 @@
 
 - Fixed Anthropic adaptive-thinking replay preserving signed thinking blocks on the latest abandoned tool-use assistant message, avoiding `thinking blocks in the latest assistant message cannot be modified` 400s. ([#1531](https://github.com/can1357/oh-my-pi/issues/1531))
 
+### Fixed
+
+- Fixed OpenAI Codex multi-account routing so an invalidated/expired OAuth access token (e.g. `Encountered invalidated oauth token for user, failing request`) no longer surfaces as a hard failure. The codex provider tags OAuth-token rejections — whether they arrive as in-stream `error`/`response.failed` events or non-401 HTTP bodies — as HTTP 401 so the auth-retry path engages. On that retry the agent now force-refreshes the matching credential via the new `AuthStorage.refreshCredentialMatching` (the access token is dead but the refresh token is still valid) and retries the same account with a freshly minted token, only falling back to blocking + rotating to a sibling account when the force-refresh genuinely fails.
+
 ## [15.5.15] - 2026-05-30
 
 ### Added
