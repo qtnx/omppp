@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a Learning Audit dashboard tab with API endpoints for inspecting persisted live-learning classifier and writer artifacts.
+
+
 ## [15.1.6] - 2026-05-19
 
 ### Fixed

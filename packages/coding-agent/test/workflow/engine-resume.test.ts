@@ -30,7 +30,16 @@ describe("WorkflowRun with journal", () => {
 			resolveAgent: () => ({ name: "workflow-subagent" }) as AgentDefinition,
 			runSubprocess: async o => {
 				calls++;
-				return { index: o.index, id: o.id, output: "LIVE" } as SingleResult;
+				return {
+					index: o.index,
+					id: o.id,
+					exitCode: 0,
+					output: "LIVE",
+					stderr: "",
+					truncated: false,
+					durationMs: 0,
+					tokens: 0,
+				} as SingleResult;
 			},
 			journal,
 		});

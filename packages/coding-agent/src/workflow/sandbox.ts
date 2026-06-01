@@ -32,6 +32,46 @@ export function validateSyntax(source: string): SyntaxResult {
 	}
 }
 
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+	if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+	const then = (value as { then?: unknown }).then;
+	return typeof then === "function";
+}
+
+function isPlainObject(value: object): value is Record<string, unknown> {
+	return Object.prototype.toString.call(value) === "[object Object]";
+}
+
+async function resolveWorkflowReturnValueInner(value: unknown, seen: WeakSet<object>): Promise<unknown> {
+	const resolved = isPromiseLike(value) ? await value : value;
+	if (resolved === null) return null;
+	if (typeof resolved !== "object") return resolved;
+	if (!Array.isArray(resolved) && !isPlainObject(resolved)) return resolved;
+	if (seen.has(resolved)) {
+		throw new Error("Workflow return value contains a circular reference.");
+	}
+	seen.add(resolved);
+	if (Array.isArray(resolved)) {
+		const output: unknown[] = [];
+		for (const item of resolved) {
+			output.push(await resolveWorkflowReturnValueInner(item, seen));
+		}
+		seen.delete(resolved);
+		return output;
+	}
+	const record = resolved as Record<string, unknown>;
+	const output: Record<string, unknown> = {};
+	for (const key of Object.keys(record)) {
+		output[key] = await resolveWorkflowReturnValueInner(record[key], seen);
+	}
+	seen.delete(resolved);
+	return output;
+}
+
+export async function resolveWorkflowReturnValue(value: unknown): Promise<unknown> {
+	return resolveWorkflowReturnValueInner(value, new WeakSet<object>());
+}
+
 const DETERMINISM_INIT = `
 "use strict";
 Math.random = () => {
@@ -70,5 +110,6 @@ export async function runWorkflowScript(
 	options: { filename?: string } = {},
 ): Promise<unknown> {
 	const ctx = createWorkflowContext({ ...globals, args });
-	return await vm.runInContext(transformSource(source), ctx, { filename: options.filename ?? "workflow.js" });
+	const value = await vm.runInContext(transformSource(source), ctx, { filename: options.filename ?? "workflow.js" });
+	return resolveWorkflowReturnValue(value);
 }

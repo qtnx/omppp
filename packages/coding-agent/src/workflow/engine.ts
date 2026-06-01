@@ -83,6 +83,19 @@ function withTerminalProgressStatus(
 	return { ...progress, status };
 }
 
+function parseStructuredOutput(output: string, label: string): unknown {
+	try {
+		return JSON.parse(output);
+	} catch {
+		throw new Error(`agent("${label}") returned non-JSON output despite schema validation.`);
+	}
+}
+
+function formatModelLabel(model: string | string[] | undefined): string | undefined {
+	if (Array.isArray(model)) return model.join(", ");
+	return model;
+}
+
 export class WorkflowRun {
 	readonly runId: string;
 	readonly cwd: string;
@@ -94,6 +107,7 @@ export class WorkflowRun {
 	#currentPhase: string | undefined;
 	#tokensSpent = 0;
 	#prevKey = "";
+	#pendingAgents = new Set<Promise<unknown | null>>();
 	readonly #semaphore: Semaphore;
 	readonly #opts: WorkflowRunOptions;
 
@@ -137,7 +151,23 @@ export class WorkflowRun {
 		return (opts.label ?? prompt.slice(0, 60)).replace(/\s+/g, " ").trim() || "agent";
 	}
 
-	async spawn(prompt: string, opts: WorkflowAgentOpts): Promise<string | null> {
+	spawn(prompt: string, opts: WorkflowAgentOpts): Promise<unknown | null> {
+		const promise = this.#spawn(prompt, opts);
+		this.#pendingAgents.add(promise);
+		const removePending = () => {
+			this.#pendingAgents.delete(promise);
+		};
+		promise.then(removePending, removePending);
+		return promise;
+	}
+
+	async waitForIdle(): Promise<void> {
+		while (this.#pendingAgents.size > 0) {
+			await Promise.allSettled(Array.from(this.#pendingAgents));
+		}
+	}
+
+	async #spawn(prompt: string, opts: WorkflowAgentOpts): Promise<unknown | null> {
 		if (this.signal.aborted) return null;
 		const iso = opts.isolation as string | undefined;
 		if (iso) {
@@ -166,7 +196,7 @@ export class WorkflowRun {
 				state: "cached",
 				agentId: cached.agentId,
 			});
-			return cached.result;
+			return opts.schema ? parseStructuredOutput(cached.result, label) : cached.result;
 		}
 
 		const index = ++this.#spawnIndex;
@@ -194,7 +224,7 @@ export class WorkflowRun {
 		};
 		emitAgent({
 			state: "start",
-			model: opts.model,
+			model: formatModelLabel(opts.model),
 		});
 
 		try {
@@ -214,7 +244,7 @@ export class WorkflowRun {
 					latestProgress = cloned;
 					emitAgent({
 						state: workflowStateForProgress(cloned.status),
-						model: cloned.resolvedModel ?? opts.model,
+						model: cloned.resolvedModel ?? formatModelLabel(opts.model),
 						progress: cloned,
 					});
 				},
@@ -226,12 +256,17 @@ export class WorkflowRun {
 				const progress = withTerminalProgressStatus(latestProgress, "aborted");
 				emitAgent({
 					state: "error",
-					model: result.resolvedModel ?? progress?.resolvedModel ?? opts.model,
+					model: result.resolvedModel ?? progress?.resolvedModel ?? formatModelLabel(opts.model),
 					error: "aborted",
 					durationMs: Date.now() - startedAt,
 					progress,
 				});
 				return null;
+			}
+			if (result.exitCode !== 0) {
+				throw new Error(
+					result.stderr || result.error || `agent("${label}") failed with exit code ${result.exitCode}`,
+				);
 			}
 			if (this.#opts.journal && typeof result.output === "string") {
 				await this.#opts.journal.recordResult(cacheKey, agentId, result.output);
@@ -239,17 +274,17 @@ export class WorkflowRun {
 			const progress = withTerminalProgressStatus(latestProgress, "completed");
 			emitAgent({
 				state: "done",
-				model: result.resolvedModel ?? progress?.resolvedModel ?? opts.model,
+				model: result.resolvedModel ?? progress?.resolvedModel ?? formatModelLabel(opts.model),
 				tokens,
 				durationMs: Date.now() - startedAt,
 				progress,
 			});
-			return result.output;
+			return opts.schema ? parseStructuredOutput(result.output, label) : result.output;
 		} catch (error) {
 			const progress = withTerminalProgressStatus(latestProgress, "failed");
 			emitAgent({
 				state: "error",
-				model: progress?.resolvedModel ?? opts.model,
+				model: progress?.resolvedModel ?? formatModelLabel(opts.model),
 				error: error instanceof Error ? error.message : String(error),
 				durationMs: Date.now() - startedAt,
 				progress,

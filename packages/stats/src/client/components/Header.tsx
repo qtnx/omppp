@@ -1,9 +1,9 @@
 import { Activity, RefreshCw } from "lucide-react";
 import type { TimeRange } from "../types";
 
-type Tab = "overview" | "traces" | "requests" | "errors" | "models" | "costs" | "behavior";
+type Tab = "overview" | "traces" | "requests" | "errors" | "models" | "costs" | "behavior" | "learning";
 
-const tabs: Tab[] = ["overview", "traces", "requests", "errors", "models", "costs", "behavior"];
+const tabs: Tab[] = ["overview", "traces", "requests", "errors", "models", "costs", "behavior", "learning"];
 const timeRanges: { label: string; value: TimeRange }[] = [
 	{ label: "1h", value: "1h" },
 	{ label: "24h", value: "24h" },

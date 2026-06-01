@@ -90,7 +90,7 @@ describe("generateFileMentionMessages path resolution", () => {
 		});
 		expect(messages).toHaveLength(1);
 		const message = messages[0];
-		if (!message || message.role !== "fileMention") {
+		if (message?.role !== "fileMention") {
 			throw new Error("expected file mention message");
 		}
 		expect(message.files[0]?.path).toBe("be/src/api.ts");

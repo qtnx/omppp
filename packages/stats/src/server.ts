@@ -15,6 +15,7 @@ import {
 	syncAllSessions,
 } from "./aggregator";
 import embeddedClientArchiveTxt from "./embedded-client.generated.txt";
+import { getLearningAuditDetail, listLearningAudits } from "./learning-audit";
 import { getSessionTrace, listSessions } from "./sessions";
 
 const getEmbeddedClientArchive = (() => {
@@ -200,6 +201,24 @@ async function handleApi(req: Request): Promise<Response> {
 		return Response.json(trace);
 	}
 
+	if (path === "/api/learnings/audit") {
+		const limit = url.searchParams.get("limit");
+		const offset = url.searchParams.get("offset");
+		const audits = await listLearningAudits({
+			query: url.searchParams.get("query"),
+			limit: limit ? Number(limit) : undefined,
+			offset: offset ? Number(offset) : undefined,
+		});
+		return Response.json(audits);
+	}
+
+	if (path.startsWith("/api/learnings/audit/")) {
+		const id = path.slice("/api/learnings/audit/".length);
+		if (!id) return new Response("Bad Request", { status: 400 });
+		const detail = await getLearningAuditDetail(decodeURIComponent(id));
+		if (!detail) return new Response("Not Found", { status: 404 });
+		return Response.json(detail);
+	}
 	if (path === "/api/stats") {
 		const stats = await getDashboardStats(range);
 		return Response.json(stats);

@@ -23,7 +23,7 @@ export interface WorkflowAgentOpts {
 	phase?: string;
 	/** JTD schema object (same format as the task tool's `schema`); forces structured output. */
 	schema?: unknown;
-	model?: string;
+	model?: string | string[];
 	/** Reserved for worktree isolation. */
 	isolation?: "worktree";
 	/** Named agent type from discovered agents; defaults to bundled `workflow-subagent`. */

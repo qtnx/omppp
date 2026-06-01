@@ -19,7 +19,17 @@ describe("workflow end-to-end (stubbed subprocess)", () => {
 			emit: f => frames.push(f),
 			resolveAgent: () => ({ name: "workflow-subagent" }) as AgentDefinition,
 			runSubprocess: async o =>
-				({ index: o.index, id: o.id, output: `R(${o.task})`, usage: { output: 5 } }) as SingleResult,
+				({
+					index: o.index,
+					id: o.id,
+					exitCode: 0,
+					output: `R(${o.task})`,
+					stderr: "",
+					truncated: false,
+					durationMs: 0,
+					tokens: 0,
+					usage: { output: 5 },
+				}) as SingleResult,
 		});
 		const globals = createWorkflowGlobals(run, { topics: ["a", "b"] });
 

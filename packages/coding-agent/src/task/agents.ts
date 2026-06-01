@@ -111,6 +111,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 		frontmatter: {
 			name: "workflow-subagent",
 			description: "Internal subagent for workflow script orchestration.",
+			model: "pi/task",
 		},
 		template: workflowSubagentMd,
 	},

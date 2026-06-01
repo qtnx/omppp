@@ -6,6 +6,7 @@ import * as path from "node:path";
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { AsyncJobManager } from "../async";
+import { resolveAgentModelPatterns } from "../config/model-resolver";
 import { MCPManager } from "../mcp/manager";
 import workflowDescription from "../prompts/tools/workflow.md" with { type: "text" };
 import { getBundledAgent } from "../task/agents";
@@ -37,6 +38,22 @@ function emptyDetails(runId: string): WorkflowToolDetails {
 	return { runId, phases: [], agents: [], logs: [] };
 }
 
+export function resolveWorkflowAgentModelOverride(args: {
+	settings: ToolSession["settings"];
+	agent: AgentDefinition;
+	explicitModel?: string | string[];
+	parentActiveModelPattern?: string;
+	fallbackModelPattern?: string;
+}): string[] {
+	const agentModelOverrides = args.settings.get("task.agentModelOverrides");
+	return resolveAgentModelPatterns({
+		settingsOverride: args.explicitModel ?? agentModelOverrides[args.agent.name],
+		agentModel: args.agent.model,
+		settings: args.settings,
+		activeModelPattern: args.parentActiveModelPattern,
+		fallbackModelPattern: args.fallbackModelPattern,
+	});
+}
 export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowToolDetails> {
 	readonly name = "workflow";
 	readonly approval = "exec" as const;
@@ -195,13 +212,22 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 			emit,
 			resolveAgent: this.#resolveAgent,
 			journal,
-			runSubprocess: (options: ExecutorOptions) =>
-				runSubprocess({
+			runSubprocess: (options: ExecutorOptions) => {
+				const parentActiveModelPattern = this.session.getActiveModelString?.();
+				const modelOverride = resolveWorkflowAgentModelOverride({
+					settings: this.session.settings,
+					agent: options.agent,
+					explicitModel: options.modelOverride,
+					parentActiveModelPattern,
+					fallbackModelPattern: this.session.getModelString?.(),
+				});
+				return runSubprocess({
 					// Mirrors task/index.ts:989-1031 — keep this wiring in sync with the task tool.
 					...options,
+					modelOverride,
 					assignment: options.task,
 					taskDepth: (this.session.taskDepth ?? 0) + 1,
-					parentActiveModelPattern: this.session.getActiveModelString?.(),
+					parentActiveModelPattern,
 					persistArtifacts: !!artifactsDir,
 					artifactsDir: transcriptDir,
 					eventBus: this.session.eventBus,
@@ -221,7 +247,8 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 					parentArtifactManager: this.session.getArtifactManager?.() ?? undefined,
 					parentHindsightSessionState: this.session.getHindsightSessionState?.(),
 					parentEvalSessionId: this.session.getEvalSessionId?.() ?? undefined,
-				}),
+				});
+			},
 		});
 
 		const globals = createWorkflowGlobals(run, args, {
@@ -251,6 +278,7 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 			const msg = error instanceof Error ? error.message : String(error);
 			return `Workflow "${meta.name}" (${runId}) failed: ${msg}`;
 		} finally {
+			await run.waitForIdle();
 			await journal?.close();
 		}
 	}

@@ -203,6 +203,63 @@ export interface BehaviorDashboardStats {
 	behaviorSeries: BehaviorTimeSeriesPoint[];
 }
 
+export interface LearningAuditSummary {
+	id: string;
+	createdAt: number;
+	updatedAt: number;
+	sessionId: string;
+	cwd: string;
+	sourceMessageHash: string;
+	userMessagePreview: string;
+	scope: string;
+	trigger: string;
+	confidence: number | null;
+	reason: string;
+	classifierStatus: string;
+	classifierModel: string;
+	classifierError: string;
+	writerStatus: string;
+	writerModel: string;
+	writerExitCode: number | null;
+	stored: boolean;
+	outcome: string;
+	auditDir: string;
+	auditJsonPath: string;
+	classifierRequestPath: string;
+	classifierResponsePath: string;
+	writerRequestPath: string;
+	writerResultPath: string;
+	writerSessionPath: string;
+	writerOutputPath: string;
+}
+
+export interface LearningAuditListResponse {
+	audits: LearningAuditSummary[];
+	total: number;
+}
+
+export interface LearningAuditFile {
+	path: string;
+	content: string;
+	truncated: boolean;
+	size: number;
+	error?: string;
+}
+
+export interface LearningAuditDetail {
+	audit: LearningAuditSummary;
+	auditJson: unknown;
+	files: {
+		candidate: LearningAuditFile;
+		classifierRequest: LearningAuditFile;
+		classifierResponse: LearningAuditFile;
+		writerRequest: LearningAuditFile;
+		writerResult: LearningAuditFile;
+		writerSession: LearningAuditFile;
+		writerOutput: LearningAuditFile;
+	};
+}
+
 export interface SessionStatsAggregate {
 	sessionFile: string;
 	folder: string;

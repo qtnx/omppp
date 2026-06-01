@@ -15,6 +15,7 @@ import { ChartsContainer } from "./components/ChartsContainer";
 import { CostChart } from "./components/CostChart";
 import { CostSummary } from "./components/CostSummary";
 import { Header } from "./components/Header";
+import { LearningAuditView } from "./components/LearningAuditView";
 import { ModelsTable } from "./components/ModelsTable";
 import { RequestDetail } from "./components/RequestDetail";
 import { RequestList } from "./components/RequestList";
@@ -29,7 +30,7 @@ import type {
 	TimeRange,
 } from "./types";
 
-type Tab = "overview" | "traces" | "requests" | "errors" | "models" | "costs" | "behavior";
+type Tab = "overview" | "traces" | "requests" | "errors" | "models" | "costs" | "behavior" | "learning";
 
 export default function App() {
 	const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
@@ -203,6 +204,8 @@ export default function App() {
 						)}
 					</div>
 				)}
+
+				{activeTab === "learning" && <LearningAuditView />}
 
 				{selectedRequest !== null && (
 					<RequestDetail id={selectedRequest} onClose={() => setSelectedRequest(null)} />

@@ -2,6 +2,8 @@ import type {
 	BehaviorDashboardStats,
 	CostDashboardStats,
 	DashboardStats,
+	LearningAuditDetail,
+	LearningAuditListResponse,
 	MessageStats,
 	ModelDashboardStats,
 	OverviewStats,
@@ -79,4 +81,18 @@ export async function getSessionTrace(path: string): Promise<SessionTrace> {
 	const res = await fetch(`${API_BASE}/sessions/trace?${params.toString()}`);
 	if (!res.ok) throw new Error("Failed to fetch session trace");
 	return res.json() as Promise<SessionTrace>;
+}
+
+export async function getLearningAudits(query = "", limit = 100): Promise<LearningAuditListResponse> {
+	const params = new URLSearchParams({ limit: String(limit) });
+	if (query.trim()) params.set("query", query.trim());
+	const res = await fetch(`${API_BASE}/learnings/audit?${params.toString()}`);
+	if (!res.ok) throw new Error("Failed to fetch learning audit events");
+	return res.json() as Promise<LearningAuditListResponse>;
+}
+
+export async function getLearningAuditDetail(id: string): Promise<LearningAuditDetail> {
+	const res = await fetch(`${API_BASE}/learnings/audit/${encodeURIComponent(id)}`);
+	if (!res.ok) throw new Error("Failed to fetch learning audit detail");
+	return res.json() as Promise<LearningAuditDetail>;
 }

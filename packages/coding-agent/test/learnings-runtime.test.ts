@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, type Mock, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -14,7 +15,7 @@ import {
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SingleResult } from "@oh-my-pi/pi-coding-agent/task";
 import * as taskExecutor from "@oh-my-pi/pi-coding-agent/task/executor";
-import { logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { getAgentDbPath, logger, Snowflake } from "@oh-my-pi/pi-utils";
 
 interface LearningFixture {
 	agentDir: string;
@@ -207,6 +208,40 @@ function agentWriterAbortResult(): SingleResult {
 		resolvedModel: "anthropic/claude-opus-4-8:high",
 	};
 }
+
+interface LearningAuditTestRow {
+	id: string;
+	session_id: string;
+	cwd: string;
+	outcome: string;
+	classifier_status: string;
+	writer_status: string;
+	stored: number;
+	audit_dir: string;
+	audit_json_path: string;
+	classifier_request_path: string;
+	classifier_response_path: string;
+	writer_request_path: string;
+	writer_result_path: string;
+	writer_session_path: string;
+	writer_output_path: string;
+}
+
+function readLearningAuditRows(agentDir: string): LearningAuditTestRow[] {
+	const db = new Database(getAgentDbPath(agentDir));
+	try {
+		return db
+			.prepare("SELECT * FROM live_learning_audit_events ORDER BY created_at DESC")
+			.all() as LearningAuditTestRow[];
+	} finally {
+		db.close();
+	}
+}
+
+async function readJsonFile(filePath: string): Promise<Record<string, unknown>> {
+	return (await Bun.file(filePath).json()) as Record<string, unknown>;
+}
+
 describe("live learnings runtime", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -307,6 +342,80 @@ describe("live learnings runtime", () => {
 			"live-learning: stored",
 			expect.objectContaining({ cwd: fx.cwd, scope: "repo", trigger: "complaint" }),
 		);
+	});
+
+	test("writes classifier and writer audit artifacts for each learning run", async () => {
+		const fx = await createFixture();
+		vi.spyOn(logger, "debug").mockImplementation(() => {});
+		vi.spyOn(ai, "completeSimple").mockResolvedValueOnce(
+			toolUseMessage([
+				{
+					type: "toolCall",
+					id: "decision-audit",
+					name: "record_learning_decision",
+					arguments: {
+						store: true,
+						scope: "repo",
+						trigger: "guideline",
+						confidence: 0.94,
+						reason: "User asked for auditable learning logs.",
+					},
+				},
+			]),
+		);
+		const writerSpy = vi
+			.spyOn(taskExecutor, "runSubprocess")
+			.mockResolvedValueOnce(agentWriterResult("Persist raw learning classifier and writer artifacts for audit."));
+
+		startLearningStartupTask({
+			session: fx.session,
+			settings: fx.settings,
+			modelRegistry: fx.modelRegistry,
+			agentDir: fx.agentDir,
+			taskDepth: 0,
+		});
+		fx.emit({
+			type: "agent_end",
+			messages: [
+				{
+					role: "user",
+					content: "Audit this learning path: dump classifier and writer raw messages so I can inspect them.",
+					attribution: "user",
+					timestamp: Date.now(),
+				},
+			],
+		});
+
+		await waitFor(() => {
+			expect(readLearningAuditRows(fx.agentDir)).toHaveLength(1);
+		});
+		const [audit] = readLearningAuditRows(fx.agentDir);
+		expect(audit).toMatchObject({
+			session_id: "session-1",
+			cwd: fx.cwd,
+			outcome: "stored",
+			classifier_status: "success",
+			writer_status: "store",
+			stored: 1,
+		});
+		expect(writerSpy.mock.calls[0]?.[0]?.artifactsDir).toBe(audit.audit_dir);
+		expect(writerSpy.mock.calls[0]?.[0]?.persistArtifacts).toBe(true);
+
+		const candidate = await readJsonFile(path.join(audit.audit_dir, "candidate.json"));
+		const classifierRequest = await readJsonFile(audit.classifier_request_path);
+		const classifierResponse = await readJsonFile(audit.classifier_response_path);
+		const writerRequest = await readJsonFile(audit.writer_request_path);
+		const writerResult = await readJsonFile(audit.writer_result_path);
+		const auditJson = await readJsonFile(audit.audit_json_path);
+
+		expect(JSON.stringify(candidate)).toContain("Audit this learning path");
+		expect(JSON.stringify(classifierRequest)).toContain("You classify one latest user-authored message");
+		expect(JSON.stringify(classifierResponse)).toContain("User asked for auditable learning logs");
+		expect(JSON.stringify(writerRequest)).toContain("Audit this learning path");
+		expect(writerResult.status).toBe("store");
+		expect(auditJson.outcome).toBe("stored");
+		expect(audit.writer_session_path).toBe(path.join(audit.audit_dir, "learning-writer.jsonl"));
+		expect(audit.writer_output_path).toBe(path.join(audit.audit_dir, "learning-writer.md"));
 	});
 
 	test("routes the writer agent through the configured learning.writerModels chain", async () => {

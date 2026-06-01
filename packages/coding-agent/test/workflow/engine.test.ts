@@ -17,7 +17,17 @@ function makeRun(opts: {
 		allocateId: async label => `0-${label}`,
 		emit: () => {},
 		resolveAgent: () => ({ name: "workflow-subagent" }) as AgentDefinition,
-		runSubprocess: async o => ({ index: o.index, id: o.id, ...(await opts.runSubprocess(o.task)) }) as SingleResult,
+		runSubprocess: async o =>
+			({
+				index: o.index,
+				id: o.id,
+				exitCode: 0,
+				stderr: "",
+				truncated: false,
+				durationMs: 0,
+				tokens: 0,
+				...(await opts.runSubprocess(o.task)),
+			}) as SingleResult,
 	});
 }
 

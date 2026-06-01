@@ -144,6 +144,15 @@
 - Fixed unbounded MCP reconnect loop that could fork-bomb the host when a stdio MCP server completes the `initialize`/`tools/list` handshake and then exits. `MCPManager` now enforces a per-server crash circuit breaker (5 reconnects per 30 s window) on the automatic `transport.onClose` path; manual `/mcp reconnect` resets the window so users can recover after fixing the misconfiguration ([#1592](https://github.com/can1357/oh-my-pi/issues/1592)).
 - Fixed auto context maintenance to include the pending prompt in the pre-send token estimate, so large user turns compact history before the provider rejects an over-limit request ([#1618](https://github.com/can1357/oh-my-pi/issues/1618)).
 
+### Added
+
+- Added live-learning audit artifacts for every classifier and writer run, including classifier request/response dumps, writer request/result dumps, and persisted writer-agent JSONL paths.
+
+
+### Fixed
+
+- Fixed workflow subagents to honor structured-output schemas, fail failed subagent calls instead of returning error JSON as success, resolve returned `agent()` promises before serializing the workflow return value, wait for orphaned spawned agents before reporting completion, and default through the task model role instead of inheriting the active session model.
+
 ## [15.7.4] - 2026-05-31
 
 ### Removed

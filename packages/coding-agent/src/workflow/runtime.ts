@@ -12,7 +12,7 @@ export interface WorkflowGlobalDeps {
 }
 
 export interface WorkflowGlobals {
-	agent: (prompt: string, opts?: WorkflowAgentOpts) => Promise<string | null>;
+	agent: (prompt: string, opts?: WorkflowAgentOpts) => Promise<unknown | null>;
 	parallel: <T>(thunks: Array<() => Promise<T>>) => Promise<(T | null)[]>;
 	pipeline: (
 		items: unknown[],
