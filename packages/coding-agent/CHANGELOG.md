@@ -317,6 +317,10 @@
 - Added the `learning.writerModels` setting — an ordered model/role fallback chain for the live-learning writer agent, paralleling `learning.classifierModels`. When unset it keeps the previous `pi/plan` → `pi/default` default chain.
 - Added live reload for `.omp/SYSTEM.md` and `.omp/APPEND_SYSTEM.md` prompt overlays, a `/reload-prompt` command, and `/restart` self-resume support so running TUI sessions can apply prompt-overlay edits or a replaced binary without manually exiting first.
 
+### Changed
+
+- Kept the task delegation tool in the default active built-in tool set when full tool discovery is enabled, and enabled eager task delegation by default.
+
 ### Fixed
 
 - Fixed Hindsight per-project-tagged memory scoping so recall/reflect and mental-model injection require the current `project:<repo>` tag, while resolving that repo identity through Git's primary checkout so sibling worktrees share memory without leaking unrelated repositories.

@@ -108,6 +108,8 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		const prompt = session.systemPrompt.join("\n");
 		const searchTool = session.agent.state.tools.find(tool => tool.name === "search_tool_bm25");
 		expect(session.getActiveToolNames()).not.toContain("find");
+		expect(session.getActiveToolNames()).toContain("task");
+		expect(prompt).toContain("## Eager Tasks");
 		expect(prompt).toContain("call `search_tool_bm25` before concluding no such tool exists");
 		expect(searchTool?.description).toContain("Total discoverable tools available:");
 	});

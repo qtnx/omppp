@@ -81,6 +81,11 @@ describe("computeEssentialBuiltinNames", () => {
 		expect(computeEssentialBuiltinNames(settings).sort()).toEqual([...DEFAULT_ESSENTIAL_TOOL_NAMES].sort());
 	});
 
+	it("keeps task in the default essential tool set", () => {
+		const settings = Settings.isolated({});
+		expect(computeEssentialBuiltinNames(settings).sort()).toEqual(["bash", "edit", "read", "task"].sort());
+	});
+
 	it("respects tools.essentialOverride when provided", () => {
 		const settings = Settings.isolated({ "tools.essentialOverride": ["read", "find"] });
 		expect(computeEssentialBuiltinNames(settings).sort()).toEqual(["find", "read"]);
@@ -114,5 +119,12 @@ describe("tools.discoveryMode settings schema", () => {
 	it("back-compat: mcp.discoveryMode still accepted", () => {
 		const settings = Settings.isolated({ "mcp.discoveryMode": true });
 		expect(settings.get("mcp.discoveryMode")).toBe(true);
+	});
+});
+
+describe("task.eager settings schema", () => {
+	it("defaults to eager task delegation", () => {
+		const settings = Settings.isolated({});
+		expect(settings.get("task.eager")).toBe(true);
 	});
 });

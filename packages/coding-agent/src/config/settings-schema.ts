@@ -2600,7 +2600,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			label: "Essential Tools Override",
 			description:
-				"Override the always-loaded built-in tools (default: read, bash, edit). Leave empty to use defaults.",
+				"Override the always-loaded built-in tools (default: read, bash, edit, task). Leave empty to use defaults.",
 		},
 	},
 
@@ -2776,7 +2776,7 @@ export const SETTINGS_SCHEMA = {
 
 	"task.eager": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "tasks",
 			label: "Prefer Task Delegation",
