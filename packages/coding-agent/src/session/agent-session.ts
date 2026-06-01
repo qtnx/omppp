@@ -7309,7 +7309,7 @@ export class AgentSession {
 		// the oversized input still gets resolved.
 		if (compactionSettings.strategy === "shake") {
 			const outcome = await this.#runAutoShake(reason, willRetry, generation, shouldAutoContinue);
-			if (outcome !== "fallback") return "compacted";
+			if (outcome !== "fallback") return outcome;
 		}
 		// "overflow" and "incomplete" force inline execution because they are recovery
 		// paths the caller wants resolved before scheduling the next turn. "idle" is
@@ -7713,14 +7713,14 @@ export class AgentSession {
 	 *
 	 * Returns `"fallback"` only for an overflow recovery where shake reclaimed
 	 * nothing (or threw) — the caller then runs the summary-compaction body so
-	 * the oversized input still gets resolved. Returns `"handled"` otherwise.
+	 * the oversized input still gets resolved.
 	 */
 	async #runAutoShake(
 		reason: "overflow" | "threshold" | "idle" | "incomplete" | "topic-switch",
 		willRetry: boolean,
 		generation: number,
 		autoContinue: boolean,
-	): Promise<"handled" | "fallback"> {
+	): Promise<AutoCompactionOutcome | "fallback"> {
 		const action = "shake";
 		await this.#emitSessionEvent({ type: "auto_compaction_start", reason, action });
 		this.#autoCompactionAbortController?.abort();
@@ -7737,7 +7737,7 @@ export class AgentSession {
 					aborted: true,
 					willRetry: false,
 				});
-				return "handled";
+				return "aborted";
 			}
 			const reclaimed = result.toolResultsDropped + result.blocksDropped > 0;
 			// Overflow needs the input to actually shrink before the retry; if shake
@@ -7762,7 +7762,7 @@ export class AgentSession {
 				skipped: !reclaimed,
 			});
 
-			if (!willRetry && reason !== "idle" && autoContinue) {
+			if (!willRetry && reason !== "idle" && reason !== "topic-switch" && autoContinue) {
 				this.#scheduleAutoContinuePrompt(generation);
 			}
 			if (willRetry) {
@@ -7786,7 +7786,7 @@ export class AgentSession {
 					shouldContinue: () => this.agent.hasQueuedMessages(),
 				});
 			}
-			return "handled";
+			return reclaimed ? "compacted" : "skipped";
 		} catch (error) {
 			if (signal.aborted) {
 				await this.#emitSessionEvent({
@@ -7796,7 +7796,7 @@ export class AgentSession {
 					aborted: true,
 					willRetry: false,
 				});
-				return "handled";
+				return "aborted";
 			}
 			const message = error instanceof Error ? error.message : "shake failed";
 			await this.#emitSessionEvent({
@@ -7808,7 +7808,7 @@ export class AgentSession {
 				errorMessage: `Auto-shake failed: ${message}`,
 			});
 			// Overflow still needs recovery even if shake threw.
-			return reason === "overflow" ? "fallback" : "handled";
+			return reason === "overflow" ? "fallback" : "failed";
 		} finally {
 			if (this.#autoCompactionAbortController === controller) {
 				this.#autoCompactionAbortController = undefined;
