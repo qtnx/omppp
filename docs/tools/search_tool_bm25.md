@@ -42,7 +42,7 @@
 - The renderer shows a status line plus up to 5 collapsed tree items by default (`COLLAPSED_MATCH_LIMIT`), each with label, optional server name, score to 3 decimals, and truncated description. The ranked match list is not serialized into `content`.
 
 ## Flow
-1. `SearchToolBm25Tool.createIf()` in `packages/coding-agent/src/tools/search-tool-bm25.ts` exposes the tool only when `tools.discoveryMode` is set to a non-`"off"` value or legacy `mcp.discoveryMode === true`, and only if the session implements the discovery hooks.
+1. `SearchToolBm25Tool.createIf()` in `packages/coding-agent/src/tools/search-tool-bm25.ts` exposes the tool only when effective discovery is not `"off"` (explicit `all`/`mcp-only`, default `auto` on a model below 1M context tokens, or legacy `mcp.discoveryMode === true` while `tools.discoveryMode` remains `auto`) and only if the session implements the discovery hooks.
 2. `description` is rendered from `packages/coding-agent/src/prompts/tools/search-tool-bm25.md` via `renderSearchToolBm25Description()`, using the current discoverable-tool list plus per-server summary/count.
 3. `execute()` re-checks capability and settings:
    - missing discovery hooks -> `ToolError("Tool discovery is unavailable in this session.")`
@@ -59,9 +59,13 @@
 
 ## Modes / Variants
 - Discovery-mode gating:
+  - `tools.discoveryMode = "auto"`: default; resolves to `all` for models below 1M context tokens, otherwise `off`.
   - `tools.discoveryMode = "all"`: searches hidden discoverable built-ins plus hidden MCP tools.
   - `tools.discoveryMode = "mcp-only"`: searches hidden MCP tools only.
-  - legacy `mcp.discoveryMode = true` with `tools.discoveryMode = "off"`: same as MCP-only.
+  - legacy `mcp.discoveryMode = true` with default `tools.discoveryMode = "auto"`: same as MCP-only; explicit `tools.discoveryMode = "off"` disables discovery.
+- Prompt guidance:
+  - `all` mode advertises a compact native-tool catalog in the system prompt.
+  - MCP tools stay server-summarized by default; per-tool MCP descriptions remain in the hidden search index.
 - Search-index source:
   - generic cached discoverable index from the session
   - legacy cached MCP index, cast to the generic shape
@@ -113,6 +117,6 @@
   - Built-in entries appear only in `"all"` mode and only for registry tools whose `loadMode === "discoverable"` and are not currently active.
   - Hidden/internal built-ins are intentionally excluded from the built-in corpus: `resolve`, `yield`, `report_finding`, `report_tool_issue` are called out in the `#collectDiscoverableBuiltinTools()` comment.
 - `DiscoverableToolSource` includes `"extension"` and `"custom"`, but `AgentSession.getDiscoverableTools()` currently assembles only built-in and MCP sources.
-- On startup, `packages/coding-agent/src/sdk.ts` hides non-essential discoverable built-ins in `tools.discoveryMode = "all"`; defaults are `read`, `bash`, and `edit` unless `tools.essentialOverride` changes them.
+- On startup, `packages/coding-agent/src/sdk.ts` hides non-essential discoverable built-ins in effective `all` mode (explicit or default `auto` under 1M context tokens); defaults are `read`, `bash`, `edit`, and `task` unless `tools.essentialOverride` changes them.
 - Query tokenization is simple and deterministic: Unicode is NFKD-normalized, combining marks are dropped, acronym/camelCase and digit-to-capital boundaries are split, non-letter/non-number characters become spaces, tokens are lowercased, and only non-empty tokens survive.
 - Scores are rounded differently by surface: `details.tools[].score` keeps 6 decimals; the TUI line renders 3.

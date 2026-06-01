@@ -126,6 +126,7 @@ import {
 	type DiscoverableTool,
 	filterBySource,
 	formatDiscoverableToolServerSummary,
+	resolveEffectiveToolDiscoveryMode,
 	selectDiscoverableToolNamesByServer,
 	summarizeDiscoverableTools,
 } from "./tool-discovery/tool-index";
@@ -585,6 +586,7 @@ export interface BuildSystemPromptOptions {
 	cwd?: string;
 	appendPrompt?: string;
 	repeatToolDescriptions?: boolean;
+	nativeDiscoveryToolSummaries?: string[];
 }
 
 /**
@@ -600,6 +602,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		contextFiles: options.contextFiles,
 		appendSystemPrompt: options.appendPrompt,
 		repeatToolDescriptions: options.repeatToolDescriptions,
+		nativeDiscoveryToolSummaries: options.nativeDiscoveryToolSummaries,
 	});
 }
 
@@ -626,6 +629,12 @@ const TOOL_DEFINITION_MARKER = Symbol("__isToolDefinition");
 
 /** Matches the truncation applied to per-server instructions inside `rebuildSystemPrompt`. */
 const MAX_MCP_INSTRUCTIONS_LENGTH = 4000;
+
+function formatNativeDiscoveryToolSummary(tool: DiscoverableTool): string {
+	const label = tool.label && tool.label !== tool.name ? `${tool.label} (\`${tool.name}\`)` : `\`${tool.name}\``;
+	const summary = tool.summary.trim().replace(/\s+/g, " ");
+	return summary ? `${label}: ${summary}` : label;
+}
 
 let sshCleanupRegistered = false;
 
@@ -1278,6 +1287,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getSessionSpawns: () => options.spawns ?? "*",
 			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
 			getActiveModelString,
+			getActiveModelContextWindow: () => agent?.state.model?.contextWindow ?? model?.contextWindow,
 			getPlanModeState: () => session?.getPlanModeState(),
 			getPlanReferencePath: () => session?.getPlanReferencePath() ?? "local://PLAN.md",
 			getGoalModeState: () => session?.getGoalModeState(),
@@ -1708,6 +1718,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							{ source: "builtin" },
 						)
 					: [];
+			const nativeDiscoveryToolSummaries = discoverableBuiltinTools.map(formatNativeDiscoveryToolSummary);
 			const discoverableToolsForDesc: DiscoverableTool[] = [...discoverableBuiltinTools, ...discoverableMCPTools];
 			const discoverableToolSummary = summarizeDiscoverableTools(discoverableToolsForDesc);
 			const hasDiscoverableTools =
@@ -1753,6 +1764,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				intentField,
 				mcpDiscoveryMode: hasDiscoverableTools,
 				mcpDiscoveryServerSummaries: discoverableToolSummary.servers.map(formatDiscoverableToolServerSummary),
+				nativeDiscoveryToolSummaries,
 				eagerTasks,
 				secretsEnabled,
 				workspaceTree: promptWorkspaceTreePromise,
@@ -1790,14 +1802,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const requestedToolNames = explicitlyRequestedToolNames ?? toolNamesFromRegistry;
 		const normalizedRequested = requestedToolNames.filter(name => toolRegistry.has(name));
 		const requestedToolNameSet = new Set(normalizedRequested);
-		// Effective discovery mode: tools.discoveryMode takes precedence; mcp.discoveryMode is back-compat alias.
-		const toolsDiscoveryModeSetting = settings.get("tools.discoveryMode");
-		const effectiveDiscoveryMode: "off" | "mcp-only" | "all" =
-			toolsDiscoveryModeSetting !== "off"
-				? (toolsDiscoveryModeSetting as "off" | "mcp-only" | "all")
-				: settings.get("mcp.discoveryMode")
-					? "mcp-only"
-					: "off";
+		const effectiveDiscoveryMode = resolveEffectiveToolDiscoveryMode(settings, model);
 		const mcpDiscoveryEnabled = effectiveDiscoveryMode !== "off"; // back-compat: true when any discovery active
 		const defaultInactiveToolNames = new Set(
 			registeredTools.filter(tool => tool.definition.defaultInactive).map(tool => tool.definition.name),

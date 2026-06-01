@@ -42,8 +42,7 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 	readonly approval = "exec" as const;
 	readonly label = "Workflow";
 	readonly summary = "Orchestrate subagents with a deterministic workflow script";
-	// No loadMode → always present when the gate (workflow.enabled) admits it, rather than
-	// hidden behind search_tool_bm25. Workflow is an explicit opt-in feature.
+	readonly loadMode = "essential";
 	readonly description: string;
 	readonly parameters = workflowSchema;
 	readonly strict = true;

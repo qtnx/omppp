@@ -42,6 +42,15 @@ function createReasoningModel(): Model<"openai-responses"> {
 	};
 }
 
+function createLargeContextModel(): Model<"openai-responses"> {
+	return {
+		...createReasoningModel(),
+		id: "mock-large-context",
+		name: "mock-large-context",
+		contextWindow: 1_000_000,
+	};
+}
+
 const oldSessionMtime = new Date("2000-01-01T00:00:00.000Z");
 
 describe("createAgentSession MCP discovery prompt gating", () => {
@@ -88,7 +97,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		);
 	});
 
-	it("advertises discovery guidance for builtin-only tools.discoveryMode all sessions", async () => {
+	it("advertises native discovery guidance for builtin-only tools.discoveryMode all sessions", async () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir: tempDir,
@@ -109,9 +118,57 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		const searchTool = session.agent.state.tools.find(tool => tool.name === "search_tool_bm25");
 		expect(session.getActiveToolNames()).not.toContain("find");
 		expect(session.getActiveToolNames()).toContain("task");
-		expect(prompt).toContain("## Eager Tasks");
+		expect(prompt).toContain("Discoverable native tools are hidden until activated.");
+		expect(prompt).toContain("Find (`find`):");
+		expect(prompt).toContain("## Orchestrator Mode / Eager Delegation");
 		expect(prompt).toContain("call `search_tool_bm25` before concluding no such tool exists");
 		expect(searchTool?.description).toContain("Total discoverable tools available:");
+	});
+
+	it("auto-enables all discovery for default models below 1M context tokens", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		const prompt = session.systemPrompt.join("\n");
+		expect(session.getActiveToolNames()).toContain("search_tool_bm25");
+		expect(session.getActiveToolNames()).not.toContain("find");
+		expect(prompt).toContain("Discoverable native tools are hidden until activated.");
+	});
+
+	it("keeps discovery off by default for 1M context models", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			model: createLargeContextModel(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		const prompt = session.systemPrompt.join("\n");
+		expect(session.getActiveToolNames()).not.toContain("search_tool_bm25");
+		expect(session.getActiveToolNames()).toContain("find");
+		expect(prompt).not.toContain("Discoverable native tools are hidden until activated.");
 	});
 
 	it("preserves explicitly requested MCP tools in discovery mode", async () => {

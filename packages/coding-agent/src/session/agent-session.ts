@@ -198,7 +198,9 @@ import {
 	type DiscoverableToolSearchIndex,
 	filterBySource,
 	isMCPToolName,
+	resolveEffectiveToolDiscoveryMode,
 	selectDiscoverableToolNamesByServer,
+	type ToolDiscoveryMode,
 } from "../tool-discovery/tool-index";
 import { assertEditableFile } from "../tools/auto-generated-guard";
 import type { CheckpointState } from "../tools/checkpoint";
@@ -3250,12 +3252,8 @@ export class AgentSession {
 
 	// ── Generic tool discovery (covers built-in + MCP + extension) ────────────
 
-	/** Resolve effective discovery mode: tools.discoveryMode wins; mcp.discoveryMode is back-compat alias. */
-	#resolveEffectiveDiscoveryMode(): "off" | "mcp-only" | "all" {
-		const toolsMode = this.settings.get("tools.discoveryMode");
-		if (toolsMode !== "off") return toolsMode as "off" | "mcp-only" | "all";
-		if (this.settings.get("mcp.discoveryMode")) return "mcp-only";
-		return "off";
+	#resolveEffectiveDiscoveryMode(): ToolDiscoveryMode {
+		return resolveEffectiveToolDiscoveryMode(this.settings, this.model);
 	}
 
 	isToolDiscoveryEnabled(): boolean {

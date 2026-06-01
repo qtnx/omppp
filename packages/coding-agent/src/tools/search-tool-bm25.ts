@@ -12,6 +12,7 @@ import {
 	type DiscoverableToolSearchIndex,
 	filterBySource,
 	formatDiscoverableToolServerSummary,
+	resolveEffectiveToolDiscoveryMode,
 	searchDiscoverableTools,
 	summarizeDiscoverableTools,
 } from "../tool-discovery/tool-index";
@@ -198,12 +199,10 @@ export class SearchToolBm25Tool implements AgentTool<typeof searchToolBm25Schema
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): SearchToolBm25Tool | null {
-		// Active when new tools.discoveryMode is non-"off" or legacy mcp.discoveryMode is true
-		const toolsDiscoveryMode = session.settings.get("tools.discoveryMode");
-		const active =
-			(toolsDiscoveryMode !== undefined && toolsDiscoveryMode !== "off") ||
-			session.settings.get("mcp.discoveryMode") === true;
-		if (!active) return null;
+		const mode = resolveEffectiveToolDiscoveryMode(session.settings, {
+			contextWindow: session.getActiveModelContextWindow?.(),
+		});
+		if (mode === "off") return null;
 		return supportsToolDiscoveryExecution(session) ? new SearchToolBm25Tool(session) : null;
 	}
 

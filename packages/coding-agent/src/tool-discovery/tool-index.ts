@@ -27,6 +27,30 @@ export interface DiscoverableToolSummary {
 	toolCount: number;
 }
 
+export type ToolDiscoveryMode = "off" | "mcp-only" | "all";
+export type ToolDiscoveryModeSetting = ToolDiscoveryMode | "auto";
+
+export const AUTO_TOOL_DISCOVERY_CONTEXT_WINDOW = 1_000_000;
+
+interface ToolDiscoverySettingsReader {
+	get(path: "tools.discoveryMode" | "mcp.discoveryMode"): unknown;
+}
+
+function normalizeToolDiscoveryMode(value: unknown): ToolDiscoveryModeSetting {
+	return value === "off" || value === "mcp-only" || value === "all" || value === "auto" ? value : "auto";
+}
+
+export function resolveEffectiveToolDiscoveryMode(
+	settings: ToolDiscoverySettingsReader,
+	model?: { contextWindow?: number },
+): ToolDiscoveryMode {
+	const toolsMode = normalizeToolDiscoveryMode(settings.get("tools.discoveryMode"));
+	if (toolsMode === "all" || toolsMode === "mcp-only" || toolsMode === "off") return toolsMode;
+	if (settings.get("mcp.discoveryMode") === true) return "mcp-only";
+	if (model?.contextWindow === undefined) return "off";
+	return model.contextWindow < AUTO_TOOL_DISCOVERY_CONTEXT_WINDOW ? "all" : "off";
+}
+
 export interface DiscoverableToolSearchDocument {
 	tool: DiscoverableTool;
 	termFrequencies: Map<string, number>;

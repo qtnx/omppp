@@ -375,6 +375,8 @@ export interface BuildSystemPromptOptions {
 	mcpDiscoveryMode?: boolean;
 	/** Discoverable MCP server summaries to advertise when discovery mode is active. */
 	mcpDiscoveryServerSummaries?: string[];
+	/** Compact discoverable built-in tool summaries advertised when native discovery hides them. */
+	nativeDiscoveryToolSummaries?: string[];
 	/** Encourage the agent to delegate via tasks unless changes are trivial. */
 	eagerTasks?: boolean;
 	/** Rules with alwaysApply=true — their full content is injected into the prompt. */
@@ -416,6 +418,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		intentField,
 		mcpDiscoveryMode = false,
 		mcpDiscoveryServerSummaries = [],
+		nativeDiscoveryToolSummaries = [],
 		eagerTasks = false,
 		secretsEnabled = false,
 		workspaceTree: providedWorkspaceTree,
@@ -606,6 +609,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		mcpDiscoveryMode,
 		hasMCPDiscoveryServers: mcpDiscoveryServerSummaries.length > 0,
 		mcpDiscoveryServerSummaries,
+		hasNativeDiscoveryToolSummaries: nativeDiscoveryToolSummaries.length > 0,
+		nativeDiscoveryToolSummaries,
 		eagerTasks,
 		secretsEnabled,
 		hasMemoryRoot: memoryRootEnabled,
