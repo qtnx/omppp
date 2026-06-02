@@ -18,6 +18,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { isPromise } from "node:util/types";
+import {
+	CONTEXT_GC_CUSTOM_TYPE,
+	estimateContextGcEffectiveTokens,
+	getContextGcDbPath,
+} from "@oh-my-pi/context-gc-plugin";
 import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import {
 	type AfterToolCallContext,
@@ -292,6 +297,21 @@ export interface AsyncJobSnapshot {
 	recent: AsyncJobSnapshotItem[];
 	delivery: AsyncJobDeliveryState;
 }
+export interface AsyncJobSnapshotOptions {
+	recentLimit?: number;
+	requireOwner?: boolean;
+}
+
+/** Project an AsyncJob down to the fields exposed in a snapshot. */
+function toAsyncJobSnapshotItem(job: AsyncJob): AsyncJobSnapshotItem {
+	return {
+		id: job.id,
+		type: job.type,
+		status: job.status,
+		label: job.label,
+		startTime: job.startTime,
+	};
+}
 
 export type { ShakeMode, ShakeResult };
 
@@ -330,6 +350,8 @@ export interface AgentSessionConfig {
 	toolRegistry?: Map<string, AgentTool>;
 	/** Current session pre-LLM message transform pipeline */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
+	/** Context GC database path used by the active Context GC extension instance. */
+	contextGcDbPath?: string;
 	/** Provider payload hook used by the active session request path */
 	onPayload?: SimpleStreamOptions["onPayload"];
 	/** Provider response hook used by the active session request path */
@@ -855,6 +877,11 @@ export class AgentSession {
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	#pendingNextTurnMessages: CustomMessage[] = [];
 	#scheduledHiddenNextTurnGeneration: number | undefined = undefined;
+	/** Live prompt messages that {@link #prePersistPromptMessages} already wrote to the session before
+	 *  `agent.prompt`, so the later `message_end` event for the same object reference skips a duplicate
+	 *  persist. Identity-keyed and weak: each entry is consumed (deleted) on its `message_end`, and any
+	 *  message whose end never fires is collected with the message object. */
+	#prePersistedPromptMessages = new WeakSet<AgentMessage>();
 	#planModeState: PlanModeState | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
@@ -934,6 +961,7 @@ export class AgentSession {
 	// Tool registry and prompt builder for extensions
 	#toolRegistry: Map<string, AgentTool>;
 	#transformContext: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
+	#contextGcDbPath: string | undefined;
 	#onPayload: SimpleStreamOptions["onPayload"] | undefined;
 	#onResponse: SimpleStreamOptions["onResponse"] | undefined;
 	#onSseEvent: SimpleStreamOptions["onSseEvent"] | undefined;
@@ -1113,6 +1141,7 @@ export class AgentSession {
 		this.#validateRetryFallbackChains();
 		this.#toolRegistry = config.toolRegistry ?? new Map();
 		this.#requestedToolNames = config.requestedToolNames;
+		this.#contextGcDbPath = config.contextGcDbPath;
 		this.#transformContext = config.transformContext ?? (messages => messages);
 		this.#onPayload = config.onPayload;
 		this.rawSseDebugBuffer = config.rawSseDebugBuffer ?? new RawSseDebugBuffer();
@@ -1378,24 +1407,12 @@ export class AgentSession {
 		return tag;
 	}
 
-	getAsyncJobSnapshot(options?: { recentLimit?: number }): AsyncJobSnapshot | null {
+	getAsyncJobSnapshot(options?: AsyncJobSnapshotOptions): AsyncJobSnapshot | null {
 		const manager = AsyncJobManager.instance();
-		if (!manager) return null;
+		if (!manager || (options?.requireOwner && !this.#agentId)) return null;
 		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
-		const running = manager.getRunningJobs(ownerFilter).map(job => ({
-			id: job.id,
-			type: job.type,
-			status: job.status,
-			label: job.label,
-			startTime: job.startTime,
-		}));
-		const recent = manager.getRecentJobs(options?.recentLimit ?? 5, ownerFilter).map(job => ({
-			id: job.id,
-			type: job.type,
-			status: job.status,
-			label: job.label,
-			startTime: job.startTime,
-		}));
+		const running = manager.getRunningJobs(ownerFilter).map(toAsyncJobSnapshotItem);
+		const recent = manager.getRecentJobs(options?.recentLimit ?? 5, ownerFilter).map(toAsyncJobSnapshotItem);
 		const delivery = manager.getDeliveryState(ownerFilter);
 		return { running, recent, delivery };
 	}
@@ -1737,16 +1754,22 @@ export class AgentSession {
 
 		// Handle session persistence
 		if (event.type === "message_end") {
+			// A prompt message pre-persisted by `#prePersistPromptMessages` already owns a session entry;
+			// consume the marker so this `message_end` re-emit does not write a duplicate. Side effects
+			// below (e.g. ttsr-injection marking) still run.
+			const alreadyPersisted = this.#prePersistedPromptMessages.delete(event.message);
 			// Check if this is a hook/custom message
 			if (event.message.role === "hookMessage" || event.message.role === "custom") {
 				// Persist as CustomMessageEntry
-				this.sessionManager.appendCustomMessageEntry(
-					event.message.customType,
-					event.message.content,
-					event.message.display,
-					event.message.details,
-					event.message.attribution ?? "agent",
-				);
+				if (!alreadyPersisted) {
+					this.sessionManager.appendCustomMessageEntry(
+						event.message.customType,
+						event.message.content,
+						event.message.display,
+						event.message.details,
+						event.message.attribution ?? "agent",
+					);
+				}
 				if (event.message.role === "custom" && event.message.customType === "ttsr-injection") {
 					this.#markTtsrInjected(this.#extractTtsrRuleNames(event.message.details));
 				}
@@ -1758,7 +1781,9 @@ export class AgentSession {
 				event.message.role === "fileMention"
 			) {
 				// Regular LLM message - persist as SessionMessageEntry
-				this.sessionManager.appendMessage(event.message);
+				if (!alreadyPersisted) {
+					this.sessionManager.appendMessage(event.message);
+				}
 			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
@@ -4506,6 +4531,11 @@ export class AgentSession {
 				return;
 			}
 
+			// Pre-persist the prompt messages the `message_end` handler would otherwise write, so context
+			// extensions observe stable per-occurrence entry ids during this live turn — not only after a
+			// resume/rebuild. Runs after every generation bail-out above so a superseded prompt never
+			// orphans entries.
+			this.#prePersistPromptMessages(messages);
 			const agentPromptOptions = options?.toolChoice ? { toolChoice: options.toolChoice } : undefined;
 			await this.#promptAgentWithIdleRetry(messages, agentPromptOptions);
 			if (!options?.skipPostPromptRecoveryWait) {
@@ -4560,6 +4590,8 @@ export class AgentSession {
 			modelRegistry: this.#modelRegistry,
 			model: this.model ?? undefined,
 			isIdle: () => !this.isStreaming,
+			getAsyncJobSnapshot: options =>
+				this.getAsyncJobSnapshot({ recentLimit: options?.recentLimit, requireOwner: true }),
 			abort: () => {
 				void this.abort();
 			},
@@ -4870,11 +4902,16 @@ export class AgentSession {
 					this.#queueHiddenNextTurnMessage(appMessage, false);
 					return;
 				}
+				this.#prePersistPromptMessages([appMessage]);
 				await this.agent.prompt(appMessage);
 				return;
 			}
 			this.agent.appendMessage(appMessage);
-			this.sessionManager.appendCustomMessageEntry(
+			// Stamp the entry id onto the live custom message so context extensions can disambiguate this
+			// occurrence in the same turn. Safe: `appendCustomMessageEntry` builds a fresh entry from
+			// content, so the persisted record never carries the runtime-only id; `convertToLlm` rebuilds
+			// custom messages, so it never leaks to the provider.
+			appMessage.entryId = this.sessionManager.appendCustomMessageEntry(
 				message.customType,
 				message.content,
 				message.display,
@@ -4889,12 +4926,15 @@ export class AgentSession {
 				this.#queueHiddenNextTurnMessage(appMessage, false);
 				return;
 			}
+			this.#prePersistPromptMessages([appMessage]);
 			await this.agent.prompt(appMessage);
 			return;
 		}
 
 		this.agent.appendMessage(appMessage);
-		this.sessionManager.appendCustomMessageEntry(
+		// Stamp the entry id onto the live custom message (same rationale as the nextTurn branch above):
+		// context extensions get a stable occurrence id this turn; persisted/provider payloads stay clean.
+		appMessage.entryId = this.sessionManager.appendCustomMessageEntry(
 			message.customType,
 			message.content,
 			message.display,
@@ -8284,6 +8324,55 @@ export class AgentSession {
 		this.#resolveRetry();
 	}
 
+	/**
+	 * Pre-persist the prompt messages that the `message_end` handler would otherwise write, in array
+	 * order, immediately before `agent.prompt`. This closes the live-session gap: context extensions
+	 * (e.g. context-gc) inventory and project the live turn's messages before the asynchronous
+	 * `message_end` events have been consumed, so without this they would see prompt-time non-tool
+	 * surfaces (file mentions, custom asides) lacking the stable session entry id and fall back to a
+	 * lossy payload-hash match. Each pre-persisted message is recorded in `#prePersistedPromptMessages`
+	 * so the later `message_end` for the same object reference skips the duplicate write.
+	 *
+	 * Only `fileMention` and `custom` live messages are stamped with their entry id. These roles'
+	 * `convertToLlm` branch builds a brand-new provider message, so the runtime-only id is dropped at
+	 * the provider boundary and never reaches the LLM. `user`/`developer` (and `assistant`/`toolResult`)
+	 * are deliberately left unstamped because `convertToLlm` spreads them, which would leak the id into
+	 * the outbound payload. Disk writes stay clean: `appendCustomMessageEntry` builds a fresh entry from
+	 * content (it never references the live object), and `appendMessage` receives a shallow clone before
+	 * the runtime-only id is stamped onto the live object; any later rewrite re-stamps the identical id
+	 * via `buildSessionContext`.
+	 */
+	#prePersistPromptMessages(messages: readonly AgentMessage[]): void {
+		for (const message of messages) {
+			if (message.role === "hookMessage" || message.role === "custom") {
+				const entryId = this.sessionManager.appendCustomMessageEntry(
+					message.customType,
+					message.content,
+					message.display,
+					message.details,
+					message.attribution ?? "agent",
+				);
+				this.#prePersistedPromptMessages.add(message);
+				if (message.role === "custom") {
+					(message as CustomMessage).entryId = entryId;
+				}
+			} else if (
+				message.role === "user" ||
+				message.role === "developer" ||
+				message.role === "assistant" ||
+				message.role === "toolResult" ||
+				message.role === "fileMention"
+			) {
+				const entryId = this.sessionManager.appendMessage({ ...message });
+				this.#prePersistedPromptMessages.add(message);
+				if (message.role === "fileMention") {
+					(message as FileMentionMessage).entryId = entryId;
+				}
+			}
+			// Other roles (bashExecution/pythonExecution/etc.) are not persisted on `message_end`.
+		}
+	}
+
 	async #promptAgentWithIdleRetry(messages: AgentMessage[], options?: { toolChoice?: ToolChoice }): Promise<void> {
 		const deadline = Date.now() + 30_000;
 		for (;;) {
@@ -8427,11 +8516,12 @@ export class AgentSession {
 			// Queue for later - will be flushed on agent_end
 			this.#pendingBashMessages.push(bashMessage);
 		} else {
-			// Add to agent state immediately
+			// Persist a clone first so the in-memory session entry cannot observe the runtime-only
+			// entry id stamped onto the live message, then attach that id so context extensions can
+			// disambiguate this occurrence in the same turn.
+			const entryId = this.sessionManager.appendMessage({ ...bashMessage });
+			bashMessage.entryId = entryId;
 			this.agent.appendMessage(bashMessage);
-
-			// Save to session
-			this.sessionManager.appendMessage(bashMessage);
 		}
 	}
 
@@ -8462,11 +8552,11 @@ export class AgentSession {
 		if (this.#pendingBashMessages.length === 0) return;
 
 		for (const bashMessage of this.#pendingBashMessages) {
-			// Add to agent state
+			// Persist a clone first, then stamp the runtime-only entry id onto the live message before it
+			// enters agent state, so the next turn's context path sees a stable id without dirtying rewrites.
+			const entryId = this.sessionManager.appendMessage({ ...bashMessage });
+			bashMessage.entryId = entryId;
 			this.agent.appendMessage(bashMessage);
-
-			// Save to session
-			this.sessionManager.appendMessage(bashMessage);
 		}
 
 		this.#pendingBashMessages = [];
@@ -8575,8 +8665,11 @@ export class AgentSession {
 		if (this.isStreaming) {
 			this.#pendingPythonMessages.push(pythonMessage);
 		} else {
+			// Persist a clone first, then stamp the runtime-only entry id onto the live message so context
+			// extensions can disambiguate this occurrence in the same turn without dirtying rewrites.
+			const entryId = this.sessionManager.appendMessage({ ...pythonMessage });
+			pythonMessage.entryId = entryId;
 			this.agent.appendMessage(pythonMessage);
-			this.sessionManager.appendMessage(pythonMessage);
 		}
 	}
 
@@ -8638,8 +8731,11 @@ export class AgentSession {
 		if (this.#pendingPythonMessages.length === 0) return;
 
 		for (const pythonMessage of this.#pendingPythonMessages) {
+			// Persist a clone first, then stamp the runtime-only entry id onto the live message before it
+			// enters agent state, so the next turn's context path sees a stable id without dirtying rewrites.
+			const entryId = this.sessionManager.appendMessage({ ...pythonMessage });
+			pythonMessage.entryId = entryId;
 			this.agent.appendMessage(pythonMessage);
-			this.sessionManager.appendMessage(pythonMessage);
 		}
 
 		this.#pendingPythonMessages = [];
@@ -9558,12 +9654,12 @@ export class AgentSession {
 				return { tokens: null, contextWindow, percent: null };
 			}
 		}
-
 		const estimate = this.#estimateContextTokens();
-		const percent = (estimate.tokens / contextWindow) * 100;
+		const tokens = this.#estimateEffectiveContextTokens(estimate.tokens, estimate.lastUsageIndex);
+		const percent = (tokens / contextWindow) * 100;
 
 		return {
-			tokens: estimate.tokens,
+			tokens,
 			contextWindow,
 			percent,
 		};
@@ -9577,6 +9673,52 @@ export class AgentSession {
 		});
 	}
 
+	#estimateEffectiveContextTokens(baseTokens: number, lastUsageIndex: number | null): number {
+		try {
+			const postUsageUnloadIds =
+				lastUsageIndex === null ? undefined : this.#contextGcUnloadIdsAfterLatestAssistantUsage();
+			const messages =
+				lastUsageIndex === null || (postUsageUnloadIds !== undefined && postUsageUnloadIds.length > 0)
+					? this.messages
+					: this.messages.slice(lastUsageIndex + 1);
+			const effectiveTokens = estimateContextGcEffectiveTokens({
+				dbPath: this.#contextGcDbPath ?? getContextGcDbPath(this.settings.getAgentDir()),
+				cwd: this.sessionManager.getCwd(),
+				sessionManager: this.sessionManager,
+				messages,
+				baseTokens,
+				recordIds: postUsageUnloadIds,
+			});
+			return effectiveTokens ?? baseTokens;
+		} catch (error) {
+			logger.debug("Context GC effective token estimate failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return baseTokens;
+		}
+	}
+	#contextGcUnloadIdsAfterLatestAssistantUsage(): string[] {
+		const ids: string[] = [];
+		const entries = this.sessionManager.getBranch();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (entry.type === "custom" && entry.customType === CONTEXT_GC_CUSTOM_TYPE) {
+				const data = entry.data;
+				if (typeof data === "object" && data !== null) {
+					const delta = data as { id?: unknown; op?: unknown };
+					if (delta.op === "unload" && typeof delta.id === "string") ids.push(delta.id);
+				}
+				continue;
+			}
+			if (entry.type === "message" && entry.message.role === "assistant") {
+				const assistant = entry.message as AssistantMessage;
+				if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error" && assistant.usage) {
+					break;
+				}
+			}
+		}
+		return ids;
+	}
 	async fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null> {
 		const authStorage = this.#modelRegistry.authStorage;
 		if (!authStorage.fetchUsageReports) return null;
@@ -9591,6 +9733,7 @@ export class AgentSession {
 	 */
 	#estimateContextTokens(): {
 		tokens: number;
+		lastUsageIndex: number | null;
 	} {
 		const messages = this.messages;
 
@@ -9610,14 +9753,11 @@ export class AgentSession {
 		}
 
 		if (!lastUsage || lastUsageIndex === null) {
-			// No usage data - estimate all messages
 			let estimated = 0;
 			for (const message of messages) {
 				estimated += estimateTokens(message);
 			}
-			return {
-				tokens: estimated,
-			};
+			return { tokens: estimated, lastUsageIndex: null };
 		}
 
 		const usageTokens = calculatePromptTokens(lastUsage);
@@ -9626,9 +9766,7 @@ export class AgentSession {
 			trailingTokens += estimateTokens(messages[i]);
 		}
 
-		return {
-			tokens: usageTokens + trailingTokens,
-		};
+		return { tokens: usageTokens + trailingTokens, lastUsageIndex };
 	}
 
 	/**

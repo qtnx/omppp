@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import {
 	clearCustomApis,
@@ -16,6 +19,9 @@ import {
 	resolveToolCallBatchCapForModel,
 } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
+import { CONTEXT_GC_CUSTOM_TYPE, type ContextGcDelta } from "../../context-gc-plugin/src/schema";
+import { openContextGcStore } from "../../context-gc-plugin/src/storage";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 function createAgent(): Agent {
@@ -113,6 +119,132 @@ describe("AgentSession message pipeline", () => {
 		expect(transformContext).toHaveBeenCalledWith(inputMessages, abortController.signal);
 		expect(convertToLlm).toHaveBeenCalledWith(transformedMessages);
 		expect(result).toEqual(convertedMessages);
+	});
+
+	it("reports Context GC projected tokens in context usage", async () => {
+		const previousAgentDir = getAgentDir();
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-context-gc-usage-"));
+		try {
+			setAgentDir(tempDir);
+			const largeText = "large read output\n".repeat(2_000);
+			const secondText = "secondary read output\n".repeat(600);
+			const toolResult: AgentMessage = {
+				role: "toolResult",
+				toolCallId: "call-a",
+				toolName: "read",
+				content: [{ type: "text", text: largeText }],
+				isError: false,
+				timestamp: Date.now(),
+			};
+			const secondToolResult: AgentMessage = {
+				role: "toolResult",
+				toolCallId: "call-b",
+				toolName: "read",
+				content: [{ type: "text", text: secondText }],
+				isError: false,
+				timestamp: Date.now(),
+			};
+			const model = {
+				id: "test-model",
+				name: "Test Model",
+				api: "anthropic",
+				provider: "anthropic",
+				baseUrl: "",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 200_000,
+				maxTokens: 4_096,
+			} satisfies Model;
+			const sessionManager = SessionManager.inMemory(tempDir);
+			sessionManager.appendMessage(toolResult);
+			sessionManager.appendMessage(secondToolResult);
+			const dbPath = path.join(tempDir, "custom-context-gc.sqlite");
+			const store = openContextGcStore({ dbPath });
+			try {
+				const payload = store.putPayload("text/plain;charset=utf-8", largeText);
+				const secondPayload = store.putPayload("text/plain;charset=utf-8", secondText);
+				const baseRecord = {
+					sessionId: sessionManager.getSessionId(),
+					sessionFile: sessionManager.getSessionFile() ?? null,
+					status: "candidate" as const,
+					kind: "tool_result" as const,
+					sourceUri: null,
+				};
+				store.upsertRecord({
+					...baseRecord,
+					id: "record-a",
+					source: { toolCallId: "call-a", toolName: "read" },
+					payloadHash: payload.hash,
+					artifactId: "artifact-a",
+					summary: "large read output",
+					tokenEstimate: Math.ceil(largeText.length / 4),
+				});
+				store.upsertRecord({
+					...baseRecord,
+					id: "record-b",
+					source: { toolCallId: "call-b", toolName: "read" },
+					payloadHash: secondPayload.hash,
+					artifactId: "artifact-b",
+					summary: "secondary read output",
+					tokenEstimate: Math.ceil(secondText.length / 4),
+				});
+			} finally {
+				store.close();
+			}
+			const delta: ContextGcDelta = {
+				op: "unload",
+				id: "record-a",
+				sessionId: sessionManager.getSessionId(),
+				summary: "read output no longer needed",
+				createdAt: new Date().toISOString(),
+			};
+			sessionManager.appendCustomEntry(CONTEXT_GC_CUSTOM_TYPE, delta);
+			const session = new AgentSession({
+				agent: new Agent({
+					initialState: {
+						model,
+						systemPrompt: ["system prompt"],
+						messages: [toolResult, secondToolResult],
+						tools: [],
+					},
+				}),
+				sessionManager,
+				settings: Settings.isolated({ "compaction.enabled": false }),
+				contextGcDbPath: dbPath,
+				modelRegistry: {} as never,
+			});
+			sessions.push(session);
+
+			const usage = session.getContextUsage();
+			if (!usage?.tokens) throw new Error("Expected Context GC-adjusted usage");
+			const assistant = createAssistantMessage("ack");
+			assistant.usage.input = usage.tokens;
+			session.agent.appendMessage(assistant);
+			sessionManager.appendMessage(assistant);
+
+			const afterAssistantUsage = session.getContextUsage();
+
+			expect(afterAssistantUsage?.tokens).toBe(usage.tokens);
+			expect(usage.tokens).toBeLessThan(Math.ceil((largeText.length + secondText.length) / 4));
+
+			const secondDelta: ContextGcDelta = {
+				op: "unload",
+				id: "record-b",
+				sessionId: sessionManager.getSessionId(),
+				summary: "secondary output no longer needed",
+				createdAt: new Date().toISOString(),
+			};
+			sessionManager.appendCustomEntry(CONTEXT_GC_CUSTOM_TYPE, secondDelta);
+
+			const afterSecondUnload = session.getContextUsage();
+
+			expect(afterSecondUnload?.tokens).toBeLessThan(usage.tokens);
+			expect(afterSecondUnload?.tokens).toBeGreaterThan(50);
+		} finally {
+			setAgentDir(previousAgentDir);
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("composes session payload hooks into direct side-request options", async () => {

@@ -283,5 +283,25 @@ describe("Settings", () => {
 
 			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/new.db");
 		});
+
+		it("loads legacy flat dotted retry fallback chains", async () => {
+			await writeSettings({
+				modelRoles: {
+					smol: "cursor/composer-2.5",
+				},
+				"retry.fallbackChains": {
+					smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
+				},
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("retry.fallbackChains")).toEqual({
+				smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
+			});
+
+			// The single-segment sibling must survive the flat-dotted migration.
+			expect(settings.get("modelRoles")).toEqual({ smol: "cursor/composer-2.5" });
+		});
 	});
 });

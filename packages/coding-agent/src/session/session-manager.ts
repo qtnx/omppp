@@ -545,6 +545,28 @@ export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEnt
 }
 
 /**
+ * Stamp a session-entry-backed non-tool surface with its stable entry id so context extensions can
+ * tell duplicate-content occurrences apart by identity rather than guessing from a payload hash.
+ *
+ * Restricted to `custom`/`fileMention`/`bashExecution`/`pythonExecution`: these are exactly the roles
+ * whose `convertToLlm` branch builds a brand-new provider message, so the runtime-only `entryId` is
+ * dropped at the provider boundary and never reaches the LLM. Other roles (`user`/`assistant`/
+ * `toolResult`/`developer`) are returned untouched — `convertToLlm` spreads those, which would leak
+ * the id into the outbound payload. The original entry object is never mutated (shallow clone).
+ */
+function tagNonToolEntrySurface(message: AgentMessage, entryId: string): AgentMessage {
+	if (
+		message.role === "custom" ||
+		message.role === "fileMention" ||
+		message.role === "bashExecution" ||
+		message.role === "pythonExecution"
+	) {
+		return { ...message, entryId } as AgentMessage;
+	}
+	return message;
+}
+
+/**
  * Build the session context from entries using tree traversal.
  * If leafId is provided, walks from that entry to root.
  * Handles compaction and branch summaries along the path.
@@ -675,7 +697,7 @@ export function buildSessionContext(
 
 	const appendMessage = (entry: SessionEntry) => {
 		if (entry.type === "message") {
-			messages.push(entry.message);
+			messages.push(tagNonToolEntrySurface(entry.message, entry.id));
 		} else if (entry.type === "custom_message") {
 			messages.push(
 				createCustomMessage(
@@ -685,6 +707,7 @@ export function buildSessionContext(
 					entry.details,
 					entry.timestamp,
 					entry.attribution,
+					entry.id,
 				),
 			);
 		} else if (entry.type === "branch_summary" && entry.summary) {

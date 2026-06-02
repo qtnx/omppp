@@ -118,6 +118,8 @@ export class ExtensionUiController {
 		const contextActions: ExtensionContextActions = {
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
+			getAsyncJobSnapshot: options =>
+				this.ctx.session.getAsyncJobSnapshot({ recentLimit: options?.recentLimit, requireOwner: true }),
 			abort: () => this.ctx.session.abort(),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			shutdown: () => {
@@ -358,6 +360,8 @@ export class ExtensionUiController {
 		const contextActions: ExtensionContextActions = {
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
+			getAsyncJobSnapshot: options =>
+				this.ctx.session.getAsyncJobSnapshot({ recentLimit: options?.recentLimit, requireOwner: true }),
 			abort: () => this.ctx.session.abort(),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			shutdown: () => {
@@ -537,6 +541,7 @@ export class ExtensionUiController {
 						modelRegistry: this.ctx.session.modelRegistry,
 						model: this.ctx.session.model,
 						isIdle: () => !this.ctx.session.isStreaming,
+						getAsyncJobSnapshot: options => this.ctx.session.getAsyncJobSnapshot(options),
 						hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 						abort: () => {
 							this.ctx.session.abort();

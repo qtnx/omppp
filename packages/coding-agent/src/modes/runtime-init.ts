@@ -73,6 +73,8 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 		{
 			getModel: () => session.model,
 			isIdle: () => !session.isStreaming,
+			getAsyncJobSnapshot: options =>
+				session.getAsyncJobSnapshot({ recentLimit: options?.recentLimit, requireOwner: true }),
 			abort: () => session.abort(),
 			hasPendingMessages: () => session.queuedMessageCount > 0,
 			shutdown,

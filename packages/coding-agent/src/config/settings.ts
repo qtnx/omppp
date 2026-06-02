@@ -99,6 +99,31 @@ function setByPath(obj: RawSettings, segments: string[], value: unknown): void {
 	current[segments[segments.length - 1]] = value;
 }
 
+const KNOWN_SETTING_PATHS = new Set<string>(Object.keys(SETTINGS_SCHEMA));
+
+/**
+ * Migrate legacy top-level flat dotted keys (e.g. `"retry.fallbackChains"`)
+ * into their nested form (`retry: { fallbackChains }`).
+ *
+ * The `key.includes(".")` guard is essential: many schema paths are a single
+ * segment (e.g. `modelRoles`), so without it such a key would match and then be
+ * deleted, silently dropping a valid setting.
+ *
+ * An explicit nested value wins: when both forms exist the flat key is discarded
+ * without overwriting the nested one.
+ */
+function migrateFlatSettingPaths(raw: RawSettings): void {
+	for (const [key, value] of Object.entries(raw)) {
+		if (!key.includes(".") || !KNOWN_SETTING_PATHS.has(key)) continue;
+
+		const segments = key.split(".");
+		if (getByPath(raw, segments) === undefined) {
+			setByPath(raw, segments, value);
+		}
+		delete raw[key];
+	}
+}
+
 const PATH_SCOPED_ARRAY_SETTINGS = new Set<SettingPath>(["enabledModels", "disabledProviders"]);
 type PathScopedStringArrayEntry = {
 	path?: unknown;
@@ -613,6 +638,8 @@ export class Settings {
 
 	/** Apply schema migrations to raw settings */
 	#migrateRawSettings(raw: RawSettings): RawSettings {
+		migrateFlatSettingPaths(raw);
+
 		// queueMode -> steeringMode
 		if ("queueMode" in raw && !("steeringMode" in raw)) {
 			raw.steeringMode = raw.queueMode;

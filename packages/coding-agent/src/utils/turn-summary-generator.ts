@@ -1,8 +1,8 @@
 /**
- * Generate a one-line summary of what an agent accomplished in the latest turn,
- * using a smol, fast model. Mirrors title-generator.ts.
+ * Generate a concise past-tense recap (2-3 sentences) of what an agent
+ * accomplished in the latest turn, using a smol, fast model. Mirrors title-generator.ts.
  *
- * The summary is a UI-only "activity log" line surfaced when a run completes, so
+ * The recap is a UI-only "activity log" block surfaced when a run completes, so
  * a user who left the session open (or backgrounded it) can tell at a glance what
  * the agent just did without re-reading the whole turn.
  */
@@ -19,19 +19,20 @@ const TURN_SUMMARY_SYSTEM_PROMPT = prompt.render(turnSummarySystemPrompt);
 const MAX_REQUEST_CHARS = 600;
 const MAX_RESPONSE_CHARS = 1500;
 const MAX_TURN_TOOLS = 12;
-const SUMMARY_MAX_TOKENS = 40;
+const SUMMARY_MAX_TOKENS = 200;
 const REASONING_SAFE_MAX_TOKENS = 1024;
 const SET_SUMMARY_TOOL_NAME = "set_summary";
 
 const setSummaryTool: Tool = {
 	name: SET_SUMMARY_TOOL_NAME,
-	description: "Record the one-line summary of what the assistant just accomplished.",
+	description: "Record the concise recap of what the assistant just accomplished.",
 	parameters: {
 		type: "object",
 		properties: {
 			summary: {
 				type: "string",
-				description: "A concise past-tense summary (max 10 words) of what the assistant did this turn.",
+				description:
+					"A concise past-tense recap (2-3 sentences, at most ~60 words) of what the assistant did this turn.",
 			},
 		},
 		required: ["summary"],
@@ -139,7 +140,7 @@ function truncate(text: string, maxChars: number): string {
 }
 
 /**
- * Generate a one-line turn summary. Returns `null` when no model/key is available
+ * Generate a concise turn recap. Returns `null` when no model/key is available
  * or the model produces nothing usable; callers fall back silently.
  *
  * @param context Distilled turn input from {@link collectTurnSummaryContext}.

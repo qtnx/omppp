@@ -52,6 +52,7 @@
         "@agentclientprotocol/sdk": "catalog:",
         "@babel/parser": "catalog:",
         "@mozilla/readability": "catalog:",
+        "@oh-my-pi/context-gc-plugin": "catalog:",
         "@oh-my-pi/hashline": "catalog:",
         "@oh-my-pi/omp-stats": "catalog:",
         "@oh-my-pi/pi-agent-core": "catalog:",
@@ -86,6 +87,23 @@
       },
       "optionalDependencies": {
         "@huggingface/transformers": "catalog:",
+      },
+    },
+    "packages/context-gc-plugin": {
+      "name": "@oh-my-pi/context-gc-plugin",
+      "version": "15.8.0",
+      "dependencies": {
+        "@oh-my-pi/pi-agent-core": "workspace:*",
+        "@oh-my-pi/pi-ai": "workspace:*",
+        "@oh-my-pi/pi-utils": "workspace:*",
+        "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@oh-my-pi/pi-coding-agent": "workspace:*",
+        "@types/bun": "catalog:",
+      },
+      "peerDependencies": {
+        "@oh-my-pi/pi-coding-agent": "^15",
       },
     },
     "packages/hashline": {
@@ -248,6 +266,7 @@
     "@huggingface/transformers": "^4.2.0",
     "@mozilla/readability": "^0.6.0",
     "@napi-rs/cli": "3.7.0",
+    "@oh-my-pi/context-gc-plugin": "15.9.0",
     "@oh-my-pi/hashline": "15.9.0",
     "@oh-my-pi/omp-stats": "15.9.0",
     "@oh-my-pi/pi-agent-core": "15.9.0",
@@ -632,6 +651,8 @@
     "@octokit/rest": ["@octokit/rest@22.0.1", "", { "dependencies": { "@octokit/core": "^7.0.6", "@octokit/plugin-paginate-rest": "^14.0.0", "@octokit/plugin-request-log": "^6.0.0", "@octokit/plugin-rest-endpoint-methods": "^17.0.0" } }, "sha512-Jzbhzl3CEexhnivb1iQ0KJ7s5vvjMWcmRtq5aUsKmKDrRW6z3r84ngmiFKFvpZjpiU/9/S6ITPFRpn5s/3uQJw=="],
 
     "@octokit/types": ["@octokit/types@16.0.0", "", { "dependencies": { "@octokit/openapi-types": "^27.0.0" } }, "sha512-sKq+9r1Mm4efXW1FCk7hFSeJo4QKreL/tTbR0rz/qx/r1Oa2VV83LTA/H/MuCOX7uCIJmQVRKBcbmWoySjAnSg=="],
+
+    "@oh-my-pi/context-gc-plugin": ["@oh-my-pi/context-gc-plugin@workspace:packages/context-gc-plugin"],
 
     "@oh-my-pi/hashline": ["@oh-my-pi/hashline@workspace:packages/hashline"],
 

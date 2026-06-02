@@ -35,6 +35,7 @@ import type { BashResult } from "../../exec/bash-executor";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type { CustomEditor } from "../../modes/components/custom-editor";
 import type { Theme } from "../../modes/theme/theme";
+import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { CustomMessage } from "../../session/messages";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
 import type {
@@ -304,6 +305,8 @@ export interface ExtensionContext {
 	model: Model | undefined;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
+	/** Snapshot of background jobs owned by this session, if background jobs are enabled. */
+	getAsyncJobSnapshot(options?: { recentLimit?: number }): AsyncJobSnapshot | null;
 	/** Abort the current agent operation */
 	abort(): void;
 	/** Whether there are queued messages waiting */
@@ -1243,6 +1246,7 @@ export interface ExtensionActions {
 export interface ExtensionContextActions {
 	getModel: () => Model | undefined;
 	isIdle: () => boolean;
+	getAsyncJobSnapshot?: (options?: { recentLimit?: number }) => AsyncJobSnapshot | null;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;

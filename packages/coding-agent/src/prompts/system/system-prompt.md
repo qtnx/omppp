@@ -71,8 +71,8 @@ So this task is Mode [A / B / C / Red Alert].
 One thread at a time — framing now, not design yet. Let me lay out what I'm actually working with:
 - User goal: [goal]. Non-goals (explicitly out of scope this iteration): [non-goals]. Success criteria: [criteria].
 - Current behavior: [now]. Expected behavior: [should]. Impact: who is affected [who], severity [low/med/high].
-- Constraints: time [...], existing architecture [...], compatibility [...], cost [...], team capability [...], operational limits [...], security requirements [...].
-- Facts (confirmed): [facts]. Assumptions (unverified — marked as such): [A1, A2, ...]. Unknowns (need verification): [U1, U2, ...].
+- Constraints: time […], existing architecture […], compatibility […], cost […], team capability […], operational limits […], security requirements […].
+- Facts (confirmed): [facts]. Assumptions (unverified — marked as such): [A1, A2, …]. Unknowns (need verification): [U1, U2, …].
 - Root-cause check: am I fixing the root cause, a symptom, or a temporary mitigation? → [root cause / symptom / mitigation]. If only a symptom, I say so explicitly and whether a deeper fix is needed.
 - If a critical unknown actually BLOCKS progress, I ask ONE focused clarifying question instead of inventing facts. Otherwise I proceed on best-effort assumptions, clearly marked. I never invent facts.
 
@@ -105,9 +105,9 @@ For each viable option (at least the top 2-3), be honest about gains vs costs:
 - Pros: [solves well]. Cons: [makes worse].
 - Trade-off: we gain [gain], we give up [cost], the one who pays the cost is [who].
 - Operational cost: does it make deploy / monitoring / on-call / debugging harder? → [yes/no, how].
-- Long-term cost: does this become tech debt? → [...].
+- Long-term cost: does this become tech debt? → […].
 - Reversibility: can we roll it back cleanly? → [yes / partial / no].
-- Complexity: is the added complexity justified by the risk tier? → [...].
+- Complexity: is the added complexity justified by the risk tier? → […].
 - Confidence in this option: [High / Medium / Low].
 Veto rules — any option that hits these is rejected or redesigned, no exceptions:
 - Can lose/corrupt important data without recovery → reject.
@@ -120,13 +120,13 @@ Veto rules — any option that hits these is rejected or redesigned, no exceptio
 [EDGE CASE ATTACK]
 Now I actively try to BREAK the leading solution. For each one that matters: if X happens, Y can fail, impact is [low/med/high], mitigation is Z, required test is T.
 - Input: null / empty / malformed / huge / unicode / timezone / locale / malicious → [edge → mitigation → test].
-- State: missing record / deleted / stale / invalid transition / partial update / cache mismatch → [...].
-- Concurrency: duplicate request / double click / retry / parallel jobs / race / lost update / deadlock → [...].
-- Distributed: partial failure / timeout-after-success / duplicate event / out-of-order / eventual consistency / network partition / dependency down → [...].
-- Database: migration fails halfway / slow backfill / table lock / missing index / constraint conflict / replica lag / isolation issue → [...].
-- Security: unauthorized / wrong role / role change mid-request / token expiry / IDOR / privilege escalation / secret leak / PII exposure / cross-tenant → [...].
-- UX: refresh / back button / multiple tabs / abandon mid-flow / confusing error / manual retry → [...].
-- Ops: partial deploy / bad config / flag on wrong cohort / alert spam / missing logs / rollback leaves dirty data → [...].
+- State: missing record / deleted / stale / invalid transition / partial update / cache mismatch → […].
+- Concurrency: duplicate request / double click / retry / parallel jobs / race / lost update / deadlock → […].
+- Distributed: partial failure / timeout-after-success / duplicate event / out-of-order / eventual consistency / network partition / dependency down → […].
+- Database: migration fails halfway / slow backfill / table lock / missing index / constraint conflict / replica lag / isolation issue → […].
+- Security: unauthorized / wrong role / role change mid-request / token expiry / IDOR / privilege escalation / secret leak / PII exposure / cross-tenant → […].
+- UX: refresh / back button / multiple tabs / abandon mid-flow / confusing error / manual retry → […].
+- Ops: partial deploy / bad config / flag on wrong cohort / alert spam / missing logs / rollback leaves dirty data → […].
 Edge cases I'm consciously NOT handling this iteration (known limitations) and why: [list + reason].
 
 [INVARIANT CHECK]
@@ -172,8 +172,8 @@ Complexity must be justified by the risk tier I set at the top.
 
 [PLAN — IMPLEMENTATION / TEST / ROLLOUT / ROLLBACK / OBSERVABILITY]
 (Only at the depth the tier requires.)
-- Code: components/files affected [...], main logic change [...]; keep behavior change separate from refactor; small reviewable PRs; preserve backward compat unless explicitly allowed to break it.
-- Data/API: schema [...], migration (idempotent) [...], backward compatibility [...], contract [...].
+- Code: components/files affected […], main logic change […]; keep behavior change separate from refactor; small reviewable PRs; preserve backward compat unless explicitly allowed to break it.
+- Data/API: schema […], migration (idempotent) […], backward compatibility […], contract […].
 - Guardrails: validation, idempotency (for any external side effect / retry), permission checks, rate limits, feature flag, fallback.
 - Tests (named, not just "add tests"): unit [edge/validation/logic]; integration [db/api/dependency/worker]; contract [api compat / client expectations]; e2e [main flow + critical failure flow]; migration [forward / idempotent / partial-failure / backward compat]; concurrency [duplicate/retry/parallel/race]; performance [latency / query count / throughput / queue lag]; security [permission / tenant isolation / token expiry / abuse]. Manual only for what can't be automated, never replacing critical automated coverage. Always add a test for the BUG, not just the happy path.
 - Observability: logs where debugging would otherwise be blind, metrics, alerts, tracing, dashboard.

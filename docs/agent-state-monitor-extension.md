@@ -15,10 +15,10 @@ The runtime does not expose one native `state` enum with these exact values. Bui
 
 | State | Meaning | Primary signal | Clear signal |
 | --- | --- | --- | --- |
-| `idle` | Agent is not streaming and has no queued work | `ctx.isIdle() === true` and `ctx.hasPendingMessages() === false` | `agent_start`, `turn_start`, or queued message |
-| `working` | Agent is actively processing a prompt/tool turn | `agent_start`, `turn_start`, `message_start`, `tool_execution_start` | `agent_end` / `turn_end` if no blocking state |
+| `idle` | Agent is not streaming and has no queued work or background jobs | `ctx.isIdle() === true`, `ctx.hasPendingMessages() === false`, and `ctx.getAsyncJobSnapshot()?.running.length === 0` | `agent_start`, `turn_start`, queued message, or background job/subagent start |
+| `working` | Agent is actively processing a prompt/tool turn or background job/subagent work is still running | `agent_start`, `turn_start`, `message_start`, `tool_execution_start`, `task:subagent:lifecycle` start, or running background job snapshot | `agent_end` / `turn_end` if no blocking/background state |
 | `need_question` | Agent is waiting for user input from the `ask` tool | `tool_call` or `tool_execution_start` where `toolName === "ask"` | `tool_result` or `tool_execution_end` for `ask` |
-| `pending_review` | Agent finished a work cycle that changed code and should be reviewed | `agent_end` after write/edit/exec-changing tools ran | explicit user command such as `/state-reviewed`, new prompt, or new working cycle |
+| `pending_review` | Agent finished a work cycle that changed code and should be reviewed | `agent_end` after write/edit/exec-changing tools ran and no background work remains | explicit user command such as `/state-reviewed`, new prompt, or new working cycle |
 
 `pending_review` is a policy state, not a built-in runtime state. Decide what counts as review-worthy. A practical default is: any successful turn that used `write`, `edit`, `ast_edit`, `bash`, `task`, or another mutating custom tool.
 
@@ -34,7 +34,7 @@ Extensions are loaded at session startup. Restart `omp` after changing the exten
 ## Minimal extension
 
 ```ts
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 type AgentUiState = "idle" | "working" | "pending_review" | "need_question";
 
@@ -63,12 +63,41 @@ export default function stateMonitor(pi: ExtensionAPI): void {
     lastReason: "session initialized",
     updatedAt: Date.now(),
   };
+  const activeSubagents = new Set<string>();
 
   function setState(value: AgentUiState, reason: string, ctx?: { ui?: { setStatus?: (key: string, text: string | undefined) => void } }) {
     state = { ...state, value, lastReason: reason, updatedAt: Date.now() };
     ctx?.ui?.setStatus?.("agent-state", `state: ${value}`);
     pi.appendEntry(CUSTOM_TYPE, state);
   }
+
+  function hasBackgroundWork(ctx: ExtensionContext): boolean {
+    const jobs = ctx.getAsyncJobSnapshot();
+    return (
+      activeSubagents.size > 0 ||
+      (jobs?.running.length ?? 0) > 0 ||
+      (jobs?.delivery.queued ?? 0) > 0 ||
+      jobs?.delivery.delivering === true
+    );
+  }
+
+  function idleOrWorking(ctx: ExtensionContext): AgentUiState {
+    return ctx.isIdle() && !ctx.hasPendingMessages() && !hasBackgroundWork(ctx) ? "idle" : "working";
+  }
+
+  pi.events.on("task:subagent:lifecycle", data => {
+    if (!data || typeof data !== "object") return;
+    const payload = data as { id?: string; index?: number; agent?: string; status?: string };
+    const id = payload.id ?? `${payload.index ?? "?"}:${payload.agent ?? "agent"}`;
+    if (payload.status === "started") {
+      activeSubagents.add(id);
+      setState("working", "subagent running");
+      return;
+    }
+    if (payload.status === "completed" || payload.status === "failed" || payload.status === "aborted") {
+      activeSubagents.delete(id);
+    }
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     // Restore the latest persisted state if this session is resumed.
@@ -78,8 +107,7 @@ export default function stateMonitor(pi: ExtensionAPI): void {
       }
     }
 
-    const value = ctx.isIdle() && !ctx.hasPendingMessages() ? "idle" : "working";
-    setState(value, "session_start", ctx);
+    setState(idleOrWorking(ctx), "session_start", ctx);
   });
 
   pi.on("agent_start", async (_event, ctx) => {
@@ -126,13 +154,17 @@ export default function stateMonitor(pi: ExtensionAPI): void {
       return;
     }
 
+    if (hasBackgroundWork(ctx)) {
+      setState("working", "background work still running", ctx);
+      return;
+    }
+
     if (state.dirty) {
       setState("pending_review", "agent changed state that requires review", ctx);
       return;
     }
 
-    const value = ctx.isIdle() && !ctx.hasPendingMessages() ? "idle" : "working";
-    setState(value, "agent_end", ctx);
+    setState(idleOrWorking(ctx), "agent_end", ctx);
   });
 
   pi.registerCommand("state", {
@@ -147,8 +179,7 @@ export default function stateMonitor(pi: ExtensionAPI): void {
     handler: async (_args, ctx) => {
       state.dirty = false;
       state.activeQuestion = false;
-      const value = ctx.isIdle() && !ctx.hasPendingMessages() ? "idle" : "working";
-      setState(value, "review acknowledged", ctx);
+      setState(idleOrWorking(ctx), "review acknowledged", ctx);
     },
   });
 }
@@ -199,6 +230,7 @@ tool_call/tool_result mutating tool
 
 agent_end
   -> need_question if activeQuestion
+  -> working if any background job/subagent is still running or delivery is queued
   -> pending_review if dirty
   -> idle if ctx.isIdle() && !ctx.hasPendingMessages()
   -> working otherwise
@@ -287,4 +319,4 @@ After adding the extension, restart `omp` and verify:
 
 - Hooks/extensions load at startup. Restart after editing extension files.
 - `pending_review` is intentionally explicit and sticky. Do not auto-clear it on `agent_end`; require `/state-reviewed` or a clear user action.
-- If the monitor is meant for subagents too, also observe `task` tool details or the shared subagent event bus. For top-level UI state, the lifecycle events above are sufficient.
+- If the monitor is meant for subagents too, also observe `task:subagent:lifecycle` / `task:subagent:progress` on `pi.events`, and check `ctx.getAsyncJobSnapshot()` before publishing idle. This matters when `async.enabled` lets background task/workflow jobs outlive the parent turn.

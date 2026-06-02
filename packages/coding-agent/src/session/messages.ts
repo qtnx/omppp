@@ -6,8 +6,6 @@
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import {
-	type BranchSummaryMessage,
-	type CompactionSummaryMessage,
 	renderBranchSummaryContext,
 	renderCompactionSummaryContext,
 } from "@oh-my-pi/pi-agent-core/compaction/messages";
@@ -218,6 +216,10 @@ export interface BashExecutionMessage {
 	truncated: boolean;
 	meta?: OutputMeta;
 	timestamp: number;
+	/** Runtime-only stable session entry id, stamped by buildSessionContext for context-extension
+	 *  per-occurrence disambiguation. Never sent to the LLM: convertToLlm builds a fresh provider
+	 *  message for this role, so the field is dropped at the provider boundary. */
+	entryId?: string;
 	/** If true, this message is excluded from LLM context (!! prefix) */
 	excludeFromContext?: boolean;
 }
@@ -235,6 +237,8 @@ export interface PythonExecutionMessage {
 	truncated: boolean;
 	meta?: OutputMeta;
 	timestamp: number;
+	/** Runtime-only stable session entry id (see BashExecutionMessage.entryId). Never sent to the LLM. */
+	entryId?: string;
 	/** If true, this message is excluded from LLM context ($$ prefix) */
 	excludeFromContext?: boolean;
 }
@@ -251,6 +255,8 @@ export interface CustomMessage<T = unknown> {
 	/** Who initiated this message for billing/attribution semantics. */
 	attribution?: MessageAttribution;
 	timestamp: number;
+	/** Runtime-only stable session entry id (see BashExecutionMessage.entryId). Never sent to the LLM. */
+	entryId?: string;
 }
 
 /**
@@ -283,18 +289,20 @@ export interface FileMentionMessage {
 		image?: ImageContent;
 	}>;
 	timestamp: number;
+	/** Runtime-only stable session entry id (see BashExecutionMessage.entryId). Never sent to the LLM. */
+	entryId?: string;
 }
 
-// Extend CustomAgentMessages via declaration merging
-// Legacy hookMessage is kept for migration; new code should use custom.
+// Extend CustomAgentMessages with the surfaces owned by the coding agent. `custom`, `hookMessage`,
+// `branchSummary`, and `compactionSummary` are already registered by pi-agent-core; re-declaring
+// them here would only clash the moment their shapes diverge — which is exactly what the
+// runtime-only `entryId` on this package's CustomMessage does (TS2717). The local CustomMessage
+// remains a structural superset of pi-agent-core's, so createCustomMessage's result stays a valid
+// `custom` AgentMessage.
 declare module "@oh-my-pi/pi-agent-core" {
 	interface CustomAgentMessages {
 		bashExecution: BashExecutionMessage;
 		pythonExecution: PythonExecutionMessage;
-		custom: CustomMessage;
-		hookMessage: HookMessage;
-		branchSummary: BranchSummaryMessage;
-		compactionSummary: CompactionSummaryMessage;
 		fileMention: FileMentionMessage;
 	}
 }
@@ -371,6 +379,7 @@ export function createCustomMessage(
 	details: unknown | undefined,
 	timestamp: string,
 	attribution?: MessageAttribution,
+	entryId?: string,
 ): CustomMessage {
 	return {
 		role: "custom",
@@ -379,6 +388,7 @@ export function createCustomMessage(
 		display,
 		details,
 		attribution,
+		...(entryId !== undefined ? { entryId } : {}),
 		timestamp: new Date(timestamp).getTime(),
 	};
 }

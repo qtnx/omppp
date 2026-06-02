@@ -1,7 +1,7 @@
 import { INTENT_FIELD } from "@oh-my-pi/pi-agent-core";
 import { calculatePromptTokens } from "@oh-my-pi/pi-agent-core/compaction/compaction";
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
-import { type Component, Loader, replaceTabs, TERMINAL, Text, TruncatedText } from "@oh-my-pi/pi-tui";
+import { type Component, Loader, replaceTabs, TERMINAL, Text } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
@@ -864,7 +864,7 @@ export class EventController {
 	}
 
 	/**
-	 * Generate a one-line summary of the just-completed turn, or `undefined` when
+	 * Generate a concise recap of the just-completed turn, or `undefined` when
 	 * summarization is disabled, the turn was aborted/errored, the turn did no
 	 * tool work, or no summary model is available. Never throws.
 	 */
@@ -893,7 +893,7 @@ export class EventController {
 	}
 
 	/**
-	 * Foreground surface: append the turn summary as a persistent one-line entry in
+	 * Foreground surface: append the turn recap as a short wrapped block in
 	 * the transcript so a user returning to an open session can see what the agent
 	 * just did. The background surface enriches the completion notification instead.
 	 */
@@ -914,14 +914,15 @@ export class EventController {
 	}
 
 	#appendTurnSummaryLine(summary: string): void {
-		const clean = replaceTabs(summary)
-			.replace(/[\r\n]+/g, " ")
-			.replace(/\s+/g, " ")
-			.trim();
+		const clean = replaceTabs(summary).replace(/\s+/g, " ").trim();
 		if (!clean) return;
-		const line = `${theme.fg("success", theme.status.success)} ${theme.fg("muted", clean)}`;
+		// Render as a width-wrapped block (not a single truncated line) so the
+		// 2-3 sentence recap stays fully visible. `Text` soft-wraps to the terminal
+		// width and carries the muted color across wrapped lines; the success glyph
+		// colors only the first line.
+		const recap = `${theme.fg("success", theme.status.success)} ${theme.fg("muted", clean)}`;
 		this.ctx.chatContainer.addChild(new Text("", 0, 0));
-		this.ctx.chatContainer.addChild(new TruncatedText(line, 1, 0));
+		this.ctx.chatContainer.addChild(new Text(recap, 1, 0));
 		this.ctx.ui.requestRender();
 	}
 

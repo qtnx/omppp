@@ -1,9 +1,10 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { renderContextGcReport } from "@oh-my-pi/context-gc-plugin";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/utils/oauth";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
-import { Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
+import { Snowflake, sanitizeText, setProjectDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
@@ -20,10 +21,12 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../extensibility/plugins/marketplace";
+import type { Skill } from "../extensibility/skills";
 import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../learnings";
 import { resolveMemoryBackend } from "../memory-backend";
 import type { InteractiveModeContext } from "../modes/types";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
+import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
 import { resolveWorkspaceRootReference } from "../workspace-roots";
 import { buildContextReportText } from "./helpers/context-report";
@@ -125,11 +128,182 @@ function isDumpCopyInvocation(args: string): boolean {
 	return arg === "" || arg === "copy" || arg === "clipboard" || arg === "--copy";
 }
 
+const SKILL_DESCRIPTION_LIMIT = 120;
+
+function formatToggle(value: boolean | undefined, defaultValue: boolean = true): string {
+	return (value ?? defaultValue) ? "on" : "off";
+}
+
+function shortenEmbeddedHomePaths(value: string): string {
+	const home = os.homedir();
+	return home ? value.replaceAll(home, "~") : value;
+}
+
+function sanitizeInlineText(value: string, maxWidth: number = TRUNCATE_LENGTHS.LINE): string {
+	const singleLine = replaceTabs(sanitizeText(shortenEmbeddedHomePaths(value))).replaceAll(/\r?\n/g, " ");
+	return truncateToWidth(singleLine, maxWidth);
+}
+
+function formatList(values: readonly string[] | undefined): string {
+	return values && values.length > 0
+		? values.map(value => sanitizeInlineText(value, TRUNCATE_LENGTHS.CONTENT)).join(", ")
+		: "(none)";
+}
+
+function formatSkillDescription(description: string): string {
+	return sanitizeInlineText(description, SKILL_DESCRIPTION_LIMIT);
+}
+
+function formatSkillLine(skill: Skill): string {
+	const description = formatSkillDescription(skill.description);
+	const name = sanitizeInlineText(skill.name, TRUNCATE_LENGTHS.CONTENT);
+	const source = sanitizeInlineText(skill.source, TRUNCATE_LENGTHS.SHORT);
+	return `* ${name} [${source}]${description ? ` — ${description}` : ""}`;
+}
+
+function buildSkillsReportText(runtime: SlashCommandRuntime): string {
+	const skillSettings = runtime.session.skillsSettings ?? runtime.settings.getGroup("skills");
+	const disabledExtensions = skillSettings.disabledExtensions ?? runtime.settings.get("disabledExtensions") ?? [];
+	const disabledSkillNames = disabledExtensions
+		.filter(id => id.startsWith("skill:"))
+		.map(id => id.slice("skill:".length))
+		.sort((a, b) => a.localeCompare(b));
+	const skills = [...runtime.session.skills].sort((a, b) => a.name.localeCompare(b.name));
+	const warnings = runtime.session.skillWarnings ?? [];
+
+	const lines = [
+		"Skill selection",
+		`- Discovery: ${formatToggle(skillSettings.enabled)}`,
+		`- /skill commands: ${formatToggle(skillSettings.enableSkillCommands)}`,
+		`- Sources: codex user ${formatToggle(skillSettings.enableCodexUser)}, claude user ${formatToggle(skillSettings.enableClaudeUser)}, claude project ${formatToggle(skillSettings.enableClaudeProject)}, OMP user ${formatToggle(skillSettings.enablePiUser)}, OMP project ${formatToggle(skillSettings.enablePiProject)}`,
+		`- Include skills: ${formatList(skillSettings.includeSkills)}`,
+		`- Ignored skills: ${formatList(skillSettings.ignoredSkills)}`,
+		`- Disabled skill extensions: ${formatList(disabledSkillNames)}`,
+		"",
+		`Active skills (${skills.length})`,
+	];
+
+	if (skills.length === 0) {
+		lines.push("No active skills loaded.");
+	} else {
+		for (const skill of skills) lines.push(formatSkillLine(skill));
+	}
+
+	if (warnings.length > 0) {
+		lines.push("", `Skill warnings (${warnings.length})`);
+		for (const warning of warnings) {
+			const pathPrefix = warning.skillPath ? `${shortenPath(warning.skillPath)}: ` : "";
+			const text = sanitizeInlineText(`${pathPrefix}${warning.message}`);
+			lines.push(`- ${text}`);
+		}
+	}
+
+	return lines.join("\n");
+}
+
 const LEARNING_CLEAR_SCOPE_LABELS = {
 	all: "All",
 	global: "Global",
 	repo: "Repo",
 } as const;
+
+type ContextGcAction = "stats" | "global" | "tree" | "debug";
+type ContextGcStatus = "candidate" | "unloaded" | "pinned";
+type ContextGcGroupBy = "status" | "kind" | "source";
+
+interface ParsedContextGcArgs {
+	action: ContextGcAction;
+	status?: ContextGcStatus;
+	groupBy?: ContextGcGroupBy;
+	limit?: number;
+	includeRecords?: boolean;
+	error?: string;
+}
+
+const CONTEXT_GC_USAGE =
+	"Usage: /context-gc [stats|global|global-stats|tree|debug]\n" +
+	"  /context-gc tree [--status candidate|unloaded|pinned] [--group status|kind|source] [--limit N]\n" +
+	"  /context-gc debug [--records] [--limit N]";
+
+function parseContextGcStatus(value: string | undefined): ContextGcStatus | undefined {
+	if (value === "candidate" || value === "unloaded" || value === "pinned") return value;
+	return undefined;
+}
+
+function parseContextGcGroupBy(value: string | undefined): ContextGcGroupBy | undefined {
+	if (value === "status" || value === "kind" || value === "source") return value;
+	return undefined;
+}
+
+function parseContextGcLimit(value: string | undefined): number | undefined {
+	if (!value) return undefined;
+	const parsed = Number(value);
+	if (!Number.isInteger(parsed) || parsed < 1) return undefined;
+	return parsed;
+}
+
+function parseContextGcArgs(args: string): ParsedContextGcArgs {
+	const tokens = args.split(/\s+/).filter(Boolean);
+	const first = tokens[0]?.toLowerCase();
+	const normalizedFirst = first === "global-stats" ? "global" : first;
+	if (
+		normalizedFirst !== undefined &&
+		normalizedFirst !== "stats" &&
+		normalizedFirst !== "global" &&
+		normalizedFirst !== "tree" &&
+		normalizedFirst !== "debug"
+	) {
+		return { action: "stats", error: `Unknown /context-gc subcommand: ${tokens[0]}.` };
+	}
+	const action: ContextGcAction = normalizedFirst ?? "stats";
+
+	let status: ContextGcStatus | undefined;
+	let groupBy: ContextGcGroupBy | undefined;
+	let limit: number | undefined;
+	let includeRecords = false;
+	let i = first === undefined ? 0 : 1;
+	while (i < tokens.length) {
+		const token = tokens[i]!;
+		switch (token) {
+			case "--status": {
+				if (action !== "tree") return { action, error: `Option ${token} is only valid for /context-gc tree.` };
+				const parsed = parseContextGcStatus(tokens[i + 1]);
+				if (!parsed) return { action, error: "Usage: --status candidate|unloaded|pinned" };
+				status = parsed;
+				i += 2;
+				break;
+			}
+			case "--group": {
+				if (action !== "tree") return { action, error: `Option ${token} is only valid for /context-gc tree.` };
+				const parsed = parseContextGcGroupBy(tokens[i + 1]);
+				if (!parsed) return { action, error: "Usage: --group status|kind|source" };
+				groupBy = parsed;
+				i += 2;
+				break;
+			}
+			case "--limit": {
+				if (action !== "tree" && action !== "debug") {
+					return { action, error: `Option ${token} is only valid for /context-gc tree or debug.` };
+				}
+				const parsed = parseContextGcLimit(tokens[i + 1]);
+				if (parsed === undefined) return { action, error: "Usage: --limit N where N is a positive integer." };
+				limit = parsed;
+				i += 2;
+				break;
+			}
+			case "--records": {
+				if (action !== "debug") return { action, error: `Option ${token} is only valid for /context-gc debug.` };
+				includeRecords = true;
+				i += 1;
+				break;
+			}
+			default:
+				return { action, error: `Unknown /context-gc option: ${token}.` };
+		}
+	}
+
+	return { action, status, groupBy, limit, includeRecords };
+}
 
 const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
@@ -662,6 +836,15 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "skills",
+		description: "Show active skills and skill-selection filters",
+		acpDescription: "Show active skills and skill filters",
+		handle: async (_command, runtime) => {
+			await runtime.output(buildSkillsReportText(runtime));
+			return commandConsumed();
+		},
+	},
+	{
 		name: "context",
 		description: "Show estimated context usage breakdown",
 		acpDescription: "Show context usage",
@@ -672,6 +855,36 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: (_command, runtime) => {
 			runtime.ctx.handleContextCommand();
 			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "context-gc",
+		aliases: ["contextgc", "gc"],
+		description: "Show Context GC stats, tree, and diagnostics",
+		acpInputHint: "[stats|global|tree|debug]",
+		subcommands: [
+			{ name: "stats", description: "Show current branch Context GC stats" },
+			{ name: "global", description: "Show global Context GC database stats" },
+			{ name: "tree", description: "Show grouped current branch record tree" },
+			{ name: "debug", description: "Show Context GC diagnostics" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const parsed = parseContextGcArgs(command.args);
+			if (parsed.error) return usage(`${parsed.error}\n${CONTEXT_GC_USAGE}`, runtime);
+			const report = await renderContextGcReport({
+				agentDir: runtime.settings.getAgentDir(),
+				cwd: runtime.cwd,
+				sessionManager: runtime.sessionManager,
+				action: parsed.action,
+				status: parsed.status,
+				groupBy: parsed.groupBy,
+				limit: parsed.limit,
+				includeRecords: parsed.includeRecords,
+				contextUsage: runtime.session.getContextUsage?.(),
+			});
+			await runtime.output(report);
+			return commandConsumed();
 		},
 	},
 	{

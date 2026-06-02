@@ -1,3 +1,5 @@
+import * as path from "node:path";
+import { createContextGcExtension, setDefaultContextGcDbPath } from "@oh-my-pi/context-gc-plugin";
 import {
 	Agent,
 	type AgentEvent,
@@ -250,6 +252,8 @@ export interface CreateAgentSessionOptions {
 	cwd?: string;
 	/** Global config directory. Default: ~/.omp/agent */
 	agentDir?: string;
+	/** Context GC SQLite path. Default: `<agentDir>/context-gc.sqlite`. */
+	contextGcDbPath?: string;
 	/** Spawns to allow. Default: "*" */
 	spawns?: string;
 
@@ -422,6 +426,22 @@ function getDefaultAgentDir(): string {
 	return getAgentDir();
 }
 
+let contextGcExtensionLoadTail: Promise<void> = Promise.resolve();
+
+async function withContextGcDbPath<T>(dbPath: string, load: () => Promise<T>): Promise<T> {
+	const previous = contextGcExtensionLoadTail;
+	const { promise, resolve } = Promise.withResolvers<void>();
+	contextGcExtensionLoadTail = previous.then(() => promise);
+	await previous;
+	const restoreContextGcDbPath = setDefaultContextGcDbPath(dbPath);
+	try {
+		return await load();
+	} finally {
+		restoreContextGcDbPath();
+		resolve();
+	}
+}
+
 // Discovery Functions
 
 /**
@@ -479,32 +499,39 @@ export async function discoverExtensions(cwd?: string): Promise<LoadExtensionsRe
  * repeated. Keep this the single source of the discovery branch logic.
  */
 export async function loadSessionExtensions(
-	options: Pick<CreateAgentSessionOptions, "disableExtensionDiscovery" | "additionalExtensionPaths">,
+	options: Pick<
+		CreateAgentSessionOptions,
+		"agentDir" | "contextGcDbPath" | "disableExtensionDiscovery" | "additionalExtensionPaths"
+	>,
 	cwd: string,
 	settings: Settings,
 	eventBus: EventBus,
 ): Promise<LoadExtensionsResult> {
-	let result: LoadExtensionsResult;
-	if (options.disableExtensionDiscovery) {
-		const configuredPaths = options.additionalExtensionPaths ?? [];
-		result = await logger.time("loadExtensions", loadExtensions, configuredPaths, cwd, eventBus);
-	} else {
-		// Merge CLI extension paths with settings extension paths.
-		const configuredPaths = [...(options.additionalExtensionPaths ?? []), ...(settings.get("extensions") ?? [])];
-		const disabledExtensionIds = settings.get("disabledExtensions") ?? [];
-		result = await logger.time(
-			"discoverAndLoadExtensions",
-			discoverAndLoadExtensions,
-			configuredPaths,
-			cwd,
-			eventBus,
-			disabledExtensionIds,
-		);
-	}
-	for (const { path, error } of result.errors) {
-		logger.error("Failed to load extension", { path, error });
-	}
-	return result;
+	const contextGcDbPath =
+		options.contextGcDbPath ?? path.join(options.agentDir ?? getDefaultAgentDir(), "context-gc.sqlite");
+	return await withContextGcDbPath(contextGcDbPath, async () => {
+		let result: LoadExtensionsResult;
+		if (options.disableExtensionDiscovery) {
+			const configuredPaths = options.additionalExtensionPaths ?? [];
+			result = await logger.time("loadExtensions", loadExtensions, configuredPaths, cwd, eventBus);
+		} else {
+			// Merge CLI extension paths with settings extension paths.
+			const configuredPaths = [...(options.additionalExtensionPaths ?? []), ...(settings.get("extensions") ?? [])];
+			const disabledExtensionIds = settings.get("disabledExtensions") ?? [];
+			result = await logger.time(
+				"discoverAndLoadExtensions",
+				discoverAndLoadExtensions,
+				configuredPaths,
+				cwd,
+				eventBus,
+				disabledExtensionIds,
+			);
+		}
+		for (const { path, error } of result.errors) {
+			logger.error("Failed to load extension", { path, error });
+		}
+		return result;
+	});
 }
 
 /**
@@ -960,14 +987,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		? Promise.resolve(options.slashCommands)
 		: logger.time("discoverSlashCommands", discoverSlashCommands, cwd);
 	slashCommandsPromise.catch(() => {});
-	const skillsSettings = settings.getGroup("skills");
 	const disabledExtensionIds = settings.get("disabledExtensions") ?? [];
+	const skillsSettings = {
+		...settings.getGroup("skills"),
+		disabledExtensions: disabledExtensionIds,
+	};
 	const discoveredSkillsPromise =
 		options.skills === undefined
-			? logger.time("discoverSkills", discoverSkills, cwd, agentDir, {
-					...skillsSettings,
-					disabledExtensions: disabledExtensionIds,
-				})
+			? logger.time("discoverSkills", discoverSkills, cwd, agentDir, skillsSettings)
 			: undefined;
 	discoveredSkillsPromise?.catch(() => {});
 
@@ -1456,6 +1483,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			inlineExtensions.push(createCustomToolsExtension(customTools));
 		}
 
+		const contextGcDbPath = options.contextGcDbPath ?? path.join(agentDir, "context-gc.sqlite");
+
 		// Load extensions. A preloaded result (e.g. resolved by the CLI before
 		// session creation so it can classify `@file` args extension-aware without
 		// a session/breadcrumb existing yet) is reused as-is; otherwise discover now
@@ -1465,20 +1494,36 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const extensionsResult: LoadExtensionsResult =
 			options.preloadedExtensions ?? (await loadSessionExtensions(options, cwd, settings, eventBus));
 
-		// Load inline extensions from factories
-		if (inlineExtensions.length > 0) {
-			for (let i = 0; i < inlineExtensions.length; i++) {
-				const factory = inlineExtensions[i];
+		await withContextGcDbPath(contextGcDbPath, async () => {
+			// Load inline extensions from factories
+			if (inlineExtensions.length > 0) {
+				for (let i = 0; i < inlineExtensions.length; i++) {
+					const factory = inlineExtensions[i];
+					const loaded = await loadExtensionFromFactory(
+						factory,
+						cwd,
+						eventBus,
+						extensionsResult.runtime,
+						`<inline-${i}>`,
+					);
+					extensionsResult.extensions.push(loaded);
+				}
+			}
+
+			// Context GC is shipped as a plugin package for external reuse, but loaded natively in
+			// bundled omp so users get durable unload/recall without `omp plugin install`. This runs
+			// after user inline factories so wrappers that set the same label are deduped too.
+			if (!extensionsResult.extensions.some(extension => extension.label === "Context GC")) {
 				const loaded = await loadExtensionFromFactory(
-					factory,
+					createContextGcExtension({ dbPath: contextGcDbPath }),
 					cwd,
 					eventBus,
 					extensionsResult.runtime,
-					`<inline-${i}>`,
+					"<native-context-gc>",
 				);
 				extensionsResult.extensions.push(loaded);
 			}
-		}
+		});
 
 		// Process provider registrations queued during extension loading.
 		// This must happen before the runner is created so that models registered by
@@ -1758,7 +1803,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				toolNames,
 				rules: rulebookRules,
 				alwaysApplyRules,
-				skillsSettings: settings.getGroup("skills"),
+				skillsSettings,
 				appendSystemPrompt: appendPrompt,
 				repeatToolDescriptions,
 				intentField,
@@ -2137,10 +2182,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			customCommands: customCommandsResult.commands,
 			skills,
 			skillWarnings,
-			skillsSettings: settings.getGroup("skills"),
+			skillsSettings,
 			modelRegistry,
 			toolRegistry,
 			transformContext,
+			contextGcDbPath,
 			onPayload,
 			onResponse,
 			convertToLlm: convertToLlmFinal,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import {
 	type BranchSummaryEntry,
 	buildSessionContext,
@@ -114,6 +115,82 @@ describe("buildSessionContext", () => {
 			expect(customMessage?.role).toBe("custom");
 			if (customMessage?.role !== "custom") throw new Error("Expected custom message");
 			expect(customMessage.attribution).toBeUndefined();
+		});
+		it("tags session-entry-backed non-tool surfaces with their stable entry id (never leaked to the LLM)", () => {
+			const entries: SessionEntry[] = [
+				msg("u1", null, "user", "hello"),
+				{
+					type: "message",
+					id: "cm-1",
+					parentId: "u1",
+					timestamp: "2025-01-01T00:00:00Z",
+					message: {
+						role: "custom",
+						customType: "tool-output",
+						content: "custom body",
+						display: false,
+						timestamp: 1,
+					},
+				},
+				{
+					type: "message",
+					id: "fm-1",
+					parentId: "cm-1",
+					timestamp: "2025-01-01T00:00:00Z",
+					message: {
+						role: "fileMention",
+						files: [{ path: "a.ts", content: "x", lineCount: 1 }],
+						timestamp: 1,
+					},
+				},
+				{
+					type: "message",
+					id: "bash-1",
+					parentId: "fm-1",
+					timestamp: "2025-01-01T00:00:00Z",
+					message: {
+						role: "bashExecution",
+						command: "ls",
+						output: "out",
+						exitCode: 0,
+						cancelled: false,
+						truncated: false,
+						timestamp: 1,
+					},
+				},
+				{
+					type: "message",
+					id: "py-1",
+					parentId: "bash-1",
+					timestamp: "2025-01-01T00:00:00Z",
+					message: {
+						role: "pythonExecution",
+						code: "print(1)",
+						output: "1",
+						exitCode: 0,
+						cancelled: false,
+						truncated: false,
+						timestamp: 1,
+					},
+				},
+			];
+
+			const ctx = buildSessionContext(entries);
+			const surface = (role: string): Record<string, unknown> | undefined =>
+				ctx.messages.find(m => m.role === role) as Record<string, unknown> | undefined;
+
+			// Session-entry-backed non-tool surfaces carry their stable entry id for context-GC linkage.
+			expect(surface("custom")?.entryId).toBe("cm-1");
+			expect(surface("fileMention")?.entryId).toBe("fm-1");
+			expect(surface("bashExecution")?.entryId).toBe("bash-1");
+			expect(surface("pythonExecution")?.entryId).toBe("py-1");
+			// Plain user turns are never tagged (convertToLlm spreads them, which would leak the id).
+			expect(surface("user")?.entryId).toBeUndefined();
+
+			// The provider-facing conversion must never carry the runtime-only entryId.
+			for (const message of convertToLlm(ctx.messages)) {
+				expect(Object.hasOwn(message, "entryId")).toBe(false);
+			}
 		});
 		it("simple conversation", () => {
 			const entries: SessionEntry[] = [

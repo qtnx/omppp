@@ -147,7 +147,13 @@
 ### Added
 
 - Added live-learning audit artifacts for every classifier and writer run, including classifier request/response dumps, writer request/result dumps, and persisted writer-agent JSONL paths.
+- Added `/skills` to report active session skills, source toggles, include/ignore filters, disabled skill extensions, and skill discovery warnings.
+- Added `/context-gc global` for database-wide Context GC stats across persisted sessions.
 
+
+### Changed
+
+- Changed the completed-turn recap from a one-line (≤10-word) summary to a concise 2-3 sentence past-tense paragraph (≤~60 words) that names the files, commands, and outcomes touched. The foreground transcript now renders it as a width-wrapped block instead of a single truncated line.
 
 ### Fixed
 

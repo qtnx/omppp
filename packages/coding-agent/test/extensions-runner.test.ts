@@ -12,6 +12,7 @@ import {
 	ExtensionRunner,
 	testSetExtensionHandlerTimeoutMs,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, logger, TempDir } from "@oh-my-pi/pi-utils";
@@ -771,6 +772,72 @@ describe("ExtensionRunner", () => {
 
 			expect(loadError).toBeDefined();
 			expect(loadError?.error).toContain("Extension runtime not initialized");
+		});
+	});
+
+	describe("async job snapshot API", () => {
+		it("passes background job snapshots to extension event contexts", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("agent_end", (_event, ctx) => {
+						pi.appendEntry("snapshot", ctx.getAsyncJobSnapshot({ recentLimit: 2 }));
+					});
+				}
+			`;
+			const explicitExtensionPath = path.join(tempDir.path(), "async-snapshot.ts");
+			fs.writeFileSync(explicitExtensionPath, extCode);
+
+			const result = await loadTestExtensions([explicitExtensionPath]);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const entries: Array<{ customType: string; data?: unknown }> = [];
+			const snapshot: AsyncJobSnapshot = {
+				running: [{ id: "task-1", type: "task", status: "running", label: "Task 1", startTime: 123 }],
+				recent: [],
+				delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+			};
+			let recentLimit: number | undefined;
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: (customType, data) => entries.push({ customType, data }),
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					getAsyncJobSnapshot: options => {
+						recentLimit = options?.recentLimit;
+						return snapshot;
+					},
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+				},
+			);
+
+			await runner.emit({ type: "agent_end", messages: [] });
+
+			expect(recentLimit).toBe(2);
+			expect(entries).toEqual([{ customType: "snapshot", data: snapshot }]);
 		});
 	});
 

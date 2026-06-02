@@ -175,6 +175,7 @@ export class ExtensionRunner {
 	#errorListeners: Set<ExtensionErrorListener> = new Set();
 	#getModel: () => Model | undefined = () => undefined;
 	#isIdleFn: () => boolean = () => true;
+	#getAsyncJobSnapshotFn: NonNullable<ExtensionContextActions["getAsyncJobSnapshot"]> = () => null;
 	#waitForIdleFn: () => Promise<void> = async () => {};
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
@@ -231,6 +232,7 @@ export class ExtensionRunner {
 		// Context actions (required)
 		this.#getModel = contextActions.getModel;
 		this.#isIdleFn = contextActions.isIdle;
+		this.#getAsyncJobSnapshotFn = contextActions.getAsyncJobSnapshot ?? (() => null);
 		this.#abortFn = contextActions.abort;
 		this.#hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.#shutdownHandler = contextActions.shutdown;
@@ -473,6 +475,7 @@ export class ExtensionRunner {
 				return getModel();
 			},
 			isIdle: () => this.#isIdleFn(),
+			getAsyncJobSnapshot: options => this.#getAsyncJobSnapshotFn(options),
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
 			shutdown: () => this.#shutdownHandler(),

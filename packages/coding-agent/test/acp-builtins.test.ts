@@ -2,11 +2,15 @@ import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
-import { Settings } from "../src/config/settings";
+import { getAgentDir, getProjectDir, setAgentDir, setProjectDir } from "@oh-my-pi/pi-utils";
+import { CONTEXT_GC_CUSTOM_TYPE, type ContextGcDelta, type ContextStatus } from "../../context-gc-plugin/src/schema";
+import { type ContextGcStore, openContextGcStore } from "../../context-gc-plugin/src/storage";
+import { Settings, type SkillsSettings } from "../src/config/settings";
+import type { Skill, SkillWarning } from "../src/extensibility/skills";
 import type { AgentSession } from "../src/session/agent-session";
 import type { SessionManager } from "../src/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../src/slash-commands/acp-builtins";
+import type { SlashCommandRuntime } from "../src/slash-commands/types";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
@@ -39,6 +43,15 @@ interface FakeAcpBuiltinSession {
 	getContextUsage(): { tokens?: number; contextWindow: number } | undefined;
 	getAvailableModels(): Array<{ provider: string; id: string; contextWindow?: number }>;
 	setModel(model: unknown): Promise<void>;
+	skills: Skill[];
+	skillsSettings?: SkillsSettings;
+	skillWarnings?: SkillWarning[];
+}
+
+interface FakeSessionEntry {
+	type: string;
+	customType?: string;
+	data?: unknown;
 }
 
 function createRuntime() {
@@ -51,6 +64,7 @@ function createRuntime() {
 		sessionId: "fake-session-id",
 		sessionName: "Fake Session",
 		_todoPhases: [],
+		skills: [],
 		toggleFastMode() {
 			this.fastMode = !this.fastMode;
 			return this.fastMode;
@@ -99,7 +113,7 @@ function createRuntime() {
 	const fakeSessionManager = {
 		_sessionFile: undefined as string | undefined,
 		_cwd: "/tmp/project",
-		_entries: [] as { type: string }[],
+		_entries: [] as FakeSessionEntry[],
 		_customEntries: [] as Array<{ customType: string; data: unknown }>,
 		_movedTo: undefined as string | undefined,
 		_flushed: false,
@@ -110,10 +124,10 @@ function createRuntime() {
 		getSessionFile(): string | undefined {
 			return this._sessionFile;
 		},
-		getEntries(): { type: string }[] {
+		getEntries(): FakeSessionEntry[] {
 			return this._entries;
 		},
-		getBranch(): { type: string }[] {
+		getBranch(): FakeSessionEntry[] {
 			return this._entries;
 		},
 		appendCustomEntry(customType: string, data?: unknown): string {
@@ -153,6 +167,98 @@ function createRuntime() {
 			notifyConfigChanged: undefined as (() => Promise<void> | void) | undefined,
 		},
 	};
+}
+
+function fakeSkill(name: string, source: string, description: string = ""): Skill {
+	const [provider = "custom", level = "user"] = source.split(":", 2);
+	const sourceLevel = level === "project" || level === "native" ? level : "user";
+	const baseDir = `/tmp/skills/${name}`;
+	return {
+		name,
+		description,
+		filePath: `${baseDir}/SKILL.md`,
+		baseDir,
+		source,
+		_source: {
+			provider,
+			providerName: provider,
+			path: `${baseDir}/SKILL.md`,
+			level: sourceLevel,
+		},
+	};
+}
+
+function seedContextGcRecord(
+	store: ContextGcStore,
+	id: string,
+	status: ContextStatus,
+	tokenEstimate: number,
+	kind: "file_read" | "tool_result",
+): ContextGcDelta {
+	const payload = store.putPayload("text/plain;charset=utf-8", `payload ${id}`);
+	const summary = `summary ${id}`;
+	store.upsertRecord({
+		id,
+		sessionId: "fake-session-id",
+		status: "candidate",
+		kind,
+		source:
+			kind === "file_read"
+				? { entryId: `entry-${id}`, path: `/tmp/${id}.txt` }
+				: { toolCallId: id, toolName: "read" },
+		payloadHash: payload.hash,
+		summary,
+		tokenEstimate,
+	});
+	const createdAt = new Date().toISOString();
+	if (status === "unloaded") {
+		return { op: "unload", id, sessionId: "fake-session-id", status, summary: `Unloaded ${summary}`, createdAt };
+	}
+	if (status === "pinned") {
+		return { op: "pin", id, sessionId: "fake-session-id", status, createdAt };
+	}
+	return { op: "candidate", id, sessionId: "fake-session-id", status, createdAt };
+}
+
+async function withContextGcFixture(
+	run: (fixture: {
+		output: string[];
+		runtime: SlashCommandRuntime;
+		fakeSessionManager: { _entries: FakeSessionEntry[] };
+	}) => Promise<void>,
+): Promise<void> {
+	const previousAgentDir = getAgentDir();
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "context-gc-slash-"));
+	const agentDir = path.join(root, "agent");
+	await fs.mkdir(agentDir, { recursive: true });
+	setAgentDir(agentDir);
+	const store = openContextGcStore({ dbPath: path.join(agentDir, "context-gc.sqlite") });
+	try {
+		const unloaded = seedContextGcRecord(store, "ctx-unloaded", "unloaded", 120, "file_read");
+		const candidate = seedContextGcRecord(store, "ctx-candidate", "candidate", 80, "tool_result");
+		const globalPayload = store.putPayload("text/plain;charset=utf-8", "global payload");
+		store.upsertRecord({
+			id: "ctx-global-unloaded",
+			sessionId: "other-session",
+			status: "unloaded",
+			kind: "tool_result",
+			source: { toolCallId: "ctx-global-unloaded", toolName: "bash" },
+			payloadHash: globalPayload.hash,
+			summary: "summary ctx-global-unloaded",
+			tokenEstimate: 300,
+		});
+		const { output, runtime, fakeSessionManager, session } = createRuntime();
+		session.getContextUsage = () => ({ tokens: 1_000, contextWindow: 10_000 });
+		fakeSessionManager._entries = [
+			{ type: "custom", customType: CONTEXT_GC_CUSTOM_TYPE, data: candidate },
+			{ type: "custom", customType: CONTEXT_GC_CUSTOM_TYPE, data: unloaded },
+		];
+		await run({ output, runtime, fakeSessionManager });
+	} finally {
+		store.close();
+		setAgentDir(previousAgentDir);
+		await fs.rm(root, { recursive: true, force: true });
+	}
 }
 
 describe("ACP builtin slash commands", () => {
@@ -201,6 +307,65 @@ describe("ACP builtin slash commands", () => {
 		expect(output[0]).toContain("5 hours (prolite)");
 		expect(output[0]).toContain("user@example.com: 0.24 unknown used (76.0% left)");
 		expect(output[0]).toContain("resets in");
+	});
+
+	it("/skills: lists active skills and configured selection filters", async () => {
+		const { output, runtime, session } = createRuntime();
+		session.skills = [
+			fakeSkill("alpha", "claude:user", "Handles alpha work"),
+			fakeSkill("beta", "native:project", "Handles beta work"),
+		];
+		runtime.settings.set("disabledExtensions" as never, ["skill:disabled-one"] as never);
+		runtime.settings.set("skills.ignoredSkills" as never, ["legacy-*"] as never);
+
+		const result = await executeAcpBuiltinSlashCommand("/skills", runtime);
+
+		expect(result).toEqual({ consumed: true });
+		const text = output[0] ?? "";
+		expect(text).toContain("Skill selection");
+		expect(text).toContain("Active skills (2)");
+		expect(text).toContain("* alpha [claude:user] — Handles alpha work");
+		expect(text).toContain("* beta [native:project] — Handles beta work");
+		expect(text).toContain("Disabled skill extensions: disabled-one");
+		expect(text).toContain("Ignored skills: legacy-*");
+	});
+
+	it("/skills: reports disabled extensions from the session skill snapshot", async () => {
+		const { output, runtime, session } = createRuntime();
+		session.skillsSettings = { disabledExtensions: ["skill:snapshot-disabled"] };
+		runtime.settings.set("disabledExtensions" as never, ["skill:current-disabled"] as never);
+
+		const result = await executeAcpBuiltinSlashCommand("/skills", runtime);
+
+		expect(result).toEqual({ consumed: true });
+		const text = output[0] ?? "";
+		expect(text).toContain("Disabled skill extensions: snapshot-disabled");
+		expect(text).not.toContain("current-disabled");
+	});
+
+	it("/skills: sanitizes warning paths and text for TUI-safe output", async () => {
+		const { output, runtime, session } = createRuntime();
+		const warningPath = path.join(os.homedir(), "tmp", "skill", "SKILL.md");
+		session.skillWarnings = [{ skillPath: warningPath, message: `bad\twarning\nnext line ${warningPath}` }];
+
+		const result = await executeAcpBuiltinSlashCommand("/skills", runtime);
+
+		expect(result).toEqual({ consumed: true });
+		const text = output[0] ?? "";
+		expect(text).toContain(`~${warningPath.slice(os.homedir().length)}`);
+		expect(text).toContain("bad");
+		expect(text).toContain("warning next line");
+		expect(text).not.toContain(os.homedir());
+		expect(text).not.toContain("\t");
+	});
+
+	it("/skills: reports empty active state when no skills are loaded", async () => {
+		const { output, runtime } = createRuntime();
+
+		const result = await executeAcpBuiltinSlashCommand("/skills", runtime);
+
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toContain("No active skills loaded.");
 	});
 
 	it("returns false for unknown commands", async () => {
@@ -887,6 +1052,72 @@ describe("wave 5 — adapters and polish", () => {
 		expect(text.split("\n").length).toBeGreaterThan(1);
 	});
 
+	it("/context-gc: renders current branch stats", async () => {
+		await withContextGcFixture(async ({ output, runtime }) => {
+			const result = await executeAcpBuiltinSlashCommand("/context-gc", runtime);
+
+			expect(result).toEqual({ consumed: true });
+			const text = output[0] ?? "";
+			expect(text).toContain("Context GC stats");
+			expect(text).toContain("Estimated active tokens saved");
+			expect(text).toContain("120");
+			const aliasResult = await executeAcpBuiltinSlashCommand("/gc stats", runtime);
+			expect(aliasResult).toEqual({ consumed: true });
+			expect(output[1]).toContain("Context GC stats");
+		});
+	});
+
+	it("/context-gc global: renders global database stats", async () => {
+		await withContextGcFixture(async ({ output, runtime }) => {
+			const result = await executeAcpBuiltinSlashCommand("/context-gc global", runtime);
+
+			expect(result).toEqual({ consumed: true });
+			const text = output[0] ?? "";
+			expect(text).toContain("Context GC global stats");
+			expect(text).toContain("Global sessions: 2");
+			expect(text).toContain("Global records: 3");
+			expect(text).toContain("Estimated global tokens saved: 300 unloaded token(s)");
+			const aliasResult = await executeAcpBuiltinSlashCommand("/context-gc global-stats", runtime);
+			expect(aliasResult).toEqual({ consumed: true });
+			expect(output[1]).toContain("Context GC global stats");
+		});
+	});
+
+	it("/context-gc tree: renders grouped current branch records", async () => {
+		await withContextGcFixture(async ({ output, runtime }) => {
+			const result = await executeAcpBuiltinSlashCommand(
+				"/context-gc tree --status unloaded --group kind --limit 5",
+				runtime,
+			);
+
+			expect(result).toEqual({ consumed: true });
+			const text = output[0] ?? "";
+			expect(text).toContain("Context GC tree");
+			expect(text).toContain("unloaded");
+			expect(text).toContain("file_read");
+		});
+	});
+
+	it("/context-gc debug: renders diagnostics with records when requested", async () => {
+		await withContextGcFixture(async ({ output, runtime }) => {
+			const result = await executeAcpBuiltinSlashCommand("/context-gc debug --records --limit 5", runtime);
+
+			expect(result).toEqual({ consumed: true });
+			const text = output[0] ?? "";
+			expect(text).toContain("Context GC debug");
+			expect(text).toContain("records");
+			expect(text).toContain("ctx-unloaded");
+		});
+	});
+
+	it("/context-gc: reports usage for unknown options", async () => {
+		await withContextGcFixture(async ({ output, runtime }) => {
+			const result = await executeAcpBuiltinSlashCommand("/context-gc tree --wat", runtime);
+
+			expect(result).toEqual({ consumed: true });
+			expect(output[0]).toContain("Usage: /context-gc");
+		});
+	});
 	// /jobs empty state
 	it("/jobs: empty-state output mentions background jobs definition", async () => {
 		const { output, runtime } = createRuntime();
