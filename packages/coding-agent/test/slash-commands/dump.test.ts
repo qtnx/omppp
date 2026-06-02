@@ -3,7 +3,7 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 
 function createRuntimeHarness() {
-	const handleDumpCommand = vi.fn(async () => {});
+	const handleDumpCommand = vi.fn(async (_target?: "clipboard" | "file") => {});
 	const setText = vi.fn();
 
 	const ctx = {
@@ -28,7 +28,7 @@ describe("/dump slash command", () => {
 		const handled = await executeBuiltinSlashCommand("/dump copy", harness.runtime);
 
 		expect(handled).toBe(true);
-		expect(harness.handleDumpCommand).toHaveBeenCalledTimes(1);
+		expect(harness.handleDumpCommand).toHaveBeenCalledWith("clipboard");
 		expect(harness.setText).toHaveBeenCalledWith("");
 	});
 
@@ -39,6 +39,16 @@ describe("/dump slash command", () => {
 
 		expect(handled).toBe(true);
 		expect(harness.handleDumpCommand).toHaveBeenCalledTimes(1);
+		expect(harness.setText).toHaveBeenCalledWith("");
+	});
+
+	it("accepts file as a temp text dump subcommand", async () => {
+		const harness = createRuntimeHarness();
+
+		const handled = await executeBuiltinSlashCommand("/dump file", harness.runtime);
+
+		expect(handled).toBe(true);
+		expect(harness.handleDumpCommand).toHaveBeenCalledWith("file");
 		expect(harness.setText).toHaveBeenCalledWith("");
 	});
 

@@ -81,6 +81,10 @@
 - Fixed startup model resolution ignoring cached discovery rows for special built-in providers (`google-antigravity`, `google-gemini-cli`, `openai-codex`) until the background refresh completed ([#1721](https://github.com/can1357/oh-my-pi/issues/1721)).
 - Fixed Windows clipboard-image paste keeping `Ctrl+V` unregistered by default. The TUI now registers `Ctrl+V` plus the Windows Terminal-safe `Alt+V` fallback, and the keybinding docs call out when to use the fallback ([#1708](https://github.com/can1357/oh-my-pi/issues/1708)).
 
+### Fixed
+
+- Fixed `/dump copy` over SSH/tmux by using Vim-style OSC 52 passthrough wrapping, and added `/dump file` for writing the transcript to a private temporary `.txt` file.
+
 ## [15.8.0] - 2026-06-02
 
 ### Added

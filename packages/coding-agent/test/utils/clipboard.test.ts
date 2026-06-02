@@ -81,7 +81,7 @@ function captureStdoutWrites(): () => string {
 	return () => captured;
 }
 
-const ENV_KEYS = ["WSL_DISTRO_NAME", "WSL_INTEROP", "DISPLAY", "WAYLAND_DISPLAY", "TERMUX_VERSION"] as const;
+const ENV_KEYS = ["WSL_DISTRO_NAME", "WSL_INTEROP", "DISPLAY", "WAYLAND_DISPLAY", "TERMUX_VERSION", "TMUX"] as const;
 let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 
 beforeEach(() => {
@@ -116,6 +116,18 @@ describe("copyToClipboard", () => {
 		await copyToClipboard("ssh transcript");
 
 		expect(capturedStdout()).toBe("\x1b]52;c;c3NoIHRyYW5zY3JpcHQ=\x07");
+		expect(nativeSpy).toHaveBeenCalledWith("ssh transcript");
+	});
+
+	it("wraps OSC 52 in tmux passthrough before the native clipboard fallback", async () => {
+		setStdoutIsTty(true);
+		process.env.TMUX = "/tmp/tmux-1000/default,123,0";
+		const capturedStdout = captureStdoutWrites();
+		const nativeSpy = vi.spyOn(native, "copyToClipboard").mockImplementation(() => undefined);
+
+		await copyToClipboard("ssh transcript");
+
+		expect(capturedStdout()).toBe("\x1bPtmux;\x1b\x1b]52;c;c3NoIHRyYW5zY3JpcHQ=\x07\x1b\\");
 		expect(nativeSpy).toHaveBeenCalledWith("ssh transcript");
 	});
 });

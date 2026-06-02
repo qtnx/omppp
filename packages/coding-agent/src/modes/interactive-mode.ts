@@ -2778,8 +2778,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleExportCommand(text);
 	}
 
-	handleDumpCommand(): Promise<void> {
-		return this.#commandController.handleDumpCommand();
+	handleDumpCommand(target?: "clipboard" | "file"): Promise<void> {
+		return this.#commandController.handleDumpCommand(target);
 	}
 
 	handleDebugTranscriptCommand(): Promise<void> {

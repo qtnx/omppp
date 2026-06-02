@@ -11,6 +11,30 @@ function isWsl(): boolean {
 	return process.platform === "linux" && Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
 }
 
+function buildOsc52Sequence(text: string): string {
+	const encoded = Buffer.from(text, "utf8").toString("base64");
+	const osc52 = `\x1b]52;c;${encoded}\x07`;
+	if (process.env.TMUX) return `\x1bPtmux;\x1b${osc52}\x1b\\`;
+	return osc52;
+}
+
+async function writeOsc52(sequence: string): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	let settled = false;
+	const finish = () => {
+		if (settled) return;
+		settled = true;
+		process.stdout.off("error", finish);
+		resolve();
+	};
+	try {
+		process.stdout.on("error", finish);
+		process.stdout.write(sequence, finish);
+		await promise;
+	} catch {
+		finish();
+	}
+}
 /**
  * Copy text to the system clipboard.
  *
@@ -22,31 +46,7 @@ function isWsl(): boolean {
  */
 export async function copyToClipboard(text: string): Promise<void> {
 	if (process.stdout.isTTY) {
-		const onError = (err: unknown) => {
-			process.stdout.off("error", onError);
-			// Prevent unhandled 'error' from crashing the process when stdout is a closed pipe.
-			if ((err as NodeJS.ErrnoException | null | undefined)?.code === "EPIPE") {
-				return;
-			}
-		};
-		try {
-			const encoded = Buffer.from(text).toString("base64");
-			const osc52 = `\x1b]52;c;${encoded}\x07`;
-			process.stdout.on("error", onError);
-			process.stdout.write(osc52, err => {
-				process.stdout.off("error", onError);
-				// If stdout is closed (e.g. piped to a process that exits early),
-				// ignore EPIPE and proceed with native clipboard best-effort.
-				if ((err as NodeJS.ErrnoException | null | undefined)?.code === "EPIPE") {
-					return;
-				}
-			});
-		} catch (err) {
-			process.stdout.off("error", onError);
-			if ((err as NodeJS.ErrnoException | null | undefined)?.code !== "EPIPE") {
-				// Ignore all write failures (OSC 52 is best-effort).
-			}
-		}
+		await writeOsc52(buildOsc52Sequence(text));
 	}
 
 	// Also try native tools (best effort for local sessions)

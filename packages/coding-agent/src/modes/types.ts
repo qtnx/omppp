@@ -223,7 +223,7 @@ export interface InteractiveModeContext {
 	handleHotkeysCommand(): void;
 	handleToolsCommand(): void;
 	handleContextCommand(): void;
-	handleDumpCommand(): Promise<void>;
+	handleDumpCommand(target?: "clipboard" | "file"): Promise<void>;
 	handleDebugTranscriptCommand(): Promise<void>;
 	handleClearCommand(): Promise<void>;
 	handleDropCommand(): Promise<void>;

@@ -45,6 +45,7 @@ import { replaceTabs } from "../../tools/render-utils";
 import { getChangelogPath, parseChangelog } from "../../utils/changelog";
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
+import { type DumpTarget, writeSessionTranscriptDump } from "../../utils/session-dump";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 import { resolveWorkspaceRootReference } from "../../workspace-roots";
 
@@ -89,17 +90,22 @@ export class CommandController {
 		}
 	}
 
-	async handleDumpCommand(): Promise<void> {
+	async handleDumpCommand(target: DumpTarget = "clipboard"): Promise<void> {
 		try {
 			const formatted = this.ctx.session.formatSessionAsText();
 			if (!formatted) {
 				this.ctx.showError("No messages to dump yet.");
 				return;
 			}
+			if (target === "file") {
+				const filePath = await writeSessionTranscriptDump(formatted);
+				this.ctx.showStatus(`Session transcript written to:\n${filePath}`);
+				return;
+			}
 			await copyToClipboard(formatted);
 			this.ctx.showStatus("Session copied to clipboard");
 		} catch (error: unknown) {
-			this.ctx.showError(`Failed to copy session: ${error instanceof Error ? error.message : "Unknown error"}`);
+			this.ctx.showError(`Failed to dump session: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 	}
 

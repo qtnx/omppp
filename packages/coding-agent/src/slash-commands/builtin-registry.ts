@@ -28,6 +28,7 @@ import type { InteractiveModeContext } from "../modes/types";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
+import { type DumpTarget, writeSessionTranscriptDump } from "../utils/session-dump";
 import { resolveWorkspaceRootReference } from "../workspace-roots";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
@@ -123,9 +124,11 @@ function parseShakeMode(args: string): ShakeMode | { error: string } {
 	return { error: `Unknown /shake mode "${verb}". Use elide or images.` };
 }
 
-function isDumpCopyInvocation(args: string): boolean {
+function parseDumpTarget(args: string): DumpTarget | null {
 	const arg = args.trim().toLowerCase();
-	return arg === "" || arg === "copy" || arg === "clipboard" || arg === "--copy";
+	if (arg === "" || arg === "copy" || arg === "clipboard" || arg === "--copy") return "clipboard";
+	if (arg === "file" || arg === "txt" || arg === "tmp" || arg === "--file") return "file";
+	return null;
 }
 
 const SKILL_DESCRIPTION_LIMIT = 120;
@@ -512,18 +515,33 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "dump",
-		description: "Copy session transcript to clipboard",
-		subcommands: [{ name: "copy", description: "Copy session transcript to clipboard" }],
+		description: "Copy session transcript to clipboard or write it to a temp text file",
+		subcommands: [
+			{ name: "copy", description: "Copy session transcript to clipboard" },
+			{ name: "file", description: "Write session transcript to a temp text file" },
+		],
 		allowArgs: true,
 		acpDescription: "Return full transcript as plain text",
-		handle: async (_command, runtime) => {
+		handle: async (command, runtime) => {
+			const target = parseDumpTarget(command.args);
+			if (!target) return { prompt: command.text };
 			const text = runtime.session.formatSessionAsText();
-			await runtime.output(text || "No messages to dump yet.");
+			if (!text) {
+				await runtime.output("No messages to dump yet.");
+				return commandConsumed();
+			}
+			if (target === "file") {
+				const filePath = await writeSessionTranscriptDump(text);
+				await runtime.output(`Session transcript written to:\n${filePath}`);
+				return commandConsumed();
+			}
+			await runtime.output(text);
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
-			if (!isDumpCopyInvocation(command.args)) return { prompt: command.text };
-			await runtime.ctx.handleDumpCommand();
+			const target = parseDumpTarget(command.args);
+			if (!target) return { prompt: command.text };
+			await runtime.ctx.handleDumpCommand(target);
 			runtime.ctx.editor.setText("");
 		},
 	},
