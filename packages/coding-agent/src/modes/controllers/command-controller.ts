@@ -89,14 +89,14 @@ export class CommandController {
 		}
 	}
 
-	handleDumpCommand() {
+	async handleDumpCommand(): Promise<void> {
 		try {
 			const formatted = this.ctx.session.formatSessionAsText();
 			if (!formatted) {
 				this.ctx.showError("No messages to dump yet.");
 				return;
 			}
-			copyToClipboard(formatted);
+			await copyToClipboard(formatted);
 			this.ctx.showStatus("Session copied to clipboard");
 		} catch (error: unknown) {
 			this.ctx.showError(`Failed to copy session: ${error instanceof Error ? error.message : "Unknown error"}`);

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as native from "@oh-my-pi/pi-natives";
 import type { Subprocess } from "bun";
-import { readImageFromClipboard } from "../../src/utils/clipboard";
+import { copyToClipboard, readImageFromClipboard } from "../../src/utils/clipboard";
 
 type SpawnOptions = Bun.SpawnOptions.SpawnOptions<
 	Bun.SpawnOptions.Writable,
@@ -50,6 +50,37 @@ function restorePlatform(): void {
 	if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
 }
 
+const stdoutIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+
+function setStdoutIsTty(value: boolean): void {
+	Object.defineProperty(process.stdout, "isTTY", { value, configurable: true });
+}
+
+function restoreStdout(): void {
+	process.stdout.write = originalStdoutWrite as typeof process.stdout.write;
+	if (stdoutIsTtyDescriptor) {
+		Object.defineProperty(process.stdout, "isTTY", stdoutIsTtyDescriptor);
+	} else {
+		delete (process.stdout as { isTTY?: boolean }).isTTY;
+	}
+}
+
+function captureStdoutWrites(): () => string {
+	let captured = "";
+	process.stdout.write = ((
+		chunk: string | Uint8Array,
+		encodingOrCallback?: BufferEncoding | ((err?: Error) => void),
+		callback?: (err?: Error) => void,
+	): boolean => {
+		captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+		const cb = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+		cb?.();
+		return true;
+	}) as typeof process.stdout.write;
+	return () => captured;
+}
+
 const ENV_KEYS = ["WSL_DISTRO_NAME", "WSL_INTEROP", "DISPLAY", "WAYLAND_DISPLAY", "TERMUX_VERSION"] as const;
 let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 
@@ -68,6 +99,7 @@ afterEach(() => {
 		else process.env[key] = prior;
 	}
 	restorePlatform();
+	restoreStdout();
 	vi.restoreAllMocks();
 });
 
@@ -75,6 +107,18 @@ afterEach(() => {
 const RED_1X1_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
+describe("copyToClipboard", () => {
+	it("emits OSC 52 for SSH-capable terminals before the native clipboard fallback", async () => {
+		setStdoutIsTty(true);
+		const capturedStdout = captureStdoutWrites();
+		const nativeSpy = vi.spyOn(native, "copyToClipboard").mockImplementation(() => undefined);
+
+		await copyToClipboard("ssh transcript");
+
+		expect(capturedStdout()).toBe("\x1b]52;c;c3NoIHRyYW5zY3JpcHQ=\x07");
+		expect(nativeSpy).toHaveBeenCalledWith("ssh transcript");
+	});
+});
 describe("readImageFromClipboard on WSL", () => {
 	it("decodes the PowerShell base64 payload without touching the native bridge", async () => {
 		setPlatform("linux");

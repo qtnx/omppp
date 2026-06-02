@@ -120,6 +120,11 @@ function parseShakeMode(args: string): ShakeMode | { error: string } {
 	return { error: `Unknown /shake mode "${verb}". Use elide or images.` };
 }
 
+function isDumpCopyInvocation(args: string): boolean {
+	const arg = args.trim().toLowerCase();
+	return arg === "" || arg === "copy" || arg === "clipboard" || arg === "--copy";
+}
+
 const LEARNING_CLEAR_SCOPE_LABELS = {
 	all: "All",
 	global: "Global",
@@ -334,13 +339,16 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "dump",
 		description: "Copy session transcript to clipboard",
+		subcommands: [{ name: "copy", description: "Copy session transcript to clipboard" }],
+		allowArgs: true,
 		acpDescription: "Return full transcript as plain text",
 		handle: async (_command, runtime) => {
 			const text = runtime.session.formatSessionAsText();
 			await runtime.output(text || "No messages to dump yet.");
 			return commandConsumed();
 		},
-		handleTui: async (_command, runtime) => {
+		handleTui: async (command, runtime) => {
+			if (!isDumpCopyInvocation(command.args)) return { prompt: command.text };
 			await runtime.ctx.handleDumpCommand();
 			runtime.ctx.editor.setText("");
 		},

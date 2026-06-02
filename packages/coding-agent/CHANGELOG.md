@@ -152,6 +152,7 @@
 ### Fixed
 
 - Fixed workflow subagents to honor structured-output schemas, fail failed subagent calls instead of returning error JSON as success, resolve returned `agent()` promises before serializing the workflow return value, wait for orphaned spawned agents before reporting completion, and default through the task model role instead of inheriting the active session model.
+- Fixed `/dump copy` so the interactive slash command is consumed as an explicit clipboard copy request, including SSH terminals that rely on OSC 52 clipboard forwarding.
 
 ## [15.7.4] - 2026-05-31
 
