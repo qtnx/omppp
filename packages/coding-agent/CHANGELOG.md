@@ -81,9 +81,23 @@
 - Fixed startup model resolution ignoring cached discovery rows for special built-in providers (`google-antigravity`, `google-gemini-cli`, `openai-codex`) until the background refresh completed ([#1721](https://github.com/can1357/oh-my-pi/issues/1721)).
 - Fixed Windows clipboard-image paste keeping `Ctrl+V` unregistered by default. The TUI now registers `Ctrl+V` plus the Windows Terminal-safe `Alt+V` fallback, and the keybinding docs call out when to use the fallback ([#1708](https://github.com/can1357/oh-my-pi/issues/1708)).
 
+### Added
+
+- Added status-line PR state detection via `gh pr view`, showing the current branch's PR number plus draft, mergeability, review, or terminal state.
+- Added a native System Context Reminder plugin that keeps system-context drift guidance in the default prompt and queues a hidden next-turn reminder when final prose omits required persona context or uses forbidden replacement terms like `tôi`, `mình`, or `bạn`.
+
 ### Fixed
 
+- Fixed native Context GC guidance being absent from the persisted root system prompt metadata.
+- Fixed plugin reload and Claude Code plugin discovery so OMP refreshes the active skill snapshot, system prompt, and `skill://` catalog after Claude-side skill/plugin changes, and respects Claude `enabledPlugins: false` entries when hiding plugin skills/MCP servers.
+- Fixed the status-line PR segment clearing stale cached PRs when branch or repo context changes.
+- Fixed the status-line PR segment rejecting unsafe PR hyperlinks and unknown status values before rendering terminal control sequences.
+- Fixed Herdr/agent-state monitors missing foreground and auto-background work by emitting async job lifecycle/progress events and tracking running tool/background job ids.
+- Fixed restricted explore subagents inheriting IRC access, full skill catalogs, broad extension runtime, and unrelated parent MCP tools, which could inflate prompts and RAM usage during parallel explore batches.
+- Fixed the bundled `explore` agent lacking read-only shell access for diagnostics/tracing while tightening its prompt to cap tool/read scope, avoid web/context-GC tools, and report blockers instead of expanding into unrelated searches.
+- Fixed workflow keyword prompts injecting conflicting eval-based and workflow-tool reminders. Workflow requests now inject a single workflow-tool notice.
 - Fixed `/dump copy` over SSH/tmux by using Vim-style OSC 52 passthrough wrapping, and added `/dump file` for writing the transcript to a private temporary `.txt` file.
+- Fixed usage-limit credential rotation re-selecting the same rate-limit pool by threading the active model into credential acquisition (the Agent `getApiKey` callback) and the post-usage-limit re-pick in `onAuthError`. OpenAI Codex `-spark` requests now select and rotate on the spark pool while general requests use the shared pool, instead of dropping the model id and always gating on the shared pool.
 
 ## [15.8.0] - 2026-06-02
 

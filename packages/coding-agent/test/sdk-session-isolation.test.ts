@@ -53,6 +53,10 @@ function getAssistantText(message: AssistantMessage | undefined): string {
 		.join(" ");
 }
 
+function countOccurrences(text: string, needle: string): number {
+	return text.split(needle).length - 1;
+}
+
 describe("createAgentSession session storage isolation", () => {
 	const tempDirs: string[] = [];
 
@@ -123,6 +127,263 @@ describe("createAgentSession session storage isolation", () => {
 			expect(init?.task).toBe("Root interactive session");
 			expect(init?.systemPrompt).toBe("# Root prompt\n\nUse Markdown.");
 			expect(init?.tools).toContain("read");
+		} finally {
+			await session.dispose();
+		}
+	});
+	it("persists native Context GC guidance in root system prompt metadata", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-context-gc-prompt-${Snowflake.next()}-`));
+		tempDirs.push(tempDir);
+		const cwd = path.join(tempDir, `project-${Snowflake.next()}`);
+		const agentDir = path.join(tempDir, "agent");
+		fs.mkdirSync(cwd, { recursive: true });
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settings: Settings.isolated(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		try {
+			const init = session.sessionManager
+				.getEntries()
+				.find((entry): entry is SessionInitEntry => entry.type === "session_init");
+			const systemPromptText = session.systemPrompt.join("\n\n");
+			expect(systemPromptText).toContain("## Context GC Discipline");
+			expect(init?.systemPrompt).toContain("## Context GC Discipline");
+			expect(init?.systemPrompt).toContain("context_unload");
+			expect(countOccurrences(systemPromptText, "## Context GC Discipline")).toBe(1);
+
+			const beforeResult = await session.extensionRunner?.emitBeforeAgentStart(
+				"continue",
+				undefined,
+				session.systemPrompt,
+			);
+			expect(beforeResult?.systemPrompt).toBeUndefined();
+		} finally {
+			await session.dispose();
+		}
+	});
+	it("persists native System Context Reminder guidance in root system prompt metadata", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-system-reminder-prompt-${Snowflake.next()}-`));
+		tempDirs.push(tempDir);
+		const cwd = path.join(tempDir, `project-${Snowflake.next()}`);
+		const agentDir = path.join(tempDir, "agent");
+		fs.mkdirSync(cwd, { recursive: true });
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settings: Settings.isolated(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		try {
+			const init = session.sessionManager
+				.getEntries()
+				.find((entry): entry is SessionInitEntry => entry.type === "session_init");
+			const systemPromptText = session.systemPrompt.join("\n\n");
+			expect(systemPromptText).toContain("## System Context Reminder");
+			expect(systemPromptText).toContain("forgot the system prompt");
+			expect(systemPromptText).toContain("follow the full system prompt");
+			expect(init?.systemPrompt).toContain("## System Context Reminder");
+			expect(countOccurrences(systemPromptText, "## System Context Reminder")).toBe(1);
+
+			const beforeResult = await session.extensionRunner?.emitBeforeAgentStart(
+				"continue",
+				undefined,
+				session.systemPrompt,
+			);
+			expect(beforeResult?.systemPrompt).toBeUndefined();
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("preserves explicit custom system prompt replacement without native reminder reinjection", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-system-reminder-custom-${Snowflake.next()}-`));
+		tempDirs.push(tempDir);
+		const cwd = path.join(tempDir, `project-${Snowflake.next()}`);
+		const agentDir = path.join(tempDir, "agent");
+		fs.mkdirSync(cwd, { recursive: true });
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settings: Settings.isolated(),
+			systemPrompt: ["# Custom prompt"],
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		try {
+			expect(session.systemPrompt).toEqual(["# Custom prompt"]);
+			const beforeResult = await session.extensionRunner?.emitBeforeAgentStart(
+				"continue",
+				undefined,
+				session.systemPrompt,
+			);
+			expect((beforeResult?.systemPrompt ?? []).join("\n\n")).not.toContain("## System Context Reminder");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("preserves callback system prompt replacement without native reminder reinjection", async () => {
+		const tempDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), `pi-sdk-system-reminder-callback-custom-${Snowflake.next()}-`),
+		);
+		tempDirs.push(tempDir);
+		const cwd = path.join(tempDir, `project-${Snowflake.next()}`);
+		const agentDir = path.join(tempDir, "agent");
+		fs.mkdirSync(cwd, { recursive: true });
+		let callbackSawDefaultPrompt = false;
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settings: Settings.isolated(),
+			systemPrompt: async defaultPrompt => {
+				callbackSawDefaultPrompt = defaultPrompt.some(item => item.includes("## System Context Reminder"));
+				return ["# Custom callback prompt"];
+			},
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		try {
+			expect(callbackSawDefaultPrompt).toBe(true);
+			expect(session.systemPrompt).toEqual(["# Custom callback prompt"]);
+			const beforeResult = await session.extensionRunner?.emitBeforeAgentStart(
+				"continue",
+				undefined,
+				session.systemPrompt,
+			);
+			expect((beforeResult?.systemPrompt ?? []).join("\n\n")).not.toContain("## System Context Reminder");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("passes native Context GC guidance through custom system prompt callbacks once", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-context-gc-callback-${Snowflake.next()}-`));
+		tempDirs.push(tempDir);
+		const cwd = path.join(tempDir, `project-${Snowflake.next()}`);
+		const agentDir = path.join(tempDir, "agent");
+		fs.mkdirSync(cwd, { recursive: true });
+		let callbackPrompt: string[] | undefined;
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settings: Settings.isolated(),
+			systemPrompt: async defaultPrompt => {
+				callbackPrompt = defaultPrompt;
+				return defaultPrompt;
+			},
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		try {
+			const callbackPromptText = callbackPrompt?.join("\n\n") ?? "";
+			const systemPromptText = session.systemPrompt.join("\n\n");
+			expect(countOccurrences(callbackPromptText, "## Context GC Discipline")).toBe(1);
+			expect(countOccurrences(systemPromptText, "## Context GC Discipline")).toBe(1);
+			expect(systemPromptText).toContain("context_unload");
+			expect(countOccurrences(callbackPromptText, "## System Context Reminder")).toBe(1);
+			expect(countOccurrences(systemPromptText, "## System Context Reminder")).toBe(1);
+		} finally {
+			await session.dispose();
+		}
+	});
+	it("omits native Context GC guidance when Context GC tools fail to register", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-context-gc-disabled-${Snowflake.next()}-`));
+		tempDirs.push(tempDir);
+		const cwd = path.join(tempDir, `project-${Snowflake.next()}`);
+		const agentDir = path.join(tempDir, "agent");
+		const invalidContextGcDbPath = path.join(tempDir, "context-gc-dir");
+		fs.mkdirSync(cwd, { recursive: true });
+		fs.mkdirSync(invalidContextGcDbPath, { recursive: true });
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			contextGcDbPath: invalidContextGcDbPath,
+			settings: Settings.isolated(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		try {
+			const init = session.sessionManager
+				.getEntries()
+				.find((entry): entry is SessionInitEntry => entry.type === "session_init");
+			expect(session.getActiveToolNames()).not.toContain("context_unload");
+			expect(session.systemPrompt.join("\n\n")).not.toContain("## Context GC Discipline");
+			expect(init?.systemPrompt).not.toContain("## Context GC Discipline");
+		} finally {
+			await session.dispose();
+		}
+	});
+	it("omits native Context GC guidance when Context GC tools are inactive", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-context-gc-inactive-${Snowflake.next()}-`));
+		tempDirs.push(tempDir);
+		const cwd = path.join(tempDir, `project-${Snowflake.next()}`);
+		const agentDir = path.join(tempDir, "agent");
+		fs.mkdirSync(cwd, { recursive: true });
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settings: Settings.isolated(),
+			toolNames: ["read"],
+			respectToolNamesForCustomTools: true,
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		try {
+			expect(session.getActiveToolNames()).not.toContain("context_unload");
+			expect(session.systemPrompt.join("\n\n")).not.toContain("## Context GC Discipline");
 		} finally {
 			await session.dispose();
 		}

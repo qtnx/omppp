@@ -12,7 +12,9 @@ import {
 } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Snowflake } from "@oh-my-pi/pi-utils";
+import { SYSTEM_CONTEXT_REMINDER_LABEL } from "@oh-my-pi/system-context-reminder-plugin";
 import * as z from "zod/v4";
+import { getBundledAgent } from "../src/task/agents";
 
 const toolActivationExtension: ExtensionFactory = pi => {
 	pi.registerTool({
@@ -34,6 +36,10 @@ const toolActivationExtension: ExtensionFactory = pi => {
 			return { content: [{ type: "text", text: "active" }] };
 		},
 	});
+};
+
+const systemContextReminderLabelOnlyExtension: ExtensionFactory = pi => {
+	pi.setLabel(SYSTEM_CONTEXT_REMINDER_LABEL);
 };
 
 describe("createAgentSession defaultInactive tool activation", () => {
@@ -81,6 +87,174 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
+	it("enforces explicit toolNames when runtime activation tries to enable extension tools", async () => {
+		const tempDir = path.join(os.tmpdir(), `pi-sdk-tool-whitelist-${Snowflake.next()}`);
+		tempDirs.push(tempDir);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			extensions: [toolActivationExtension],
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: ["read"],
+			respectToolNamesForCustomTools: true,
+		});
+
+		try {
+			expect(session.getAllToolNames()).toEqual(
+				expect.arrayContaining(["read", "default_active_tool", "default_inactive_tool"]),
+			);
+			expect(session.getActiveToolNames()).toContain("read");
+			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
+
+			await session.setActiveToolsByName([...session.getActiveToolNames(), "default_active_tool"]);
+
+			expect(session.getActiveToolNames()).toContain("read");
+			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("skips extension/runtime loading for minimal tool-surface sessions", async () => {
+		const tempDir = path.join(os.tmpdir(), `pi-sdk-minimal-runtime-${Snowflake.next()}`);
+		tempDirs.push(tempDir);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const { session, extensionsResult } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			extensions: [toolActivationExtension],
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: ["read"],
+			respectToolNamesForCustomTools: true,
+			minimalExtensionRuntime: true,
+		});
+
+		try {
+			expect(extensionsResult.extensions).toHaveLength(0);
+			expect(session.getAllToolNames()).toContain("read");
+			expect(session.getAllToolNames()).not.toContain("default_active_tool");
+			expect(session.getAllToolNames()).not.toContain("context_debug");
+			expect(session.systemPrompt.join("\n\n")).not.toContain("## System Context Reminder");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("keeps bundled explore sessions on the effective bounded tool surface", async () => {
+		const tempDir = path.join(os.tmpdir(), `pi-sdk-explore-tools-${Snowflake.next()}`);
+		tempDirs.push(tempDir);
+		fs.mkdirSync(tempDir, { recursive: true });
+		const explore = getBundledAgent("explore");
+		if (!explore) throw new Error("Expected bundled explore agent");
+
+		const { session, extensionsResult } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			extensions: [toolActivationExtension],
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: explore.tools,
+			respectToolNamesForCustomTools: true,
+			minimalExtensionRuntime: explore.resourceProfile === "minimal",
+		});
+
+		try {
+			const expectedToolNames = ["read", "search", "find", "bash", "yield"];
+			const contextGcToolNames = [
+				"context_debug",
+				"context_global_stats",
+				"context_inventory",
+				"context_pin",
+				"context_recall",
+				"context_stats",
+				"context_tree",
+				"context_unload",
+			];
+			expect(session.getActiveToolNames()).toEqual(expectedToolNames);
+			for (const toolName of ["web_search", "default_active_tool", ...contextGcToolNames]) {
+				expect(session.getAllToolNames()).not.toContain(toolName);
+				expect(session.getActiveToolNames()).not.toContain(toolName);
+			}
+			expect(extensionsResult.extensions).toHaveLength(0);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("does not restore persisted MCP selections outside explicit toolNames", async () => {
+		const tempDir = path.join(os.tmpdir(), `pi-sdk-mcp-whitelist-${Snowflake.next()}`);
+		tempDirs.push(tempDir);
+		fs.mkdirSync(tempDir, { recursive: true });
+		const sessionManager = SessionManager.inMemory(tempDir);
+		sessionManager.appendMCPToolSelection(["mcp__docs_search"]);
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager,
+			settings: Settings.isolated(),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: ["read"],
+			respectToolNamesForCustomTools: true,
+			customTools: [
+				{
+					name: "mcp__docs_search",
+					label: "docs/search",
+					description: "Search internal docs",
+					parameters: z.object({ query: z.string() }),
+					mcpServerName: "docs",
+					mcpToolName: "search",
+					async execute() {
+						return { content: [{ type: "text" as const, text: "docs" }] };
+					},
+				},
+			],
+		});
+
+		try {
+			expect(session.getAllToolNames()).toContain("mcp__docs_search");
+			expect(session.getActiveToolNames()).toContain("read");
+			expect(session.getActiveToolNames()).not.toContain("mcp__docs_search");
+			expect(session.systemPrompt.join("\n")).not.toContain("mcp__docs_search");
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	it("loads context GC tools as native bundled extensions without plugin discovery", async () => {
 		const tempDir = path.join(os.tmpdir(), `pi-sdk-context-gc-${Snowflake.next()}`);
 		tempDirs.push(tempDir);
@@ -121,6 +295,74 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			);
 			expect(fs.existsSync(path.join(tempDir, "context-gc.sqlite"))).toBe(true);
 			expect(process.env.OMP_CONTEXT_GC_DB_PATH).toBe(previousContextGcDbPath);
+		} finally {
+			await result?.session.dispose();
+		}
+	});
+	it("loads system context reminder as a native bundled extension without plugin discovery", async () => {
+		const tempDir = path.join(os.tmpdir(), `pi-sdk-system-reminder-${Snowflake.next()}`);
+		tempDirs.push(tempDir);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		let result: CreateAgentSessionResult | undefined;
+		try {
+			result = await createAgentSession({
+				cwd: tempDir,
+				agentDir: tempDir,
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated(),
+				model: getBundledModel("openai", "gpt-4o-mini"),
+				disableExtensionDiscovery: true,
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+			});
+
+			expect(
+				result.extensionsResult.extensions.filter(extension => extension.label === SYSTEM_CONTEXT_REMINDER_LABEL),
+			).toHaveLength(1);
+			expect(result.session.systemPrompt.join("\n\n")).toContain("## System Context Reminder");
+		} finally {
+			await result?.session.dispose();
+		}
+	});
+
+	it("does not double-load native system context reminder when supplied inline", async () => {
+		const tempDir = path.join(os.tmpdir(), `pi-sdk-system-reminder-inline-${Snowflake.next()}`);
+		tempDirs.push(tempDir);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		let result: CreateAgentSessionResult | undefined;
+		try {
+			result = await createAgentSession({
+				cwd: tempDir,
+				agentDir: tempDir,
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated(),
+				model: getBundledModel("openai", "gpt-4o-mini"),
+				disableExtensionDiscovery: true,
+				extensions: [systemContextReminderLabelOnlyExtension],
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+			});
+
+			expect(
+				result.extensionsResult.extensions.filter(extension => extension.label === SYSTEM_CONTEXT_REMINDER_LABEL),
+			).toHaveLength(1);
+			expect(result.session.systemPrompt.join("\n\n")).not.toContain("## System Context Reminder");
+			const beforeResult = await result.session.extensionRunner?.emitBeforeAgentStart(
+				"continue",
+				undefined,
+				result.session.systemPrompt,
+			);
+			expect((beforeResult?.systemPrompt ?? []).join("\n\n")).not.toContain("## System Context Reminder");
 		} finally {
 			await result?.session.dispose();
 		}

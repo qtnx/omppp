@@ -1,5 +1,9 @@
 import * as path from "node:path";
-import { createContextGcExtension, setDefaultContextGcDbPath } from "@oh-my-pi/context-gc-plugin";
+import {
+	appendContextGcSystemPrompt,
+	createContextGcExtension,
+	setDefaultContextGcDbPath,
+} from "@oh-my-pi/context-gc-plugin";
 import {
 	Agent,
 	type AgentEvent,
@@ -35,6 +39,11 @@ import {
 	prompt,
 	Snowflake,
 } from "@oh-my-pi/pi-utils";
+import {
+	appendSystemContextReminderPrompt,
+	createSystemContextReminderExtension,
+	SYSTEM_CONTEXT_REMINDER_LABEL,
+} from "@oh-my-pi/system-context-reminder-plugin";
 import chalk from "chalk";
 import { type AsyncJob, AsyncJobManager, isBackgroundJobSupportEnabled } from "./async";
 import { createAutoresearchExtension } from "./autoresearch";
@@ -321,6 +330,10 @@ export interface CreateAgentSessionOptions {
 	skipPythonPreflight?: boolean;
 	/** Tool names explicitly requested (enables disabled-by-default tools) */
 	toolNames?: string[];
+	/** When true, explicit toolNames also gate custom and extension tools. */
+	respectToolNamesForCustomTools?: boolean;
+	/** When true, skip non-essential extension/custom-tool discovery for restricted subagent sessions. */
+	minimalExtensionRuntime?: boolean;
 
 	/** Output schema for structured completion (subagents) */
 	outputSchema?: unknown;
@@ -962,6 +975,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager.setWorkspaceRoots(workspaceRoots);
 	}
 
+	const minimalExtensionRuntime = options.minimalExtensionRuntime === true;
 	// Kick off workspace tree discovery early. The native workspace scan returns
 	// both the rendered-tree input and the AGENTS.md directory-context index, so
 	// startup does not perform a second recursive filesystem search. Subagents
@@ -985,7 +999,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	promptTemplatesPromise.catch(() => {});
 	const slashCommandsPromise = options.slashCommands
 		? Promise.resolve(options.slashCommands)
-		: logger.time("discoverSlashCommands", discoverSlashCommands, cwd);
+		: minimalExtensionRuntime
+			? Promise.resolve([])
+			: logger.time("discoverSlashCommands", discoverSlashCommands, cwd);
 	slashCommandsPromise.catch(() => {});
 	const disabledExtensionIds = settings.get("disabledExtensions") ?? [];
 	const skillsSettings = {
@@ -1248,6 +1264,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		backgroundJobsEnabled && !options.parentTaskPrefix
 			? new AsyncJobManager({
 					maxRunningJobs: asyncMaxJobs,
+					eventBus,
 					onJobComplete: async (jobId, result, job) => {
 						if (!session || asyncJobManager!.isDeliverySuppressed(jobId)) return;
 						const formattedResult = await formatAsyncResultForFollowUp(result);
@@ -1439,20 +1456,23 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				customTools.push(...mcpResult.tools.map(loaded => loaded.tool));
 			}
 		}
+
 		// Only top-level sessions own the global MCPManager. Subagents already
 		// receive the parent's manager via `options.mcpManager`, and reassigning
-		// the singleton to the same value is a no-op \u2014 keep the gate explicit
+		// the singleton to the same value is a no-op — keep the gate explicit
 		// to mirror the AsyncJobManager ownership rule.
 		if (mcpManager && !options.parentTaskPrefix) MCPManager.setInstance(mcpManager);
 
-		// Add image tools when the active model or configured image providers can generate images.
-		const imageGenTools = await logger.time("getImageGenTools", () => getImageGenTools(modelRegistry, model));
-		if (imageGenTools.length > 0) {
-			customTools.push(...(imageGenTools as unknown as CustomTool[]));
-		}
+		if (!minimalExtensionRuntime) {
+			// Add image tools when the active model or configured image providers can generate images.
+			const imageGenTools = await logger.time("getImageGenTools", () => getImageGenTools(modelRegistry, model));
+			if (imageGenTools.length > 0) {
+				customTools.push(...(imageGenTools as unknown as CustomTool[]));
+			}
 
-		if (settings.get("tts.enabled")) {
-			customTools.push(ttsTool as unknown as CustomTool);
+			if (settings.get("tts.enabled")) {
+				customTools.push(ttsTool as unknown as CustomTool);
+			}
 		}
 
 		// Add web search tools
@@ -1460,27 +1480,32 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			customTools.push(...getSearchTools());
 		}
 
-		// Discover and load custom tools from .omp/tools/, .claude/tools/, etc.
-		const builtInToolNames = builtinTools.map(t => t.name);
-		const discoveredCustomTools = await logger.time(
-			"discoverAndLoadCustomTools",
-			discoverAndLoadCustomTools,
-			[],
-			cwd,
-			builtInToolNames,
-			action => queueResolveHandler(toolSession, action),
-		);
-		for (const { path, error } of discoveredCustomTools.errors) {
-			logger.error("Custom tool load failed", { path, error });
-		}
-		if (discoveredCustomTools.tools.length > 0) {
-			customTools.push(...discoveredCustomTools.tools.map(loaded => loaded.tool));
+		if (!minimalExtensionRuntime) {
+			// Discover and load custom tools from .omp/tools/, .claude/tools/, etc.
+			const builtInToolNames = builtinTools.map(t => t.name);
+			const discoveredCustomTools = await logger.time(
+				"discoverAndLoadCustomTools",
+				discoverAndLoadCustomTools,
+				[],
+				cwd,
+				builtInToolNames,
+				action => queueResolveHandler(toolSession, action),
+			);
+			for (const { path, error } of discoveredCustomTools.errors) {
+				logger.error("Custom tool load failed", { path, error });
+			}
+			if (discoveredCustomTools.tools.length > 0) {
+				customTools.push(...discoveredCustomTools.tools.map(loaded => loaded.tool));
+			}
 		}
 
-		const inlineExtensions: ExtensionFactory[] = options.extensions ? [...options.extensions] : [];
-		inlineExtensions.push(createAutoresearchExtension);
-		if (customTools.length > 0) {
-			inlineExtensions.push(createCustomToolsExtension(customTools));
+		const inlineExtensions: ExtensionFactory[] = [];
+		if (!minimalExtensionRuntime) {
+			if (options.extensions) inlineExtensions.push(...options.extensions);
+			inlineExtensions.push(createAutoresearchExtension);
+			if (customTools.length > 0) {
+				inlineExtensions.push(createCustomToolsExtension(customTools));
+			}
 		}
 
 		const contextGcDbPath = options.contextGcDbPath ?? path.join(agentDir, "context-gc.sqlite");
@@ -1490,10 +1515,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// a session/breadcrumb existing yet) is reused as-is; otherwise discover now
 		// through the shared helper. Preloaded wins over `disableExtensionDiscovery`
 		// because the preloaded result already reflects that choice — re-running the
-		// loader here would double-load.
-		const extensionsResult: LoadExtensionsResult =
-			options.preloadedExtensions ?? (await loadSessionExtensions(options, cwd, settings, eventBus));
+		// loader here would double-load. Minimal subagent sessions intentionally skip
+		// the preloaded/discovered/native extension stack to avoid multiplying RAM.
+		const extensionsResult: LoadExtensionsResult = minimalExtensionRuntime
+			? await logger.time("loadExtensions", loadExtensions, [], cwd, eventBus)
+			: (options.preloadedExtensions ?? (await loadSessionExtensions(options, cwd, settings, eventBus)));
 
+		let shouldAppendNativeSystemContextReminderPrompt = false;
 		await withContextGcDbPath(contextGcDbPath, async () => {
 			// Load inline extensions from factories
 			if (inlineExtensions.length > 0) {
@@ -1513,7 +1541,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// Context GC is shipped as a plugin package for external reuse, but loaded natively in
 			// bundled omp so users get durable unload/recall without `omp plugin install`. This runs
 			// after user inline factories so wrappers that set the same label are deduped too.
-			if (!extensionsResult.extensions.some(extension => extension.label === "Context GC")) {
+			if (
+				!minimalExtensionRuntime &&
+				!extensionsResult.extensions.some(extension => extension.label === "Context GC")
+			) {
 				const loaded = await loadExtensionFromFactory(
 					createContextGcExtension({ dbPath: contextGcDbPath }),
 					cwd,
@@ -1522,6 +1553,23 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					"<native-context-gc>",
 				);
 				extensionsResult.extensions.push(loaded);
+			}
+
+			// The system-context reminder is also shipped as a plugin package, but loaded natively so
+			// bundled omp can remind the agent when its final prose drops high-priority persona context.
+			if (
+				!minimalExtensionRuntime &&
+				!extensionsResult.extensions.some(extension => extension.label === SYSTEM_CONTEXT_REMINDER_LABEL)
+			) {
+				const loaded = await loadExtensionFromFactory(
+					createSystemContextReminderExtension({ injectPromptOnBeforeAgentStart: false }),
+					cwd,
+					eventBus,
+					extensionsResult.runtime,
+					"<native-system-context-reminder>",
+				);
+				extensionsResult.extensions.push(loaded);
+				shouldAppendNativeSystemContextReminderPrompt = true;
 			}
 		});
 
@@ -1618,10 +1666,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 
 		// Discover custom commands (TypeScript slash commands)
-		const customCommandsResult: CustomCommandsLoadResult = options.disableExtensionDiscovery
-			? { commands: [], errors: [] }
-			: await logger.time("discoverCustomCommands", loadCustomCommandsInternal, { cwd, agentDir });
-		if (!options.disableExtensionDiscovery) {
+		const customCommandsResult: CustomCommandsLoadResult =
+			options.disableExtensionDiscovery || minimalExtensionRuntime
+				? { commands: [], errors: [] }
+				: await logger.time("discoverCustomCommands", loadCustomCommandsInternal, { cwd, agentDir });
+		if (!options.disableExtensionDiscovery && !minimalExtensionRuntime) {
 			for (const { path, error } of customCommandsResult.errors) {
 				logger.error("Failed to load custom command", { path, error });
 			}
@@ -1797,13 +1846,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			const defaultPrompt = await buildSystemPromptInternal({
 				cwd: currentCwd,
-				skills,
+				skills: [...(session?.skills ?? skills)],
 				contextFiles: await promptContextFilesPromise,
 				tools: promptTools,
 				toolNames,
 				rules: rulebookRules,
 				alwaysApplyRules,
-				skillsSettings,
+				skillsSettings: session?.skillsSettings ?? skillsSettings,
 				appendSystemPrompt: appendPrompt,
 				repeatToolDescriptions,
 				intentField,
@@ -1817,15 +1866,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				workspaceRoots,
 			});
 
+			const contextGcSystemPrompt = toolNames.includes("context_unload")
+				? (appendContextGcSystemPrompt(defaultPrompt.systemPrompt) ?? defaultPrompt.systemPrompt)
+				: defaultPrompt.systemPrompt;
+			const defaultSystemPrompt = shouldAppendNativeSystemContextReminderPrompt
+				? (appendSystemContextReminderPrompt(contextGcSystemPrompt) ?? contextGcSystemPrompt)
+				: contextGcSystemPrompt;
+
 			if (options.systemPrompt === undefined) {
-				return defaultPrompt;
+				return { systemPrompt: defaultSystemPrompt };
 			}
 			if (Array.isArray(options.systemPrompt)) {
 				return { systemPrompt: options.systemPrompt };
 			}
-			return {
-				systemPrompt: await options.systemPrompt(defaultPrompt.systemPrompt),
-			};
+			return { systemPrompt: await options.systemPrompt(defaultSystemPrompt) };
 		};
 
 		const toolNamesFromRegistry = Array.from(toolRegistry.keys());
@@ -1844,6 +1898,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		) {
 			explicitlyRequestedToolNames.push("yield");
 		}
+		const explicitToolNameAllows = (name: string): boolean =>
+			explicitlyRequestedToolNames === undefined || explicitlyRequestedToolNames.includes(name.toLowerCase());
+		const shouldAutoIncludeCustomTool = (name: string): boolean =>
+			options.respectToolNamesForCustomTools !== true || explicitToolNameAllows(name);
 		const requestedToolNames = explicitlyRequestedToolNames ?? toolNamesFromRegistry;
 		const normalizedRequested = requestedToolNames.filter(name => toolRegistry.has(name));
 		const requestedToolNameSet = new Set(normalizedRequested);
@@ -1866,14 +1924,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			? selectDiscoverableToolNamesByServer(
 					filterBySource(collectDiscoverableTools(toolRegistry.values()), "mcp"),
 					discoveryDefaultServers,
-				)
+				).filter(explicitToolNameAllows)
 			: [];
 		let initialSelectedMCPToolNames: string[] = [];
 		let defaultSelectedMCPToolNames: string[] = [];
 		let initialToolNames = [...initialRequestedActiveToolNames];
 		if (mcpDiscoveryEnabled) {
-			const restoredSelectedMCPToolNames = existingSession.selectedMCPToolNames.filter(name =>
-				toolRegistry.has(name),
+			const restoredSelectedMCPToolNames = existingSession.selectedMCPToolNames.filter(
+				name => toolRegistry.has(name) && explicitToolNameAllows(name),
 			);
 			defaultSelectedMCPToolNames = [
 				...new Set([...discoveryDefaultServerToolNames, ...explicitlyRequestedMCPToolNames]),
@@ -1889,10 +1947,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			];
 		}
 
-		// Custom tools and extension-registered tools are always included regardless of toolNames filter
+		// Custom tools and extension-registered tools are normally included regardless of toolNames filter.
+		// Subagents opt into respecting explicit tool whitelists so restricted agents cannot regain
+		// parent/extension capabilities through custom-tool registration.
 		const alwaysInclude: string[] = [
-			...(options.customTools?.map(t => (isCustomTool(t) ? t.name : t.name)) ?? []),
-			...registeredTools.filter(t => !t.definition.defaultInactive).map(t => t.definition.name),
+			...(options.customTools
+				?.filter(tool => shouldAutoIncludeCustomTool(tool.name.toLowerCase()))
+				.map(tool => tool.name) ?? []),
+			...registeredTools
+				.filter(t => !t.definition.defaultInactive && shouldAutoIncludeCustomTool(t.definition.name))
+				.map(t => t.definition.name),
 		];
 		for (const name of alwaysInclude) {
 			if (mcpDiscoveryEnabled && name.startsWith("mcp__")) {
@@ -1935,6 +1999,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
 			status: "running",
+			ircEnabled: initialToolNames.includes("irc"),
 		});
 		hasRegistered = true;
 
@@ -2044,10 +2109,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			kimiApiFormat: settings.get("providers.kimiApiFormat") ?? "anthropic",
 			preferWebsockets: preferOpenAICodexWebsockets,
 			getToolContext: tc => toolContextStore.getContext(tc),
-			getApiKey: async provider => {
+			getApiKey: async (provider, callModel) => {
 				// Read agent.sessionId at call time so credential selection stays aligned
 				// with metadataResolver after /new, fork, resume, or branch switches.
-				const key = await modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
+				const key =
+					callModel && callModel.provider === provider
+						? await modelRegistry.getApiKey(callModel, agent.sessionId)
+						: await modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
 				if (!key) {
 					throw new Error(`No API key found for provider "${provider}"`);
 				}
@@ -2073,6 +2141,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							const retryAfterMs = extractRetryHint(undefined, message);
 							const switched = await modelRegistry.authStorage.markUsageLimitReached(provider, agent.sessionId, {
 								retryAfterMs,
+								modelId: streamModel.id,
 								signal: streamOptions?.signal,
 							});
 							logger.debug("Retrying provider request after usage-limit block", {
@@ -2082,7 +2151,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 								error: message,
 							});
 							if (!switched) return undefined;
-							return modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
+							return modelRegistry.getApiKey(streamModel, agent.sessionId);
 						}
 						// Genuine auth failure (e.g. Codex's "invalidated oauth token" → 401).
 						// The access token is dead but the refresh token is almost always
@@ -2108,7 +2177,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							provider,
 							error: message,
 						});
-						return modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
+						return modelRegistry.getApiKey(streamModel, agent.sessionId);
 					},
 				});
 			},
