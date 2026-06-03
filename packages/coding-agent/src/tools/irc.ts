@@ -151,7 +151,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			if (!ref || ref.id === senderId) {
 				notFound.push(to);
 				targets = [];
-			} else if (ref.status !== "running" && ref.status !== "idle") {
+			} else if (!ref.ircEnabled || (ref.status !== "running" && ref.status !== "idle")) {
 				notFound.push(to);
 				targets = [];
 			} else {

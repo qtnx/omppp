@@ -110,6 +110,53 @@ function buildStaticInlineHint(hint: string): (argumentText: string) => string |
 	return (argumentText: string) => (argumentText.trim().length === 0 ? hint : null);
 }
 
+const PLUGIN_SELECTOR_REFRESH_POLL_MS = 250;
+const PLUGIN_SELECTOR_REFRESH_WINDOW_MS = 10 * 60 * 1000;
+
+async function readInstalledPluginSnapshot(mgr: MarketplaceManager): Promise<string> {
+	const installed = await mgr.listInstalledPlugins();
+	const keys = installed.map(plugin =>
+		[
+			plugin.id,
+			plugin.scope,
+			plugin.shadowedBy ?? "",
+			...plugin.entries.map(entry =>
+				[entry.scope, entry.installPath, entry.version, entry.lastUpdated, entry.enabled === false ? "disabled" : "enabled"].join(
+					"\u0000",
+				),
+			),
+		].join("\u0000"),
+	);
+	keys.sort();
+	return keys.join("\u0001");
+}
+
+function refreshPluginStateAfterSelectorMutation(
+	ctx: InteractiveModeContext,
+	mgr: MarketplaceManager,
+	initialSnapshot: string,
+): void {
+	const deadline = Date.now() + PLUGIN_SELECTOR_REFRESH_WINDOW_MS;
+	const poll = async (): Promise<void> => {
+		if (Date.now() > deadline) return;
+		try {
+			const currentSnapshot = await readInstalledPluginSnapshot(mgr);
+			if (currentSnapshot !== initialSnapshot) {
+				await ctx.refreshPluginState();
+				return;
+			}
+		} catch {
+			return;
+		}
+		globalThis.setTimeout(() => {
+			void poll();
+		}, PLUGIN_SELECTOR_REFRESH_POLL_MS);
+	};
+	globalThis.setTimeout(() => {
+		void poll();
+	}, PLUGIN_SELECTOR_REFRESH_POLL_MS);
+}
+
 const shutdownHandlerTui = (_command: ParsedSlashCommand, runtime: TuiSlashCommandRuntime): SlashCommandResult => {
 	runtime.ctx.editor.setText("");
 	void runtime.ctx.shutdown();
@@ -1633,8 +1680,18 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 
 			// /marketplace (no args) or /marketplace install (no args) → interactive browser
 			if ((sub === "install" && !rest) || (!args[0] && !command.args.trim())) {
+				const mgr = new MarketplaceManager({
+					marketplacesRegistryPath: getMarketplacesRegistryPath(),
+					installedRegistryPath: getInstalledPluginsRegistryPath(),
+					projectInstalledRegistryPath: await resolveOrDefaultProjectRegistryPath(runtime.ctx.sessionManager.getCwd()),
+					marketplacesCacheDir: getMarketplacesCacheDir(),
+					pluginsCacheDir: getPluginsCacheDir(),
+					clearPluginRootsCache: clearPluginRootsAndCaches,
+				});
 				try {
+					const installedSnapshot = await readInstalledPluginSnapshot(mgr);
 					runtime.ctx.showPluginSelector("install");
+					refreshPluginStateAfterSelectorMutation(runtime.ctx, mgr, installedSnapshot);
 				} catch (err) {
 					runtime.ctx.showStatus(`Marketplace error: ${err}`);
 				}
@@ -1714,13 +1771,16 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 						const name = parsed.installSpec.slice(0, atIdx);
 						const marketplace = parsed.installSpec.slice(atIdx + 1);
 						await mgr.installPlugin(name, marketplace, { force: parsed.force, scope: parsed.scope });
+						await runtime.ctx.refreshPluginState();
 						runtime.ctx.showStatus(`Installed ${name} from ${marketplace}`);
 						break;
 					}
 					case "uninstall": {
 						if (!rest) {
 							// No args → open interactive uninstall selector
+							const installedSnapshot = await readInstalledPluginSnapshot(mgr);
 							runtime.ctx.showPluginSelector("uninstall");
+							refreshPluginStateAfterSelectorMutation(runtime.ctx, mgr, installedSnapshot);
 							return;
 						}
 						const uninstArgs = parsePluginScopeArgs(
@@ -1732,6 +1792,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 							return;
 						}
 						await mgr.uninstallPlugin(uninstArgs.pluginId, uninstArgs.scope);
+						await runtime.ctx.refreshPluginState();
 						runtime.ctx.showStatus(`Uninstalled ${uninstArgs.pluginId}`);
 						break;
 					}
@@ -1758,12 +1819,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 								return;
 							}
 							const result = await mgr.upgradePlugin(upArgs.pluginId, upArgs.scope);
+							await runtime.ctx.refreshPluginState();
 							runtime.ctx.showStatus(`Upgraded ${upArgs.pluginId} to ${result.version}`);
 						} else {
 							const results = await mgr.upgradeAllPlugins();
 							if (results.length === 0) {
 								runtime.ctx.showStatus("All marketplace plugins are up to date");
 							} else {
+								await runtime.ctx.refreshPluginState();
 								const lines = results.map(r => `  ${r.pluginId}: ${r.from} -> ${r.to}`);
 								runtime.ctx.showStatus(`Upgraded ${results.length} plugin(s):\n${lines.join("\n")}`);
 							}
@@ -1902,6 +1965,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 						}
 						const isEnable = sub === "enable";
 						await mgr.setPluginEnabled(parsed.pluginId, isEnable, parsed.scope);
+						await runtime.ctx.refreshPluginState();
 						runtime.ctx.showStatus(`${isEnable ? "Enabled" : "Disabled"} ${parsed.pluginId}`);
 						break;
 					}
@@ -1973,8 +2037,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			// listClaudePluginRoots re-reads from disk on next access.
 			const projectPath = await resolveActiveProjectRegistryPath(runtime.ctx.sessionManager.getCwd());
 			clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
-			await runtime.ctx.refreshSlashCommandState();
-			await runtime.ctx.session.refreshSshTool({ activateIfAvailable: true });
+			await runtime.ctx.refreshPluginState();
 			runtime.ctx.showStatus("Plugins reloaded.");
 			runtime.ctx.editor.setText("");
 		},
@@ -2122,8 +2185,7 @@ export async function executeBuiltinSlashCommand(
 			reloadPlugins: async () => {
 				const projectPath = await resolveActiveProjectRegistryPath(ctx.sessionManager.getCwd());
 				clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
-				await ctx.refreshSlashCommandState();
-				await ctx.session.refreshSshTool({ activateIfAvailable: true });
+				await ctx.refreshPluginState();
 			},
 		};
 		const result = await command.handle(parsed, adapted);

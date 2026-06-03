@@ -16,6 +16,15 @@ export type {
 
 export type RGB = readonly [number, number, number];
 
+export interface PrStatusInfo {
+	number: number;
+	url: string;
+	state?: string;
+	isDraft?: boolean;
+	mergeStateStatus?: string;
+	reviewDecision?: string;
+}
+
 export interface SegmentContext {
 	session: AgentSession;
 	width: number;
@@ -49,7 +58,7 @@ export interface SegmentContext {
 	git: {
 		branch: string | null;
 		status: { staged: number; unstaged: number; untracked: number } | null;
-		pr: { number: number; url: string } | null;
+		pr: PrStatusInfo | null;
 	};
 	usage: {
 		fiveHour?: { percent: number; resetMinutes?: number };

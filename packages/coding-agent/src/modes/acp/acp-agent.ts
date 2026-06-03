@@ -54,7 +54,12 @@ import {
 } from "../../extensibility/extensions";
 import { runExtensionCompact } from "../../extensibility/extensions/compact-handler";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
-import { buildSkillPromptMessage, getSkillSlashCommandName } from "../../extensibility/skills";
+import {
+	buildSkillPromptMessage,
+	getSkillSlashCommandName,
+	loadSkills,
+	setActiveSkills,
+} from "../../extensibility/skills";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { MCPManager } from "../../mcp/manager";
 import type { MCPServerConfig } from "../../mcp/types";
@@ -140,6 +145,7 @@ function isPromptTurnInFlight(turn: PromptTurnState | undefined): turn is Prompt
 type ManagedSessionRecord = {
 	session: AgentSession;
 	mcpManager: MCPManager | undefined;
+	acpMcpServers: McpServer[];
 	promptTurn: PromptTurnState | undefined;
 	promptQueue: PromptQueueState;
 	liveMessageId: string | undefined;
@@ -976,6 +982,7 @@ export class AcpAgent implements Agent {
 		return {
 			session,
 			mcpManager: undefined,
+			acpMcpServers: [],
 			promptTurn: undefined,
 			promptQueue: { promise: Promise.resolve(), release: undefined },
 			liveMessageId: undefined,
@@ -1527,21 +1534,53 @@ export class AcpAgent implements Agent {
 		});
 	}
 
+	async #refreshMCPToolState(record: ManagedSessionRecord): Promise<void> {
+		if (record.mcpManager) {
+			await record.mcpManager.disconnectAll();
+		}
+		if (record.acpMcpServers.length === 0) {
+			record.mcpManager = undefined;
+			record.session.setMCPPromptCommands([]);
+			await record.session.refreshMCPTools([]);
+			return;
+		}
+
+		const manager = record.mcpManager ?? new MCPManager(record.session.sessionManager.getCwd());
+		manager.setCwd(record.session.sessionManager.getCwd());
+		record.mcpManager = manager;
+		record.session.setMCPPromptCommands([]);
+		const result = await manager.connectServers(
+			this.#toMcpConfigs(record.acpMcpServers),
+			this.#toMcpSources(record.acpMcpServers),
+		);
+		this.#throwMcpConnectErrors(result.errors);
+		await record.session.refreshMCPTools(manager.getTools());
+	}
+
 	/**
 	 * Reload plugin/registry state for an ACP session. Mirrors the interactive
 	 * `/reload-plugins` and `/move` flows: invalidates the plugin-roots cache,
-	 * resets the capability cache, refreshes the session's slash-command state,
-	 * then re-advertises commands so the client sees newly installed/disabled
-	 * plugins.
+	 * resets the capability cache, refreshes skills, slash commands, SSH, MCP
+	 * runtime tools, and the base system prompt, then re-advertises commands so
+	 * the client sees newly installed/disabled plugins.
 	 */
 	async #reloadPluginState(record: ManagedSessionRecord): Promise<void> {
 		const cwd = record.session.sessionManager.getCwd();
 		const projectPath = await resolveActiveProjectRegistryPath(cwd);
 		clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
 		resetCapabilities();
+		const skillSettings = {
+			...record.session.settings.getGroup("skills"),
+			disabledExtensions: record.session.settings.get("disabledExtensions") ?? [],
+		};
+		const skills = await loadSkills({ ...skillSettings, cwd });
+		record.session.setSkills(skills.skills, skills.warnings, skillSettings);
+		setActiveSkills(skills.skills);
 		const fileCommands = await loadSlashCommands({ cwd });
 		record.session.setSlashCommands(fileCommands);
 		await record.session.refreshSshTool({ activateIfAvailable: true });
+		await this.#refreshMCPToolState(record);
+		await record.session.refreshBaseSystemPrompt();
 		await this.#emitAvailableCommandsUpdate(record);
 	}
 
@@ -1980,6 +2019,7 @@ export class AcpAgent implements Agent {
 	}
 
 	async #configureMcpServers(record: ManagedSessionRecord, servers: McpServer[]): Promise<void> {
+		record.acpMcpServers = servers;
 		if (record.mcpManager) {
 			await record.mcpManager.disconnectAll();
 		}
@@ -1990,10 +2030,24 @@ export class AcpAgent implements Agent {
 		}
 
 		const manager = new MCPManager(record.session.sessionManager.getCwd());
+		const result = await manager.connectServers(this.#toMcpConfigs(servers), this.#toMcpSources(servers));
+		this.#throwMcpConnectErrors(result.errors);
+
+		record.mcpManager = manager;
+		await record.session.refreshMCPTools(result.tools, { activateAll: true });
+	}
+
+	#toMcpConfigs(servers: McpServer[]): MCPConfigMap {
 		const configs: MCPConfigMap = {};
-		const sources: MCPSourceMap = {};
 		for (const server of servers) {
 			configs[server.name] = this.#toMcpConfig(server);
+		}
+		return configs;
+	}
+
+	#toMcpSources(servers: McpServer[]): MCPSourceMap {
+		const sources: MCPSourceMap = {};
+		for (const server of servers) {
 			sources[server.name] = {
 				provider: "acp",
 				providerName: "ACP Client",
@@ -2001,18 +2055,18 @@ export class AcpAgent implements Agent {
 				level: "project",
 			};
 		}
+		return sources;
+	}
 
-		const result = await manager.connectServers(configs, sources);
-		if (result.errors.size > 0) {
-			throw new Error(
-				Array.from(result.errors.entries())
-					.map(([name, message]) => `${name}: ${message}`)
-					.join("; "),
-			);
+	#throwMcpConnectErrors(errors: Map<string, string>): void {
+		if (errors.size === 0) {
+			return;
 		}
-
-		record.mcpManager = manager;
-		await record.session.refreshMCPTools(result.tools, { activateAll: true });
+		throw new Error(
+			Array.from(errors.entries())
+				.map(([name, message]) => `${name}: ${message}`)
+				.join("; "),
+		);
 	}
 
 	#toMcpConfig(server: McpServer): MCPServerConfig {

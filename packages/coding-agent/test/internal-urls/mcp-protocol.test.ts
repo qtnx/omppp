@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { Settings } from "../../src/config/settings";
 import { InternalUrlRouter } from "../../src/internal-urls";
 import { MCPManager } from "../../src/mcp/manager";
 import type { MCPResource, MCPResourceReadResult, MCPResourceTemplate } from "../../src/mcp/types";
+import type { ToolSession } from "../../src/tools";
+import { ReadTool, type ReadToolDetails } from "../../src/tools/read";
 
 function createMockManager(opts: {
 	servers?: string[];
@@ -17,6 +21,24 @@ function createMockManager(opts: {
 			return opts.readResult;
 		},
 	} as unknown as MCPManager;
+}
+
+function createReadSession(mcpManager?: MCPManager): ToolSession {
+	return {
+		cwd: "/tmp",
+		hasUI: false,
+		settings: Settings.isolated(),
+		getSessionFile: () => null,
+		getSessionSpawns: () => "*",
+		mcpManager,
+	} as unknown as ToolSession;
+}
+
+function textOutput(result: AgentToolResult<ReadToolDetails>): string {
+	return result.content
+		.filter(content => content.type === "text")
+		.map(content => content.text)
+		.join("\n");
 }
 
 describe("McpProtocolHandler", () => {
@@ -74,6 +96,62 @@ describe("McpProtocolHandler", () => {
 		const resource = await router.resolve("mcp://test://doc");
 		expect(resource.content).toBe("hello world");
 		expect(resource.notes).toEqual(["MCP server: my-server"]);
+	});
+
+	it("uses caller-scoped MCP manager instead of the process-global manager when context is provided", async () => {
+		const globalResources = new Map<string, { resources: MCPResource[]; templates: MCPResourceTemplate[] }>();
+		globalResources.set("global-server", {
+			resources: [{ uri: "test://doc", name: "global-doc" }],
+			templates: [],
+		});
+		const scopedResources = new Map<string, { resources: MCPResource[]; templates: MCPResourceTemplate[] }>();
+		scopedResources.set("scoped-server", {
+			resources: [{ uri: "test://doc", name: "scoped-doc" }],
+			templates: [],
+		});
+		const globalManager = createMockManager({
+			servers: ["global-server"],
+			resources: globalResources,
+			readResult: { contents: [{ uri: "test://doc", text: "global content" }] },
+		});
+		const scopedManager = createMockManager({
+			servers: ["scoped-server"],
+			resources: scopedResources,
+			readResult: { contents: [{ uri: "test://doc", text: "scoped content" }] },
+		});
+		MCPManager.setInstance(globalManager);
+		const router = InternalUrlRouter.instance();
+
+		const scopedResource = await router.resolve("mcp://test://doc", { mcpManager: scopedManager });
+		expect(scopedResource.content).toBe("scoped content");
+		expect(scopedResource.notes).toEqual(["MCP server: scoped-server"]);
+		await expect(router.resolve("mcp://test://doc", { mcpManager: undefined })).rejects.toThrow("No MCP manager");
+	});
+
+	it("read tool resolves mcp:// URLs only through the caller-scoped MCP manager", async () => {
+		const resources = new Map<string, { resources: MCPResource[]; templates: MCPResourceTemplate[] }>();
+		resources.set("scoped-server", {
+			resources: [{ uri: "test://doc", name: "doc" }],
+			templates: [],
+		});
+		const globalManager = createMockManager({
+			servers: ["global-server"],
+			readResult: { contents: [{ uri: "test://doc", text: "global content" }] },
+		});
+		const scopedManager = createMockManager({
+			servers: ["scoped-server"],
+			resources,
+			readResult: { contents: [{ uri: "test://doc", text: "scoped content" }] },
+		});
+		MCPManager.setInstance(globalManager);
+
+		await expect(
+			new ReadTool(createReadSession()).execute("read-restricted", { path: "mcp://test://doc" }),
+		).rejects.toThrow("No MCP manager");
+		const result = await new ReadTool(createReadSession(scopedManager)).execute("read-unrestricted", {
+			path: "mcp://test://doc",
+		});
+		expect(textOutput(result)).toContain("scoped content");
 	});
 
 	it("preserves query parameters in MCP resource URI", async () => {

@@ -18,6 +18,7 @@ import {
 	ANTHROPIC_TOOL_CALL_BATCH_CAP,
 	resolveToolCallBatchCapForModel,
 } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
 import { CONTEXT_GC_CUSTOM_TYPE, type ContextGcDelta } from "../../context-gc-plugin/src/schema";
@@ -80,6 +81,63 @@ describe("AgentSession message pipeline", () => {
 		expect(resolveToolCallBatchCapForModel({ ...anthropicOpus48, id: "claude-opus-4-80" })).toBeUndefined();
 		expect(resolveToolCallBatchCapForModel(baseModel)).toBeUndefined();
 		expect(resolveToolCallBatchCapForModel({ ...baseModel, provider: "openai-codex" })).toBeUndefined();
+	});
+
+	it("injects a single workflow-tool notice for workflow requests", async () => {
+		const api = "test-workflow-notice";
+		let capturedAgentMessages: AgentMessage[] = [];
+		registerCustomApi(api, () => {
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => {
+				const message = createAssistantMessage("Answer");
+				stream.push({ type: "text_delta", contentIndex: 0, delta: "Answer", partial: message });
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		});
+		const model = {
+			id: "workflow-model",
+			name: "Workflow Model",
+			api,
+			provider: "test-provider",
+			baseUrl: "",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 4096,
+			maxTokens: 1024,
+		} satisfies Model;
+		const session = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["system prompt"],
+					messages: [],
+					tools: [],
+				},
+				convertToLlm: messages => {
+					capturedAgentMessages = messages;
+					return convertToLlm(messages);
+				},
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false, "workflow.enabled": true }),
+			modelRegistry: {
+				getApiKey: vi.fn(async () => "key"),
+			} as never,
+		});
+		sessions.push(session);
+
+		await session.prompt("workflow resolve this?");
+
+		const workflowMessages = capturedAgentMessages.filter(
+			(message): message is AgentMessage & { role: "custom"; customType: string; content: string } =>
+				message.role === "custom" && message.customType.startsWith("workflow"),
+		);
+		expect(workflowMessages).toHaveLength(1);
+		expect(workflowMessages[0]?.customType).toBe("workflow-notice");
+		expect(workflowMessages[0]?.content).toContain("`workflow` tool");
+		expect(workflowMessages[0]?.content).not.toContain("Python in the `eval` tool");
 	});
 
 	it("applies transformContext before convertToLlm", async () => {

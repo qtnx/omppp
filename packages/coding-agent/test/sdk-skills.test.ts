@@ -82,6 +82,29 @@ Loaded via symbolic link.
 		expect(session.skills.some((s: Skill) => s.name === "test-skill")).toBe(true);
 	});
 
+	it("refreshes the base system prompt from the updated session skill snapshot", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: SessionManager.inMemory(),
+			settings: createIsolatedSkillsSettings(),
+		});
+		const replacementSkill: Skill = {
+			name: "replacement-skill",
+			description: "Replacement skill for prompt refresh",
+			filePath: path.join(skillsDir, "SKILL.md"),
+			baseDir: skillsDir,
+			source: "test",
+		};
+
+		session.setSkills([replacementSkill], [], session.skillsSettings);
+		await session.refreshBaseSystemPrompt();
+
+		const prompt = session.systemPrompt.join("\n");
+		expect(prompt).toContain("- replacement-skill: Replacement skill for prompt refresh");
+		expect(prompt).not.toContain("- test-skill: A test skill for SDK tests.");
+	});
+
 	it("should discover skills when skill directory is a symlink", async () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,

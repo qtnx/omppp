@@ -8,8 +8,8 @@ import { keywordInProse } from "./markdown-prose";
  * Typing the standalone word in the input editor paints it with a warm
  * amber→green gradient ({@link highlightWorkflow}); submitting a message that
  * mentions it appends a hidden {@link WORKFLOW_NOTICE} that steers the model to
- * author a deterministic multi-subagent workflow in eval cells (agent/parallel/
- * pipeline). Matching is whitespace-delimited and case-sensitive (lowercase
+ * author and run a deterministic multi-subagent workflow through the workflow
+ * tool. Matching is whitespace-delimited and case-sensitive (lowercase
  * only) — "workflow"/"workflows" trigger, but "workflowed", "Workflow", and
  * "workflow.ts" never do.
  */

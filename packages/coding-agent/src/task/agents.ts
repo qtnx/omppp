@@ -29,6 +29,7 @@ interface AgentFrontmatter {
 	model?: string | string[];
 	thinkingLevel?: string;
 	blocking?: boolean;
+	resourceProfile?: "minimal";
 	reviewGate?: AgentReviewGatePolicy;
 }
 

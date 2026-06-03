@@ -1,3 +1,5 @@
+import type { PrStatusInfo } from "./types";
+
 /**
  * Extract "owner/repo" from a GitHub remote URL.
  * Handles HTTPS, SSH (scp-style), and git:// protocols.
@@ -34,7 +36,7 @@ export function isSamePrCacheContext(a: PrCacheContext | undefined, b: PrCacheCo
 }
 
 export function canReuseCachedPr(
-	cachedPr: { number: number; url: string } | null | undefined,
+	cachedPr: PrStatusInfo | null | undefined,
 	cachedContext: PrCacheContext | undefined,
 	currentContext: PrCacheContext | null,
 ): boolean {

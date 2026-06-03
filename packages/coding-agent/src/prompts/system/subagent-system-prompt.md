@@ -34,7 +34,7 @@ You NEVER modify files outside this tree or in the original repository.
 
 {{#if contextFile}}
 # Conversation Context
-If you need additional information, you can find your conversation with the user in {{contextFile}} (`tail` or `grep` relevant terms).
+If you need additional information, read {{contextFile}} with the `read` tool, or use `search` on that path for relevant terms when available.
 {{/if}}
 
 {{#if ircPeers}}

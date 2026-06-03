@@ -21,7 +21,6 @@ import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "..";
 import { AsyncJobManager } from "../async";
 import { resolveAgentModelPatterns } from "../config/model-resolver";
-import { MCPManager } from "../mcp/manager";
 import type { Theme } from "../modes/theme/theme";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
@@ -106,6 +105,10 @@ function formatReviewBlockedPreview(result: SingleResult): string {
 	const reason = result.reviewGate?.failureReason?.trim();
 	const feedback = reason ? `Review gate blocked: ${reason}` : "Review gate blocked.";
 	return base ? `${base}\n\n${feedback}` : feedback;
+}
+
+function usesRestrictedResourceProfile(agent: AgentDefinition): boolean {
+	return agent.resourceProfile === "minimal" && agent.tools !== undefined;
 }
 
 function createUsageTotals(): Usage {
@@ -1000,16 +1003,25 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				};
 			}
 
-			// Write parent conversation context for subagents. When IRC is available,
-			// subagents should ask live peers instead of reading a stale markdown dump.
+			const ircEnabled = this.session.settings.get("irc.enabled") === true;
+			const agentCanUseIrc = (candidate: AgentDefinition): boolean =>
+				ircEnabled && (candidate.tools === undefined || candidate.tools.includes("irc"));
+			const shouldWriteConversationContext =
+				!agentCanUseIrc(effectiveAgent) ||
+				(reviewGateConfig !== undefined &&
+					(!agentCanUseIrc(reviewGateConfig.reviewerAgent) || !agentCanUseIrc(reviewGateConfig.fixerAgent)));
+
+			// Write parent conversation context when a subagent cannot use IRC.
+			// Restricted read-only agents such as `explore` should not have to IPC
+			// back to Main just to recover basic conversation context.
 			await fs.mkdir(effectiveArtifactsDir, { recursive: true });
-			const shouldWriteConversationContext = this.session.settings.get("irc.enabled") !== true;
 			const compactContext = shouldWriteConversationContext ? this.session.getCompactContext?.() : undefined;
-			let contextFilePath: string | undefined;
-			if (compactContext) {
-				contextFilePath = path.join(effectiveArtifactsDir, "context.md");
+			const writeContextSnapshot = async (): Promise<string | undefined> => {
+				if (!compactContext) return undefined;
+				const contextFilePath = path.join(effectiveArtifactsDir, `context-${Snowflake.next()}.md`);
 				await Bun.write(contextFilePath, compactContext);
-			}
+				return contextFilePath;
+			};
 
 			// Build full prompts with context prepended
 			// Allocate unique IDs across the session to prevent artifact collisions
@@ -1023,20 +1035,23 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			}
 			const tasksWithUniqueIds = tasks.map((t, i) => ({ ...t, id: uniqueIds[i] }));
 
-			const availableSkills = [...(this.session.skills ?? [])];
-			// Resolve autoload skills from agent definition against available skills
-			const resolvedAutoloadSkills =
-				agent.autoloadSkills?.length && availableSkills.length > 0
-					? agent.autoloadSkills
-							.map(name => availableSkills.find(s => s.name === name))
-							.filter((s): s is NonNullable<typeof s> => s !== undefined)
+			const availableSkills = this.session.skills ?? [];
+			const resolveAutoloadSkills = (agentDefinition: AgentDefinition) =>
+				agentDefinition.autoloadSkills?.length && availableSkills.length > 0
+					? agentDefinition.autoloadSkills
+							.map(name => availableSkills.find(skill => skill.name === name))
+							.filter((skill): skill is NonNullable<typeof skill> => skill !== undefined)
 					: [];
+			const resolveSessionSkills = (agentDefinition: AgentDefinition) =>
+				usesRestrictedResourceProfile(agentDefinition) ? resolveAutoloadSkills(agentDefinition) : availableSkills;
+			const resolvedAutoloadSkills = resolveAutoloadSkills(effectiveAgent);
+			const resolvedSessionSkills = resolveSessionSkills(effectiveAgent);
 			const contextFiles = this.session.contextFiles?.filter(
 				file => path.basename(file.path).toLowerCase() !== "agents.md",
 			);
 			const promptTemplates = this.session.promptTemplates;
 			const parentEvalSessionId = this.session.getEvalSessionId?.() ?? undefined;
-			const mcpManager = this.session.mcpManager ?? MCPManager.instance();
+			const mcpManager = this.session.mcpManager;
 
 			// Initialize progress for all tasks
 			for (let i = 0; i < tasksWithUniqueIds.length; i++) {
@@ -1138,6 +1153,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					const stage: ReviewGateProgress["stage"] = role === "review" ? "reviewing" : "fixing";
 					publishReviewGateProgress(stage, request.iteration);
 					const gateId = `${task.id}-${role}-${request.iteration}`;
+					const resolvedGateAutoloadSkills = resolveAutoloadSkills(gateAgent);
+					const resolvedGateSessionSkills = resolveSessionSkills(gateAgent);
 					return runSubprocess({
 						cwd: this.session.cwd,
 						...(worktree ? { worktree } : {}),
@@ -1157,7 +1174,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						sessionFile,
 						persistArtifacts: !!artifactsDir,
 						artifactsDir: effectiveArtifactsDir,
-						contextFile: contextFilePath,
+						contextFile: await writeContextSnapshot(),
 						enableLsp: subagentLspEnabled,
 						signal,
 						eventBus: this.session.eventBus,
@@ -1167,8 +1184,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						settings: this.session.settings,
 						mcpManager,
 						contextFiles,
-						skills: availableSkills,
-						autoloadSkills: undefined,
+						skills: resolvedGateSessionSkills,
+						autoloadSkills: resolvedGateAutoloadSkills,
 						workspaceTree: this.session.workspaceTree,
 						workspaceRoots: this.session.workspaceRoots,
 						promptTemplates,
@@ -1249,7 +1266,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							sessionFile,
 							persistArtifacts: !!artifactsDir,
 							artifactsDir: effectiveArtifactsDir,
-							contextFile: contextFilePath,
+							contextFile: await writeContextSnapshot(),
 							enableLsp: subagentLspEnabled,
 							signal,
 							eventBus: this.session.eventBus,
@@ -1262,9 +1279,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							authStorage: this.session.authStorage,
 							modelRegistry: this.session.modelRegistry,
 							settings: this.session.settings,
-							mcpManager: MCPManager.instance(),
+							mcpManager,
 							contextFiles,
-							skills: availableSkills,
+							skills: resolvedSessionSkills,
 							autoloadSkills: resolvedAutoloadSkills,
 							workspaceTree: this.session.workspaceTree,
 							workspaceRoots: this.session.workspaceRoots,
@@ -1342,7 +1359,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						sessionFile,
 						persistArtifacts: !!artifactsDir,
 						artifactsDir: effectiveArtifactsDir,
-						contextFile: contextFilePath,
+						contextFile: await writeContextSnapshot(),
 						enableLsp: subagentLspEnabled,
 						signal,
 						eventBus: this.session.eventBus,
@@ -1357,7 +1374,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						settings: this.session.settings,
 						mcpManager,
 						contextFiles,
-						skills: availableSkills,
+						skills: resolvedSessionSkills,
 						autoloadSkills: resolvedAutoloadSkills,
 						workspaceTree: this.session.workspaceTree,
 						workspaceRoots: this.session.workspaceRoots,

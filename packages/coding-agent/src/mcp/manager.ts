@@ -200,6 +200,10 @@ export class MCPManager {
 		private toolCache: MCPToolCache | null = null,
 	) {}
 
+	setCwd(cwd: string): void {
+		this.cwd = cwd;
+	}
+
 	/**
 	 * Set a callback to receive all server notifications.
 	 */

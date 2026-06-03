@@ -254,6 +254,7 @@ export interface ParsedAgentFields {
 	model?: string[];
 	output?: unknown;
 	thinkingLevel?: ThinkingLevel;
+	resourceProfile?: "minimal";
 	autoloadSkills?: string[];
 	blocking?: boolean;
 	reviewGate?: AgentReviewGatePolicy;
@@ -271,10 +272,16 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		return null;
 	}
 
-	let tools = parseArrayOrCSV(frontmatter.tools)?.map(tool => tool.toLowerCase());
+	const rawTools = frontmatter.tools;
+	let tools = (
+		Array.isArray(rawTools)
+			? rawTools.filter((item): item is string => typeof item === "string")
+			: parseArrayOrCSV(rawTools)
+	)?.map(tool => tool.toLowerCase());
 
-	// Subagents with explicit tool lists always need yield
-	if (tools && !tools.includes("yield")) {
+	// Non-empty explicit tool lists always need yield. Preserve `tools: []`
+	// until runtime so it stays distinguishable from an omitted tools field.
+	if (tools && tools.length > 0 && !tools.includes("yield")) {
 		tools = [...tools, "yield"];
 	}
 
@@ -309,11 +316,26 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const thinkingLevel = parseThinkingLevel(rawThinkingLevel);
 	const model = parseModelList(frontmatter.model);
 	const blocking = parseBoolean(frontmatter.blocking);
+	const rawResourceProfile =
+		typeof frontmatter.resourceProfile === "string" ? frontmatter.resourceProfile.trim().toLowerCase() : undefined;
+	const resourceProfile = rawResourceProfile === "minimal" ? "minimal" : undefined;
 	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
 		?.map(s => s.trim())
 		.filter(Boolean);
 	const reviewGate = parseReviewGatePolicy(frontmatter.reviewGate);
-	return { name, description, tools, spawns, model, output, thinkingLevel, blocking, autoloadSkills, reviewGate };
+	return {
+		name,
+		description,
+		tools,
+		spawns,
+		model,
+		output,
+		thinkingLevel,
+		blocking,
+		resourceProfile,
+		autoloadSkills,
+		reviewGate,
+	};
 }
 
 async function globIf(
@@ -794,19 +816,159 @@ export async function resolveOrDefaultProjectRegistryPath(cwd: string): Promise<
 
 const pluginRootsCache = new Map<string, { roots: ClaudePluginRoot[]; warnings: string[] }>();
 
+interface ClaudePluginSettingsSnapshot {
+	disabledPluginIds: Set<string>;
+	signature: string;
+}
+
+async function readFreshOptionalFile(filePath: string): Promise<string | null> {
+	try {
+		return await Bun.file(filePath).text();
+	} catch {
+		return null;
+	}
+}
+
+function fileSignature(filePath: string, content: string | null): string {
+	if (content === null) return `${filePath}:missing`;
+	return `${filePath}:${content.length}:${Bun.hash(content).toString(36)}`;
+}
+
+function mergeEnabledPluginOverrides(overrides: Map<string, boolean>, content: string | null): void {
+	if (!content) return;
+	const parsed = tryParseJson<{ enabledPlugins?: Record<string, unknown> }>(content);
+	const enabledPlugins = parsed?.enabledPlugins;
+	if (!enabledPlugins || typeof enabledPlugins !== "object" || Array.isArray(enabledPlugins)) return;
+	for (const [pluginId, enabled] of Object.entries(enabledPlugins)) {
+		if (typeof enabled === "boolean") {
+			overrides.set(pluginId, enabled);
+		}
+	}
+}
+
+function getClaudeSettingsPaths(home: string, cwd?: string, projectRoot?: string): string[] {
+	const paths: string[] = [];
+	const seen = new Set<string>();
+	const add = (filePath: string) => {
+		const resolved = path.resolve(filePath);
+		if (seen.has(resolved)) return;
+		seen.add(resolved);
+		paths.push(resolved);
+	};
+	add(path.join(home, ".claude", "settings.json"));
+	add(path.join(home, ".claude", "settings.local.json"));
+	if (projectRoot) {
+		add(path.join(projectRoot, ".claude", "settings.json"));
+		add(path.join(projectRoot, ".claude", "settings.local.json"));
+	}
+	if (cwd) {
+		add(path.join(cwd, ".claude", "settings.json"));
+		add(path.join(cwd, ".claude", "settings.local.json"));
+	}
+	return paths;
+}
+
+function getProjectRootFromRegistryPath(registryPath: string | null): string | undefined {
+	if (!registryPath) return undefined;
+	return path.dirname(path.dirname(path.dirname(registryPath)));
+}
+
+async function loadClaudePluginSettings(
+	home: string,
+	cwd?: string,
+	projectRoot?: string,
+): Promise<ClaudePluginSettingsSnapshot> {
+	const paths = getClaudeSettingsPaths(home, cwd, projectRoot);
+	const contents = await Promise.all(paths.map(readFreshOptionalFile));
+	const overrides = new Map<string, boolean>();
+	for (const content of contents) {
+		mergeEnabledPluginOverrides(overrides, content);
+	}
+	const disabledPluginIds = new Set<string>();
+	for (const [pluginId, enabled] of overrides) {
+		if (!enabled) disabledPluginIds.add(pluginId);
+	}
+	const signature = paths.map((filePath, index) => fileSignature(filePath, contents[index])).join("|");
+	return { disabledPluginIds, signature };
+}
+
+function isClaudePluginEnabled(pluginId: string, settings: ClaudePluginSettingsSnapshot): boolean {
+	return !settings.disabledPluginIds.has(pluginId);
+}
+
+function pluginRootsSignature(
+	parts: readonly string[],
+	injectedRoots: readonly ClaudePluginRoot[],
+	settingsSignature: string,
+): string {
+	const injectedSignature = injectedRoots
+		.map(root => `${root.id}:${root.scope}:${root.version}:${root.path}`)
+		.join(",");
+	return [...parts, settingsSignature, `injected:${injectedSignature}`].join("|");
+}
+
+function addClaudePluginRoot(
+	roots: ClaudePluginRoot[],
+	warnings: string[],
+	pluginId: string,
+	entry: ClaudePluginEntry,
+	settingsSnapshot: ClaudePluginSettingsSnapshot,
+	scopeOverride?: "user" | "project",
+): void {
+	if (!isClaudePluginEnabled(pluginId, settingsSnapshot)) return;
+	if (!entry.installPath || typeof entry.installPath !== "string") {
+		warnings.push(`Plugin ${pluginId} entry has no installPath`);
+		return;
+	}
+	if (entry.enabled === false) return;
+
+	const atIndex = pluginId.lastIndexOf("@");
+	if (atIndex === -1) {
+		warnings.push(`Invalid plugin ID format (missing @marketplace): ${pluginId}`);
+		return;
+	}
+
+	roots.push({
+		id: pluginId,
+		marketplace: pluginId.slice(atIndex + 1),
+		plugin: pluginId.slice(0, atIndex),
+		version: entry.version || "unknown",
+		path: entry.installPath,
+		scope: scopeOverride ?? entry.scope ?? "user",
+	});
+}
+
 /**
  * List all installed Claude Code plugin roots from the plugin cache.
  * Reads ~/.claude/plugins/installed_plugins.json and ~/.omp/plugins/installed_plugins.json,
  * and optionally the nearest project-scoped registry resolved from `cwd`.
- *
- * Results are cached per `home:resolvedProjectPath` key to avoid repeated parsing.
+ * Results are cached by source-file content signature so external Claude Code
+ * plugin enable/disable changes are reflected on the next discovery call.
  */
 export async function listClaudePluginRoots(
 	home: string,
 	cwd?: string,
 ): Promise<{ roots: ClaudePluginRoot[]; warnings: string[] }> {
 	const resolvedProjectPath = cwd ? await resolveActiveProjectRegistryPath(cwd) : null;
-	const cacheKey = `${home}:${resolvedProjectPath ?? ""}`;
+	const projectRoot = getProjectRootFromRegistryPath(resolvedProjectPath);
+	const settingsSnapshot = await loadClaudePluginSettings(home, cwd, projectRoot);
+	const registryPath = path.join(home, ".claude", "plugins", "installed_plugins.json");
+	const ompRegistryPath = path.join(getPluginsDir(home), "installed_plugins.json");
+	const [content, ompContent, projectContent] = await Promise.all([
+		readFreshOptionalFile(registryPath),
+		readFreshOptionalFile(ompRegistryPath),
+		resolvedProjectPath ? readFreshOptionalFile(resolvedProjectPath) : Promise.resolve(null),
+	]);
+	const cacheKey = pluginRootsSignature(
+		[
+			`${home}:${resolvedProjectPath ?? ""}`,
+			fileSignature(registryPath, content),
+			fileSignature(ompRegistryPath, ompContent),
+			resolvedProjectPath ? fileSignature(resolvedProjectPath, projectContent) : "project:missing",
+		],
+		injectedPluginDirRoots,
+		settingsSnapshot.signature,
+	);
 	const cached = pluginRootsCache.get(cacheKey);
 	if (cached) return cached;
 
@@ -815,9 +977,6 @@ export async function listClaudePluginRoots(
 	const projectRoots: ClaudePluginRoot[] = [];
 
 	// ── Claude Code registry ──────────────────────────────────────────────────
-	const registryPath = path.join(home, ".claude", "plugins", "installed_plugins.json");
-	const content = await readFile(registryPath);
-
 	if (content) {
 		const registry = parseClaudePluginsRegistry(content);
 		if (!registry) {
@@ -826,33 +985,10 @@ export async function listClaudePluginRoots(
 			for (const [pluginId, entries] of Object.entries(registry.plugins)) {
 				if (!Array.isArray(entries) || entries.length === 0) continue;
 
-				// Parse plugin ID format: "plugin-name@marketplace"
-				const atIndex = pluginId.lastIndexOf("@");
-				if (atIndex === -1) {
-					warnings.push(`Invalid plugin ID format (missing @marketplace): ${pluginId}`);
-					continue;
-				}
-
-				const pluginName = pluginId.slice(0, atIndex);
-				const marketplace = pluginId.slice(atIndex + 1);
-
 				// Process all valid entries, not just the first one.
 				// This handles plugins with multiple installs (different scopes/versions).
 				for (const entry of entries) {
-					if (!entry.installPath || typeof entry.installPath !== "string") {
-						warnings.push(`Plugin ${pluginId} entry has no installPath`);
-						continue;
-					}
-					if (entry.enabled === false) continue;
-
-					roots.push({
-						id: pluginId,
-						marketplace,
-						plugin: pluginName,
-						version: entry.version || "unknown",
-						path: entry.installPath,
-						scope: entry.scope || "user",
-					});
+					addClaudePluginRoot(roots, warnings, pluginId, entry, settingsSnapshot);
 				}
 			}
 		}
@@ -863,44 +999,20 @@ export async function listClaudePluginRoots(
 	// In production `home` is `os.homedir()`, so `getPluginsDir(home)` resolves to the
 	// same XDG-aware path the marketplace writer uses (reads and writes always agree).
 	// Tests pass a temp dir, which short-circuits the resolver for deterministic isolation.
-	const ompRegistryPath = path.join(getPluginsDir(home), "installed_plugins.json");
-	const ompContent = await readFile(ompRegistryPath);
 	if (ompContent) {
 		const ompRegistry = parseClaudePluginsRegistry(ompContent);
 		if (ompRegistry) {
 			for (const [pluginId, entries] of Object.entries(ompRegistry.plugins)) {
 				if (!Array.isArray(entries) || entries.length === 0) continue;
 
-				const atIndex = pluginId.lastIndexOf("@");
-				if (atIndex === -1) {
-					warnings.push(`Invalid plugin ID format (missing @marketplace): ${pluginId}`);
-					continue;
-				}
-				const pluginName = pluginId.slice(0, atIndex);
-				const marketplace = pluginId.slice(atIndex + 1);
-
-				// OMP is authoritative: drop all Claude-sourced entries for this plugin ID
+				// OMP is authoritative: drop all Claude-sourced entries for this plugin ID.
 				const filtered = roots.filter(r => r.id !== pluginId);
 				roots.length = 0;
 				roots.push(...filtered);
 
 				for (const entry of entries) {
-					if (!entry.installPath || typeof entry.installPath !== "string") {
-						warnings.push(`Plugin ${pluginId} entry has no installPath`);
-						continue;
-					}
-					if (entry.enabled === false) continue;
-					// Deduplicate by installPath within same ID
 					if (roots.some(r => r.id === pluginId && r.path === entry.installPath)) continue;
-
-					roots.push({
-						id: pluginId,
-						marketplace,
-						plugin: pluginName,
-						version: entry.version || "unknown",
-						path: entry.installPath,
-						scope: entry.scope || "user",
-					});
+					addClaudePluginRoot(roots, warnings, pluginId, entry, settingsSnapshot);
 				}
 			}
 		} else {
@@ -911,39 +1023,17 @@ export async function listClaudePluginRoots(
 	// ── Project-scoped OMP registry ────────────────────────────────────────
 	// Loaded from the nearest .omp/plugins/installed_plugins.json relative to cwd.
 	// Project entries take precedence over user entries for the same plugin ID.
-	if (resolvedProjectPath) {
-		const projectContent = await readFile(resolvedProjectPath);
-		if (projectContent) {
-			const projectRegistry = parseClaudePluginsRegistry(projectContent);
-			if (projectRegistry) {
-				for (const [pluginId, entries] of Object.entries(projectRegistry.plugins)) {
-					if (!Array.isArray(entries) || entries.length === 0) continue;
-					const atIndex = pluginId.lastIndexOf("@");
-					if (atIndex === -1) {
-						warnings.push(`Invalid plugin ID format (missing @marketplace): ${pluginId}`);
-						continue;
-					}
-					const pluginName = pluginId.slice(0, atIndex);
-					const marketplace = pluginId.slice(atIndex + 1);
-					for (const entry of entries) {
-						if (!entry.installPath || typeof entry.installPath !== "string") {
-							warnings.push(`Plugin ${pluginId} entry has no installPath`);
-							continue;
-						}
-						if (entry.enabled === false) continue;
-						projectRoots.push({
-							id: pluginId,
-							marketplace,
-							plugin: pluginName,
-							version: entry.version || "unknown",
-							path: entry.installPath,
-							scope: "project",
-						});
-					}
+	if (resolvedProjectPath && projectContent) {
+		const projectRegistry = parseClaudePluginsRegistry(projectContent);
+		if (projectRegistry) {
+			for (const [pluginId, entries] of Object.entries(projectRegistry.plugins)) {
+				if (!Array.isArray(entries) || entries.length === 0) continue;
+				for (const entry of entries) {
+					addClaudePluginRoot(projectRoots, warnings, pluginId, entry, settingsSnapshot, "project");
 				}
-			} else {
-				warnings.push(`Failed to parse project plugin registry: ${resolvedProjectPath}`);
 			}
+		} else {
+			warnings.push(`Failed to parse project plugin registry: ${resolvedProjectPath}`);
 		}
 	}
 
@@ -955,7 +1045,7 @@ export async function listClaudePluginRoots(
 		roots.push(...projectRoots, ...deduped);
 	}
 
-	// Merge --plugin-dir roots (highest precedence) on every fresh load
+	// Merge --plugin-dir roots (highest precedence) on every fresh load.
 	if (injectedPluginDirRoots.length > 0) {
 		const injectedIds = new Set(injectedPluginDirRoots.map(r => r.id));
 		const filtered = roots.filter(r => !injectedIds.has(r.id));
@@ -988,6 +1078,8 @@ export function clearClaudePluginRootsCache(): void {
 export function clearPluginRootsAndCaches(extraPaths?: readonly string[]): void {
 	invalidateFsCache(path.join(os.homedir(), ".claude", "plugins", "installed_plugins.json"));
 	invalidateFsCache(path.join(getPluginsDir(), "installed_plugins.json"));
+	invalidateFsCache(path.join(os.homedir(), ".claude", "settings.json"));
+	invalidateFsCache(path.join(os.homedir(), ".claude", "settings.local.json"));
 	for (const p of extraPaths ?? []) invalidateFsCache(p);
 	clearClaudePluginRootsCache();
 }

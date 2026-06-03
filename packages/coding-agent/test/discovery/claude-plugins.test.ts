@@ -11,6 +11,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 import "@oh-my-pi/pi-coding-agent/discovery/claude-plugins";
+import type { MCPServer } from "@oh-my-pi/pi-coding-agent/capability/mcp";
 import type { Skill } from "@oh-my-pi/pi-coding-agent/capability/skill";
 import type { SlashCommand } from "@oh-my-pi/pi-coding-agent/capability/slash-command";
 
@@ -237,7 +238,98 @@ describe("listClaudePluginRoots", () => {
 		expect(result.warnings[0]).toContain("has no installPath");
 	});
 
-	test("caches results for same home directory", async () => {
+	test("honors Claude Code enabledPlugins disables from settings.local.json", async () => {
+		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		await fs.mkdir(pluginsDir, { recursive: true });
+		await fs.writeFile(
+			path.join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({
+				version: 2,
+				plugins: {
+					"enabled-plugin@market": [
+						{
+							scope: "user",
+							installPath: "/path/to/enabled",
+							version: "1.0.0",
+							installedAt: "2025-01-01T00:00:00Z",
+							lastUpdated: "2025-01-01T00:00:00Z",
+						},
+					],
+					"disabled-plugin@market": [
+						{
+							scope: "user",
+							installPath: "/path/to/disabled",
+							version: "1.0.0",
+							installedAt: "2025-01-01T00:00:00Z",
+							lastUpdated: "2025-01-01T00:00:00Z",
+						},
+					],
+				},
+			}),
+		);
+		await fs.writeFile(
+			path.join(tempDir, ".claude", "settings.local.json"),
+			JSON.stringify({ enabledPlugins: { "disabled-plugin@market": false } }),
+		);
+
+		const result = await listClaudePluginRoots(tempDir);
+
+		expect(result.roots.map(root => root.id)).toEqual(["enabled-plugin@market"]);
+	});
+
+	test("honors project-root enabledPlugins disables when discovery cwd is nested", async () => {
+		const projectRoot = path.join(tempDir, "project");
+		const nestedCwd = path.join(projectRoot, "packages", "app");
+		const pluginsDir = path.join(projectRoot, ".omp", "plugins");
+		const pluginPath = path.join(tempDir, "plugins", "project-disabled");
+		await fs.mkdir(nestedCwd, { recursive: true });
+		await fs.mkdir(pluginsDir, { recursive: true });
+		await fs.mkdir(path.join(projectRoot, ".claude"), { recursive: true });
+		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
+		await fs.mkdir(path.join(pluginPath, ".claude", "skills", "hidden-skill"), { recursive: true });
+		await fs.writeFile(
+			path.join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({
+				version: 2,
+				plugins: {
+					"project-disabled@market": [
+						{
+							scope: "project",
+							installPath: pluginPath,
+							version: "1.0.0",
+							installedAt: "2025-01-01T00:00:00Z",
+							lastUpdated: "2025-01-01T00:00:00Z",
+						},
+					],
+				},
+			}),
+		);
+		await fs.writeFile(
+			path.join(projectRoot, ".claude", "settings.local.json"),
+			JSON.stringify({ enabledPlugins: { "project-disabled@market": false } }),
+		);
+		await fs.writeFile(
+			path.join(pluginPath, ".claude-plugin", "plugin.json"),
+			JSON.stringify({
+				skills: "./.claude/skills",
+				mcpServers: { hidden: { command: "node", args: ["hidden.js"] } },
+			}),
+		);
+		await fs.writeFile(
+			path.join(pluginPath, ".claude", "skills", "hidden-skill", "SKILL.md"),
+			"---\nname: hidden-skill\ndescription: Hidden skill\n---\nBody\n",
+		);
+
+		const roots = await listClaudePluginRoots(tempDir, nestedCwd);
+		const skills = await loadCapability<Skill>("skills", { cwd: nestedCwd });
+		const mcps = await loadCapability<MCPServer>("mcps", { cwd: nestedCwd });
+
+		expect(roots.roots.map(root => root.id)).toEqual([]);
+		expect(skills.all.find(skill => skill.name === "hidden-skill")).toBeUndefined();
+		expect(mcps.all.find(server => server.name === "project-disabled:hidden")).toBeUndefined();
+	});
+
+	test("reflects registry changes on the next call", async () => {
 		const pluginsDir = path.join(tempDir, ".claude", "plugins");
 		await fs.mkdir(pluginsDir, { recursive: true });
 
@@ -264,11 +356,9 @@ describe("listClaudePluginRoots", () => {
 
 		await fs.writeFile(path.join(pluginsDir, "installed_plugins.json"), JSON.stringify(registry));
 
-		// First call
 		const result1 = await listClaudePluginRoots(tempDir);
-		expect(result1.roots).toHaveLength(1);
+		expect(result1.roots.map(root => root.id)).toEqual(["cached-plugin@market"]);
 
-		// Modify the file
 		registry.plugins["new-plugin@market"] = [
 			{
 				scope: "user",
@@ -280,15 +370,8 @@ describe("listClaudePluginRoots", () => {
 		];
 		await fs.writeFile(path.join(pluginsDir, "installed_plugins.json"), JSON.stringify(registry));
 
-		// Second call should return cached result (still 1 plugin)
 		const result2 = await listClaudePluginRoots(tempDir);
-		expect(result2.roots).toHaveLength(1);
-
-		// After clearing cache, should see new plugin
-		clearClaudePluginRootsCache();
-		clearFsCache(); // Also clear fs cache so the file is re-read
-		const result3 = await listClaudePluginRoots(tempDir);
-		expect(result3.roots).toHaveLength(2);
+		expect(result2.roots.map(root => root.id).sort()).toEqual(["cached-plugin@market", "new-plugin@market"]);
 	});
 
 	test("defaults scope to user when not specified", async () => {
@@ -354,6 +437,80 @@ describe("listClaudePluginRoots", () => {
 
 		expect(found).toBeDefined();
 		expect(found?.path).toContain(path.join(".claude", "skills", "manifest-skill", "SKILL.md"));
+	});
+
+	test("reads MCP servers from plugin manifest mcpServers field", async () => {
+		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginPath = path.join(tempDir, "plugins", "manifest-mcp");
+		await fs.mkdir(pluginsDir, { recursive: true });
+		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
+
+		await fs.writeFile(
+			path.join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({
+				version: 2,
+				plugins: {
+					"manifest-mcp@market": [
+						{
+							scope: "user",
+							installPath: pluginPath,
+							version: "1.0.0",
+							installedAt: "2025-01-01T00:00:00Z",
+							lastUpdated: "2025-01-01T00:00:00Z",
+						},
+					],
+				},
+			}),
+		);
+		await fs.writeFile(
+			path.join(pluginPath, ".claude-plugin", "plugin.json"),
+			JSON.stringify({ mcpServers: { browser: { command: "npx", args: ["chrome-devtools-mcp"] } } }),
+		);
+
+		const result = await loadCapability<MCPServer>("mcps", { cwd: tempDir });
+		const found = result.all.find(server => server.name === "manifest-mcp:browser");
+
+		expect(found).toBeDefined();
+		expect(found?.command).toBe("npx");
+		expect(found?.args).toEqual(["chrome-devtools-mcp"]);
+		expect(found?._source.path).toBe(path.join(pluginPath, ".claude-plugin", "plugin.json"));
+	});
+
+	test("still reads manifest MCP servers when plugin .mcp.json is invalid", async () => {
+		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginPath = path.join(tempDir, "plugins", "manifest-mcp-invalid-file");
+		await fs.mkdir(pluginsDir, { recursive: true });
+		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
+
+		await fs.writeFile(
+			path.join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({
+				version: 2,
+				plugins: {
+					"manifest-mcp-invalid-file@market": [
+						{
+							scope: "user",
+							installPath: pluginPath,
+							version: "1.0.0",
+							installedAt: "2025-01-01T00:00:00Z",
+							lastUpdated: "2025-01-01T00:00:00Z",
+						},
+					],
+				},
+			}),
+		);
+		await fs.writeFile(path.join(pluginPath, ".mcp.json"), "{not json");
+		await fs.writeFile(
+			path.join(pluginPath, ".claude-plugin", "plugin.json"),
+			JSON.stringify({ mcpServers: { browser: { command: "npx", args: ["chrome-devtools-mcp"] } } }),
+		);
+
+		const result = await loadCapability<MCPServer>("mcps", { cwd: tempDir });
+		const found = result.all.find(server => server.name === "manifest-mcp-invalid-file:browser");
+
+		expect(result.warnings.some(warning => warning.includes("Invalid JSON"))).toBe(true);
+		expect(found).toBeDefined();
+		expect(found?._source.path).toBe(path.join(pluginPath, ".claude-plugin", "plugin.json"));
 	});
 
 	test("reads slash commands directory from plugin manifest slash-commands field", async () => {

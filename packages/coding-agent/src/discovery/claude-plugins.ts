@@ -32,6 +32,7 @@ interface ClaudePluginManifest {
 	skills?: string;
 	"slash-commands"?: string;
 	commands?: string;
+	mcpServers?: Record<string, unknown>;
 }
 
 interface ResolvedPluginDir {
@@ -256,46 +257,32 @@ async function loadTools(ctx: LoadContext): Promise<LoadResult<CustomTool>> {
 async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> {
 	const items: MCPServer[] = [];
 	const warnings: string[] = [];
+	const seenMcpNames = new Set<string>();
 
 	const { roots, warnings: rootWarnings } = await listClaudePluginRoots(ctx.home, ctx.cwd);
 	warnings.push(...rootWarnings);
 
-	for (const root of roots) {
-		const mcpPath = path.join(root.path, ".mcp.json");
-		const raw = await readFile(mcpPath);
-		if (raw === null) continue; // file absent — skip silently
-
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(raw);
-		} catch {
-			warnings.push(`[claude-plugins] Invalid JSON in ${mcpPath}`);
-			logger.warn(`[claude-plugins] Invalid JSON in ${mcpPath}`);
-			continue;
-		}
-
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+	const parseServerMap = (parsed: unknown): Record<string, unknown> | null => {
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 		const obj = parsed as Record<string, unknown>;
-
 		// Two shapes are supported:
 		//   nested: { "mcpServers": { name: cfg, ... } }   (OMP/Claude Code project shape)
 		//   flat:   { name: cfg, ... }                      (Claude marketplace plugin shape)
 		// If "mcpServers" is present and an object, treat it as the canonical map.
 		// Otherwise, treat the whole object as the server map.
-		let servers: Record<string, unknown>;
 		if (
 			obj.mcpServers !== undefined &&
 			obj.mcpServers !== null &&
 			typeof obj.mcpServers === "object" &&
 			!Array.isArray(obj.mcpServers)
 		) {
-			servers = obj.mcpServers as Record<string, unknown>;
-		} else if (!("mcpServers" in obj)) {
-			servers = obj;
-		} else {
-			continue;
+			return obj.mcpServers as Record<string, unknown>;
 		}
+		if (!("mcpServers" in obj)) return obj;
+		return null;
+	};
 
+	const appendServers = (root: ClaudePluginRoot, sourcePath: string, servers: Record<string, unknown>) => {
 		for (const [serverName, serverCfg] of Object.entries(servers)) {
 			if (!serverCfg || typeof serverCfg !== "object" || Array.isArray(serverCfg)) continue;
 			const raw = serverCfg as {
@@ -312,13 +299,17 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				type?: string;
 			};
 			// Require either command (stdio) or url (HTTP/SSE) — Claude marketplace plugins
-			// occasionally ship .mcp.json entries with neither, which would register a useless
+			// occasionally ship MCP entries with neither, which would register a useless
 			// server and surface as a connection error at runtime.
 			if (typeof raw.command !== "string" && typeof raw.url !== "string") {
-				warnings.push(`[claude-plugins] Skipping MCP server "${serverName}" in ${mcpPath}: missing command or url`);
+				warnings.push(
+					`[claude-plugins] Skipping MCP server "${serverName}" in ${sourcePath}: missing command or url`,
+				);
 				continue;
 			}
 			const namespacedName = root.plugin ? `${root.plugin}:${serverName}` : serverName;
+			if (seenMcpNames.has(namespacedName)) continue;
+			seenMcpNames.add(namespacedName);
 			const server: MCPServer = {
 				name: namespacedName,
 				...(raw.enabled !== undefined && { enabled: raw.enabled }),
@@ -332,9 +323,30 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				...(raw.auth !== undefined && { auth: raw.auth }),
 				...(raw.oauth !== undefined && { oauth: raw.oauth }),
 				...(raw.type !== undefined && { transport: raw.type as MCPServer["transport"] }),
-				_source: createSourceMeta(PROVIDER_ID, mcpPath, root.scope),
+				_source: createSourceMeta(PROVIDER_ID, sourcePath, root.scope),
 			};
 			items.push(server);
+		}
+	};
+
+	for (const root of roots) {
+		const mcpPath = path.join(root.path, ".mcp.json");
+		const raw = await readFile(mcpPath);
+		if (raw !== null) {
+			try {
+				const parsed = JSON.parse(raw);
+				const servers = parseServerMap(parsed);
+				if (servers) appendServers(root, mcpPath, servers);
+			} catch {
+				warnings.push(`[claude-plugins] Invalid JSON in ${mcpPath}`);
+				logger.warn(`[claude-plugins] Invalid JSON in ${mcpPath}`);
+			}
+		}
+
+		const manifest = await readPluginManifest(root);
+		if (manifest?.mcpServers && typeof manifest.mcpServers === "object" && !Array.isArray(manifest.mcpServers)) {
+			const manifestPath = path.join(root.path, ".claude-plugin", "plugin.json");
+			appendServers(root, manifestPath, manifest.mcpServers);
 		}
 	}
 

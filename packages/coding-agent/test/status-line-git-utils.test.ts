@@ -106,12 +106,32 @@ describe("canReuseCachedPr", () => {
 		).toBe(true);
 	});
 
+	test("does not reuse an unresolved cache entry", () => {
+		expect(
+			canReuseCachedPr(
+				undefined,
+				createPrCacheContext("feature/one", "/repo/.git/HEAD"),
+				createPrCacheContext("feature/one", "/repo/.git/HEAD"),
+			),
+		).toBe(false);
+	});
+
 	test("rejects cached PR when branch changes", () => {
 		expect(
 			canReuseCachedPr(
 				{ number: 12, url: "https://example.test/pr/12" },
 				createPrCacheContext("feature/one", "/repo/.git/HEAD"),
 				createPrCacheContext("feature/two", "/repo/.git/HEAD"),
+			),
+		).toBe(false);
+	});
+
+	test("rejects cached PR when repo changes", () => {
+		expect(
+			canReuseCachedPr(
+				{ number: 12, url: "https://example.test/pr/12" },
+				createPrCacheContext("feature/one", "/repo-a/.git/HEAD"),
+				createPrCacheContext("feature/one", "/repo-b/.git/HEAD"),
 			),
 		).toBe(false);
 	});

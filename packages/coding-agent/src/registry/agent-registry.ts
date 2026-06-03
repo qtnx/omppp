@@ -20,6 +20,7 @@ export interface AgentRef {
 	parentId?: string;
 	status: AgentStatus;
 	session: AgentSession | null;
+	ircEnabled: boolean;
 	sessionFile: string | null;
 	createdAt: number;
 	lastActivity: number;
@@ -39,6 +40,7 @@ export interface RegisterInput {
 	parentId?: string;
 	session: AgentSession | null;
 	sessionFile?: string | null;
+	ircEnabled?: boolean;
 	status?: AgentStatus;
 }
 
@@ -70,6 +72,7 @@ export class AgentRegistry {
 			status: input.status ?? "running",
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
+			ircEnabled: input.ircEnabled ?? true,
 			createdAt: now,
 			lastActivity: now,
 		};
@@ -120,7 +123,9 @@ export class AgentRegistry {
 	 * Flat namespace: every agent can see every other agent.
 	 */
 	listVisibleTo(id: string): AgentRef[] {
-		return this.list().filter(ref => ref.id !== id && (ref.status === "running" || ref.status === "idle"));
+		return this.list().filter(
+			ref => ref.id !== id && ref.ircEnabled && (ref.status === "running" || ref.status === "idle"),
+		);
 	}
 
 	onChange(listener: RegistryListener): () => void {

@@ -1,3 +1,0 @@
-<system-reminder>
-The user mentioned "workflow". If their message is a concrete task that benefits from multi-step or parallel subagent work, fulfill it by calling the `workflow` tool — do NOT ask them to write a script. Author a dynamic script for THIS task yourself right now: a pure-literal `export const meta = { name, description, phases }`, then `phase()` groups with `agent()` calls, fanning out with `parallel()` (independent units, all-at-once) or `pipeline()` (multi-stage per item). Infer the phases, the per-agent prompts, and the right `agentType` from the task. Pass dynamic values via `args`. End with a `return` that synthesizes the result. If the message is trivial, conversational, or only asks *about* workflows, ignore this reminder.
-</system-reminder>

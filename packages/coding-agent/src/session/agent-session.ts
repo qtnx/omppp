@@ -182,7 +182,6 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 };
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
-import workflowTriggerReminder from "../prompts/system/workflow-trigger.md" with { type: "text" };
 import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { deobfuscateSessionContext, type SecretObfuscator } from "../secrets/obfuscator";
 import { invalidateHostMetadata } from "../ssh/connection-manager";
@@ -3130,8 +3129,19 @@ export class AgentSession {
 		return this.#retryAttempt;
 	}
 
+	#isRequestedToolAllowed(name: string): boolean {
+		if (this.#requestedToolNames === undefined) return true;
+		const normalized = name.toLowerCase();
+		return (
+			(normalized === "report_tool_issue" && isAutoQaEnabled(this.settings)) ||
+			this.#requestedToolNames.has(normalized)
+		);
+	}
+
 	#collectDiscoverableMCPToolsFromRegistry(): Map<string, DiscoverableTool> {
-		const mcpTools = filterBySource(collectDiscoverableTools(this.#toolRegistry.values()), "mcp");
+		const mcpTools = filterBySource(collectDiscoverableTools(this.#toolRegistry.values()), "mcp").filter(tool =>
+			this.#isRequestedToolAllowed(tool.name),
+		);
 		return new Map(mcpTools.map(tool => [tool.name, tool] as const));
 	}
 
@@ -3148,7 +3158,10 @@ export class AgentSession {
 	}
 
 	#filterSelectableMCPToolNames(toolNames: Iterable<string>): string[] {
-		return Array.from(toolNames).filter(name => this.#discoverableMCPTools.has(name) && this.#toolRegistry.has(name));
+		return Array.from(toolNames).filter(
+			name =>
+				this.#isRequestedToolAllowed(name) && this.#discoverableMCPTools.has(name) && this.#toolRegistry.has(name),
+		);
 	}
 
 	#getConfiguredDefaultSelectedMCPToolNames(): string[] {
@@ -3304,6 +3317,7 @@ export class AgentSession {
 		const activeNames = new Set(this.getActiveToolNames());
 		const result: DiscoverableTool[] = [];
 		for (const tool of this.#toolRegistry.values()) {
+			if (!this.#isRequestedToolAllowed(tool.name)) continue;
 			if (tool.loadMode !== "discoverable") continue;
 			if (activeNames.has(tool.name)) continue;
 			const collected = collectDiscoverableTools([tool], { source: "builtin" });
@@ -3352,7 +3366,7 @@ export class AgentSession {
 			const currentActiveNames = new Set(this.getActiveToolNames());
 			const newlyAdded: string[] = [];
 			for (const name of nonMcpNames) {
-				if (this.#toolRegistry.has(name) && !currentActiveNames.has(name)) {
+				if (this.#isRequestedToolAllowed(name) && this.#toolRegistry.has(name) && !currentActiveNames.has(name)) {
 					newlyAdded.push(name);
 					this.#selectedDiscoveredToolNames.add(name);
 					activated.push(name);
@@ -3469,7 +3483,9 @@ export class AgentSession {
 		toolNames: string[],
 		options?: { persistMCPSelection?: boolean; previousSelectedMCPToolNames?: string[] },
 	): Promise<void> {
-		toolNames = [...new Set(toolNames.map(name => name.toLowerCase()))];
+		toolNames = [
+			...new Set(toolNames.map(name => name.toLowerCase()).filter(name => this.#isRequestedToolAllowed(name))),
+		];
 		const previousSelectedMCPToolNames = options?.previousSelectedMCPToolNames ?? this.getSelectedMCPToolNames();
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
@@ -4071,6 +4087,13 @@ export class AgentSession {
 		this.#slashCommands = [...slashCommands];
 	}
 
+	/** Replace the session skill snapshot after plugin/skill rediscovery. */
+	setSkills(skills: readonly Skill[], warnings: readonly SkillWarning[], settings?: SkillsSettings): void {
+		this.#skills = [...skills];
+		this.#skillWarnings = [...warnings];
+		this.#skillsSettings = settings;
+	}
+
 	/** Custom commands (TypeScript slash commands and MCP prompts) */
 	get customCommands(): ReadonlyArray<LoadedCustomCommand> {
 		if (this.#mcpPromptCommands.length === 0) return this.#customCommands;
@@ -4174,26 +4197,6 @@ export class AgentSession {
 		if (!text.includes("$")) return [];
 		const agents = text.includes("$agent:") ? (await discoverAgents(this.sessionManager.getCwd())).agents : [];
 		return buildDollarMentionContextMessages(text, { skills: this.#skills, agents });
-	}
-
-	/**
-	 * When the user mentions "workflow" and the workflow tool is enabled, inject a
-	 * just-in-time reminder so the agent authors and runs a dynamic workflow for the
-	 * task instead of waiting to be told to. Hidden context message (display: false).
-	 */
-	#buildWorkflowTriggerMessages(text: string): CustomMessage[] {
-		if (this.settings.get("workflow.enabled") !== true) return [];
-		if (!/\bworkflows?\b/i.test(text)) return [];
-		return [
-			{
-				role: "custom",
-				customType: "workflow-trigger",
-				content: workflowTriggerReminder,
-				display: false,
-				attribution: "agent",
-				timestamp: Date.now(),
-			},
-		];
 	}
 
 	/**
@@ -4305,7 +4308,6 @@ export class AgentSession {
 		const dollarMentionMessages = options?.synthetic
 			? []
 			: await this.#buildDollarMentionContextMessages(expandedText);
-		const workflowTriggerMessages = options?.synthetic ? [] : this.#buildWorkflowTriggerMessages(expandedText);
 		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 		if (options?.images) {
 			userContent.push(...options.images);
@@ -4323,11 +4325,7 @@ export class AgentSession {
 		}
 
 		try {
-			const prependMessages = [
-				...dollarMentionMessages,
-				...workflowTriggerMessages,
-				...(eagerTodoPrelude ? [eagerTodoPrelude.message] : []),
-			];
+			const prependMessages = [...dollarMentionMessages, ...(eagerTodoPrelude ? [eagerTodoPrelude.message] : [])];
 			await this.#promptWithMessage(message, expandedText, {
 				...options,
 				prependMessages: prependMessages.length > 0 ? prependMessages : undefined,
@@ -8225,6 +8223,7 @@ export class AgentSession {
 				{
 					retryAfterMs,
 					baseUrl: this.model.baseUrl,
+					modelId: this.model.id,
 				},
 			);
 			if (switched) {

@@ -89,7 +89,7 @@
 ### Fixed
 
 - Fixed native Context GC guidance being absent from the persisted root system prompt metadata.
-- Fixed plugin reload and Claude Code plugin discovery so OMP refreshes the active skill snapshot, system prompt, and `skill://` catalog after Claude-side skill/plugin changes, and respects Claude `enabledPlugins: false` entries when hiding plugin skills/MCP servers.
+- Fixed plugin reload and Claude Code plugin discovery so OMP refreshes the active skill snapshot, MCP tool snapshot, system prompt, and `skill://` catalog after Claude-side skill/plugin changes, reads plugin manifest `mcpServers`, and respects Claude `enabledPlugins: false` entries when hiding plugin skills/MCP servers.
 - Fixed the status-line PR segment clearing stale cached PRs when branch or repo context changes.
 - Fixed the status-line PR segment rejecting unsafe PR hyperlinks and unknown status values before rendering terminal control sequences.
 - Fixed Herdr/agent-state monitors missing foreground and auto-background work by emitting async job lifecycle/progress events and tracking running tool/background job ids.

@@ -62,9 +62,11 @@ import type {
 	ExtensionWidgetOptions,
 } from "../extensibility/extensions";
 import type { CompactOptions } from "../extensibility/extensions/types";
+import { loadSkills, setActiveSkills } from "../extensibility/skills";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { Goal, GoalModeState } from "../goals/state";
 import { resolveLocalUrlToPath } from "../internal-urls";
+import type { MCPManager } from "../mcp";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import {
 	humanizePlanTitle,
@@ -353,7 +355,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#workflowFrames: WorkflowProgressFrame[] = [];
 	#workflowPanel: Container | undefined;
 	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
-	mcpManager?: import("../mcp").MCPManager;
+	mcpManager?: MCPManager;
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 
 	readonly #btwController: BtwController;
@@ -382,7 +384,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		changelogMarkdown: string | undefined = undefined,
 		setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void = () => {},
 		lspServers: LspStartupServerInfo[] | undefined = undefined,
-		mcpManager?: import("../mcp").MCPManager,
+		mcpManager?: MCPManager,
 		eventBus?: EventBus,
 	) {
 		this.session = session;
@@ -768,6 +770,46 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.session.setSlashCommands(fileCommands);
 	}
 
+	async #refreshSkillState(cwd?: string): Promise<void> {
+		const basePath = cwd ?? this.sessionManager.getCwd();
+		const skillSettings = {
+			...settings.getGroup("skills"),
+			disabledExtensions: settings.get("disabledExtensions") ?? [],
+		};
+		const result = await loadSkills({ ...skillSettings, cwd: basePath });
+		this.session.setSkills(result.skills, result.warnings, skillSettings);
+		setActiveSkills(result.skills);
+
+		this.skillCommands.clear();
+		this.#pendingSlashCommands = this.#pendingSlashCommands.filter(command => !command.name.startsWith("skill:"));
+		if (settings.get("skills.enableSkillCommands")) {
+			for (const skill of result.skills) {
+				const commandName = `skill:${skill.name}`;
+				this.skillCommands.set(commandName, skill.filePath);
+				this.#pendingSlashCommands.push({ name: commandName, description: skill.description });
+			}
+		}
+	}
+
+	async #refreshMCPToolState(cwd?: string): Promise<void> {
+		const manager = this.mcpManager;
+		if (!manager) return;
+		manager.setCwd(cwd ?? this.sessionManager.getCwd());
+		this.session.setMCPPromptCommands([]);
+		await manager.disconnectAll();
+		await manager.discoverAndConnect();
+		await this.session.refreshMCPTools(manager.getTools());
+	}
+
+	async refreshPluginState(cwd?: string): Promise<void> {
+		await this.#refreshSkillState(cwd);
+		await this.session.refreshSshTool({ activateIfAvailable: true });
+		await this.refreshSlashCommandState(cwd);
+		await this.#refreshMCPToolState(cwd);
+		await this.session.refreshBaseSystemPrompt();
+		this.statusLine.invalidate();
+	}
+
 	/**
 	 * Re-point the process and every cwd-derived cache at `newCwd` after the
 	 * active session's working directory changed (`/move` relocation or resuming
@@ -782,12 +824,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (isSettingsInitialized()) {
 			await settings.reloadForCwd(newCwd);
 		}
-		// Re-warm plugin roots, capabilities, slash commands, and the ssh tool so
-		// the next prompt sees everything scoped to the new project directory.
+		// Re-warm plugin roots, capabilities, skills, slash commands, and the ssh
+		// tool so the next prompt sees everything scoped to the new project directory.
 		clearClaudePluginRootsCache();
 		resetCapabilities();
-		await this.refreshSlashCommandState(newCwd);
-		await this.session.refreshSshTool({ activateIfAvailable: true });
+		await this.refreshPluginState(newCwd);
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.statusLine.invalidate();
 		this.updateEditorTopBorder();

@@ -3,7 +3,6 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import { type Component, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatCount, getProjectDir } from "@oh-my-pi/pi-utils";
-import { $ } from "bun";
 import { settings } from "../../config/settings";
 import type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../config/settings-schema";
 import { theme } from "../../modes/theme/theme";
@@ -22,6 +21,35 @@ import { getPreset } from "./status-line/presets";
 import { renderSegment, type SegmentContext } from "./status-line/segments";
 import { getSeparator } from "./status-line/separators";
 import { calculateTokensPerSecond } from "./status-line/token-rate";
+import type { PrStatusInfo } from "./status-line/types";
+
+const PR_STATUS_FIELDS = "number,url,state,isDraft,mergeStateStatus,reviewDecision";
+const PR_STATUS_TTL_MS = 60_000;
+
+function optionalString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+function normalizePrStatus(value: unknown): PrStatusInfo | null {
+	if (!value || typeof value !== "object") return null;
+	const pr = value as {
+		number?: unknown;
+		url?: unknown;
+		state?: unknown;
+		isDraft?: unknown;
+		mergeStateStatus?: unknown;
+		reviewDecision?: unknown;
+	};
+	if (typeof pr.number !== "number" || typeof pr.url !== "string") return null;
+	return {
+		number: pr.number,
+		url: pr.url,
+		state: optionalString(pr.state),
+		isDraft: typeof pr.isDraft === "boolean" ? pr.isDraft : undefined,
+		mergeStateStatus: optionalString(pr.mergeStateStatus),
+		reviewDecision: optionalString(pr.reviewDecision),
+	};
+}
 
 export interface StatusLineSegmentOptions {
 	model?: { showThinkingLevel?: boolean };
@@ -161,10 +189,12 @@ export class StatusLineComponent implements Component {
 	#gitStatusInFlight = false;
 
 	// PR lookup caching (invalidated on branch/repo context changes)
-	#cachedPr: { number: number; url: string } | null | undefined = undefined;
+	#cachedPr: PrStatusInfo | null | undefined = undefined;
 	#cachedPrContext: PrCacheContext | undefined = undefined;
+	#cachedPrFetchedAt = 0;
 	#prLookupInFlight = false;
 	#defaultBranch?: string;
+	#defaultBranchRepoId: string | null | undefined = undefined;
 	#lastTokensPerSecond: number | null = null;
 	#lastTokensPerSecondTimestamp: number | null = null;
 
@@ -279,6 +309,8 @@ export class StatusLineComponent implements Component {
 		this.#cachedBranch = undefined;
 		this.#cachedBranchRepoId = undefined;
 		this.#cachedPrContext = undefined;
+		this.#cachedPr = undefined;
+		this.#cachedPrFetchedAt = 0;
 	}
 	#getCurrentBranch(): string | null {
 		const head = git.head.resolveSync(getProjectDir());
@@ -298,16 +330,22 @@ export class StatusLineComponent implements Component {
 		return this.#cachedBranch ?? null;
 	}
 
-	#isDefaultBranch(branch: string): boolean {
-		if (this.#defaultBranch === undefined) {
+	#isDefaultBranch(branch: string, repoId: string | null): boolean {
+		if (this.#defaultBranch === undefined || this.#defaultBranchRepoId !== repoId) {
 			this.#defaultBranch = "main";
-			(async () => {
-				const resolved = await git.branch.default(getProjectDir());
-				if (resolved) {
-					this.#defaultBranch = resolved;
-					if (this.#onBranchChange) {
-						this.#onBranchChange();
+			this.#defaultBranchRepoId = repoId;
+			const lookupRepoId = repoId;
+			void (async () => {
+				try {
+					const resolved = await git.branch.default(getProjectDir());
+					if (resolved && this.#defaultBranchRepoId === lookupRepoId) {
+						this.#defaultBranch = resolved;
+						if (this.#onBranchChange) {
+							this.#onBranchChange();
+						}
 					}
+				} catch {
+					// Keep the fallback default branch and stay quiet in status-line rendering.
 				}
 			})();
 		}
@@ -335,18 +373,27 @@ export class StatusLineComponent implements Component {
 		return this.#cachedGitStatus;
 	}
 
-	#lookupPr(): { number: number; url: string } | null {
+	#lookupPr(): PrStatusInfo | null {
 		const branch = this.#getCurrentBranch();
 		const currentContext = branch ? createPrCacheContext(branch, this.#cachedBranchRepoId ?? null) : null;
 
-		if (canReuseCachedPr(this.#cachedPr, this.#cachedPrContext, currentContext)) {
+		if (
+			canReuseCachedPr(this.#cachedPr, this.#cachedPrContext, currentContext) &&
+			Date.now() - this.#cachedPrFetchedAt < PR_STATUS_TTL_MS
+		) {
 			return this.#cachedPr ?? null;
 		}
 
-		const stalePr = this.#cachedPr;
+		const stalePr =
+			currentContext && isSamePrCacheContext(this.#cachedPrContext, currentContext) ? this.#cachedPr : undefined;
 
 		// Don't look up if no branch, detached HEAD, default branch, or already in flight
-		if (!branch || branch === "detached" || this.#isDefaultBranch(branch) || this.#prLookupInFlight) {
+		if (
+			!branch ||
+			branch === "detached" ||
+			this.#isDefaultBranch(branch, currentContext?.repoId ?? null) ||
+			this.#prLookupInFlight
+		) {
 			return stalePr ?? null;
 		}
 
@@ -356,7 +403,7 @@ export class StatusLineComponent implements Component {
 		// Fire async lookup, keep stale value visible until resolved
 		(async () => {
 			// Helper: only write cache if branch/repo context hasn't changed since launch
-			const setCachedPr = (value: { number: number; url: string } | null) => {
+			const setCachedPr = (value: PrStatusInfo | null) => {
 				const latestBranch = this.#getCurrentBranch();
 				const latestContext = latestBranch
 					? createPrCacheContext(latestBranch, this.#cachedBranchRepoId ?? null)
@@ -364,21 +411,14 @@ export class StatusLineComponent implements Component {
 				if (lookupContext && isSamePrCacheContext(latestContext, lookupContext)) {
 					this.#cachedPr = value;
 					this.#cachedPrContext = lookupContext;
+					this.#cachedPrFetchedAt = Date.now();
 				}
 			};
 			try {
-				// Requires `gh repo set-default` to be configured; fails gracefully if not
-				const result = await $`gh pr view --json number,url`.quiet().nothrow();
-				if (result.exitCode !== 0) {
-					setCachedPr(null);
-					return;
-				}
-				const pr = JSON.parse(result.stdout.toString()) as { number: number; url: string };
-				if (typeof pr.number === "number") {
-					setCachedPr({ number: pr.number, url: pr.url });
-				} else {
-					setCachedPr(null);
-				}
+				// `gh pr view` resolves the PR for the current branch; cache
+				// non-zero/invalid responses as "no PR" so rendering stays quiet.
+				const pr = await git.github.json<unknown>(getProjectDir(), ["pr", "view", "--json", PR_STATUS_FIELDS]);
+				setCachedPr(normalizePrStatus(pr));
 			} catch {
 				setCachedPr(null);
 			} finally {

@@ -237,6 +237,7 @@ export interface AgentDefinition {
 	thinkingLevel?: ThinkingLevel;
 	output?: unknown;
 	blocking?: boolean;
+	resourceProfile?: "minimal";
 	autoloadSkills?: string[];
 	reviewGate?: AgentReviewGatePolicy;
 	source: AgentSource;

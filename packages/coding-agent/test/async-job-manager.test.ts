@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import {
+	ASYNC_JOB_LIFECYCLE_CHANNEL,
+	ASYNC_JOB_PROGRESS_CHANNEL,
+	AsyncJobManager,
+} from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { EventBus } from "../src/utils/event-bus";
 
 describe("AsyncJobManager", () => {
 	test("forwards progress updates and delivers completion", async () => {
@@ -31,6 +36,66 @@ describe("AsyncJobManager", () => {
 		expect(progressEvents).toEqual([{ text: "running step", details: { async: { state: "running" } } }]);
 		expect(completions).toEqual([{ jobId, text: "final output" }]);
 		expect(manager.getJob(jobId)?.status).toBe("completed");
+	});
+
+	test("emits lifecycle and progress events for background jobs", async () => {
+		const eventBus = new EventBus();
+		const lifecycleEvents: unknown[] = [];
+		const progressEvents: unknown[] = [];
+		eventBus.on(ASYNC_JOB_LIFECYCLE_CHANNEL, data => {
+			lifecycleEvents.push(data);
+		});
+		eventBus.on(ASYNC_JOB_PROGRESS_CHANNEL, data => {
+			progressEvents.push(data);
+		});
+
+		const manager = new AsyncJobManager({
+			eventBus,
+			onJobComplete: async () => {},
+		});
+		const jobId = manager.register(
+			"bash",
+			"watch ci",
+			async ({ reportProgress }) => {
+				await reportProgress("still running", { async: { state: "running", jobId: "ignored" } });
+				return "done";
+			},
+			{ ownerId: "Main" },
+		);
+
+		await manager.waitForAll();
+		await manager.drainDeliveries({ timeoutMs: 2_000 });
+
+		expect(lifecycleEvents).toEqual([
+			{
+				id: jobId,
+				type: "bash",
+				status: "running",
+				startTime: expect.any(Number),
+				label: "watch ci",
+				ownerId: "Main",
+			},
+			{
+				id: jobId,
+				type: "bash",
+				status: "completed",
+				startTime: expect.any(Number),
+				label: "watch ci",
+				ownerId: "Main",
+			},
+		]);
+		expect(progressEvents).toEqual([
+			{
+				id: jobId,
+				type: "bash",
+				status: "running",
+				startTime: expect.any(Number),
+				label: "watch ci",
+				ownerId: "Main",
+				text: "still running",
+				details: { async: { state: "running", jobId: "ignored" } },
+			},
+		]);
 	});
 
 	test("swallows progress callback errors without failing the job", async () => {

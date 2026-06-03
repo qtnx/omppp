@@ -14,6 +14,8 @@ import type { RenderedSegment, SegmentContext, StatusLineSegment, StatusLineSegm
 export type { SegmentContext } from "./types";
 
 // ═══════════════════════════════════════════════════════════════════════════
+const TERMINAL_CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
+
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -31,6 +33,70 @@ function stripDisplayRoot(pwd: string): string {
 
 function normalizePremiumRequests(value: number): number {
 	return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function normalizePrStatusValue(value: string | undefined): string | null {
+	const trimmed = value?.trim();
+	return trimmed ? trimmed.toUpperCase() : null;
+}
+
+function isSafePrUrl(url: string): boolean {
+	if (TERMINAL_CONTROL_RE.test(url)) return false;
+	try {
+		const parsed = new URL(url);
+		return parsed.protocol === "https:" || parsed.protocol === "http:";
+	} catch {
+		return false;
+	}
+}
+
+function formatPrStatus(pr: NonNullable<SegmentContext["git"]["pr"]>): string | null {
+	if (pr.isDraft) return "draft";
+
+	const state = normalizePrStatusValue(pr.state);
+	if (state === "CLOSED") return "closed";
+	if (state === "MERGED") return "merged";
+
+	const mergeState = normalizePrStatusValue(pr.mergeStateStatus);
+	switch (mergeState) {
+		case "DIRTY":
+			return "conflict";
+		case "BLOCKED":
+			return "blocked";
+		case "UNSTABLE":
+			return "checks";
+		case "BEHIND":
+			return "behind";
+		case "DRAFT":
+			return "draft";
+		default:
+			break;
+	}
+
+	const reviewDecision = normalizePrStatusValue(pr.reviewDecision);
+	switch (reviewDecision) {
+		case "CHANGES_REQUESTED":
+			return "changes";
+		case "REVIEW_REQUIRED":
+			return "review";
+		case "APPROVED":
+			return "approved";
+		default:
+			break;
+	}
+
+	switch (mergeState) {
+		case "CLEAN":
+			return "ready";
+		case "HAS_HOOKS":
+			return "hooks";
+		case "UNKNOWN":
+			break;
+		default:
+			break;
+	}
+
+	return state === "OPEN" ? "open" : null;
 }
 
 const SCRATCH_ROOTS: readonly string[] = (() => {
@@ -274,8 +340,9 @@ const prSegment: StatusLineSegment = {
 		const { pr } = ctx.git;
 		if (!pr) return { content: "", visible: false };
 
-		const label = withIcon(theme.icon.pr, `#${pr.number}`);
-		const content = TERMINAL.hyperlinks ? `\x1b]8;;${pr.url}\x07${label}\x1b]8;;\x07` : label;
+		const status = formatPrStatus(pr);
+		const label = withIcon(theme.icon.pr, status ? `#${pr.number} ${status}` : `#${pr.number}`);
+		const content = TERMINAL.hyperlinks && isSafePrUrl(pr.url) ? `\x1b]8;;${pr.url}\x07${label}\x1b]8;;\x07` : label;
 		return { content: theme.fg("accent", content), visible: true };
 	},
 };
