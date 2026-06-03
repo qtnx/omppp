@@ -479,6 +479,45 @@ describe("contextGcExtension", () => {
 		shutdown(fakePi);
 	});
 
+	it("keeps unload reminders compact instead of enumerating candidate records", async () => {
+		const fakePi = createFakePi();
+		contextGcExtension(fakePi as unknown as ExtensionAPI);
+		const toolResultHandler = getHandler<ToolResultHandler>(fakePi, "tool_result");
+		const beforeHandler = getHandler<BeforeAgentStartHandler>(fakePi, "before_agent_start");
+		expect(toolResultHandler).toBeDefined();
+		expect(beforeHandler).toBeDefined();
+		if (!toolResultHandler || !beforeHandler) return;
+
+		const largeText = "large reminder tool payload\n".repeat(40_000);
+		await toolResultHandler(
+			{
+				type: "tool_result",
+				toolName: "read",
+				toolCallId: "call-reminder-1",
+				input: { path: "src/large.ts" },
+				content: [{ type: "text", text: largeText }],
+				isError: false,
+			},
+			createFakeContext(),
+		);
+		const result = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: [] },
+			createFakeContext(),
+		);
+
+		const content = reminderContent(result) ?? "";
+		expect(content).toContain("Context GC:");
+		expect(content).toContain("estimated tokens are eligible to unload");
+		expect(content).toContain("context_inventory");
+		expect(content).toContain("context_unload");
+		expect(content).toContain("context_pin");
+		expect(content).not.toContain("call-reminder-1");
+		expect(content).not.toContain("tool:session-a:");
+		expect(content).not.toContain("large reminder tool payload");
+		expect(content).not.toMatch(/\n(?:[-*]|\d+\.)\s/);
+		shutdown(fakePi);
+	});
+
 	it("appends Context GC tool guidance to the per-turn system prompt", () => {
 		const fakePi = createFakePi();
 		contextGcExtension(fakePi as unknown as ExtensionAPI);

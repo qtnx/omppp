@@ -1,3 +1,5 @@
+import { prompt } from "@oh-my-pi/pi-utils";
+import reminderPrompt from "./context-gc-reminder.md" with { type: "text" };
 import type { ContextRecord } from "./schema";
 
 export interface ContextGcReminderUsage {
@@ -8,14 +10,8 @@ export interface ContextGcReminderUsage {
 
 export interface BuildUnloadReminderOptions {
 	thresholdTokens: number;
-	maxRecords?: number;
 	contextUsage?: ContextGcReminderUsage;
 	minContextUsagePercent?: number;
-}
-
-function recordSummary(record: ContextRecord): string {
-	const tool = record.source.toolName ? ` from ${record.source.toolName}` : "";
-	return `${record.kind}${tool} — ${record.summary}`;
 }
 
 function contextUsageBelowThreshold(options: BuildUnloadReminderOptions): boolean {
@@ -40,19 +36,10 @@ export function buildContextGcReminder(
 	const totalTokens = candidates.reduce((sum, record) => sum + record.tokenEstimate, 0);
 	if (totalTokens < options.thresholdTokens) return undefined;
 
-	const maxRecords = options.maxRecords ?? 8;
-	const lines = candidates
-		.slice(0, maxRecords)
-		.map(record => `- ${record.id} (${record.tokenEstimate} tok): ${recordSummary(record)}`);
-	const extra = candidates.length > maxRecords ? `\n- … ${candidates.length - maxRecords} more candidate(s)` : "";
-	const usageLine = formatContextUsage(options.contextUsage);
-	const header = [`Context GC: ${totalTokens} estimated tokens are eligible to unload.`];
-	if (usageLine) header.push(usageLine);
-	return (
-		[
-			...header,
-			"If these contexts are no longer needed, call context_unload with ids, summary, and reason. Use context_pin for context that must remain available.",
-			...lines,
-		].join("\n") + extra
-	);
+	return prompt
+		.render(reminderPrompt, {
+			eligible_tokens: String(totalTokens),
+			context_usage_line: formatContextUsage(options.contextUsage),
+		})
+		.trim();
 }

@@ -73,6 +73,8 @@ export function setDefaultContextGcDbPath(dbPath: string | undefined): () => voi
 	};
 }
 const REMINDER_THRESHOLD_TOKENS = 8_000;
+export const CONTEXT_GC_SYSTEM_PROMPT = contextGcSystemPrompt.trim();
+
 const REMINDER_CONTEXT_USAGE_THRESHOLD_PERCENT = 40;
 
 type ContextMessage = ContextEvent["messages"][number];
@@ -404,10 +406,9 @@ export function createContextGcExtension(options: ContextGcExtensionOptions = {}
 	};
 }
 
-function appendContextGcSystemPrompt(systemPrompt: readonly string[]): string[] | undefined {
-	const block = contextGcSystemPrompt.trim();
-	if (systemPrompt.some(item => item.trim() === block)) return undefined;
-	return [...systemPrompt, block];
+export function appendContextGcSystemPrompt(systemPrompt: readonly string[]): string[] | undefined {
+	if (systemPrompt.some(item => item.trim() === CONTEXT_GC_SYSTEM_PROMPT)) return undefined;
+	return [...systemPrompt, CONTEXT_GC_SYSTEM_PROMPT];
 }
 
 function contextGcReminderMessage(reminder: string): {
