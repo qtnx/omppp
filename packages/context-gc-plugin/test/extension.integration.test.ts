@@ -510,6 +510,7 @@ describe("contextGcExtension", () => {
 		expect(content).toContain("estimated tokens are eligible to unload");
 		expect(content).toContain("context_inventory");
 		expect(content).toContain("context_unload");
+		expect(content).toContain("tool calls, file reads, searches");
 		expect(content).toContain("context_pin");
 		expect(content).not.toContain("call-reminder-1");
 		expect(content).not.toContain("tool:session-a:");
@@ -553,7 +554,7 @@ describe("contextGcExtension", () => {
 		shutdown(fakePi);
 	});
 
-	it("suppresses unload reminders until context usage crosses the pressure threshold", async () => {
+	it("suppresses unload reminders until context usage is above fifty percent", async () => {
 		const fakePi = createFakePi();
 		contextGcExtension(fakePi as unknown as ExtensionAPI);
 		const contextHandler = getHandler<ContextHandler>(fakePi, "context");
@@ -573,22 +574,28 @@ describe("contextGcExtension", () => {
 
 		const below = beforeHandler(
 			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
-			createFakeContext({ tokens: 39_000, contextWindow: 100_000, percent: 39 }),
+			createFakeContext({ tokens: 49_900, contextWindow: 100_000, percent: 49.9 }),
 		);
 		expect(below?.message).toBeUndefined();
 		expect(below?.systemPrompt).toEqual(["base", expect.stringContaining("context_unload")]);
 
+		const atThreshold = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 50_000, contextWindow: 100_000, percent: 50 }),
+		);
+		expect(atThreshold?.message).toBeUndefined();
+		expect(atThreshold?.systemPrompt).toEqual(["base", expect.stringContaining("context_unload")]);
+
 		const above = beforeHandler(
 			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
-			createFakeContext({ tokens: 40_000, contextWindow: 100_000, percent: 40 }),
+			createFakeContext({ tokens: 50_100, contextWindow: 100_000, percent: 50.1 }),
 		);
 		expect(above?.message).toMatchObject({
 			customType: "context-gc",
 			display: false,
 			details: { kind: "reminder" },
 		});
-		expect(reminderContent(above)).toContain("Context usage: 40000/100000 tokens (40%).");
-
+		expect(reminderContent(above)).toContain("Context usage: 50100/100000 tokens (50.1%).");
 		const unknown = beforeHandler(
 			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
 			createFakeContext({ tokens: null, contextWindow: 100_000, percent: null }),
@@ -599,6 +606,17 @@ describe("contextGcExtension", () => {
 			details: { kind: "reminder" },
 		});
 		expect(reminderContent(unknown) ?? "").not.toContain("Context usage:");
+
+		const missingUsage = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext(),
+		);
+		expect(missingUsage?.message).toMatchObject({
+			customType: "context-gc",
+			display: false,
+			details: { kind: "reminder" },
+		});
+		expect(reminderContent(missingUsage) ?? "").not.toContain("Context usage:");
 		expect(above?.systemPrompt).toEqual(["base", expect.stringContaining("context_unload")]);
 		shutdown(fakePi);
 	});

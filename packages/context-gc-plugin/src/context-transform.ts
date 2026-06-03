@@ -36,12 +36,33 @@ interface UnloadedContextRecord {
 	readonly artifactId?: string | null;
 }
 
+const CONTEXT_GC_INSPECTION_TOOLS = new Set([
+	"context_debug",
+	"context_global_stats",
+	"context_inventory",
+	"context_stats",
+	"context_tree",
+]);
+
 export function projectUnloadedContext(
 	messages: readonly AgentMessage[],
 	records: readonly ContextRecord[],
 ): AgentMessage[] {
 	const unloadedRecords = records.filter(isUnloadedRecord);
-	if (unloadedRecords.length === 0) {
+	let cleanupSeen = false;
+	const staleContextGcInspectionCallIds = new Set<string>();
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (!isToolResultMessage(message)) continue;
+		if (message.toolName === "context_unload") {
+			cleanupSeen = true;
+			continue;
+		}
+		if (cleanupSeen && CONTEXT_GC_INSPECTION_TOOLS.has(message.toolName)) {
+			staleContextGcInspectionCallIds.add(message.toolCallId);
+		}
+	}
+	if (unloadedRecords.length === 0 && staleContextGcInspectionCallIds.size === 0) {
 		return [...messages];
 	}
 	// An unloaded record projects at most one live message per pass. Tracking consumed record ids
@@ -49,6 +70,9 @@ export function projectUnloadedContext(
 	// messages into placeholders, and lets distinct same-content records map to distinct messages.
 	const consumed = new Set<string>();
 	return messages.map(message => {
+		if (isToolResultMessage(message) && staleContextGcInspectionCallIds.has(message.toolCallId)) {
+			return renderRemovedInspectionResult(message);
+		}
 		if (!isProjectableMessage(message)) {
 			return message;
 		}
@@ -80,6 +104,13 @@ function renderProjected(message: AgentMessage, record: UnloadedContextRecord): 
 	const projected: ProjectedContextMessage = { ...asRecord(message), content };
 	delete projected.details;
 	return projected as unknown as AgentMessage;
+}
+
+function renderRemovedInspectionResult(message: ToolResultSurface): AgentMessage {
+	return {
+		...message,
+		content: [{ type: "text", text: "Context GC inspection output removed after context_unload." }],
+	} as unknown as AgentMessage;
 }
 
 function isProjectableMessage(message: AgentMessage): boolean {

@@ -75,7 +75,7 @@ export function setDefaultContextGcDbPath(dbPath: string | undefined): () => voi
 const REMINDER_THRESHOLD_TOKENS = 8_000;
 export const CONTEXT_GC_SYSTEM_PROMPT = contextGcSystemPrompt.trim();
 
-const REMINDER_CONTEXT_USAGE_THRESHOLD_PERCENT = 40;
+const REMINDER_CONTEXT_USAGE_THRESHOLD_PERCENT = 50;
 
 type ContextMessage = ContextEvent["messages"][number];
 

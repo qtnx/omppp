@@ -473,9 +473,7 @@ export class AsyncJobManager {
 	#activeDeliveries(source: AsyncJobDelivery[], filter?: AsyncJobFilter): AsyncJobDelivery[] {
 		const ownerId = filter?.ownerId;
 		if (!ownerId) return source.filter(delivery => !this.isDeliverySuppressed(delivery.jobId));
-		return source.filter(
-			delivery => delivery.ownerId === ownerId && !this.isDeliverySuppressed(delivery.jobId),
-		);
+		return source.filter(delivery => delivery.ownerId === ownerId && !this.isDeliverySuppressed(delivery.jobId));
 	}
 
 	#filterDeliveries(filter?: AsyncJobFilter): AsyncJobDelivery[] {

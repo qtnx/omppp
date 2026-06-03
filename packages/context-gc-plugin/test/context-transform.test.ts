@@ -55,6 +55,60 @@ describe("projectUnloadedContext", () => {
 		expect(String((out.content as Array<{ text: string }>)[0].text)).not.toContain("very long output");
 	});
 
+	test("removes stale Context GC inspection tool outputs after cleanup while preserving tool-result pairing", () => {
+		const messages = [
+			{
+				role: "toolResult",
+				toolCallId: "call_inventory_before",
+				toolName: "context_inventory",
+				content: [{ type: "text", text: "Context GC inventory:\nlarge stale inventory details" }],
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call_stats_before",
+				toolName: "context_stats",
+				content: [{ type: "text", text: "Context GC stats:\nlarge stale stats details" }],
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call_unload",
+				toolName: "context_unload",
+				content: [{ type: "text", text: "Context GC unloaded 2 record(s)." }],
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call_inventory_after",
+				toolName: "context_inventory",
+				content: [{ type: "text", text: "fresh inventory still needed" }],
+			},
+		] as unknown as AgentMessage[];
+
+		const projected = projectUnloadedContext(messages, []);
+		const inventoryBefore = projected[0] as unknown as { content: Array<{ text: string }>; toolCallId: string };
+		const statsBefore = projected[1] as unknown as { content: Array<{ text: string }>; toolCallId: string };
+		const unload = projected[2] as unknown as { content: Array<{ text: string }> };
+		const inventoryAfter = projected[3] as unknown as { content: Array<{ text: string }> };
+
+		expect(projected).toHaveLength(messages.length);
+		expect(inventoryBefore.toolCallId).toBe("call_inventory_before");
+		expect(inventoryBefore.content[0].text).toBe("Context GC inspection output removed after context_unload.");
+		expect(statsBefore.toolCallId).toBe("call_stats_before");
+		expect(statsBefore.content[0].text).toBe("Context GC inspection output removed after context_unload.");
+		expect(unload.content[0].text).toBe("Context GC unloaded 2 record(s).");
+		expect(inventoryAfter.content[0].text).toBe("fresh inventory still needed");
+	});
+
+	test("keeps Context GC inspection outputs until a later cleanup happens", () => {
+		const message = {
+			role: "toolResult",
+			toolCallId: "call_inventory",
+			toolName: "context_inventory",
+			content: [{ type: "text", text: "inventory required for current cleanup decision" }],
+		} as unknown as AgentMessage;
+
+		expect(projectUnloadedContext([message], [])[0]).toBe(message);
+	});
+
 	test("placeholder includes top-level artifactId when set", () => {
 		const message = {
 			role: "toolResult",

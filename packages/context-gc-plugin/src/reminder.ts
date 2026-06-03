@@ -18,7 +18,7 @@ function contextUsageBelowThreshold(options: BuildUnloadReminderOptions): boolea
 	if (options.minContextUsagePercent === undefined) return false;
 	const usage = options.contextUsage;
 	if (!usage || usage.percent === null) return false;
-	return usage.percent < options.minContextUsagePercent;
+	return usage.percent <= options.minContextUsagePercent;
 }
 
 function formatContextUsage(usage: ContextGcReminderUsage | undefined): string | undefined {

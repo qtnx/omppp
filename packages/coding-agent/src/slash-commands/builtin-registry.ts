@@ -121,9 +121,13 @@ async function readInstalledPluginSnapshot(mgr: MarketplaceManager): Promise<str
 			plugin.scope,
 			plugin.shadowedBy ?? "",
 			...plugin.entries.map(entry =>
-				[entry.scope, entry.installPath, entry.version, entry.lastUpdated, entry.enabled === false ? "disabled" : "enabled"].join(
-					"\u0000",
-				),
+				[
+					entry.scope,
+					entry.installPath,
+					entry.version,
+					entry.lastUpdated,
+					entry.enabled === false ? "disabled" : "enabled",
+				].join("\u0000"),
 			),
 		].join("\u0000"),
 	);
@@ -1683,7 +1687,9 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				const mgr = new MarketplaceManager({
 					marketplacesRegistryPath: getMarketplacesRegistryPath(),
 					installedRegistryPath: getInstalledPluginsRegistryPath(),
-					projectInstalledRegistryPath: await resolveOrDefaultProjectRegistryPath(runtime.ctx.sessionManager.getCwd()),
+					projectInstalledRegistryPath: await resolveOrDefaultProjectRegistryPath(
+						runtime.ctx.sessionManager.getCwd(),
+					),
 					marketplacesCacheDir: getMarketplacesCacheDir(),
 					pluginsCacheDir: getPluginsCacheDir(),
 					clearPluginRootsCache: clearPluginRootsAndCaches,

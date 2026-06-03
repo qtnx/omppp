@@ -66,8 +66,8 @@ import { loadSkills, setActiveSkills } from "../extensibility/skills";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { Goal, GoalModeState } from "../goals/state";
 import { resolveLocalUrlToPath } from "../internal-urls";
-import type { MCPManager } from "../mcp";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
+import type { MCPManager } from "../mcp";
 import {
 	humanizePlanTitle,
 	type PlanApprovalDetails,
