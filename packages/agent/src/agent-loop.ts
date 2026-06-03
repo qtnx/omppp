@@ -728,7 +728,7 @@ async function streamAssistantResponse(
 	// metadata so that the session-sticky credential recorded by getApiKey is
 	// visible to metadataResolver (e.g. for the correct account_uuid in metadata.user_id).
 	const resolvedApiKey =
-		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
+		(config.getApiKey ? await config.getApiKey(config.model.provider, config.model) : undefined) || config.apiKey;
 
 	// Re-resolve metadata after credential selection so the per-request value
 	// reflects the credential actually used, not the snapshot from AgentLoopConfig construction.

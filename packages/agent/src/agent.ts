@@ -3,6 +3,7 @@
  */
 import { isPromise } from "node:util/types";
 import {
+	type Api,
 	type AssistantMessage,
 	type AssistantMessageEvent,
 	type CursorExecHandlers,
@@ -135,7 +136,7 @@ export interface AgentOptions {
 	 * Resolves an API key dynamically for each LLM call.
 	 * Useful for expiring tokens (e.g., GitHub Copilot OAuth).
 	 */
-	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+	getApiKey?: (provider: string, model?: Model<Api>) => Promise<string | undefined> | string | undefined;
 
 	/**
 	 * Inspect or replace provider payloads before they are sent.
@@ -313,7 +314,7 @@ export class Agent {
 	#cursorToolResultBuffer: CursorToolResultEntry[] = [];
 
 	streamFn: StreamFn;
-	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+	getApiKey?: (provider: string, model?: Model<Api>) => Promise<string | undefined> | string | undefined;
 	/**
 	 * Hook invoked after tool arguments are validated and before execution.
 	 * Reassign at any time to swap the implementation (e.g. on extension reload).

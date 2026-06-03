@@ -93,6 +93,56 @@ function createCodexUsageReport(args: {
 	};
 }
 
+/**
+ * Codex surfaces model-specific pools (e.g. the GPT-5.3-Codex-Spark "spark" pool)
+ * alongside the shared primary/secondary windows. Build one so tests can exercise
+ * the case where a model-specific pool is exhausted while the shared pool is free.
+ */
+function createCodexSparkLimit(args: {
+	key: "primary" | "secondary";
+	usedFraction: number;
+	resetInMs: number;
+}): UsageLimit {
+	const clamped = Math.min(Math.max(args.usedFraction, 0), 1);
+	const used = clamped * 100;
+	const windowId = args.key === "primary" ? "5h" : "7d";
+	const windowLabel = args.key === "primary" ? "5 hours (Spark)" : "7 days (Spark)";
+	return {
+		id: `openai-codex:spark:${args.key}`,
+		label: windowLabel,
+		scope: { provider: "openai-codex", tier: "spark", windowId, shared: true },
+		window: {
+			id: windowId,
+			label: windowLabel,
+			durationMs: args.key === "primary" ? FIVE_HOUR_MS : WEEK_MS,
+			resetsAt: Date.now() + args.resetInMs,
+		},
+		amount: {
+			unit: "percent",
+			used,
+			limit: 100,
+			remaining: 100 - used,
+			usedFraction: clamped,
+			remainingFraction: Math.max(0, 1 - clamped),
+		},
+		status: clamped >= 1 ? "exhausted" : clamped >= 0.9 ? "warning" : "ok",
+	};
+}
+
+function withSparkPool(
+	report: UsageReport,
+	spark: { primary: UsageWindowSpec; secondary: UsageWindowSpec },
+): UsageReport {
+	return {
+		...report,
+		limits: [
+			...report.limits,
+			createCodexSparkLimit({ key: "primary", ...spark.primary }),
+			createCodexSparkLimit({ key: "secondary", ...spark.secondary }),
+		],
+	};
+}
+
 function createCredential(accountId: string, email: string): OAuthCredentials {
 	return {
 		access: `access-${accountId}`,
@@ -512,6 +562,168 @@ describe("AuthStorage codex oauth ranking", () => {
 		expect(refreshStarts).toHaveLength(3);
 		expect(maxConcurrent).toBe(3);
 		expect(elapsedMs).toBeLessThan(refreshDelayMs * 2);
+	});
+
+	// Regression: an account that has exhausted only a model-specific pool (spark)
+	// while its shared "pro" pool is free must NOT be treated as rate-limited for a
+	// general (non-spark) model. The bug was `#isUsageLimitReached` counting EVERY
+	// window, so an exhausted spark pool parked otherwise-healthy accounts, all
+	// siblings looked blocked, `markUsageLimitReached` returned false, and the agent
+	// hit the multi-minute usage-limit wait instead of rotating.
+	test("rotates to a sibling with free main pool when only spark pool is exhausted (non-spark model)", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("openai-codex", [
+			{ type: "oauth", ...createCredential("acct-a", "a@example.com") },
+			{ type: "oauth", ...createCredential("acct-b", "b@example.com") },
+		]);
+		for (const accountId of ["acct-a", "acct-b"]) {
+			usageByAccount.set(
+				accountId,
+				withSparkPool(
+					createCodexUsageReport({
+						accountId,
+						primary: { usedFraction: 0.1, resetInMs: 2 * HOUR_MS },
+						secondary: { usedFraction: 0.2, resetInMs: 5 * 24 * HOUR_MS },
+					}),
+					{
+						primary: { usedFraction: 1, resetInMs: 90 * 60 * 1000 },
+						secondary: { usedFraction: 1, resetInMs: 5 * 24 * HOUR_MS },
+					},
+				),
+			);
+		}
+
+		const session = "session-spark-exhausted-nonspark";
+		const modelId = "gpt-5.3-codex";
+
+		// Selection for a non-spark model must not park either account on spark exhaustion.
+		const firstKey = await authStorage.getApiKey("openai-codex", session, { modelId });
+		expect(firstKey).toBeDefined();
+
+		// The active credential hit a usage limit, but a sibling with free shared
+		// quota is still available, so rotation MUST be reported as possible.
+		const switched = await authStorage.markUsageLimitReached("openai-codex", session, { modelId });
+		expect(switched).toBe(true);
+
+		// ...and the next acquisition for the same session actually hands off to the sibling
+		// rather than re-handing the parked credential.
+		const rotatedKey = await authStorage.getApiKey("openai-codex", session, { modelId });
+		expect(rotatedKey).toBeDefined();
+		expect(rotatedKey).not.toBe(firstKey);
+	});
+
+	// Correctness counterpart: on the SAME data, a `-spark` model genuinely draws
+	// from the exhausted spark pool, so there is no sibling to rotate to and the
+	// usage limit stands. This proves gating is scoped per model, not globally
+	// permissive.
+	test("does not rotate for a spark model when every spark pool is exhausted", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("openai-codex", [
+			{ type: "oauth", ...createCredential("acct-a", "a@example.com") },
+			{ type: "oauth", ...createCredential("acct-b", "b@example.com") },
+		]);
+		for (const accountId of ["acct-a", "acct-b"]) {
+			usageByAccount.set(
+				accountId,
+				withSparkPool(
+					createCodexUsageReport({
+						accountId,
+						primary: { usedFraction: 0.1, resetInMs: 2 * HOUR_MS },
+						secondary: { usedFraction: 0.2, resetInMs: 5 * 24 * HOUR_MS },
+					}),
+					{
+						primary: { usedFraction: 1, resetInMs: 90 * 60 * 1000 },
+						secondary: { usedFraction: 1, resetInMs: 5 * 24 * HOUR_MS },
+					},
+				),
+			);
+		}
+
+		const session = "session-spark-exhausted-spark-model";
+		const modelId = "gpt-5.3-codex-spark";
+
+		// Record a session credential first so a `false` below means "no spark sibling
+		// is available", not "no session credential was ever selected".
+		const sparkKey = await authStorage.getApiKey("openai-codex", session, { modelId });
+		expect(sparkKey).toBeDefined();
+		const switched = await authStorage.markUsageLimitReached("openai-codex", session, { modelId });
+		expect(switched).toBe(false);
+	});
+
+	// Regression (cross-model backoff contamination): a usage-limit block created by a
+	// spark request is scoped to the spark pool, so it must NOT park the same accounts for
+	// a later non-spark request whose shared/main pool is free. Without scoped backoff, the
+	// spark block lands in the shared `provider:type` bucket and re-creates the no-rotation
+	// hang for the next non-spark turn.
+	test("a spark-scoped usage-limit block does not park accounts for non-spark requests", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("openai-codex", [
+			{ type: "oauth", ...createCredential("acct-a", "a@example.com") },
+			{ type: "oauth", ...createCredential("acct-b", "b@example.com") },
+		]);
+		// Shared "main" pool free, model-specific "spark" pool exhausted on both accounts.
+		for (const accountId of ["acct-a", "acct-b"]) {
+			usageByAccount.set(
+				accountId,
+				withSparkPool(
+					createCodexUsageReport({
+						accountId,
+						primary: { usedFraction: 0.1, resetInMs: 2 * HOUR_MS },
+						secondary: { usedFraction: 0.2, resetInMs: 5 * 24 * HOUR_MS },
+					}),
+					{
+						primary: { usedFraction: 1, resetInMs: 90 * 60 * 1000 },
+						secondary: { usedFraction: 1, resetInMs: 5 * 24 * HOUR_MS },
+					},
+				),
+			);
+		}
+
+		// 1) A spark request parks both accounts in the spark scope (spark pool exhausted).
+		await authStorage.getApiKey("openai-codex", "session-spark-turn", { modelId: "gpt-5.3-codex-spark" });
+		await authStorage.markUsageLimitReached("openai-codex", "session-spark-turn", {
+			modelId: "gpt-5.3-codex-spark",
+		});
+
+		// 2) A later non-spark turn must still see free shared quota on both accounts: the
+		// spark-scope block must not contaminate the main scope, so rotation stays possible.
+		const nonSparkKey = await authStorage.getApiKey("openai-codex", "session-main-turn", {
+			modelId: "gpt-5.3-codex",
+		});
+		expect(nonSparkKey).toBeDefined();
+		const switched = await authStorage.markUsageLimitReached("openai-codex", "session-main-turn", {
+			modelId: "gpt-5.3-codex",
+		});
+		expect(switched).toBe(true);
+	});
+
+	// Regression: model-scoped usage-limit backoff must NOT leak into stored API-key
+	// selection. API keys have no per-model rate pools and are chosen via the global
+	// block bucket, so their usage-limit block must stay global — otherwise a scoped
+	// write is invisible to `#selectCredentialByType` and the parked key is handed back.
+	test("rotates between API-key credentials after a usage limit (block stays global)", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("openai-codex", [
+			{ type: "api_key", key: "codex-key-a" },
+			{ type: "api_key", key: "codex-key-b" },
+		]);
+
+		const session = "session-apikey-rotate";
+		const modelId = "gpt-5.3-codex";
+
+		const firstKey = await authStorage.getApiKey("openai-codex", session, { modelId });
+		expect(firstKey).toBeDefined();
+
+		const switched = await authStorage.markUsageLimitReached("openai-codex", session, { modelId });
+		expect(switched).toBe(true);
+
+		const rotatedKey = await authStorage.getApiKey("openai-codex", session, { modelId });
+		expect(rotatedKey).toBeDefined();
+		expect(rotatedKey).not.toBe(firstKey);
 	});
 });
 

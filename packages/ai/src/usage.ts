@@ -182,4 +182,19 @@ export interface CredentialRankingStrategy {
 	};
 	/** Optional: priority boost for specific credential states (e.g., fresh 5h ticker start). */
 	hasPriorityBoost?(primary: UsageLimit | undefined): boolean;
+	/**
+	 * Optional: select the subset of report limits that actually gate a request for the given
+	 * model. Providers that expose model-specific rate-limit pools (e.g. Codex's "spark" pool,
+	 * surfaced alongside the shared primary/secondary windows) implement this so an exhausted
+	 * pool only blocks the models that draw from it. When omitted, every limit gates every model.
+	 */
+	selectGatingLimits?(report: UsageReport, modelId: string | undefined): UsageLimit[];
+	/**
+	 * Optional: the usage-limit backoff scope for a model. Credentials parked by a usage limit are
+	 * keyed by this scope so an exhausted model-specific pool (e.g. Codex "spark", Claude "opus")
+	 * only parks the credential for models in the same scope — not every model of the provider.
+	 * Return `undefined` to use a single global scope (the default for providers without
+	 * model-specific pools). Must be consistent with {@link selectGatingLimits}.
+	 */
+	backoffScope?(modelId: string | undefined): string | undefined;
 }

@@ -474,6 +474,20 @@ export const openaiCodexUsageProvider: UsageProvider = {
 
 const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
 
+/** Shared "pro" pool windows every Codex model draws from. */
+function isCodexMainPoolLimit(limit: UsageLimit): boolean {
+	return limit.id === "openai-codex:primary" || limit.id === "openai-codex:secondary";
+}
+
+/** Model-specific "spark" pool windows, only consumed by `-spark` models. */
+function isCodexSparkPoolLimit(limit: UsageLimit): boolean {
+	return limit.scope.tier === "spark" || limit.id.startsWith("openai-codex:spark:");
+}
+
+function isCodexSparkModel(modelId: string | undefined): boolean {
+	return typeof modelId === "string" && modelId.includes("-spark");
+}
+
 export const codexRankingStrategy: CredentialRankingStrategy = {
 	findWindowLimits(report) {
 		const findLimit = (key: "primary" | "secondary"): UsageLimit | undefined => {
@@ -499,5 +513,25 @@ export const codexRankingStrategy: CredentialRankingStrategy = {
 		if (!isFiveHourWindow) return false;
 		const usedFraction = primary.amount.usedFraction;
 		return typeof usedFraction === "number" && Number.isFinite(usedFraction) && usedFraction === 0;
+	},
+	selectGatingLimits(report, modelId) {
+		// A `-spark` request only consumes the spark pool, so only spark windows
+		// gate it. Accounts that expose no spark pool fall back to the shared
+		// primary/secondary windows (best-effort).
+		if (isCodexSparkModel(modelId)) {
+			const sparkPool = report.limits.filter(isCodexSparkPoolLimit);
+			return sparkPool.length > 0 ? sparkPool : report.limits.filter(isCodexMainPoolLimit);
+		}
+		// A general (non-spark) request only consumes the shared primary/secondary
+		// pool. An exhausted model-specific pool (spark, …) MUST NOT park the
+		// credential — otherwise rotation/selection wrongly skips an account whose
+		// main quota is still free, which is exactly the usage-limit hang we fix.
+		return report.limits.filter(isCodexMainPoolLimit);
+	},
+	backoffScope(modelId) {
+		// Park spark and general requests in separate scopes so an exhausted spark
+		// pool never blocks a credential for general (main-pool) requests, and
+		// vice versa. Mirrors `selectGatingLimits`'s spark/main split.
+		return isCodexSparkModel(modelId) ? "spark" : "main";
 	},
 };

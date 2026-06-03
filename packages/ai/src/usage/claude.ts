@@ -472,6 +472,23 @@ export const claudeUsageProvider: UsageProvider = {
 	supports: params => params.provider === "anthropic" && params.credential.type === "oauth",
 };
 
+/** Map a model id to its tier-specific window scope (case-insensitive substring match). */
+function claudeModelTier(modelId: string | undefined): "opus" | "sonnet" | undefined {
+	if (typeof modelId !== "string") return undefined;
+	const lower = modelId.toLowerCase();
+	if (lower.includes("opus")) return "opus";
+	if (lower.includes("sonnet")) return "sonnet";
+	return undefined;
+}
+
+function isClaudeSharedLimit(limit: UsageLimit): boolean {
+	return limit.id === "anthropic:5h" || limit.id === "anthropic:7d" || limit.scope.shared === true;
+}
+
+function isClaudeTierLimit(limit: UsageLimit, tier: "opus" | "sonnet"): boolean {
+	return limit.id === `anthropic:7d:${tier}` || limit.scope.tier?.toLowerCase() === tier;
+}
+
 export const claudeRankingStrategy: CredentialRankingStrategy = {
 	findWindowLimits(report) {
 		const primary = report.limits.find(l => l.id === "anthropic:5h");
@@ -479,4 +496,16 @@ export const claudeRankingStrategy: CredentialRankingStrategy = {
 		return { primary, secondary };
 	},
 	windowDefaults: { primaryMs: 5 * 60 * 60 * 1000, secondaryMs: 7 * 24 * 60 * 60 * 1000 },
+	selectGatingLimits(report, modelId) {
+		const tier = claudeModelTier(modelId);
+		return report.limits.filter(
+			limit => isClaudeSharedLimit(limit) || (tier !== undefined && isClaudeTierLimit(limit, tier)),
+		);
+	},
+	backoffScope(modelId) {
+		// Park Opus/Sonnet requests in their own tier scope so an exhausted tier
+		// window never blocks a credential for a different tier. A different-tier
+		// request re-checks live usage, so shared-window exhaustion is still caught.
+		return claudeModelTier(modelId) ?? "default";
+	},
 };

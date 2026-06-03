@@ -7,7 +7,7 @@
  * widget lose per-model visibility.
  */
 import { describe, expect, it } from "bun:test";
-import { openaiCodexUsageProvider } from "../src/usage/openai-codex";
+import { codexRankingStrategy, openaiCodexUsageProvider } from "../src/usage/openai-codex";
 
 const accessTokenFixture = (() => {
 	const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
@@ -124,5 +124,55 @@ describe("openai-codex usage parser", () => {
 		);
 		expect(report).not.toBeNull();
 		expect(report?.limits.map(l => l.id)).toEqual(["openai-codex:spark:primary"]);
+	});
+});
+
+describe("codexRankingStrategy.selectGatingLimits", () => {
+	const credential = {
+		type: "oauth" as const,
+		accessToken: accessTokenFixture,
+		accountId: "acct-gating",
+		email: "u@example.com",
+	};
+	async function reportFrom(payload: unknown) {
+		const report = await openaiCodexUsageProvider.fetchUsage(
+			{ provider: "openai-codex", credential },
+			{ fetch: fakeFetch(payload) },
+		);
+		if (!report) throw new Error("expected a usage report");
+		return report;
+	}
+
+	it("gates non-spark models on the shared primary/secondary pool only", async () => {
+		const report = await reportFrom(makePayload());
+		const ids = codexRankingStrategy.selectGatingLimits?.(report, "gpt-5.3-codex").map(l => l.id);
+		expect(ids?.sort()).toEqual(["openai-codex:primary", "openai-codex:secondary"]);
+	});
+
+	it("gates spark models on the spark pool only", async () => {
+		const report = await reportFrom(makePayload());
+		const ids = codexRankingStrategy.selectGatingLimits?.(report, "gpt-5.3-codex-spark").map(l => l.id);
+		expect(ids?.sort()).toEqual(["openai-codex:spark:primary", "openai-codex:spark:secondary"]);
+	});
+
+	it("ignores an absent model id and gates on the shared pool", async () => {
+		const report = await reportFrom(makePayload());
+		const ids = codexRankingStrategy.selectGatingLimits?.(report, undefined).map(l => l.id);
+		expect(ids?.sort()).toEqual(["openai-codex:primary", "openai-codex:secondary"]);
+	});
+
+	it("falls back to the shared pool for spark models when no spark pool exists", async () => {
+		const report = await reportFrom({
+			plan_type: "pro",
+			rate_limit: {
+				allowed: true,
+				limit_reached: false,
+				primary_window: { used_percent: 4, limit_window_seconds: 17940, reset_at: 2_000_000_000 },
+				secondary_window: { used_percent: 1, limit_window_seconds: 604740, reset_at: 2_000_500_000 },
+			},
+			additional_rate_limits: [],
+		});
+		const ids = codexRankingStrategy.selectGatingLimits?.(report, "gpt-5.3-codex-spark").map(l => l.id);
+		expect(ids?.sort()).toEqual(["openai-codex:primary", "openai-codex:secondary"]);
 	});
 });

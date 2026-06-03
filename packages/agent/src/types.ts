@@ -1,4 +1,5 @@
 import type {
+	Api,
 	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
@@ -112,7 +113,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Useful for short-lived OAuth tokens (e.g., GitHub Copilot) that may expire
 	 * during long-running tool execution phases.
 	 */
-	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+	getApiKey?: (provider: string, model?: Model<Api>) => Promise<string | undefined> | string | undefined;
 
 	/**
 	 * Returns steering messages to inject into the conversation mid-run.
