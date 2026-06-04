@@ -5,6 +5,7 @@
 ### Added
 
 - Added a Learning Audit dashboard tab with API endpoints for inspecting persisted live-learning classifier and writer artifacts.
+- Added per-model System Context Reminder counts and rates to the model stats table.
 
 
 ## [15.1.6] - 2026-05-19

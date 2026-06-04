@@ -13,6 +13,7 @@ import type {
 	ModelPerformancePoint,
 	ModelStats,
 	ModelTimeSeriesPoint,
+	ReminderStats,
 	SessionStatsAggregate,
 	TimeSeriesPoint,
 	UserMessageLink,
@@ -40,6 +41,7 @@ const BACKFILL_PENDING = "pending";
 const USER_MESSAGES_BACKFILL_KEY = "user_messages_v5";
 const USER_MESSAGE_LINKS_REPAIR_KEY = "user_message_links_v1";
 const PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY = "premium_requests_priority_v1";
+const SYSTEM_CONTEXT_REMINDERS_BACKFILL_KEY = "system_context_reminders_v1";
 function shouldResetBackfill(value: string | undefined): boolean {
 	return value !== BACKFILL_COMPLETE && value !== BACKFILL_PENDING;
 }
@@ -92,6 +94,22 @@ export async function initDb(): Promise<Database> {
 		CREATE INDEX IF NOT EXISTS idx_messages_timestamp_folder ON messages(timestamp, folder);
 		CREATE INDEX IF NOT EXISTS idx_messages_stop_reason_timestamp ON messages(stop_reason, timestamp);
 
+
+		CREATE TABLE IF NOT EXISTS system_context_reminders (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_file TEXT NOT NULL,
+			entry_id TEXT NOT NULL,
+			folder TEXT NOT NULL,
+			timestamp INTEGER NOT NULL,
+			model TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			api TEXT,
+			UNIQUE(session_file, entry_id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_system_context_reminders_timestamp ON system_context_reminders(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_system_context_reminders_timestamp_model_provider
+			ON system_context_reminders(timestamp, model, provider);
 		CREATE TABLE IF NOT EXISTS file_offsets (
 			session_file TEXT PRIMARY KEY,
 			offset INTEGER NOT NULL,
@@ -182,6 +200,7 @@ export async function initDb(): Promise<Database> {
 	backfillUserMessages(db);
 	repairUserMessageLinks(db);
 	backfillPriorityPremiumRequests(db);
+	backfillSystemContextReminders(db);
 	backfillMissingCatalogCosts(db);
 	return db;
 }
@@ -356,6 +375,27 @@ export function insertMessageStats(stats: MessageStats[]): number {
 	return inserted;
 }
 
+export function insertReminderStats(stats: ReminderStats[]): number {
+	if (!db || stats.length === 0) return 0;
+
+	const stmt = db.prepare(`
+		INSERT OR IGNORE INTO system_context_reminders (
+			session_file, entry_id, folder, timestamp, model, provider, api
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`);
+
+	let inserted = 0;
+	const insert = db.transaction(() => {
+		for (const s of stats) {
+			const result = stmt.run(s.sessionFile, s.entryId, s.folder, s.timestamp, s.model, s.provider, s.api ?? null);
+			if (result.changes > 0) inserted++;
+		}
+	});
+
+	insert();
+	return inserted;
+}
+
 /**
  * Build aggregated stats from query results.
  */
@@ -449,34 +489,59 @@ export function getStatsByModel(cutoff?: number): ModelStats[] {
 
 	const hasCutoff = cutoff !== undefined && cutoff > 0;
 	const stmt = db.prepare(`
+		WITH message_stats AS (
+			SELECT
+				model,
+				provider,
+				COUNT(*) as total_requests,
+				SUM(CASE WHEN stop_reason = 'error' THEN 1 ELSE 0 END) as failed_requests,
+				SUM(input_tokens) as total_input_tokens,
+				SUM(output_tokens) as total_output_tokens,
+				SUM(cache_read_tokens) as total_cache_read_tokens,
+				SUM(cache_write_tokens) as total_cache_write_tokens,
+				SUM(premium_requests) as total_premium_requests,
+				SUM(cost_total) as total_cost,
+				AVG(duration) as avg_duration,
+				AVG(ttft) as avg_ttft,
+				AVG(CASE WHEN duration > 0 THEN output_tokens * 1000.0 / duration ELSE NULL END) as avg_tokens_per_second,
+				MIN(timestamp) as first_timestamp,
+				MAX(timestamp) as last_timestamp
+			FROM messages
+			${hasCutoff ? "WHERE timestamp >= ?" : ""}
+			GROUP BY model, provider
+		),
+		reminder_stats AS (
+			SELECT
+				model,
+				provider,
+				COUNT(*) as reminder_count
+			FROM system_context_reminders
+			${hasCutoff ? "WHERE timestamp >= ?" : ""}
+			GROUP BY model, provider
+		)
 		SELECT
-			model,
-			provider,
-			COUNT(*) as total_requests,
-			SUM(CASE WHEN stop_reason = 'error' THEN 1 ELSE 0 END) as failed_requests,
-			SUM(input_tokens) as total_input_tokens,
-			SUM(output_tokens) as total_output_tokens,
-			SUM(cache_read_tokens) as total_cache_read_tokens,
-			SUM(cache_write_tokens) as total_cache_write_tokens,
-			SUM(premium_requests) as total_premium_requests,
-			SUM(cost_total) as total_cost,
-			AVG(duration) as avg_duration,
-			AVG(ttft) as avg_ttft,
-			AVG(CASE WHEN duration > 0 THEN output_tokens * 1000.0 / duration ELSE NULL END) as avg_tokens_per_second,
-			MIN(timestamp) as first_timestamp,
-			MAX(timestamp) as last_timestamp
-		FROM messages
-		${hasCutoff ? "WHERE timestamp >= ?" : ""}
-		GROUP BY model, provider
+			message_stats.*,
+			COALESCE(reminder_stats.reminder_count, 0) as reminder_count
+		FROM message_stats
+		LEFT JOIN reminder_stats
+			ON reminder_stats.model = message_stats.model
+			AND reminder_stats.provider = message_stats.provider
 		ORDER BY total_requests DESC
 	`);
 
-	const rows = (hasCutoff ? stmt.all(cutoff) : stmt.all()) as any[];
-	return rows.map(row => ({
-		model: row.model,
-		provider: row.provider,
-		...buildAggregatedStats([row]),
-	}));
+	const rows = (hasCutoff ? stmt.all(cutoff, cutoff) : stmt.all()) as any[];
+	return rows.map(row => {
+		const aggregate = buildAggregatedStats([row]);
+		const systemContextReminderCount = row.reminder_count || 0;
+		return {
+			model: row.model,
+			provider: row.provider,
+			systemContextReminderCount,
+			systemContextReminderRate:
+				aggregate.totalRequests > 0 ? systemContextReminderCount / aggregate.totalRequests : 0,
+			...aggregate,
+		};
+	});
 }
 
 /**
@@ -899,6 +964,23 @@ function backfillPriorityPremiumRequests(database: Database): void {
 	database
 		.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
 		.run(PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY, BACKFILL_PENDING);
+}
+
+/**
+ * One-shot wipe of `file_offsets` so sessions parsed before reminder stats
+ * existed are scanned again and their persisted `system-context-reminder`
+ * custom messages are inserted into `system_context_reminders`.
+ */
+function backfillSystemContextReminders(database: Database): void {
+	const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(SYSTEM_CONTEXT_REMINDERS_BACKFILL_KEY) as
+		| { value: string }
+		| undefined;
+	if (!shouldResetBackfill(row?.value)) return;
+
+	database.exec("DELETE FROM file_offsets");
+	database
+		.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+		.run(SYSTEM_CONTEXT_REMINDERS_BACKFILL_KEY, BACKFILL_PENDING);
 }
 
 export function markPriorityPremiumRequestsBackfillComplete(): void {

@@ -18,6 +18,7 @@ import {
 	getTimeSeries,
 	initDb,
 	insertMessageStats,
+	insertReminderStats,
 	insertUserMessageStats,
 	setFileOffset,
 	updateUserMessageLinks,
@@ -42,9 +43,10 @@ import type { BehaviorDashboardStats, DashboardStats, MessageStats, RequestDetai
 function applyParseResult(sessionFile: string, lastModified: number, result: ParseSessionResult): number {
 	if (result.stats.length > 0) insertMessageStats(result.stats);
 	if (result.userStats.length > 0) insertUserMessageStats(result.userStats);
+	if (result.reminderStats.length > 0) insertReminderStats(result.reminderStats);
 	if (result.userLinks.length > 0) updateUserMessageLinks(result.userLinks);
 	setFileOffset(sessionFile, result.newOffset, lastModified);
-	return result.stats.length + result.userStats.length;
+	return result.stats.length + result.userStats.length + result.reminderStats.length;
 }
 
 /**

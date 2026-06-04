@@ -72,7 +72,23 @@ export interface SessionServiceTierChangeEntry {
 	serviceTier: ServiceTier | null;
 }
 
-export type SessionEntry = SessionHeader | SessionMessageEntry | SessionServiceTierChangeEntry | { type: string };
+export interface SessionCustomMessageEntry {
+	type: "custom_message";
+	id: string;
+	parentId?: string | null;
+	timestamp: string;
+	customType: string;
+	content: unknown;
+	details?: unknown;
+	display: boolean;
+}
+
+export type SessionEntry =
+	| SessionHeader
+	| SessionMessageEntry
+	| SessionServiceTierChangeEntry
+	| SessionCustomMessageEntry
+	| { type: string };
 
 /**
  * Behavioral stats extracted from a single user message.
@@ -122,4 +138,14 @@ export interface UserMessageLink {
 	entryId: string;
 	model: string;
 	provider: string;
+}
+
+export interface ReminderStats {
+	sessionFile: string;
+	entryId: string;
+	folder: string;
+	timestamp: number;
+	model: string;
+	provider: string;
+	api?: string;
 }

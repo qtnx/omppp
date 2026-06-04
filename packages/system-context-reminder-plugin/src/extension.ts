@@ -53,14 +53,19 @@ function registerSystemContextReminderExtension(
 	}
 
 	pi.on("turn_end", (event: TurnEndEvent) => {
-		if (!shouldQueueReminder(event.message)) return;
+		if (!isAssistantMessage(event.message) || !shouldQueueReminder(event.message)) return;
 		pi.sendMessage(
 			{
 				customType: SYSTEM_CONTEXT_REMINDER_CUSTOM_TYPE,
 				content: SYSTEM_CONTEXT_REMINDER_MESSAGE,
 				display: false,
 				attribution: "agent",
-				details: { kind: "system-context-reminder" },
+				details: {
+					kind: "system-context-reminder",
+					model: event.message.model,
+					provider: event.message.provider,
+					api: event.message.api,
+				},
 			},
 			{ deliverAs: "nextTurn" },
 		);

@@ -138,7 +138,12 @@ describe("systemContextReminderExtension", () => {
 				customType: SYSTEM_CONTEXT_REMINDER_CUSTOM_TYPE,
 				display: false,
 				attribution: "agent",
-				details: { kind: "system-context-reminder" },
+				details: {
+					kind: "system-context-reminder",
+					model: "test-model",
+					provider: "synthetic",
+					api: "openai-responses",
+				},
 			},
 			options: { deliverAs: "nextTurn" },
 		});

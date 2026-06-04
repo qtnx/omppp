@@ -33,7 +33,7 @@ import { rangeMeta } from "./range-meta";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
-const GRID_TEMPLATE = "2fr 0.9fr 0.9fr 1fr 0.8fr 0.8fr 140px 40px";
+const GRID_TEMPLATE = "2fr 0.85fr 0.75fr 0.9fr 1fr 0.8fr 0.8fr 140px 40px";
 
 interface ModelsTableProps {
 	models: ModelStats[];
@@ -72,6 +72,7 @@ export function ModelsTable({ models, performanceSeries, timeRange }: ModelsTabl
 				columns={[
 					{ label: "Model" },
 					{ label: "Requests", align: "right" },
+					{ label: "Reminders", align: "right" },
 					{ label: "Cost", align: "right" },
 					{ label: "Tokens", align: "right" },
 					{ label: "Tokens/s", align: "right" },
@@ -99,6 +100,9 @@ export function ModelsTable({ models, performanceSeries, timeRange }: ModelsTabl
 								<ModelNameCell key="name" model={model.model} provider={model.provider} />,
 								<div key="requests" className="text-right text-[var(--text-secondary)] font-mono text-sm">
 									{model.totalRequests.toLocaleString()}
+								</div>,
+								<div key="reminders" className="text-right text-[var(--text-secondary)] font-mono text-sm">
+									{model.systemContextReminderCount.toLocaleString()}
 								</div>,
 								<div key="cost" className="text-right text-[var(--text-secondary)] font-mono text-sm">
 									${model.totalCost.toFixed(2)}
@@ -144,6 +148,13 @@ export function ModelsTable({ models, performanceSeries, timeRange }: ModelsTabl
 													<span>Cache rate</span>
 													<span className="text-[var(--accent-cyan)]">
 														{(model.cacheRate * 100).toFixed(1)}%
+													</span>
+												</div>
+												<div className="flex items-center justify-between">
+													<span>System reminders</span>
+													<span className="font-mono text-[var(--accent-cyan)]">
+														{model.systemContextReminderCount.toLocaleString()} (
+														{(model.systemContextReminderRate * 100).toFixed(1)}%)
 													</span>
 												</div>
 											</div>

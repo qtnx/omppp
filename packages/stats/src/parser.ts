@@ -4,6 +4,8 @@ import { type AssistantMessage, getPriorityPremiumRequests, type ServiceTier } f
 import { getSessionsDir, isEnoent } from "@oh-my-pi/pi-utils";
 import type {
 	MessageStats,
+	ReminderStats,
+	SessionCustomMessageEntry,
 	SessionEntry,
 	SessionMessageEntry,
 	SessionServiceTierChangeEntry,
@@ -53,6 +55,46 @@ function isUserMessage(entry: SessionEntry): entry is SessionMessageEntry {
  */
 function isServiceTierChange(entry: SessionEntry): entry is SessionServiceTierChangeEntry {
 	return entry.type === "service_tier_change";
+}
+
+function isCustomMessage(entry: SessionEntry): entry is SessionCustomMessageEntry {
+	if (entry.type !== "custom_message") return false;
+	const customEntry = entry as SessionCustomMessageEntry;
+	return typeof customEntry.id === "string" && customEntry.id.length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function extractReminderStats(
+	sessionFile: string,
+	folder: string,
+	entry: SessionCustomMessageEntry,
+	assistantByEntryId: ReadonlyMap<string, SessionMessageEntry>,
+): ReminderStats | null {
+	if (entry.customType !== "system-context-reminder") return null;
+	const details = isRecord(entry.details) ? entry.details : {};
+	const parent = entry.parentId ? assistantByEntryId.get(entry.parentId) : undefined;
+	const parentMessage = parent?.message as AssistantMessage | undefined;
+	const hasDetailsModelProvider = typeof details.model === "string" && typeof details.provider === "string";
+	const hasPartialDetailsModelProvider = details.model !== undefined || details.provider !== undefined;
+	if (!hasDetailsModelProvider && hasPartialDetailsModelProvider) return null;
+	if (details.api !== undefined && typeof details.api !== "string") return null;
+	const model = hasDetailsModelProvider ? details.model : parentMessage?.model;
+	const provider = hasDetailsModelProvider ? details.provider : parentMessage?.provider;
+	const api = typeof details.api === "string" ? details.api : hasDetailsModelProvider ? undefined : parentMessage?.api;
+	if (typeof model !== "string" || typeof provider !== "string") return null;
+	const timestamp = parentMessage?.timestamp ?? Date.parse(entry.timestamp);
+	return {
+		sessionFile,
+		entryId: entry.id,
+		folder,
+		timestamp: Number.isFinite(timestamp) ? timestamp : 0,
+		model,
+		provider,
+		...(api === undefined ? {} : { api }),
+	};
 }
 
 /**
@@ -208,6 +250,7 @@ export interface ParseSessionResult {
 	stats: MessageStats[];
 	userStats: UserMessageStats[];
 	userLinks: UserMessageLink[];
+	reminderStats: ReminderStats[];
 	newOffset: number;
 }
 export async function parseSessionFile(sessionPath: string, fromOffset = 0): Promise<ParseSessionResult> {
@@ -215,7 +258,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	try {
 		bytes = await Bun.file(sessionPath).bytes();
 	} catch (err) {
-		if (isEnoent(err)) return { stats: [], userStats: [], userLinks: [], newOffset: fromOffset };
+		if (isEnoent(err)) return { stats: [], userStats: [], userLinks: [], reminderStats: [], newOffset: fromOffset };
 		throw err;
 	}
 
@@ -223,6 +266,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	const stats: MessageStats[] = [];
 	const userStats: UserMessageStats[] = [];
 	const userLinks: UserMessageLink[] = [];
+	const reminderStats: ReminderStats[] = [];
 	const userByEntryId = new Map<string, UserMessageStats>();
 	const start = Math.max(0, Math.min(fromOffset, bytes.length));
 	const unprocessed = bytes.subarray(start);
@@ -230,6 +274,10 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	let currentServiceTier: ServiceTier | undefined;
 	if (start > 0) {
 		currentServiceTier = scanLastServiceTier(bytes.subarray(0, start));
+	}
+	const assistantByEntryId = new Map<string, SessionMessageEntry>();
+	for (const entry of entries) {
+		if (isAssistantMessage(entry)) assistantByEntryId.set(entry.id, entry);
 	}
 	for (const entry of entries) {
 		if (isServiceTierChange(entry)) {
@@ -242,6 +290,11 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 				userStats.push(userMsg);
 				userByEntryId.set(entry.id, userMsg);
 			}
+			continue;
+		}
+		if (isCustomMessage(entry)) {
+			const reminder = extractReminderStats(sessionPath, folder, entry, assistantByEntryId);
+			if (reminder) reminderStats.push(reminder);
 			continue;
 		}
 		if (isAssistantMessage(entry)) {
@@ -269,7 +322,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 		}
 	}
 
-	return { stats, userStats, userLinks, newOffset: start + read };
+	return { stats, userStats, userLinks, reminderStats, newOffset: start + read };
 }
 
 /**
