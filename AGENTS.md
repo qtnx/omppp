@@ -6,6 +6,10 @@ This repo contains multiple packages, but **`packages/coding-agent/`** is the pr
 
 **Terminology**: When the user says "agent" or asks "why is agent doing X", they mean the **coding-agent package implementation**, not you (the assistant). The coding-agent is a CLI tool — questions about its behavior refer to code in `packages/coding-agent/`, not your current session.
 
+### Repository Remotes
+
+This working copy is the **OMP++** fork. Keep `origin` pointed at `git@github.com:qtnx/omppp.git` for qtnx-owned pushes, and keep `upstream` pointed at `git@github.com:can1357/oh-my-pi.git` for pulling the original project's changes. Fetch or rebase from `upstream/main`; push local fork work to `origin/main`.
+
 ### Package Structure
 
 | Package                 | Description                                          |

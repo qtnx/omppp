@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
+  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="OMP++">
 </p>
+
+<h1 align="center">OMP++</h1>
 
 <p align="center">
   <strong>A coding agent with the IDE wired in.</strong>
