@@ -18,6 +18,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
 import { StatusLineComponent } from "../src/modes/components/status-line";
 import { initTheme } from "../src/modes/theme/theme";
+import { computeContextBreakdown } from "../src/modes/utils/context-usage";
 import type { AgentSession } from "../src/session/agent-session";
 
 beforeAll(async () => {
@@ -37,6 +38,8 @@ function makeSession(opts: {
 	skills?: { name: string; description: string }[];
 	contextWindow?: number;
 	modelId?: string;
+	contextUsageTokens?: number | null;
+	contextUsageAdjusted?: boolean;
 }): AgentSession {
 	return {
 		messages: opts.messages,
@@ -44,6 +47,16 @@ function makeSession(opts: {
 		agent: { state: { tools: opts.tools ?? [] } },
 		skills: opts.skills ?? [],
 		model: { id: opts.modelId ?? "test-model", contextWindow: opts.contextWindow ?? 200_000 },
+		settings: { getGroup: () => ({ enabled: false, strategy: "off" }) },
+		getContextUsage: () => ({
+			tokens: opts.contextUsageTokens ?? null,
+			contextWindow: opts.contextWindow ?? 200_000,
+			percent:
+				opts.contextUsageTokens === undefined || opts.contextUsageTokens === null
+					? null
+					: (opts.contextUsageTokens / (opts.contextWindow ?? 200_000)) * 100,
+			...(opts.contextUsageAdjusted ? { adjustedBy: "context_gc" as const } : {}),
+		}),
 	} as unknown as AgentSession;
 }
 
@@ -67,6 +80,72 @@ describe("StatusLineComponent incremental context breakdown cache", () => {
 		expect(first.usedTokens).toBeGreaterThan(0);
 		expect(second.usedTokens).toBe(first.usedTokens);
 		expect(second.contextWindow).toBe(200_000);
+	});
+
+	it("uses projection-adjusted effective context usage when it is lower than raw messages", () => {
+		const session = makeSession({
+			messages: Array.from({ length: 50 }, (_, i) => userMessage(`large stale message ${i}`.repeat(100))),
+			contextUsageTokens: 123,
+			contextUsageAdjusted: true,
+		});
+		const comp = new StatusLineComponent(session);
+
+		const result = comp.getCachedContextBreakdown();
+
+		expect(result.usedTokens).toBe(123);
+		expect(result.contextWindow).toBe(200_000);
+	});
+
+	it("ignores lower provider usage when it is not marked as Context GC adjusted", () => {
+		const messages = Array.from({ length: 50 }, (_, i) => userMessage(`large message ${i}`.repeat(100)));
+		const rawSession = makeSession({ messages });
+		const raw = new StatusLineComponent(rawSession).getCachedContextBreakdown();
+		const session = makeSession({
+			messages,
+			contextUsageTokens: 123,
+			contextUsageAdjusted: false,
+		});
+		const comp = new StatusLineComponent(session);
+
+		const result = comp.getCachedContextBreakdown();
+
+		expect(result.usedTokens).toBe(raw.usedTokens);
+	});
+
+	it("reports projection-adjusted message tokens in context breakdown", () => {
+		const session = makeSession({
+			messages: Array.from({ length: 50 }, (_, i) => userMessage(`large stale message ${i}`.repeat(100))),
+		});
+		const raw = computeContextBreakdown(session);
+		const adjustedTokens = raw.usedTokens - 50;
+		(session as { getContextUsage: AgentSession["getContextUsage"] }).getContextUsage = () => ({
+			tokens: adjustedTokens,
+			contextWindow: 200_000,
+			percent: (adjustedTokens / 200_000) * 100,
+			adjustedBy: "context_gc",
+		});
+		const result = computeContextBreakdown(session);
+
+		expect(result.usedTokens).toBe(adjustedTokens);
+		expect(result.categories.find(category => category.id === "messages")?.tokens).toBe(
+			(raw.categories.find(category => category.id === "messages")?.tokens ?? 0) - 50,
+		);
+	});
+
+	it("keeps raw context breakdown when lower usage is not Context GC adjusted", () => {
+		const session = makeSession({
+			messages: Array.from({ length: 50 }, (_, i) => userMessage(`large stale message ${i}`.repeat(100))),
+		});
+		const raw = computeContextBreakdown(session);
+		(session as { getContextUsage: AgentSession["getContextUsage"] }).getContextUsage = () => ({
+			tokens: raw.usedTokens - 50,
+			contextWindow: 200_000,
+			percent: ((raw.usedTokens - 50) / 200_000) * 100,
+		});
+
+		const result = computeContextBreakdown(session);
+
+		expect(result.usedTokens).toBe(raw.usedTokens);
 	});
 
 	it("appending a message increases the total by approximately the new message's tokens", () => {
@@ -120,6 +199,26 @@ describe("StatusLineComponent incremental context breakdown cache", () => {
 		});
 		const v3 = comp.getCachedContextBreakdown();
 		expect(v3.usedTokens).toBeGreaterThan(v2.usedTokens);
+	});
+
+	it("non-message cache invalidates when tool content changes without changing tool count", () => {
+		const session = makeSession({
+			messages: [userMessage("hi")],
+			tools: [{ name: "bash", description: "Run shell commands", parameters: { type: "object" } }],
+		});
+		const comp = new StatusLineComponent(session);
+
+		const before = comp.getCachedContextBreakdown();
+		(
+			session.agent as { state: { tools: Array<{ name: string; description: string; parameters?: unknown }> } }
+		).state.tools[0] = {
+			name: "bash",
+			description: "Run shell commands with a much longer description".repeat(20),
+			parameters: { type: "object", properties: { command: { type: "string" } } },
+		};
+		const after = comp.getCachedContextBreakdown();
+
+		expect(after.usedTokens).toBeGreaterThan(before.usedTokens);
 	});
 
 	it("zero messages: produces only non-message tokens, no crash", () => {

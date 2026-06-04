@@ -44,6 +44,10 @@ const CONTEXT_GC_INSPECTION_TOOLS = new Set([
 	"context_tree",
 ]);
 
+export function isContextGcInspectionTool(toolName: string): boolean {
+	return CONTEXT_GC_INSPECTION_TOOLS.has(toolName);
+}
+
 export function projectUnloadedContext(
 	messages: readonly AgentMessage[],
 	records: readonly ContextRecord[],
@@ -54,11 +58,11 @@ export function projectUnloadedContext(
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const message = messages[index];
 		if (!isToolResultMessage(message)) continue;
-		if (message.toolName === "context_unload") {
+		if (message.toolName === "context_unload" && asRecord(message).isError === false) {
 			cleanupSeen = true;
 			continue;
 		}
-		if (cleanupSeen && CONTEXT_GC_INSPECTION_TOOLS.has(message.toolName)) {
+		if (cleanupSeen && isContextGcInspectionTool(message.toolName)) {
 			staleContextGcInspectionCallIds.add(message.toolCallId);
 		}
 	}
@@ -107,10 +111,16 @@ function renderProjected(message: AgentMessage, record: UnloadedContextRecord): 
 }
 
 function renderRemovedInspectionResult(message: ToolResultSurface): AgentMessage {
-	return {
-		...message,
+	const surface = asRecord(message);
+	const projected: Record<string, unknown> = {
+		role: "toolResult",
+		toolCallId: message.toolCallId,
+		toolName: message.toolName,
 		content: [{ type: "text", text: "Context GC inspection output removed after context_unload." }],
-	} as unknown as AgentMessage;
+	};
+	if ("isError" in surface) projected.isError = surface.isError;
+	if ("timestamp" in surface) projected.timestamp = surface.timestamp;
+	return projected as unknown as AgentMessage;
 }
 
 function isProjectableMessage(message: AgentMessage): boolean {

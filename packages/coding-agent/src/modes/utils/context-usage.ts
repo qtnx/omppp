@@ -123,7 +123,7 @@ export function computeContextBreakdown(session: AgentSession): ContextBreakdown
 	//   Messages      = conversation messages
 	const { skillsTokens, toolsTokens, systemContextTokens, systemPromptTokens } = computeNonMessageBreakdown(session);
 
-	const categories: CategoryInfo[] = [
+	const rawCategories: CategoryInfo[] = [
 		{ id: "systemPrompt", label: "System prompt", tokens: systemPromptTokens, color: "accent", glyph: CELL_FILLED },
 		{ id: "systemTools", label: "System tools", tokens: toolsTokens, color: "warning", glyph: CELL_FILLED },
 		{
@@ -143,6 +143,23 @@ export function computeContextBreakdown(session: AgentSession): ContextBreakdown
 		},
 	];
 
+	const rawUsedTokens = rawCategories.reduce((sum, c) => sum + c.tokens, 0);
+	const effectiveUsage = session.getContextUsage();
+	const effectiveUsedTokens =
+		effectiveUsage?.adjustedBy === "context_gc" &&
+		effectiveUsage.tokens !== null &&
+		effectiveUsage.tokens < rawUsedTokens
+			? effectiveUsage.tokens
+			: rawUsedTokens;
+	const messageTokenSavings = rawUsedTokens - effectiveUsedTokens;
+	const categories =
+		messageTokenSavings > 0
+			? rawCategories.map(category =>
+					category.id === "messages"
+						? { ...category, tokens: Math.max(0, category.tokens - messageTokenSavings) }
+						: category,
+				)
+			: rawCategories;
 	const usedTokens = categories.reduce((sum, c) => sum + c.tokens, 0);
 
 	let autoCompactBufferTokens = 0;

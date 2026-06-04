@@ -568,22 +568,39 @@ export class StatusLineComponent implements Component {
 			messagesTokens += i === lastIdx ? estimateTokens(messages[i]) : tokensForMessage(messages[i]);
 		}
 
-		const usedTokens = this.#nonMessageTokensCache + messagesTokens;
+		const rawUsedTokens = this.#nonMessageTokensCache + messagesTokens;
+		const effectiveUsage = this.session.getContextUsage();
+		const usedTokens =
+			effectiveUsage?.adjustedBy === "context_gc" &&
+			effectiveUsage.tokens !== null &&
+			effectiveUsage.tokens < rawUsedTokens
+				? effectiveUsage.tokens
+				: rawUsedTokens;
 		return { usedTokens, contextWindow };
 	}
 
 	/**
-	 * Build an identity fingerprint for the non-message inputs (system prompt,
-	 * tools, skills). When this changes, the non-message token cache must be
-	 * recomputed. Cheap: just lengths + first-string-length. Doesn't need to
-	 * be cryptographically unique — only stable for the same inputs.
+	 * Build an identity fingerprint for non-message inputs. It must include token-relevant
+	 * content, not just counts, because extension/tool catalogs can change without changing
+	 * array lengths.
 	 */
 	#computeNonMessageInputsKey(): string {
 		const sp = this.session.systemPrompt ?? [];
 		const tools = this.session.agent?.state?.tools ?? [];
 		const skills = this.session.skills ?? [];
-		const modelId = this.session.model?.id ?? "";
-		return `${modelId}|${sp.length}:${sp[0]?.length ?? 0}|${tools.length}|${skills.length}`;
+		const fragments: string[] = [this.session.model?.id ?? "", String(sp.length), ...sp];
+		for (const tool of tools) {
+			fragments.push(tool.name, tool.description);
+			try {
+				fragments.push(JSON.stringify(tool.parameters ?? {}));
+			} catch {
+				fragments.push("[unserializable-tool-parameters]");
+			}
+		}
+		for (const skill of skills) {
+			fragments.push(skill.name, skill.description);
+		}
+		return String(Bun.hash(fragments.join("\0")));
 	}
 
 	#buildSegmentContext(width: number): SegmentContext {

@@ -369,6 +369,83 @@ describe("contextGcExtension", () => {
 		shutdown(fakePi);
 	});
 
+	it("does not inventory Context GC inspection tool results as unload candidates", async () => {
+		const fakePi = createFakePi();
+		contextGcExtension(fakePi as unknown as ExtensionAPI);
+		const toolResultHandler = getHandler<ToolResultHandler>(fakePi, "tool_result");
+		const beforeHandler = getHandler<BeforeAgentStartHandler>(fakePi, "before_agent_start");
+		expect(toolResultHandler).toBeDefined();
+		expect(beforeHandler).toBeDefined();
+		if (!toolResultHandler || !beforeHandler) return;
+
+		const largeText = "Context GC inventory row\n".repeat(40_000);
+		await toolResultHandler(
+			{
+				type: "tool_result",
+				toolName: "context_inventory",
+				toolCallId: "call-inventory-large",
+				input: { status: "candidate", includePinned: false, limit: 200 },
+				content: [{ type: "text", text: largeText }],
+				isError: false,
+			},
+			createFakeContext(),
+		);
+
+		expect(fakePi.deltas).toHaveLength(0);
+		const result = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 75_000, contextWindow: 100_000, percent: 75 }),
+		);
+		expect(result?.message).toBeUndefined();
+		expect(result?.systemPrompt).toEqual(["base", expect.stringContaining("context_unload")]);
+		shutdown(fakePi);
+	});
+
+	it("compacts stale Context GC inspection outputs through the context projection hook", async () => {
+		const fakePi = createFakePi();
+		contextGcExtension(fakePi as unknown as ExtensionAPI);
+		const contextHandler = getHandler<ContextHandler>(fakePi, "context");
+		expect(contextHandler).toBeDefined();
+		if (!contextHandler) return;
+
+		const projected = await contextHandler(
+			{
+				type: "context",
+				messages: [
+					{
+						role: "toolResult",
+						toolCallId: "call_inventory_before",
+						toolName: "context_inventory",
+						content: [{ type: "text", text: "large inventory before cleanup" }],
+						details: { records: ["large inventory before cleanup"] },
+					},
+					{
+						role: "toolResult",
+						toolCallId: "call_unload",
+						toolName: "context_unload",
+						content: [{ type: "text", text: "Context GC unloaded 1 record(s)." }],
+						isError: false,
+					},
+					{
+						role: "toolResult",
+						toolCallId: "call_inventory_after",
+						toolName: "context_inventory",
+						content: [{ type: "text", text: "fresh inventory after cleanup" }],
+					},
+				],
+			},
+			createFakeContext(),
+		);
+
+		const before = projected?.messages?.[0] as Record<string, unknown> & { content?: Array<{ text: string }> };
+		const after = projected?.messages?.[2] as Record<string, unknown> & { content?: Array<{ text: string }> };
+		expect(before.toolCallId).toBe("call_inventory_before");
+		expect(before.content?.[0]?.text).toBe("Context GC inspection output removed after context_unload.");
+		expect(before.details).toBeUndefined();
+		expect(after.content?.[0]?.text).toBe("fresh inventory after cleanup");
+		shutdown(fakePi);
+	});
+
 	it("persists image-bearing tool results as structured JSON through the extension", async () => {
 		const fakePi = createFakePi();
 		contextGcExtension(fakePi as unknown as ExtensionAPI);

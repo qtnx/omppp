@@ -8,7 +8,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent";
 import { logger } from "@oh-my-pi/pi-utils";
 import contextGcSystemPrompt from "./context-gc-system-prompt.md" with { type: "text" };
-import { projectUnloadedContext } from "./context-transform";
+import { isContextGcInspectionTool, projectUnloadedContext } from "./context-transform";
 import { extractMessagePayload, payloadForMessage, payloadFromContent } from "./extract";
 import { buildContextGcReminder } from "./reminder";
 import {
@@ -192,6 +192,7 @@ async function collectLargeToolResult(
 	ctx: ExtensionContext,
 ): Promise<void> {
 	if (event.isError) return;
+	if (isContextGcInspectionTool(event.toolName)) return;
 	const persisted = payloadFromContent(event.content);
 	if (persisted.text.length === 0) return;
 	if (estimateTokens(persisted.text) < LARGE_TOOL_RESULT_TOKENS) return;

@@ -9656,11 +9656,13 @@ export class AgentSession {
 		const estimate = this.#estimateContextTokens();
 		const tokens = this.#estimateEffectiveContextTokens(estimate.tokens, estimate.lastUsageIndex);
 		const percent = (tokens / contextWindow) * 100;
+		const adjustedBy = tokens < estimate.tokens ? "context_gc" : undefined;
 
 		return {
 			tokens,
 			contextWindow,
 			percent,
+			...(adjustedBy ? { adjustedBy } : {}),
 		};
 	}
 
@@ -9676,10 +9678,17 @@ export class AgentSession {
 		try {
 			const postUsageUnloadIds =
 				lastUsageIndex === null ? undefined : this.#contextGcUnloadIdsAfterLatestAssistantUsage();
-			const messages =
-				lastUsageIndex === null || (postUsageUnloadIds !== undefined && postUsageUnloadIds.length > 0)
-					? this.messages
-					: this.messages.slice(lastUsageIndex + 1);
+			const hasPostUsageCleanup =
+				lastUsageIndex !== null && this.#hasSuccessfulContextGcCleanupAfterIndex(lastUsageIndex);
+			let messages: readonly AgentMessage[];
+			if (lastUsageIndex === null) {
+				messages = this.messages;
+			} else if ((postUsageUnloadIds !== undefined && postUsageUnloadIds.length > 0) || hasPostUsageCleanup) {
+				const previousCleanupIndex = this.#lastSuccessfulContextGcCleanupIndexBefore(lastUsageIndex);
+				messages = this.messages.slice(previousCleanupIndex + 1);
+			} else {
+				messages = this.messages.slice(lastUsageIndex + 1);
+			}
 			const effectiveTokens = estimateContextGcEffectiveTokens({
 				dbPath: this.#contextGcDbPath ?? getContextGcDbPath(this.settings.getAgentDir()),
 				cwd: this.sessionManager.getCwd(),
@@ -9695,6 +9704,26 @@ export class AgentSession {
 			});
 			return baseTokens;
 		}
+	}
+
+	#hasSuccessfulContextGcCleanupAfterIndex(index: number): boolean {
+		for (let i = index + 1; i < this.messages.length; i++) {
+			if (this.#isSuccessfulContextGcCleanupMessage(this.messages[i])) return true;
+		}
+		return false;
+	}
+
+	#lastSuccessfulContextGcCleanupIndexBefore(index: number): number {
+		for (let i = index - 1; i >= 0; i--) {
+			if (this.#isSuccessfulContextGcCleanupMessage(this.messages[i])) return i;
+		}
+		return -1;
+	}
+
+	#isSuccessfulContextGcCleanupMessage(message: AgentMessage): boolean {
+		if (!message || typeof message !== "object") return false;
+		const surface = message as unknown as Record<string, unknown>;
+		return surface.role === "toolResult" && surface.toolName === "context_unload" && surface.isError === false;
 	}
 	#contextGcUnloadIdsAfterLatestAssistantUsage(): string[] {
 		const ids: string[] = [];

@@ -271,6 +271,8 @@ export interface ContextUsage {
 	contextWindow: number;
 	/** Context usage as percentage of context window, or null if tokens is unknown. */
 	percent: number | null;
+	/** Source of a projection-aware adjustment, when tokens are lower than the raw persisted context. */
+	adjustedBy?: "context_gc";
 }
 
 export interface CompactOptions {

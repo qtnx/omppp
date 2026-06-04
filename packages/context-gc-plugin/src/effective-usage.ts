@@ -21,6 +21,18 @@ function estimateMessages(messages: readonly AgentMessage[]): number {
 	}
 	return tokens;
 }
+
+function hasSuccessfulContextUnload(messages: readonly AgentMessage[]): boolean {
+	for (const message of messages) {
+		if (!message || typeof message !== "object") continue;
+		const surface = message as unknown as Record<string, unknown>;
+		if (surface.role === "toolResult" && surface.toolName === "context_unload" && surface.isError === false) {
+			return true;
+		}
+	}
+	return false;
+}
+
 function filterRecordsById<T extends { id: string }>(records: readonly T[], ids: readonly string[] | undefined): T[] {
 	if (ids === undefined) return [...records];
 	const allowed = new Set(ids);
@@ -32,13 +44,15 @@ export function estimateContextGcEffectiveTokens(options: ContextGcEffectiveToke
 		cwd: options.cwd,
 		sessionManager: options.sessionManager,
 	});
-	if (options.recordIds !== undefined && options.recordIds.length === 0) return undefined;
-	if (!state.deltas.some(delta => delta.op === "unload")) return undefined;
+	const hasUnloadDelta = state.deltas.some(delta => delta.op === "unload");
+	const hasCleanupResult = hasSuccessfulContextUnload(options.messages);
+	if (options.recordIds !== undefined && options.recordIds.length === 0 && !hasCleanupResult) return undefined;
+	if (!hasUnloadDelta && !hasCleanupResult) return undefined;
 
 	const store = openContextGcStore({ dbPath: options.dbPath });
 	try {
 		const records = filterRecordsById(branchRecords(store, state), options.recordIds);
-		if (!records.some(record => record.status === "unloaded")) return undefined;
+		if (!records.some(record => record.status === "unloaded") && !hasCleanupResult) return undefined;
 
 		const projectedMessages = projectUnloadedContext(options.messages, records);
 		const rawTokens = estimateMessages(options.messages);

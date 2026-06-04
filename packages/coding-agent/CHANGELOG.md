@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+
+- Fixed Context GC cleanup not reducing visible status-line and `/context` usage by applying projection-adjusted token estimates when Context GC actually lowered model-visible context.
 
 ## [15.9.0] - 2026-06-04
 

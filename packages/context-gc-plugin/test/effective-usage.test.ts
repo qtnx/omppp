@@ -88,6 +88,37 @@ describe("estimateContextGcEffectiveTokens", () => {
 		expect(effective).toBeGreaterThan(0);
 	});
 
+	it("subtracts stale inspection output savings after successful cleanup even without unloaded records", () => {
+		const inventory: AgentMessage = {
+			role: "toolResult",
+			toolCallId: "call-inventory",
+			toolName: "context_inventory",
+			content: [{ type: "text", text: "large inventory row\n".repeat(2_000) }],
+			details: { records: ["large inventory row"] },
+			isError: false,
+		} as unknown as AgentMessage;
+		const cleanup: AgentMessage = {
+			role: "toolResult",
+			toolCallId: "call-unload",
+			toolName: "context_unload",
+			content: [{ type: "text", text: "Context GC unloaded 0 record(s)." }],
+			isError: false,
+		} as unknown as AgentMessage;
+
+		const effective = estimateContextGcEffectiveTokens({
+			dbPath: getContextGcDbPath(tempDir),
+			cwd: tempDir,
+			sessionManager: makeSessionManager(),
+			messages: [inventory, cleanup],
+			baseTokens: 9_000,
+			recordIds: [],
+		});
+
+		if (effective === undefined) throw new Error("Expected inspection compaction to reduce effective tokens");
+		expect(effective).toBeLessThan(9_000);
+		expect(effective).toBeGreaterThan(0);
+	});
+
 	it("does nothing when the current branch has no unload delta", () => {
 		const effective = estimateContextGcEffectiveTokens({
 			dbPath: getContextGcDbPath(tempDir),

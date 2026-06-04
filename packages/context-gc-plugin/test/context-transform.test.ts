@@ -62,6 +62,9 @@ describe("projectUnloadedContext", () => {
 				toolCallId: "call_inventory_before",
 				toolName: "context_inventory",
 				content: [{ type: "text", text: "Context GC inventory:\nlarge stale inventory details" }],
+				details: { records: ["large stale inventory details"] },
+				isError: false,
+				timestamp: 1,
 			},
 			{
 				role: "toolResult",
@@ -74,6 +77,7 @@ describe("projectUnloadedContext", () => {
 				toolCallId: "call_unload",
 				toolName: "context_unload",
 				content: [{ type: "text", text: "Context GC unloaded 2 record(s)." }],
+				isError: false,
 			},
 			{
 				role: "toolResult",
@@ -84,7 +88,10 @@ describe("projectUnloadedContext", () => {
 		] as unknown as AgentMessage[];
 
 		const projected = projectUnloadedContext(messages, []);
-		const inventoryBefore = projected[0] as unknown as { content: Array<{ text: string }>; toolCallId: string };
+		const inventoryBefore = projected[0] as unknown as Record<string, unknown> & {
+			content: Array<{ text: string }>;
+			toolCallId: string;
+		};
 		const statsBefore = projected[1] as unknown as { content: Array<{ text: string }>; toolCallId: string };
 		const unload = projected[2] as unknown as { content: Array<{ text: string }> };
 		const inventoryAfter = projected[3] as unknown as { content: Array<{ text: string }> };
@@ -92,10 +99,54 @@ describe("projectUnloadedContext", () => {
 		expect(projected).toHaveLength(messages.length);
 		expect(inventoryBefore.toolCallId).toBe("call_inventory_before");
 		expect(inventoryBefore.content[0].text).toBe("Context GC inspection output removed after context_unload.");
+		expect(inventoryBefore.details).toBeUndefined();
+		expect(inventoryBefore.isError).toBe(false);
+		expect(inventoryBefore.timestamp).toBe(1);
 		expect(statsBefore.toolCallId).toBe("call_stats_before");
 		expect(statsBefore.content[0].text).toBe("Context GC inspection output removed after context_unload.");
 		expect(unload.content[0].text).toBe("Context GC unloaded 2 record(s).");
 		expect(inventoryAfter.content[0].text).toBe("fresh inventory still needed");
+	});
+
+	test("compacts every Context GC inspection tool output after cleanup", () => {
+		const inspectionTools = [
+			"context_debug",
+			"context_global_stats",
+			"context_inventory",
+			"context_stats",
+			"context_tree",
+		] as const;
+		const messages = [
+			...inspectionTools.map((toolName, index) => ({
+				role: "toolResult",
+				toolCallId: `call_${index}`,
+				toolName,
+				content: [{ type: "text", text: `${toolName} verbose output` }],
+				details: { large: `${toolName} details` },
+				isError: false,
+				timestamp: index,
+			})),
+			{
+				role: "toolResult",
+				toolCallId: "call_unload",
+				toolName: "context_unload",
+				content: [{ type: "text", text: "Context GC unloaded 1 record(s)." }],
+				isError: false,
+			},
+		] as unknown as AgentMessage[];
+
+		const projected = projectUnloadedContext(messages, []);
+
+		for (let index = 0; index < inspectionTools.length; index++) {
+			const result = projected[index] as unknown as Record<string, unknown> & {
+				content: Array<{ text: string }>;
+			};
+			expect(result.toolName).toBe(inspectionTools[index]);
+			expect(result.content[0].text).toBe("Context GC inspection output removed after context_unload.");
+			expect(result.details).toBeUndefined();
+			expect(result.isError).toBe(false);
+			expect(result.timestamp).toBe(index);
+		}
 	});
 
 	test("keeps Context GC inspection outputs until a later cleanup happens", () => {
@@ -107,6 +158,64 @@ describe("projectUnloadedContext", () => {
 		} as unknown as AgentMessage;
 
 		expect(projectUnloadedContext([message], [])[0]).toBe(message);
+	});
+
+	test("keeps inspection outputs when the later cleanup failed", () => {
+		const messages = [
+			{
+				role: "toolResult",
+				toolCallId: "call_inventory",
+				toolName: "context_inventory",
+				content: [{ type: "text", text: "inventory needed to retry failed cleanup" }],
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call_unload",
+				toolName: "context_unload",
+				content: [{ type: "text", text: "Context GC unload failed." }],
+				isError: true,
+			},
+		] as unknown as AgentMessage[];
+
+		expect(projectUnloadedContext(messages, [])[0]).toBe(messages[0]);
+	});
+
+	test("uses the latest successful cleanup boundary when failed cleanup appears later", () => {
+		const messages = [
+			{
+				role: "toolResult",
+				toolCallId: "old_inventory",
+				toolName: "context_inventory",
+				content: [{ type: "text", text: "old inventory before successful cleanup" }],
+			},
+			{
+				role: "toolResult",
+				toolCallId: "successful_unload",
+				toolName: "context_unload",
+				content: [{ type: "text", text: "Context GC unloaded 1 record(s)." }],
+				isError: false,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "fresh_inventory",
+				toolName: "context_inventory",
+				content: [{ type: "text", text: "fresh inventory after successful cleanup" }],
+			},
+			{
+				role: "toolResult",
+				toolCallId: "failed_unload",
+				toolName: "context_unload",
+				content: [{ type: "text", text: "Context GC unload failed." }],
+				isError: true,
+			},
+		] as unknown as AgentMessage[];
+
+		const projected = projectUnloadedContext(messages, []);
+		const oldInventory = projected[0] as unknown as { content: Array<{ text: string }> };
+		const freshInventory = projected[2] as unknown as { content: Array<{ text: string }> };
+
+		expect(oldInventory.content[0].text).toBe("Context GC inspection output removed after context_unload.");
+		expect(freshInventory.content[0].text).toBe("fresh inventory after successful cleanup");
 	});
 
 	test("placeholder includes top-level artifactId when set", () => {
