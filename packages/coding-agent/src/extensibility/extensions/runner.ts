@@ -176,6 +176,7 @@ export class ExtensionRunner {
 	#getModel: () => Model | undefined = () => undefined;
 	#isIdleFn: () => boolean = () => true;
 	#getAsyncJobSnapshotFn: NonNullable<ExtensionContextActions["getAsyncJobSnapshot"]> = () => null;
+	#getGoalModeStateFn: NonNullable<ExtensionContextActions["getGoalModeState"]> = () => undefined;
 	#waitForIdleFn: () => Promise<void> = async () => {};
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
@@ -233,6 +234,7 @@ export class ExtensionRunner {
 		this.#getModel = contextActions.getModel;
 		this.#isIdleFn = contextActions.isIdle;
 		this.#getAsyncJobSnapshotFn = contextActions.getAsyncJobSnapshot ?? (() => null);
+		this.#getGoalModeStateFn = contextActions.getGoalModeState ?? (() => undefined);
 		this.#abortFn = contextActions.abort;
 		this.#hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.#shutdownHandler = contextActions.shutdown;
@@ -476,6 +478,7 @@ export class ExtensionRunner {
 			},
 			isIdle: () => this.#isIdleFn(),
 			getAsyncJobSnapshot: options => this.#getAsyncJobSnapshotFn(options),
+			getGoalModeState: () => this.#getGoalModeStateFn(),
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
 			shutdown: () => this.#shutdownHandler(),

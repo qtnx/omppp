@@ -28,7 +28,7 @@ import type { HookInputComponent } from "./components/hook-input";
 import type { HookSelectorComponent, HookSelectorOptions } from "./components/hook-selector";
 import type { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
-import type { LoopLimitRuntime } from "./loop-limit";
+import type { LoopRuntime } from "./loop-limit";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "./theme/theme";
 
@@ -102,7 +102,8 @@ export interface InteractiveModeContext {
 	goalModePaused: boolean;
 	loopModeEnabled: boolean;
 	loopPrompt?: string;
-	loopLimit?: LoopLimitRuntime;
+	loopRuntime?: LoopRuntime;
+	loopLimit?: LoopRuntime;
 	planModePlanFilePath?: string;
 	hideThinkingBlock: boolean;
 	pendingImages: ImageContent[];

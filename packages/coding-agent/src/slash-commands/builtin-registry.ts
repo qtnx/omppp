@@ -414,8 +414,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "loop",
 		description:
-			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Esc cancels the current iteration; /loop again to disable.",
-		inlineHint: "[count|duration]",
+			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield, waiting the configured time before each repeat. Esc cancels the current iteration; /loop again to disable.",
+		inlineHint: "[time] [iteration=unlimited]",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			await runtime.ctx.handleLoopCommand(command.args);

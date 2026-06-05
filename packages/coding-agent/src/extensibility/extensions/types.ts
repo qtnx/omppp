@@ -33,6 +33,7 @@ import type { EditToolDetails } from "../../edit";
 import type { PythonResult } from "../../eval/py/executor";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
+import type { GoalModeState } from "../../goals/state";
 import type { CustomEditor } from "../../modes/components/custom-editor";
 import type { Theme } from "../../modes/theme/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
@@ -309,6 +310,8 @@ export interface ExtensionContext {
 	isIdle(): boolean;
 	/** Snapshot of background jobs owned by this session, if background jobs are enabled. */
 	getAsyncJobSnapshot(options?: { recentLimit?: number }): AsyncJobSnapshot | null;
+	/** Current Goal Mode state, if Goal Mode is active or paused. */
+	getGoalModeState(): GoalModeState | undefined;
 	/** Abort the current agent operation */
 	abort(): void;
 	/** Whether there are queued messages waiting */
@@ -1249,6 +1252,7 @@ export interface ExtensionContextActions {
 	getModel: () => Model | undefined;
 	isIdle: () => boolean;
 	getAsyncJobSnapshot?: (options?: { recentLimit?: number }) => AsyncJobSnapshot | null;
+	getGoalModeState?: () => GoalModeState | undefined;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;

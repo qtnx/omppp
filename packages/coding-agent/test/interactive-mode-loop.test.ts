@@ -59,23 +59,60 @@ describe("InteractiveMode loop auto-submit", () => {
 		resetSettingsForTest();
 	});
 
+	it("waits the configured interval before auto-submitting the next loop prompt", async () => {
+		vi.useFakeTimers();
+		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
+		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
+		Object.defineProperty(session, "hasPostPromptWork", { configurable: true, get: () => false });
+
+		await mode.handleLoopCommand("2s 3");
+		mode.loopPrompt = "repeat slowly";
+		const resolved: SubmittedUserInput[] = [];
+		void mode.getUserInput().then(input => resolved.push(input));
+
+		vi.advanceTimersByTime(1_999);
+		await flushMicrotasks();
+		expect(resolved).toHaveLength(0);
+
+		vi.advanceTimersByTime(1);
+		await flushMicrotasks();
+
+		expect(resolved).toHaveLength(1);
+		expect(resolved[0].text).toBe("repeat slowly");
+
+		void mode.getUserInput().then(input => resolved.push(input));
+		vi.advanceTimersByTime(1_999);
+		await flushMicrotasks();
+		expect(resolved).toHaveLength(1);
+
+		vi.advanceTimersByTime(1);
+		await flushMicrotasks();
+
+		expect(resolved).toHaveLength(2);
+		expect(resolved[1].text).toBe("repeat slowly");
+	});
+
 	it("does not resolve the next loop prompt while compaction is running", async () => {
 		vi.useFakeTimers();
 		let compacting = true;
 		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => compacting });
 		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
 
-		mode.loopModeEnabled = true;
+		await mode.handleLoopCommand("2s");
 		mode.loopPrompt = "repeat this";
 		const resolved: SubmittedUserInput[] = [];
 		void mode.getUserInput().then(input => resolved.push(input));
 
-		vi.advanceTimersByTime(800);
+		vi.advanceTimersByTime(2_000);
 		await flushMicrotasks();
 		expect(resolved).toHaveLength(0);
 
 		compacting = false;
-		vi.advanceTimersByTime(800);
+		vi.advanceTimersByTime(99);
+		await flushMicrotasks();
+		expect(resolved).toHaveLength(0);
+
+		vi.advanceTimersByTime(1);
 		await flushMicrotasks();
 
 		expect(resolved).toHaveLength(1);
@@ -104,7 +141,7 @@ describe("InteractiveMode loop auto-submit", () => {
 		expect(resolved).toHaveLength(0);
 
 		streaming = false;
-		vi.advanceTimersByTime(800);
+		vi.advanceTimersByTime(100);
 		await flushMicrotasks();
 
 		expect(compact).toHaveBeenCalledTimes(1);
@@ -131,7 +168,7 @@ describe("InteractiveMode loop auto-submit", () => {
 
 		// Background delivery completes; loop may now fire.
 		hasPendingWork = false;
-		vi.advanceTimersByTime(800);
+		vi.advanceTimersByTime(100);
 		await flushMicrotasks();
 
 		expect(resolved).toHaveLength(1);

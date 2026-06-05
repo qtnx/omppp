@@ -120,6 +120,7 @@ export class ExtensionUiController {
 			isIdle: () => !this.ctx.session.isStreaming,
 			getAsyncJobSnapshot: options =>
 				this.ctx.session.getAsyncJobSnapshot({ recentLimit: options?.recentLimit, requireOwner: true }),
+			getGoalModeState: () => this.ctx.session.getGoalModeState(),
 			abort: () => this.ctx.session.abort(),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			shutdown: () => {
@@ -362,6 +363,7 @@ export class ExtensionUiController {
 			isIdle: () => !this.ctx.session.isStreaming,
 			getAsyncJobSnapshot: options =>
 				this.ctx.session.getAsyncJobSnapshot({ recentLimit: options?.recentLimit, requireOwner: true }),
+			getGoalModeState: () => this.ctx.session.getGoalModeState(),
 			abort: () => this.ctx.session.abort(),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			shutdown: () => {
@@ -542,6 +544,7 @@ export class ExtensionUiController {
 						model: this.ctx.session.model,
 						isIdle: () => !this.ctx.session.isStreaming,
 						getAsyncJobSnapshot: options => this.ctx.session.getAsyncJobSnapshot(options),
+						getGoalModeState: () => this.ctx.session.getGoalModeState(),
 						hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 						abort: () => {
 							this.ctx.session.abort();

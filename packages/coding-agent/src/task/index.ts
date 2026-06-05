@@ -51,6 +51,7 @@ import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimit, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "./render";
 import { repairTaskParams } from "./repair-args";
+import { persistTaskReviewFindings } from "./review-findings";
 import { type ReviewGateConfig, runReviewGate } from "./review-gate";
 import { getTaskSimpleModeCapabilities, type TaskSimpleMode } from "./simple-mode";
 import {
@@ -1745,6 +1746,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				outputIds,
 				agentName,
 				mergeSummary,
+			});
+			await persistTaskReviewFindings({
+				agentName,
+				cwd: this.session.cwd,
+				sessionFile,
+				results,
 			});
 
 			// Cleanup temp directory if used

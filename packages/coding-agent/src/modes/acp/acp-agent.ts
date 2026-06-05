@@ -72,7 +72,7 @@ import {
 	type SessionInfo as StoredSessionInfo,
 	type UsageStatistics,
 } from "../../session/session-manager";
-import { ACP_BUILTIN_SLASH_COMMANDS, executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
+import { executeAcpBuiltinSlashCommand, getAcpBuiltinSlashCommands } from "../../slash-commands/acp-builtins";
 import { AUTO_THINKING, parseConfiguredThinkingLevel } from "../../thinking";
 import { createAcpClientBridge } from "./acp-client-bridge";
 import {
@@ -1421,7 +1421,7 @@ export class AcpAgent implements Agent {
 		// (so core commands like `/model`, `/mcp`, `/todo` cannot be shadowed),
 		// then skills, then custom/user commands, then file-based slash
 		// commands. `appendCommand` dedupes by name so earlier entries win.
-		for (const command of ACP_BUILTIN_SLASH_COMMANDS) {
+		for (const command of getAcpBuiltinSlashCommands()) {
 			appendCommand(command);
 		}
 
@@ -1968,6 +1968,7 @@ export class AcpAgent implements Agent {
 			{
 				getModel: () => record.session.model,
 				isIdle: () => !record.session.isStreaming,
+				getGoalModeState: () => record.session.getGoalModeState(),
 				abort: () => {
 					void record.session.abort();
 				},

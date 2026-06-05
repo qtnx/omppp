@@ -4590,6 +4590,7 @@ export class AgentSession {
 			isIdle: () => !this.isStreaming,
 			getAsyncJobSnapshot: options =>
 				this.getAsyncJobSnapshot({ recentLimit: options?.recentLimit, requireOwner: true }),
+			getGoalModeState: () => this.getGoalModeState(),
 			abort: () => {
 				void this.abort();
 			},

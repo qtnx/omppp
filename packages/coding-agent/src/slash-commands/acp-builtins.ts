@@ -5,23 +5,36 @@ import type { AcpBuiltinSlashCommandResult, SlashCommandRuntime } from "./types"
 
 export type { AcpBuiltinSlashCommandResult } from "./types";
 
+let acpBuiltinSlashCommandsCache: AvailableCommand[] | undefined;
+
 /**
  * Commands advertised to ACP clients. Entries without a text-mode `handle`
  * (e.g. `/quit`, `/login`, dashboards) are filtered out so the client doesn't
  * see commands it cannot drive.
  */
-export const ACP_BUILTIN_SLASH_COMMANDS: AvailableCommand[] = BUILTIN_SLASH_COMMANDS_INTERNAL.filter(
-	command => command.handle !== undefined,
-).map(command => {
-	// Honor mode-specific copy: ACP clients receive concise text-mode
-	// descriptions/hints when the spec sets `acpDescription` / `acpInputHint`,
-	// otherwise fall back to the unified `description` / `inlineHint`.
-	const hint = command.acpInputHint ?? command.inlineHint;
-	return {
-		name: command.name,
-		description: command.acpDescription ?? command.description,
-		input: hint ? { hint } : undefined,
-	};
+export function getAcpBuiltinSlashCommands(): AvailableCommand[] {
+	if (acpBuiltinSlashCommandsCache) return acpBuiltinSlashCommandsCache;
+	acpBuiltinSlashCommandsCache = BUILTIN_SLASH_COMMANDS_INTERNAL.filter(command => command.handle !== undefined).map(
+		command => {
+			// Honor mode-specific copy: ACP clients receive concise text-mode
+			// descriptions/hints when the spec sets `acpDescription` / `acpInputHint`,
+			// otherwise fall back to the unified `description` / `inlineHint`.
+			const hint = command.acpInputHint ?? command.inlineHint;
+			return {
+				name: command.name,
+				description: command.acpDescription ?? command.description,
+				input: hint ? { hint } : undefined,
+			};
+		},
+	);
+	return acpBuiltinSlashCommandsCache;
+}
+
+export const ACP_BUILTIN_SLASH_COMMANDS: AvailableCommand[] = new Proxy([] as AvailableCommand[], {
+	get(_target, property) {
+		const value: unknown = Reflect.get(getAcpBuiltinSlashCommands(), property);
+		return typeof value === "function" ? value.bind(getAcpBuiltinSlashCommands()) : value;
+	},
 });
 
 /**

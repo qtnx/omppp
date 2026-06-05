@@ -262,6 +262,118 @@ export interface LearningAuditDetail {
 	};
 }
 
+export type ReviewFindingPriorityLabel = "P0" | "P1" | "P2" | "P3";
+
+export type ReviewFindingStatus = "all" | "pending" | "saved";
+
+export interface ReviewFindingSummary {
+	id: string;
+	repoName: string;
+	repoRoot: string;
+	agent: string;
+	taskId: string;
+	taskDescription: string;
+	title: string;
+	bodyPreview: string;
+	priorityLabel: ReviewFindingPriorityLabel;
+	priority: number;
+	confidence: number;
+	filePath: string;
+	lineStart: number;
+	lineEnd: number;
+	taskExitCode: number;
+	taskAborted: boolean;
+	firstSeenAt: number;
+	lastSeenAt: number;
+	occurrenceCount: number;
+	learningId: string | null;
+	learningSavedAt: number | null;
+}
+
+export interface ReviewFindingDetailRecord extends ReviewFindingSummary {
+	cwd: string;
+	body: string;
+	taskAssignment: string;
+	outputPath: string;
+	sessionFile: string;
+	resolvedModel: string;
+}
+
+export interface ReviewFindingRepoSummary {
+	repoName: string;
+	repoRoot: string;
+	pendingCount: number;
+	savedCount: number;
+}
+
+export interface ReviewFindingListResponse {
+	findings: ReviewFindingSummary[];
+	total: number;
+	repos: ReviewFindingRepoSummary[];
+}
+
+export type ReviewFindingLessonGenerationStatus = "idle" | "queued" | "running" | "succeeded" | "failed";
+
+export type ReviewFindingLessonGenerationEventKind = "status" | "progress" | "error";
+
+export interface ReviewFindingLessonGenerationProgressTool {
+	tool: string;
+	args: string;
+	endMs: number;
+}
+
+export interface ReviewFindingLessonGenerationProgress {
+	status: ReviewFindingLessonGenerationStatus;
+	message: string;
+	lastIntent?: string;
+	currentTool?: string;
+	currentToolArgs?: string;
+	recentTools: ReviewFindingLessonGenerationProgressTool[];
+	recentOutput: string[];
+	toolCount: number;
+	tokens: number;
+	contextTokens?: number;
+	contextWindow?: number;
+	cost: number;
+	durationMs: number;
+	resolvedModel?: string;
+}
+
+export interface ReviewFindingLessonGenerationEvent {
+	sequence: number;
+	jobId: string;
+	findingId: string;
+	kind: ReviewFindingLessonGenerationEventKind;
+	message: string;
+	progress: ReviewFindingLessonGenerationProgress | null;
+	createdAt: number;
+}
+
+export interface ReviewFindingLessonGeneration {
+	jobId: string | null;
+	status: ReviewFindingLessonGenerationStatus;
+	error: string | null;
+	createdAt: number | null;
+	updatedAt: number | null;
+	completedAt: number | null;
+	events: ReviewFindingLessonGenerationEvent[];
+}
+
+export interface ReviewFindingGenerationEventsResponse {
+	generation: ReviewFindingLessonGeneration;
+	events: ReviewFindingLessonGenerationEvent[];
+}
+
+export interface ReviewFindingDetail {
+	finding: ReviewFindingDetailRecord;
+	lessonPreview: string | null;
+	generation: ReviewFindingLessonGeneration;
+}
+
+export interface ReviewFindingGenerateResponse extends ReviewFindingDetail {
+	alreadySaved: boolean;
+}
+
 export interface SessionStatsAggregate {
 	sessionFile: string;
 	folder: string;

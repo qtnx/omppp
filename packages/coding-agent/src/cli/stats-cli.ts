@@ -6,6 +6,7 @@
 
 import { APP_NAME, formatDuration, formatNumber, formatPercent } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { createReviewFindingLessonGenerator } from "../stats/review-finding-lesson-generator";
 import { openPath } from "../utils/open";
 
 /**
@@ -145,7 +146,7 @@ export async function runStatsCommand(cmd: StatsCommandArgs): Promise<void> {
 	}
 
 	// Start the dashboard server
-	const { port } = await startServer(cmd.port);
+	const { port } = await startServer(cmd.port, { generateReviewFindingLesson: createReviewFindingLessonGenerator() });
 	console.log(chalk.green(`Dashboard available at: http://localhost:${port}`));
 
 	// Open browser

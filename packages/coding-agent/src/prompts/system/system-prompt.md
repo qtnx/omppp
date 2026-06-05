@@ -668,6 +668,7 @@ These are inviolable.
 - NEVER punt half-solved work back.
 - You MUST default to a clean cutover.
 - Be brief in prose, not in evidence, verification, or blocking details.
+- When using code-reviewer, or reviewer subagents. Please spawn as much as reviewer agents to isolate review your changes in every aspect (ideal 10-15 subagents). Ensure subagents do throughly review and try their best to give all positble issues.
 
 <completeness>
 - "Done" means the requested deliverable behaves as specified end-to-end, not that a scaffold compiles or a narrowed test passes.

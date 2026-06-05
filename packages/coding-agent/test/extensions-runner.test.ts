@@ -12,6 +12,7 @@ import {
 	ExtensionRunner,
 	testSetExtensionHandlerTimeoutMs,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -743,6 +744,7 @@ describe("ExtensionRunner", () => {
 				{
 					getModel: () => undefined,
 					isIdle: () => true,
+					getGoalModeState: () => undefined,
 					abort: () => {},
 					hasPendingMessages: () => false,
 					shutdown: () => {},
@@ -825,6 +827,7 @@ describe("ExtensionRunner", () => {
 						recentLimit = options?.recentLimit;
 						return snapshot;
 					},
+					getGoalModeState: () => undefined,
 					abort: () => {},
 					hasPendingMessages: () => false,
 					shutdown: () => {},
@@ -838,6 +841,75 @@ describe("ExtensionRunner", () => {
 
 			expect(recentLimit).toBe(2);
 			expect(entries).toEqual([{ customType: "snapshot", data: snapshot }]);
+		});
+	});
+
+	describe("goal mode state API", () => {
+		it("passes current goal mode state to extension event contexts", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("session_start", (_event, ctx) => {
+						pi.appendEntry("goal-state", ctx.getGoalModeState());
+					});
+				}
+			`;
+			const explicitExtensionPath = path.join(tempDir.path(), "goal-state.ts");
+			fs.writeFileSync(explicitExtensionPath, extCode);
+
+			const result = await loadTestExtensions([explicitExtensionPath]);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const entries: Array<{ customType: string; data?: unknown }> = [];
+			const goalState: GoalModeState = {
+				enabled: true,
+				mode: "active",
+				goal: {
+					id: "goal-1",
+					objective: "finish the task",
+					status: "active",
+					createdAt: 1,
+					updatedAt: 1,
+					tokensUsed: 0,
+					timeUsedSeconds: 0,
+				},
+			};
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: (customType, data) => entries.push({ customType, data }),
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+					getGoalModeState: () => goalState,
+				},
+			);
+
+			await runner.emit({ type: "session_start" });
+
+			expect(entries).toEqual([{ customType: "goal-state", data: goalState }]);
 		});
 	});
 
@@ -1021,6 +1093,7 @@ describe("ExtensionRunner", () => {
 				{
 					getModel: () => undefined,
 					isIdle: () => true,
+					getGoalModeState: () => undefined,
 					abort: () => {},
 					hasPendingMessages: () => false,
 					shutdown: () => {},

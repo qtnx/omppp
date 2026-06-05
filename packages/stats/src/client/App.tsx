@@ -19,6 +19,7 @@ import { LearningAuditView } from "./components/LearningAuditView";
 import { ModelsTable } from "./components/ModelsTable";
 import { RequestDetail } from "./components/RequestDetail";
 import { RequestList } from "./components/RequestList";
+import { ReviewFindingsView } from "./components/ReviewFindingsView";
 import { StatsGrid } from "./components/StatsGrid";
 import { TracesView } from "./components/TracesView";
 import type {
@@ -30,7 +31,7 @@ import type {
 	TimeRange,
 } from "./types";
 
-type Tab = "overview" | "traces" | "requests" | "errors" | "models" | "costs" | "behavior" | "learning";
+type Tab = "overview" | "traces" | "requests" | "errors" | "models" | "costs" | "behavior" | "learning" | "reviews";
 
 export default function App() {
 	const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
@@ -206,6 +207,8 @@ export default function App() {
 				)}
 
 				{activeTab === "learning" && <LearningAuditView />}
+
+				{activeTab === "reviews" && <ReviewFindingsView />}
 
 				{selectedRequest !== null && (
 					<RequestDetail id={selectedRequest} onClose={() => setSelectedRequest(null)} />

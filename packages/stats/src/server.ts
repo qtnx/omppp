@@ -16,6 +16,14 @@ import {
 } from "./aggregator";
 import embeddedClientArchiveTxt from "./embedded-client.generated.txt";
 import { getLearningAuditDetail, listLearningAudits } from "./learning-audit";
+import {
+	getReviewFindingDetail,
+	listReviewFindingLessonGenerationEvents,
+	listReviewFindings,
+	ReviewFindingLessonGeneratorUnavailableError,
+	type ReviewFindingStorageOptions,
+	triggerReviewFindingLessonGeneration,
+} from "./review-findings";
 import { getSessionTrace, listSessions } from "./sessions";
 
 const getEmbeddedClientArchive = (() => {
@@ -34,6 +42,36 @@ const IS_BUN_COMPILED =
 
 const COMPILED_CLIENT_DIR_ROOT = path.join(os.tmpdir(), "omp-stats-client");
 let compiledClientDirPromise: Promise<string> | null = null;
+
+interface StatsApiOptions extends ReviewFindingStorageOptions {}
+
+function jsonError(message: string, status: number): Response {
+	return Response.json({ error: message }, { status });
+}
+
+function decodePathSegment(value: string): string | null {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return null;
+	}
+}
+
+function isSameOriginMutation(req: Request, url: URL): boolean {
+	const origin = req.headers.get("Origin");
+	if (origin) return origin === url.origin;
+	const referer = req.headers.get("Referer");
+	if (!referer) return true;
+	try {
+		return new URL(referer).origin === url.origin;
+	} catch {
+		return false;
+	}
+}
+
+function parseReviewFindingStatus(value: string | null): "all" | "pending" | "saved" {
+	return value === "pending" || value === "saved" ? value : "all";
+}
 
 function sanitizeArchivePath(archivePath: string): string | null {
 	const normalized = archivePath.replaceAll("\\", "/").replace(/^\.\//, "");
@@ -165,16 +203,83 @@ const ensureClientBuild = async () => {
 
 	await Bun.write(path.join(STATIC_DIR, "index.html"), indexHtml);
 };
-
 /**
  * Handle API requests.
  */
-async function handleApi(req: Request): Promise<Response> {
+export async function handleStatsApiRequest(req: Request, options: StatsApiOptions = {}): Promise<Response> {
 	const url = new URL(req.url);
 	const path = url.pathname;
 
 	// Stats reads are DB-only; explicit /api/sync does the expensive session scan.
 	const range = url.searchParams.get("range");
+
+	if (path === "/api/review-findings") {
+		if (req.method !== "GET") return jsonError("Method not allowed", 405);
+		const limit = url.searchParams.get("limit");
+		const offset = url.searchParams.get("offset");
+		const findings = await listReviewFindings({
+			...options,
+			query: url.searchParams.get("query"),
+			status: parseReviewFindingStatus(url.searchParams.get("status")),
+			repoRoot: url.searchParams.get("repoRoot"),
+			limit: limit ? Number(limit) : undefined,
+			offset: offset ? Number(offset) : undefined,
+		});
+		return Response.json(findings);
+	}
+
+	if (path.startsWith("/api/review-findings/")) {
+		const segments = path.split("/").filter(Boolean);
+		const encodedId = segments[2];
+		if (segments[0] !== "api" || segments[1] !== "review-findings" || !encodedId) {
+			return jsonError("Bad Request", 400);
+		}
+		const id = decodePathSegment(encodedId);
+		if (!id) return jsonError("Bad Request", 400);
+
+		if (segments.length === 4 && segments[3] === "generation-events") {
+			if (req.method !== "GET") return jsonError("Method not allowed", 405);
+			const after = url.searchParams.get("after");
+			const limit = url.searchParams.get("limit");
+			const events = await listReviewFindingLessonGenerationEvents(id, {
+				...options,
+				afterSequence: after ? Number(after) : undefined,
+				limit: limit ? Number(limit) : undefined,
+			});
+			if (!events) return jsonError("Not Found", 404);
+			return Response.json(events);
+		}
+
+		if (segments.length === 4 && segments[3] === "generate-learning") {
+			if (req.method !== "POST") return jsonError("Method not allowed", 405);
+			if (!isSameOriginMutation(req, url)) {
+				return jsonError("Cross-origin learning generation requests are not allowed", 403);
+			}
+			try {
+				const generated = await triggerReviewFindingLessonGeneration(id, options);
+				if (!generated) return jsonError("Not Found", 404);
+				return Response.json(generated);
+			} catch (err) {
+				if (err instanceof ReviewFindingLessonGeneratorUnavailableError) {
+					return jsonError(err.message, 503);
+				}
+				throw err;
+			}
+		}
+
+		if (segments.length === 4 && segments[3] === "save-learning") {
+			return jsonError("Use generate-learning to create a distilled lesson", 410);
+		}
+
+		if (segments.length === 3) {
+			if (req.method !== "GET") return jsonError("Method not allowed", 405);
+			const detail = await getReviewFindingDetail(id, options);
+			if (!detail) return jsonError("Not Found", 404);
+			return Response.json(detail);
+		}
+
+		return jsonError("Bad Request", 400);
+	}
 
 	if (path === "/api/sessions") {
 		const limit = url.searchParams.get("limit");
@@ -313,7 +418,10 @@ async function handleStatic(requestPath: string): Promise<Response> {
 /**
  * Start the HTTP server.
  */
-export async function startServer(port = 3847): Promise<{ port: number; stop: () => void }> {
+export async function startServer(
+	port = 3847,
+	options: StatsApiOptions = {},
+): Promise<{ port: number; stop: () => void }> {
 	await ensureClientBuild();
 
 	const server = Bun.serve({
@@ -337,7 +445,7 @@ export async function startServer(port = 3847): Promise<{ port: number; stop: ()
 				let response: Response;
 
 				if (path.startsWith("/api/")) {
-					response = await handleApi(req);
+					response = await handleStatsApiRequest(req, options);
 				} else {
 					response = await handleStatic(path);
 				}

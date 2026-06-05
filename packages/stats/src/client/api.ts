@@ -8,6 +8,11 @@ import type {
 	ModelDashboardStats,
 	OverviewStats,
 	RequestDetails,
+	ReviewFindingDetail,
+	ReviewFindingGenerateResponse,
+	ReviewFindingGenerationEventsResponse,
+	ReviewFindingListResponse,
+	ReviewFindingStatus,
 	SessionListResponse,
 	SessionTrace,
 } from "./types";
@@ -95,4 +100,53 @@ export async function getLearningAuditDetail(id: string): Promise<LearningAuditD
 	const res = await fetch(`${API_BASE}/learnings/audit/${encodeURIComponent(id)}`);
 	if (!res.ok) throw new Error("Failed to fetch learning audit detail");
 	return res.json() as Promise<LearningAuditDetail>;
+}
+
+async function parseApiError(res: Response, fallback: string): Promise<Error> {
+	try {
+		const body = (await res.json()) as { error?: unknown };
+		return new Error(typeof body.error === "string" ? body.error : fallback);
+	} catch {
+		return new Error(fallback);
+	}
+}
+
+export async function getReviewFindings(
+	query = "",
+	status: ReviewFindingStatus = "all",
+	repoRoot = "",
+	limit = 100,
+): Promise<ReviewFindingListResponse> {
+	const params = new URLSearchParams({ limit: String(limit), status });
+	if (query.trim()) params.set("query", query.trim());
+	if (repoRoot.trim()) params.set("repoRoot", repoRoot.trim());
+	const res = await fetch(`${API_BASE}/review-findings?${params.toString()}`);
+	if (!res.ok) throw await parseApiError(res, "Failed to fetch review findings");
+	return res.json() as Promise<ReviewFindingListResponse>;
+}
+
+export async function getReviewFindingDetail(id: string): Promise<ReviewFindingDetail> {
+	const res = await fetch(`${API_BASE}/review-findings/${encodeURIComponent(id)}`);
+	if (!res.ok) throw await parseApiError(res, "Failed to fetch review finding detail");
+	return res.json() as Promise<ReviewFindingDetail>;
+}
+
+export async function getReviewFindingGenerationEvents(
+	id: string,
+	afterSequence: number,
+): Promise<ReviewFindingGenerationEventsResponse> {
+	const params = new URLSearchParams({ after: String(Math.max(0, Math.floor(afterSequence))) });
+	const res = await fetch(
+		`${API_BASE}/review-findings/${encodeURIComponent(id)}/generation-events?${params.toString()}`,
+	);
+	if (!res.ok) throw await parseApiError(res, "Failed to fetch review finding generation events");
+	return res.json() as Promise<ReviewFindingGenerationEventsResponse>;
+}
+
+export async function generateReviewFindingLesson(id: string): Promise<ReviewFindingGenerateResponse> {
+	const res = await fetch(`${API_BASE}/review-findings/${encodeURIComponent(id)}/generate-learning`, {
+		method: "POST",
+	});
+	if (!res.ok) throw await parseApiError(res, "Failed to generate review finding lesson");
+	return res.json() as Promise<ReviewFindingGenerateResponse>;
 }

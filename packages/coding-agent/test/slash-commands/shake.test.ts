@@ -4,6 +4,7 @@ import type { ShakeMode } from "@oh-my-pi/pi-coding-agent/session/shake-types";
 import {
 	ACP_BUILTIN_SLASH_COMMANDS,
 	executeAcpBuiltinSlashCommand,
+	getAcpBuiltinSlashCommands,
 } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
@@ -60,7 +61,7 @@ describe("/shake dispatch (ACP)", () => {
 	});
 
 	it("is advertised to ACP clients with the mode hint", () => {
-		const advertised = ACP_BUILTIN_SLASH_COMMANDS.find(c => c.name === "shake");
+		const advertised = getAcpBuiltinSlashCommands().find(c => c.name === "shake");
 		expect(advertised).toBeDefined();
 		expect(advertised?.input?.hint).toBe("[elide|images]");
 	});

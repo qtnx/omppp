@@ -1,26 +1,26 @@
-export type LoopLimitConfig =
-	| {
-			kind: "iterations";
-			iterations: number;
-	  }
-	| {
-			kind: "duration";
-			durationMs: number;
-	  };
+export type LoopConfig = {
+	intervalMs: number;
+	iterations?: number;
+};
 
-export type LoopLimitRuntime =
-	| {
-			kind: "iterations";
-			initial: number;
-			remaining: number;
-	  }
-	| {
-			kind: "duration";
-			durationMs: number;
-			deadlineMs: number;
-	  };
+export type LoopRuntime = {
+	intervalMs: number;
+	initialIterations?: number;
+	remainingIterations?: number;
+};
+
+export const DEFAULT_LOOP_INTERVAL_MS = 800;
+export const MAX_LOOP_INTERVAL_MS = 2_147_483_647;
+
+const LOOP_USAGE =
+	"Usage: /loop [time] [iteration]. Omit iteration for unlimited repeats. Examples: /loop 10, /loop 10s 5, /loop 2m.";
 
 const TIME_UNITS_MS = new Map<string, number>([
+	["ms", 1],
+	["msec", 1],
+	["msecs", 1],
+	["millisecond", 1],
+	["milliseconds", 1],
 	["s", 1_000],
 	["sec", 1_000],
 	["secs", 1_000],
@@ -38,92 +38,128 @@ const TIME_UNITS_MS = new Map<string, number>([
 	["hours", 3_600_000],
 ]);
 
-export function parseLoopLimitArgs(args: string): LoopLimitConfig | undefined | string {
+type ParsedInterval = {
+	intervalMs: number;
+	nextIndex: number;
+};
+
+export function parseLoopArgs(args: string): LoopConfig | string {
 	const trimmed = args.trim().toLowerCase();
-	if (!trimmed) return undefined;
+	if (!trimmed) return { intervalMs: DEFAULT_LOOP_INTERVAL_MS };
 
 	const parts = trimmed.split(/\s+/);
-	if (parts.length > 2) {
-		return "Usage: /loop [count|duration]. Examples: /loop 10, /loop 10m, /loop 10min.";
-	}
+	if (parts.length > 3) return LOOP_USAGE;
 
-	if (parts.length === 2) {
-		return parseDurationParts(parts[0], parts[1]);
-	}
+	const parsedInterval = parseInterval(parts);
+	if (typeof parsedInterval === "string") return parsedInterval;
+	if (parsedInterval.nextIndex === parts.length) return { intervalMs: parsedInterval.intervalMs };
+	if (parsedInterval.nextIndex !== parts.length - 1) return LOOP_USAGE;
 
-	const token = parts[0];
-	const iterationMatch = /^(\d+)$/.exec(token);
-	if (iterationMatch) {
-		const iterations = Number(iterationMatch[1]);
-		if (!Number.isSafeInteger(iterations) || iterations <= 0) {
-			return "Loop count must be a positive integer.";
-		}
-		return { kind: "iterations", iterations };
-	}
-
-	const durationMatch = /^(\d+)([a-z]+)$/.exec(token);
-	if (durationMatch) {
-		return parseDurationParts(durationMatch[1], durationMatch[2]);
-	}
-
-	return "Usage: /loop [count|duration]. Examples: /loop 10, /loop 10m, /loop 10min.";
+	const iterations = parseIterationCount(parts[parsedInterval.nextIndex]);
+	if (typeof iterations === "string") return iterations;
+	return { intervalMs: parsedInterval.intervalMs, iterations };
 }
 
-function parseDurationParts(amountText: string, unitText: string): LoopLimitConfig | string {
-	if (!/^\d+$/.test(amountText)) {
-		return "Loop duration must use a positive integer amount.";
+function parseInterval(parts: string[]): ParsedInterval | string {
+	if (parts.length >= 2 && /^\d+$/.test(parts[0]) && /^[a-z]+$/.test(parts[1])) {
+		const amount = parsePositiveInteger(
+			parts[0],
+			"Loop sleep time must use a positive integer amount.",
+			"Loop sleep time must be positive.",
+		);
+		if (typeof amount === "string") return amount;
+		return parseIntervalAmount(amount, parts[1], 2);
 	}
 
-	const amount = Number(amountText);
-	if (!Number.isSafeInteger(amount) || amount <= 0) {
-		return "Loop duration must be positive.";
+	const compactMatch = /^(\d+)([a-z]+)?$/.exec(parts[0]);
+	if (compactMatch) {
+		const amount = parsePositiveInteger(
+			compactMatch[1],
+			"Loop sleep time must use a positive integer amount.",
+			"Loop sleep time must be positive.",
+		);
+		if (typeof amount === "string") return amount;
+		return parseIntervalAmount(amount, compactMatch[2] ?? "s", 1);
 	}
 
+	return LOOP_USAGE;
+}
+
+function parseIntervalAmount(amount: number, unitText: string, nextIndex: number): ParsedInterval | string {
 	const unitMs = TIME_UNITS_MS.get(unitText);
 	if (unitMs === undefined) {
-		return "Loop duration unit must be seconds, minutes, or hours.";
+		return "Loop sleep time unit must be milliseconds, seconds, minutes, or hours.";
 	}
 
-	return { kind: "duration", durationMs: amount * unitMs };
+	const intervalMs = amount * unitMs;
+	if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
+		return "Loop sleep time must be positive.";
+	}
+	if (intervalMs > MAX_LOOP_INTERVAL_MS) {
+		return `Loop sleep time must be at most ${MAX_LOOP_INTERVAL_MS} milliseconds.`;
+	}
+	return { intervalMs, nextIndex };
 }
 
-export function createLoopLimitRuntime(
-	config: LoopLimitConfig | undefined,
-	nowMs = Date.now(),
-): LoopLimitRuntime | undefined {
-	if (!config) return undefined;
-	if (config.kind === "iterations") {
-		return { kind: "iterations", initial: config.iterations, remaining: config.iterations };
-	}
-	return { kind: "duration", durationMs: config.durationMs, deadlineMs: nowMs + config.durationMs };
+function parseIterationCount(token: string): number | string {
+	const iterations = parsePositiveInteger(
+		token,
+		"Loop iteration count must be a positive integer.",
+		"Loop iteration count must be a positive integer.",
+	);
+	return iterations;
 }
 
-export function consumeLoopLimitIteration(limit: LoopLimitRuntime | undefined, nowMs = Date.now()): boolean {
-	if (!limit) return true;
-	if (limit.kind === "duration") {
-		return nowMs < limit.deadlineMs;
+function parsePositiveInteger(token: string, invalidMessage: string, nonPositiveMessage: string): number | string {
+	if (!/^\d+$/.test(token)) return invalidMessage;
+	const value = Number(token);
+	if (!Number.isSafeInteger(value) || value <= 0) return nonPositiveMessage;
+	return value;
+}
+
+export function createLoopRuntime(config: LoopConfig): LoopRuntime {
+	const runtime: LoopRuntime = { intervalMs: config.intervalMs };
+	if (config.iterations !== undefined) {
+		runtime.initialIterations = config.iterations;
+		runtime.remainingIterations = config.iterations;
 	}
-	if (limit.remaining <= 0) return false;
-	limit.remaining -= 1;
+	return runtime;
+}
+
+export function hasLoopIterationRemaining(runtime: LoopRuntime | undefined): boolean {
+	return runtime?.remainingIterations === undefined || runtime.remainingIterations > 0;
+}
+
+export function consumeLoopIteration(runtime: LoopRuntime | undefined): boolean {
+	if (!hasLoopIterationRemaining(runtime)) return false;
+	if (runtime?.remainingIterations === undefined) return true;
+	runtime.remainingIterations -= 1;
 	return true;
 }
 
-export function isLoopDurationExpired(limit: LoopLimitRuntime | undefined, nowMs = Date.now()): boolean {
-	return limit?.kind === "duration" && nowMs >= limit.deadlineMs;
+export function describeLoopConfig(config: LoopConfig): string {
+	const interval = formatDuration(config.intervalMs);
+	if (config.iterations === undefined) return `every ${interval}`;
+	return `every ${interval} for ${config.iterations} ${config.iterations === 1 ? "iteration" : "iterations"}`;
 }
 
-export function describeLoopLimit(config: LoopLimitConfig): string {
-	if (config.kind === "iterations") {
-		return `${config.iterations} ${config.iterations === 1 ? "iteration" : "iterations"}`;
-	}
-	return formatDuration(config.durationMs);
+export function describeLoopRuntime(runtime: LoopRuntime): string | undefined {
+	if (runtime.remainingIterations === undefined || runtime.initialIterations === undefined) return undefined;
+	return `${runtime.remainingIterations} of ${runtime.initialIterations} ${
+		runtime.initialIterations === 1 ? "iteration" : "iterations"
+	} remaining`;
 }
 
-export function describeLoopLimitRuntime(limit: LoopLimitRuntime): string {
-	if (limit.kind === "iterations") {
-		return `${limit.remaining} of ${limit.initial} ${limit.initial === 1 ? "iteration" : "iterations"} remaining`;
-	}
-	return `${formatDuration(limit.durationMs)} limit`;
+export type LoopLimitConfig = LoopConfig;
+export type LoopLimitRuntime = LoopRuntime;
+export const parseLoopLimitArgs = parseLoopArgs;
+export const createLoopLimitRuntime = createLoopRuntime;
+export const consumeLoopLimitIteration = consumeLoopIteration;
+export const describeLoopLimit = describeLoopConfig;
+export const describeLoopLimitRuntime = describeLoopRuntime;
+
+export function isLoopDurationExpired(): false {
+	return false;
 }
 
 function formatDuration(durationMs: number): string {
@@ -135,6 +171,9 @@ function formatDuration(durationMs: number): string {
 		const minutes = durationMs / 60_000;
 		return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
 	}
-	const seconds = durationMs / 1_000;
-	return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+	if (durationMs % 1_000 === 0) {
+		const seconds = durationMs / 1_000;
+		return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+	}
+	return `${durationMs} ${durationMs === 1 ? "millisecond" : "milliseconds"}`;
 }

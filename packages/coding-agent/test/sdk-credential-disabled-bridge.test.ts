@@ -66,6 +66,7 @@ const initializeRunnerForTest = (runner: ExtensionRunner | undefined): void => {
 		{
 			getModel: () => undefined,
 			isIdle: () => true,
+			getGoalModeState: () => undefined,
 			abort: () => {},
 			hasPendingMessages: () => false,
 			shutdown: () => {},
@@ -526,6 +527,7 @@ describe("createAgentSession credential_disabled subscription", () => {
 				{
 					getModel: () => undefined,
 					isIdle: () => true,
+					getGoalModeState: () => undefined,
 					abort: () => {},
 					hasPendingMessages: () => false,
 					shutdown: () => {},
