@@ -621,7 +621,7 @@ function buildSessionMetadata(
 		if (typeof accountUuid === "string" && accountUuid.length > 0) {
 			userId.account_uuid = accountUuid;
 			// Claude Code's `device_id` is a stable 64-hex install identifier. Use
-			// omp's persistent install id as the root instead of deriving it from
+			// OMPx's persistent install id as the root instead of deriving it from
 			// `account_uuid`: logging into a different Claude account on the same
 			// install should not make the device look new.
 			userId.device_id = crypto
@@ -2918,7 +2918,7 @@ export class AgentSession {
 	 * `metadata.user_id` shaped like real Claude Code's `getAPIMetadata` output:
 	 * `{ session_id, account_uuid, device_id }`. `account_uuid` is included only
 	 * when an Anthropic OAuth credential with a known account UUID is loaded;
-	 * `device_id` is derived from the persistent omp install id. Resolving live
+	 * `device_id` is derived from the persistent OMPx install id. Resolving live
 	 * keeps the value in sync with auth-state changes (login/logout, token
 	 * refresh that surfaces a new account uuid) without needing to re-call
 	 * `#syncAgentSessionId()` on every such event.

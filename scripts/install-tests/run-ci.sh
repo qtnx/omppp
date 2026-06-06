@@ -15,19 +15,19 @@ section() {
 }
 
 smoke_cli() {
-   local omp_bin="$1"
+   local ompx_bin="$1"
    local runtime_dir
    runtime_dir="$(mktemp -d "$WORK_DIR/compiled-runtime.XXXXXX")"
-   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" --version
-   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" --help >/dev/null
-   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" stats --summary >/dev/null
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$ompx_bin" --version
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$ompx_bin" --help >/dev/null
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$ompx_bin" stats --summary >/dev/null
    # Spawns the stats sync worker via `new Worker(...)` and waits for a pong.
    # Regression probe for #1011 (browser tab worker) and #1027 (stats sync
    # worker) — both broke silently in compiled binaries because the `with
    # { type: "file" }` import pattern only copies the worker as a raw asset
    # without bundling its imports. `stats --summary` doesn't catch this on a
    # fresh install (no session files = no Worker spawn).
-   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" --smoke-test
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$ompx_bin" --smoke-test
 }
 
 find_tarball() {
@@ -51,8 +51,8 @@ bun --cwd=packages/coding-agent run build
 
 BINARY_DIR="$WORK_DIR/binary-bin"
 mkdir -p "$BINARY_DIR"
-cp packages/coding-agent/dist/omp "$BINARY_DIR/omp"
-smoke_cli "$BINARY_DIR/omp"
+cp packages/coding-agent/dist/ompx "$BINARY_DIR/ompx"
+smoke_cli "$BINARY_DIR/ompx"
 
 section "Source install smoke"
 SOURCE_BUN_HOME="$WORK_DIR/bun-source"
@@ -60,7 +60,7 @@ SOURCE_BUN_HOME="$WORK_DIR/bun-source"
    export BUN_INSTALL="$SOURCE_BUN_HOME"
    export PATH="$BUN_INSTALL/bin:$PATH"
    bun --cwd="$ROOT_DIR/packages/coding-agent" link
-   smoke_cli "$BUN_INSTALL/bin/omp"
+   smoke_cli "$BUN_INSTALL/bin/ompx"
 )
 
 section "Tarball install smoke"
@@ -146,7 +146,7 @@ mkdir -p "$TARBALL_APP_DIR"
       echo "Platform leaf package not installed: $leaf_dir"
       exit 1
    }
-   smoke_cli ./node_modules/.bin/omp
+   smoke_cli ./node_modules/.bin/ompx
 )
 
 echo ""

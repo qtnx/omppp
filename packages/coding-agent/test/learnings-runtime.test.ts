@@ -439,7 +439,7 @@ describe("live learnings runtime", () => {
 		);
 		const writerSpy = vi
 			.spyOn(taskExecutor, "runSubprocess")
-			.mockResolvedValueOnce(agentWriterResult("Always rebuild the global omp binary after applying a fix."));
+			.mockResolvedValueOnce(agentWriterResult("Always rebuild the global OMPx binary after applying a fix."));
 
 		startLearningStartupTask({
 			session: fx.session,
@@ -454,7 +454,7 @@ describe("live learnings runtime", () => {
 			messages: [
 				{
 					role: "user",
-					content: "Sau khi fix xong thì luôn rebuild lại global omp binary.",
+					content: "Sau khi fix xong thì luôn rebuild lại global OMPx binary.",
 					attribution: "user",
 					timestamp: Date.now(),
 				},

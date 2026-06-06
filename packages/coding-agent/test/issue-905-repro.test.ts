@@ -1,7 +1,7 @@
 /**
  * Regression test for issue #905.
  *
- * `omp --list-models` did not include providers contributed by extensions
+ * `ompx --list-models` did not include providers contributed by extensions
  * (via `pi.registerProvider(...)`), regardless of whether the extension was
  * supplied via `-e <path>` or configured under `extensions:` in the user
  * settings. The `--list-models` short-circuit in `runRootCommand` exited

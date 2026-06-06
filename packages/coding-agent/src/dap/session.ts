@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import * as timers from "node:timers/promises";
-import { logger, ptree, untilAborted } from "@oh-my-pi/pi-utils";
+import { APP_DISPLAY_NAME, APP_NAME, logger, ptree, untilAborted } from "@oh-my-pi/pi-utils";
 import { NON_INTERACTIVE_ENV } from "../exec/non-interactive-env";
 import { DapClient } from "./client";
 import type {
@@ -1051,8 +1051,8 @@ export class DapSessionManager {
 
 	#buildInitializeArguments(adapter: DapResolvedAdapter): DapInitializeArguments {
 		return {
-			clientID: "omp",
-			clientName: "Oh My Pi",
+			clientID: APP_NAME,
+			clientName: APP_DISPLAY_NAME,
 			adapterID: adapter.name,
 			locale: "en-US",
 			linesStartAt1: true,

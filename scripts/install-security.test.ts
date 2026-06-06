@@ -6,6 +6,7 @@ import * as path from "node:path";
 const repoRoot = path.join(import.meta.dir, "..");
 const shellInstallerPath = path.join(repoRoot, "scripts", "install.sh");
 const powershellInstallerPath = path.join(repoRoot, "scripts", "install.ps1");
+const standardConfigPath = path.join(repoRoot, "packages", "coding-agent", "examples", "standard-config.yml");
 const powershellCommand = findExecutable(["pwsh", "powershell"]);
 const describePowerShell = powershellCommand ? describe : describe.skip;
 
@@ -27,6 +28,36 @@ function findExecutable(names: readonly string[]): string | null {
 	}
 	return null;
 }
+function normalizeConfig(text: string): string {
+	return `${text.replace(/\r\n/g, "\n").trimEnd()}\n`;
+}
+
+async function readStandardConfig(): Promise<string> {
+	return normalizeConfig(await Bun.file(standardConfigPath).text());
+}
+
+async function readShellInstallerConfigSeed(): Promise<string> {
+	const installer = await Bun.file(shellInstallerPath).text();
+	const match = installer.match(/cat > "\$config_file" <<'EOF_CONFIG'\n([\s\S]*?)\nEOF_CONFIG/);
+	if (!match) throw new Error("Could not find shell installer standard config seed");
+	return normalizeConfig(match[1]);
+}
+
+async function readPowerShellInstallerConfigSeed(): Promise<string> {
+	const installer = await Bun.file(powershellInstallerPath).text();
+	const match = installer.match(/@'\n([\s\S]*?)\n'@ \| Set-Content -Path \$ConfigFile -Encoding UTF8/);
+	if (!match) throw new Error("Could not find PowerShell installer standard config seed");
+	return normalizeConfig(match[1]);
+}
+
+function shellConfigPath(root: string): string {
+	return path.join(root, "home", ".omp", "agent", "config.yml");
+}
+
+function powerShellConfigPath(root: string): string {
+	return path.join(root, "profile", ".omp", "agent", "config.yml");
+}
+
 
 async function writeExecutable(filePath: string, content: string): Promise<void> {
 	await Bun.write(filePath, content);
@@ -34,7 +65,7 @@ async function writeExecutable(filePath: string, content: string): Promise<void>
 }
 
 async function createFakeInstallerTools(binaryContent: string, checksum: string): Promise<{ root: string; installDir: string }> {
-	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-install-test-"));
+	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ompx-install-test-"));
 	const binDir = path.join(root, "bin");
 	const installDir = path.join(root, "install");
 	await fs.promises.mkdir(binDir, { recursive: true });
@@ -70,11 +101,11 @@ while [ $# -gt 0 ]; do
 done
 case "$url" in
   */releases/latest) content='{"tag_name":"v-test"}' ;;
-  */releases/download/v-test/SHA256SUMS) content='1111111111111111111111111111111111111111111111111111111111111111  omp-darwin-arm64
-${checksum}  omp-linux-x64
-2222222222222222222222222222222222222222222222222222222222222222  omp-linux-arm64
+  */releases/download/v-test/SHA256SUMS) content='1111111111111111111111111111111111111111111111111111111111111111  ompx-darwin-arm64
+${checksum}  ompx-linux-x64
+2222222222222222222222222222222222222222222222222222222222222222  ompx-linux-arm64
 ' ;;
-  */releases/download/v-test/omp-linux-x64) content='${binaryContent}' ;;
+  */releases/download/v-test/ompx-linux-x64) content='${binaryContent}' ;;
   *) exit 22 ;;
 esac
 if [ -n "$out" ]; then
@@ -87,18 +118,22 @@ fi
 
 	return { root, installDir };
 }
-
 async function runShellInstaller(
 	root: string,
 	installDir: string,
 	args: string[] = ["--binary"],
+	extraEnv: Record<string, string> = {},
 ): Promise<{ exitCode: number; output: string }> {
+	const homeDir = path.join(root, "home");
+	await fs.promises.mkdir(homeDir, { recursive: true });
 	const proc = Bun.spawn(["sh", shellInstallerPath, ...args], {
 		cwd: repoRoot,
 		env: {
 			...process.env,
 			PATH: `${path.join(root, "bin")}:${process.env.PATH ?? ""}`,
 			PI_INSTALL_DIR: installDir,
+			HOME: homeDir,
+			...extraEnv,
 		},
 		stdout: "pipe",
 		stderr: "pipe",
@@ -116,6 +151,7 @@ async function runPowerShellInstaller(
 	installDir: string,
 	baseUrl: string,
 	args: string[] = ["-Binary"],
+	extraEnv: Record<string, string> = {},
 ): Promise<{ exitCode: number; output: string }> {
 	if (!powershellCommand) throw new Error("PowerShell is not available");
 	const userProfile = path.join(root, "profile");
@@ -132,6 +168,9 @@ async function runPowerShellInstaller(
 			PI_RELEASE_DOWNLOAD_BASE_URL: `${baseUrl}/download`,
 			USERPROFILE: userProfile,
 			LOCALAPPDATA: localAppData,
+			OMPX_INSTALL_SKIP_PATH_UPDATE: "1",
+			OMPX_INSTALL_SKIP_BASH_CONFIG: "1",
+			...extraEnv,
 		},
 		stdout: "pipe",
 		stderr: "pipe",
@@ -186,6 +225,13 @@ describe("installer supply-chain hardening", () => {
 		expect(powershellInstaller).not.toContain("bun.sh/install.ps1");
 	});
 
+	it("keeps installer standard config seeds in sync with the canonical template", async () => {
+		const standardConfig = await readStandardConfig();
+
+		expect(await readShellInstallerConfigSeed()).toBe(standardConfig);
+		expect(await readPowerShellInstallerConfigSeed()).toBe(standardConfig);
+	});
+
 	it("installs a release binary only after matching SHA256SUMS", async () => {
 		const binaryContent = "safe release binary";
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
@@ -194,8 +240,39 @@ describe("installer supply-chain hardening", () => {
 			const result = await runShellInstaller(root, installDir);
 
 			expect(result.exitCode).toBe(0);
-			expect(result.output).toContain("Verifying omp-linux-x64 checksum");
-			expect(await Bun.file(path.join(installDir, "omp")).text()).toBe(binaryContent);
+			expect(result.output).toContain("Verifying ompx-linux-x64 checksum");
+			expect(await Bun.file(path.join(installDir, "ompx")).text()).toBe(binaryContent);
+			expect(normalizeConfig(await Bun.file(shellConfigPath(root)).text())).toBe(await readStandardConfig());
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("does not overwrite an existing shell installer config", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(configPath, "theme:\n  dark: custom\n");
+			const result = await runShellInstaller(root, installDir);
+
+			expect(result.exitCode).toBe(0);
+			expect(await Bun.file(configPath).text()).toBe("theme:\n  dark: custom\n");
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("skips shell installer config seeding when requested", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		try {
+			const result = await runShellInstaller(root, installDir, ["--binary"], { OMPX_INSTALL_SKIP_STANDARD_CONFIG: "1" });
+
+			expect(result.exitCode).toBe(0);
+			expect(await Bun.file(shellConfigPath(root)).exists()).toBe(false);
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
@@ -209,8 +286,8 @@ describe("installer supply-chain hardening", () => {
 			const result = await runShellInstaller(root, installDir, []);
 
 			expect(result.exitCode).toBe(0);
-			expect(result.output).toContain("Verifying omp-linux-x64 checksum");
-			expect(await Bun.file(path.join(installDir, "omp")).text()).toBe(binaryContent);
+			expect(result.output).toContain("Verifying ompx-linux-x64 checksum");
+			expect(await Bun.file(path.join(installDir, "ompx")).text()).toBe(binaryContent);
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
@@ -218,13 +295,13 @@ describe("installer supply-chain hardening", () => {
 
 	it("preserves an existing install when the checksum does not match", async () => {
 		const { root, installDir } = await createFakeInstallerTools("tampered binary", "0".repeat(64));
-		const installedPath = path.join(installDir, "omp");
+		const installedPath = path.join(installDir, "ompx");
 		try {
 			await Bun.write(installedPath, "previous binary");
 			const result = await runShellInstaller(root, installDir);
 
 			expect(result.exitCode).toBe(1);
-			expect(result.output).toContain("Checksum verification failed for omp-linux-x64");
+			expect(result.output).toContain("Checksum verification failed for ompx-linux-x64");
 			expect(await Bun.file(installedPath).text()).toBe("previous binary");
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
@@ -237,13 +314,72 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 		const binaryContent = "safe windows release binary";
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
-		const server = startReleaseServer("omp-windows-x64.exe", binaryContent, checksum);
+		const server = startReleaseServer("ompx-windows-x64.exe", binaryContent, checksum);
 		try {
 			const result = await runPowerShellInstaller(root, installDir, server.url);
 
 			expect(result.exitCode).toBe(0);
-			expect(result.output).toContain("Verifying omp-windows-x64.exe checksum");
-			expect(await Bun.file(path.join(installDir, "omp.exe")).text()).toBe(binaryContent);
+			expect(result.output).toContain("Verifying ompx-windows-x64.exe checksum");
+			expect(await Bun.file(path.join(installDir, "ompx.exe")).text()).toBe(binaryContent);
+			expect(normalizeConfig(await Bun.file(powerShellConfigPath(root)).text())).toBe(await readStandardConfig());
+		} finally {
+			server.stop();
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("does not overwrite an existing PowerShell installer config", async () => {
+		const binaryContent = "safe windows release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const server = startReleaseServer("ompx-windows-x64.exe", binaryContent, checksum);
+		const configPath = powerShellConfigPath(root);
+		try {
+			await Bun.write(configPath, "theme:\n  dark: custom\n");
+			const result = await runPowerShellInstaller(root, installDir, server.url);
+
+			expect(result.exitCode).toBe(0);
+			expect(await Bun.file(configPath).text()).toBe("theme:\n  dark: custom\n");
+		} finally {
+			server.stop();
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("skips PowerShell installer config seeding when requested", async () => {
+		const binaryContent = "safe windows release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const server = startReleaseServer("ompx-windows-x64.exe", binaryContent, checksum);
+		try {
+			const result = await runPowerShellInstaller(root, installDir, server.url, ["-Binary"], {
+				OMPX_INSTALL_SKIP_STANDARD_CONFIG: "1",
+			});
+
+			expect(result.exitCode).toBe(0);
+			expect(await Bun.file(powerShellConfigPath(root)).exists()).toBe(false);
+		} finally {
+			server.stop();
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("writes detected bash shell path to PowerShell installer config.yml", async () => {
+		const binaryContent = "safe windows release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const server = startReleaseServer("ompx-windows-x64.exe", binaryContent, checksum);
+		const bashPath = path.join(root, "bin", "bash.exe");
+		try {
+			await writeExecutable(bashPath, "#!/bin/sh\nexit 0\n");
+			const result = await runPowerShellInstaller(root, installDir, server.url, ["-Binary"], {
+				OMPX_INSTALL_SKIP_BASH_CONFIG: "0",
+			});
+
+			expect(result.exitCode).toBe(0);
+			const config = await Bun.file(powerShellConfigPath(root)).text();
+			expect(config).toContain("shellPath: '");
+			expect(await Bun.file(path.join(root, "profile", ".omp", "agent", "settings.json")).exists()).toBe(false);
 		} finally {
 			server.stop();
 			await fs.promises.rm(root, { recursive: true, force: true });
@@ -254,13 +390,13 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 		const binaryContent = "safe windows fallback binary";
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
-		const server = startReleaseServer("omp-windows-x64.exe", binaryContent, checksum);
+		const server = startReleaseServer("ompx-windows-x64.exe", binaryContent, checksum);
 		try {
 			const result = await runPowerShellInstaller(root, installDir, server.url, []);
 
 			expect(result.exitCode).toBe(0);
-			expect(result.output).toContain("Verifying omp-windows-x64.exe checksum");
-			expect(await Bun.file(path.join(installDir, "omp.exe")).text()).toBe(binaryContent);
+			expect(result.output).toContain("Verifying ompx-windows-x64.exe checksum");
+			expect(await Bun.file(path.join(installDir, "ompx.exe")).text()).toBe(binaryContent);
 		} finally {
 			server.stop();
 			await fs.promises.rm(root, { recursive: true, force: true });
@@ -269,14 +405,14 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 
 	it("preserves an existing install when the checksum does not match", async () => {
 		const { root, installDir } = await createFakeInstallerTools("tampered windows binary", "0".repeat(64));
-		const installedPath = path.join(installDir, "omp.exe");
-		const server = startReleaseServer("omp-windows-x64.exe", "tampered windows binary", "0".repeat(64));
+		const installedPath = path.join(installDir, "ompx.exe");
+		const server = startReleaseServer("ompx-windows-x64.exe", "tampered windows binary", "0".repeat(64));
 		try {
 			await Bun.write(installedPath, "previous windows binary");
 			const result = await runPowerShellInstaller(root, installDir, server.url);
 
 			expect(result.exitCode).toBe(1);
-			expect(result.output).toContain("Checksum verification failed for omp-windows-x64.exe");
+			expect(result.output).toContain("Checksum verification failed for ompx-windows-x64.exe");
 			expect(await Bun.file(installedPath).text()).toBe("previous windows binary");
 		} finally {
 			server.stop();

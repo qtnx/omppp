@@ -132,7 +132,7 @@ describe("flushGrievances", () => {
 		expect(headers?.authorization).toBe("Bearer secret-token");
 
 		const body = JSON.parse(String(capturedInit?.body));
-		expect(body.agent?.name).toBe("omp");
+		expect(body.agent?.name).toBe("ompx");
 		expect(typeof body.agent?.version).toBe("string");
 		expect(body.host).toBeUndefined();
 		expect(typeof body.platform).toBe("string");
@@ -144,7 +144,7 @@ describe("flushGrievances", () => {
 		]);
 
 		// Rows are retained for inspection — `pushed=1` flips, but the data
-		// stays so users can browse what they've shipped via `omp grievances`.
+		// stays so users can browse what they've shipped via `ompx grievances`.
 		expect(selectIds(db)).toEqual([1, 2]);
 		expect(selectPushedIds(db)).toEqual([1, 2]);
 		expect(selectUnpushedIds(db)).toEqual([]);

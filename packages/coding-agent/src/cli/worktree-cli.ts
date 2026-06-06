@@ -1,5 +1,5 @@
 /**
- * CLI handler for `omp worktree` — list and clean up agent-managed worktrees.
+ * CLI handler for `ompx worktree` — list and clean up agent-managed worktrees.
  *
  * Layout under `~/.omp/wt/`:
  *
@@ -31,7 +31,7 @@ export interface WorktreeEntry {
 	parentRepo?: string;
 	/** Branch name extracted from the parent's tracking file, when available. */
 	branch?: string;
-	/** When set, the entry is unhealthy and `omp worktree clear` will remove it. */
+	/** When set, the entry is unhealthy and `ompx worktree clear` will remove it. */
 	orphanReason?: string;
 }
 

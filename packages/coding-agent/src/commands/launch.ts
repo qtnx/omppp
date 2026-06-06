@@ -10,7 +10,7 @@ import { runRootCommand } from "../main";
 import { prepareAcpTerminalAuthArgs } from "../modes/acp/terminal-auth";
 
 export default class Index extends Command {
-	static description = "AI coding assistant";
+	static description = "OMPx, an upgrade for OMP";
 	static hidden = true;
 
 	static args = {

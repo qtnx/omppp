@@ -1,7 +1,7 @@
 /**
  * Regression test for issue #1234.
  *
- * `omp acp` must not auto-discover host `.mcp.json` servers when creating a
+ * `ompx acp` must not auto-discover host `.mcp.json` servers when creating a
  * session for an ACP client. MCP server ownership belongs entirely to the ACP
  * client (`session/new.mcpServers` → `AcpAgent#configureMcpServers`); letting
  * `createAgentSession` run on-disk discovery in parallel registers host MCP

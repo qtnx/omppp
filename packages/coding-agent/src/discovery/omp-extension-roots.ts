@@ -124,7 +124,7 @@ async function isDirectory(p: string): Promise<boolean> {
  * 2. Project `<cwd>/.omp/settings.json#extensions`
  * 3. User `~/.omp/agent/settings.json#extensions`
  * 4. Enabled plugins installed under `<plugins>/node_modules/` (e.g. via
- *    `omp install <pkg>` / `omp plugin install` / `omp plugin link`)
+ *    `ompx install <pkg>` / `ompx plugin install` / `ompx plugin link`)
  *
  * Only entries that resolve to a directory on disk are returned; file
  * entrypoints contribute zero sub-discovery surface and are filtered out.
@@ -172,7 +172,7 @@ export async function listOmpExtensionRoots(ctx: LoadContext): Promise<OmpExtens
  * `prompts/`, and `.mcp.json` are wired into discovery — mirrors how
  * `getAllPluginExtensionPaths` already feeds the extension factory loader.
  *
- * Marketplace and `omp plugin link` installs write to the plugin manager's
+ * Marketplace and `ompx plugin link` installs write to the plugin manager's
  * `node_modules` (or symlink into it) rather than to `extensions:` in
  * settings; without this branch the sub-discovery provider would still miss
  * everything those install paths produce.

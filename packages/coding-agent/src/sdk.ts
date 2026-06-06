@@ -1539,7 +1539,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 
 			// Context GC is shipped as a plugin package for external reuse, but loaded natively in
-			// bundled omp so users get durable unload/recall without `omp plugin install`. This runs
+			// bundled OMPx so users get durable unload/recall without `ompx plugin install`. This runs
 			// after user inline factories so wrappers that set the same label are deduped too.
 			if (
 				!minimalExtensionRuntime &&

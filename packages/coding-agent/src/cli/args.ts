@@ -2,7 +2,7 @@
  * CLI argument parsing and help display
  */
 import { type Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
-import { APP_NAME, CONFIG_DIR_NAME, logger } from "@oh-my-pi/pi-utils";
+import { APP_DISPLAY_NAME, APP_NAME, APP_TAGLINE, CONFIG_DIR_NAME, logger } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { parseEffort } from "../thinking";
 import { BUILTIN_TOOLS } from "../tools";
@@ -349,13 +349,13 @@ ${chalk.bold("Workspace Options:")}
   --add-dir <path>           Extra working directory, tagged by basename (repeatable)
 
 ${chalk.bold("Useful Commands:")}
-  omp agents unpack           - Export bundled subagents to ~/.omp/agent/agents (default)
-  omp agents unpack --project - Export bundled subagents to ./.omp/agents`;
+  ${APP_NAME} agents unpack           - Export bundled subagents to ~/.omp/agent/agents (default)
+  ${APP_NAME} agents unpack --project - Export bundled subagents to ./.omp/agents`;
 }
 
 export function printHelp(): void {
 	process.stdout.write(
-		`${chalk.bold(APP_NAME)} - AI coding assistant\n\n` +
+		`${chalk.bold(APP_DISPLAY_NAME)} - ${APP_TAGLINE}\n` +
 			`Run ${APP_NAME} --help for full command and option details.\n` +
 			`Run ${APP_NAME} <command> --help for command-specific help.\n\n` +
 			`${getExtraHelpText()}\n`,

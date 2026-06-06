@@ -25,7 +25,7 @@ export interface AuthBrokerClientConfig {
 	token: string;
 }
 
-/** Path to the local bearer token file. Created on the broker host by `omp auth-broker token`. */
+/** Path to the local bearer token file. Created on the broker host by `ompx auth-broker token`. */
 export function getAuthBrokerTokenFilePath(): string {
 	return path.join(getConfigRootDir(), "auth-broker.token");
 }

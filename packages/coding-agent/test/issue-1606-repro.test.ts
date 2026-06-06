@@ -20,7 +20,7 @@ import { createTinyTitleSubprocess, smokeTestTinyTitleWorker, TINY_WORKER_ARG } 
 describe("issue #1606 — tiny model lives in an isolated subprocess", () => {
 	it("ping/pongs through the spawned worker subprocess and tears it down cleanly", async () => {
 		// `smokeTestTinyTitleWorker` is the runtime probe wired into
-		// `omp --smoke-test`: it spawns the worker subprocess via
+		// `ompx --smoke-test`: it spawns the worker subprocess via
 		// `Bun.spawn`, sends a ping over the IPC channel, awaits the pong,
 		// then SIGKILLs the child. If anyone reverts the worker to an
 		// in-process `new Worker(...)` thread or drops the `--tiny-worker`

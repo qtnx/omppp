@@ -6,8 +6,8 @@ import { getChangelogPath, getPackageDir, walkUpForPackageDir } from "../src/con
 import { parseChangelog } from "../src/utils/changelog";
 
 /**
- * Regression: omp startup parsed the host project's `CHANGELOG.md` as if it
- * were omp's, then persisted `lastChangelogVersion` to the global config. Root
+ * Regression: OMPx startup parsed the host project's `CHANGELOG.md` as if it
+ * were OMPx's, then persisted `lastChangelogVersion` to the global config. Root
  * cause was `getPackageDir()` falling back to `getProjectDir()` (the user's
  * cwd) when the walk-up from `import.meta.dir` couldn't find a `package.json`
  * — which happens in `bun --compile` binaries where `import.meta.dir`
@@ -46,7 +46,7 @@ describe("issue #1423 — package-dir lookup must not fall back to cwd", () => {
 		projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-issue-1423-"));
 		fs.writeFileSync(
 			path.join(projectDir, "CHANGELOG.md"),
-			"# Changelog\n\n## [99.0.0] - 2099-01-01\n\n### Added\n\n- Host project entry, NOT omp's.\n",
+			"# Changelog\n\n## [99.0.0] - 2099-01-01\n\n### Added\n\n- Host project entry, NOT OMPx's.\n",
 		);
 		// Critical: no package.json in projectDir — only CHANGELOG.md.
 		process.chdir(projectDir);
@@ -92,14 +92,14 @@ describe("issue #1423 — package-dir lookup must not fall back to cwd", () => {
 	it("getChangelogPath()'s real-tree result never points under host cwd", () => {
 		const changelogPath = getChangelogPath();
 		// In dev/test runs from the workspace, walk-up succeeds and resolves
-		// to omp's own CHANGELOG.md. The host project's `cwd` MUST not bleed
+		// to OMPx's own CHANGELOG.md. The host project's `cwd` MUST not bleed
 		// into the resolution either way.
 		if (changelogPath !== undefined) {
 			expect(changelogPath.startsWith(projectDir)).toBe(false);
 		}
 	});
 
-	it("host project's CHANGELOG.md is never parsed as omp's", async () => {
+	it("host project's CHANGELOG.md is never parsed as OMPx's", async () => {
 		const changelogPath = getChangelogPath();
 		const entries = await parseChangelog(changelogPath);
 		const hostEntry = entries.find(e => e.major === 99 && e.minor === 0 && e.patch === 0);

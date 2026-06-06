@@ -3,6 +3,8 @@
 ## [Unreleased]
 ### Changed
 
+- Rebranded the CLI invocation from `omp` to `ompx`, updated release/install binary names, and seeded fresh installs with the standard `~/.omp/agent/config.yml` backup.
+
 - Disabled OMP-compatible Claude hook discovery from `.claude/hooks/**` and Cursor rule prompt injection by default; enable `hooks.enableClaudeUser` / `hooks.enableClaudeProject` or `rules.enableCursorUser` / `rules.enableCursorProject` from trusted operator config or runtime overrides to opt back in.
 
 ### Fixed

@@ -25,7 +25,7 @@ import {
 	TERMINAL,
 	Text,
 } from "@oh-my-pi/pi-tui";
-import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { APP_DISPLAY_NAME, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import * as z from "zod/v4";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
@@ -430,7 +430,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		const method = this.session.settings.get("ask.notify");
 		if (method === "off") return;
 		TERMINAL.sendNotification({
-			title: "Oh My Pi",
+			title: APP_DISPLAY_NAME,
 			body: "Waiting for input",
 			type: "ask",
 			urgency: "normal",

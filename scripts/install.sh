@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-# OMP Coding Agent Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh
+# OMPx Coding Agent Installer
+# Usage: curl -fsSL https://raw.githubusercontent.com/qtnx/omppp/main/scripts/install.sh | sh
 #
 # Options:
 #   --source       Install via bun (requires bun to already be installed)
@@ -10,7 +10,7 @@ set -e
 #   --ref <ref>    Install specific tag/commit/branch
 #   -r <ref>       Shorthand for --ref
 
-REPO="can1357/oh-my-pi"
+REPO="qtnx/omppp"
 PACKAGE="@oh-my-pi/pi-coding-agent"
 INSTALL_DIR="${PI_INSTALL_DIR:-$HOME/.local/bin}"
 MIN_BUN_VERSION="1.3.14"
@@ -226,6 +226,84 @@ verify_release_checksum() {
     fi
 }
 
+install_standard_config() {
+    if [ "${OMPX_INSTALL_SKIP_STANDARD_CONFIG:-}" = "1" ]; then
+        return
+    fi
+
+    config_dir="${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}"
+    config_file="${config_dir}/config.yml"
+    if [ -e "$config_file" ]; then
+        echo "✓ Existing config kept at ${config_file}"
+        return
+    fi
+
+    mkdir -p "$config_dir"
+    cat > "$config_file" <<'EOF_CONFIG'
+# OMPx standard agent config.
+# Safe backup of ~/.omp/agent/config.yml for bootstrapping new machines.
+# Copy to ~/.omp/agent/config.yml before first run, or let the installer seed it
+# when the target config file does not already exist.
+modelRoles:
+  default: openai-codex/gpt-5.5:xhigh
+  task: anthropic/claude-opus-4-8
+  smol: anthropic/claude-sonnet-4-6
+  slow: openai-codex/gpt-5.5:high
+  plan: anthropic/claude-opus-4-8:xhigh
+  designer: anthropic/claude-opus-4-8
+  commit: openai-codex/gpt-5.5:low
+task:
+  showResolvedModelBadge: true
+  agentModelOverrides:
+    agent-creator: anthropic/
+    code-architect: pi/plan
+    code-explorer: pi/smol
+    code-reviewer: openai-codex/codex-auto-review
+    code-simplifier: anthropic/claude-opus-4-8
+    codex-rescue: openai-codex/gpt-5.5:medium
+    designer: anthropic/claude-opus-4-8:xhigh
+    oracle: openai-codex/gpt-5.5:xhigh
+    plan: openai-codex/gpt-5.5:xhigh
+    quick_task: openai-codex/gpt-5.5:low
+    reviewer: openai-codex/gpt-5.5:xhigh
+    task: openai-codex/gpt-5.5:medium
+workflow:
+  enabled: true
+dev:
+  autoqa:
+    consent: denied
+memory:
+  backend: hindsight
+learning:
+  enabled: true
+  classifierModels:
+    - openai-codex/gpt-5.4-mini
+    - openai-codex/gpt-5.3-codex-spark
+    - anthropic/claude-haiku-4-5
+    - pi/smol
+    - pi/default
+hindsight:
+  apiUrl: http://localhost:8888
+hideThinkingBlock: false
+providers:
+  webSearch: perplexity
+symbolPreset: unicode
+theme:
+  dark: titanium
+setupVersion: 1
+retry:
+  fallbackChains:
+    task:
+      - anthropic/claude-opus-4-8
+      - openai-codex/gpt-5.5:low
+    smol:
+      - openai-codex/gpt-5.3-codex-spark
+      - anthropic/claude-haiku-4-5
+EOF_CONFIG
+    chmod 600 "$config_file" 2>/dev/null || true
+    echo "✓ Seeded OMPx standard config at ${config_file}"
+}
+
 # Install via bun
 install_via_bun() {
     echo "Installing via bun..."
@@ -235,7 +313,7 @@ install_via_bun() {
             exit 1
         fi
 
-        TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/omp-install.XXXXXX")"
+        TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ompx-install.XXXXXX")"
         trap 'rm -rf "$TMP_DIR"' EXIT
 
         if git clone --depth 1 --branch "$REF" "https://github.com/${REPO}.git" "$TMP_DIR" >/dev/null 2>&1; then
@@ -265,9 +343,10 @@ install_via_bun() {
             exit 1
         }
     fi
+    install_standard_config
     echo ""
-    echo "✓ Installed omp via bun"
-    echo "Run 'omp' to get started!"
+    echo "✓ Installed OMPx via bun"
+    echo "Run 'ompx' to get started!"
 }
 
 # Install binary from GitHub releases
@@ -288,7 +367,7 @@ install_binary() {
         *)             echo "Unsupported architecture: $ARCH"; exit 1 ;;
     esac
 
-    BINARY="omp-${PLATFORM}-${ARCH}"
+    BINARY="ompx-${PLATFORM}-${ARCH}"
     # Get release tag
     if [ -n "$REF" ]; then
         echo "Fetching release $REF..."
@@ -316,8 +395,8 @@ install_binary() {
     echo "Using version: $LATEST"
 
     mkdir -p "$INSTALL_DIR"
-    TMP_BINARY="$(mktemp "${INSTALL_DIR}/.omp.XXXXXX")"
-    TMP_CHECKSUMS="$(mktemp "${INSTALL_DIR}/.omp-checksums.XXXXXX")"
+    TMP_BINARY="$(mktemp "${INSTALL_DIR}/.ompx.XXXXXX")"
+    TMP_CHECKSUMS="$(mktemp "${INSTALL_DIR}/.ompx-checksums.XXXXXX")"
     trap 'rm -f "$TMP_BINARY" "$TMP_CHECKSUMS"' EXIT
 
     # Download binary, verify its release checksum, then install atomically.
@@ -325,15 +404,16 @@ install_binary() {
     echo "Downloading ${BINARY}..."
     curl -fsSL "$BINARY_URL" -o "$TMP_BINARY"
     verify_release_checksum "$BINARY" "$TMP_BINARY" "$LATEST" "$TMP_CHECKSUMS"
-    mv "$TMP_BINARY" "${INSTALL_DIR}/omp"
-    chmod +x "${INSTALL_DIR}/omp"
+    mv "$TMP_BINARY" "${INSTALL_DIR}/ompx"
+    chmod +x "${INSTALL_DIR}/ompx"
+    install_standard_config
     echo ""
-    echo "✓ Installed omp to ${INSTALL_DIR}/omp"
+    echo "✓ Installed OMPx to ${INSTALL_DIR}/ompx"
 
     # Check if in PATH
     case ":$PATH:" in
-        *":$INSTALL_DIR:"*) echo "Run 'omp' to get started!" ;;
-        *) echo "Add ${INSTALL_DIR} to your PATH, then run 'omp'" ;;
+        *":$INSTALL_DIR:"*) echo "Run 'ompx' to get started!" ;;
+        *) echo "Add ${INSTALL_DIR} to your PATH, then run 'ompx'" ;;
     esac
 }
 

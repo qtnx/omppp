@@ -46,7 +46,7 @@
       "name": "@oh-my-pi/pi-coding-agent",
       "version": "15.9.0",
       "bin": {
-        "omp": "src/cli.ts",
+        "ompx": "src/cli.ts",
       },
       "dependencies": {
         "@agentclientprotocol/sdk": "catalog:",

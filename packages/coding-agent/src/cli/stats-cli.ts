@@ -1,7 +1,7 @@
 /**
  * Stats CLI command handlers.
  *
- * Handles `omp stats` subcommand for viewing AI usage statistics.
+ * Handles `ompx stats` subcommand for viewing AI usage statistics.
  */
 
 import { APP_NAME, formatDuration, formatNumber, formatPercent } from "@oh-my-pi/pi-utils";

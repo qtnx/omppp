@@ -1,14 +1,14 @@
 /**
- * Centralized path helpers for omp config directories.
+ * Centralized path helpers for OMPx config directories.
  *
  * Uses PI_CONFIG_DIR (default ".omp") for the config root and
  * PI_CODING_AGENT_DIR to override the agent directory.
  *
  * On Linux, if XDG_DATA_HOME / XDG_STATE_HOME / XDG_CACHE_HOME environment
  * variables are set, paths are redirected to XDG-compliant locations under
- * $XDG_*_HOME/omp/. This requires running `omp config migrate` first to
+ * $XDG_*_HOME/omp/. This requires running `ompx config migrate` first to
  * move data to the new locations. No filesystem existence checks are performed
- * — if the env var is set, omp trusts that the migration has been done.
+ * — if the env var is set, OMPx trusts that the migration has been done.
  */
 
 import * as fs from "node:fs";
@@ -16,8 +16,17 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { engines, version } from "../package.json" with { type: "json" };
 
-/** App name (e.g. "omp") */
-export const APP_NAME: string = "omp";
+/** CLI executable name (e.g. "ompx") */
+export const APP_NAME: string = "ompx";
+
+/** Stable on-disk namespace kept as "omp" so OMPx upgrades reuse existing data. */
+export const APP_STORAGE_NAME: string = "omp";
+
+/** User-visible product brand. */
+export const APP_DISPLAY_NAME: string = "OMPx";
+
+/** Short product tagline for top-level help and package metadata. */
+export const APP_TAGLINE: string = "an upgrade for OMP";
 
 /** Config directory name (e.g. ".omp") */
 export const CONFIG_DIR_NAME: string = ".omp";
@@ -140,7 +149,7 @@ class DirResolver {
 				const value = process.env[envVar];
 				if (value) {
 					try {
-						const joined = path.join(value, APP_NAME);
+						const joined = path.join(value, APP_STORAGE_NAME);
 						if (fs.existsSync(joined)) {
 							return joined;
 						}
@@ -239,7 +248,7 @@ export function getLogsDir(): string {
 
 /** Get the path to a dated log file (~/.omp/logs/omp.YYYY-MM-DD.log). */
 export function getLogPath(date = new Date()): string {
-	return path.join(getLogsDir(), `${APP_NAME}.${date.toISOString().slice(0, 10)}.log`);
+	return path.join(getLogsDir(), `${APP_STORAGE_NAME}.${date.toISOString().slice(0, 10)}.log`);
 }
 
 /**
@@ -454,7 +463,7 @@ export function getCrashLogPath(agentDir?: string): string {
 
 /** Get the debug log path (~/.omp/agent/omp-debug.log). */
 export function getDebugLogPath(agentDir?: string): string {
-	return dirs.agentSubdir(agentDir, `${APP_NAME}-debug.log`, "state");
+	return dirs.agentSubdir(agentDir, `${APP_STORAGE_NAME}-debug.log`, "state");
 }
 
 // =============================================================================

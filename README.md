@@ -1,19 +1,19 @@
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="OMP++">
+  <img src="https://github.com/qtnx/omppp/blob/main/assets/hero.png?raw=true" alt="OMPx">
 </p>
 
-<h1 align="center">OMP++</h1>
+<h1 align="center">OMPx</h1>
 
 <p align="center">
-  <strong>A coding agent with the IDE wired in.</strong>
-  <strong><a href="https://omp.sh">omp.sh</a></strong>
+  <strong>an upgrade for OMP</strong>
+  <strong><a href="https://github.com/qtnx/omppp">github.com/qtnx/omppp</a></strong>
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent"><img src="https://img.shields.io/npm/v/@oh-my-pi/pi-coding-agent?style=flat&colorA=222222&colorB=CB3837" alt="npm version"></a>
-  <a href="https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-keep-E05735?style=flat&colorA=222222" alt="Changelog"></a>
-  <a href="https://github.com/can1357/oh-my-pi/actions"><img src="https://img.shields.io/github/actions/workflow/status/can1357/oh-my-pi/ci.yml?style=flat&colorA=222222&colorB=3FB950" alt="CI"></a>
-  <a href="https://github.com/can1357/oh-my-pi/blob/main/LICENSE"><img src="https://img.shields.io/github/license/can1357/oh-my-pi?style=flat&colorA=222222&colorB=58A6FF" alt="License"></a>
+  <a href="https://github.com/qtnx/omppp/blob/main/packages/coding-agent/CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-keep-E05735?style=flat&colorA=222222" alt="Changelog"></a>
+  <a href="https://github.com/qtnx/omppp/actions"><img src="https://img.shields.io/github/actions/workflow/status/qtnx/omppp/ci.yml?style=flat&colorA=222222&colorB=3FB950" alt="CI"></a>
+  <a href="https://github.com/qtnx/omppp/blob/main/LICENSE"><img src="https://img.shields.io/github/license/qtnx/omppp?style=flat&colorA=222222&colorB=58A6FF" alt="License"></a>
   <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&colorA=222222&logo=typescript&logoColor=white" alt="TypeScript"></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-DEA584?style=flat&colorA=222222&logo=rust&logoColor=white" alt="Rust"></a>
   <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat&colorA=222222" alt="Bun"></a>
@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  Fork of <a href="https://github.com/badlogic/pi-mono">Pi</a> by <a href="https://github.com/mariozechner">@mariozechner</a> 
+  OMPx is a qtnx-maintained upgrade of <a href="https://github.com/can1357/oh-my-pi">oh-my-pi</a>, which descends from <a href="https://github.com/badlogic/pi-mono">Pi</a> by <a href="https://github.com/mariozechner">@mariozechner</a>.
 </p>
 
 The most capable agent surface that ships. Continuously tuned by real-world use — complete out of the box, open all the way down.
@@ -33,7 +33,7 @@ The most capable agent surface that ships. Continuously tuned by real-world use 
 **macOS · Linux**
 
 ```sh
-curl -fsSL https://omp.sh/install | sh
+curl -fsSL https://raw.githubusercontent.com/qtnx/omppp/main/scripts/install.sh | sh
 ```
 
 **Bun (recommended)**
@@ -45,35 +45,37 @@ bun install -g @oh-my-pi/pi-coding-agent
 **Windows (PowerShell)**
 
 ```powershell
-irm https://omp.sh/install.ps1 | iex
+irm https://raw.githubusercontent.com/qtnx/omppp/main/scripts/install.ps1 | iex
 ```
 
 **Pinned versions (mise)**
 
 ```sh
-mise use -g github:can1357/oh-my-pi
+mise use -g github:qtnx/omppp
 ```
 
 macOS · Linux · Windows · bun ≥ 1.3.14
 
+The macOS/Linux and Windows installer scripts seed `~/.omp/agent/config.yml` with a config matching `packages/coding-agent/examples/standard-config.yml` on fresh machines and never overwrite an existing config. Set `OMPX_INSTALL_SKIP_STANDARD_CONFIG=1` to skip the seed. For direct Bun installs, copy that template manually before first run if you want the same starting config.
+
 ### Shell completions
 
-`omp` generates its own completion scripts for **bash**, **zsh**, and **fish** from the live command/flag metadata, so they never drift from the actual CLI. Subcommands, flags, and enum values complete statically; model names (`--model`, `--smol`, `--slow`, `--plan`) resolve against the bundled model catalog and `--resume` against your on-disk sessions.
+`ompx` generates its own completion scripts for **bash**, **zsh**, and **fish** from the live command/flag metadata, so they never drift from the actual CLI. Subcommands, flags, and enum values complete statically; model names (`--model`, `--smol`, `--slow`, `--plan`) resolve against the bundled model catalog and `--resume` against your on-disk sessions.
 
 ```sh
 # zsh — add to ~/.zshrc (or write the output into a file on your $fpath)
-eval "$(omp completions zsh)"
+eval "$(ompx completions zsh)"
 
 # bash — add to ~/.bashrc
-eval "$(omp completions bash)"
+eval "$(ompx completions bash)"
 
 # fish
-omp completions fish > ~/.config/fish/completions/omp.fish
+ompx completions fish > ~/.config/fish/completions/ompx.fish
 ```
 
 ## Every tool, _benchmaxxed_.
 
-Edits that land on the first attempt. Reads that summarize files instead of dumping their content. Searches that return instantly. Pick any model — omp will get it right.
+Edits that land on the first attempt. Reads that summarize files instead of dumping their content. Searches that return instantly. Pick any model — OMPx will get it right.
 
 | model            | metric       | what                                                                  |
 | ---------------- | ------------ | --------------------------------------------------------------------- |
@@ -91,7 +93,7 @@ Edits that land on the first attempt. Reads that summarize files instead of dump
 
 ## The Pi _you love_, with **batteries included**.
 
-Originally built on [Mario Zechner](https://github.com/mariozechner)'s wonderful [Pi](https://github.com/badlogic/pi-mono), omp adds everything you're missing.
+Originally built on [Mario Zechner](https://github.com/mariozechner)'s wonderful [Pi](https://github.com/badlogic/pi-mono), OMPx adds everything you're missing.
 
 ### 01 · Code execution w/ tool-calling
 
@@ -139,7 +141,7 @@ _[Watch the capture ↗](https://omp.sh/clips/web.mp4)_
 
 ### 07 · Unapologetically native. Even on Windows.
 
-Other agents shell out to rg, grep, find, and bash. On many machines those binaries don't exist, and on the ones where they do, every call costs a fork-exec round-trip. omp links the real implementations into the process. ripgrep, glob, find: in-process. brush is the bash, with sessions that survive across calls. The same omp binary runs on macOS, Linux, and Windows — no WSL bridge.
+Other agents shell out to rg, grep, find, and bash. On many machines those binaries don't exist, and on the ones where they do, every call costs a fork-exec round-trip. OMPx links the real implementations into the process. ripgrep, glob, find: in-process. brush is the bash, with sessions that survive across calls. The same `ompx` binary runs on macOS, Linux, and Windows — no WSL bridge.
 
 ### 08 · Code review with priorities and a verdict
 
@@ -159,15 +161,15 @@ The agent remembers your codebase between sessions. It writes facts mid-run with
 
 ### 12 · ACP: editor-drivable agent
 
-Run omp inside Zed and you get the same agent you drive from the terminal — reading the buffer you're actually looking at, writing through the editor's save path, spawning shells in the editor's terminal. Destructive tools pause for a permission prompt you can answer once and forget. No bridge, no plugin, no second brain to keep in sync.
+Run OMPx inside Zed and you get the same agent you drive from the terminal — reading the buffer you're actually looking at, writing through the editor's save path, spawning shells in the editor's terminal. Destructive tools pause for a permission prompt you can answer once and forget. No bridge, no plugin, no second brain to keep in sync.
 
 ### 13 · Inherits what your other tools already wrote
 
-Every other agent ships an importer and expects you to convert. omp reads the eight formats already on disk in their native shape — Cursor MDC, Cline .clinerules, Codex AGENTS.md, Copilot applyTo, and the rest. No migration script, no YAML-to-TOML port, no "supported subset" footnotes. The config your team wrote last quarter still works tonight.
+Every other agent ships an importer and expects you to convert. OMPx reads the eight formats already on disk in their native shape — Cursor MDC, Cline .clinerules, Codex AGENTS.md, Copilot applyTo, and the rest. No migration script, no YAML-to-TOML port, no "supported subset" footnotes. The config your team wrote last quarter still works tonight.
 
-### 14 · omp commit: atomic splits, validated messages
+### 14 · ompx commit: atomic splits, validated messages
 
-omp reads the working tree through git-overview, git-file-diff, and git-hunk, then splits unrelated changes into atomic commits ordered by their dependencies. Cycles are rejected before anything is written. Source files score above tests, docs, and configs, so the headline commit is the one that matters. Lock files are excluded from analysis entirely.
+OMPx reads the working tree through git-overview, git-file-diff, and git-hunk, then splits unrelated changes into atomic commits ordered by their dependencies. Cycles are rejected before anything is written. Source files score above tests, docs, and configs, so the headline commit is the one that matters. Lock files are excluded from analysis entirely.
 
 ### 15 · Read PRs. _Walk skills._ Pull JSON out of subagents.
 
@@ -373,7 +375,7 @@ The table below is a per-module breakdown that intentionally omits glue and test
 
 ## Four entry points: _interactive_, _one-shot_, RPC, and ACP.
 
-Same engine, four wrappers. `omp` runs the TUI. `omp -p` answers a single prompt and exits. The Node SDK embeds the session in your process. `omp --mode rpc` and `omp acp` hand the wheel to another program over stdio.
+Same engine, four wrappers. `ompx` runs the TUI. `ompx -p` answers a single prompt and exits. The Node SDK embeds the session in your process. `ompx --mode rpc` and `ompx acp` hand the wheel to another program over stdio.
 
 ### Interactive — when in doubt, the agent asks
 
@@ -406,12 +408,12 @@ await session.prompt("list .ts files");
 
 ### RPC — drive over stdio
 
-`omp --mode rpc`
+`ompx --mode rpc`
 
 For non-Node embedders, or when you want process isolation. NDJSON commands in, response and event frames out. `--mode rpc-ui` adds tool cards, selectors, and dialogs as `extension_ui_request` frames the host must answer.
 
 ```
-$ omp --mode rpc --no-session
+$ ompx --mode rpc --no-session
 > {"id":"r1","type":"prompt","message":"list .ts files"}
 < {"id":"r1","type":"response", ...}
 > {"id":"r2","type":"set_model","provider":"anthropic","modelId":"sonnet-4.5"}
@@ -420,11 +422,11 @@ $ omp --mode rpc --no-session
 
 ### ACP — speak to editors
 
-`omp acp`
+`ompx acp`
 
 The [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) over JSON-RPC. When the editor advertises capabilities, tool I/O routes through it and writes are gated by `session/request_permission`.
 
-| omp tool                      | ACP route                           |
+| OMPx tool                     | ACP route                           |
 | ----------------------------- | ----------------------------------- |
 | `bash`                        | `terminal/create + terminal/output` |
 | `read`                        | `fs/read_text_file`                 |
@@ -437,7 +439,7 @@ Full reference: [omp.sh/docs/sdk](https://omp.sh/docs/sdk).
 
 Pick it up at **[omp.sh](https://omp.sh)**.
 
-omp is a fork of [Pi](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), rewritten as a coding-first surface: sessions, subagents, slash commands, extensions — all TypeScript, all MIT, all on [GitHub](https://github.com/can1357/oh-my-pi). Shape it from config, hook it from outside, or read the source when you need to.
+OMPx is an upgrade for OMP, a fork of [Pi](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), rewritten as a coding-first surface: sessions, subagents, slash commands, extensions — all TypeScript, all MIT, all on [GitHub](https://github.com/qtnx/omppp). Shape it from config, hook it from outside, or read the source when you need to.
 
 ### Primitives
 
@@ -445,11 +447,11 @@ An extension is a TypeScript module. Same tool API, same slash-command registry,
 
 ### Discovery
 
-On first run omp inherits whatever is already on disk: rules, skills, and MCP servers from `.claude`, `.cursor`, `.windsurf`, `.gemini`, `.codex`, `.cline`, `.github/copilot`, and `.vscode`. No migration script.
+On first run OMPx inherits whatever is already on disk: rules, skills, and MCP servers from `.claude`, `.cursor`, `.windsurf`, `.gemini`, `.codex`, `.cline`, `.github/copilot`, and `.vscode`. No migration script.
 
 ### Extensibility
 
-Ask omp to write the piece you're missing, then `/reload-plugins`. Keep it local, ship it in a `marketplace`, or publish it to npm.
+Ask OMPx to write the piece you're missing, then `/reload-plugins`. Keep it local, ship it in a `marketplace`, or publish it to npm.
 
 ## Philosophy
 

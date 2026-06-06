@@ -1,5 +1,5 @@
 import { type Component, matchesKey, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { APP_NAME } from "@oh-my-pi/pi-utils";
+import { APP_DISPLAY_NAME } from "@oh-my-pi/pi-utils";
 import { gradientLogo, PI_LOGO } from "../components/welcome";
 import { theme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
@@ -154,7 +154,7 @@ export class SetupWizardComponent implements Component {
 		const header = [
 			"",
 			...logo.map(line => centerLine(line, width)),
-			centerLine(theme.bold(theme.fg("accent", APP_NAME)), width),
+			centerLine(theme.bold(theme.fg("accent", APP_DISPLAY_NAME)), width),
 			centerLine(theme.fg("muted", `Setup step ${this.#sceneIndex + 1} of ${this.scenes.length}`), width),
 			"",
 			indentLine(theme.bold(title), width, SCENE_MARGIN_X),

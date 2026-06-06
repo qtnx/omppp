@@ -8,7 +8,7 @@
  *     `--no-worktree`) create an isolated worktree on a fresh `omp/<name>`
  *     branch checked out from the repo's origin default branch. The user's main
  *     checkout is never touched, so a dirty tree is safe. Worktrees live under
- *     `~/.omp/wt/` and are cleanable via `omp worktree clear`.
+ *     `~/.omp/wt/` and are cleanable via `ompx worktree clear`.
  *   - `--add-dir <path>` tags an existing directory by its basename. No
  *     worktree is created.
  *

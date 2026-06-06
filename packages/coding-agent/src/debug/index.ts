@@ -17,7 +17,7 @@ import {
 	type TerminalNotification,
 	Text,
 } from "@oh-my-pi/pi-tui";
-import { getSessionsDir } from "@oh-my-pi/pi-utils";
+import { APP_DISPLAY_NAME, getSessionsDir } from "@oh-my-pi/pi-utils";
 import { DynamicBorder } from "../modes/components/dynamic-border";
 import { getSelectListTheme, getSymbolTheme, theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
@@ -399,7 +399,7 @@ export class DebugSelectorComponent extends Container {
 		if (!suppressed) {
 			const sessionName = this.ctx.sessionManager.getSessionName();
 			const notification: TerminalNotification = {
-				title: sessionName || "Oh My Pi",
+				title: sessionName || APP_DISPLAY_NAME,
 				body: "Terminal protocol test",
 				type: "test",
 				actions: "focus",

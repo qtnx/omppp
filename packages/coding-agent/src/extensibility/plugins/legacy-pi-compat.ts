@@ -8,7 +8,7 @@ const IS_COMPILED_BINARY = isCompiledBinary();
 // Canonical scope for in-process pi packages. Plugins published against any of
 // the aliased scopes below (mariozechner's original publish, earendil-works'
 // fork, or the canonical @oh-my-pi scope itself) are remapped to this scope and
-// resolved against the bundled copy that ships inside the omp binary. This
+// resolved against the bundled copy that ships inside the OMPx binary. This
 // keeps plugins running against the exact runtime state of the host (single
 // module registry, single tool registry, etc.) regardless of which historical
 // scope name they happened to declare in their peerDependencies.
@@ -20,7 +20,7 @@ const CANONICAL_PI_SCOPE = "@oh-my-pi";
 // path instead of pulling a duplicate copy from plugin node_modules.
 const PI_SCOPE_ALIASES = ["oh-my-pi", "mariozechner", "earendil-works"] as const;
 
-// Internal pi-* package basenames bundled inside the omp binary.
+// Internal pi-* package basenames bundled inside the OMPx binary.
 const PI_PACKAGE_NAMES = ["pi-agent-core", "pi-ai", "pi-coding-agent", "pi-natives", "pi-tui", "pi-utils"] as const;
 
 const PI_SCOPE_ALTERNATION = PI_SCOPE_ALIASES.join("|");

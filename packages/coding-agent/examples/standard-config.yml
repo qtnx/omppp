@@ -1,0 +1,59 @@
+# OMPx standard agent config.
+# Safe backup of ~/.omp/agent/config.yml for bootstrapping new machines.
+# Copy to ~/.omp/agent/config.yml before first run, or let the installer seed it
+# when the target config file does not already exist.
+modelRoles:
+  default: openai-codex/gpt-5.5:xhigh
+  task: anthropic/claude-opus-4-8
+  smol: anthropic/claude-sonnet-4-6
+  slow: openai-codex/gpt-5.5:high
+  plan: anthropic/claude-opus-4-8:xhigh
+  designer: anthropic/claude-opus-4-8
+  commit: openai-codex/gpt-5.5:low
+task:
+  showResolvedModelBadge: true
+  agentModelOverrides:
+    agent-creator: anthropic/
+    code-architect: pi/plan
+    code-explorer: pi/smol
+    code-reviewer: openai-codex/codex-auto-review
+    code-simplifier: anthropic/claude-opus-4-8
+    codex-rescue: openai-codex/gpt-5.5:medium
+    designer: anthropic/claude-opus-4-8:xhigh
+    oracle: openai-codex/gpt-5.5:xhigh
+    plan: openai-codex/gpt-5.5:xhigh
+    quick_task: openai-codex/gpt-5.5:low
+    reviewer: openai-codex/gpt-5.5:xhigh
+    task: openai-codex/gpt-5.5:medium
+workflow:
+  enabled: true
+dev:
+  autoqa:
+    consent: denied
+memory:
+  backend: hindsight
+learning:
+  enabled: true
+  classifierModels:
+    - openai-codex/gpt-5.4-mini
+    - openai-codex/gpt-5.3-codex-spark
+    - anthropic/claude-haiku-4-5
+    - pi/smol
+    - pi/default
+hindsight:
+  apiUrl: http://localhost:8888
+hideThinkingBlock: false
+providers:
+  webSearch: perplexity
+symbolPreset: unicode
+theme:
+  dark: titanium
+setupVersion: 1
+retry:
+  fallbackChains:
+    task:
+      - anthropic/claude-opus-4-8
+      - openai-codex/gpt-5.5:low
+    smol:
+      - openai-codex/gpt-5.3-codex-spark
+      - anthropic/claude-haiku-4-5

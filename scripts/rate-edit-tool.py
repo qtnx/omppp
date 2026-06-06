@@ -949,9 +949,9 @@ def sync_reference_fixtures(fixtures_dir: Path) -> None:
 def resolve_omp_bin(raw: str | None) -> str:
     if raw:
         return raw
-    found = shutil.which("omp")
+    found = shutil.which("ompx")
     if not found:
-        raise SystemExit("Could not find `omp` on PATH. Set --omp-bin or OMP_BIN.")
+        raise SystemExit("Could not find `ompx` on PATH. Set --omp-bin or OMP_BIN.")
     return found
 
 

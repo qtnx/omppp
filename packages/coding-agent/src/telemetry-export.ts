@@ -6,7 +6,7 @@
  * TracerProvider is registered in the process — otherwise the API returns a
  * no-op tracer and the spans are silently dropped. The shipped CLI never
  * registered one, so headless / embedded hosts (e.g. an ACP harness that
- * spawns `omp` as a child process) had no way to collect omp's internal traces.
+ * spawns `ompx` as a child process) had no way to collect OMPx's internal traces.
  *
  * This module registers a NodeTracerProvider with an OTLP/proto exporter when
  * the standard `OTEL_EXPORTER_OTLP_ENDPOINT` (or `..._TRACES_ENDPOINT`) env var
@@ -30,7 +30,7 @@ import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 
 /**
- * Periodic flush interval. A long-lived `omp` process (the ACP server is
+ * Periodic flush interval. A long-lived `ompx` process (the ACP server is
  * spawned once and reused across many turns) would otherwise hold finished
  * spans until the batch window elapses or the process exits.
  */

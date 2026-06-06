@@ -158,6 +158,8 @@ On startup, if `config.yml` is missing:
 2. Merge with legacy DB settings from `agent.db`
 3. Write merged result to `config.yml`
 
+The macOS/Linux and Windows installer scripts seed the global file with a config matching `packages/coding-agent/examples/standard-config.yml` when `~/.omp/agent/config.yml` does not exist. Existing user config is never overwritten; set `OMPX_INSTALL_SKIP_STANDARD_CONFIG=1` before running the installer to skip the seed. Direct Bun installs do not run the repository installer, so copy the template manually when bootstrapping that way.
+
 Field-level migrations in `#migrateRawSettings`:
 
 - `queueMode` -> `steeringMode`

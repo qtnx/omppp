@@ -1,7 +1,7 @@
 /**
  * Update CLI command handler.
  *
- * Handles `omp update` to check for and install updates.
+ * Handles `ompx update` to check for and install updates.
  * Uses bun if available, otherwise downloads binary from GitHub releases.
  */
 import * as fs from "node:fs";
@@ -12,7 +12,7 @@ import { $ } from "bun";
 import chalk from "chalk";
 import { theme } from "../modes/theme/theme";
 
-const REPO = "can1357/oh-my-pi";
+const REPO = "qtnx/omppp";
 const PACKAGE = "@oh-my-pi/pi-coding-agent";
 /**
  * Official npm registry origin.
@@ -100,7 +100,7 @@ function isPathInDirectory(filePath: string, directoryPath: string): boolean {
 	if (isPathInDirectoryLexical(filePath, directoryPath)) return true;
 	// Layer realpath resolution on top of the lexical guard. On Windows, ~/.bun
 	// is a junction when Bun is installed via Scoop, so `bun pm bin -g` and the
-	// PATH-resolved omp path can refer to the same directory through different
+	// PATH-resolved OMPx path can refer to the same directory through different
 	// strings. path.resolve does not traverse junctions/symlinks; realpath does.
 	// Resolve the file's parent directory to tolerate the file itself not yet
 	// existing (e.g. a fresh install path) while still catching link-traversed
@@ -114,22 +114,22 @@ function isPathInDirectory(filePath: string, directoryPath: string): boolean {
 
 type UpdateTarget = { method: "bun" } | { method: "binary"; path: string };
 
-function resolveUpdateMethod(ompPath: string, bunBinDir: string | undefined): "bun" | "binary" {
+function resolveUpdateMethod(ompxPath: string, bunBinDir: string | undefined): "bun" | "binary" {
 	if (!bunBinDir) return "binary";
-	return isPathInDirectory(ompPath, bunBinDir) ? "bun" : "binary";
+	return isPathInDirectory(ompxPath, bunBinDir) ? "bun" : "binary";
 }
 
-export function resolveUpdateMethodForTest(ompPath: string, bunBinDir: string | undefined): "bun" | "binary" {
-	return resolveUpdateMethod(ompPath, bunBinDir);
+export function resolveUpdateMethodForTest(ompxPath: string, bunBinDir: string | undefined): "bun" | "binary" {
+	return resolveUpdateMethod(ompxPath, bunBinDir);
 }
 async function resolveUpdateTarget(): Promise<UpdateTarget> {
 	const bunBinDir = await getBunGlobalBinDir();
-	const ompPath = resolveOmpPath();
+	const ompxPath = resolveOmpxPath();
 
-	if (ompPath) {
-		const method = resolveUpdateMethod(ompPath, bunBinDir);
+	if (ompxPath) {
+		const method = resolveUpdateMethod(ompxPath, bunBinDir);
 		if (method === "bun") return { method };
-		return { method, path: ompPath };
+		return { method, path: ompxPath };
 	}
 
 	if (bunBinDir) return { method: "bun" };
@@ -216,28 +216,28 @@ function getBinaryName(): string {
 }
 
 /**
- * Resolve the path that `omp` maps to in the user's PATH.
+ * Resolve the path that `ompx` maps to in the user's PATH.
  */
-function resolveOmpPath(): string | undefined {
+function resolveOmpxPath(): string | undefined {
 	return $which(APP_NAME) ?? undefined;
 }
 
 /**
- * Run the resolved omp binary and check if it reports the expected version.
+ * Run the resolved OMPx binary and check if it reports the expected version.
  */
 async function verifyInstalledVersion(expectedVersion: string): Promise<InstalledVersionVerification> {
-	const ompPath = resolveOmpPath();
-	if (!ompPath) return { ok: false };
+	const ompxPath = resolveOmpxPath();
+	if (!ompxPath) return { ok: false };
 	try {
-		const result = await $`${ompPath} --version`.quiet().nothrow();
-		if (result.exitCode !== 0) return { ok: false, path: ompPath };
+		const result = await $`${ompxPath} --version`.quiet().nothrow();
+		if (result.exitCode !== 0) return { ok: false, path: ompxPath };
 		const output = result.text().trim();
-		// Output format: "omp/X.Y.Z"
+		// Output format: "ompx/X.Y.Z"
 		const match = output.match(/\/(\d+\.\d+\.\d+)/);
 		const actual = match?.[1];
-		return { ok: actual === expectedVersion, actual, path: ompPath };
+		return { ok: actual === expectedVersion, actual, path: ompxPath };
 	} catch {
-		return { ok: false, path: ompPath };
+		return { ok: false, path: ompxPath };
 	}
 }
 
@@ -262,7 +262,11 @@ async function printVerification(expectedVersion: string): Promise<void> {
 		return;
 	}
 	console.log(chalk.yellow(`\nWarning: ${formatVerificationFailure(result, expectedVersion)}`));
-	console.log(chalk.yellow(`You may need to reinstall: curl -fsSL https://omp.sh/install | sh`));
+	console.log(
+		chalk.yellow(
+			"You may need to reinstall: curl -fsSL https://raw.githubusercontent.com/qtnx/omppp/main/scripts/install.sh | sh",
+		),
+	);
 }
 
 async function unlinkIfExists(filePath: string): Promise<void> {
@@ -305,7 +309,7 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 }
 
 /**
- * Build the bun argv used to globally install a specific omp version.
+ * Build the bun argv used to globally install a specific OMPx version.
  *
  * The version is selected by hitting {@link NPM_REGISTRY} directly in
  * {@link getLatestRelease}, so the install MUST observe the same catalog:
@@ -317,7 +321,7 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
  * - `--no-cache` tells bun to ignore its on-disk manifest snapshot so it
  *   re-fetches metadata from that registry on every invocation.
  *
- * Together these two flags make `omp update` produce exactly the registry
+ * Together these two flags make `ompx update` produce exactly the registry
  * lookup the version check just performed. See #1686.
  */
 export function buildBunInstallArgs(expectedVersion: string): string[] {
@@ -402,7 +406,7 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 		return;
 	}
 
-	// Choose update method based on the prioritized omp binary in PATH
+	// Choose update method based on the prioritized OMPx binary in PATH
 	try {
 		const target = await resolveUpdateTarget();
 		if (target.method === "bun") {

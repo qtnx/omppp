@@ -4,7 +4,7 @@ import CommitCommand from "../src/commands/commit";
 import * as commitModule from "../src/commit";
 import * as themeModule from "../src/modes/theme/theme";
 
-describe("omp commit command lifecycle (issue #1041)", () => {
+describe("ompx commit command lifecycle (issue #1041)", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
@@ -19,7 +19,7 @@ describe("omp commit command lifecycle (issue #1041)", () => {
 		const quitSpy = vi.spyOn(postmortem, "quit").mockResolvedValue(undefined);
 
 		const command = new CommitCommand([], {
-			bin: "omp",
+			bin: "ompx",
 			version: "0.0.0-test",
 			commands: new Map(),
 		});

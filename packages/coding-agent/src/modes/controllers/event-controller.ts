@@ -2,7 +2,7 @@ import { INTENT_FIELD } from "@oh-my-pi/pi-agent-core";
 import { calculatePromptTokens } from "@oh-my-pi/pi-agent-core/compaction/compaction";
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { type Component, Loader, replaceTabs, TERMINAL, Text } from "@oh-my-pi/pi-tui";
-import { logger } from "@oh-my-pi/pi-utils";
+import { APP_DISPLAY_NAME, logger } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -856,7 +856,7 @@ export class EventController {
 		const title = this.ctx.sessionManager.getSessionName();
 		const body = summary?.trim() || "Complete";
 		TERMINAL.sendNotification({
-			title: title || "Oh My Pi",
+			title: title || APP_DISPLAY_NAME,
 			body,
 			type: "completion",
 			actions: "focus",

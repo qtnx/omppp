@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed the shared CLI app name constant to `ompx` and added OMPx display/tagline constants for runtime branding.
+
 ## [15.9.0] - 2026-06-04
 
 ### Added

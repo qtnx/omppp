@@ -4,7 +4,7 @@ import * as path from "node:path";
 /**
  * Regression for https://github.com/can1357/oh-my-pi/issues/1150
  *
- * In v15.1.3 `omp stats` crashed in the published Linux/macOS/Windows
+ * In v15.1.3 `ompx stats` crashed in the published Linux/macOS/Windows
  * binaries with `BuildMessage: ModuleNotFound resolving
  * "./packages/stats/src/sync-worker.ts" (entry point)`. The dev-mode build
  * script `packages/coding-agent/scripts/build-binary.ts` listed the three
@@ -20,7 +20,7 @@ import * as path from "node:path";
  * the `isCompiledBinary()` hybrid pattern must be listed as an extra
  * `--compile` entry in **both** scripts. This test pins that contract for
  * the release script; the dev script is covered by `issue-1011-repro` for
- * the tab worker entry. Runtime coverage lives in `omp --smoke-test`,
+ * the tab worker entry. Runtime coverage lives in `ompx --smoke-test`,
  * which the release-binary CI step now invokes.
  */
 describe("issue #1150 — release-build script must list all worker --compile entrypoints", () => {

@@ -8,7 +8,7 @@ This repo contains multiple packages, but **`packages/coding-agent/`** is the pr
 
 ### Repository Remotes
 
-This working copy is the **OMP++** fork. Keep `origin` pointed at `git@github.com:qtnx/omppp.git` for qtnx-owned pushes, and keep `upstream` pointed at `git@github.com:can1357/oh-my-pi.git` for pulling the original project's changes. Fetch or rebase from `upstream/main`; push local fork work to `origin/main`.
+This working copy is the **OMPx** fork. Keep `origin` pointed at `git@github.com:qtnx/omppp.git` for qtnx-owned pushes, and keep `upstream` pointed at `git@github.com:can1357/oh-my-pi.git` for pulling the original project's changes. Fetch or rebase from `upstream/main`; push local fork work to `origin/main`.
 
 ### Package Structure
 
@@ -19,7 +19,7 @@ This working copy is the **OMP++** fork. Keep `origin` pointed at `git@github.co
 | `packages/coding-agent` | Main CLI application (primary focus)                 |
 | `packages/tui`          | Terminal UI library with differential rendering      |
 | `packages/natives`      | Bindings for native text/image/grep operations       |
-| `packages/stats`        | Local observability dashboard (`omp stats`)          |
+| `packages/stats`        | Local observability dashboard (`ompx stats`)         |
 | `packages/utils`        | Shared utilities (logger, streams, temp files)       |
 | `crates/pi-natives`     | Rust crate for performance-critical text/grep ops    |
 
@@ -42,7 +42,7 @@ This working copy is the **OMP++** fork. Keep `origin` pointed at `git@github.co
   ```
   The literal in the compiled branch is what Bun's `--compile` static analyzer needs to discover the worker — its path is **`--root`-relative** (repo root, since `build-binary.ts` passes `--root ../..`), so it must start with `./packages/...`. The `new URL` form in the dev branch keeps spawns portable across cwds.
   In addition, every worker entry **MUST** be listed as an extra `--compile` entrypoint in `packages/coding-agent/scripts/build-binary.ts`. Without that the analyzer sees the literal but the worker never gets emitted into bunfs. The three current entries (`sync-worker.ts`, `tab-worker-entry.ts`, `worker-entry.ts`) live there as the working reference.
-  Validate any new worker with the dedicated smoke probe: `omp --smoke-test` spawns the stats sync worker, pings it, and exits — it's wired into `ci:test:smoke` and `scripts/install-tests/run-ci.sh` so binary, source-link, and tarball installs all exercise it. Add a sibling smoke if the new worker is on a different module graph.
+  Validate any new worker with the dedicated smoke probe: `ompx --smoke-test` spawns the stats sync worker, pings it, and exits — it's wired into `ci:test:smoke` and `scripts/install-tests/run-ci.sh` so binary, source-link, and tarball installs all exercise it. Add a sibling smoke if the new worker is on a different module graph.
 
 ## Bun Over Node
 
@@ -207,9 +207,9 @@ For the bash tool specifically:
 
 ### Building a local binary
 
-Compile a standalone binary with `bun --cwd=packages/coding-agent run build` → `packages/coding-agent/dist/omp`. To replace a globally linked dev `omp`, overwrite the launcher at its real path (e.g. `~/.bun/bin/omp`) with a copy of `dist/omp` (`bun link` installs a symlink to `src/cli.ts`; replacing the file with the compiled binary is a clean cutover, reversible by re-linking).
+Compile a standalone binary with `bun --cwd=packages/coding-agent run build` → `packages/coding-agent/dist/ompx`. To replace a globally linked dev `ompx`, overwrite the launcher at its real path (e.g. `~/.bun/bin/ompx`) with a copy of `dist/ompx` (`bun link` installs a symlink to `src/cli.ts`; replacing the file with the compiled binary is a clean cutover, reversible by re-linking).
 
-**Native sentinel gotcha.** The binary embeds the prebuilt native addon from `packages/natives/native/*.node` (via `embed-native.ts`). If that `.node` predates the current crate, the compiled binary fails at startup with `does not expose the @oh-my-pi/pi-natives@<ver> version sentinel __piNativesV<ver>`. Fix: rebuild the native first (`bun --cwd=packages/natives run build`), then rebuild the binary. The runtime extracts the embedded `.node` to `~/.omp/natives/<version>/`; a stale file there is loaded in preference and blocks re-extraction, so delete `~/.omp/natives/<version>` after rebuilding. Validate with `dist/omp --version && dist/omp --smoke-test`.
+**Native sentinel gotcha.** The binary embeds the prebuilt native addon from `packages/natives/native/*.node` (via `embed-native.ts`). If that `.node` predates the current crate, the compiled binary fails at startup with `does not expose the @oh-my-pi/pi-natives@<ver> version sentinel __piNativesV<ver>`. Fix: rebuild the native first (`bun --cwd=packages/natives run build`), then rebuild the binary. The runtime extracts the embedded `.node` to `~/.omp/natives/<version>/`; a stale file there is loaded in preference and blocks re-extraction, so delete `~/.omp/natives/<version>` after rebuilding. Validate with `dist/ompx --version && dist/ompx --smoke-test`.
 
 ## Testing Guidance
 

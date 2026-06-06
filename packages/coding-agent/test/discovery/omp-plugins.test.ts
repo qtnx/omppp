@@ -177,7 +177,7 @@ test(".mcp.json with bare entries (no command/url) records a warning and is skip
 	expect((result.warnings ?? []).some(w => w.includes('"broken"'))).toBe(true);
 });
 
-test("installed plugins under `<plugins>/node_modules/` are surfaced (e.g. via `omp plugin link`/`install`)", async () => {
+test("installed plugins under `<plugins>/node_modules/` are surfaced (e.g. via `ompx plugin link`/`install`)", async () => {
 	// Simulate what `plugin install` / `plugin link` produces: a plugins root
 	// with `package.json#dependencies` and a populated `node_modules/<pkg>/`.
 	const pluginsDir = path.join(home, ".omp", "plugins");
@@ -217,10 +217,10 @@ test("disabled installed plugins do not contribute sub-discovery", async () => {
 });
 
 test("linked plugins (only in lockfile, not in package.json#dependencies) are surfaced", async () => {
-	// `omp plugin link ./local-ext` creates a symlink under
+	// `ompx plugin link ./local-ext` creates a symlink under
 	// `<plugins>/node_modules/<pkg>` plus a lockfile entry, but it never
 	// touches `<plugins>/package.json#dependencies`. The discovery path must
-	// still find the package — otherwise the documented `omp install
+	// still find the package — otherwise the documented `ompx install
 	// ./local-extension` workflow leaves the sibling skills/hooks/tools
 	// invisible (see PR #1498 review).
 	const pluginsDir = path.join(home, ".omp", "plugins");

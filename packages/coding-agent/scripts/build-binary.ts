@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 
 const packageDir = path.join(import.meta.dir, "..");
-const outputPath = path.join(packageDir, "dist", "omp");
+const outputPath = path.join(packageDir, "dist", "ompx");
 
 // Transformers.js is an optional, native-heavy dependency that is never bundled
 // into the binary; the tiny-model worker `bun install`s it into a runtime cache
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
 					"./src/extensibility/legacy-pi-ai-shim.ts",
 					"./src/extensibility/legacy-pi-coding-agent-shim.ts",
 					"--outfile",
-					"dist/omp",
+					"dist/ompx",
 				],
 				buildEnv,
 			);

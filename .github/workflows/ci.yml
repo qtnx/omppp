@@ -338,35 +338,35 @@ jobs:
                     platform: linux,
                     arch: x64,
                     target_id: linux-x64,
-                    binary_path: packages/coding-agent/binaries/omp-linux-x64,
+                    binary_path: packages/coding-agent/binaries/ompx-linux-x64,
                  }
                - {
                     os: ubuntu-24.04-arm,
                     platform: linux,
                     arch: arm64,
                     target_id: linux-arm64,
-                    binary_path: packages/coding-agent/binaries/omp-linux-arm64,
+                    binary_path: packages/coding-agent/binaries/ompx-linux-arm64,
                  }
                - {
                     os: macos-15-intel,
                     platform: darwin,
                     arch: x64,
                     target_id: darwin-x64,
-                    binary_path: packages/coding-agent/binaries/omp-darwin-x64,
+                    binary_path: packages/coding-agent/binaries/ompx-darwin-x64,
                  }
                - {
                     os: macos-14,
                     platform: darwin,
                     arch: arm64,
                     target_id: darwin-arm64,
-                    binary_path: packages/coding-agent/binaries/omp-darwin-arm64,
+                    binary_path: packages/coding-agent/binaries/ompx-darwin-arm64,
                  }
                - {
                     os: ubuntu-22.04,
                     platform: win32,
                     arch: x64,
                     target_id: win32-x64,
-                    binary_path: packages/coding-agent/binaries/omp-windows-x64.exe,
+                    binary_path: packages/coding-agent/binaries/ompx-windows-x64.exe,
                  }
       runs-on: ${{ matrix.os }}
       permissions:
@@ -422,7 +422,7 @@ jobs:
          - name: Upload release binary artifact
            uses: actions/upload-artifact@v4
            with:
-              name: omp-binary-${{ matrix.target_id }}
+              name: ompx-binary-${{ matrix.target_id }}
               path: ${{ matrix.binary_path }}
 
    release-github:
@@ -442,18 +442,18 @@ jobs:
          - name: Download release binaries
            uses: actions/download-artifact@v4
            with:
-              pattern: omp-binary-*
+              pattern: ompx-binary-*
               path: packages/coding-agent/binaries
               merge-multiple: true
          - name: Generate release checksums
            working-directory: packages/coding-agent/binaries
-           run: sha256sum omp-* > SHA256SUMS
+           run: sha256sum ompx-* > SHA256SUMS
          - name: Create GitHub Release
            uses: softprops/action-gh-release@v2
            with:
               tag_name: ${{ needs.gate.outputs.release-tag }}
               files: |
-                 packages/coding-agent/binaries/omp-*
+                 packages/coding-agent/binaries/ompx-*
                  packages/coding-agent/binaries/SHA256SUMS
               body_path: release-notes.md
               generate_release_notes: true
@@ -472,15 +472,15 @@ jobs:
            env:
               GH_TOKEN: ${{ github.token }}
            run: |
-              gh release download "${{ needs.gate.outputs.release-tag }}" --repo "${{ github.repository }}" --pattern SHA256SUMS --pattern 'omp-*'
+              gh release download "${{ needs.gate.outputs.release-tag }}" --repo "${{ github.repository }}" --pattern SHA256SUMS --pattern 'ompx-*'
               shasum -a 256 --check SHA256SUMS
-              chmod +x omp-darwin-arm64
+              chmod +x ompx-darwin-arm64
          - name: Verify draft macOS arm64 binary
            run: |
-              codesign -dv ./omp-darwin-arm64
+              codesign -dv ./ompx-darwin-arm64
               runtime_dir="$(mktemp -d)"
-              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ./omp-darwin-arm64 --version
-              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ./omp-darwin-arm64 --smoke-test
+              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ./ompx-darwin-arm64 --version
+              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ./ompx-darwin-arm64 --smoke-test
          - name: Publish verified GitHub Release
            env:
               GH_TOKEN: ${{ github.token }}
