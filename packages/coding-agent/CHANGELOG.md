@@ -3,6 +3,8 @@
 ## [Unreleased]
 ### Fixed
 
+- Hardened binary installers to verify GitHub release SHA256SUMS before installing, removed remote Bun bootstrap execution from source-install paths, and pinned vulnerable transitive `tar` resolution to a patched version.
+
 - Fixed Herdr agent-state reporting for Goal Mode sessions by exposing live goal state to extensions, so active goal/subagent work no longer falls back to idle-only context heuristics.
 
 - Fixed Context GC cleanup not reducing visible status-line and `/context` usage by applying projection-adjusted token estimates when Context GC actually lowered model-visible context.

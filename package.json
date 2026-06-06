@@ -85,7 +85,9 @@
       "zod": "4.4.3"
     }
   },
-  "overrides": {},
+  "overrides": {
+    "tar": "7.5.16"
+  },
   "scripts": {
     "install:dev": "bun install && bun --cwd=packages/coding-agent link && bun --cwd=packages/ai link",
     "dev": "bun --cwd=packages/coding-agent src/cli.ts",

@@ -318,6 +318,8 @@ jobs:
               sudo ln -s $(which fdfind) /usr/local/bin/fd
               sudo ln -sf /usr/bin/convert /usr/local/bin/magick
          - run: bun install --frozen-lockfile
+         - name: Installer security regression tests
+           run: bun test scripts/install-security.test.ts
          - name: Install method smoke tests
            run: bun run ci:test:install-methods
 
@@ -443,14 +445,19 @@ jobs:
               pattern: omp-binary-*
               path: packages/coding-agent/binaries
               merge-multiple: true
+         - name: Generate release checksums
+           working-directory: packages/coding-agent/binaries
+           run: sha256sum omp-* > SHA256SUMS
          - name: Create GitHub Release
            uses: softprops/action-gh-release@v2
            with:
               tag_name: ${{ needs.gate.outputs.release-tag }}
               files: |
                  packages/coding-agent/binaries/omp-*
+                 packages/coding-agent/binaries/SHA256SUMS
               body_path: release-notes.md
               generate_release_notes: true
+              draft: true
 
 
    release_github_verify:
@@ -459,17 +466,25 @@ jobs:
       needs: [gate, release-github]
       runs-on: macos-14
       permissions:
-         contents: read
+         contents: write
       steps:
-         - name: Download published macOS arm64 binary
+         - name: Download and verify draft release assets
+           env:
+              GH_TOKEN: ${{ github.token }}
            run: |
-              curl -fsSL -o omp-darwin-arm64 "https://github.com/${{ github.repository }}/releases/download/${{ needs.gate.outputs.release-tag }}/omp-darwin-arm64"
+              gh release download "${{ needs.gate.outputs.release-tag }}" --repo "${{ github.repository }}" --pattern SHA256SUMS --pattern 'omp-*'
+              shasum -a 256 --check SHA256SUMS
               chmod +x omp-darwin-arm64
-         - name: Verify published macOS arm64 binary
+         - name: Verify draft macOS arm64 binary
            run: |
               codesign -dv ./omp-darwin-arm64
               runtime_dir="$(mktemp -d)"
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ./omp-darwin-arm64 --version
+              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ./omp-darwin-arm64 --smoke-test
+         - name: Publish verified GitHub Release
+           env:
+              GH_TOKEN: ${{ github.token }}
+           run: gh release edit "${{ needs.gate.outputs.release-tag }}" --repo "${{ github.repository }}" --draft=false
 
    release-npm:
       if: ${{ needs.gate.outputs.is-release == 'true' && !cancelled() &&
