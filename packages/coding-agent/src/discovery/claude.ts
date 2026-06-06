@@ -339,6 +339,17 @@ async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashComm
 	return { items, warnings };
 }
 
+function readClaudeHookToggles(): { enableUser: boolean; enableProject: boolean } {
+	try {
+		return {
+			enableUser: settings.getTrusted("hooks.enableClaudeUser") ?? false,
+			enableProject: settings.getTrusted("hooks.enableClaudeProject") ?? false,
+		};
+	} catch {
+		return { enableUser: false, enableProject: false };
+	}
+}
+
 // =============================================================================
 // Hooks
 // =============================================================================
@@ -347,6 +358,7 @@ async function loadHooks(ctx: LoadContext): Promise<LoadResult<Hook>> {
 	const items: Hook[] = [];
 	const warnings: string[] = [];
 
+	const { enableUser, enableProject } = readClaudeHookToggles();
 	const userBase = getUserClaude(ctx);
 	const userHooksDir = path.join(userBase, "hooks");
 	const projectBase = getProjectClaude(ctx);
@@ -355,11 +367,15 @@ async function loadHooks(ctx: LoadContext): Promise<LoadResult<Hook>> {
 	const hookTypes = ["pre", "post"] as const;
 
 	const loadTasks: { dir: string; hookType: "pre" | "post"; level: "user" | "project" }[] = [];
-	for (const hookType of hookTypes) {
-		loadTasks.push({ dir: path.join(userHooksDir, hookType), hookType, level: "user" });
+	if (enableUser) {
+		for (const hookType of hookTypes) {
+			loadTasks.push({ dir: path.join(userHooksDir, hookType), hookType, level: "user" });
+		}
 	}
-	for (const hookType of hookTypes) {
-		loadTasks.push({ dir: path.join(projectHooksDir, hookType), hookType, level: "project" });
+	if (enableProject) {
+		for (const hookType of hookTypes) {
+			loadTasks.push({ dir: path.join(projectHooksDir, hookType), hookType, level: "project" });
+		}
 	}
 
 	const results = await Promise.all(

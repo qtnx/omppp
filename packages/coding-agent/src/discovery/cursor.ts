@@ -20,9 +20,9 @@ import { readFile } from "../capability/fs";
 import { type MCPServer, mcpCapability } from "../capability/mcp";
 import type { Rule } from "../capability/rule";
 import { ruleCapability } from "../capability/rule";
-import type { Settings } from "../capability/settings";
-import { settingsCapability } from "../capability/settings";
+import { type Settings, settingsCapability } from "../capability/settings";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
+import { settings } from "../config/settings";
 import {
 	buildRuleFromMarkdown,
 	createSourceMeta,
@@ -106,13 +106,24 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 // Rules
 // =============================================================================
 
+function readCursorRuleToggles(): { enableUser: boolean; enableProject: boolean } {
+	try {
+		return {
+			enableUser: settings.getTrusted("rules.enableCursorUser") ?? false,
+			enableProject: settings.getTrusted("rules.enableCursorProject") ?? false,
+		};
+	} catch {
+		return { enableUser: false, enableProject: false };
+	}
+}
+
 async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 	const items: Rule[] = [];
 	const warnings: string[] = [];
 
-	const userRulesPath = getUserPath(ctx, "cursor", "rules");
-
-	const projectRulesPath = getProjectPath(ctx, "cursor", "rules");
+	const { enableUser, enableProject } = readCursorRuleToggles();
+	const userRulesPath = enableUser ? getUserPath(ctx, "cursor", "rules") : null;
+	const projectRulesPath = enableProject ? getProjectPath(ctx, "cursor", "rules") : null;
 
 	const [userResult, projectResult] = await Promise.all([
 		userRulesPath

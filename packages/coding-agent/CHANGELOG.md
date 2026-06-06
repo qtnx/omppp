@@ -1,7 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+
+- Disabled OMP-compatible Claude hook discovery from `.claude/hooks/**` and Cursor rule prompt injection by default; enable `hooks.enableClaudeUser` / `hooks.enableClaudeProject` or `rules.enableCursorUser` / `rules.enableCursorProject` from trusted operator config or runtime overrides to opt back in.
+
 ### Fixed
+
+- Fixed compiled binary builds with the patched `tar` dependency by applying a `fastembed` ESM import compatibility patch.
 
 - Hardened binary installers to verify GitHub release SHA256SUMS before installing, removed remote Bun bootstrap execution from source-install paths, and pinned vulnerable transitive `tar` resolution to a patched version.
 

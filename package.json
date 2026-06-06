@@ -170,5 +170,8 @@
   },
   "lint-staged": {
     "*.{js,ts,jsx,tsx,json,jsonc,css}": "biome check --write --no-errors-on-unmatched"
+  },
+  "patchedDependencies": {
+    "fastembed@2.1.0": "patches/fastembed@2.1.0.patch"
   }
 }

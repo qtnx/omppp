@@ -315,6 +315,21 @@ export class Settings {
 	}
 
 	/**
+	 * Get a setting from trusted operator-controlled layers only.
+	 * Project-discovered settings are intentionally ignored.
+	 */
+	getTrusted<P extends SettingPath>(path: P): SettingValue<P> {
+		const segments = path.split(".");
+		const overrideValue = getByPath(this.#overrides, segments);
+		const value = overrideValue !== undefined ? overrideValue : getByPath(this.#global, segments);
+		if (value !== undefined) {
+			const pathScopedValue = resolvePathScopedStringArray(path, value, this.#cwd);
+			return (pathScopedValue ?? value) as SettingValue<P>;
+		}
+		return getDefault(path);
+	}
+
+	/**
 	 * Set a setting value (sync).
 	 * Updates global settings and queues a background save.
 	 * Triggers hooks for settings that have side effects.

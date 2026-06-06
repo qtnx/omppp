@@ -1,0 +1,13 @@
+diff --git a/lib/esm/fastembed.js b/lib/esm/fastembed.js
+index 620362efd465c6d3ce8c9eb54990c24168b16145..3e1ecd1d482ec42e0836a8417a08a1d2062d73e9 100644
+--- a/lib/esm/fastembed.js
++++ b/lib/esm/fastembed.js
+@@ -4,7 +4,7 @@ import https from "https";
+ import * as ort from "onnxruntime-node";
+ import path from "path";
+ import Progress from "progress";
+-import tar from "tar";
++import * as tar from "tar";
+ import { downloadFileToCacheDir } from "@huggingface/hub";
+ export var ExecutionProvider;
+ (function (ExecutionProvider) {

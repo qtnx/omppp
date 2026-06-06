@@ -73,6 +73,8 @@ Discovery providers for `hookCapability` still model pre/post shell-style hook f
 
 The hook loader here uses dynamic module import and requires a default JS/TS hook factory. If a discovered hook path is not importable as a module, load fails and is reported in `LoadHooksResult.errors`.
 
+Claude Code hook discovery is disabled by default for security. Enable `hooks.enableClaudeUser` and/or `hooks.enableClaudeProject` from trusted operator config or a runtime override when you explicitly trust the corresponding `.claude/hooks/**` tree; project-discovered settings cannot self-enable these hooks. This gate applies to the OMP-compatible module hooks described above, not to Claude Code's native shell hook execution semantics.
+
 ## Event surfaces
 
 Hook events are strongly typed in `types.ts`.

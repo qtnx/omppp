@@ -3048,6 +3048,52 @@ export const SETTINGS_SCHEMA = {
 
 	"skills.includeSkills": { type: "array", default: [] as string[] },
 
+	// Hooks
+	"hooks.enableClaudeUser": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			label: "Claude User Hooks",
+			description:
+				"Load OMP-compatible hook modules from ~/.claude/hooks/. Disabled by default because hooks can run code.",
+		},
+	},
+
+	"hooks.enableClaudeProject": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			label: "Claude Project Hooks",
+			description:
+				"Load OMP-compatible hook modules from .claude/hooks/. Disabled by default because project hooks can run code.",
+		},
+	},
+
+	// Rules
+	"rules.enableCursorUser": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "context",
+			label: "Cursor User Rules",
+			description:
+				"Inject rules from ~/.cursor/rules/ into prompts. Disabled by default to avoid implicit cross-tool prompt injection.",
+		},
+	},
+
+	"rules.enableCursorProject": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "context",
+			label: "Cursor Project Rules",
+			description:
+				"Inject rules from .cursor/rules/ into prompts. Disabled by default to avoid implicit project prompt injection.",
+		},
+	},
+
 	// Commands
 	"commands.enableClaudeUser": {
 		type: "boolean",
