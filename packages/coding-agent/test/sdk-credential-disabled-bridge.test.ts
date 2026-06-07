@@ -94,6 +94,7 @@ describe("createAgentSession credential_disabled subscription", () => {
 		cwd: dirs.cwd,
 		agentDir: dirs.agentDir,
 		authStorage,
+		modelRegistry: new ModelRegistry(authStorage),
 		settings: Settings.isolated(),
 		disableExtensionDiscovery: true,
 		extensions,

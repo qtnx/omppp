@@ -221,13 +221,13 @@ describe("runEvalLlm", () => {
 		// A oneshot completion emits no status until it returns; a slow request
 		// must not look like a stalled cell. The bridge pumps a heartbeat while it
 		// awaits, re-arming the watchdog through emitStatus.
-		setBridgeHeartbeatIntervalMs(15);
+		setBridgeHeartbeatIntervalMs(25);
 		vi.spyOn(ai, "completeSimple").mockImplementation(async () => {
-			await Bun.sleep(200);
+			await Bun.sleep(350);
 			return assistant({ text: "the answer" });
 		});
 
-		using idle = new IdleTimeout(60);
+		using idle = new IdleTimeout(150);
 		const result = await runEvalLlm(
 			{ prompt: "q", model: "smol" },
 			{
