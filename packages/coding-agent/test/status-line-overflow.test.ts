@@ -80,6 +80,7 @@ function createStatusLineSession(sessionName: string) {
 		getAsyncJobSnapshot: () => ({ running: [] }),
 		getCurrentModel: () => undefined,
 		isFastModeEnabled: () => false,
+		getContextUsage: () => undefined,
 		sessionManager: {
 			getSessionName: () => sessionName,
 			getUsageStatistics: () => ({

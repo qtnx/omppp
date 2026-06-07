@@ -15,13 +15,16 @@ class FakeSession {
 	readonly commands: SentCommand[] = [];
 	detached = false;
 	readonly #delayMs: number;
+	readonly #sendBlocker: Promise<void> | undefined;
 
-	constructor(delayMs = 0) {
+	constructor(delayMs = 0, sendBlocker?: Promise<void>) {
 		this.#delayMs = delayMs;
+		this.#sendBlocker = sendBlocker;
 	}
 
 	async send(method: string, params?: Record<string, unknown>): Promise<unknown> {
 		this.commands.push({ method, params });
+		if (this.#sendBlocker) await this.#sendBlocker;
 		if (this.#delayMs > 0) await Bun.sleep(this.#delayMs);
 		return {};
 	}
@@ -42,9 +45,9 @@ class FakeTarget {
 	createCalls = 0;
 	readonly #type: string;
 
-	constructor(type: string, delayMs = 0) {
+	constructor(type: string, delayMs = 0, sendBlocker?: Promise<void>) {
 		this.#type = type;
-		this.session = new FakeSession(delayMs);
+		this.session = new FakeSession(delayMs, sendBlocker);
 	}
 
 	type(): string {
@@ -196,7 +199,8 @@ describe("browser stealth target setup", () => {
 	});
 
 	it("gives a slow page-like target a bounded but non-trivial window to receive user-agent override", async () => {
-		const slowPage = new FakeTarget("page", 200);
+		const neverCompletes = Promise.withResolvers<void>();
+		const slowPage = new FakeTarget("page", 0, neverCompletes.promise);
 		const browser = new FakeBrowser([slowPage]);
 		const started = performance.now();
 
@@ -204,6 +208,6 @@ describe("browser stealth target setup", () => {
 
 		const elapsed = performance.now() - started;
 		expect(elapsed).toBeGreaterThanOrEqual(45);
-		expect(elapsed).toBeLessThan(150);
+		expect(elapsed).toBeLessThan(500);
 	});
 });

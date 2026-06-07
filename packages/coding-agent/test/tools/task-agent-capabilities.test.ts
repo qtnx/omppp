@@ -27,10 +27,14 @@ describe("task agent capability descriptions", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("classifies bundled explore as the only read-only delegated agent", () => {
+	it("does not classify bundled agents as read-only when they expose command-capable tools", () => {
 		const agents = loadBundledAgents();
+		const explore = agentByName(agents, "explore");
 
-		expect(isReadOnlyAgent(agentByName(agents, "explore"))).toBe(true);
+		expect(explore.tools).toContain("bash");
+		expect(isReadOnlyAgent(explore)).toBe(false);
+		expect(explore.systemPrompt).toContain("You MUST operate as read-only");
+		expect(explore.systemPrompt).toContain("You MUST NOT use `bash` to write");
 		for (const name of ["task", "quick_task", "plan", "reviewer", "oracle", "designer"]) {
 			expect(isReadOnlyAgent(agentByName(agents, name))).toBe(false);
 		}

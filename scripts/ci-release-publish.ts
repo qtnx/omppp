@@ -90,6 +90,8 @@ export const packages: PublishPackage[] = [
 		extraTypeConfigs: ["tsconfig.publish.client.json"],
 	},
 	{ dir: "packages/agent", kind: "typescript" },
+	{ dir: "packages/context-gc-plugin", kind: "typescript" },
+	{ dir: "packages/system-context-reminder-plugin", kind: "typescript" },
 	{ dir: "packages/coding-agent", kind: "typescript" },
 ];
 

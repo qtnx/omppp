@@ -78,7 +78,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			agentDir: tempDir,
 			modelRegistry,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: Settings.isolated({ "tools.discoveryMode": "mcp-only", "mcp.discoveryMode": true }),
 			model: getBundledModel("openai", "gpt-4o-mini"),
 			disableExtensionDiscovery: true,
 			skills: [],
@@ -171,13 +171,13 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(prompt).not.toContain("Discoverable native tools are hidden until activated.");
 	});
 
-	it("preserves explicitly requested MCP tools in discovery mode", async () => {
+	it("keeps unrequested MCP tools outside explicit tool allowlists in discovery mode", async () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir: tempDir,
 			modelRegistry,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: Settings.isolated({ "tools.discoveryMode": "mcp-only", "mcp.discoveryMode": true }),
 			model: getBundledModel("openai", "gpt-4o-mini"),
 			disableExtensionDiscovery: true,
 			skills: [],
@@ -197,12 +197,14 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(session.getSelectedMCPToolNames()).toEqual(["mcp__github_create_issue"]);
 		expect(session.systemPrompt.join("\n")).toContain("mcp__github_create_issue");
 
-		await session.activateDiscoveredMCPTools(["mcp__slack_post_message"]);
+		const activated = await session.activateDiscoveredMCPTools(["mcp__slack_post_message"]);
 
+		expect(activated).toEqual([]);
 		expect(session.getActiveToolNames()).toEqual(
-			expect.arrayContaining(["read", "search_tool_bm25", "mcp__github_create_issue", "mcp__slack_post_message"]),
+			expect.arrayContaining(["read", "search_tool_bm25", "mcp__github_create_issue"]),
 		);
-		expect(session.getSelectedMCPToolNames()).toEqual(["mcp__github_create_issue", "mcp__slack_post_message"]);
+		expect(session.getActiveToolNames()).not.toContain("mcp__slack_post_message");
+		expect(session.getSelectedMCPToolNames()).toEqual(["mcp__github_create_issue"]);
 	});
 
 	it("keeps configured discovery default servers visible in discovery mode", async () => {
@@ -212,6 +214,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			modelRegistry,
 			sessionManager: SessionManager.inMemory(),
 			settings: Settings.isolated({
+				"tools.discoveryMode": "mcp-only",
 				"mcp.discoveryMode": true,
 				"mcp.discoveryDefaultServers": ["github", "missing"],
 			}),
@@ -223,7 +226,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
-			toolNames: ["read", "search_tool_bm25"],
+			toolNames: ["read", "search_tool_bm25", "mcp__github_create_issue"],
 			customTools: [
 				createMcpCustomTool("mcp__github_create_issue", "github", "create_issue"),
 				createMcpCustomTool("mcp__slack_post_message", "slack", "post_message"),
@@ -246,7 +249,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			agentDir: tempDir,
 			modelRegistry,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: Settings.isolated({ "tools.discoveryMode": "mcp-only", "mcp.discoveryMode": true }),
 			model: getBundledModel("openai", "gpt-4o-mini"),
 			disableExtensionDiscovery: true,
 			skills: [],
@@ -255,7 +258,6 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
-			toolNames: ["read", "search_tool_bm25"],
 			customTools: [createMcpCustomTool("mcp__github_create_issue", "github", "create_issue")],
 		});
 
@@ -299,6 +301,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			modelRegistry,
 			sessionManager: firstManager,
 			settings: Settings.isolated({
+				"tools.discoveryMode": "mcp-only",
 				"mcp.discoveryMode": true,
 				defaultThinkingLevel: "high",
 				serviceTier: "priority",
@@ -311,7 +314,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
-			toolNames: ["read", "search_tool_bm25"],
+			toolNames: ["read", "search_tool_bm25", "mcp__slack_post_message"],
 			customTools: [
 				createMcpCustomTool("mcp__github_create_issue", "github", "create_issue"),
 				createMcpCustomTool("mcp__slack_post_message", "slack", "post_message"),
@@ -336,6 +339,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			modelRegistry,
 			sessionManager: resumedManager,
 			settings: Settings.isolated({
+				"tools.discoveryMode": "mcp-only",
 				"mcp.discoveryMode": true,
 				defaultThinkingLevel: "high",
 				serviceTier: "none",
@@ -348,7 +352,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
-			toolNames: ["read", "search_tool_bm25"],
+			toolNames: ["read", "search_tool_bm25", "mcp__slack_post_message"],
 			customTools: [
 				createMcpCustomTool("mcp__github_create_issue", "github", "create_issue"),
 				createMcpCustomTool("mcp__slack_post_message", "slack", "post_message"),
@@ -389,6 +393,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			modelRegistry,
 			sessionManager: resumedManager,
 			settings: Settings.isolated({
+				"tools.discoveryMode": "mcp-only",
 				"mcp.discoveryMode": true,
 				"mcp.discoveryDefaultServers": ["github"],
 				defaultThinkingLevel: "high",
@@ -402,7 +407,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
-			toolNames: ["read", "search_tool_bm25"],
+			toolNames: ["read", "search_tool_bm25", "mcp__github_create_issue"],
 			customTools: [
 				createMcpCustomTool("mcp__github_create_issue", "github", "create_issue"),
 				createMcpCustomTool("mcp__slack_post_message", "slack", "post_message"),
@@ -430,7 +435,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			agentDir: tempDir,
 			modelRegistry,
 			sessionManager: firstManager,
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: Settings.isolated({ "tools.discoveryMode": "mcp-only", "mcp.discoveryMode": true }),
 			model: getBundledModel("openai", "gpt-4o-mini"),
 			disableExtensionDiscovery: true,
 			skills: [],
@@ -458,7 +463,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			agentDir: tempDir,
 			modelRegistry,
 			sessionManager: resumedManager,
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: Settings.isolated({ "tools.discoveryMode": "mcp-only", "mcp.discoveryMode": true }),
 			model: getBundledModel("openai", "gpt-4o-mini"),
 			disableExtensionDiscovery: true,
 			skills: [],

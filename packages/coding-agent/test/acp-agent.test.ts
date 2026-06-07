@@ -80,6 +80,14 @@ function makeAssistantMessage(text: string, thinking?: string) {
 	};
 }
 
+interface FakeSkill {
+	name: string;
+	description: string;
+	filePath: string;
+	baseDir: string;
+	source: string;
+}
+
 class FakeAgentSession {
 	sessionManager: SessionManager;
 	sessionId: string;
@@ -99,8 +107,8 @@ class FakeAgentSession {
 	}
 	promptCalls: string[] = [];
 	customMessages: Array<{ customType: string; content: string; details?: unknown }> = [];
-	skillsSettings = { enableSkillCommands: true };
-	skills: Array<{ name: string; description: string; filePath: string; baseDir: string; source: string }> = [];
+	skillsSettings: Record<string, unknown> = { enableSkillCommands: true };
+	skills: FakeSkill[] = [];
 	planModeState: PlanModeState | undefined;
 	waitForIdleCalls = 0;
 	waitForIdleBlocker: (() => Promise<void>) | undefined;
@@ -232,9 +240,18 @@ class FakeAgentSession {
 
 	async refreshMCPTools(_tools: unknown[]): Promise<void> {}
 
+	setSkills(skills: FakeSkill[], _warnings: readonly string[], settings: Record<string, unknown>): void {
+		this.skills = skills;
+		this.skillsSettings = settings;
+	}
+
 	getContextUsage(): undefined {
 		return undefined;
 	}
+
+	setMCPPromptCommands(): void {}
+
+	async refreshBaseSystemPrompt(): Promise<void> {}
 
 	async switchSession(sessionPath: string): Promise<boolean> {
 		await this.sessionManager.setSessionFile(sessionPath);
@@ -1046,7 +1063,7 @@ describe("ACP agent", () => {
 		const harness = await createHarness();
 		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
 		const session = harness.findSession(created.sessionId)!;
-		const skillDir = path.join(harness.cwdA, ".skills", "sample");
+		const skillDir = path.join(harness.cwdA, ".claude", "skills", "sample");
 		const skillPath = path.join(skillDir, "SKILL.md");
 		await fs.promises.mkdir(skillDir, { recursive: true });
 		await fs.promises.writeFile(skillPath, "---\ndescription: Sample skill\n---\n# Sample\nDo work.\n");

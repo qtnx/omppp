@@ -566,13 +566,18 @@ describe("ProcessTerminal DECRQM + in-band resize (DEC 2026/2048)", () => {
 describe("ProcessTerminal Kitty graphics temp-file probe", () => {
 	const originalProtocol = TERMINAL.imageProtocol;
 	let originalGraphics: KittyGraphicsFeatures;
+	let originalKittyGraphicsProbe: string | undefined;
+	let originalKittyImageTransmission: string | undefined;
 
 	beforeEach(() => {
 		Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
 		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
 		Object.defineProperty(process.stdin, "setRawMode", { value: vi.fn(), configurable: true });
 		originalGraphics = { ...getKittyGraphics() };
+		originalKittyGraphicsProbe = Bun.env.PI_TUI_KITTY_GRAPHICS_PROBE;
+		originalKittyImageTransmission = Bun.env.PI_KITTY_IMAGE_TRANSMISSION;
 		Bun.env.PI_TUI_KITTY_GRAPHICS_PROBE = "1";
+		Bun.env.PI_KITTY_IMAGE_TRANSMISSION = "temp-file";
 		setTerminalImageProtocol(ImageProtocol.Kitty);
 		setKittyGraphics({ transmissionMedium: "direct" });
 	});
@@ -582,7 +587,8 @@ describe("ProcessTerminal Kitty graphics temp-file probe", () => {
 		restoreProperty(process.stdin, "isTTY", stdinIsTtyDescriptor);
 		restoreProperty(process.stdout, "isTTY", stdoutIsTtyDescriptor);
 		restoreProperty(process.stdin, "setRawMode", stdinSetRawModeDescriptor);
-		delete Bun.env.PI_TUI_KITTY_GRAPHICS_PROBE;
+		restoreEnv("PI_TUI_KITTY_GRAPHICS_PROBE", originalKittyGraphicsProbe);
+		restoreEnv("PI_KITTY_IMAGE_TRANSMISSION", originalKittyImageTransmission);
 		setTerminalImageProtocol(originalProtocol);
 		setKittyGraphics(originalGraphics);
 	});

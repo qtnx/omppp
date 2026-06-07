@@ -94,7 +94,7 @@ cp "$natives_pkg_backup" "$ROOT_DIR/packages/natives/package.json"
 [ "$core_rc" -eq 0 ] || exit "$core_rc"
 
 # 3. Pack the remaining workspace packages (natives core handled above).
-for pkg in utils hashline ai mnemopi agent tui stats coding-agent; do
+for pkg in utils hashline ai mnemopi agent tui stats context-gc-plugin system-context-reminder-plugin coding-agent; do
    (
       cd "$ROOT_DIR/packages/$pkg"
       bun pm pack --destination "$TARBALL_DIR" --quiet >/dev/null
@@ -110,6 +110,8 @@ mnemopi_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-mnemopi-*.tgz)"
 agent_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-agent-core-*.tgz)"
 tui_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-tui-*.tgz)"
 stats_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-omp-stats-*.tgz)"
+context_gc_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-context-gc-plugin-*.tgz)"
+system_context_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-system-context-reminder-plugin-*.tgz)"
 coding_agent_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-coding-agent-*.tgz)"
 
 TARBALL_APP_DIR="$WORK_DIR/tarball-install"
@@ -132,12 +134,14 @@ mkdir -p "$TARBALL_APP_DIR"
 			'@oh-my-pi/pi-agent-core': '$agent_tgz',
 			'@oh-my-pi/pi-tui': '$tui_tgz',
 			'@oh-my-pi/omp-stats': '$stats_tgz',
+			'@oh-my-pi/context-gc-plugin': '$context_gc_tgz',
+			'@oh-my-pi/system-context-reminder-plugin': '$system_context_tgz',
 			'@oh-my-pi/pi-coding-agent': '$coding_agent_tgz'
 		};
 		require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2));
 	"
 
-   bun add "$utils_tgz" "$natives_tgz" "$hashline_tgz" "$ai_tgz" "$mnemopi_tgz" "$agent_tgz" "$tui_tgz" "$stats_tgz" "$coding_agent_tgz"
+   bun add "$coding_agent_tgz"
    # The platform leaf must arrive through the core's optionalDependencies +
    # override, not as a direct dependency — assert it landed before smoking so a
    # resolution regression is distinguishable from a runtime loader bug.
