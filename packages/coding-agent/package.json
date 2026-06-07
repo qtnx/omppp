@@ -35,7 +35,7 @@
 		"check": "biome check . && bun run check:types",
 		"check:types": "tsgo -p tsconfig.json --noEmit",
 		"lint": "biome lint .",
-		"test": "bun test --timeout=60000 test/sdk-credential-disabled-bridge.test.ts src/eval/__tests__/shared-executors.test.ts test/agent-session-concurrent.test.ts test/task/worktree.test.ts test/core/python-executor-per-call.test.ts test/sdk-session-isolation.test.ts test/sdk-model-selection.test.ts && bun test --parallel=8 --timeout=60000 --path-ignore-patterns='test/sdk-credential-disabled-bridge.test.ts' --path-ignore-patterns='src/eval/__tests__/shared-executors.test.ts' --path-ignore-patterns='test/agent-session-concurrent.test.ts' --path-ignore-patterns='test/task/worktree.test.ts' --path-ignore-patterns='test/core/python-executor-per-call.test.ts' --path-ignore-patterns='test/sdk-session-isolation.test.ts' --path-ignore-patterns='test/sdk-model-selection.test.ts'",
+		"test": "bun scripts/run-tests.ts",
 		"fix": "biome check --write --unsafe . && bun run format-prompts && bun run generate-docs-index",
 		"fmt": "biome format --write . && bun run format-prompts",
 		"format-prompts": "bun scripts/format-prompts.ts",
