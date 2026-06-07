@@ -36,5 +36,5 @@ for (const file of SERIAL_TEST_FILES) {
 const ignoreArgs = [...ROOT_PATH_IGNORE_PATTERNS, ...SERIAL_TEST_FILES].map(
 	pattern => `--path-ignore-patterns=${pattern}`,
 );
-const parallelExit = await runTest(["--parallel=8", "--timeout=60000", ...ignoreArgs]);
+const parallelExit = await runTest(["--timeout=60000", ...ignoreArgs]);
 process.exit(parallelExit);
