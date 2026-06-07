@@ -1,0 +1,4 @@
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+ignoreUntil = 2026-12-31
+reason = "bincode 1.3.3 is an indirect syntect dependency; advisory is unmaintained/no-fixed-version with no reported exploitable vulnerability. Revisit during dependency updates."

@@ -318,12 +318,28 @@ jobs:
          - name: Install method smoke tests
            run: bun run ci:test:install-methods
 
+   security:
+      needs: [gate]
+      if: ${{ needs.gate.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+      uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2" # v2.3.8
+      permissions:
+         actions: read
+         contents: read
+         security-events: write
+      with:
+         fail-on-vuln: true
+         scan-args: |-
+            --config=./osv-scanner.toml
+            --lockfile=./bun.lock
+            --lockfile=./Cargo.lock
+
    release_binary:
       if: ${{ needs.gate.outputs.is-release == 'true' && !cancelled() &&
          needs.native_linux.result == 'success' && needs.native_release.result ==
          'success' && needs.test.result == 'success' && needs.check.result ==
-         'success' && needs.install_methods.result == 'success' }}
-      needs: [gate, check, native_linux, native_release, test, install_methods, rust-hash]
+         'success' && needs.install_methods.result == 'success' &&
+         needs.security.result == 'success' }}
+      needs: [gate, check, native_linux, native_release, test, install_methods, security, rust-hash]
       strategy:
          fail-fast: false
          matrix:
