@@ -8,7 +8,11 @@ const SERIAL_TEST_FILES = [
 	"test/core/python-executor-per-call.test.ts",
 	"test/sdk-session-isolation.test.ts",
 	"test/sdk-model-selection.test.ts",
+	"test/sdk-tool-activation.test.ts",
 	"test/agent-session-openai-responses-replay.test.ts",
+	"test/agent-session-user-shortcut-hooks.test.ts",
+	"test/cli/completions.test.ts",
+	"test/task/review-gate.test.ts",
 	"test/tools/schema-validation.test.ts",
 	"test/tools/search-path-lists.test.ts",
 ] as const;
