@@ -264,11 +264,11 @@ jobs:
               run-id: ${{ steps.source.outputs.run-id }}
               github-token: ${{ secrets.GITHUB_TOKEN }}
          - name: Test workspace (TS)
-           # `test:ts` sets GITHUB_ACTIONS=0 inline so `bun test` skips its
-           # per-file `::group::`/`::endgroup::` annotations. Under `--workspaces`
-           # every line is prefixed with `<pkg> test: `, which breaks GHA's
-           # column-0 parsing and would leak those markers as literal log spam.
-           run: bun run test:ts
+           # Run the shell driver directly instead of through `bun run`: when a
+           # package test hangs or the job is cancelled, the extra Bun script
+           # wrapper can hide the per-package progress that identifies the
+           # stalled package in the Actions log.
+           run: bash scripts/ci-test-ts.sh
          - name: CLI smoke test
            run: bun run ci:test:smoke
 
