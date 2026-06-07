@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildBunInstallArgs, replaceBinaryForUpdate, resolveUpdateMethodForTest } from "../src/cli/update-cli";
+import {
+	buildBunInstallArgs,
+	getBinaryNameForTest,
+	replaceBinaryForUpdate,
+	resolveUpdateMethodForTest,
+} from "../src/cli/update-cli";
 
 const tempDirs: string[] = [];
 
@@ -22,6 +27,22 @@ describe("update-cli install target detection", () => {
 		expect(method).toBe("bun");
 	});
 
+	it("uses bun update when prioritized ompx is a symlink to bun global bin", async () => {
+		const dir = await makeTempDir();
+		const bunBin = path.join(dir, "bun-bin");
+		const pathBin = path.join(dir, "path-bin");
+		await fs.mkdir(bunBin, { recursive: true });
+		await fs.mkdir(pathBin, { recursive: true });
+		const bunManagedBinary = path.join(bunBin, "ompx");
+		const symlinkedBinary = path.join(pathBin, "ompx");
+		await Bun.write(bunManagedBinary, "bun-managed binary");
+		await fs.symlink(bunManagedBinary, symlinkedBinary);
+
+		const method = resolveUpdateMethodForTest(symlinkedBinary, bunBin);
+
+		expect(method).toBe("bun");
+	});
+
 	it("uses binary update when prioritized ompx is outside bun global bin", () => {
 		const method = resolveUpdateMethodForTest("/Users/test/.local/bin/ompx", "/Users/test/.bun/bin");
 
@@ -35,16 +56,27 @@ describe("update-cli install target detection", () => {
 	});
 });
 
+describe("update-cli release binary names", () => {
+	it("matches the release assets published by CI", () => {
+		expect(getBinaryNameForTest("linux", "x64")).toBe("ompx-linux-x64");
+		expect(getBinaryNameForTest("linux", "arm64")).toBe("ompx-linux-arm64");
+		expect(getBinaryNameForTest("darwin", "x64")).toBe("ompx-darwin-x64");
+		expect(getBinaryNameForTest("darwin", "arm64")).toBe("ompx-darwin-arm64");
+		expect(getBinaryNameForTest("win32", "x64")).toBe("ompx-windows-x64.exe");
+		expect(() => getBinaryNameForTest("win32", "arm64")).toThrow("Unsupported Windows architecture");
+	});
+});
+
 describe("update-cli bun install command", () => {
-	it("pins the official npm registry and bypasses the manifest cache so a stale mirror or snapshot cannot mask a freshly published version", () => {
-		// Regression: OMPx queries https://registry.npmjs.org/<pkg>/latest directly.
-		// The install MUST hit the same registry, otherwise:
+	it("pins the official npm registry and bypasses the manifest cache so a stale mirror or snapshot cannot block a tag-matched package install", () => {
+		// Regression: OMPx selects the update version from the GitHub release tag,
+		// then bun-managed installs resolve the matching npm package. The install
+		// MUST hit the official registry directly, otherwise:
 		//   - a lagging mirror (corp proxy, Taobao, …) rejects the version with
 		//     `No version matching "X" (but package exists)`,
 		//   - or bun's local manifest snapshot does the same when the user's bun
 		//     is already pointed at the official registry but its cache predates
 		//     the release.
-		// See https://github.com/can1357/oh-my-pi/issues/1686.
 		expect(buildBunInstallArgs("15.7.6")).toEqual([
 			"install",
 			"-g",

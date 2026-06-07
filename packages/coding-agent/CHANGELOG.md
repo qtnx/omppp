@@ -9,6 +9,8 @@
 
 ### Fixed
 
+- Fixed release publishing and `ompx update` to use version GitHub tags as the binary release source, build release assets from tag pushes, delay public GitHub release publication until after npm publish, and verify binary update downloads against `SHA256SUMS`.
+
 - Fixed compiled binary builds with the patched `tar` dependency by applying a `fastembed` ESM import compatibility patch.
 
 - Hardened binary installers to verify GitHub release SHA256SUMS before installing, removed remote Bun bootstrap execution from source-install paths, and pinned vulnerable transitive `tar` resolution to a patched version.

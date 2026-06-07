@@ -6,31 +6,24 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { pipeline } from "node:stream/promises";
 import { $which, APP_NAME, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import chalk from "chalk";
 import { theme } from "../modes/theme/theme";
+import { downloadReleaseAsset, fetchLatestReleaseInfo, type ReleaseInfo } from "./update-release";
 
-const REPO = "qtnx/omppp";
 const PACKAGE = "@oh-my-pi/pi-coding-agent";
 /**
  * Official npm registry origin.
  *
- * Pinned across both the version check and the bun install step so the two
- * agree on which catalog they are talking to. A user's bun may be pointed at
- * an unofficial mirror (corporate proxy, Taobao, etc.) that lags the upstream
- * registry by minutes-to-hours, in which case `getLatestRelease` would resolve
- * a version the mirror has not yet replicated and the install would fail with
- * `No version matching "X" found for specifier "<pkg>" (but package exists)`.
+ * Pinned for bun-managed installs so the package manager resolves from the same
+ * canonical registry CI publishes to. A user's bun may be pointed at an
+ * unofficial mirror (corporate proxy, Taobao, etc.) that lags the upstream
+ * registry by minutes-to-hours, in which case bun would reject a GitHub release
+ * version that the official npm registry already has.
  * See #1686.
  */
 const NPM_REGISTRY = "https://registry.npmjs.org/";
-
-interface ReleaseInfo {
-	tag: string;
-	version: string;
-}
 
 /** Result from running the installed binary and parsing its reported version. */
 export interface InstalledVersionVerification {
@@ -99,15 +92,17 @@ function isPathInDirectoryLexical(filePath: string, directoryPath: string): bool
 function isPathInDirectory(filePath: string, directoryPath: string): boolean {
 	if (isPathInDirectoryLexical(filePath, directoryPath)) return true;
 	// Layer realpath resolution on top of the lexical guard. On Windows, ~/.bun
-	// is a junction when Bun is installed via Scoop, so `bun pm bin -g` and the
-	// PATH-resolved OMPx path can refer to the same directory through different
-	// strings. path.resolve does not traverse junctions/symlinks; realpath does.
-	// Resolve the file's parent directory to tolerate the file itself not yet
-	// existing (e.g. a fresh install path) while still catching link-traversed
-	// equality once the directory exists.
-	const fileDir = tryRealpath(path.dirname(path.resolve(filePath)));
+	// is a junction when Bun is installed via Scoop, and on Unix users commonly
+	// expose a bun-managed binary through a symlink in another PATH directory.
+	// path.resolve does not traverse either; realpath does. Resolve the file
+	// first when it exists so symlinked bun installs remain bun-managed, then
+	// fall back to resolving the parent directory to tolerate fresh paths.
 	const dirReal = tryRealpath(path.resolve(directoryPath));
-	if (!fileDir || !dirReal) return false;
+	if (!dirReal) return false;
+	const fileReal = tryRealpath(path.resolve(filePath));
+	if (fileReal && isPathInDirectoryLexical(fileReal, dirReal)) return true;
+	const fileDir = tryRealpath(path.dirname(path.resolve(filePath)));
+	if (!fileDir) return false;
 	const resolvedFile = path.join(fileDir, path.basename(filePath));
 	return isPathInDirectoryLexical(resolvedFile, dirReal);
 }
@@ -138,50 +133,9 @@ async function resolveUpdateTarget(): Promise<UpdateTarget> {
 }
 
 /**
- * Get the latest release info from the npm registry.
- * Uses npm instead of GitHub API to avoid unauthenticated rate limiting.
- */
-async function getLatestRelease(): Promise<ReleaseInfo> {
-	const response = await fetch(`${NPM_REGISTRY}${PACKAGE}/latest`);
-	if (!response.ok) {
-		throw new Error(`Failed to fetch release info: ${response.statusText}`);
-	}
-
-	const data = (await response.json()) as { version: string };
-	const version = data.version;
-	const tag = `v${version}`;
-
-	return {
-		tag,
-		version,
-	};
-}
-
-/**
- * Compare semver versions. Returns:
- * - negative if a < b
- * - 0 if a == b
- * - positive if a > b
- */
-function compareVersions(a: string, b: string): number {
-	const pa = a.split(".").map(Number);
-	const pb = b.split(".").map(Number);
-
-	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-		const na = pa[i] || 0;
-		const nb = pb[i] || 0;
-		if (na !== nb) return na - nb;
-	}
-	return 0;
-}
-
-/**
  * Get the appropriate binary name for this platform.
  */
-function getBinaryName(): string {
-	const platform = process.platform;
-	const arch = process.arch;
-
+function getBinaryNameForPlatform(platform: NodeJS.Platform, arch: NodeJS.Architecture): string {
 	let os: string;
 	switch (platform) {
 		case "linux":
@@ -191,8 +145,10 @@ function getBinaryName(): string {
 			os = "darwin";
 			break;
 		case "win32":
-			os = "windows";
-			break;
+			if (arch !== "x64") {
+				throw new Error(`Unsupported Windows architecture: ${arch}; release binaries are only published for x64`);
+			}
+			return `${APP_NAME}-windows-x64.exe`;
 		default:
 			throw new Error(`Unsupported platform: ${platform}`);
 	}
@@ -209,10 +165,15 @@ function getBinaryName(): string {
 			throw new Error(`Unsupported architecture: ${arch}`);
 	}
 
-	if (os === "windows") {
-		return `${APP_NAME}-${os}-${archName}.exe`;
-	}
 	return `${APP_NAME}-${os}-${archName}`;
+}
+
+export function getBinaryNameForTest(platform: NodeJS.Platform, arch: NodeJS.Architecture): string {
+	return getBinaryNameForPlatform(platform, arch);
+}
+
+function getBinaryName(): string {
+	return getBinaryNameForPlatform(process.platform, process.arch);
 }
 
 /**
@@ -311,8 +272,10 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 /**
  * Build the bun argv used to globally install a specific OMPx version.
  *
- * The version is selected by hitting {@link NPM_REGISTRY} directly in
- * {@link getLatestRelease}, so the install MUST observe the same catalog:
+ * The version is selected from the latest published GitHub release tag, but
+ * bun-managed installs still resolve the package from npm. CI publishes the npm
+ * package and GitHub release from the same tag; these flags make bun query the
+ * canonical registry and ignore stale local metadata:
  *
  * - `--registry=${NPM_REGISTRY}` pins the install to the official registry
  *   regardless of the user's bunfig/`.npmrc`. A mirror (corporate proxy,
@@ -321,8 +284,7 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
  * - `--no-cache` tells bun to ignore its on-disk manifest snapshot so it
  *   re-fetches metadata from that registry on every invocation.
  *
- * Together these two flags make `ompx update` produce exactly the registry
- * lookup the version check just performed. See #1686.
+ * See #1686.
  */
 export function buildBunInstallArgs(expectedVersion: string): string[] {
 	return ["install", "-g", "--no-cache", `--registry=${NPM_REGISTRY}`, `${PACKAGE}@${expectedVersion}`];
@@ -345,31 +307,22 @@ async function updateViaBun(expectedVersion: string): Promise<void> {
 /**
  * Download a release binary to a target path, replacing an existing file.
  */
-async function updateViaBinaryAt(targetPath: string, expectedVersion: string): Promise<void> {
+async function updateViaBinaryAt(targetPath: string, release: ReleaseInfo): Promise<void> {
 	const binaryName = getBinaryName();
-	const tag = `v${expectedVersion}`;
-	const url = `https://github.com/${REPO}/releases/download/${tag}/${binaryName}`;
 
 	const tempPath = `${targetPath}.new`;
 	const backupPath = `${targetPath}.bak`;
-	console.log(chalk.dim(`Downloading ${binaryName}…`));
-
-	const response = await fetch(url, { redirect: "follow" });
-	if (!response.ok || !response.body) {
-		throw new Error(`Download failed: ${response.statusText}`);
-	}
-	const fileStream = fs.createWriteStream(tempPath, { mode: 0o755 });
-	await pipeline(response.body, fileStream);
+	await downloadReleaseAsset({ release, binaryName, tempPath });
 
 	console.log(chalk.dim("Installing update..."));
 	await replaceBinaryForUpdate({
 		targetPath,
 		tempPath,
 		backupPath,
-		expectedVersion,
+		expectedVersion: release.version,
 		verifyInstalledVersion,
 	});
-	printVerifiedVersion(expectedVersion);
+	printVerifiedVersion(release.version);
 	console.log(chalk.dim(`Restart ${APP_NAME} to use the new version`));
 }
 
@@ -382,13 +335,13 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 	// Check for updates
 	let release: ReleaseInfo;
 	try {
-		release = await getLatestRelease();
+		release = await fetchLatestReleaseInfo();
 	} catch (err) {
 		console.error(chalk.red(`Failed to check for updates: ${err}`));
 		process.exit(1);
 	}
 
-	const comparison = compareVersions(release.version, VERSION);
+	const comparison = Bun.semver.order(release.version, VERSION);
 
 	if (comparison <= 0 && !opts.force) {
 		console.log(chalk.green(`${theme.status.success} Already up to date`));
@@ -412,7 +365,7 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 		if (target.method === "bun") {
 			await updateViaBun(release.version);
 		} else {
-			await updateViaBinaryAt(target.path, release.version);
+			await updateViaBinaryAt(target.path, release);
 		}
 	} catch (err) {
 		console.error(chalk.red(`Update failed: ${err}`));
