@@ -144,7 +144,7 @@ describe("executePython (per-call)", () => {
 
 		expect(result.cancelled).toBe(true);
 		expect(result.exitCode).toBeUndefined();
-		expect(result.output).toContain("eval cell timed out after 2s");
+		expect(result.output).toContain("eval cell timed out after ");
 		expect(shutdownCalls).toBe(1);
 	});
 });

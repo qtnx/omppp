@@ -35,9 +35,21 @@ class UnknownViewportTerminal extends VirtualTerminal {
 }
 
 async function settle(term: VirtualTerminal): Promise<void> {
-	await new Promise<void>(resolve => process.nextTick(resolve));
+	const { promise, resolve } = Promise.withResolvers<void>();
+	process.nextTick(resolve);
+	await promise;
 	await Bun.sleep(120);
 	await term.flush();
+}
+
+async function waitForViewportText(term: VirtualTerminal, text: string): Promise<string> {
+	const deadline = Date.now() + 1_000;
+	let viewport = term.getViewport().join("\n");
+	while (!viewport.includes(text) && Date.now() < deadline) {
+		await settle(term);
+		viewport = term.getViewport().join("\n");
+	}
+	return viewport;
 }
 
 describe("slash command autocomplete with unknown native viewport state", () => {
@@ -62,8 +74,7 @@ describe("slash command autocomplete with unknown native viewport state", () => 
 			await settle(term);
 			for (const char of "/model") {
 				term.sendInput(char);
-				await settle(term);
-				const viewport = term.getViewport().join("\n");
+				const viewport = await waitForViewportText(term, editor.getText());
 				expect(viewport).toContain(editor.getText());
 			}
 			expect(editor.getText()).toBe("/model");
@@ -103,8 +114,7 @@ describe("slash command autocomplete with unknown native viewport state", () => 
 				// background row, so the bypass MUST still kick in for the live UI rows.
 				transcriptCounter += 1;
 				term.sendInput(char);
-				await settle(term);
-				const viewport = term.getViewport().join("\n");
+				const viewport = await waitForViewportText(term, editor.getText());
 				expect(viewport).toContain(editor.getText());
 			}
 			expect(editor.getText()).toBe("/mo");

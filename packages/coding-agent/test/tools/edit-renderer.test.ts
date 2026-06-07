@@ -186,7 +186,7 @@ describe("editToolRenderer", () => {
 			const component = new ToolExecutionComponent("edit", { input }, { snapshots }, hashlineTool, uiStub, tmpDir);
 
 			component.setArgsComplete();
-			await Bun.sleep(50);
+			await component.whenPreviewSettled();
 
 			const rendered = Bun.stripANSI(component.render(160).join("\n"));
 			expect(rendered).toContain("export const b = 22;");

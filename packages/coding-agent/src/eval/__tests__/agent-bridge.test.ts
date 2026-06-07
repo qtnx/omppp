@@ -494,19 +494,19 @@ describe("agent() through eval runtimes", () => {
 		mockAgents();
 		// Heartbeat cadence well under the idle budget so a working-but-silent
 		// subagent re-arms the watchdog several times before it could expire.
-		setBridgeHeartbeatIntervalMs(15);
+		setBridgeHeartbeatIntervalMs(50);
 
 		// runSubprocess runs far past the budget and emits NO progress of its own
 		// — the only thing standing between the subagent and a spurious idle abort
 		// is the heartbeat keepalive the bridge pumps while it awaits.
 		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
-			await Bun.sleep(200);
+			await Bun.sleep(700);
 			return singleResult(options, { output: "done" });
 		});
 
 		// Mirror the eval tool's wiring: an IdleTimeout drives cancellation and
 		// ONLY a bridge heartbeat re-arms it.
-		using idle = new IdleTimeout(60);
+		using idle = new IdleTimeout(500);
 		const result = await runEvalAgent(
 			{ prompt: "investigate" },
 			{

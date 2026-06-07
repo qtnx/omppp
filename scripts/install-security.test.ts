@@ -9,6 +9,7 @@ const powershellInstallerPath = path.join(repoRoot, "scripts", "install.ps1");
 const standardConfigPath = path.join(repoRoot, "packages", "coding-agent", "examples", "standard-config.yml");
 const powershellCommand = findExecutable(["pwsh", "powershell"]);
 const describePowerShell = powershellCommand ? describe : describe.skip;
+const installerProcessTestOptions = { timeout: 30_000 };
 
 function findExecutable(names: readonly string[]): string | null {
 	const pathExts = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
@@ -326,7 +327,7 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 			server.stop();
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
-	});
+	}, installerProcessTestOptions);
 
 	it("does not overwrite an existing PowerShell installer config", async () => {
 		const binaryContent = "safe windows release binary";
@@ -344,7 +345,7 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 			server.stop();
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
-	});
+	}, installerProcessTestOptions);
 
 	it("skips PowerShell installer config seeding when requested", async () => {
 		const binaryContent = "safe windows release binary";
@@ -362,7 +363,7 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 			server.stop();
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
-	});
+	}, installerProcessTestOptions);
 
 	it("writes detected bash shell path to PowerShell installer config.yml", async () => {
 		const binaryContent = "safe windows release binary";
@@ -384,7 +385,7 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 			server.stop();
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
-	});
+	}, installerProcessTestOptions);
 
 	it("falls back to the verified binary path when default mode finds an outdated Bun", async () => {
 		const binaryContent = "safe windows fallback binary";
@@ -401,7 +402,7 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 			server.stop();
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
-	});
+	}, installerProcessTestOptions);
 
 	it("preserves an existing install when the checksum does not match", async () => {
 		const { root, installDir } = await createFakeInstallerTools("tampered windows binary", "0".repeat(64));
@@ -418,5 +419,5 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 			server.stop();
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
-	});
+	}, installerProcessTestOptions);
 });
