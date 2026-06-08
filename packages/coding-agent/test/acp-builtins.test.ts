@@ -11,6 +11,7 @@ import type { AgentSession } from "../src/session/agent-session";
 import type { SessionManager } from "../src/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../src/slash-commands/acp-builtins";
 import type { SlashCommandRuntime } from "../src/slash-commands/types";
+import type { MacOSSandboxRelaunchResult } from "../src/task/omp-command";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
@@ -40,6 +41,7 @@ interface FakeAcpBuiltinSession {
 	refreshSshTool(options?: { activateIfAvailable?: boolean }): Promise<void>;
 	getToolByName(name: string): unknown;
 	compact(args?: string): Promise<void>;
+	requestMacOSSandboxRelaunch?: (paths: string[]) => MacOSSandboxRelaunchResult;
 	getContextUsage(): { tokens?: number; contextWindow: number } | undefined;
 	getAvailableModels(): Array<{ provider: string; id: string; contextWindow?: number }>;
 	setModel(model: unknown): Promise<void>;
@@ -330,6 +332,45 @@ describe("ACP builtin slash commands", () => {
 		expect(text).toContain("Ignored skills: legacy-*");
 	});
 
+	it("/add-dir requests a sandbox relaunch with the supplied directory", async () => {
+		const { output, runtime, session, fakeSessionManager } = createRuntime();
+		fakeSessionManager._sessionFile = "/tmp/sessions/fake-session.jsonl";
+		const requested: string[][] = [];
+		session.requestMacOSSandboxRelaunch = paths => {
+			requested.push(paths);
+			return { requested: true };
+		};
+
+		const result = await executeAcpBuiltinSlashCommand("/add-dir ../other", runtime);
+
+		expect(result).toEqual({ consumed: true });
+		expect(requested).toEqual([["/tmp/other"]]);
+		expect(output[0]).toContain("Requested sandbox relaunch");
+	});
+
+	it("/add-dir prints shell-safe manual restart args when no supervisor is available", async () => {
+		const { output, runtime, session, fakeSessionManager } = createRuntime();
+		fakeSessionManager._sessionFile = "/tmp/sessions/fake-session.jsonl";
+		session.requestMacOSSandboxRelaunch = () => ({ requested: false, reason: "missing-supervisor" });
+
+		const result = await executeAcpBuiltinSlashCommand("/add-dir /tmp/other;echo-owned", runtime);
+
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toContain("'--session-dir' '/tmp/sessions'");
+		expect(output[0]).toContain("'/tmp/other;echo-owned'");
+	});
+
+	it("/add-dir rejects broad sandbox roots", async () => {
+		const { output, runtime, session } = createRuntime();
+		session.requestMacOSSandboxRelaunch = () => {
+			throw new Error("should not request relaunch for unsafe roots");
+		};
+
+		const result = await executeAcpBuiltinSlashCommand("/add-dir /", runtime);
+
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toContain("Refusing to whitelist unsafe sandbox directory");
+	});
 	it("/skills: reports disabled extensions from the session skill snapshot", async () => {
 		const { output, runtime, session } = createRuntime();
 		session.skillsSettings = { disabledExtensions: ["skill:snapshot-disabled"] };

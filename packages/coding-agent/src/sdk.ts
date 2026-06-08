@@ -123,6 +123,7 @@ import {
 	buildSystemPromptToolMetadata,
 	loadProjectContextFiles as loadContextFilesInternal,
 } from "./system-prompt";
+import { requestMacOSSandboxRelaunch } from "./task/omp-command";
 import { AgentOutputManager } from "./task/output-manager";
 import {
 	AUTO_THINKING,
@@ -156,6 +157,7 @@ import {
 	isSearchProviderPreference,
 	type LspStartupServerInfo,
 	loadSshTool,
+	MacOSSandboxTool,
 	ReadTool,
 	ResolveTool,
 	renderSearchToolBm25Description,
@@ -425,6 +427,7 @@ export {
 	FindTool,
 	HIDDEN_TOOLS,
 	loadSshTool,
+	MacOSSandboxTool,
 	ReadTool,
 	ResolveTool,
 	SearchTool,
@@ -1323,6 +1326,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			trackEvalExecution: (execution, abortController) =>
 				session ? session.trackEvalExecution(execution, abortController) : execution,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
+			requestMacOSSandboxRelaunch: paths =>
+				sessionManager.getSessionFile()
+					? requestMacOSSandboxRelaunch(paths, sessionManager.getSessionId())
+					: { requested: false, reason: "missing-session" },
 			getHindsightSessionState: () => session?.getHindsightSessionState(),
 			getMnemopiSessionState: () => getMnemopiSessionState(session),
 			getAgentId: () => resolvedAgentId,

@@ -31,6 +31,22 @@ export interface OmpxSelfSandboxOptions extends OmpxSandboxOptions {
 	execPath?: string;
 }
 
+export interface MacOSSandboxRelaunchRequest {
+	type: "ompx:macos-sandbox:relaunch";
+	sessionId: string;
+	addDirs: string[];
+}
+
+export interface MacOSSandboxRelaunchResult {
+	requested: boolean;
+	reason?: "inactive" | "missing-session" | "missing-supervisor" | "send-failed" | "unsafe-path";
+}
+
+export interface ResolvedMacOSSandboxWorkspaceDirs {
+	paths: string[];
+	error?: string;
+}
+
 interface SandboxPathSets {
 	readMetadataLiterals: Set<string>;
 	readLiterals: Set<string>;
@@ -45,6 +61,8 @@ const MACOS_SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 export const MACOS_SANDBOX_ACTIVE_ENV = "PI_OMPX_MACOS_SANDBOX_ACTIVE";
 const MACOS_SANDBOX_ACTIVE_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED";
 const MACOS_SANDBOX_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_INHERITED";
+const MACOS_SANDBOX_RELAUNCH_MESSAGE_TYPE = "ompx:macos-sandbox:relaunch";
+const MACOS_SANDBOX_RELAUNCH_SUPPORTED_ENV = "PI_OMPX_MACOS_SANDBOX_RELAUNCH_SUPPORTED";
 const MACOS_SANDBOX_DEFAULT_SENTINEL = "default";
 const DISABLE_SANDBOX_VALUES = new Set(["0", "false", "no", "off"]);
 const READ_DENY_ROOTS = ["/Volumes", "/System/Volumes/Data/Volumes", "/Users", "/System/Volumes/Data/Users"];
@@ -103,6 +121,32 @@ const CLI_VALUE_FLAGS = new Set([
 	"--tools",
 	"-e",
 ]);
+const RELAUNCH_UNSUPPORTED_FLAGS = new Set(["--print", "-p", "--export"]);
+const RELAUNCH_UNSUPPORTED_MODES = new Set(["json", "rpc", "rpc-ui"]);
+const RELAUNCH_UNSUPPORTED_SUBCOMMANDS = new Set([
+	"__complete",
+	"agents",
+	"auth-broker",
+	"auth-gateway",
+	"commit",
+	"completions",
+	"config",
+	"grep",
+	"grievances",
+	"install",
+	"plugin",
+	"read",
+	"search",
+	"setup",
+	"shell",
+	"ssh",
+	"stats",
+	"tiny-models",
+	"update",
+	"worktree",
+	"wt",
+	"q",
+]);
 
 export function resolveOmpCommand(): OmpxCommand {
 	const envCmd = $env.PI_SUBPROCESS_CMD;
@@ -160,11 +204,99 @@ function commandRequestsNoSandbox(args: readonly string[]): boolean {
 	return false;
 }
 
+function extractCliFlagValues(args: readonly string[], targetFlag: string): string[] {
+	let skipNext = false;
+	const values: string[] = [];
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (skipNext) {
+			skipNext = false;
+			continue;
+		}
+		if (!arg) continue;
+		if (arg === "--") break;
+		const eqIndex = arg.indexOf("=");
+		const flag = eqIndex === -1 ? arg : arg.slice(0, eqIndex);
+		if (flag === targetFlag) {
+			if (eqIndex === -1) {
+				const value = args[index + 1];
+				if (value !== undefined) {
+					values.push(value);
+					index++;
+				}
+			} else {
+				values.push(arg.slice(eqIndex + 1));
+			}
+			continue;
+		}
+		if (eqIndex === -1 && CLI_VALUE_FLAGS.has(flag)) {
+			skipNext = true;
+		}
+	}
+	return values;
+}
+
+function hasCliFlag(args: readonly string[], targetFlags: ReadonlySet<string>): boolean {
+	let skipNext = false;
+	for (const arg of args) {
+		if (skipNext) {
+			skipNext = false;
+			continue;
+		}
+		if (arg === "--") return false;
+		const eqIndex = arg.indexOf("=");
+		const flag = eqIndex === -1 ? arg : arg.slice(0, eqIndex);
+		if (targetFlags.has(flag)) return true;
+		if (eqIndex === -1 && CLI_VALUE_FLAGS.has(flag)) {
+			skipNext = true;
+		}
+	}
+	return false;
+}
+
+function firstNonFlagArg(args: readonly string[]): string | undefined {
+	let skipNext = false;
+	for (const arg of args) {
+		if (skipNext) {
+			skipNext = false;
+			continue;
+		}
+		if (arg === "--") return undefined;
+		const eqIndex = arg.indexOf("=");
+		const flag = eqIndex === -1 ? arg : arg.slice(0, eqIndex);
+		if (arg.startsWith("-")) {
+			if (eqIndex === -1 && CLI_VALUE_FLAGS.has(flag)) {
+				skipNext = true;
+			}
+			continue;
+		}
+		return arg;
+	}
+	return undefined;
+}
+
+function supportsMacOSSandboxRelaunch(argv: readonly string[]): boolean {
+	if (hasCliFlag(argv, RELAUNCH_UNSUPPORTED_FLAGS)) return false;
+	const mode = extractCliFlagValues(argv, "--mode")[0];
+	if (mode && RELAUNCH_UNSUPPORTED_MODES.has(mode)) return false;
+	const firstArg = firstNonFlagArg(argv);
+	return !firstArg || firstArg === "launch" || firstArg === "acp" || !RELAUNCH_UNSUPPORTED_SUBCOMMANDS.has(firstArg);
+}
+
 function withActiveMacOSSandboxEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
 	return {
 		...env,
 		[MACOS_SANDBOX_ACTIVE_ENV]: "1",
 		[MACOS_SANDBOX_ACTIVE_INHERITED_ENV]: "1",
+	};
+}
+
+function withMacOSSandboxRelaunchSupervisorEnv(
+	env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+	return {
+		...env,
+		[MACOS_SANDBOX_RELAUNCH_SUPPORTED_ENV]: "1",
 	};
 }
 
@@ -235,6 +367,67 @@ function lexicalPaths(inputPath: string): string[] {
 function pathIsWithin(root: string, candidate: string): boolean {
 	const relative = path.relative(root, candidate);
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function inferMacOSSandboxHome(cwd: string): string {
+	const resolved = path.resolve(cwd);
+	const userPath = resolved.startsWith("/System/Volumes/Data/")
+		? resolved.slice("/System/Volumes/Data".length)
+		: resolved;
+	const parts = userPath.split(path.sep);
+	if (parts[1] === "Users" && parts[2]) {
+		return path.join(path.sep, "Users", parts[2]);
+	}
+	return os.homedir();
+}
+
+function unsafeMacOSSandboxWorkspaceDirReason(candidate: string, home: string): string | null {
+	const candidates = realPaths(candidate);
+	const homeCandidates = realPaths(home);
+	const unsafeExact = new Set([
+		"/",
+		"/Users",
+		"/System/Volumes/Data",
+		"/System/Volumes/Data/Users",
+		"/Volumes",
+		"/System/Volumes/Data/Volumes",
+		...homeCandidates,
+	]);
+	for (const resolved of candidates) {
+		if (unsafeExact.has(resolved)) return "broad home/root paths are not working directories";
+		for (const homeCandidate of homeCandidates) {
+			for (const secretDir of [
+				path.join(homeCandidate, ".ssh"),
+				path.join(homeCandidate, ".config", "gh"),
+				path.join(homeCandidate, "Library", "Keychains"),
+			]) {
+				if (pathIsWithin(secretDir, resolved)) {
+					return "credential and keychain directories cannot be whitelisted as working directories";
+				}
+			}
+		}
+	}
+	return null;
+}
+
+export function resolveMacOSSandboxWorkspaceDirs(
+	inputPaths: readonly string[],
+	cwd: string,
+): ResolvedMacOSSandboxWorkspaceDirs {
+	const seen = new Set<string>();
+	const paths: string[] = [];
+	const home = inferMacOSSandboxHome(cwd);
+	for (const inputPath of inputPaths) {
+		const trimmed = inputPath.trim();
+		if (!trimmed) continue;
+		const resolved = path.isAbsolute(trimmed) ? path.resolve(trimmed) : path.resolve(cwd, trimmed);
+		const unsafeReason = unsafeMacOSSandboxWorkspaceDirReason(resolved, home);
+		if (unsafeReason) return { paths, error: unsafeReason };
+		if (seen.has(resolved)) continue;
+		seen.add(resolved);
+		paths.push(resolved);
+	}
+	return { paths };
 }
 
 function addTraversalLiterals(paths: Set<string>, allowedPath: string): void {
@@ -374,12 +567,26 @@ function trustedSSHAuthSock(env: Record<string, string | undefined>): string | u
 
 function addSSHAgentSocket(sets: SandboxPathSets, inputPath: string | undefined): void {
 	if (!inputPath?.trim()) return;
-	if (addTrustedTempSubpath(sets, inputPath)) return;
-	try {
-		if (fs.lstatSync(path.resolve(inputPath)).isSocket()) {
-			addWriteLiteral(sets, inputPath);
+	const candidates = realPaths(inputPath);
+	if (candidates.length === 0) return;
+	if (candidates.every(candidate => pathIsWithinAnyRoot(TRUSTED_TEMP_ROOTS, candidate))) {
+		for (const candidate of candidates) {
+			try {
+				if (!fs.lstatSync(candidate).isSocket()) return;
+			} catch {}
 		}
-	} catch {}
+		for (const candidate of candidates) {
+			addWriteLiteral(sets, candidate);
+		}
+		return;
+	}
+	for (const candidate of candidates) {
+		try {
+			if (fs.lstatSync(candidate).isSocket()) {
+				addWriteLiteral(sets, candidate);
+			}
+		} catch {}
+	}
 }
 
 function addSSHSupportSubpaths(sets: SandboxPathSets, env: Record<string, string | undefined>, home: string): void {
@@ -402,24 +609,26 @@ function addResolvedReadArg(sets: SandboxPathSets, arg: string | undefined, cwd:
 	addReadSubpath(sets, resolveChildPath(arg, cwd));
 }
 
+function addWorkspaceDirectoryArg(sets: SandboxPathSets, value: string | undefined, cwd: string): void {
+	if (!value?.trim()) return;
+	const resolved = resolveMacOSSandboxWorkspaceDirs([value], cwd);
+	if (resolved.error) return;
+	for (const workspaceDir of resolved.paths) {
+		addWriteSubpath(sets, workspaceDir);
+	}
+}
+
 function addCommandArgumentPaths(sets: SandboxPathSets, args: string[], cwd: string): void {
 	const firstArg = args[0];
 	if (firstArg && !firstArg.startsWith("-") && (path.isAbsolute(firstArg) || firstArg.includes(path.sep))) {
 		addResolvedReadArg(sets, firstArg, cwd);
 	}
 
-	for (let index = 0; index < args.length; index++) {
-		const arg = args[index];
-		if (arg === "--session-dir") {
-			if (args[index + 1]) {
-				addWriteSubpath(sets, resolveChildPath(args[index + 1], cwd));
-			}
-			index++;
-			continue;
-		}
-		if (arg?.startsWith("--session-dir=")) {
-			addWriteSubpath(sets, resolveChildPath(arg.slice("--session-dir=".length), cwd));
-		}
+	for (const sessionDir of extractCliFlagValues(args, "--session-dir")) {
+		addWriteSubpath(sets, resolveChildPath(sessionDir, cwd));
+	}
+	for (const workspaceDir of extractCliFlagValues(args, "--add-dir")) {
+		addWorkspaceDirectoryArg(sets, workspaceDir, cwd);
 	}
 }
 
@@ -582,6 +791,126 @@ function buildMacOSSandboxProfile(paths: SandboxPathSets): string {
 	return `${rules.join("\n")}\n`;
 }
 
+function extractSessionDirArgs(argv: readonly string[]): string[] {
+	const sessionDir = extractCliFlagValues(argv, "--session-dir")[0];
+	return sessionDir ? ["--session-dir", sessionDir] : [];
+}
+
+function extractAddDirArgs(argv: readonly string[]): string[] {
+	return extractCliFlagValues(argv, "--add-dir");
+}
+
+function extractRelaunchModeArgs(argv: readonly string[]): string[] {
+	if (argv[0] === "acp") return ["--mode", "acp"];
+	const mode = extractCliFlagValues(argv, "--mode")[0];
+	return mode === "acp" ? ["--mode", "acp"] : [];
+}
+
+function macOSSandboxShellQuote(arg: string): string {
+	return `'${arg.replaceAll("'", "'\\''")}'`;
+}
+
+export function formatMacOSSandboxRestartCommand(args: readonly string[]): string {
+	return [APP_NAME, ...args].map(macOSSandboxShellQuote).join(" ");
+}
+
+function uniqueAddDirs(paths: readonly string[]): string[] {
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const inputPath of paths) {
+		const trimmed = inputPath.trim();
+		if (!trimmed) continue;
+		const resolved = path.resolve(trimmed);
+		if (seen.has(resolved)) continue;
+		seen.add(resolved);
+		out.push(resolved);
+	}
+	return out;
+}
+
+function isSafeMacOSSandboxRelaunchSessionId(sessionId: string): boolean {
+	const trimmed = sessionId.trim();
+	return trimmed.length > 0 && trimmed === sessionId && !trimmed.startsWith("-") && !trimmed.includes("\0");
+}
+
+function parseMacOSSandboxRelaunchRequest(message: unknown, cwd: string): MacOSSandboxRelaunchRequest | null {
+	if (!message || typeof message !== "object") return null;
+	const value = message as Partial<MacOSSandboxRelaunchRequest>;
+	if (
+		value.type !== MACOS_SANDBOX_RELAUNCH_MESSAGE_TYPE ||
+		typeof value.sessionId !== "string" ||
+		!isSafeMacOSSandboxRelaunchSessionId(value.sessionId) ||
+		!Array.isArray(value.addDirs) ||
+		!value.addDirs.every(dir => typeof dir === "string")
+	) {
+		return null;
+	}
+	const resolved = resolveMacOSSandboxWorkspaceDirs(value.addDirs, cwd);
+	if (resolved.error || resolved.paths.length === 0) return null;
+	return {
+		type: MACOS_SANDBOX_RELAUNCH_MESSAGE_TYPE,
+		sessionId: value.sessionId,
+		addDirs: resolved.paths,
+	};
+}
+
+function processSender(): ((message: unknown) => boolean) | undefined {
+	return (process as NodeJS.Process & { send?: (message: unknown) => boolean }).send;
+}
+
+export function disconnectMacOSSandboxSupervisor(): void {
+	const childProcess = process as NodeJS.Process & { connected?: boolean; disconnect?: () => void };
+	if (!childProcess.disconnect || childProcess.connected === false) return;
+	childProcess.disconnect();
+}
+
+export function requestMacOSSandboxRelaunch(
+	addDirs: readonly string[],
+	sessionId: string | null | undefined,
+): MacOSSandboxRelaunchResult {
+	if (!isMacOSSandboxActive()) return { requested: false, reason: "inactive" };
+	if (!sessionId || !isSafeMacOSSandboxRelaunchSessionId(sessionId)) {
+		return { requested: false, reason: "missing-session" };
+	}
+	if (Bun.env[MACOS_SANDBOX_RELAUNCH_SUPPORTED_ENV] !== "1") {
+		return { requested: false, reason: "missing-supervisor" };
+	}
+	const sender = processSender();
+	if (!sender) return { requested: false, reason: "missing-supervisor" };
+	const resolved = resolveMacOSSandboxWorkspaceDirs(addDirs, process.cwd());
+	if (resolved.error) return { requested: false, reason: "unsafe-path" };
+	if (resolved.paths.length === 0) return { requested: false, reason: "missing-session" };
+	const request: MacOSSandboxRelaunchRequest = {
+		type: MACOS_SANDBOX_RELAUNCH_MESSAGE_TYPE,
+		sessionId,
+		addDirs: uniqueAddDirs(resolved.paths),
+	};
+	const childProcess = process as NodeJS.Process & { connected?: boolean };
+	if (childProcess.connected === false) return { requested: false, reason: "send-failed" };
+	try {
+		return sender(request) ? { requested: true } : { requested: false, reason: "send-failed" };
+	} catch {
+		return { requested: false, reason: "send-failed" };
+	}
+}
+
+export function buildMacOSSandboxRelaunchArgv(
+	previousArgv: readonly string[],
+	sessionId: string,
+	addDirs: readonly string[],
+): string[] {
+	const argv = [
+		...extractSessionDirArgs(previousArgv),
+		...extractRelaunchModeArgs(previousArgv),
+		"--resume",
+		sessionId,
+	];
+	for (const dir of uniqueAddDirs([...extractAddDirArgs(previousArgv), ...addDirs])) {
+		argv.push("--add-dir", dir);
+	}
+	return argv;
+}
+
 function shouldSelfSandboxArgv(argv: readonly string[], env: Record<string, string | undefined>): boolean {
 	if (isMacOSSandboxActive(env) || commandRequestsNoSandbox(argv)) return false;
 	const first = argv[0];
@@ -614,16 +943,56 @@ export function sandboxCurrentOmpxCommand(argv: string[], options: OmpxSelfSandb
 }
 
 export async function reexecUnderMacOSSandboxIfNeeded(argv: string[]): Promise<boolean> {
-	const command = sandboxCurrentOmpxCommand(argv);
+	let command = sandboxCurrentOmpxCommand(argv);
 	if (!command) return false;
-	const child = Bun.spawn([command.cmd, ...command.args], {
-		env: command.env ?? Bun.env,
-		stderr: "inherit",
-		stdin: "inherit",
-		stdout: "inherit",
-	});
-	const exitCode = await child.exited;
-	process.exit(exitCode);
+
+	let nextArgv = argv;
+	const addDirs: string[] = [];
+	while (command) {
+		const relaunchSupported = supportsMacOSSandboxRelaunch(nextArgv);
+		if (!relaunchSupported) {
+			const child = Bun.spawn({
+				cmd: [command.cmd, ...command.args],
+				env: command.env ?? Bun.env,
+				stderr: "inherit",
+				stdin: "inherit",
+				stdout: "inherit",
+			});
+			process.exit(await child.exited);
+		}
+
+		let relaunchSessionId: string | undefined;
+		let terminationScheduled = false;
+		const relaunchAddDirs: string[] = [];
+		const child = Bun.spawn({
+			cmd: [command.cmd, ...command.args],
+			env: withMacOSSandboxRelaunchSupervisorEnv(command.env ?? Bun.env),
+			stderr: "inherit",
+			stdin: "inherit",
+			stdout: "inherit",
+			serialization: "advanced",
+			ipc(message) {
+				const request = parseMacOSSandboxRelaunchRequest(message, process.cwd());
+				if (!request) return;
+				if (relaunchSessionId && relaunchSessionId !== request.sessionId) return;
+				relaunchSessionId = request.sessionId;
+				relaunchAddDirs.push(...request.addDirs);
+				if (terminationScheduled) return;
+				terminationScheduled = true;
+				globalThis.setTimeout(() => {
+					child.kill("SIGTERM");
+				}, 250);
+			},
+		});
+		const exitCode = await child.exited;
+		if (!relaunchSessionId) {
+			process.exit(exitCode);
+		}
+		addDirs.push(...relaunchAddDirs);
+		nextArgv = buildMacOSSandboxRelaunchArgv(nextArgv, relaunchSessionId, addDirs);
+		command = sandboxCurrentOmpxCommand(nextArgv);
+	}
+	return false;
 }
 
 export function sandboxOmpxCommand(command: OmpxCommand, options: OmpxSandboxOptions = {}): OmpxCommand {

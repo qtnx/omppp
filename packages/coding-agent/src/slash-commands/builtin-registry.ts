@@ -26,6 +26,11 @@ import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogTe
 import { resolveMemoryBackend } from "../memory-backend";
 import type { InteractiveModeContext } from "../modes/types";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
+import {
+	buildMacOSSandboxRelaunchArgv,
+	formatMacOSSandboxRestartCommand,
+	resolveMacOSSandboxWorkspaceDirs,
+} from "../task/omp-command";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
 import { type DumpTarget, writeSessionTranscriptDump } from "../utils/session-dump";
@@ -217,6 +222,7 @@ function formatSkillLine(skill: Skill): string {
 
 function buildSkillsReportText(runtime: SlashCommandRuntime): string {
 	const skillSettings = runtime.session.skillsSettings ?? runtime.settings.getGroup("skills");
+
 	const disabledExtensions = skillSettings.disabledExtensions ?? runtime.settings.get("disabledExtensions") ?? [];
 	const disabledSkillNames = disabledExtensions
 		.filter(id => id.startsWith("skill:"))
@@ -253,6 +259,39 @@ function buildSkillsReportText(runtime: SlashCommandRuntime): string {
 	}
 
 	return lines.join("\n");
+}
+
+async function handleAddDirCommand(
+	command: ParsedSlashCommand,
+	runtime: SlashCommandRuntime,
+): Promise<SlashCommandResult> {
+	const rawPath = command.args.trim();
+	const resolved = resolveMacOSSandboxWorkspaceDirs([rawPath], runtime.cwd);
+	if (resolved.error) {
+		await runtime.output(`Refusing to whitelist unsafe sandbox directory: ${resolved.error}.`);
+		return commandConsumed();
+	}
+	const resolvedPath = resolved.paths[0];
+	if (!resolvedPath) return usage("Usage: /add-dir <trusted-workspace-dir>", runtime);
+	const sessionFile = runtime.sessionManager.getSessionFile();
+	const sessionId = sessionFile ? runtime.sessionManager.getSessionId() : null;
+	const result = sessionId
+		? runtime.session.requestMacOSSandboxRelaunch([resolvedPath])
+		: ({ requested: false, reason: "missing-session" } as const);
+	const displayPath = sanitizeInlineText(resolvedPath);
+	if (result.requested) {
+		await runtime.output(`Requested sandbox relaunch with whitelisted working directory: ${displayPath}`);
+		return commandConsumed();
+	}
+	const previousArgv = sessionFile ? ["--session-dir", path.dirname(sessionFile)] : [];
+	const restartArgs = sessionId ? buildMacOSSandboxRelaunchArgv(previousArgv, sessionId, [resolvedPath]) : undefined;
+	const restartCommand = restartArgs ? formatMacOSSandboxRestartCommand(restartArgs) : null;
+	await runtime.output(
+		restartCommand
+			? `Cannot update the active macOS sandbox in place (${result.reason ?? "unknown"}). Restart from your shell: ${restartCommand}`
+			: `Cannot update the active macOS sandbox in place (${result.reason ?? "unknown"}); no persisted session is available to resume.`,
+	);
+	return commandConsumed();
 }
 
 const LEARNING_CLEAR_SCOPE_LABELS = {
@@ -360,6 +399,13 @@ function parseContextGcArgs(args: string): ParsedContextGcArgs {
 }
 
 const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
+	{
+		name: "add-dir",
+		description: "Relaunch the macOS sandbox with another trusted working directory",
+		inlineHint: "<path>",
+		allowArgs: true,
+		handle: handleAddDirCommand,
+	},
 	{
 		name: "settings",
 		description: "Open settings menu",

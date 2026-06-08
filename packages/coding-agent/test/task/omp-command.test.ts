@@ -4,6 +4,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	buildMacOSSandboxRelaunchArgv,
 	MACOS_SANDBOX_ACTIVE_ENV,
 	sandboxCurrentOmpxCommand,
 	sandboxOmpxCommand,
@@ -243,6 +244,85 @@ describe("sandboxOmpxCommand", () => {
 		).toBeNull();
 	});
 
+	it("preserves session-dir, ACP mode, and existing add-dir roots when supervisor relaunches a session", () => {
+		const argv = buildMacOSSandboxRelaunchArgv(
+			[
+				"--model",
+				"claude-opus-4-1",
+				"--session-dir",
+				"/Users/alice/sessions",
+				"--mode",
+				"acp",
+				"--add-dir",
+				"/Users/alice/project1",
+				"old prompt",
+			],
+			"session-1",
+			["/Users/alice/project2", "/Users/alice/project1", "/Users/alice/project3"],
+		);
+
+		expect(argv).toEqual([
+			"--session-dir",
+			"/Users/alice/sessions",
+			"--mode",
+			"acp",
+			"--resume",
+			"session-1",
+			"--add-dir",
+			"/Users/alice/project1",
+			"--add-dir",
+			"/Users/alice/project2",
+			"--add-dir",
+			"/Users/alice/project3",
+		]);
+	});
+
+	it("allows --add-dir paths in the sandbox profile at launch", () => {
+		setPlatform("darwin");
+
+		const wrapped = sandboxOmpxCommand(
+			{
+				cmd: "/usr/local/bin/ompx",
+				args: ["--resume", "session-1", "--add-dir", "/Users/alice/other-work"],
+				shell: false,
+			},
+			{ cwd: "/Users/alice/project", env: macEnv() },
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		expect(profile).toContain('(subpath "/Users/alice/other-work")');
+		expect(profile).toContain('(subpath "/System/Volumes/Data/Users/alice/other-work")');
+	});
+
+	it("does not allow unsafe or value-operand add-dir paths in the sandbox profile", () => {
+		setPlatform("darwin");
+
+		const unsafeAddDir = sandboxOmpxCommand(
+			{
+				cmd: "/usr/local/bin/ompx",
+				args: ["--resume", "session-1", "--add-dir", "/System/Volumes/Data/Users/alice/.ssh"],
+				shell: false,
+			},
+			{ cwd: "/Users/alice/project", env: macEnv() },
+		);
+		const unsafeProfile = unsafeAddDir.args[1] ?? "";
+
+		expect(unsafeProfile).not.toContain('(subpath "/Users/alice/.ssh")');
+		expect(unsafeProfile).not.toContain('(subpath "/System/Volumes/Data/Users/alice/.ssh")');
+
+		const valueOperand = sandboxOmpxCommand(
+			{
+				cmd: "/usr/local/bin/ompx",
+				args: ["--append-system-prompt", "--add-dir=/Users/alice/.ssh", "--resume", "session-1"],
+				shell: false,
+			},
+			{ cwd: "/Users/alice/project", env: macEnv() },
+		);
+		const valueProfile = valueOperand.args[1] ?? "";
+
+		expect(valueProfile).not.toContain('(subpath "/Users/alice/.ssh")');
+	});
+
 	it("allows external git metadata referenced by a git worktree", () => {
 		setPlatform("darwin");
 		const root = createTempDir("ompx-sandbox-git-");
@@ -345,7 +425,8 @@ describe("sandboxOmpxCommand", () => {
 		);
 		const profile = wrapped.args[1] ?? "";
 
-		expect(profile).toContain('(subpath "/private/tmp/com.apple.launchd.test/Listeners")');
+		expect(profile).toContain('(literal "/private/tmp/com.apple.launchd.test/Listeners")');
+		expect(profileHasWritableFilter(profile, '(literal "/private/tmp/com.apple.launchd.test/Listeners")')).toBe(true);
 		expect(profile).not.toContain("/Users/alice/.ssh/ignored-agent.sock");
 		expect(profile).toContain('(literal "/Users/alice/.ssh/config")');
 		expect(profile).toContain('(literal "/Users/alice/.ssh/known_hosts")');
@@ -402,9 +483,9 @@ describe("sandboxOmpxCommand", () => {
 		}
 	});
 
-	it("does not allow trusted SSH_AUTH_SOCK when it points to a regular file", () => {
+	it("does not allow trusted SSH_AUTH_SOCK under trusted temp roots when it points to a regular file", () => {
 		setPlatform("darwin");
-		const dir = createWorkspaceTempDir("ompx-ssh-agent-file-");
+		const dir = createTempDir("ompx-ssh-agent-file-");
 		const socketPath = path.join(dir, "agent.sock");
 		fs.writeFileSync(socketPath, "not a socket");
 
