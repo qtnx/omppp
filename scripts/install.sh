@@ -4,9 +4,12 @@ set -e
 # OMPx Coding Agent Installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/qtnx/omppp/main/scripts/install.sh | sh
 #
+# By default this downloads the prebuilt binary from the GitHub releases of
+# qtnx/omppp. The npm registry is never used unless you opt in with --source.
+#
 # Options:
-#   --source       Install via bun (requires bun to already be installed)
-#   --binary       Always install prebuilt binary
+#   --source       Install via bun from source (requires bun to already be installed)
+#   --binary       Always install prebuilt binary (default)
 #   --ref <ref>    Install specific tag/commit/branch
 #   -r <ref>       Shorthand for --ref
 
@@ -115,16 +118,6 @@ require_bun_version() {
         echo "Upgrade Bun at https://bun.sh/docs/installation"
         exit 1
     fi
-}
-
-has_supported_bun() {
-    version_raw=$(bun --version 2>/dev/null || true)
-    if [ -z "$version_raw" ]; then
-        return 1
-    fi
-
-    version_clean=${version_raw%%-*}
-    version_ge "$version_clean" "$MIN_BUN_VERSION"
 }
 
 # Check if git is available
@@ -402,7 +395,13 @@ install_binary() {
     # Download binary, verify its release checksum, then install atomically.
     BINARY_URL="${RELEASE_DOWNLOAD_BASE_URL}/${LATEST}/${BINARY}"
     echo "Downloading ${BINARY}..."
-    curl -fsSL "$BINARY_URL" -o "$TMP_BINARY"
+    # Show a progress bar on an interactive terminal; stay quiet when stderr is
+    # not a TTY (piped installs, CI) so logs aren't flooded with bar redraws.
+    if [ -t 2 ]; then
+        curl -fSL --progress-bar "$BINARY_URL" -o "$TMP_BINARY"
+    else
+        curl -fsSL "$BINARY_URL" -o "$TMP_BINARY"
+    fi
     verify_release_checksum "$BINARY" "$TMP_BINARY" "$LATEST" "$TMP_CHECKSUMS"
     mv "$TMP_BINARY" "${INSTALL_DIR}/ompx"
     chmod +x "${INSTALL_DIR}/ompx"
@@ -430,11 +429,8 @@ case "$MODE" in
         install_binary
         ;;
     *)
-        # Default: use bun if available, otherwise binary
-        if has_bun && has_supported_bun; then
-            install_via_bun
-        else
-            install_binary
-        fi
+        # Default: always install the prebuilt binary from GitHub releases.
+        # The npm registry is never used here; pass --source to install via bun.
+        install_binary
         ;;
 esac
