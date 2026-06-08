@@ -1,3 +1,5 @@
+import "../cli/preload-env";
+
 import { emergencyTerminalRestore } from "@oh-my-pi/pi-tui";
 import { postmortem } from "@oh-my-pi/pi-utils";
 

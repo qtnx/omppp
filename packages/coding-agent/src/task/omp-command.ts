@@ -33,8 +33,10 @@ export interface OmpxSelfSandboxOptions extends OmpxSandboxOptions {
 
 interface SandboxPathSets {
 	readMetadataLiterals: Set<string>;
+	readLiterals: Set<string>;
 	readSubpaths: Set<string>;
 	writeSubpaths: Set<string>;
+	writeLiterals: Set<string>;
 }
 
 const DEFAULT_CMD = process.platform === "win32" ? `${APP_NAME}.cmd` : APP_NAME;
@@ -50,6 +52,7 @@ const KEYCHAIN_DENY_ROOTS = ["/Library/Keychains", "/System/Volumes/Data/Library
 const TRAVERSAL_ROOTS = ["/Volumes", "/System/Volumes/Data/Volumes", "/Users", "/System/Volumes/Data/Users"];
 const TRUSTED_CONFIG_DIR_ENV = "PI_OMPX_TRUSTED_CONFIG_DIR";
 const TRUSTED_AGENT_DIR_ENV = "PI_OMPX_TRUSTED_CODING_AGENT_DIR";
+const TRUSTED_SSH_AUTH_SOCK_ENV = "PI_OMPX_TRUSTED_SSH_AUTH_SOCK";
 const TRUSTED_TEMP_ROOTS = [
 	"/tmp",
 	"/private/tmp",
@@ -57,6 +60,21 @@ const TRUSTED_TEMP_ROOTS = [
 	"/private/var/tmp",
 	"/var/folders",
 	"/private/var/folders",
+];
+const SSH_CLIENT_READ_FILES = ["config", "known_hosts", "known_hosts2", "allowed_signers", "revoked_keys"];
+const SSH_PUBLIC_IDENTITY_FILES = [
+	"id_dsa.pub",
+	"id_dsa-cert.pub",
+	"id_ecdsa.pub",
+	"id_ecdsa-cert.pub",
+	"id_ecdsa_sk.pub",
+	"id_ecdsa_sk-cert.pub",
+	"id_ed25519.pub",
+	"id_ed25519-cert.pub",
+	"id_ed25519_sk.pub",
+	"id_ed25519_sk-cert.pub",
+	"id_rsa.pub",
+	"id_rsa-cert.pub",
 ];
 const CLI_VALUE_FLAGS = new Set([
 	"--api-key",
@@ -206,6 +224,14 @@ function realPaths(inputPath: string): string[] {
 	return paths;
 }
 
+function lexicalPaths(inputPath: string): string[] {
+	if (inputPath.includes("\0")) return [];
+	const resolved = path.resolve(inputPath);
+	const paths = [resolved];
+	addMacOSDataAlias(paths, resolved);
+	return paths;
+}
+
 function pathIsWithin(root: string, candidate: string): boolean {
 	const relative = path.relative(root, candidate);
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
@@ -239,6 +265,23 @@ function addWriteSubpath(sets: SandboxPathSets, inputPath: string | undefined): 
 	for (const candidate of realPaths(inputPath)) {
 		sets.readSubpaths.add(candidate);
 		sets.writeSubpaths.add(candidate);
+		addTraversalLiterals(sets.readMetadataLiterals, candidate);
+	}
+}
+
+function addReadLiteral(sets: SandboxPathSets, inputPath: string | undefined): void {
+	if (!inputPath?.trim()) return;
+	for (const candidate of lexicalPaths(inputPath)) {
+		sets.readLiterals.add(candidate);
+		addTraversalLiterals(sets.readMetadataLiterals, candidate);
+	}
+}
+
+function addWriteLiteral(sets: SandboxPathSets, inputPath: string | undefined): void {
+	if (!inputPath?.trim()) return;
+	for (const candidate of lexicalPaths(inputPath)) {
+		sets.readLiterals.add(candidate);
+		sets.writeLiterals.add(candidate);
 		addTraversalLiterals(sets.readMetadataLiterals, candidate);
 	}
 }
@@ -296,16 +339,57 @@ function addRuntimeDirs(sets: SandboxPathSets, env: Record<string, string | unde
 function pathIsWithinAnyRoot(roots: readonly string[], candidate: string): boolean {
 	return roots.some(root => pathIsWithin(root, candidate));
 }
-
-function addTrustedTempSubpath(sets: SandboxPathSets, inputPath: string | undefined): void {
-	if (!inputPath?.trim()) return;
+function addTrustedTempSubpath(sets: SandboxPathSets, inputPath: string | undefined): boolean {
+	if (!inputPath?.trim()) return false;
 	const candidates = realPaths(inputPath);
-	if (candidates.length === 0) return;
-	if (!candidates.every(candidate => pathIsWithinAnyRoot(TRUSTED_TEMP_ROOTS, candidate))) return;
+	if (candidates.length === 0) return false;
+	if (!candidates.every(candidate => pathIsWithinAnyRoot(TRUSTED_TEMP_ROOTS, candidate))) return false;
 	for (const candidate of candidates) {
 		sets.readSubpaths.add(candidate);
 		sets.writeSubpaths.add(candidate);
 		addTraversalLiterals(sets.readMetadataLiterals, candidate);
+	}
+	return true;
+}
+
+function existingPathIsRegularFile(inputPath: string): boolean | null {
+	try {
+		const stat = fs.lstatSync(inputPath);
+		return stat.isFile();
+	} catch {
+		return null;
+	}
+}
+
+function addSSHClientReadFile(sets: SandboxPathSets, inputPath: string): void {
+	const regularFile = existingPathIsRegularFile(inputPath);
+	if (regularFile === false) return;
+	addReadLiteral(sets, inputPath);
+}
+
+function trustedSSHAuthSock(env: Record<string, string | undefined>): string | undefined {
+	const trusted = env[TRUSTED_SSH_AUTH_SOCK_ENV]?.trim();
+	return trusted && trusted !== MACOS_SANDBOX_DEFAULT_SENTINEL ? trusted : undefined;
+}
+
+function addSSHAgentSocket(sets: SandboxPathSets, inputPath: string | undefined): void {
+	if (!inputPath?.trim()) return;
+	if (addTrustedTempSubpath(sets, inputPath)) return;
+	try {
+		if (fs.lstatSync(path.resolve(inputPath)).isSocket()) {
+			addWriteLiteral(sets, inputPath);
+		}
+	} catch {}
+}
+
+function addSSHSupportSubpaths(sets: SandboxPathSets, env: Record<string, string | undefined>, home: string): void {
+	addSSHAgentSocket(sets, trustedSSHAuthSock(env));
+	const sshDir = path.join(home, ".ssh");
+	for (const file of SSH_CLIENT_READ_FILES) {
+		addSSHClientReadFile(sets, path.join(sshDir, file));
+	}
+	for (const file of SSH_PUBLIC_IDENTITY_FILES) {
+		addSSHClientReadFile(sets, path.join(sshDir, file));
 	}
 }
 
@@ -404,15 +488,18 @@ function collectSandboxPaths(
 	env: Record<string, string | undefined>,
 ): SandboxPathSets {
 	const sets: SandboxPathSets = {
+		readLiterals: new Set(),
 		readMetadataLiterals: new Set(),
 		readSubpaths: new Set(),
 		writeSubpaths: new Set(),
+		writeLiterals: new Set(),
 	};
 
 	addWriteSubpath(sets, cwd);
 	addGitMetadataSubpaths(sets, cwd);
 	const home = addRuntimeDirs(sets, env);
 	addReadSubpath(sets, home ? path.join(home, ".bun") : undefined);
+	addSSHSupportSubpaths(sets, env, home);
 	addReadSubpath(sets, resolvedCmd);
 	addCommandArgumentPaths(sets, command.args, cwd);
 
@@ -475,12 +562,14 @@ function buildMacOSSandboxProfile(paths: SandboxPathSets): string {
 		"",
 		";; Re-allow traversal and selected subpaths after the broad read denies.",
 		renderRule("allow file-read-metadata", renderFilters("literal", paths.readMetadataLiterals)),
+		renderRule("allow file-read*", renderFilters("literal", paths.readLiterals)),
 		renderRule("allow file-read*", renderFilters("subpath", paths.readSubpaths)),
 		"",
 		";; System.keychain is world-readable on stock macOS.",
 		renderRule("deny file-read*", renderFilters("subpath", KEYCHAIN_DENY_ROOTS)),
 		"",
 		renderRule("allow file-write*", renderFilters("subpath", paths.writeSubpaths)),
+		renderRule("allow file-write*", renderFilters("literal", paths.writeLiterals)),
 		"",
 		";; Keep raw disk and packet-capture devices blocked even though /dev is writable.",
 		'(deny file-read* file-write*\n    (regex #"^/dev/r?disk")\n    (regex #"^/private/dev/r?disk")\n    (regex #"^/dev/bpf"))',

@@ -1,3 +1,5 @@
+import "./cli/preload-env";
+
 import { HookEditorComponent, HookInputComponent, HookSelectorComponent } from "./modes/components";
 
 // Core session management

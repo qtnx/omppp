@@ -24,3 +24,8 @@ if (!process.env.PI_OMPX_TRUSTED_CODING_AGENT_DIR?.trim()) {
 		? process.env.PI_CODING_AGENT_DIR
 		: "default";
 }
+if (!process.env.PI_OMPX_TRUSTED_SSH_AUTH_SOCK?.trim()) {
+	process.env.PI_OMPX_TRUSTED_SSH_AUTH_SOCK = process.env.SSH_AUTH_SOCK?.trim()
+		? process.env.SSH_AUTH_SOCK
+		: "default";
+}

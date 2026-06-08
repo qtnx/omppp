@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -34,6 +35,41 @@ function createTempDir(prefix: string): string {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 	tempDirs.push(dir);
 	return dir;
+}
+
+function createWorkspaceTempDir(prefix: string): string {
+	const dir = fs.mkdtempSync(path.join(process.cwd(), prefix));
+	tempDirs.push(dir);
+	return dir;
+}
+
+async function listenUnixSocket(socketPath: string): Promise<net.Server> {
+	const server = net.createServer();
+	const { promise, reject, resolve } = Promise.withResolvers<void>();
+	server.once("error", reject);
+	server.listen(socketPath, resolve);
+	await promise;
+	server.off("error", reject);
+	return server;
+}
+
+async function closeServer(server: net.Server): Promise<void> {
+	const { promise, reject, resolve } = Promise.withResolvers<void>();
+	server.close(error => {
+		if (error) {
+			reject(error);
+		} else {
+			resolve();
+		}
+	});
+	await promise;
+}
+
+function profileHasWritableFilter(profile: string, filter: string): boolean {
+	return profile
+		.split("(allow file-write*")
+		.slice(1)
+		.some(rule => rule.includes(filter));
 }
 
 describe("sandboxOmpxCommand", () => {
@@ -277,6 +313,7 @@ describe("sandboxOmpxCommand", () => {
 
 	it("escapes Seatbelt string literals and preserves temp/device deny ordering", () => {
 		setPlatform("darwin");
+
 		const trickyCwd = '/Users/alice/work "repo" \\ slash\nline';
 
 		const wrapped = sandboxOmpxCommand(
@@ -291,5 +328,114 @@ describe("sandboxOmpxCommand", () => {
 		expect(profile).toContain('(subpath "/private/tmp/ompx tmp")');
 		expect(profile).toContain('(regex #"^/dev/r?disk")');
 		expect(profile.lastIndexOf('(regex #"^/dev/r?disk")')).toBeGreaterThan(profile.indexOf('(subpath "/dev")'));
+	});
+
+	it("allows SSH agent sockets and public SSH client metadata without exposing private keys", () => {
+		setPlatform("darwin");
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--print", "git fetch"], shell: false },
+			{
+				cwd: "/Users/alice/project",
+				env: macEnv({
+					PI_OMPX_TRUSTED_SSH_AUTH_SOCK: "/private/tmp/com.apple.launchd.test/Listeners",
+					SSH_AUTH_SOCK: "/Users/alice/.ssh/ignored-agent.sock",
+				}),
+			},
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		expect(profile).toContain('(subpath "/private/tmp/com.apple.launchd.test/Listeners")');
+		expect(profile).not.toContain("/Users/alice/.ssh/ignored-agent.sock");
+		expect(profile).toContain('(literal "/Users/alice/.ssh/config")');
+		expect(profile).toContain('(literal "/Users/alice/.ssh/known_hosts")');
+		expect(profile).toContain('(literal "/Users/alice/.ssh/known_hosts2")');
+		expect(profile).toContain('(literal "/Users/alice/.ssh/allowed_signers")');
+		expect(profile).toContain('(literal "/Users/alice/.ssh/revoked_keys")');
+		expect(profile).toContain('(literal "/Users/alice/.ssh/id_ed25519.pub")');
+		expect(profile).toContain('(literal "/Users/alice/.ssh/id_ed25519-cert.pub")');
+		expect(profile).not.toContain('(subpath "/Users/alice/.ssh/id_ed25519")');
+		expect(profile).not.toContain('(subpath "/Users/alice/.ssh/id_rsa")');
+		expect(profile).not.toContain('(subpath "/Users/alice/.ssh")');
+	});
+
+	it("does not follow symlinked SSH metadata to private keys", () => {
+		setPlatform("darwin");
+		const home = createWorkspaceTempDir("ompx-ssh-home-");
+		const sshDir = path.join(home, ".ssh");
+		fs.mkdirSync(sshDir, { recursive: true });
+		fs.writeFileSync(path.join(sshDir, "id_ed25519"), "private-key");
+		fs.symlinkSync(path.join(sshDir, "id_ed25519"), path.join(sshDir, "config"));
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--print", "ssh host"], shell: false },
+			{ cwd: "/Users/alice/project", env: macEnv({ HOME: home }) },
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		expect(profile).not.toContain(`(literal ${JSON.stringify(path.join(sshDir, "id_ed25519"))})`);
+		expect(profile).not.toContain(`(subpath ${JSON.stringify(path.join(sshDir, "id_ed25519"))})`);
+		expect(profile).not.toContain(`(literal ${JSON.stringify(path.join(sshDir, "config"))})`);
+	});
+
+	it("allows an inherited trusted SSH agent socket outside temp roots when it is a Unix socket", async () => {
+		setPlatform("darwin");
+		const dir = createWorkspaceTempDir("ompx-ssh-agent-");
+		const socketPath = path.join(dir, "agent.sock");
+		const server = await listenUnixSocket(socketPath);
+		try {
+			const wrapped = sandboxOmpxCommand(
+				{ cmd: "/usr/local/bin/ompx", args: ["--print", "ssh host"], shell: false },
+				{
+					cwd: "/Users/alice/project",
+					env: macEnv({
+						PI_OMPX_TRUSTED_SSH_AUTH_SOCK: socketPath,
+					}),
+				},
+			);
+			const profile = wrapped.args[1] ?? "";
+
+			expect(profile).toContain(`(literal ${JSON.stringify(socketPath)})`);
+			expect(profileHasWritableFilter(profile, `(literal ${JSON.stringify(socketPath)})`)).toBe(true);
+		} finally {
+			await closeServer(server);
+		}
+	});
+
+	it("does not allow trusted SSH_AUTH_SOCK when it points to a regular file", () => {
+		setPlatform("darwin");
+		const dir = createWorkspaceTempDir("ompx-ssh-agent-file-");
+		const socketPath = path.join(dir, "agent.sock");
+		fs.writeFileSync(socketPath, "not a socket");
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--print", "ssh host"], shell: false },
+			{
+				cwd: "/Users/alice/project",
+				env: macEnv({
+					PI_OMPX_TRUSTED_SSH_AUTH_SOCK: socketPath,
+				}),
+			},
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		expect(profile).not.toContain(socketPath);
+	});
+
+	it("does not allow unsafe SSH_AUTH_SOCK paths under the user home", () => {
+		setPlatform("darwin");
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--print", "ssh host"], shell: false },
+			{
+				cwd: "/Users/alice/project",
+				env: macEnv({
+					SSH_AUTH_SOCK: "/Users/alice/.ssh/agent.sock",
+				}),
+			},
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		expect(profile).not.toContain("/Users/alice/.ssh/agent.sock");
 	});
 });
