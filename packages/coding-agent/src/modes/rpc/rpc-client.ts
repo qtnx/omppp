@@ -199,7 +199,7 @@ export class RpcClient {
 		);
 		this.#process = ptree.spawn([command.cmd, ...command.args], {
 			cwd: this.options.cwd,
-			env,
+			env: command.env ?? env,
 			stdin: "pipe",
 		});
 

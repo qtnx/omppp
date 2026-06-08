@@ -1,6 +1,17 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import type { ToolSession } from "../src/tools";
-import { BashTool } from "../src/tools/bash";
+import { BashTool, formatMacOSSandboxDenialNotice } from "../src/tools/bash";
+
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+const previousActiveSandbox = Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED;
+
+function setPlatform(value: NodeJS.Platform): void {
+	Object.defineProperty(process, "platform", { value, configurable: true });
+}
+
+function restorePlatform(): void {
+	if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
+}
 
 function makeSession(): ToolSession {
 	return {
@@ -30,6 +41,15 @@ function makeSession(): ToolSession {
 }
 
 describe("BashTool non-zero exit", () => {
+	afterEach(() => {
+		restorePlatform();
+		if (previousActiveSandbox === undefined) {
+			delete Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED;
+		} else {
+			Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED = previousActiveSandbox;
+		}
+	});
+
 	it("resolves with an error result carrying execution details instead of throwing", async () => {
 		const tool = new BashTool(makeSession());
 		const result = await tool.execute("call-fail", { command: "exit 3" });
@@ -44,6 +64,27 @@ describe("BashTool non-zero exit", () => {
 		// The LLM-facing text still states the exit code verbatim.
 		const text = result.content.find(c => c.type === "text")?.text ?? "";
 		expect(text).toContain("Command exited with code 3");
+	});
+
+	it("adds a sandbox denial notice to failed command output when active", async () => {
+		setPlatform("darwin");
+		Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED = "1";
+		const tool = new BashTool(makeSession());
+		const result = await tool.execute("call-sandbox-fail", {
+			command: "printf '%s\\n' 'touch: /Users/alice/.ssh/key: Operation not permitted'; exit 1",
+		});
+
+		expect(result.isError).toBe(true);
+		const text = result.content.find(c => c.type === "text")?.text ?? "";
+		expect(text).toContain("macOS sandbox may have blocked this command");
+		expect(text).toContain("restart the top-level OMPx process with --no-sandbox");
+	});
+
+	it("does not report sandbox denial text when the sandbox is inactive", () => {
+		setPlatform("darwin");
+		Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED = "0";
+
+		expect(formatMacOSSandboxDenialNotice("Operation not permitted")).toBeUndefined();
 	});
 
 	it("returns a success result with no exit-code detail for a zero exit", async () => {

@@ -16,6 +16,7 @@ export interface BashExecutorOptions {
 	cwd?: string;
 	timeout?: number;
 	onChunk?: (chunk: string) => void;
+	onRawChunk?: (chunk: string) => void;
 	chunkThrottleMs?: number;
 	signal?: AbortSignal;
 	/** Session key suffix to isolate shell sessions per agent */
@@ -195,6 +196,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 					},
 					(err, chunk) => {
 						if (!err) {
+							options?.onRawChunk?.(chunk);
 							enqueueChunk(chunk);
 						}
 					},
@@ -212,6 +214,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 					},
 					(err, chunk) => {
 						if (!err) {
+							options?.onRawChunk?.(chunk);
 							enqueueChunk(chunk);
 						}
 					},

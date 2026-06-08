@@ -2594,7 +2594,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			beforeQuit: () => {
 				const child = Bun.spawn([command.cmd, ...command.args], {
 					cwd,
-					env: Bun.env,
+					env: command.env ?? Bun.env,
 					stdin: "inherit",
 					stdout: "inherit",
 					stderr: "inherit",

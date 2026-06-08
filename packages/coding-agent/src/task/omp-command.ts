@@ -18,6 +18,7 @@ export interface OmpxCommand {
 	cmd: string;
 	args: string[];
 	shell: boolean;
+	env?: Record<string, string | undefined>;
 }
 
 export interface OmpxSandboxOptions {
@@ -34,6 +35,8 @@ interface SandboxPathSets {
 const DEFAULT_CMD = process.platform === "win32" ? `${APP_NAME}.cmd` : APP_NAME;
 const DEFAULT_SHELL = process.platform === "win32";
 const MACOS_SANDBOX_EXEC = "/usr/bin/sandbox-exec";
+export const MACOS_SANDBOX_ACTIVE_ENV = "PI_OMPX_MACOS_SANDBOX_ACTIVE";
+const MACOS_SANDBOX_ACTIVE_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED";
 const MACOS_SANDBOX_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_INHERITED";
 const MACOS_SANDBOX_DEFAULT_SENTINEL = "default";
 const DISABLE_SANDBOX_VALUES = new Set(["0", "false", "no", "off"]);
@@ -50,6 +53,33 @@ const TRUSTED_TEMP_ROOTS = [
 	"/var/folders",
 	"/private/var/folders",
 ];
+const CLI_VALUE_FLAGS = new Set([
+	"--api-key",
+	"--approval-mode",
+	"--add-dir",
+	"--append-system-prompt",
+	"--be",
+	"--fe",
+	"--export",
+	"--extension",
+	"--fork",
+	"--hook",
+	"--mode",
+	"--model",
+	"--models",
+	"--plan",
+	"--plugin-dir",
+	"--provider",
+	"--provider-session-id",
+	"--session-dir",
+	"--skills",
+	"--slow",
+	"--smol",
+	"--system-prompt",
+	"--thinking",
+	"--tools",
+	"-e",
+]);
 
 export function resolveOmpCommand(): OmpxCommand {
 	const envCmd = $env.PI_SUBPROCESS_CMD;
@@ -76,8 +106,42 @@ function resolveSandboxEnvValue(env: Record<string, string | undefined>): string
 	return trimmed === "" || trimmed === MACOS_SANDBOX_DEFAULT_SENTINEL ? undefined : inherited;
 }
 
+export function isMacOSSandboxActive(env: Record<string, string | undefined> = Bun.env): boolean {
+	return process.platform === "darwin" && env[MACOS_SANDBOX_ACTIVE_INHERITED_ENV]?.trim() === "1";
+}
+
+export function disableMacOSSandboxForProcess(): void {
+	Bun.env[MACOS_SANDBOX_INHERITED_ENV] = "0";
+	Bun.env.PI_OMPX_MACOS_SANDBOX = "0";
+}
+
 function shouldSandboxOmpxCommand(env: Record<string, string | undefined>): boolean {
 	return process.platform === "darwin" && !isDisabledEnvValue(resolveSandboxEnvValue(env));
+}
+
+function commandRequestsNoSandbox(args: readonly string[]): boolean {
+	let skipNext = false;
+	for (const arg of args) {
+		if (skipNext) {
+			skipNext = false;
+			continue;
+		}
+		const eqIndex = arg.indexOf("=");
+		const flag = eqIndex === -1 ? arg : arg.slice(0, eqIndex);
+		if (flag === "--no-sandbox") return true;
+		if (eqIndex === -1 && CLI_VALUE_FLAGS.has(flag)) {
+			skipNext = true;
+		}
+	}
+	return false;
+}
+
+function withActiveMacOSSandboxEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
+	return {
+		...env,
+		[MACOS_SANDBOX_ACTIVE_ENV]: "1",
+		[MACOS_SANDBOX_ACTIVE_INHERITED_ENV]: "1",
+	};
 }
 
 function findExecutableOnPath(cmd: string, env: Record<string, string | undefined>, cwd: string): string | null {
@@ -361,7 +425,6 @@ function buildMacOSSandboxProfile(paths: SandboxPathSets): string {
 		"(allow process-info*)",
 		"(allow sysctl-read)",
 		"(allow process*)",
-		"(allow process-exec\n    (literal \"/bin/ps\")\n    (with no-sandbox))",
 	].filter((rule): rule is string => rule !== null);
 
 	return `${rules.join("\n")}\n`;
@@ -370,7 +433,7 @@ function buildMacOSSandboxProfile(paths: SandboxPathSets): string {
 export function sandboxOmpxCommand(command: OmpxCommand, options: OmpxSandboxOptions = {}): OmpxCommand {
 	if (command.cmd === MACOS_SANDBOX_EXEC) return command;
 	const env = options.env ?? Bun.env;
-	if (!shouldSandboxOmpxCommand(env)) return command;
+	if (commandRequestsNoSandbox(command.args) || !shouldSandboxOmpxCommand(env)) return command;
 
 	const cwd = path.resolve(options.cwd?.trim() ? options.cwd : process.cwd());
 	const resolvedCmd = resolveExecutable(command.cmd, env, cwd);
@@ -379,5 +442,6 @@ export function sandboxOmpxCommand(command: OmpxCommand, options: OmpxSandboxOpt
 		cmd: MACOS_SANDBOX_EXEC,
 		args: ["-p", profile, resolvedCmd, ...command.args],
 		shell: false,
+		env: withActiveMacOSSandboxEnv(env),
 	};
 }

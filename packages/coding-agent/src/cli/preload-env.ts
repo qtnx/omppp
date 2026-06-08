@@ -10,6 +10,12 @@ if (!process.env.PI_OMPX_MACOS_SANDBOX_INHERITED?.trim()) {
 	process.env.PI_OMPX_MACOS_SANDBOX_INHERITED = inheritedMacOSSandbox?.trim() ? inheritedMacOSSandbox : "default";
 }
 
+if (!process.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED?.trim()) {
+	process.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED = process.env.PI_OMPX_MACOS_SANDBOX_ACTIVE?.trim()
+		? process.env.PI_OMPX_MACOS_SANDBOX_ACTIVE
+		: "0";
+}
+
 if (!process.env.PI_OMPX_TRUSTED_CONFIG_DIR?.trim()) {
 	process.env.PI_OMPX_TRUSTED_CONFIG_DIR = process.env.PI_CONFIG_DIR?.trim()
 		? process.env.PI_CONFIG_DIR

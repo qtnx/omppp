@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { sandboxOmpxCommand } from "@oh-my-pi/pi-coding-agent/task/omp-command";
+import { MACOS_SANDBOX_ACTIVE_ENV, sandboxOmpxCommand } from "@oh-my-pi/pi-coding-agent/task/omp-command";
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 
@@ -49,6 +49,8 @@ describe("sandboxOmpxCommand", () => {
 		const profile = wrapped.args[1] ?? "";
 		expect(wrapped.args.slice(0, 3)).toEqual(["-p", profile, "/Users/alice/.bun/bin/bun"]);
 		expect(wrapped.args.slice(3)).toEqual(command.args);
+		expect(wrapped.env?.[MACOS_SANDBOX_ACTIVE_ENV]).toBe("1");
+		expect(wrapped.env?.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED).toBe("1");
 		expect(profile.startsWith("(version 1)\n")).toBe(true);
 		expect(profile).toContain("(allow default)");
 		expect(profile).toContain("(deny file-write*");
@@ -116,6 +118,45 @@ describe("sandboxOmpxCommand", () => {
 		expect(wrapped.cmd).toBe("/usr/bin/sandbox-exec");
 	});
 
+	it("does not add a new wrapper for explicit child --no-sandbox", () => {
+		setPlatform("darwin");
+		const command = { cmd: "/usr/local/bin/ompx", args: ["--no-sandbox", "--resume", "session-1"], shell: false };
+
+		expect(sandboxOmpxCommand(command, { cwd: "/Users/alice/work", env: macEnv() })).toBe(command);
+		const equalsCommand = { cmd: "/usr/local/bin/ompx", args: ["--no-sandbox=true"], shell: false };
+		expect(sandboxOmpxCommand(equalsCommand, { cwd: "/Users/alice/work", env: macEnv() })).toBe(equalsCommand);
+		const afterStandaloneDashdash = { cmd: "/usr/local/bin/ompx", args: ["--", "--no-sandbox"], shell: false };
+		expect(sandboxOmpxCommand(afterStandaloneDashdash, { cwd: "/Users/alice/work", env: macEnv() })).toBe(
+			afterStandaloneDashdash,
+		);
+		const afterConsumedDashdash = {
+			cmd: "/usr/local/bin/ompx",
+			args: ["--approval-mode", "--", "--no-sandbox"],
+			shell: false,
+		};
+		expect(sandboxOmpxCommand(afterConsumedDashdash, { cwd: "/Users/alice/work", env: macEnv() })).toBe(
+			afterConsumedDashdash,
+		);
+	});
+
+	it("does not treat --no-sandbox values for other flags as an opt-out", () => {
+		setPlatform("darwin");
+		for (const args of [
+			["--append-system-prompt", "--no-sandbox", "--resume", "session-1"],
+			["--approval-mode", "--no-sandbox", "--resume", "session-1"],
+		]) {
+			const command = {
+				cmd: "/usr/local/bin/ompx",
+				args,
+				shell: false,
+			};
+
+			const wrapped = sandboxOmpxCommand(command, { cwd: "/Users/alice/work", env: macEnv() });
+
+			expect(wrapped.cmd).toBe("/usr/bin/sandbox-exec");
+		}
+	});
+
 	it("resolves relative executables from the child cwd", () => {
 		setPlatform("darwin");
 
@@ -165,6 +206,7 @@ describe("sandboxOmpxCommand", () => {
 		expect(profile).toContain("(subpath \"/System/Volumes/Data/Users\")");
 		expect(profile).toContain("(subpath \"/System/Volumes/Data/Volumes\")");
 		expect(profile).toContain("(subpath \"/System/Volumes/Data/Library/Keychains\")");
+		expect(profile).not.toContain("(with no-sandbox)");
 	});
 
 	it("escapes Seatbelt string literals and preserves temp/device deny ordering", () => {
