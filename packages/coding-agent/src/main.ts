@@ -21,7 +21,6 @@ import {
 	VERSION,
 } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
-import macosSandboxActivePrompt from "./prompts/system/macos-sandbox-active.md" with { type: "text" };
 import { reset as resetCapabilities } from "./capability";
 import type { Args } from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
@@ -54,9 +53,9 @@ import {
 import type { MCPManager } from "./mcp";
 import { InteractiveMode, runAcpMode, runPrintMode, runRpcMode } from "./modes";
 import { ALL_SCENES, runSetupWizard, selectSetupScenes } from "./modes/setup-wizard";
-import { disableMacOSSandboxForProcess, isMacOSSandboxActive } from "./task/omp-command";
 import { initTheme, stopThemeWatcher } from "./modes/theme/theme";
 import type { SubmittedUserInput } from "./modes/types";
+import macosSandboxActivePrompt from "./prompts/system/macos-sandbox-active.md" with { type: "text" };
 import {
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
@@ -69,6 +68,7 @@ import type { AuthStorage } from "./session/auth-storage";
 import { resolveResumableSession, type SessionInfo, SessionManager } from "./session/session-manager";
 import { resolvePromptInput } from "./system-prompt";
 import { applySystemPromptOverlay, loadAutoDiscoveredSystemPromptOverlay } from "./system-prompt-overrides";
+import { disableMacOSSandboxForProcess, isMacOSSandboxActive } from "./task/omp-command";
 import { initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { AUTO_THINKING } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";

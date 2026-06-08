@@ -268,9 +268,7 @@ function addRuntimeDirs(sets: SandboxPathSets, env: Record<string, string | unde
 	const home = env.HOME ?? os.homedir();
 	const trustedConfigDir = env[TRUSTED_CONFIG_DIR_ENV]?.trim();
 	const configDirName =
-		trustedConfigDir && trustedConfigDir !== MACOS_SANDBOX_DEFAULT_SENTINEL
-			? trustedConfigDir
-			: CONFIG_DIR_NAME;
+		trustedConfigDir && trustedConfigDir !== MACOS_SANDBOX_DEFAULT_SENTINEL ? trustedConfigDir : CONFIG_DIR_NAME;
 	const configRoot = path.join(home, configDirName);
 	const trustedAgentDir = env[TRUSTED_AGENT_DIR_ENV]?.trim();
 	const agentDir =
@@ -365,11 +363,11 @@ function collectSandboxPaths(
 }
 
 function seatbeltString(value: string): string {
-	let escaped = "\"";
+	let escaped = '"';
 	for (let index = 0; index < value.length; index++) {
 		const char = value[index] ?? "";
 		const code = char.charCodeAt(0);
-		if (char === "\"" || char === "\\") {
+		if (char === '"' || char === "\\") {
 			escaped += `\\${char}`;
 		} else if (char === "\n") {
 			escaped += "\\n";
@@ -405,7 +403,7 @@ function buildMacOSSandboxProfile(paths: SandboxPathSets): string {
 		"(allow default)",
 		"",
 		";; Deny writes outside explicit working/runtime paths.",
-		"(deny file-write*\n    (subpath \"/\"))",
+		'(deny file-write*\n    (subpath "/"))',
 		"",
 		";; Deny removable-volume and home reads unless selected paths are re-allowed below.",
 		renderRule("deny file-read*", renderFilters("subpath", READ_DENY_ROOTS)),
@@ -420,7 +418,7 @@ function buildMacOSSandboxProfile(paths: SandboxPathSets): string {
 		renderRule("allow file-write*", renderFilters("subpath", paths.writeSubpaths)),
 		"",
 		";; Keep raw disk and packet-capture devices blocked even though /dev is writable.",
-		"(deny file-read* file-write*\n    (regex #\"^/dev/r?disk\")\n    (regex #\"^/private/dev/r?disk\")\n    (regex #\"^/dev/bpf\"))",
+		'(deny file-read* file-write*\n    (regex #"^/dev/r?disk")\n    (regex #"^/private/dev/r?disk")\n    (regex #"^/dev/bpf"))',
 		"",
 		"(allow process-info*)",
 		"(allow sysctl-read)",

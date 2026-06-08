@@ -17,9 +17,7 @@ if (!process.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED?.trim()) {
 }
 
 if (!process.env.PI_OMPX_TRUSTED_CONFIG_DIR?.trim()) {
-	process.env.PI_OMPX_TRUSTED_CONFIG_DIR = process.env.PI_CONFIG_DIR?.trim()
-		? process.env.PI_CONFIG_DIR
-		: "default";
+	process.env.PI_OMPX_TRUSTED_CONFIG_DIR = process.env.PI_CONFIG_DIR?.trim() ? process.env.PI_CONFIG_DIR : "default";
 }
 if (!process.env.PI_OMPX_TRUSTED_CODING_AGENT_DIR?.trim()) {
 	process.env.PI_OMPX_TRUSTED_CODING_AGENT_DIR = process.env.PI_CODING_AGENT_DIR?.trim()
