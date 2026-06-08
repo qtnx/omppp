@@ -98,6 +98,20 @@ describe("parseArgs — workspace flags", () => {
 		expect(parseArgs(["--add-dir", "/a", "--add-dir", "/b"]).addDirs).toEqual(["/a", "/b"]);
 	});
 
+	test("--sandbox-add-dir is consumed as a sandbox-only relaunch allowlist", () => {
+		const args = parseArgs(["--sandbox-add-dir", "/a", "--resume", "session-1"]);
+		expect(args.sandboxAddDirs).toEqual(["/a"]);
+		expect(args.messages).toEqual([]);
+	});
+
+	test("--sandbox-add-dir does not create workspace roots or change the primary cwd", async () => {
+		await withTempDir(async dir => {
+			const result = await resolveWorkspaceRoots(parseArgs(["--sandbox-add-dir", dir, "--resume", "session-1"]));
+			expect(result.roots).toEqual([]);
+			expect(result.primaryCwd).toBeNull();
+		});
+	});
+
 	test("--no-worktree is captured", () => {
 		expect(parseArgs(["--no-worktree", "--be", "/srv/api"]).noWorktree).toBe(true);
 	});

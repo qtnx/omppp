@@ -12,6 +12,7 @@ import type { SessionManager } from "../src/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../src/slash-commands/acp-builtins";
 import type { SlashCommandRuntime } from "../src/slash-commands/types";
 import type { MacOSSandboxRelaunchResult } from "../src/task/omp-command";
+import type { WorkspaceRoot } from "../src/workspace-roots";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
@@ -48,6 +49,7 @@ interface FakeAcpBuiltinSession {
 	skills: Skill[];
 	skillsSettings?: SkillsSettings;
 	skillWarnings?: SkillWarning[];
+	workspaceRoots: WorkspaceRoot[];
 }
 
 interface FakeSessionEntry {
@@ -67,6 +69,7 @@ function createRuntime() {
 		sessionName: "Fake Session",
 		_todoPhases: [],
 		skills: [],
+		workspaceRoots: [],
 		toggleFastMode() {
 			this.fastMode = !this.fastMode;
 			return this.fastMode;
@@ -332,8 +335,9 @@ describe("ACP builtin slash commands", () => {
 		expect(text).toContain("Ignored skills: legacy-*");
 	});
 
-	it("/add-dir requests a sandbox relaunch with the supplied directory", async () => {
+	it("/add-dir requests a sandbox relaunch with the current project as the primary workspace root", async () => {
 		const { output, runtime, session, fakeSessionManager } = createRuntime();
+		session.workspaceRoots = [{ tag: "api", path: "/tmp/api", primary: false }];
 		fakeSessionManager._sessionFile = "/tmp/sessions/fake-session.jsonl";
 		const requested: string[][] = [];
 		session.requestMacOSSandboxRelaunch = paths => {
@@ -344,20 +348,26 @@ describe("ACP builtin slash commands", () => {
 		const result = await executeAcpBuiltinSlashCommand("/add-dir ../other", runtime);
 
 		expect(result).toEqual({ consumed: true });
-		expect(requested).toEqual([["/tmp/other"]]);
+		expect(requested).toEqual([["/tmp/project", "/tmp/api", "/tmp/other"]]);
 		expect(output[0]).toContain("Requested sandbox relaunch");
+		expect(output[0]).toContain("/tmp/other");
+		expect(output[0]).not.toContain("/tmp/project");
+		expect(output[0]).not.toContain("/tmp/api");
 	});
 
 	it("/add-dir prints shell-safe manual restart args when no supervisor is available", async () => {
 		const { output, runtime, session, fakeSessionManager } = createRuntime();
 		fakeSessionManager._sessionFile = "/tmp/sessions/fake-session.jsonl";
+		session.workspaceRoots = [{ tag: "api", path: "/tmp/api", primary: false }];
 		session.requestMacOSSandboxRelaunch = () => ({ requested: false, reason: "missing-supervisor" });
 
 		const result = await executeAcpBuiltinSlashCommand("/add-dir /tmp/other;echo-owned", runtime);
 
 		expect(result).toEqual({ consumed: true });
 		expect(output[0]).toContain("'--session-dir' '/tmp/sessions'");
-		expect(output[0]).toContain("'/tmp/other;echo-owned'");
+		expect(output[0]).toContain(
+			"'--sandbox-add-dir' '/tmp/project' '--sandbox-add-dir' '/tmp/api' '--sandbox-add-dir' '/tmp/other;echo-owned'",
+		);
 	});
 
 	it("/add-dir rejects broad sandbox roots", async () => {

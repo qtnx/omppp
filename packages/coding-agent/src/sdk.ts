@@ -1326,10 +1326,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			trackEvalExecution: (execution, abortController) =>
 				session ? session.trackEvalExecution(execution, abortController) : execution,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
-			requestMacOSSandboxRelaunch: paths =>
-				sessionManager.getSessionFile()
-					? requestMacOSSandboxRelaunch(paths, sessionManager.getSessionId())
-					: { requested: false, reason: "missing-session" },
+			requestMacOSSandboxRelaunch: paths => {
+				const sessionFile = sessionManager.getSessionFile();
+				return sessionFile
+					? requestMacOSSandboxRelaunch(paths, sessionManager.getSessionId(), path.dirname(sessionFile))
+					: { requested: false, reason: "missing-session" };
+			},
 			getHindsightSessionState: () => session?.getHindsightSessionState(),
 			getMnemopiSessionState: () => getMnemopiSessionState(session),
 			getAgentId: () => resolvedAgentId,

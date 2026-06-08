@@ -8,6 +8,7 @@ import { MacOSSandboxTool } from "@oh-my-pi/pi-coding-agent/tools/macos-sandbox"
 function makeSession(
 	request: (dirs: string[]) => MacOSSandboxRelaunchResult,
 	sessionFile: string | null = "/Users/alice/.omp/session.jsonl",
+	workspaceRoots?: ToolSession["workspaceRoots"],
 ): ToolSession {
 	return {
 		cwd: "/Users/alice/project",
@@ -16,6 +17,7 @@ function makeSession(
 		getSessionSpawns: () => "*",
 		getSessionId: () => "session-1",
 		requestMacOSSandboxRelaunch: request,
+		workspaceRoots,
 	} as unknown as ToolSession;
 }
 
@@ -27,25 +29,44 @@ function firstText(result: AgentToolResult): string {
 }
 
 describe("MacOSSandboxTool", () => {
-	it("requests relaunch with resolved working directories", async () => {
+	it("requests relaunch with the current session directory as the primary workspace root", async () => {
 		const requested: string[][] = [];
 		const tool = new MacOSSandboxTool(
-			makeSession(dirs => {
-				requested.push(dirs);
-				return { requested: true };
-			}),
+			makeSession(
+				dirs => {
+					requested.push(dirs);
+					return { requested: true };
+				},
+				"/Users/alice/.omp/session.jsonl",
+				[{ tag: "api", path: "/Users/alice/api", primary: false }],
+			),
 		);
 
 		const result = await tool.execute("call-1", { paths: ["../other", "/Users/alice/third"] });
 
-		expect(requested).toEqual([[path.resolve("/Users/alice/project", "../other"), "/Users/alice/third"]]);
+		expect(requested).toEqual([
+			[
+				"/Users/alice/project",
+				"/Users/alice/api",
+				path.resolve("/Users/alice/project", "../other"),
+				"/Users/alice/third",
+			],
+		]);
 		expect(result.isError).toBeUndefined();
 		expect(result.details?.relaunchRequested).toBe(true);
-		expect(firstText(result)).toContain("Requested a sandbox relaunch");
+		const text = firstText(result);
+		expect(text).toContain("/Users/alice/other");
+		expect(text).toContain("/Users/alice/third");
+		expect(text).not.toContain("/Users/alice/project");
+		expect(text).not.toContain("/Users/alice/api");
 	});
 
 	it("returns a manual restart command when no supervisor is available", async () => {
-		const tool = new MacOSSandboxTool(makeSession(() => ({ requested: false, reason: "missing-supervisor" })));
+		const tool = new MacOSSandboxTool(
+			makeSession(() => ({ requested: false, reason: "missing-supervisor" }), "/Users/alice/.omp/session.jsonl", [
+				{ tag: "api", path: "/Users/alice/api", primary: false },
+			]),
+		);
 
 		const result = await tool.execute("call-2", { paths: ["/Users/alice/other;echo-owned"] });
 
@@ -56,11 +77,17 @@ describe("MacOSSandboxTool", () => {
 			"/Users/alice/.omp",
 			"--resume",
 			"session-1",
-			"--add-dir",
+			"--sandbox-add-dir",
+			"/Users/alice/project",
+			"--sandbox-add-dir",
+			"/Users/alice/api",
+			"--sandbox-add-dir",
 			"/Users/alice/other;echo-owned",
 		]);
 		expect(firstText(result)).toContain("'--session-dir' '/Users/alice/.omp'");
-		expect(firstText(result)).toContain("'/Users/alice/other;echo-owned'");
+		expect(firstText(result)).toContain(
+			"'--sandbox-add-dir' '/Users/alice/project' '--sandbox-add-dir' '/Users/alice/api' '--sandbox-add-dir' '/Users/alice/other;echo-owned'",
+		);
 		expect(firstText(result)).toContain("restart OMPx from your shell");
 	});
 

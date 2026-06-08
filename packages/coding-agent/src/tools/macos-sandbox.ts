@@ -57,8 +57,13 @@ export class MacOSSandboxTool implements AgentTool<typeof macosSandboxSchema, Ma
 		}
 		const sessionFile = this.session.getSessionFile();
 		const sessionId = sessionFile ? (this.session.getSessionId?.() ?? null) : null;
+		const relaunchPaths = [
+			this.session.cwd,
+			...(this.session.workspaceRoots?.map(root => root.path) ?? []),
+			...paths,
+		];
 		const result = sessionId
-			? (this.session.requestMacOSSandboxRelaunch?.(paths) ?? {
+			? (this.session.requestMacOSSandboxRelaunch?.(relaunchPaths) ?? {
 					requested: false,
 					reason: "missing-supervisor" as const,
 				})
@@ -76,7 +81,7 @@ export class MacOSSandboxTool implements AgentTool<typeof macosSandboxSchema, Ma
 		}
 
 		const previousArgv = sessionFile ? ["--session-dir", path.dirname(sessionFile)] : [];
-		const restartArgs = sessionId ? buildMacOSSandboxRelaunchArgv(previousArgv, sessionId, paths) : undefined;
+		const restartArgs = sessionId ? buildMacOSSandboxRelaunchArgv(previousArgv, sessionId, relaunchPaths) : undefined;
 		const restartLine = restartArgs ? `\n\nManual restart: ${formatMacOSSandboxRestartCommand(restartArgs)}` : "";
 		return {
 			content: [

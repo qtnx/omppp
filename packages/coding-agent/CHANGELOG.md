@@ -9,6 +9,7 @@
 - Disabled OMP-compatible Claude hook discovery from `.claude/hooks/**` and Cursor rule prompt injection by default; enable `hooks.enableClaudeUser` / `hooks.enableClaudeProject` or `rules.enableCursorUser` / `rules.enableCursorProject` from trusted operator config or runtime overrides to opt back in.
 
 ### Fixed
+- Fixed runtime macOS sandbox allowlist relaunches to keep the active project as the primary workspace root, so adding another trusted directory no longer trips the cross-project resume/fork prompt.
 
 - Fixed release publishing and `ompx update` to use version GitHub tags as the binary release source, build release assets from tag pushes, delay public GitHub release publication until after npm publish, and verify binary update downloads against `SHA256SUMS`.
 

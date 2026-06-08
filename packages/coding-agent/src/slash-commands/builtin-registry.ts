@@ -275,8 +275,9 @@ async function handleAddDirCommand(
 	if (!resolvedPath) return usage("Usage: /add-dir <trusted-workspace-dir>", runtime);
 	const sessionFile = runtime.sessionManager.getSessionFile();
 	const sessionId = sessionFile ? runtime.sessionManager.getSessionId() : null;
+	const relaunchPaths = [runtime.cwd, ...runtime.session.workspaceRoots.map(root => root.path), resolvedPath];
 	const result = sessionId
-		? runtime.session.requestMacOSSandboxRelaunch([resolvedPath])
+		? runtime.session.requestMacOSSandboxRelaunch(relaunchPaths)
 		: ({ requested: false, reason: "missing-session" } as const);
 	const displayPath = sanitizeInlineText(resolvedPath);
 	if (result.requested) {
@@ -284,7 +285,7 @@ async function handleAddDirCommand(
 		return commandConsumed();
 	}
 	const previousArgv = sessionFile ? ["--session-dir", path.dirname(sessionFile)] : [];
-	const restartArgs = sessionId ? buildMacOSSandboxRelaunchArgv(previousArgv, sessionId, [resolvedPath]) : undefined;
+	const restartArgs = sessionId ? buildMacOSSandboxRelaunchArgv(previousArgv, sessionId, relaunchPaths) : undefined;
 	const restartCommand = restartArgs ? formatMacOSSandboxRestartCommand(restartArgs) : null;
 	await runtime.output(
 		restartCommand

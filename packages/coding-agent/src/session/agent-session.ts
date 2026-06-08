@@ -3954,8 +3954,9 @@ export class AgentSession {
 		return this.#providerSessionId ?? this.sessionManager.getSessionId();
 	}
 	requestMacOSSandboxRelaunch(paths: string[]): MacOSSandboxRelaunchResult {
-		if (!this.sessionManager.getSessionFile()) return { requested: false, reason: "missing-session" };
-		return requestMacOSSandboxRelaunch(paths, this.sessionManager.getSessionId());
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionFile) return { requested: false, reason: "missing-session" };
+		return requestMacOSSandboxRelaunch(paths, this.sessionManager.getSessionId(), path.dirname(sessionFile));
 	}
 
 	getEvalSessionId(): string | null {

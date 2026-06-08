@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -6,6 +6,8 @@ import * as path from "node:path";
 import {
 	buildMacOSSandboxRelaunchArgv,
 	MACOS_SANDBOX_ACTIVE_ENV,
+	reexecUnderMacOSSandboxIfNeeded,
+	requestMacOSSandboxRelaunch,
 	sandboxCurrentOmpxCommand,
 	sandboxOmpxCommand,
 } from "@oh-my-pi/pi-coding-agent/task/omp-command";
@@ -197,6 +199,7 @@ describe("sandboxOmpxCommand", () => {
 		for (const args of [
 			["--append-system-prompt", "--no-sandbox", "--resume", "session-1"],
 			["--approval-mode", "--no-sandbox", "--resume", "session-1"],
+			["--sandbox-add-dir", "--no-sandbox", "--resume", "session-1"],
 		]) {
 			const command = {
 				cmd: "/usr/local/bin/ompx",
@@ -244,7 +247,7 @@ describe("sandboxOmpxCommand", () => {
 		).toBeNull();
 	});
 
-	it("preserves session-dir, ACP mode, and existing add-dir roots when supervisor relaunches a session", () => {
+	it("preserves session-dir and ACP mode while converting relaunch allowlist dirs to sandbox-only flags", () => {
 		const argv = buildMacOSSandboxRelaunchArgv(
 			[
 				"--model",
@@ -253,6 +256,8 @@ describe("sandboxOmpxCommand", () => {
 				"/Users/alice/sessions",
 				"--mode",
 				"acp",
+				"--sandbox-add-dir",
+				"/Users/alice/project0",
 				"--add-dir",
 				"/Users/alice/project1",
 				"old prompt",
@@ -268,13 +273,110 @@ describe("sandboxOmpxCommand", () => {
 			"acp",
 			"--resume",
 			"session-1",
-			"--add-dir",
-			"/Users/alice/project1",
-			"--add-dir",
+			"--sandbox-add-dir",
 			"/Users/alice/project2",
-			"--add-dir",
+			"--sandbox-add-dir",
+			"/Users/alice/project1",
+			"--sandbox-add-dir",
 			"/Users/alice/project3",
+			"--sandbox-add-dir",
+			"/Users/alice/project0",
 		]);
+	});
+
+	it("includes the persisted session directory in relaunch IPC requests", () => {
+		setPlatform("darwin");
+		Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE = "1";
+		Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED = "1";
+		Bun.env.PI_OMPX_MACOS_SANDBOX_RELAUNCH_SUPPORTED = "1";
+		const sendDescriptor = Object.getOwnPropertyDescriptor(process, "send");
+		const connectedDescriptor = Object.getOwnPropertyDescriptor(process, "connected");
+		let sent: unknown;
+		try {
+			Object.defineProperty(process, "send", {
+				value: (message: unknown) => {
+					sent = message;
+					return true;
+				},
+				configurable: true,
+			});
+			Object.defineProperty(process, "connected", { value: true, configurable: true });
+
+			const result = requestMacOSSandboxRelaunch(
+				["/Users/alice/project"],
+				"session-1",
+				"/Users/alice/.omp/sessions",
+			);
+
+			expect(result).toEqual({ requested: true });
+			expect(sent).toMatchObject({
+				type: "ompx:macos-sandbox:relaunch",
+				sessionId: "session-1",
+				sessionDir: "/Users/alice/.omp/sessions",
+				addDirs: ["/Users/alice/project"],
+			});
+		} finally {
+			delete Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE;
+			delete Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED;
+			delete Bun.env.PI_OMPX_MACOS_SANDBOX_RELAUNCH_SUPPORTED;
+			if (sendDescriptor) {
+				Object.defineProperty(process, "send", sendDescriptor);
+			} else {
+				delete (process as NodeJS.Process & { send?: (message: unknown) => boolean }).send;
+			}
+			if (connectedDescriptor) {
+				Object.defineProperty(process, "connected", connectedDescriptor);
+			} else {
+				Reflect.deleteProperty(process, "connected");
+			}
+		}
+	});
+
+	it("supervisor relaunch preserves the session directory before resuming", async () => {
+		setPlatform("darwin");
+		const exitDescriptor = Object.getOwnPropertyDescriptor(process, "exit");
+		const spawnedCommands: string[][] = [];
+		let spawnCount = 0;
+		const spawnSpy = spyOn(Bun, "spawn").mockImplementation(((options: {
+			cmd: string[];
+			ipc?: (message: unknown) => void;
+		}) => {
+			spawnCount++;
+			spawnedCommands.push(options.cmd);
+			if (spawnCount === 1) {
+				options.ipc?.({
+					type: "ompx:macos-sandbox:relaunch",
+					sessionId: "session-1",
+					sessionDir: "/Users/alice/.omp/sessions",
+					addDirs: ["/Users/alice/extra"],
+				});
+			}
+			return {
+				exited: Promise.resolve(0),
+				kill() {},
+			};
+		}) as never);
+		try {
+			Object.defineProperty(process, "exit", {
+				value: (code?: string | number | null) => {
+					throw new Error(`exit:${String(code)}`);
+				},
+				configurable: true,
+			});
+
+			await expect(reexecUnderMacOSSandboxIfNeeded(["--resume", "session-1"])).rejects.toThrow("exit:0");
+
+			const relaunched = spawnedCommands[1] ?? [];
+			const sessionDirIndex = relaunched.indexOf("--session-dir");
+			expect(sessionDirIndex).toBeGreaterThanOrEqual(0);
+			expect(relaunched[sessionDirIndex + 1]).toBe("/Users/alice/.omp/sessions");
+			expect(relaunched.indexOf("--resume")).toBeGreaterThan(sessionDirIndex);
+			expect(relaunched).toContain("--sandbox-add-dir");
+			expect(relaunched).not.toContain("--add-dir");
+		} finally {
+			spawnSpy.mockRestore();
+			if (exitDescriptor) Object.defineProperty(process, "exit", exitDescriptor);
+		}
 	});
 
 	it("allows --add-dir paths in the sandbox profile at launch", () => {
@@ -284,6 +386,23 @@ describe("sandboxOmpxCommand", () => {
 			{
 				cmd: "/usr/local/bin/ompx",
 				args: ["--resume", "session-1", "--add-dir", "/Users/alice/other-work"],
+				shell: false,
+			},
+			{ cwd: "/Users/alice/project", env: macEnv() },
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		expect(profile).toContain('(subpath "/Users/alice/other-work")');
+		expect(profile).toContain('(subpath "/System/Volumes/Data/Users/alice/other-work")');
+	});
+
+	it("allows sandbox-only add-dir paths in the sandbox profile without changing relaunch argv semantics", () => {
+		setPlatform("darwin");
+
+		const wrapped = sandboxOmpxCommand(
+			{
+				cmd: "/usr/local/bin/ompx",
+				args: ["--resume", "session-1", "--sandbox-add-dir", "/Users/alice/other-work"],
 				shell: false,
 			},
 			{ cwd: "/Users/alice/project", env: macEnv() },

@@ -66,6 +66,10 @@ export default class Index extends Command {
 			description: "Additional working directory, tagged by basename (repeatable)",
 			multiple: true,
 		}),
+		"sandbox-add-dir": Flags.string({
+			hidden: true,
+			multiple: true,
+		}),
 		mode: Flags.string({
 			description: "Output mode: text (default), json, rpc, or rpc-ui",
 			options: ["text", "json", "rpc", "acp", "rpc-ui"],

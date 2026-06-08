@@ -34,6 +34,7 @@ export interface OmpxSelfSandboxOptions extends OmpxSandboxOptions {
 export interface MacOSSandboxRelaunchRequest {
 	type: "ompx:macos-sandbox:relaunch";
 	sessionId: string;
+	sessionDir?: string;
 	addDirs: string[];
 }
 
@@ -98,6 +99,7 @@ const CLI_VALUE_FLAGS = new Set([
 	"--api-key",
 	"--approval-mode",
 	"--add-dir",
+	"--sandbox-add-dir",
 	"--append-system-prompt",
 	"--be",
 	"--fe",
@@ -630,6 +632,9 @@ function addCommandArgumentPaths(sets: SandboxPathSets, args: string[], cwd: str
 	for (const workspaceDir of extractCliFlagValues(args, "--add-dir")) {
 		addWorkspaceDirectoryArg(sets, workspaceDir, cwd);
 	}
+	for (const workspaceDir of extractCliFlagValues(args, "--sandbox-add-dir")) {
+		addWorkspaceDirectoryArg(sets, workspaceDir, cwd);
+	}
 }
 
 function readGitFileTarget(gitFilePath: string): string | null {
@@ -796,8 +801,8 @@ function extractSessionDirArgs(argv: readonly string[]): string[] {
 	return sessionDir ? ["--session-dir", sessionDir] : [];
 }
 
-function extractAddDirArgs(argv: readonly string[]): string[] {
-	return extractCliFlagValues(argv, "--add-dir");
+function extractSandboxAllowDirArgs(argv: readonly string[]): string[] {
+	return [...extractCliFlagValues(argv, "--sandbox-add-dir"), ...extractCliFlagValues(argv, "--add-dir")];
 }
 
 function extractRelaunchModeArgs(argv: readonly string[]): string[] {
@@ -828,9 +833,13 @@ function uniqueAddDirs(paths: readonly string[]): string[] {
 	return out;
 }
 
+function isSafeMacOSSandboxRelaunchArg(value: string): boolean {
+	const trimmed = value.trim();
+	return trimmed.length > 0 && trimmed === value && !trimmed.startsWith("-") && !trimmed.includes("\0");
+}
+
 function isSafeMacOSSandboxRelaunchSessionId(sessionId: string): boolean {
-	const trimmed = sessionId.trim();
-	return trimmed.length > 0 && trimmed === sessionId && !trimmed.startsWith("-") && !trimmed.includes("\0");
+	return isSafeMacOSSandboxRelaunchArg(sessionId);
 }
 
 function parseMacOSSandboxRelaunchRequest(message: unknown, cwd: string): MacOSSandboxRelaunchRequest | null {
@@ -845,11 +854,17 @@ function parseMacOSSandboxRelaunchRequest(message: unknown, cwd: string): MacOSS
 	) {
 		return null;
 	}
+	const sessionDir =
+		typeof value.sessionDir === "string" && isSafeMacOSSandboxRelaunchArg(value.sessionDir)
+			? path.resolve(value.sessionDir)
+			: undefined;
+	if (value.sessionDir !== undefined && !sessionDir) return null;
 	const resolved = resolveMacOSSandboxWorkspaceDirs(value.addDirs, cwd);
 	if (resolved.error || resolved.paths.length === 0) return null;
 	return {
 		type: MACOS_SANDBOX_RELAUNCH_MESSAGE_TYPE,
 		sessionId: value.sessionId,
+		sessionDir,
 		addDirs: resolved.paths,
 	};
 }
@@ -867,6 +882,7 @@ export function disconnectMacOSSandboxSupervisor(): void {
 export function requestMacOSSandboxRelaunch(
 	addDirs: readonly string[],
 	sessionId: string | null | undefined,
+	sessionDir?: string | null,
 ): MacOSSandboxRelaunchResult {
 	if (!isMacOSSandboxActive()) return { requested: false, reason: "inactive" };
 	if (!sessionId || !isSafeMacOSSandboxRelaunchSessionId(sessionId)) {
@@ -880,9 +896,14 @@ export function requestMacOSSandboxRelaunch(
 	const resolved = resolveMacOSSandboxWorkspaceDirs(addDirs, process.cwd());
 	if (resolved.error) return { requested: false, reason: "unsafe-path" };
 	if (resolved.paths.length === 0) return { requested: false, reason: "missing-session" };
+	const resolvedSessionDir =
+		typeof sessionDir === "string" && isSafeMacOSSandboxRelaunchArg(sessionDir)
+			? path.resolve(sessionDir)
+			: undefined;
 	const request: MacOSSandboxRelaunchRequest = {
 		type: MACOS_SANDBOX_RELAUNCH_MESSAGE_TYPE,
 		sessionId,
+		sessionDir: resolvedSessionDir,
 		addDirs: uniqueAddDirs(resolved.paths),
 	};
 	const childProcess = process as NodeJS.Process & { connected?: boolean };
@@ -905,8 +926,8 @@ export function buildMacOSSandboxRelaunchArgv(
 		"--resume",
 		sessionId,
 	];
-	for (const dir of uniqueAddDirs([...extractAddDirArgs(previousArgv), ...addDirs])) {
-		argv.push("--add-dir", dir);
+	for (const dir of uniqueAddDirs([...addDirs, ...extractSandboxAllowDirArgs(previousArgv)])) {
+		argv.push("--sandbox-add-dir", dir);
 	}
 	return argv;
 }
@@ -962,6 +983,7 @@ export async function reexecUnderMacOSSandboxIfNeeded(argv: string[]): Promise<b
 		}
 
 		let relaunchSessionId: string | undefined;
+		let relaunchSessionDir: string | undefined;
 		let terminationScheduled = false;
 		const relaunchAddDirs: string[] = [];
 		const child = Bun.spawn({
@@ -976,6 +998,9 @@ export async function reexecUnderMacOSSandboxIfNeeded(argv: string[]): Promise<b
 				if (!request) return;
 				if (relaunchSessionId && relaunchSessionId !== request.sessionId) return;
 				relaunchSessionId = request.sessionId;
+				if (request.sessionDir) {
+					relaunchSessionDir = request.sessionDir;
+				}
 				relaunchAddDirs.push(...request.addDirs);
 				if (terminationScheduled) return;
 				terminationScheduled = true;
@@ -989,7 +1014,8 @@ export async function reexecUnderMacOSSandboxIfNeeded(argv: string[]): Promise<b
 			process.exit(exitCode);
 		}
 		addDirs.push(...relaunchAddDirs);
-		nextArgv = buildMacOSSandboxRelaunchArgv(nextArgv, relaunchSessionId, addDirs);
+		const relaunchPreviousArgv = relaunchSessionDir ? ["--session-dir", relaunchSessionDir, ...nextArgv] : nextArgv;
+		nextArgv = buildMacOSSandboxRelaunchArgv(relaunchPreviousArgv, relaunchSessionId, addDirs);
 		command = sandboxCurrentOmpxCommand(nextArgv);
 	}
 	return false;
