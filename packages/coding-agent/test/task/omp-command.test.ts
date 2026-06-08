@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
 	MACOS_SANDBOX_ACTIVE_ENV,
 	sandboxCurrentOmpxCommand,
@@ -25,9 +28,20 @@ function macEnv(overrides: Record<string, string | undefined> = {}): Record<stri
 	};
 }
 
+const tempDirs: string[] = [];
+
+function createTempDir(prefix: string): string {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+	tempDirs.push(dir);
+	return dir;
+}
+
 describe("sandboxOmpxCommand", () => {
 	afterEach(() => {
 		restorePlatform();
+		for (const dir of tempDirs.splice(0)) {
+			fs.rmSync(dir, { force: true, recursive: true });
+		}
 	});
 
 	it("wraps macOS ompx spawns in a Seatbelt profile by default", () => {
@@ -191,6 +205,28 @@ describe("sandboxOmpxCommand", () => {
 				env: macEnv({ PATH: "/Users/alice/bin", PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED: "1" }),
 			}),
 		).toBeNull();
+	});
+
+	it("allows external git metadata referenced by a git worktree", () => {
+		setPlatform("darwin");
+		const root = createTempDir("ompx-sandbox-git-");
+		const worktree = path.join(root, "worktree");
+		const commonGitDir = path.join(root, "main", ".git");
+		const worktreeGitDir = path.join(commonGitDir, "worktrees", "feature");
+		fs.mkdirSync(worktree, { recursive: true });
+		fs.mkdirSync(worktreeGitDir, { recursive: true });
+		fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${worktreeGitDir}\n`);
+		fs.writeFileSync(path.join(worktreeGitDir, "commondir"), "../..\n");
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--print", "hi"], shell: false },
+			{ cwd: worktree, env: macEnv() },
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		expect(profile).toContain(`(subpath ${JSON.stringify(worktreeGitDir)})`);
+		expect(profile).toContain(`(subpath ${JSON.stringify(commonGitDir)})`);
+		expect(profile).not.toContain('(subpath "/Users/alice")');
 	});
 
 	it("resolves relative executables from the child cwd", () => {

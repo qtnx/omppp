@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 ### Changed
-- Sandboxed top-level and nested `ompx` runs on macOS by default with a sandvault-inspired Seatbelt profile scoped to the effective working directory and OMPx runtime paths, plus `--no-sandbox`, sandbox-denial notices, and sandbox awareness for commands/hooks.
+- Sandboxed top-level and nested `ompx` runs on macOS by default with a sandvault-inspired Seatbelt profile scoped to the effective working directory, associated Git metadata, and OMPx runtime paths, plus `--no-sandbox`, sandbox-denial notices, and sandbox awareness for commands/hooks.
 
 - Rebranded the CLI invocation from `omp` to `ompx`, updated release/install binary names, and seeded fresh installs with the standard `~/.omp/agent/config.yml` backup.
 

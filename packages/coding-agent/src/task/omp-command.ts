@@ -339,6 +339,64 @@ function addCommandArgumentPaths(sets: SandboxPathSets, args: string[], cwd: str
 	}
 }
 
+function readGitFileTarget(gitFilePath: string): string | null {
+	try {
+		const firstLine = fs.readFileSync(gitFilePath, "utf8").split(/\r?\n/, 1)[0]?.trim();
+		if (!firstLine?.startsWith("gitdir:")) return null;
+		const rawTarget = firstLine.slice("gitdir:".length).trim();
+		if (!rawTarget || rawTarget.includes("\0")) return null;
+		return path.resolve(path.dirname(gitFilePath), rawTarget);
+	} catch {
+		return null;
+	}
+}
+
+function isAssociatedExternalGitDir(candidate: string): boolean {
+	const parts = path.resolve(candidate).split(path.sep);
+	const gitIndex = parts.lastIndexOf(".git");
+	if (gitIndex === -1) return false;
+	const tail = parts.slice(gitIndex + 1);
+	return tail.includes("worktrees") || tail.includes("modules");
+}
+
+function readCommonGitDir(gitDir: string): string | null {
+	try {
+		const firstLine = fs.readFileSync(path.join(gitDir, "commondir"), "utf8").split(/\r?\n/, 1)[0]?.trim();
+		if (!firstLine || firstLine.includes("\0")) return null;
+		return path.resolve(gitDir, firstLine);
+	} catch {
+		return null;
+	}
+}
+
+function addGitMetadataSubpaths(sets: SandboxPathSets, cwd: string): void {
+	let current = cwd;
+	while (true) {
+		const gitPath = path.join(current, ".git");
+		try {
+			const stat = fs.statSync(gitPath);
+			if (stat.isDirectory()) {
+				addWriteSubpath(sets, gitPath);
+				return;
+			}
+			if (stat.isFile()) {
+				addReadSubpath(sets, gitPath);
+				const gitDir = readGitFileTarget(gitPath);
+				if (!gitDir || (!pathIsWithin(cwd, gitDir) && !isAssociatedExternalGitDir(gitDir))) return;
+				addWriteSubpath(sets, gitDir);
+				const commonGitDir = readCommonGitDir(gitDir);
+				if (commonGitDir && pathIsWithin(commonGitDir, gitDir)) {
+					addWriteSubpath(sets, commonGitDir);
+				}
+				return;
+			}
+		} catch {}
+		const parent = path.dirname(current);
+		if (parent === current) return;
+		current = parent;
+	}
+}
+
 function collectSandboxPaths(
 	command: OmpxCommand,
 	resolvedCmd: string,
@@ -352,6 +410,7 @@ function collectSandboxPaths(
 	};
 
 	addWriteSubpath(sets, cwd);
+	addGitMetadataSubpaths(sets, cwd);
 	const home = addRuntimeDirs(sets, env);
 	addReadSubpath(sets, home ? path.join(home, ".bun") : undefined);
 	addReadSubpath(sets, resolvedCmd);
