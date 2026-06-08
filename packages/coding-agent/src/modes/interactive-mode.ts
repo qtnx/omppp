@@ -2,6 +2,7 @@
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
  */
+import "../cli/preload-env";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -88,7 +89,7 @@ import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
 import { loadAutoDiscoveredSystemPromptOverlay } from "../system-prompt-overrides";
 import { discoverAgents } from "../task/discovery";
-import { resolveOmpCommand } from "../task/omp-command";
+import { resolveOmpCommand, sandboxOmpxCommand } from "../task/omp-command";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
@@ -2578,12 +2579,20 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 
-		const command = resolveOmpCommand();
+		const baseCommand = resolveOmpCommand();
 		const cwd = this.sessionManager.getCwd();
+		const command = sandboxOmpxCommand(
+			{
+				cmd: baseCommand.cmd,
+				args: [...baseCommand.args, "--resume", sessionId],
+				shell: baseCommand.shell,
+			},
+			{ cwd, env: Bun.env },
+		);
 		await this.#finishProcessExit({
 			printResumeHint: false,
 			beforeQuit: () => {
-				const child = Bun.spawn([command.cmd, ...command.args, "--resume", sessionId], {
+				const child = Bun.spawn([command.cmd, ...command.args], {
 					cwd,
 					env: Bun.env,
 					stdin: "inherit",

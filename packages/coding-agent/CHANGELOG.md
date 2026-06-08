@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 ### Changed
+- Sandboxed nested `ompx` spawns on macOS by default with a sandvault-inspired Seatbelt profile scoped to the effective working directory and OMPx runtime paths.
 
 - Rebranded the CLI invocation from `omp` to `ompx`, updated release/install binary names, and seeded fresh installs with the standard `~/.omp/agent/config.yml` backup.
 
