@@ -5,6 +5,9 @@ import { type Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
 import { APP_DISPLAY_NAME, APP_NAME, APP_TAGLINE, CONFIG_DIR_NAME, logger } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { parseEffort } from "../thinking";
+
+export { extractRootNoSandboxFlag } from "./sandbox-flags";
+
 import { BUILTIN_TOOLS } from "../tools";
 
 export type Mode = "text" | "json" | "rpc" | "acp" | "rpc-ui";

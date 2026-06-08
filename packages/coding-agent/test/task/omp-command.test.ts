@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { MACOS_SANDBOX_ACTIVE_ENV, sandboxOmpxCommand } from "@oh-my-pi/pi-coding-agent/task/omp-command";
+import {
+	MACOS_SANDBOX_ACTIVE_ENV,
+	sandboxCurrentOmpxCommand,
+	sandboxOmpxCommand,
+} from "@oh-my-pi/pi-coding-agent/task/omp-command";
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 
@@ -124,8 +128,8 @@ describe("sandboxOmpxCommand", () => {
 		const equalsCommand = { cmd: "/usr/local/bin/ompx", args: ["--no-sandbox=true"], shell: false };
 		expect(sandboxOmpxCommand(equalsCommand, { cwd: "/Users/alice/work", env: macEnv() })).toBe(equalsCommand);
 		const afterStandaloneDashdash = { cmd: "/usr/local/bin/ompx", args: ["--", "--no-sandbox"], shell: false };
-		expect(sandboxOmpxCommand(afterStandaloneDashdash, { cwd: "/Users/alice/work", env: macEnv() })).toBe(
-			afterStandaloneDashdash,
+		expect(sandboxOmpxCommand(afterStandaloneDashdash, { cwd: "/Users/alice/work", env: macEnv() }).cmd).toBe(
+			"/usr/bin/sandbox-exec",
 		);
 		const afterConsumedDashdash = {
 			cmd: "/usr/local/bin/ompx",
@@ -153,6 +157,40 @@ describe("sandboxOmpxCommand", () => {
 
 			expect(wrapped.cmd).toBe("/usr/bin/sandbox-exec");
 		}
+	});
+
+	it("wraps the current top-level ompx process by default on macOS", () => {
+		setPlatform("darwin");
+
+		const wrapped = sandboxCurrentOmpxCommand(["--print", "hi"], {
+			cwd: "/Users/alice/work",
+			entryPath: "/Users/alice/bin/ompx",
+			env: macEnv({ PATH: "/Users/alice/bin" }),
+			execPath: "/Users/alice/bin/ompx",
+		});
+
+		expect(wrapped?.cmd).toBe("/usr/bin/sandbox-exec");
+		expect(wrapped?.args.slice(2)).toEqual(["/Users/alice/bin/ompx", "--print", "hi"]);
+		expect(wrapped?.env?.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED).toBe("1");
+	});
+
+	it("does not self-wrap helper or explicitly unsandboxed top-level invocations", () => {
+		setPlatform("darwin");
+		const options = {
+			cwd: "/Users/alice/work",
+			entryPath: "/Users/alice/bin/ompx",
+			env: macEnv({ PATH: "/Users/alice/bin" }),
+			execPath: "/Users/alice/bin/ompx",
+		};
+
+		expect(sandboxCurrentOmpxCommand(["--smoke-test"], options)).toBeNull();
+		expect(sandboxCurrentOmpxCommand(["--no-sandbox"], options)).toBeNull();
+		expect(
+			sandboxCurrentOmpxCommand(["--print", "hi"], {
+				...options,
+				env: macEnv({ PATH: "/Users/alice/bin", PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED: "1" }),
+			}),
+		).toBeNull();
 	});
 
 	it("resolves relative executables from the child cwd", () => {

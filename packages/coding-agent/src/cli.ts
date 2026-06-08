@@ -11,7 +11,9 @@ import "./cli/preload-env";
  */
 import { type CliConfig, run } from "@oh-my-pi/pi-utils/cli";
 import { APP_NAME, MIN_BUN_VERSION, VERSION } from "@oh-my-pi/pi-utils/dirs";
+import { extractRootNoSandboxFlag } from "./cli/sandbox-flags";
 import { commands, isSubcommand } from "./cli-commands";
+import { disableMacOSSandboxForProcess, reexecUnderMacOSSandboxIfNeeded } from "./task/omp-command";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 	process.stderr.write(
@@ -95,6 +97,12 @@ async function runTinyWorker(): Promise<void> {
 
 /** Run the CLI with the given argv (no `process.argv` prefix). */
 export async function runCli(argv: string[]): Promise<void> {
+	const rootSandbox = extractRootNoSandboxFlag(argv);
+	if (rootSandbox.noSandbox) {
+		disableMacOSSandboxForProcess();
+	}
+	argv = rootSandbox.argv;
+	if (await reexecUnderMacOSSandboxIfNeeded(argv)) return;
 	if (argv[0] === "--smoke-test") {
 		await runSmokeTest();
 		return;

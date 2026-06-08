@@ -26,6 +26,11 @@ export interface OmpxSandboxOptions {
 	env?: Record<string, string | undefined>;
 }
 
+export interface OmpxSelfSandboxOptions extends OmpxSandboxOptions {
+	entryPath?: string;
+	execPath?: string;
+}
+
 interface SandboxPathSets {
 	readMetadataLiterals: Set<string>;
 	readSubpaths: Set<string>;
@@ -126,6 +131,7 @@ function commandRequestsNoSandbox(args: readonly string[]): boolean {
 			skipNext = false;
 			continue;
 		}
+		if (arg === "--") return false;
 		const eqIndex = arg.indexOf("=");
 		const flag = eqIndex === -1 ? arg : arg.slice(0, eqIndex);
 		if (flag === "--no-sandbox") return true;
@@ -426,6 +432,50 @@ function buildMacOSSandboxProfile(paths: SandboxPathSets): string {
 	].filter((rule): rule is string => rule !== null);
 
 	return `${rules.join("\n")}\n`;
+}
+
+function shouldSelfSandboxArgv(argv: readonly string[], env: Record<string, string | undefined>): boolean {
+	if (isMacOSSandboxActive(env) || commandRequestsNoSandbox(argv)) return false;
+	const first = argv[0];
+	return (
+		first !== "--smoke-test" &&
+		first !== "--tiny-worker" &&
+		first !== "--help" &&
+		first !== "-h" &&
+		first !== "--version" &&
+		first !== "-v" &&
+		first !== "help"
+	);
+}
+
+function currentOmpxBaseCommand(argv: string[], options: OmpxSelfSandboxOptions): OmpxCommand {
+	const execPath = options.execPath ?? process.execPath;
+	const entryPath = options.entryPath ?? process.argv[1];
+	const args =
+		entryPath && (entryPath.endsWith(".ts") || entryPath.endsWith(".js")) ? [entryPath, ...argv] : [...argv];
+	return { cmd: execPath, args, shell: false };
+}
+
+export function sandboxCurrentOmpxCommand(argv: string[], options: OmpxSelfSandboxOptions = {}): OmpxCommand | null {
+	const env = options.env ?? Bun.env;
+	if (!shouldSelfSandboxArgv(argv, env)) return null;
+
+	const command = currentOmpxBaseCommand(argv, options);
+	const sandboxed = sandboxOmpxCommand(command, options);
+	return sandboxed === command ? null : sandboxed;
+}
+
+export async function reexecUnderMacOSSandboxIfNeeded(argv: string[]): Promise<boolean> {
+	const command = sandboxCurrentOmpxCommand(argv);
+	if (!command) return false;
+	const child = Bun.spawn([command.cmd, ...command.args], {
+		env: command.env ?? Bun.env,
+		stderr: "inherit",
+		stdin: "inherit",
+		stdout: "inherit",
+	});
+	const exitCode = await child.exited;
+	process.exit(exitCode);
 }
 
 export function sandboxOmpxCommand(command: OmpxCommand, options: OmpxSandboxOptions = {}): OmpxCommand {
