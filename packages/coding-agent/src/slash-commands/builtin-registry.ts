@@ -25,6 +25,7 @@ import type { Skill } from "../extensibility/skills";
 import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../learnings";
 import { resolveMemoryBackend } from "../memory-backend";
 import type { InteractiveModeContext } from "../modes/types";
+import type { FreshSessionResult } from "../session/agent-session";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
@@ -161,6 +162,10 @@ function refreshPluginStateAfterSelectorMutation(
 	}, PLUGIN_SELECTOR_REFRESH_POLL_MS);
 }
 
+function formatFreshSessionResult(result: FreshSessionResult): string {
+	const stateLabel = result.closedProviderSessions === 1 ? "provider state" : "provider states";
+	return `Fresh provider session started (${result.closedProviderSessions} ${stateLabel} pruned).`;
+}
 const shutdownHandlerTui = (_command: ParsedSlashCommand, runtime: TuiSlashCommandRuntime): SlashCommandResult => {
 	runtime.ctx.editor.setText("");
 	void runtime.ctx.shutdown();
@@ -703,17 +708,9 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "copy",
-		description: "Copy last agent message to clipboard",
-		subcommands: [
-			{ name: "last", description: "Copy full last agent message" },
-			{ name: "code", description: "Copy last code block" },
-			{ name: "all", description: "Copy all code blocks from last message" },
-			{ name: "cmd", description: "Copy last bash/python command" },
-		],
-		allowArgs: true,
-		handleTui: async (command, runtime) => {
-			const sub = command.args.trim().toLowerCase() || undefined;
-			await runtime.ctx.handleCopyCommand(sub);
+		description: "Pick text or code from the conversation to copy",
+		handleTui: (_command, runtime) => {
+			runtime.ctx.showCopySelector();
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -1137,6 +1134,25 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "fresh",
+		description: "Reset provider stream state without changing the local transcript",
+		handle: async (_command, runtime) => {
+			const result = runtime.session.freshSession();
+			if (!result) {
+				await runtime.output(
+					"Wait for the current response to finish or abort it before refreshing provider state.",
+				);
+				return commandConsumed();
+			}
+			await runtime.output(formatFreshSessionResult(result));
+			return commandConsumed();
+		},
+		handleTui: async (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleFreshCommand();
+		},
+	},
+	{
 		name: "drop",
 		description: "Delete the current session and start a new one",
 		handleTui: async (_command, runtime) => {
@@ -1235,6 +1251,17 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "tan",
+		description: "Run a full background agent on tangential work",
+		inlineHint: "<work>",
+		allowArgs: true,
+		handleTui: async (command, runtime) => {
+			const work = command.text.slice(`/${command.name}`.length).trim();
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleTanCommand(work);
+		},
+	},
+	{
 		name: "omfg",
 		description: "Forge a TTSR rule from a complaint to stop a recurring behavior",
 		inlineHint: "<complaint>",
@@ -1254,15 +1281,6 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				runtime.ctx.showStatus("Nothing to retry");
 			}
 			runtime.ctx.editor.setText("");
-		},
-	},
-	{
-		name: "background",
-		aliases: ["bg"],
-		description: "Detach UI and continue running in background",
-		handleTui: (_command, runtime) => {
-			runtime.ctx.editor.setText("");
-			runtime.handleBackgroundCommand();
 		},
 	},
 	{
@@ -1300,7 +1318,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			const verb = (command.args.trim().split(/\s+/)[0] ?? "").toLowerCase() || "view";
-			const backend = resolveMemoryBackend(runtime.settings);
+			const backend = await resolveMemoryBackend(runtime.settings);
 			switch (verb) {
 				case "view": {
 					const payload = await backend.buildDeveloperInstructions(

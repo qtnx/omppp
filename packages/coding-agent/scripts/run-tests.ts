@@ -2,7 +2,6 @@
 
 const SERIAL_TEST_FILES = [
 	"test/sdk-credential-disabled-bridge.test.ts",
-	"src/eval/__tests__/shared-executors.test.ts",
 	"test/agent-session-concurrent.test.ts",
 	"test/task/worktree.test.ts",
 	"test/core/python-executor-per-call.test.ts",

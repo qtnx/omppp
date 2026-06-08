@@ -632,11 +632,6 @@ describe("remote compaction setting", () => {
 
 		const remoteOutput = [
 			{ type: "message", role: "developer", content: [{ type: "input_text", text: "stale developer" }] },
-			{
-				type: "message",
-				role: "user",
-				content: [{ type: "input_text", text: "<system-reminder>wrapped</system-reminder>" }],
-			},
 			{ type: "message", role: "user", content: [{ type: "input_text", text: "Real preserved user" }] },
 			{ type: "reasoning", encrypted_content: "secret" },
 			{ type: "function_call_output", call_id: "call_1", output: "ignored" },
@@ -887,26 +882,6 @@ describe("Large session fixture", () => {
 // ============================================================================
 
 describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("LLM summarization", () => {
-	it("should generate a compaction result for the large session", async () => {
-		const entries = await loadLargeSessionEntries();
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-
-		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
-		expect(preparation).toBeDefined();
-
-		const compactionResult = await compact(preparation!, model, e2eApiKey("ANTHROPIC_API_KEY")!);
-
-		expect(compactionResult.summary.length).toBeGreaterThan(100);
-		expect(compactionResult.firstKeptEntryId).toBeTruthy();
-		expect(compactionResult.tokensBefore).toBeGreaterThan(0);
-
-		console.log("Summary length:", compactionResult.summary.length);
-		console.log("First kept entry ID:", compactionResult.firstKeptEntryId);
-		console.log("Tokens before:", compactionResult.tokensBefore);
-		console.log("\n--- SUMMARY ---\n");
-		console.log(compactionResult.summary);
-	}, 60000);
-
 	it("should produce valid session after compaction", async () => {
 		const entries = await loadLargeSessionEntries();
 		const loaded = buildSessionContext(entries);

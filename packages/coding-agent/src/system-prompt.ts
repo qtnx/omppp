@@ -389,6 +389,8 @@ export interface BuildSystemPromptOptions {
 	memoryRootEnabled?: boolean;
 	/** Tagged workspace roots (--be/--fe/--add-dir) to list in the prompt. */
 	workspaceRoots?: WorkspaceRoot[];
+	/** Active model identifier (e.g. "anthropic/claude-opus-4") surfaced to the agent. */
+	model?: string;
 }
 
 /** Result of building provider-facing system prompt messages. */
@@ -424,6 +426,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		workspaceTree: providedWorkspaceTree,
 		memoryRootEnabled = false,
 		workspaceRoots,
+		model,
 	} = options;
 	const resolvedCwd = cwd ?? getProjectDir();
 
@@ -604,6 +607,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		date,
 		dateTime,
 		cwd: promptCwd,
+		model: model ?? "",
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
 		mcpDiscoveryMode,

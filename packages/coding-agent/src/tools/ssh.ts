@@ -1,6 +1,5 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import * as z from "zod/v4";
 import type { SSHHost } from "../capability/ssh";
@@ -14,10 +13,11 @@ import type { SSHHostInfo } from "../ssh/connection-manager";
 import { ensureHostInfo, getHostInfoForHost } from "../ssh/connection-manager";
 import { executeSSH } from "../ssh/ssh-executor";
 import { renderStatusLine } from "../tui";
-import { CachedOutputBlock } from "../tui/output-block";
+import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { formatStyledTruncationWarning, type OutputMeta, stripOutputNotice } from "./output-meta";
+import { capPreviewLines, replaceTabs } from "./render-utils";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
@@ -230,12 +230,35 @@ interface SshRenderContext {
 	totalVisualLines?: number;
 }
 
+function formatSshCommandLines(command: string, uiTheme: Theme): string[] {
+	const sanitized = replaceTabs(command);
+	const rawLines = sanitized.length > 0 ? sanitized.split("\n") : ["…"];
+	const prefix = uiTheme.fg("dim", "$ ");
+	return rawLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+}
+
 export const sshToolRenderer = {
 	renderCall(args: SshRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const host = args.host || "…";
-		const command = args.command || "…";
-		const text = renderStatusLine({ icon: "pending", title: "SSH", description: `[${host}] $ ${command}` }, uiTheme);
-		return new Text(text, 0, 0);
+		const command = args.command ?? "";
+		const header = renderStatusLine({ icon: "pending", title: "SSH", description: `[${host}]` }, uiTheme);
+		const cmdLines = formatSshCommandLines(command, uiTheme);
+		const outputBlock = new CachedOutputBlock();
+		return markFramedBlockComponent({
+			render: (width: number): string[] =>
+				outputBlock.render(
+					{
+						header,
+						state: "pending",
+						sections: [{ lines: capPreviewLines(cmdLines, uiTheme, { expanded: _options.expanded }) }],
+						width,
+					},
+					uiTheme,
+				),
+			invalidate: () => {
+				outputBlock.invalidate();
+			},
+		});
 	},
 
 	renderResult(
@@ -249,15 +272,13 @@ export const sshToolRenderer = {
 	): Component {
 		const details = result.details;
 		const host = args?.host || "…";
-		const command = args?.command || "…";
-		const header = renderStatusLine(
-			{ icon: "success", title: "SSH", description: `[${host}] $ ${command}` },
-			uiTheme,
-		);
+		const command = args?.command ?? "";
+		const header = renderStatusLine({ icon: "success", title: "SSH", description: `[${host}]` }, uiTheme);
+		const cmdLines = formatSshCommandLines(command, uiTheme);
 		const textContent = result.content?.find(c => c.type === "text")?.text ?? "";
 		const outputBlock = new CachedOutputBlock();
 
-		return {
+		return markFramedBlockComponent({
 			render: (width: number): string[] => {
 				// REACTIVE: read mutable options at render time
 				const { expanded, renderContext } = options;
@@ -303,7 +324,14 @@ export const sshToolRenderer = {
 					{
 						header,
 						state: "success",
-						sections: [{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines }],
+						sections: [
+							{
+								lines: options.isPartial
+									? capPreviewLines(cmdLines, uiTheme, { expanded: options.expanded })
+									: cmdLines,
+							},
+							{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
+						],
 						width,
 					},
 					uiTheme,
@@ -312,7 +340,7 @@ export const sshToolRenderer = {
 			invalidate: () => {
 				outputBlock.invalidate();
 			},
-		};
+		});
 	},
 	mergeCallAndResult: true,
 };

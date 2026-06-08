@@ -36,6 +36,12 @@ The most capable agent surface that ships. Continuously tuned by real-world use 
 curl -fsSL https://raw.githubusercontent.com/qtnx/omppp/main/scripts/install.sh | sh
 ```
 
+**Homebrew**
+
+```sh
+brew install can1357/tap/omp
+```
+
 **Bun (recommended)**
 
 ```sh

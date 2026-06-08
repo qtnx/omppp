@@ -41,6 +41,7 @@ export const OpenAICompatSchema = z.object({
 	openRouterRouting: OpenRouterRoutingSchema.optional(),
 	vercelGatewayRouting: VercelGatewayRoutingSchema.optional(),
 	extraBody: z.record(z.string(), z.unknown()).optional(),
+	cacheControlFormat: z.enum(["anthropic"]).optional(),
 	supportsStrictMode: z.boolean().optional(),
 	toolStrictMode: z.enum(["all_strict", "none"]).optional(),
 });
@@ -92,6 +93,7 @@ const ModelDefinitionSchema = z.object({
 	premiumMultiplier: z.number().optional(),
 	contextWindow: z.number().optional(),
 	maxTokens: z.number().optional(),
+	omitMaxOutputTokens: z.boolean().optional(),
 	headers: z.record(z.string(), z.string()).optional(),
 	compat: OpenAICompatSchema.optional(),
 	contextPromotionTarget: z.string().min(1).optional(),
@@ -113,6 +115,7 @@ export const ModelOverrideSchema = z.object({
 	premiumMultiplier: z.number().optional(),
 	contextWindow: z.number().optional(),
 	maxTokens: z.number().optional(),
+	omitMaxOutputTokens: z.boolean().optional(),
 	headers: z.record(z.string(), z.string()).optional(),
 	compat: OpenAICompatSchema.optional(),
 	contextPromotionTarget: z.string().min(1).optional(),

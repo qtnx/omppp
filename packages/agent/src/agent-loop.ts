@@ -3,6 +3,7 @@
  * Transforms to Message[] only at the LLM call boundary.
  */
 import {
+	type ApiKeyResolveContext,
 	type AssistantMessage,
 	type AssistantMessageEvent,
 	type Context,
@@ -48,6 +49,7 @@ import type {
 	AgentMessage,
 	AgentTool,
 	AgentToolResult,
+	AsideMessage,
 	StreamFn,
 } from "./types";
 import { yieldIfDue } from "./utils/yield";
@@ -464,6 +466,23 @@ function cloneAssistantMessageForToolCallCap(message: AssistantMessage): Assista
 	};
 }
 
+/**
+ * Resolve aside entries at the moment the loop is about to inject them. Each entry
+ * is either a ready {@link AgentMessage} or a sync thunk evaluated here so the
+ * producer can make the final inject-or-drop decision (return null) against
+ * up-to-the-injection state — e.g. dropping late diagnostics a newer edit
+ * superseded. Kept sync so it can never stall the loop.
+ */
+function resolveAsides(entries: AsideMessage[] | undefined): AgentMessage[] {
+	if (!entries || entries.length === 0) return [];
+	const out: AgentMessage[] = [];
+	for (const entry of entries) {
+		const message = typeof entry === "function" ? entry() : entry;
+		if (message) out.push(message);
+	}
+	return out;
+}
+
 async function runLoopBody(
 	currentContext: AgentContext,
 	newMessages: AgentMessage[],
@@ -646,15 +665,18 @@ async function runLoopBody(
 
 			stream.push({ type: "turn_end", message, toolResults });
 
-			pendingMessages = steeringMessagesFromExecution ?? ((await config.getSteeringMessages?.()) || []);
+			const steering = steeringMessagesFromExecution ?? ((await config.getSteeringMessages?.()) || []);
+			const asides = resolveAsides(await config.getAsideMessages?.());
+			pendingMessages = asides.length > 0 ? [...steering, ...asides] : steering;
 		}
 
-		// Agent would stop here. Check for follow-up messages.
+		// Agent would stop here. Drain non-interrupting asides + follow-up messages.
 		await config.onBeforeYield?.();
+		const asideMessages = resolveAsides(await config.getAsideMessages?.());
 		const followUpMessages = (await config.getFollowUpMessages?.()) || [];
-		if (followUpMessages.length > 0) {
-			// Set as pending so inner loop processes them
-			pendingMessages = followUpMessages;
+		if (asideMessages.length > 0 || followUpMessages.length > 0) {
+			// Set as pending so the inner loop processes them before stopping.
+			pendingMessages = [...asideMessages, ...followUpMessages];
 			continue;
 		}
 
@@ -727,8 +749,10 @@ async function streamAssistantResponse(
 	// Resolve API key (important for expiring tokens) — do this before resolving
 	// metadata so that the session-sticky credential recorded by getApiKey is
 	// visible to metadataResolver (e.g. for the correct account_uuid in metadata.user_id).
+	const staticApiKey = typeof config.apiKey === "string" ? config.apiKey : undefined;
 	const resolvedApiKey =
-		(config.getApiKey ? await config.getApiKey(config.model.provider, config.model) : undefined) || config.apiKey;
+		(config.getApiKey ? await config.getApiKey(config.model.provider, undefined, config.model) : undefined) ||
+		staticApiKey;
 
 	// Re-resolve metadata after credential selection so the per-request value
 	// reflects the credential actually used, not the snapshot from AgentLoopConfig construction.
@@ -798,7 +822,19 @@ async function streamAssistantResponse(
 		return await runInActiveSpan(chatSpan, async () => {
 			const response = await streamFunction(config.model, llmContext, {
 				...config,
-				apiKey: resolvedApiKey,
+				// Hand streamSimple a resolver so its central auth-retry policy can
+				// re-resolve on 401 / usage-limit: the initial step reuses the key
+				// already resolved above (which set the session-sticky credential
+				// feeding metadataResolver), and retry steps forward the a/b/c ctx
+				// to config.getApiKey (force-refresh, then rotate). With no
+				// getApiKey hook the caller's own apiKey (string or resolver) flows
+				// through unchanged.
+				apiKey: config.getApiKey
+					? (ctx: ApiKeyResolveContext) =>
+							ctx.error === undefined
+								? resolvedApiKey
+								: Promise.resolve(config.getApiKey!(config.model.provider, ctx))
+					: config.apiKey,
 				metadata: resolvedMetadata,
 				toolChoice: effectiveToolChoice,
 				reasoning: effectiveReasoning,
@@ -839,7 +875,14 @@ async function streamAssistantResponse(
 			let detachAbortListener: (() => void) | undefined;
 			if (requestSignal) {
 				if (requestSignal.aborted) {
-					const aborted = emitAbortedAssistantMessage(partialMessage, addedPartial, context, config, stream);
+					const aborted = emitAbortedAssistantMessage(
+						partialMessage,
+						addedPartial,
+						context,
+						config,
+						stream,
+						requestSignal,
+					);
 					await finishChat(aborted);
 					return aborted;
 				}
@@ -861,7 +904,14 @@ async function streamAssistantResponse(
 								if (capped) return capped;
 							}
 							responseIterator.return?.()?.catch(() => {});
-							const aborted = emitAbortedAssistantMessage(partialMessage, addedPartial, context, config, stream);
+							const aborted = emitAbortedAssistantMessage(
+								partialMessage,
+								addedPartial,
+								context,
+								config,
+								stream,
+								requestSignal,
+							);
 							await finishChat(aborted);
 							return aborted;
 						}
@@ -874,7 +924,14 @@ async function streamAssistantResponse(
 							const capped = await finishCappedAssistantMessage();
 							if (capped) return capped;
 						}
-						const aborted = emitAbortedAssistantMessage(partialMessage, addedPartial, context, config, stream);
+						const aborted = emitAbortedAssistantMessage(
+							partialMessage,
+							addedPartial,
+							context,
+							config,
+							stream,
+							requestSignal,
+						);
 						await finishChat(aborted);
 						return aborted;
 					}
@@ -982,14 +1039,30 @@ async function streamAssistantResponse(
 	}
 }
 
+/** Resolve the human-readable reason an abort carried. A caller that aborts via
+ *  `AbortController.abort(reason)` with a string or a non-`AbortError` `Error`
+ *  (e.g. the coding agent's user-interrupt label) gets that text surfaced on the
+ *  synthesized assistant message's `errorMessage`; a bare `abort()` (whose
+ *  `signal.reason` is the default `AbortError` `DOMException`) falls back to the
+ *  generic sentinel that downstream renderers treat as "no specific reason". */
+export function abortReasonText(signal: AbortSignal | undefined): string {
+	const reason = signal?.reason;
+	if (typeof reason === "string" && reason.trim().length > 0) return reason;
+	if (reason instanceof Error && reason.name !== "AbortError" && reason.message.trim().length > 0) {
+		return reason.message;
+	}
+	return "Request was aborted";
+}
+
 function emitAbortedAssistantMessage(
 	partialMessage: AssistantMessage | null,
 	addedPartial: boolean,
 	context: AgentContext,
 	config: AgentLoopConfig,
 	stream: EventStream<AgentEvent, AgentMessage[]>,
+	requestSignal: AbortSignal | undefined,
 ): AssistantMessage {
-	const errorMessage = "Request was aborted";
+	const errorMessage = abortReasonText(requestSignal);
 	const abortedMessage: AssistantMessage = partialMessage
 		? { ...partialMessage, stopReason: "aborted", errorMessage }
 		: {
@@ -1231,7 +1304,7 @@ async function executeToolCalls(
 				const rawResult = await tool.execute(
 					toolCall.id,
 					transformToolCallArguments ? transformToolCallArguments(effectiveArgs, toolCall.name) : effectiveArgs,
-					tool.nonAbortable ? undefined : toolSignal,
+					toolSignal,
 					partialResult => {
 						stream.push({
 							type: "tool_execution_update",

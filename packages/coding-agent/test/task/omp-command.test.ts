@@ -54,17 +54,15 @@ describe("sandboxOmpxCommand", () => {
 		expect(profile.startsWith("(version 1)\n")).toBe(true);
 		expect(profile).toContain("(allow default)");
 		expect(profile).toContain("(deny file-write*");
-		expect(profile).toContain("(subpath \"/\")");
+		expect(profile).toContain('(subpath "/")');
 		expect(profile).toContain("(deny file-read*");
-		expect(profile).toContain("(subpath \"/Users\")");
-		expect(profile).toContain("(subpath \"/Volumes\")");
-		expect(profile).toContain("(subpath \"/Users/alice/work repo\")");
-		expect(profile).toContain("(subpath \"/Users/alice/.bun/bin/bun\")");
-		expect(profile).toContain("(subpath \"/Users/alice/.bun\")");
-		expect(profile).toContain("(literal \"/Users\")");
-		expect(profile.indexOf("(subpath \"/Users\")")).toBeLessThan(
-			profile.indexOf("(subpath \"/Users/alice/work repo\")"),
-		);
+		expect(profile).toContain('(subpath "/Users")');
+		expect(profile).toContain('(subpath "/Volumes")');
+		expect(profile).toContain('(subpath "/Users/alice/work repo")');
+		expect(profile).toContain('(subpath "/Users/alice/.bun/bin/bun")');
+		expect(profile).toContain('(subpath "/Users/alice/.bun")');
+		expect(profile).toContain('(literal "/Users")');
+		expect(profile.indexOf('(subpath "/Users")')).toBeLessThan(profile.indexOf('(subpath "/Users/alice/work repo")'));
 	});
 
 	it("uses the inherited working directory when cwd is omitted", () => {
@@ -166,7 +164,7 @@ describe("sandboxOmpxCommand", () => {
 		);
 
 		expect(wrapped.args[2]).toBe("/Users/alice/project/bin/ompx");
-		expect(wrapped.args[1]).toContain("(subpath \"/Users/alice/project/bin/ompx\")");
+		expect(wrapped.args[1]).toContain('(subpath "/Users/alice/project/bin/ompx")');
 	});
 
 	it("allows known writable runtime paths without allowing arbitrary absolute args", () => {
@@ -175,13 +173,7 @@ describe("sandboxOmpxCommand", () => {
 		const wrapped = sandboxOmpxCommand(
 			{
 				cmd: "/usr/local/bin/ompx",
-				args: [
-					"dist/cli.js",
-					"--session-dir",
-					"ompx sessions",
-					"--model",
-					"/Users/alice/secrets",
-				],
+				args: ["dist/cli.js", "--session-dir", "ompx sessions", "--model", "/Users/alice/secrets"],
 				shell: false,
 			},
 			{
@@ -195,23 +187,23 @@ describe("sandboxOmpxCommand", () => {
 		);
 		const profile = wrapped.args[1] ?? "";
 
-		expect(profile).toContain("(subpath \"/Users/alice/project/ompx sessions\")");
-		expect(profile).toContain("(subpath \"/Users/alice/isolated-agent\")");
-		expect(profile).toContain("(subpath \"/System/Volumes/Data/Users/alice/project/ompx sessions\")");
-		expect(profile).not.toContain("(subpath \"/Users/alice/.ssh\")");
-		expect(profile).not.toContain("(subpath \"/Users/alice\")");
-		expect(profile).not.toContain("(subpath \"/System/Volumes/Data/Users/alice\")");
-		expect(profile).not.toContain("(subpath \"/Users/alice/secrets\")");
-		expect(profile).not.toContain("(subpath \"/Users/alice/untrusted-tmp\")");
-		expect(profile).toContain("(subpath \"/System/Volumes/Data/Users\")");
-		expect(profile).toContain("(subpath \"/System/Volumes/Data/Volumes\")");
-		expect(profile).toContain("(subpath \"/System/Volumes/Data/Library/Keychains\")");
+		expect(profile).toContain('(subpath "/Users/alice/project/ompx sessions")');
+		expect(profile).toContain('(subpath "/Users/alice/isolated-agent")');
+		expect(profile).toContain('(subpath "/System/Volumes/Data/Users/alice/project/ompx sessions")');
+		expect(profile).not.toContain('(subpath "/Users/alice/.ssh")');
+		expect(profile).not.toContain('(subpath "/Users/alice")');
+		expect(profile).not.toContain('(subpath "/System/Volumes/Data/Users/alice")');
+		expect(profile).not.toContain('(subpath "/Users/alice/secrets")');
+		expect(profile).not.toContain('(subpath "/Users/alice/untrusted-tmp")');
+		expect(profile).toContain('(subpath "/System/Volumes/Data/Users")');
+		expect(profile).toContain('(subpath "/System/Volumes/Data/Volumes")');
+		expect(profile).toContain('(subpath "/System/Volumes/Data/Library/Keychains")');
 		expect(profile).not.toContain("(with no-sandbox)");
 	});
 
 	it("escapes Seatbelt string literals and preserves temp/device deny ordering", () => {
 		setPlatform("darwin");
-		const trickyCwd = "/Users/alice/work \"repo\" \\ slash\nline";
+		const trickyCwd = '/Users/alice/work "repo" \\ slash\nline';
 
 		const wrapped = sandboxOmpxCommand(
 			{ cmd: "/usr/local/bin/ompx", args: ["--resume", "session-1"], shell: false },
@@ -220,12 +212,10 @@ describe("sandboxOmpxCommand", () => {
 		const profile = wrapped.args[1] ?? "";
 
 		expect(profile).toContain(`(subpath ${JSON.stringify(trickyCwd)})`);
-		expect(profile).toContain("(subpath \"/tmp\")");
-		expect(profile).toContain("(subpath \"/private/tmp\")");
-		expect(profile).toContain("(subpath \"/private/tmp/ompx tmp\")");
-		expect(profile).toContain("(regex #\"^/dev/r?disk\")");
-		expect(profile.lastIndexOf("(regex #\"^/dev/r?disk\")")).toBeGreaterThan(
-			profile.indexOf("(subpath \"/dev\")"),
-		);
+		expect(profile).toContain('(subpath "/tmp")');
+		expect(profile).toContain('(subpath "/private/tmp")');
+		expect(profile).toContain('(subpath "/private/tmp/ompx tmp")');
+		expect(profile).toContain('(regex #"^/dev/r?disk")');
+		expect(profile.lastIndexOf('(regex #"^/dev/r?disk")')).toBeGreaterThan(profile.indexOf('(subpath "/dev")'));
 	});
 });
