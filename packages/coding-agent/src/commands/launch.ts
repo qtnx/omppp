@@ -100,6 +100,9 @@ export default class Index extends Command {
 		"no-pty": Flags.boolean({
 			description: "Disable PTY-based interactive bash execution",
 		}),
+		"no-sandbox": Flags.boolean({
+			description: "Disable macOS sandboxing for nested OMPx spawns in this session",
+		}),
 		tools: Flags.string({
 			description: "Comma-separated list of tools to enable (default: all)",
 		}),

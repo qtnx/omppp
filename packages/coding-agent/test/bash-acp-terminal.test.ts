@@ -3,6 +3,17 @@ import type { ClientBridge, ClientBridgeTerminalHandle } from "../src/session/cl
 import type { ToolSession } from "../src/tools";
 import { BashTool } from "../src/tools/bash";
 
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+const previousActiveSandbox = Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED;
+
+function setPlatform(value: NodeJS.Platform): void {
+	Object.defineProperty(process, "platform", { value, configurable: true });
+}
+
+function restorePlatform(): void {
+	if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
+}
+
 function makeSession(bridge: ClientBridge): ToolSession {
 	return {
 		cwd: "/tmp",
@@ -31,6 +42,12 @@ function makeSession(bridge: ClientBridge): ToolSession {
 
 afterEach(() => {
 	mock.restore();
+	restorePlatform();
+	if (previousActiveSandbox === undefined) {
+		delete Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED;
+	} else {
+		Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED = previousActiveSandbox;
+	}
 });
 
 describe("BashTool ACP terminal routing", () => {
@@ -78,6 +95,25 @@ describe("BashTool ACP terminal routing", () => {
 
 		// The handle must always be released
 		expect(releaseSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps command execution local when macOS sandbox inheritance is active", async () => {
+		setPlatform("darwin");
+		Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED = "1";
+		const bridge: ClientBridge = {
+			capabilities: { terminal: true },
+			createTerminal: async () => {
+				throw new Error("bridge terminal should not be used inside the sandbox");
+			},
+		};
+		const createSpy = spyOn(bridge, "createTerminal");
+
+		const tool = new BashTool(makeSession(bridge));
+		const result = await tool.execute("call-sandbox-local", { command: "printf sandboxed" });
+
+		expect(createSpy).not.toHaveBeenCalled();
+		const text = result.content.find(c => c.type === "text");
+		expect(text?.text).toContain("sandboxed");
 	});
 
 	it("releases the client terminal when final output retrieval fails", async () => {

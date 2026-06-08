@@ -21,6 +21,7 @@ import {
 	VERSION,
 } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import macosSandboxActivePrompt from "./prompts/system/macos-sandbox-active.md" with { type: "text" };
 import { reset as resetCapabilities } from "./capability";
 import type { Args } from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
@@ -53,6 +54,7 @@ import {
 import type { MCPManager } from "./mcp";
 import { InteractiveMode, runAcpMode, runPrintMode, runRpcMode } from "./modes";
 import { ALL_SCENES, runSetupWizard, selectSetupScenes } from "./modes/setup-wizard";
+import { disableMacOSSandboxForProcess, isMacOSSandboxActive } from "./task/omp-command";
 import { initTheme, stopThemeWatcher } from "./modes/theme/theme";
 import type { SubmittedUserInput } from "./modes/types";
 import {
@@ -642,7 +644,8 @@ async function buildSessionOptions(
 		if (explicitAppendPrompt) {
 			overlay.appendPrompt = { path: "<cli>", content: explicitAppendPrompt, hash: "" };
 		}
-		return applySystemPromptOverlay(defaultPrompt, overlay);
+		const prompt = applySystemPromptOverlay(defaultPrompt, overlay);
+		return isMacOSSandboxActive() ? [...prompt, macosSandboxActivePrompt.trim()] : prompt;
 	};
 
 	// Tools
@@ -703,9 +706,19 @@ export async function runRootCommand(
 	await logger.time("initTheme:initial", initTheme);
 
 	const parsedArgs = parsed;
+	if (parsedArgs.noSandbox) {
+		disableMacOSSandboxForProcess();
+	}
 	await logger.time("maybeAutoChdir", maybeAutoChdir, parsedArgs);
 
 	const notifs: (InteractiveModeNotify | null)[] = [];
+	if (parsedArgs.noSandbox && isMacOSSandboxActive()) {
+		notifs.push({
+			kind: "warn",
+			message:
+				"--no-sandbox prevents new macOS sandbox wrappers only; this process is already sandboxed. Restart the top-level OMPx process with --no-sandbox to run without the inherited sandbox.",
+		});
+	}
 
 	// Resolve multi-root workspace flags (--be/--fe/--worktree/--add-dir). When a
 	// primary root is produced (e.g. a freshly created worktree), adopt it as the

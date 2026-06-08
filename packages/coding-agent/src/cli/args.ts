@@ -37,6 +37,7 @@ export interface Args {
 	noLsp?: boolean;
 	noPty?: boolean;
 	hooks?: string[];
+	noSandbox?: boolean;
 	extensions?: string[];
 	noExtensions?: boolean;
 	pluginDirs?: string[];
@@ -160,6 +161,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.noLsp = true;
 		} else if (arg === "--no-pty") {
 			result.noPty = true;
+		} else if (arg === "--no-sandbox") {
+			result.noSandbox = true;
 		} else if (arg === "--tools" && i + 1 < args.length) {
 			const toolNames = args[++i]
 				.split(",")
@@ -318,6 +321,7 @@ export function getExtraHelpText(): string {
   PI_SLOW_MODEL              - Override slow/reasoning model (see --slow)
   PI_PLAN_MODEL              - Override planning model (see --plan)
   PI_NO_PTY                  - Disable PTY-based interactive bash execution
+  PI_OMPX_MACOS_SANDBOX     - Set to 0/false/no/off before startup to disable nested macOS sandboxing
 
   For complete environment variable reference, see:
   ${chalk.dim("docs/environment-variables.md")}

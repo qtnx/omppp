@@ -22,6 +22,7 @@ import type { ClientBridgeTerminalExitStatus, ClientBridgeTerminalOutput } from 
 import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock } from "../tui/output-block";
+import { isMacOSSandboxActive } from "../task/omp-command";
 import { getSixelLineMask } from "../utils/sixel";
 import { resolveWorkspaceRootReference } from "../workspace-roots";
 import type { ToolSession } from ".";
@@ -42,6 +43,13 @@ export const BASH_DEFAULT_PREVIEW_LINES = 10;
 
 const BASH_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS = 60_000;
+const MACOS_SANDBOX_DENIAL_PATTERNS = [
+	/\bOperation not permitted\b/i,
+	/\bsandbox(?:d)?\b.*\bdeny\b/i,
+	/\bdeny(?:ing)?\s+file-(?:read|write)/i,
+	/\bfile-(?:read|write)[^\n]*\bdenied\b/i,
+	/\bnot allowed by sandbox\b/i,
+] as const;
 
 /**
  * Bash patterns flagged as safety critical for approval policy.
@@ -289,6 +297,19 @@ function formatExitCodeNotice(exitCode: number): string {
 	return `Command exited with code ${exitCode}`;
 }
 
+function outputLooksLikeMacOSSandboxDenial(output: string): boolean {
+	return MACOS_SANDBOX_DENIAL_PATTERNS.some(pattern => pattern.test(output));
+}
+
+export function formatMacOSSandboxDenialNotice(
+	output: string,
+	env: Record<string, string | undefined> = Bun.env,
+): string | undefined {
+	if (!isMacOSSandboxActive(env)) return undefined;
+	if (!outputLooksLikeMacOSSandboxDenial(output)) return undefined;
+	return "macOS sandbox may have blocked this command. Commands, long-running jobs, and hooks are limited to the working directory plus OMPx runtime paths. Use project-local caches/stores, or restart the top-level OMPx process with --no-sandbox only if you trust this workspace.";
+}
+
 /**
  * Strip the trailing occurrence of `notice` (plus a single surrounding newline
  * on each side) so the TUI can echo the value via a styled footer label
@@ -399,6 +420,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		options: {
 			requestedTimeoutSec?: number;
 			notices?: readonly string[];
+			sandboxDenialSeen?: boolean;
 			terminalId?: string;
 			wallTimeMs?: number;
 		} = {},
@@ -411,6 +433,11 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		if (options.wallTimeMs !== undefined) {
 			notices.push(formatWallTimeNotice(options.wallTimeMs));
 		}
+		const sandboxDenialNotice =
+			failedExit && (options.sandboxDenialSeen || outputLooksLikeMacOSSandboxDenial(normalizeResultOutput(result)))
+				? formatMacOSSandboxDenialNotice("Operation not permitted")
+				: undefined;
+		if (sandboxDenialNotice) notices.push(sandboxDenialNotice);
 		if (options.notices) {
 			for (const notice of options.notices) {
 				if (notice) notices.push(notice);
@@ -507,6 +534,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 				const wallTimeStart = performance.now();
+				let sandboxDenialSeen = false;
 				try {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
@@ -516,6 +544,11 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 						env: options.resolvedEnv,
 						artifactPath,
 						artifactId,
+						onRawChunk: chunk => {
+							if (!sandboxDenialSeen && outputLooksLikeMacOSSandboxDenial(chunk)) {
+								sandboxDenialSeen = true;
+							}
+						},
 						onChunk: chunk => {
 							tailBuffer.append(chunk);
 							latestText = tailBuffer.text();
@@ -527,6 +560,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					const finalResult = this.#buildCompletedResult(result, options.timeoutSec, {
 						requestedTimeoutSec: options.requestedTimeoutSec,
 						notices: options.notices ?? [],
+						sandboxDenialSeen,
 						wallTimeMs,
 					});
 					const finalText = this.#extractTextResult(finalResult);
@@ -784,9 +818,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		}
 
 		// Route through the client terminal when the client advertises the terminal capability.
-		// Skip when pty=true (PTY needs the local terminal UI).
+		// Skip when pty=true (PTY needs the local terminal UI), or when local sandbox inheritance is required.
 		const clientBridge = this.session.getClientBridge?.();
-		if (clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty) {
+		if (clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty && !isMacOSSandboxActive()) {
 			const bridgeWallTimeStart = performance.now();
 			const handle = await clientBridge.createTerminal({
 				command,
@@ -802,6 +836,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 
 			const exitPromise = handle.waitForExit();
 			let exitStatus!: ClientBridgeTerminalExitStatus;
+			let sandboxDenialSeen = false;
 
 			type BridgeRaceResult =
 				| { kind: "exit"; status: ClientBridgeTerminalExitStatus }
@@ -862,6 +897,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 							let current = { output: "", truncated: false };
 							try {
 								current = await handle.currentOutput();
+								if (!sandboxDenialSeen && outputLooksLikeMacOSSandboxDenial(current.output)) {
+									sandboxDenialSeen = true;
+								}
 							} catch (error) {
 								logger.warn("ACP terminal final output read failed", {
 									terminalId: handle.terminalId,
@@ -884,6 +922,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 								notices: pendingNotices,
 								terminalId: handle.terminalId,
 								wallTimeMs: performance.now() - bridgeWallTimeStart,
+								sandboxDenialSeen,
 							});
 						}
 
@@ -904,6 +943,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 							// observe `signal?.aborted` and exit via the abort branch.
 							continue;
 						}
+						if (!sandboxDenialSeen && outputLooksLikeMacOSSandboxDenial(pollOutput.output)) {
+							sandboxDenialSeen = true;
+						}
 						onUpdate?.({
 							content: [{ type: "text", text: pollOutput.output }],
 							details: { terminalId: handle.terminalId },
@@ -915,6 +957,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 
 				// Fetch final output; the terminal is released in the outer finally.
 				const finalOutput = await handle.currentOutput();
+				if (!sandboxDenialSeen && outputLooksLikeMacOSSandboxDenial(finalOutput.output)) {
+					sandboxDenialSeen = true;
+				}
 
 				// Map exit status: null exitCode with a signal → treat as signal kill (137).
 				const rawExitCode = exitStatus.exitCode;
@@ -943,6 +988,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				return this.#buildCompletedResult(bridgeResult, timeoutSec, {
 					requestedTimeoutSec,
 					notices: bridgeNotices,
+					sandboxDenialSeen,
 					terminalId: handle.terminalId,
 					wallTimeMs: performance.now() - bridgeWallTimeStart,
 				});
@@ -957,12 +1003,14 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 
 		// Track output for streaming updates (tail only)
 		const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
+		const streamUpdate = streamTailUpdates(tailBuffer, onUpdate);
 
 		// Allocate artifact for truncated output storage
 		const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 
 		const interactiveUi = canUseInteractiveBashPty(pty, ctx) ? ctx?.ui : undefined;
 		const wallTimeStart = performance.now();
+		let sandboxDenialSeen = false;
 		const result: BashResult | BashInteractiveResult = interactiveUi
 			? await runInteractiveBashPty(interactiveUi, {
 					command,
@@ -972,6 +1020,11 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					env: resolvedEnv,
 					artifactPath,
 					artifactId,
+					onChunk: chunk => {
+						if (!sandboxDenialSeen && outputLooksLikeMacOSSandboxDenial(chunk)) {
+							sandboxDenialSeen = true;
+						}
+					},
 				})
 			: await executeBash(command, {
 					cwd: commandCwd,
@@ -980,8 +1033,15 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					signal,
 					env: resolvedEnv,
 					artifactPath,
+					onRawChunk: chunk => {
+						if (!sandboxDenialSeen && outputLooksLikeMacOSSandboxDenial(chunk)) {
+							sandboxDenialSeen = true;
+						}
+					},
 					artifactId,
-					onChunk: streamTailUpdates(tailBuffer, onUpdate),
+					onChunk: chunk => {
+						streamUpdate(chunk);
+					},
 					onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 				});
 		const wallTimeMs = performance.now() - wallTimeStart;
@@ -997,6 +1057,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		return this.#buildCompletedResult(result, timeoutSec, {
 			requestedTimeoutSec,
 			notices: pendingNotices,
+			sandboxDenialSeen,
 			wallTimeMs,
 		});
 	}

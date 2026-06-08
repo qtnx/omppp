@@ -4,6 +4,7 @@
  * Spawns the agent in RPC mode and provides a typed API for all operations.
  */
 
+import "../../cli/preload-env";
 import { isPromise } from "node:util/types";
 import type { AgentEvent, AgentMessage, AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
@@ -11,6 +12,7 @@ import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { isRecord, ptree, readJsonl } from "@oh-my-pi/pi-utils";
 import type { BashResult } from "../../exec/bash-executor";
 import type { SessionStats } from "../../session/agent-session";
+import { sandboxOmpxCommand } from "../../task/omp-command";
 import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
@@ -184,9 +186,20 @@ export class RpcClient {
 			args.push(...this.options.args);
 		}
 
-		this.#process = ptree.spawn(["bun", cliPath, ...args], {
+		const env = { ...Bun.env, ...this.options.env };
+		if (this.options.env?.PI_CONFIG_DIR?.trim()) {
+			env.PI_OMPX_TRUSTED_CONFIG_DIR = this.options.env.PI_CONFIG_DIR;
+		}
+		if (this.options.env?.PI_CODING_AGENT_DIR?.trim()) {
+			env.PI_OMPX_TRUSTED_CODING_AGENT_DIR = this.options.env.PI_CODING_AGENT_DIR;
+		}
+		const command = sandboxOmpxCommand(
+			{ cmd: "bun", args: [cliPath, ...args], shell: false },
+			{ cwd: this.options.cwd, env },
+		);
+		this.#process = ptree.spawn([command.cmd, ...command.args], {
 			cwd: this.options.cwd,
-			env: { ...Bun.env, ...this.options.env },
+			env: command.env ?? env,
 			stdin: "pipe",
 		});
 
