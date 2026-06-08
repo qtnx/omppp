@@ -2,6 +2,7 @@ import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTelemetryConfig, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { AsyncJobManager } from "../async/job-manager";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import { EditTool } from "../edit";
@@ -125,6 +126,29 @@ export type {
 	DiscoverableToolSource,
 } from "../tool-discovery/tool-index";
 
+/**
+ * A late LSP diagnostics result that arrived after the edit/write tool already
+ * returned. Surfaced to the model and the transcript via
+ * {@link ToolSession.queueDeferredDiagnostics}, batched through the session
+ * yield queue like background-job results.
+ */
+export interface DeferredDiagnosticsEntry {
+	/** Absolute path the diagnostics belong to (the renderer shortens it). */
+	path: string;
+	/** One-line severity summary, e.g. "2 errors". */
+	summary: string;
+	/** Formatted, ready-to-display diagnostic lines. */
+	messages: string[];
+	/** True when any message is error severity. */
+	errored: boolean;
+	/**
+	 * Evaluated at injection time (in the dispatcher's stale check): drop the entry
+	 * when a newer mutation to the same file has superseded it, so the model never
+	 * sees diagnostics for stale content.
+	 */
+	isStale(): boolean;
+}
+
 /** Session context for tool factories */
 export interface ToolSession {
 	/** Current working directory */
@@ -197,6 +221,21 @@ export interface ToolSession {
 	modelRegistry?: import("../config/model-registry").ModelRegistry;
 	/** Agent output manager for unique agent:// IDs across task invocations */
 	agentOutputManager?: AgentOutputManager;
+	/**
+	 * Async job manager scoped to this session.
+	 *
+	 * - Top-level session that constructed one: its own manager.
+	 * - Subagent (`parentTaskPrefix` set): the parent's manager, so background
+	 *   bash/task work and `onJobComplete` deliveries flow into the conversation
+	 *   that spawned it.
+	 * - Secondary in-process top-level session that found a singleton already
+	 *   installed (issue #1923): `undefined`. Tools refuse async work rather
+	 *   than silently route completions into the owning session's `yieldQueue`.
+	 *
+	 * Tools MUST use this instead of `AsyncJobManager.instance()` so a secondary
+	 * session never borrows the owning session's manager by accident.
+	 */
+	asyncJobManager?: AsyncJobManager;
 	/** MCP manager visible to subagents without relying on the process-global singleton. */
 	mcpManager?: MCPManager;
 	/** Local protocol root to propagate to nested subagents and eval-created agents. */
@@ -281,8 +320,17 @@ export interface ToolSession {
 
 	/** Queue a hidden message to be injected at the next agent turn. */
 	queueDeferredMessage?(message: CustomMessage): void;
-	/** Request the macOS sandbox supervisor to relaunch this session with extra `--add-dir` roots. */
+	/** Request the macOS sandbox supervisor to relaunch this session with extra sandbox allowlist roots. */
 	requestMacOSSandboxRelaunch?(paths: string[]): MacOSSandboxRelaunchResult;
+	/** Queue late LSP diagnostics (arrived after an edit/write returned) to be shown
+	 *  in the transcript and delivered to the model at the next yield, like background
+	 *  job results. */
+	queueDeferredDiagnostics?(entry: DeferredDiagnosticsEntry): void;
+	/** Bump and return the session-global mutation counter for `path`. Edit/write
+	 *  tools call this on every file mutation so stale late-diagnostics can be dropped. */
+	bumpFileMutationVersion?(path: string): number;
+	/** Read the current session-global mutation counter for `path` (0 if never mutated). */
+	getFileMutationVersion?(path: string): number;
 	/** Get the active OpenTelemetry config so subagent dispatch can forward
 	 *  the parent's tracer/hooks with the subagent's own identity stamped. */
 	getTelemetry?: () => AgentTelemetryConfig | undefined;

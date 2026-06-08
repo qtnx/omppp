@@ -240,6 +240,8 @@ export interface AgentDefinition {
 	resourceProfile?: "minimal";
 	autoloadSkills?: string[];
 	reviewGate?: AgentReviewGatePolicy;
+	/** When `false`, the agent's `read` tool returns verbatim file content instead of structural summaries. */
+	readSummarize?: boolean;
 	source: AgentSource;
 	filePath?: string;
 }

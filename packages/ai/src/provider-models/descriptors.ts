@@ -132,7 +132,7 @@ function catalogDescriptor(
  * openai-codex) are handled separately because they require different config shapes.
  */
 export const PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
-	descriptor("anthropic", "claude-sonnet-4-6", config => anthropicModelManagerOptions(config)),
+	descriptor("anthropic", "claude-opus-4-6", config => anthropicModelManagerOptions(config)),
 	catalogDescriptor(
 		"alibaba-coding-plan",
 		"qwen3.5-plus",
@@ -311,6 +311,15 @@ export const PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
 		"mimo-v2-flash",
 		config => xiaomiModelManagerOptions(config),
 		catalog("Xiaomi", ["XIAOMI_API_KEY"]),
+	),
+	descriptor("xiaomi-token-plan-sgp", "mimo-v2.5", config =>
+		xiaomiModelManagerOptions({ ...config, providerId: "xiaomi-token-plan-sgp", tokenPlanRegion: "sgp" }),
+	),
+	descriptor("xiaomi-token-plan-ams", "mimo-v2.5", config =>
+		xiaomiModelManagerOptions({ ...config, providerId: "xiaomi-token-plan-ams", tokenPlanRegion: "ams" }),
+	),
+	descriptor("xiaomi-token-plan-cn", "mimo-v2.5", config =>
+		xiaomiModelManagerOptions({ ...config, providerId: "xiaomi-token-plan-cn", tokenPlanRegion: "cn" }),
 	),
 	catalogDescriptor(
 		"zenmux",

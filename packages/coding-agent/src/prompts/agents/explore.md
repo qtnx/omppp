@@ -5,6 +5,7 @@ tools: read, search, find, bash
 resource-profile: minimal
 model: pi/smol
 thinking-level: medium
+read-summarize: false
 output:
   properties:
     summary:

@@ -28,8 +28,11 @@ import {
 } from "../src/provider-models/descriptors";
 import {
 	buildXaiOAuthStaticSeed,
+	clampFireworksKimiMaxTokens,
+	isFireworksKimiK2ModelId,
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
 	mapModelsDevToModels,
+	stripFireworksDeepSeekThinkingToggle,
 	UNK_CONTEXT_WINDOW,
 	UNK_MAX_TOKENS,
 } from "../src/provider-models/openai-compat";
@@ -222,6 +225,37 @@ function applyCodexPricingFallback(models: readonly Model[]): Model[] {
 	});
 }
 
+/**
+ * Fireworks-backed Kimi K2.x deployments report `max_completion_tokens: 65536`
+ * over `/v1/models`, but Kimi's documented output budget on Fireworks is
+ * lower (#1849). Cap them here so the post-processing pass — which also folds
+ * in the `prevModelsJson` static fallback used by `firepass` — never lets a
+ * stale or inflated upstream value through. The resolver applies the same
+ * cap when discovery runs at runtime; this is the bundle-time safety net.
+ */
+function applyFireworksKimiMaxTokensCap(models: readonly Model[]): Model[] {
+	const FIREWORKS_KIMI_PROVIDERS = new Set(["fireworks", "firepass"]);
+	return models.map(model => {
+		if (!FIREWORKS_KIMI_PROVIDERS.has(model.provider)) return model;
+		if (!isFireworksKimiK2ModelId(model.id)) return model;
+		const capped = clampFireworksKimiMaxTokens(model.id, model.maxTokens);
+		if (capped === model.maxTokens) return model;
+		return { ...model, maxTokens: capped };
+	});
+}
+
+/**
+ * Fireworks' DeepSeek V4 endpoint accepts the user's effort through
+ * `reasoning_effort` and rejects the DeepSeek-native binary `thinking` toggle
+ * when both are present. Strip stale reference metadata from generated fallbacks.
+ */
+function applyFireworksDeepSeekReasoningShape(models: readonly Model[]): Model[] {
+	return models.map(model => {
+		if (model.provider !== "fireworks" || model.api !== "openai-completions") return model;
+		return stripFireworksDeepSeekThinkingToggle(model, model.id);
+	});
+}
+
 const ANTIGRAVITY_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 
 async function getOAuthAccessFromStorage(provider: OAuthProvider): Promise<OAuthAccess | null> {
@@ -394,6 +428,8 @@ async function generateModels() {
 	allModels = applyGlobalModelsDevFallback(allModels, modelsDevModels);
 	allModels = applyPremiumMultiplierOverrides(allModels);
 	allModels = applyCodexPricingFallback(allModels);
+	allModels = applyFireworksKimiMaxTokensCap(allModels);
+	allModels = applyFireworksDeepSeekReasoningShape(allModels);
 	applyGeneratedModelPolicies(allModels);
 	linkOpenAIPromotionTargets(allModels);
 

@@ -256,6 +256,7 @@ export interface ParsedAgentFields {
 	thinkingLevel?: ThinkingLevel;
 	resourceProfile?: "minimal";
 	autoloadSkills?: string[];
+	readSummarize?: boolean;
 	blocking?: boolean;
 	reviewGate?: AgentReviewGatePolicy;
 }
@@ -319,6 +320,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const rawResourceProfile =
 		typeof frontmatter.resourceProfile === "string" ? frontmatter.resourceProfile.trim().toLowerCase() : undefined;
 	const resourceProfile = rawResourceProfile === "minimal" ? "minimal" : undefined;
+	const readSummarize = parseBoolean(frontmatter.readSummarize);
 	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
 		?.map(s => s.trim())
 		.filter(Boolean);
@@ -335,6 +337,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		resourceProfile,
 		autoloadSkills,
 		reviewGate,
+		readSummarize,
 	};
 }
 

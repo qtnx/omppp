@@ -12,18 +12,26 @@ import { CustomMessageComponent } from "../../modes/components/custom-message";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import {
+	type LateDiagnosticsFile,
+	LateDiagnosticsMessageComponent,
+} from "../../modes/components/late-diagnostics-message";
+import {
 	ReadToolGroupComponent,
 	readArgsHaveTarget,
 	readArgsTargetInternalUrl,
 } from "../../modes/components/read-tool-group";
 import { SkillMessageComponent } from "../../modes/components/skill-message";
 import { ToolExecutionComponent } from "../../modes/components/tool-execution";
+import { TranscriptBlock } from "../../modes/components/transcript-container";
 import { UserMessageComponent } from "../../modes/components/user-message";
+import { materializeImageReferenceLinksSync } from "../../modes/image-references";
 import { theme } from "../../modes/theme/theme";
 import type { CompactionQueuedMessage, InteractiveModeContext } from "../../modes/types";
 import {
 	type CustomMessage,
 	isSilentAbort,
+	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
+	resolveAbortLabel,
 	SKILL_PROMPT_MESSAGE_TYPE,
 	type SkillPromptDetails,
 } from "../../session/messages";
@@ -40,6 +48,18 @@ type QueuedMessages = {
 	steering: string[];
 	followUp: string[];
 };
+
+function imageLinksForMessage(
+	message: Extract<AgentMessage, { role: "developer" | "user" }>,
+	putBlobSync: InteractiveModeContext["sessionManager"]["putBlobSync"],
+): (string | undefined)[] | undefined {
+	if (typeof message.content === "string") return undefined;
+	const images = message.content.filter(
+		(content): content is ImageContent =>
+			content.type === "image" && typeof content.data === "string" && typeof content.mimeType === "string",
+	);
+	return materializeImageReferenceLinksSync(images, putBlobSync);
+}
 
 export class UiHelpers {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -61,9 +81,6 @@ export class UiHelpers {
 	 * we update the previous status line instead of appending new ones to avoid log spam.
 	 */
 	showStatus(message: string, options?: { dim?: boolean }): void {
-		if (this.ctx.isBackgrounded) {
-			return;
-		}
 		const children = this.ctx.chatContainer.children;
 		const last = children.length > 0 ? children[children.length - 1] : undefined;
 		const secondLast = children.length > 1 ? children[children.length - 2] : undefined;
@@ -78,14 +95,15 @@ export class UiHelpers {
 
 		const spacer = new Spacer(1);
 		const text = new Text(rendered, 1, 0);
-		this.ctx.chatContainer.addChild(spacer);
-		this.ctx.chatContainer.addChild(text);
+		this.ctx.present([spacer, text]);
 		this.ctx.lastStatusSpacer = spacer;
 		this.ctx.lastStatusText = text;
-		this.ctx.ui.requestRender();
 	}
 
-	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): Component[] {
+	addMessageToChat(
+		message: AgentMessage,
+		options?: { populateHistory?: boolean; imageLinks?: readonly (string | undefined)[] },
+	): Component[] {
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ctx.ui, message.excludeFromContext);
@@ -138,6 +156,7 @@ export class UiHelpers {
 											durationMs: details?.durationMs,
 										},
 									];
+						const block = new TranscriptBlock();
 						for (const job of jobs) {
 							const jobId = job.jobId ?? "unknown";
 							const typeLabel = job.type ? `[${job.type}]` : "[job]";
@@ -150,8 +169,20 @@ export class UiHelpers {
 							]
 								.filter(Boolean)
 								.join(" ");
-							this.ctx.chatContainer.addChild(new Text(line, 1, 0));
+							block.addChild(new Text(line, 1, 0));
 						}
+						this.ctx.chatContainer.addChild(block);
+						break;
+					}
+					if (message.customType === LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE) {
+						const details = (
+							message as CustomMessage<{
+								files?: LateDiagnosticsFile[];
+							}>
+						).details;
+						const component = new LateDiagnosticsMessageComponent(details?.files ?? []);
+						component.setExpanded(this.ctx.toolOutputExpanded);
+						this.ctx.chatContainer.addChild(component);
 						break;
 					}
 					if (message.customType === SKILL_PROMPT_MESSAGE_TYPE) {
@@ -191,19 +222,18 @@ export class UiHelpers {
 							body = details?.body ?? "";
 							arrow = `${from} ⇨ ${to}`;
 						}
-						const components: Component[] = [];
+						const block = new TranscriptBlock();
 						const header = `${theme.fg("accent", `[IRC] ${arrow}`)}`;
 						const headerComponent = new Text(header, 1, 0);
-						this.ctx.chatContainer.addChild(headerComponent);
-						components.push(headerComponent);
+						block.addChild(headerComponent);
 						if (body) {
 							for (const line of body.split("\n")) {
 								const lineComponent = new Text(theme.fg("muted", `  ${line}`), 0, 0);
-								this.ctx.chatContainer.addChild(lineComponent);
-								components.push(lineComponent);
+								block.addChild(lineComponent);
 							}
 						}
-						return components;
+						this.ctx.chatContainer.addChild(block);
+						return [block];
 					}
 					const renderer = this.ctx.session.extensionRunner?.getMessageRenderer(message.customType);
 					// Both HookMessage and CustomMessage have the same structure, cast for compatibility
@@ -214,14 +244,12 @@ export class UiHelpers {
 				break;
 			}
 			case "compactionSummary": {
-				this.ctx.chatContainer.addChild(new Spacer(1));
 				const component = new CompactionSummaryMessageComponent(message);
 				component.setExpanded(this.ctx.toolOutputExpanded);
 				this.ctx.chatContainer.addChild(component);
 				break;
 			}
 			case "branchSummary": {
-				this.ctx.chatContainer.addChild(new Spacer(1));
 				const component = new BranchSummaryMessageComponent(message);
 				component.setExpanded(this.ctx.toolOutputExpanded);
 				this.ctx.chatContainer.addChild(component);
@@ -229,6 +257,7 @@ export class UiHelpers {
 			}
 			case "fileMention": {
 				// Render compact file mention display
+				const block = new TranscriptBlock();
 				for (const file of message.files) {
 					let suffix: string;
 					if (file.skippedReason === "tooLarge") {
@@ -245,8 +274,9 @@ export class UiHelpers {
 						"accent",
 						file.path,
 					)} ${theme.fg("dim", suffix)}`;
-					this.ctx.chatContainer.addChild(new Text(text, 0, 0));
+					block.addChild(new Text(text, 0, 0));
 				}
+				if (block.children.length > 0) this.ctx.chatContainer.addChild(block);
 				break;
 			}
 			case "user":
@@ -254,7 +284,10 @@ export class UiHelpers {
 				const textContent = this.ctx.getUserMessageText(message);
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
-					const userComponent = new UserMessageComponent(textContent, isSynthetic);
+					const imageLinks =
+						options?.imageLinks ??
+						imageLinksForMessage(message, this.ctx.sessionManager.putBlobSync.bind(this.ctx.sessionManager));
+					const userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks);
 					this.ctx.chatContainer.addChild(userComponent);
 					if (options?.populateHistory && message.role === "user" && !isSynthetic) {
 						this.ctx.editor.addToHistory(textContent);
@@ -320,18 +353,25 @@ export class UiHelpers {
 				if (assistantComponent) {
 					assistantComponent.setUsageInfo(message.usage);
 				}
-				readGroup = null;
+				const hasVisibleAssistantContent = message.content.some(
+					content =>
+						(content.type === "text" && content.text.trim().length > 0) ||
+						(content.type === "thinking" && content.thinking.trim().length > 0),
+				);
+				if (hasVisibleAssistantContent) {
+					// Rebuild reconstructs immutable history; seal (not finalize) so the
+					// group freezes even if a read's result was never persisted —
+					// finalize alone keeps a pending entry live and would stop the whole
+					// transcript below it from committing to native scrollback.
+					readGroup?.seal();
+					readGroup = null;
+				}
 				const isAbortedSilently = message.stopReason === "aborted" && isSilentAbort(message.errorMessage);
 				const hasErrorStop =
 					!isAbortedSilently && (message.stopReason === "aborted" || message.stopReason === "error");
 				const errorMessage = hasErrorStop
 					? message.stopReason === "aborted"
-						? (() => {
-								const retryAttempt = this.ctx.session.retryAttempt;
-								return retryAttempt > 0
-									? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-									: "Operation aborted";
-							})()
+						? resolveAbortLabel(message.errorMessage, this.ctx.session.retryAttempt)
 						: message.errorMessage || "Error"
 					: null;
 
@@ -373,6 +413,7 @@ export class UiHelpers {
 						continue;
 					}
 
+					readGroup?.seal();
 					readGroup = null;
 					const tool = this.ctx.session.getToolByName(content.name);
 					const renderArgs =
@@ -460,6 +501,11 @@ export class UiHelpers {
 			}
 		}
 
+		// The trailing read run has no following break to close it; seal so the
+		// rebuilt group freezes (even with a never-persisted result) and commits to
+		// native scrollback like every other historical block.
+		readGroup?.seal();
+
 		// Render deferred messages (compaction summaries) at the bottom so they're visible
 		for (const message of deferredMessages) {
 			this.ctx.addMessageToChat(message, options);
@@ -472,8 +518,15 @@ export class UiHelpers {
 	renderInitialMessages(prebuiltContext?: SessionContext, options: RenderInitialMessagesOptions = {}): void {
 		// This path is used to rebuild the visible chat transcript (e.g. after custom/debug UI).
 		// Clear existing rendered chat first to avoid duplicating the full session in the container.
+		// On a non-preserving rebuild the existing blocks are discarded for good, so
+		// dispose them (stopping any live timers/subscriptions) before clearing. When
+		// preserving, the same instances are re-added below, so detach without dispose.
 		const preservedChatChildren = options.preserveExistingChat ? this.ctx.chatContainer.children : undefined;
-		this.ctx.chatContainer.clear();
+		if (preservedChatChildren) {
+			this.ctx.chatContainer.clear();
+		} else {
+			this.ctx.resetTranscript();
+		}
 		this.ctx.pendingMessagesContainer.clear();
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
@@ -509,38 +562,25 @@ export class UiHelpers {
 	}
 
 	clearEditor(): void {
-		if (this.ctx.isBackgrounded) {
-			return;
-		}
 		this.ctx.editor.setText("");
 		this.ctx.pendingImages = [];
+		this.ctx.pendingImageLinks = [];
+		this.ctx.editor.imageLinks = undefined;
 		this.ctx.ui.requestRender();
 	}
 
 	showError(errorMessage: string): void {
-		if (this.ctx.isBackgrounded) {
-			process.stderr.write(`Error: ${errorMessage}\n`);
-			return;
-		}
-		this.ctx.chatContainer.addChild(new Spacer(1));
-		this.ctx.chatContainer.addChild(new Text(theme.fg("error", `Error: ${errorMessage}`), 1, 0));
-		this.ctx.ui.requestRender();
+		this.ctx.present([new Spacer(1), new Text(theme.fg("error", `Error: ${errorMessage}`), 1, 0)]);
 	}
 
 	showWarning(warningMessage: string): void {
-		if (this.ctx.isBackgrounded) {
-			process.stderr.write(`Warning: ${warningMessage}\n`);
-			return;
-		}
-		this.ctx.chatContainer.addChild(new Spacer(1));
-		this.ctx.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
-		this.ctx.ui.requestRender();
+		this.ctx.present([new Spacer(1), new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0)]);
 	}
 
 	showNewVersionNotification(newVersion: string): void {
-		this.ctx.chatContainer.addChild(new Spacer(1));
-		this.ctx.chatContainer.addChild(new DynamicBorder(text => theme.fg("warning", text)));
-		this.ctx.chatContainer.addChild(
+		const block = new TranscriptBlock();
+		block.addChild(new DynamicBorder(text => theme.fg("warning", text)));
+		block.addChild(
 			new Text(
 				theme.bold(theme.fg("warning", "Update Available")) +
 					"\n" +
@@ -550,8 +590,8 @@ export class UiHelpers {
 				0,
 			),
 		);
-		this.ctx.chatContainer.addChild(new DynamicBorder(text => theme.fg("warning", text)));
-		this.ctx.ui.requestRender();
+		block.addChild(new DynamicBorder(text => theme.fg("warning", text)));
+		this.ctx.present(block);
 	}
 
 	updatePendingMessagesDisplay(): void {

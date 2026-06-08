@@ -1,11 +1,12 @@
 import {
 	type Component,
 	Container,
-	fuzzyFilter,
+	fuzzyMatch,
 	Input,
 	matchesKey,
 	padding,
 	replaceTabs,
+	ScrollView,
 	Spacer,
 	Text,
 	truncateToWidth,
@@ -45,43 +46,107 @@ function formatSessionStatus(status: SessionStatus | undefined): string | undefi
 /** Returns the IDs of sessions whose recorded prompts match a query, best first. */
 export type SessionHistoryMatcher = (query: string) => string[];
 
+function sessionSearchText(session: SessionInfo): string {
+	const parts = [
+		session.id,
+		session.title ?? "",
+		session.cwd ?? "",
+		session.firstMessage ?? "",
+		session.allMessagesText,
+		session.path,
+	];
+	return parts.filter(Boolean).join(" ");
+}
+
+function tokenizeSessionQuery(query: string): string[] {
+	const trimmed = query.trim().toLowerCase();
+	return trimmed ? trimmed.split(/\s+/) : [];
+}
+
+function compareSessionRecency(a: SessionInfo, b: SessionInfo): number {
+	return b.modified.getTime() - a.modified.getTime();
+}
+
 /**
- * Combine fuzzy session matches with prompt-history matches for ranking, using
- * both signals rather than replacing one with the other.
+ * Filter and rank session picker search results.
  *
- * - `fuzzy` is the ordered fuzzy-filter result over session metadata (best first).
+ * Resume search narrows a recency-sorted list: once every query token appears
+ * as a literal substring, newer sessions should beat a slightly better fuzzy
+ * position match. Pure fuzzy/acronym matches still sort by fuzzy score after
+ * literal matches.
+ */
+export function rankSessionSearchMatches(allSessions: SessionInfo[], query: string): SessionInfo[] {
+	const tokens = tokenizeSessionQuery(query);
+	if (tokens.length === 0) return allSessions;
+
+	const results: Array<{ session: SessionInfo; score: number; literal: boolean; index: number }> = [];
+	for (let index = 0; index < allSessions.length; index++) {
+		const session = allSessions[index]!;
+		const text = sessionSearchText(session);
+		const textLower = text.toLowerCase();
+		let score = 0;
+		let literal = true;
+		let matches = true;
+
+		for (const token of tokens) {
+			const match = fuzzyMatch(token, textLower);
+			if (!match.matches) {
+				matches = false;
+				break;
+			}
+			score += match.score;
+			if (!textLower.includes(token)) literal = false;
+		}
+
+		if (matches) results.push({ session, score, literal, index });
+	}
+
+	results.sort((a, b) => {
+		if (a.literal !== b.literal) return a.literal ? -1 : 1;
+		if (a.literal) return compareSessionRecency(a.session, b.session) || a.index - b.index;
+		return a.score - b.score || compareSessionRecency(a.session, b.session) || a.index - b.index;
+	});
+
+	return results.map(result => result.session);
+}
+
+/**
+ * Combine metadata matches with prompt-history matches for ranking, using both
+ * signals rather than replacing one with the other.
+ *
+ * - `fuzzy` is the ordered metadata/session-text result.
  * - `historyIds` are session IDs whose recorded prompts matched the query,
- *   ordered by history relevance (best first); duplicates are tolerated.
+ *   ordered by prompt-history rank (typically newest matching prompt first); duplicates are tolerated.
  *
- * Ranking: sessions matched by **both** signals lead (keeping fuzzy order), then
- * fuzzy-only matches, then history-only matches (by history order). A fuzzy match
- * is never dropped, and history matches not present in `allSessions` (e.g. deleted
- * or out-of-scope sessions) are ignored since they cannot be resumed from here.
+ * Ranking: prompt-history matches lead in history order, then remaining
+ * metadata matches keep their existing order. A metadata match is never dropped,
+ * and history matches not present in `allSessions` (e.g. deleted or out-of-scope
+ * sessions) are ignored since they cannot be resumed from here.
  */
 export function mergeSessionRanking(
 	allSessions: SessionInfo[],
 	fuzzy: SessionInfo[],
 	historyIds: string[],
 ): SessionInfo[] {
-	const historyRank = new Map<string, number>();
-	historyIds.forEach((id, index) => {
-		if (!historyRank.has(id)) historyRank.set(id, index);
-	});
-	if (historyRank.size === 0) return fuzzy;
+	if (historyIds.length === 0) return fuzzy;
 
-	const both: SessionInfo[] = [];
-	const fuzzyOnly: SessionInfo[] = [];
-	const fuzzyPaths = new Set<string>();
-	for (const session of fuzzy) {
-		fuzzyPaths.add(session.path);
-		(historyRank.has(session.id) ? both : fuzzyOnly).push(session);
+	const sessionsById = new Map<string, SessionInfo>();
+	for (const session of allSessions) {
+		if (!sessionsById.has(session.id)) sessionsById.set(session.id, session);
 	}
 
-	const historyOnly = allSessions
-		.filter(session => historyRank.has(session.id) && !fuzzyPaths.has(session.path))
-		.sort((a, b) => (historyRank.get(a.id) ?? 0) - (historyRank.get(b.id) ?? 0));
+	const historyMatches: SessionInfo[] = [];
+	const historyPaths = new Set<string>();
+	for (const id of historyIds) {
+		const session = sessionsById.get(id);
+		if (!session || historyPaths.has(session.path)) continue;
+		historyMatches.push(session);
+		historyPaths.add(session.path);
+	}
+	if (historyMatches.length === 0) return fuzzy;
 
-	return [...both, ...fuzzyOnly, ...historyOnly];
+	const metadataOnly = fuzzy.filter(session => !historyPaths.has(session.path));
+	return [...historyMatches, ...metadataOnly];
 }
 
 /**
@@ -95,7 +160,9 @@ class SessionList implements Component {
 	onCancel?: () => void;
 	onExit: () => void = () => {};
 	onToggleScope?: () => void;
-	#maxVisible: number = 5; // Max sessions visible (each session is 3 lines: msg + metadata + blank)
+	// Snapshot of the live terminal-row getter; the visible window is derived
+	// from it per render so the picker fits the viewport (and adapts to resize).
+	readonly #getTerminalRows: () => number;
 
 	onDeleteRequest?: (session: SessionInfo) => void;
 
@@ -103,7 +170,13 @@ class SessionList implements Component {
 	#showCwd: boolean;
 	readonly #historyMatcher?: SessionHistoryMatcher;
 
-	constructor(sessions: SessionInfo[], showCwd = false, historyMatcher?: SessionHistoryMatcher) {
+	constructor(
+		sessions: SessionInfo[],
+		showCwd = false,
+		historyMatcher?: SessionHistoryMatcher,
+		getTerminalRows: () => number = () => 24,
+	) {
+		this.#getTerminalRows = getTerminalRows;
 		this.#allSessions = sessions;
 		this.#showCwd = showCwd;
 		this.#historyMatcher = historyMatcher;
@@ -119,6 +192,25 @@ class SessionList implements Component {
 		};
 	}
 
+	/**
+	 * Number of sessions to show at once, sized so the whole picker fits the
+	 * current viewport instead of pushing its header/search off the top.
+	 *
+	 * Budget = rows − chrome − reserve, divided by the worst-case per-session
+	 * height. Chrome (12) is the surrounding spacers/borders/header (7) plus the
+	 * list's search line, blank, scroll indicator, blank, and hint (5). A titled
+	 * session is the tallest item at 4 lines (title + preview + metadata +
+	 * blank); budgeting for that guarantees no overflow even when every visible
+	 * entry has a title. The reserve covers below-editor hook widgets / cursor.
+	 */
+	#visibleCount(): number {
+		const CHROME = 12;
+		const PER_SESSION = 4;
+		const RESERVE = 1;
+		const budget = this.#getTerminalRows() - CHROME - RESERVE;
+		return Math.max(2, Math.floor(budget / PER_SESSION));
+	}
+
 	/** Replace the visible dataset, e.g. when toggling folder/all-projects scope. */
 	setSessions(sessions: SessionInfo[], showCwd: boolean): void {
 		this.#allSessions = sessions;
@@ -128,17 +220,7 @@ class SessionList implements Component {
 	}
 
 	#filterSessions(query: string): void {
-		const fuzzy = fuzzyFilter(this.#allSessions, query, session => {
-			const parts = [
-				session.id,
-				session.title ?? "",
-				session.cwd ?? "",
-				session.firstMessage ?? "",
-				session.allMessagesText,
-				session.path,
-			];
-			return parts.filter(Boolean).join(" ");
-		});
+		const fuzzy = rankSessionSearchMatches(this.#allSessions, query);
 		this.#filteredSessions = this.#mergeHistoryMatches(query, fuzzy);
 		this.#selectedIndex = Math.min(this.#selectedIndex, Math.max(0, this.#filteredSessions.length - 1));
 	}
@@ -210,17 +292,21 @@ class SessionList implements Component {
 			return date.toLocaleDateString();
 		};
 
-		// Calculate visible range with scrolling
+		// Calculate visible range with scrolling. The window is sized to the
+		// current viewport so the picker never overflows past the top.
+		const maxVisible = this.#visibleCount();
 		const startIndex = Math.max(
 			0,
-			Math.min(
-				this.#selectedIndex - Math.floor(this.#maxVisible / 2),
-				this.#filteredSessions.length - this.#maxVisible,
-			),
+			Math.min(this.#selectedIndex - Math.floor(maxVisible / 2), this.#filteredSessions.length - maxVisible),
 		);
-		const endIndex = Math.min(startIndex + this.#maxVisible, this.#filteredSessions.length);
+		const endIndex = Math.min(startIndex + maxVisible, this.#filteredSessions.length);
 
-		// Render visible sessions (2-3 lines per session + blank line)
+		// Render visible sessions (3 lines, or 4 when a title adds a preview line).
+		// Each session block is built into sessionLines, then wrapped by ScrollView
+		// so the right-edge scrollbar is proportional at the physical-line level.
+		const sessionLines: string[] = [];
+		const overflow = this.#filteredSessions.length > maxVisible;
+		const rowWidth = Math.max(0, width - (overflow ? 1 : 0));
 		for (let i = startIndex; i < endIndex; i++) {
 			const session = this.#filteredSessions[i];
 			const isSelected = i === this.#selectedIndex;
@@ -232,22 +318,22 @@ class SessionList implements Component {
 			const cursorSymbol = `${theme.nav.cursor} `;
 			const cursorWidth = visibleWidth(cursorSymbol);
 			const cursor = isSelected ? theme.fg("accent", cursorSymbol) : padding(cursorWidth);
-			const maxWidth = width - cursorWidth; // Account for cursor width
+			const maxWidth = rowWidth - cursorWidth; // Account for cursor width
 
 			if (session.title) {
 				// Has title: show title on first line, dimmed first message on second line
 				const truncatedTitle = truncateToWidth(session.title, maxWidth);
 				const titleLine = cursor + (isSelected ? theme.bold(truncatedTitle) : truncatedTitle);
-				lines.push(titleLine);
+				sessionLines.push(titleLine);
 
 				// Second line: dimmed first message preview
 				const truncatedPreview = truncateToWidth(normalizedMessage, maxWidth);
-				lines.push(`  ${theme.fg("dim", truncatedPreview)}`);
+				sessionLines.push(`  ${theme.fg("dim", truncatedPreview)}`);
 			} else {
 				// No title: show first message as main line
 				const truncatedMsg = truncateToWidth(normalizedMessage, maxWidth);
 				const messageLine = cursor + (isSelected ? theme.bold(truncatedMsg) : truncatedMsg);
-				lines.push(messageLine);
+				sessionLines.push(messageLine);
 			}
 
 			// Metadata line: date + file size + lifecycle status (+ project dir in
@@ -264,18 +350,23 @@ class SessionList implements Component {
 			if (this.#showCwd && session.cwd) {
 				metadata += ` ${dot} ${dim(shortenPath(session.cwd))}`;
 			}
-			const metadataLine = truncateToWidth(metadata, width);
+			const metadataLine = truncateToWidth(metadata, rowWidth);
 
-			lines.push(metadataLine);
-			lines.push(""); // Blank line between sessions
+			sessionLines.push(metadataLine);
+			sessionLines.push(""); // Blank line between sessions
 		}
 
-		// Add scroll indicator if needed
-		if (startIndex > 0 || endIndex < this.#filteredSessions.length) {
-			const scrollText = `  (${this.#selectedIndex + 1}/${this.#filteredSessions.length})`;
-			const scrollInfo = theme.fg("muted", truncateToWidth(scrollText, width));
-			lines.push(scrollInfo);
-		}
+		// Wrap the rendered window in a ScrollView for a proportional right-edge bar.
+		const visibleCount = endIndex - startIndex;
+		const linesPerItem = visibleCount > 0 ? sessionLines.length / visibleCount : 1;
+		const sv = new ScrollView(sessionLines, {
+			height: sessionLines.length,
+			scrollbar: "auto",
+			totalRows: Math.round(this.#filteredSessions.length * linesPerItem),
+			theme: { track: t => theme.fg("muted", t), thumb: t => theme.fg("accent", t) },
+		});
+		sv.setScrollOffset(Math.round(startIndex * linesPerItem));
+		lines.push(...sv.render(width));
 
 		// Add keybinding hint
 		lines.push("");
@@ -311,12 +402,12 @@ class SessionList implements Component {
 		}
 		// Page up - jump up by maxVisible items
 		if (matchesKey(keyData, "pageUp")) {
-			this.#selectedIndex = Math.max(0, this.#selectedIndex - this.#maxVisible);
+			this.#selectedIndex = Math.max(0, this.#selectedIndex - this.#visibleCount());
 			return;
 		}
 		// Page down - jump down by maxVisible items
 		if (matchesKey(keyData, "pageDown")) {
-			this.#selectedIndex = Math.min(this.#filteredSessions.length - 1, this.#selectedIndex + this.#maxVisible);
+			this.#selectedIndex = Math.min(this.#filteredSessions.length - 1, this.#selectedIndex + this.#visibleCount());
 			return;
 		}
 		// Enter
@@ -359,6 +450,11 @@ export interface SessionSelectorOptions {
 	allSessions?: SessionInfo[];
 	/** Open directly in all-projects scope (e.g. the current folder has no sessions). */
 	startInAllScope?: boolean;
+	/**
+	 * Reads the live terminal height so the visible window fits the viewport.
+	 * Omitted only in tests; defaults to a conservative 24 rows.
+	 */
+	getTerminalRows?: () => number;
 }
 
 /**
@@ -405,7 +501,7 @@ export class SessionSelectorComponent extends Container {
 		this.addChild(new Spacer(1));
 		this.addChild(this.#messageContainer);
 		// Create session list
-		this.#sessionList = new SessionList(initialSessions, startAll, options.historyMatcher);
+		this.#sessionList = new SessionList(initialSessions, startAll, options.historyMatcher, options.getTerminalRows);
 		this.#sessionList.onSelect = onSelect;
 		this.#sessionList.onCancel = onCancel;
 		this.#sessionList.onExit = onExit;

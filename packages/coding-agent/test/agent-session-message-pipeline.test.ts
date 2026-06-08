@@ -9,6 +9,7 @@ import {
 	type Model,
 	registerCustomApi,
 	type SimpleStreamOptions,
+	type TextContent,
 } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -18,7 +19,7 @@ import {
 	ANTHROPIC_TOOL_CALL_BATCH_CAP,
 	resolveToolCallBatchCapForModel,
 } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { convertToLlm, wrapSteeringForModel } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
 import { CONTEXT_GC_CUSTOM_TYPE, type ContextGcDelta } from "../../context-gc-plugin/src/schema";
@@ -33,6 +34,20 @@ function createAgent(): Agent {
 			tools: [],
 		},
 	});
+}
+
+function getConvertedUserText(message: Message | undefined): string {
+	if (message?.role !== "user") {
+		throw new Error("Expected converted user message");
+	}
+	if (typeof message.content === "string") {
+		return message.content;
+	}
+	const text = message.content.find((content): content is TextContent => content.type === "text");
+	if (!text) {
+		throw new Error("Expected converted text content");
+	}
+	return text.text;
 }
 
 describe("AgentSession message pipeline", () => {
@@ -305,6 +320,55 @@ describe("AgentSession message pipeline", () => {
 		}
 	});
 
+	it("marks queued user steers without changing the public queue text", async () => {
+		const session = new AgentSession({
+			agent: createAgent(),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+		});
+		sessions.push(session);
+
+		await session.sendUserMessage("raw <steer> &", { deliverAs: "steer" });
+
+		expect(session.getQueuedMessages().steering).toEqual(["raw <steer> &"]);
+		const queued = session.agent.popLastSteer();
+		if (queued?.role !== "user") {
+			throw new Error("Expected queued user steer");
+		}
+		expect(queued.steering).toBe(true);
+		expect(queued.content).toEqual([{ type: "text", text: "raw <steer> &" }]);
+		session.clearQueue();
+	});
+
+	it("keeps stored steering text raw while pre-LLM conversion wraps it", async () => {
+		const session = new AgentSession({
+			agent: createAgent(),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+			transformContext: wrapSteeringForModel,
+			convertToLlm,
+		});
+		sessions.push(session);
+		const raw: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: "steer with <xml> & ampersand" }],
+			steering: true,
+			timestamp: 1,
+		};
+		session.agent.appendMessage(raw);
+
+		const converted = await session.convertMessagesToLlm(session.messages);
+
+		expect(session.messages[0]).toBe(raw);
+		expect(raw.content).toEqual([{ type: "text", text: "steer with <xml> & ampersand" }]);
+		const convertedText = getConvertedUserText(converted[0]);
+		expect(convertedText).toContain("<user_interjection>");
+		expect(convertedText).toContain("<message>\nsteer with <xml> & ampersand\n</message>");
+		expect(convertedText).not.toContain("&lt;xml&gt;");
+		expect(convertedText).not.toContain("&amp;");
+	});
 	it("composes session payload hooks into direct side-request options", async () => {
 		const sessionOnPayload = vi.fn(async (payload: unknown) => ({
 			...(payload as Record<string, unknown>),

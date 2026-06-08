@@ -204,7 +204,7 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 		registerCustomApi(
 			API,
 			(_model: Model<Api>, _context: Context, options?: SimpleStreamOptions) => {
-				seenKeys.push(options?.apiKey);
+				seenKeys.push(typeof options?.apiKey === "string" ? options.apiKey : undefined);
 				const stream = new AssistantMessageEventStream();
 				queueMicrotask(() => {
 					if (options?.apiKey === "codex-stale-access") {
@@ -227,10 +227,10 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 
 		let authErrors = 0;
 		const stream = streamSimple(model(), context, {
-			apiKey: "codex-stale-access",
-			onAuthError: async (provider, oldKey) => {
+			apiKey: async ({ error }) => {
+				if (error === undefined) return "codex-stale-access";
 				authErrors += 1;
-				return authStorage!.refreshCredentialMatching(provider, oldKey);
+				return authStorage!.refreshCredentialMatching("openai-codex", "codex-stale-access");
 			},
 		});
 		for await (const _event of stream) {

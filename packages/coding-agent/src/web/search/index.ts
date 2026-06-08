@@ -131,7 +131,9 @@ async function executeSearch(
 	const providers =
 		params.provider && params.provider !== "auto"
 			? await getSearchProvider(params.provider).then(async provider =>
-					(await provider.isAvailable(authStorage)) ? [provider] : resolveProviderChain(authStorage, "auto"),
+					(await provider.isExplicitlyAvailable(authStorage))
+						? [provider]
+						: resolveProviderChain(authStorage, "auto"),
 				)
 			: await resolveProviderChain(authStorage);
 	if (providers.length === 0) {
@@ -276,8 +278,8 @@ export const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchRende
 		return renderSearchCall(args, options, theme);
 	},
 
-	renderResult(result, options: RenderResultOptions, theme: Theme) {
-		return renderSearchResult(result, options, theme);
+	renderResult(result, options: RenderResultOptions, theme: Theme, args) {
+		return renderSearchResult(result, options, theme, args);
 	},
 };
 

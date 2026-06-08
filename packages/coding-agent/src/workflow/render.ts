@@ -98,9 +98,15 @@ function renderAgentFrame(frame: AgentFrame, isLast: boolean, options: WorkflowR
 	const progress = normalizeProgress(frame);
 	if (!progress || !options.theme) return renderFallbackAgent(frame);
 
+	const prefix =
+		progress.status === "running"
+			? ""
+			: options.theme.fg("dim", isLast ? options.theme.tree.last : options.theme.tree.branch);
+	const continuePrefix = isLast ? "   " : `${options.theme.fg("dim", options.theme.tree.vertical)}  `;
 	return renderAgentProgress(
 		progress,
-		isLast,
+		prefix,
+		continuePrefix,
 		options.expanded ?? false,
 		options.theme,
 		options.spinnerFrame,

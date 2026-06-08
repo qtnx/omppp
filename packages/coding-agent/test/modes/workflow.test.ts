@@ -8,11 +8,11 @@ beforeAll(() => {
 });
 
 describe("workflow keyword detection", () => {
-	it("matches the lowercase word (singular or plural) delimited by whitespace", () => {
+	it("matches the lowercase trigger word delimited by whitespace", () => {
 		expect(containsWorkflow("workflow")).toBe(true);
 		expect(containsWorkflow("please workflow this rollout")).toBe(true);
+		expect(containsWorkflow("design the workflows")).toBe(true);
 		expect(containsWorkflow("run these workflows")).toBe(true);
-		expect(containsWorkflow("design the workflow")).toBe(true);
 	});
 
 	it("ignores casing, inflections, punctuation-adjacent, and path-embedded forms", () => {
