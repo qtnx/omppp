@@ -18,8 +18,8 @@ Append `:<sel>` to `path`. The bare path falls back to the default mode.
 - `:50` / `:50-` — read from line 50 onward.
 - `:50-200` — lines 50–200 inclusive.
 - `:50+150` — 150 lines starting at line 50.
-- `:20+1` — exactly one line.
-- `:5-16,960-973` — multiple ranges in one call (sorted, overlaps merged).
+- `:20+1` — anchor on line 20 (single-range reads expand by ≤1 leading and ≤3 trailing context lines).
+- `:5-16,960-973` — multiple ranges in one call (sorted, overlaps merged). Multi-range mode returns exact bounds with no context padding.
 - `:raw` — verbatim text; no anchors, no summary, no line prefixes.
 - `:2-4:raw` or `:raw:2-4` — range AND verbatim; the two compose in either order.
 - `:conflicts` — one-line-per-block index of every unresolved git merge conflict.
@@ -28,7 +28,7 @@ Append `:<sel>` to `path`. The bare path falls back to the default mode.
 
 - Reading a directory path returns a depth-limited dirent listing.
 {{#if IS_HL_MODE}}
-- Reading a file with an explicit selector emits a file snapshot tag header and numbered lines: `¶src/foo.ts#0a` then `41:def alpha():`. Copy the `¶PATH#TAG` header for anchored edits; ops use bare line numbers. NEVER fabricate the tag.
+- Reading a file with an explicit selector emits a file snapshot tag header and numbered lines: `[src/foo.ts#1A2B]` then `41:def alpha():`. Copy the `[PATH#TAG]` header for anchored edits; ops use bare line numbers. NEVER fabricate the tag.
 {{else}}
 {{#if IS_LINE_NUMBER_MODE}}
 - Reading a file with an explicit selector returns lines prefixed with line numbers: `41|def alpha():`.

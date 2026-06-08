@@ -33,7 +33,11 @@ export const SEARCH_PROVIDER_OPTIONS = [
 		description: "Automatically uses the first configured web-search provider",
 	},
 	{ value: "tavily", label: "Tavily", description: "Requires TAVILY_API_KEY" },
-	{ value: "perplexity", label: "Perplexity", description: "Requires PERPLEXITY_COOKIES or PERPLEXITY_API_KEY" },
+	{
+		value: "perplexity",
+		label: "Perplexity",
+		description: "Uses auth when configured; explicit selection falls back to anonymous search",
+	},
 	{ value: "brave", label: "Brave", description: "Requires BRAVE_API_KEY" },
 	{ value: "jina", label: "Jina", description: "Requires JINA_API_KEY" },
 	{ value: "kimi", label: "Kimi", description: "Requires MOONSHOT_SEARCH_API_KEY or MOONSHOT_API_KEY" },
@@ -53,7 +57,7 @@ export const SEARCH_PROVIDER_OPTIONS = [
 		description: "OpenAI's native web_search (uses ChatGPT OAuth via /login openai-codex)",
 	},
 	{ value: "zai", label: "Z.AI", description: "Calls Z.AI webSearchPrime MCP" },
-	{ value: "exa", label: "Exa", description: "Requires EXA_API_KEY" },
+	{ value: "exa", label: "Exa", description: "Uses Exa API when EXA_API_KEY is set; falls back to Exa MCP" },
 	{ value: "parallel", label: "Parallel", description: "Requires PARALLEL_API_KEY" },
 	{ value: "kagi", label: "Kagi", description: "Requires KAGI_API_KEY and Kagi Search API beta access" },
 	{ value: "synthetic", label: "Synthetic", description: "Requires SYNTHETIC_API_KEY" },
@@ -472,6 +476,7 @@ export interface PerplexityResponse {
 	choices: PerplexityChoice[];
 	citations?: string[] | null;
 	search_results?: PerplexitySearchResult[] | null;
+	related_questions?: string[] | null;
 	type?: PerplexityCompletionResponseType | null;
 	status?: PerplexityCompletionResponseStatus | null;
 }

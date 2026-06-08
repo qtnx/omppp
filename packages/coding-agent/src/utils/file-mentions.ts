@@ -10,8 +10,6 @@ import path from "node:path";
 import { formatHashlineHeader, formatNumberedLines, type SnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { glob } from "@oh-my-pi/pi-natives";
-import { fuzzyMatch } from "@oh-my-pi/pi-tui";
 import { formatAge, formatBytes, readImageMetadata } from "@oh-my-pi/pi-utils";
 import { normalizeToLF } from "../edit/normalize";
 import type { FileMentionMessage } from "../session/messages";
@@ -30,27 +28,6 @@ const LEADING_PUNCTUATION_REGEX = /^[`"'([{<]+/;
 const TRAILING_PUNCTUATION_REGEX = /[)\]}>.,;:!?"'`]+$/;
 const MENTION_BOUNDARY_REGEX = /[\s([{<"'`]/;
 const DEFAULT_DIR_LIMIT = 500;
-const MIN_FUZZY_QUERY_LENGTH = 5;
-const MAX_RESOLUTION_CANDIDATES = 20_000;
-const PATH_SEPARATOR_REGEX = /[/._\-\s]+/g;
-
-type MentionDiscoveryProfile = {
-	hidden: boolean;
-	gitignore: boolean;
-	includeNodeModules: boolean;
-	maxResults: number;
-	cache: boolean;
-};
-
-function getMentionCandidateDiscoveryProfile(): MentionDiscoveryProfile {
-	return {
-		hidden: true,
-		gitignore: true,
-		cache: true,
-		includeNodeModules: true,
-		maxResults: MAX_RESOLUTION_CANDIDATES,
-	};
-}
 
 // Avoid OOM when users @mention very large files. Above these limits we skip
 // auto-reading and only include the path in the message.
@@ -87,16 +64,6 @@ type WorkspaceScopedMention = {
 	query: string;
 };
 
-type MentionCandidate = {
-	path: string;
-	pathLower: string;
-	normalizedPath: string;
-};
-
-function normalizeMentionQuery(query: string): string {
-	return query.toLowerCase().replace(PATH_SEPARATOR_REGEX, "");
-}
-
 async function pathExists(filePath: string): Promise<boolean> {
 	try {
 		await Bun.file(filePath).stat();
@@ -104,33 +71,6 @@ async function pathExists(filePath: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
-}
-
-async function listMentionCandidates(cwd: string): Promise<MentionCandidate[]> {
-	let entries: string[];
-	try {
-		const discoveryProfile = getMentionCandidateDiscoveryProfile();
-		const result = await glob({
-			pattern: "**/*",
-			path: cwd,
-			...discoveryProfile,
-		});
-		entries = result.matches.map(match => match.path);
-	} catch {
-		return [];
-	}
-
-	entries.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-	const candidates: MentionCandidate[] = [];
-	for (const entry of entries) {
-		const pathLower = entry.toLowerCase();
-		const normalizedPath = normalizeMentionQuery(entry);
-		if (normalizedPath.length === 0) {
-			continue;
-		}
-		candidates.push({ path: entry, pathLower, normalizedPath });
-	}
-	return candidates;
 }
 
 function isInsideRoot(rootPath: string, candidatePath: string): boolean {
@@ -155,66 +95,19 @@ function resolveWorkspaceScopedMention(
 	};
 }
 
-async function resolveMentionPathWithinRoot(
-	filePath: string,
-	cwd: string,
-	getMentionCandidates: () => Promise<MentionCandidate[]>,
-): Promise<string | null> {
+async function resolveMentionPathWithinRoot(filePath: string, cwd: string): Promise<string | null> {
 	const absolutePath = resolveReadPath(filePath, cwd);
-	if (await pathExists(absolutePath)) {
-		return filePath;
-	}
-
-	const queryLower = filePath.toLowerCase();
-	const candidates = await getMentionCandidates();
-	const prefixMatches = candidates.filter(candidate => candidate.pathLower.startsWith(queryLower));
-	if (prefixMatches.length === 1) {
-		return prefixMatches[0]?.path ?? null;
-	}
-	if (prefixMatches.length > 1) {
-		return null;
-	}
-
-	const normalizedQuery = normalizeMentionQuery(filePath);
-	if (normalizedQuery.length < MIN_FUZZY_QUERY_LENGTH) {
-		return null;
-	}
-
-	const scored = candidates
-		.map(candidate => ({ candidate, match: fuzzyMatch(normalizedQuery, candidate.normalizedPath) }))
-		.filter(entry => entry.match.matches)
-		.sort((a, b) => {
-			if (a.match.score !== b.match.score) {
-				return a.match.score - b.match.score;
-			}
-			return a.candidate.path.localeCompare(b.candidate.path);
-		});
-
-	if (scored.length === 0) {
-		return null;
-	}
-
-	return scored[0]?.candidate.path ?? null;
+	return (await pathExists(absolutePath)) ? filePath : null;
 }
 
 async function resolveMentionPath(
 	filePath: string,
 	cwd: string,
-	getMentionCandidates: () => Promise<MentionCandidate[]>,
 	workspaceRoots: readonly WorkspaceMentionRoot[] | undefined,
 ): Promise<ResolvedMentionPath | null> {
 	const scoped = resolveWorkspaceScopedMention(filePath, workspaceRoots);
 	if (scoped) {
-		let scopedCandidatesPromise: Promise<MentionCandidate[]> | null = null;
-		const getScopedCandidates = (): Promise<MentionCandidate[]> => {
-			scopedCandidatesPromise ??= listMentionCandidates(scoped.rootPath);
-			return scopedCandidatesPromise;
-		};
-		const resolvedRelativePath = await resolveMentionPathWithinRoot(
-			scoped.query,
-			scoped.rootPath,
-			getScopedCandidates,
-		);
+		const resolvedRelativePath = await resolveMentionPathWithinRoot(scoped.query, scoped.rootPath);
 		if (!resolvedRelativePath) return null;
 		const absolutePath = path.resolve(resolveReadPath(resolvedRelativePath, scoped.rootPath));
 		if (!isInsideRoot(scoped.rootPath, absolutePath)) return null;
@@ -226,7 +119,7 @@ async function resolveMentionPath(
 		};
 	}
 
-	const resolvedPath = await resolveMentionPathWithinRoot(filePath, cwd, getMentionCandidates);
+	const resolvedPath = await resolveMentionPathWithinRoot(filePath, cwd);
 	if (!resolvedPath) return null;
 	return { displayPath: resolvedPath, absolutePath: path.resolve(resolveReadPath(resolvedPath, cwd)) };
 }
@@ -361,14 +254,9 @@ export async function generateFileMentionMessages(
 	const autoResizeImages = options?.autoResizeImages ?? true;
 
 	const files: FileMentionMessage["files"] = [];
-	let mentionCandidatesPromise: Promise<MentionCandidate[]> | null = null;
-	const getMentionCandidates = (): Promise<MentionCandidate[]> => {
-		mentionCandidatesPromise ??= listMentionCandidates(cwd);
-		return mentionCandidatesPromise;
-	};
 
 	for (const filePath of filePaths) {
-		const resolvedPath = await resolveMentionPath(filePath, cwd, getMentionCandidates, options?.workspaceRoots);
+		const resolvedPath = await resolveMentionPath(filePath, cwd, options?.workspaceRoots);
 		if (!resolvedPath) {
 			continue;
 		}

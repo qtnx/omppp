@@ -136,7 +136,7 @@ describe("hashline streaming preview (single-op trailing payload)", () => {
 	});
 
 	test("does not surface stale hash errors while streaming", async () => {
-		const input = "¶a.ts#FFFF\nreplace 2..2:\n+const b = 22";
+		const input = "[a.ts#FFFF]\nreplace 2..2:\n+const b = 22";
 		const previews = await strategy.computeDiffPreview({ input } as never, ctx(tmpDir) as never);
 		expect(previews).toHaveLength(1);
 		expect(previews?.[0]?.error).toBeUndefined();
@@ -170,7 +170,7 @@ describe("hashline streaming preview (single-op trailing payload)", () => {
 	});
 
 	test("surfaces stale hash errors once streaming is complete", async () => {
-		const input = "¶a.ts#FFFF\nreplace 2..2:\n+const b = 22\n";
+		const input = "[a.ts#FFFF]\nreplace 2..2:\n+const b = 22\n";
 		const previews = await strategy.computeDiffPreview({ input } as never, ctx(tmpDir, false) as never);
 		expect(previews).toHaveLength(1);
 		expect(previews?.[0]?.error).toContain("not from this session");
@@ -183,6 +183,65 @@ describe("hashline streaming preview (single-op trailing payload)", () => {
 		const input = `${header}\nreplace 2..2:\n`;
 		const previews = await strategy.computeDiffPreview({ input } as never, ctx(tmpDir) as never);
 		expect(previews).toBeNull();
+	});
+});
+
+describe("hashline streaming preview (monotonic growth)", () => {
+	const strategy = EDIT_MODE_STRATEGIES.hashline;
+	// A 20-line body whose rows repeat the same `}` / `old(n)` tokens the
+	// payload also contains. A whole-file Myers re-diff greedily matches those
+	// shared rows, scattering the in-flight `+` lines through the removed block
+	// and making the renderer's pinned tail window stutter as additions jump
+	// between hunks. The natural-order streaming builder must instead keep the
+	// removed block fixed and only append `+` rows as the payload grows.
+	const body = Array.from({ length: 20 }, (_, i) => (i % 3 === 0 ? "\t}" : `\told(${i})`)).join("\n");
+	const text = `head\n${body}\ntail\n`;
+	const payload = ["func f() {", "\tx := 1", "\t}", "\treturn x", "}"];
+	let tmpDir: string;
+	let file: string;
+	let snapshots: InMemorySnapshotStore;
+	let header: string;
+
+	beforeEach(async () => {
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "hashline-stream-mono-"));
+		file = path.join(tmpDir, "a.go");
+		await Bun.write(file, text);
+		snapshots = new InMemorySnapshotStore();
+		header = formatHashlineHeader("a.go", snapshots.record(file, text));
+	});
+
+	afterEach(async () => {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	});
+
+	const ctx = (cwd: string) => ({ cwd, signal: new AbortController().signal, snapshots, isStreaming: true });
+	// Replace the 20-line body (lines 2..21) with the first `n` payload rows.
+	const buildInput = (n: number) =>
+		`${header}\nreplace 2..21:\n${payload
+			.slice(0, n)
+			.map(l => `+${l}`)
+			.join("\n")}`;
+
+	test("each streamed chunk extends the prior diff instead of reshuffling it", async () => {
+		let prev = "";
+		for (let n = 1; n <= payload.length; n++) {
+			const previews = await strategy.computeDiffPreview({ input: buildInput(n) } as never, ctx(tmpDir) as never);
+			const diff = previews?.[0]?.diff ?? "";
+			// The `+` rows are exactly the payload typed so far, in order — never
+			// buried inside the removed block.
+			const added = diff
+				.split("\n")
+				.filter(l => l.startsWith("+"))
+				.map(l => l.replace(/^\+\d+\|/, ""));
+			expect(added).toEqual(payload.slice(0, n));
+			// The whole removed range is shown as a stable leading `-` block.
+			const removed = diff.split("\n").filter(l => l.startsWith("-"));
+			expect(removed).toHaveLength(20);
+			// Monotonic: every prior frame is a byte-for-byte prefix of this one,
+			// so the renderer's bottom-pinned window only ever grows downward.
+			if (prev) expect(diff.startsWith(prev)).toBe(true);
+			prev = diff;
+		}
 	});
 });
 
@@ -245,12 +304,12 @@ describe("apply_patch streaming preview (trailing partial line)", () => {
 
 describe("matcherDigest", () => {
 	test("hashline: digests stripped `+` body rows only, never headers or op lines", () => {
-		const input = ["¶a.ts#AB12", "replace 1..2:", "+const x = 1;", "+const y = 2;", "delete 5", ""].join("\n");
+		const input = ["[a.ts#AB12]", "replace 1..2:", "+const x = 1;", "+const y = 2;", "delete 5", ""].join("\n");
 		expect(EDIT_MODE_STRATEGIES.hashline.matcherDigest({ input })).toBe("const x = 1;\nconst y = 2;");
 	});
 
 	test("hashline: grammar-only payload digests to empty, missing input to undefined", () => {
-		expect(EDIT_MODE_STRATEGIES.hashline.matcherDigest({ input: "¶a.ts#AB12\ndelete 3\n" })).toBe("");
+		expect(EDIT_MODE_STRATEGIES.hashline.matcherDigest({ input: "[a.ts#AB12]\ndelete 3\n" })).toBe("");
 		expect(EDIT_MODE_STRATEGIES.hashline.matcherDigest({})).toBeUndefined();
 	});
 

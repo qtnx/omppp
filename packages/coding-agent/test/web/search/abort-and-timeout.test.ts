@@ -123,6 +123,7 @@ describe("Anthropic provider hard-timeout wiring", () => {
 			systemPrompt: "",
 			authStorage: {
 				getApiKey: async () => "sk-fallback",
+				resolver: vi.fn(() => async () => "sk-fallback"),
 			} as unknown as AuthStorage,
 		});
 
@@ -164,6 +165,7 @@ describe("executeSearch abort propagation", () => {
 			id,
 			label: "Anthropic",
 			isAvailable: () => true,
+			isExplicitlyAvailable: () => true,
 			search: behaviour,
 		};
 	}

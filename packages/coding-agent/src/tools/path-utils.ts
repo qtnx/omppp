@@ -217,6 +217,27 @@ export function parseLineRanges(sel: string): [LineRange, ...LineRange[]] | null
 	return merged as [LineRange, ...LineRange[]];
 }
 
+/**
+ * Extract the line-range component from a read-tool selector that may also
+ * carry a verbatim/index display mode (`raw`, `conflicts`) — alone or compounded
+ * with a range (`raw:50-100`, `50-100:raw`). Returns the parsed ranges when the
+ * selector names any, otherwise `undefined` (pure `raw`/`conflicts`/none).
+ *
+ * Used by content search, which honors line ranges as a match filter but has no
+ * use for verbatim/conflict display modes — so those selectors are accepted and
+ * treated as an unfiltered, whole-resource search rather than rejected.
+ */
+export function selectorLineRanges(sel: string | undefined): [LineRange, ...LineRange[]] | undefined {
+	if (!sel) return undefined;
+	for (const chunk of sel.split(":")) {
+		const lower = chunk.toLowerCase();
+		if (lower === "raw" || lower === "conflicts") continue;
+		const ranges = parseLineRanges(chunk);
+		if (ranges) return ranges;
+	}
+	return undefined;
+}
+
 /** Return `true` when `lineNumber` (1-indexed) falls in any of the supplied ranges. */
 export function isLineInRanges(lineNumber: number, ranges: readonly LineRange[]): boolean {
 	for (const range of ranges) {
@@ -551,9 +572,14 @@ export interface ResolvedMultiSearchPath {
 	targets?: ResolvedSearchTarget[];
 }
 
-export interface ResolvedMultiFindPattern {
+export interface ResolvedFindTarget {
 	basePath: string;
 	globPattern: string;
+	hasGlob: boolean;
+}
+
+export interface ResolvedMultiFindPattern {
+	targets: ResolvedFindTarget[];
 	scopePath: string;
 }
 
@@ -578,6 +604,23 @@ export function parseSearchPath(filePath: string): ParsedSearchPath {
 		basePath: segments.slice(0, firstGlobIndex).join("/"),
 		glob: segments.slice(firstGlobIndex).join("/"),
 	};
+}
+
+/**
+ * Async sibling of {@link parseSearchPath} that prefers literal interpretation
+ * when a path containing glob metacharacters resolves to an existing entry on
+ * disk. Disambiguates Next.js/SvelteKit routes like `apps/[id]/page.tsx` —
+ * without this, `[id]` is parsed as a glob character class and silently
+ * matches nothing.
+ */
+export async function parseSearchPathPreferringLiteral(filePath: string, cwd: string): Promise<ParsedSearchPath> {
+	if (!hasGlobPathChars(filePath) || isInternalUrlPath(filePath)) return parseSearchPath(filePath);
+	try {
+		await fs.promises.stat(resolveToCwd(filePath, cwd));
+		return { basePath: filePath };
+	} catch {
+		return parseSearchPath(filePath);
+	}
 }
 
 // Parse a find pattern into a base directory path and a glob pattern.
@@ -686,7 +729,7 @@ async function resolveSearchPathItems(
 
 	const parsedItems = await Promise.all(
 		pathItems.map(async item => {
-			const parsedPath = parseSearchPath(item);
+			const parsedPath = await parseSearchPathPreferringLiteral(item, cwd);
 			const absoluteBasePath = resolveToCwd(parsedPath.basePath, cwd);
 			const stat = await fs.promises.stat(absoluteBasePath);
 			return { raw: item, parsedPath, absoluteBasePath, stat };
@@ -744,30 +787,22 @@ async function resolveFindPatternItems(
 		return undefined;
 	}
 
-	const parsedItems = await Promise.all(
-		patternItems.map(async item => {
-			const parsedPattern = parseFindPattern(item);
-			const absoluteBasePath = resolveToCwd(parsedPattern.basePath, cwd);
-			const stat = await fs.promises.stat(absoluteBasePath);
-			return { raw: item, parsedPattern, absoluteBasePath, stat };
-		}),
-	);
-
-	const commonBasePath = findCommonBasePath(parsedItems.map(item => item.absoluteBasePath));
-	const combinedPatterns = parsedItems.map(item => {
-		const relativeBasePath = normalizePosixPath(path.relative(commonBasePath, item.absoluteBasePath)) || ".";
-		if (item.parsedPattern.hasGlob) {
-			return joinRelativeGlob(relativeBasePath, item.parsedPattern.globPattern);
-		}
-		if (item.stat.isDirectory()) {
-			return joinRelativeGlob(relativeBasePath, "**/*");
-		}
-		return relativeBasePath === "." ? path.basename(item.absoluteBasePath) : relativeBasePath;
+	// Each path becomes its own walk root. Collapsing to a shared common ancestor
+	// (and filtering with a brace-union glob) would force the walker to traverse
+	// and stat every unrelated sibling under that ancestor — two paths under
+	// $HOME would scan all of $HOME. The find tool fans these targets out in
+	// parallel instead, so every scan stays bounded to exactly one requested path.
+	const targets = patternItems.map(item => {
+		const parsedPattern = parseFindPattern(item);
+		return {
+			basePath: resolveToCwd(parsedPattern.basePath, cwd),
+			globPattern: parsedPattern.globPattern,
+			hasGlob: parsedPattern.hasGlob,
+		};
 	});
 
 	return {
-		basePath: commonBasePath,
-		globPattern: buildBraceUnion(combinedPatterns) ?? "**/*",
+		targets,
 		scopePath: toScopeDisplay(patternItems, cwd),
 	};
 }
@@ -925,6 +960,15 @@ export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<To
 	if (rawPaths.some(rawPath => rawPath.length === 0)) {
 		throw new ToolError("`paths` must contain non-empty paths or globs");
 	}
+	// External (http/https/ftp/file) URLs are not searchable; route the caller
+	// to `read` instead of letting the path-resolver surface a confusing
+	// "Path not found" for a slash-stripped URL.
+	const externalUrl = rawPaths.find(rawPath => /^(?:https?|ftp|file|ws|wss):\/\//i.test(rawPath));
+	if (externalUrl) {
+		throw new ToolError(
+			`Cannot ${internalUrlAction} external URL: ${externalUrl}. Use \`read\` to fetch web content, then search the returned text.`,
+		);
+	}
 	const internalRouter = InternalUrlRouter.instance();
 	const resolvedPathInputs: string[] = [];
 	const immutableSourcePaths = new Set<string>();
@@ -968,7 +1012,7 @@ export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<To
 	let multiTargets: ResolvedSearchTarget[] | undefined;
 	let exactFilePaths: string[] | undefined;
 	if (effectivePaths.length === 1) {
-		const parsedPath = parseSearchPath(effectivePaths[0] ?? ".");
+		const parsedPath = await parseSearchPathPreferringLiteral(effectivePaths[0] ?? ".", cwd);
 		searchPath = resolveToCwd(parsedPath.basePath, cwd);
 		globFilter = parsedPath.glob;
 		scopePath = formatPathRelativeToCwd(searchPath, cwd);

@@ -5,7 +5,7 @@ import { Settings } from "../../config/settings";
 import { OutputSink } from "../../session/streaming-output";
 import type { ToolSession } from "../../tools";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../../tools/output-meta";
-import { EVAL_HEARTBEAT_OP } from "../heartbeat";
+import { isEvalTimeoutControlEvent } from "../bridge-timeout";
 import type { JsStatusEvent } from "../js/shared/types";
 import {
 	checkPythonKernelAvailability,
@@ -27,8 +27,8 @@ export interface PythonExecutorOptions {
 	/** Absolute wall-clock deadline in milliseconds since epoch */
 	deadlineMs?: number;
 	/**
-	 * Inactivity budget (ms). Used only for timeout-annotation text when the
-	 * caller drives cancellation via an idle-aware `signal` instead of a
+	 * Runtime-work budget (ms). Used only for timeout-annotation text when the
+	 * caller drives cancellation via the eval watchdog `signal` instead of a
 	 * wall-clock `deadlineMs`/`timeoutMs`. Does not arm a timer.
 	 */
 	idleTimeoutMs?: number;
@@ -126,7 +126,7 @@ interface PythonSession {
 
 const sessions = new Map<string, PythonSession>();
 const startingSessions = new Map<string, Promise<PythonSession>>();
-const resettingSessions = new Set<string>();
+const resettingSessions = new Map<string, Promise<void>>();
 
 function normalizeSessionCwd(cwd: string): string {
 	return path.resolve(cwd);
@@ -492,10 +492,10 @@ async function executeWithKernel(
 	// long-running bridge helpers (e.g. `agent()`) surface progress mid-cell.
 	const collectDisplay = (output: KernelDisplayOutput) => {
 		if (output.type === "status") {
-			// Heartbeats are pure idle-watchdog keepalives: forward them so the
-			// eval tool re-arms its timer, but never store or render them.
+			// Timeout-control events drive the eval watchdog only; never store or
+			// render them as cell output.
 			options?.onStatus?.(output.event);
-			if (output.event.op === EVAL_HEARTBEAT_OP) return;
+			if (isEvalTimeoutControlEvent(output.event)) return;
 		}
 		displayOutputs.push(output);
 	};
@@ -611,17 +611,29 @@ async function executeOnSession(code: string, cwd: string, options: PythonExecut
 		options.bridgeSessionId = sessionId;
 	}
 	if (options.reset) {
-		if (resettingSessions.has(sessionKey)) {
-			throw new Error("Python kernel reset already in progress");
+		// Coalesce concurrent resets: if another reset is in flight for this
+		// session, await it instead of throwing — the caller's intent ("start
+		// from a clean kernel") is satisfied once that reset settles.
+		const inFlight = resettingSessions.get(sessionKey);
+		if (inFlight) await inFlight.catch(() => undefined);
+		else {
+			const resetPromise = resetSession(sessionKey);
+			resettingSessions.set(
+				sessionKey,
+				resetPromise.then(() => undefined),
+			);
+			try {
+				await resetPromise;
+			} finally {
+				resettingSessions.delete(sessionKey);
+			}
 		}
-		resettingSessions.add(sessionKey);
-		try {
-			await resetSession(sessionKey);
-		} finally {
-			resettingSessions.delete(sessionKey);
-		}
-	} else if (resettingSessions.has(sessionKey)) {
-		throw new Error("Python kernel reset in progress");
+	} else {
+		// A reset already in progress is an internal coordination state, not a
+		// user-visible failure. Wait for it to clear, then proceed with the
+		// requested execution on the freshly-restarted kernel.
+		const inFlight = resettingSessions.get(sessionKey);
+		if (inFlight) await inFlight.catch(() => undefined);
 	}
 	const session = await acquireSession(sessionKey, sessionId, cwd, options);
 	if (options.signal?.aborted) {

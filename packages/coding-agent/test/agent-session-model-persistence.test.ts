@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { type Api, Effort, getBundledModel, type Model } from "@oh-my-pi/pi-ai";
@@ -7,14 +7,35 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { type CreateAgentSessionResult, createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import {
+	EPHEMERAL_MODEL_CHANGE_ROLE,
+	getRestorableSessionModels,
+	SessionManager,
+} from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 describe("AgentSession model persistence", () => {
 	let tempDir: TempDir;
 	let session: AgentSession | undefined;
 	let sessionSettings: Settings;
-	const authStorages: AuthStorage[] = [];
+	// Auth storage (SQLite DB) and the model registry are immutable across these tests:
+	// every test sets the same anthropic runtime key and only ever reads the bundled model
+	// list. Building them once avoids ~12 SQLite opens + registry constructions.
+	let sharedDir: TempDir;
+	let sharedAuthStorage: AuthStorage;
+	let sharedModelRegistry: ModelRegistry;
+
+	beforeAll(async () => {
+		sharedDir = TempDir.createSync("@pi-model-persistence-shared-");
+		sharedAuthStorage = await AuthStorage.create(path.join(sharedDir.path(), "auth.db"));
+		sharedAuthStorage.setRuntimeApiKey("anthropic", "test-key");
+		sharedModelRegistry = new ModelRegistry(sharedAuthStorage, path.join(sharedDir.path(), "models.yml"));
+	});
+
+	afterAll(() => {
+		sharedAuthStorage.close();
+		sharedDir.removeSync();
+	});
 
 	beforeEach(() => {
 		tempDir = TempDir.createSync("@pi-model-persistence-");
@@ -24,9 +45,6 @@ describe("AgentSession model persistence", () => {
 		if (session) {
 			await session.dispose();
 			session = undefined;
-		}
-		for (const authStorage of authStorages.splice(0)) {
-			authStorage.close();
 		}
 		tempDir.removeSync();
 	});
@@ -80,13 +98,7 @@ describe("AgentSession model persistence", () => {
 		modelRoles?: Record<string, string>;
 		persist?: boolean;
 	}): Promise<{ modelRegistry: ModelRegistry; settings: Settings; session: AgentSession }> {
-		const authStorage = await AuthStorage.create(path.join(tempDir.path(), `testauth-${authStorages.length}.db`));
-		authStorages.push(authStorage);
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		const modelRegistry = new ModelRegistry(
-			authStorage,
-			path.join(tempDir.path(), `models-${authStorages.length}.yml`),
-		);
+		const modelRegistry = sharedModelRegistry;
 		const model =
 			options?.initialModel ??
 			options?.selectInitialModel?.(modelRegistry.getAvailable()) ??
@@ -114,7 +126,7 @@ describe("AgentSession model persistence", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: options?.persist
-				? SessionManager.create(tempDir.path(), path.join(tempDir.path(), `active-${authStorages.length}`))
+				? SessionManager.create(tempDir.path(), path.join(tempDir.path(), "active"))
 				: SessionManager.inMemory(),
 			settings: sessionSettings,
 			modelRegistry,
@@ -127,19 +139,12 @@ describe("AgentSession model persistence", () => {
 		targetSessionFile: string,
 		settings: Settings = Settings.isolated(),
 	): Promise<CreateAgentSessionResult> {
-		const authStorage = await AuthStorage.create(path.join(tempDir.path(), `testauth-${authStorages.length}.db`));
-		authStorages.push(authStorage);
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		const modelRegistry = new ModelRegistry(
-			authStorage,
-			path.join(tempDir.path(), `models-${authStorages.length}.yml`),
-		);
 		const sessionManager = await SessionManager.open(targetSessionFile, path.join(tempDir.path(), "startup"));
 		const result = await createAgentSession({
 			cwd: tempDir.path(),
 			agentDir: tempDir.path(),
-			authStorage,
-			modelRegistry,
+			authStorage: sharedAuthStorage,
+			modelRegistry: sharedModelRegistry,
 			sessionManager,
 			settings,
 			disableExtensionDiscovery: true,
@@ -302,14 +307,18 @@ describe("AgentSession model persistence", () => {
 		expect(created.session.model?.id).toBe(defaultModel.id);
 	});
 
-	it("restores the saved default model when switch-session last role is temporary", async () => {
+	it("restores the saved default model when switch-session last role is fallback", async () => {
 		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
-		const temporaryModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
+		const fallbackModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
 		const defaultRoleValue = modelValue(defaultModel);
-		const targetSessionFile = await writeRoleModelSession(defaultRoleValue, modelValue(temporaryModel), "temporary");
+		const targetSessionFile = await writeRoleModelSession(
+			defaultRoleValue,
+			modelValue(fallbackModel),
+			EPHEMERAL_MODEL_CHANGE_ROLE,
+		);
 
 		const created = await createSession({
-			initialModel: temporaryModel,
+			initialModel: fallbackModel,
 			modelRoles: { default: defaultRoleValue },
 			persist: true,
 		});
@@ -331,16 +340,85 @@ describe("AgentSession model persistence", () => {
 		expect(result.session.model?.id).toBe(defaultModel.id);
 	});
 
-	it("restores the saved default model when startup last role is temporary", async () => {
+	it("restores the saved default model when startup last role is fallback", async () => {
+		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
+		const fallbackModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
+		const defaultRoleValue = modelValue(defaultModel);
+		const targetSessionFile = await writeRoleModelSession(
+			defaultRoleValue,
+			modelValue(fallbackModel),
+			EPHEMERAL_MODEL_CHANGE_ROLE,
+		);
+		const settings = Settings.isolated();
+		settings.setModelRole("default", modelValue(fallbackModel));
+
+		const result = await createStartupResumeSession(targetSessionFile, settings);
+
+		expect(result.session.model?.id).toBe(defaultModel.id);
+	});
+
+	it("restores a temporary model when switching sessions", async () => {
+		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
+		const temporaryModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
+		const defaultRoleValue = modelValue(defaultModel);
+		const targetSessionFile = await writeRoleModelSession(defaultRoleValue, modelValue(temporaryModel), "temporary");
+
+		const created = await createSession({
+			initialModel: defaultModel,
+			modelRoles: { default: defaultRoleValue },
+			persist: true,
+		});
+
+		await expect(created.session.switchSession(targetSessionFile)).resolves.toBe(true);
+		expect(created.session.model?.id).toBe(temporaryModel.id);
+	});
+
+	it("restores a temporary model during startup resume", async () => {
 		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
 		const temporaryModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
 		const defaultRoleValue = modelValue(defaultModel);
 		const targetSessionFile = await writeRoleModelSession(defaultRoleValue, modelValue(temporaryModel), "temporary");
 		const settings = Settings.isolated();
-		settings.setModelRole("default", modelValue(temporaryModel));
+		settings.setModelRole("default", defaultRoleValue);
 
 		const result = await createStartupResumeSession(targetSessionFile, settings);
 
-		expect(result.session.model?.id).toBe(defaultModel.id);
+		expect(result.session.model?.id).toBe(temporaryModel.id);
+	});
+
+	it("lists restorable temporary model before the default fallback", () => {
+		expect(
+			getRestorableSessionModels(
+				{
+					default: "anthropic/claude-sonnet-4-5",
+					temporary: "anthropic/claude-sonnet-4-6",
+				},
+				"temporary",
+			),
+		).toEqual(["anthropic/claude-sonnet-4-6", "anthropic/claude-sonnet-4-5"]);
+	});
+
+	it("lists only the default model for ephemeral fallback restores", () => {
+		expect(
+			getRestorableSessionModels(
+				{
+					default: "anthropic/claude-sonnet-4-5",
+					[EPHEMERAL_MODEL_CHANGE_ROLE]: "anthropic/claude-sonnet-4-6",
+				},
+				EPHEMERAL_MODEL_CHANGE_ROLE,
+			),
+		).toEqual(["anthropic/claude-sonnet-4-5"]);
+	});
+
+	it("lists a named role model before the default fallback", () => {
+		expect(
+			getRestorableSessionModels(
+				{
+					default: "anthropic/claude-sonnet-4-5",
+					smol: "anthropic/claude-sonnet-4-6",
+				},
+				"smol",
+			),
+		).toEqual(["anthropic/claude-sonnet-4-6", "anthropic/claude-sonnet-4-5"]);
 	});
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+	type BlockResolution,
 	type BlockResolver,
 	type BlockSpan,
 	computeFileHash,
@@ -85,14 +86,39 @@ describe("resolveBlockEdits", () => {
 			"could not resolve a syntactic block beginning on line 7",
 		);
 	});
+
+	it("fires onResolved with the resolved span for replace and delete blocks", () => {
+		const seen: BlockResolution[] = [];
+		// stubResolver maps line N → span [N, N+1].
+		resolveBlockEdits(parsePatch("replace block 2:\n+A\n+B").edits, "ignored", PATH, stubResolver, {
+			onResolved: resolution => seen.push(resolution),
+		});
+		resolveBlockEdits(parsePatch("delete block 5").edits, "ignored", PATH, stubResolver, {
+			onResolved: resolution => seen.push(resolution),
+		});
+
+		expect(seen).toEqual([
+			{ anchorLine: 2, start: 2, end: 3, isDelete: false },
+			{ anchorLine: 5, start: 5, end: 6, isDelete: true },
+		]);
+	});
+
+	it("does not fire onResolved for a dropped unresolvable block", () => {
+		const seen: BlockResolution[] = [];
+		resolveBlockEdits(parsePatch("replace block 2:\n+X").edits, "ignored", PATH, () => null, {
+			onUnresolved: "drop",
+			onResolved: resolution => seen.push(resolution),
+		});
+		expect(seen).toHaveLength(0);
+	});
 });
 
 describe("PatchSection.applyTo / applyPartialTo with block edits", () => {
 	const text = "function x() {\n  if (y) {\n  }\n}\n";
 
 	it("applyTo resolves a block edit and matches the equivalent `replace`", () => {
-		const blockSection = Patch.parseSingle(`¶${PATH}#1A2B\nreplace block 2:\n+  if (y || z) {\n+  }`);
-		const replaceSection = Patch.parseSingle(`¶${PATH}#1A2B\nreplace 2..3:\n+  if (y || z) {\n+  }`);
+		const blockSection = Patch.parseSingle(`[${PATH}#1A2B]\nreplace block 2:\n+  if (y || z) {\n+  }`);
+		const replaceSection = Patch.parseSingle(`[${PATH}#1A2B]\nreplace 2..3:\n+  if (y || z) {\n+  }`);
 
 		const blockResult = blockSection.applyTo(text, stubResolver);
 		const replaceResult = replaceSection.applyTo(text);
@@ -102,12 +128,12 @@ describe("PatchSection.applyTo / applyPartialTo with block edits", () => {
 	});
 
 	it("applyTo throws when a block edit has no resolver", () => {
-		const section = Patch.parseSingle(`¶${PATH}#1A2B\nreplace block 2:\n+X`);
+		const section = Patch.parseSingle(`[${PATH}#1A2B]\nreplace block 2:\n+X`);
 		expect(() => section.applyTo(text)).toThrow("replace block");
 	});
 
 	it("applyPartialTo drops an unresolvable block edit instead of throwing", () => {
-		const section = Patch.parseSingle(`¶${PATH}#1A2B\nreplace block 2:\n+X`);
+		const section = Patch.parseSingle(`[${PATH}#1A2B]\nreplace block 2:\n+X`);
 		// No resolver → drop. The lone block edit vanishes, so the text is unchanged.
 		const result = section.applyPartialTo(text);
 		expect(result.text).toBe(text);
@@ -123,10 +149,21 @@ describe("Patcher with a block resolver", () => {
 		const tag = snapshots.record(PATH, text);
 		const patcher = new Patcher({ fs, snapshots, blockResolver: stubResolver });
 
-		const result = await patcher.apply(Patch.parse(`¶${PATH}#${tag}\nreplace block 2:\n+  if (y || z) {\n+  }`));
+		const result = await patcher.apply(Patch.parse(`[${PATH}#${tag}]\nreplace block 2:\n+  if (y || z) {\n+  }`));
 
 		expect(result.sections[0]?.op).toBe("update");
 		expect(fs.get(PATH)).toBe("function x() {\n  if (y || z) {\n  }\n}\n");
+	});
+
+	it("surfaces the resolved span on the section result (hash-match path)", async () => {
+		const fs = new InMemoryFilesystem([[PATH, text]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = snapshots.record(PATH, text);
+		const patcher = new Patcher({ fs, snapshots, blockResolver: stubResolver });
+
+		const result = await patcher.apply(Patch.parse(`[${PATH}#${tag}]\nreplace block 2:\n+  if (y || z) {\n+  }`));
+
+		expect(result.sections[0]?.blockResolutions).toEqual([{ anchorLine: 2, start: 2, end: 3, isDelete: false }]);
 	});
 
 	it("resolves against the tagged snapshot and recovers onto drifted content", async () => {
@@ -140,11 +177,14 @@ describe("Patcher with a block resolver", () => {
 
 		// `block 2` resolves against the SNAPSHOT → span [2,3] → replace
 		// "line1","line2"; recovery 3-way-merges the change onto the live file.
-		const result = await patcher.apply(Patch.parse(`¶${PATH}#${tag}\nreplace block 2:\n+NEW`));
+		const result = await patcher.apply(Patch.parse(`[${PATH}#${tag}]\nreplace block 2:\n+NEW`));
 
 		expect(result.sections[0]?.op).toBe("update");
 		expect(fs.get(PATH)).toBe("line0\nNEW\nline3\nline4\nline5\n");
 		expect(result.sections[0]?.warnings.some(w => /Recovered/.test(w))).toBe(true);
+		// Drift routed the resolution through recovery, where line numbers shift,
+		// so the (now-misleading) span is intentionally not surfaced.
+		expect(result.sections[0]?.blockResolutions).toBeUndefined();
 	});
 
 	it("rejects a block edit whose tag was never recorded for this path", async () => {
@@ -155,7 +195,7 @@ describe("Patcher with a block resolver", () => {
 		const bogus = live === "FFFF" ? "0000" : "FFFF";
 		const patcher = new Patcher({ fs, snapshots, blockResolver: stubResolver });
 
-		await expect(patcher.apply(Patch.parse(`¶${PATH}#${bogus}\nreplace block 2:\n+NEW`))).rejects.toBeInstanceOf(
+		await expect(patcher.apply(Patch.parse(`[${PATH}#${bogus}]\nreplace block 2:\n+NEW`))).rejects.toBeInstanceOf(
 			MismatchError,
 		);
 		expect(fs.get(PATH)).toBe(liveText);
@@ -167,7 +207,7 @@ describe("Patcher with a block resolver", () => {
 		const tag = snapshots.record(PATH, text);
 		const patcher = new Patcher({ fs, snapshots, blockResolver: () => null });
 
-		await expect(patcher.apply(Patch.parse(`¶${PATH}#${tag}\nreplace block 2:\n+X`))).rejects.toThrow(
+		await expect(patcher.apply(Patch.parse(`[${PATH}#${tag}]\nreplace block 2:\n+X`))).rejects.toThrow(
 			"could not resolve a syntactic block",
 		);
 		expect(fs.get(PATH)).toBe(text);
@@ -201,13 +241,13 @@ describe("delete block", () => {
 	});
 
 	it("applyTo deletes the resolved block span", () => {
-		const section = Patch.parseSingle(`¶${PATH}#1A2B\ndelete block 2`);
+		const section = Patch.parseSingle(`[${PATH}#1A2B]\ndelete block 2`);
 		// stub span [2,3] → drop "  if (y) {" and "  }".
 		expect(section.applyTo(text, stubResolver).text).toBe("function x() {\n}\n");
 	});
 
 	it("applyPartialTo drops an unresolvable delete-block edit instead of throwing", () => {
-		const section = Patch.parseSingle(`¶${PATH}#1A2B\ndelete block 2`);
+		const section = Patch.parseSingle(`[${PATH}#1A2B]\ndelete block 2`);
 		expect(section.applyPartialTo(text).text).toBe(text);
 	});
 
@@ -217,7 +257,7 @@ describe("delete block", () => {
 		const tag = snapshots.record(PATH, text);
 		const patcher = new Patcher({ fs, snapshots, blockResolver: stubResolver });
 
-		const result = await patcher.apply(Patch.parse(`¶${PATH}#${tag}\ndelete block 2`));
+		const result = await patcher.apply(Patch.parse(`[${PATH}#${tag}]\ndelete block 2`));
 
 		expect(result.sections[0]?.op).toBe("update");
 		expect(fs.get(PATH)).toBe("function x() {\n}\n");

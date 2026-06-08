@@ -16,7 +16,10 @@ import type {
 	MessageAttribution,
 	TextContent,
 	ToolResultMessage,
+	UserMessage,
 } from "@oh-my-pi/pi-ai";
+import { prompt } from "@oh-my-pi/pi-utils";
+import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 
 export {
 	type BranchSummaryMessage,
@@ -29,6 +32,7 @@ import type { OutputMeta } from "../tools/output-meta";
 import { formatOutputNotice } from "../tools/output-meta";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
+export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
 
 export interface SkillPromptDetails {
 	name: string;
@@ -63,6 +67,40 @@ export const SILENT_ABORT_MARKER = "__omp.silent_abort__";
  *  namespacing changes) propagate through every consumer in lockstep. */
 export function isSilentAbort(errorMessage: string | undefined): boolean {
 	return errorMessage === SILENT_ABORT_MARKER;
+}
+
+/** Reason threaded through `AbortController.abort(reason)` when the user aborts
+ *  the turn with Esc (see `AgentSession.abort`). The agent keeps it on the
+ *  aborted assistant message's `errorMessage` so queued follow-ups/tool-result
+ *  placeholders can distinguish a deliberate interrupt from a bare lifecycle
+ *  abort, but interactive renderers suppress this redundant transcript line. */
+export const USER_INTERRUPT_LABEL = "Interrupted by user";
+
+export function isUserInterruptAbort(errorMessage: string | undefined): boolean {
+	return errorMessage === USER_INTERRUPT_LABEL;
+}
+
+export function shouldRenderAbortReason(errorMessage: string | undefined): boolean {
+	return !isSilentAbort(errorMessage) && !isUserInterruptAbort(errorMessage);
+}
+
+/** Sentinel `errorMessage` the agent stamps on any abort that carried no custom
+ *  reason (bare `abort()`). Renderers treat it as "no specific reason given". */
+const GENERIC_ABORT_SENTINEL = "Request was aborted";
+
+/** Resolve the operator-facing label for an aborted assistant turn. A custom
+ *  abort reason threaded onto `errorMessage` is returned verbatim; aborts with
+ *  no threaded reason fall back to the retry-aware generic label. Call
+ *  `shouldRenderAbortReason` before rendering when user interrupts should stay
+ *  visually quiet. */
+export function resolveAbortLabel(errorMessage: string | undefined, retryAttempt = 0): string {
+	if (errorMessage && errorMessage !== GENERIC_ABORT_SENTINEL && !isSilentAbort(errorMessage)) {
+		return errorMessage;
+	}
+	if (retryAttempt > 0) {
+		return `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`;
+	}
+	return "Operation aborted";
 }
 
 /** Extract the optional `__pendingDisplayTag` field from a CustomMessage's
@@ -101,6 +139,83 @@ export function stripInternalDetailsFields<T>(details: T | undefined): T | undef
 		delete cleaned[key];
 	}
 	return cleaned as T;
+}
+
+function isSteeringUserMessage(message: AgentMessage | undefined): message is UserMessage & { steering: true } {
+	return message?.role === "user" && message.steering === true;
+}
+
+function userMessageWithoutSteering(message: UserMessage): UserMessage {
+	const { steering, ...rest } = message;
+	void steering;
+	return rest;
+}
+
+function renderSteeringEnvelope(message: string): string {
+	return prompt.render(userInterjectionTemplate, { message });
+}
+
+function getArrayContentText(content: (TextContent | ImageContent)[]): string {
+	let firstText: string | undefined;
+	let textParts: string[] | undefined;
+	for (const part of content) {
+		if (part.type !== "text") continue;
+		if (firstText === undefined) {
+			firstText = part.text;
+			continue;
+		}
+		if (textParts === undefined) {
+			textParts = [firstText];
+		}
+		textParts.push(part.text);
+	}
+	return textParts === undefined ? (firstText ?? "") : textParts.join("\n");
+}
+
+function getArrayContentImages(content: (TextContent | ImageContent)[]): ImageContent[] {
+	let images: ImageContent[] | undefined;
+	for (const part of content) {
+		if (part.type !== "image") continue;
+		if (images === undefined) images = [];
+		images.push(part);
+	}
+	return images ?? [];
+}
+
+function wrapSteeringUserMessage(message: UserMessage): UserMessage {
+	if (typeof message.content === "string") {
+		if (message.content.length === 0) return message;
+		return { ...userMessageWithoutSteering(message), content: renderSteeringEnvelope(message.content) };
+	}
+
+	const text = getArrayContentText(message.content);
+	if (text.length === 0) return message;
+	const content: (TextContent | ImageContent)[] = [{ type: "text", text: renderSteeringEnvelope(text) }];
+	content.push(...getArrayContentImages(message.content));
+	return { ...userMessageWithoutSteering(message), content };
+}
+
+export function wrapSteeringForModel(messages: AgentMessage[]): AgentMessage[] {
+	const last = messages[messages.length - 1];
+	if (!isSteeringUserMessage(last)) return messages;
+
+	let firstSteer = messages.length - 1;
+	while (firstSteer > 0 && isSteeringUserMessage(messages[firstSteer - 1])) {
+		firstSteer--;
+	}
+
+	let wrappedMessages: AgentMessage[] | undefined;
+	for (let i = firstSteer; i < messages.length; i++) {
+		const message = messages[i];
+		if (!isSteeringUserMessage(message)) continue;
+		const wrappedMessage = wrapSteeringUserMessage(message);
+		if (wrappedMessage === message) continue;
+		if (wrappedMessages === undefined) {
+			wrappedMessages = messages.slice();
+		}
+		wrappedMessages[i] = wrappedMessage;
+	}
+	return wrappedMessages ?? messages;
 }
 
 function getPrunedToolResultContent(message: ToolResultMessage): (TextContent | ImageContent)[] {
@@ -428,7 +543,7 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 				case "custom":
 				case "hookMessage": {
 					const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
-					const role = "user";
+					const role = "developer";
 					const attribution = m.attribution;
 					return {
 						role,
@@ -468,17 +583,15 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 							const inner = file.content ? `\n${file.content}\n` : "\n";
 							return `<file path="${file.path}">${inner}</file>`;
 						})
-						.join("\n\n");
-					const content: (TextContent | ImageContent)[] = [
-						{ type: "text" as const, text: `<system-reminder>\n${fileContents}\n</system-reminder>` },
-					];
+						.join("\n");
+					const content: (TextContent | ImageContent)[] = [{ type: "text" as const, text: fileContents }];
 					for (const file of m.files) {
 						if (file.image) {
 							content.push(file.image);
 						}
 					}
 					return {
-						role: "user",
+						role: "developer",
 						content,
 						attribution: "user",
 						timestamp: m.timestamp,
