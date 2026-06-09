@@ -74,6 +74,17 @@ describe("incremental markdown lexer == full lexer", () => {
 		});
 	}
 
+	// Fine-grained streaming (every 1–2 chars) surfaces seal artifacts that coarser
+	// steps skip: a loose list sealed mid-stream must not be split into adjacent
+	// single-item list tokens — the trailing-list strip must re-merge it.
+	for (const step of [1, 2]) {
+		for (const [name, doc] of Object.entries(CORPUS)) {
+			it(`final streamed lex matches full lex at step ${step}: ${name}`, () => {
+				expect(project(streamTo(doc, step))).toBe(fullLex(doc));
+			});
+		}
+	}
+
 	it("exercises the reuse branch (extending a cached multi-block prefix)", () => {
 		const base = "# Heading\n\npara one\n\npara two\n\n";
 		resetLexCache();
