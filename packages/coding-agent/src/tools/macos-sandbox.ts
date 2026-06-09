@@ -49,6 +49,7 @@ export class MacOSSandboxTool implements AgentTool<typeof macosSandboxSchema, Ma
 	readonly approval = "write" as const;
 	readonly label = "Sandbox";
 	readonly summary = "Add trusted files or directories to the macOS sandbox allowlist";
+	readonly loadMode = "discoverable";
 	readonly description = prompt.render(macosSandboxDescription);
 	readonly parameters = macosSandboxSchema;
 	readonly strict = true;
