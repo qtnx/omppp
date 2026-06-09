@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-06-09
+
 ### Fixed
 
 - Fixed local embedding builds with patched `tar` 7 by patching `fastembed`'s ESM import to use namespace exports.

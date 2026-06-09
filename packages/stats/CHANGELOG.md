@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-06-09
+
 ### Added
 
 - Added a Learning Audit dashboard tab with API endpoints for inspecting persisted live-learning classifier and writer artifacts.

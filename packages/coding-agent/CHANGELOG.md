@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [1.0.7] - 2026-06-09
 ### Added
 - The macOS sandbox now auto-discovers the user's running SSH agent so `git`/`ssh` over SSH works with zero config even when the launching context doesn't export `SSH_AUTH_SOCK` (e.g. a supervisor that strips it). It probes 1Password, Secretive, the launchd agent, and classic `ssh-agent` sockets, trusting only sockets owned by the current user, exposes the discovered socket to sandboxed children as `SSH_AUTH_SOCK`, and allows it in the Seatbelt profile (sockets only — private keys stay blocked). Override the path with the `sandbox.sshAuthSock` setting or `PI_OMPX_SSH_AUTH_SOCK` env var, or set `sandbox.sshAuthSock: off` to disable.
 

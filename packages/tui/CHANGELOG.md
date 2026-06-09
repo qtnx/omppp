@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-06-09
+
 ### Changed
 
 - Updated terminal notification app metadata to the OMPx brand.
