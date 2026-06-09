@@ -437,10 +437,11 @@ export class ToolExecutionComponent extends Container {
 			this.#spinnerInterval = setInterval(() => {
 				const now = performance.now();
 				const frameCount = theme.spinnerFrames.length;
-				// Redraw at 30fps for a smooth `task` name shimmer, but keep the spinner
-				// glyph phase-locked to its classic ~12.5fps cadence. Advancing the
-				// anchor by elapsed frames instead of resetting to `now` avoids the
-				// 30fps timer quantizing the glyph down to one step every three ticks.
+				// Advance the spinner glyph at its classic ~12.5fps cadence, decoupled
+				// from the render cadence. Advancing the anchor by elapsed frames (vs
+				// resetting to `now`) avoids quantizing the glyph to one step per three
+				// ticks.
+				let glyphAdvanced = false;
 				if (frameCount > 0) {
 					const elapsed = now - this.#lastSpinnerAdvanceAt;
 					if (elapsed >= SPINNER_GLYPH_ADVANCE_MS) {
@@ -448,9 +449,17 @@ export class ToolExecutionComponent extends Container {
 						this.#spinnerFrame = ((this.#spinnerFrame ?? 0) + steps) % frameCount;
 						this.#renderState.spinnerFrame = this.#spinnerFrame;
 						this.#lastSpinnerAdvanceAt += steps * SPINNER_GLYPH_ADVANCE_MS;
+						glyphAdvanced = true;
 					}
 				}
-				this.#ui.requestRender();
+				// The 30fps cadence only exists to animate the `task` row's name
+				// shimmer. Non-task spinners (edit/write while args stream) animate
+				// nothing between glyph steps, so only repaint when the glyph actually
+				// advanced — avoids ~2.4x redundant full-tree diffs per running
+				// edit/write tool during streaming.
+				if (this.#toolName === "task" || glyphAdvanced) {
+					this.#ui.requestRender();
+				}
 			}, SPINNER_RENDER_INTERVAL_MS);
 		} else if (!needsSpinner && this.#spinnerInterval) {
 			clearInterval(this.#spinnerInterval);

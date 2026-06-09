@@ -6,6 +6,10 @@
 
 - Updated terminal notification app metadata to the OMPx brand.
 
+### Fixed
+
+- Eliminated the dominant streaming-render CPU cost. The assistant message was re-lexed in full by `marked.lexer` on every ~30fps reveal frame — O(n) per frame, O(n²) over a reply (measured ~9s of CPU for a 16KB answer; the render cache is keyed on the full text, so every growing frame missed). Markdown block lexing is now append-only incremental: tokens of blocks sealed by a blank line are cached at module level (surviving the per-frame Markdown component recreation) and only the still-growing trailing block is re-lexed. Output is provably identical to a full lex — a link reference definition or any non-append change falls back to a full lex — and an equivalence test covers headings/lists/loose lists/fences/blockquotes/tables/setext across every streamed prefix. ~400x less lexing work on a 16KB streamed reply.
+
 ## [15.10.4] - 2026-06-08
 
 ### Fixed

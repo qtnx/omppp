@@ -49,6 +49,84 @@ markdownParser.setOptions({
 });
 
 // ---------------------------------------------------------------------------
+// Append-only incremental block lexing (streaming hot path)
+// ---------------------------------------------------------------------------
+// The streaming reveal re-renders a growing prefix of the assistant message at
+// ~30fps and recreates the Markdown component each frame, so re-lexing the whole
+// text every frame is O(n)/frame → O(n²) over a reply (measured ~6.5s of CPU for
+// a 16KB answer). Streaming is append-only, and a blank line ("\n\n") terminates
+// every container block (paragraph/list/blockquote/closed fence), so all blocks
+// before the last blank-line seal are final and cannot change as more text
+// arrives. We cache their tokens (module-level, surviving component recreation)
+// and re-lex only the still-growing tail after the last seal.
+//
+// Correctness: the result always equals `markdownParser.lexer(text)`. Only blocks
+// sealed by a blank line are reused — an open fence or a loose list that spans a
+// blank line is a single token with no boundary there, so it is never reused. A
+// link reference definition resolves document-wide, so any ref-def forces a full
+// lex; so does any non-append-only change.
+interface LexCacheEntry {
+	text: string;
+	tokens: Token[];
+	hasRefDef: boolean;
+}
+const LEX_CACHE_MAX = 4;
+const lexCache: LexCacheEntry[] = [];
+const REF_DEF_RE = /^ {0,3}\[[^\]\n]+\]:/m;
+
+function lexMarkdown(text: string): Token[] {
+	const hasRefDef = REF_DEF_RE.test(text);
+	let reuse: LexCacheEntry | undefined;
+	if (!hasRefDef) {
+		for (const entry of lexCache) {
+			if (
+				!entry.hasRefDef &&
+				entry.text.length < text.length &&
+				(reuse === undefined || entry.text.length > reuse.text.length) &&
+				text.startsWith(entry.text)
+			) {
+				reuse = entry;
+			}
+		}
+	}
+
+	let tokens: Token[] | undefined;
+	if (reuse) {
+		// Keep cached tokens only up to the last blank-line seal: a "\n\n" that
+		// falls exactly on a top-level token boundary. Everything before it is a
+		// complete, terminated block that cannot change; re-lex from the seal.
+		let keptCount = 0;
+		let keptLen = 0;
+		let cum = 0;
+		for (let i = 0; i < reuse.tokens.length; i++) {
+			cum += reuse.tokens[i]!.raw.length;
+			if (reuse.text.endsWith("\n\n", cum)) {
+				keptCount = i + 1;
+				keptLen = cum;
+			}
+		}
+		if (keptCount > 0) {
+			const tail = markdownParser.lexer(text.slice(keptLen));
+			tokens = reuse.tokens.slice(0, keptCount).concat(tail);
+		}
+	}
+	tokens ??= markdownParser.lexer(text);
+
+	lexCache.unshift({ text, tokens, hasRefDef });
+	if (lexCache.length > LEX_CACHE_MAX) lexCache.length = LEX_CACHE_MAX;
+	return tokens;
+}
+
+/** Test seam: incremental block lex (uses the module cache). @internal */
+export function __lexMarkdownForTest(text: string): Token[] {
+	return lexMarkdown(text);
+}
+/** Test seam: clear the incremental lex cache between cases. @internal */
+export function __resetMarkdownLexCacheForTest(): void {
+	lexCache.length = 0;
+}
+
+// ---------------------------------------------------------------------------
 // Module-level LRU render cache
 // ---------------------------------------------------------------------------
 // Each session-tree navigation discards and recreates Markdown component
@@ -368,7 +446,7 @@ export class Markdown implements Component {
 		}
 
 		// Parse markdown to HTML-like tokens
-		const tokens = markdownParser.lexer(normalizedText);
+		const tokens = lexMarkdown(normalizedText);
 
 		// Convert tokens to styled terminal output
 		const renderedLines: string[] = [];

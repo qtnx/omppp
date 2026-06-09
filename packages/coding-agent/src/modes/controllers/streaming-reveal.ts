@@ -15,16 +15,53 @@ type StreamingRevealControllerOptions = {
 	requestRender(): void;
 };
 
+// Grapheme counting dominates the 30fps reveal: `visibleUnits` + `buildDisplayMessage`
+// each run a full `Intl.Segmenter` pass over the whole growing message every frame
+// (~2.5ms per 16KB pass; measured ~433ms of CPU per 16KB reply). Two cheap, correct
+// guards: (1) pure-ASCII text (with no CR) has grapheme count == length — the only
+// ASCII grapheme cluster is CRLF — so skip the segmenter entirely; (2) memoize counts
+// in a small LRU so the repeated passes over the same snapshot (within a frame) and
+// over stable blocks (across frames) don't re-segment.
+const GRAPHEME_COUNT_CACHE_MAX = 16;
+const graphemeCountCache = new Map<string, number>();
+
+function isFastAsciiText(text: string): boolean {
+	for (let i = 0; i < text.length; i++) {
+		const code = text.charCodeAt(i);
+		// >127: non-ASCII (may combine/join/surrogate). 13: CR (CRLF is one cluster).
+		if (code > 127 || code === 13) return false;
+	}
+	return true;
+}
 function countGraphemes(text: string): number {
-	let count = 0;
-	for (const _segment of getSegmenter().segment(text)) {
-		count += 1;
+	if (text.length === 0) return 0;
+	const cached = graphemeCountCache.get(text);
+	if (cached !== undefined) {
+		// Refresh LRU position so stable blocks survive churn from the growing block.
+		graphemeCountCache.delete(text);
+		graphemeCountCache.set(text, cached);
+		return cached;
+	}
+	let count: number;
+	if (isFastAsciiText(text)) {
+		count = text.length;
+	} else {
+		count = 0;
+		for (const _segment of getSegmenter().segment(text)) count += 1;
+	}
+	graphemeCountCache.set(text, count);
+	if (graphemeCountCache.size > GRAPHEME_COUNT_CACHE_MAX) {
+		const oldest = graphemeCountCache.keys().next().value;
+		if (oldest !== undefined) graphemeCountCache.delete(oldest);
 	}
 	return count;
 }
 
 function sliceGraphemes(text: string, units: number): string {
 	if (units <= 0 || text.length === 0) return "";
+	// ASCII fast-path: 1 char == 1 grapheme (CRLF excluded by isFastAsciiText),
+	// so the first `units` graphemes are exactly `text.slice(0, units)`.
+	if (isFastAsciiText(text)) return units >= text.length ? text : text.slice(0, units);
 	let count = 0;
 	for (const { index, segment } of getSegmenter().segment(text)) {
 		count += 1;

@@ -214,7 +214,6 @@ export class EventController {
 			await this.ctx.init();
 		}
 
-		this.ctx.statusLine.invalidate();
 		this.ctx.updateEditorTopBorder();
 
 		const run = this.#handlers[event.type] as (e: AgentSessionEvent) => Promise<void>;
@@ -738,6 +737,12 @@ export class EventController {
 		this.#readToolCallAssistantComponents.clear();
 		this.#resetReadGroup();
 		this.#lastAssistantComponent = undefined;
+		// Per-event status invalidation was removed from handleEvent (it forced a
+		// sync git resolve + back-to-back `gh pr view` per streaming delta). Refresh
+		// git/PR chrome once at turn end so post-tool changes (e.g. a commit that
+		// did not move HEAD) settle without the per-delta cost.
+		this.ctx.statusLine.invalidate();
+		this.ctx.updateEditorTopBorder();
 		this.ctx.ui.requestRender();
 		this.#scheduleIdleCompaction();
 		this.sendCompletionNotification();
