@@ -259,6 +259,7 @@ async function runInteractiveMode(
 	eventBus?: EventBus,
 	initialMessage?: string,
 	initialImages?: ImageContent[],
+	sandboxRelaunch = false,
 ): Promise<void> {
 	const mode = new InteractiveMode(
 		session,
@@ -340,6 +341,21 @@ async function runInteractiveMode(
 		try {
 			using _keepalive = new EventLoopKeepalive();
 			await session.prompt(message);
+		} catch (error: unknown) {
+			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+			mode.showError(errorMessage);
+		}
+	}
+
+	// A macOS sandbox relaunch SIGTERM'd this session mid-turn and respawned it via
+	// --resume. If the model's turn was interrupted before it replied (the
+	// conversation ends with the sandbox tool result), continue it so the agent
+	// retries the blocked operation instead of idling at the prompt. No-op when the
+	// last turn already completed (e.g. /add-dir issued between turns).
+	if (sandboxRelaunch) {
+		try {
+			using _keepalive = new EventLoopKeepalive();
+			await session.continueAfterSandboxRelaunch();
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 			mode.showError(errorMessage);
@@ -1195,6 +1211,7 @@ export async function runRootCommand(
 				eventBus,
 				initialMessage,
 				initialImages,
+				(parsedArgs.sandboxAddDirs?.length ?? 0) > 0,
 			);
 		} else {
 			// Branch-only single-shot runner: keep print-mode code out of normal interactive startup.

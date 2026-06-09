@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+- Fixed the agent stalling after a macOS sandbox relaunch. When the model calls the `sandbox` tool (or the user runs `/add-dir`) mid-turn, the supervisor SIGTERMs the session and respawns it via `--resume` — but the resumed child restored the message history and then idled at the prompt, silently dropping the model's interrupted turn so it never retried the blocked operation. The resumed session now detects that the model still owes a response (the conversation ends with the `sandbox` tool result, via `conversationAwaitsAssistant`) and auto-continues the turn so the agent retries; a `/add-dir` between completed turns stays a no-op. Also bounded the supervisor's relaunch wait — if a child's SIGTERM cleanup hangs (an unbounded ssh/sshfs unmount in `postmortem` could block `process.exit`), it now escalates to SIGKILL after 10s so the relaunch can't freeze indefinitely.
 
 ## [1.0.7] - 2026-06-09
 ### Added
