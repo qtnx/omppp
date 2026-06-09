@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { MacOSSandboxRelaunchResult } from "@oh-my-pi/pi-coding-agent/task/omp-command";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { MacOSSandboxTool } from "@oh-my-pi/pi-coding-agent/tools/macos-sandbox";
@@ -9,6 +10,7 @@ function makeSession(
 	request: (dirs: string[]) => MacOSSandboxRelaunchResult,
 	sessionFile: string | null = "/Users/alice/.omp/session.jsonl",
 	workspaceRoots?: ToolSession["workspaceRoots"],
+	settings: ToolSession["settings"] = Settings.isolated(),
 ): ToolSession {
 	return {
 		cwd: "/Users/alice/project",
@@ -18,6 +20,7 @@ function makeSession(
 		getSessionId: () => "session-1",
 		requestMacOSSandboxRelaunch: request,
 		workspaceRoots,
+		settings,
 	} as unknown as ToolSession;
 }
 
@@ -55,12 +58,42 @@ describe("MacOSSandboxTool", () => {
 		expect(result.isError).toBeUndefined();
 		expect(result.details?.relaunchRequested).toBe(true);
 		const text = firstText(result);
-		expect(text).toContain("Successfully added working directories to the macOS sandbox allowlist");
+		expect(text).toContain("Successfully added paths to the macOS sandbox allowlist");
 		expect(text).toContain("Retry the original operation after OMPx relaunches");
 		expect(text).toContain("/Users/alice/other");
 		expect(text).toContain("/Users/alice/third");
 		expect(text).not.toContain("/Users/alice/project");
 		expect(text).not.toContain("/Users/alice/api");
+	});
+
+	it("persists approved sandbox paths before requesting relaunch", async () => {
+		const settings = Settings.isolated();
+		const requested: string[][] = [];
+		let settingAtRequest: string[] = [];
+		const tool = new MacOSSandboxTool(
+			makeSession(
+				dirs => {
+					settingAtRequest = settings.getTrusted("sandbox.allowedPaths");
+					requested.push(dirs);
+					return { requested: true };
+				},
+				"/Users/alice/.omp/session.jsonl",
+				[{ tag: "api", path: "/Users/alice/api", primary: false }],
+				settings,
+			),
+		);
+
+		const result = await tool.execute("call-persist", {
+			paths: ["../.kube/config"],
+			remember: true,
+		} as never);
+
+		const resolvedPath = "/Users/alice/.kube/config";
+		expect(result.isError).toBeUndefined();
+		expect(firstText(result)).toContain("Saved to sandbox.allowedPaths");
+		expect(requested).toEqual([["/Users/alice/project", "/Users/alice/api", resolvedPath]]);
+		expect(settingAtRequest).toEqual(["~/.kube/config", resolvedPath]);
+		expect(settings.getTrusted("sandbox.allowedPaths")).toEqual(["~/.kube/config", resolvedPath]);
 	});
 
 	it("returns a manual restart command when no supervisor is available", async () => {
@@ -102,9 +135,9 @@ describe("MacOSSandboxTool", () => {
 		});
 
 		expect(homeResult.isError).toBe(true);
-		expect(firstText(homeResult)).toContain("Refusing to whitelist unsafe sandbox directory");
+		expect(firstText(homeResult)).toContain("Refusing to whitelist unsafe sandbox path");
 		expect(dataAliasResult.isError).toBe(true);
-		expect(firstText(dataAliasResult)).toContain("Refusing to whitelist unsafe sandbox directory");
+		expect(firstText(dataAliasResult)).toContain("Refusing to whitelist unsafe sandbox path");
 	});
 
 	it("does not request relaunch for non-persisted sessions", async () => {

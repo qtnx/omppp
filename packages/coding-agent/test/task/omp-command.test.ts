@@ -11,8 +11,10 @@ import {
 	sandboxCurrentOmpxCommand,
 	sandboxOmpxCommand,
 } from "@oh-my-pi/pi-coding-agent/task/omp-command";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+const originalAgentDir = getAgentDir();
 
 function setPlatform(value: NodeJS.Platform): void {
 	Object.defineProperty(process, "platform", { value, configurable: true });
@@ -78,6 +80,7 @@ function profileHasWritableFilter(profile: string, filter: string): boolean {
 describe("sandboxOmpxCommand", () => {
 	afterEach(() => {
 		restorePlatform();
+		setAgentDir(originalAgentDir);
 		for (const dir of tempDirs.splice(0)) {
 			fs.rmSync(dir, { force: true, recursive: true });
 		}
@@ -411,6 +414,86 @@ describe("sandboxOmpxCommand", () => {
 
 		expect(profile).toContain('(subpath "/Users/alice/other-work")');
 		expect(profile).toContain('(subpath "/System/Volumes/Data/Users/alice/other-work")');
+	});
+
+	it("allows default kube config without exposing the kube directory", () => {
+		setPlatform("darwin");
+		const agentDir = createTempDir("ompx-sandbox-default-config-");
+		setAgentDir(agentDir);
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--resume", "session-1"], shell: false },
+			{ cwd: "/Users/alice/project", env: macEnv() },
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		expect(profile).toContain('(literal "/Users/alice/.kube/config")');
+		expect(profile).toContain('(literal "/System/Volumes/Data/Users/alice/.kube/config")');
+		expect(profileHasWritableFilter(profile, '(literal "/Users/alice/.kube/config")')).toBe(true);
+		expect(profile).not.toContain('(subpath "/Users/alice/.kube")');
+	});
+
+	it("keeps default kube config file-scoped when the config path is a symlinked directory", () => {
+		setPlatform("darwin");
+		const agentDir = createTempDir("ompx-sandbox-kube-symlink-config-");
+		setAgentDir(agentDir);
+		const home = createWorkspaceTempDir("ompx-kube-home-");
+		const kubeDir = path.join(home, ".kube");
+		const targetDir = path.join(home, "Documents");
+		fs.mkdirSync(kubeDir, { recursive: true });
+		fs.mkdirSync(targetDir, { recursive: true });
+		fs.symlinkSync(targetDir, path.join(kubeDir, "config"));
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--resume", "session-1"], shell: false },
+			{ cwd: "/Users/alice/project", env: macEnv({ HOME: home }) },
+		);
+		const profile = wrapped.args[1] ?? "";
+		const kubeConfig = path.join(kubeDir, "config");
+
+		expect(profile).toContain(`(literal ${JSON.stringify(kubeConfig)})`);
+		expect(profile).not.toContain(`(subpath ${JSON.stringify(targetDir)})`);
+		expect(profileHasWritableFilter(profile, `(subpath ${JSON.stringify(targetDir)})`)).toBe(false);
+	});
+
+	it("allows trusted sandbox paths from global config", () => {
+		setPlatform("darwin");
+		const agentDir = createTempDir("ompx-sandbox-config-");
+		setAgentDir(agentDir);
+		fs.writeFileSync(
+			path.join(agentDir, "config.yml"),
+			"sandbox:\n  allowedPaths:\n    - /Users/alice/.aws/config\n",
+		);
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--resume", "session-1"], shell: false },
+			{ cwd: "/Users/alice/project", env: macEnv() },
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		expect(profile).not.toContain('(literal "/Users/alice/.kube/config")');
+		expect(profile).toContain('(subpath "/Users/alice/.aws/config")');
+		expect(profileHasWritableFilter(profile, '(subpath "/Users/alice/.aws/config")')).toBe(true);
+	});
+
+	it("ignores unsafe sandbox paths from global config", () => {
+		setPlatform("darwin");
+		const agentDir = createTempDir("ompx-sandbox-unsafe-config-");
+		setAgentDir(agentDir);
+		fs.writeFileSync(
+			path.join(agentDir, "config.yml"),
+			"sandbox:\n  allowedPaths:\n    - /Users/alice\n    - /System/Volumes/Data/Users/alice/.ssh\n",
+		);
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--resume", "session-1"], shell: false },
+			{ cwd: "/Users/alice/project", env: macEnv() },
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		expect(profile).not.toContain('(subpath "/Users/alice")');
+		expect(profile).not.toContain('(subpath "/Users/alice/.ssh")');
+		expect(profile).not.toContain('(subpath "/System/Volumes/Data/Users/alice/.ssh")');
 	});
 
 	it("does not allow unsafe or value-operand add-dir paths in the sandbox profile", () => {

@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import process from "node:process";
 
+import { YAML } from "bun";
 import "../cli/preload-env";
 import {
 	$env,
@@ -13,6 +14,7 @@ import {
 	getAgentDir,
 	getConfigRootDir,
 } from "@oh-my-pi/pi-utils";
+import { DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS } from "../config/sandbox-defaults";
 
 export interface OmpxCommand {
 	cmd: string;
@@ -432,6 +434,27 @@ export function resolveMacOSSandboxWorkspaceDirs(
 	return { paths };
 }
 
+export function resolveMacOSSandboxAllowedPaths(
+	inputPaths: readonly string[],
+	cwd: string,
+	home: string = inferMacOSSandboxHome(cwd),
+): ResolvedMacOSSandboxWorkspaceDirs {
+	const seen = new Set<string>();
+	const paths: string[] = [];
+	for (const inputPath of inputPaths) {
+		const trimmed = inputPath.trim();
+		if (!trimmed || trimmed.includes("\0")) continue;
+		const expanded = trimmed === "~" ? home : trimmed.startsWith("~/") ? path.join(home, trimmed.slice(2)) : trimmed;
+		const resolved = path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(cwd, expanded);
+		const unsafeReason = unsafeMacOSSandboxWorkspaceDirReason(resolved, home);
+		if (unsafeReason) return { paths, error: unsafeReason };
+		if (seen.has(resolved)) continue;
+		seen.add(resolved);
+		paths.push(resolved);
+	}
+	return { paths };
+}
+
 function addTraversalLiterals(paths: Set<string>, allowedPath: string): void {
 	for (const root of TRAVERSAL_ROOTS) {
 		if (!pathIsWithin(root, allowedPath) || allowedPath === root) continue;
@@ -478,6 +501,66 @@ function addWriteLiteral(sets: SandboxPathSets, inputPath: string | undefined): 
 		sets.readLiterals.add(candidate);
 		sets.writeLiterals.add(candidate);
 		addTraversalLiterals(sets.readMetadataLiterals, candidate);
+	}
+}
+
+function pathLooksLikeKubeConfig(inputPath: string): boolean {
+	const normalized = inputPath.replaceAll("\\", "/");
+	return normalized === "~/.kube/config" || normalized.endsWith("/.kube/config");
+}
+
+function addSandboxAllowedPath(sets: SandboxPathSets, inputPath: string): void {
+	if (pathLooksLikeKubeConfig(inputPath)) {
+		addWriteLiteral(sets, inputPath);
+		return;
+	}
+	for (const candidate of realPaths(inputPath)) {
+		try {
+			if (fs.lstatSync(candidate).isDirectory() && !pathLooksLikeKubeConfig(candidate)) {
+				addWriteSubpath(sets, candidate);
+				continue;
+			}
+			addWriteLiteral(sets, candidate);
+		} catch {
+			if (pathLooksLikeKubeConfig(candidate)) {
+				addWriteLiteral(sets, candidate);
+			} else {
+				addWriteSubpath(sets, candidate);
+			}
+		}
+	}
+}
+
+function stringArraySetting(value: unknown): string[] | null {
+	if (value === undefined) return null;
+	if (typeof value === "string") return [value];
+	if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+	return null;
+}
+
+function readConfiguredMacOSSandboxAllowedPaths(): string[] {
+	try {
+		const configPath = path.join(getAgentDir(), "config.yml");
+		const parsed = YAML.parse(fs.readFileSync(configPath, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS;
+		}
+		const raw = parsed as { sandbox?: { allowedPaths?: unknown }; "sandbox.allowedPaths"?: unknown };
+		return (
+			stringArraySetting(raw.sandbox?.allowedPaths) ??
+			stringArraySetting(raw["sandbox.allowedPaths"]) ??
+			DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS
+		);
+	} catch {
+		return DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS;
+	}
+}
+
+function addConfiguredSandboxAllowedPaths(sets: SandboxPathSets, cwd: string, home: string): void {
+	const resolved = resolveMacOSSandboxAllowedPaths(readConfiguredMacOSSandboxAllowedPaths(), cwd, home);
+	if (resolved.error) return;
+	for (const allowedPath of resolved.paths) {
+		addSandboxAllowedPath(sets, allowedPath);
 	}
 }
 
@@ -620,6 +703,15 @@ function addWorkspaceDirectoryArg(sets: SandboxPathSets, value: string | undefin
 	}
 }
 
+function addSandboxAllowedPathArg(sets: SandboxPathSets, value: string | undefined, cwd: string): void {
+	if (!value?.trim()) return;
+	const resolved = resolveMacOSSandboxAllowedPaths([value], cwd);
+	if (resolved.error) return;
+	for (const allowedPath of resolved.paths) {
+		addSandboxAllowedPath(sets, allowedPath);
+	}
+}
+
 function addCommandArgumentPaths(sets: SandboxPathSets, args: string[], cwd: string): void {
 	const firstArg = args[0];
 	if (firstArg && !firstArg.startsWith("-") && (path.isAbsolute(firstArg) || firstArg.includes(path.sep))) {
@@ -632,8 +724,8 @@ function addCommandArgumentPaths(sets: SandboxPathSets, args: string[], cwd: str
 	for (const workspaceDir of extractCliFlagValues(args, "--add-dir")) {
 		addWorkspaceDirectoryArg(sets, workspaceDir, cwd);
 	}
-	for (const workspaceDir of extractCliFlagValues(args, "--sandbox-add-dir")) {
-		addWorkspaceDirectoryArg(sets, workspaceDir, cwd);
+	for (const allowedPath of extractCliFlagValues(args, "--sandbox-add-dir")) {
+		addSandboxAllowedPathArg(sets, allowedPath, cwd);
 	}
 }
 
@@ -714,6 +806,7 @@ function collectSandboxPaths(
 	const home = addRuntimeDirs(sets, env);
 	addReadSubpath(sets, home ? path.join(home, ".bun") : undefined);
 	addSSHSupportSubpaths(sets, env, home);
+	addConfiguredSandboxAllowedPaths(sets, cwd, home);
 	addReadSubpath(sets, resolvedCmd);
 	addCommandArgumentPaths(sets, command.args, cwd);
 
@@ -859,7 +952,7 @@ function parseMacOSSandboxRelaunchRequest(message: unknown, cwd: string): MacOSS
 			? path.resolve(value.sessionDir)
 			: undefined;
 	if (value.sessionDir !== undefined && !sessionDir) return null;
-	const resolved = resolveMacOSSandboxWorkspaceDirs(value.addDirs, cwd);
+	const resolved = resolveMacOSSandboxAllowedPaths(value.addDirs, cwd);
 	if (resolved.error || resolved.paths.length === 0) return null;
 	return {
 		type: MACOS_SANDBOX_RELAUNCH_MESSAGE_TYPE,
@@ -893,7 +986,7 @@ export function requestMacOSSandboxRelaunch(
 	}
 	const sender = processSender();
 	if (!sender) return { requested: false, reason: "missing-supervisor" };
-	const resolved = resolveMacOSSandboxWorkspaceDirs(addDirs, process.cwd());
+	const resolved = resolveMacOSSandboxAllowedPaths(addDirs, process.cwd());
 	if (resolved.error) return { requested: false, reason: "unsafe-path" };
 	if (resolved.paths.length === 0) return { requested: false, reason: "missing-session" };
 	const resolvedSessionDir =

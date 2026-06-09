@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 ### Changed
-- Sandboxed top-level and nested `ompx` runs on macOS by default with a sandvault-inspired Seatbelt profile scoped to the effective working directory, associated Git metadata, OMPx runtime paths, sandbox-allowed inherited SSH agent sockets, and public SSH client metadata/public identity files, plus `--no-sandbox`, `/add-dir`, the `sandbox` tool, sandbox-denial notices, and sandbox awareness for commands/hooks.
+- Sandboxed top-level and nested `ompx` runs on macOS by default with a sandvault-inspired Seatbelt profile scoped to the effective working directory, associated Git metadata, OMPx runtime paths, sandbox-allowed inherited SSH agent sockets, public SSH client metadata/public identity files, and trusted configured sandbox allowlist paths such as `~/.kube/config`, plus `--no-sandbox`, `/add-dir`, the `sandbox` tool, sandbox-denial notices, and sandbox awareness for commands/hooks.
 
 - Rebranded the CLI invocation from `omp` to `ompx`, updated release/install binary names, and seeded fresh installs with the standard `~/.omp/agent/config.yml` backup.
 
