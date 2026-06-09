@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS } from "@oh-my-pi/pi-coding-agent/config/sandbox-defaults";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { MacOSSandboxRelaunchResult } from "@oh-my-pi/pi-coding-agent/task/omp-command";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -84,16 +85,17 @@ describe("MacOSSandboxTool", () => {
 		);
 
 		const result = await tool.execute("call-persist", {
-			paths: ["../.kube/config"],
+			paths: ["../work"],
 			remember: true,
 		} as never);
 
-		const resolvedPath = "/Users/alice/.kube/config";
+		const resolvedPath = "/Users/alice/work";
+		const expected = [...DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS, resolvedPath];
 		expect(result.isError).toBeUndefined();
 		expect(firstText(result)).toContain("Saved to sandbox.allowedPaths");
 		expect(requested).toEqual([["/Users/alice/project", "/Users/alice/api", resolvedPath]]);
-		expect(settingAtRequest).toEqual(["~/.kube/config", resolvedPath]);
-		expect(settings.getTrusted("sandbox.allowedPaths")).toEqual(["~/.kube/config", resolvedPath]);
+		expect(settingAtRequest).toEqual(expected);
+		expect(settings.getTrusted("sandbox.allowedPaths")).toEqual(expected);
 	});
 
 	it("returns a manual restart command when no supervisor is available", async () => {

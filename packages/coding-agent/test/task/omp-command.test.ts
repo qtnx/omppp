@@ -456,6 +456,34 @@ describe("sandboxOmpxCommand", () => {
 		expect(profileHasWritableFilter(profile, `(subpath ${JSON.stringify(targetDir)})`)).toBe(false);
 	});
 
+	it("allows default developer config and cache paths read-write", () => {
+		setPlatform("darwin");
+		const agentDir = createTempDir("ompx-sandbox-dx-config-");
+		setAgentDir(agentDir);
+		const home = createWorkspaceTempDir("ompx-dx-home-");
+		fs.writeFileSync(path.join(home, ".gitconfig"), "[user]\n\tname = test\n");
+		const cacheDirs = [".cargo", "go", ".cache", path.join(".bun", "install", "cache")];
+		for (const dir of cacheDirs) {
+			fs.mkdirSync(path.join(home, dir), { recursive: true });
+		}
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--resume", "session-1"], shell: false },
+			{ cwd: "/Users/alice/project", env: macEnv({ HOME: home }) },
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		const gitconfig = path.join(home, ".gitconfig");
+		expect(profile).toContain(`(literal ${JSON.stringify(gitconfig)})`);
+		expect(profileHasWritableFilter(profile, `(literal ${JSON.stringify(gitconfig)})`)).toBe(true);
+
+		for (const dir of cacheDirs) {
+			const resolved = path.join(home, dir);
+			expect(profile).toContain(`(subpath ${JSON.stringify(resolved)})`);
+			expect(profileHasWritableFilter(profile, `(subpath ${JSON.stringify(resolved)})`)).toBe(true);
+		}
+	});
+
 	it("allows trusted sandbox paths from global config", () => {
 		setPlatform("darwin");
 		const agentDir = createTempDir("ompx-sandbox-config-");
