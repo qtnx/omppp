@@ -221,3 +221,57 @@ describe("streaming reveal", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 });
+
+// Independent oracle: a fresh segmenter, not the one the implementation uses.
+const refSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+function refCount(text: string): number {
+	let n = 0;
+	for (const _ of refSegmenter.segment(text)) n += 1;
+	return n;
+}
+
+describe("visibleUnits grapheme counting (ASCII fast-path + cache)", () => {
+	const cases: Record<string, string> = {
+		ascii: "Hello, world! Plain ASCII with punctuation 123.",
+		multiline: "line one\nline two\n\nparagraph two\n",
+		crlf: "windows\r\nline\r\nendings\r\n",
+		accents: "café résumé naïve Zürich",
+		emoji: "rocket 🚀 launch ✨ done 🎉",
+		zwj: "family 👨‍👩‍👧‍👦 and flag 🇺🇸 here",
+		mixed: "ASCII then 🚀 then ascii\nand café\r\n",
+	};
+	for (const [name, text] of Object.entries(cases)) {
+		it(`matches Intl.Segmenter for ${name}`, () => {
+			expect(visibleUnits(makeMessage([{ type: "text", text }]), false)).toBe(refCount(text));
+		});
+	}
+
+	it("does not mistake CRLF for two graphemes (fast-path guards \\r)", () => {
+		const text = "a\r\nb\r\nc"; // graphemes: a, CRLF, b, CRLF, c = 5; length = 7
+		expect(refCount(text)).toBe(5);
+		expect(visibleUnits(makeMessage([{ type: "text", text }]), false)).toBe(5);
+	});
+
+	it("sums grapheme counts across blocks", () => {
+		const msg = makeMessage([
+			{ type: "text", text: "café 🚀" },
+			{ type: "text", text: "plain ascii" },
+		]);
+		expect(visibleUnits(msg, false)).toBe(refCount("café 🚀") + refCount("plain ascii"));
+	});
+});
+
+describe("buildDisplayMessage never splits a grapheme cluster", () => {
+	it("reveals emoji/ZWJ/accent prefixes as whole clusters", () => {
+		const text = "ab🚀👨‍👩‍👧cdé";
+		const msg = makeMessage([{ type: "text", text }]);
+		const total = visibleUnits(msg, false);
+		const segments = [...refSegmenter.segment(text)].map(s => s.segment);
+		expect(total).toBe(segments.length);
+		let expectedPrefix = "";
+		for (let units = 0; units <= total; units++) {
+			if (units > 0) expectedPrefix += segments[units - 1];
+			expect(textAt(buildDisplayMessage(msg, units, false), 0)).toBe(expectedPrefix);
+		}
+	});
+});

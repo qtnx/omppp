@@ -9,6 +9,10 @@
 - Disabled OMP-compatible Claude hook discovery from `.claude/hooks/**` and Cursor rule prompt injection by default; enable `hooks.enableClaudeUser` / `hooks.enableClaudeProject` or `rules.enableCursorUser` / `rules.enableCursorProject` from trusted operator config or runtime overrides to opt back in.
 
 ### Fixed
+- Reduced sustained CPU during assistant streaming and tool execution. The status line was rebuilt on every agent event (every token delta): it re-ran a synchronous git HEAD resolve (an uncached filesystem tree-walk) and, on non-default branches, defeated the PR cache's 60s TTL so `gh pr view` was re-spawned back-to-back for the whole turn; it also re-tokenized the still-growing assistant message on every delta. Branch resolution is now cwd-cached (refreshed by the existing HEAD watcher, on `/cd`, and once per turn at `agent_end`), the per-event git/PR cache invalidation was removed, the growing message's token estimate is TTL-throttled, and pending edit/write tool spinners repaint at their glyph cadence instead of 30fps (the `task`-row name shimmer keeps its 30fps cadence).
+
+- Cut grapheme-counting CPU in the streaming reveal. `visibleUnits`/`buildDisplayMessage` ran full `Intl.Segmenter` passes over the whole growing message on every 30fps frame and every delta. `countGraphemes` and `sliceGraphemes` now take an ASCII fast-path (pure-ASCII text with no CR maps 1 char == 1 grapheme — CRLF is the only ASCII cluster), and grapheme counts are memoized in a small LRU, so stable blocks and repeated same-snapshot passes don't re-segment. Verified against an independent `Intl.Segmenter` oracle (ASCII/CRLF/accent/emoji/ZWJ) and that `buildDisplayMessage` never splits a cluster.
+
 - Fixed runtime macOS sandbox allowlist relaunches to keep the active project as the primary workspace root, so adding another trusted directory no longer trips the cross-project resume/fork prompt.
 
 - Fixed release publishing and `ompx update` to use version GitHub tags as the binary release source, build release assets from tag pushes, delay public GitHub release publication until after npm publish, and verify binary update downloads against `SHA256SUMS`.

@@ -25,6 +25,7 @@ import type { PrStatusInfo } from "./status-line/types";
 
 const PR_STATUS_FIELDS = "number,url,state,isDraft,mergeStateStatus,reviewDecision";
 const PR_STATUS_TTL_MS = 60_000;
+const LAST_MESSAGE_TOKEN_TTL_MS = 250;
 
 function optionalString(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
@@ -179,6 +180,7 @@ export class StatusLineComponent implements Component {
 	#effectiveSettings: EffectiveStatusLineSettings | undefined;
 	#cachedBranch: string | null | undefined = undefined;
 	#cachedBranchRepoId: string | null | undefined = undefined;
+	#cachedBranchCwd: string | undefined = undefined;
 	#gitWatcher: fs.FSWatcher | null = null;
 	#onBranchChange: (() => void) | null = null;
 	#autoCompactEnabled: boolean = true;
@@ -225,6 +227,12 @@ export class StatusLineComponent implements Component {
 	// tool registration).
 	#nonMessageTokensCache: number | undefined;
 	#nonMessageInputsKey: string | undefined;
+
+	// Last (still-streaming) message token estimate, TTL-bounded so the native
+	// tokenizer does not run per streaming delta (see #estimateLastMessageTokens).
+	#lastMessageTokens = 0;
+	#lastMessageTokensRef: AgentMessage | undefined;
+	#lastMessageTokensAt = 0;
 
 	constructor(private readonly session: AgentSession) {
 		this.#settings = {
@@ -284,6 +292,17 @@ export class StatusLineComponent implements Component {
 		this.#setupGitWatcher();
 	}
 
+	/**
+	 * Re-point the HEAD watcher at the current project dir and drop stale
+	 * git/PR caches. Call after a cwd change (`/cd`): otherwise the watcher
+	 * stays bound to the previous repo's HEAD and in-repo branch changes in the
+	 * new directory would never refresh the status line.
+	 */
+	rearmGitWatcher(): void {
+		this.#invalidateGitCaches();
+		this.#setupGitWatcher();
+	}
+
 	#setupGitWatcher(): void {
 		if (this.#gitWatcher) {
 			this.#gitWatcher.close();
@@ -318,19 +337,27 @@ export class StatusLineComponent implements Component {
 
 	#invalidateGitCaches(): void {
 		this.#cachedBranch = undefined;
+		this.#cachedBranchCwd = undefined;
 		this.#cachedBranchRepoId = undefined;
 		this.#cachedPrContext = undefined;
 		this.#cachedPr = undefined;
 		this.#cachedPrFetchedAt = 0;
 	}
 	#getCurrentBranch(): string | null {
-		const head = git.head.resolveSync(getProjectDir());
-		const gitHeadPath = head?.headPath ?? null;
-		if (this.#cachedBranch !== undefined && this.#cachedBranchRepoId === gitHeadPath) {
+		const cwd = getProjectDir();
+		// Cache-hit fast path: while cwd is unchanged, skip the sync git
+		// resolver entirely. Actual branch changes are delivered by the HEAD
+		// fs.watch (#setupGitWatcher), which clears this cache; cwd/repo changes
+		// are caught by the cwd key (and rearmGitWatcher on /cd). This keeps the
+		// status line off the per-event sync FS tree-walk resolveSync performs.
+		if (this.#cachedBranch !== undefined && this.#cachedBranchCwd === cwd) {
 			return this.#cachedBranch;
 		}
 
-		this.#cachedBranchRepoId = gitHeadPath;
+		const head = git.head.resolveSync(cwd);
+		this.#cachedBranchCwd = cwd;
+		// Keep HEAD path as the repo identity used by the PR + default-branch caches.
+		this.#cachedBranchRepoId = head?.headPath ?? null;
 		if (!head) {
 			this.#cachedBranch = null;
 			return null;
@@ -571,12 +598,12 @@ export class StatusLineComponent implements Component {
 		//    replace messages (replaceMessages, branch rebuild, compaction)
 		//    yield fresh objects → cache miss → recompute. In-place
 		//    mutations on the same object are caught by fingerprint
-		//    mismatch. The LAST message is always recomputed because it
-		//    may still be growing during streaming.
+		//    mismatch. The LAST (still-growing) message can't be fingerprint-
+		//    cached, so its native token estimate is TTL-bounded (see below).
 		let messagesTokens = 0;
 		const lastIdx = messages.length - 1;
 		for (let i = 0; i < messages.length; i++) {
-			messagesTokens += i === lastIdx ? estimateTokens(messages[i]) : tokensForMessage(messages[i]);
+			messagesTokens += i === lastIdx ? this.#estimateLastMessageTokens(messages[i]) : tokensForMessage(messages[i]);
 		}
 
 		const rawUsedTokens = this.#nonMessageTokensCache + messagesTokens;
@@ -588,6 +615,27 @@ export class StatusLineComponent implements Component {
 				? effectiveUsage.tokens
 				: rawUsedTokens;
 		return { usedTokens, contextWindow };
+	}
+
+	/**
+	 * Token estimate for the last message, TTL-bounded by message identity. The
+	 * last message is the one still growing during streaming, so it can't be
+	 * fingerprint-cached like the others. `updateEditorTopBorder()` runs on every
+	 * streaming delta; recomputing the growing message's native token count per
+	 * delta is O(n) native work per delta (O(n^2) over the message). The
+	 * status-line context% is advisory and self-corrects within the TTL;
+	 * `computeContextBreakdown` (used by /context) stays exact.
+	 */
+	#estimateLastMessageTokens(message: AgentMessage): number {
+		const now = Date.now();
+		if (this.#lastMessageTokensRef === message && now - this.#lastMessageTokensAt < LAST_MESSAGE_TOKEN_TTL_MS) {
+			return this.#lastMessageTokens;
+		}
+		const tokens = estimateTokens(message);
+		this.#lastMessageTokensRef = message;
+		this.#lastMessageTokens = tokens;
+		this.#lastMessageTokensAt = now;
+		return tokens;
 	}
 
 	/**

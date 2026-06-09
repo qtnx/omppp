@@ -867,7 +867,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		resetCapabilities();
 		await this.refreshPluginState(newCwd);
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
-		this.statusLine.invalidate();
+		// Re-point the HEAD watcher at the new repo (and drop stale git/PR caches);
+		// plain invalidate() would leave the watcher bound to the old repo's HEAD.
+		this.statusLine.rearmGitWatcher();
 		this.updateEditorTopBorder();
 	}
 
