@@ -105,6 +105,19 @@ function resolveOmpxTarget(): string {
 }
 
 /**
+ * Extract the `X.Y.Z` version from `ompx --version` output.
+ *
+ * The binary prints the bare semver — see main.ts: `process.stdout.write(\`${VERSION}\n\`)`
+ * — so the match must NOT require a prefix. We scan for the first `X.Y.Z` run,
+ * which also tolerates an optional leading `ompx/` or `v` if the banner format
+ * ever changes. Returns undefined when no version is present (e.g. the binary
+ * printed an error instead of a version).
+ */
+export function parseReportedVersion(output: string): string | undefined {
+	return output.match(/(\d+\.\d+\.\d+)/)?.[1];
+}
+
+/**
  * Run the resolved OMPx binary and check if it reports the expected version.
  */
 async function verifyInstalledVersion(expectedVersion: string): Promise<InstalledVersionVerification> {
@@ -113,10 +126,7 @@ async function verifyInstalledVersion(expectedVersion: string): Promise<Installe
 	try {
 		const result = await $`${ompxPath} --version`.quiet().nothrow();
 		if (result.exitCode !== 0) return { ok: false, path: ompxPath };
-		const output = result.text().trim();
-		// Output format: "ompx/X.Y.Z"
-		const match = output.match(/\/(\d+\.\d+\.\d+)/);
-		const actual = match?.[1];
+		const actual = parseReportedVersion(result.text());
 		return { ok: actual === expectedVersion, actual, path: ompxPath };
 	} catch {
 		return { ok: false, path: ompxPath };

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getBinaryNameForTest, replaceBinaryForUpdate } from "../src/cli/update-cli";
+import { getBinaryNameForTest, parseReportedVersion, replaceBinaryForUpdate } from "../src/cli/update-cli";
 
 const tempDirs: string[] = [];
 
@@ -24,6 +24,25 @@ describe("update-cli release binary names", () => {
 		expect(getBinaryNameForTest("darwin", "arm64")).toBe("ompx-darwin-arm64");
 		expect(getBinaryNameForTest("win32", "x64")).toBe("ompx-windows-x64.exe");
 		expect(() => getBinaryNameForTest("win32", "arm64")).toThrow("Unsupported Windows architecture");
+	});
+});
+
+describe("parseReportedVersion", () => {
+	// Regression: `ompx --version` prints the bare semver (main.ts writes `${VERSION}\n`).
+	// The previous parser required an "ompx/" slash and never matched the real
+	// output, so every downloaded update failed verification and got rolled back.
+	it("parses the bare `X.Y.Z` that `ompx --version` emits", () => {
+		expect(parseReportedVersion("15.10.5\n")).toBe("15.10.5");
+	});
+
+	it("tolerates optional `ompx/` or `v` prefixes", () => {
+		expect(parseReportedVersion("ompx/15.10.5")).toBe("15.10.5");
+		expect(parseReportedVersion("v15.10.5\n")).toBe("15.10.5");
+	});
+
+	it("returns undefined when the binary printed no version", () => {
+		expect(parseReportedVersion("command not found")).toBeUndefined();
+		expect(parseReportedVersion("")).toBeUndefined();
 	});
 });
 
