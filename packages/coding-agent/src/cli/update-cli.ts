@@ -2,55 +2,20 @@
  * Update CLI command handler.
  *
  * Handles `ompx update` to check for and install updates.
- * Uses bun if available, otherwise downloads binary from GitHub releases.
+ *
+ * OMPx is distributed as a GitHub release binary from `qtnx/omppp`, so updates
+ * always download the matching release asset and swap the on-disk binary in
+ * place. There is no npm/bun reinstall path: the published npm package lives in
+ * a scope this fork does not own, so reinstalling from it would pull a different
+ * project's build rather than the latest OMPx release.
  */
 import * as fs from "node:fs";
-import * as path from "node:path";
 import { $which, APP_NAME, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import chalk from "chalk";
 import { theme } from "../modes/theme/theme";
 import { downloadReleaseAsset, fetchLatestReleaseInfo, type ReleaseInfo } from "./update-release";
 
-const PACKAGE = "@oh-my-pi/pi-coding-agent";
-/**
- * Official npm registry origin.
- *
- * Pinned for bun-managed installs so the package manager resolves from the same
- * canonical registry CI publishes to. A user's bun may be pointed at an
- * unofficial mirror (corporate proxy, Taobao, etc.) that lags the upstream
- * registry by minutes-to-hours, in which case bun would reject a GitHub release
- * version that the official npm registry already has.
- * See #1686.
- */
-const NPM_REGISTRY = "https://registry.npmjs.org/";
-
-/**
- * Core native addon package. Bumped in lock-step with {@link PACKAGE} so the
- * version sentinel the loader looks up at runtime matches the `.node` on
- * disk; see {@link buildBunInstallArgs} for why this must be installed
- * explicitly rather than inherited as a transitive dependency.
- */
-const NATIVES_PACKAGE = "@oh-my-pi/pi-natives";
-
-/**
- * Platform tags the release pipeline publishes as
- * `@oh-my-pi/pi-natives-<tag>` leaves. Mirrors `SUPPORTED_PLATFORMS` in
- * `packages/natives/native/loader-state.js` and `LEAF_TARGETS` in
- * `packages/natives/scripts/gen-npm-packages.ts`; kept here as the local
- * source of truth so the update path stays free of cross-package imports.
- */
-const SUPPORTED_NATIVE_TAGS: ReadonlySet<string> = new Set([
-	"linux-x64",
-	"linux-arm64",
-	"darwin-x64",
-	"darwin-arm64",
-	"win32-x64",
-]);
-
-function currentNativeTag(): string {
-	return `${process.platform}-${process.arch}`;
-}
 /** Result from running the installed binary and parsing its reported version. */
 export interface InstalledVersionVerification {
 	ok: boolean;
@@ -80,82 +45,6 @@ export function parseUpdateArgs(args: string[]): { force: boolean; check: boolea
 		force: args.includes("--force") || args.includes("-f"),
 		check: args.includes("--check") || args.includes("-c"),
 	};
-}
-
-async function getBunGlobalBinDir(): Promise<string | undefined> {
-	if (!$which("bun")) return undefined;
-	try {
-		const result = await $`bun pm bin -g`.quiet().nothrow();
-		if (result.exitCode !== 0) return undefined;
-		const output = result.text().trim();
-		return output.length > 0 ? output : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function normalizePathForComparison(filePath: string): string {
-	const normalized = path.normalize(filePath);
-	if (process.platform === "win32") return normalized.toLowerCase();
-	return normalized;
-}
-
-function tryRealpath(p: string): string | undefined {
-	try {
-		return fs.realpathSync.native(p);
-	} catch {
-		return undefined;
-	}
-}
-
-function isPathInDirectoryLexical(filePath: string, directoryPath: string): boolean {
-	const normalizedPath = normalizePathForComparison(path.resolve(filePath));
-	const normalizedDirectory = normalizePathForComparison(path.resolve(directoryPath));
-	const relativePath = path.relative(normalizedDirectory, normalizedPath);
-	return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
-}
-
-function isPathInDirectory(filePath: string, directoryPath: string): boolean {
-	if (isPathInDirectoryLexical(filePath, directoryPath)) return true;
-	// Layer realpath resolution on top of the lexical guard. On Windows, ~/.bun
-	// is a junction when Bun is installed via Scoop, and on Unix users commonly
-	// expose a bun-managed binary through a symlink in another PATH directory.
-	// path.resolve does not traverse either; realpath does. Resolve the file
-	// first when it exists so symlinked bun installs remain bun-managed, then
-	// fall back to resolving the parent directory to tolerate fresh paths.
-	const dirReal = tryRealpath(path.resolve(directoryPath));
-	if (!dirReal) return false;
-	const fileReal = tryRealpath(path.resolve(filePath));
-	if (fileReal && isPathInDirectoryLexical(fileReal, dirReal)) return true;
-	const fileDir = tryRealpath(path.dirname(path.resolve(filePath)));
-	if (!fileDir) return false;
-	const resolvedFile = path.join(fileDir, path.basename(filePath));
-	return isPathInDirectoryLexical(resolvedFile, dirReal);
-}
-
-type UpdateTarget = { method: "bun" } | { method: "binary"; path: string };
-
-function resolveUpdateMethod(ompxPath: string, bunBinDir: string | undefined): "bun" | "binary" {
-	if (!bunBinDir) return "binary";
-	return isPathInDirectory(ompxPath, bunBinDir) ? "bun" : "binary";
-}
-
-export function resolveUpdateMethodForTest(ompxPath: string, bunBinDir: string | undefined): "bun" | "binary" {
-	return resolveUpdateMethod(ompxPath, bunBinDir);
-}
-async function resolveUpdateTarget(): Promise<UpdateTarget> {
-	const bunBinDir = await getBunGlobalBinDir();
-	const ompxPath = resolveOmpxPath();
-
-	if (ompxPath) {
-		const method = resolveUpdateMethod(ompxPath, bunBinDir);
-		if (method === "bun") return { method };
-		return { method, path: ompxPath };
-	}
-
-	if (bunBinDir) return { method: "bun" };
-
-	throw new Error(`Could not resolve ${APP_NAME} binary path in PATH`);
 }
 
 /**
@@ -198,22 +87,28 @@ export function getBinaryNameForTest(platform: NodeJS.Platform, arch: NodeJS.Arc
 	return getBinaryNameForPlatform(platform, arch);
 }
 
-function getBinaryName(): string {
-	return getBinaryNameForPlatform(process.platform, process.arch);
-}
-
 /**
- * Resolve the path that `ompx` maps to in the user's PATH.
+ * Resolve the installed `ompx` binary this process should replace.
+ *
+ * Throws when the binary cannot be located in PATH — there is nothing to swap
+ * in place, and reinstalling via the install script is the right recovery.
  */
-function resolveOmpxPath(): string | undefined {
-	return $which(APP_NAME) ?? undefined;
+function resolveOmpxTarget(): string {
+	const ompxPath = $which(APP_NAME) ?? undefined;
+	if (!ompxPath) {
+		throw new Error(
+			`Could not resolve ${APP_NAME} binary path in PATH; reinstall with: ` +
+				"curl -fsSL https://raw.githubusercontent.com/qtnx/omppp/main/scripts/install.sh | sh",
+		);
+	}
+	return ompxPath;
 }
 
 /**
  * Run the resolved OMPx binary and check if it reports the expected version.
  */
 async function verifyInstalledVersion(expectedVersion: string): Promise<InstalledVersionVerification> {
-	const ompxPath = resolveOmpxPath();
+	const ompxPath = $which(APP_NAME) ?? undefined;
 	if (!ompxPath) return { ok: false };
 	try {
 		const result = await $`${ompxPath} --version`.quiet().nothrow();
@@ -239,28 +134,28 @@ function formatVerificationFailure(result: InstalledVersionVerification, expecte
 	return `could not verify updated version${result.path ? ` at ${result.path}` : ""}`;
 }
 
-/**
- * Print post-update verification result.
- */
-async function printVerification(expectedVersion: string): Promise<void> {
-	const result = await verifyInstalledVersion(expectedVersion);
-	if (result.ok) {
-		printVerifiedVersion(expectedVersion);
-		return;
-	}
-	console.log(chalk.yellow(`\nWarning: ${formatVerificationFailure(result, expectedVersion)}`));
-	console.log(
-		chalk.yellow(
-			"You may need to reinstall: curl -fsSL https://raw.githubusercontent.com/qtnx/omppp/main/scripts/install.sh | sh",
-		),
-	);
-}
-
 async function unlinkIfExists(filePath: string): Promise<void> {
 	try {
 		await fs.promises.unlink(filePath);
 	} catch (err) {
 		if (!isEnoent(err)) throw err;
+	}
+}
+
+/**
+ * Remove a file, ignoring every failure.
+ *
+ * Used for the post-replacement backup cleanup: on Windows the previous binary
+ * (renamed to `.bak`) is still held open by the running process, so unlinking
+ * it fails with EPERM/EBUSY. The new binary is already in place and verified at
+ * that point, so a leftover `.bak` is harmless — the next update clears it
+ * before renaming — and must never fail an otherwise-successful update.
+ */
+async function unlinkBestEffort(filePath: string): Promise<void> {
+	try {
+		await fs.promises.unlink(filePath);
+	} catch {
+		// Intentionally ignored; see doc comment.
 	}
 }
 
@@ -283,7 +178,7 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 		}
 
 		backupReady = false;
-		await unlinkIfExists(options.backupPath);
+		await unlinkBestEffort(options.backupPath);
 		return verification;
 	} catch (err) {
 		if (backupReady) {
@@ -296,71 +191,10 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 }
 
 /**
- * Build the bun argv used to globally install a specific OMPx version.
- *
- * The version is selected from the latest published GitHub release tag, but
- * bun-managed installs still resolve the package from npm. CI publishes the npm
- * package and GitHub release from the same tag; these flags make bun query the
- * canonical registry and ignore stale local metadata:
- *
- * - `--registry=${NPM_REGISTRY}` pins the install to the official registry
- *   regardless of the user's bunfig/`.npmrc`. A mirror (corporate proxy,
- *   Taobao, …) that hasn't yet replicated the release would otherwise reject
- *   a version the upstream registry already advertises.
- * - `--no-cache` tells bun to ignore its on-disk manifest snapshot so it
- *   re-fetches metadata from that registry on every invocation.
- *
- * Together these two flags make `omp update` produce exactly the registry
- * lookup the version check just performed. See #1686.
- *
- * Also pins {@link NATIVES_PACKAGE} and the platform-specific
- * `@oh-my-pi/pi-natives-<tag>` leaf to `expectedVersion`. `bun install -g`
- * does not reliably refresh transitive `optionalDependencies` when the
- * top-level package is the only one bumped, so the native addon and its
- * version sentinel can drift out of sync with the freshly installed
- * `@oh-my-pi/pi-coding-agent` and the loader aborts at
- * `validateLoadedBindings` on the next launch
- * (`The .node file on disk is from a different release than this loader`).
- * Listing the natives explicitly forces bun to replace them in lock-step.
- * The leaf is added only on tags the release pipeline actually publishes
- * ({@link SUPPORTED_NATIVE_TAGS}) so unsupported platforms still fail with
- * the original "no matching version" message instead of `EBADPLATFORM`.
- * See #1824.
- */
-export function buildBunInstallArgs(expectedVersion: string, nativeTag: string = currentNativeTag()): string[] {
-	const args = [
-		"install",
-		"-g",
-		"--no-cache",
-		`--registry=${NPM_REGISTRY}`,
-		`${PACKAGE}@${expectedVersion}`,
-		`${NATIVES_PACKAGE}@${expectedVersion}`,
-	];
-	if (SUPPORTED_NATIVE_TAGS.has(nativeTag)) {
-		args.push(`${NATIVES_PACKAGE}-${nativeTag}@${expectedVersion}`);
-	}
-	return args;
-}
-
-/**
- * Update via bun package manager.
- */
-async function updateViaBun(expectedVersion: string): Promise<void> {
-	console.log(chalk.dim("Updating via bun..."));
-	const args = buildBunInstallArgs(expectedVersion);
-	const result = await $`bun ${args}`.nothrow();
-	if (result.exitCode !== 0) {
-		throw new Error(`bun install failed with exit code ${result.exitCode}`);
-	}
-
-	await printVerification(expectedVersion);
-}
-
-/**
  * Download a release binary to a target path, replacing an existing file.
  */
 async function updateViaBinaryAt(targetPath: string, release: ReleaseInfo): Promise<void> {
-	const binaryName = getBinaryName();
+	const binaryName = getBinaryNameForPlatform(process.platform, process.arch);
 
 	const tempPath = `${targetPath}.new`;
 	const backupPath = `${targetPath}.bak`;
@@ -411,14 +245,10 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 		return;
 	}
 
-	// Choose update method based on the prioritized OMPx binary in PATH
+	// Download the matching release binary and swap it in place.
 	try {
-		const target = await resolveUpdateTarget();
-		if (target.method === "bun") {
-			await updateViaBun(release.version);
-		} else {
-			await updateViaBinaryAt(target.path, release);
-		}
+		const targetPath = resolveOmpxTarget();
+		await updateViaBinaryAt(targetPath, release);
 	} catch (err) {
 		console.error(chalk.red(`Update failed: ${err}`));
 		process.exit(1);

@@ -17,6 +17,8 @@
 
 - Fixed release publishing and `ompx update` to use version GitHub tags as the binary release source, build release assets from tag pushes, delay public GitHub release publication until after npm publish, and verify binary update downloads against `SHA256SUMS`.
 
+- Fixed `ompx update` reinstalling the upstream `@oh-my-pi/pi-coding-agent` npm package (from `registry.npmjs.org`) whenever `ompx` lived in bun's global bin directory — the documented fork install location — which pulled a different project's build instead of the latest OMPx release. `ompx update` now always downloads the matching `qtnx/omppp` GitHub release binary and swaps it in place regardless of install location, dropping the npm/bun reinstall path entirely; the post-swap backup cleanup is now best-effort so a still-open previous binary on Windows no longer fails an otherwise-verified update.
+
 - Fixed compiled binary builds with the patched `tar` dependency by applying a `fastembed` ESM import compatibility patch.
 
 - Hardened binary installers to verify GitHub release SHA256SUMS before installing, removed remote Bun bootstrap execution from source-install paths, and pinned vulnerable transitive `tar` resolution to a patched version.
