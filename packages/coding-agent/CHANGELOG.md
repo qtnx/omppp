@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- The macOS sandbox now auto-discovers the user's running SSH agent so `git`/`ssh` over SSH works with zero config even when the launching context doesn't export `SSH_AUTH_SOCK` (e.g. a supervisor that strips it). It probes 1Password, Secretive, the launchd agent, and classic `ssh-agent` sockets, trusting only sockets owned by the current user, exposes the discovered socket to sandboxed children as `SSH_AUTH_SOCK`, and allows it in the Seatbelt profile (sockets only — private keys stay blocked). Override the path with the `sandbox.sshAuthSock` setting or `PI_OMPX_SSH_AUTH_SOCK` env var, or set `sandbox.sshAuthSock: off` to disable.
+
 ### Changed
 - Sandboxed top-level and nested `ompx` runs on macOS by default with a sandvault-inspired Seatbelt profile scoped to the effective working directory, associated Git metadata, OMPx runtime paths, sandbox-allowed inherited SSH agent sockets, public SSH client metadata/public identity files, and trusted configured sandbox allowlist paths (defaulting to `~/.gitconfig`, the shared `~/.bun/install/cache`, `~/.cargo`, `~/go`, and `~/.cache` toolchain caches, and `~/.kube/config`), plus `--no-sandbox`, `/add-dir`, the `sandbox` tool, sandbox-denial notices, and sandbox awareness for commands/hooks.
 

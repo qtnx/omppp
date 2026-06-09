@@ -749,4 +749,168 @@ describe("sandboxOmpxCommand", () => {
 
 		expect(profile).not.toContain("/Users/alice/.ssh/agent.sock");
 	});
+
+	it("injects the trusted SSH agent socket as SSH_AUTH_SOCK for sandboxed children", () => {
+		setPlatform("darwin");
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--print", "git fetch"], shell: false },
+			{
+				cwd: "/Users/alice/project",
+				env: macEnv({
+					PI_OMPX_TRUSTED_SSH_AUTH_SOCK: "/private/tmp/com.apple.launchd.test/Listeners",
+				}),
+			},
+		);
+
+		expect(wrapped.env?.SSH_AUTH_SOCK).toBe("/private/tmp/com.apple.launchd.test/Listeners");
+		expect(wrapped.env?.PI_OMPX_TRUSTED_SSH_AUTH_SOCK).toBe("/private/tmp/com.apple.launchd.test/Listeners");
+	});
+
+	it("falls back to the configured SSH agent socket when none is inherited", async () => {
+		setPlatform("darwin");
+		const agentDir = createTempDir("ompx-ssh-config-");
+		setAgentDir(agentDir);
+		const socketDir = createWorkspaceTempDir("ompx-ssh-cfg-sock-");
+		const socketPath = path.join(socketDir, "agent.sock");
+		const server = await listenUnixSocket(socketPath);
+		try {
+			fs.writeFileSync(
+				path.join(agentDir, "config.yml"),
+				`sandbox:\n  sshAuthSock: ${JSON.stringify(socketPath)}\n`,
+			);
+
+			const wrapped = sandboxOmpxCommand(
+				{ cmd: "/usr/local/bin/ompx", args: ["--print", "ssh host"], shell: false },
+				{ cwd: "/Users/alice/project", env: macEnv() },
+			);
+			const profile = wrapped.args[1] ?? "";
+
+			expect(wrapped.env?.SSH_AUTH_SOCK).toBe(socketPath);
+			expect(wrapped.env?.PI_OMPX_TRUSTED_SSH_AUTH_SOCK).toBe(socketPath);
+			expect(profile).toContain(`(literal ${JSON.stringify(socketPath)})`);
+			expect(profileHasWritableFilter(profile, `(literal ${JSON.stringify(socketPath)})`)).toBe(true);
+		} finally {
+			await closeServer(server);
+		}
+	});
+
+	it("expands ~ in the configured SSH agent socket path", () => {
+		setPlatform("darwin");
+		const agentDir = createTempDir("ompx-ssh-config-tilde-");
+		setAgentDir(agentDir);
+		fs.writeFileSync(path.join(agentDir, "config.yml"), `sandbox:\n  sshAuthSock: "~/run/agent.sock"\n`);
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--print", "ssh host"], shell: false },
+			{ cwd: "/Users/alice/project", env: macEnv({ HOME: "/Users/alice" }) },
+		);
+
+		expect(wrapped.env?.SSH_AUTH_SOCK).toBe("/Users/alice/run/agent.sock");
+	});
+
+	it("inherited trusted socket takes priority over the configured socket", () => {
+		setPlatform("darwin");
+		const agentDir = createTempDir("ompx-ssh-config-priority-");
+		setAgentDir(agentDir);
+		fs.writeFileSync(
+			path.join(agentDir, "config.yml"),
+			`sandbox:\n  sshAuthSock: "/private/tmp/configured/agent.sock"\n`,
+		);
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--print", "ssh host"], shell: false },
+			{
+				cwd: "/Users/alice/project",
+				env: macEnv({ PI_OMPX_TRUSTED_SSH_AUTH_SOCK: "/private/tmp/inherited/Listeners" }),
+			},
+		);
+
+		expect(wrapped.env?.SSH_AUTH_SOCK).toBe("/private/tmp/inherited/Listeners");
+	});
+
+	it("does not allow a configured SSH_AUTH_SOCK that points at a regular file", () => {
+		setPlatform("darwin");
+		const agentDir = createTempDir("ompx-ssh-config-file-");
+		setAgentDir(agentDir);
+		const fileDir = createWorkspaceTempDir("ompx-ssh-cfg-file-");
+		const filePath = path.join(fileDir, "not-a-socket");
+		fs.writeFileSync(filePath, "regular file");
+		fs.writeFileSync(path.join(agentDir, "config.yml"), `sandbox:\n  sshAuthSock: ${JSON.stringify(filePath)}\n`);
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--print", "ssh host"], shell: false },
+			{ cwd: "/Users/alice/project", env: macEnv() },
+		);
+		const profile = wrapped.args[1] ?? "";
+
+		expect(profile).not.toContain(filePath);
+	});
+
+	it("auto-discovers a 1Password-style agent socket under the home directory (zero config)", async () => {
+		setPlatform("darwin");
+		const home = fs.realpathSync(fs.mkdtempSync("/tmp/ompx-1p-"));
+		tempDirs.push(home);
+		const socketDir = path.join(home, "Library/Group Containers/2BUA8C4S2C.com.1password/t");
+		fs.mkdirSync(socketDir, { recursive: true });
+		const socketPath = path.join(socketDir, "agent.sock");
+		const server = await listenUnixSocket(socketPath);
+		try {
+			const wrapped = sandboxOmpxCommand(
+				{ cmd: "/usr/local/bin/ompx", args: ["--print", "git fetch"], shell: false },
+				{ cwd: "/Users/alice/project", env: macEnv({ HOME: home }) },
+			);
+			const profile = wrapped.args[1] ?? "";
+
+			expect(wrapped.env?.SSH_AUTH_SOCK).toBe(socketPath);
+			expect(profile).toContain(`(literal ${JSON.stringify(socketPath)})`);
+		} finally {
+			await closeServer(server);
+		}
+	});
+
+	it("auto-discovers a classic ssh-agent socket under TMPDIR (zero config)", async () => {
+		setPlatform("darwin");
+		const tmp = fs.realpathSync(fs.mkdtempSync("/tmp/ompx-tmpdir-"));
+		tempDirs.push(tmp);
+		const agentDir = path.join(tmp, "ssh-abc123");
+		fs.mkdirSync(agentDir, { recursive: true });
+		const socketPath = path.join(agentDir, "agent.4242");
+		const server = await listenUnixSocket(socketPath);
+		const future = new Date(Date.now() + 60_000);
+		fs.utimesSync(socketPath, future, future);
+		try {
+			const wrapped = sandboxOmpxCommand(
+				{ cmd: "/usr/local/bin/ompx", args: ["--print", "git fetch"], shell: false },
+				{ cwd: "/Users/alice/project", env: macEnv({ TMPDIR: tmp }) },
+			);
+
+			expect(wrapped.env?.SSH_AUTH_SOCK).toBe(socketPath);
+		} finally {
+			await closeServer(server);
+		}
+	});
+
+	it("disables auto-discovery when sandbox.sshAuthSock is off", async () => {
+		setPlatform("darwin");
+		const agentDir = createTempDir("ompx-ssh-off-");
+		setAgentDir(agentDir);
+		fs.writeFileSync(path.join(agentDir, "config.yml"), `sandbox:\n  sshAuthSock: "off"\n`);
+		const tmp = fs.realpathSync(fs.mkdtempSync("/tmp/ompx-off-tmp-"));
+		tempDirs.push(tmp);
+		const sshDir = path.join(tmp, "ssh-zzz");
+		fs.mkdirSync(sshDir, { recursive: true });
+		const socketPath = path.join(sshDir, "agent.1");
+		const server = await listenUnixSocket(socketPath);
+		try {
+			const wrapped = sandboxOmpxCommand(
+				{ cmd: "/usr/local/bin/ompx", args: ["--print", "git fetch"], shell: false },
+				{ cwd: "/Users/alice/project", env: macEnv({ TMPDIR: tmp }) },
+			);
+
+			expect(wrapped.env?.SSH_AUTH_SOCK).toBeUndefined();
+		} finally {
+			await closeServer(server);
+		}
+	});
 });
