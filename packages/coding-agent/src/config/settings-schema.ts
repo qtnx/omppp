@@ -2260,6 +2260,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"sandbox.sshAuthSock": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			label: "macOS Sandbox SSH Agent Socket",
+			description:
+				"macOS sandbox SSH agent socket for git/ssh. Leave empty to auto-discover the running agent (1Password, Secretive, launchd, or ssh-agent) when SSH_AUTH_SOCK isn't inherited; set an explicit socket path to override (supports ~); set to `off` to disable. Only user/global config is trusted; also settable via the PI_OMPX_SSH_AUTH_SOCK env var.",
+		},
+	},
+
 	// Todo tool
 	"todo.enabled": {
 		type: "boolean",
@@ -3733,6 +3744,7 @@ export interface ShellMinimizerSettings {
 
 export interface SandboxSettings {
 	allowedPaths: string[];
+	sshAuthSock: string | undefined;
 }
 
 /** Map group prefix -> typed settings interface */

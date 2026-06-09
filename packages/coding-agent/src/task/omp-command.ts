@@ -97,6 +97,12 @@ const SSH_PUBLIC_IDENTITY_FILES = [
 	"id_rsa.pub",
 	"id_rsa-cert.pub",
 ];
+// Well-known SSH agent socket locations probed for zero-config discovery (macOS).
+// Entries are paths under the user home (relative to ~).
+const SSH_AGENT_HOME_SOCKETS = [
+	"Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock", // 1Password
+	"Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh", // Secretive
+];
 const CLI_VALUE_FLAGS = new Set([
 	"--api-key",
 	"--approval-mode",
@@ -650,6 +656,97 @@ function trustedSSHAuthSock(env: Record<string, string | undefined>): string | u
 	return trusted && trusted !== MACOS_SANDBOX_DEFAULT_SENTINEL ? trusted : undefined;
 }
 
+function readConfiguredSSHAuthSock(): string | undefined {
+	try {
+		const configPath = path.join(getAgentDir(), "config.yml");
+		const parsed = YAML.parse(fs.readFileSync(configPath, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+		const raw = parsed as { sandbox?: { sshAuthSock?: unknown }; "sandbox.sshAuthSock"?: unknown };
+		const value = raw.sandbox?.sshAuthSock ?? raw["sandbox.sshAuthSock"];
+		return typeof value === "string" && value.trim() ? value.trim() : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function statIfOwnedSocket(candidate: string, uid: number | undefined): fs.Stats | null {
+	try {
+		const stat = fs.lstatSync(candidate);
+		if (!stat.isSocket()) return null;
+		if (uid !== undefined && stat.uid !== uid) return null;
+		return stat;
+	} catch {
+		return null;
+	}
+}
+
+// launchd agents expose `<root>/com.apple.launchd.*/Listeners`; classic ssh-agent
+// exposes `<root>/ssh-*/agent.*`. Pick the newest live-looking socket owned by us.
+function newestAgentSocketInTempRoots(
+	roots: readonly (string | undefined)[],
+	uid: number | undefined,
+): string | undefined {
+	let best: string | undefined;
+	let bestMtime = -1;
+	const seen = new Set<string>();
+	for (const root of roots) {
+		if (!root?.trim() || seen.has(root)) continue;
+		seen.add(root);
+		let entries: string[];
+		try {
+			entries = fs.readdirSync(root);
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			let socketPath: string | undefined;
+			if (entry.startsWith("com.apple.launchd.")) {
+				socketPath = path.join(root, entry, "Listeners");
+			} else if (entry.startsWith("ssh-")) {
+				try {
+					const inner = fs.readdirSync(path.join(root, entry)).find(name => name.startsWith("agent."));
+					if (inner) socketPath = path.join(root, entry, inner);
+				} catch {}
+			}
+			const stat = socketPath ? statIfOwnedSocket(socketPath, uid) : null;
+			if (socketPath && stat && stat.mtimeMs > bestMtime) {
+				best = socketPath;
+				bestMtime = stat.mtimeMs;
+			}
+		}
+	}
+	return best;
+}
+
+// Best-effort zero-config discovery of the user's running SSH agent on macOS. Only
+// sockets owned by the current uid are trusted, so another user cannot plant one
+// under a shared temp root to hijack agent auth.
+function discoverSSHAuthSock(env: Record<string, string | undefined>, home: string): string | undefined {
+	const getuid = process.getuid;
+	const uid = getuid ? getuid() : undefined;
+	for (const relative of SSH_AGENT_HOME_SOCKETS) {
+		const candidate = path.join(home, relative);
+		if (statIfOwnedSocket(candidate, uid)) return candidate;
+	}
+	return newestAgentSocketInTempRoots([env.TMPDIR, os.tmpdir(), "/tmp", "/private/tmp"], uid);
+}
+
+// Resolution priority mirrors the trust model: the boot-captured/env-override socket
+// (PI_OMPX_TRUSTED_SSH_AUTH_SOCK, set in preload-env) wins, then user/global config,
+// then best-effort zero-config discovery. Raw SSH_AUTH_SOCK is never trusted directly.
+// A config value of off/false/no/0 disables both the config path and discovery.
+function resolveSandboxSSHAuthSock(env: Record<string, string | undefined>, home: string): string | undefined {
+	const inherited = trustedSSHAuthSock(env);
+	if (inherited) return inherited;
+	const configured = readConfiguredSSHAuthSock();
+	if (configured) {
+		if (DISABLE_SANDBOX_VALUES.has(configured.toLowerCase())) return undefined;
+		if (configured === "~") return home;
+		return configured.startsWith("~/") ? path.join(home, configured.slice(2)) : configured;
+	}
+	return discoverSSHAuthSock(env, home);
+}
+
 function addSSHAgentSocket(sets: SandboxPathSets, inputPath: string | undefined): void {
 	if (!inputPath?.trim()) return;
 	const candidates = realPaths(inputPath);
@@ -1121,11 +1218,17 @@ export function sandboxOmpxCommand(command: OmpxCommand, options: OmpxSandboxOpt
 
 	const cwd = path.resolve(options.cwd?.trim() ? options.cwd : process.cwd());
 	const resolvedCmd = resolveExecutable(command.cmd, env, cwd);
-	const profile = buildMacOSSandboxProfile(collectSandboxPaths(command, resolvedCmd, cwd, env));
+	const childEnv = withActiveMacOSSandboxEnv(env);
+	const sshAuthSock = resolveSandboxSSHAuthSock(childEnv, childEnv.HOME ?? os.homedir());
+	if (sshAuthSock) {
+		childEnv.SSH_AUTH_SOCK = sshAuthSock;
+		childEnv[TRUSTED_SSH_AUTH_SOCK_ENV] = sshAuthSock;
+	}
+	const profile = buildMacOSSandboxProfile(collectSandboxPaths(command, resolvedCmd, cwd, childEnv));
 	return {
 		cmd: MACOS_SANDBOX_EXEC,
 		args: ["-p", profile, resolvedCmd, ...command.args],
 		shell: false,
-		env: withActiveMacOSSandboxEnv(env),
+		env: childEnv,
 	};
 }
