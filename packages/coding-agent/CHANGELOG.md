@@ -2,13 +2,14 @@
 
 ## [Unreleased]
 ### Changed
-- Sandboxed nested `ompx` spawns on macOS by default with a sandvault-inspired Seatbelt profile scoped to the effective working directory and OMPx runtime paths, plus `--no-sandbox`, sandbox-denial notices, and sandbox awareness for commands/hooks.
+- Sandboxed top-level and nested `ompx` runs on macOS by default with a sandvault-inspired Seatbelt profile scoped to the effective working directory, associated Git metadata, OMPx runtime paths, sandbox-allowed inherited SSH agent sockets, public SSH client metadata/public identity files, and trusted configured sandbox allowlist paths (defaulting to `~/.gitconfig`, the shared `~/.bun/install/cache`, `~/.cargo`, `~/go`, and `~/.cache` toolchain caches, and `~/.kube/config`), plus `--no-sandbox`, `/add-dir`, the `sandbox` tool, sandbox-denial notices, and sandbox awareness for commands/hooks.
 
 - Rebranded the CLI invocation from `omp` to `ompx`, updated release/install binary names, and seeded fresh installs with the standard `~/.omp/agent/config.yml` backup.
 
 - Disabled OMP-compatible Claude hook discovery from `.claude/hooks/**` and Cursor rule prompt injection by default; enable `hooks.enableClaudeUser` / `hooks.enableClaudeProject` or `rules.enableCursorUser` / `rules.enableCursorProject` from trusted operator config or runtime overrides to opt back in.
 
 ### Fixed
+- Fixed runtime macOS sandbox allowlist relaunches to keep the active project as the primary workspace root, so adding another trusted directory no longer trips the cross-project resume/fork prompt.
 
 - Fixed release publishing and `ompx update` to use version GitHub tags as the binary release source, build release assets from tag pushes, delay public GitHub release publication until after npm publish, and verify binary update downloads against `SHA256SUMS`.
 

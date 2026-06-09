@@ -22,6 +22,7 @@ import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import { TaskTool } from "../task";
+import type { MacOSSandboxRelaunchResult } from "../task/omp-command";
 import type { AgentOutputManager } from "../task/output-manager";
 import {
 	type DiscoverableTool,
@@ -47,6 +48,7 @@ import { GithubTool } from "./gh";
 import { InspectImageTool } from "./inspect-image";
 import { IrcTool } from "./irc";
 import { JobTool } from "./job";
+import { MacOSSandboxTool } from "./macos-sandbox";
 import { MemoryEditTool } from "./memory-edit";
 import { MemoryRecallTool } from "./memory-recall";
 import { MemoryReflectTool } from "./memory-reflect";
@@ -90,6 +92,7 @@ export * from "./image-gen";
 export * from "./inspect-image";
 export * from "./irc";
 export * from "./job";
+export * from "./macos-sandbox";
 export * from "./memory-edit";
 export * from "./memory-recall";
 export * from "./memory-reflect";
@@ -317,6 +320,8 @@ export interface ToolSession {
 
 	/** Queue a hidden message to be injected at the next agent turn. */
 	queueDeferredMessage?(message: CustomMessage): void;
+	/** Request the macOS sandbox supervisor to relaunch this session with extra sandbox allowlist roots. */
+	requestMacOSSandboxRelaunch?(paths: string[]): MacOSSandboxRelaunchResult;
 	/** Queue late LSP diagnostics (arrived after an edit/write returned) to be shown
 	 *  in the transcript and delivered to the model at the next yield, like background
 	 *  job results. */
@@ -367,6 +372,7 @@ export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
 	debug: DebugTool.createIf,
 	eval: s => new EvalTool(s),
 	ssh: loadSshTool,
+	sandbox: s => new MacOSSandboxTool(s),
 	github: GithubTool.createIf,
 	find: s => new FindTool(s),
 	search: s => new SearchTool(s),

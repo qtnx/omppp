@@ -193,6 +193,9 @@ export class RpcClient {
 		if (this.options.env?.PI_CODING_AGENT_DIR?.trim()) {
 			env.PI_OMPX_TRUSTED_CODING_AGENT_DIR = this.options.env.PI_CODING_AGENT_DIR;
 		}
+		if (this.options.env && "SSH_AUTH_SOCK" in this.options.env && !this.options.env.PI_OMPX_TRUSTED_SSH_AUTH_SOCK) {
+			env.PI_OMPX_TRUSTED_SSH_AUTH_SOCK = "default";
+		}
 		const command = sandboxOmpxCommand(
 			{ cmd: "bun", args: [cliPath, ...args], shell: false },
 			{ cwd: this.options.cwd, env },

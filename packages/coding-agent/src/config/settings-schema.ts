@@ -24,6 +24,7 @@ import {
 } from "../tiny/models";
 import { EDIT_MODES } from "../utils/edit-mode";
 import { SEARCH_PROVIDER_OPTIONS, SEARCH_PROVIDER_PREFERENCES } from "../web/search/types";
+import { DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS } from "./sandbox-defaults";
 
 /** Unified settings schema - single source of truth for all settings.
  * Unified settings schema - single source of truth for all settings.
@@ -2248,6 +2249,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"sandbox.allowedPaths": {
+		type: "array",
+		default: DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS,
+		ui: {
+			tab: "tools",
+			label: "macOS Sandbox Allowlist",
+			description:
+				"Trusted file or directory paths the macOS sandbox may read/write. Supports ~. Only user/global config is trusted for sandboxing; project settings cannot widen the sandbox.",
+		},
+	},
+
 	// Todo tool
 	"todo.enabled": {
 		type: "boolean",
@@ -3719,6 +3731,10 @@ export interface ShellMinimizerSettings {
 	maxCaptureBytes: number;
 }
 
+export interface SandboxSettings {
+	allowedPaths: string[];
+}
+
 /** Map group prefix -> typed settings interface */
 export interface GroupTypeMap {
 	compaction: CompactionSettings;
@@ -3738,6 +3754,7 @@ export interface GroupTypeMap {
 	modelTags: ModelTagsSettings;
 	cycleOrder: string[];
 	shellMinimizer: ShellMinimizerSettings;
+	sandbox: SandboxSettings;
 }
 
 export type GroupPrefix = keyof GroupTypeMap;

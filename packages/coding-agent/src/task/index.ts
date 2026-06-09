@@ -12,6 +12,7 @@
  *   - Progress tracking via JSON events
  *   - Session artifacts for debugging
  */
+import "../cli/preload-env";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";

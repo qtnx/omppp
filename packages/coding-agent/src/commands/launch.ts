@@ -66,6 +66,10 @@ export default class Index extends Command {
 			description: "Additional working directory, tagged by basename (repeatable)",
 			multiple: true,
 		}),
+		"sandbox-add-dir": Flags.string({
+			hidden: true,
+			multiple: true,
+		}),
 		cwd: Flags.string({
 			description: "Directory to start in (overrides the launch cwd)",
 		}),

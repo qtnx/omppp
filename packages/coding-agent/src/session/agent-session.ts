@@ -190,6 +190,7 @@ import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { deobfuscateSessionContext, type SecretObfuscator } from "../secrets/obfuscator";
 import { invalidateHostMetadata } from "../ssh/connection-manager";
 import { discoverAgents } from "../task/discovery";
+import { type MacOSSandboxRelaunchResult, requestMacOSSandboxRelaunch } from "../task/omp-command";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -4098,6 +4099,12 @@ export class AgentSession {
 	get sessionId(): string {
 		return this.#activeProviderSessionId();
 	}
+	requestMacOSSandboxRelaunch(paths: string[]): MacOSSandboxRelaunchResult {
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionFile) return { requested: false, reason: "missing-session" };
+		return requestMacOSSandboxRelaunch(paths, this.sessionManager.getSessionId(), path.dirname(sessionFile));
+	}
+
 	getEvalSessionId(): string | null {
 		if (this.#parentEvalSessionId !== undefined) return this.#parentEvalSessionId;
 		return defaultEvalSessionId({
