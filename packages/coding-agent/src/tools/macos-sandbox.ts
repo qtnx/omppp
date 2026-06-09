@@ -73,7 +73,7 @@ export class MacOSSandboxTool implements AgentTool<typeof macosSandboxSchema, Ma
 				content: [
 					{
 						type: "text",
-						text: `Requested a sandbox relaunch with additional working directories:\n${paths.map(p => `- ${p}`).join("\n")}`,
+						text: `Successfully added working directories to the macOS sandbox allowlist for the relaunched session.\nRetry the original operation after OMPx relaunches.\n${paths.map(p => `- ${p}`).join("\n")}`,
 					},
 				],
 				details: { paths, relaunchRequested: true },

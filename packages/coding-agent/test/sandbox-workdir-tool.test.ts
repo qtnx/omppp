@@ -29,7 +29,7 @@ function firstText(result: AgentToolResult): string {
 }
 
 describe("MacOSSandboxTool", () => {
-	it("requests relaunch with the current session directory as the primary workspace root", async () => {
+	it("reports successful working directory allowlisting when relaunch is requested", async () => {
 		const requested: string[][] = [];
 		const tool = new MacOSSandboxTool(
 			makeSession(
@@ -55,6 +55,8 @@ describe("MacOSSandboxTool", () => {
 		expect(result.isError).toBeUndefined();
 		expect(result.details?.relaunchRequested).toBe(true);
 		const text = firstText(result);
+		expect(text).toContain("Successfully added working directories to the macOS sandbox allowlist");
+		expect(text).toContain("Retry the original operation after OMPx relaunches");
 		expect(text).toContain("/Users/alice/other");
 		expect(text).toContain("/Users/alice/third");
 		expect(text).not.toContain("/Users/alice/project");
