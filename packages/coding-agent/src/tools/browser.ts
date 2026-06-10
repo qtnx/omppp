@@ -5,8 +5,8 @@ import browserDescription from "../prompts/tools/browser.md" with { type: "text"
 import type { ToolSession } from "../sdk";
 import { truncateForPrompt } from "./approval";
 import { acquireBrowser, type BrowserHandle, type BrowserKind, type BrowserKindTag } from "./browser/registry";
-import type { Observation, ScreenshotResult } from "./browser/tab-protocol";
-import { acquireTab, dropHeadlessTabs, getTab, releaseAllTabs, releaseTab, runInTab } from "./browser/tab-supervisor";
+import type { AnnotationSubmission, Observation, ScreenshotResult } from "./browser/tab-protocol";
+import { acquireTab, dropHeadlessTabs, getTab, releaseAllTabs, releaseTab, runInTab, setAnnotateMode, waitForAnnotation } from "./browser/tab-supervisor";
 import type { OutputMeta } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
@@ -26,7 +26,7 @@ const appSchema = z.object({
 });
 
 const browserSchema = z.object({
-	action: z.enum(["open", "close", "run"] as const).describe("operation"),
+	action: z.enum(["open", "close", "run", "annotate"] as const).describe("operation"),
 	name: z.string().describe("tab id (default 'main')").optional(),
 	url: z.string().describe("url to open").optional(),
 	app: appSchema.optional(),
@@ -49,6 +49,8 @@ const browserSchema = z.object({
 	timeout: z.number().default(30).describe("timeout in seconds (default 30, max 300)").optional(),
 	all: z.boolean().describe("close every tab").optional(),
 	kill: z.boolean().describe("also kill spawned-app browsers").optional(),
+	enabled: z.boolean().describe("annotate: enable (default) or disable the overlay").optional(),
+	wait: z.boolean().describe("annotate: wait for a human submission (default true)").optional(),
 });
 
 /** Input schema for the browser tool. */
@@ -81,10 +83,11 @@ function resolveBrowserKind(params: BrowserParams, session: ToolSession): Browse
 }
 
 /**
- * Browser tool: stateful, multi-tab. Three actions:
- * - `open`  → acquire/create a named tab on a browser kind (headless | spawned | connected) and optionally goto a url.
- * - `close` → release a named tab (or all tabs); dispose browser when refcount hits 0.
- * - `run`   → execute JS code against an existing tab with `page`/`browser`/`tab` helpers in scope.
+ * Browser tool: stateful, multi-tab. Four actions:
+ * - `open`     → acquire/create a named tab on a browser kind (headless | spawned | connected) and optionally goto a url.
+ * - `close`    → release a named tab (or all tabs); dispose browser when refcount hits 0.
+ * - `run`      → execute JS code against an existing tab with `page`/`browser`/`tab` helpers in scope.
+ * - `annotate` → toggle/wait for human annotation overlay on an existing tab.
  */
 export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolDetails> {
 	readonly name = "browser";
@@ -141,6 +144,8 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 					return await this.#close(name, params, details, signal);
 				case "run":
 					return await this.#run(name, params, details, timeoutMs, signal);
+				case "annotate":
+					return await this.#annotate(name, params, details, timeoutMs, signal);
 				default:
 					throw new ToolError(`Unsupported action: ${(params as BrowserParams).action}`);
 			}
@@ -274,6 +279,48 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 		details.result = textOnly;
 		return toolResult(details).content(content).done();
 	}
+
+	async #annotate(
+		name: string,
+		params: BrowserParams,
+		details: BrowserToolDetails,
+		timeoutMs: number,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<BrowserToolDetails>> {
+		const tab = getTab(name);
+		if (tab) {
+			details.browser = tab.browser.kind.kind;
+			details.url = tab.info.url;
+		}
+
+		const enabled = params.enabled ?? true;
+		if (!enabled) {
+			await untilAborted(signal, () => setAnnotateMode(name, false, timeoutMs));
+			details.result = `Annotation overlay disabled on tab ${JSON.stringify(name)}`;
+			return toolResult(details).text(details.result).done();
+		}
+
+		await untilAborted(signal, () => setAnnotateMode(name, true, timeoutMs));
+		if (params.wait === false) {
+			details.result = `Annotation overlay active on tab ${JSON.stringify(name)}. Call {action:"annotate"} again to wait for a submission.`;
+			return toolResult(details).text(details.result).done();
+		}
+
+		const submission = await waitForAnnotation(name, { timeoutMs, signal });
+		if (!submission) {
+			details.result = `Annotation overlay active on tab ${JSON.stringify(name)}; no submission within ${Math.round(timeoutMs / 1000)}s. Call {action:"annotate"} again to keep waiting.`;
+			return toolResult(details).text(details.result).done();
+		}
+
+		const text = formatAnnotationSubmission(submission);
+		details.result = text;
+		return toolResult(details)
+			.content([
+				{ type: "text", text },
+				{ type: "image", data: submission.screenshot.data, mimeType: submission.screenshot.mimeType },
+			])
+			.done();
+	}
 }
 
 function describeBrowser(handle: BrowserHandle): string {
@@ -304,6 +351,26 @@ function sameBrowserKind(a: BrowserKind, b: BrowserKind): boolean {
 	if (a.kind === "spawned" && b.kind === "spawned") return a.path === b.path;
 	if (a.kind === "connected" && b.kind === "connected") return a.cdpUrl === b.cdpUrl;
 	return false;
+}
+
+function formatAnnotationSubmission(submission: AnnotationSubmission): string {
+	const title = submission.payload.title?.trim();
+	const lines = [`Human feedback from ${submission.payload.url}${title ? ` — ${title}` : ""}`];
+	const comment = submission.payload.comment.trim();
+	if (comment) {
+		lines.push(`Comment: ${comment}`);
+	}
+	if (submission.payload.rects.length) {
+		for (const [index, rect] of submission.payload.rects.entries()) {
+			const note = rect.note ? ` — ${rect.note}` : "";
+			lines.push(
+				`[${index + 1}] x=${Math.round(rect.x)} y=${Math.round(rect.y)} w=${Math.round(rect.width)} h=${Math.round(rect.height)}${note}`,
+			);
+		}
+	} else {
+		lines.push("(no regions marked)");
+	}
+	return lines.join("\n");
 }
 
 function stringifyReturnValue(value: unknown): string {

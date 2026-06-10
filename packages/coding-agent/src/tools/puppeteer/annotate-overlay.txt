@@ -1,0 +1,360 @@
+(() => {
+  // Idempotent per document: a second injection (e.g. a queued
+  // evaluateOnNewDocument racing with an evaluate) must not rebuild the UI.
+  if (globalThis.__ompxAnnotateInstalled) return;
+  // Page-side disable gate (fallback for puppeteer builds without
+  // removeScriptToEvaluateOnNewDocument). The worker resets this to true on
+  // enable and to false on disable.
+  if (globalThis.__ompxAnnotateEnabled === false) return;
+
+  globalThis.__ompxAnnotateInstalled = true;
+  globalThis.__ompxAnnotateEnabled = true;
+
+  const HOST_ID = "__ompx-annotate-host";
+  const MIN_RECT = 4;
+  const NOTE_MAX = 1000;
+
+  const install = () => {
+    // The worker may disable between injection and DOMContentLoaded.
+    if (globalThis.__ompxAnnotateEnabled === false) return;
+    const doc = document;
+    const root = doc.documentElement;
+    if (!root) return;
+
+    // Drop any stale host left behind by a prior install on this document.
+    const stale = doc.getElementById(HOST_ID);
+    if (stale) stale.remove();
+
+    // Host lives on documentElement (NOT body — SPAs swap body wholesale). It is
+    // a zero-size, pointer-transparent anchor; children opt back into pointers.
+    const host = doc.createElement("div");
+    host.id = HOST_ID;
+    host.setAttribute("data-ompx", "annotate");
+    host.style.position = "fixed";
+    host.style.top = "0";
+    host.style.left = "0";
+    host.style.width = "0";
+    host.style.height = "0";
+    host.style.margin = "0";
+    host.style.padding = "0";
+    host.style.border = "0";
+    host.style.zIndex = "2147483647";
+    host.style.pointerEvents = "none";
+    const shadow = host.attachShadow({ mode: "open" });
+    root.appendChild(host);
+
+    const style = doc.createElement("style");
+    style.textContent = [
+      ":host { all: initial; }",
+      "* { box-sizing: border-box; }",
+      ".layer { position: fixed; top: 0; left: 0; pointer-events: none; }",
+      ".rects { will-change: transform; }",
+      ".rect { position: absolute; border: 2px solid #e53935; background: rgba(229,57,53,0.08); pointer-events: none; }",
+      ".badge { position: absolute; top: -1px; left: -1px; min-width: 16px; height: 16px; padding: 0 3px; font: 700 11px/16px ui-sans-serif, system-ui, -apple-system, sans-serif; color: #fff; background: #e53935; text-align: center; border-radius: 0 0 4px 0; }",
+      ".capture { position: fixed; inset: 0; pointer-events: auto; cursor: crosshair; background: rgba(0,0,0,0.02); }",
+      ".preview { position: fixed; border: 2px dashed #e53935; background: rgba(229,57,53,0.08); pointer-events: none; }",
+      ".note-input { position: fixed; pointer-events: auto; font: 400 12px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif; padding: 3px 6px; border: 1px solid #e53935; border-radius: 4px; background: #fff; color: #111; box-shadow: 0 2px 6px rgba(0,0,0,0.25); width: 220px; }",
+      ".toolbar { position: fixed; top: 12px; right: 12px; width: 260px; pointer-events: auto; font: 400 13px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif; color: #111; background: #fff; border: 1px solid #d0d0d0; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); padding: 10px; }",
+      ".row { display: flex; gap: 6px; margin-bottom: 8px; }",
+      ".btn { flex: 1 1 auto; font: inherit; padding: 6px 8px; border: 1px solid #c0c0c0; border-radius: 6px; background: #f5f5f5; color: #111; cursor: pointer; }",
+      ".btn:hover { background: #ececec; }",
+      ".btn.active { background: #e53935; border-color: #e53935; color: #fff; }",
+      ".btn.primary { background: #1e88e5; border-color: #1e88e5; color: #fff; }",
+      ".btn.primary:hover { background: #1976d2; }",
+      ".btn[disabled] { opacity: 0.5; cursor: default; }",
+      "textarea.comment { width: 100%; min-height: 64px; resize: vertical; font: 400 13px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif; padding: 6px 8px; border: 1px solid #c0c0c0; border-radius: 6px; color: #111; background: #fff; margin-bottom: 8px; }",
+      ".status { min-height: 16px; font-size: 12px; color: #666; word-break: break-word; }",
+      ".toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); pointer-events: none; font: 500 13px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif; color: #fff; background: #323232; padding: 8px 14px; border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,0.3); max-width: 70vw; }",
+      ".toast.error { background: #c62828; }",
+    ].join("\n");
+    shadow.appendChild(style);
+
+    // Rects layer stays VISIBLE in screenshots; chrome layer is hidden by the
+    // worker right before capture via __ompxAnnotateSetChromeVisible(false).
+    const rectsLayer = doc.createElement("div");
+    rectsLayer.className = "layer rects";
+    rectsLayer.setAttribute("data-ompx-layer", "rects");
+
+    const chromeLayer = doc.createElement("div");
+    chromeLayer.className = "layer chrome";
+    chromeLayer.setAttribute("data-ompx-layer", "chrome");
+
+    shadow.appendChild(rectsLayer);
+    shadow.appendChild(chromeLayer);
+
+    // Rects are positioned at PAGE coordinates inside the fixed rects layer; a
+    // single translate of the layer by the negative scroll offset glues every
+    // rect to its page content as the user scrolls.
+    const scrollX = () => window.scrollX || window.pageXOffset || 0;
+    const scrollY = () => window.scrollY || window.pageYOffset || 0;
+    const syncScroll = () => {
+      rectsLayer.style.transform = "translate(" + -scrollX() + "px," + -scrollY() + "px)";
+    };
+    syncScroll();
+    window.addEventListener("scroll", syncScroll, { capture: true, passive: true });
+    window.addEventListener("resize", syncScroll, { passive: true });
+
+    const rects = [];
+
+    const renumber = () => {
+      for (let i = 0; i < rects.length; i++) rects[i].badge.textContent = String(i + 1);
+    };
+
+    // vx/vy are viewport (client) coordinates at draw time.
+    const addRect = (vx, vy, w, h) => {
+      const pageX = vx + scrollX();
+      const pageY = vy + scrollY();
+      const el = doc.createElement("div");
+      el.className = "rect";
+      el.style.left = pageX + "px";
+      el.style.top = pageY + "px";
+      el.style.width = w + "px";
+      el.style.height = h + "px";
+      const badge = doc.createElement("div");
+      badge.className = "badge";
+      el.appendChild(badge);
+      rectsLayer.appendChild(el);
+      const entry = { el: el, badge: badge, pageX: pageX, pageY: pageY, width: w, height: h, note: "" };
+      rects.push(entry);
+      renumber();
+      return entry;
+    };
+
+    const clearRects = () => {
+      for (const r of rects) r.el.remove();
+      rects.length = 0;
+    };
+
+    // Capture surface for draw mode (appended before the toolbar so the toolbar
+    // paints above it and stays clickable while drawing).
+    const capture = doc.createElement("div");
+    capture.className = "capture";
+    capture.style.display = "none";
+    chromeLayer.appendChild(capture);
+
+    const toolbar = doc.createElement("div");
+    toolbar.className = "toolbar";
+
+    const row = doc.createElement("div");
+    row.className = "row";
+    const drawBtn = doc.createElement("button");
+    drawBtn.type = "button";
+    drawBtn.className = "btn";
+    drawBtn.textContent = "Draw";
+    const clearBtn = doc.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "btn";
+    clearBtn.textContent = "Clear";
+    row.appendChild(drawBtn);
+    row.appendChild(clearBtn);
+
+    const comment = doc.createElement("textarea");
+    comment.className = "comment";
+    comment.placeholder = "Describe what to fix...";
+
+    const sendBtn = doc.createElement("button");
+    sendBtn.type = "button";
+    sendBtn.className = "btn primary";
+    sendBtn.textContent = "Send to agent";
+
+    const status = doc.createElement("div");
+    status.className = "status";
+
+    toolbar.appendChild(row);
+    toolbar.appendChild(comment);
+    toolbar.appendChild(sendBtn);
+    toolbar.appendChild(status);
+    chromeLayer.appendChild(toolbar);
+
+    const setStatus = (msg) => {
+      status.textContent = msg || "";
+    };
+
+    let toastEl = null;
+    let toastTimer = 0;
+    const toast = (msg, isError) => {
+      if (toastEl) toastEl.remove();
+      toastEl = doc.createElement("div");
+      toastEl.className = isError ? "toast error" : "toast";
+      toastEl.textContent = msg;
+      chromeLayer.appendChild(toastEl);
+      window.clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(() => {
+        if (toastEl) {
+          toastEl.remove();
+          toastEl = null;
+        }
+      }, 2600);
+    };
+
+    // ---- draw mode --------------------------------------------------------
+    let drawActive = false;
+    let drag = null;
+    let noteOpen = false;
+
+    const positionPreview = (cx, cy) => {
+      if (!drag) return;
+      drag.preview.style.left = Math.min(drag.startX, cx) + "px";
+      drag.preview.style.top = Math.min(drag.startY, cy) + "px";
+      drag.preview.style.width = Math.abs(cx - drag.startX) + "px";
+      drag.preview.style.height = Math.abs(cy - drag.startY) + "px";
+    };
+
+    const cancelDrag = () => {
+      if (drag && drag.preview) drag.preview.remove();
+      drag = null;
+    };
+
+    const setDraw = (on) => {
+      drawActive = on;
+      capture.style.display = on ? "block" : "none";
+      drawBtn.classList.toggle("active", on);
+      if (on) {
+        setStatus("Drag to draw a box. Esc to exit.");
+      } else {
+        cancelDrag();
+        setStatus("");
+      }
+    };
+
+    const promptNote = (entry, vx, vy) => {
+      const input = doc.createElement("input");
+      input.type = "text";
+      input.className = "note-input";
+      input.placeholder = "Optional note — Enter to save, Esc to skip";
+      input.style.left = Math.max(4, Math.min(vx, window.innerWidth - 230)) + "px";
+      input.style.top = Math.max(4, vy - 30) + "px";
+      chromeLayer.appendChild(input);
+      noteOpen = true;
+      let done = false;
+      const finish = (commit) => {
+        if (done) return;
+        done = true;
+        noteOpen = false;
+        if (commit) entry.note = input.value.slice(0, NOTE_MAX);
+        input.remove();
+      };
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          finish(true);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          finish(false);
+        }
+      });
+      input.addEventListener("blur", () => finish(true));
+      input.focus();
+    };
+
+    capture.addEventListener("pointerdown", (e) => {
+      if (!drawActive || e.button !== 0) return;
+      e.preventDefault();
+      if (capture.setPointerCapture) capture.setPointerCapture(e.pointerId);
+      const preview = doc.createElement("div");
+      preview.className = "preview";
+      chromeLayer.appendChild(preview);
+      drag = { startX: e.clientX, startY: e.clientY, preview: preview };
+      positionPreview(e.clientX, e.clientY);
+    });
+
+    capture.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      e.preventDefault();
+      positionPreview(e.clientX, e.clientY);
+    });
+
+    capture.addEventListener("pointerup", (e) => {
+      if (!drag) return;
+      e.preventDefault();
+      const x = Math.min(drag.startX, e.clientX);
+      const y = Math.min(drag.startY, e.clientY);
+      const w = Math.abs(e.clientX - drag.startX);
+      const h = Math.abs(e.clientY - drag.startY);
+      const preview = drag.preview;
+      drag = null;
+      if (preview) preview.remove();
+      if (w >= MIN_RECT && h >= MIN_RECT) {
+        const entry = addRect(x, y, w, h);
+        promptNote(entry, x, y);
+      }
+    });
+
+    // Only trap Escape while actively drawing; never preventDefault otherwise.
+    const onKeyDown = (e) => {
+      if (e.key !== "Escape") return;
+      if (noteOpen) return;
+      if (!drawActive && !drag) return;
+      e.preventDefault();
+      if (drag) cancelDrag();
+      else setDraw(false);
+    };
+    doc.addEventListener("keydown", onKeyDown, true);
+
+    // ---- submit -----------------------------------------------------------
+    // Coordinates are emitted in viewport (CSS-pixel) space at send time so they
+    // line up with the viewport screenshot the worker captures.
+    const buildPayload = () => {
+      const sx = scrollX();
+      const sy = scrollY();
+      const out = [];
+      for (const r of rects) {
+        const rect = { x: r.pageX - sx, y: r.pageY - sy, width: r.width, height: r.height };
+        if (r.note) rect.note = r.note;
+        out.push(rect);
+      }
+      return { comment: comment.value, rects: out, url: location.href, title: doc.title };
+    };
+
+    let sending = false;
+    const send = async () => {
+      if (sending) return;
+      const submit = globalThis.__ompxAnnotateSubmit;
+      if (typeof submit !== "function") {
+        toast("Agent is not connected", true);
+        return;
+      }
+      if (comment.value.trim().length === 0 && rects.length === 0) {
+        setStatus("Add a comment or draw a box first.");
+        return;
+      }
+      sending = true;
+      sendBtn.disabled = true;
+      setStatus("Sending...");
+      try {
+        await submit(JSON.stringify(buildPayload()));
+        toast("Sent to agent");
+        setStatus("Sent.");
+        comment.value = "";
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        toast(msg, true);
+        setStatus(msg);
+      } finally {
+        sending = false;
+        sendBtn.disabled = false;
+      }
+    };
+
+    drawBtn.addEventListener("click", () => setDraw(!drawActive));
+    clearBtn.addEventListener("click", () => {
+      clearRects();
+      setStatus("Cleared.");
+    });
+    sendBtn.addEventListener("click", send);
+
+    // Worker toggles this around screenshot capture so chrome stays out of the
+    // captured image while the rects layer remains visible.
+    globalThis.__ompxAnnotateSetChromeVisible = (visible) => {
+      chromeLayer.style.display = visible ? "" : "none";
+    };
+  };
+
+  // evaluateOnNewDocument fires before the parser creates <html>; defer the UI
+  // build until the DOM exists. The worker's direct evaluate() path lands on a
+  // loaded document and installs synchronously.
+  if (document.documentElement) install();
+  else document.addEventListener("DOMContentLoaded", install, { once: true });
+})();

@@ -20,6 +20,7 @@ import { resizeImage } from "../../utils/image-resize";
 import { resolveToCwd } from "../path-utils";
 import { formatScreenshot } from "../render-utils";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tool-errors";
+import { disableAnnotationMode, enableAnnotationMode } from "./annotate";
 import {
 	applyStealthPatches,
 	applyViewport,
@@ -456,6 +457,9 @@ export class WorkerCore {
 			case "tool-reply":
 				this.#deliverToolReply(msg.id, msg.reply);
 				return;
+			case "annotate":
+				await this.#setAnnotate(msg);
+				return;
 			case "close":
 				await this.#close();
 				return;
@@ -533,6 +537,33 @@ export class WorkerCore {
 		page.on("dialog", handler);
 		this.#dialogPolicy = policy;
 		this.#dialogHandler = handler;
+	}
+
+	async #setAnnotate(msg: Extract<WorkerInbound, { type: "annotate" }>): Promise<void> {
+		try {
+			const page = this.#requirePage();
+			if (msg.enabled) {
+				await enableAnnotationMode(page, async (payload, png) => {
+					const resized = await resizeImage(
+						{ type: "image", data: png.toBase64(), mimeType: "image/png" },
+						{ maxWidth: 1024, maxHeight: 1024, maxBytes: 150 * 1024, jpegQuality: 70 },
+					);
+					this.#transport.send({
+						type: "annotation",
+						submission: {
+							payload,
+							screenshot: { data: resized.buffer.toBase64(), mimeType: resized.mimeType },
+							ts: Date.now(),
+						},
+					});
+				});
+			} else {
+				await disableAnnotationMode(page);
+			}
+			this.#transport.send({ type: "annotate-ack", id: msg.id, ok: true });
+		} catch (error) {
+			this.#transport.send({ type: "annotate-ack", id: msg.id, ok: false, error: errorPayload(error) });
+		}
 	}
 
 	async #postReadyInfo(): Promise<void> {

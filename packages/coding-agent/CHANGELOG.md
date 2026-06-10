@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- Added a human-in-the-loop `annotate` action to the `browser` tool: it overlays an in-page feedback UI (draw red boxes with optional notes, write a comment, "Send to agent") on a live tab, waits for a submission, and returns the structured feedback plus a screenshot with the marked regions burned in and the toolbar hidden. The overlay survives navigations, stays glued to page content while scrolling, and `enabled: false` / `wait: false` toggle it without blocking.
+
 ## [1.0.7] - 2026-06-09
 ### Added
 - The macOS sandbox now auto-discovers the user's running SSH agent so `git`/`ssh` over SSH works with zero config even when the launching context doesn't export `SSH_AUTH_SOCK` (e.g. a supervisor that strips it). It probes 1Password, Secretive, the launchd agent, and classic `ssh-agent` sockets, trusting only sockets owned by the current user, exposes the discovered socket to sandboxed children as `SSH_AUTH_SOCK`, and allows it in the Seatbelt profile (sockets only — private keys stay blocked). Override the path with the `sandbox.sshAuthSock` setting or `PI_OMPX_SSH_AUTH_SOCK` env var, or set `sandbox.sshAuthSock: off` to disable.
