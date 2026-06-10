@@ -66,6 +66,7 @@ const MACOS_SANDBOX_ACTIVE_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERIT
 const MACOS_SANDBOX_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_INHERITED";
 const MACOS_SANDBOX_RELAUNCH_MESSAGE_TYPE = "ompx:macos-sandbox:relaunch";
 const MACOS_SANDBOX_RELAUNCH_SUPPORTED_ENV = "PI_OMPX_MACOS_SANDBOX_RELAUNCH_SUPPORTED";
+const MACOS_SANDBOX_RELAUNCH_FORCE_KILL_MS = 10_000;
 const MACOS_SANDBOX_DEFAULT_SENTINEL = "default";
 const DISABLE_SANDBOX_VALUES = new Set(["0", "false", "no", "off"]);
 const READ_DENY_ROOTS = ["/Volumes", "/System/Volumes/Data/Volumes", "/Users", "/System/Volumes/Data/Users"];
@@ -1179,6 +1180,7 @@ export async function reexecUnderMacOSSandboxIfNeeded(argv: string[]): Promise<b
 		let relaunchSessionId: string | undefined;
 		let relaunchSessionDir: string | undefined;
 		let terminationScheduled = false;
+		let forceKillTimer: NodeJS.Timeout | undefined;
 		const relaunchAddDirs: string[] = [];
 		const child = Bun.spawn({
 			cmd: [command.cmd, ...command.args],
@@ -1200,10 +1202,22 @@ export async function reexecUnderMacOSSandboxIfNeeded(argv: string[]): Promise<b
 				terminationScheduled = true;
 				globalThis.setTimeout(() => {
 					child.kill("SIGTERM");
+					// Escalate to SIGKILL if the child's SIGTERM cleanup hangs (e.g. an
+					// unbounded ssh/sshfs unmount in postmortem) so the relaunch never
+					// blocks `await child.exited` forever.
+					forceKillTimer = globalThis.setTimeout(() => {
+						try {
+							child.kill("SIGKILL");
+						} catch {
+							// Child already exited; nothing to escalate.
+						}
+					}, MACOS_SANDBOX_RELAUNCH_FORCE_KILL_MS);
+					forceKillTimer.unref?.();
 				}, 250);
 			},
 		});
 		const exitCode = await child.exited;
+		if (forceKillTimer) clearTimeout(forceKillTimer);
 		if (!relaunchSessionId) {
 			process.exit(exitCode);
 		}

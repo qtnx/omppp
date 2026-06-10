@@ -184,6 +184,7 @@ import planModeReferencePrompt from "../prompts/system/plan-mode-reference.md" w
 import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool-decision-reminder.md" with {
 	type: "text",
 };
+import sandboxRelaunchContinuePrompt from "../prompts/system/sandbox-relaunch-continue.md" with { type: "text" };
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
 import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
@@ -445,6 +446,24 @@ export interface PromptOptions {
 	attribution?: MessageAttribution;
 	/** Skip pre-send compaction checks for this prompt (internal use for maintenance flows). */
 	skipCompactionCheck?: boolean;
+}
+
+/**
+ * True when the LLM-visible conversation tail leaves the model owing a response:
+ * the last `user`/`assistant`/`toolResult` message is a `user` or `toolResult`
+ * (a turn interrupted before the assistant replied), not an `assistant`. Used to
+ * decide whether a session resumed after a macOS sandbox relaunch should
+ * auto-continue the interrupted turn. False for a completed turn (assistant tail)
+ * or an empty conversation. Non-turn-bearing roles (developer/custom/…) are
+ * skipped since they don't reach the model via `convertToLlm`.
+ */
+export function conversationAwaitsAssistant(messages: readonly AgentMessage[]): boolean {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const role = messages[i]!.role;
+		if (role === "assistant") return false;
+		if (role === "user" || role === "toolResult") return true;
+	}
+	return false;
 }
 
 /** Result from a handoff operation. */
@@ -4103,6 +4122,21 @@ export class AgentSession {
 		const sessionFile = this.sessionManager.getSessionFile();
 		if (!sessionFile) return { requested: false, reason: "missing-session" };
 		return requestMacOSSandboxRelaunch(paths, this.sessionManager.getSessionId(), path.dirname(sessionFile));
+	}
+
+	/**
+	 * After a macOS sandbox relaunch, the supervisor SIGTERMs this child mid-turn
+	 * and respawns it via `--resume`, restoring the message history. If the model's
+	 * turn was interrupted before it replied (the conversation ends with the
+	 * `sandbox` tool result), re-invoke the model so it retries the previously
+	 * blocked operation instead of idling at the prompt. Returns true when a
+	 * continuation was started; false (no-op) when the last turn already completed,
+	 * e.g. a `/add-dir` issued between turns.
+	 */
+	async continueAfterSandboxRelaunch(): Promise<boolean> {
+		if (!conversationAwaitsAssistant(this.agent.state.messages)) return false;
+		await this.prompt(sandboxRelaunchContinuePrompt, { synthetic: true, expandPromptTemplates: false });
+		return true;
 	}
 
 	getEvalSessionId(): string | null {

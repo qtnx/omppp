@@ -1,0 +1,1 @@
+The macOS sandbox was relaunched with the additional path(s) you requested via the `sandbox` tool, and the new allowlist is now active. Continue the task you were working on: retry the operation that was previously blocked by the sandbox, then proceed.
