@@ -1,0 +1,75 @@
+(() => {
+	const state = globalThis.__ompxReact || {
+		roots: new Set(),
+		recording: false,
+		commits: [],
+		idMap: new Map(),
+		nextId: 1,
+	};
+	globalThis.__ompxReact = state;
+
+	let rendererSeq = 0;
+	const existingHook = globalThis.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+	const hook = existingHook || {
+		renderers: new Map(),
+		supportsFiber: true,
+		isDisabled: false,
+		inject(renderer) {
+			const id = ++rendererSeq;
+			this.renderers.set(id, renderer);
+			return id;
+		},
+		checkDCE() {},
+		onScheduleFiberRoot() {},
+		onCommitFiberUnmount() {},
+		onPostCommitFiberRoot() {},
+		setStrictMode() {},
+		getInternalModuleRanges() { return null; },
+		registerInternalModuleStart() {},
+		registerInternalModuleStop() {},
+		on() {},
+		off() {},
+		sub() { return () => {}; },
+		emit() {},
+		getFiberRoots() { return state.roots; },
+	};
+
+	if (!hook.renderers) hook.renderers = new Map();
+	if (!hook.supportsFiber) hook.supportsFiber = true;
+	if (typeof hook.inject !== "function") {
+		hook.inject = function inject(renderer) {
+			const id = ++rendererSeq;
+			this.renderers.set(id, renderer);
+			return id;
+		};
+	}
+	if (typeof hook.checkDCE !== "function") hook.checkDCE = function checkDCE() {};
+	if (typeof hook.onScheduleFiberRoot !== "function") hook.onScheduleFiberRoot = function onScheduleFiberRoot() {};
+	if (typeof hook.onCommitFiberUnmount !== "function") hook.onCommitFiberUnmount = function onCommitFiberUnmount() {};
+	if (typeof hook.onPostCommitFiberRoot !== "function") hook.onPostCommitFiberRoot = function onPostCommitFiberRoot() {};
+	if (typeof hook.setStrictMode !== "function") hook.setStrictMode = function setStrictMode() {};
+	if (typeof hook.getInternalModuleRanges !== "function") hook.getInternalModuleRanges = function getInternalModuleRanges() { return null; };
+	if (typeof hook.registerInternalModuleStart !== "function") hook.registerInternalModuleStart = function registerInternalModuleStart() {};
+	if (typeof hook.registerInternalModuleStop !== "function") hook.registerInternalModuleStop = function registerInternalModuleStop() {};
+	if (typeof hook.on !== "function") hook.on = function on() {};
+	if (typeof hook.off !== "function") hook.off = function off() {};
+	if (typeof hook.sub !== "function") hook.sub = function sub() { return () => {}; };
+	if (typeof hook.emit !== "function") hook.emit = function emit() {};
+	if (typeof hook.getFiberRoots !== "function") hook.getFiberRoots = function getFiberRoots() { return state.roots; };
+
+	if (!hook.__ompxWrappedCommit) {
+		const previousCommit = hook.onCommitFiberRoot;
+		hook.onCommitFiberRoot = function onCommitFiberRoot(rendererId, root, priorityLevel) {
+			state.roots.add(root);
+			if (state.recording) state.commits.push({ ts: performance.now(), rendererId });
+			if (typeof previousCommit === "function") return previousCommit.apply(this, arguments);
+		};
+		try {
+			Object.defineProperty(hook, "__ompxWrappedCommit", { value: true, configurable: true });
+		} catch (e) {
+			hook.__ompxWrappedCommit = true;
+		}
+	}
+
+	globalThis.__REACT_DEVTOOLS_GLOBAL_HOOK__ = hook;
+})();
