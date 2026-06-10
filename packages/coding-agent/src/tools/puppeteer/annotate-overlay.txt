@@ -13,6 +13,45 @@
   const HOST_ID = "__ompx-annotate-host";
   const MIN_RECT = 4;
   const NOTE_MAX = 1000;
+  const PENDING_KEY = "__ompxAnnotatePending";
+  const PENDING_MAX = 10;
+
+  // Offline queue: submissions made while no agent is connected (binding
+  // missing, or dispatch rejecting) are kept in sessionStorage so they survive
+  // reloads and agent restarts, with an in-memory fallback for pages where
+  // storage is unavailable. The worker drains the queue via
+  // __ompxAnnotateTakePending() every time annotation mode is (re)enabled.
+  const pendingRead = () => {
+    let list = null;
+    try {
+      const raw = sessionStorage.getItem(PENDING_KEY);
+      if (raw) list = JSON.parse(raw);
+    } catch {}
+    if (Array.isArray(list)) return list;
+    const mem = globalThis.__ompxAnnotateMemPending;
+    return Array.isArray(mem) ? mem : [];
+  };
+  const pendingWrite = (list) => {
+    globalThis.__ompxAnnotateMemPending = list;
+    try {
+      sessionStorage.setItem(PENDING_KEY, JSON.stringify(list));
+    } catch {}
+  };
+  const pendingPush = (raw) => {
+    const list = pendingRead();
+    list.push(raw);
+    while (list.length > PENDING_MAX) list.shift();
+    pendingWrite(list);
+    return list.length;
+  };
+  globalThis.__ompxAnnotateTakePending = () => {
+    const list = pendingRead();
+    globalThis.__ompxAnnotateMemPending = [];
+    try {
+      sessionStorage.removeItem(PENDING_KEY);
+    } catch {}
+    return list;
+  };
 
   const install = () => {
     // The worker may disable between injection and DOMContentLoaded.
@@ -53,6 +92,13 @@
       ".badge { position: absolute; top: -1px; left: -1px; min-width: 16px; height: 16px; padding: 0 3px; font: 700 11px/16px ui-sans-serif, system-ui, -apple-system, sans-serif; color: #fff; background: #e53935; text-align: center; border-radius: 0 0 4px 0; }",
       ".capture { position: fixed; inset: 0; pointer-events: auto; cursor: crosshair; background: rgba(0,0,0,0.02); }",
       ".preview { position: fixed; border: 2px dashed #e53935; background: rgba(229,57,53,0.08); pointer-events: none; }",
+      ".hl { position: fixed; pointer-events: none; background: rgba(77,144,254,0.28); border: 1px solid rgba(13,108,242,0.85); }",
+      ".hl-tip { position: fixed; pointer-events: none; font: 500 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; color: #fff; background: #323232; padding: 2px 6px; border-radius: 4px; max-width: 60vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
+      ".tb-head { display: flex; align-items: center; gap: 6px; margin: -10px -10px 8px; padding: 6px 8px 6px 10px; cursor: grab; user-select: none; border-bottom: 1px solid #e8e8e8; border-radius: 8px 8px 0 0; background: #fafafa; }",
+      ".tb-title { flex: 1 1 auto; font: 600 12px/1.2 ui-sans-serif, system-ui, -apple-system, sans-serif; color: #444; }",
+      ".tb-min { flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border: 0; background: transparent; cursor: pointer; font: 700 13px/20px ui-sans-serif, system-ui, -apple-system, sans-serif; color: #666; border-radius: 4px; }",
+      ".tb-min:hover { background: #ececec; }",
+      ".pill { position: fixed; top: 12px; right: 12px; pointer-events: auto; font: 600 12px/1 ui-sans-serif, system-ui, -apple-system, sans-serif; color: #fff; background: #e53935; border: 0; border-radius: 999px; padding: 9px 14px; box-shadow: 0 4px 14px rgba(0,0,0,0.3); cursor: grab; }",
       ".note-input { position: fixed; pointer-events: auto; font: 400 12px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif; padding: 3px 6px; border: 1px solid #e53935; border-radius: 4px; background: #fff; color: #111; box-shadow: 0 2px 6px rgba(0,0,0,0.25); width: 220px; }",
       ".toolbar { position: fixed; top: 12px; right: 12px; width: 260px; pointer-events: auto; font: 400 13px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif; color: #111; background: #fff; border: 1px solid #d0d0d0; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); padding: 10px; }",
       ".row { display: flex; gap: 6px; margin-bottom: 8px; }",
@@ -95,17 +141,20 @@
     window.addEventListener("resize", syncScroll, { passive: true });
 
     const rects = [];
+    let minimized = false;
 
-    const captureElementInfo = (cx, cy) => {
+    const targetAt = (cx, cy) => {
       try {
         const stack = doc.elementsFromPoint(cx, cy) || [];
-        let target = null;
         for (const item of stack) {
-          if (item && item.id !== HOST_ID) {
-            target = item;
-            break;
-          }
+          if (item && item.id !== HOST_ID) return item;
         }
+      } catch {}
+      return null;
+    };
+
+    const describeElement = (target) => {
+      try {
         if (!target) return null;
 
         const parts = [];
@@ -170,13 +219,16 @@
       }
     };
 
+    const captureElementInfo = (cx, cy) => describeElement(targetAt(cx, cy));
+
 
     const renumber = () => {
       for (let i = 0; i < rects.length; i++) rects[i].badge.textContent = String(i + 1);
+      if (minimized) pill.textContent = rects.length ? "\u270E " + rects.length : "\u270E";
     };
 
     // vx/vy are viewport (client) coordinates at draw time.
-    const addRect = (vx, vy, w, h) => {
+    const addRect = (vx, vy, w, h, pickedEl) => {
       const pageX = vx + scrollX();
       const pageY = vy + scrollY();
       const el = doc.createElement("div");
@@ -190,7 +242,7 @@
       el.appendChild(badge);
       rectsLayer.appendChild(el);
       const entry = { el: el, badge: badge, pageX: pageX, pageY: pageY, width: w, height: h, note: "" };
-      const element = captureElementInfo(vx + w / 2, vy + h / 2);
+      const element = pickedEl ? describeElement(pickedEl) : captureElementInfo(vx + w / 2, vy + h / 2);
       if (element) entry.element = element;
       rects.push(entry);
       renumber();
@@ -200,6 +252,7 @@
     const clearRects = () => {
       for (const r of rects) r.el.remove();
       rects.length = 0;
+      renumber();
     };
 
     // Capture surface for draw mode (appended before the toolbar so the toolbar
@@ -212,17 +265,35 @@
     const toolbar = doc.createElement("div");
     toolbar.className = "toolbar";
 
+    const head = doc.createElement("div");
+    head.className = "tb-head";
+    const headTitle = doc.createElement("div");
+    headTitle.className = "tb-title";
+    headTitle.textContent = "Annotate";
+    const minBtn = doc.createElement("button");
+    minBtn.type = "button";
+    minBtn.className = "tb-min";
+    minBtn.textContent = "\u2013";
+    minBtn.title = "Minimize";
+    head.appendChild(headTitle);
+    head.appendChild(minBtn);
+
     const row = doc.createElement("div");
     row.className = "row";
     const drawBtn = doc.createElement("button");
     drawBtn.type = "button";
     drawBtn.className = "btn";
     drawBtn.textContent = "Draw";
+    const pickBtn = doc.createElement("button");
+    pickBtn.type = "button";
+    pickBtn.className = "btn";
+    pickBtn.textContent = "Pick";
     const clearBtn = doc.createElement("button");
     clearBtn.type = "button";
     clearBtn.className = "btn";
     clearBtn.textContent = "Clear";
     row.appendChild(drawBtn);
+    row.appendChild(pickBtn);
     row.appendChild(clearBtn);
 
     const comment = doc.createElement("textarea");
@@ -237,11 +308,31 @@
     const status = doc.createElement("div");
     status.className = "status";
 
+    toolbar.appendChild(head);
     toolbar.appendChild(row);
     toolbar.appendChild(comment);
     toolbar.appendChild(sendBtn);
     toolbar.appendChild(status);
     chromeLayer.appendChild(toolbar);
+
+    // Collapsed pill (Vercel-comments style) shown while the toolbar is minimized.
+    const pill = doc.createElement("button");
+    pill.type = "button";
+    pill.className = "pill";
+    pill.style.display = "none";
+    pill.textContent = "\u270E";
+    pill.title = "Annotate";
+    chromeLayer.appendChild(pill);
+
+    // DevTools-style hover highlight for pick mode.
+    const hl = doc.createElement("div");
+    hl.className = "hl";
+    hl.style.display = "none";
+    chromeLayer.appendChild(hl);
+    const hlTip = doc.createElement("div");
+    hlTip.className = "hl-tip";
+    hlTip.style.display = "none";
+    chromeLayer.appendChild(hlTip);
 
     const setStatus = (msg) => {
       status.textContent = msg || "";
@@ -264,10 +355,12 @@
       }, 2600);
     };
 
-    // ---- draw mode --------------------------------------------------------
+    // ---- draw & pick modes ------------------------------------------------
     let drawActive = false;
+    let pickActive = false;
     let drag = null;
     let noteOpen = false;
+    let hoverTarget = null;
 
     const positionPreview = (cx, cy) => {
       if (!drag) return;
@@ -282,15 +375,72 @@
       drag = null;
     };
 
+    const syncCapture = () => {
+      capture.style.display = drawActive || pickActive ? "block" : "none";
+    };
+
+    const hideHighlight = () => {
+      hoverTarget = null;
+      hl.style.display = "none";
+      hlTip.style.display = "none";
+    };
+
+    const highlightLabel = (el) => {
+      let label = el.tagName.toLowerCase();
+      if (el.id) label += "#" + el.id;
+      else if (el.classList.length > 0) label += "." + Array.prototype.slice.call(el.classList, 0, 2).join(".");
+      const bounds = el.getBoundingClientRect();
+      return label + "  " + Math.round(bounds.width) + " \u00D7 " + Math.round(bounds.height);
+    };
+
+    const showHighlight = (el) => {
+      hoverTarget = el;
+      const bounds = el.getBoundingClientRect();
+      hl.style.left = bounds.left + "px";
+      hl.style.top = bounds.top + "px";
+      hl.style.width = bounds.width + "px";
+      hl.style.height = bounds.height + "px";
+      hl.style.display = "block";
+      hlTip.textContent = highlightLabel(el);
+      hlTip.style.display = "block";
+      hlTip.style.left = Math.max(4, Math.min(bounds.left, window.innerWidth - 160)) + "px";
+      hlTip.style.top = (bounds.top >= 26 ? bounds.top - 22 : Math.min(window.innerHeight - 22, bounds.bottom + 4)) + "px";
+    };
+
+    // Re-pin the hover highlight to its element while the page scrolls under
+    // the cursor (registered here, after the mode state exists — syncScroll
+    // runs synchronously during install, before these bindings initialize).
+    window.addEventListener(
+      "scroll",
+      () => {
+        if (pickActive && hoverTarget) showHighlight(hoverTarget);
+      },
+      { capture: true, passive: true },
+    );
+
     const setDraw = (on) => {
+      if (on && pickActive) setPick(false);
       drawActive = on;
-      capture.style.display = on ? "block" : "none";
       drawBtn.classList.toggle("active", on);
+      syncCapture();
       if (on) {
         setStatus("Drag to draw a box. Esc to exit.");
       } else {
         cancelDrag();
-        setStatus("");
+        if (!pickActive) setStatus("");
+      }
+    };
+
+    const setPick = (on) => {
+      if (on && drawActive) setDraw(false);
+      pickActive = on;
+      pickBtn.classList.toggle("active", on);
+      syncCapture();
+      if (on) {
+        setStatus("Click an element to mark it. Esc to exit.");
+      } else {
+        hideHighlight();
+        if (!drawActive) setStatus("");
       }
     };
 
@@ -326,8 +476,30 @@
       input.focus();
     };
 
+    // Picking marks the element's viewport-clamped bounding box (outer rect
+    // coords must stay non-negative for the worker-side validator).
+    const pickElement = (el) => {
+      const bounds = el.getBoundingClientRect();
+      const x = Math.max(0, bounds.left);
+      const y = Math.max(0, bounds.top);
+      const w = Math.min(window.innerWidth, bounds.right) - x;
+      const h = Math.min(window.innerHeight, bounds.bottom) - y;
+      if (w < 1 || h < 1) {
+        toast("Element is outside the viewport", true);
+        return;
+      }
+      const entry = addRect(x, y, Math.max(w, MIN_RECT), Math.max(h, MIN_RECT), el);
+      setPick(false);
+      promptNote(entry, x, y);
+    };
+
     capture.addEventListener("pointerdown", (e) => {
-      if (!drawActive || e.button !== 0) return;
+      if (e.button !== 0) return;
+      if (pickActive) {
+        e.preventDefault();
+        return;
+      }
+      if (!drawActive) return;
       e.preventDefault();
       if (capture.setPointerCapture) capture.setPointerCapture(e.pointerId);
       const preview = doc.createElement("div");
@@ -338,12 +510,28 @@
     });
 
     capture.addEventListener("pointermove", (e) => {
+      if (pickActive) {
+        const el = targetAt(e.clientX, e.clientY);
+        if (el) {
+          if (el !== hoverTarget) showHighlight(el);
+        } else {
+          hideHighlight();
+        }
+        return;
+      }
       if (!drag) return;
       e.preventDefault();
       positionPreview(e.clientX, e.clientY);
     });
 
     capture.addEventListener("pointerup", (e) => {
+      if (pickActive) {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        const el = hoverTarget || targetAt(e.clientX, e.clientY);
+        if (el) pickElement(el);
+        return;
+      }
       if (!drag) return;
       e.preventDefault();
       const x = Math.min(drag.startX, e.clientX);
@@ -359,13 +547,14 @@
       }
     });
 
-    // Only trap Escape while actively drawing; never preventDefault otherwise.
+    // Only trap Escape while a mode is active; never preventDefault otherwise.
     const onKeyDown = (e) => {
       if (e.key !== "Escape") return;
       if (noteOpen) return;
-      if (!drawActive && !drag) return;
+      if (!drawActive && !pickActive && !drag) return;
       e.preventDefault();
       if (drag) cancelDrag();
+      else if (pickActive) setPick(false);
       else setDraw(false);
     };
     doc.addEventListener("keydown", onKeyDown, true);
@@ -389,27 +578,31 @@
     let sending = false;
     const send = async () => {
       if (sending) return;
-      const submit = globalThis.__ompxAnnotateSubmit;
-      if (typeof submit !== "function") {
-        toast("Agent is not connected", true);
-        return;
-      }
       if (comment.value.trim().length === 0 && rects.length === 0) {
         setStatus("Add a comment or draw a box first.");
+        return;
+      }
+      const raw = JSON.stringify(buildPayload());
+      const submit = globalThis.__ompxAnnotateSubmit;
+      if (typeof submit !== "function") {
+        const n = pendingPush(raw);
+        toast("Agent offline - saved locally (" + n + " pending)", true);
+        setStatus("Saved locally. The agent will pull it when annotation mode is re-enabled.");
         return;
       }
       sending = true;
       sendBtn.disabled = true;
       setStatus("Sending...");
       try {
-        await submit(JSON.stringify(buildPayload()));
+        await submit(raw);
         toast("Sent to agent");
         setStatus("Sent.");
         comment.value = "";
       } catch (err) {
         const msg = err && err.message ? err.message : String(err);
-        toast(msg, true);
-        setStatus(msg);
+        const n = pendingPush(raw);
+        toast("Not delivered - saved locally (" + n + " pending)", true);
+        setStatus("Send failed (" + msg + "). Saved locally; the agent will pull it on reconnect.");
       } finally {
         sending = false;
         sendBtn.disabled = false;
@@ -417,11 +610,77 @@
     };
 
     drawBtn.addEventListener("click", () => setDraw(!drawActive));
+    pickBtn.addEventListener("click", () => setPick(!pickActive));
     clearBtn.addEventListener("click", () => {
       clearRects();
       setStatus("Cleared.");
     });
     sendBtn.addEventListener("click", send);
+
+    // ---- toolbar drag + minimize (Vercel-comments style) -------------------
+    // Right-anchored until the first drag; afterwards the toolbar and the pill
+    // share one user-chosen position, clamped to the viewport.
+    let boxPos = null;
+    const applyBoxPos = (el) => {
+      if (!boxPos) return;
+      const w = el.offsetWidth || 260;
+      const h = el.offsetHeight || 40;
+      el.style.left = Math.max(4, Math.min(boxPos.x, window.innerWidth - w - 4)) + "px";
+      el.style.top = Math.max(4, Math.min(boxPos.y, window.innerHeight - h - 4)) + "px";
+      el.style.right = "auto";
+    };
+
+    // Drag `box` by `handle`; a press that never travels >= 4px counts as a tap.
+    const makeDraggable = (handle, box, ignoreEl, onTap) => {
+      handle.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0) return;
+        if (ignoreEl && e.target === ignoreEl) return;
+        e.preventDefault();
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const bounds = box.getBoundingClientRect();
+        const offX = e.clientX - bounds.left;
+        const offY = e.clientY - bounds.top;
+        let moved = false;
+        const onMove = (ev) => {
+          if (!moved && Math.abs(ev.clientX - startX) < 4 && Math.abs(ev.clientY - startY) < 4) return;
+          moved = true;
+          boxPos = { x: ev.clientX - offX, y: ev.clientY - offY };
+          applyBoxPos(box);
+        };
+        const onUp = (ev) => {
+          handle.removeEventListener("pointermove", onMove);
+          handle.removeEventListener("pointerup", onUp);
+          handle.removeEventListener("pointercancel", onUp);
+          if (!moved && onTap) onTap(ev);
+        };
+        if (handle.setPointerCapture) {
+          try {
+            handle.setPointerCapture(e.pointerId);
+          } catch {}
+        }
+        handle.addEventListener("pointermove", onMove);
+        handle.addEventListener("pointerup", onUp);
+        handle.addEventListener("pointercancel", onUp);
+      });
+    };
+
+    const setMinimized = (on) => {
+      minimized = on;
+      toolbar.style.display = on ? "none" : "";
+      pill.style.display = on ? "" : "none";
+      if (on) {
+        pill.textContent = rects.length ? "\u270E " + rects.length : "\u270E";
+        applyBoxPos(pill);
+      } else {
+        applyBoxPos(toolbar);
+      }
+    };
+
+    minBtn.addEventListener("click", () => setMinimized(true));
+    makeDraggable(head, toolbar, minBtn, null);
+    makeDraggable(pill, pill, null, () => setMinimized(false));
+    window.addEventListener("resize", () => applyBoxPos(minimized ? pill : toolbar), { passive: true });
 
     // Worker toggles this around screenshot capture so chrome stays out of the
     // captured image while the rects layer remains visible.

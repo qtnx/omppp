@@ -4,6 +4,9 @@
 
 ### Added
 - Added a human-in-the-loop `annotate` action to the `browser` tool: it overlays an in-page feedback UI (draw red boxes with optional notes, write a comment, "Send to agent") on a live tab, waits for a submission, and returns the structured feedback plus a screenshot with the marked regions burned in and the toolbar hidden. Each marked region also carries the DOM element under it (CSS selector, role, accessible name, text snippet) captured at draw time, so the agent can target it in follow-up `run` calls. The overlay survives navigations, stays glued to page content while scrolling, and `enabled: false` / `wait: false` toggle it without blocking.
+- Extended the browser `annotate` overlay with a DevTools-style **Pick** mode (hovering highlights the element under the cursor with a selector/size tooltip; clicking marks its viewport box with the element context attached) and made the floating toolbar draggable by its header and minimizable to a Vercel-comments-style pill that shows the marked-region count.
+- The `annotate` action now auto-launches a **visible** browser (fresh profile, sandbox-safe launch flags) when the target tab is missing or lives on a hidden headless browser, migrating the tab's URL — pass `url` to annotate without opening a tab first. Previously annotate on the default headless browser waited on an overlay no human could see.
+- The annotate overlay now keeps an offline queue: submissions made while no agent is connected (or whose dispatch fails) are saved page-side in `sessionStorage` (in-memory fallback), surviving reloads, and are delivered automatically the next time annotation mode is enabled — calling `{action:"annotate"}` again pulls them immediately. The toolbar reports "saved locally (N pending)" instead of silently dropping the feedback.
 
 ## [1.0.7] - 2026-06-09
 ### Added

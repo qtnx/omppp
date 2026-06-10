@@ -39,6 +39,7 @@ export interface AnnotationPayload {
 export type AnnotationSubmitHandler = (payload: AnnotationPayload, screenshotPng: Buffer) => void | Promise<void>;
 
 const SUBMIT_FN = "__ompxAnnotateSubmit";
+const TAKE_PENDING_FN = "__ompxAnnotateTakePending";
 const HOST_ID = "__ompx-annotate-host";
 const COMMENT_MAX = 10_000;
 const NOTE_MAX = 1_000;
@@ -220,6 +221,11 @@ async function dispatchSubmit(page: Page, raw: string): Promise<void> {
  * On submit the binding validates the payload, hides the overlay chrome, captures
  * a viewport PNG (chrome hidden, rects visible), restores chrome, then awaits
  * `onSubmit`. Idempotent per page.
+ *
+ * After (re)install, any submissions the overlay queued page-side while no agent
+ * was connected (sessionStorage-backed offline queue) are drained through the
+ * same dispatch path, so reconnecting delivers them immediately; their
+ * screenshots reflect the current page state, not the moment they were queued.
  */
 export async function enableAnnotationMode(page: Page, onSubmit: AnnotationSubmitHandler): Promise<void> {
 	let reg = registry.get(page);
@@ -257,6 +263,21 @@ export async function enableAnnotationMode(page: Page, onSubmit: AnnotationSubmi
 		}, HOST_ID)
 		.catch(() => undefined);
 	await page.evaluate(overlayScript).catch(() => undefined);
+
+	// Drain the page-side offline queue through the normal dispatch path.
+	// Malformed entries are dropped; one bad entry must not block the rest.
+	const pending = await page
+		.evaluate((fn: string) => {
+			const take = (globalThis as unknown as Record<string, (() => unknown) | undefined>)[fn];
+			return typeof take === "function" ? take() : [];
+		}, TAKE_PENDING_FN)
+		.catch(() => []);
+	if (Array.isArray(pending)) {
+		for (const raw of pending) {
+			if (typeof raw !== "string") continue;
+			await dispatchSubmit(page, raw).catch(() => undefined);
+		}
+	}
 }
 
 /**
