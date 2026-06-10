@@ -2,10 +2,11 @@ Drives real Chromium tab; full puppeteer access via JS execution.
 
 <instruction>
 - For static web content (articles, docs, issues/PRs, JSON, PDFs, feeds), prefer `read` tool with URL — reader-mode text without spinning up browser. Use this tool when Need JS execution, authentication, or interactive actions.
-- Three actions only:
+- Four actions:
   - `open` — acquire or reuse named tab. `name` defaults `"main"`. Optional `url` navigates after tab ready. Optional `viewport` sets dimensions. Optional `dialogs: "accept" | "dismiss"` auto-handles `alert`/`confirm`/`beforeunload` so navigation/clicks don't hang (default: leave dialogs unhandled — page hangs until caller wires `page.on('dialog', …)`).
   - `close` — release tab by `name`, or every tab with `all: true`. For spawned-app browsers, set `kill: true` to terminate process tree (default leaves running).
   - `run` — execute JS against existing tab. `code` is body of async function with `page`, `browser`, `tab`, `display`, `assert`, `wait` in scope. Function's return value JSON-stringified into tool result; multiple `display(value)` calls accumulate text/images.
+  - `annotate` — overlay a human feedback UI on the tab: the user draws red boxes or uses **Pick** to select an element DevTools-style (hover highlights the element under the cursor; click marks its box), writes a comment, then hits "Send to agent". The floating toolbar can be dragged anywhere and minimized to a pill. If the named tab is missing or lives on a hidden headless browser, a **visible** browser is launched automatically with a fresh profile (pass `url` when no tab exists). The call waits up to `timeout` for a submission and returns the comment, numbered rects (viewport CSS px) with optional notes, DOM element context under each marked region (CSS selector, role, accessible name/text snippet) so follow-up `run` calls can target it directly, and a screenshot with the boxes burned in. Submissions made while no agent is connected are saved in the page (survives reloads) and delivered automatically the next time annotation mode is enabled — re-issue `{action:"annotate"}` to pull them. `enabled: false` removes the overlay; `wait: false` enables without blocking. Timing out is not an error — call again to keep waiting; rects stay on the page.
 - Tabs survive across `run` calls and across in-process subagents. Open once, reuse many times.
 - Browser kinds, selected by `app` field on `open`:
   - default (no `app`) → headless Chromium with stealth patches.
@@ -57,6 +58,12 @@ Drives real Chromium tab; full puppeteer access via JS execution.
 
 # Attach to an existing Electron app
 `{"action":"open","name":"cursor","app":{"path":"/Applications/Cursor.app/Contents/MacOS/Cursor"}}`
+
+# Ask for human visual feedback
+`{"action":"annotate","name":"main","timeout":120}`
+
+# Ask for human visual feedback on a fresh page (auto-launches a visible browser)
+`{"action":"annotate","name":"review","url":"http://localhost:3000","timeout":300}`
 
 # Close one tab (browser stays alive if other tabs reference it)
 `{"action":"close","name":"docs"}`

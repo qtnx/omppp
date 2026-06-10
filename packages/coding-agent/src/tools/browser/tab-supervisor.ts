@@ -7,6 +7,7 @@ import { ToolAbortError, ToolError } from "../tool-errors";
 import { pickElectronTarget } from "./attach";
 import { type BrowserHandle, type BrowserKindTag, holdBrowser, releaseBrowser } from "./registry";
 import type {
+	AnnotationSubmission,
 	ReadyInfo,
 	RunErrorPayload,
 	RunResultOk,
@@ -53,6 +54,9 @@ export interface TabSession {
 	state: "alive" | "dead";
 	info: ReadyInfo;
 	pending: Map<string, PendingRun>;
+	annotations: AnnotationSubmission[];
+	annotationWaiters: Array<{ resolve(submission: AnnotationSubmission): void; reject(error: unknown): void }>;
+	pendingAnnotates: Map<string, { resolve(): void; reject(error: unknown): void }>;
 	dialogPolicy?: DialogPolicy;
 	kindTag: BrowserKindTag;
 }
@@ -171,6 +175,9 @@ export async function acquireTab(
 		state: "alive",
 		info,
 		pending: new Map(),
+		annotations: [],
+		annotationWaiters: [],
+		pendingAnnotates: new Map(),
 		dialogPolicy: opts.dialogs,
 		kindTag: browser.kind.kind,
 	};
@@ -185,6 +192,55 @@ export async function runInTab(name: string, opts: RunInTabOptions): Promise<Run
 		{ code: opts.code, timeoutMs: opts.timeoutMs, signal: opts.signal, session: opts.session },
 		{ cwd: opts.session.cwd, browserScreenshotDir: expandBrowserScreenshotDir(opts.session) },
 	);
+}
+
+/** Toggle the human annotation overlay on a tab; resolves when the worker acks. */
+export async function setAnnotateMode(name: string, enabled: boolean, timeoutMs: number): Promise<void> {
+	const tab = tabs.get(name);
+	if (!tab || tab.state !== "alive") throw new ToolError(`No live tab named ${JSON.stringify(name)}. Open it first.`);
+	const id = crypto.randomUUID();
+	const { promise, resolve, reject } = Promise.withResolvers<void>();
+	tab.pendingAnnotates.set(id, { resolve, reject });
+	safeSend(tab, { type: "annotate", id, enabled });
+	try {
+		await raceWithTimeout(promise, timeoutMs, `Timed out toggling annotation mode on tab ${JSON.stringify(name)}`);
+	} finally {
+		tab.pendingAnnotates.delete(id);
+	}
+}
+
+/** Wait for the next overlay submission on a tab; returns a buffered one immediately. Resolves null on timeout. */
+export async function waitForAnnotation(
+	name: string,
+	opts: { timeoutMs: number; signal?: AbortSignal },
+): Promise<AnnotationSubmission | null> {
+	const tab = tabs.get(name);
+	if (!tab || tab.state !== "alive") throw new ToolError(`No live tab named ${JSON.stringify(name)}. Open it first.`);
+	const annotation = tab.annotations.shift();
+	if (annotation) return annotation;
+	const { promise, resolve, reject } = Promise.withResolvers<AnnotationSubmission | null>();
+	const waiter = { resolve, reject };
+	tab.annotationWaiters.push(waiter);
+	const removeWaiter = (): void => {
+		const index = tab.annotationWaiters.indexOf(waiter);
+		if (index >= 0) tab.annotationWaiters.splice(index, 1);
+	};
+	const timer = setTimeout(() => {
+		removeWaiter();
+		resolve(null);
+	}, opts.timeoutMs);
+	const abort = (): void => {
+		removeWaiter();
+		reject(new ToolAbortError());
+	};
+	if (opts.signal?.aborted) abort();
+	else opts.signal?.addEventListener("abort", abort, { once: true });
+	try {
+		return await promise;
+	} finally {
+		clearTimeout(timer);
+		opts.signal?.removeEventListener("abort", abort);
+	}
 }
 
 async function runInTabWithSnapshot(
@@ -241,6 +297,10 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 		pending.reject(closeError);
 	}
 	tab.pending.clear();
+	for (const waiter of tab.annotationWaiters) waiter.reject(closeError);
+	tab.annotationWaiters.length = 0;
+	for (const pending of tab.pendingAnnotates.values()) pending.reject(closeError);
+	tab.pendingAnnotates.clear();
 	let forced = false;
 	if (wasAlive) {
 		try {
@@ -318,6 +378,23 @@ function handleTabMessage(tab: TabSession, msg: WorkerOutbound): void {
 		void dispatchToolCall(tab, msg);
 		return;
 	}
+	if (msg.type === "annotate-ack") {
+		const pending = tab.pendingAnnotates.get(msg.id);
+		if (!pending) return;
+		tab.pendingAnnotates.delete(msg.id);
+		if (msg.ok) pending.resolve();
+		else pending.reject(errorFromPayload(msg.error));
+		return;
+	}
+	if (msg.type === "annotation") {
+		const waiter = tab.annotationWaiters.shift();
+		if (waiter) waiter.resolve(msg.submission);
+		else {
+			tab.annotations.push(msg.submission);
+			if (tab.annotations.length > 20) tab.annotations.shift();
+		}
+		return;
+	}
 	if (msg.type === "log") logWorkerMessage(msg);
 }
 
@@ -386,6 +463,10 @@ async function forceKillTab(name: string, reason: string): Promise<void> {
 	const error = new ToolError(reason);
 	for (const pending of tab.pending.values()) pending.reject(error);
 	tab.pending.clear();
+	for (const waiter of tab.annotationWaiters) waiter.reject(error);
+	tab.annotationWaiters.length = 0;
+	for (const pending of tab.pendingAnnotates.values()) pending.reject(error);
+	tab.pendingAnnotates.clear();
 	await tab.worker.terminate().catch(() => undefined);
 	if (tab.kindTag === "headless") await closeOrphanTarget(tab);
 	await releaseBrowser(tab.browser, { kill: false });

@@ -1,4 +1,5 @@
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { AnnotationPayload } from "./annotate";
 
 export type Transferable = Bun.Transferable;
 
@@ -40,6 +41,14 @@ export interface SessionSnapshot {
 	browserScreenshotDir?: string;
 }
 
+/** One human overlay submission relayed from the tab worker to the supervisor. */
+export interface AnnotationSubmission {
+	payload: AnnotationPayload;
+	/** Resized capture (chrome hidden, rects visible), base64-encoded. */
+	screenshot: { data: string; mimeType: string };
+	ts: number;
+}
+
 export type WorkerInitPayload =
 	| {
 			mode: "headless";
@@ -66,6 +75,7 @@ export type WorkerInbound =
 	| { type: "run"; id: string; name: string; code: string; timeoutMs: number; session: SessionSnapshot }
 	| { type: "abort"; id: string }
 	| { type: "tool-reply"; id: string; reply: ToolReply }
+	| { type: "annotate"; id: string; enabled: boolean }
 	| { type: "close" };
 
 export interface ReadyInfo {
@@ -96,6 +106,9 @@ export type WorkerOutbound =
 	| { type: "result"; id: string; ok: false; error: RunErrorPayload }
 	| { type: "tool-call"; id: string; runId: string; name: string; args: unknown }
 	| { type: "log"; level: "debug" | "warn" | "error"; msg: string; meta?: Record<string, unknown> }
+	| { type: "annotate-ack"; id: string; ok: true }
+	| { type: "annotate-ack"; id: string; ok: false; error: RunErrorPayload }
+	| { type: "annotation"; submission: AnnotationSubmission }
 	| { type: "closed" };
 
 export interface Transport {
