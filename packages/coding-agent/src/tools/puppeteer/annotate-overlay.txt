@@ -96,6 +96,81 @@
 
     const rects = [];
 
+    const captureElementInfo = (cx, cy) => {
+      try {
+        const stack = doc.elementsFromPoint(cx, cy) || [];
+        let target = null;
+        for (const item of stack) {
+          if (item && item.id !== HOST_ID) {
+            target = item;
+            break;
+          }
+        }
+        if (!target) return null;
+
+        const parts = [];
+        let node = target;
+        for (let i = 0; node && node.nodeType === 1 && i < 6; i++) {
+          const tag = node.tagName.toLowerCase();
+          if (node.id) {
+            parts.unshift("#" + CSS.escape(node.id));
+            break;
+          }
+          let index = 1;
+          let sameTag = false;
+          let sibling = node.previousElementSibling;
+          while (sibling) {
+            if (sibling.tagName.toLowerCase() === tag) {
+              index++;
+              sameTag = true;
+            }
+            sibling = sibling.previousElementSibling;
+          }
+          sibling = node.nextElementSibling;
+          while (sibling) {
+            if (sibling.tagName.toLowerCase() === tag) {
+              sameTag = true;
+              break;
+            }
+            sibling = sibling.nextElementSibling;
+          }
+          parts.unshift(sameTag ? tag + ":nth-of-type(" + index + ")" : tag);
+          if (node === doc.body || node === doc.documentElement) break;
+          node = node.parentElement;
+        }
+
+        const bounds = target.getBoundingClientRect();
+        const info = {
+          selector: parts.join(" > "),
+          tag: target.tagName.toLowerCase(),
+          rect: {
+            x: Math.round(bounds.x),
+            y: Math.round(bounds.y),
+            width: Math.round(bounds.width),
+            height: Math.round(bounds.height),
+          },
+        };
+        if (target.id) info.id = target.id;
+        const classes = Array.prototype.slice.call(target.classList, 0, 3);
+        if (classes.length > 0) info.classes = classes;
+        const role = target.getAttribute("role");
+        if (role) info.role = role;
+        const rawName =
+          target.getAttribute("aria-label") ||
+          target.getAttribute("alt") ||
+          target.getAttribute("placeholder") ||
+          target.getAttribute("title");
+        const name = rawName ? rawName.trim() : "";
+        if (name) info.name = name.slice(0, 120);
+        const text = target.innerText ? target.innerText.trim().replace(/\s+/g, " ") : "";
+        if (text) info.text = text.slice(0, 200);
+        return info;
+      } catch {
+        return null;
+      }
+    };
+
+
     const renumber = () => {
       for (let i = 0; i < rects.length; i++) rects[i].badge.textContent = String(i + 1);
     };
@@ -115,6 +190,8 @@
       el.appendChild(badge);
       rectsLayer.appendChild(el);
       const entry = { el: el, badge: badge, pageX: pageX, pageY: pageY, width: w, height: h, note: "" };
+      const element = captureElementInfo(vx + w / 2, vy + h / 2);
+      if (element) entry.element = element;
       rects.push(entry);
       renumber();
       return entry;
@@ -303,6 +380,7 @@
       for (const r of rects) {
         const rect = { x: r.pageX - sx, y: r.pageY - sy, width: r.width, height: r.height };
         if (r.note) rect.note = r.note;
+        if (r.element) rect.element = r.element;
         out.push(rect);
       }
       return { comment: comment.value, rects: out, url: location.href, title: doc.title };

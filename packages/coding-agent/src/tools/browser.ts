@@ -366,6 +366,13 @@ function formatAnnotationSubmission(submission: AnnotationSubmission): string {
 			lines.push(
 				`[${index + 1}] x=${Math.round(rect.x)} y=${Math.round(rect.y)} w=${Math.round(rect.width)} h=${Math.round(rect.height)}${note}`,
 			);
+			const element = rect.element;
+			if (element) {
+				const role = element.role ? `  (role=${element.role})` : "";
+				const label = element.name ?? element.text;
+				const quoted = label ? ` "${label.length > 80 ? `${label.slice(0, 79)}…` : label}"` : "";
+				lines.push(`    ↳ ${element.selector}${role}${quoted}`);
+			}
 		}
 	} else {
 		lines.push("(no regions marked)");

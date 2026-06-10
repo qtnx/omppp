@@ -83,6 +83,72 @@ describe("validateAnnotationPayload", () => {
 		expect(payload.url).toBe("");
 		expect(payload.title).toBeUndefined();
 	});
+
+	it("passes through valid element info and clamps oversized element strings", () => {
+		const payload = validateAnnotationPayload(
+			JSON.stringify({
+				comment: "x",
+				rects: [
+					{
+						x: 1,
+						y: 2,
+						width: 3,
+						height: 4,
+						element: {
+							selector: "#submit",
+							tag: "button",
+							id: "submit",
+							classes: ["primary", "wide"],
+							role: "button",
+							name: "n".repeat(200),
+							text: "t".repeat(500),
+							rect: { x: 10, y: 20, width: 100, height: 40 },
+						},
+					},
+				],
+				url: "u",
+			}),
+		);
+		expect(payload.rects[0].element).toEqual({
+			selector: "#submit",
+			tag: "button",
+			id: "submit",
+			classes: ["primary", "wide"],
+			role: "button",
+			name: "n".repeat(120),
+			text: "t".repeat(300),
+			rect: { x: 10, y: 20, width: 100, height: 40 },
+		});
+	});
+
+	it("drops malformed element info without rejecting the submission", () => {
+		for (const element of ["div", { tag: "div", rect: { x: 0, y: 0, width: 1, height: 1 } }, { selector: "div", tag: "div", rect: { x: "NaN-ish", y: 0, width: 1, height: 1 } }]) {
+			const payload = validateAnnotationPayload(
+				JSON.stringify({ comment: "x", rects: [{ x: 0, y: 0, width: 5, height: 5, element }], url: "u" }),
+			);
+			expect(payload.rects[0].element).toBeUndefined();
+		}
+	});
+
+	it("preserves negative element rect coordinates", () => {
+		const payload = validateAnnotationPayload(
+			JSON.stringify({
+				comment: "x",
+				rects: [
+					{
+						x: -12,
+						y: -8,
+						width: 5,
+						height: 5,
+						element: { selector: "div", tag: "div", rect: { x: -12, y: -8, width: 20, height: 10 } },
+					},
+				],
+				url: "u",
+			}),
+		);
+		expect(payload.rects[0]).toMatchObject({ x: 0, y: 0 });
+		expect(payload.rects[0].element?.rect).toEqual({ x: -12, y: -8, width: 20, height: 10 });
+	});
 });
 
 describe("annotate-overlay.txt", () => {

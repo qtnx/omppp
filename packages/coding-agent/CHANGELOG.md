@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- Added a human-in-the-loop `annotate` action to the `browser` tool: it overlays an in-page feedback UI (draw red boxes with optional notes, write a comment, "Send to agent") on a live tab, waits for a submission, and returns the structured feedback plus a screenshot with the marked regions burned in and the toolbar hidden. The overlay survives navigations, stays glued to page content while scrolling, and `enabled: false` / `wait: false` toggle it without blocking.
+- Added a human-in-the-loop `annotate` action to the `browser` tool: it overlays an in-page feedback UI (draw red boxes with optional notes, write a comment, "Send to agent") on a live tab, waits for a submission, and returns the structured feedback plus a screenshot with the marked regions burned in and the toolbar hidden. Each marked region also carries the DOM element under it (CSS selector, role, accessible name, text snippet) captured at draw time, so the agent can target it in follow-up `run` calls. The overlay survives navigations, stays glued to page content while scrolling, and `enabled: false` / `wait: false` toggle it without blocking.
 
 ## [1.0.7] - 2026-06-09
 ### Added

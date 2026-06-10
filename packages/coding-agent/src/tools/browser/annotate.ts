@@ -1,6 +1,18 @@
 import type { Page } from "puppeteer-core";
 import overlayScript from "../puppeteer/annotate-overlay.txt" with { type: "text" };
 
+export interface AnnotationElementInfo {
+	/** Best-effort CSS selector, id-anchored when possible, max depth 6. */
+	selector: string;
+	tag: string; // lowercase tag name
+	id?: string;
+	classes?: string[]; // first 3 class names
+	role?: string; // explicit role attribute
+	name?: string; // aria-label || alt || placeholder || title attr (trimmed)
+	text?: string; // trimmed innerText snippet
+	rect: { x: number; y: number; width: number; height: number }; // viewport coords at capture time (MAY be negative)
+}
+
 /** A single annotation rectangle in viewport (CSS-pixel) coordinates. */
 export interface AnnotationRect {
 	x: number;
@@ -8,6 +20,7 @@ export interface AnnotationRect {
 	width: number;
 	height: number;
 	note?: string;
+	element?: AnnotationElementInfo;
 }
 
 /** Payload submitted by the in-page overlay when the human hits "Send to agent". */
@@ -53,6 +66,54 @@ function finiteNonNegative(value: unknown, field: string): number {
 	return n < 0 ? 0 : n;
 }
 
+function finiteRounded(value: unknown): number | null {
+	const n = typeof value === "number" ? value : Number(value);
+	return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+function optionalClampedString(value: unknown, max: number): string | undefined {
+	return typeof value === "string" && value.length > 0 ? clampString(value, max) : undefined;
+}
+
+function validateElementInfo(value: unknown): AnnotationElementInfo | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const obj = value as Record<string, unknown>;
+	if (typeof obj.selector !== "string" || obj.selector.length === 0) return undefined;
+	if (typeof obj.tag !== "string" || obj.tag.length === 0) return undefined;
+	if (typeof obj.rect !== "object" || obj.rect === null || Array.isArray(obj.rect)) return undefined;
+	const rawRect = obj.rect as Record<string, unknown>;
+	const x = finiteRounded(rawRect.x);
+	const y = finiteRounded(rawRect.y);
+	const width = finiteRounded(rawRect.width);
+	const height = finiteRounded(rawRect.height);
+	if (x === null || y === null || width === null || height === null) return undefined;
+
+	const element: AnnotationElementInfo = {
+		selector: clampString(obj.selector, 500),
+		tag: clampString(obj.tag, 50),
+		rect: { x, y, width, height },
+	};
+	const id = optionalClampedString(obj.id, 200);
+	if (id) element.id = id;
+	const role = optionalClampedString(obj.role, 50);
+	if (role) element.role = role;
+	const name = optionalClampedString(obj.name, 120);
+	if (name) element.name = name;
+	const text = optionalClampedString(obj.text, 300);
+	if (text) element.text = text;
+	if (Array.isArray(obj.classes)) {
+		const classes: string[] = [];
+		for (const item of obj.classes) {
+			if (typeof item === "string") {
+				classes.push(clampString(item, 100));
+				if (classes.length === 10) break;
+			}
+		}
+		if (classes.length > 0) element.classes = classes;
+	}
+	return element;
+}
+
 /**
  * Parse and defensively validate the JSON string the overlay sends.
  *
@@ -61,6 +122,7 @@ function finiteNonNegative(value: unknown, field: string): number {
  * - Coerces rect coords to finite numbers, clamping negatives to 0; throws on
  *   non-finite (NaN/Infinity) coordinates.
  * - Clamps oversized strings (`comment` ≤ 10k, `note` ≤ 1k, `url`/`title` bounded).
+ * - Drops malformed per-rect element enrichment instead of rejecting the payload.
  *
  * Exported for unit testing; also the trust boundary for untrusted page input.
  */
@@ -94,6 +156,8 @@ export function validateAnnotationPayload(raw: string): AnnotationPayload {
 		if (typeof r.note === "string" && r.note.length > 0) {
 			rect.note = clampString(r.note, NOTE_MAX);
 		}
+		const element = validateElementInfo(r.element);
+		if (element) rect.element = element;
 		rects.push(rect);
 	}
 
