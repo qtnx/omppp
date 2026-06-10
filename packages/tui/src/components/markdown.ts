@@ -105,6 +105,20 @@ function lexMarkdown(text: string): Token[] {
 				keptLen = cum;
 			}
 		}
+		// A list can gain another item across blank lines (loose-list continuation),
+		// so a sealed list followed only by blank-line "space" tokens may still grow
+		// as more text arrives — re-lex from it with the tail. Every other top-level
+		// block is definitively terminated by the blank line, and a list closed by a
+		// following non-space block is final. Without this, a streamed loose list is
+		// split into adjacent single-item list tokens and diverges from a full lex.
+		for (;;) {
+			let last = keptCount - 1;
+			while (last >= 0 && reuse.tokens[last]!.type === "space") last--;
+			if (last >= 0 && reuse.tokens[last]!.type === "list") keptCount = last;
+			else break;
+		}
+		keptLen = 0;
+		for (let i = 0; i < keptCount; i++) keptLen += reuse.tokens[i]!.raw.length;
 		if (keptCount > 0) {
 			const tail = markdownParser.lexer(text.slice(keptLen));
 			tokens = reuse.tokens.slice(0, keptCount).concat(tail);
@@ -142,6 +156,47 @@ const renderCache = new LRUCache<string, readonly string[]>({ max: RENDER_CACHE_
 /** Drop all L2 cache entries. Call on theme change to prevent stale styled output. */
 export function clearRenderCache(): void {
 	renderCache.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Incremental render cache (streaming hot path)
+// ---------------------------------------------------------------------------
+// During streaming the assistant message is re-rendered ~30fps with a growing
+// text, so the L2 renderCache (keyed on the full text) misses every frame and
+// the whole message is re-tokenized, re-rendered, re-wrapped and re-highlighted
+// — O(n)/frame → O(n²)/reply. lexMarkdown() reuses the token OBJECTS of every
+// blank-line-sealed block (identical references across frames), so we reuse the
+// rendered+wrapped+padded output lines of the sealed prefix and re-render only
+// the still-growing tail. Sealed code fences are frozen, so they are highlighted
+// once; only the open block re-highlights. We freeze [0..frozenCount-1] where
+// frozenCount = sealedBlockCount - 1: the last sealed token is dropped because
+// its trailing blank line depends on the next (still-live) token's type. Frozen
+// output is plain strings, so it survives the per-frame component recreation.
+// Keyed by the first token's identity (stable once the first block seals) so
+// distinct messages never collide; validated by the layout key + an identity
+// check of the frozen prefix so a non-append edit falls back to a full render.
+interface IncRenderEntry {
+	readonly layoutKey: string;
+	readonly tokens: readonly Token[];
+	readonly frozenCount: number;
+	readonly frozenLines: readonly string[];
+	readonly frozenOsc66: boolean;
+}
+let incRenderCache = new WeakMap<Token, IncRenderEntry>();
+
+/** Length of the leading run of reference-identical tokens shared by `a` and `b`. */
+function sharedTokenPrefix(a: readonly Token[], b: readonly Token[]): number {
+	const n = Math.min(a.length, b.length);
+	let i = 0;
+	while (i < n && a[i] === b[i]) i++;
+	return i;
+}
+
+/** Test seam: clear the L2 + incremental render caches between cases. @internal */
+export function __resetMarkdownRenderCachesForTest(): void {
+	renderCache.clear();
+	lexCache.length = 0;
+	incRenderCache = new WeakMap();
 }
 
 // Stable numeric IDs for structural theme/style objects (no ID field on type).
@@ -435,7 +490,8 @@ export class Markdown implements Component {
 		// by MarkdownTheme and is one of the most styling-sensitive entries.
 		const bgColorProbe = this.#defaultTextStyle?.bgColor ? this.#defaultTextStyle.bgColor("\x01") : "";
 		const headingProbe = this.#theme.heading("");
-		const cacheKey = `${normalizedText}\x00${width}\x00${this.#paddingX}\x00${this.#paddingY}\x00${this.#codeBlockIndent}\x00${objectId(this.#theme)}\x00${this.#defaultTextStyle ? objectId(this.#defaultTextStyle) : -1}\x00${TERMINAL.imageProtocol ?? ""}\x00${TERMINAL.hyperlinks ? 1 : 0}\x00${TERMINAL.textSizing ? 1 : 0}\x00${bgColorProbe}\x00${headingProbe}`;
+		const layoutKey = `${width}\x00${this.#paddingX}\x00${this.#paddingY}\x00${this.#codeBlockIndent}\x00${objectId(this.#theme)}\x00${this.#defaultTextStyle ? objectId(this.#defaultTextStyle) : -1}\x00${TERMINAL.imageProtocol ?? ""}\x00${TERMINAL.hyperlinks ? 1 : 0}\x00${TERMINAL.textSizing ? 1 : 0}\x00${bgColorProbe}\x00${headingProbe}`;
+		const cacheKey = `${normalizedText}\x00${layoutKey}`;
 		const cached = renderCache.get(cacheKey);
 		if (cached !== undefined) {
 			// Populate L1 so subsequent calls from this instance are O(1) map lookup.
@@ -445,69 +501,82 @@ export class Markdown implements Component {
 			return cached.slice();
 		}
 
-		// Parse markdown to HTML-like tokens
+		// Parse markdown to block tokens (incremental: reuses sealed-block tokens).
 		const tokens = lexMarkdown(normalizedText);
 
-		// Convert tokens to styled terminal output
-		const renderedLines: string[] = [];
-
-		for (let i = 0; i < tokens.length; i++) {
-			const token = tokens[i];
-			const nextToken = tokens[i + 1];
-			const tokenLines = this.#renderToken(token, contentWidth, nextToken?.type);
-			renderedLines.push(...tokenLines);
-		}
-
-		// Wrap lines (NO padding, NO background yet)
-		const wrappedLines: string[] = [];
-		for (const line of renderedLines) {
-			// Skip wrapping for image protocol lines and OSC 66 sized headings
-			// (would corrupt escape sequences / split the indivisible sized span).
-			if (TERMINAL.isImageLine(line) || isOsc66Line(line)) {
-				wrappedLines.push(line);
-			} else {
-				wrappedLines.push(...wrapTextWithAnsi(line, contentWidth));
-			}
-		}
-
-		// Add margins and background to each wrapped line
 		const leftMargin = padding(this.#paddingX);
 		const rightMargin = padding(this.#paddingX);
 		const bgFn = this.#defaultTextStyle?.bgColor;
-		const contentLines: string[] = [];
 
-		let previousLineWasOsc66 = false;
+		// Incremental render: reuse the rendered output of the sealed-block prefix
+		// (see incRenderCache notes) and re-render only the growing tail.
+		const firstToken = tokens[0];
+		const prior = firstToken ? incRenderCache.get(firstToken) : undefined;
+		let contentLines: string[];
+		let startToken: number;
+		let prevWasOsc66: boolean;
+		let reusedLineCount: number;
+		if (
+			prior &&
+			prior.layoutKey === layoutKey &&
+			prior.frozenCount > 0 &&
+			sharedTokenPrefix(prior.tokens, tokens) >= prior.frozenCount
+		) {
+			contentLines = prior.frozenLines.slice();
+			startToken = prior.frozenCount;
+			prevWasOsc66 = prior.frozenOsc66;
+			reusedLineCount = prior.frozenLines.length;
+		} else {
+			contentLines = [];
+			startToken = 0;
+			prevWasOsc66 = false;
+			reusedLineCount = 0;
+		}
+		const reuseOsc66 = prior?.frozenOsc66 ?? false;
 
-		for (const line of wrappedLines) {
-			// The first empty row after a scale>1 OSC 66 heading is structural:
-			// it reserves the lower cells occupied by the multicell glyphs. Do
-			// not pad or background-fill it, because real spaces on that row can
-			// interact with Kitty's multicell overwrite rules during the first
-			// paint. Leave it as a cursor-only newline.
-			if (previousLineWasOsc66 && line === "") {
-				contentLines.push("");
-				previousLineWasOsc66 = false;
-				continue;
+		// Render tokens [startToken..end], recording the line count + OSC66 state at
+		// each token boundary so the next frozen cut can be sliced exactly.
+		const boundaryLineCount: number[] = [];
+		const boundaryOsc66: boolean[] = [];
+		for (let i = startToken; i < tokens.length; i++) {
+			const token = tokens[i];
+			const tokenLines = this.#renderToken(token, contentWidth, tokens[i + 1]?.type);
+			prevWasOsc66 = this.#appendFinalized(
+				contentLines,
+				tokenLines,
+				width,
+				contentWidth,
+				leftMargin,
+				rightMargin,
+				bgFn,
+				prevWasOsc66,
+			);
+			boundaryLineCount[i] = contentLines.length;
+			boundaryOsc66[i] = prevWasOsc66;
+		}
+
+		// Freeze the sealed-block prefix (all but the last sealed token, whose
+		// trailing spacing depends on the still-open tail) for the next frame.
+		if (firstToken) {
+			let sealedCount = 0;
+			let cum = 0;
+			for (let i = 0; i < tokens.length; i++) {
+				cum += tokens[i]!.raw.length;
+				if (normalizedText.endsWith("\n\n", cum)) sealedCount = i + 1;
 			}
-
-			// Image lines and OSC 66 sized headings must be output raw - no margins or background
-			if (TERMINAL.isImageLine(line) || isOsc66Line(line)) {
-				contentLines.push(line);
-				previousLineWasOsc66 = isOsc66Line(line);
-				continue;
-			}
-
-			previousLineWasOsc66 = false;
-
-			const lineWithMargins = leftMargin + line + rightMargin;
-
-			if (bgFn) {
-				contentLines.push(applyBackgroundToLine(lineWithMargins, width, bgFn));
-			} else {
-				// No background - just pad to width
-				const visibleLen = visibleWidth(lineWithMargins);
-				const paddingNeeded = Math.max(0, width - visibleLen);
-				contentLines.push(lineWithMargins + padding(paddingNeeded));
+			const newFrozenCount = Math.max(0, sealedCount - 1);
+			if (newFrozenCount > 0) {
+				const frozenLen =
+					newFrozenCount > startToken ? boundaryLineCount[newFrozenCount - 1]! : reusedLineCount;
+				const frozenOsc66 =
+					newFrozenCount > startToken ? boundaryOsc66[newFrozenCount - 1]! : reuseOsc66;
+				incRenderCache.set(firstToken, {
+					layoutKey,
+					tokens,
+					frozenCount: newFrozenCount,
+					frozenLines: contentLines.slice(0, frozenLen),
+					frozenOsc66,
+				});
 			}
 		}
 
@@ -535,6 +604,59 @@ export class Markdown implements Component {
 		renderCache.set(cacheKey, cachedLines);
 
 		return result;
+	}
+
+	/**
+	 * Wrap + margin/background a single token's rendered lines and append them to
+	 * `out`, threading the `previousLineWasOsc66` state. Factored out of render()
+	 * so the incremental path can finalize one token at a time; the per-line logic
+	 * is identical to the former flat wrap + margin passes. Returns the OSC66 state
+	 * after the appended lines.
+	 */
+	#appendFinalized(
+		out: string[],
+		renderedLines: readonly string[],
+		width: number,
+		contentWidth: number,
+		leftMargin: string,
+		rightMargin: string,
+		bgFn: ((text: string) => string) | undefined,
+		previousLineWasOsc66: boolean,
+	): boolean {
+		let prevWasOsc66 = previousLineWasOsc66;
+		for (const rawLine of renderedLines) {
+			// Skip wrapping for image protocol lines and OSC 66 sized headings
+			// (would corrupt escape sequences / split the indivisible sized span).
+			const wrapped =
+				TERMINAL.isImageLine(rawLine) || isOsc66Line(rawLine)
+					? [rawLine]
+					: wrapTextWithAnsi(rawLine, contentWidth);
+			for (const line of wrapped) {
+				// The first empty row after a scale>1 OSC 66 heading is structural:
+				// it reserves the lower cells occupied by the multicell glyphs.
+				if (prevWasOsc66 && line === "") {
+					out.push("");
+					prevWasOsc66 = false;
+					continue;
+				}
+				// Image lines and OSC 66 sized headings must be output raw.
+				if (TERMINAL.isImageLine(line) || isOsc66Line(line)) {
+					out.push(line);
+					prevWasOsc66 = isOsc66Line(line);
+					continue;
+				}
+				prevWasOsc66 = false;
+				const lineWithMargins = leftMargin + line + rightMargin;
+				if (bgFn) {
+					out.push(applyBackgroundToLine(lineWithMargins, width, bgFn));
+				} else {
+					const visibleLen = visibleWidth(lineWithMargins);
+					const paddingNeeded = Math.max(0, width - visibleLen);
+					out.push(lineWithMargins + padding(paddingNeeded));
+				}
+			}
+		}
+		return prevWasOsc66;
 	}
 
 	/**

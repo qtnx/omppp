@@ -140,6 +140,7 @@ export class StreamingRevealController {
 	#revealed = 0;
 	#hideThinkingBlock = false;
 	#smoothStreaming = true;
+	#targetTotal = 0;
 
 	constructor(options: StreamingRevealControllerOptions) {
 		this.#getSmoothStreaming = options.getSmoothStreaming;
@@ -159,6 +160,7 @@ export class StreamingRevealController {
 			return;
 		}
 		const total = visibleUnits(message, this.#hideThinkingBlock);
+		this.#targetTotal = total;
 		if (message.content.some(block => block.type === "toolCall")) {
 			// A tool call is a transcript-order boundary: finish any leading
 			// assistant text before EventController renders the separate tool card.
@@ -178,6 +180,7 @@ export class StreamingRevealController {
 			return;
 		}
 		const total = visibleUnits(message, this.#hideThinkingBlock);
+		this.#targetTotal = total;
 		if (message.content.some(block => block.type === "toolCall")) {
 			// A tool call is a transcript-order boundary: finish any leading
 			// assistant text before EventController renders the separate tool card.
@@ -189,8 +192,11 @@ export class StreamingRevealController {
 		if (this.#revealed > total) {
 			this.#revealed = total;
 		}
-		this.#renderCurrent();
 		this.#syncTimer(total);
+		// When the reveal is animating, the 30fps #tick performs the single build+render;
+		// avoid the O(N) buildDisplayMessage on the per-delta event-thread path. Only render
+		// synchronously when no tick will fire (already fully revealed, timer stopped).
+		if (!this.#timer) this.#renderCurrent();
 	}
 
 	stop(): void {
@@ -198,6 +204,7 @@ export class StreamingRevealController {
 		this.#target = undefined;
 		this.#component = undefined;
 		this.#revealed = 0;
+		this.#targetTotal = 0;
 	}
 
 	#renderCurrent(): void {
@@ -205,7 +212,7 @@ export class StreamingRevealController {
 		this.#component.updateContent(buildDisplayMessage(this.#target, this.#revealed, this.#hideThinkingBlock));
 	}
 
-	#syncTimer(total = this.#target ? visibleUnits(this.#target, this.#hideThinkingBlock) : 0): void {
+	#syncTimer(total = this.#targetTotal): void {
 		if (!this.#target || !this.#component || this.#revealed >= total) {
 			this.#stopTimer();
 			return;
@@ -234,7 +241,7 @@ export class StreamingRevealController {
 			this.stop();
 			return;
 		}
-		const total = visibleUnits(target, this.#hideThinkingBlock);
+		const total = this.#targetTotal;
 		if (this.#revealed >= total) {
 			this.#stopTimer();
 			return;
