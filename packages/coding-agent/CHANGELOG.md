@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+- macOS sandbox SSH agent auto-discovery now probes `/var/run` (and `/private/var/run`), where the system launchd `com.openssh.ssh-agent` (Keychain) socket lives. Previously only per-user temp roots were scanned, so sessions launched without an inherited `SSH_AUTH_SOCK` fell back to blocked key files and SSH auth failed.
 
 ## [1.0.7] - 2026-06-09
 ### Added
