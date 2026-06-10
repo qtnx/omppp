@@ -20,7 +20,18 @@ export interface VitalsReport {
 export interface ReactTreeNode {
 	id: number;
 	name: string;
-	kind: "function" | "class" | "host" | "suspense" | "fragment" | "provider" | "consumer" | "memo" | "lazy" | "portal" | "other";
+	kind:
+		| "function"
+		| "class"
+		| "host"
+		| "suspense"
+		| "fragment"
+		| "provider"
+		| "consumer"
+		| "memo"
+		| "lazy"
+		| "portal"
+		| "other";
 	key?: string;
 	childCount?: number;
 	children?: ReactTreeNode[];
@@ -298,10 +309,12 @@ export async function reactInspect(page: Page, id: number): Promise<ReactInspect
 		if (debugSource) {
 			const fileName = debugSource.fileName;
 			const lineNumber = debugSource.lineNumber;
-			if (typeof fileName === "string") source = `${fileName}${typeof lineNumber === "number" ? `:${lineNumber}` : ""}`;
+			if (typeof fileName === "string")
+				source = `${fileName}${typeof lineNumber === "number" ? `:${lineNumber}` : ""}`;
 		}
 
-		const propsRecord = props && typeof props === "object" && !Array.isArray(props) ? (props as Record<string, unknown>) : undefined;
+		const propsRecord =
+			props && typeof props === "object" && !Array.isArray(props) ? (props as Record<string, unknown>) : undefined;
 		return {
 			id: fiberId,
 			name: typeName(fiber.type) ?? typeName(fiber.elementType) ?? "Unknown",

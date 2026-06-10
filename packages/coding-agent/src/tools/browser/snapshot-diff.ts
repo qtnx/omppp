@@ -11,7 +11,6 @@ export interface PixelDiffResult {
 	diffPng: Uint8Array;
 }
 
-
 function serializeValue(value: ObservationEntry["value"]): string | undefined {
 	if (value === undefined) return undefined;
 	return typeof value === "string" ? JSON.stringify(value) : String(value);
@@ -27,7 +26,9 @@ export function serializeObservation(obs: Observation): string {
 	for (const element of obs.elements) {
 		const value = serializeValue(element.value);
 		const valuePart = value === undefined ? "" : ` value=${value}`;
-		lines.push(`${element.role} ${JSON.stringify(element.name ?? "")}${valuePart} states=[${element.states.join(",")}]`);
+		lines.push(
+			`${element.role} ${JSON.stringify(element.name ?? "")}${valuePart} states=[${element.states.join(",")}]`,
+		);
 	}
 
 	return lines.join("\n");
@@ -118,11 +119,12 @@ export async function pixelDiffInPage(
 						const inBase = x < baseBitmap.width && y < baseBitmap.height;
 						const inCurr = x < currBitmap.width && y < currBitmap.height;
 						const alphaChanged = baseData[offset + 3] !== currData[offset + 3];
-						const colorDistance = Math.max(
-							Math.abs(baseData[offset] - currData[offset]),
-							Math.abs(baseData[offset + 1] - currData[offset + 1]),
-							Math.abs(baseData[offset + 2] - currData[offset + 2]),
-						) / 255;
+						const colorDistance =
+							Math.max(
+								Math.abs(baseData[offset] - currData[offset]),
+								Math.abs(baseData[offset + 1] - currData[offset + 1]),
+								Math.abs(baseData[offset + 2] - currData[offset + 2]),
+							) / 255;
 						const changed = inBase !== inCurr || alphaChanged || colorDistance > clampedThreshold;
 
 						if (changed) {
@@ -132,7 +134,8 @@ export async function pixelDiffInPage(
 							currData[offset + 2] = 0;
 							currData[offset + 3] = 255;
 						} else {
-							const luma = 0.2126 * currData[offset] + 0.7152 * currData[offset + 1] + 0.0722 * currData[offset + 2];
+							const luma =
+								0.2126 * currData[offset] + 0.7152 * currData[offset + 1] + 0.0722 * currData[offset + 2];
 							const dimmed = Math.min(255, Math.round(luma * 0.3 + 178));
 							currData[offset] = dimmed;
 							currData[offset + 1] = dimmed;

@@ -186,7 +186,9 @@ async function dispatchSubmit(page: Page, raw: string): Promise<void> {
 
 	await page
 		.evaluate(() => {
-			(globalThis as unknown as { __ompxAnnotateSetChromeVisible?: (visible: boolean) => void }).__ompxAnnotateSetChromeVisible?.(false);
+			(
+				globalThis as unknown as { __ompxAnnotateSetChromeVisible?: (visible: boolean) => void }
+			).__ompxAnnotateSetChromeVisible?.(false);
 		})
 		.catch(() => undefined);
 	let bytes: Uint8Array;
@@ -195,15 +197,15 @@ async function dispatchSubmit(page: Page, raw: string): Promise<void> {
 	} finally {
 		await page
 			.evaluate(() => {
-				(globalThis as unknown as { __ompxAnnotateSetChromeVisible?: (visible: boolean) => void }).__ompxAnnotateSetChromeVisible?.(true);
+				(
+					globalThis as unknown as { __ompxAnnotateSetChromeVisible?: (visible: boolean) => void }
+				).__ompxAnnotateSetChromeVisible?.(true);
 			})
 			.catch(() => undefined);
 	}
 	// `page.screenshot` returns a Uint8Array; wrap it as a Buffer view over the
 	// same memory (no copy) when it isn't already a Buffer.
-	const screenshot = Buffer.isBuffer(bytes)
-		? bytes
-		: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const screenshot = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
 	await handler(payload, screenshot);
 }

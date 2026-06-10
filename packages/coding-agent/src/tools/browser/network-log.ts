@@ -153,14 +153,18 @@ export class NetworkLog {
 		if (filter.filter) {
 			const matcher = /^\/(.*)\/$/.exec(filter.filter);
 			const regex = matcher ? new RegExp(matcher[1]!) : undefined;
-			entries = regex ? entries.filter(entry => regex.test(entry.url)) : entries.filter(entry => entry.url.includes(filter.filter!));
+			entries = regex
+				? entries.filter(entry => regex.test(entry.url))
+				: entries.filter(entry => entry.url.includes(filter.filter!));
 		}
 		if (filter.type) {
 			const types = new Set(Array.isArray(filter.type) ? filter.type : [filter.type]);
 			entries = entries.filter(entry => types.has(entry.resourceType));
 		}
 		if (filter.method) {
-			const methods = new Set((Array.isArray(filter.method) ? filter.method : [filter.method]).map(method => method.toUpperCase()));
+			const methods = new Set(
+				(Array.isArray(filter.method) ? filter.method : [filter.method]).map(method => method.toUpperCase()),
+			);
 			entries = entries.filter(entry => methods.has(entry.method.toUpperCase()));
 		}
 		if (filter.status) {
@@ -171,7 +175,10 @@ export class NetworkLog {
 			const limit = Math.max(0, Math.trunc(filter.limit));
 			entries = limit >= entries.length ? entries : entries.slice(entries.length - limit);
 		}
-		return entries.map(({ requestHeaders: _requestHeaders, responseHeaders: _responseHeaders, postData: _postData, ...entry }) => entry);
+		return entries.map(
+			({ requestHeaders: _requestHeaders, responseHeaders: _responseHeaders, postData: _postData, ...entry }) =>
+				entry,
+		);
 	}
 
 	async request(id: number): Promise<RequestDetail | undefined> {
@@ -268,7 +275,12 @@ export class NetworkLog {
 				await request.abort();
 				return;
 			}
-			if (route.spec.body !== undefined || route.spec.status !== undefined || route.spec.headers || route.spec.contentType) {
+			if (
+				route.spec.body !== undefined ||
+				route.spec.status !== undefined ||
+				route.spec.headers ||
+				route.spec.contentType
+			) {
 				const body = route.spec.body;
 				await request.respond({
 					status: route.spec.status ?? 200,
@@ -284,7 +296,6 @@ export class NetworkLog {
 		}
 	}
 }
-
 
 function truncateResponseBody(body: string): string {
 	const bytes = new TextEncoder().encode(body);

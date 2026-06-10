@@ -122,7 +122,11 @@ describe("validateAnnotationPayload", () => {
 	});
 
 	it("drops malformed element info without rejecting the submission", () => {
-		for (const element of ["div", { tag: "div", rect: { x: 0, y: 0, width: 1, height: 1 } }, { selector: "div", tag: "div", rect: { x: "NaN-ish", y: 0, width: 1, height: 1 } }]) {
+		for (const element of [
+			"div",
+			{ tag: "div", rect: { x: 0, y: 0, width: 1, height: 1 } },
+			{ selector: "div", tag: "div", rect: { x: "NaN-ish", y: 0, width: 1, height: 1 } },
+		]) {
 			const payload = validateAnnotationPayload(
 				JSON.stringify({ comment: "x", rects: [{ x: 0, y: 0, width: 5, height: 5, element }], url: "u" }),
 			);

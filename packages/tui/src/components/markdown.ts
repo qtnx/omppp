@@ -566,10 +566,8 @@ export class Markdown implements Component {
 			}
 			const newFrozenCount = Math.max(0, sealedCount - 1);
 			if (newFrozenCount > 0) {
-				const frozenLen =
-					newFrozenCount > startToken ? boundaryLineCount[newFrozenCount - 1]! : reusedLineCount;
-				const frozenOsc66 =
-					newFrozenCount > startToken ? boundaryOsc66[newFrozenCount - 1]! : reuseOsc66;
+				const frozenLen = newFrozenCount > startToken ? boundaryLineCount[newFrozenCount - 1]! : reusedLineCount;
+				const frozenOsc66 = newFrozenCount > startToken ? boundaryOsc66[newFrozenCount - 1]! : reuseOsc66;
 				incRenderCache.set(firstToken, {
 					layoutKey,
 					tokens,
@@ -628,9 +626,7 @@ export class Markdown implements Component {
 			// Skip wrapping for image protocol lines and OSC 66 sized headings
 			// (would corrupt escape sequences / split the indivisible sized span).
 			const wrapped =
-				TERMINAL.isImageLine(rawLine) || isOsc66Line(rawLine)
-					? [rawLine]
-					: wrapTextWithAnsi(rawLine, contentWidth);
+				TERMINAL.isImageLine(rawLine) || isOsc66Line(rawLine) ? [rawLine] : wrapTextWithAnsi(rawLine, contentWidth);
 			for (const line of wrapped) {
 				// The first empty row after a scale>1 OSC 66 heading is structural:
 				// it reserves the lower cells occupied by the multicell glyphs.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ConsoleMessage, Page } from "puppeteer-core";
-import { PageLogBuffer } from "../page-log";
 import { parseStatusFilter, patternToMatcher } from "../network-log";
+import { PageLogBuffer } from "../page-log";
 
 type Handler = (value: unknown) => void;
 

@@ -15,10 +15,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { Chalk } from "chalk";
 import {
-	__resetMarkdownRenderCachesForTest as resetRenderCaches,
 	type DefaultTextStyle,
 	Markdown,
 	type MarkdownTheme,
+	__resetMarkdownRenderCachesForTest as resetRenderCaches,
 } from "../src/components/markdown.js";
 import { setTerminalTextSizing, TERMINAL } from "../src/terminal-capabilities.js";
 import { defaultMarkdownTheme } from "./test-themes.js";
@@ -101,7 +101,9 @@ describe("incremental markdown render == full render", () => {
 		const style: DefaultTextStyle = { bgColor: (t: string) => `\x1b[44m${t}\x1b[49m` };
 		const cfg: Cfg = { px: 1, py: 0, style };
 		for (const doc of Object.values(CORPUS)) {
-			expect(streamRender(doc, 60, defaultMarkdownTheme, cfg)).toEqual(fullRender(doc, 60, defaultMarkdownTheme, cfg));
+			expect(streamRender(doc, 60, defaultMarkdownTheme, cfg)).toEqual(
+				fullRender(doc, 60, defaultMarkdownTheme, cfg),
+			);
 		}
 	});
 });
@@ -125,7 +127,9 @@ describe("incremental render with text-sizing (OSC 66) headings", () => {
 		for (const width of [40, 80]) {
 			it(`${name} @${width}`, () => {
 				const cfg: Cfg = { px: 0, py: 0 };
-				expect(streamRender(doc, width, defaultMarkdownTheme, cfg)).toEqual(fullRender(doc, width, defaultMarkdownTheme, cfg));
+				expect(streamRender(doc, width, defaultMarkdownTheme, cfg)).toEqual(
+					fullRender(doc, width, defaultMarkdownTheme, cfg),
+				);
 			});
 		}
 	}
