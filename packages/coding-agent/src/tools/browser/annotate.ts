@@ -259,7 +259,8 @@ export async function enableAnnotationMode(page: Page, onSubmit: AnnotationSubmi
 		.evaluate((id: string) => {
 			const g = globalThis as unknown as { __ompxAnnotateEnabled?: boolean; __ompxAnnotateInstalled?: boolean };
 			g.__ompxAnnotateEnabled = true;
-			if (!document.getElementById(id)) g.__ompxAnnotateInstalled = false;
+			const doc = document as unknown as { getElementById(id: string): { remove(): void } | null };
+			if (!doc.getElementById(id)) g.__ompxAnnotateInstalled = false;
 		}, HOST_ID)
 		.catch(() => undefined);
 	await page.evaluate(overlayScript).catch(() => undefined);
@@ -300,7 +301,8 @@ export async function disableAnnotationMode(page: Page): Promise<void> {
 			const g = globalThis as unknown as { __ompxAnnotateEnabled?: boolean; __ompxAnnotateInstalled?: boolean };
 			g.__ompxAnnotateEnabled = false;
 			g.__ompxAnnotateInstalled = false;
-			document.getElementById(id)?.remove();
+			const doc = document as unknown as { getElementById(id: string): { remove(): void } | null };
+			doc.getElementById(id)?.remove();
 		}, HOST_ID)
 		.catch(() => undefined);
 }

@@ -1,0 +1,99 @@
+(() => {
+	if (globalThis.__ompxVitals) return;
+
+	const vitals = {
+		lcp: undefined,
+		cls: 0,
+		fcp: undefined,
+		ttfb: undefined,
+		inp: undefined,
+		domContentLoaded: undefined,
+		load: undefined,
+		events: [],
+	};
+	globalThis.__ompxVitals = vitals;
+
+	const setNavigationTimings = () => {
+		try {
+			const nav = performance.getEntriesByType("navigation")[0];
+			if (!nav) return;
+			if (typeof nav.responseStart === "number") vitals.ttfb = nav.responseStart;
+			if (typeof nav.domContentLoadedEventEnd === "number") vitals.domContentLoaded = nav.domContentLoadedEventEnd;
+			if (typeof nav.loadEventEnd === "number") vitals.load = nav.loadEventEnd;
+		} catch (e) {}
+	};
+	const deferNavigationTimings = () => {
+		setTimeout(setNavigationTimings, 0);
+	};
+
+	setNavigationTimings();
+	try {
+		addEventListener("DOMContentLoaded", deferNavigationTimings, { once: true, passive: true });
+		addEventListener("load", deferNavigationTimings, { once: true, passive: true });
+	} catch (e) {}
+
+	try {
+		new PerformanceObserver(list => {
+			const entries = list.getEntries();
+			for (let i = 0; i < entries.length; i++) {
+				const entry = entries[i];
+				if (entry.name === "first-contentful-paint" && typeof vitals.fcp !== "number") {
+					vitals.fcp = entry.startTime;
+				}
+			}
+		}).observe({ type: "paint", buffered: true });
+	} catch (e) {}
+
+	try {
+		new PerformanceObserver(list => {
+			const entries = list.getEntries();
+			for (let i = 0; i < entries.length; i++) {
+				const entry = entries[i];
+				const element = entry.element;
+				vitals.lcp = {
+					startTime: entry.startTime,
+					size: entry.size,
+					tag: element && element.tagName ? String(element.tagName).toLowerCase() : undefined,
+					id: element && element.id ? String(element.id) : undefined,
+				};
+			}
+		}).observe({ type: "largest-contentful-paint", buffered: true });
+	} catch (e) {}
+
+	try {
+		let sessionValue = 0;
+		let sessionStart = 0;
+		let sessionLast = 0;
+		new PerformanceObserver(list => {
+			const entries = list.getEntries();
+			for (let i = 0; i < entries.length; i++) {
+				const entry = entries[i];
+				if (entry.hadRecentInput) continue;
+				const value = entry.value || 0;
+				const start = entry.startTime || 0;
+				if (sessionValue === 0 || start - sessionLast > 1000 || start - sessionStart > 5000) {
+					sessionValue = value;
+					sessionStart = start;
+				} else {
+					sessionValue += value;
+				}
+				sessionLast = start;
+				if (sessionValue > vitals.cls) vitals.cls = sessionValue;
+			}
+		}).observe({ type: "layout-shift", buffered: true });
+	} catch (e) {}
+
+	try {
+		new PerformanceObserver(list => {
+			const entries = list.getEntries();
+			for (let i = 0; i < entries.length; i++) {
+				const entry = entries[i];
+				const duration = entry.duration || 0;
+				if (duration > (vitals.inp || 0)) vitals.inp = duration;
+				vitals.events.push({ name: entry.name, startTime: entry.startTime, duration });
+			}
+			vitals.events.sort((a, b) => b.duration - a.duration);
+			if (vitals.events.length > 10) vitals.events.length = 10;
+		}).observe({ type: "event", buffered: true, durationThreshold: 40 });
+	} catch (e) {}
+})();
