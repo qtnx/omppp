@@ -680,8 +680,9 @@ function statIfOwnedSocket(candidate: string, uid: number | undefined): fs.Stats
 	}
 }
 
-// launchd agents expose `<root>/com.apple.launchd.*/Listeners`; classic ssh-agent
-// exposes `<root>/ssh-*/agent.*`. Pick the newest live-looking socket owned by us.
+// launchd agents expose `<root>/com.apple.launchd.*/Listeners` (under per-user temp
+// roots, or /var/run for the system com.openssh.ssh-agent); classic ssh-agent exposes
+// `<root>/ssh-*/agent.*`. Pick the newest live-looking socket owned by us.
 function newestAgentSocketInTempRoots(
 	roots: readonly (string | undefined)[],
 	uid: number | undefined,
@@ -728,7 +729,10 @@ function discoverSSHAuthSock(env: Record<string, string | undefined>, home: stri
 		const candidate = path.join(home, relative);
 		if (statIfOwnedSocket(candidate, uid)) return candidate;
 	}
-	return newestAgentSocketInTempRoots([env.TMPDIR, os.tmpdir(), "/tmp", "/private/tmp"], uid);
+	return newestAgentSocketInTempRoots(
+		[env.TMPDIR, os.tmpdir(), "/tmp", "/private/tmp", "/var/run", "/private/var/run"],
+		uid,
+	);
 }
 
 // Resolution priority mirrors the trust model: the boot-captured/env-override socket
