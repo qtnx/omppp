@@ -9,6 +9,7 @@
 ### Changed
 
 - `ompx update` now runs the repo install script (`scripts/install.sh`, pinned to the release tag) on Linux/macOS instead of only swapping the binary asset, so updates share one source of truth with fresh installs — SHA256SUMS verification, standard-config seeding, and future installer migrations apply automatically. The previous binary is backed up and restored when the script fails or the updated binary reports the wrong version; Windows and failed script fetches fall back to the direct binary swap
+- `task.showResolvedModelBadge` now defaults to `true`, so the task widget and eval renderer show the actual model each running subagent resolved to (the badge previously existed but was opt-in and effectively invisible)
 
 ### Fixed
 

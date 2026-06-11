@@ -3146,7 +3146,7 @@ export const SETTINGS_SCHEMA = {
 
 	"task.showResolvedModelBadge": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "appearance",
 			label: "Show Resolved Model Badge",
