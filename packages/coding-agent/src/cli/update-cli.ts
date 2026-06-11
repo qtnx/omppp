@@ -3,18 +3,33 @@
  *
  * Handles `ompx update` to check for and install updates.
  *
- * OMPx is distributed as a GitHub release binary from `qtnx/omppp`, so updates
- * always download the matching release asset and swap the on-disk binary in
- * place. There is no npm/bun reinstall path: the published npm package lives in
- * a scope this fork does not own, so reinstalling from it would pull a different
- * project's build rather than the latest OMPx release.
+ * OMPx is distributed as a GitHub release binary from `qtnx/omppp`. On POSIX
+ * platforms updates run the repo's `scripts/install.sh` (pinned to the release
+ * tag) so the update path and the install path stay one source of truth —
+ * checksum verification, standard-config seeding, and any future installer
+ * migrations apply to updates automatically. The previous binary is backed up
+ * and restored when the updated binary fails version verification. Windows
+ * (and any environment where the script cannot run) falls back to downloading
+ * the release asset and swapping the on-disk binary in place. There is no
+ * npm/bun reinstall path: the published npm package lives in a scope this fork
+ * does not own, so reinstalling from it would pull a different project's build
+ * rather than the latest OMPx release.
  */
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { $which, APP_NAME, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import chalk from "chalk";
 import { theme } from "../modes/theme/theme";
 import { downloadReleaseAsset, fetchLatestReleaseInfo, type ReleaseInfo } from "./update-release";
+
+const REPO = "qtnx/omppp";
+
+/** Raw URL of the install script pinned to a release tag. */
+export function installScriptUrl(tag: string): string {
+	return `https://raw.githubusercontent.com/${REPO}/${tag}/scripts/install.sh`;
+}
 
 /** Result from running the installed binary and parsing its reported version. */
 export interface InstalledVersionVerification {
@@ -222,6 +237,86 @@ async function updateViaBinaryAt(targetPath: string, release: ReleaseInfo): Prom
 	console.log(chalk.dim(`Restart ${APP_NAME} to use the new version`));
 }
 
+/** Dependencies for {@link updateViaInstallScript}; injectable for tests. */
+export interface InstallScriptUpdateOptions {
+	targetPath: string;
+	release: ReleaseInfo;
+	fetchScript?: (url: string) => Promise<string>;
+	runScript?: (scriptPath: string, args: string[], installDir: string) => Promise<number>;
+	verifyInstalledVersion?: (expectedVersion: string) => Promise<InstalledVersionVerification>;
+}
+
+async function fetchInstallScript(url: string): Promise<string> {
+	const response = await fetch(url);
+	if (!response.ok) {
+		throw new Error(`Install script download failed: ${response.status} ${response.statusText}`);
+	}
+	return response.text();
+}
+
+async function runInstallScript(scriptPath: string, args: string[], installDir: string): Promise<number> {
+	const proc = Bun.spawn(["sh", scriptPath, ...args], {
+		env: { ...process.env, PI_INSTALL_DIR: installDir },
+		stdout: "inherit",
+		stderr: "inherit",
+	});
+	return proc.exited;
+}
+
+/**
+ * Update by running the repo install script pinned to the release tag.
+ *
+ * `PI_INSTALL_DIR` steers the script at the directory of the currently
+ * resolved binary, and `--binary --ref <tag>` pins the exact release — no
+ * "latest" race between our version check and the script's own resolution.
+ * The script verifies the SHA256SUMS entry itself and seeds the standard
+ * config when missing; we keep a backup of the current binary and restore it
+ * when the script fails or the updated binary reports the wrong version.
+ */
+export async function updateViaInstallScript(options: InstallScriptUpdateOptions): Promise<void> {
+	const { targetPath, release } = options;
+	const fetchScript = options.fetchScript ?? fetchInstallScript;
+	const runScript = options.runScript ?? runInstallScript;
+	const verify = options.verifyInstalledVersion ?? verifyInstalledVersion;
+
+	const script = await fetchScript(installScriptUrl(release.tag));
+
+	const scriptPath = path.join(await fs.promises.mkdtemp(path.join(os.tmpdir(), "ompx-update-")), "install.sh");
+	await Bun.write(scriptPath, script);
+
+	const backupPath = `${targetPath}.bak`;
+	await unlinkIfExists(backupPath);
+	await fs.promises.copyFile(targetPath, backupPath);
+
+	try {
+		console.log(chalk.dim("Running install script..."));
+		const exitCode = await runScript(scriptPath, ["--binary", "--ref", release.tag], path.dirname(targetPath));
+		if (exitCode !== 0) {
+			throw new Error(`install script exited with code ${exitCode}`);
+		}
+
+		const verification = await verify(release.version);
+		if (!verification.ok) {
+			throw new Error(formatVerificationFailure(verification, release.version));
+		}
+
+		await unlinkBestEffort(backupPath);
+	} catch (err) {
+		// Restore best-effort: never mask the root failure with a rollback error.
+		try {
+			await unlinkIfExists(targetPath);
+			await fs.promises.rename(backupPath, targetPath);
+		} catch (restoreErr) {
+			throw new Error(
+				`${err instanceof Error ? err.message : err}; failed to restore previous ${APP_NAME} binary: ${restoreErr}`,
+			);
+		}
+		throw new Error(`${err instanceof Error ? err.message : err}; restored previous ${APP_NAME} binary`);
+	} finally {
+		await fs.promises.rm(path.dirname(scriptPath), { recursive: true, force: true });
+	}
+}
+
 /**
  * Run the update command.
  */
@@ -255,10 +350,24 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 		return;
 	}
 
-	// Download the matching release binary and swap it in place.
+	// POSIX: run the pinned install script (one source of truth with fresh
+	// installs — checksum verify + standard-config seeding). Windows or a
+	// failed script fetch falls back to the in-place binary swap.
 	try {
 		const targetPath = resolveOmpxTarget();
-		await updateViaBinaryAt(targetPath, release);
+		if (process.platform === "win32") {
+			await updateViaBinaryAt(targetPath, release);
+		} else {
+			try {
+				await updateViaInstallScript({ targetPath, release });
+				printVerifiedVersion(release.version);
+				console.log(chalk.dim(`Restart ${APP_NAME} to use the new version`));
+			} catch (err) {
+				console.error(chalk.yellow(`Install script update failed: ${err}`));
+				console.log(chalk.dim("Falling back to direct binary download..."));
+				await updateViaBinaryAt(targetPath, release);
+			}
+		}
 	} catch (err) {
 		console.error(chalk.red(`Update failed: ${err}`));
 		process.exit(1);

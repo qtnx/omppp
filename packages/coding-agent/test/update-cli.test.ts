@@ -4,8 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	getBinaryNameForTest,
+	installScriptUrl,
 	parseReportedVersion,
 	replaceBinaryForUpdate,
+	updateViaInstallScript,
 } from "@oh-my-pi/pi-coding-agent/cli/update-cli";
 
 const tempDirs: string[] = [];
@@ -93,5 +95,81 @@ describe("update-cli binary replacement", () => {
 		expect(await Bun.file(targetPath).text()).toBe("new binary");
 		expect(await Bun.file(tempPath).exists()).toBe(false);
 		expect(await Bun.file(backupPath).exists()).toBe(false);
+	});
+});
+
+describe("update-cli install script path", () => {
+	it("pins the install script URL to the release tag on the fork repo", () => {
+		expect(installScriptUrl("v1.2.0")).toBe("https://raw.githubusercontent.com/qtnx/omppp/v1.2.0/scripts/install.sh");
+	});
+
+	it("passes the install dir and pinned ref to the script, then keeps the verified result", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, "ompx");
+		await Bun.write(targetPath, "old binary");
+
+		let seen: { args: string[]; installDir: string; script: string } | undefined;
+		await updateViaInstallScript({
+			targetPath,
+			release: { tag: "v9.9.9", version: "9.9.9" },
+			fetchScript: async url => `#!/bin/sh\n# from ${url}\n`,
+			runScript: async (scriptPath, args, installDir) => {
+				seen = { args, installDir, script: await Bun.file(scriptPath).text() };
+				await Bun.write(targetPath, "new binary");
+				return 0;
+			},
+			verifyInstalledVersion: async () => ({ ok: true, actual: "9.9.9", path: targetPath }),
+		});
+
+		expect(seen?.args).toEqual(["--binary", "--ref", "v9.9.9"]);
+		expect(seen?.installDir).toBe(dir);
+		expect(seen?.script).toContain(installScriptUrl("v9.9.9"));
+		expect(await Bun.file(targetPath).text()).toBe("new binary");
+		expect(await Bun.file(`${targetPath}.bak`).exists()).toBe(false);
+	});
+
+	it("restores the previous binary when the script fails", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, "ompx");
+		await Bun.write(targetPath, "old binary");
+
+		await expect(
+			updateViaInstallScript({
+				targetPath,
+				release: { tag: "v9.9.9", version: "9.9.9" },
+				fetchScript: async () => "#!/bin/sh\n",
+				runScript: async () => {
+					await Bun.write(targetPath, "half-written binary");
+					return 1;
+				},
+				verifyInstalledVersion: async () => {
+					throw new Error("must not verify after a failed script");
+				},
+			}),
+		).rejects.toThrow("restored previous ompx binary");
+
+		expect(await Bun.file(targetPath).text()).toBe("old binary");
+		expect(await Bun.file(`${targetPath}.bak`).exists()).toBe(false);
+	});
+
+	it("restores the previous binary when the updated binary reports the wrong version", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, "ompx");
+		await Bun.write(targetPath, "old binary");
+
+		await expect(
+			updateViaInstallScript({
+				targetPath,
+				release: { tag: "v9.9.9", version: "9.9.9" },
+				fetchScript: async () => "#!/bin/sh\n",
+				runScript: async () => {
+					await Bun.write(targetPath, "wrong binary");
+					return 0;
+				},
+				verifyInstalledVersion: async () => ({ ok: false, actual: "1.0.0", path: targetPath }),
+			}),
+		).rejects.toThrow("restored previous ompx binary");
+
+		expect(await Bun.file(targetPath).text()).toBe("old binary");
 	});
 });
