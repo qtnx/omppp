@@ -4,6 +4,7 @@
 
 ### Added
 - Added `compact` tool: the agent can schedule a context compaction at the next turn boundary when it judges older history is no longer needed (honors `compaction.strategy`, including snapcompact)
+- Added natural-language compact intent: an imperative "compact" instruction in a new user message ("compact đi", "please compact", bare `compact`) runs the compaction inline before the prompt is answered, bypassing the token threshold; questions and discussion about compaction do not trigger it
 - Added a `# Context Compaction` system prompt section (rendered when the `compact` tool is available) that proactively lists the boundary cases where the agent should compact and requires restating next steps before calling
 - Added a tier quick-reference (`quick_task` / `task` / `heavy_task`) at the top of the eager-orchestrator system prompt section so tier selection guidance is visible before the detailed PHASE 3 case lists
 

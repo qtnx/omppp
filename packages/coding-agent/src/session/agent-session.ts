@@ -4816,6 +4816,13 @@ export class AgentSession {
 				);
 			}
 
+			// An explicit "compact" instruction in the user's message becomes a
+			// pending request so the pre-prompt #checkCompaction below runs the
+			// compaction inline (threshold-free) before this prompt is answered.
+			if (!options?.skipCompactionCheck && detectUserCompactIntent(expandedText)) {
+				this.#pendingAgentCompactionRequest ??= { reason: "user asked to compact" };
+			}
+
 			// Check if we need to compact before sending (catches aborted responses). Run
 			// inline (allowDefer=false) so the handoff/maintenance fully settles before this
 			// prompt's agent loop starts — otherwise a deferred handoff would fire on the
@@ -10517,4 +10524,24 @@ export class AgentSession {
 	get extensionRunner(): ExtensionRunner | undefined {
 		return this.#extensionRunner;
 	}
+}
+
+/**
+ * Detect an explicit user instruction to compact in a freshly submitted
+ * message. Imperative phrasings trigger ("compact đi", "hãy compact",
+ * "please compact", bare "compact"/"/compact", "compact now"); questions and
+ * discussion *about* compaction do not — a debugging conversation mentioning
+ * the word every message must not archive itself mid-thread.
+ */
+const COMPACT_INTENT_PATTERNS: readonly RegExp[] = [
+	/^\s*\/?compact\s*[!.]*\s*$/i,
+	/\bcompact\s+(?:đi|giùm|giúp|hộ|ngay|luôn|nhé|nha|đã|trước)\b/iu,
+	/\b(?:hãy|nhớ|làm\s+ơn)\s+(?:\S+\s+){0,2}?compact\b/iu,
+	/\b(?:please|pls|run|do|perform|trigger|execute)\s+(?:\S+\s+){0,2}?compact\b/i,
+	/\bcompact\s+(?:now|please|pls|first|context|history|the\s+context)\b/i,
+];
+
+export function detectUserCompactIntent(text: string): boolean {
+	if (!text || text.includes("?")) return false;
+	return COMPACT_INTENT_PATTERNS.some(pattern => pattern.test(text));
 }

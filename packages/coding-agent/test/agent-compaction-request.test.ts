@@ -6,7 +6,11 @@ import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import {
+	AgentSession,
+	type AgentSessionEvent,
+	detectUserCompactIntent,
+} from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
@@ -293,5 +297,43 @@ describe("system prompt compaction guidance", () => {
 
 		const withoutCompact = await buildSystemPrompt({ ...base, toolNames: ["read", "context_unload"] });
 		expect(withoutCompact.systemPrompt.join("\n\n")).not.toContain("# Context Compaction");
+	});
+});
+
+describe("detectUserCompactIntent", () => {
+	it("triggers on imperative compact instructions", () => {
+		const imperatives = [
+			"compact",
+			"/compact",
+			"compact!",
+			"compact đi",
+			"compact ngay đi",
+			"compact giùm tao",
+			"hãy compact",
+			"làm ơn compact giúp",
+			"please compact",
+			"pls compact",
+			"run compact",
+			"compact now",
+			"compact the context",
+		];
+		for (const text of imperatives) {
+			expect(detectUserCompactIntent(text), text).toBe(true);
+		}
+	});
+
+	it("ignores questions and discussion about compaction", () => {
+		const mentions = [
+			"mày có thực hiện compact trước khi trả lời đâu?",
+			"phần consider thực hiện compact có vẻ chưa hoạt động ?",
+			"trong cái phần checkCompaction luôn check tin nhắn có từ compact hoặc intent user bảo compact thì thực hiện compact",
+			"compaction strategy nào tốt nhất",
+			"tool compact hoạt động chưa",
+			"the compact tool schedules compaction at the next turn boundary",
+			"",
+		];
+		for (const text of mentions) {
+			expect(detectUserCompactIntent(text), text).toBe(false);
+		}
 	});
 });
