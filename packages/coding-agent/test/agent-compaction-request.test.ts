@@ -10,6 +10,7 @@ import {
 	AgentSession,
 	type AgentSessionEvent,
 	detectUserCompactIntent,
+	stripUserCompactIntent,
 } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -237,6 +238,36 @@ describe("agent-requested compaction", () => {
 			events.filter(event => event.type === "auto_compaction_start" && event.reason === "requested"),
 		).toHaveLength(1);
 	});
+
+	it("strips the consumed compact instruction from the prompt and appends a performed notice", async () => {
+		seedCompactableHistory();
+		shortCircuitCompaction();
+		// Pre-prompt #checkCompaction only runs when agent state holds an assistant message.
+		session.agent.replaceMessages([assistant("stop")]);
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await session.prompt("compact đi rồi tiếp tục việc còn lại");
+
+		expect(
+			events.filter(event => event.type === "auto_compaction_start" && event.reason === "requested"),
+		).toHaveLength(1);
+
+		const arg = promptSpy.mock.calls[0]?.[0];
+		const sent = (Array.isArray(arg) ? arg : [arg]) as Array<{
+			role: string;
+			customType?: string;
+			content: string | Array<{ type: string; text?: string }>;
+		}>;
+		const userMessage = sent.find(message => message.role === "user");
+		expect(userMessage).toBeDefined();
+		const textBlock = Array.isArray(userMessage?.content)
+			? userMessage.content.find(block => block.type === "text")
+			: undefined;
+		expect(textBlock?.text).toBe("rồi tiếp tục việc còn lại");
+		expect(
+			sent.some(message => message.role === "custom" && message.customType === "compaction-performed-notice"),
+		).toBe(true);
+	});
 });
 
 describe("CompactTool agent request bridge", () => {
@@ -334,6 +365,30 @@ describe("detectUserCompactIntent", () => {
 		];
 		for (const text of mentions) {
 			expect(detectUserCompactIntent(text), text).toBe(false);
+		}
+	});
+});
+
+describe("stripUserCompactIntent", () => {
+	it("removes the consumed instruction and keeps the rest of the request", () => {
+		const cases: [string, string][] = [
+			["compact", ""],
+			["/compact", ""],
+			["compact!", ""],
+			["hãy compact", ""],
+			["compact đi rồi fix bug X", "rồi fix bug X"],
+			["please compact then continue the review", "then continue the review"],
+			["compact now and rerun the tests", "and rerun the tests"],
+		];
+		for (const [input, expected] of cases) {
+			expect(stripUserCompactIntent(input), input).toBe(expected);
+		}
+	});
+
+	it("leaves non-imperative text untouched", () => {
+		const texts = ["the compact tool schedules compaction", "compaction strategy nào tốt nhất"];
+		for (const text of texts) {
+			expect(stripUserCompactIntent(text), text).toBe(text);
 		}
 	});
 });

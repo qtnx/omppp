@@ -189,6 +189,7 @@ import { containsWorkflow, WORKFLOW_NOTICE } from "../modes/workflow";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import type { PlanModeState } from "../plan-mode/state";
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
+import compactionPerformedNotice from "../prompts/system/compaction-performed-notice.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
@@ -4819,7 +4820,8 @@ export class AgentSession {
 			// An explicit "compact" instruction in the user's message becomes a
 			// pending request so the pre-prompt #checkCompaction below runs the
 			// compaction inline (threshold-free) before this prompt is answered.
-			if (!options?.skipCompactionCheck && detectUserCompactIntent(expandedText)) {
+			const userCompactIntent = !options?.skipCompactionCheck && detectUserCompactIntent(expandedText);
+			if (userCompactIntent) {
 				this.#pendingAgentCompactionRequest ??= { reason: "user asked to compact" };
 			}
 
@@ -4828,8 +4830,33 @@ export class AgentSession {
 			// prompt's agent loop starts — otherwise a deferred handoff would fire on the
 			// next microtask alongside the new turn.
 			const lastAssistant = this.#findLastAssistantMessage();
+			const compactionIdBeforeIntent = userCompactIntent
+				? getLatestCompactionEntry(this.sessionManager.getBranch())?.id
+				: undefined;
 			if (lastAssistant && !options?.skipCompactionCheck) {
 				await this.#checkCompaction(lastAssistant, false, false, false);
+			}
+
+			// When that instruction was consumed (a new compaction entry landed), strip
+			// the directive from the outgoing message so the stale imperative cannot
+			// steer the model into compacting again, and remember to append a notice
+			// telling the model the compaction already ran.
+			let compactionPerformedForIntent = false;
+			if (userCompactIntent) {
+				const latest = getLatestCompactionEntry(this.sessionManager.getBranch());
+				compactionPerformedForIntent = latest !== null && latest.id !== compactionIdBeforeIntent;
+			}
+			if (compactionPerformedForIntent && message.role === "user") {
+				const stripped = stripUserCompactIntent(expandedText) || "Compaction requested.";
+				if (stripped !== expandedText) {
+					expandedText = stripped;
+					if (Array.isArray(message.content)) {
+						const textBlock = message.content.find((block): block is TextContent => block.type === "text");
+						if (textBlock) {
+							textBlock.text = stripped;
+						}
+					}
+				}
 			}
 
 			// Build messages array (session context, eager todo prelude, then active prompt message)
@@ -4856,6 +4883,16 @@ export class AgentSession {
 			// user message so the model reads it as part of the same turn.
 			if (options?.appendMessages) {
 				messages.push(...options.appendMessages);
+			}
+			if (compactionPerformedForIntent) {
+				messages.push({
+					role: "custom",
+					customType: "compaction-performed-notice",
+					content: compactionPerformedNotice.trim(),
+					display: false,
+					attribution: "user",
+					timestamp: Date.now(),
+				} satisfies CustomMessage);
 			}
 
 			// Early bail-out: if a newer abort/prompt cycle started during setup,
@@ -10544,4 +10581,18 @@ const COMPACT_INTENT_PATTERNS: readonly RegExp[] = [
 export function detectUserCompactIntent(text: string): boolean {
 	if (!text || text.includes("?")) return false;
 	return COMPACT_INTENT_PATTERNS.some(pattern => pattern.test(text));
+}
+
+/**
+ * Remove the matched compact instruction from `text` once the compaction has
+ * been performed, so the stale imperative cannot steer the model (or a later
+ * transcript replay) into compacting again. Collapses the whitespace left
+ * behind; returns an empty string when the whole message was the instruction.
+ */
+export function stripUserCompactIntent(text: string): string {
+	let result = text;
+	for (const pattern of COMPACT_INTENT_PATTERNS) {
+		result = result.replace(pattern, " ");
+	}
+	return result.replace(/\s{2,}/g, " ").trim();
 }
