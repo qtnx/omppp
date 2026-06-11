@@ -839,7 +839,9 @@ export class EventController {
 						? "Idle "
 						: event.reason === "topic-switch"
 							? "Topic changed, "
-							: "";
+							: event.reason === "requested"
+								? "Agent requested, "
+								: "";
 		const actionLabel =
 			event.action === "handoff"
 				? "Auto-handoff"

@@ -1502,6 +1502,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			recordEvalSubagentUsage: output => sessionManager.recordEvalSubagentOutput(output),
 			getClientBridge: () => session?.clientBridge,
 			queueDeferredDiagnostics: entry => session?.yieldQueue.enqueue(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, entry),
+			requestCompaction: reason =>
+				session?.requestCompactionFromAgent(reason) ?? {
+					status: "unavailable",
+					detail: "session is not ready yet",
+				},
 			bumpFileMutationVersion: path => {
 				const next = (fileMutationVersions.get(path) ?? 0) + 1;
 				fileMutationVersions.set(path, next);

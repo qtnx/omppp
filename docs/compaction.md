@@ -127,6 +127,14 @@ The automatic paths are intentionally different:
   - Trigger: `runIdleCompaction()` when not streaming or already compacting.
   - Uses `reason: "idle"` and does not auto-continue afterward.
 
+### Agent-requested compaction (`compact` tool)
+
+The `compact` tool lets the model request context compaction itself when it judges older history is no longer needed. The request schedules the auto-maintenance pipeline (`#runAutoCompaction` with `reason: "requested"`) rather than the manual `/compact` path, so it never aborts the in-flight turn, and the configured `compaction.strategy` still decides whether the run is context-full, handoff, shake, or snapcompact.
+
+Agent-requested compaction never runs mid-turn. A successful tool call records one pending request for the current turn, and the compaction runs only after that turn reaches the normal boundary. At most one request is kept per turn; if the turn aborts before the boundary, the pending request is dropped. The tool does not accept custom compaction instructions, so `compaction.strategy: "snapcompact"` remains eligible.
+
+The tool is hidden when `compaction.strategy: "off"`. It still works when `compaction.enabled: false` because it is an explicit request, in the same class as idle compaction rather than threshold auto-maintenance. While the request is running, the TUI loader says `Agent requested, …`; the reason string supplied in the tool call is shown on the tool's own transcript row, not in the loader.
+
 ### Snapcompact strategy
 
 `compaction.strategy: "snapcompact"` replaces the LLM summarization call with a local, deterministic archival pass (`snapcompactCompact` from `@oh-my-pi/snapcompact`):

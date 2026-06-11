@@ -42,6 +42,7 @@ import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
 import { type CheckpointState, CheckpointTool, RewindTool } from "./checkpoint";
+import { CompactTool } from "./compact";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
@@ -81,6 +82,7 @@ export * from "./ast-grep";
 export * from "./bash";
 export * from "./browser";
 export * from "./checkpoint";
+export * from "./compact";
 export * from "./debug";
 export * from "./eval";
 export * from "./eval-backends";
@@ -123,6 +125,12 @@ export type {
 	DiscoverableToolSearchResult,
 	DiscoverableToolSource,
 } from "../tool-discovery/tool-index";
+
+/** Scheduling result of an agent-initiated compaction request (the `compact` tool). */
+export type ToolCompactionRequest =
+	| { status: "scheduled" }
+	| { status: "already-scheduled" }
+	| { status: "unavailable"; detail: string };
 
 /**
  * A late LSP diagnostics result that arrived after the edit/write tool already
@@ -340,6 +348,8 @@ export interface ToolSession {
 
 	/** Queue a hidden message to be injected at the next agent turn. */
 	queueDeferredMessage?(message: CustomMessage): void;
+	/** Request a compaction at the next turn boundary. Returns scheduling status. */
+	requestCompaction?(reason: string): ToolCompactionRequest;
 	/** Request the macOS sandbox supervisor to relaunch this session with extra sandbox allowlist roots. */
 	requestMacOSSandboxRelaunch?(paths: string[]): MacOSSandboxRelaunchResult;
 	/** Queue late LSP diagnostics (arrived after an edit/write returned) to be shown
@@ -433,6 +443,7 @@ export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
 	browser: s => new BrowserTool(s),
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
+	compact: CompactTool.createIf,
 	task: s => TaskTool.create(s),
 	workflow: s => WorkflowTool.create(s),
 	job: s => new JobTool(s),
@@ -550,6 +561,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "search_tool_bm25") return discoveryActive;
 		if (name === "browser") return session.settings.get("browser.enabled");
 		if (name === "checkpoint" || name === "rewind") return session.settings.get("checkpoint.enabled");
+		if (name === "compact") return session.settings.get("compaction.strategy") !== "off";
 		if (name === "irc") return isIrcEnabled(session.settings, session.taskDepth ?? 0);
 		if (name === "retain" || name === "recall" || name === "reflect") {
 			return ["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");

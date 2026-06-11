@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- Added `compact` tool: the agent can schedule a context compaction at the next turn boundary when it judges older history is no longer needed (honors `compaction.strategy`, including snapcompact)
+- Added a `# Context Compaction` system prompt section (rendered when the `compact` tool is available) that proactively lists the boundary cases where the agent should compact and requires restating next steps before calling
+- Added a tier quick-reference (`quick_task` / `task` / `heavy_task`) at the top of the eager-orchestrator system prompt section so tier selection guidance is visible before the detailed PHASE 3 case lists
+
 ## [1.0.9] - 2026-06-10
 ### Fixed
 - Fixed the agent stalling after a macOS sandbox relaunch. When the model calls the `sandbox` tool (or the user runs `/add-dir`) mid-turn, the supervisor SIGTERMs the session and respawns it via `--resume` — but the resumed child restored the message history and then idled at the prompt, silently dropping the model's interrupted turn so it never retried the blocked operation. The resumed session now detects that the model still owes a response (the conversation ends with the `sandbox` tool result, via `conversationAwaitsAssistant`) and auto-continues the turn so the agent retries; a `/add-dir` between completed turns stays a no-op. Also bounded the supervisor's relaunch wait — if a child's SIGTERM cleanup hangs (an unbounded ssh/sshfs unmount in `postmortem` could block `process.exit`), it now escalates to SIGKILL after 10s so the relaunch can't freeze indefinitely.

@@ -200,10 +200,13 @@ export interface TurnEndEvent {
 // Auto-compaction / Auto-retry Events
 // ============================================================================
 
+/** Why an auto-compaction pass started. `requested` = the agent asked via the `compact` tool. */
+export type AutoCompactionReason = "threshold" | "overflow" | "idle" | "incomplete" | "topic-switch" | "requested";
+
 /** Fired when auto-compaction starts */
 export interface AutoCompactionStartEvent {
 	type: "auto_compaction_start";
-	reason: "threshold" | "overflow" | "idle" | "incomplete" | "topic-switch";
+	reason: AutoCompactionReason;
 	action: "context-full" | "handoff" | "shake" | "snapcompact";
 }
 

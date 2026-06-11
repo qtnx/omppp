@@ -22,6 +22,7 @@ import type { HookUIContext } from "../../extensibility/hooks/types";
 import type { Theme } from "../../modes/theme/theme";
 import type { ReadonlySessionManager } from "../../session/session-manager";
 import type { TodoItem } from "../../tools/todo";
+import type { AutoCompactionReason } from "../shared-events";
 
 /** Alias for clarity */
 export type CustomToolUIContext = HookUIContext;
@@ -102,7 +103,7 @@ export type CustomToolSessionEvent =
 	  }
 	| {
 			reason: "auto_compaction_start";
-			trigger: "threshold" | "overflow" | "idle" | "incomplete" | "topic-switch";
+			trigger: AutoCompactionReason;
 			action: "context-full" | "handoff" | "shake" | "snapcompact";
 	  }
 	| {

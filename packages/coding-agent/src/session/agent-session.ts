@@ -170,6 +170,7 @@ import type {
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import type { HookCommandContext } from "../extensibility/hooks/types";
+import type { AutoCompactionReason } from "../extensibility/shared-events";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
 import { GoalRuntime } from "../goals/runtime";
@@ -229,6 +230,7 @@ import {
 	selectDiscoverableToolNamesByServer,
 	type ToolDiscoveryMode,
 } from "../tool-discovery/tool-index";
+import type { ToolCompactionRequest } from "../tools";
 import { assertEditableFile } from "../tools/auto-generated-guard";
 import type { CheckpointState } from "../tools/checkpoint";
 import { outputMeta } from "../tools/output-meta";
@@ -277,7 +279,7 @@ export type AgentSessionEvent =
 	| AgentEvent
 	| {
 			type: "auto_compaction_start";
-			reason: "threshold" | "overflow" | "idle" | "incomplete" | "topic-switch";
+			reason: AutoCompactionReason;
 			action: "context-full" | "handoff" | "shake" | "snapcompact";
 	  }
 	| {
@@ -967,6 +969,7 @@ export class AgentSession {
 
 	// Compaction state
 	#compactionAbortController: AbortController | undefined = undefined;
+	#pendingAgentCompactionRequest?: { reason: string };
 	#autoCompactionAbortController: AbortController | undefined = undefined;
 
 	// Branch summarization state
@@ -1970,6 +1973,9 @@ export class AgentSession {
 			}
 
 			if (this.#assistantEndedWithSuccessfulYield(msg)) {
+				// Terminal yield: the yield-triggered abort() already dropped any
+				// pending agent compaction request — running one here would race
+				// the executor's session teardown for zero value.
 				this.#lastSuccessfulYieldToolCallId = undefined;
 				return;
 			}
@@ -5506,6 +5512,8 @@ export class AgentSession {
 		this.#promptGeneration++;
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 		this.abortCompaction();
+		// A pending agent-requested compaction dies with the turn it was scheduled in.
+		this.#pendingAgentCompactionRequest = undefined;
 		this.abortHandoff();
 		this.abortBash();
 		this.abortEval();
@@ -6380,6 +6388,25 @@ export class AgentSession {
 		}
 	}
 
+	requestCompactionFromAgent(reason: string): ToolCompactionRequest {
+		const compactionSettings = this.settings.getGroup("compaction");
+		if (compactionSettings.strategy === "off") {
+			return { status: "unavailable", detail: "compaction strategy is set to off" };
+		}
+		if (this.#pendingAgentCompactionRequest) {
+			return { status: "already-scheduled" };
+		}
+		if (this.#compactionAbortController || this.#autoCompactionAbortController) {
+			return { status: "unavailable", detail: "a compaction is already in progress" };
+		}
+		if (!prepareCompaction(this.sessionManager.getBranch(), compactionSettings)) {
+			return { status: "unavailable", detail: "nothing to compact yet (session too small or already compacted)" };
+		}
+		this.#pendingAgentCompactionRequest = { reason };
+		logger.debug("Agent requested compaction", { reason });
+		return { status: "scheduled" };
+	}
+
 	/**
 	 * Manually compact the session context.
 	 * Aborts current agent operation first.
@@ -6890,7 +6917,7 @@ export class AgentSession {
 	 * Check if context maintenance or promotion is needed and run it.
 	 * Called after agent_end and before prompt submission.
 	 *
-	 * Four cases (in order):
+	 * Five cases (in order):
 	 * 1. Input overflow + compaction enabled: drop the dead turn, run context
 	 *    maintenance, auto-retry on the same model.
 	 * 2. Input overflow + compaction disabled: promote to a larger-context model so
@@ -6900,7 +6927,8 @@ export class AgentSession {
 	 *    (reasoning-only or truncated). Same recovery class as overflow — compact when
 	 *    enabled, otherwise promote. Unlike overflow, the input is fine, so handoff
 	 *    strategy can run.
-	 * 4. Threshold: context over threshold, run context maintenance (no auto-retry).
+	 * 4. Requested: agent-requested compaction runs before the threshold gate.
+	 * 5. Threshold: context over threshold, run context maintenance (no auto-retry).
 	 *
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
@@ -6921,6 +6949,8 @@ export class AgentSession {
 		allowDefer = true,
 		autoContinue = true,
 	): Promise<boolean> {
+		const agentRequested = this.#pendingAgentCompactionRequest;
+		this.#pendingAgentCompactionRequest = undefined;
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
 		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return false;
 		const contextWindow = this.model?.contextWindow ?? 0;
@@ -7009,6 +7039,13 @@ export class AgentSession {
 		// Supersede pass runs every turn, before any threshold gating: it is cheap
 		// (bails when no candidate) and independent of the compaction setting.
 		const supersedeResult = await this.#pruneSupersededReads();
+
+		if (agentRequested && assistantMessage.stopReason !== "error") {
+			const outcome = await this.#runAutoCompaction("requested", false, false, allowDefer, { autoContinue });
+			if (outcome !== "skipped") {
+				return outcome === "deferred";
+			}
+		}
 
 		if (!compactionEnabled) return false;
 
@@ -7866,7 +7903,7 @@ export class AgentSession {
 	 * @returns The observed maintenance outcome.
 	 */
 	async #runAutoCompaction(
-		reason: "overflow" | "threshold" | "idle" | "incomplete" | "topic-switch",
+		reason: AutoCompactionReason,
 		willRetry: boolean,
 		deferred = false,
 		allowDefer = true,
@@ -7874,7 +7911,8 @@ export class AgentSession {
 	): Promise<AutoCompactionOutcome> {
 		const compactionSettings = this.settings.getGroup("compaction");
 		if (compactionSettings.strategy === "off") return "skipped";
-		if (reason !== "idle" && reason !== "topic-switch" && !compactionSettings.enabled) return "skipped";
+		if (reason !== "idle" && reason !== "topic-switch" && reason !== "requested" && !compactionSettings.enabled)
+			return "skipped";
 		const generation = this.#promptGeneration;
 		const shouldAutoContinue = options.autoContinue !== false && compactionSettings.autoContinue !== false;
 		// Shake runs inline (cheap, no remote LLM). On overflow recovery, if shake
@@ -7906,7 +7944,7 @@ export class AgentSession {
 				async signal => {
 					await Promise.resolve();
 					if (signal.aborted) return;
-					await this.#runAutoCompaction(reason, willRetry, true);
+					await this.#runAutoCompaction(reason, willRetry, true, true, options);
 				},
 				{ generation },
 			);
@@ -8323,7 +8361,7 @@ export class AgentSession {
 	 * the oversized input still gets resolved.
 	 */
 	async #runAutoShake(
-		reason: "overflow" | "threshold" | "idle" | "incomplete" | "topic-switch",
+		reason: AutoCompactionReason,
 		willRetry: boolean,
 		generation: number,
 		autoContinue: boolean,
