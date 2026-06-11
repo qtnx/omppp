@@ -34,16 +34,13 @@ function createToolSession(registry: AgentRegistry, id: string): ToolSession {
 }
 
 describe("AgentRegistry IRC visibility", () => {
-	it("hides non-IRC agents from peer listings", async () => {
+	it("hides non-IRC agents from registry-visible peer listings", () => {
 		const registry = new AgentRegistry();
 		registerAgent(registry, "sender", true);
 		registerAgent(registry, "restricted", false);
 		registerAgent(registry, "peer", true);
 
-		const result = await new IrcTool(createToolSession(registry, "sender")).execute("irc-list", { op: "list" });
-
-		expect(result.details?.peers?.map(peer => peer.id)).toEqual(["peer"]);
-		expect(result.details?.channels).toEqual(["all", "peer"]);
+		expect(registry.listVisibleTo("sender").map(peer => peer.id)).toEqual(["peer"]);
 	});
 
 	it("does not deliver direct IRC messages to non-IRC agents", async () => {
@@ -62,11 +59,11 @@ describe("AgentRegistry IRC visibility", () => {
 			op: "send",
 			to: "restricted",
 			message: "hello",
-			awaitReply: true,
+			await: true,
+			timeoutMs: 1,
 		});
 
 		expect(deliveries).toBe(0);
-		expect(result.details?.delivered).toEqual([]);
-		expect(result.details?.notFound).toEqual(["restricted"]);
+		expect(result.details?.receipts).toEqual([expect.objectContaining({ to: "restricted", outcome: "failed" })]);
 	});
 });

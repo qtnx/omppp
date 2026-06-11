@@ -25,6 +25,7 @@ import {
 	getOpenAICodexTransportDetails,
 	prewarmOpenAICodexResponses,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
 import type { Component } from "@oh-my-pi/pi-tui";
 import {
 	$env,
@@ -44,7 +45,7 @@ import {
 	SYSTEM_CONTEXT_REMINDER_LABEL,
 } from "@oh-my-pi/system-context-reminder-plugin";
 import chalk from "chalk";
-import { type AsyncJob, AsyncJobManager, isBackgroundJobSupportEnabled } from "./async";
+import { type AsyncJob, AsyncJobManager } from "./async";
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
@@ -52,7 +53,6 @@ import { createApiKeyResolver } from "./config/api-key-resolver";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { ModelRegistry } from "./config/model-registry";
 import {
-	defaultModelPerProvider,
 	formatModelString,
 	getModelMatchPreferences,
 	parseModelPattern,
@@ -73,10 +73,11 @@ import {
 	type LoadedCustomCommand,
 	loadCustomCommands as loadCustomCommandsInternal,
 } from "./extensibility/custom-commands";
-import { discoverAndLoadCustomTools } from "./extensibility/custom-tools";
+import { discoverCustomToolPaths, loadCustomTools, type ToolPathWithSource } from "./extensibility/custom-tools";
 import type { CustomTool, CustomToolContext, CustomToolSessionEvent } from "./extensibility/custom-tools/types";
 import {
 	discoverAndLoadExtensions,
+	discoverExtensionPaths,
 	type ExtensionContext,
 	type ExtensionFactory,
 	ExtensionRunner,
@@ -100,16 +101,18 @@ import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls
 import { buildLearningDeveloperInstructions, startLearningStartupTask } from "./learnings";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
 import { discoverAndLoadMCPTools, MCPManager, type MCPToolsLoadResult } from "./mcp";
-import { resolveMemoryBackend } from "./memory-backend";
+import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import type { MnemopiSessionState } from "./mnemopi/state";
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
+import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
 import {
 	collectEnvSecrets,
 	deobfuscateSessionContext,
 	loadSecrets,
 	obfuscateMessages,
+	obfuscateProviderContext,
 	SecretObfuscator,
 } from "./secrets";
 import { AgentSession } from "./session/agent-session";
@@ -146,6 +149,7 @@ import {
 	parseThinkingLevel,
 	resolveProvisionalAutoLevel,
 	resolveThinkingLevelForModel,
+	shouldDisableReasoning,
 	toReasoningEffort,
 } from "./thinking";
 import {
@@ -167,6 +171,7 @@ import {
 	EditTool,
 	EvalTool,
 	FindTool,
+	filterInitialToolsForDiscoveryAll,
 	getSearchTools,
 	HIDDEN_TOOLS,
 	isImageProviderPreference,
@@ -353,10 +358,41 @@ export interface CreateAgentSessionOptions {
 	/** Disable extension discovery (explicit paths still load). */
 	disableExtensionDiscovery?: boolean;
 	/**
-	 * Pre-loaded extensions (skips file discovery).
-	 * @internal Used by CLI when extensions are loaded early to parse custom flags.
+	 * Pre-loaded extensions (skips file discovery and the per-session factory
+	 * call). Used by the CLI when extensions are loaded early to parse custom
+	 * flags — the same process owns the returned instances, so reusing them is
+	 * safe.
+	 *
+	 * NEVER pass this across session boundaries (e.g. parent → subagent).
+	 * `Extension` instances close over a parent-bound `ExtensionAPI` (cwd,
+	 * eventBus, runtime), and reusing them would route tools/handlers/commands
+	 * back through the parent. For subagents, forward
+	 * {@link preloadedExtensionPaths} instead.
+	 *
+	 * @internal
 	 */
 	preloadedExtensions?: LoadExtensionsResult;
+	/**
+	 * Pre-discovered extension source paths. When provided, the filesystem-scan
+	 * inside `discoverExtensionPaths()` is skipped — the session still calls
+	 * `loadExtensions()` itself so each `Extension` is bound to THIS session's
+	 * `ExtensionAPI` (cwd, eventBus, runtime).
+	 *
+	 * This is the safe pass-through for parent → subagent forwarding.
+	 */
+	preloadedExtensionPaths?: string[];
+	/**
+	 * Pre-discovered custom-tool source paths from `.omp/tools/`, `.claude/tools/`,
+	 * plugins, etc. When provided, the filesystem-scan inside
+	 * `discoverCustomToolPaths()` is skipped — subagents inherit the parent's
+	 * scan result and call `loadCustomTools()` themselves so each session binds
+	 * tools to its OWN `CustomToolAPI` (cwd, exec, pushPendingAction, UI).
+	 *
+	 * Forwarding the loaded `LoadedCustomTool[]` instances directly would reuse
+	 * the parent's session-bound API and route tool execution back through the
+	 * parent — wrong for isolated tasks and for pending-action routing.
+	 */
+	preloadedCustomToolPaths?: ToolPathWithSource[];
 
 	/** Shared event bus for tool/extension communication. Default: creates new bus. */
 	eventBus?: EventBus;
@@ -537,11 +573,18 @@ function resolveSnapshotTtlMs(): number {
  * override to re-mint access tokens when needed.
  */
 export async function discoverAuthStorage(agentDir: string = getDefaultAgentDir()): Promise<AuthStorage> {
-	const brokerConfig = await resolveAuthBrokerConfig();
+	const brokerConfigPromise = resolveAuthBrokerConfig();
+	const cachePath = getAuthBrokerSnapshotCachePath();
+	// Warm the encrypted snapshot cache into the page cache while the broker
+	// config resolves (it may shell out for a `!command` token). Decryption
+	// needs the resolved token, so the real cache read cannot start earlier.
+	void Bun.file(cachePath)
+		.arrayBuffer()
+		.catch(() => undefined);
+	const brokerConfig = await brokerConfigPromise;
 	if (brokerConfig) {
 		const client = new AuthBrokerClient({ url: brokerConfig.url, token: brokerConfig.token });
 		const ttlMs = resolveSnapshotTtlMs();
-		const cachePath = getAuthBrokerSnapshotCachePath();
 		const persist =
 			ttlMs > 0
 				? (snapshot: SnapshotResponse): void => {
@@ -604,6 +647,26 @@ export async function discoverExtensions(cwd?: string): Promise<LoadExtensionsRe
 }
 
 /**
+ * Path-only counterpart of {@link loadSessionExtensions}: the FS-heavy scan
+ * without the per-session module load. Subagents reuse the parent's path list
+ * (cached on {@link ToolSession.extensionPaths}) and rebuild Extension
+ * instances themselves so each session's `ExtensionAPI` (cwd, eventBus,
+ * runtime) is its own.
+ */
+export async function discoverSessionExtensionPaths(
+	options: Pick<CreateAgentSessionOptions, "disableExtensionDiscovery" | "additionalExtensionPaths">,
+	cwd: string,
+	settings: Settings,
+): Promise<string[]> {
+	if (options.disableExtensionDiscovery) {
+		return options.additionalExtensionPaths ?? [];
+	}
+	const configuredPaths = [...(options.additionalExtensionPaths ?? []), ...(settings.get("extensions") ?? [])];
+	const disabledExtensionIds = settings.get("disabledExtensions") ?? [];
+	return discoverExtensionPaths(configuredPaths, cwd, disabledExtensionIds);
+}
+
+/**
  * Load the discovered/configured extensions for a session — everything {@link
  * createAgentSession} would load except the inline factory extensions it appends
  * itself. Extracted so the CLI can resolve extension-registered flags (and thus
@@ -624,23 +687,8 @@ export async function loadSessionExtensions(
 	const contextGcDbPath =
 		options.contextGcDbPath ?? path.join(options.agentDir ?? getDefaultAgentDir(), "context-gc.sqlite");
 	return await withContextGcDbPath(contextGcDbPath, async () => {
-		let result: LoadExtensionsResult;
-		if (options.disableExtensionDiscovery) {
-			const configuredPaths = options.additionalExtensionPaths ?? [];
-			result = await logger.time("loadExtensions", loadExtensions, configuredPaths, cwd, eventBus);
-		} else {
-			// Merge CLI extension paths with settings extension paths.
-			const configuredPaths = [...(options.additionalExtensionPaths ?? []), ...(settings.get("extensions") ?? [])];
-			const disabledExtensionIds = settings.get("disabledExtensions") ?? [];
-			result = await logger.time(
-				"discoverAndLoadExtensions",
-				discoverAndLoadExtensions,
-				configuredPaths,
-				cwd,
-				eventBus,
-				disabledExtensionIds,
-			);
-		}
+		const paths = await discoverSessionExtensionPaths(options, cwd, settings);
+		const result = await logger.time("loadExtensions", loadExtensions, paths, cwd, eventBus);
 		for (const { path, error } of result.errors) {
 			logger.error("Failed to load extension", { path, error });
 		}
@@ -1264,23 +1312,26 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	}
 
 	// Discover rules and bucket them in one pass to avoid repeated scans over large rule sets.
-	const { ttsrManager, rulebookRules, alwaysApplyRules } = await logger.time("discoverTtsrRules", async () => {
-		const { TtsrManager } = await import("./export/ttsr");
-		const ttsrSettings = settings.getGroup("ttsr");
-		const ttsrManager = new TtsrManager(ttsrSettings);
-		const rulesResult =
-			options.rules !== undefined
-				? { items: options.rules, warnings: undefined }
-				: await loadCapability<Rule>(ruleCapability.id, { cwd });
-		const { rulebookRules, alwaysApplyRules } = bucketRules(rulesResult.items, ttsrManager, {
-			builtinRules: ttsrSettings.builtinRules,
-			disabledRules: ttsrSettings.disabledRules,
-		});
-		if (existingSession.injectedTtsrRules.length > 0) {
-			ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
-		}
-		return { ttsrManager, rulebookRules, alwaysApplyRules };
-	});
+	const { ttsrManager, rulebookRules, alwaysApplyRules, allRules } = await logger.time(
+		"discoverTtsrRules",
+		async () => {
+			const { TtsrManager } = await import("./export/ttsr");
+			const ttsrSettings = settings.getGroup("ttsr");
+			const ttsrManager = new TtsrManager(ttsrSettings);
+			const rulesResult =
+				options.rules !== undefined
+					? { items: options.rules, warnings: undefined }
+					: await loadCapability<Rule>(ruleCapability.id, { cwd });
+			const { rulebookRules, alwaysApplyRules } = bucketRules(rulesResult.items, ttsrManager, {
+				builtinRules: ttsrSettings.builtinRules,
+				disabledRules: ttsrSettings.disabledRules,
+			});
+			if (existingSession.injectedTtsrRules.length > 0) {
+				ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
+			}
+			return { ttsrManager, rulebookRules, alwaysApplyRules, allRules: rulesResult.items };
+		},
+	);
 
 	// Resolve contextFiles up-front (it's needed before tool creation). The
 	// workspace tree scan is slow on large repos and we MUST NOT block startup on
@@ -1315,7 +1366,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	let hasSession = false;
 	let hasRegistered = false;
 	const enableLsp = options.enableLsp ?? true;
-	const backgroundJobsEnabled = isBackgroundJobSupportEnabled(settings);
 	const asyncMaxJobs = Math.min(100, Math.max(1, settings.get("async.maxJobs") ?? 100));
 	const ASYNC_INLINE_RESULT_MAX_CHARS = 12_000;
 	const ASYNC_PREVIEW_MAX_CHARS = 4_000;
@@ -1348,7 +1398,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// (issue #1923). The `instance()` guard means later sessions also skip
 	// constructing an orphaned manager that nothing would ever route to.
 	const asyncJobManager =
-		backgroundJobsEnabled && !options.parentTaskPrefix && !AsyncJobManager.instance()
+		!options.parentTaskPrefix && !AsyncJobManager.instance()
 			? new AsyncJobManager({
 					maxRunningJobs: asyncMaxJobs,
 					eventBus,
@@ -1374,6 +1424,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
 	const resolvedAgentDisplayName =
 		options.agentDisplayName ?? ((options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? "sub" : "main");
+	const agentKind = (options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? ("sub" as const) : ("main" as const);
+	/**
+	 * Forget the agent ref on teardown — unless the agent is being parked (or is
+	 * already parked). Parking disposes the session but keeps the ref addressable
+	 * (history://, revive); only process teardown / explicit kill unregisters.
+	 */
+	const unregisterUnlessParked = (): void => {
+		if (agentRegistry.get(resolvedAgentId)?.status === "parked") return;
+		if (AgentLifecycleManager.global().isParking(resolvedAgentId)) return;
+		agentRegistry.unregister(resolvedAgentId);
+	};
 	const evalKernelOwnerId = `agent-session:${Snowflake.next()}`;
 
 	try {
@@ -1404,6 +1465,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			workspaceTree: resolvedWorkspaceTree,
 			workspaceRoots,
 			skills,
+			rules: allRules,
 			eventBus,
 			outputSchema: options.outputSchema,
 			requireYieldTool: options.requireYieldTool,
@@ -1439,7 +1501,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getTurnBudget: () => sessionManager.getTurnBudget(),
 			recordEvalSubagentUsage: output => sessionManager.recordEvalSubagentOutput(output),
 			getClientBridge: () => session?.clientBridge,
-			getCompactContext: () => session.formatCompactContext(),
 			queueDeferredDiagnostics: entry => session?.yieldQueue.enqueue(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, entry),
 			bumpFileMutationVersion: path => {
 				const next = (fileMutationVersions.get(path) ?? 0) + 1;
@@ -1508,7 +1569,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const getArtifactsDir = () => sessionManager.getArtifactsDir();
 		if (!options.parentTaskPrefix) {
 			setActiveSkills(skills);
-			setActiveRules([...rulebookRules, ...alwaysApplyRules]);
+			// Include TTSR rules so `rule://<name>` can resolve them too. They are
+			// registered with the manager and bucketed out before rulebook/always,
+			// so without this a TTSR-only rule (e.g. a triggered builtin) is not
+			// addressable and `rule://` reports "Available: none".
+			setActiveRules([...rulebookRules, ...alwaysApplyRules, ...ttsrManager.getRules()]);
 			if (asyncJobManager) AsyncJobManager.setInstance(asyncJobManager);
 		}
 		const localProtocolOptions = options.localProtocolOptions ?? {
@@ -1593,24 +1658,32 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			customTools.push(...getSearchTools());
 		}
 
+		let customToolPaths: ToolPathWithSource[] = [];
 		if (!minimalExtensionRuntime) {
-			// Discover and load custom tools from .omp/tools/, .claude/tools/, etc.
+			// Discover custom tools from `.omp/tools/`, `.claude/tools/`, plugins, etc.
+			// Subagents reuse the parent's scan via `preloadedCustomToolPaths` to skip
+			// the FS walk, but ALWAYS re-call `loadCustomTools` here so factories bind
+			// to THIS session's `CustomToolAPI` (cwd, exec, pushPendingAction, UI).
+			// Forwarding the parent's `LoadedCustomTool[]` directly would route tool
+			// execution back through the parent — wrong for isolated tasks and for
+			// pending-action queueing.
 			const builtInToolNames = builtinTools.map(t => t.name);
-			const discoveredCustomTools = await logger.time(
-				"discoverAndLoadCustomTools",
-				discoverAndLoadCustomTools,
-				[],
-				cwd,
-				builtInToolNames,
-				action => queueResolveHandler(toolSession, action),
+			customToolPaths =
+				options.preloadedCustomToolPaths ??
+				(await logger.time("discoverCustomToolPaths", () => discoverCustomToolPaths([], cwd)));
+			const customToolsLoadResult = await logger.time("loadCustomTools", () =>
+				loadCustomTools(customToolPaths, cwd, builtInToolNames, action => queueResolveHandler(toolSession, action)),
 			);
-			for (const { path, error } of discoveredCustomTools.errors) {
+			for (const { path, error } of customToolsLoadResult.errors) {
 				logger.error("Custom tool load failed", { path, error });
 			}
-			if (discoveredCustomTools.tools.length > 0) {
-				customTools.push(...discoveredCustomTools.tools.map(loaded => loaded.tool));
+			if (customToolsLoadResult.tools.length > 0) {
+				customTools.push(...customToolsLoadResult.tools.map(loaded => loaded.tool));
 			}
 		}
+		// Forward the path list (NOT the loaded tools) to subagents so they
+		// re-bind under their own `CustomToolAPI` while skipping the FS scan.
+		toolSession.customToolPaths = customToolPaths;
 
 		const inlineExtensions: ExtensionFactory[] = [];
 		if (!minimalExtensionRuntime) {
@@ -1623,16 +1696,56 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 		const contextGcDbPath = options.contextGcDbPath ?? path.join(agentDir, "context-gc.sqlite");
 
-		// Load extensions. A preloaded result (e.g. resolved by the CLI before
-		// session creation so it can classify `@file` args extension-aware without
-		// a session/breadcrumb existing yet) is reused as-is; otherwise discover now
-		// through the shared helper. Preloaded wins over `disableExtensionDiscovery`
-		// because the preloaded result already reflects that choice — re-running the
-		// loader here would double-load. Minimal subagent sessions intentionally skip
-		// the preloaded/discovered/native extension stack to avoid multiplying RAM.
-		const extensionsResult: LoadExtensionsResult = minimalExtensionRuntime
-			? await logger.time("loadExtensions", loadExtensions, [], cwd, eventBus)
-			: (options.preloadedExtensions ?? (await loadSessionExtensions(options, cwd, settings, eventBus)));
+		// Load extensions. Four paths:
+		//   1. Minimal subagent runtime: skip the preloaded/discovered/native
+		//      extension stack to avoid multiplying RAM.
+		//   2. `preloadedExtensions` (CLI): caller already loaded — reuse the
+		//      Extension instances. Shallow-clone `extensions` so the inline
+		//      push below cannot mutate the caller's array. `runtime` is shared
+		//      so flag values set pre-creation flow into the live session.
+		//   3. `preloadedExtensionPaths` (subagent): caller resolved paths;
+		//      skip the FS scan but always re-call `loadExtensions` here so
+		//      each `Extension` binds to THIS session's `ExtensionAPI`
+		//      (cwd, eventBus, runtime).
+		//   4. No preload: run the full session discovery.
+		// `disableExtensionDiscovery` is honored implicitly: a caller that set
+		// the flag and pre-resolved the result already reflects that choice.
+		let extensionPaths: string[] = [];
+		let extensionsResult: LoadExtensionsResult;
+		if (minimalExtensionRuntime) {
+			extensionsResult = await logger.time("loadExtensions", loadExtensions, [], cwd, eventBus);
+		} else if (options.preloadedExtensions) {
+			extensionsResult = {
+				...options.preloadedExtensions,
+				extensions: [...options.preloadedExtensions.extensions],
+			};
+			// Capture paths for downstream forwarding; filter inline-factory
+			// entries (`<inline-N>`) — those are per-session, not source paths.
+			extensionPaths = extensionsResult.extensions
+				.map(ext => ext.resolvedPath)
+				.filter(p => !p.startsWith("<inline"));
+		} else if (options.preloadedExtensionPaths) {
+			extensionPaths = options.preloadedExtensionPaths;
+			extensionsResult = await withContextGcDbPath(contextGcDbPath, async () =>
+				logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus),
+			);
+			for (const { path, error } of extensionsResult.errors) {
+				logger.error("Failed to load extension", { path, error });
+			}
+		} else {
+			extensionPaths = await logger.time("discoverSessionExtensionPaths", () =>
+				discoverSessionExtensionPaths(options, cwd, settings),
+			);
+			extensionsResult = await withContextGcDbPath(contextGcDbPath, async () =>
+				logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus),
+			);
+			for (const { path, error } of extensionsResult.errors) {
+				logger.error("Failed to load extension", { path, error });
+			}
+		}
+		// Forward the source-path list (NOT the loaded instances) so subagents
+		// rebuild their own session-scoped extensions.
+		toolSession.extensionPaths = extensionPaths;
 
 		let shouldAppendNativeSystemContextReminderPrompt = false;
 		await withContextGcDbPath(contextGcDbPath, async () => {
@@ -1700,6 +1813,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			extensionsResult.runtime.pendingProviderRegistrations = [];
 		}
+		// Discover runtime (extension) provider catalogs now that they are
+		// registered. The startup refreshInBackground() ran before extensions
+		// loaded, so dynamic extension providers are only discovered here. Runs in
+		// the background (cache-aware) so startup is never blocked on the fetch; the
+		// model list re-renders when the catalog arrives, like other dynamic providers.
+		void modelRegistry.refreshRuntimeProviders().catch(error => {
+			logger.warn("runtime provider discovery failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
 
 		// Retry session-model candidates now that extension providers are
 		// registered. The initial restore runs before extensions load, so a role
@@ -1763,7 +1886,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// the winning provider (e.g. anthropic's claude-3-5-sonnet-20240620)
 			// instead of the intended provider default (claude-sonnet-4-6). Mirrors
 			// findInitialModel's precedence.
-			for (const [provider, defaultId] of Object.entries(defaultModelPerProvider)) {
+			for (const [provider, defaultId] of Object.entries(DEFAULT_MODEL_PER_PROVIDER)) {
 				const preferred = fallbackCandidates.find(
 					candidate => candidate.provider === provider && candidate.id === defaultId,
 				);
@@ -1818,6 +1941,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			cwd,
 			sessionManager,
 			modelRegistry,
+			() => (hasSession ? createSessionMemoryRuntimeContext(session, agentDir, cwd) : undefined),
 		);
 
 		credentialDisabledTarget = extensionRunner;
@@ -2109,19 +2233,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// from the initial set unless they were explicitly requested or restored from persistence.
 		// The model finds them via search_tool_bm25 and activates them on demand.
 		if (effectiveDiscoveryMode === "all") {
-			const essentialBuiltinNames = new Set(computeEssentialBuiltinNames(settings));
-			const explicitlyRequestedToolNames = new Set(options.toolNames?.map(name => name.toLowerCase()) ?? []);
-			// Back-compat: persisted activations live under selectedMCPToolNames today (built-in
-			// activation persistence is a follow-up). MCP names won't collide with built-in names.
-			const restoredDiscoveredNames = new Set(existingSession.selectedMCPToolNames);
-			initialToolNames = initialToolNames.filter(name => {
-				const tool = toolRegistry.get(name);
-				if (!tool?.loadMode) return true; // not a built-in — leave MCP/custom/extension to existing logic
-				if (tool.loadMode === "essential") return true;
-				if (essentialBuiltinNames.has(name)) return true;
-				if (explicitlyRequestedToolNames.has(name)) return true;
-				if (restoredDiscoveredNames.has(name)) return true;
-				return false;
+			// Tools a forced tool_choice will target must stay active, or the named
+			// choice references a tool absent from the request (provider 400). Eager
+			// todos force a named `todo` choice on the first turn.
+			const forceActive = new Set<string>();
+			if (settings.get("todo.eager") && settings.get("todo.enabled") && toolRegistry.has("todo")) {
+				forceActive.add("todo");
+			}
+			initialToolNames = filterInitialToolsForDiscoveryAll(initialToolNames, {
+				loadModeOf: name => toolRegistry.get(name)?.loadMode,
+				essentialNames: new Set(computeEssentialBuiltinNames(settings)),
+				explicitlyRequested: new Set(options.toolNames?.map(name => name.toLowerCase()) ?? []),
+				// Back-compat: persisted activations live under selectedMCPToolNames today (built-in
+				// activation persistence is a follow-up). MCP names won't collide with built-in names.
+				restored: new Set(existingSession.selectedMCPToolNames),
+				forceActive,
 			});
 		}
 
@@ -2132,7 +2258,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		agentRegistry.register({
 			id: resolvedAgentId,
 			displayName: resolvedAgentDisplayName,
-			kind: (options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? "sub" : "main",
+			kind: agentKind,
 			parentId: options.parentTaskPrefix,
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
@@ -2191,6 +2317,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (!obfuscator?.hasSecrets()) return converted;
 			return obfuscateMessages(obfuscator, converted);
 		};
+
 		const transformContext = async (messages: AgentMessage[], _signal?: AbortSignal) => {
 			const withContext = await extensionRunner.emitContext(messages);
 			return wrapSteeringForModel(withContext);
@@ -2226,6 +2353,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				systemPrompt,
 				model,
 				thinkingLevel: toReasoningEffort(effectiveThinkingLevel),
+				disableReasoning: shouldDisableReasoning(effectiveThinkingLevel),
 				tools: initialTools,
 			},
 			convertToLlm: convertToLlmFinal,
@@ -2234,6 +2362,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionId: providerSessionId,
 			promptCacheKey: options.providerPromptCacheKey,
 			transformContext,
+			transformProviderContext: obfuscator ? context => obfuscateProviderContext(obfuscator, context) : undefined,
 			steeringMode: settings.get("steeringMode") ?? "one-at-a-time",
 			followUpMode: settings.get("followUpMode") ?? "one-at-a-time",
 			interruptMode: settings.get("interruptMode") ?? "immediate",
@@ -2332,6 +2461,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
 			sessionManager,
 			settings,
+			autoApprove: options.autoApprove,
 			evalKernelOwnerId,
 			// Defined only for top-level sessions (creation is gated above).
 			// AgentSession uses this to decide whether it may dispose the global
@@ -2380,7 +2510,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
-			agentRegistry,
 			providerSessionId: options.providerSessionId,
 			parentEvalSessionId: options.parentEvalSessionId,
 		});
@@ -2401,22 +2530,34 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 		// Attach the live session to the pre-registered ref so peers can route IRC
 		// messages here. Refresh sessionFile in case it was unavailable at pre-register
-		// time. The dispose wrapper below unregisters on teardown.
+		// time. The dispose wrapper below unregisters on teardown (unless parked).
 		agentRegistry.attachSession(resolvedAgentId, session, sessionManager.getSessionFile() ?? null);
 		{
 			const originalDispose = session.dispose.bind(session);
 			session.dispose = async () => {
 				try {
+					// Reject new session work (Python/eval starts) the moment disposal
+					// begins — the lifecycle await below opens an async gap before
+					// AgentSession.dispose() would otherwise set its guards.
+					session.beginDispose();
+					if (agentKind === "main") {
+						// Top-level teardown owns the global agent lifecycle: park timers,
+						// adopted subagent sessions, revivers. Tear it down while shared
+						// resources (kernels, MCP, LSP) are still live. Subagent disposal
+						// must NOT touch the global lifecycle.
+						await AgentLifecycleManager.global().dispose();
+					}
 					await originalDispose();
 				} finally {
-					agentRegistry.unregister(resolvedAgentId);
+					unregisterUnlessParked();
 					unsubscribeCredentialDisabled?.();
 				}
 			};
 		}
 
 		if (model?.api === "openai-codex-responses") {
-			const codexModel = model;
+			// `.api` equality doesn't narrow the generic; the guard makes this cast sound.
+			const codexModel = model as Model<"openai-codex-responses">;
 			const codexTransport = getOpenAICodexTransportDetails(codexModel, {
 				sessionId: providerSessionId,
 				baseUrl: codexModel.baseUrl,
@@ -2447,12 +2588,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 
 		// Start LSP warmup in the background so startup does not block on language server initialization.
-		// Print/script invocations (`hasUI=false`) don't render the warmup status indicator AND typically
-		// finish before LSP servers would have stabilized — warming them just spends CPU parsing big
-		// `initialize` responses concurrently with the LLM stream consumer, jittering perceived latency.
-		// Tools that need an LSP server still spin one up on demand through `getOrCreateClient`.
+		// With `lsp.lazy` (the default) the warmup is skipped: recognized servers are still discovered and
+		// surfaced in the UI as "available", but cold-start on first use — the lsp tool or an edit/write
+		// touching a matching file type — through `getOrCreateClient`.
+		// Print/script invocations (`hasUI=false`) skip it regardless: they don't render the warmup status
+		// indicator AND typically finish before LSP servers would have stabilized — warming them just spends
+		// CPU parsing big `initialize` responses concurrently with the LLM stream consumer, jittering
+		// perceived latency.
 		let lspServers: CreateAgentSessionResult["lspServers"];
-		if (enableLsp && options.hasUI && settings.get("lsp.diagnosticsOnWrite")) {
+		if (enableLsp && options.hasUI && settings.get("lsp.lazy")) {
+			lspServers = discoverStartupLspServers(cwd, "available");
+		} else if (enableLsp && options.hasUI) {
 			lspServers = discoverStartupLspServers(cwd);
 			if (lspServers.length > 0) {
 				void (async () => {
@@ -2567,7 +2713,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (hasSession) {
 				await session.dispose();
 			} else {
-				if (hasRegistered) agentRegistry.unregister(resolvedAgentId);
+				if (hasRegistered) unregisterUnlessParked();
 				if (asyncJobManager) {
 					if (AsyncJobManager.instance() === asyncJobManager) {
 						AsyncJobManager.setInstance(undefined);

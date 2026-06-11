@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
-import type { ClientBridge, ClientBridgeTerminalHandle } from "../src/session/client-bridge";
-import type { ToolSession } from "../src/tools";
-import { BashTool } from "../src/tools/bash";
+import type { ClientBridge, ClientBridgeTerminalHandle } from "@oh-my-pi/pi-coding-agent/session/client-bridge";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 const previousActiveSandbox = Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED;

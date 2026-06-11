@@ -7,16 +7,20 @@ import { validateToolArguments } from "@oh-my-pi/pi-ai/utils/validation";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { canonicalSnapshotKey } from "@oh-my-pi/pi-coding-agent/edit/file-snapshot-store";
 import type { RenderResultOptions } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
+import { AgentHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
+import { TreeSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tree-selector";
+import type {
+	ObservableSession,
+	SessionObserverRegistry,
+} from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
 import type { Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import type { SessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-queue";
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { searchToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/search";
 import { Text } from "@oh-my-pi/pi-tui";
-import { SessionObserverOverlayComponent } from "../../src/modes/components/session-observer-overlay";
-import { TreeSelectorComponent } from "../../src/modes/components/tree-selector";
-import type { ObservableSession, SessionObserverRegistry } from "../../src/modes/session-observer-registry";
-import { initTheme } from "../../src/modes/theme/theme";
-import type { SessionEntry, SessionTreeNode } from "../../src/session/session-manager";
 
 function createTestSession(cwd: string, overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
@@ -282,7 +286,7 @@ describe("tool path arrays", () => {
 		expect(component).toBeInstanceOf(Text);
 		expect((component as Text).getText()).toContain("in folder with spaces/");
 	});
-	it("session observer overlay renders a single-string search path summary", async () => {
+	it("agent hub chat renders a single-string search path summary", async () => {
 		const sessionFile = await makeJsonlSessionFile(tempDir, [
 			{ type: "session", version: 3, id: "search-overlay-session", timestamp: new Date().toISOString() },
 			{
@@ -336,7 +340,7 @@ describe("tool path arrays", () => {
 				},
 			},
 		]);
-		const registry = makeSubagentRegistry([
+		const observers = makeSubagentRegistry([
 			{
 				id: "search-overlay-session",
 				kind: "subagent",
@@ -346,9 +350,27 @@ describe("tool path arrays", () => {
 				lastUpdate: Date.now(),
 			},
 		]);
+		const agents = new AgentRegistry();
+		agents.register({
+			id: "search-overlay-session",
+			displayName: "search-overlay-session",
+			kind: "sub",
+			parentId: "Main",
+			session: null,
+			sessionFile,
+			status: "parked",
+		});
 
-		const overlay = new SessionObserverOverlayComponent(registry, () => {}, ["ctrl+s"]);
-		const rendered = Bun.stripANSI(overlay.render(120).join("\n"));
+		const hub = new AgentHubOverlayComponent({
+			observers,
+			hubKeys: ["ctrl+s"],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+		});
+		hub.openChat("search-overlay-session");
+		const rendered = Bun.stripANSI(hub.render(120).join("\n"));
+		hub.dispose();
 
 		expect(rendered).toContain("paths: folder with spaces/");
 	});

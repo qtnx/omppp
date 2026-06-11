@@ -4,6 +4,7 @@ import type {
 	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
+	Context,
 	Effort,
 	ImageContent,
 	Message,
@@ -47,14 +48,6 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * - "wait" = defer steering until the current turn completes
 	 */
 	interruptMode?: "immediate" | "wait";
-
-	/**
-	 * Maximum completed tool calls to accept from one streamed assistant turn before
-	 * cutting the provider stream and executing that batch. The cap is enforced on
-	 * `toolcall_end` so every executed call has complete arguments. Undefined disables
-	 * batching.
-	 */
-	maxToolCallsPerTurn?: number;
 
 	/**
 	 * Optional session identifier forwarded to LLM providers.
@@ -115,6 +108,13 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * ```
 	 */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
+
+	/**
+	 * Optional transform applied to the final provider context after conversion,
+	 * normalization, and append-only context handling, but before telemetry capture
+	 * and provider send.
+	 */
+	transformProviderContext?: (context: Context) => Context;
 
 	/**
 	 * Resolves an API key dynamically for each LLM call.
@@ -222,6 +222,15 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * the next model call instead of waiting for the next prompt.
 	 */
 	getReasoning?: () => Effort | undefined;
+
+	/**
+	 * Dynamic reasoning-disable override, resolved per LLM call. When set,
+	 * its return value overrides the static `disableReasoning` from
+	 * `SimpleStreamOptions` for that request. Pair with `getReasoning` so
+	 * mid-run transitions into and out of the explicit `off` state propagate
+	 * to the next provider call.
+	 */
+	getDisableReasoning?: () => boolean | undefined;
 
 	/**
 	 * Called after a tool call has been validated and is about to execute.
@@ -371,6 +380,7 @@ export interface AgentState {
 	systemPrompt: string[];
 	model: Model;
 	thinkingLevel?: Effort;
+	disableReasoning?: boolean;
 	tools: AgentTool<any>[];
 	messages: AgentMessage[]; // Can include attachments + custom message types
 	isStreaming: boolean;

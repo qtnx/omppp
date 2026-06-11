@@ -172,7 +172,7 @@ function renderAgentProgressEvents(events: EvalStatusEvent[], theme: Theme, spin
 		const status = agentEventStatus(event.status);
 		const iconStatus =
 			status === "completed"
-				? "success"
+				? "done"
 				: status === "failed"
 					? "error"
 					: status === "aborted"
@@ -182,10 +182,13 @@ function renderAgentProgressEvents(events: EvalStatusEvent[], theme: Theme, spin
 							: "running";
 		const iconColor =
 			status === "completed" ? "success" : status === "failed" || status === "aborted" ? "error" : "accent";
-		const icon = formatStatusIcon(iconStatus, theme, status === "running" ? spinnerFrame : undefined);
+		const icon =
+			status === "completed"
+				? theme.styledSymbol("tool.eval", "accent")
+				: theme.fg(iconColor, formatStatusIcon(iconStatus, theme, status === "running" ? spinnerFrame : undefined));
 
 		const id = eventString(event.id) ?? "agent";
-		let line = `${prefix} ${theme.fg(iconColor, icon)} ${theme.fg("accent", theme.bold(id))}`;
+		let line = `${prefix} ${icon} ${theme.fg("accent", theme.bold(id))}`;
 
 		if (status === "failed" || status === "aborted") {
 			line += ` ${formatBadge(status, iconColor, theme)}`;
@@ -452,7 +455,7 @@ function formatCellOutputLines(
 	previewLines: number,
 	theme: Theme,
 	width: number,
-): { lines: string[]; hiddenCount: number } {
+): { lines: readonly string[]; hiddenCount: number } {
 	if (!cell.output) {
 		return { lines: [], hiddenCount: 0 };
 	}
@@ -489,7 +492,7 @@ export const evalToolRenderer = {
 		let cached: { key: string; width: number; result: string[] } | undefined;
 
 		return markFramedBlockComponent({
-			render: (width: number): string[] => {
+			render: (width: number): readonly string[] => {
 				const key = `${options.expanded ? 1 : 0}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
 				if (cached && cached.key === key && cached.width === width) {
 					return cached.result;
@@ -570,7 +573,7 @@ export const evalToolRenderer = {
 			let cached: { key: string; width: number; result: string[] } | undefined;
 
 			return markFramedBlockComponent({
-				render: (width: number): string[] => {
+				render: (width: number): readonly string[] => {
 					const expanded = options.renderContext?.expanded ?? options.expanded;
 					const previewLines = options.renderContext?.previewLines ?? EVAL_DEFAULT_PREVIEW_LINES;
 					const key = `${expanded}|${previewLines}|${options.spinnerFrame}`;
@@ -694,12 +697,12 @@ export const evalToolRenderer = {
 		const textContent = `\n${styledOutput}`;
 
 		let cachedWidth: number | undefined;
-		let cachedLines: string[] | undefined;
+		let cachedLines: readonly string[] | undefined;
 		let cachedSkipped: number | undefined;
 		let cachedPreviewLines: number | undefined;
 
 		return {
-			render: (width: number): string[] => {
+			render: (width: number): readonly string[] => {
 				const previewLines = options.renderContext?.previewLines ?? EVAL_DEFAULT_PREVIEW_LINES;
 				if (cachedLines === undefined || cachedWidth !== width || cachedPreviewLines !== previewLines) {
 					const result = truncateToVisualLines(textContent, previewLines, width);

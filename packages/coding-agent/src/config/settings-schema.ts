@@ -1,5 +1,4 @@
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
-import { TASK_SIMPLE_MODES } from "../task/simple-mode";
 import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMetadata } from "../thinking";
 import {
 	TINY_MODEL_DEVICE_DEFAULT,
@@ -152,7 +151,7 @@ export type AnyUiMetadata = UiBase & {
 
 interface BooleanDef {
 	type: "boolean";
-	default: boolean;
+	default: boolean | undefined;
 	ui?: UiBoolean;
 }
 
@@ -247,7 +246,11 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 		message: "Use the `edit` tool instead of awk -i inplace. It provides diff preview and fuzzy matching.",
 	},
 	{
-		pattern: "^\\s*(echo|printf|cat\\s*<<)\\s+.*[^|]>\\s*\\S",
+		// `>` must sit outside quoted regions (so `echo "a -> b"` passes) and be
+		// followed by a plausible filename — including `$VAR` targets; `>|`
+		// (clobber) counts as a redirect; `>&2`/`2>&1` style fd duplication is
+		// not matched.
+		pattern: "^\\s*(echo|printf|cat\\s*<<)\\s+(?:[^\"'>]|\"[^\"]*\"|'[^']*')*(?<!\\|)>{1,2}\\|?\\s*[$\\w./~\"'-]",
 		tool: "write",
 		message: "Use the `write` tool instead of echo/cat redirection. It handles encoding and provides confirmation.",
 	},
@@ -257,7 +260,6 @@ export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 	// General settings (no UI)
 	// ────────────────────────────────────────────────────────────────────────
-	lastChangelogVersion: { type: "string", default: undefined },
 	setupVersion: { type: "number", default: 0 },
 
 	// Auth broker — credentials proxied through a remote `ompx auth-broker serve`
@@ -687,16 +689,6 @@ export const SETTINGS_SCHEMA = {
 		ui: { tab: "appearance", label: "Show Hardware Cursor", description: "Show terminal cursor for IME support" },
 	},
 
-	clearOnShrink: {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "appearance",
-			label: "Clear on Shrink",
-			description: "Clear empty rows when content shrinks (may cause flicker)",
-		},
-	},
-
 	// ────────────────────────────────────────────────────────────────────────
 	// Model
 	// ────────────────────────────────────────────────────────────────────────
@@ -887,7 +879,7 @@ export const SETTINGS_SCHEMA = {
 
 	"retry.maxRetries": {
 		type: "number",
-		default: 3,
+		default: 10,
 		ui: {
 			tab: "model",
 			label: "Retry Attempts",
@@ -902,7 +894,7 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"retry.baseDelayMs": { type: "number", default: 2000 },
+	"retry.baseDelayMs": { type: "number", default: 500 },
 	"retry.maxDelayMs": {
 		type: "number",
 		default: 5 * 60 * 1000,
@@ -1197,13 +1189,13 @@ export const SETTINGS_SCHEMA = {
 
 	"compaction.strategy": {
 		type: "enum",
-		values: ["context-full", "handoff", "shake", "off"] as const,
+		values: ["context-full", "handoff", "shake", "snapcompact", "off"] as const,
 		default: "context-full",
 		ui: {
 			tab: "context",
 			label: "Compaction Strategy",
 			description:
-				"Choose in-place context-full maintenance, auto-handoff, surgical shake (drop heavy content), or disable auto maintenance (off)",
+				"Choose in-place context-full maintenance, auto-handoff, surgical shake (drop heavy content), snapcompact (archive history as dense images), or disable auto maintenance (off)",
 			options: [
 				{
 					value: "context-full",
@@ -1215,6 +1207,11 @@ export const SETTINGS_SCHEMA = {
 					value: "shake",
 					label: "Shake",
 					description: "Drop heavy content (tool results + large blocks) in place; recover via artifact",
+				},
+				{
+					value: "snapcompact",
+					label: "Snapcompact",
+					description: "Archive history onto dense bitmap images the model reads back; no LLM call",
 				},
 				{
 					value: "off",
@@ -1390,6 +1387,16 @@ export const SETTINGS_SCHEMA = {
 				{ value: "50000", label: "50K tokens" },
 				{ value: "100000", label: "100K tokens" },
 			],
+		},
+	},
+
+	"compaction.supersedeReads": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			label: "Supersede Stale Reads",
+			description: "Prune older read results when the same file is read again (cache-aware, runs every turn)",
 		},
 	},
 	// Branch summaries
@@ -2085,6 +2092,17 @@ export const SETTINGS_SCHEMA = {
 		ui: { tab: "editing", label: "LSP", description: "Enable the lsp tool for language server protocol" },
 	},
 
+	"lsp.lazy": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "editing",
+			label: "Lazy LSP Startup",
+			description:
+				"Start language servers on first use (lsp tool or editing a matching file type) instead of at session startup",
+		},
+	},
+
 	"lsp.formatOnWrite": {
 		type: "boolean",
 		default: false,
@@ -2164,6 +2182,20 @@ export const SETTINGS_SCHEMA = {
 		type: "number",
 		default: 4 * 1024 * 1024,
 	},
+	"shellMinimizer.sourceOutlineLevel": {
+		type: "enum",
+		values: ["default", "aggressive"] as const,
+		default: "default",
+		ui: {
+			tab: "editing",
+			label: "Shell Minimizer Source Outline",
+			description: "Source outline mode for cat/read of source files: default or aggressive",
+		},
+	},
+	"shellMinimizer.legacyFilters": {
+		type: "boolean",
+		default: undefined,
+	},
 
 	// Eval (per-backend toggles; add more as new backends ship, e.g. eval.ts)
 	"eval.py": {
@@ -2195,6 +2227,16 @@ export const SETTINGS_SCHEMA = {
 			tab: "editing",
 			label: "Python Kernel Mode",
 			description: "Whether to keep IPython kernel alive across calls",
+		},
+	},
+	"python.interpreter": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "editing",
+			label: "Python Interpreter",
+			description:
+				"Optional path to an exact Python executable. When set, automatic Python runtime discovery is skipped.",
 		},
 	},
 
@@ -2310,6 +2352,12 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"bash.enabled": {
+		type: "boolean",
+		default: true,
+		ui: { tab: "tools", label: "Bash", description: "Enable the bash tool for shell command execution" },
+	},
+
 	// Search and AST tools
 	"find.enabled": {
 		type: "boolean",
@@ -2384,7 +2432,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			label: "IRC",
-			description: "Enable agent-to-agent IRC messaging via the irc tool",
+			description: "Enable agent-to-agent messaging for sessions that have addressable peers",
 		},
 	},
 
@@ -2394,8 +2442,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			label: "IRC Timeout",
-			description:
-				"Drop IRC messages whose recipient does not respond within this many milliseconds (0 disables the timeout)",
+			description: "Default timeout for irc wait (and send await:true) in milliseconds; 0 disables the timeout",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "30000", label: "30 seconds" },
@@ -2590,7 +2637,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			label: "Async Execution",
-			description: "Enable async bash commands and background task execution",
+			description: "Enable async bash commands",
 		},
 	},
 
@@ -2836,31 +2883,14 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"task.simple": {
-		type: "enum",
-		values: TASK_SIMPLE_MODES,
-		default: "schema-free",
+	"task.batch": {
+		type: "boolean",
+		default: true,
 		ui: {
 			tab: "tasks",
-			label: "Task Input Mode",
-			description: "How much shared structure the task tool accepts (default, schema-free, or independent)",
-			options: [
-				{
-					value: "default",
-					label: "Default",
-					description: "Shared context and custom task schema are available",
-				},
-				{
-					value: "schema-free",
-					label: "Schema-free",
-					description: "Shared context stays available, but custom task schema is disabled",
-				},
-				{
-					value: "independent",
-					label: "Independent",
-					description: "No shared context or custom task schema; each task must stand alone",
-				},
-			],
+			label: "Batch Task Calls",
+			description:
+				"Switch the task tool to its batch shape: one call carries { agent, context, tasks[] } — one subagent per item (with per-item isolation) and a required shared context prepended to every assignment. Each spawn still runs as an independent background agent with the normal idle/parked lifecycle. Disable to restore the flat single-spawn schema.",
 		},
 	},
 
@@ -3036,6 +3066,33 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"task.agentIdleTtlMs": {
+		type: "number",
+		default: 420_000,
+		ui: {
+			tab: "tasks",
+			label: "Agent Idle TTL",
+			description:
+				"How long an idle subagent stays live in memory before being parked to disk (ms). Parked agents are revived automatically when messaged or resumed. 0 keeps idle agents live until exit.",
+		},
+	},
+
+	"task.softRequestBudget": {
+		type: "number",
+		default: 90,
+		ui: {
+			tab: "tasks",
+			label: "Soft Subagent Request Budget",
+			description:
+				"Soft per-subagent request budget (assistant requests per run). Crossing it injects one steering notice asking the subagent to wrap up; at 1.5x the budget the run is aborted gracefully, salvaging partial output. 0 disables the guard. Bundled explore/quick_task agents use a lower built-in budget.",
+			options: [
+				{ value: "0", label: "Disabled" },
+				{ value: "40", label: "40 requests" },
+				{ value: "90", label: "90 requests", description: "Default" },
+				{ value: "150", label: "150 requests" },
+			],
+		},
+	},
 	"task.disabledAgents": {
 		type: "array",
 		default: [] as string[],
@@ -3522,21 +3579,23 @@ type Schema = typeof SETTINGS_SCHEMA;
 export type SettingPath = keyof Schema;
 
 /** Infer the value type for a setting path */
-export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean" }
-	? boolean
-	: Schema[P] extends { type: "string" }
-		? string | undefined
-		: Schema[P] extends { type: "number" }
-			? number
-			: Schema[P] extends { type: "enum"; values: infer V }
-				? V extends readonly string[]
-					? V[number]
-					: never
-				: Schema[P] extends { type: "array"; default: infer D }
-					? D
-					: Schema[P] extends { type: "record"; default: infer D }
+export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean"; default: undefined }
+	? boolean | undefined
+	: Schema[P] extends { type: "boolean" }
+		? boolean
+		: Schema[P] extends { type: "string" }
+			? string | undefined
+			: Schema[P] extends { type: "number" }
+				? number
+				: Schema[P] extends { type: "enum"; values: infer V }
+					? V extends readonly string[]
+						? V[number]
+						: never
+					: Schema[P] extends { type: "array"; default: infer D }
 						? D
-						: never;
+						: Schema[P] extends { type: "record"; default: infer D }
+							? D
+							: never;
 
 /** Get the default value for a setting path */
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
@@ -3592,7 +3651,7 @@ export type TreeFilterMode = SettingValue<"treeFilterMode">;
 
 export interface CompactionSettings {
 	enabled: boolean;
-	strategy: "context-full" | "handoff" | "shake" | "off";
+	strategy: "context-full" | "handoff" | "shake" | "snapcompact" | "off";
 	thresholdPercent: number;
 	thresholdTokens: number;
 	reserveTokens: number;
@@ -3607,6 +3666,7 @@ export interface CompactionSettings {
 	topicSwitchEnabled: boolean;
 	topicSwitchIdleSeconds: number;
 	topicSwitchMinContextTokens: number;
+	supersedeReads: boolean;
 }
 
 export interface ContextPromotionSettings {
@@ -3740,6 +3800,8 @@ export interface ShellMinimizerSettings {
 	only: string[];
 	except: string[];
 	maxCaptureBytes: number;
+	sourceOutlineLevel: "default" | "aggressive";
+	legacyFilters: boolean | undefined;
 }
 
 export interface SandboxSettings {

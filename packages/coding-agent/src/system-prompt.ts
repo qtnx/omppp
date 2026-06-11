@@ -9,8 +9,10 @@ import { $env, getGpuCachePath, getProjectDir, hasFsCode, isEnoent, logger, prom
 import { $ } from "bun";
 import { contextFileCapability } from "./capability/context-file";
 import { systemPromptCapability } from "./capability/system-prompt";
+import { findConfigFile } from "./config";
 import type { SkillsSettings } from "./config/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
+import { expandAtImports } from "./discovery/at-imports";
 import { loadSkills, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
@@ -209,6 +211,19 @@ async function getEnvironmentInfo(): Promise<Array<{ label: string; value: strin
 	return entries.filter((e): e is { label: string; value: string } => !!e.value);
 }
 
+/** Discover TITLE_SYSTEM.md file for automatic session-title prompt overrides */
+export function discoverTitleSystemPromptFile(cwd?: string): string | undefined {
+	const projectPath = findConfigFile("TITLE_SYSTEM.md", { user: false, cwd });
+	if (projectPath) {
+		return projectPath;
+	}
+	const globalPath = findConfigFile("TITLE_SYSTEM.md", { user: true, cwd });
+	if (globalPath) {
+		return globalPath;
+	}
+	return undefined;
+}
+
 /** Resolve input as file path or literal string */
 export async function resolvePromptInput(input: string | undefined, description: string): Promise<string | undefined> {
 	if (!input) {
@@ -250,14 +265,24 @@ async function loadProjectContextFilesForCwd(
 	cwd: string,
 ): Promise<Array<{ path: string; content: string; depth?: number }>> {
 	const result = await loadCapability(contextFileCapability.id, { cwd });
-	const files = result.items.map(item => {
-		const contextFile = item as ContextFile;
-		return {
-			path: contextFile.path,
-			content: contextFile.content,
-			depth: contextFile.depth,
-		};
-	});
+
+	// Materialize ContextFile items, expanding any `@path/to/file` includes
+	// in their content. The expansion uses the file's own directory as the
+	// resolution base so relative imports work the same way Claude Code,
+	// Goose, and other tools document.
+	const files = await Promise.all(
+		result.items.map(async item => {
+			const contextFile = item as ContextFile;
+			return {
+				path: contextFile.path,
+				content: await expandAtImports(contextFile.content, contextFile.path),
+				depth: contextFile.depth,
+			};
+		}),
+	);
+
+	// Sort by depth (descending): higher depth (farther from cwd) comes first,
+	// so files closer to cwd appear later and are more prominent
 	files.sort((a, b) => {
 		const depthA = a.depth ?? -1;
 		const depthB = b.depth ?? -1;

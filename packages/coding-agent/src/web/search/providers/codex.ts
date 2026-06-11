@@ -7,8 +7,9 @@
  * SQLite store, never POSTs the broker sentinel to an OpenAI token endpoint.
  */
 import * as os from "node:os";
-import { type AuthStorage, getBundledModels } from "@oh-my-pi/pi-ai";
-import { decodeJwt } from "@oh-my-pi/pi-ai/utils/oauth/openai-codex";
+import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
+import { decodeJwt } from "@oh-my-pi/pi-ai/oauth/openai-codex";
+import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { $env, readSseJson } from "@oh-my-pi/pi-utils";
 import packageJson from "../../../../package.json" with { type: "json" };
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
@@ -66,6 +67,7 @@ function shouldRetryWithNextDefaultModel(error: unknown): boolean {
 
 export interface CodexSearchParams {
 	signal?: AbortSignal;
+	fetch?: FetchImpl;
 	query: string;
 	system_prompt?: string;
 	num_results?: number;
@@ -322,6 +324,7 @@ async function callCodexSearch(
 		systemPrompt?: string;
 		searchContextSize?: "low" | "medium" | "high";
 		modelId: string;
+		fetch?: FetchImpl;
 	},
 ): Promise<{
 	answer: string;
@@ -356,7 +359,8 @@ async function callCodexSearch(
 		instructions: options.systemPrompt ?? DEFAULT_INSTRUCTIONS,
 	};
 
-	const response = await fetch(url, {
+	const fetchImpl = options.fetch ?? fetch;
+	const response = await fetchImpl(url, {
 		method: "POST",
 		headers,
 		body: JSON.stringify(body),
@@ -522,6 +526,7 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 				systemPrompt: params.systemPrompt,
 				searchContextSize: "high",
 				modelId,
+				fetch: params.fetch,
 			});
 			break;
 		} catch (error) {

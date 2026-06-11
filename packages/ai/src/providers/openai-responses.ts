@@ -1,4 +1,5 @@
-import { $env, extractHttpStatusFromError, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import { parseGitHubCopilotApiKey } from "@oh-my-pi/pi-catalog/wire/github-copilot";
+import { $env, extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
 import OpenAI, { APIConnectionTimeoutError as OpenAIConnectionTimeoutError } from "openai";
 import type {
 	Tool as OpenAITool,
@@ -9,7 +10,6 @@ import type {
 import { getEnvApiKey } from "../stream";
 import type {
 	AssistantMessage,
-	CacheRetention,
 	Context,
 	FetchImpl,
 	MessageAttribution,
@@ -39,7 +39,6 @@ import {
 	getOpenAIStreamIdleTimeoutMs,
 	iterateWithIdleTimeout,
 } from "../utils/idle-iterator";
-import { parseGitHubCopilotApiKey } from "../utils/oauth/github-copilot";
 import { notifyProviderResponse } from "../utils/provider-response";
 import { callWithCopilotModelRetry } from "../utils/retry";
 import { adaptSchemaForStrict, NO_STRICT, sanitizeSchemaForOpenAIResponses, toolWireSchema } from "../utils/schema";
@@ -68,20 +67,6 @@ import {
 	repairOrphanResponsesToolOutputs,
 } from "./openai-responses-shared";
 import { transformMessages } from "./transform-messages";
-
-/**
- * Get prompt cache retention based on cacheRetention and base URL.
- * Only applies to direct OpenAI API calls (api.openai.com).
- */
-function getPromptCacheRetention(baseUrl: string, cacheRetention: CacheRetention): "24h" | undefined {
-	if (cacheRetention !== "long") {
-		return undefined;
-	}
-	if (baseUrl.includes("api.openai.com")) {
-		return "24h";
-	}
-	return undefined;
-}
 
 export function normalizeOpenAIResponsesPromptCacheKey(sessionId: string | undefined): string | undefined {
 	if (!sessionId || sessionId.length === 0) return undefined;
@@ -242,7 +227,7 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 			);
 			const premiumRequestsTotal = copilotPremiumRequests;
 			const providerSessionState = getOpenAIResponsesProviderSessionState(model, options?.providerSessionState);
-			const { params } = buildParams(model, context, options, providerSessionState, baseUrl);
+			const params = buildParams(model, context, options, providerSessionState);
 			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs();
 			const firstEventTimeoutMs =
 				options?.streamFirstEventTimeoutMs ?? getOpenAIStreamFirstEventTimeoutMs(idleTimeoutMs);
@@ -271,6 +256,12 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 						const { data, response, request_id } = await client.responses
 							.create(params, requestOptions)
 							.withResponse();
+						// Disarm the first-event watchdog as soon as headers arrive — a slow
+						// onResponse callback must not abort an already-connected stream.
+						if (requestTimeout !== undefined) {
+							clearTimeout(requestTimeout);
+							requestTimeout = undefined;
+						}
 						await notifyProviderResponse(options, response, model, request_id);
 						return data;
 					} catch (error) {
@@ -288,6 +279,7 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 			stream.push({ type: "start", partial: output });
 
 			const nativeOutputItems: Array<Record<string, unknown>> = [];
+			let sawCompleted = false;
 			const timedOpenaiStream = iterateWithIdleTimeout(openaiStream, {
 				idleTimeoutMs,
 				firstItemTimeoutMs: firstEventTimeoutMs,
@@ -306,10 +298,14 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 					if (!firstTokenTime) firstTokenTime = Date.now();
 				},
 				onOutputItemDone: item => {
-					nativeOutputItems.push(structuredCloneJSON<unknown>(item) as unknown as Record<string, unknown>);
+					// `processResponsesStream` hands over a private clone already; no
+					// second deep copy needed (reasoning items carry multi-KB blobs).
+					nativeOutputItems.push(item as unknown as Record<string, unknown>);
+				},
+				onCompleted: () => {
+					sawCompleted = true;
 				},
 			});
-			if (premiumRequestsTotal !== undefined) output.usage.premiumRequests = premiumRequestsTotal;
 
 			const firstEventTimeoutError = abortTracker.getLocalAbortReason();
 			if (firstEventTimeoutError) {
@@ -317,6 +313,14 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 			}
 			if (abortTracker.wasCallerAbort()) {
 				throw new Error("Request was aborted");
+			}
+
+			// Detect premature stream closure: the HTTP stream ended without the
+			// provider sending `response.completed`. Custom/proxy providers may
+			// drop the connection mid-stream; without this guard the incomplete
+			// output is silently surfaced as a successful "stop".
+			if (!sawCompleted) {
+				throw new Error("OpenAI responses stream closed before response.completed was received");
 			}
 
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
@@ -388,7 +392,7 @@ function createClient(
 		copilotPremiumRequests = copilot.premiumRequests;
 		baseUrl = resolveGitHubCopilotBaseUrl(model.baseUrl, rawApiKey) ?? model.baseUrl;
 	}
-	if (sessionId && model.provider === "openai" && (baseUrl ?? "").toLowerCase().includes("api.openai.com")) {
+	if (sessionId && model.provider === "openai") {
 		headers.session_id ??= sessionId;
 		headers["x-client-request-id"] ??= sessionId;
 	}
@@ -431,24 +435,14 @@ function buildParams(
 	context: Context,
 	options: OpenAIResponsesOptions | undefined,
 	providerSessionState: OpenAIResponsesProviderSessionState | undefined,
-	resolvedBaseUrl?: string,
-): { conversationMessages: ResponseInput; params: OpenAIResponsesSamplingParams } {
-	const strictResponsesPairing =
-		options?.strictResponsesPairing ??
-		(isAzureOpenAIBaseUrl(model.baseUrl ?? "") || model.provider === "github-copilot");
-	const conversationMessages = convertConversationMessages(
-		model,
-		context,
-		strictResponsesPairing,
-		providerSessionState,
-		options,
-	);
-	const messages: ResponseInput = [...conversationMessages];
+): OpenAIResponsesSamplingParams {
+	const strictResponsesPairing = options?.strictResponsesPairing ?? model.compat.strictResponsesPairing;
+	const messages = convertConversationMessages(model, context, strictResponsesPairing, providerSessionState, options);
 
 	const systemPrompts = normalizeSystemPrompts(context.systemPrompt);
 	let systemInstructions: string | undefined;
 	if (systemPrompts.length > 0) {
-		const needsDeveloperRole = model.reasoning && supportsDeveloperRole(resolvedBaseUrl ?? model);
+		const needsDeveloperRole = model.reasoning && model.compat.supportsDeveloperRole;
 		if (needsDeveloperRole) {
 			// Reasoning models on known OpenAI-compatible endpoints require the
 			// `developer` role. Send all system prompts inline in `input`.
@@ -471,7 +465,11 @@ function buildParams(
 		instructions: systemInstructions,
 		stream: true,
 		prompt_cache_key: promptCacheKey,
-		prompt_cache_retention: promptCacheKey ? getPromptCacheRetention(model.baseUrl, cacheRetention) : undefined,
+		prompt_cache_retention: promptCacheKey
+			? cacheRetention === "long" && model.compat.supportsLongPromptCacheRetention
+				? "24h"
+				: undefined
+			: undefined,
 		store: false,
 		stream_options: model.provider === "openai" ? { include_obfuscation: false } : undefined,
 	};
@@ -483,7 +481,7 @@ function buildParams(
 	// `StreamOptions.frequencyPenalty` is intentionally dropped for this provider.
 
 	if (context.tools) {
-		params.tools = convertTools(context.tools, supportsStrictMode(model), model);
+		params.tools = convertTools(context.tools, model.compat.supportsStrictMode, model);
 		if (options?.toolChoice) {
 			params.tool_choice = mapOpenAIResponsesToolChoiceForTools(options.toolChoice, context.tools, model);
 		}
@@ -506,7 +504,7 @@ function buildParams(
 		effort =>
 			mapReasoningEffort(
 				effort as NonNullable<OpenAIResponsesOptions["reasoning"]>,
-				model.compat?.reasoningEffortMap,
+				model.compat.reasoningEffortMap,
 			),
 		options?.includeEncryptedReasoning ?? true,
 		options?.omitReasoningEffort ?? false,
@@ -516,7 +514,7 @@ function buildParams(
 		Object.assign(params, options.extraBody);
 	}
 
-	return { conversationMessages, params };
+	return params;
 }
 
 function mapReasoningEffort(
@@ -524,34 +522,6 @@ function mapReasoningEffort(
 	reasoningEffortMap: OpenAICompat["reasoningEffortMap"] | undefined,
 ): string {
 	return reasoningEffortMap?.[effort] ?? effort;
-}
-
-function isAzureOpenAIBaseUrl(baseUrl: string): boolean {
-	return baseUrl.includes(".openai.azure.com") || baseUrl.includes("azure.com/openai");
-}
-
-function supportsStrictMode(model: Model<"openai-responses">): boolean {
-	if (model.provider === "openai" || model.provider === "azure" || model.provider === "github-copilot") return true;
-
-	const baseUrl = model.baseUrl.toLowerCase();
-	return (
-		baseUrl.includes("api.openai.com") ||
-		baseUrl.includes(".openai.azure.com") ||
-		baseUrl.includes("models.inference.ai.azure.com")
-	);
-}
-
-export function supportsDeveloperRole(modelOrBaseUrl: Pick<Model, "provider" | "baseUrl"> | string): boolean {
-	const baseUrl =
-		typeof modelOrBaseUrl === "string" ? modelOrBaseUrl.toLowerCase() : (modelOrBaseUrl.baseUrl ?? "").toLowerCase();
-	return (
-		baseUrl.includes("api.openai.com") ||
-		baseUrl.includes(".openai.azure.com") ||
-		baseUrl.includes("azure.com/openai") ||
-		baseUrl.includes("models.inference.ai.azure.com") ||
-		baseUrl.includes("githubcopilot.com") ||
-		baseUrl.includes("copilot-api.")
-	);
 }
 
 function convertConversationMessages(
@@ -594,9 +564,13 @@ function convertConversationMessages(
 			messages.push({ role: "user", content });
 		} else if (msg.role === "assistant") {
 			const assistantMsg = msg as AssistantMessage;
-			const providerPayload = shouldReplayNativeHistory
-				? getOpenAIResponsesHistoryPayload(assistantMsg.providerPayload, model.provider, assistantMsg.provider)
-				: undefined;
+			// Native items are model-bound (reasoning carries encrypted content minted
+			// by the producing model); after a mid-session model switch fall back to
+			// block re-encode, which strips foreign signatures.
+			const providerPayload =
+				shouldReplayNativeHistory && assistantMsg.api === model.api && assistantMsg.model === model.id
+					? getOpenAIResponsesHistoryPayload(assistantMsg.providerPayload, model.provider, assistantMsg.provider)
+					: undefined;
 			const historyItems = providerPayload?.items;
 			if (historyItems) {
 				const sanitizedHistoryItems = sanitizeOpenAIResponsesHistoryItemsForReplay(filterReasoning(historyItems));

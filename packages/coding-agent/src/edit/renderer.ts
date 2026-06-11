@@ -260,7 +260,7 @@ function renderEditHeader(
 	uiTheme: Theme,
 	options: {
 		icon: "pending" | "success" | "error";
-		spinnerFrame?: number;
+		iconOverride?: string;
 		op?: Operation;
 		rawPath: string;
 		rename?: string;
@@ -279,8 +279,15 @@ function renderEditHeader(
 	const formatted = formatEditDescription(options.rawPath, uiTheme, descriptionOptions);
 	const suffix = `${options.statsSuffix ?? ""}${options.extraSuffix ?? ""}`;
 	const buildHeader = (description: string): string =>
-		renderStatusLine({ icon: options.icon, spinnerFrame: options.spinnerFrame, title, description }, uiTheme) +
-		suffix;
+		renderStatusLine(
+			{
+				icon: options.icon,
+				iconOverride: options.iconOverride,
+				title,
+				description,
+			},
+			uiTheme,
+		) + suffix;
 
 	const header = buildHeader(formatted.description);
 	const overflow = visibleWidth(header) - editHeaderLabelBudget(width, uiTheme);
@@ -313,6 +320,7 @@ function formatStreamingDiff(
 	uiTheme: Theme,
 	expanded: boolean,
 	label = "streaming",
+	spinnerFrame?: number,
 ): string {
 	if (!diff) return "";
 	// Collapsed uses a "Cursor" tail window: pin the last
@@ -333,11 +341,26 @@ function formatStreamingDiff(
 		text += `${uiTheme.fg("dim", `… (${remainder.join(", ")} above)`)}\n`;
 	}
 	text += renderDiffColored(visible.join("\n"), { filePath: rawPath });
-	if (!expanded || label !== "preview") text += uiTheme.fg("dim", `\n(${label})`);
+	// The animated glyph rides this trailing line — inside the transcript's
+	// volatile-tail holdback — never the block header: an animating head row
+	// pins the native-scrollback commit boundary at the top of the block, so a
+	// tall expanded preview could never scroll-append mid-stream.
+	const spinner = spinnerFrame !== undefined ? `${formatStatusIcon("running", uiTheme, spinnerFrame)} ` : "";
+	// Expanded approval previews hide the "(preview)" label (#1992) but keep
+	// the animated glyph when one is active so the volatile tail stays live.
+	const hideLabel = expanded && label === "preview";
+	if (spinner || !hideLabel) {
+		text += `\n${hideLabel ? spinner.trimEnd() : `${spinner}${uiTheme.fg("dim", `(${label})`)}`}`;
+	}
 	return text;
 }
 
-function formatMultiFileStreamingDiff(previews: PerFileDiffPreview[], uiTheme: Theme, expanded: boolean): string {
+function formatMultiFileStreamingDiff(
+	previews: PerFileDiffPreview[],
+	uiTheme: Theme,
+	expanded: boolean,
+	spinnerFrame?: number,
+): string {
 	const parts: string[] = [];
 	for (const preview of previews) {
 		if (!preview.diff && !preview.error) continue;
@@ -347,7 +370,13 @@ function formatMultiFileStreamingDiff(previews: PerFileDiffPreview[], uiTheme: T
 			continue;
 		}
 		if (preview.diff) {
-			parts.push(`${header}${formatStreamingDiff(preview.diff, preview.path, uiTheme, expanded, "preview")}`);
+			// Only the last file's preview carries the animated streaming glyph;
+			// earlier files have settled and must stay byte-stable so their rows
+			// can commit to native scrollback mid-stream.
+			const isLast = preview === previews[previews.length - 1];
+			parts.push(
+				`${header}${formatStreamingDiff(preview.diff, preview.path, uiTheme, expanded, "preview", isLast ? spinnerFrame : undefined)}`,
+			);
 		}
 	}
 	return parts.join("");
@@ -359,16 +388,17 @@ function getCallPreview(
 	uiTheme: Theme,
 	renderContext: EditRenderContext | undefined,
 	expanded: boolean,
+	spinnerFrame?: number,
 ): string {
 	const multi = renderContext?.perFileDiffPreview;
 	if (multi && multi.length > 1 && multi.some(p => p.diff || p.error)) {
-		return formatMultiFileStreamingDiff(multi, uiTheme, expanded);
+		return formatMultiFileStreamingDiff(multi, uiTheme, expanded, spinnerFrame);
 	}
 	if (args.previewDiff) {
-		return formatStreamingDiff(args.previewDiff, rawPath, uiTheme, expanded, "preview");
+		return formatStreamingDiff(args.previewDiff, rawPath, uiTheme, expanded, "preview", spinnerFrame);
 	}
 	if (args.diff && args.op) {
-		return formatStreamingDiff(args.diff, rawPath, uiTheme, expanded);
+		return formatStreamingDiff(args.diff, rawPath, uiTheme, expanded, "streaming", spinnerFrame);
 	}
 	if (args.diff) {
 		return renderPlainTextPreview(args.diff, uiTheme, rawPath);
@@ -545,15 +575,20 @@ export const editToolRenderer = {
 			fileCount = countEditFiles(editArgs.edits);
 		}
 		return framedBlock(uiTheme, width => {
+			// Static pending icon, never the animated glyph: the header is the
+			// head row of the framed block, and native-scrollback commits are
+			// prefix-only — an animating head row would pin the commit boundary
+			// at the top and keep a tall expanded preview from scroll-appending
+			// mid-stream. The liveness cue rides the trailing "(preview)" /
+			// "(streaming)" line instead.
 			const header = renderEditHeader(width, uiTheme, {
 				icon: "pending",
-				spinnerFrame: options?.spinnerFrame,
 				op,
 				rawPath,
 				rename,
 				extraSuffix: fileCount > 1 ? uiTheme.fg("dim", ` (+${fileCount - 1} more)`) : undefined,
 			});
-			let body = getCallPreview(editArgs, rawPath, uiTheme, renderContext, options.expanded);
+			let body = getCallPreview(editArgs, rawPath, uiTheme, renderContext, options.expanded, options?.spinnerFrame);
 			if (applyPatchSummary?.error) {
 				body += `\n${uiTheme.fg("error", truncateToWidth(replaceTabs(applyPatchSummary.error, rawPath), Math.max(1, width - 2)))}`;
 			}
@@ -633,6 +668,7 @@ function renderSingleFileResult(
 		const statsSuffix = headerDiff ? formatDiffStatsSuffix(headerDiff, uiTheme) : "";
 		const header = renderEditHeader(width, uiTheme, {
 			icon: isError ? "error" : "success",
+			iconOverride: !isError && !options.isPartial ? uiTheme.styledSymbol("tool.edit", "accent") : undefined,
 			op,
 			rawPath,
 			rename,

@@ -6,6 +6,7 @@ import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai";
 import { streamSimple } from "@oh-my-pi/pi-ai/stream";
 import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@oh-my-pi/pi-ai/types";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { type AuthCredentialStore, AuthStorage, SqliteAuthCredentialStore } from "../src/auth-storage";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -37,7 +38,7 @@ function assistant(content: string[] = []): AssistantMessage {
 }
 
 function model(): Model<Api> {
-	return {
+	return buildModel({
 		id: "test-model",
 		name: "test-model",
 		api: API,
@@ -48,7 +49,7 @@ function model(): Model<Api> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 1024,
 		maxTokens: 1024,
-	};
+	});
 }
 
 const context: Context = {

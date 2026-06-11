@@ -5,17 +5,13 @@
  * and provides a transformer to convert them to LLM-compatible messages.
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import {
-	renderBranchSummaryContext,
-	renderCompactionSummaryContext,
-} from "@oh-my-pi/pi-agent-core/compaction/messages";
+import { convertMessageToLlm } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import type {
 	AssistantMessage,
 	ImageContent,
 	Message,
 	MessageAttribution,
 	TextContent,
-	ToolResultMessage,
 	UserMessage,
 } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
@@ -57,7 +53,7 @@ export interface SkillPromptDetails {
  *
  *  Consumers: `AgentSession.#handleAgentEvent` (stamper) writes this value;
  *  `EventController.#handleMessageEnd`, `AssistantMessageComponent`,
- *  `ui-helpers.addMessageToChat` (renderers), `SessionObserverOverlay
+ *  `ui-helpers.addMessageToChat` (renderers), `AgentHubOverlayComponent
  *  #buildTranscriptLines`, `runPrintMode`, and `AcpAgent#replayAssistantMessage`
  *  (fallback error emission) read it via `isSilentAbort`. */
 export const SILENT_ABORT_MARKER = "__omp.silent_abort__";
@@ -216,15 +212,6 @@ export function wrapSteeringForModel(messages: AgentMessage[]): AgentMessage[] {
 		wrappedMessages[i] = wrappedMessage;
 	}
 	return wrappedMessages ?? messages;
-}
-
-function getPrunedToolResultContent(message: ToolResultMessage): (TextContent | ImageContent)[] {
-	if (message.prunedAt === undefined) {
-		return message.content;
-	}
-	const textBlocks = message.content.filter((content): content is TextContent => content.type === "text");
-	const text = textBlocks.map(block => block.text).join("") || "[Output truncated]";
-	return [{ type: "text", text }];
 }
 
 /** Result of filtering image blocks out of a `(TextContent | ImageContent)[]` array. */
@@ -540,43 +527,6 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						attribution: "user",
 						timestamp: m.timestamp,
 					};
-				case "custom":
-				case "hookMessage": {
-					const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
-					const role = "developer";
-					const attribution = m.attribution;
-					return {
-						role,
-						content,
-						attribution,
-						timestamp: m.timestamp,
-					};
-				}
-				case "branchSummary":
-					return {
-						role: "user",
-						content: [
-							{
-								type: "text" as const,
-								text: renderBranchSummaryContext(m.summary),
-							},
-						],
-						attribution: "agent",
-						timestamp: m.timestamp,
-					};
-				case "compactionSummary":
-					return {
-						role: "user",
-						content: [
-							{
-								type: "text" as const,
-								text: renderCompactionSummaryContext(m.summary),
-							},
-						],
-						attribution: "agent",
-						providerPayload: m.providerPayload,
-						timestamp: m.timestamp,
-					};
 				case "fileMention": {
 					const fileContents = m.files
 						.map(file => {
@@ -597,18 +547,18 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						timestamp: m.timestamp,
 					};
 				}
+				case "custom":
+				case "hookMessage":
+				case "branchSummary":
+				case "compactionSummary":
 				case "user":
-					return { ...m, attribution: m.attribution ?? "user" };
 				case "developer":
-					return { ...m, attribution: m.attribution ?? "agent" };
 				case "assistant":
-					return m;
 				case "toolResult":
-					return {
-						...m,
-						content: getPrunedToolResultContent(m as ToolResultMessage),
-						attribution: m.attribution ?? "agent",
-					};
+					// Core roles share one transformer with agent-core —
+					// duplicating them here is how snapcompact frames once
+					// silently fell off the provider request.
+					return convertMessageToLlm(m);
 				default:
 					m satisfies never;
 					return undefined;

@@ -149,6 +149,7 @@ function createResult(options: ExecutorOptions): SingleResult {
 		truncated: false,
 		durationMs: 1,
 		tokens: 0,
+		requests: 0,
 	};
 }
 
@@ -407,7 +408,7 @@ describe("subagent resource profile", () => {
 		const options = runSpy.mock.calls[0]?.[0];
 		expect(options?.skills?.map(skill => skill.name)).toEqual([runtimeSkill.name]);
 		expect(options?.autoloadSkills?.map(skill => skill.name)).toEqual([runtimeSkill.name]);
-		expect(options?.contextFile).toBeString();
+		expect(options?.contextFiles?.[0]?.path).toBeString();
 	});
 
 	it("autoloads only filtered minimal-profile skills into the child session", async () => {
@@ -737,7 +738,7 @@ describe("subagent resource profile", () => {
 
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
 		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
-			if (options.contextFile) contextFiles.push(options.contextFile);
+			if (options.contextFiles?.[0]) contextFiles.push(options.contextFiles[0].path);
 			return createResult(options);
 		});
 

@@ -107,7 +107,7 @@ function resolveOmpxTarget(): string {
 /**
  * Extract the `X.Y.Z` version from `ompx --version` output.
  *
- * The binary prints the bare semver — see main.ts: `process.stdout.write(\`${VERSION}\n\`)`
+ * The binary prints the bare semver — see main.ts: `process.stdout.write(`${VERSION}\n`)`
  * — so the match must NOT require a prefix. We scan for the first `X.Y.Z` run,
  * which also tolerates an optional leading `ompx/` or `v` if the banner format
  * ever changes. Returns undefined when no version is present (e.g. the binary

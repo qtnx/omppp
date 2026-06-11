@@ -9,10 +9,10 @@
 import { describe, expect, it } from "bun:test";
 import type { ProxyAssistantMessageEvent } from "@oh-my-pi/pi-agent-core/proxy";
 import { type ProxyMessageEventStream, streamProxy } from "@oh-my-pi/pi-agent-core/proxy";
-import type { AssistantMessageEvent, Context, Model } from "@oh-my-pi/pi-ai";
-import { hookFetch } from "@oh-my-pi/pi-utils";
+import type { AssistantMessageEvent, Context, FetchImpl, Model } from "@oh-my-pi/pi-ai";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
-const mockModel: Model = {
+const mockModel: Model = buildModel({
 	id: "test-model",
 	name: "Test Model",
 	api: "openai",
@@ -23,7 +23,7 @@ const mockModel: Model = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 4096,
 	maxTokens: 1024,
-};
+});
 
 const mockContext: Context = {
 	messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
@@ -76,12 +76,12 @@ describe("streamProxy — server disconnect without terminal event", () => {
 	it("emits an error event when server disconnects after start with no terminal event", async () => {
 		const events: ProxyAssistantMessageEvent[] = [{ type: "start" }];
 		const body = buildSseBody(events);
-
-		using _hook = hookFetch(() => new Response(body, { status: 200 }));
+		const fetchMock: FetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));
 
 		const stream = streamProxy(mockModel, mockContext, {
 			proxyUrl: "http://localhost:0",
 			authToken: "test",
+			fetch: fetchMock,
 		});
 		const collected = await collectEvents(stream);
 		const errorEvent = collected.find(e => e.type === "error");
@@ -98,12 +98,12 @@ describe("streamProxy — server disconnect without terminal event", () => {
 			{ type: "text_delta", contentIndex: 0, delta: "Hel" },
 		];
 		const body = buildSseBody(events);
-
-		using _hook = hookFetch(() => new Response(body, { status: 200 }));
+		const fetchMock: FetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));
 
 		const stream = streamProxy(mockModel, mockContext, {
 			proxyUrl: "http://localhost:0",
 			authToken: "test",
+			fetch: fetchMock,
 		});
 
 		// Consume iterator so the internal async function runs
@@ -123,13 +123,13 @@ describe("streamProxy — server disconnect without terminal event", () => {
 
 		const events: ProxyAssistantMessageEvent[] = [{ type: "start" }];
 		const body = buildSseBody(events);
-
-		using _hook = hookFetch(() => new Response(body, { status: 200 }));
+		const fetchMock: FetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));
 
 		const stream = streamProxy(mockModel, mockContext, {
 			proxyUrl: "http://localhost:0",
 			authToken: "test",
 			signal: abortController.signal,
+			fetch: fetchMock,
 		});
 
 		const collected = await collectEvents(stream);
@@ -150,13 +150,13 @@ describe("streamProxy — server disconnect without terminal event", () => {
 
 		const events: ProxyAssistantMessageEvent[] = [{ type: "start" }];
 		const body = buildSseBody(events);
-
-		using _hook = hookFetch(() => new Response(body, { status: 200 }));
+		const fetchMock: FetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));
 
 		const stream = streamProxy(mockModel, mockContext, {
 			proxyUrl: "http://localhost:0",
 			authToken: "test",
 			signal: abortController.signal,
+			fetch: fetchMock,
 		});
 
 		await collectEvents(stream);
@@ -180,12 +180,12 @@ describe("streamProxy — server disconnect without terminal event", () => {
 			},
 		];
 		const body = buildSseBody(events);
-
-		using _hook = hookFetch(() => new Response(body, { status: 200 }));
+		const fetchMock: FetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));
 
 		const stream = streamProxy(mockModel, mockContext, {
 			proxyUrl: "http://localhost:0",
 			authToken: "test",
+			fetch: fetchMock,
 		});
 
 		const collected = await collectEvents(stream);
@@ -209,12 +209,12 @@ describe("streamProxy — server disconnect without terminal event", () => {
 			},
 		];
 		const body = buildSseBody(events);
-
-		using _hook = hookFetch(() => new Response(body, { status: 200 }));
+		const fetchMock: FetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));
 
 		const stream = streamProxy(mockModel, mockContext, {
 			proxyUrl: "http://localhost:0",
 			authToken: "test",
+			fetch: fetchMock,
 		});
 
 		const collected = await collectEvents(stream);

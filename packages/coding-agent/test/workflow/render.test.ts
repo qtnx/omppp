@@ -69,6 +69,7 @@ describe("renderWorkflowTree", () => {
 			recentOutput: [],
 			toolCount: 1,
 			tokens: 128,
+			requests: 1,
 			cost: 0,
 			durationMs: 250,
 			resolvedModel: "anthropic/claude-sonnet-4",

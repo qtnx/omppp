@@ -22,13 +22,14 @@ import type {
 	Context,
 	ImageContent,
 	Model,
+	ModelSpec,
 	ProviderResponseMetadata,
 	SimpleStreamOptions,
 	Static,
 	TextContent,
 	TSchema,
 } from "@oh-my-pi/pi-ai";
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/utils/oauth/types";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
 import type * as piCodingAgent from "@oh-my-pi/pi-coding-agent";
 import type { AutocompleteItem, Component, EditorTheme, KeyId, TUI } from "@oh-my-pi/pi-tui";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
@@ -40,6 +41,7 @@ import type { PythonResult } from "../../eval/py/executor";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type { GoalModeState } from "../../goals/state";
+import type { MemoryRuntimeContext } from "../../memory-backend";
 import type { CustomEditor } from "../../modes/components/custom-editor";
 import type { Theme } from "../../modes/theme/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
@@ -326,6 +328,8 @@ export interface ExtensionContext {
 	shutdown(): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
+	/** Structured memory runtime for status/search/save across the configured backend. */
+	memory?: MemoryRuntimeContext;
 }
 
 /**
@@ -1089,7 +1093,7 @@ export interface ExtensionAPI {
 	 *       id: "claude-sonnet-4@20250514",
 	 *       name: "Claude Sonnet 4 (Vertex)",
 	 *       reasoning: true,
-	 *       thinking: { mode: "anthropic-adaptive", minLevel: "minimal", maxLevel: "high" },
+	 *       thinking: { mode: "anthropic-adaptive", efforts: ["minimal", "low", "medium", "high"] },
 	 *       input: ["text", "image"],
 	 *       cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
 	 *       contextWindow: 200000,
@@ -1142,6 +1146,13 @@ export interface ProviderConfig {
 		/** Optional model rewrite hook for credential-aware routing (e.g., enterprise URLs). */
 		modifyModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
 	};
+	/**
+	 * Async factory that fetches the live model list from the provider endpoint.
+	 * Runs through the same SQLite model-cache as built-in providers (keyed by
+	 * provider name, default 24 h TTL). Receives the resolved API key (undefined
+	 * when unauthenticated). Mutually exclusive with `models`.
+	 */
+	fetchDynamicModels?: (apiKey: string | undefined) => Promise<readonly ProviderModelConfig[]>;
 }
 
 /** Configuration for a model within a provider. */
@@ -1169,7 +1180,7 @@ export interface ProviderModelConfig {
 	/** Custom headers for this model. */
 	headers?: Record<string, string>;
 	/** OpenAI compatibility settings. */
-	compat?: Model<Api>["compat"];
+	compat?: ModelSpec<Api>["compat"];
 }
 
 /** Extension factory function type. Supports both sync and async initialization. */

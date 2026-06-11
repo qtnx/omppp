@@ -4,7 +4,7 @@
  * Handles /mcp subcommands for managing MCP servers.
  */
 import * as path from "node:path";
-import { Spacer, Text } from "@oh-my-pi/pi-tui";
+import { type Component, replaceTabs, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { getMCPConfigPath, getProjectDir } from "@oh-my-pi/pi-utils";
 import type { SourceMeta } from "../../capability/types";
 import { analyzeAuthError, discoverOAuthEndpoints, MCPManager } from "../../mcp";
@@ -36,6 +36,7 @@ import {
 import type { MCPAuthConfig, MCPServerConfig, MCPServerConnection } from "../../mcp/types";
 import type { OAuthCredential } from "../../session/auth-storage";
 import { shortenPath } from "../../tools/render-utils";
+import { urlHyperlinkAlways } from "../../tui";
 import { openPath } from "../../utils/open";
 import { ChatBlock } from "../components/chat-block";
 import { MCPAddWizard } from "../components/mcp-add-wizard";
@@ -45,10 +46,35 @@ import { theme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
 import { groupBySource, parseRemoveArgs, readScopeFlag, showCommandMessage } from "./command-controller-shared";
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+const MCP_MANUAL_INPUT_PROVIDER_ID = "mcp";
+const MCP_MANUAL_LOGIN_TIP = "Headless? Paste the redirect URL or code with /login <value>.";
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string, onTimeout?: () => void): Promise<T> {
 	const { promise: timeoutPromise, reject } = Promise.withResolvers<T>();
-	const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+	const timer = setTimeout(() => {
+		onTimeout?.();
+		reject(new Error(message));
+	}, timeoutMs);
 	return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
+
+/** Renders the MCP OAuth fallback URL without hard-wrapping the copy target. */
+export class MCPAuthorizationLinkPrompt implements Component {
+	readonly #url: string;
+
+	constructor(url: string) {
+		this.#url = url;
+	}
+
+	invalidate(): void {}
+
+	render(_width: number): readonly string[] {
+		const link = urlHyperlinkAlways(this.#url, "Click here to authorize");
+		return [
+			` ${theme.fg("success", "Open authorization URL:")}`,
+			` ${theme.fg("accent", link)}`,
+			` ${theme.fg("muted", `Copy URL: ${replaceTabs(this.#url)}`)}`,
+		];
+	}
 }
 
 /**
@@ -570,6 +596,15 @@ export class MCPCommandController {
 		const resolvedClientId = clientId.trim() || parsedAuthUrl.searchParams.get("client_id") || undefined;
 		const resolvedClientSecret = clientSecret.trim() || undefined;
 
+		const manualInput = this.ctx.oauthManualInput;
+		if (manualInput.hasPending()) {
+			const pendingProvider = manualInput.pendingProviderId ?? "another provider";
+			throw new Error(
+				`OAuth login already in progress for ${pendingProvider}. Complete or cancel it before starting MCP OAuth.`,
+			);
+		}
+		let manualInputClaim: { promise: Promise<string>; clear: (reason?: string) => void } | undefined;
+		const oauthTimeout = new AbortController();
 		try {
 			// Create OAuth flow
 			const flow = new MCPOAuthFlow(
@@ -599,6 +634,7 @@ export class MCPCommandController {
 								0,
 							),
 						);
+						block.addChild(new Text(theme.fg("muted", MCP_MANUAL_LOGIN_TIP), 1, 0));
 						block.addChild(new Spacer(1));
 						block.addChild(new Text(theme.fg("accent", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"), 1, 0));
 						// Try to open browser automatically
@@ -610,26 +646,42 @@ export class MCPCommandController {
 							block.addChild(new Text(theme.fg("success", "→ Opening browser automatically..."), 1, 0));
 							block.addChild(new Spacer(1));
 							block.addChild(new Text(theme.fg("muted", "Alternative if browser did not open:"), 1, 0));
-							block.addChild(new Text(theme.fg("success", "Copy this exact URL in your browser:"), 1, 0));
-							block.addChild(new Text(theme.fg("accent", info.url), 1, 0));
+							block.addChild(new MCPAuthorizationLinkPrompt(info.url));
 							this.ctx.ui.requestRender();
 						} catch (_error) {
 							// Show error if browser doesn't open
 							block.addChild(new Spacer(1));
 							block.addChild(new Text(theme.fg("warning", "→ Could not open browser automatically"), 1, 0));
-							block.addChild(new Text(theme.fg("success", "Copy this exact URL in your browser:"), 1, 0));
-							block.addChild(new Text(theme.fg("accent", info.url), 1, 0));
+							block.addChild(new MCPAuthorizationLinkPrompt(info.url));
 							this.ctx.ui.requestRender();
 						}
 					},
 					onProgress: (message: string) => {
 						this.ctx.present([new Spacer(1), new Text(theme.fg("muted", message), 1, 0)]);
 					},
+					onManualCodeInput: () => {
+						if (manualInputClaim) return manualInputClaim.promise;
+						const pendingInput = manualInput.tryClaimInput(MCP_MANUAL_INPUT_PROVIDER_ID);
+						if (!pendingInput) {
+							const pendingProvider = manualInput.pendingProviderId ?? "another provider";
+							throw new Error(
+								`OAuth login already in progress for ${pendingProvider}. Complete or cancel it before starting MCP OAuth.`,
+							);
+						}
+						manualInputClaim = pendingInput;
+						return pendingInput.promise;
+					},
+					signal: oauthTimeout.signal,
 				},
 			);
 
 			// Execute OAuth flow with 5 minute timeout
-			const credentials = await withTimeout(flow.login(), 5 * 60 * 1000, "OAuth flow timed out after 5 minutes");
+			const credentials = await withTimeout(
+				flow.login(),
+				5 * 60 * 1000,
+				"OAuth flow timed out after 5 minutes",
+				() => oauthTimeout.abort("MCP OAuth flow timed out"),
+			);
 
 			this.ctx.present([
 				new Spacer(1),
@@ -668,6 +720,8 @@ export class MCPCommandController {
 			} else {
 				throw new Error(`OAuth authentication failed: ${errorMsg}`);
 			}
+		} finally {
+			manualInputClaim?.clear("Manual MCP OAuth input cleared");
 		}
 	}
 
@@ -802,7 +856,7 @@ export class MCPCommandController {
 				await this.ctx.session.refreshMCPTools(this.ctx.mcpManager.getTools());
 			}
 			if (state === "connected") {
-				block.setStatus(theme.fg("success", `✓ Connected to "${name}"`));
+				block.setStatus(theme.fg("success", `${theme.status.enabled} Connected to "${name}"`));
 			} else if (state === "connecting") {
 				block.setStatus(theme.fg("muted", `◌ "${name}" is still connecting...`));
 			} else {
@@ -873,10 +927,10 @@ export class MCPCommandController {
 
 			// Show success message
 			const scopeLabel = scope === "user" ? "user" : "project";
-			const lines = ["", theme.fg("success", `✓ Added server "${name}" to ${scopeLabel} config`), ""];
+			const lines = ["", theme.fg("success", `+ Added server "${name}" to ${scopeLabel} config`), ""];
 
 			if (isConnected) {
-				lines.push(theme.fg("success", `✓ Successfully connected to server`));
+				lines.push(theme.fg("success", `${theme.status.enabled} Successfully connected to server`));
 				lines.push("");
 			} else if (isConnecting) {
 				lines.push(theme.fg("muted", `◌ Server is connecting in background...`));
@@ -1096,7 +1150,7 @@ export class MCPCommandController {
 			// Reload MCP manager
 			await this.#reloadMCP();
 
-			this.#showMessage(["", theme.fg("success", `✓ Removed server "${name}" from ${scope} config`), ""].join("\n"));
+			this.#showMessage(["", theme.fg("success", `- Removed server "${name}" from ${scope} config`), ""].join("\n"));
 		} catch (error) {
 			this.ctx.showError(`Failed to remove server: ${error instanceof Error ? error.message : String(error)}`);
 		}
@@ -1156,7 +1210,7 @@ export class MCPCommandController {
 
 			const lines = [
 				"",
-				theme.fg("success", `✓ Successfully connected to "${name}"`),
+				theme.fg("success", `${theme.status.enabled} Successfully connected to "${name}"`),
 				"",
 				`  Server: ${connection.serverInfo.name} v${connection.serverInfo.version}`,
 				`  Tools: ${tools.length}`,
@@ -1243,12 +1297,18 @@ export class MCPCommandController {
 								? theme.fg("muted", "Connecting")
 								: theme.fg("warning", "Not connected yet");
 					this.#showMessage(
-						["", theme.fg("success", `✓ Enabled "${name}"`), "", `  Status: ${status}`, ""].join("\n"),
+						[
+							"",
+							theme.fg("success", `${theme.status.enabled} Enabled "${name}"`),
+							"",
+							`  Status: ${status}`,
+							"",
+						].join("\n"),
 					);
 				} else {
 					await this.ctx.mcpManager?.disconnectServer(name);
 					await this.ctx.session.refreshMCPTools(this.ctx.mcpManager?.getTools() ?? []);
-					this.#showMessage(["", theme.fg("success", `✓ Disabled "${name}"`), ""].join("\n"));
+					this.#showMessage(["", theme.fg("muted", `${theme.status.disabled} Disabled "${name}"`), ""].join("\n"));
 				}
 				return;
 			}
@@ -1279,7 +1339,9 @@ export class MCPCommandController {
 
 			const lines = [
 				"",
-				theme.fg("success", `✓ ${enabled ? "Enabled" : "Disabled"} "${name}" (${found.scope} config)`),
+				enabled
+					? theme.fg("success", `${theme.status.enabled} Enabled "${name}" (${found.scope} config)`)
+					: theme.fg("muted", `${theme.status.disabled} Disabled "${name}" (${found.scope} config)`),
 			];
 			if (status) {
 				lines.push("");
@@ -1317,7 +1379,7 @@ export class MCPCommandController {
 			await this.#reloadMCP();
 
 			this.#showMessage(
-				["", theme.fg("success", `✓ Cleared auth for "${name}" (${found.scope} config)`), ""].join("\n"),
+				["", theme.fg("success", `- Cleared auth for "${name}" (${found.scope} config)`), ""].join("\n"),
 			);
 		} catch (error) {
 			this.ctx.showError(`Failed to clear auth: ${error instanceof Error ? error.message : String(error)}`);
@@ -1411,7 +1473,12 @@ export class MCPCommandController {
 			await this.#reloadMCP();
 			const connectedCount = this.ctx.mcpManager?.getConnectedServers().length ?? 0;
 			this.#showMessage(
-				["", theme.fg("success", "✓ MCP reload complete"), `  Connected servers: ${connectedCount}`, ""].join("\n"),
+				[
+					"",
+					theme.fg("success", `${theme.icon.loop} MCP reload complete`),
+					`  Connected servers: ${connectedCount}`,
+					"",
+				].join("\n"),
 			);
 		} catch (error) {
 			this.ctx.showError(`Failed to reload MCP: ${error instanceof Error ? error.message : String(error)}`);
@@ -1442,9 +1509,12 @@ export class MCPCommandController {
 				await this.ctx.session.refreshMCPTools(this.ctx.mcpManager.getTools());
 				const serverTools = this.ctx.mcpManager.getTools().filter(t => t.mcpServerName === name);
 				this.#showMessage(
-					["\n", theme.fg("success", `✓ Reconnected to "${name}"`), `  Tools: ${serverTools.length}`, "\n"].join(
+					[
 						"\n",
-					),
+						theme.fg("success", `${theme.status.enabled} Reconnected to "${name}"`),
+						`  Tools: ${serverTools.length}`,
+						"\n",
+					].join("\n"),
 				);
 			} else {
 				this.ctx.showError(`Failed to reconnect to "${name}". Check server status and logs.`);

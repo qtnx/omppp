@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import { type Component, TERMINAL } from "@oh-my-pi/pi-tui";
-import { resetSettingsForTest, Settings, settings } from "../src/config/settings";
-import { ReadToolGroupComponent } from "../src/modes/components/read-tool-group";
-import { TranscriptContainer } from "../src/modes/components/transcript-container";
-import * as themeModule from "../src/modes/theme/theme";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
+import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
+import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { Component } from "@oh-my-pi/pi-tui";
 
 /** Minimal transcript block whose finalized state is fixed at construction. */
 class StubBlock implements Component {
@@ -21,8 +21,6 @@ function successResult() {
 }
 
 describe("ReadToolGroupComponent transcript freezing", () => {
-	let prevRisk: boolean;
-
 	beforeAll(async () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
@@ -31,7 +29,6 @@ describe("ReadToolGroupComponent transcript freezing", () => {
 
 	afterEach(() => {
 		settings.clearOverride("tui.hyperlinks");
-		TERMINAL.eagerEraseScrollbackRisk = prevRisk;
 		vi.restoreAllMocks();
 	});
 
@@ -42,9 +39,6 @@ describe("ReadToolGroupComponent transcript freezing", () => {
 	// ED3-risk terminals the container froze the group at its pending preview, so
 	// the late success result never repainted — the read stuck on "⏳ Read <path>".
 	it("repaints a late read result instead of freezing the pending preview", () => {
-		prevRisk = TERMINAL.eagerEraseScrollbackRisk;
-		TERMINAL.eagerEraseScrollbackRisk = true;
-
 		const tc = new TranscriptContainer();
 		const group = new ReadToolGroupComponent();
 		group.updateArgs({ path: "/tmp/example.ts", sel: "280-345" }, "id1");
@@ -67,7 +61,6 @@ describe("ReadToolGroupComponent transcript freezing", () => {
 
 	// The finalization seam the TranscriptContainer keys off of.
 	it("stays live until pending entries settle, then reports finalized", () => {
-		prevRisk = TERMINAL.eagerEraseScrollbackRisk;
 		const group = new ReadToolGroupComponent();
 		group.updateArgs({ path: "/tmp/a.ts" }, "id1");
 
@@ -87,7 +80,6 @@ describe("ReadToolGroupComponent transcript freezing", () => {
 	// Turn-end safety: a read that never delivers a result (aborted turn) must not
 	// pin the live region forever. seal() forces it terminal.
 	it("seals a never-resolved pending read so it can freeze", () => {
-		prevRisk = TERMINAL.eagerEraseScrollbackRisk;
 		const group = new ReadToolGroupComponent();
 		group.updateArgs({ path: "/tmp/a.ts" }, "id1");
 		group.finalize();

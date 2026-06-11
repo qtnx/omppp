@@ -1,12 +1,14 @@
 import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTelemetryConfig, AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { ToolChoice } from "@oh-my-pi/pi-ai";
+import type { FetchImpl, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AsyncJobManager } from "../async/job-manager";
+import type { Rule } from "../capability/rule";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import { EditTool } from "../edit";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
+import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
@@ -16,7 +18,7 @@ import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { PlanModeState } from "../plan-mode/state";
-import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
 import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
@@ -46,7 +48,7 @@ import { resolveEvalBackends } from "./eval-backends";
 import { FindTool } from "./find";
 import { GithubTool } from "./gh";
 import { InspectImageTool } from "./inspect-image";
-import { IrcTool } from "./irc";
+import { IrcTool, isIrcEnabled } from "./irc";
 import { JobTool } from "./job";
 import { MacOSSandboxTool } from "./macos-sandbox";
 import { MemoryEditTool } from "./memory-edit";
@@ -66,11 +68,7 @@ import { type TodoPhase, TodoTool } from "./todo";
 import { WriteTool } from "./write";
 import { YieldTool } from "./yield";
 
-// Exa MCP tools (22 tools)
-
 export * from "../edit";
-export * from "../exa";
-export type * from "../exa/types";
 export * from "../goals";
 export * from "../lsp";
 export * from "../session/streaming-output";
@@ -155,6 +153,8 @@ export interface ToolSession {
 	cwd: string;
 	/** Whether UI is available */
 	hasUI: boolean;
+	/** Optional fetch implementation injected into the URL read pipeline (tests, proxies). Defaults to global fetch. */
+	fetch?: FetchImpl;
 	/** Skip Python kernel availability check and warmup */
 	skipPythonPreflight?: boolean;
 	/** Pre-loaded context files (AGENTS.md, etc) */
@@ -167,6 +167,21 @@ export interface ToolSession {
 	skills?: Skill[];
 	/** Pre-loaded prompt templates */
 	promptTemplates?: PromptTemplate[];
+	/** Pre-loaded rules (forwarded to subagents to skip re-discovery). */
+	rules?: Rule[];
+	/**
+	 * Pre-discovered extension source paths. Forwarded to subagents so they
+	 * skip the FS scan but still re-bind extensions to their own session-scoped
+	 * `ExtensionAPI` (cwd, eventBus, runtime). Inline extension factories
+	 * (`<inline-N>`) are NOT included — those are session-local.
+	 */
+	extensionPaths?: string[];
+	/**
+	 * Pre-discovered custom-tool source paths from `.omp/tools/`, `.claude/tools/`,
+	 * plugins, etc. Forwarded to subagents so they skip the FS scan but still
+	 * re-bind tools to their own session-scoped `CustomToolAPI`.
+	 */
+	customToolPaths?: ToolPathWithSource[];
 	/** Whether LSP integrations are enabled */
 	enableLsp?: boolean;
 	/** Whether an edit-capable tool is available in this session (controls hashline output) */
@@ -258,8 +273,6 @@ export interface ToolSession {
 	recordEvalSubagentUsage?: (output: number) => void;
 	/** Bridge to the connected client (e.g. ACP editor host). Tools should route fs/terminal/permission requests through this when available. */
 	getClientBridge?: () => ClientBridge | undefined;
-	/** Get compact conversation context for subagents (excludes tool results, system prompts) */
-	getCompactContext?: () => string;
 	/** Get cached todo phases for this session. */
 	getTodoPhases?: () => TodoPhase[];
 	/** Replace cached todo phases for this session. */
@@ -318,6 +331,13 @@ export interface ToolSession {
 	 *  model for each file. Lazily initialized by `getDiagnosticsLedger`. */
 	diagnosticsLedger?: import("../lsp/diagnostics-ledger").DiagnosticsLedger;
 
+	/** Per-session ledger of consecutive byte-identical no-op edits, keyed by
+	 *  canonical file path. The hashline executor escalates a soft no-op hint
+	 *  to a thrown error once the same payload no-ops `NOOP_HARD_LIMIT` times,
+	 *  breaking subagent loops that ignore the textual hint (issue #2081).
+	 *  Lazily initialized by `getNoopLoopGuard`. */
+	noopLoopGuard?: import("../edit/hashline/noop-loop-guard").NoopLoopGuard;
+
 	/** Queue a hidden message to be injected at the next agent turn. */
 	queueDeferredMessage?(message: CustomMessage): void;
 	/** Request the macOS sandbox supervisor to relaunch this session with extra sandbox allowlist roots. */
@@ -358,6 +378,38 @@ export function computeEssentialBuiltinNames(settings: Settings): string[] {
 }
 
 /**
+ * Filter the initial active tool set when `tools.discoveryMode === "all"`.
+ *
+ * Non-essential discoverable built-ins are hidden — the model rediscovers them
+ * via `search_tool_bm25` and activates them on demand. A tool survives hiding
+ * when it is essential, explicitly requested, restored from a prior selection,
+ * or required by a forced tool_choice feature (`forceActive`). The last case is
+ * load-bearing: a named tool_choice (e.g. the eager `todo` prelude) must
+ * reference a tool present in the request, or the provider rejects it with 400.
+ */
+export function filterInitialToolsForDiscoveryAll(
+	initialToolNames: string[],
+	opts: {
+		loadModeOf: (name: string) => BuiltinToolLoadMode | undefined;
+		essentialNames: ReadonlySet<string>;
+		explicitlyRequested: ReadonlySet<string>;
+		restored: ReadonlySet<string>;
+		forceActive: ReadonlySet<string>;
+	},
+): string[] {
+	return initialToolNames.filter(name => {
+		const loadMode = opts.loadModeOf(name);
+		if (!loadMode) return true; // not a built-in — leave MCP/custom/extension to existing logic
+		if (loadMode === "essential") return true;
+		if (opts.essentialNames.has(name)) return true;
+		if (opts.explicitlyRequested.has(name)) return true;
+		if (opts.restored.has(name)) return true;
+		if (opts.forceActive.has(name)) return true;
+		return false;
+	});
+}
+
+/**
  * Public callable factory map. External callers may invoke `BUILTIN_TOOLS.read(session)` or
  * `BUILTIN_TOOLS[name](session)` to construct a tool directly.
  */
@@ -383,7 +435,7 @@ export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
 	rewind: RewindTool.createIf,
 	task: s => TaskTool.create(s),
 	workflow: s => WorkflowTool.create(s),
-	job: JobTool.createIf,
+	job: s => new JobTool(s),
 	irc: IrcTool.createIf,
 	todo: s => new TodoTool(s),
 	web_search: s => new WebSearchTool(s),
@@ -433,7 +485,12 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		!allowJs &&
 		(requestedTools === undefined || requestedTools.includes("eval"))
 	) {
-		const availability = await logger.time("createTools:pythonCheck", checkPythonKernelAvailability, session.cwd);
+		const availability = await logger.time(
+			"createTools:pythonCheck",
+			checkPythonKernelAvailability,
+			session.cwd,
+			session.settings.get("python.interpreter")?.trim() || undefined,
+		);
 		pythonAvailable = availability.ok;
 		if (!availability.ok) {
 			logger.warn("Python kernel unavailable and JS backend disabled; eval will be unavailable", {
@@ -478,7 +535,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const isToolAllowed = (name: string) => {
 		if (name === "goal") return goalEnabled && goalModeActive;
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
-		if (name === "bash") return true;
+		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "eval") return allowEval;
 		if (name === "debug") return session.settings.get("debug.enabled");
 		if (name === "todo") return !includeYield && session.settings.get("todo.enabled");
@@ -493,13 +550,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "search_tool_bm25") return discoveryActive;
 		if (name === "browser") return session.settings.get("browser.enabled");
 		if (name === "checkpoint" || name === "rewind") return session.settings.get("checkpoint.enabled");
-		if (name === "irc") {
-			if (!session.settings.get("irc.enabled")) return false;
-			// Main agent only needs `irc` when subagents may run concurrently (async).
-			// In sync mode main blocks on `task`, so peer messaging from main is dead weight.
-			if (!session.settings.get("async.enabled") && session.getAgentId?.() === MAIN_AGENT_ID) return false;
-			return true;
-		}
+		if (name === "irc") return isIrcEnabled(session.settings, session.taskDepth ?? 0);
 		if (name === "retain" || name === "recall" || name === "reflect") {
 			return ["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
 		}

@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type AuthCredentialStore, AuthStorage, SqliteAuthCredentialStore } from "../src/auth-storage";
-import type { UsageLimit, UsageProvider, UsageReport } from "../src/usage";
-import * as oauthUtils from "../src/utils/oauth";
-import type { OAuthCredentials } from "../src/utils/oauth/types";
+import { type AuthCredentialStore, AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
+import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
+import type { OAuthCredentials } from "@oh-my-pi/pi-ai/registry/oauth/types";
+import type { UsageLimit, UsageProvider, UsageReport } from "@oh-my-pi/pi-ai/usage";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -631,8 +631,8 @@ describe("AuthStorage codex oauth ranking", () => {
 
 		// The active credential hit a usage limit, but a sibling with free shared
 		// quota is still available, so rotation MUST be reported as possible.
-		const switched = await authStorage.markUsageLimitReached("openai-codex", session, { modelId });
-		expect(switched).toBe(true);
+		const result = await authStorage.markUsageLimitReached("openai-codex", session, { modelId });
+		expect(result.switched).toBe(true);
 
 		// ...and the next acquisition for the same session actually hands off to the sibling
 		// rather than re-handing the parked credential.
@@ -676,8 +676,8 @@ describe("AuthStorage codex oauth ranking", () => {
 		// is available", not "no session credential was ever selected".
 		const sparkKey = await authStorage.getApiKey("openai-codex", session, { modelId });
 		expect(sparkKey).toBeDefined();
-		const switched = await authStorage.markUsageLimitReached("openai-codex", session, { modelId });
-		expect(switched).toBe(false);
+		const result = await authStorage.markUsageLimitReached("openai-codex", session, { modelId });
+		expect(result.switched).toBe(false);
 	});
 
 	// Regression (cross-model backoff contamination): a usage-limit block created by a
@@ -722,10 +722,10 @@ describe("AuthStorage codex oauth ranking", () => {
 			modelId: "gpt-5.3-codex",
 		});
 		expect(nonSparkKey).toBeDefined();
-		const switched = await authStorage.markUsageLimitReached("openai-codex", "session-main-turn", {
+		const result = await authStorage.markUsageLimitReached("openai-codex", "session-main-turn", {
 			modelId: "gpt-5.3-codex",
 		});
-		expect(switched).toBe(true);
+		expect(result.switched).toBe(true);
 	});
 
 	// Regression: model-scoped usage-limit backoff must NOT leak into stored API-key
@@ -746,8 +746,8 @@ describe("AuthStorage codex oauth ranking", () => {
 		const firstKey = await authStorage.getApiKey("openai-codex", session, { modelId });
 		expect(firstKey).toBeDefined();
 
-		const switched = await authStorage.markUsageLimitReached("openai-codex", session, { modelId });
-		expect(switched).toBe(true);
+		const result = await authStorage.markUsageLimitReached("openai-codex", session, { modelId });
+		expect(result.switched).toBe(true);
 
 		const rotatedKey = await authStorage.getApiKey("openai-codex", session, { modelId });
 		expect(rotatedKey).toBeDefined();

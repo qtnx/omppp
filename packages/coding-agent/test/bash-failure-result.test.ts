@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import type { ToolSession } from "../src/tools";
-import { BashTool, formatMacOSSandboxDenialNotice } from "../src/tools/bash";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { BashTool, formatMacOSSandboxDenialNotice } from "@oh-my-pi/pi-coding-agent/tools/bash";
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 const previousActiveSandbox = Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED;

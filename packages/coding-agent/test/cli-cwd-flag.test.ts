@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
+import { applyStartupCwd } from "@oh-my-pi/pi-coding-agent/cli/startup-cwd";
 import { getProjectDir, normalizePathForComparison, setProjectDir } from "@oh-my-pi/pi-utils";
-import { parseArgs } from "../src/cli/args";
-import { applyStartupCwd } from "../src/cli/startup-cwd";
 
 const originalProjectDir = getProjectDir();
 
@@ -26,6 +26,12 @@ describe("parseArgs — --cwd flag", () => {
 		expect(result.messages).toEqual(["hello"]);
 	});
 
+	it("parses repeated --config overlays", () => {
+		const result = parseArgs(["--config", "base.yml", "--config=team.yml", "hello"]);
+
+		expect(result.config).toEqual(["base.yml", "team.yml"]);
+		expect(result.messages).toEqual(["hello"]);
+	});
 	it("applies --cwd before session lookup callers read the project directory", async () => {
 		const launchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-launch-"));
 		const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-target-"));

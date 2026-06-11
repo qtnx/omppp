@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { renderContextGcReport } from "@oh-my-pi/context-gc-plugin";
-import { getOAuthProviders } from "@oh-my-pi/pi-ai/utils/oauth";
+import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { Snowflake, sanitizeText, setProjectDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
@@ -42,6 +42,7 @@ import { createMarketplaceManager } from "./helpers/marketplace-manager";
 import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSlashCommand, parseSubcommand, usage } from "./helpers/parse";
 import { handleSshAcp } from "./helpers/ssh";
+import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
 import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
 import { parseMarketplaceInstallArgs, parsePluginScopeArgs } from "./marketplace-install-parser";
@@ -421,6 +422,23 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "setup",
+		aliases: ["providers"],
+		description: "Open provider setup",
+		allowArgs: true,
+		subcommands: [{ name: "providers", description: "Configure sign-in and web search providers" }],
+		handleTui: async (command, runtime) => {
+			const args = command.args.trim().toLowerCase();
+			const opensProviders = args === "" || args === "providers";
+			if (opensProviders) {
+				await runtime.ctx.showProviderSetup();
+			} else {
+				runtime.ctx.showWarning(`Usage: /${command.name} [providers]`);
+			}
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "plan",
 		description: "Toggle plan mode (agent plans before executing)",
 		inlineHint: "[prompt]",
@@ -436,6 +454,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			if (hadArgs && wasPlanModeEnabled) {
 				runtime.ctx.editor.addToHistory(command.text);
 			}
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "plan-review",
+		description: "Re-open the plan review for the latest plan (plan mode only)",
+		handleTui: async (_command, runtime) => {
+			await runtime.ctx.openPlanReview();
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -889,6 +915,25 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (_command, runtime) => {
 			await runtime.ctx.handleUsageCommand();
 			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "stats",
+		description: "Launch the local stats dashboard",
+		inlineHint: "[--port <port>]",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const parsed = parseStatsDashboardArgs(command.args);
+			if ("error" in parsed) return usage(parsed.error, runtime);
+
+			await runtime.output("Syncing session files...");
+			try {
+				const result = await launchStatsDashboard(parsed);
+				await runtime.output(result.message);
+			} catch (error) {
+				await runtime.output(`Stats dashboard failed: ${errorMessage(error)}`);
+			}
+			return commandConsumed();
 		},
 	},
 	{
@@ -2173,10 +2218,13 @@ for (const command of BUILTIN_SLASH_COMMAND_REGISTRY) {
 	}
 }
 
+export const BUILTIN_SLASH_COMMAND_RESERVED_NAMES: ReadonlySet<string> = new Set(BUILTIN_SLASH_COMMAND_LOOKUP.keys());
+
 /** Builtin command metadata used for slash-command autocomplete and help text. */
 export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BUILTIN_SLASH_COMMAND_REGISTRY.map(
 	command => ({
 		name: command.name,
+		aliases: command.aliases,
 		description: command.description,
 		subcommands: command.subcommands,
 		inlineHint: command.inlineHint,

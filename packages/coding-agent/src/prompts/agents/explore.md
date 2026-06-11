@@ -53,8 +53,9 @@ Investigate only the assigned codebase slice. Optimize for a fast, compressed ha
 <procedure>
 1. Extract target paths, symbols, keywords, and non-goals from the assignment.
 2. Run one narrow locate pass with `find`/`search`.
-3. Read only the decisive sections needed to support the answer.
-4. Return findings immediately in the required structured output.
+3. Read only the decisive sections needed to support the answer. NEVER read full files unless they're tiny.
+4. Identify relevant types/interfaces/key functions and direct dependencies between files.
+5. Return findings immediately in the required structured output.
 </procedure>
 
 <output-guidance>

@@ -8,8 +8,8 @@ version = "1.0.9"
 edition = "2024"
 license = "MIT"
 authors = ["Can Boluk"]
-homepage = "https://omp.sh/"
-repository = "https://github.com/can1357/oh-my-pi"
+homepage = "https://github.com/qtnx/omppp"
+repository = "https://github.com/qtnx/omppp"
 
 [patch.crates-io]
 brush-core = { path = "crates/brush-core-vendored" }
@@ -182,6 +182,7 @@ tokio-util = { version = "0.7", features = ["full"] }
 # ──────────────────────────────────────────────────────────────────────────────
 # Serialization & Data Formats
 # ──────────────────────────────────────────────────────────────────────────────
+base64 = "0.22"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 toml = "1.1"
@@ -274,6 +275,7 @@ image = { version = "0.25", default-features = false, features = [
    "gif",
    "webp",
 ] }
+png = "0.18"
 inferno = { version = "0.12", default-features = false }
 syntect = { version = "5.3", default-features = false, features = [
    "default-syntaxes",
