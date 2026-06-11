@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-11
+
 ### Added
 - Added `compact` tool: the agent can schedule a context compaction at the next turn boundary when it judges older history is no longer needed (honors `compaction.strategy`, including snapcompact)
 - Added natural-language compact intent: an imperative "compact" instruction in a new user message ("compact đi", "please compact", bare `compact`) runs the compaction inline before the prompt is answered, bypassing the token threshold; questions and discussion about compaction do not trigger it
