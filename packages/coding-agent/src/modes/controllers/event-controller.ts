@@ -829,6 +829,13 @@ export class EventController {
 		this.ctx.editor.onEscape = () => {
 			this.ctx.session.abortCompaction();
 		};
+		// Stop (not just un-mount) the working spinner: clearing the container
+		// alone leaves ctx.loadingAnimation set, which turns every later
+		// ensureLoadingAnimation() into a no-op and the turn runs spinner-less.
+		if (this.ctx.loadingAnimation) {
+			this.ctx.loadingAnimation.stop();
+			this.ctx.loadingAnimation = undefined;
+		}
 		this.ctx.statusContainer.clear();
 		const reasonText =
 			event.reason === "overflow"
@@ -917,6 +924,13 @@ export class EventController {
 		} else {
 			this.ctx.showWarning("Auto context-full maintenance failed; continuing without maintenance");
 		}
+		// A prompt is still in flight (inline pre-prompt compaction or mid-turn
+		// maintenance): bring the working spinner back. agent_start only re-fires
+		// for a new loop, so mid-turn nothing else would restore it. When the
+		// session is idle (idle/scheduled compaction) this stays off.
+		if (this.ctx.session.isStreaming) {
+			this.ctx.ensureLoadingAnimation();
+		}
 		await this.ctx.flushCompactionQueue({ willRetry: event.willRetry });
 		this.ctx.ui.requestRender();
 	}
@@ -926,6 +940,13 @@ export class EventController {
 		this.ctx.editor.onEscape = () => {
 			this.ctx.session.abortRetry();
 		};
+		// Same orphaning hazard as #handleAutoCompactionStart: stop the working
+		// spinner before clearing its container so ensureLoadingAnimation() can
+		// recreate it after the retry.
+		if (this.ctx.loadingAnimation) {
+			this.ctx.loadingAnimation.stop();
+			this.ctx.loadingAnimation = undefined;
+		}
 		this.ctx.statusContainer.clear();
 		const delaySeconds = Math.round(event.delayMs / 1000);
 		this.ctx.retryLoader = new Loader(
@@ -948,6 +969,10 @@ export class EventController {
 			this.ctx.retryLoader.stop();
 			this.ctx.retryLoader = undefined;
 			this.ctx.statusContainer.clear();
+		}
+		// Successful retry continues the same in-flight turn; restore the spinner.
+		if (event.success && this.ctx.session.isStreaming) {
+			this.ctx.ensureLoadingAnimation();
 		}
 		if (!event.success) {
 			this.ctx.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);

@@ -6,6 +6,10 @@
 
 - `ompx update` now runs the repo install script (`scripts/install.sh`, pinned to the release tag) on Linux/macOS instead of only swapping the binary asset, so updates share one source of truth with fresh installs — SHA256SUMS verification, standard-config seeding, and future installer migrations apply automatically. The previous binary is backed up and restored when the script fails or the updated binary reports the wrong version; Windows and failed script fetches fall back to the direct binary swap
 
+### Fixed
+
+- Fixed the working spinner disappearing for the rest of the turn after an automatic compaction ran when a prompt was submitted (and after mid-turn context maintenance or auto-retry): the compaction/retry status handlers cleared the status container without releasing the spinner handle, turning every later `ensureLoadingAnimation()` into a no-op. The handlers now stop and release the spinner before showing their own loader, and restore it afterwards while a prompt is still in flight
+
 ## [1.2.0] - 2026-06-11
 
 ### Fixed
