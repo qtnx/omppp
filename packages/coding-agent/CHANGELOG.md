@@ -10,6 +10,7 @@
 
 - `ompx update` now runs the repo install script (`scripts/install.sh`, pinned to the release tag) on Linux/macOS instead of only swapping the binary asset, so updates share one source of truth with fresh installs — SHA256SUMS verification, standard-config seeding, and future installer migrations apply automatically. The previous binary is backed up and restored when the script fails or the updated binary reports the wrong version; Windows and failed script fetches fall back to the direct binary swap
 - `task.showResolvedModelBadge` now defaults to `true`, so the task widget and eval renderer show the actual model each running subagent resolved to (the badge previously existed but was opt-in and effectively invisible)
+- Tightened the task-delegation prompt contract end to end: the task tool's `assignment-fmt` now mandates four sections (`# Target` scope + forbidden files, `# Change` locked implementation, `# Acceptance` per-item self-verifiable checks, `# Done` report contents + escalation conditions) with a quality bar and a WRONG/RIGHT example; the system prompt's WORK PACKAGE CONTRACT uses the same vocabulary; subagents now receive the assignment framed as a contract (scope boundary, exit conditions, no silent guessing) and the `task`/`quick_task`/`heavy_task` worker prompts treat unmet Acceptance items as explicit blockers
 
 ### Fixed
 

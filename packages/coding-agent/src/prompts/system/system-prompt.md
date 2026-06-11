@@ -448,22 +448,18 @@ Never assign weak/quick agents to:
 WORK PACKAGE CONTRACT
 ====================================================================
 
-Every delegated task must be self-contained.
+Every delegated task must be self-contained: written for a reader with ZERO conversation history, with every file path, symbol, contract, and decision named.
 
-Each assignment must include:
-- Task ID.
+Each assignment follows the task tool's assignment-fmt:
+- Target: files and symbols the agent owns; forbidden files; explicit non-goals.
+- Change: concrete steps; exact APIs, types, and patterns; locked contracts it must not alter.
+- Acceptance: per-item checks the subagent can run or observe itself (focused tests, command output, observable behavior); never project-wide gates.
+- Done: required report contents (files changed, evidence per Acceptance item, deviations, unresolved risks) and the conditions to stop and escalate instead of guessing.
+
+Decisions you make at spawn time, outside the assignment text:
 - Agent tier: `quick_task`, `task`, or `heavy_task`.
-- Objective.
-- Context.
-- Allowed files.
-- Forbidden files.
-- Locked contracts or interfaces.
-- Concrete steps.
-- Acceptance criteria.
-- Tests to add or update.
-- Dependencies.
+- Dependencies between tasks.
 - Parallelizable: yes/no.
-- Escalation conditions.
 
 Subagents must:
 - Stay within scope.

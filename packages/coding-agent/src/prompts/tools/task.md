@@ -17,7 +17,7 @@
 {{#if batchEnabled}}
 - `context`: shared background prepended to every assignment — goal, constraints, shared contract (see context-fmt); REQUIRED, session-specific only
 - `tasks`: tasks to spawn — one subagent per item, all in parallel:
-  - `assignment`: complete self-contained instructions; one-liners and missing acceptance criteria are PROHIBITED
+  - `assignment`: complete self-contained instructions following assignment-fmt; one-liners and missing Acceptance/Done sections are PROHIBITED
   - `id`: stable agent id, CamelCase, ≤32 chars; generated when omitted
   - `description`: UI label only — subagent never sees it
 {{#if isolationEnabled}}
@@ -26,7 +26,7 @@
 {{else}}
 - `id`: stable agent id, CamelCase, ≤32 chars; generated when omitted
 - `description`: UI label only — subagent never sees it
-- `assignment`: complete self-contained instructions; one-liners and missing acceptance criteria are PROHIBITED
+- `assignment`: complete self-contained instructions following assignment-fmt; one-liners and missing Acceptance/Done sections are PROHIBITED
 {{#if isolationEnabled}}
 - `isolated`: run in isolated env; returns patches. Isolated agents are torn down at completion — not addressable afterwards
 {{/if}}
@@ -71,10 +71,31 @@ Parallel when tasks touch disjoint files or are independent refactors/tests.
 {{/if}}
 
 <assignment-fmt>
-# Target       ← exact files and symbols; explicit non-goals
-# Change       ← step-by-step add/remove/rename; APIs and patterns
-# Acceptance   ← observable result; no project-wide commands
+# Target       ← files + symbols the agent owns; forbidden files; explicit non-goals
+# Change       ← step-by-step add/remove/rename; exact APIs, types, patterns; locked contracts it must not alter
+# Acceptance   ← per-item checks the subagent can run or observe itself (focused tests, command output, behavior); no project-wide commands
+# Done         ← required report contents: files changed, evidence per Acceptance item, deviations/assumptions, blockers; conditions to stop and escalate instead of guessing
 </assignment-fmt>
+
+<assignment-quality>
+An assignment is a contract for a reader with ZERO conversation history. Before sending, check:
+- Self-contained: every file path, symbol, contract, and decision named. "As discussed" and bare pronouns are dead references.
+- Scoped: owned files listed; out-of-bounds named explicitly.
+- Verifiable: each Acceptance item is a check the subagent can run or observe itself.
+- Bounded: names the conditions to stop and report instead of guessing.
+
+WRONG — forces the subagent to guess intent, scope, and done-ness:
+  "Fix the spinner bug in the event controller and make sure tests pass"
+RIGHT:
+  # Target
+  src/modes/controllers/event-controller.ts `#handleAutoCompactionStart` only; do NOT touch the retry handlers.
+  # Change
+  Stop and null `ctx.loadingAnimation` before `statusContainer.clear()`, mirroring `#handleAgentEnd`.
+  # Acceptance
+  `bun test test/modes/controllers/event-controller-compaction-spinner.test.ts` green; new test proves the spinner handle is released on `auto_compaction_start`.
+  # Done
+  Report files changed + test output; flag any behavior that deviates from this spec as an explicit deviation, not silently.
+</assignment-quality>
 
 <agents>
 {{#if spawningDisabled}}
