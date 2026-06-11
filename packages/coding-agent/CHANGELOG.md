@@ -4,6 +4,10 @@
 
 ## [1.2.0] - 2026-06-11
 
+### Fixed
+
+- Fixed `ompx --smoke-test` hanging on macOS ("sync worker did not pong"): internal worker re-entry argv selectors (`__omp_stats_sync_worker`, `__omp_tab_worker`, `__omp_js_eval_worker`, `--tiny-worker`) were dispatched after the macOS self-sandbox relaunch check, so a worker thread re-entering the CLI in an unsandboxed process spawned a detached `sandbox-exec` clone with no postMessage channel. Worker dispatch now runs before the relaunch check, and the selectors are excluded from self-sandboxing
+
 ### Changed
 
 - When a natural-language compact instruction in a new user message runs the inline compaction, the consumed instruction is now stripped from the outgoing message (so the stale imperative cannot steer the model into compacting again) and a hidden notice telling the model the compaction already ran is appended after the message

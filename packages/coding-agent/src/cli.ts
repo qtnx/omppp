@@ -13,6 +13,7 @@ import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
 import { APP_NAME, MIN_BUN_VERSION, VERSION } from "@oh-my-pi/pi-utils/dirs";
 import { declareWorkerHostEntry } from "@oh-my-pi/pi-utils/env";
 import { extractRootNoSandboxFlag } from "./cli/sandbox-flags";
+import { JS_EVAL_WORKER_ARG, STATS_SYNC_WORKER_ARG, TAB_WORKER_ARG, TINY_WORKER_ARGS } from "./cli/worker-selectors";
 import {
 	disableMacOSSandboxForProcess,
 	disconnectMacOSSandboxSupervisor,
@@ -74,11 +75,6 @@ async function runSmokeTest(): Promise<void> {
 	await smokeTestTinyTitleWorker();
 	process.stdout.write("smoke-test: ok\n");
 }
-
-const TINY_WORKER_ARGS = new Set(["--tiny-worker", "__tiny_worker"]);
-const STATS_SYNC_WORKER_ARG = "__omp_stats_sync_worker";
-const TAB_WORKER_ARG = "__omp_tab_worker";
-const JS_EVAL_WORKER_ARG = "__omp_js_eval_worker";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === STATS_SYNC_WORKER_ARG) {
@@ -170,18 +166,23 @@ export async function runCli(argv: string[]): Promise<void> {
 		disableMacOSSandboxForProcess();
 	}
 	argv = rootSandbox.argv;
-	if (await reexecUnderMacOSSandboxIfNeeded(argv)) return;
+	// Internal entrypoints (smoke probe, worker re-entries) dispatch before the
+	// macOS self-sandbox relaunch: a worker thread re-entering this module must
+	// never be wrapped into a detached sandbox-exec clone — the clone has no
+	// postMessage channel to the spawning thread, so the worker would hang
+	// (darwin release-smoke "sync worker did not pong" failure).
 	if (argv[0] === "--smoke-test") {
 		await runSmokeTest();
 		return;
 	}
-	if (TINY_WORKER_ARGS.has(argv[0] ?? "")) {
+	if (TINY_WORKER_ARGS[argv[0] ?? ""]) {
 		await runTinyWorker();
 		return;
 	}
 	if (await runWorkerEntrypoint(argv[0])) {
 		return;
 	}
+	if (await reexecUnderMacOSSandboxIfNeeded(argv)) return;
 	const [{ run }, { commands, resolveCliArgv }] = await Promise.all([
 		import("@oh-my-pi/pi-utils/cli"),
 		import("./cli-commands"),

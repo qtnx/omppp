@@ -250,6 +250,29 @@ describe("sandboxOmpxCommand", () => {
 		).toBeNull();
 	});
 
+	it("never self-wraps internal worker re-entry selectors", () => {
+		// A worker thread re-enters cli.ts with a hidden selector; wrapping it
+		// into a detached sandbox-exec clone severs its postMessage channel and
+		// hangs the spawning thread (v1.2.0 darwin release smoke failure).
+		setPlatform("darwin");
+		const options = {
+			cwd: "/Users/alice/work",
+			entryPath: "/Users/alice/bin/ompx",
+			env: macEnv({ PATH: "/Users/alice/bin" }),
+			execPath: "/Users/alice/bin/ompx",
+		};
+
+		for (const selector of [
+			"__omp_stats_sync_worker",
+			"__omp_tab_worker",
+			"__omp_js_eval_worker",
+			"--tiny-worker",
+			"__tiny_worker",
+		]) {
+			expect(sandboxCurrentOmpxCommand([selector], options), selector).toBeNull();
+		}
+	});
+
 	it("preserves session-dir and ACP mode while converting relaunch allowlist dirs to sandbox-only flags", () => {
 		const argv = buildMacOSSandboxRelaunchArgv(
 			[

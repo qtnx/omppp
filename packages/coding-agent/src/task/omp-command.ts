@@ -14,6 +14,7 @@ import {
 	getAgentDir,
 	getConfigRootDir,
 } from "@oh-my-pi/pi-utils";
+import { INTERNAL_WORKER_ENTRY_ARGS } from "../cli/worker-selectors";
 import { DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS } from "../config/sandbox-defaults";
 
 export interface OmpxCommand {
@@ -1127,12 +1128,15 @@ export function buildMacOSSandboxRelaunchArgv(
 	return argv;
 }
 
-function shouldSelfSandboxArgv(argv: readonly string[], env: Record<string, string | undefined>): boolean {
+export function shouldSelfSandboxArgv(argv: readonly string[], env: Record<string, string | undefined>): boolean {
 	if (isMacOSSandboxActive(env) || commandRequestsNoSandbox(argv)) return false;
 	const first = argv[0];
+	// Internal worker re-entries never self-sandbox: they run inside (or on
+	// behalf of) an already-dispatched parent and a sandbox-exec wrapper would
+	// detach them from their postMessage/IPC channel.
+	if (first !== undefined && INTERNAL_WORKER_ENTRY_ARGS[first]) return false;
 	return (
 		first !== "--smoke-test" &&
-		first !== "--tiny-worker" &&
 		first !== "--help" &&
 		first !== "-h" &&
 		first !== "--version" &&
