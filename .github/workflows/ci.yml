@@ -553,30 +553,42 @@ jobs:
          contents: read
       env:
          MACOS_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' && secrets.APPLE_API_KEY != '' }}
+         # No-op without npm credentials (mirrors release_brew's HAS_TAP_KEY):
+         # forks without NPM_TOKEN still get GitHub releases — the npm jobs
+         # succeed as no-ops so release-github-publish can un-draft the release.
+         HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
       steps:
          - uses: actions/checkout@v4
+           if: env.HAS_NPM_TOKEN == 'true'
          - uses: oven-sh/setup-bun@v2
+           if: env.HAS_NPM_TOKEN == 'true'
            with:
               bun-version: "1.3"
          - uses: actions/setup-node@v4
+           if: env.HAS_NPM_TOKEN == 'true'
            with:
               node-version: "24"
               registry-url: "https://registry.npmjs.org"
          - name: Ensure npm supports trusted publishing
+           if: env.HAS_NPM_TOKEN == 'true'
            run: npm install -g npm@latest
          - name: Cache bun dependencies
+           if: env.HAS_NPM_TOKEN == 'true'
            uses: actions/cache@v4
            with:
               path: ~/.bun/install/cache
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
          - run: bun install --frozen-lockfile
+           if: env.HAS_NPM_TOKEN == 'true'
          - name: Download native addon(s)
+           if: env.HAS_NPM_TOKEN == 'true'
            uses: actions/download-artifact@v4
            with:
               pattern: pi-natives-${{ matrix.platform }}-${{ matrix.arch }}*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
               merge-multiple: true
          - name: Publish native addon package
+           if: env.HAS_NPM_TOKEN == 'true'
            env:
               # Fallback auth: setup-node wrote an .npmrc referencing
               # NODE_AUTH_TOKEN; npm uses it only when OIDC has no trusted
@@ -600,36 +612,47 @@ jobs:
       permissions:
          id-token: write
          contents: read
+      env:
+         # Same fork no-op guard as release-native-leaf-npm above.
+         HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
       steps:
          - uses: actions/checkout@v4
+           if: env.HAS_NPM_TOKEN == 'true'
          - uses: oven-sh/setup-bun@v2
+           if: env.HAS_NPM_TOKEN == 'true'
            with:
               bun-version: "1.3"
          - uses: actions/setup-node@v4
+           if: env.HAS_NPM_TOKEN == 'true'
            with:
               node-version: "24"
               registry-url: "https://registry.npmjs.org"
          # Keep npm aligned with trusted publishing setup (>= 11.16.0).
          - name: Ensure npm supports trusted publishing
+           if: env.HAS_NPM_TOKEN == 'true'
            run: npm install -g npm@latest
          - name: Cache bun dependencies
+           if: env.HAS_NPM_TOKEN == 'true'
            uses: actions/cache@v4
            with:
               path: ~/.bun/install/cache
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
          - run: bun install --frozen-lockfile
+           if: env.HAS_NPM_TOKEN == 'true'
          # The pi-coding-agent prepack executes workspace code (bundle-dist
          # imports the pi-utils barrel, which loads the pi-natives addon), so
          # this job needs the linux x64 native addons just like `test` does.
          # Release runs always rebuild natives in this same run, so the
          # default run-id resolves the artifacts.
          - name: Download native addons
+           if: env.HAS_NPM_TOKEN == 'true'
            uses: actions/download-artifact@v4
            with:
               pattern: pi-natives-linux-x64-*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
               merge-multiple: true
          - name: Publish to npm
+           if: env.HAS_NPM_TOKEN == 'true'
            env:
               # Fallback auth: setup-node wrote an .npmrc referencing
               # NODE_AUTH_TOKEN; npm uses it only when OIDC has no trusted
