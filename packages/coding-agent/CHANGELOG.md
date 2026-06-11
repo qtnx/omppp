@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-11
+
 ### Added
 
 - Added a native-loaded Delegation Reminder extension (`@oh-my-pi/delegation-reminder-plugin`) for main interactive sessions running in Orchestrator Mode (`task.eager` on with the `task` tool available). It tracks per-turn hands-on tool calls (`edit`, `write`, `ast_edit`, `bash`) and, once the `delegation.reminder.threshold` (default 6) is crossed without any `task` delegation, appends a one-time mid-turn `<system-notice>` nudging the model to delegate via subagents, then records a session-log-only `delegation-reminder` stats entry (`{ model, provider, api, handsOnCount, taskCount, threshold }`) for per-model offender stats. Subagent sessions never nudge. Toggle with the `delegation.reminder.enabled` setting

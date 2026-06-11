@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-11
+
 ### Added
 
 - Added the Delegation Reminder extension: tracks per-turn hands-on tool usage (`edit`, `write`, `ast_edit`, `bash`) and, when the session runs in Orchestrator Mode (`task.eager` on with the `task` tool available), appends a one-time mid-turn `<system-notice>` nudging the model to delegate via subagents once the configured threshold is crossed without any `task` delegation.
