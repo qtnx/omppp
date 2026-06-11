@@ -4,6 +4,7 @@ import {
 	createContextGcExtension,
 	setDefaultContextGcDbPath,
 } from "@oh-my-pi/context-gc-plugin";
+import { createDelegationReminderExtension, DELEGATION_REMINDER_LABEL } from "@oh-my-pi/delegation-reminder-plugin";
 import {
 	Agent,
 	type AgentEvent,
@@ -2254,6 +2255,30 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				restored: new Set(existingSession.selectedMCPToolNames),
 				forceActive,
 			});
+		}
+
+		// The delegation reminder is shipped as a plugin package but loaded natively so bundled
+		// omp can nudge the model mid-turn when it does heavy hands-on work without delegating.
+		// Main interactive sessions only — subagents are meant to do hands-on work (§6) — gated on
+		// the same initial tool-name list that `buildSystemPromptInternal` receives for the
+		// Orchestrator Mode section (`{{#if eagerTasks}}{{#has tools "task"}}`).
+		const isSubagentSession = taskDepth > 0 || options.parentTaskPrefix !== undefined;
+		if (
+			!minimalExtensionRuntime &&
+			!isSubagentSession &&
+			settings.get("delegation.reminder.enabled") &&
+			settings.get("task.eager") &&
+			initialToolNames.includes("task") &&
+			!extensionsResult.extensions.some(extension => extension.label === DELEGATION_REMINDER_LABEL)
+		) {
+			const loaded = await loadExtensionFromFactory(
+				createDelegationReminderExtension({ threshold: settings.get("delegation.reminder.threshold") }),
+				cwd,
+				eventBus,
+				extensionsResult.runtime,
+				"<native-delegation-reminder>",
+			);
+			extensionsResult.extensions.push(loaded);
 		}
 
 		// Pre-register in the global agent registry BEFORE building the system prompt,

@@ -22,6 +22,7 @@
       "@mozilla/readability": "^0.6.0",
       "@napi-rs/cli": "3.7.0",
       "@oh-my-pi/context-gc-plugin": "1.2.0",
+      "@oh-my-pi/delegation-reminder-plugin": "1.2.0",
       "@oh-my-pi/hashline": "1.2.0",
       "@oh-my-pi/omp-stats": "1.2.0",
       "@oh-my-pi/pi-agent-core": "1.2.0",

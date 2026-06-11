@@ -92,7 +92,7 @@ cp "$natives_pkg_backup" "$ROOT_DIR/packages/natives/package.json"
 
 # 3. Pack the remaining workspace packages (natives core and coding-agent
 #    handled separately).
-for pkg in utils hashline catalog ai mnemopi snapcompact agent tui stats context-gc-plugin system-context-reminder-plugin; do
+for pkg in utils hashline catalog ai mnemopi snapcompact agent tui stats context-gc-plugin system-context-reminder-plugin delegation-reminder-plugin; do
    (
       cd "$ROOT_DIR/packages/$pkg"
       bun pm pack --destination "$TARBALL_DIR" --quiet >/dev/null
@@ -128,6 +128,7 @@ tui_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-tui-*.tgz)"
 stats_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-omp-stats-*.tgz)"
 context_gc_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-context-gc-plugin-*.tgz)"
 system_context_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-system-context-reminder-plugin-*.tgz)"
+delegation_reminder_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-delegation-reminder-plugin-*.tgz)"
 coding_agent_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-coding-agent-*.tgz)"
 
 TARBALL_APP_DIR="$WORK_DIR/tarball-install"
@@ -154,12 +155,13 @@ mkdir -p "$TARBALL_APP_DIR"
 			'@oh-my-pi/omp-stats': '$stats_tgz',
 			'@oh-my-pi/context-gc-plugin': '$context_gc_tgz',
 			'@oh-my-pi/system-context-reminder-plugin': '$system_context_tgz',
+			'@oh-my-pi/delegation-reminder-plugin': '$delegation_reminder_tgz',
 			'@oh-my-pi/pi-coding-agent': '$coding_agent_tgz'
 		};
 		require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2));
 	"
 
-   bun add "$utils_tgz" "$natives_tgz" "$hashline_tgz" "$catalog_tgz" "$ai_tgz" "$mnemopi_tgz" "$snapcompact_tgz" "$agent_tgz" "$tui_tgz" "$stats_tgz" "$context_gc_tgz" "$system_context_tgz" "$coding_agent_tgz"
+   bun add "$utils_tgz" "$natives_tgz" "$hashline_tgz" "$catalog_tgz" "$ai_tgz" "$mnemopi_tgz" "$snapcompact_tgz" "$agent_tgz" "$tui_tgz" "$stats_tgz" "$context_gc_tgz" "$system_context_tgz" "$delegation_reminder_tgz" "$coding_agent_tgz"
    # The platform leaf must arrive through the core's optionalDependencies +
    # override, not as a direct dependency — assert it landed before smoking so a
    # resolution regression is distinguishable from a runtime loader bug.

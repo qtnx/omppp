@@ -102,6 +102,7 @@ export const packages: PublishPackage[] = [
 	{ dir: "packages/agent", kind: "typescript" },
 	{ dir: "packages/context-gc-plugin", kind: "typescript" },
 	{ dir: "packages/system-context-reminder-plugin", kind: "typescript" },
+	{ dir: "packages/delegation-reminder-plugin", kind: "typescript" },
 	{ dir: "packages/coding-agent", kind: "typescript", publishBin: { ompx: "dist/cli.js" } },
 ];
 

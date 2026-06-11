@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+
+### Added
+
+- Added per-model Delegation Reminder ingestion, aggregation, and model-table count/rate display.
+
 ## [1.0.7] - 2026-06-09
 
 ### Added

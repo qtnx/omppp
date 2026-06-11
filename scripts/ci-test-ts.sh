@@ -5,6 +5,7 @@ export GITHUB_ACTIONS=0
 
 packages=(
   packages/system-context-reminder-plugin
+  packages/delegation-reminder-plugin
   packages/hashline
   packages/natives
   packages/utils

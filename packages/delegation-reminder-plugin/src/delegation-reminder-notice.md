@@ -1,0 +1,3 @@
+<system-notice>
+You have run {{count}} hands-on edits/commands this turn (delegation threshold {{threshold}}) without dispatching any work to a subagent. The system prompt mandates Orchestrator Mode: decompose the task and dispatch `task` subagents — tiers `quick_task`, `task`, `heavy_task` — for substantial or parallelizable work, then verify and integrate their results yourself. Delegate the remaining work now through the `task` tool, fanning out independent units in parallel. Keep working hands-on ONLY if the user explicitly told you to work alone, or the remaining work is genuinely trivial (a single small edit). Stop doing heavy hands-on work yourself when it can be delegated.
+</system-notice>

@@ -10,6 +10,7 @@ import type {
 	BehaviorOverallStats,
 	BehaviorTimeSeriesPoint,
 	CostTimeSeriesPoint,
+	DelegationReminderStats,
 	FolderStats,
 	MessageStats,
 	ModelPerformancePoint,
@@ -44,6 +45,7 @@ const USER_MESSAGES_BACKFILL_KEY = "user_messages_v5";
 const USER_MESSAGE_LINKS_REPAIR_KEY = "user_message_links_v1";
 const PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY = "premium_requests_priority_v1";
 const SYSTEM_CONTEXT_REMINDERS_BACKFILL_KEY = "system_context_reminders_v1";
+const DELEGATION_REMINDERS_BACKFILL_KEY = "delegation_reminders_v1";
 function shouldResetBackfill(value: string | undefined): boolean {
 	return value !== BACKFILL_COMPLETE && value !== BACKFILL_PENDING;
 }
@@ -112,6 +114,25 @@ export async function initDb(): Promise<Database> {
 		CREATE INDEX IF NOT EXISTS idx_system_context_reminders_timestamp ON system_context_reminders(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_system_context_reminders_timestamp_model_provider
 			ON system_context_reminders(timestamp, model, provider);
+
+		CREATE TABLE IF NOT EXISTS delegation_reminders (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_file TEXT NOT NULL,
+			entry_id TEXT NOT NULL,
+			folder TEXT NOT NULL,
+			timestamp INTEGER NOT NULL,
+			model TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			api TEXT,
+			hands_on_count INTEGER NOT NULL,
+			task_count INTEGER NOT NULL,
+			threshold INTEGER NOT NULL,
+			UNIQUE(session_file, entry_id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_delegation_reminders_timestamp ON delegation_reminders(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_delegation_reminders_timestamp_model_provider
+			ON delegation_reminders(timestamp, model, provider);
 		CREATE TABLE IF NOT EXISTS file_offsets (
 			session_file TEXT PRIMARY KEY,
 			offset INTEGER NOT NULL,
@@ -203,6 +224,7 @@ export async function initDb(): Promise<Database> {
 	repairUserMessageLinks(db);
 	backfillPriorityPremiumRequests(db);
 	backfillSystemContextReminders(db);
+	backfillDelegationReminders(db);
 	backfillMissingCatalogCosts(db);
 	return db;
 }
@@ -398,6 +420,39 @@ export function insertReminderStats(stats: ReminderStats[]): number {
 	return inserted;
 }
 
+export function insertDelegationReminderStats(stats: DelegationReminderStats[]): number {
+	if (!db || stats.length === 0) return 0;
+
+	const stmt = db.prepare(`
+		INSERT OR IGNORE INTO delegation_reminders (
+			session_file, entry_id, folder, timestamp, model, provider, api,
+			hands_on_count, task_count, threshold
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`);
+
+	let inserted = 0;
+	const insert = db.transaction(() => {
+		for (const s of stats) {
+			const result = stmt.run(
+				s.sessionFile,
+				s.entryId,
+				s.folder,
+				s.timestamp,
+				s.model,
+				s.provider,
+				s.api ?? null,
+				s.handsOnCount,
+				s.taskCount,
+				s.threshold,
+			);
+			if (result.changes > 0) inserted++;
+		}
+	});
+
+	insert();
+	return inserted;
+}
+
 /**
  * Build aggregated stats from query results.
  */
@@ -520,27 +575,43 @@ export function getStatsByModel(cutoff?: number): ModelStats[] {
 			FROM system_context_reminders
 			${hasCutoff ? "WHERE timestamp >= ?" : ""}
 			GROUP BY model, provider
+		),
+		delegation_stats AS (
+			SELECT
+				model,
+				provider,
+				COUNT(*) as delegation_reminder_count
+			FROM delegation_reminders
+			${hasCutoff ? "WHERE timestamp >= ?" : ""}
+			GROUP BY model, provider
 		)
 		SELECT
 			message_stats.*,
-			COALESCE(reminder_stats.reminder_count, 0) as reminder_count
+			COALESCE(reminder_stats.reminder_count, 0) as reminder_count,
+			COALESCE(delegation_stats.delegation_reminder_count, 0) as delegation_reminder_count
 		FROM message_stats
 		LEFT JOIN reminder_stats
 			ON reminder_stats.model = message_stats.model
 			AND reminder_stats.provider = message_stats.provider
+		LEFT JOIN delegation_stats
+			ON delegation_stats.model = message_stats.model
+			AND delegation_stats.provider = message_stats.provider
 		ORDER BY total_requests DESC
 	`);
 
-	const rows = (hasCutoff ? stmt.all(cutoff, cutoff) : stmt.all()) as any[];
+	const rows = (hasCutoff ? stmt.all(cutoff, cutoff, cutoff) : stmt.all()) as any[];
 	return rows.map(row => {
 		const aggregate = buildAggregatedStats([row]);
 		const systemContextReminderCount = row.reminder_count || 0;
+		const delegationReminderCount = row.delegation_reminder_count || 0;
 		return {
 			model: row.model,
 			provider: row.provider,
 			systemContextReminderCount,
 			systemContextReminderRate:
 				aggregate.totalRequests > 0 ? systemContextReminderCount / aggregate.totalRequests : 0,
+			delegationReminderCount,
+			delegationReminderRate: aggregate.totalRequests > 0 ? delegationReminderCount / aggregate.totalRequests : 0,
 			...aggregate,
 		};
 	});
@@ -983,6 +1054,23 @@ function backfillSystemContextReminders(database: Database): void {
 	database
 		.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
 		.run(SYSTEM_CONTEXT_REMINDERS_BACKFILL_KEY, BACKFILL_PENDING);
+}
+
+/**
+ * One-shot wipe of `file_offsets` so sessions parsed before delegation-reminder
+ * stats existed are scanned again and their persisted custom entries are
+ * inserted into `delegation_reminders`.
+ */
+function backfillDelegationReminders(database: Database): void {
+	const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(DELEGATION_REMINDERS_BACKFILL_KEY) as
+		| { value: string }
+		| undefined;
+	if (!shouldResetBackfill(row?.value)) return;
+
+	database.exec("DELETE FROM file_offsets");
+	database
+		.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+		.run(DELEGATION_REMINDERS_BACKFILL_KEY, BACKFILL_PENDING);
 }
 
 export function markPriorityPremiumRequestsBackfillComplete(): void {

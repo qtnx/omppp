@@ -3,8 +3,10 @@ import * as path from "node:path";
 import { type AssistantMessage, getPriorityPremiumRequests, type ServiceTier } from "@oh-my-pi/pi-ai";
 import { getSessionsDir, isEnoent } from "@oh-my-pi/pi-utils";
 import type {
+	DelegationReminderStats,
 	MessageStats,
 	ReminderStats,
+	SessionCustomEntry,
 	SessionCustomMessageEntry,
 	SessionEntry,
 	SessionMessageEntry,
@@ -63,18 +65,25 @@ function isCustomMessage(entry: SessionEntry): entry is SessionCustomMessageEntr
 	return typeof customEntry.id === "string" && customEntry.id.length > 0;
 }
 
+function isCustomEntry(entry: SessionEntry): entry is SessionCustomEntry {
+	if (entry.type !== "custom") return false;
+	const customEntry = entry as SessionCustomEntry;
+	return typeof customEntry.id === "string" && customEntry.id.length > 0;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-function extractReminderStats(
+function extractReminderBase(
 	sessionFile: string,
 	folder: string,
-	entry: SessionCustomMessageEntry,
+	entry: SessionCustomMessageEntry | SessionCustomEntry,
+	details: Record<string, unknown>,
 	assistantByEntryId: ReadonlyMap<string, SessionMessageEntry>,
+	customType: string,
 ): ReminderStats | null {
-	if (entry.customType !== "system-context-reminder") return null;
-	const details = isRecord(entry.details) ? entry.details : {};
+	if (entry.customType !== customType) return null;
 	const parent = entry.parentId ? assistantByEntryId.get(entry.parentId) : undefined;
 	const parentMessage = parent?.message as AssistantMessage | undefined;
 	const hasDetailsModelProvider = typeof details.model === "string" && typeof details.provider === "string";
@@ -94,6 +103,43 @@ function extractReminderStats(
 		model,
 		provider,
 		...(api === undefined ? {} : { api }),
+	};
+}
+
+function extractReminderStats(
+	sessionFile: string,
+	folder: string,
+	entry: SessionCustomMessageEntry,
+	assistantByEntryId: ReadonlyMap<string, SessionMessageEntry>,
+): ReminderStats | null {
+	const details = isRecord(entry.details) ? entry.details : {};
+	return extractReminderBase(sessionFile, folder, entry, details, assistantByEntryId, "system-context-reminder");
+}
+
+function numericDetail(details: Record<string, unknown>, key: string): number {
+	const value = details[key];
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function extractDelegationReminderStats(
+	sessionFile: string,
+	folder: string,
+	entry: SessionCustomMessageEntry | SessionCustomEntry,
+	assistantByEntryId: ReadonlyMap<string, SessionMessageEntry>,
+): DelegationReminderStats | null {
+	let details: Record<string, unknown> = {};
+	if (entry.type === "custom_message") {
+		if (isRecord(entry.details)) details = entry.details;
+	} else if (isRecord(entry.data)) {
+		details = entry.data;
+	}
+	const base = extractReminderBase(sessionFile, folder, entry, details, assistantByEntryId, "delegation-reminder");
+	if (!base) return null;
+	return {
+		...base,
+		handsOnCount: numericDetail(details, "handsOnCount"),
+		taskCount: numericDetail(details, "taskCount"),
+		threshold: numericDetail(details, "threshold"),
 	};
 }
 
@@ -251,6 +297,7 @@ export interface ParseSessionResult {
 	userStats: UserMessageStats[];
 	userLinks: UserMessageLink[];
 	reminderStats: ReminderStats[];
+	delegationReminderStats: DelegationReminderStats[];
 	newOffset: number;
 }
 export async function parseSessionFile(sessionPath: string, fromOffset = 0): Promise<ParseSessionResult> {
@@ -258,7 +305,16 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	try {
 		bytes = await Bun.file(sessionPath).bytes();
 	} catch (err) {
-		if (isEnoent(err)) return { stats: [], userStats: [], userLinks: [], reminderStats: [], newOffset: fromOffset };
+		if (isEnoent(err)) {
+			return {
+				stats: [],
+				userStats: [],
+				userLinks: [],
+				reminderStats: [],
+				delegationReminderStats: [],
+				newOffset: fromOffset,
+			};
+		}
 		throw err;
 	}
 
@@ -267,6 +323,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	const userStats: UserMessageStats[] = [];
 	const userLinks: UserMessageLink[] = [];
 	const reminderStats: ReminderStats[] = [];
+	const delegationReminderStats: DelegationReminderStats[] = [];
 	const userByEntryId = new Map<string, UserMessageStats>();
 	const start = Math.max(0, Math.min(fromOffset, bytes.length));
 	const unprocessed = bytes.subarray(start);
@@ -295,6 +352,13 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 		if (isCustomMessage(entry)) {
 			const reminder = extractReminderStats(sessionPath, folder, entry, assistantByEntryId);
 			if (reminder) reminderStats.push(reminder);
+			const delegationReminder = extractDelegationReminderStats(sessionPath, folder, entry, assistantByEntryId);
+			if (delegationReminder) delegationReminderStats.push(delegationReminder);
+			continue;
+		}
+		if (isCustomEntry(entry)) {
+			const delegationReminder = extractDelegationReminderStats(sessionPath, folder, entry, assistantByEntryId);
+			if (delegationReminder) delegationReminderStats.push(delegationReminder);
 			continue;
 		}
 		if (isAssistantMessage(entry)) {
@@ -322,7 +386,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 		}
 	}
 
-	return { stats, userStats, userLinks, reminderStats, newOffset: start + read };
+	return { stats, userStats, userLinks, reminderStats, delegationReminderStats, newOffset: start + read };
 }
 
 /**

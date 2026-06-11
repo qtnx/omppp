@@ -3,7 +3,14 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getDashboardStats, syncAllSessions } from "@oh-my-pi/omp-stats/aggregator";
-import { closeDb, initDb, insertMessageStats, insertReminderStats } from "@oh-my-pi/omp-stats/db";
+import {
+	closeDb,
+	getStatsByModel,
+	initDb,
+	insertDelegationReminderStats,
+	insertMessageStats,
+	insertReminderStats,
+} from "@oh-my-pi/omp-stats/db";
 import { parseSessionFile } from "@oh-my-pi/omp-stats/parser";
 import type { MessageStats } from "@oh-my-pi/omp-stats/types";
 import { getAgentDir, getSessionsDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
@@ -93,8 +100,7 @@ describe("getDashboardStats time range", () => {
 		const stats = await getDashboardStats("last century");
 		expect(stats.overall.totalRequests).toBe(1);
 	});
-
-	it("aggregates system-context reminder count and rate by model within the selected range", async () => {
+	it("aggregates reminder counts and rates by model within the selected range", async () => {
 		await initDb();
 
 		const now = Date.now();
@@ -139,25 +145,77 @@ describe("getDashboardStats time range", () => {
 				provider: "synthetic",
 			},
 		]);
+		insertDelegationReminderStats([
+			{
+				sessionFile: "/tmp/session.jsonl",
+				entryId: "delegation-a-in-range",
+				folder: "/tmp/project",
+				timestamp: now,
+				model: "gpt-5.4",
+				provider: "openai-codex",
+				api: "openai-codex-responses",
+				handsOnCount: 6,
+				taskCount: 0,
+				threshold: 6,
+			},
+			{
+				sessionFile: "/tmp/session.jsonl",
+				entryId: "delegation-a-in-range",
+				folder: "/tmp/project",
+				timestamp: now,
+				model: "gpt-5.4",
+				provider: "openai-codex",
+				api: "openai-codex-responses",
+				handsOnCount: 7,
+				taskCount: 0,
+				threshold: 6,
+			},
+			{
+				sessionFile: "/tmp/session.jsonl",
+				entryId: "delegation-a-out-of-range",
+				folder: "/tmp/project",
+				timestamp: now - 48 * 60 * 60 * 1000,
+				model: "gpt-5.4",
+				provider: "openai-codex",
+				handsOnCount: 8,
+				taskCount: 0,
+				threshold: 6,
+			},
+			{
+				sessionFile: "/tmp/session.jsonl",
+				entryId: "delegation-no-request-row",
+				folder: "/tmp/project",
+				timestamp: now,
+				model: "missing-model",
+				provider: "synthetic",
+				handsOnCount: 6,
+				taskCount: 0,
+				threshold: 6,
+			},
+		]);
 
-		const dayStats = await getDashboardStats("24h");
-		const codexModel = dayStats.byModel.find(model => model.model === "gpt-5.4" && model.provider === "openai-codex");
-		const anthropicModel = dayStats.byModel.find(
+		const dayStats = getStatsByModel(now - 24 * 60 * 60 * 1000);
+		const codexModel = dayStats.find(model => model.model === "gpt-5.4" && model.provider === "openai-codex");
+		const anthropicModel = dayStats.find(
 			model => model.model === "claude-sonnet-4.5" && model.provider === "anthropic",
 		);
-		const missingModel = dayStats.byModel.find(model => model.model === "missing-model");
+		const missingModel = dayStats.find(model => model.model === "missing-model");
 
 		expect(codexModel?.systemContextReminderCount).toBe(1);
+		expect(codexModel?.delegationReminderCount).toBe(1);
+		expect(codexModel?.delegationReminderRate).toBe(0.5);
 		expect(codexModel?.systemContextReminderRate).toBe(0.5);
 		expect(anthropicModel?.systemContextReminderCount).toBe(0);
+		expect(anthropicModel?.delegationReminderCount).toBe(0);
+		expect(anthropicModel?.delegationReminderRate).toBe(0);
 		expect(anthropicModel?.systemContextReminderRate).toBe(0);
 		expect(missingModel).toBeUndefined();
 
-		const allStats = await getDashboardStats("all");
-		const allCodexModel = allStats.byModel.find(
-			model => model.model === "gpt-5.4" && model.provider === "openai-codex",
-		);
+		const allStats = getStatsByModel();
+		const allCodexModel = allStats.find(model => model.model === "gpt-5.4" && model.provider === "openai-codex");
 		expect(allCodexModel?.systemContextReminderCount).toBe(2);
+		expect(allCodexModel?.delegationReminderCount).toBe(2);
+		expect(allCodexModel?.delegationReminderRate).toBe(1);
 		expect(allCodexModel?.systemContextReminderRate).toBe(1);
 	});
 
@@ -258,6 +316,33 @@ describe("getDashboardStats time range", () => {
 					display: false,
 					details: { kind: "system-context-reminder", model: "gpt-5.4", provider: "openai-codex" },
 				},
+				{
+					type: "custom",
+					id: "delegation-entry",
+					parentId: "assistant-entry",
+					timestamp,
+					customType: "delegation-reminder",
+					data: {
+						model: "gpt-5.4",
+						provider: "openai-codex",
+						api: "openai-codex-responses",
+						handsOnCount: 6,
+						taskCount: 0,
+						threshold: 6,
+					},
+				},
+				{
+					type: "custom_message",
+					id: "delegation-fallback-entry",
+					parentId: "assistant-entry",
+					timestamp,
+					customType: "delegation-reminder",
+					content: "legacy hidden reminder",
+					display: false,
+					details: {
+						handsOnCount: 7,
+					},
+				},
 			]
 				.map(entry => JSON.stringify(entry))
 				.join("\n"),
@@ -293,9 +378,36 @@ describe("getDashboardStats time range", () => {
 				api: "openai-codex-responses",
 			},
 		]);
+
+		expect(parsed.delegationReminderStats).toEqual([
+			{
+				sessionFile,
+				entryId: "delegation-entry",
+				folder: "/tmp/project",
+				timestamp: assistantTimestamp,
+				model: "gpt-5.4",
+				provider: "openai-codex",
+				api: "openai-codex-responses",
+				handsOnCount: 6,
+				taskCount: 0,
+				threshold: 6,
+			},
+			{
+				sessionFile,
+				entryId: "delegation-fallback-entry",
+				folder: "/tmp/project",
+				timestamp: assistantTimestamp,
+				model: "gpt-5.4",
+				provider: "openai-codex",
+				api: "openai-codex-responses",
+				handsOnCount: 7,
+				taskCount: 0,
+				threshold: 0,
+			},
+		]);
 	});
 
-	it("ingests reminder custom messages through session sync into model stats", async () => {
+	it("ingests reminder custom entries through session sync into model stats", async () => {
 		const now = Date.now();
 		const timestamp = new Date(now).toISOString();
 		const dir = path.join(getSessionsDir(), "--tmp--project");
@@ -349,6 +461,21 @@ describe("getDashboardStats time range", () => {
 						api: "openai-codex-responses",
 					},
 				},
+				{
+					type: "custom",
+					id: "delegation-entry",
+					parentId: "assistant-entry",
+					timestamp,
+					customType: "delegation-reminder",
+					data: {
+						model: "gpt-5.4",
+						provider: "openai-codex",
+						api: "openai-codex-responses",
+						handsOnCount: 6,
+						taskCount: 0,
+						threshold: 6,
+					},
+				},
 			]
 				.map(entry => JSON.stringify(entry))
 				.join("\n"),
@@ -360,6 +487,8 @@ describe("getDashboardStats time range", () => {
 		const stats = await getDashboardStats("all");
 		const model = stats.byModel.find(row => row.model === "gpt-5.4" && row.provider === "openai-codex");
 		expect(model?.systemContextReminderCount).toBe(1);
+		expect(model?.delegationReminderCount).toBe(1);
+		expect(model?.delegationReminderRate).toBe(1);
 		expect(model?.systemContextReminderRate).toBe(1);
 	});
 });

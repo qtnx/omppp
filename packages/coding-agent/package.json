@@ -49,6 +49,7 @@
 		"@babel/parser": "catalog:",
 		"@mozilla/readability": "catalog:",
 		"@oh-my-pi/context-gc-plugin": "catalog:",
+		"@oh-my-pi/delegation-reminder-plugin": "catalog:",
 		"@oh-my-pi/system-context-reminder-plugin": "catalog:",
 		"@oh-my-pi/hashline": "catalog:",
 		"@oh-my-pi/omp-stats": "catalog:",

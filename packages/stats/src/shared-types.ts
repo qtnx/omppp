@@ -50,6 +50,8 @@ export interface ModelStats extends AggregatedStats {
 	provider: string;
 	systemContextReminderCount: number;
 	systemContextReminderRate: number;
+	delegationReminderCount: number;
+	delegationReminderRate: number;
 }
 
 /**

@@ -2883,6 +2883,28 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"delegation.reminder.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tasks",
+			label: "Delegation Reminder",
+			description:
+				"When orchestrator mode is active, nudge the model mid-turn if it does many hands-on edits/commands without delegating to a subagent",
+		},
+	},
+
+	"delegation.reminder.threshold": {
+		type: "number",
+		default: 6,
+		ui: {
+			tab: "tasks",
+			label: "Delegation Reminder Threshold",
+			description:
+				"Hands-on tool calls (edit/write/ast_edit/bash) in a single turn without delegating before the delegation reminder fires (minimum 1)",
+		},
+	},
+
 	"task.batch": {
 		type: "boolean",
 		default: true,

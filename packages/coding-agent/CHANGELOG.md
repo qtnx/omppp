@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a native-loaded Delegation Reminder extension (`@oh-my-pi/delegation-reminder-plugin`) for main interactive sessions running in Orchestrator Mode (`task.eager` on with the `task` tool available). It tracks per-turn hands-on tool calls (`edit`, `write`, `ast_edit`, `bash`) and, once the `delegation.reminder.threshold` (default 6) is crossed without any `task` delegation, appends a one-time mid-turn `<system-notice>` nudging the model to delegate via subagents, then records a session-log-only `delegation-reminder` stats entry (`{ model, provider, api, handsOnCount, taskCount, threshold }`) for per-model offender stats. Subagent sessions never nudge. Toggle with the `delegation.reminder.enabled` setting
+
 ### Changed
 
 - `ompx update` now runs the repo install script (`scripts/install.sh`, pinned to the release tag) on Linux/macOS instead of only swapping the binary asset, so updates share one source of truth with fresh installs — SHA256SUMS verification, standard-config seeding, and future installer migrations apply automatically. The previous binary is backed up and restored when the script fails or the updated binary reports the wrong version; Windows and failed script fetches fall back to the direct binary swap

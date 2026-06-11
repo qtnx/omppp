@@ -71,6 +71,7 @@
         "@babel/parser": "catalog:",
         "@mozilla/readability": "catalog:",
         "@oh-my-pi/context-gc-plugin": "catalog:",
+        "@oh-my-pi/delegation-reminder-plugin": "catalog:",
         "@oh-my-pi/hashline": "catalog:",
         "@oh-my-pi/omp-stats": "catalog:",
         "@oh-my-pi/pi-agent-core": "catalog:",
@@ -119,6 +120,17 @@
         "@oh-my-pi/pi-utils": "workspace:*",
         "zod": "catalog:",
       },
+      "devDependencies": {
+        "@oh-my-pi/pi-coding-agent": "workspace:*",
+        "@types/bun": "catalog:",
+      },
+      "peerDependencies": {
+        "@oh-my-pi/pi-coding-agent": "^15",
+      },
+    },
+    "packages/delegation-reminder-plugin": {
+      "name": "@oh-my-pi/delegation-reminder-plugin",
+      "version": "1.2.0",
       "devDependencies": {
         "@oh-my-pi/pi-coding-agent": "workspace:*",
         "@types/bun": "catalog:",
@@ -319,6 +331,7 @@
     "@mozilla/readability": "^0.6.0",
     "@napi-rs/cli": "3.7.0",
     "@oh-my-pi/context-gc-plugin": "1.2.0",
+    "@oh-my-pi/delegation-reminder-plugin": "1.2.0",
     "@oh-my-pi/hashline": "1.2.0",
     "@oh-my-pi/omp-stats": "1.2.0",
     "@oh-my-pi/pi-agent-core": "1.2.0",
@@ -708,6 +721,8 @@
     "@octokit/types": ["@octokit/types@16.0.0", "", { "dependencies": { "@octokit/openapi-types": "^27.0.0" } }, "sha512-sKq+9r1Mm4efXW1FCk7hFSeJo4QKreL/tTbR0rz/qx/r1Oa2VV83LTA/H/MuCOX7uCIJmQVRKBcbmWoySjAnSg=="],
 
     "@oh-my-pi/context-gc-plugin": ["@oh-my-pi/context-gc-plugin@workspace:packages/context-gc-plugin"],
+
+    "@oh-my-pi/delegation-reminder-plugin": ["@oh-my-pi/delegation-reminder-plugin@workspace:packages/delegation-reminder-plugin"],
 
     "@oh-my-pi/hashline": ["@oh-my-pi/hashline@workspace:packages/hashline"],
 

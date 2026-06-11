@@ -17,6 +17,7 @@ import {
 	getStatsByModel,
 	getTimeSeries,
 	initDb,
+	insertDelegationReminderStats,
 	insertMessageStats,
 	insertReminderStats,
 	insertUserMessageStats,
@@ -39,9 +40,15 @@ function applyParseResult(sessionFile: string, lastModified: number, result: Par
 	if (result.stats.length > 0) insertMessageStats(result.stats);
 	if (result.userStats.length > 0) insertUserMessageStats(result.userStats);
 	if (result.reminderStats.length > 0) insertReminderStats(result.reminderStats);
+	if (result.delegationReminderStats.length > 0) insertDelegationReminderStats(result.delegationReminderStats);
 	if (result.userLinks.length > 0) updateUserMessageLinks(result.userLinks);
 	setFileOffset(sessionFile, result.newOffset, lastModified);
-	return result.stats.length + result.userStats.length + result.reminderStats.length;
+	return (
+		result.stats.length +
+		result.userStats.length +
+		result.reminderStats.length +
+		result.delegationReminderStats.length
+	);
 }
 
 /**

@@ -83,11 +83,21 @@ export interface SessionCustomMessageEntry {
 	display: boolean;
 }
 
+export interface SessionCustomEntry {
+	type: "custom";
+	id: string;
+	parentId?: string | null;
+	timestamp: string;
+	customType: string;
+	data?: unknown;
+}
+
 export type SessionEntry =
 	| SessionHeader
 	| SessionMessageEntry
 	| SessionServiceTierChangeEntry
 	| SessionCustomMessageEntry
+	| SessionCustomEntry
 	| { type: string };
 
 /**
@@ -148,4 +158,10 @@ export interface ReminderStats {
 	model: string;
 	provider: string;
 	api?: string;
+}
+
+export interface DelegationReminderStats extends ReminderStats {
+	handsOnCount: number;
+	taskCount: number;
+	threshold: number;
 }
