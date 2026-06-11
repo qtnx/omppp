@@ -57,14 +57,14 @@ interface Cfg {
 	style?: DefaultTextStyle;
 }
 
-function fullRender(doc: string, width: number, theme: MarkdownTheme, cfg: Cfg): string[] {
+function fullRender(doc: string, width: number, theme: MarkdownTheme, cfg: Cfg): readonly string[] {
 	resetRenderCaches();
 	return new Markdown(doc, cfg.px, cfg.py, theme, cfg.style).render(width);
 }
 
 // Stream growing prefixes (new instance per frame, mirroring component recreation)
 // so the incremental reuse path fires, then return the final full render.
-function streamRender(doc: string, width: number, theme: MarkdownTheme, cfg: Cfg, step = 2): string[] {
+function streamRender(doc: string, width: number, theme: MarkdownTheme, cfg: Cfg, step = 2): readonly string[] {
 	resetRenderCaches();
 	for (let n = 1; n < doc.length; n += step) {
 		new Markdown(doc.slice(0, n), cfg.px, cfg.py, theme, cfg.style).render(width);

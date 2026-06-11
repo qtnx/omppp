@@ -13,9 +13,13 @@ import * as path from "node:path";
 import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "./auth-retry";
 import { isUsageLimitError } from "./rate-limit-utils";
+import { getProviderDefinition } from "./registry";
+import { getOAuthApiKey, getOAuthProvider, refreshOAuthToken } from "./registry/oauth";
+import type { OAuthController, OAuthCredentials, OAuthProvider, OAuthProviderId } from "./registry/oauth/types";
 import { getEnvApiKey, getEnvApiKeyName } from "./stream";
 import type { Provider } from "./types";
 import type {
+	CredentialRankingContext,
 	CredentialRankingStrategy,
 	UsageCredential,
 	UsageFetchContext,
@@ -28,15 +32,10 @@ import type {
 import { claudeRankingStrategy, claudeUsageProvider } from "./usage/claude";
 import { googleGeminiCliUsageProvider } from "./usage/gemini";
 import { githubCopilotUsageProvider } from "./usage/github-copilot";
-import { antigravityUsageProvider } from "./usage/google-antigravity";
+import { antigravityRankingStrategy, antigravityUsageProvider } from "./usage/google-antigravity";
 import { kimiUsageProvider } from "./usage/kimi";
 import { codexRankingStrategy, openaiCodexUsageProvider } from "./usage/openai-codex";
 import { zaiUsageProvider } from "./usage/zai";
-import { getOAuthApiKey, getOAuthProvider, refreshOAuthToken } from "./utils/oauth";
-import { loginDeepSeek } from "./utils/oauth/deepseek";
-import { loginOpenAICodexDevice } from "./utils/oauth/openai-codex";
-import type { OAuthController, OAuthCredentials, OAuthProvider, OAuthProviderId } from "./utils/oauth/types";
-import { loginXiaomi, loginXiaomiTokenPlan } from "./utils/oauth/xiaomi";
 
 const USAGE_RANKING_METRIC_EPSILON = 1e-9;
 
@@ -494,6 +493,9 @@ const USAGE_FAILURE_BACKOFF_MS = 10_000;
 // Bumped from 3s — Claude usage retries up to 3 times with exponential backoff
 // (~3.5s total worst case); a tight per-request budget aborts retries mid-cycle.
 const DEFAULT_USAGE_REQUEST_TIMEOUT_MS = 10_000;
+const USAGE_REPORT_CACHE_KEY_VERSION_OVERRIDES: Partial<Record<Provider, number>> = {
+	"google-antigravity": 2,
+};
 const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 10_000;
 /**
  * Refresh OAuth access tokens this many ms before their stated expiry. The
@@ -536,6 +538,23 @@ export function isDefinitiveOAuthFailure(errorMsg: string): boolean {
 	if (OAUTH_DEFINITIVE_FAILURE_REGEX.test(errorMsg)) return true;
 	if (OAUTH_HTTP_AUTH_REGEX.test(errorMsg) && !OAUTH_TRANSIENT_FAILURE_REGEX.test(errorMsg)) return true;
 	return false;
+}
+
+/**
+ * Outcome of {@link AuthStorage.markUsageLimitReached}.
+ *
+ * `switched` is `true` when an unblocked same-type sibling credential is
+ * available right now, so the caller can retry immediately and the next
+ * `getApiKey` will hand it out. When `false`, `retryAtMs` (epoch ms) carries
+ * the earliest moment any same-type sibling's temporary block expires —
+ * callers should prefer waiting until then over the provider's (often
+ * multi-hour) retry-after when it is sooner. `retryAtMs` is `undefined` when
+ * no sibling credentials exist at all, or when the session has no tracked
+ * credential to rotate away from.
+ */
+export interface UsageLimitMarkResult {
+	switched: boolean;
+	retryAtMs?: number;
 }
 
 type UsageCacheEntry<T> = {
@@ -649,6 +668,7 @@ function resolveDefaultUsageProvider(provider: Provider): UsageProvider | undefi
 const DEFAULT_RANKING_STRATEGIES = new Map<Provider, CredentialRankingStrategy>([
 	["openai-codex", codexRankingStrategy],
 	["anthropic", claudeRankingStrategy],
+	["google-antigravity", antigravityRankingStrategy],
 ]);
 
 function resolveDefaultRankingStrategy(provider: Provider): CredentialRankingStrategy | undefined {
@@ -1166,71 +1186,70 @@ export class AuthStorage {
 		return order;
 	}
 
-	/** Returns block expiry timestamp for a credential, cleaning up expired entries. */
-	#getCredentialBlockedUntil(providerKey: string, credentialIndex: number): number | undefined {
-		const backoffMap = this.#credentialBackoff.get(providerKey);
+	#toScopedBackoffKey(providerKey: string, blockScope: string | undefined): string {
+		return blockScope ? `${providerKey}\0${blockScope}` : providerKey;
+	}
+
+	/** Returns block expiry timestamp for a credential/key pair, cleaning up expired entries. */
+	#getCredentialBlockedUntilForKey(backoffKey: string, credentialIndex: number): number | undefined {
+		const backoffMap = this.#credentialBackoff.get(backoffKey);
 		if (!backoffMap) return undefined;
 		const blockedUntil = backoffMap.get(credentialIndex);
 		if (!blockedUntil) return undefined;
 		if (blockedUntil <= Date.now()) {
 			backoffMap.delete(credentialIndex);
 			if (backoffMap.size === 0) {
-				this.#credentialBackoff.delete(providerKey);
+				this.#credentialBackoff.delete(backoffKey);
 			}
 			return undefined;
 		}
 		return blockedUntil;
 	}
 
+	/** Returns block expiry timestamp for a credential, checking global then scoped blocks. */
+	#getCredentialBlockedUntil(
+		providerKey: string,
+		credentialIndex: number,
+		blockScope: string | undefined = undefined,
+	): number | undefined {
+		const globalBlockedUntil = this.#getCredentialBlockedUntilForKey(providerKey, credentialIndex);
+		if (globalBlockedUntil !== undefined || !blockScope) return globalBlockedUntil;
+		return this.#getCredentialBlockedUntilForKey(this.#toScopedBackoffKey(providerKey, blockScope), credentialIndex);
+	}
+
 	/** Checks if a credential is temporarily blocked due to usage limits. */
-	#isCredentialBlocked(providerKey: string, credentialIndex: number): boolean {
-		return this.#getCredentialBlockedUntil(providerKey, credentialIndex) !== undefined;
+	#isCredentialBlocked(
+		providerKey: string,
+		credentialIndex: number,
+		blockScope: string | undefined = undefined,
+	): boolean {
+		return this.#getCredentialBlockedUntil(providerKey, credentialIndex, blockScope) !== undefined;
 	}
 
 	/** Marks a credential as blocked until the specified time. */
-	#markCredentialBlocked(providerKey: string, credentialIndex: number, blockedUntilMs: number): void {
-		const backoffMap = this.#credentialBackoff.get(providerKey) ?? new Map<number, number>();
+	#markCredentialBlocked(
+		providerKey: string,
+		credentialIndex: number,
+		blockedUntilMs: number,
+		blockScope: string | undefined = undefined,
+	): void {
+		const backoffKey = this.#toScopedBackoffKey(providerKey, blockScope);
+		const backoffMap = this.#credentialBackoff.get(backoffKey) ?? new Map<number, number>();
 		const existing = backoffMap.get(credentialIndex) ?? 0;
 		backoffMap.set(credentialIndex, Math.max(existing, blockedUntilMs));
-		this.#credentialBackoff.set(providerKey, backoffMap);
+		this.#credentialBackoff.set(backoffKey, backoffMap);
 	}
 
 	/**
-	 * Usage-limit backoff scope for a model (provider strategy decides, e.g. Codex
-	 * `spark`/`main`, Claude `opus`/`sonnet`/`default`). `undefined` → a single global
-	 * scope, the default for providers without model-specific rate-limit pools.
+	 * Usage-limit backoff scope for a model. Prefer the current ranking-strategy
+	 * context API, but keep the legacy model-only hook as a compatibility fallback
+	 * for fork strategies that still expose it.
 	 */
-	#usageBackoffScope(provider: string, modelId: string | undefined): string | undefined {
-		return this.#rankingStrategyResolver?.(provider)?.backoffScope?.(modelId);
-	}
-
-	/** Block-map key for a usage-limit block in `scope`; scope-less → the plain providerKey. */
-	#scopedBlockKey(providerKey: string, scope: string | undefined): string {
-		return scope ? `${providerKey}@@${scope}` : providerKey;
-	}
-
-	/**
-	 * Whether a credential is unavailable for a request in `scope`. Auth/transient failures are
-	 * stored under the plain providerKey and gate every model; usage-limit blocks are stored under
-	 * the scoped key and only gate models in the same scope — so an exhausted Codex spark pool can't
-	 * park a credential whose shared/main pool is free (and vice versa).
-	 */
-	#isCredentialBlockedForScope(providerKey: string, credentialIndex: number, scope: string | undefined): boolean {
-		if (this.#isCredentialBlocked(providerKey, credentialIndex)) return true;
-		if (scope === undefined) return false;
-		return this.#isCredentialBlocked(this.#scopedBlockKey(providerKey, scope), credentialIndex);
-	}
-
-	/** Latest active block expiry across the global and scoped buckets for a request. */
-	#blockedUntilForScope(providerKey: string, credentialIndex: number, scope: string | undefined): number | undefined {
-		const globalUntil = this.#getCredentialBlockedUntil(providerKey, credentialIndex);
-		const scopedUntil =
-			scope === undefined
-				? undefined
-				: this.#getCredentialBlockedUntil(this.#scopedBlockKey(providerKey, scope), credentialIndex);
-		if (globalUntil === undefined) return scopedUntil;
-		if (scopedUntil === undefined) return globalUntil;
-		return Math.max(globalUntil, scopedUntil);
+	#getBlockScope(
+		strategy: CredentialRankingStrategy | undefined,
+		context: CredentialRankingContext,
+	): string | undefined {
+		return strategy?.blockScope?.(context) ?? strategy?.backoffScope?.(context.modelId);
 	}
 
 	/** Records which credential was used for a session (for rate-limit switching). */
@@ -1592,345 +1611,34 @@ export class AuthStorage {
 			onPrompt: (prompt: { message: string; placeholder?: string }) => Promise<string>;
 		},
 	): Promise<void> {
-		let credentials: OAuthCredentials;
 		const saveApiKeyCredential = async (apiKey: string): Promise<void> => {
 			const newCredential: ApiKeyCredential = { type: "api_key", key: apiKey };
 			await this.set(provider, newCredential);
 		};
 		const manualCodeInput = () => ctrl.onPrompt({ message: "Paste the authorization code (or full redirect URL):" });
-		switch (provider) {
-			case "anthropic": {
-				const { loginAnthropic } = await import("./utils/oauth/anthropic");
-				credentials = await loginAnthropic({
-					...ctrl,
-					onManualCodeInput: ctrl.onManualCodeInput ?? manualCodeInput,
-				});
-				break;
-			}
-			case "xai-oauth": {
-				const { loginXAIOAuth } = await import("./utils/oauth/xai-oauth");
-				credentials = await loginXAIOAuth({
-					...ctrl,
-					onManualCodeInput: ctrl.onManualCodeInput ?? manualCodeInput,
-				});
-				break;
-			}
-			case "alibaba-coding-plan": {
-				const { loginAlibabaCodingPlan } = await import("./utils/oauth/alibaba-coding-plan");
-				const apiKey = await loginAlibabaCodingPlan(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "github-copilot": {
-				const { loginGitHubCopilot } = await import("./utils/oauth/github-copilot");
-				credentials = await loginGitHubCopilot({
-					onAuth: (url, instructions) => ctrl.onAuth({ url, instructions }),
-					onPrompt: ctrl.onPrompt,
-					onProgress: ctrl.onProgress,
-					signal: ctrl.signal,
-				});
-				break;
-			}
-			case "google-gemini-cli": {
-				const { loginGeminiCli } = await import("./utils/oauth/google-gemini-cli");
-				credentials = await loginGeminiCli({
-					...ctrl,
-					onManualCodeInput: ctrl.onManualCodeInput ?? manualCodeInput,
-				});
-				break;
-			}
-			case "google-antigravity": {
-				const { loginAntigravity } = await import("./utils/oauth/google-antigravity");
-				credentials = await loginAntigravity({
-					...ctrl,
-					onManualCodeInput: ctrl.onManualCodeInput ?? manualCodeInput,
-				});
-				break;
-			}
-			case "openai-codex": {
-				const { loginOpenAICodex } = await import("./utils/oauth/openai-codex");
-				credentials = await loginOpenAICodex({
-					...ctrl,
-					onManualCodeInput: ctrl.onManualCodeInput ?? manualCodeInput,
-				});
-				break;
-			}
-			case "openai-codex-device": {
-				// Device/headless flow — stores credentials under "openai-codex" so the
-				// provider can pick them up without a separate provider configuration.
-				const deviceCredentials = await loginOpenAICodexDevice(ctrl);
-				const newCredential: OAuthCredential = { type: "oauth", ...deviceCredentials };
-				await this.#upsertOAuthCredential("openai-codex", newCredential);
-				return;
-			}
-			case "gitlab-duo": {
-				const { loginGitLabDuo } = await import("./utils/oauth/gitlab-duo");
-				credentials = await loginGitLabDuo({
-					...ctrl,
-					onManualCodeInput: ctrl.onManualCodeInput ?? manualCodeInput,
-				});
-				break;
-			}
-			case "kimi-code": {
-				const { loginKimi } = await import("./utils/oauth/kimi");
-				credentials = await loginKimi(ctrl);
-				break;
-			}
-			case "kilo": {
-				const { loginKilo } = await import("./utils/oauth/kilo");
-				credentials = await loginKilo(ctrl);
-				break;
-			}
-			case "cursor": {
-				const { loginCursor } = await import("./utils/oauth/cursor");
-				credentials = await loginCursor(
-					url => ctrl.onAuth({ url }),
-					ctrl.onProgress ? () => ctrl.onProgress?.("Waiting for browser authentication...") : undefined,
-				);
-				break;
-			}
-			case "perplexity": {
-				const { loginPerplexity } = await import("./utils/oauth/perplexity");
-				credentials = await loginPerplexity(ctrl);
-				break;
-			}
-			case "huggingface": {
-				const { loginHuggingface } = await import("./utils/oauth/huggingface");
-				const apiKey = await loginHuggingface(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "opencode-zen":
-			case "opencode-go": {
-				const { loginOpenCode } = await import("./utils/oauth/opencode");
-				const apiKey = await loginOpenCode(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "lm-studio": {
-				const { loginLmStudio } = await import("./utils/oauth/lm-studio");
-				const apiKey = await loginLmStudio(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "ollama": {
-				const { loginOllama } = await import("./utils/oauth/ollama");
-				const apiKey = await loginOllama(ctrl);
-				if (!apiKey) {
-					return;
-				}
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "ollama-cloud": {
-				const { loginOllamaCloud } = await import("./utils/oauth/ollama-cloud");
-				const apiKey = await loginOllamaCloud(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "cerebras": {
-				const { loginCerebras } = await import("./utils/oauth/cerebras");
-				const apiKey = await loginCerebras(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "deepseek": {
-				const apiKey = await loginDeepSeek(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "fireworks": {
-				const { loginFireworks } = await import("./utils/oauth/fireworks");
-				const apiKey = await loginFireworks(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "firepass": {
-				const { loginFirepass } = await import("./utils/oauth/firepass");
-				const apiKey = await loginFirepass(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "wafer-pass": {
-				const { loginWaferPass } = await import("./utils/oauth/wafer");
-				const apiKey = await loginWaferPass(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "wafer-serverless": {
-				const { loginWaferServerless } = await import("./utils/oauth/wafer");
-				const apiKey = await loginWaferServerless(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "zai": {
-				const { loginZai } = await import("./utils/oauth/zai");
-				const apiKey = await loginZai(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "zhipu-coding-plan": {
-				const { loginZhipuCodingPlan } = await import("./utils/oauth/zhipu");
-				const apiKey = await loginZhipuCodingPlan(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "qianfan": {
-				const { loginQianfan } = await import("./utils/oauth/qianfan");
-				const apiKey = await loginQianfan(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "minimax-code": {
-				const { loginMiniMaxCode } = await import("./utils/oauth/minimax-code");
-				const apiKey = await loginMiniMaxCode(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "minimax-code-cn": {
-				const { loginMiniMaxCodeCn } = await import("./utils/oauth/minimax-code");
-				const apiKey = await loginMiniMaxCodeCn(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "synthetic": {
-				const { loginSynthetic } = await import("./utils/oauth/synthetic");
-				const apiKey = await loginSynthetic(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "tavily": {
-				const { loginTavily } = await import("./utils/oauth/tavily");
-				const apiKey = await loginTavily(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "venice": {
-				const { loginVenice } = await import("./utils/oauth/venice");
-				const apiKey = await loginVenice(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "litellm": {
-				const { loginLiteLLM } = await import("./utils/oauth/litellm");
-				const apiKey = await loginLiteLLM(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "moonshot": {
-				const { loginMoonshot } = await import("./utils/oauth/moonshot");
-				const apiKey = await loginMoonshot(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "kagi": {
-				const { loginKagi } = await import("./utils/oauth/kagi");
-				const apiKey = await loginKagi(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "nanogpt": {
-				const { loginNanoGPT } = await import("./utils/oauth/nanogpt");
-				const apiKey = await loginNanoGPT(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "openrouter": {
-				const { loginOpenRouter } = await import("./utils/oauth/openrouter");
-				const apiKey = await loginOpenRouter(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "together": {
-				const { loginTogether } = await import("./utils/oauth/together");
-				const apiKey = await loginTogether(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "cloudflare-ai-gateway": {
-				const { loginCloudflareAiGateway } = await import("./utils/oauth/cloudflare-ai-gateway");
-				const apiKey = await loginCloudflareAiGateway(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "vercel-ai-gateway": {
-				const { loginVercelAiGateway } = await import("./utils/oauth/vercel-ai-gateway");
-				const apiKey = await loginVercelAiGateway(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "vllm": {
-				const { loginVllm } = await import("./utils/oauth/vllm");
-				const apiKey = await loginVllm(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "parallel": {
-				const { loginParallel } = await import("./utils/oauth/parallel");
-				const apiKey = await loginParallel(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "qwen-portal": {
-				const { loginQwenPortal } = await import("./utils/oauth/qwen-portal");
-				const apiKey = await loginQwenPortal(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "nvidia": {
-				const { loginNvidia } = await import("./utils/oauth/nvidia");
-				const apiKey = await loginNvidia(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "xiaomi": {
-				const apiKey = await loginXiaomi(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "xiaomi-token-plan-sgp": {
-				const apiKey = await loginXiaomiTokenPlan(ctrl, "sgp");
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "xiaomi-token-plan-ams": {
-				const apiKey = await loginXiaomiTokenPlan(ctrl, "ams");
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "xiaomi-token-plan-cn": {
-				const apiKey = await loginXiaomiTokenPlan(ctrl, "cn");
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			case "zenmux": {
-				const { loginZenMux } = await import("./utils/oauth/zenmux");
-				const apiKey = await loginZenMux(ctrl);
-				await saveApiKeyCredential(apiKey);
-				return;
-			}
-			default: {
-				const customProvider = getOAuthProvider(provider);
-				if (!customProvider) {
-					throw new Error(`Unknown OAuth provider: ${provider}`);
-				}
-				const customLoginResult = await customProvider.login({
-					onAuth: info => ctrl.onAuth(info),
-					onProgress: ctrl.onProgress,
-					onPrompt: ctrl.onPrompt,
-					onManualCodeInput: ctrl.onManualCodeInput ?? manualCodeInput,
-					signal: ctrl.signal,
-				});
-				if (typeof customLoginResult === "string") {
-					await saveApiKeyCredential(customLoginResult);
-					return;
-				}
-				credentials = customLoginResult;
-				break;
-			}
+		// Built-in registry first, then runtime-registered extension providers.
+		const def = getProviderDefinition(provider) ?? getOAuthProvider(provider);
+		if (!def?.login) {
+			throw new Error(`Unknown OAuth provider: ${provider}`);
 		}
-		const newCredential: OAuthCredential = { type: "oauth", ...credentials };
-		await this.#upsertOAuthCredential(provider, newCredential);
+		const result = await def.login({
+			onAuth: ctrl.onAuth,
+			onProgress: ctrl.onProgress,
+			onPrompt: ctrl.onPrompt,
+			onManualCodeInput: ctrl.onManualCodeInput ?? manualCodeInput,
+			signal: ctrl.signal,
+			fetch: ctrl.fetch,
+		});
+		if (typeof result === "string") {
+			// Some flows (e.g. ollama) return "" to signal that no key was entered.
+			if (!result) {
+				return;
+			}
+			await saveApiKeyCredential(result);
+			return;
+		}
+		const newCredential: OAuthCredential = { type: "oauth", ...result };
+		await this.#upsertOAuthCredential(def.storeCredentialsAs ?? provider, newCredential);
 	}
 
 	/**
@@ -1990,15 +1698,19 @@ export class AuthStorage {
 	#buildUsageReportCacheKey(request: UsageRequestDescriptor): string {
 		const baseUrl = this.#normalizeUsageBaseUrl(request.baseUrl) || "default";
 		const identity = this.#buildUsageCacheIdentity(request.credential);
-		return `report:${request.provider}:${baseUrl}:${identity}`;
+		const versionOverride = USAGE_REPORT_CACHE_KEY_VERSION_OVERRIDES[request.provider];
+		const providerKey = versionOverride === undefined ? request.provider : `${versionOverride}:${request.provider}`;
+		return `report:${providerKey}:${baseUrl}:${identity}`;
 	}
 
 	#buildUsageReportsCacheKey(requests: ReadonlyArray<UsageRequestDescriptor>): string {
 		const snapshot = requests
-			.map(
-				request =>
-					`${request.provider}:${this.#normalizeUsageBaseUrl(request.baseUrl) || "default"}:${this.#buildUsageCacheIdentity(request.credential)}`,
-			)
+			.map(request => {
+				const versionOverride = USAGE_REPORT_CACHE_KEY_VERSION_OVERRIDES[request.provider];
+				const providerKey =
+					versionOverride === undefined ? request.provider : `${versionOverride}:${request.provider}`;
+				return `${providerKey}:${this.#normalizeUsageBaseUrl(request.baseUrl) || "default"}:${this.#buildUsageCacheIdentity(request.credential)}`;
+			})
 			.sort()
 			.join("\n");
 		return `reports:${Bun.hash(snapshot).toString(16)}`;
@@ -2500,27 +2212,28 @@ export class AuthStorage {
 		return false;
 	}
 
-	/**
-	 * The limits that actually gate a request for `modelId`. Defers to the
-	 * provider's ranking strategy (e.g. Codex scopes model-specific "spark" pools
-	 * to `-spark` models) and falls back to every limit when the strategy doesn't
-	 * opt in. This prevents an exhausted model-specific pool from parking a
-	 * credential whose shared quota is still free.
-	 */
-	#gatingLimits(report: UsageReport, modelId: string | undefined): UsageLimit[] {
-		const strategy = this.#rankingStrategyResolver?.(report.provider);
-		return strategy?.selectGatingLimits?.(report, modelId) ?? report.limits;
+	/** Return the usage limits that apply to the requested model for this strategy. */
+	#getScopedUsageLimits(
+		strategy: CredentialRankingStrategy,
+		report: UsageReport,
+		context: CredentialRankingContext,
+	): UsageLimit[] {
+		return (
+			strategy.scopeLimits?.(report, context) ??
+			strategy.selectGatingLimits?.(report, context.modelId) ??
+			report.limits
+		);
 	}
 
-	/** Returns true if usage indicates the rate limit gating `modelId` has been reached. */
-	#isUsageLimitReached(report: UsageReport, modelId?: string): boolean {
-		return this.#gatingLimits(report, modelId).some(limit => this.#isUsageLimitExhausted(limit));
+	/** Returns true if usage indicates rate limit has been reached. */
+	#isUsageLimitReached(limits: UsageLimit[]): boolean {
+		return limits.some(limit => this.#isUsageLimitExhausted(limit));
 	}
 
-	/** Extracts the earliest reset timestamp from exhausted gating windows (in ms). */
-	#getUsageResetAtMs(report: UsageReport, nowMs: number, modelId?: string): number | undefined {
+	/** Extracts the earliest reset timestamp from exhausted windows (in ms). */
+	#getUsageResetAtMs(limits: UsageLimit[], nowMs: number): number | undefined {
 		const candidates: number[] = [];
-		for (const limit of this.#gatingLimits(report, modelId)) {
+		for (const limit of limits) {
 			if (!this.#isUsageLimitExhausted(limit)) continue;
 			const window = limit.window;
 			if (window?.resetsAt && window.resetsAt > nowMs) {
@@ -2806,41 +2519,45 @@ export class AuthStorage {
 	/**
 	 * Marks the current session's credential as temporarily blocked due to usage limits.
 	 * Uses usage reports to determine accurate reset time when available.
-	 * Returns true if a credential was blocked, enabling automatic fallback to the next credential.
+	 * Returns whether a sibling credential is available now; when none is, also
+	 * reports the earliest time a blocked sibling becomes available again so
+	 * callers can wait for the sibling instead of the provider's full window.
 	 */
 	async markUsageLimitReached(
 		provider: string,
 		sessionId: string | undefined,
 		options?: { retryAfterMs?: number; baseUrl?: string; modelId?: string; signal?: AbortSignal },
-	): Promise<boolean> {
+	): Promise<UsageLimitMarkResult> {
 		const sessionCredential = this.#getSessionCredential(provider, sessionId);
-		if (!sessionCredential) return false;
+		if (!sessionCredential) return { switched: false };
 
 		const providerKey = this.#getProviderTypeKey(provider, sessionCredential.type);
-		// Usage-limit blocks are scoped by model pool only for OAuth credentials (Codex/Claude
-		// accounts expose per-model rate-limit pools). Stored API keys have no per-model pools and
-		// are selected via the global block bucket, so keep their usage-limit blocks global —
-		// otherwise a scoped write would be invisible to `#selectCredentialByType` and the parked
-		// key would be handed back on the next acquisition.
-		const scope =
-			sessionCredential.type === "oauth" ? this.#usageBackoffScope(provider, options?.modelId) : undefined;
+		const strategy = this.#rankingStrategyResolver?.(provider);
+		const rankingContext: CredentialRankingContext = { modelId: options?.modelId };
+		// Stored API keys are selected via the global provider/type bucket, so keep
+		// their usage-limit blocks global; OAuth credentials can be scoped by model
+		// pool (Codex/Claude/etc.) without hiding the block from selection.
+		const blockScope = sessionCredential.type === "oauth" ? this.#getBlockScope(strategy, rankingContext) : undefined;
 		const now = Date.now();
 		let blockedUntil = now + (options?.retryAfterMs ?? AuthStorage.#defaultBackoffMs);
 
-		if (sessionCredential.type === "oauth" && this.#rankingStrategyResolver?.(provider)) {
+		if (sessionCredential.type === "oauth" && strategy) {
 			const credential = this.#getCredentialsForProvider(provider)[sessionCredential.index];
 			if (credential?.type === "oauth") {
 				const report = await this.#getUsageReport(provider, credential, options);
-				if (report && this.#isUsageLimitReached(report, options?.modelId)) {
-					const resetAtMs = this.#getUsageResetAtMs(report, Date.now(), options?.modelId);
-					if (resetAtMs && resetAtMs > blockedUntil) {
-						blockedUntil = resetAtMs;
+				if (report) {
+					const scopedLimits = this.#getScopedUsageLimits(strategy, report, rankingContext);
+					if (this.#isUsageLimitReached(scopedLimits)) {
+						const resetAtMs = this.#getUsageResetAtMs(scopedLimits, Date.now());
+						if (resetAtMs && resetAtMs > blockedUntil) {
+							blockedUntil = resetAtMs;
+						}
 					}
 				}
 			}
 		}
 
-		this.#markCredentialBlocked(this.#scopedBlockKey(providerKey, scope), sessionCredential.index, blockedUntil);
+		this.#markCredentialBlocked(providerKey, sessionCredential.index, blockedUntil, blockScope);
 
 		const remainingCredentials = this.#getCredentialsForProvider(provider)
 			.map((credential, index) => ({ credential, index }))
@@ -2849,9 +2566,13 @@ export class AuthStorage {
 					entry.credential.type === sessionCredential.type && entry.index !== sessionCredential.index,
 			);
 
-		return remainingCredentials.some(
-			candidate => !this.#isCredentialBlockedForScope(providerKey, candidate.index, scope),
-		);
+		let retryAtMs: number | undefined;
+		for (const candidate of remainingCredentials) {
+			const candidateBlockedUntil = this.#getCredentialBlockedUntil(providerKey, candidate.index, blockScope);
+			if (candidateBlockedUntil === undefined) return { switched: true };
+			if (retryAtMs === undefined || candidateBlockedUntil < retryAtMs) retryAtMs = candidateBlockedUntil;
+		}
+		return { switched: false, retryAtMs };
 	}
 
 	#resolveWindowResetAt(window: UsageLimit["window"]): number | undefined {
@@ -3012,11 +2733,12 @@ export class AuthStorage {
 		options?: AuthApiKeyOptions;
 		sessionId?: string;
 		strategy: CredentialRankingStrategy;
+		rankingContext: CredentialRankingContext;
+		blockScope?: string;
 	}): Promise<OAuthCandidate[]> {
 		const nowMs = Date.now();
 		const { strategy } = args;
 		const ranked: RankedOAuthCandidate[] = [];
-		const scope = this.#usageBackoffScope(args.provider, args.options?.modelId);
 		// Pre-fetch usage reports in parallel for non-blocked credentials.
 		// Wrap with a timeout so slow/429'd fetches don't indefinitely block
 		// credential selection — better to pick a credential without usage data
@@ -3026,7 +2748,7 @@ export class AuthStorage {
 			args.order.map(async idx => {
 				const selection = args.credentials[idx];
 				if (!selection) return null;
-				const blockedUntil = this.#blockedUntilForScope(args.providerKey, selection.index, scope);
+				const blockedUntil = this.#getCredentialBlockedUntil(args.providerKey, selection.index, args.blockScope);
 				if (blockedUntil !== undefined) return { selection, usage: null, usageChecked: false, blockedUntil };
 				const usage = await this.#getUsageReport(args.provider, selection.credential, {
 					...args.options,
@@ -3059,13 +2781,14 @@ export class AuthStorage {
 			const { selection, usage, usageChecked } = result;
 			let { blockedUntil } = result;
 			let blocked = blockedUntil !== undefined;
-			if (!blocked && usage && this.#isUsageLimitReached(usage, args.options?.modelId)) {
-				const resetAtMs = this.#getUsageResetAtMs(usage, nowMs, args.options?.modelId);
+			const scopedLimits = usage ? this.#getScopedUsageLimits(strategy, usage, args.rankingContext) : undefined;
+			if (!blocked && scopedLimits && this.#isUsageLimitReached(scopedLimits)) {
+				const resetAtMs = this.#getUsageResetAtMs(scopedLimits, nowMs);
 				blockedUntil = resetAtMs ?? Date.now() + AuthStorage.#defaultBackoffMs;
-				this.#markCredentialBlocked(this.#scopedBlockKey(args.providerKey, scope), selection.index, blockedUntil);
+				this.#markCredentialBlocked(args.providerKey, selection.index, blockedUntil, args.blockScope);
 				blocked = true;
 			}
-			const windows = usage ? strategy.findWindowLimits(usage) : undefined;
+			const windows = usage ? strategy.findWindowLimits(usage, args.rankingContext) : undefined;
 			const primary = windows?.primary;
 			const secondary = windows?.secondary;
 			const secondaryTarget = secondary ?? primary;
@@ -3114,9 +2837,10 @@ export class AuthStorage {
 		const providerKey = this.#getProviderTypeKey(provider, "oauth");
 		const order = this.#getCredentialOrder(providerKey, sessionId, credentials.length);
 		const strategy = this.#rankingStrategyResolver?.(provider);
+		const rankingContext: CredentialRankingContext = { modelId: options?.modelId };
+		const blockScope = this.#getBlockScope(strategy, rankingContext);
 		const requiresProModel = requiresOpenAICodexProModel(provider, options?.modelId);
 		const checkUsage = strategy !== undefined && (credentials.length > 1 || requiresProModel);
-		const scope = this.#usageBackoffScope(provider, options?.modelId);
 		const sessionCredential = this.#getSessionCredential(provider, sessionId);
 		const sessionPreferredIndex = sessionCredential?.type === "oauth" ? sessionCredential.index : undefined;
 		// Skip ranking only when the session already has a working preferred credential — re-ranking
@@ -3125,7 +2849,7 @@ export class AuthStorage {
 		// with the most headroom proactively and fall back intelligently when rate-limited.
 		const sessionPreferredIsAvailable =
 			sessionPreferredIndex !== undefined &&
-			!this.#isCredentialBlockedForScope(providerKey, sessionPreferredIndex, scope);
+			!this.#isCredentialBlocked(providerKey, sessionPreferredIndex, blockScope);
 		const shouldRank = checkUsage && (!sessionPreferredIsAvailable || requiresProModel);
 		const rankingOrder = shouldRank && sessionId ? credentials.map((_credential, index) => index) : order;
 		const candidates = shouldRank
@@ -3137,6 +2861,8 @@ export class AuthStorage {
 					options,
 					sessionId,
 					strategy: strategy!,
+					rankingContext,
+					blockScope,
 				})
 			: order
 					.map(idx => credentials[idx])
@@ -3146,7 +2872,7 @@ export class AuthStorage {
 		if (sessionPreferredIndex !== undefined && !requiresProModel) {
 			const sessionPreferredCandidate = candidates.findIndex(
 				candidate =>
-					!this.#isCredentialBlockedForScope(providerKey, candidate.selection.index, scope) &&
+					!this.#isCredentialBlocked(providerKey, candidate.selection.index, blockScope) &&
 					candidate.selection.index === sessionPreferredIndex,
 			);
 			if (sessionPreferredCandidate > 0) {
@@ -3220,18 +2946,24 @@ export class AuthStorage {
 					prefetchedUsage: candidate.usage,
 					usagePrechecked: candidate.usageChecked,
 					enforceProRequirement,
+					strategy,
+					rankingContext,
+					blockScope,
 				},
 			);
 			if (resolved) return resolved;
 		}
 
-		if (fallback && this.#isCredentialBlockedForScope(providerKey, fallback.selection.index, scope)) {
+		if (fallback && this.#isCredentialBlocked(providerKey, fallback.selection.index, blockScope)) {
 			return this.#tryOAuthCredential(provider, fallback.selection, providerKey, sessionId, options, {
 				checkUsage,
 				allowBlocked: true,
 				prefetchedUsage: fallback.usage,
 				usagePrechecked: fallback.usageChecked,
 				enforceProRequirement,
+				strategy,
+				rankingContext,
+				blockScope,
 			});
 		}
 
@@ -3350,6 +3082,9 @@ export class AuthStorage {
 			prefetchedUsage?: UsageReport | null;
 			usagePrechecked?: boolean;
 			enforceProRequirement?: boolean;
+			strategy?: CredentialRankingStrategy;
+			rankingContext?: CredentialRankingContext;
+			blockScope?: string;
 		},
 	): Promise<OAuthResolutionResult | undefined> {
 		const {
@@ -3358,9 +3093,11 @@ export class AuthStorage {
 			prefetchedUsage = null,
 			usagePrechecked = false,
 			enforceProRequirement,
+			strategy,
+			rankingContext,
+			blockScope,
 		} = usageOptions;
-		const scope = this.#usageBackoffScope(provider, options?.modelId);
-		if (!allowBlocked && this.#isCredentialBlockedForScope(providerKey, selection.index, scope)) {
+		if (!allowBlocked && this.#isCredentialBlocked(providerKey, selection.index, blockScope)) {
 			return undefined;
 		}
 
@@ -3387,14 +3124,18 @@ export class AuthStorage {
 			if (applyProFilter && !hasOpenAICodexProPlan(usage)) {
 				return undefined;
 			}
-			if (checkUsage && !allowBlocked && usage && this.#isUsageLimitReached(usage, options?.modelId)) {
-				const resetAtMs = this.#getUsageResetAtMs(usage, Date.now(), options?.modelId);
-				this.#markCredentialBlocked(
-					this.#scopedBlockKey(providerKey, scope),
-					selection.index,
-					resetAtMs ?? Date.now() + AuthStorage.#defaultBackoffMs,
-				);
-				return undefined;
+			if (checkUsage && !allowBlocked && usage && strategy && rankingContext) {
+				const scopedLimits = this.#getScopedUsageLimits(strategy, usage, rankingContext);
+				if (this.#isUsageLimitReached(scopedLimits)) {
+					const resetAtMs = this.#getUsageResetAtMs(scopedLimits, Date.now());
+					this.#markCredentialBlocked(
+						providerKey,
+						selection.index,
+						resetAtMs ?? Date.now() + AuthStorage.#defaultBackoffMs,
+						blockScope,
+					);
+					return undefined;
+				}
 			}
 		}
 
@@ -3453,14 +3194,18 @@ export class AuthStorage {
 				if (applyProFilter && !hasOpenAICodexProPlan(usage)) {
 					return undefined;
 				}
-				if (checkUsage && !allowBlocked && usage && this.#isUsageLimitReached(usage, options?.modelId)) {
-					const resetAtMs = this.#getUsageResetAtMs(usage, Date.now(), options?.modelId);
-					this.#markCredentialBlocked(
-						this.#scopedBlockKey(providerKey, scope),
-						selection.index,
-						resetAtMs ?? Date.now() + AuthStorage.#defaultBackoffMs,
-					);
-					return undefined;
+				if (checkUsage && !allowBlocked && usage && strategy && rankingContext) {
+					const scopedLimits = this.#getScopedUsageLimits(strategy, usage, rankingContext);
+					if (this.#isUsageLimitReached(scopedLimits)) {
+						const resetAtMs = this.#getUsageResetAtMs(scopedLimits, Date.now());
+						this.#markCredentialBlocked(
+							providerKey,
+							selection.index,
+							resetAtMs ?? Date.now() + AuthStorage.#defaultBackoffMs,
+							blockScope,
+						);
+						return undefined;
+					}
 				}
 			}
 			this.#recordSessionCredential(provider, sessionId, "oauth", selection.index);
@@ -3888,7 +3633,7 @@ export class AuthStorage {
 	async rotateSessionCredential(
 		provider: string,
 		sessionId: string | undefined,
-		options?: { error?: unknown; signal?: AbortSignal },
+		options?: { error?: unknown; modelId?: string; signal?: AbortSignal },
 	): Promise<boolean> {
 		const sessionCredential = this.#getSessionCredential(provider, sessionId);
 		if (!sessionCredential) return false;
@@ -3896,7 +3641,12 @@ export class AuthStorage {
 		const error = options?.error;
 		const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
 		if (message && isUsageLimitError(message)) {
-			return this.markUsageLimitReached(provider, sessionId, { signal: options?.signal });
+			return (
+				await this.markUsageLimitReached(provider, sessionId, {
+					modelId: options?.modelId,
+					signal: options?.signal,
+				})
+			).switched;
 		}
 
 		const providerKey = this.#getProviderTypeKey(provider, sessionCredential.type);
@@ -3947,7 +3697,7 @@ export class AuthStorage {
 				return this.getApiKey(provider, sessionId, { baseUrl, modelId, signal });
 			}
 			if (lastChance) {
-				await this.rotateSessionCredential(provider, sessionId, { error, signal });
+				await this.rotateSessionCredential(provider, sessionId, { error, modelId, signal });
 				return this.getApiKey(provider, sessionId, { baseUrl, modelId, signal });
 			}
 			return this.getApiKey(provider, sessionId, { baseUrl, modelId, forceRefresh: true, signal });
@@ -4441,8 +4191,8 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			return;
 		}
 
-		const schemaVersion = this.#readAuthSchemaVersion() ?? this.#inferAuthSchemaVersion();
-		const shouldWriteSchemaVersion = schemaVersion <= AUTH_SCHEMA_VERSION;
+		const recordedVersion = this.#readAuthSchemaVersion();
+		const schemaVersion = recordedVersion ?? this.#inferAuthSchemaVersion();
 		if (schemaVersion > AUTH_SCHEMA_VERSION) {
 			logger.warn("SqliteAuthCredentialStore schema version mismatch", {
 				current: schemaVersion,
@@ -4454,7 +4204,9 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 
 		this.#createAuthCredentialIndexes();
 		this.#backfillCredentialIdentityKeys();
-		if (shouldWriteSchemaVersion) {
+		// Rewriting an already-current version row is a no-op write transaction
+		// on every boot; only persist when the recorded version actually changes.
+		if (recordedVersion !== AUTH_SCHEMA_VERSION && schemaVersion <= AUTH_SCHEMA_VERSION) {
 			this.#writeAuthSchemaVersion(AUTH_SCHEMA_VERSION);
 		}
 	}
@@ -4610,9 +4362,13 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			.all() as AuthRow[];
 		if (rows.length === 0) return;
 
-		const updateIdentity = this.#db.prepare("UPDATE auth_credentials SET identity_key = ? WHERE id = ?");
+		let updateIdentity: Statement | null = null;
 		for (const row of rows) {
 			const identityKey = resolveRowCredentialIdentityKey(row.provider, row);
+			// Rows whose identity cannot be derived stay NULL; writing NULL over
+			// NULL would just burn a write transaction on every boot.
+			if (identityKey === null) continue;
+			updateIdentity ??= this.#db.prepare("UPDATE auth_credentials SET identity_key = ? WHERE id = ?");
 			updateIdentity.run(identityKey, row.id);
 		}
 	}

@@ -1,6 +1,6 @@
 import { addKeyAliases, canonicalKeyId, Editor, type KeyId, parseKey, parseKittySequence } from "@oh-my-pi/pi-tui";
 import type { AppKeybinding } from "../../config/keybindings";
-import { imageReferenceHyperlink, renderImageReferences } from "../image-references";
+import { imageReferenceHyperlink, PLACEHOLDER_REGEX, renderPlaceholders } from "../image-references";
 import { highlightMagicKeywords } from "../magic-keywords";
 import { theme } from "../theme/theme";
 
@@ -58,16 +58,72 @@ function buildMatchKeys(keys: readonly KeyId[]): Set<string> {
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 const BRACKETED_IMAGE_PATH_REGEX = /\.(?:png|jpe?g|gif|webp)$/i;
+const BRACKETED_IMAGE_PATH_BOUNDARY_REGEX = /\.(?:png|jpe?g|gif|webp)(?=$|["']?\s)/gi;
+const SHELL_ESCAPED_PATH_CHAR_REGEX = /\\([\\\s'"()[\]{}&;<>|?*!$`])/g;
 
-export function extractBracketedImagePastePath(data: string): string | undefined {
+function isPastedPathSeparator(char: string | undefined): boolean {
+	return char === undefined || char === " " || char === "\t" || char === "\r" || char === "\n";
+}
+
+function imagePathBoundaryEnd(payload: string, segmentStart: number, extensionEnd: number): number | undefined {
+	const quote = payload[segmentStart];
+	const afterExtension = payload[extensionEnd];
+	if (quote === '"' || quote === "'") {
+		return afterExtension === quote && isPastedPathSeparator(payload[extensionEnd + 1])
+			? extensionEnd + 1
+			: undefined;
+	}
+	if (isPastedPathSeparator(afterExtension)) return extensionEnd;
+	return undefined;
+}
+
+function normalizePastedImagePath(path: string): string {
+	const trimmed = path.trim();
+	const first = trimmed[0];
+	const last = trimmed[trimmed.length - 1];
+	const unquoted =
+		trimmed.length > 1 && (first === '"' || first === "'") && last === first ? trimmed.slice(1, -1) : trimmed;
+	return unquoted.replace(SHELL_ESCAPED_PATH_CHAR_REGEX, "$1");
+}
+
+export function extractBracketedImagePastePaths(data: string): string[] | undefined {
 	if (!data.startsWith(BRACKETED_PASTE_START)) return undefined;
 	const endIndex = data.indexOf(BRACKETED_PASTE_END, BRACKETED_PASTE_START.length);
 	if (endIndex === -1 || endIndex + BRACKETED_PASTE_END.length !== data.length) return undefined;
 
 	const pasted = data.slice(BRACKETED_PASTE_START.length, endIndex).trim();
-	if (!pasted || /[\r\n]/.test(pasted)) return undefined;
-	if (!BRACKETED_IMAGE_PATH_REGEX.test(pasted)) return undefined;
-	return pasted;
+	if (!pasted) return undefined;
+
+	const paths: string[] = [];
+	let segmentStart = 0;
+	BRACKETED_IMAGE_PATH_BOUNDARY_REGEX.lastIndex = 0;
+	for (
+		let match = BRACKETED_IMAGE_PATH_BOUNDARY_REGEX.exec(pasted);
+		match;
+		match = BRACKETED_IMAGE_PATH_BOUNDARY_REGEX.exec(pasted)
+	) {
+		const extensionEnd = match.index + match[0].length;
+		const boundaryEnd = imagePathBoundaryEnd(pasted, segmentStart, extensionEnd);
+		if (boundaryEnd === undefined) continue;
+
+		const path = normalizePastedImagePath(pasted.slice(segmentStart, boundaryEnd));
+		if (!path || !BRACKETED_IMAGE_PATH_REGEX.test(path)) return undefined;
+		paths.push(path);
+
+		segmentStart = boundaryEnd;
+		while (segmentStart < pasted.length && isPastedPathSeparator(pasted[segmentStart])) {
+			segmentStart++;
+		}
+		BRACKETED_IMAGE_PATH_BOUNDARY_REGEX.lastIndex = segmentStart;
+	}
+
+	if (paths.length === 0 || segmentStart !== pasted.length) return undefined;
+	return paths;
+}
+
+export function extractBracketedImagePastePath(data: string): string | undefined {
+	const paths = extractBracketedImagePastePaths(data);
+	return paths?.length === 1 ? paths[0] : undefined;
 }
 
 /**
@@ -76,16 +132,22 @@ export function extractBracketedImagePastePath(data: string): string | undefined
 export class CustomEditor extends Editor {
 	imageLinks?: readonly (string | undefined)[];
 
+	/** Treat image/paste markers as indivisible: a stray backspace deletes the whole token
+	 *  instead of corrupting `[Paste #1, +30 lines]` into plain text. */
+	override atomicTokenPattern = PLACEHOLDER_REGEX;
+
 	/** Gradient-highlight the "ultrathink" / "orchestrate" / "workflowz" keywords as the user types
 	 *  them, skipping any occurrence inside code spans, fenced blocks, or XML sections. Also make
 	 *  pasted image placeholders visually distinct and hyperlink them once their blob file exists. */
 	decorateText = (text: string): string =>
-		renderImageReferences(text, {
+		renderPlaceholders(text, {
 			renderText: value => highlightMagicKeywords(value),
-			renderReference: (value, index) =>
-				imageReferenceHyperlink(value, index, this.imageLinks, label =>
-					theme.fg("accent", `\x1b[1m\x1b[4m${label}\x1b[24m\x1b[22m`),
-				),
+			renderReference: (value, kind, index) =>
+				kind === "image"
+					? imageReferenceHyperlink(value, index, this.imageLinks, label =>
+							theme.fg("accent", `\x1b[1m\x1b[4m${label}\x1b[24m\x1b[22m`),
+						)
+					: theme.fg("accent", `\x1b[1m${value}\x1b[22m`),
 		});
 	onEscape?: () => void;
 	onClear?: () => void;
@@ -105,14 +167,16 @@ export class CustomEditor extends Editor {
 	onCopyPrompt?: () => void;
 	/** Called when the configured image-paste shortcut is pressed. */
 	onPasteImage?: () => Promise<boolean>;
-	/** Called when a bracketed paste contains exactly one image-file path. */
-	onPasteImagePath?: (path: string) => void;
+	/** Called when a bracketed paste contains one or more image-file paths. */
+	onPasteImagePath?: (path: string) => void | Promise<void>;
 	/** Called when the configured raw text-paste shortcut is pressed. */
 	onPasteTextRaw?: () => void;
 	/** Called when the configured dequeue shortcut is pressed. */
 	onDequeue?: () => void;
 	/** Called when Caps Lock is pressed. */
 	onCapsLock?: () => void;
+	/** Called when left-arrow is pressed while the editor is empty (cursor necessarily at start). */
+	onLeftAtStart?: () => void;
 
 	/** Custom key handlers from extensions and non-built-in app actions. */
 	#customKeyHandlers = new Map<KeyId, () => void>();
@@ -182,14 +246,26 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
-		const pastedImagePath = extractBracketedImagePastePath(data);
-		if (pastedImagePath && this.onPasteImagePath) {
-			this.onPasteImagePath(pastedImagePath);
+		const pastedImagePaths = extractBracketedImagePastePaths(data);
+		if (pastedImagePaths && this.onPasteImagePath) {
+			void (async () => {
+				for (const path of pastedImagePaths) {
+					await this.onPasteImagePath?.(path);
+				}
+			})();
 			return;
 		}
 
 		const parsedKey = parseKey(data);
 		const canonical = parsedKey !== undefined ? canonicalKeyId(parsedKey) : undefined;
+
+		// Left-arrow on an empty editor: surface for the agent-hub double-tap
+		// gesture. Plain "left" only — modified arrows and any in-text cursor
+		// movement fall through to normal handling.
+		if (canonical === "left" && this.onLeftAtStart && this.getText().trim() === "") {
+			this.onLeftAtStart();
+			return;
+		}
 
 		if (canonical !== undefined) {
 			// Intercept configured image paste (async - fires and handles result)

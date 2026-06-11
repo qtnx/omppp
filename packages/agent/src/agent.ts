@@ -7,10 +7,10 @@ import {
 	type ApiKeyResolveContext,
 	type AssistantMessage,
 	type AssistantMessageEvent,
+	type Context,
 	type CursorExecHandlers,
 	type CursorToolResultHandler,
 	type Effort,
-	getBundledModel,
 	type ImageContent,
 	type Message,
 	type Model,
@@ -23,6 +23,7 @@ import {
 	type ToolChoice,
 	type ToolResultMessage,
 } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { abortReasonText, agentLoop, agentLoopContinue } from "./agent-loop";
 import type { AppendOnlyContextManager } from "./append-only-context";
 import type { HarmonyAuditEvent } from "./harmony-leak";
@@ -95,6 +96,12 @@ export interface AgentOptions {
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 
 	/**
+	 * Optional transform applied after provider context assembly and before
+	 * telemetry capture/provider send.
+	 */
+	transformProviderContext?: (context: Context) => Context;
+
+	/**
 	 * Steering mode: "all" = send all steering messages at once, "one-at-a-time" = one per turn
 	 */
 	steeringMode?: "all" | "one-at-a-time";
@@ -110,12 +117,6 @@ export interface AgentOptions {
 	 * - "wait": defer steering until the current turn completes
 	 */
 	interruptMode?: "immediate" | "wait";
-
-	/**
-	 * Maximum completed tool calls to accept from one streamed assistant turn before
-	 * executing the batch. Undefined disables batching.
-	 */
-	maxToolCallsPerTurn?: number;
 
 	/**
 	 * API format for Kimi Code provider: "openai" or "anthropic" (default: "anthropic")
@@ -276,6 +277,7 @@ export class Agent {
 		systemPrompt: [],
 		model: getBundledModel("google", "gemini-2.5-flash-lite-preview-06-17"),
 		thinkingLevel: undefined,
+		disableReasoning: false,
 		tools: [],
 		messages: [],
 		isStreaming: false,
@@ -288,12 +290,12 @@ export class Agent {
 	#abortController?: AbortController;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
+	#transformProviderContext?: (context: Context) => Context;
 	#steeringQueue: AgentMessage[][] = [];
 	#followUpQueue: AgentMessage[][] = [];
 	#steeringMode: "all" | "one-at-a-time";
 	#followUpMode: "all" | "one-at-a-time";
 	#interruptMode: "immediate" | "wait";
-	#maxToolCallsPerTurn?: number;
 	#sessionId?: string;
 	#promptCacheKey?: string;
 	#metadata?: Record<string, unknown>;
@@ -359,7 +361,6 @@ export class Agent {
 		this.#steeringMode = opts.steeringMode || "one-at-a-time";
 		this.#followUpMode = opts.followUpMode || "one-at-a-time";
 		this.#interruptMode = opts.interruptMode || "immediate";
-		this.#maxToolCallsPerTurn = opts.maxToolCallsPerTurn;
 		this.streamFn = opts.streamFn || streamSimple;
 		this.#sessionId = opts.sessionId;
 		this.#promptCacheKey = opts.promptCacheKey;
@@ -392,6 +393,7 @@ export class Agent {
 		this.afterToolCall = opts.afterToolCall;
 		this.#telemetry = opts.telemetry;
 		this.#appendOnlyContext = opts.appendOnlyContext;
+		this.#transformProviderContext = opts.transformProviderContext;
 	}
 
 	/**
@@ -597,14 +599,6 @@ export class Agent {
 		this.#maxRetryDelayMs = value;
 	}
 
-	get maxToolCallsPerTurn(): number | undefined {
-		return this.#maxToolCallsPerTurn;
-	}
-
-	set maxToolCallsPerTurn(value: number | undefined) {
-		this.#maxToolCallsPerTurn = value;
-	}
-
 	get state(): AgentState {
 		return this.#state;
 	}
@@ -681,6 +675,10 @@ export class Agent {
 
 	setThinkingLevel(l: Effort | undefined) {
 		this.#state.thinkingLevel = l;
+	}
+
+	setDisableReasoning(disabled: boolean) {
+		this.#state.disableReasoning = disabled;
 	}
 
 	setSteeringMode(mode: "all" | "one-at-a-time") {
@@ -967,6 +965,7 @@ export class Agent {
 		const config: AgentLoopConfig = {
 			model,
 			reasoning,
+			disableReasoning: this.#state.disableReasoning,
 			temperature: this.#temperature,
 			topP: this.#topP,
 			topK: this.#topK,
@@ -976,7 +975,6 @@ export class Agent {
 			serviceTier: this.#serviceTier,
 			hideThinkingSummary: this.#hideThinkingSummary,
 			interruptMode: this.#interruptMode,
-			maxToolCallsPerTurn: this.#maxToolCallsPerTurn,
 			sessionId: this.#sessionId,
 			promptCacheKey: this.#promptCacheKey,
 			metadata: this.#metadataResolver ? undefined : this.#metadata,
@@ -987,6 +985,7 @@ export class Agent {
 			kimiApiFormat: this.#kimiApiFormat,
 			preferWebsockets: this.#preferWebsockets,
 			convertToLlm: this.#convertToLlm,
+			transformProviderContext: this.#transformProviderContext,
 			transformContext: this.#transformContext,
 			onPayload: this.#onPayload,
 			onResponse: this.#onResponse,
@@ -1011,6 +1010,7 @@ export class Agent {
 			onHarmonyLeak: this.#onHarmonyLeak,
 			getToolChoice,
 			getReasoning: () => this.#state.thinkingLevel,
+			getDisableReasoning: () => this.#state.disableReasoning,
 			getSteeringMessages: async () => {
 				if (skipInitialSteeringPoll) {
 					skipInitialSteeringPoll = false;

@@ -10,7 +10,7 @@ import type { Theme } from "../modes/theme/theme";
 import sshDescriptionBase from "../prompts/tools/ssh.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import type { SSHHostInfo } from "../ssh/connection-manager";
-import { ensureHostInfo, getHostInfoForHost } from "../ssh/connection-manager";
+import { ensureHostInfo, getCachedHostInfoSync } from "../ssh/connection-manager";
 import { executeSSH } from "../ssh/ssh-executor";
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
@@ -33,8 +33,8 @@ export interface SSHToolDetails {
 	meta?: OutputMeta;
 }
 
-async function formatHostEntry(host: SSHHost): Promise<string> {
-	const info = await getHostInfoForHost(host);
+function formatHostEntry(host: SSHHost): string {
+	const info = getCachedHostInfoSync(host);
 
 	let shell: string;
 	if (!info) {
@@ -59,12 +59,12 @@ async function formatHostEntry(host: SSHHost): Promise<string> {
 	return `- ${host.name} (${host.host}) | ${shell}`;
 }
 
-async function formatDescription(hosts: SSHHost[]): Promise<string> {
+function formatDescription(hosts: SSHHost[]): string {
 	const baseDescription = prompt.render(sshDescriptionBase);
 	if (hosts.length === 0) {
 		return baseDescription;
 	}
-	const hostList = (await Promise.all(hosts.map(formatHostEntry))).join("\n");
+	const hostList = hosts.map(formatHostEntry).join("\n");
 	return `${baseDescription}\n\nAvailable hosts:\n${hostList}`;
 }
 
@@ -206,7 +206,7 @@ export async function loadSshTool(session: ToolSession): Promise<SshTool | null>
 	const descriptionHosts = hostNames
 		.map(name => hostsByName.get(name))
 		.filter((host): host is SSHHost => host !== undefined);
-	const description = await formatDescription(descriptionHosts);
+	const description = formatDescription(descriptionHosts);
 
 	return new SshTool(session, hostNames, hostsByName, description);
 }
@@ -245,7 +245,7 @@ export const sshToolRenderer = {
 		const cmdLines = formatSshCommandLines(command, uiTheme);
 		const outputBlock = new CachedOutputBlock();
 		return markFramedBlockComponent({
-			render: (width: number): string[] =>
+			render: (width: number): readonly string[] =>
 				outputBlock.render(
 					{
 						header,
@@ -273,13 +273,16 @@ export const sshToolRenderer = {
 		const details = result.details;
 		const host = args?.host || "…";
 		const command = args?.command ?? "";
-		const header = renderStatusLine({ icon: "success", title: "SSH", description: `[${host}]` }, uiTheme);
+		const header = renderStatusLine(
+			{ iconOverride: uiTheme.styledSymbol("tool.ssh", "accent"), title: "SSH", description: `[${host}]` },
+			uiTheme,
+		);
 		const cmdLines = formatSshCommandLines(command, uiTheme);
 		const textContent = result.content?.find(c => c.type === "text")?.text ?? "";
 		const outputBlock = new CachedOutputBlock();
 
 		return markFramedBlockComponent({
-			render: (width: number): string[] => {
+			render: (width: number): readonly string[] => {
 				// REACTIVE: read mutable options at render time
 				const { expanded, renderContext } = options;
 				// Strip LLM-facing notice so we don't echo it next to the styled warning.

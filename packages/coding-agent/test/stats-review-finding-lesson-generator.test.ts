@@ -19,6 +19,7 @@ function singleResult(output: string): SingleResult {
 		truncated: false,
 		durationMs: 1,
 		tokens: 0,
+		requests: 0,
 	};
 }
 
@@ -68,6 +69,7 @@ describe("review finding lesson generator", () => {
 				recentOutput: ["Inspecting source context."],
 				toolCount: 1,
 				tokens: 128,
+				requests: 1,
 				contextTokens: 512,
 				contextWindow: 4096,
 				cost: 0.004,

@@ -23,6 +23,7 @@ describe("task review findings capture", () => {
 			truncated: false,
 			durationMs: 1,
 			tokens: 0,
+			requests: 0,
 			extractedToolData: {
 				report_finding: [
 					{
@@ -91,6 +92,7 @@ describe("task review findings capture", () => {
 			truncated: false,
 			durationMs: 1,
 			tokens: 0,
+			requests: 0,
 			extractedToolData: {
 				yield: [
 					{
@@ -199,6 +201,7 @@ describe("task review findings capture", () => {
 			truncated: false,
 			durationMs: 1,
 			tokens: 0,
+			requests: 0,
 		};
 
 		expect(collectReviewFindingRecordItems(result)).toEqual([
@@ -257,6 +260,7 @@ describe("task review findings capture", () => {
 			truncated: false,
 			durationMs: 1,
 			tokens: 0,
+			requests: 0,
 		};
 
 		expect(collectReviewFindingRecordItems(result).map(finding => [finding.line_start, finding.line_end])).toEqual([
@@ -308,6 +312,7 @@ describe("task review findings capture", () => {
 			truncated: false,
 			durationMs: 1,
 			tokens: 0,
+			requests: 0,
 		};
 
 		expect(collectReviewFindingRecordItems(result).map(finding => [finding.title, finding.priority])).toEqual([

@@ -14,19 +14,21 @@ import { keywordInProse } from "./markdown-prose";
  * "workflow.ts" never do.
  */
 
-// Detection: lowercase keyword (singular or plural) flanked by whitespace or a string edge. Non-global so `.test` stays stateless.
-const WORKFLOW_WORD = /(?<!\S)workflows?(?!\S)/;
+// Detection: fork compatibility keeps any lowercase "workflow" prose substring
+// as a notice trigger (for example, "workflowz") while code/XML masking stays in
+// `keywordInProse`. Highlighting remains standalone-word only for editor display.
+const WORKFLOW_NOTICE_WORD = /(?<![/.])workflow(?!\.[A-Za-z0-9])/;
 
 /** Hidden system notice appended after a user message that mentions "workflow". */
 export const WORKFLOW_NOTICE: string = workflowNotice.trim();
 
 /**
- * Whether `text` contains the standalone keyword "workflow"/"workflows"
- * (lowercase, whitespace-delimited) in prose — never inside a code block, inline
- * code span, or XML/HTML section.
+ * Whether `text` contains the lowercase substring "workflow" in prose — never
+ * inside a code block, inline code span, or XML/HTML section. This intentionally
+ * preserves the OMPx fork's notice compatibility for inputs like "workflowz".
  */
 export function containsWorkflow(text: string): boolean {
-	return keywordInProse(text, WORKFLOW_WORD);
+	return keywordInProse(text, WORKFLOW_NOTICE_WORD);
 }
 
 /**

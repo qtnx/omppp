@@ -2,17 +2,17 @@ import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Settings, type SkillsSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { Skill, SkillWarning } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
+import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
+import type { MacOSSandboxRelaunchResult } from "@oh-my-pi/pi-coding-agent/task/omp-command";
+import type { WorkspaceRoot } from "@oh-my-pi/pi-coding-agent/workspace-roots";
 import { getAgentDir, getProjectDir, setAgentDir, setProjectDir } from "@oh-my-pi/pi-utils";
 import { CONTEXT_GC_CUSTOM_TYPE, type ContextGcDelta, type ContextStatus } from "../../context-gc-plugin/src/schema";
 import { type ContextGcStore, openContextGcStore } from "../../context-gc-plugin/src/storage";
-import { Settings, type SkillsSettings } from "../src/config/settings";
-import type { Skill, SkillWarning } from "../src/extensibility/skills";
-import type { AgentSession } from "../src/session/agent-session";
-import type { SessionManager } from "../src/session/session-manager";
-import { executeAcpBuiltinSlashCommand } from "../src/slash-commands/acp-builtins";
-import type { SlashCommandRuntime } from "../src/slash-commands/types";
-import type { MacOSSandboxRelaunchResult } from "../src/task/omp-command";
-import type { WorkspaceRoot } from "../src/workspace-roots";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
@@ -928,7 +928,7 @@ describe("wave 5 — adapters and polish", () => {
 	it("/mcp add foo --url https://example.com --token X --scope project: outputs success or propagates write error", async () => {
 		// Uses project scope so it writes to /tmp/project/.omp/mcp.json which test infra controls.
 		// We verify the command either reports success or a meaningful error (not a parse error).
-		const mcpModule = await import("../src/mcp/config-writer");
+		const mcpModule = await import("@oh-my-pi/pi-coding-agent/mcp/config-writer");
 		const spy = spyOn(mcpModule, "addMCPServer").mockResolvedValue(undefined);
 		try {
 			const { output, runtime } = createRuntime();
@@ -966,7 +966,7 @@ describe("wave 5 — adapters and polish", () => {
 
 	// /ssh add — spy on addSSHHost
 	it("/ssh add foo --host x --user y --scope user: calls addSSHHost", async () => {
-		const sshModule = await import("../src/ssh/config-writer");
+		const sshModule = await import("@oh-my-pi/pi-coding-agent/ssh/config-writer");
 		const spy = spyOn(sshModule, "addSSHHost").mockResolvedValue(undefined);
 		try {
 			const { output, runtime } = createRuntime();
@@ -1140,7 +1140,7 @@ describe("wave 5 — adapters and polish", () => {
 
 	// /marketplace discover bulleted list
 	it("/marketplace discover: output is bulleted with '  - ' token", async () => {
-		const { MarketplaceManager } = await import("../src/extensibility/plugins/marketplace");
+		const { MarketplaceManager } = await import("@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace");
 		const discoverSpy = spyOn(MarketplaceManager.prototype, "listAvailablePlugins").mockResolvedValue([
 			{ name: "hello", version: "1.0.0", description: "A greeting plugin" } as never,
 			{ name: "world", version: "2.0.0", description: undefined } as never,

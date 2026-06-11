@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { Api, Model } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
-import { type Api, getBundledModel, type Model } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { collectTurnSummaryContext, generateTurnSummary } from "../src/utils/turn-summary-generator";
 
 function getModelOrThrow(id: string): Model<Api> {

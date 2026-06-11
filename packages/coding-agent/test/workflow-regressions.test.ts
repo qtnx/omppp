@@ -30,6 +30,7 @@ function result(output: string, overrides: Partial<SingleResult> = {}): SingleRe
 		truncated: false,
 		durationMs: 1,
 		tokens: 0,
+		requests: 0,
 		...overrides,
 	};
 }

@@ -26,6 +26,7 @@ function makeRun(opts: {
 				truncated: false,
 				durationMs: 0,
 				tokens: 0,
+				requests: 0,
 				...(await opts.runSubprocess(o.task)),
 			}) as SingleResult,
 	});
@@ -97,6 +98,7 @@ describe("WorkflowRun.spawn", () => {
 			recentOutput: [],
 			toolCount: 1,
 			tokens: 17,
+			requests: 1,
 			cost: 0,
 			durationMs: 5,
 			resolvedModel: "anthropic/claude-sonnet-4",
@@ -126,6 +128,7 @@ describe("WorkflowRun.spawn", () => {
 					truncated: false,
 					durationMs: 10,
 					tokens: 17,
+					requests: 1,
 					resolvedModel: "anthropic/claude-sonnet-4",
 					usage: { output: 17 } as never,
 				} satisfies SingleResult;

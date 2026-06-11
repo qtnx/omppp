@@ -10,6 +10,7 @@ Both are persisted as session entries and converted back into user-context messa
 ## Key implementation files
 
 - `packages/agent/src/compaction/compaction.ts` (context-full summarization and handoff generation)
+- `packages/snapcompact/src/snapcompact.ts` (snapcompact strategy: history archived as dense bitmap images)
 - `packages/agent/src/compaction/branch-summarization.ts`
 - `packages/agent/src/compaction/pruning.ts`
 - `packages/agent/src/compaction/utils.ts`
@@ -126,6 +127,29 @@ The automatic paths are intentionally different:
   - Trigger: `runIdleCompaction()` when not streaming or already compacting.
   - Uses `reason: "idle"` and does not auto-continue afterward.
 
+### Agent-requested compaction (`compact` tool)
+
+The `compact` tool lets the model request context compaction itself when it judges older history is no longer needed. The request schedules the auto-maintenance pipeline (`#runAutoCompaction` with `reason: "requested"`) rather than the manual `/compact` path, so it never aborts the in-flight turn, and the configured `compaction.strategy` still decides whether the run is context-full, handoff, shake, or snapcompact.
+
+Agent-requested compaction never runs mid-turn. A successful tool call records one pending request for the current turn, and the compaction runs only after that turn reaches the normal boundary. At most one request is kept per turn; if the turn aborts before the boundary, the pending request is dropped. The tool does not accept custom compaction instructions, so `compaction.strategy: "snapcompact"` remains eligible.
+
+The tool is hidden when `compaction.strategy: "off"`. It still works when `compaction.enabled: false` because it is an explicit request, in the same class as idle compaction rather than threshold auto-maintenance. While the request is running, the TUI loader says `Agent requested, …`; the reason string supplied in the tool call is shown on the tool's own transcript row, not in the loader.
+
+### Snapcompact strategy
+
+`compaction.strategy: "snapcompact"` replaces the LLM summarization call with a local, deterministic archival pass (`snapcompactCompact` from `@oh-my-pi/snapcompact`):
+
+- The discarded history is serialized, whitespace-collapsed, and printed onto provider-aware square PNG frames using bundled public-domain pixel fonts. Anthropic-family and unknown APIs use repeated black `8x8` cells, Google uses repeated sentence-colored `8x8` cells, and OpenAI uses dense stretched `6x6` cells with `detail: "original"`.
+- Serialization keeps the archive conversation-dense: tool results are truncated head+tail (default 2,000 chars at a 0.6 head ratio), tool-call argument values are capped per value (500) and per call (2,000), and tool output is printed in dim gray ink so conversation reads louder than tool noise. All budgets and the dimming are configurable via `SnapcompactSerializeOptions` (`toolResultMaxChars`, `toolArgMaxChars`, `toolCallMaxChars`, `truncateHeadRatio`, `dimToolResults`).
+- Frames persist under `CompactionEntry.preserveData.snapcompact` and are re-attached to the `compactionSummary` message as image blocks on every context rebuild; the entry's `summary` is a deterministic reading guide (grid geometry, role tags, truncation notes) plus the usual file-operation lists.
+- Later compactions carry earlier frames forward. Beyond an 8-frame budget the archive fades from the middle out: the earliest frame (session head — the original request, or the filmed summary of older history) is pinned, and the oldest *unpinned* frames are evicted, so head and tail both survive. If the previous compaction was text-based, its summary is printed at the head of the frame archive as `[Summary of earlier history]`.
+- No model, API key, or network is involved, so snapcompact is also safe for overflow recovery. It requires a vision-capable current model (`model.input` includes `"image"`); otherwise the run falls back to context-full and emits a warning notice (auto and manual paths). Manual `/compact` honors the strategy unless custom instructions are given (those imply a directed LLM summary).
+- Rationale: the shape table comes from the snapcompact 200k-token evals in `packages/snapcompact`, where bitmap frames preserved QA recall at lower billed-token cost than raw text for vision-capable models.
+
+### Display transcript
+
+Compaction no longer visually restarts the conversation. The TUI renders the **display transcript** (`buildSessionContext({ transcript: true })` / `AgentSession.buildTranscriptSessionContext()`): every path entry in chronological order, with each compaction shown inline as a slim divider — `── 📷 compacted · ctrl+o ──` — at the point it fired. Expanding (ctrl+o) reveals the summary. Only the LLM context resets at the compaction boundary; the scrollback above the divider stays intact, including across session resume.
+
 ### Pre-compaction pruning
 
 Before compaction checks, tool-result pruning may run (`pruneToolOutputs`).
@@ -233,18 +257,21 @@ Cumulative behavior:
 
 - Includes prior compaction details only when prior entry is pi-generated (`fromExtension !== true`).
 - In split turns, includes turn-prefix file ops too.
-- `readFiles` excludes files also modified.
+- `details.readFiles` excludes files also modified; `details.modifiedFiles` carries the rest (persisted shape is unchanged).
 
-Summary text gets file tags appended via prompt template:
+Summary text gets one `<files>` tag appended via prompt template: a grouped, prefix-folded directory tree (find-tool shape) with a per-file access marker — `(Read)` for read-only files, `(Write)` for modified files never read, `(RW)` for modified files also present in the cumulative read set. Capped at 20 files with an `… (N more files omitted)` line.
 
 ```xml
-<read-files>
-...
-</read-files>
-<modified-files>
-...
-</modified-files>
+<files>
+# packages/agent/src/compaction/
+compaction.ts (Read)
+utils.ts (RW)
+## prompts/
+file-operations.md (Write)
+</files>
 ```
+
+Legacy `<read-files>`/`<modified-files>` tags from summaries written by earlier versions are stripped (alongside `<files>`) before re-appending, so old summaries self-heal on the next compaction.
 
 ### Persist and reload
 
@@ -373,7 +400,7 @@ Post-navigation event exposing new/old leaf and optional summary entry.
 From `settings-schema.ts`:
 
 - `compaction.enabled` = `true`
-- `compaction.strategy` = `"context-full"` (`"handoff"` and `"off"` are also supported)
+- `compaction.strategy` = `"context-full"` (`"handoff"`, `"shake"`, `"snapcompact"`, and `"off"` are also supported)
 - `compaction.reserveTokens` = `16384`
 - `compaction.keepRecentTokens` = `20000`
 - `compaction.autoContinue` = `true`

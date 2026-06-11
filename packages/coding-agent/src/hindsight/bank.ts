@@ -55,10 +55,24 @@ function baseBankId(config: HindsightConfig): string {
 	return prefix ? `${prefix}-${base}` : base;
 }
 
-/** Best-effort project label from a working-directory path. */
+/**
+ * Best-effort project label from a working-directory path.
+ *
+ * When `directory` lives inside a git repository we resolve the primary
+ * checkout root (or the shared common dir for bare-repo worktrees) via
+ * {@link git.repo.primaryRootSync} and basename that, so every linked
+ * worktree of one repo shares the same `project:<name>` tag.
+ * Outside a repo (or when resolution fails), fall back to the cwd basename.
+ *
+ * Sync only: this runs on the hot path of `computeBankScope`, which is
+ * exposed as a sync API to callers like `backend.ts` and must stay sync.
+ * `git.repo.primaryRootSync` walks `.git`/`commondir` with sync file reads —
+ * no subprocess — so the cost is one or two `stat`s and a small `readFile`.
+ */
 function projectLabel(directory: string): string {
 	if (!directory) return UNKNOWN_PROJECT;
-	return path.basename(directory) || UNKNOWN_PROJECT;
+	const primary = git.repo.primaryRootSync(directory);
+	return path.basename(primary ?? directory) || UNKNOWN_PROJECT;
 }
 async function projectDirectoryForScope(cwd: string): Promise<string> {
 	try {

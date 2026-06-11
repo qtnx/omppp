@@ -16,11 +16,13 @@ import { astEditToolRenderer } from "./ast-edit";
 import { astGrepToolRenderer } from "./ast-grep";
 import { bashToolRenderer } from "./bash";
 import { browserToolRenderer } from "./browser/render";
+import { compactToolRenderer } from "./compact";
 import { debugToolRenderer } from "./debug";
 import { evalToolRenderer } from "./eval-render";
 import { findToolRenderer } from "./find";
 import { githubToolRenderer } from "./gh-renderer";
 import { inspectImageToolRenderer } from "./inspect-image-renderer";
+import { ircToolRenderer } from "./irc";
 import { jobToolRenderer } from "./job";
 import { recallToolRenderer, reflectToolRenderer, retainToolRenderer } from "./memory-render";
 import { readToolRenderer } from "./read";
@@ -50,6 +52,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	ast_edit: astEditToolRenderer as ToolRenderer,
 	bash: bashToolRenderer as ToolRenderer,
 	browser: browserToolRenderer as ToolRenderer,
+	compact: compactToolRenderer as ToolRenderer,
 	debug: debugToolRenderer as ToolRenderer,
 	eval: evalToolRenderer as ToolRenderer,
 	edit: editToolRenderer as ToolRenderer,
@@ -58,6 +61,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	search: searchToolRenderer as ToolRenderer,
 	lsp: lspToolRenderer as ToolRenderer,
 	inspect_image: inspectImageToolRenderer as ToolRenderer,
+	irc: ircToolRenderer as ToolRenderer,
 	read: readToolRenderer as ToolRenderer,
 	job: jobToolRenderer as ToolRenderer,
 	resolve: resolveToolRenderer as ToolRenderer,

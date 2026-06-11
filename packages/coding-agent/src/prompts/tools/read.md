@@ -8,7 +8,7 @@ Read files, directories, archives, SQLite databases, images, documents, internal
 
 ## Parameters
 
-- `path` — required. Local path, internal URI (`skill://`, `agent://`, `artifact://`, `memory://`, `rule://`, `local://`, `vault://`, `mcp://`), or URL. Append `:<sel>` for line ranges, raw mode, or special modes (e.g. `src/foo.ts:50-200`, `src/foo.ts:raw`, `db.sqlite:users:42`).
+- `path` — required. Local path, internal URI (`skill://`, `agent://`, `artifact://`, `history://`, `memory://`, `rule://`, `local://`, `vault://`, `mcp://`, `omp://`, `issue://`, `pr://`), or URL. Append `:<sel>` for line ranges, raw mode, or special modes (e.g. `src/foo.ts:50-200`, `src/foo.ts:raw`, `db.sqlite:users:42`).
 
 ## Selectors
 
@@ -74,13 +74,11 @@ For `.sqlite`, `.sqlite3`, `.db`, `.db3`:
 
 # Internal URIs
 
-`skill://<name>`, `agent://<id>`, `artifact://<id>`, `memory://root`, `rule://<name>`, `local://<name>.md`, `vault://<vault>/<path>`, `mcp://<uri>` resolve transparently and accept the same line selectors as filesystem paths. Use `artifact://<id>` to recover full output that a previous bash/eval/tool result spilled or truncated.
+`skill://<name>`, `agent://<id>`, `artifact://<id>`, `history://<agentId>`, `memory://root`, `rule://<name>`, `local://<name>.md`, `vault://<vault>/<path>`, `mcp://<uri>`, `omp://<doc>.md`, `issue://<N>`, and `pr://<N>` resolve transparently and accept the same line selectors as filesystem paths. Use `artifact://<id>` to recover full output that a previous bash/eval/tool result spilled or truncated. `history://<agentId>` is an agent's transcript as concise markdown; bare `history://` lists agents.
 
 <critical>
 - You MUST use `read` for every file, directory, archive, and URL inspection. `cat`, `head`, `tail`, `less`, `more`, `ls`, `tar`, `unzip`, `curl`, `wget` are FORBIDDEN — any such bash call is a bug, regardless of how short or convenient it looks.
 - You MUST prefer `read` over a browser/puppeteer tool for URL content; only reach for a browser when `read` cannot deliver reasonable content.
-- You MUST always include `path`. NEVER call `read` with `{}`.
 - For line ranges, append the selector to `path` (`path="src/foo.ts:50-200"`, `path="src/foo.ts:50+150"`). NEVER substitute `sed -n`, `awk NR`, or `head`/`tail` pipelines.
-- Summary footer says `read <path>:raw …`? Re-issue the exact selector it names. NEVER guess what's inside `..` / `…` markers — they carry no content.
-- You MAY combine selectors with URL reads and internal URIs; both paginate the cached resolved output.
+- Summary footer names ranges to re-read? Re-issue ONLY the ranges you need via the multi-range selector. NEVER guess what's inside `..` / `…` markers — they carry no content.
 </critical>

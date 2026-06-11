@@ -171,6 +171,7 @@ function agentWriterResult(content: string): SingleResult {
 		truncated: false,
 		durationMs: 0,
 		tokens: 0,
+		requests: 0,
 	};
 }
 
@@ -187,6 +188,7 @@ function agentWriterSkipResult(reason: string): SingleResult {
 		truncated: false,
 		durationMs: 0,
 		tokens: 0,
+		requests: 0,
 	};
 }
 
@@ -203,6 +205,7 @@ function agentWriterAbortResult(): SingleResult {
 		truncated: false,
 		durationMs: 15_000,
 		tokens: 0,
+		requests: 0,
 		aborted: true,
 		abortReason: "The operation was aborted due to timeout",
 		resolvedModel: "anthropic/claude-opus-4-8:high",
@@ -318,7 +321,7 @@ describe("live learnings runtime", () => {
 		expect(writerOptions?.agent.name).toBe("learning-writer");
 		expect(writerOptions?.agent.tools).toEqual(["read"]);
 		expect(writerOptions?.modelOverride).toEqual(["pi/plan", "pi/default"]);
-		expect(writerOptions?.contextFile).toBe(path.join(fx.agentDir, "sessions", "session-1.jsonl"));
+		expect(writerOptions?.contextFiles?.[0]?.path).toBe(path.join(fx.agentDir, "sessions", "session-1.jsonl"));
 		expect(writerOptions?.task).toContain("Preserve only facts that are explicitly present in the user message.");
 		expect(writerOptions?.task).toContain("Do not add details, causes, scope, or examples the user did not state.");
 		expect(writerOptions?.task).toContain("When the user blames, claims, or is upset about agent behavior");

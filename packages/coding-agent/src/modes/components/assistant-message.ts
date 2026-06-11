@@ -5,7 +5,16 @@ import { settings } from "../../config/settings";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { resolveAbortLabel, shouldRenderAbortReason } from "../../session/messages";
-import { resolveImageOptions } from "../../tools/render-utils";
+import { getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
+
+/**
+ * Max lines of a turn-ending provider error rendered inline in the transcript.
+ * Bounds pathological error bodies — e.g. a proxy 502 whose body is a full HTML
+ * page — so they can't flood the scrollback. Blank lines are dropped and each
+ * line is width-truncated by {@link getPreviewLines}. Full text is still kept in
+ * the persisted session.
+ */
+const MAX_TRANSCRIPT_ERROR_LINES = 8;
 
 /**
  * Component that renders a complete assistant message
@@ -27,6 +36,9 @@ export class AssistantMessageComponent extends Container {
 	 * transcript keeps the error in history.
 	 */
 	#errorPinned = false;
+	/** Whether the last updateContent carried an in-flight streaming partial; such
+	 *  renders bypass the markdown module LRU (see Markdown.transientRenderCache). */
+	#lastUpdateTransient = false;
 
 	constructor(
 		message?: AssistantMessage,
@@ -50,7 +62,7 @@ export class AssistantMessageComponent extends Container {
 	override invalidate(): void {
 		super.invalidate();
 		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage);
+			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
 	}
 
@@ -66,7 +78,7 @@ export class AssistantMessageComponent extends Container {
 		if (this.#errorPinned === pinned) return;
 		this.#errorPinned = pinned;
 		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage);
+			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
 	}
 
@@ -76,6 +88,22 @@ export class AssistantMessageComponent extends Container {
 
 	markTranscriptBlockFinalized(): void {
 		this.#transcriptBlockFinalized = true;
+	}
+
+	/**
+	 * Render a turn-ending provider error inline. Drops blank lines, clamps the
+	 * line count to {@link MAX_TRANSCRIPT_ERROR_LINES}, and width-truncates each
+	 * line so a pathological body — e.g. the HTML page a proxy returns on a 502 —
+	 * can't flood the transcript. Mirrors {@link ErrorBannerComponent}.
+	 */
+	#appendErrorBlock(message: string): void {
+		const lines = getPreviewLines(message, MAX_TRANSCRIPT_ERROR_LINES, TRUNCATE_LENGTHS.LINE);
+		if (lines.length === 0) lines.push("Unknown error");
+		this.#contentContainer.addChild(new Spacer(1));
+		this.#contentContainer.addChild(new Text(theme.fg("error", `Error: ${lines[0]}`), 1, 0));
+		for (const line of lines.slice(1)) {
+			this.#contentContainer.addChild(new Text(theme.fg("error", `  ${line}`), 1, 0));
+		}
 	}
 
 	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
@@ -98,7 +126,7 @@ export class AssistantMessageComponent extends Container {
 			this.#convertToolImagesForKitty(toolCallId, validImages);
 		}
 		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage);
+			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
 	}
 
@@ -121,7 +149,7 @@ export class AssistantMessageComponent extends Container {
 						mimeType: "image/png",
 					});
 					if (this.#lastMessage) {
-						this.updateContent(this.#lastMessage);
+						this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 					}
 					this.onImageUpdate?.();
 				})
@@ -134,7 +162,7 @@ export class AssistantMessageComponent extends Container {
 	setUsageInfo(usage: Usage): void {
 		this.#usageInfo = usage;
 		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage);
+			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
 	}
 
@@ -186,14 +214,17 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	updateContent(message: AssistantMessage): void {
+	updateContent(message: AssistantMessage, opts?: { transient?: boolean }): void {
 		this.#lastMessage = message;
+		this.#lastUpdateTransient = opts?.transient === true;
 
 		// Clear content container
 		this.#contentContainer.clear();
 
 		const hasVisibleContent = message.content.some(
-			c => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
+			c =>
+				(c.type === "text" && c.text.trim()) ||
+				(!this.hideThinkingBlock && c.type === "thinking" && c.thinking.trim()),
 		);
 
 		// Render content in order
@@ -203,34 +234,32 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "text" && content.text.trim()) {
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
-				this.#contentContainer.addChild(new Markdown(content.text.trim(), 1, 0, getMarkdownTheme()));
+				const markdown = new Markdown(content.text.trim(), 1, 0, getMarkdownTheme());
+				markdown.transientRenderCache = this.#lastUpdateTransient;
+				this.#contentContainer.addChild(markdown);
 			} else if (content.type === "thinking" && content.thinking.trim()) {
+				if (this.hideThinkingBlock) {
+					thinkingIndex += 1;
+					continue;
+				}
 				// Add spacing only when another visible assistant content block follows.
 				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
 				const hasVisibleContentAfter = message.content
 					.slice(i + 1)
 					.some(c => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
-				if (this.hideThinkingBlock) {
-					// Show static "Thinking..." label when hidden
-					this.#contentContainer.addChild(new Text(theme.italic(theme.fg("thinkingText", "Thinking...")), 1, 0));
-					if (hasVisibleContentAfter) {
-						this.#contentContainer.addChild(new Spacer(1));
-					}
-				} else {
-					const thinkingText = content.thinking.trim();
-					// Thinking traces in thinkingText color, italic
-					this.#contentContainer.addChild(
-						new Markdown(thinkingText, 1, 0, getMarkdownTheme(), {
-							color: (text: string) => theme.fg("thinkingText", text),
-							italic: true,
-						}),
-					);
-					this.#appendThinkingExtensions(i, thinkingIndex, thinkingText);
-					thinkingIndex += 1;
-					if (hasVisibleContentAfter) {
-						this.#contentContainer.addChild(new Spacer(1));
-					}
+				const thinkingText = content.thinking.trim();
+				// Thinking traces in thinkingText color, italic
+				const thinkingMarkdown = new Markdown(thinkingText, 1, 0, getMarkdownTheme(), {
+					color: (text: string) => theme.fg("thinkingText", text),
+					italic: true,
+				});
+				thinkingMarkdown.transientRenderCache = this.#lastUpdateTransient;
+				this.#contentContainer.addChild(thinkingMarkdown);
+				this.#appendThinkingExtensions(i, thinkingIndex, thinkingText);
+				thinkingIndex += 1;
+				if (hasVisibleContentAfter) {
+					this.#contentContainer.addChild(new Spacer(1));
 				}
 			}
 		}
@@ -249,9 +278,7 @@ export class AssistantMessageComponent extends Container {
 				}
 				this.#contentContainer.addChild(new Text(theme.fg("error", abortMessage), 1, 0));
 			} else if (message.stopReason === "error" && !this.#errorPinned) {
-				const errorMsg = message.errorMessage || "Unknown error";
-				this.#contentContainer.addChild(new Spacer(1));
-				this.#contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), 1, 0));
+				this.#appendErrorBlock(message.errorMessage || "Unknown error");
 			}
 		}
 		if (
@@ -260,8 +287,7 @@ export class AssistantMessageComponent extends Container {
 			message.stopReason !== "aborted" &&
 			message.stopReason !== "error"
 		) {
-			this.#contentContainer.addChild(new Spacer(1));
-			this.#contentContainer.addChild(new Text(theme.fg("error", `Error: ${message.errorMessage}`), 1, 0));
+			this.#appendErrorBlock(message.errorMessage);
 		}
 
 		// Token usage metadata

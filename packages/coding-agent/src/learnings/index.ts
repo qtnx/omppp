@@ -575,6 +575,7 @@ async function writeLearning(options: {
 	});
 	const writerModels = config.writerModels.length > 0 ? config.writerModels : DEFAULT_WRITER_MODELS;
 	const contextFile = session.sessionManager.getSessionFile() ?? undefined;
+	const contextFiles = contextFile ? [{ path: contextFile, content: "" }] : undefined;
 	await recordLearningWriterRequest(audit, input, writerModels, contextFile);
 	const signal = AbortSignal.timeout(config.writerTimeoutMs);
 	const result = await taskExecutor.runSubprocess({
@@ -590,7 +591,7 @@ async function writeLearning(options: {
 		taskDepth: 0,
 		enableLsp: false,
 		signal,
-		contextFile,
+		contextFiles,
 		artifactsDir: audit.auditDir,
 		persistArtifacts: true,
 		modelRegistry,

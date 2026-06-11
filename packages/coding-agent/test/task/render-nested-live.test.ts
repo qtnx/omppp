@@ -41,6 +41,7 @@ describe("task renderer: nested live rendering", () => {
 			recentTools: [],
 			recentOutput: [],
 			toolCount: 1,
+			requests: 0,
 			tokens: 1000,
 			cost: 0,
 			durationMs: 1234,
@@ -63,6 +64,7 @@ describe("task renderer: nested live rendering", () => {
 			truncated: false,
 			durationMs: 500,
 			tokens: 200,
+			requests: 0,
 		};
 	}
 
@@ -79,6 +81,7 @@ describe("task renderer: nested live rendering", () => {
 			recentTools: [],
 			recentOutput: [],
 			toolCount: 0,
+			requests: 0,
 			tokens: 0,
 			cost: 0,
 			durationMs: 0,
@@ -255,7 +258,6 @@ describe("task renderer: nested live rendering", () => {
 		expect(text).toContain("Goal");
 		expect(text).toContain("Harden the auth stack before the cut.");
 	});
-
 	it("renders a static result header while the body shimmers the running task name", async () => {
 		const theme = (await getThemeByName("dark"))!;
 		const details: TaskToolDetails = {

@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { initTheme } from "../../src/modes/theme/theme";
-import { containsWorkflow, highlightWorkflow, WORKFLOW_NOTICE } from "../../src/modes/workflow";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { containsWorkflow, highlightWorkflow, WORKFLOW_NOTICE } from "@oh-my-pi/pi-coding-agent/modes/workflow";
 
 beforeAll(() => {
 	// highlightWorkflow reads the global theme's color mode.
@@ -15,14 +15,15 @@ describe("workflow keyword detection", () => {
 		expect(containsWorkflow("run these workflows")).toBe(true);
 	});
 
-	it("ignores casing, inflections, punctuation-adjacent, and path-embedded forms", () => {
+	it("ignores casing and path-embedded forms but preserves lowercase prose-substring triggers", () => {
 		expect(containsWorkflow("Workflow")).toBe(false);
 		expect(containsWorkflow("WORKFLOW")).toBe(false);
-		expect(containsWorkflow("workflowed the build")).toBe(false);
-		expect(containsWorkflow("reworkflow everything")).toBe(false);
-		// A path/extension is not whitespace, so the word never triggers.
+		expect(containsWorkflow("workflowed the build")).toBe(true);
+		expect(containsWorkflow("workflowz +500k! compare these approaches")).toBe(true);
+		expect(containsWorkflow("reworkflow everything")).toBe(true);
+		// A path/extension is masked by prose detection, so it does not trigger.
 		expect(containsWorkflow("packages/coding-agent/test/modes/workflow.test.ts")).toBe(false);
-		expect(containsWorkflow("do it. workflow.")).toBe(false);
+		expect(containsWorkflow("do it. workflow.")).toBe(true);
 		expect(containsWorkflow("nothing to see here")).toBe(false);
 	});
 });

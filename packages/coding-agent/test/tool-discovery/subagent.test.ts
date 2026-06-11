@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { Settings } from "../../src/config/settings";
-import { resolveEffectiveToolDiscoveryMode } from "../../src/tool-discovery/tool-index";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resolveEffectiveToolDiscoveryMode } from "@oh-my-pi/pi-coding-agent/tool-discovery/tool-index";
 
 // ─── Subagent discovery mode inheritance tests ────────────────────────────────
 // These are unit-level tests that verify the settings resolution logic

@@ -1,15 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { getBundledModel } from "../src/models";
-import { streamOpenAICompletions } from "../src/providers/openai-completions";
-import { stream } from "../src/stream";
-import type { Context, Model, Tool, ToolCall } from "../src/types";
-import { getStreamMarkupHealingPattern, StreamMarkupHealing } from "../src/utils/stream-markup-healing";
-
-const originalFetch = global.fetch;
-
-afterEach(() => {
-	global.fetch = originalFetch;
-});
+import { describe, expect, it } from "bun:test";
+import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
+import { stream } from "@oh-my-pi/pi-ai/stream";
+import type { Context, FetchImpl, Model, Tool, ToolCall } from "@oh-my-pi/pi-ai/types";
+import { getStreamMarkupHealingPattern, StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
 interface SseToolCallDelta {
 	index: number;
@@ -45,9 +40,9 @@ function sseResponse(events: ReadonlyArray<SseChunk | "[DONE]">): Response {
 	});
 }
 
-function mockFetch(events: ReadonlyArray<SseChunk | "[DONE]">): typeof fetch {
+function mockFetch(events: ReadonlyArray<SseChunk | "[DONE]">): FetchImpl {
 	const fn = async (_input: string | URL | Request, _init?: RequestInit): Promise<Response> => sseResponse(events);
-	return Object.assign(fn, { preconnect: originalFetch.preconnect });
+	return Object.assign(fn, { preconnect: fetch.preconnect });
 }
 
 function baseContext(): Context {
@@ -108,7 +103,7 @@ const readTool: Tool = {
 		additionalProperties: false,
 	},
 };
-const deepseekCloudModel: Model<"ollama-chat"> = {
+const deepseekCloudModel: Model<"ollama-chat"> = buildModel({
 	id: "deepseek-v4-pro",
 	name: "DeepSeek V4 Pro",
 	api: "ollama-chat",
@@ -119,7 +114,7 @@ const deepseekCloudModel: Model<"ollama-chat"> = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 131_072,
 	maxTokens: 8_192,
-};
+});
 
 function ndjsonResponse(lines: ReadonlyArray<unknown>): Response {
 	const body = `${lines.map(line => JSON.stringify(line)).join("\n")}\n`;
@@ -136,9 +131,9 @@ function ndjsonResponse(lines: ReadonlyArray<unknown>): Response {
 	});
 }
 
-function mockNdjsonFetch(lines: ReadonlyArray<unknown>): typeof fetch {
+function mockNdjsonFetch(lines: ReadonlyArray<unknown>): FetchImpl {
 	const fn = async (_input: string | URL | Request, _init?: RequestInit): Promise<Response> => ndjsonResponse(lines);
-	return Object.assign(fn, { preconnect: originalFetch.preconnect });
+	return Object.assign(fn, { preconnect: fetch.preconnect });
 }
 
 describe("StreamMarkupHealing pattern selection", () => {
@@ -224,6 +219,25 @@ describe("StreamMarkupHealing DSML envelope pattern", () => {
 		expect(calls[0].name).toBe("bash");
 		expect(JSON.parse(calls[0].arguments)).toEqual({ cmd: "ls -la" });
 	});
+
+	it("passes a bare '<' in idle prose through without holding it back", () => {
+		const healing = new StreamMarkupHealing({ pattern: "dsml" });
+		// No '>' anywhere in the tail — the old any-'<' hold-back froze display here.
+		expect(healing.feed("if a < b:\n    return a")).toBe("if a < b:\n    return a");
+	});
+
+	it("still holds back a tail that is a partial DSML section-open tag", () => {
+		const healing = new StreamMarkupHealing({ pattern: "dsml" });
+		expect(healing.feed("run ")).toBe("run ");
+		expect(healing.feed("<｜DSML｜tool")).toBe("");
+		expect(healing.feed("_calls>")).toBe("");
+		expect(
+			healing.feed(
+				'<｜DSML｜invoke name="bash"><｜DSML｜parameter name="cmd">ls</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>',
+			),
+		).toBe("");
+		expect(healing.drainCompleted()).toHaveLength(1);
+	});
 });
 
 describe("StreamMarkupHealing thinking pattern", () => {
@@ -245,14 +259,14 @@ describe("Kimi K2 leaked markup healing", () => {
 			"<|tool_call_end|>" +
 			"<|tool_calls_section_end|>";
 
-		global.fetch = mockFetch([
+		const fetchMock = mockFetch([
 			chunk(model.id, { content: "I'll read it. " }),
 			chunk(model.id, { content: leaked }),
 			chunk(model.id, {}, "stop"),
 			"[DONE]",
 		]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test" }).result();
+		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test", fetch: fetchMock }).result();
 
 		const text = result.content
 			.filter(b => b.type === "text")
@@ -286,14 +300,14 @@ describe("Kimi K2 leaked markup healing", () => {
 		expect(a + b).toBe(full);
 		expect(a.endsWith("<|tool_ca")).toBe(true);
 
-		global.fetch = mockFetch([
+		const fetchMock = mockFetch([
 			chunk(model.id, { content: a }),
 			chunk(model.id, { content: b }),
 			chunk(model.id, {}, "stop"),
 			"[DONE]",
 		]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test" }).result();
+		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test", fetch: fetchMock }).result();
 
 		const text = result.content
 			.filter(b => b.type === "text")
@@ -319,9 +333,9 @@ describe("Kimi K2 leaked markup healing", () => {
 			"<|tool_call_end|>" +
 			"<|tool_calls_section_end|>";
 
-		global.fetch = mockFetch([chunk(model.id, { content: leaked }), chunk(model.id, {}, "stop"), "[DONE]"]);
+		const fetchMock = mockFetch([chunk(model.id, { content: leaked }), chunk(model.id, {}, "stop"), "[DONE]"]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test" }).result();
+		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test", fetch: fetchMock }).result();
 		const toolCalls = result.content.filter((b): b is ToolCall => b.type === "toolCall");
 
 		expect(toolCalls).toHaveLength(2);
@@ -336,7 +350,7 @@ describe("Kimi K2 leaked markup healing", () => {
 		const tail = "<|tool_call_end|><|tool_calls_section_end|>";
 		const argsParts = ['{"path":"', "out.txt", '","content":"', "hello world", '"}'];
 
-		global.fetch = mockFetch([
+		const fetchMock = mockFetch([
 			chunk(model.id, { content: head }),
 			...argsParts.map(part => chunk(model.id, { content: part })),
 			chunk(model.id, { content: tail }),
@@ -344,7 +358,7 @@ describe("Kimi K2 leaked markup healing", () => {
 			"[DONE]",
 		]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test" }).result();
+		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test", fetch: fetchMock }).result();
 		const toolCalls = result.content.filter((b): b is ToolCall => b.type === "toolCall");
 
 		expect(toolCalls).toHaveLength(1);
@@ -353,14 +367,14 @@ describe("Kimi K2 leaked markup healing", () => {
 	});
 
 	it("passes prose through unchanged when no markers are present", async () => {
-		global.fetch = mockFetch([
+		const fetchMock = mockFetch([
 			chunk(model.id, { content: "Hello, " }),
 			chunk(model.id, { content: "world!" }),
 			chunk(model.id, {}, "stop"),
 			"[DONE]",
 		]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test" }).result();
+		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test", fetch: fetchMock }).result();
 		const text = result.content
 			.filter(b => b.type === "text")
 			.map(b => b.text)
@@ -373,13 +387,13 @@ describe("Kimi K2 leaked markup healing", () => {
 
 	it("emits a literal '<|' that is not a token prefix without holding it back forever", async () => {
 		// `<|hello|>` is not any known token. It should land in visible text.
-		global.fetch = mockFetch([
+		const fetchMock = mockFetch([
 			chunk(model.id, { content: "before <|hello|> after" }),
 			chunk(model.id, {}, "stop"),
 			"[DONE]",
 		]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test" }).result();
+		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test", fetch: fetchMock }).result();
 		const text = result.content
 			.filter(b => b.type === "text")
 			.map(b => b.text)
@@ -399,9 +413,13 @@ describe("Kimi K2 leaked markup healing", () => {
 			"<|tool_call_end|>" +
 			"<|tool_calls_section_end|>";
 
-		global.fetch = mockFetch([chunk(model.id, { content: leaked }), chunk(model.id, {}, "content_filter"), "[DONE]"]);
+		const fetchMock = mockFetch([
+			chunk(model.id, { content: leaked }),
+			chunk(model.id, {}, "content_filter"),
+			"[DONE]",
+		]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test" }).result();
+		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test", fetch: fetchMock }).result();
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toContain("content_filter");
 	});
@@ -417,7 +435,7 @@ describe("Kimi K2 leaked markup healing", () => {
 			"<|tool_call_end|>" +
 			"<|tool_calls_section_end|>";
 
-		global.fetch = mockFetch([
+		const fetchMock = mockFetch([
 			chunk(model.id, {
 				content: leaked,
 				tool_calls: [
@@ -433,7 +451,7 @@ describe("Kimi K2 leaked markup healing", () => {
 			"[DONE]",
 		]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test" }).result();
+		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test", fetch: fetchMock }).result();
 		const toolCalls = result.content.filter((b): b is ToolCall => b.type === "toolCall");
 		expect(toolCalls).toHaveLength(1);
 		expect(toolCalls[0].id).toBe("call_structured_abc");
@@ -458,7 +476,7 @@ describe("Kimi K2 leaked markup healing", () => {
 			"<|tool_call_end|>" +
 			"<|tool_calls_section_end|>";
 
-		global.fetch = mockFetch([
+		const fetchMock = mockFetch([
 			chunk(model.id, {
 				tool_calls: [
 					{
@@ -474,7 +492,7 @@ describe("Kimi K2 leaked markup healing", () => {
 			"[DONE]",
 		]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test" }).result();
+		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test", fetch: fetchMock }).result();
 		const toolCalls = result.content.filter((b): b is ToolCall => b.type === "toolCall");
 		expect(toolCalls).toHaveLength(2);
 		expect(toolCalls.map(call => call.name)).toEqual(["read", "write"]);
@@ -485,9 +503,9 @@ describe("Kimi K2 leaked markup healing", () => {
 
 	it("passes a literal <|tool_call_end|> through as text when no section is active", async () => {
 		const prose = "Use <|tool_call_end|> to close a call.";
-		global.fetch = mockFetch([chunk(model.id, { content: prose }), chunk(model.id, {}, "stop"), "[DONE]"]);
+		const fetchMock = mockFetch([chunk(model.id, { content: prose }), chunk(model.id, {}, "stop"), "[DONE]"]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test" }).result();
+		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test", fetch: fetchMock }).result();
 		const text = result.content
 			.filter(b => b.type === "text")
 			.map(b => b.text)
@@ -500,7 +518,7 @@ describe("Kimi K2 leaked markup healing", () => {
 
 describe("Ollama provider DSML envelope healing", () => {
 	it("emits a healed tool call, suppresses leaked text, and promotes stop", async () => {
-		global.fetch = mockNdjsonFetch([
+		const fetchMock = mockNdjsonFetch([
 			{
 				model: "deepseek-v4-pro",
 				message: { role: "assistant", content: " 精神精神\n\n" },
@@ -523,7 +541,7 @@ describe("Ollama provider DSML envelope healing", () => {
 		const result = await stream(
 			deepseekCloudModel,
 			{ messages: [{ role: "user", content: "Check Fedora packages", timestamp: Date.now() }] },
-			{ apiKey: "test-key" },
+			{ apiKey: "test-key", fetch: fetchMock },
 		).result();
 
 		const visibleText = result.content
@@ -553,7 +571,7 @@ describe("Ollama provider DSML envelope healing", () => {
 	});
 
 	it("leaves non-DeepSeek Ollama content untouched", async () => {
-		global.fetch = mockNdjsonFetch([
+		const fetchMock = mockNdjsonFetch([
 			{
 				model: "gpt-oss:120b",
 				message: { role: "assistant", content: "Inline `<｜literal｜>` token in prose." },
@@ -571,7 +589,7 @@ describe("Ollama provider DSML envelope healing", () => {
 		const result = await stream(
 			{ ...deepseekCloudModel, id: "gpt-oss:120b", name: "GPT OSS 120B" },
 			{ messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
-			{ apiKey: "test-key" },
+			{ apiKey: "test-key", fetch: fetchMock },
 		).result();
 
 		const text = result.content
@@ -585,7 +603,7 @@ describe("Ollama provider DSML envelope healing", () => {
 
 describe("OpenAI completions MiniMax thinking healing", () => {
 	it("parses OpenCode Zen MiniMax think tags into a thinking block", async () => {
-		const model: Model<"openai-completions"> = {
+		const model: Model<"openai-completions"> = buildModel({
 			id: "minimax-m3",
 			name: "MiniMax M3",
 			api: "openai-completions",
@@ -596,8 +614,8 @@ describe("OpenAI completions MiniMax thinking healing", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 200_000,
 			maxTokens: 8_192,
-		};
-		global.fetch = mockFetch([
+		});
+		const fetchMock = mockFetch([
 			chunk(model.id, { content: "visible <thin" }),
 			chunk(model.id, { content: "k>hidden reasoning</think" }),
 			chunk(model.id, { content: ">" }),
@@ -606,7 +624,10 @@ describe("OpenAI completions MiniMax thinking healing", () => {
 			"[DONE]",
 		]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), { apiKey: "test-key" }).result();
+		const result = await streamOpenAICompletions(model, baseContext(), {
+			apiKey: "test-key",
+			fetch: fetchMock,
+		}).result();
 
 		expect(result.content).toEqual([
 			{ type: "text", text: "visible " },
@@ -618,7 +639,7 @@ describe("OpenAI completions MiniMax thinking healing", () => {
 
 describe("OpenAI completions provider DSML envelope healing", () => {
 	it("heals the envelope into a structured tool call and suppresses leaked text", async () => {
-		const model: Model<"openai-completions"> = {
+		const model: Model<"openai-completions"> = buildModel({
 			id: "deepseek-v4-pro",
 			name: "DeepSeek V4 Pro",
 			api: "openai-completions",
@@ -629,8 +650,8 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 131_072,
 			maxTokens: 8_192,
-		};
-		global.fetch = mockFetch([
+		});
+		const fetchMock = mockFetch([
 			chunk(model.id, { content: "I'll check.\n" }),
 			chunk(model.id, { content: `${REPORTED_DSML_LEAK}\nThat should give us the package list.` }),
 			chunk(model.id, {}, "stop"),
@@ -640,7 +661,7 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 		const result = await streamOpenAICompletions(
 			model,
 			{ messages: [{ role: "user", content: "Check Fedora", timestamp: Date.now() }] },
-			{ apiKey: "test-key" },
+			{ apiKey: "test-key", fetch: fetchMock },
 		).result();
 
 		const text = result.content
@@ -674,7 +695,7 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 		expect(model.provider).toBe("nanogpt");
 
 		let payload: Record<string, unknown> | undefined;
-		global.fetch = mockFetch([
+		const fetchMock = mockFetch([
 			chunk(model.id, { content: "Checking.\n" }),
 			chunk(model.id, { content: REPORTED_DSML_LEAK }),
 			chunk(model.id, {}, "stop"),
@@ -687,6 +708,7 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 			{
 				apiKey: "test-key",
 				reasoning: "high",
+				fetch: fetchMock,
 				onPayload: value => {
 					payload = value as Record<string, unknown>;
 				},
@@ -718,7 +740,7 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 
 	it("keeps indexed parallel NanoGPT read deltas attached to their own tool calls", async () => {
 		const model = getBundledModel<"openai-completions">("nanogpt", "deepseek/deepseek-v4-pro");
-		global.fetch = mockFetch([
+		const fetchMock = mockFetch([
 			chunk(model.id, {
 				tool_calls: [
 					{ index: 0, id: "call_a", type: "function", function: { name: "read", arguments: "" } },
@@ -738,7 +760,7 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 		const result = await streamOpenAICompletions(
 			model,
 			{ messages: [{ role: "user", content: "Read a.ts and b.ts", timestamp: Date.now() }], tools: [readTool] },
-			{ apiKey: "test-key", reasoning: "high" },
+			{ apiKey: "test-key", reasoning: "high", fetch: fetchMock },
 		).result();
 
 		const toolCalls = result.content.filter((b): b is ToolCall => b.type === "toolCall");
