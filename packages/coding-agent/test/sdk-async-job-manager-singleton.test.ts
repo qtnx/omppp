@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -29,6 +29,14 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 	afterAll(() => {
 		sharedAuthStorage.close();
 		fs.rmSync(sharedTempDir, { recursive: true, force: true });
+	});
+
+	// Parallel test workers reuse the JS context across files, so a prior file
+	// that leaked an installed manager (top-level session not disposed) would
+	// otherwise become this file's "primary" manager and break the ownership
+	// assertions. Start every test from a clean singleton.
+	beforeEach(() => {
+		AsyncJobManager.resetForTests();
 	});
 
 	afterEach(async () => {
