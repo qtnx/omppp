@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/system-context-reminder-plugin",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"description": "System-context persona reminder extension for omp",
 	"homepage": "https://omp.sh",
 	"author": "Can Boluk",
