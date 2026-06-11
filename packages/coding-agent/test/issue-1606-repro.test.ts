@@ -16,6 +16,7 @@
  */
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { TINY_WORKER_ARGS } from "@oh-my-pi/pi-coding-agent/cli/worker-selectors";
 import { createTinyTitleSubprocess, TINY_WORKER_ARG } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
 
 describe("issue #1606 — tiny model lives in an isolated subprocess", () => {
@@ -42,12 +43,15 @@ describe("issue #1606 — tiny model lives in an isolated subprocess", () => {
 	}, 30_000);
 
 	it("CLI dispatches the flag that `title-client.ts` passes to the spawned child", async () => {
-		// `tinyWorkerSpawnCmd()` and the cli switch must agree on the exact
-		// flag, character-for-character — the spawned `bun`/binary sees only
-		// `argv` and there is no fallback path that "re-routes" the worker
-		// on misnamed flags. Pin the spelling on both ends.
+		// `tinyWorkerSpawnCmd()` and the cli dispatch table must agree on the
+		// exact flag, character-for-character — the spawned `bun`/binary sees
+		// only `argv` and there is no fallback path that "re-routes" the worker
+		// on misnamed flags. Pin the spawn flag's membership in the shared
+		// dispatch table, and that cli.ts still routes that table to
+		// `runTinyWorker`.
+		expect(TINY_WORKER_ARGS[TINY_WORKER_ARG]).toBe(true);
 		const cliSource = await Bun.file(new URL("../src/cli.ts", import.meta.url)).text();
-		expect(cliSource).toContain(`"${TINY_WORKER_ARG}"`);
+		expect(cliSource).toContain("TINY_WORKER_ARGS[");
 		expect(cliSource).toContain("runTinyWorker");
 	});
 
