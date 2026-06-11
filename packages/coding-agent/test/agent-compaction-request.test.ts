@@ -263,10 +263,59 @@ describe("agent-requested compaction", () => {
 		const textBlock = Array.isArray(userMessage?.content)
 			? userMessage.content.find(block => block.type === "text")
 			: undefined;
-		expect(textBlock?.text).toBe("rồi tiếp tục việc còn lại");
+		expect(textBlock?.text).toBe("tiếp tục việc còn lại");
 		expect(
 			sent.some(message => message.role === "custom" && message.customType === "compaction-performed-notice"),
 		).toBe(true);
+	});
+
+	it("replaces a whole-message compact instruction with the placeholder text", async () => {
+		seedCompactableHistory();
+		shortCircuitCompaction();
+		session.agent.replaceMessages([assistant("stop")]);
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await session.prompt("compact");
+
+		const arg = promptSpy.mock.calls[0]?.[0];
+		const sent = (Array.isArray(arg) ? arg : [arg]) as Array<{
+			role: string;
+			customType?: string;
+			content: string | Array<{ type: string; text?: string }>;
+		}>;
+		const userMessage = sent.find(message => message.role === "user");
+		const textBlock = Array.isArray(userMessage?.content)
+			? userMessage.content.find(block => block.type === "text")
+			: undefined;
+		expect(textBlock?.text).toBe("Compaction requested.");
+		expect(
+			sent.some(message => message.role === "custom" && message.customType === "compaction-performed-notice"),
+		).toBe(true);
+	});
+
+	it("keeps the message untouched when the requested compaction is skipped", async () => {
+		// No compactable history: the requested compaction reports "skipped",
+		// so the instruction must survive and no notice may be appended.
+		shortCircuitCompaction();
+		session.agent.replaceMessages([assistant("stop")]);
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await session.prompt("compact đi rồi tiếp tục việc còn lại");
+
+		const arg = promptSpy.mock.calls[0]?.[0];
+		const sent = (Array.isArray(arg) ? arg : [arg]) as Array<{
+			role: string;
+			customType?: string;
+			content: string | Array<{ type: string; text?: string }>;
+		}>;
+		const userMessage = sent.find(message => message.role === "user");
+		const textBlock = Array.isArray(userMessage?.content)
+			? userMessage.content.find(block => block.type === "text")
+			: undefined;
+		expect(textBlock?.text).toBe("compact đi rồi tiếp tục việc còn lại");
+		expect(
+			sent.some(message => message.role === "custom" && message.customType === "compaction-performed-notice"),
+		).toBe(false);
 	});
 });
 
@@ -376,9 +425,14 @@ describe("stripUserCompactIntent", () => {
 			["/compact", ""],
 			["compact!", ""],
 			["hãy compact", ""],
-			["compact đi rồi fix bug X", "rồi fix bug X"],
-			["please compact then continue the review", "then continue the review"],
-			["compact now and rerun the tests", "and rerun the tests"],
+			["compact ngay đi", ""],
+			["run compact first", ""],
+			["compact đi rồi fix bug X", "fix bug X"],
+			["hãy compact giúp tao rồi fix bug", "fix bug"],
+			["please compact then continue the review", "continue the review"],
+			["compact now and rerun the tests", "rerun the tests"],
+			["compact đi rồi compact đi tiếp", ""],
+			["fix bug X và compact đi", "fix bug X"],
 		];
 		for (const [input, expected] of cases) {
 			expect(stripUserCompactIntent(input), input).toBe(expected);
