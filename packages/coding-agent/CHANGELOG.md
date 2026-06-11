@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- When a natural-language compact instruction in a new user message runs the inline compaction, the consumed instruction is now stripped from the outgoing message (so the stale imperative cannot steer the model into compacting again) and a hidden notice telling the model the compaction already ran is appended after the message
+
 ## [1.1.0] - 2026-06-11
 
 ### Added

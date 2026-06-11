@@ -189,6 +189,7 @@ import { containsWorkflow, WORKFLOW_NOTICE } from "../modes/workflow";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import type { PlanModeState } from "../plan-mode/state";
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
+import compactionPerformedNotice from "../prompts/system/compaction-performed-notice.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
@@ -970,6 +971,8 @@ export class AgentSession {
 	// Compaction state
 	#compactionAbortController: AbortController | undefined = undefined;
 	#pendingAgentCompactionRequest?: { reason: string };
+	/** Monotonic count of performed compactions (any reason/strategy — handoff and shake included). */
+	#compactionsPerformed = 0;
 	#autoCompactionAbortController: AbortController | undefined = undefined;
 
 	// Branch summarization state
@@ -4819,7 +4822,8 @@ export class AgentSession {
 			// An explicit "compact" instruction in the user's message becomes a
 			// pending request so the pre-prompt #checkCompaction below runs the
 			// compaction inline (threshold-free) before this prompt is answered.
-			if (!options?.skipCompactionCheck && detectUserCompactIntent(expandedText)) {
+			const userCompactIntent = !options?.skipCompactionCheck && detectUserCompactIntent(expandedText);
+			if (userCompactIntent) {
 				this.#pendingAgentCompactionRequest ??= { reason: "user asked to compact" };
 			}
 
@@ -4828,8 +4832,28 @@ export class AgentSession {
 			// prompt's agent loop starts — otherwise a deferred handoff would fire on the
 			// next microtask alongside the new turn.
 			const lastAssistant = this.#findLastAssistantMessage();
+			const compactionsBeforeIntent = this.#compactionsPerformed;
 			if (lastAssistant && !options?.skipCompactionCheck) {
 				await this.#checkCompaction(lastAssistant, false, false, false);
+			}
+
+			// When that instruction was consumed (a compaction actually ran — counter
+			// covers every strategy, including handoff/shake which append no
+			// CompactionEntry), strip the directive from the outgoing message so the
+			// stale imperative cannot steer the model into compacting again, and
+			// remember to append a notice telling the model the compaction already ran.
+			const compactionPerformedForIntent = userCompactIntent && this.#compactionsPerformed > compactionsBeforeIntent;
+			if (compactionPerformedForIntent && message.role === "user") {
+				const stripped = stripUserCompactIntent(expandedText) || "Compaction requested.";
+				if (stripped !== expandedText) {
+					expandedText = stripped;
+					if (Array.isArray(message.content)) {
+						const textBlock = message.content.find((block): block is TextContent => block.type === "text");
+						if (textBlock) {
+							textBlock.text = stripped;
+						}
+					}
+				}
 			}
 
 			// Build messages array (session context, eager todo prelude, then active prompt message)
@@ -4856,6 +4880,16 @@ export class AgentSession {
 			// user message so the model reads it as part of the same turn.
 			if (options?.appendMessages) {
 				messages.push(...options.appendMessages);
+			}
+			if (compactionPerformedForIntent) {
+				messages.push({
+					role: "custom",
+					customType: "compaction-performed-notice",
+					content: compactionPerformedNotice.trim(),
+					display: false,
+					attribution: "user",
+					timestamp: Date.now(),
+				} satisfies CustomMessage);
 			}
 
 			// Early bail-out: if a newer abort/prompt cycle started during setup,
@@ -8025,6 +8059,7 @@ export class AgentSession {
 					} else if (!autoCompactionSignal.aborted && reason !== "idle" && shouldAutoContinue) {
 						this.#scheduleAutoContinuePrompt(generation);
 					}
+					this.#compactionsPerformed++;
 					return "compacted";
 				}
 			}
@@ -8322,6 +8357,7 @@ export class AgentSession {
 					shouldContinue: () => this.agent.hasQueuedMessages(),
 				});
 			}
+			this.#compactionsPerformed++;
 			return "compacted";
 		} catch (error) {
 			if (autoCompactionSignal.aborted) {
@@ -8475,7 +8511,11 @@ export class AgentSession {
 					shouldContinue: () => this.agent.hasQueuedMessages(),
 				});
 			}
-			return reclaimed ? "compacted" : "skipped";
+			if (reclaimed) {
+				this.#compactionsPerformed++;
+				return "compacted";
+			}
+			return "skipped";
 		} catch (error) {
 			if (signal.aborted) {
 				await this.#emitSessionEvent({
@@ -10544,4 +10584,32 @@ const COMPACT_INTENT_PATTERNS: readonly RegExp[] = [
 export function detectUserCompactIntent(text: string): boolean {
 	if (!text || text.includes("?")) return false;
 	return COMPACT_INTENT_PATTERNS.some(pattern => pattern.test(text));
+}
+
+/**
+ * Clause separators used when consuming a compact instruction: sentence
+ * enders plus the connective words that chain a follow-up request onto the
+ * imperative ("compact đi rồi fix X", "please compact then continue").
+ */
+const COMPACT_CLAUSE_SEPARATOR = /(?:[.!;\n]+|,?\s+(?:rồi|sau đó|xong|và|then|and)\s+)/iu;
+
+/**
+ * Remove the compact instruction from `text` once the compaction has been
+ * performed, so the stale imperative cannot steer the model (or a later
+ * transcript replay) into compacting again. Works clause-wise: every clause
+ * carrying an imperative match is dropped whole (no dangling particles like
+ * "hãy … tao"), repeated directives included. Returns an empty string when
+ * the entire message was the instruction.
+ */
+export function stripUserCompactIntent(text: string): string {
+	let result = text;
+	// Fixpoint guard: clauses joined with " " could in principle re-form a
+	// match across the seam; re-split until the imperative is gone.
+	for (let pass = 0; pass < 4 && detectUserCompactIntent(result); pass++) {
+		result = result
+			.split(COMPACT_CLAUSE_SEPARATOR)
+			.filter(clause => clause.trim().length > 0 && !COMPACT_INTENT_PATTERNS.some(pattern => pattern.test(clause)))
+			.join(" ");
+	}
+	return result.replace(/\s{2,}/g, " ").trim();
 }
