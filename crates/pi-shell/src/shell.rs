@@ -1321,7 +1321,7 @@ fn apply_command_env(
 /// Define `env` as a shell variable expanding to the literal `$env` so that
 /// brush-core's POSIX parameter expansion preserves PowerShell-style
 /// `$env:NAME` references when commands are dispatched through brush to a
-/// PowerShell (or any) subprocess. The variable is not exported, so it only
+/// `PowerShell` (or any) subprocess. The variable is not exported, so it only
 /// influences brush's own expansion; the child process environment is
 /// unaffected.
 ///

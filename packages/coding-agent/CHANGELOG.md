@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-06-12
+
 ### Fixed
 
 - Browser annotation mode now keeps a background listener after activation, so repeated overlay submissions are queued into the conversation and wake idle agents instead of requiring another blocking `annotate` call.
