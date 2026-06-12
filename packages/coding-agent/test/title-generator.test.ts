@@ -71,6 +71,41 @@ describe("title generator", () => {
 		});
 	});
 
+	it("uses the resolved title API key directly instead of resolving it again inside completeSimple", async () => {
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [
+				{
+					type: "toolCall",
+					id: "call-title",
+					name: "set_title",
+					arguments: { title: "Single Resolve" },
+				},
+			],
+		} as never);
+		const getApiKey = vi.fn(async () => "resolved-title-key");
+		const resolver = vi.fn(() => async () => "second-resolve-key");
+
+		const title = await generateSessionTitle(
+			"Investigate the resolver",
+			{
+				getAvailable: () => [model],
+				getApiKey,
+				resolver,
+			} as never,
+			createSettings(model),
+			"session-1",
+		);
+
+		expect(title).toBe("Single Resolve");
+		expect(getApiKey).toHaveBeenCalledTimes(1);
+		expect(resolver).not.toHaveBeenCalled();
+		expect(completeSimpleMock.mock.calls[0]?.[2]).toMatchObject({
+			apiKey: "resolved-title-key",
+		});
+	});
+
 	it("uses the bundled default prompt when no title prompt file is resolved", async () => {
 		const model = getModelOrThrow("claude-sonnet-4-5");
 		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({

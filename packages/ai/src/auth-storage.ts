@@ -562,6 +562,12 @@ type UsageCacheEntry<T> = {
 	expiresAt: number;
 };
 
+type UsageCacheLookup<T> = {
+	value: T | null;
+	fresh: boolean;
+	found: boolean;
+};
+
 interface UsageCache {
 	get<T>(key: string): UsageCacheEntry<T> | undefined;
 	getStale<T>(key: string): UsageCacheEntry<T> | undefined;
@@ -2263,6 +2269,55 @@ export class AuthStorage {
 		);
 	}
 
+	#readUsageReportCache(request: UsageRequestDescriptor): UsageCacheLookup<UsageReport> {
+		const cacheKey = this.#buildUsageReportCacheKey(request);
+		const now = Date.now();
+		const cached = this.#usageCache.get<UsageReport | null>(cacheKey);
+		if (cached) {
+			return { value: cached.value, fresh: cached.expiresAt > now, found: true };
+		}
+		const stale = this.#usageCache.getStale<UsageReport | null>(cacheKey);
+		if (stale) {
+			return { value: stale.value, fresh: false, found: true };
+		}
+		return { value: null, fresh: false, found: false };
+	}
+
+	#refreshUsageReportInBackground(request: UsageRequestDescriptor, timeoutMs: number): void {
+		const cacheKey = this.#buildUsageReportCacheKey(request);
+		if (this.#usageRequestInFlight.has(cacheKey)) return;
+		void this.#fetchUsageCached(request, timeoutMs).catch(error => {
+			this.#usageLogger?.debug("Usage background refresh failed", {
+				provider: request.provider,
+				error: String(error),
+			});
+		});
+	}
+
+	#getUsageReportCacheFirst(
+		provider: Provider,
+		credential: OAuthCredential,
+		options?: { baseUrl?: string; timeoutMs?: number },
+	): UsageReport | null {
+		const storeHook = this.#store.getUsageReport?.bind(this.#store);
+		if (storeHook) {
+			void storeHook(provider, credential).catch(error => {
+				this.#usageLogger?.debug("Usage store background refresh failed", {
+					provider,
+					error: String(error),
+				});
+			});
+			return null;
+		}
+
+		const request = this.#buildUsageRequestForOauth(provider, credential, options?.baseUrl);
+		const cached = this.#readUsageReportCache(request);
+		if (!cached.fresh) {
+			this.#refreshUsageReportInBackground(request, options?.timeoutMs ?? this.#usageRequestTimeoutMs);
+		}
+		return cached.value;
+	}
+
 	async fetchUsageReports(options?: {
 		baseUrlResolver?: (provider: Provider) => string | undefined;
 		/** Caller's cancel signal; only rejects this caller, never the shared upstream fetch. */
@@ -2739,40 +2794,19 @@ export class AuthStorage {
 		const nowMs = Date.now();
 		const { strategy } = args;
 		const ranked: RankedOAuthCandidate[] = [];
-		// Pre-fetch usage reports in parallel for non-blocked credentials.
-		// Wrap with a timeout so slow/429'd fetches don't indefinitely block
-		// credential selection — better to pick a credential without usage data
-		// than to hang the agent waiting for rate-limited usage endpoints.
-		const usageTimeout = Math.max(5000, this.#usageRequestTimeoutMs * 1.5);
-		const usagePromise = Promise.all(
-			args.order.map(async idx => {
-				const selection = args.credentials[idx];
-				if (!selection) return null;
-				const blockedUntil = this.#getCredentialBlockedUntil(args.providerKey, selection.index, args.blockScope);
-				if (blockedUntil !== undefined) return { selection, usage: null, usageChecked: false, blockedUntil };
-				const usage = await this.#getUsageReport(args.provider, selection.credential, {
-					...args.options,
-					timeoutMs: this.#usageRequestTimeoutMs,
-				});
-				return { selection, usage, usageChecked: true, blockedUntil: undefined as number | undefined };
-			}),
-		);
-		const timeoutSignal = Promise.withResolvers<null>();
-		// `Bun.sleep` keeps the event loop alive even after Promise.race resolves,
-		// which leaks a 7.5–15s timer per credential-selection call. Use an unref'd
-		// timer so the timeout doesn't pin the process and clear it on the happy
-		// path so memory drops immediately.
-		const timer = setTimeout(() => timeoutSignal.resolve(null), usageTimeout);
-		timer.unref?.();
-		const usageResults = await Promise.race([usagePromise, timeoutSignal.promise]).then(result => {
-			clearTimeout(timer);
-			return (
-				result ??
-				args.order.map(idx => {
-					const selection = args.credentials[idx];
-					return selection ? { selection, usage: null, usageChecked: false, blockedUntil: undefined } : null;
-				})
-			);
+		// Credential selection is on the hot path before the model request can be
+		// opened. Read fresh/stale usage cache synchronously and refresh stale or
+		// missing reports in the background; never wait on rate-limited /usage.
+		const usageResults = args.order.map(idx => {
+			const selection = args.credentials[idx];
+			if (!selection) return null;
+			const blockedUntil = this.#getCredentialBlockedUntil(args.providerKey, selection.index, args.blockScope);
+			if (blockedUntil !== undefined) return { selection, usage: null, usageChecked: false, blockedUntil };
+			const usage = this.#getUsageReportCacheFirst(args.provider, selection.credential, {
+				...args.options,
+				timeoutMs: this.#usageRequestTimeoutMs,
+			});
+			return { selection, usage, usageChecked: true, blockedUntil: undefined as number | undefined };
 		});
 
 		for (let orderPos = 0; orderPos < usageResults.length; orderPos += 1) {
@@ -3115,7 +3149,7 @@ export class AuthStorage {
 				usage = prefetchedUsage;
 				usageChecked = true;
 			} else {
-				usage = await this.#getUsageReport(provider, selection.credential, {
+				usage = this.#getUsageReportCacheFirst(provider, selection.credential, {
 					...options,
 					timeoutMs: this.#usageRequestTimeoutMs,
 				});
@@ -3185,7 +3219,7 @@ export class AuthStorage {
 			if ((checkUsage && !allowBlocked) || requiresProModel) {
 				const sameAccount = selection.credential.accountId === updated.accountId;
 				if (!usageChecked || !sameAccount) {
-					usage = await this.#getUsageReport(provider, updated, {
+					usage = this.#getUsageReportCacheFirst(provider, updated, {
 						...options,
 						timeoutMs: this.#usageRequestTimeoutMs,
 					});

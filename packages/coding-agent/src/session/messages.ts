@@ -29,6 +29,7 @@ import { formatOutputNotice } from "../tools/output-meta";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
 export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
+export const BROWSER_ANNOTATION_MESSAGE_TYPE = "browser-annotation";
 
 export interface SkillPromptDetails {
 	name: string;

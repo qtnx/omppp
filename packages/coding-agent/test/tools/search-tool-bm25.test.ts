@@ -1,12 +1,18 @@
 import { describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
 	buildDiscoverableToolSearchIndex,
 	type DiscoverableTool,
 	type DiscoverableToolSearchIndex,
 } from "@oh-my-pi/pi-coding-agent/tool-discovery/tool-index";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { renderSearchToolBm25Description, SearchToolBm25Tool } from "@oh-my-pi/pi-coding-agent/tools/search-tool-bm25";
+import {
+	renderSearchToolBm25Description,
+	SearchToolBm25Tool,
+	searchToolBm25Renderer,
+} from "@oh-my-pi/pi-coding-agent/tools/search-tool-bm25";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 
 type DiscoveryToolSession = ToolSession & {
 	isMCPDiscoveryEnabled: () => boolean;
@@ -260,5 +266,40 @@ describe("renderSearchToolBm25Description", () => {
 		]);
 
 		expect(rendered).toContain("Total discoverable tools available: 3.");
+	});
+});
+
+describe("searchToolBm25Renderer", () => {
+	it("falls back for persisted error and malformed detail payloads", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const cases = [
+			{
+				content: [
+					{
+						type: "text",
+						text: "Tool discovery is disabled. Enable tools.discoveryMode or mcp.discoveryMode to use search_tool_bm25.",
+					},
+				],
+				details: {},
+				isError: true,
+			},
+			{
+				content: [{ type: "text", text: "Malformed tool search result." }],
+				details: { query: "search", tools: [] },
+			},
+		];
+
+		for (const result of cases) {
+			const rendered = searchToolBm25Renderer
+				.renderResult(result as never, { expanded: false, isPartial: false }, uiTheme)
+				.render(160)
+				.join("\n");
+			const plain = sanitizeText(rendered);
+
+			expect(plain).toContain("Tool Discovery");
+			expect(plain).toContain(result.content[0]!.text);
+		}
 	});
 });

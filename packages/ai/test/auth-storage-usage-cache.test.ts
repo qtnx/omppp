@@ -102,6 +102,17 @@ function makeStore(rows: StoredAuthCredential[]): ObservableStore {
 	};
 }
 
+function writeStaleUsageCache(store: ObservableStore, row: StoredAuthCredential, report: UsageReport): void {
+	if (row.credential.type !== "oauth") throw new Error("expected oauth credential");
+	const account = row.credential.accountId ? `|account:${row.credential.accountId}` : "";
+	const email = row.credential.email ? `|email:${row.credential.email}` : "";
+	const key = `usage_cache:report:${row.provider}:default:oauth${account}${email}`;
+	store.cache.set(key, {
+		value: JSON.stringify({ value: report, expiresAt: 1 }),
+		expiresAtSec: Math.floor((Date.now() + 24 * 60 * 60_000) / 1000),
+	});
+}
+
 function oauthRow(id: number, email: string): StoredAuthCredential {
 	const credential: AuthCredential = {
 		type: "oauth",
@@ -326,6 +337,44 @@ describe("AuthStorage usage cache: jitter", () => {
 				expect(delta).toBeLessThan(6.5 * 60_000);
 			}
 		} finally {
+			storage.close();
+			vi.restoreAllMocks();
+		}
+	});
+});
+
+describe("AuthStorage usage cache: cache-first credential selection", () => {
+	it("does not block getApiKey on a stale usage refresh when last-good reports exist", async () => {
+		const rows = [oauthRow(1, "a@example.com"), oauthRow(2, "b@example.com")];
+		const store = makeStore(rows);
+		writeStaleUsageCache(store, rows[0]!, makeTieredReport("a@example.com"));
+		writeStaleUsageCache(store, rows[1]!, makeTieredReport("b@example.com"));
+		const storage = new AuthStorage(store, {
+			usageProviderResolver: provider => (provider === "anthropic" ? claudeUsage.claudeUsageProvider : undefined),
+		});
+		await storage.reload();
+
+		const slowUsage = Promise.withResolvers<UsageReport | null>();
+		const fetchSpy = vi.spyOn(claudeUsage.claudeUsageProvider, "fetchUsage").mockImplementation(async () => {
+			return slowUsage.promise;
+		});
+
+		try {
+			const keyPromise = storage.getApiKey("anthropic", "rank-session");
+			const early = await Promise.race([
+				keyPromise.then(key => ({ type: "key" as const, key })),
+				Bun.sleep(25).then(() => ({ type: "timeout" as const })),
+			]);
+			slowUsage.resolve(makeTieredReport("a@example.com"));
+			await keyPromise.catch(() => undefined);
+
+			expect(early.type).toBe("key");
+			if (early.type === "key") {
+				expect(["oat-1", "oat-2"]).toContain(early.key ?? "");
+			}
+			expect(fetchSpy).toHaveBeenCalled();
+		} finally {
+			slowUsage.resolve(null);
 			storage.close();
 			vi.restoreAllMocks();
 		}

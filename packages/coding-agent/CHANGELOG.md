@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Browser annotation mode now keeps a background listener after activation, so repeated overlay submissions are queued into the conversation and wake idle agents instead of requiring another blocking `annotate` call.
+- Fixed `search_tool_bm25` transcript rendering when a persisted error result has empty or malformed `details`, avoiding a renderer crash while rebuilding prior sessions.
+
 ## [1.3.0] - 2026-06-11
 
 ### Added

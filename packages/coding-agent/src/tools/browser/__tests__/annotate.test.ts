@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import { BrowserTool, createBrowserAnnotationListener } from "../../browser";
+import type { BrowserAnnotationEntry, ToolSession } from "../../index";
 import overlayScript from "../../puppeteer/annotate-overlay.txt" with { type: "text" };
 import { validateAnnotationPayload } from "../annotate";
+import { type AnnotationRouteState, drainBufferedAnnotations, routeAnnotationSubmission } from "../annotation-router";
+import type { AnnotationSubmission } from "../tab-protocol";
+import { registerTabForTest, type TabSession } from "../tab-supervisor";
 
 describe("validateAnnotationPayload", () => {
 	it("accepts a comment + rects payload and normalizes it", () => {
@@ -172,5 +177,235 @@ describe("annotate-overlay.txt", () => {
 		expect(overlayScript).toContain("__ompxAnnotateEnabled");
 		expect(overlayScript).toContain("__ompxAnnotateSubmit");
 		expect(overlayScript).toContain("__ompxAnnotateSetChromeVisible");
+	});
+});
+
+function testSubmission(comment: string): AnnotationSubmission {
+	return {
+		payload: {
+			comment,
+			rects: [],
+			url: "https://example.test/",
+			title: "Example",
+		},
+		screenshot: { data: "base64-png", mimeType: "image/png" },
+		ts: 123,
+	};
+}
+
+function annotationState(overrides: Partial<AnnotationRouteState> = {}): AnnotationRouteState {
+	return {
+		annotations: [],
+		annotationWaiters: [],
+		...overrides,
+	};
+}
+
+function fakeAnnotationTab(name: string): { tab: TabSession; emit(submission: AnnotationSubmission): void } {
+	let handler: ((msg: unknown) => void) | undefined;
+	const worker = {
+		send(msg: unknown): void {
+			if (typeof msg !== "object" || msg === null) return;
+			const annotate = msg as { type?: unknown; id?: unknown };
+			if (annotate.type !== "annotate" || typeof annotate.id !== "string") return;
+			queueMicrotask(() => handler?.({ type: "annotate-ack", id: annotate.id, ok: true }));
+		},
+		onMessage(next: (msg: unknown) => void): () => void {
+			handler = next;
+			return () => {
+				if (handler === next) handler = undefined;
+			};
+		},
+		onError(): () => void {
+			return () => undefined;
+		},
+		async terminate(): Promise<void> {},
+		mode: "inline",
+	};
+	const tab = {
+		name,
+		browser: { kind: { kind: "headless", headless: false } },
+		targetId: "target",
+		worker,
+		state: "alive",
+		info: {
+			url: "https://example.test/",
+			title: "Example",
+			viewport: { width: 800, height: 600 },
+			targetId: "target",
+		},
+		pending: new Map(),
+		annotations: [],
+		annotationWaiters: [],
+		pendingAnnotates: new Map(),
+		kindTag: "headless",
+	} as unknown as TabSession;
+	return {
+		tab,
+		emit(submission: AnnotationSubmission): void {
+			handler?.({ type: "annotation", submission });
+		},
+	};
+}
+
+describe("annotation submission routing", () => {
+	it("delivers a submission to an active waiter before the background listener", () => {
+		let waited: AnnotationSubmission | undefined;
+		const delivered: string[] = [];
+		const state = annotationState({
+			annotationWaiters: [
+				{
+					resolve: submission => {
+						waited = submission;
+					},
+					reject: () => undefined,
+				},
+			],
+			annotationListener: submission => delivered.push(submission.payload.comment),
+		});
+
+		routeAnnotationSubmission(state, testSubmission("first"));
+
+		expect(waited?.payload.comment).toBe("first");
+		expect(delivered).toEqual([]);
+		expect(state.annotations).toHaveLength(0);
+	});
+
+	it("delivers to the background listener when no waiter is active", () => {
+		const delivered: string[] = [];
+		const state = annotationState({
+			annotationListener: submission => delivered.push(submission.payload.comment),
+		});
+
+		routeAnnotationSubmission(state, testSubmission("background"));
+
+		expect(delivered).toEqual(["background"]);
+		expect(state.annotations).toHaveLength(0);
+	});
+
+	it("buffers only the newest submissions while no waiter or listener is present", () => {
+		const state = annotationState();
+		for (let index = 0; index < 25; index++) {
+			routeAnnotationSubmission(state, testSubmission(`comment-${index}`));
+		}
+
+		expect(state.annotations).toHaveLength(20);
+		expect(state.annotations[0]?.payload.comment).toBe("comment-5");
+		expect(state.annotations[19]?.payload.comment).toBe("comment-24");
+	});
+
+	it("drains buffered submissions in order when a listener is registered", () => {
+		const delivered: string[] = [];
+		const state = annotationState({
+			annotations: [testSubmission("one"), testSubmission("two")],
+			annotationListener: submission => delivered.push(submission.payload.comment),
+		});
+
+		drainBufferedAnnotations(state);
+
+		expect(delivered).toEqual(["one", "two"]);
+		expect(state.annotations).toHaveLength(0);
+	});
+
+	it("continues draining buffered submissions after a listener failure", () => {
+		let calls = 0;
+		const delivered: string[] = [];
+		const state = annotationState({
+			annotations: [testSubmission("bad"), testSubmission("good")],
+			annotationListener: submission => {
+				if (calls++ === 0) throw new Error("boom");
+				delivered.push(submission.payload.comment);
+			},
+		});
+
+		drainBufferedAnnotations(state);
+
+		expect(calls).toBe(2);
+		expect(delivered).toEqual(["good"]);
+		expect(state.annotations).toHaveLength(0);
+	});
+
+	it("drops a listener failure without blocking later routed submissions", () => {
+		let calls = 0;
+		const state = annotationState({
+			annotationListener: () => {
+				calls++;
+				throw new Error("boom");
+			},
+		});
+
+		routeAnnotationSubmission(state, testSubmission("bad"));
+		routeAnnotationSubmission(state, testSubmission("next"));
+
+		expect(calls).toBe(2);
+		expect(state.annotations).toHaveLength(0);
+	});
+});
+describe("createBrowserAnnotationListener", () => {
+	it("queues browser annotation entries with formatted text and screenshots", () => {
+		let queued:
+			| {
+					tab: string;
+					url: string;
+					title?: string;
+					text: string;
+					screenshot: { data: string; mimeType: string };
+					timestamp: number;
+			  }
+			| undefined;
+		const listener = createBrowserAnnotationListener(
+			{
+				queueBrowserAnnotation: entry => {
+					queued = entry;
+				},
+			},
+			"review",
+		);
+		if (!listener) throw new Error("listener missing");
+
+		listener(testSubmission("queued"));
+
+		expect(queued?.tab).toBe("review");
+		expect(queued?.url).toBe("https://example.test/");
+		expect(queued?.title).toBe("Example");
+		expect(queued?.text).toContain("Human feedback from https://example.test/ — Example");
+		expect(queued?.text).toContain("Comment: queued");
+		expect(queued?.screenshot).toEqual({ data: "base64-png", mimeType: "image/png" });
+		expect(queued?.timestamp).toBe(123);
+	});
+});
+
+describe("BrowserTool annotate background delivery", () => {
+	it("re-registers background delivery after a waited submission", async () => {
+		const queued: BrowserAnnotationEntry[] = [];
+		const { tab, emit } = fakeAnnotationTab("review");
+		const unregister = registerTabForTest(tab);
+		try {
+			const session: Pick<ToolSession, "queueBrowserAnnotation"> = {
+				queueBrowserAnnotation: entry => {
+					queued.push(entry);
+				},
+			};
+			const tool = new BrowserTool(session as ToolSession);
+			const pending = tool.execute("call", { action: "annotate", name: "review", timeout: 1 });
+			await Bun.sleep(0);
+			emit(testSubmission("first"));
+
+			const result = await pending;
+			const waitedText = result.content[0];
+			if (waitedText?.type !== "text") throw new Error("waited text missing");
+			expect(waitedText.text).toContain("Comment: first");
+			expect(result.content[1]).toEqual({ type: "image", data: "base64-png", mimeType: "image/png" });
+			expect(queued).toHaveLength(0);
+
+			routeAnnotationSubmission(tab, testSubmission("second"));
+
+			expect(queued).toHaveLength(1);
+			expect(queued[0]?.tab).toBe("review");
+			expect(queued[0]?.text).toContain("Comment: second");
+			expect(queued[0]?.screenshot).toEqual({ data: "base64-png", mimeType: "image/png" });
+		} finally {
+			unregister();
+		}
 	});
 });

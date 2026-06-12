@@ -17,10 +17,12 @@ import {
 } from "@oh-my-pi/pi-agent-core";
 import {
 	type CredentialDisabledEvent,
+	type ImageContent,
 	type Message,
 	type Model,
 	type SimpleStreamOptions,
 	streamSimple,
+	type TextContent,
 } from "@oh-my-pi/pi-ai";
 import {
 	getOpenAICodexTransportDetails,
@@ -105,6 +107,7 @@ import { discoverAndLoadMCPTools, MCPManager, type MCPToolsLoadResult } from "./
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import type { MnemopiSessionState } from "./mnemopi/state";
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
+import browserAnnotationTemplate from "./prompts/tools/browser-annotation.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
@@ -128,6 +131,7 @@ import {
 	writeAuthBrokerSnapshotCache,
 } from "./session/auth-storage";
 import {
+	BROWSER_ANNOTATION_MESSAGE_TYPE,
 	type CustomMessage,
 	convertToLlm,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
@@ -164,6 +168,7 @@ import {
 } from "./tool-discovery/tool-index";
 import {
 	BashTool,
+	type BrowserAnnotationEntry,
 	BUILTIN_TOOLS,
 	computeEssentialBuiltinNames,
 	createTools,
@@ -225,6 +230,69 @@ type McpNotificationEntry = {
 	serverName: string;
 	uri: string;
 };
+const MAX_BACKGROUND_BROWSER_ANNOTATIONS = 20;
+
+type BrowserAnnotationDetails = {
+	annotations: Array<{ tab: string; url: string; title?: string; timestamp: number }>;
+};
+function escapeBrowserAnnotationText(value: string): string {
+	return value.replace(/[&<>]/g, char => {
+		switch (char) {
+			case "&":
+				return "&amp;";
+			case "<":
+				return "&lt;";
+			case ">":
+				return "&gt;";
+			default:
+				return char;
+		}
+	});
+}
+
+function buildBrowserAnnotationBatchMessage(
+	entries: BrowserAnnotationEntry[],
+): CustomMessage<BrowserAnnotationDetails> | null {
+	if (entries.length === 0) return null;
+	const multiple = entries.length > 1;
+	const count = entries.length;
+	const annotations: BrowserAnnotationDetails["annotations"] = [];
+	for (const entry of entries) {
+		const annotation: BrowserAnnotationDetails["annotations"][number] = {
+			tab: entry.tab,
+			url: entry.url,
+			timestamp: entry.timestamp,
+		};
+		if (entry.title !== undefined) annotation.title = entry.title;
+		annotations.push(annotation);
+	}
+	const content: (TextContent | ImageContent)[] = [];
+	for (const [index, entry] of entries.entries()) {
+		const annotation = {
+			tab: escapeBrowserAnnotationText(entry.tab),
+			text: escapeBrowserAnnotationText(entry.text),
+		};
+		content.push({
+			type: "text",
+			text: prompt.render(browserAnnotationTemplate, {
+				annotation,
+				multiple,
+				index: index + 1,
+				count,
+			}),
+		});
+		content.push({ type: "image", data: entry.screenshot.data, mimeType: entry.screenshot.mimeType });
+	}
+	return {
+		role: "custom",
+		customType: BROWSER_ANNOTATION_MESSAGE_TYPE,
+		content,
+		display: true,
+		attribution: "user",
+		details: { annotations },
+		timestamp: Date.now(),
+	};
+}
 
 function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): CustomMessage<AsyncResultDetails> | null {
 	if (entries.length === 0) return null;
@@ -1503,6 +1571,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			recordEvalSubagentUsage: output => sessionManager.recordEvalSubagentOutput(output),
 			getClientBridge: () => session?.clientBridge,
 			queueDeferredDiagnostics: entry => session?.yieldQueue.enqueue(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, entry),
+			queueBrowserAnnotation: entry =>
+				session?.yieldQueue.enqueue(BROWSER_ANNOTATION_MESSAGE_TYPE, entry, {
+					maxEntries: MAX_BACKGROUND_BROWSER_ANNOTATIONS,
+				}),
 			requestCompaction: reason =>
 				session?.requestCompactionFromAgent(reason) ?? {
 					status: "unavailable",
@@ -2556,6 +2628,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		session.yieldQueue.register<DeferredDiagnosticsEntry>(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, {
 			isStale: entry => entry.isStale(),
 			build: buildLateDiagnosticsBatchMessage,
+		});
+		session.yieldQueue.register<BrowserAnnotationEntry>(BROWSER_ANNOTATION_MESSAGE_TYPE, {
+			build: buildBrowserAnnotationBatchMessage,
 		});
 
 		// Attach the live session to the pre-registered ref so peers can route IRC

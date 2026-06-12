@@ -155,6 +155,16 @@ export interface DeferredDiagnosticsEntry {
 	isStale(): boolean;
 }
 
+/** Browser annotation submitted from the visible overlay while the agent is running or idle. */
+export interface BrowserAnnotationEntry {
+	tab: string;
+	url: string;
+	title?: string;
+	text: string;
+	screenshot: { data: string; mimeType: string };
+	timestamp: number;
+}
+
 /** Session context for tool factories */
 export interface ToolSession {
 	/** Current working directory */
@@ -356,6 +366,8 @@ export interface ToolSession {
 	 *  in the transcript and delivered to the model at the next yield, like background
 	 *  job results. */
 	queueDeferredDiagnostics?(entry: DeferredDiagnosticsEntry): void;
+	/** Queue browser annotation feedback from the visible overlay; wakes idle agents like async job results. */
+	queueBrowserAnnotation?(entry: BrowserAnnotationEntry): void;
 	/** Bump and return the session-global mutation counter for `path`. Edit/write
 	 *  tools call this on every file mutation so stale late-diagnostics can be dropped. */
 	bumpFileMutationVersion?(path: string): number;

@@ -15,6 +15,11 @@ export interface YieldQueueOptions {
 	scheduleIdleFlush(run: () => Promise<void>): void;
 }
 
+export interface YieldEnqueueOptions {
+	/** Keep only the newest entries for this kind while waiting for the next flush. */
+	maxEntries?: number;
+}
+
 type YieldFlushMode = "streaming" | "idle";
 
 interface StoredDispatcher {
@@ -49,7 +54,7 @@ export class YieldQueue {
 		};
 	}
 
-	enqueue<P>(kind: string, entry: P): void {
+	enqueue<P>(kind: string, entry: P, options?: YieldEnqueueOptions): void {
 		if (!this.#dispatchers.has(kind)) {
 			logger.warn("Yield queue entry ignored for unregistered kind", { kind });
 			return;
@@ -60,6 +65,9 @@ export class YieldQueue {
 			this.#entries.set(kind, entries);
 		}
 		entries.push(entry);
+		if (options?.maxEntries !== undefined && entries.length > options.maxEntries) {
+			entries.splice(0, entries.length - options.maxEntries);
+		}
 		if (!this.#options.isStreaming()) {
 			this.#scheduleIdleFlush();
 		}

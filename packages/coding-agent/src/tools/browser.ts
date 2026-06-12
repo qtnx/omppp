@@ -15,6 +15,7 @@ import {
 	releaseTab,
 	runInTab,
 	setAnnotateMode,
+	setAnnotationListener,
 	waitForAnnotation,
 } from "./browser/tab-supervisor";
 import type { OutputMeta } from "./output-meta";
@@ -320,6 +321,7 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 		const enabled = params.enabled ?? true;
 		if (!enabled) {
 			await untilAborted(signal, () => setAnnotateMode(name, false, timeoutMs));
+			setAnnotationListener(name, null);
 			details.result = `Annotation overlay disabled on tab ${JSON.stringify(name)}`;
 			return toolResult(details).text(details.result).done();
 		}
@@ -363,16 +365,44 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 			details.url = tab.info.url;
 		}
 
-		await untilAborted(signal, () => setAnnotateMode(name, true, timeoutMs));
+		const queueAnnotation = createBrowserAnnotationListener(this.session, name);
+		const waitForSubmission = params.wait !== false;
+		const previousAnnotationListener = waitForSubmission ? getTab(name)?.annotationListener : undefined;
+		const enableBackgroundDelivery = (): void => {
+			if (getTab(name)?.state !== "alive") return;
+			if (queueAnnotation) {
+				setAnnotationListener(name, queueAnnotation);
+				return;
+			}
+			if (previousAnnotationListener) setAnnotationListener(name, previousAnnotationListener);
+		};
+		const deliveryNote = queueAnnotation
+			? "Future submissions will arrive automatically as background messages."
+			: 'Call {action:"annotate"} again to wait for another submission.';
+
+		if (waitForSubmission) setAnnotationListener(name, null);
+
+		try {
+			await untilAborted(signal, () => setAnnotateMode(name, true, timeoutMs));
+		} catch (error) {
+			enableBackgroundDelivery();
+			throw error;
+		}
 		const launchNote = launched ? ` (opened visible browser at ${tab.info.url})` : "";
-		if (params.wait === false) {
-			details.result = `Annotation overlay active on tab ${JSON.stringify(name)}${launchNote}. Call {action:"annotate"} again to wait for a submission.`;
+		if (!waitForSubmission) {
+			enableBackgroundDelivery();
+			details.result = `Annotation overlay active on tab ${JSON.stringify(name)}${launchNote}. ${deliveryNote}`;
 			return toolResult(details).text(details.result).done();
 		}
 
-		const submission = await waitForAnnotation(name, { timeoutMs, signal });
+		let submission: AnnotationSubmission | null;
+		try {
+			submission = await waitForAnnotation(name, { timeoutMs, signal });
+		} finally {
+			enableBackgroundDelivery();
+		}
 		if (!submission) {
-			details.result = `Annotation overlay active on tab ${JSON.stringify(name)}${launchNote}; no submission within ${Math.round(timeoutMs / 1000)}s. Call {action:"annotate"} again to keep waiting.`;
+			details.result = `Annotation overlay active on tab ${JSON.stringify(name)}${launchNote}; no submission within ${Math.round(timeoutMs / 1000)}s. ${deliveryNote}`;
 			return toolResult(details).text(details.result).done();
 		}
 
@@ -385,6 +415,25 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 			])
 			.done();
 	}
+}
+
+export function createBrowserAnnotationListener(
+	session: Pick<ToolSession, "queueBrowserAnnotation">,
+	tab: string,
+): ((submission: AnnotationSubmission) => void) | undefined {
+	if (!session.queueBrowserAnnotation) return undefined;
+	return (submission: AnnotationSubmission): void => {
+		const entry = {
+			tab,
+			url: submission.payload.url,
+			text: formatAnnotationSubmission(submission),
+			screenshot: submission.screenshot,
+			timestamp: submission.ts,
+		};
+		session.queueBrowserAnnotation?.(
+			submission.payload.title === undefined ? entry : { ...entry, title: submission.payload.title },
+		);
+	};
 }
 
 /** Persist over-cap browser run output as a session artifact; mirrors the bash minimizer's save path. */

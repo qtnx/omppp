@@ -347,6 +347,54 @@ describe("live learnings runtime", () => {
 		);
 	});
 
+	test("skips low-signal user messages without starting the classifier", async () => {
+		const fx = await createFixture();
+		vi.spyOn(logger, "debug").mockImplementation(() => {});
+		const completeSpy = vi.spyOn(ai, "completeSimple").mockResolvedValueOnce(
+			toolUseMessage([
+				{
+					type: "toolCall",
+					id: "decision-low-signal",
+					name: "record_learning_decision",
+					arguments: {
+						store: false,
+						scope: "repo",
+						trigger: "none",
+						confidence: 0.99,
+						reason: "low-signal",
+					},
+				},
+			]),
+		);
+		const writerSpy = vi.spyOn(taskExecutor, "runSubprocess");
+
+		startLearningStartupTask({
+			session: fx.session,
+			settings: fx.settings,
+			modelRegistry: fx.modelRegistry,
+			agentDir: fx.agentDir,
+			taskDepth: 0,
+		});
+
+		fx.emit({
+			type: "agent_end",
+			messages: [
+				{
+					role: "user",
+					content: "ok",
+					attribution: "user",
+					timestamp: Date.now(),
+				},
+			],
+		});
+
+		await Bun.sleep(50);
+
+		expect(completeSpy).not.toHaveBeenCalled();
+		expect(writerSpy).not.toHaveBeenCalled();
+		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
+	});
+
 	test("writes classifier and writer audit artifacts for each learning run", async () => {
 		const fx = await createFixture();
 		vi.spyOn(logger, "debug").mockImplementation(() => {});

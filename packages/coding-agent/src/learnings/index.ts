@@ -14,6 +14,7 @@ import writeTemplate from "../prompts/learnings/write.md" with { type: "text" };
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import * as taskExecutor from "../task/executor";
 import type { AgentDefinition, SingleResult } from "../task/types";
+import { isLowSignalTitleInput } from "../tiny/text";
 import {
 	createLearningAuditRun,
 	finalizeLearningAuditRun,
@@ -175,6 +176,10 @@ export function startLearningStartupTask(options: {
 		const userText = extractLatestUserText(event);
 		if (!userText) {
 			logger.debug("live-learning: no latest user message", { cwd, sessionId: session.sessionId });
+			return;
+		}
+		if (isLowSignalTitleInput(userText)) {
+			logger.debug("live-learning: skipped low-signal input", { cwd, sessionId: session.sessionId });
 			return;
 		}
 		logger.debug("live-learning: candidate", { cwd, sessionId: session.sessionId, chars: userText.length });

@@ -4,6 +4,12 @@ import { callSessionTool } from "../../eval/js/tool-bridge";
 import type { ToolSession } from "../../sdk";
 import { expandPath } from "../path-utils";
 import { ToolAbortError, ToolError } from "../tool-errors";
+import {
+	type AnnotationListener,
+	type AnnotationWaiter,
+	drainBufferedAnnotations,
+	routeAnnotationSubmission,
+} from "./annotation-router";
 import { pickElectronTarget } from "./attach";
 import { type BrowserHandle, type BrowserKindTag, holdBrowser, releaseBrowser } from "./registry";
 import type {
@@ -49,7 +55,8 @@ export interface TabSession {
 	info: ReadyInfo;
 	pending: Map<string, PendingRun>;
 	annotations: AnnotationSubmission[];
-	annotationWaiters: Array<{ resolve(submission: AnnotationSubmission): void; reject(error: unknown): void }>;
+	annotationWaiters: AnnotationWaiter[];
+	annotationListener?: AnnotationListener;
 	pendingAnnotates: Map<string, { resolve(): void; reject(error: unknown): void }>;
 	dialogPolicy?: DialogPolicy;
 	kindTag: BrowserKindTag;
@@ -90,6 +97,17 @@ const GRACE_MS = 750;
 
 export function getTab(name: string): TabSession | undefined {
 	return tabs.get(name);
+}
+
+export function registerTabForTest(tab: TabSession): () => void {
+	const previous = tabs.get(tab.name);
+	const unsubscribe = tab.worker.onMessage(msg => handleTabMessage(tab, msg));
+	tabs.set(tab.name, tab);
+	return () => {
+		unsubscribe();
+		if (previous) tabs.set(tab.name, previous);
+		else tabs.delete(tab.name);
+	};
 }
 
 export function acquireTab(name: string, browser: BrowserHandle, opts: AcquireTabOptions): Promise<AcquireTabResult> {
@@ -247,6 +265,17 @@ export async function setAnnotateMode(name: string, enabled: boolean, timeoutMs:
 	}
 }
 
+/** Register a background sink for overlay submissions; setting one drains buffered feedback immediately. */
+export function setAnnotationListener(name: string, listener: AnnotationListener | null): void {
+	const tab = tabs.get(name);
+	if (tab?.state !== "alive") {
+		if (listener) throw new ToolError(`No live tab named ${JSON.stringify(name)}. Open it first.`);
+		return;
+	}
+	tab.annotationListener = listener ?? undefined;
+	if (listener) drainBufferedAnnotations(tab);
+}
+
 /** Wait for the next overlay submission on a tab; returns a buffered one immediately. Resolves null on timeout. */
 export async function waitForAnnotation(
 	name: string,
@@ -337,6 +366,7 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 	tab.pending.clear();
 	for (const waiter of tab.annotationWaiters) waiter.reject(closeError);
 	tab.annotationWaiters.length = 0;
+	tab.annotationListener = undefined;
 	for (const pending of tab.pendingAnnotates.values()) pending.reject(closeError);
 	tab.pendingAnnotates.clear();
 	let forced = false;
@@ -425,12 +455,7 @@ function handleTabMessage(tab: TabSession, msg: WorkerOutbound): void {
 		return;
 	}
 	if (msg.type === "annotation") {
-		const waiter = tab.annotationWaiters.shift();
-		if (waiter) waiter.resolve(msg.submission);
-		else {
-			tab.annotations.push(msg.submission);
-			if (tab.annotations.length > 20) tab.annotations.shift();
-		}
+		routeAnnotationSubmission(tab, msg.submission);
 		return;
 	}
 	if (msg.type === "log") logWorkerMessage(msg);
@@ -503,6 +528,7 @@ async function forceKillTab(name: string, reason: string): Promise<void> {
 	tab.pending.clear();
 	for (const waiter of tab.annotationWaiters) waiter.reject(error);
 	tab.annotationWaiters.length = 0;
+	tab.annotationListener = undefined;
 	for (const pending of tab.pendingAnnotates.values()) pending.reject(error);
 	tab.pendingAnnotates.clear();
 	await tab.worker.terminate().catch(() => undefined);

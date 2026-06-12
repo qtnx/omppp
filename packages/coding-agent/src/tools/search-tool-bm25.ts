@@ -198,6 +198,38 @@ function renderFallbackResult(text: string, theme: Theme): Component {
 	return new Text([header, ...bodyLines].join("\n"), 0, 0);
 }
 
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every(item => typeof item === "string");
+}
+
+function isSearchToolBm25Match(value: unknown): value is SearchToolBm25Match {
+	if (typeof value !== "object" || value === null) return false;
+	const match = value as Partial<SearchToolBm25Match>;
+	return (
+		typeof match.name === "string" &&
+		typeof match.label === "string" &&
+		typeof match.description === "string" &&
+		(match.server_name === undefined || typeof match.server_name === "string") &&
+		(match.mcp_tool_name === undefined || typeof match.mcp_tool_name === "string") &&
+		isStringArray(match.schema_keys) &&
+		typeof match.score === "number"
+	);
+}
+
+function isSearchToolBm25Details(value: unknown): value is SearchToolBm25Details {
+	if (typeof value !== "object" || value === null) return false;
+	const details = value as Partial<SearchToolBm25Details>;
+	return (
+		typeof details.query === "string" &&
+		typeof details.limit === "number" &&
+		typeof details.total_tools === "number" &&
+		isStringArray(details.activated_tools) &&
+		isStringArray(details.active_selected_tools) &&
+		Array.isArray(details.tools) &&
+		details.tools.every(isSearchToolBm25Match)
+	);
+}
+
 /**
  * SearchToolsTool — wire name `search_tool_bm25` (preserved for persisted session back-compat).
  *
@@ -303,7 +335,7 @@ export const searchToolBm25Renderer = {
 		options: RenderResultOptions,
 		uiTheme: Theme,
 	): Component {
-		if (!result.details) {
+		if (result.isError || !isSearchToolBm25Details(result.details)) {
 			const fallbackText = result.content
 				.filter(part => part.type === "text")
 				.map(part => part.text)
