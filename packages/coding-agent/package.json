@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/pi-coding-agent",
-	"version": "1.3.1",
+	"version": "1.3.2",
 	"description": "OMPx, an upgrade for OMP: coding agent CLI with read, bash, edit, write tools and session management",
 	"homepage": "https://github.com/qtnx/omppp",
 	"author": "Can Boluk",

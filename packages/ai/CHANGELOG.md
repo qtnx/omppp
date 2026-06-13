@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-06-13
+
 ### Fixed
 
 - Dropped unavailable session image blobs from provider payloads instead of serializing `blob:` refs or empty data into OpenAI/Codex, Anthropic, and Gemini image requests.
