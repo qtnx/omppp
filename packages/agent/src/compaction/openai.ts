@@ -14,11 +14,13 @@
 
 import { parseTextSignature } from "@oh-my-pi/pi-ai/providers/openai-responses-shared";
 import { transformMessages } from "@oh-my-pi/pi-ai/providers/transform-messages";
-import type { AssistantMessage, FetchImpl, Message, Model } from "@oh-my-pi/pi-ai/types";
+import { isImageContentAvailable } from "@oh-my-pi/pi-ai/providers/vision-guard";
+import type { AssistantMessage, FetchImpl, ImageContent, Message, Model } from "@oh-my-pi/pi-ai/types";
 import {
 	getOpenAIResponsesHistoryItems,
 	getOpenAIResponsesHistoryPayload,
 	normalizeResponsesToolCallId,
+	sanitizeOpenAIResponsesHistoryImagesForReplay,
 } from "@oh-my-pi/pi-ai/utils";
 import {
 	CODEX_BASE_URL,
@@ -236,7 +238,9 @@ export function buildOpenAiNativeHistory(
 	model: Model,
 	previousReplacementHistory?: Array<Record<string, unknown>>,
 ): Array<Record<string, unknown>> {
-	const input: Array<Record<string, unknown>> = previousReplacementHistory ? [...previousReplacementHistory] : [];
+	const input: Array<Record<string, unknown>> = previousReplacementHistory
+		? sanitizeOpenAIResponsesHistoryImagesForReplay(previousReplacementHistory)
+		: [];
 	const transformedMessages = transformMessages(messages, model, id => normalizeOpenAiCompactionToolCallId(id));
 
 	let msgIndex = 0;
@@ -248,8 +252,9 @@ export function buildOpenAiNativeHistory(
 			const providerPayload = (message as { providerPayload?: AssistantMessage["providerPayload"] }).providerPayload;
 			const historyItems = getOpenAIResponsesHistoryItems(providerPayload, model.provider);
 			if (historyItems) {
-				input.push(...historyItems);
-				addOpenAiCallIds(historyItems, knownCallIds, customCallIds);
+				const sanitizedHistoryItems = sanitizeOpenAIResponsesHistoryImagesForReplay(historyItems);
+				input.push(...sanitizedHistoryItems);
+				addOpenAiCallIds(sanitizedHistoryItems, knownCallIds, customCallIds);
 				msgIndex++;
 				continue;
 			}
@@ -267,6 +272,7 @@ export function buildOpenAiNativeHistory(
 						continue;
 					}
 					if (block.type === "image") {
+						if (!isImageContentAvailable(block)) continue;
 						contentBlocks.push({
 							type: "input_image",
 							detail: "auto",
@@ -290,11 +296,12 @@ export function buildOpenAiNativeHistory(
 				assistant.provider,
 			);
 			if (providerPayload) {
+				const sanitizedHistoryItems = sanitizeOpenAIResponsesHistoryImagesForReplay(providerPayload.items);
 				if (providerPayload.dt) {
-					input.push(...providerPayload.items);
-					addOpenAiCallIds(providerPayload.items, knownCallIds, customCallIds);
+					input.push(...sanitizedHistoryItems);
+					addOpenAiCallIds(sanitizedHistoryItems, knownCallIds, customCallIds);
 				} else {
-					input.splice(0, input.length, ...providerPayload.items);
+					input.splice(0, input.length, ...sanitizedHistoryItems);
 					knownCallIds.clear();
 					customCallIds.clear();
 					addOpenAiCallIds(input, knownCallIds, customCallIds);
@@ -388,7 +395,9 @@ export function buildOpenAiNativeHistory(
 				.filter(block => block.type === "text")
 				.map(block => block.text)
 				.join("\n");
-			const hasImages = message.content.some(block => block.type === "image");
+			const imageContent = message.content.filter((block): block is ImageContent => block.type === "image");
+			const availableImageContent = imageContent.filter(isImageContentAvailable);
+			const hasImages = availableImageContent.length > 0;
 			const outputText = textOutput.length > 0 ? textOutput : hasImages ? "(see attached image)" : "";
 			input.push({
 				type: customCallIds.has(normalized.callId) ? "custom_tool_call_output" : "function_call_output",
@@ -400,8 +409,7 @@ export function buildOpenAiNativeHistory(
 				const contentBlocks: Array<Record<string, unknown>> = [
 					{ type: "input_text", text: "Attached image(s) from tool result:" },
 				];
-				for (const block of message.content) {
-					if (block.type !== "image") continue;
+				for (const block of availableImageContent) {
 					contentBlocks.push({
 						type: "input_image",
 						detail: "auto",

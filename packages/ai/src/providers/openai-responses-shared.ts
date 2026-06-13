@@ -32,7 +32,13 @@ import {
 import { normalizeResponsesToolCallId } from "../utils";
 import type { AssistantMessageEventStream } from "../utils/event-stream";
 import { parseStreamingJson, parseStreamingJsonThrottled } from "../utils/json-parse";
-import { joinTextWithImagePlaceholder, NON_VISION_IMAGE_PLACEHOLDER, partitionVisionContent } from "./vision-guard";
+import {
+	isImageContentAvailable,
+	joinTextWithImagePlaceholder,
+	NON_VISION_IMAGE_PLACEHOLDER,
+	partitionVisionContent,
+	UNAVAILABLE_IMAGE_PLACEHOLDER,
+} from "./vision-guard";
 export const OPENAI_RESPONSES_PROGRESS_EVENT_TYPES: ReadonlySet<string> = new Set([
 	"response.created",
 	"response.output_item.added",
@@ -276,7 +282,10 @@ export function convertResponsesInputContent(
 		return [{ type: "input_text", text: content.toWellFormed() } satisfies ResponseInputText];
 	}
 
-	const { textBlocks, imageBlocks, omittedImages } = partitionVisionContent(content, supportsImages);
+	const { textBlocks, imageBlocks, omittedImages, unavailableImages } = partitionVisionContent(
+		content,
+		supportsImages,
+	);
 	const normalizedContent: ResponseInputContent[] = [];
 	for (const item of textBlocks) {
 		const text = item.text.toWellFormed();
@@ -297,6 +306,12 @@ export function convertResponsesInputContent(
 		normalizedContent.push({
 			type: "input_text",
 			text: NON_VISION_IMAGE_PLACEHOLDER,
+		} satisfies ResponseInputText);
+	}
+	if (unavailableImages) {
+		normalizedContent.push({
+			type: "input_text",
+			text: UNAVAILABLE_IMAGE_PLACEHOLDER,
 		} satisfies ResponseInputText);
 	}
 	return normalizedContent.length > 0 ? normalizedContent : undefined;
@@ -400,15 +415,22 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 		.filter((block): block is TextContent => block.type === "text")
 		.map(block => block.text)
 		.join("\n");
-	const hasImages = toolResult.content.some((block): block is ImageContent => block.type === "image");
-	const omittedImages = hasImages && !supportsImages;
+	const imageBlocks = toolResult.content.filter((block): block is ImageContent => block.type === "image");
+	const availableImageBlocks = imageBlocks.filter(isImageContentAvailable);
+	const omittedImages = imageBlocks.length > 0 && !supportsImages;
+	const unavailableImages = supportsImages && availableImageBlocks.length < imageBlocks.length;
 	const normalized = normalizeResponsesToolCallId(toolResult.toolCallId);
-	const output = (
-		omittedImages
-			? joinTextWithImagePlaceholder(textResult, true)
-			: textResult.length > 0
-				? textResult
-				: "(see attached image)"
+	const baseOutput = omittedImages
+		? joinTextWithImagePlaceholder(textResult, true)
+		: textResult.length > 0
+			? textResult
+			: availableImageBlocks.length > 0
+				? "(see attached image)"
+				: "";
+	const output = joinTextWithImagePlaceholder(
+		baseOutput,
+		unavailableImages,
+		UNAVAILABLE_IMAGE_PLACEHOLDER,
 	).toWellFormed();
 	if (strictResponsesPairing && !knownCallIds.has(normalized.callId)) {
 		// Strict backends (Azure, Copilot) reject unpaired outputs outright, but
@@ -437,21 +459,19 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 		});
 	}
 
-	if (!hasImages || !supportsImages) {
+	if (availableImageBlocks.length === 0 || !supportsImages) {
 		return;
 	}
 
 	const contentParts: ResponseInputContent[] = [
 		{ type: "input_text", text: "Attached image(s) from tool result:" } satisfies ResponseInputText,
 	];
-	for (const block of toolResult.content) {
-		if (block.type === "image") {
-			contentParts.push({
-				type: "input_image",
-				detail: block.detail ?? "auto",
-				image_url: `data:${block.mimeType};base64,${block.data}`,
-			} satisfies ResponseInputImage);
-		}
+	for (const block of availableImageBlocks) {
+		contentParts.push({
+			type: "input_image",
+			detail: block.detail ?? "auto",
+			image_url: `data:${block.mimeType};base64,${block.data}`,
+		} satisfies ResponseInputImage);
 	}
 	messages.push({ role: "user", content: contentParts });
 }

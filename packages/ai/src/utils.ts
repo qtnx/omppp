@@ -64,6 +64,62 @@ export function truncateResponseItemId(id: string, prefix: string): string {
 	return `${prefix}_${Bun.hash(id).toString(36)}`;
 }
 
+const UNAVAILABLE_RESPONSES_IMAGE_PLACEHOLDER = "[image omitted: image data unavailable]";
+const TRUNCATED_PERSISTED_CONTENT_MARKER = "[Session persistence truncated large content]";
+
+function isUnavailableResponsesImageUrl(value: unknown): boolean {
+	if (typeof value !== "string") return false;
+	if (value.length === 0 || value.startsWith("blob:")) return true;
+	if (value.includes(TRUNCATED_PERSISTED_CONTENT_MARKER)) return true;
+	if (!value.startsWith("data:image/")) return false;
+	const marker = ";base64,";
+	const markerIndex = value.indexOf(marker);
+	if (markerIndex === -1) return false;
+	const data = value.slice(markerIndex + marker.length);
+	return data.length === 0 || data.startsWith("blob:");
+}
+
+function createUnavailableResponsesImagePlaceholder(item: Record<string, unknown>): Record<string, unknown> {
+	return {
+		type: item.role === "assistant" ? "output_text" : "input_text",
+		text: UNAVAILABLE_RESPONSES_IMAGE_PLACEHOLDER,
+	};
+}
+
+function sanitizeOpenAIResponsesHistoryItemImages<T extends Record<string, unknown>>(item: T): T | undefined {
+	const content = item.content;
+	if (!Array.isArray(content)) return item;
+
+	const sanitizedContent: unknown[] = [];
+	let changed = false;
+	let insertedPlaceholder = false;
+	for (const part of content) {
+		if (part && typeof part === "object") {
+			const record = part as { type?: unknown; image_url?: unknown };
+			if (record.type === "input_image" && isUnavailableResponsesImageUrl(record.image_url)) {
+				changed = true;
+				if (!insertedPlaceholder) {
+					sanitizedContent.push(createUnavailableResponsesImagePlaceholder(item));
+					insertedPlaceholder = true;
+				}
+				continue;
+			}
+		}
+		sanitizedContent.push(part);
+	}
+	if (!changed) return item;
+	return { ...item, content: sanitizedContent } as T;
+}
+
+export function sanitizeOpenAIResponsesHistoryImagesForReplay(
+	items: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+	return items.flatMap(item => {
+		const sanitized = sanitizeOpenAIResponsesHistoryItemImages(item);
+		return sanitized ? [sanitized] : [];
+	});
+}
+
 export function sanitizeOpenAIResponsesHistoryItemsForReplay(items: Array<Record<string, unknown>>): ResponseInput {
 	const normalizedCallIds = new Map<string, string>();
 	return items.flatMap(item => {
@@ -79,7 +135,9 @@ function sanitizeOpenAIResponsesHistoryItemForReplay(
 	if (item.type === "item_reference") return undefined;
 
 	// providerPayload stores raw output items; replay strips item ids and keeps only normalized call_id.
-	const { id: _id, ...sanitizedItem } = item;
+	const { id: _id, ...itemWithoutId } = item;
+	const sanitizedItem = sanitizeOpenAIResponsesHistoryItemImages(itemWithoutId);
+	if (!sanitizedItem) return undefined;
 	if (typeof item.call_id === "string") {
 		sanitizedItem.call_id = normalizeReplayedResponsesHistoryCallId(item.call_id, normalizedCallIds);
 	}

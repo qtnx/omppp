@@ -133,6 +133,60 @@ describe("SessionManager signature persistence", () => {
 		});
 	});
 
+	it("externalizes snapcompact frame data and restores it across reload", async () => {
+		using tempDir = TempDir.createSync("@pi-session-snapcompact-frame-persistence-");
+		const session = SessionManager.create(tempDir.path(), tempDir.path());
+		const frameData = Buffer.alloc(450_000, 7).toString("base64");
+
+		const firstKeptEntryId = session.appendMessage({ role: "user", content: "after archive", timestamp: 1 });
+		session.appendCompaction(
+			"Archived history",
+			"Archived 1 snapcompact frame",
+			firstKeptEntryId,
+			1000,
+			undefined,
+			false,
+			{
+				snapcompact: {
+					frames: [
+						{
+							data: frameData,
+							mimeType: "image/png",
+							cols: 261,
+							rows: 261,
+							chars: 44951,
+							font: "8x8",
+							variant: "sent",
+							lineRepeat: 1,
+							detail: "original",
+						},
+					],
+					totalChars: 44951,
+					truncatedChars: 0,
+				},
+			},
+		);
+		await session.ensureOnDisk();
+		await session.flush();
+
+		const persisted = await fs.readFile(session.getSessionFile()!, "utf8");
+		expect(persisted).not.toContain("[Session persistence truncated large content]");
+		expect(persisted).not.toContain(frameData.slice(0, 1000));
+
+		const reloaded = await SessionManager.open(session.getSessionFile()!);
+		const summary = reloaded.buildSessionContext().messages.find(message => message.role === "compactionSummary");
+		if (summary?.role !== "compactionSummary") throw new Error("Expected compaction summary");
+
+		expect(summary.images).toEqual([
+			{
+				type: "image",
+				data: frameData,
+				mimeType: "image/png",
+				detail: "original",
+			},
+		]);
+	});
+
 	it("rehydrates assistant replay metadata in memory without rewriting the session file", async () => {
 		using tempDir = TempDir.createSync("@pi-session-rehydrate-persistence-");
 		const session = SessionManager.create(tempDir.path(), tempDir.path());

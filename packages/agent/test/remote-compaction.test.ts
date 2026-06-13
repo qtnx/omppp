@@ -194,6 +194,54 @@ describe("buildOpenAiNativeHistory call-id tracking", () => {
 		expect(items.some(item => item.type === "function_call_output" && item.call_id === "call_old")).toBe(false);
 		expect(items.some(item => item.type === "function_call_output" && item.call_id === "call_new")).toBe(true);
 	});
+	test("sanitizes unavailable image URLs in replacement history and assistant snapshots", () => {
+		const staleImageMessage = {
+			type: "message",
+			role: "user",
+			content: [
+				{ type: "input_text", text: "kept" },
+				{ type: "input_image", image_url: "blob:sha256:missing" },
+				{ type: "input_image", image_url: "data:image/png;base64,blob:sha256:missing" },
+			],
+		};
+		const previousItems = buildOpenAiNativeHistory([], CODEX_MODEL, [staleImageMessage]);
+		expect(JSON.stringify(previousItems)).not.toContain("blob:");
+		expect(previousItems).toContainEqual({
+			type: "message",
+			role: "user",
+			content: [
+				{ type: "input_text", text: "kept" },
+				{ type: "input_text", text: "[image omitted: image data unavailable]" },
+			],
+		});
+		const imageOnlyItems = buildOpenAiNativeHistory([], CODEX_MODEL, [
+			{ type: "message", role: "user", content: [{ type: "input_image", image_url: "" }] },
+		]);
+		expect(imageOnlyItems).toContainEqual({
+			type: "message",
+			role: "user",
+			content: [{ type: "input_text", text: "[image omitted: image data unavailable]" }],
+		});
+
+		const snapshotAssistant = {
+			...codexAssistant([], false),
+			providerPayload: {
+				type: "openaiResponsesHistory" as const,
+				provider: "openai-codex",
+				items: [staleImageMessage],
+			},
+		};
+		const snapshotItems = buildOpenAiNativeHistory([snapshotAssistant], CODEX_MODEL);
+		expect(JSON.stringify(snapshotItems)).not.toContain("blob:");
+		expect(snapshotItems).toContainEqual({
+			type: "message",
+			role: "user",
+			content: [
+				{ type: "input_text", text: "kept" },
+				{ type: "input_text", text: "[image omitted: image data unavailable]" },
+			],
+		});
+	});
 });
 
 describe("remote compaction input trimming", () => {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Missing externalized session image blobs now reload as unavailable image data instead of preserving the raw `blob:` reference that could later be sent to providers as malformed base64.
+
 ## [1.3.1] - 2026-06-12
 
 ### Fixed

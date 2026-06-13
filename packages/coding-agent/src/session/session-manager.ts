@@ -27,7 +27,7 @@ import {
 	Snowflake,
 	toError,
 } from "@oh-my-pi/pi-utils";
-import { getPreservedSnapcompactArchive, snapcompactImages } from "@oh-my-pi/snapcompact";
+import { getPreservedSnapcompactArchive, SNAPCOMPACT_PRESERVE_KEY, snapcompactImages } from "@oh-my-pi/snapcompact";
 import {
 	normalizePersistedWorkspaceRoots,
 	type PersistedWorkspaceRoot,
@@ -980,6 +980,17 @@ function hasImageUrl(value: unknown): value is { image_url: string } {
 	return typeof value === "object" && value !== null && "image_url" in value && typeof value.image_url === "string";
 }
 
+function isPersistedSnapcompactFrame(value: unknown): value is { data: string; mimeType?: string } {
+	if (typeof value !== "object" || value === null) return false;
+	const frame = value as Record<string, unknown>;
+	return (
+		typeof frame.data === "string" &&
+		typeof frame.cols === "number" &&
+		typeof frame.rows === "number" &&
+		typeof frame.chars === "number"
+	);
+}
+
 async function resolvePersistedImageUrlRefs(value: unknown, blobStore: BlobStore): Promise<void> {
 	if (Array.isArray(value)) {
 		await Promise.all(value.map(item => resolvePersistedImageUrlRefs(item, blobStore)));
@@ -993,6 +1004,21 @@ async function resolvePersistedImageUrlRefs(value: unknown, blobStore: BlobStore
 	}
 
 	await Promise.all(Object.values(value).map(item => resolvePersistedImageUrlRefs(item, blobStore)));
+}
+
+async function resolvePersistedSnapcompactFrameRefs(value: unknown, blobStore: BlobStore): Promise<void> {
+	if (Array.isArray(value)) {
+		await Promise.all(value.map(item => resolvePersistedSnapcompactFrameRefs(item, blobStore)));
+		return;
+	}
+
+	if (typeof value !== "object" || value === null) return;
+
+	if (isPersistedSnapcompactFrame(value) && isBlobRef(value.data)) {
+		value.data = await resolveImageData(blobStore, value.data);
+	}
+
+	await Promise.all(Object.values(value).map(item => resolvePersistedSnapcompactFrameRefs(item, blobStore)));
 }
 
 async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobStore): Promise<void> {
@@ -1021,6 +1047,9 @@ async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobSto
 		}
 
 		promises.push(resolvePersistedImageUrlRefs(entry, blobStore));
+		if (entry.type === "compaction") {
+			promises.push(resolvePersistedSnapcompactFrameRefs(entry.preserveData?.[SNAPCOMPACT_PRESERVE_KEY], blobStore));
+		}
 	}
 
 	await Promise.all(promises);
@@ -1235,7 +1264,8 @@ function formatTimeAgo(date: Date): string {
 }
 
 const MAX_PERSIST_CHARS = 500_000;
-const TRUNCATION_NOTICE = "\n\n[Session persistence truncated large content]";
+const TRUNCATION_MARKER = "[Session persistence truncated large content]";
+const TRUNCATION_NOTICE = `\n\n${TRUNCATION_MARKER}`;
 /** Minimum base64 length to externalize to blob store (skip tiny inline images) */
 const BLOB_EXTERNALIZE_THRESHOLD = 1024;
 const TEXT_CONTENT_KEY = "content";
@@ -1268,6 +1298,34 @@ function isImageBlock(value: unknown): value is { type: "image"; data: string; m
 		"data" in value &&
 		typeof (value as { data?: string }).data === "string"
 	);
+}
+
+async function externalizeSnapcompactFrameForPersistence(
+	frame: { data: string; mimeType?: string },
+	blobStore: BlobStore,
+): Promise<{ data: string; mimeType?: string }> {
+	if (
+		isBlobRef(frame.data) ||
+		frame.data.includes(TRUNCATION_MARKER) ||
+		frame.data.length < BLOB_EXTERNALIZE_THRESHOLD
+	) {
+		return frame;
+	}
+	return { ...frame, data: await externalizeImageData(blobStore, frame.data, frame.mimeType) };
+}
+
+function externalizeSnapcompactFrameForPersistenceSync(
+	frame: { data: string; mimeType?: string },
+	blobStore: BlobStore,
+): { data: string; mimeType?: string } {
+	if (
+		isBlobRef(frame.data) ||
+		frame.data.includes(TRUNCATION_MARKER) ||
+		frame.data.length < BLOB_EXTERNALIZE_THRESHOLD
+	) {
+		return frame;
+	}
+	return { ...frame, data: externalizeImageDataSync(blobStore, frame.data, frame.mimeType) };
 }
 
 async function truncateForPersistence(obj: FileEntry, blobStore: BlobStore, key?: string): Promise<FileEntry>;
@@ -1312,6 +1370,11 @@ async function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: 
 						const blobRef = await externalizeImageData(blobStore, item.data, item.mimeType);
 						return { ...item, data: blobRef };
 					}
+				}
+				if (key === "frames" && isPersistedSnapcompactFrame(item)) {
+					const newItem = await externalizeSnapcompactFrameForPersistence(item, blobStore);
+					if (newItem !== item) changed = true;
+					return newItem;
 				}
 
 				const newItem = await truncateForPersistence(item, blobStore, key);
@@ -1411,6 +1474,12 @@ function truncateForPersistenceSync(obj: unknown, blobStore: BlobStore, key?: st
 			) {
 				changed = true;
 				result[i] = { ...item, data: externalizeImageDataSync(blobStore, item.data, item.mimeType) };
+				continue;
+			}
+			if (key === "frames" && isPersistedSnapcompactFrame(item)) {
+				const newItem = externalizeSnapcompactFrameForPersistenceSync(item, blobStore);
+				if (newItem !== item) changed = true;
+				result[i] = newItem;
 				continue;
 			}
 			const newItem = truncateForPersistenceSync(item, blobStore, key);

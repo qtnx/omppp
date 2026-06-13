@@ -81,7 +81,7 @@ import {
 	resolveGitHubCopilotBaseUrl,
 } from "./github-copilot-headers";
 import { transformMessages } from "./transform-messages";
-import { NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
+import { isImageContentAvailable, NON_VISION_IMAGE_PLACEHOLDER, UNAVAILABLE_IMAGE_PLACEHOLDER } from "./vision-guard";
 
 export type AnthropicHeaderOptions = {
 	apiKey: string;
@@ -909,6 +909,10 @@ function convertContentBlocks(
 			continue;
 		}
 
+		if (!isImageContentAvailable(block)) {
+			blocks.push({ type: "text", text: UNAVAILABLE_IMAGE_PLACEHOLDER });
+			continue;
+		}
 		const mediaType = normalizeAnthropicImageMediaType(block.mimeType);
 		if (!mediaType) {
 			blocks.push({ type: "text", text: `[unsupported image: ${block.mimeType}]` });

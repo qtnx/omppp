@@ -34,7 +34,7 @@ import type {
 	ThinkingLevel,
 } from "./google-types";
 import { transformMessages } from "./transform-messages";
-import { NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
+import { isImageContentAvailable, NON_VISION_IMAGE_PLACEHOLDER, UNAVAILABLE_IMAGE_PLACEHOLDER } from "./vision-guard";
 
 export type {
 	Content,
@@ -185,24 +185,30 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 				const supportsImages = model.input.includes("image");
 				const parts: Part[] = [];
 				let omittedImages = false;
+				let unavailableImages = false;
 				for (const item of msg.content) {
 					if (item.type === "text") {
 						const text = item.text.toWellFormed();
 						if (text.trim().length === 0) continue;
 						parts.push({ text });
-					} else if (supportsImages) {
+					} else if (!supportsImages) {
+						omittedImages = true;
+					} else if (!isImageContentAvailable(item)) {
+						unavailableImages = true;
+					} else {
 						parts.push({
 							inlineData: {
 								mimeType: item.mimeType,
 								data: item.data,
 							},
 						});
-					} else {
-						omittedImages = true;
 					}
 				}
 				if (omittedImages) {
 					parts.push({ text: NON_VISION_IMAGE_PLACEHOLDER });
+				}
+				if (unavailableImages) {
+					parts.push({ text: UNAVAILABLE_IMAGE_PLACEHOLDER });
 				}
 				if (parts.length === 0) continue;
 				contents.push({
@@ -273,11 +279,12 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			const supportsImages = model.input.includes("image");
 			const textContent = msg.content.filter((c): c is TextContent => c.type === "text");
 			const textResult = textContent.map(c => c.text).join("\n");
-			const imageContent = supportsImages ? msg.content.filter((c): c is ImageContent => c.type === "image") : [];
-			const omittedImages = !supportsImages && msg.content.some((c): c is ImageContent => c.type === "image");
-
+			const imageContent = msg.content.filter((c): c is ImageContent => c.type === "image");
+			const availableImageContent = supportsImages ? imageContent.filter(isImageContentAvailable) : [];
+			const omittedImages = !supportsImages && imageContent.length > 0;
+			const unavailableImages = supportsImages && availableImageContent.length < imageContent.length;
 			const hasText = textResult.length > 0;
-			const hasImages = imageContent.length > 0;
+			const hasImages = availableImageContent.length > 0;
 
 			// Gemini 3+ models support multimodal function responses with images nested inside
 			// functionResponse.parts. Claude and other non-Gemini models behind Cloud Code Assist /
@@ -285,15 +292,18 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			const modelSupportsMultimodalFunctionResponse = supportsMultimodalFunctionResponse(model.id);
 
 			// Use "output" key for success, "error" key for errors as per SDK documentation
-			const responseValue = omittedImages
+			const baseResponseValue = omittedImages
 				? [hasText ? textResult.toWellFormed() : "", NON_VISION_IMAGE_PLACEHOLDER].filter(Boolean).join("\n")
 				: hasText
 					? textResult.toWellFormed()
 					: hasImages
 						? "(see attached image)"
 						: "";
+			const responseValue = unavailableImages
+				? [baseResponseValue, UNAVAILABLE_IMAGE_PLACEHOLDER].filter(Boolean).join("\n")
+				: baseResponseValue;
 
-			const imageParts: Part[] = imageContent.map(imageBlock => ({
+			const imageParts: Part[] = availableImageContent.map(imageBlock => ({
 				inlineData: {
 					mimeType: imageBlock.mimeType,
 					data: imageBlock.data,

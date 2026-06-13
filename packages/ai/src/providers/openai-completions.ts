@@ -23,6 +23,7 @@ import {
 	type AssistantMessage,
 	type Context,
 	type FetchImpl,
+	type ImageContent,
 	type Message,
 	type MessageAttribution,
 	type Model,
@@ -79,8 +80,10 @@ import { createInitialResponsesAssistantMessage } from "./openai-responses-share
 import { transformMessages } from "./transform-messages";
 import {
 	isDashscopeCompatibleModeTextOnlyQwen,
+	isImageContentAvailable,
 	joinTextWithImagePlaceholder,
 	NON_VISION_IMAGE_PLACEHOLDER,
+	UNAVAILABLE_IMAGE_PLACEHOLDER,
 } from "./vision-guard";
 
 /**
@@ -1653,6 +1656,7 @@ export function convertMessages(
 				const supportsImages = model.input.includes("image") && !isDashscopeCompatibleModeTextOnlyQwen(model);
 				const content: ChatCompletionContentPart[] = [];
 				let omittedImages = false;
+				let unavailableImages = false;
 				for (const item of msg.content) {
 					if (item.type === "text") {
 						const text = item.text.toWellFormed();
@@ -1661,7 +1665,11 @@ export function convertMessages(
 							type: "text",
 							text,
 						} satisfies ChatCompletionContentPartText);
-					} else if (supportsImages) {
+					} else if (!supportsImages) {
+						omittedImages = true;
+					} else if (!isImageContentAvailable(item)) {
+						unavailableImages = true;
+					} else {
 						content.push({
 							type: "image_url",
 							image_url: {
@@ -1670,14 +1678,18 @@ export function convertMessages(
 								...(item.detail && item.detail !== "original" ? { detail: item.detail } : {}),
 							},
 						} satisfies ChatCompletionContentPartImage);
-					} else {
-						omittedImages = true;
 					}
 				}
 				if (omittedImages) {
 					content.push({
 						type: "text",
 						text: NON_VISION_IMAGE_PLACEHOLDER,
+					} satisfies ChatCompletionContentPartText);
+				}
+				if (unavailableImages) {
+					content.push({
+						type: "text",
+						text: UNAVAILABLE_IMAGE_PLACEHOLDER,
 					} satisfies ChatCompletionContentPartText);
 				}
 				if (content.length === 0) continue;
@@ -1896,21 +1908,30 @@ export function convertMessages(
 					.map(c => (c as TextContent).text)
 					.join("\n");
 				const supportsImages = model.input.includes("image") && !isDashscopeCompatibleModeTextOnlyQwen(model);
-				const hasImages = toolMsg.content.some(c => c.type === "image");
+				const imageContent = toolMsg.content.filter((c): c is ImageContent => c.type === "image");
+				const availableImageContent = imageContent.filter(isImageContentAvailable);
+				const hasImages = imageContent.length > 0;
+				const hasAvailableImages = availableImageContent.length > 0;
 				const omittedImages = hasImages && !supportsImages;
+				const unavailableImages = supportsImages && availableImageContent.length < imageContent.length;
 
 				// Always send tool result with text (or placeholder if only images)
 				const hasText = textResult.length > 0;
 				const remappedToolCallId = consumeToolCallId(toolMsg.toolCallId);
 				const resolvedToolCallId =
 					remappedToolCallId ?? ensureToolCallId(toolMsg.toolCallId, `${j}:${toolMsg.toolName ?? "tool"}`);
-				const toolResultContent = omittedImages
+				const baseToolResultContent = omittedImages
 					? joinTextWithImagePlaceholder(textResult, true)
 					: hasText
 						? textResult
-						: hasImages
+						: hasAvailableImages
 							? "(see attached image)"
 							: "";
+				const toolResultContent = joinTextWithImagePlaceholder(
+					baseToolResultContent,
+					unavailableImages,
+					UNAVAILABLE_IMAGE_PLACEHOLDER,
+				);
 				const toolResultMsg: ChatCompletionToolMessageParam = {
 					role: "tool",
 					content: toolResultContent.toWellFormed(),
@@ -1921,16 +1942,14 @@ export function convertMessages(
 				}
 				params.push(toolResultMsg);
 
-				if (hasImages && supportsImages) {
-					for (const block of toolMsg.content) {
-						if (block.type === "image") {
-							imageBlocks.push({
-								type: "image_url",
-								image_url: {
-									url: `data:${block.mimeType};base64,${block.data}`,
-								},
-							});
-						}
+				if (hasAvailableImages && supportsImages) {
+					for (const block of availableImageContent) {
+						imageBlocks.push({
+							type: "image_url",
+							image_url: {
+								url: `data:${block.mimeType};base64,${block.data}`,
+							},
+						});
 					}
 				}
 			}

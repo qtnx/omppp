@@ -5,6 +5,7 @@ import {
 	externalizeImageData,
 	parseBlobRef,
 	resolveImageData,
+	resolveImageDataUrl,
 } from "@oh-my-pi/pi-coding-agent/session/blob-store";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -33,6 +34,15 @@ describe("BlobStore image display paths", () => {
 		expect(hash).toBeTruthy();
 		expect(await Bun.file(`${tempDir.path()}/${hash}.webp`).bytes()).toEqual(new Uint8Array(data));
 		expect(await resolveImageData(store, ref)).toBe(data.toString("base64"));
+	});
+
+	it("resolves missing image blob refs to empty data instead of leaking the ref", async () => {
+		using tempDir = TempDir.createSync("@omp-blob-store-missing-image-");
+		const store = new BlobStore(tempDir.path());
+		const missingRef = "blob:sha256:missing";
+
+		expect(await resolveImageData(store, missingRef)).toBe("");
+		expect(await resolveImageDataUrl(store, missingRef)).toBe("");
 	});
 
 	it("maps common image mime types to clickable file extensions", () => {

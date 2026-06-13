@@ -223,7 +223,9 @@ export function externalizeImageDataSync(blobStore: BlobStore, base64Data: strin
 /**
  * Resolve an externalized provider image data URL back to its original string.
  * If the data is not a blob reference, returns it unchanged.
- * If the blob is missing, logs a warning and returns the reference as-is.
+ * If the blob is missing, logs a warning and returns an empty string so the
+ * request-building layer can omit the unavailable image instead of sending an
+ * invalid blob reference as an image URL.
  */
 export async function resolveImageDataUrl(blobStore: BlobStore, data: string): Promise<string> {
 	const hash = parseBlobRef(data);
@@ -232,7 +234,7 @@ export async function resolveImageDataUrl(blobStore: BlobStore, data: string): P
 	const buffer = await blobStore.get(hash);
 	if (!buffer) {
 		logger.warn("Blob not found for persisted image data URL", { hash });
-		return data;
+		return "";
 	}
 	return buffer.toString("utf8");
 }
@@ -240,7 +242,9 @@ export async function resolveImageDataUrl(blobStore: BlobStore, data: string): P
 /**
  * Resolve a blob reference back to base64 data.
  * If the data is not a blob reference, returns it unchanged.
- * If the blob is missing, logs a warning and returns a placeholder.
+ * If the blob is missing, logs a warning and returns an empty string so request
+ * builders can omit the unavailable image instead of constructing a malformed
+ * base64 data URL.
  */
 export async function resolveImageData(blobStore: BlobStore, data: string): Promise<string> {
 	const hash = parseBlobRef(data);
@@ -249,7 +253,7 @@ export async function resolveImageData(blobStore: BlobStore, data: string): Prom
 	const buffer = await blobStore.get(hash);
 	if (!buffer) {
 		logger.warn("Blob not found for image reference", { hash });
-		return data; // Return the ref as-is; downstream will see invalid base64 but won't crash
+		return "";
 	}
 	return buffer.toString("base64");
 }

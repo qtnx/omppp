@@ -22,6 +22,8 @@ const originalCodexWebSocketPingIntervalMs = Bun.env.PI_CODEX_WEBSOCKET_PING_INT
 const originalCodexWebSocketPongTimeoutMs = Bun.env.PI_CODEX_WEBSOCKET_PONG_TIMEOUT_MS;
 const originalCodexWebSocketMessageQueueCapacity = Bun.env.PI_CODEX_WEBSOCKET_MESSAGE_QUEUE_CAPACITY;
 const originalCodexWebSocketMaxIdleReuseMs = Bun.env.PI_CODEX_WEBSOCKET_MAX_IDLE_REUSE_MS;
+const originalCodexWebSocketReconnectCooldownMs = Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS;
+const originalCodexWebSocketReconnectTimeoutMs = Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_TIMEOUT_MS;
 
 function restoreEnv(name: string, value: string | undefined): void {
 	if (value === undefined) {
@@ -45,6 +47,8 @@ afterEach(() => {
 	restoreEnv("PI_CODEX_WEBSOCKET_PONG_TIMEOUT_MS", originalCodexWebSocketPongTimeoutMs);
 	restoreEnv("PI_CODEX_WEBSOCKET_MESSAGE_QUEUE_CAPACITY", originalCodexWebSocketMessageQueueCapacity);
 	restoreEnv("PI_CODEX_WEBSOCKET_MAX_IDLE_REUSE_MS", originalCodexWebSocketMaxIdleReuseMs);
+	restoreEnv("PI_CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS", originalCodexWebSocketReconnectCooldownMs);
+	restoreEnv("PI_CODEX_WEBSOCKET_RECONNECT_TIMEOUT_MS", originalCodexWebSocketReconnectTimeoutMs);
 	vi.restoreAllMocks();
 });
 
@@ -2826,10 +2830,12 @@ describe("openai-codex streaming", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
-	it("disables websocket for the session after a prewarm connect timeout so the first request falls back immediately", async () => {
+	it("falls back immediately after a prewarm connect timeout while reconnecting in the background", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");
 		setAgentDir(tempDir.path());
 		Bun.env.PI_CODEX_WEBSOCKET_PREWARM_CONNECT_TIMEOUT_MS = "5";
+		Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS = "1";
+		Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_TIMEOUT_MS = "5";
 		const token = createCodexTestToken();
 
 		const sse = `${[
@@ -2879,6 +2885,7 @@ describe("openai-codex streaming", () => {
 			providerSessionState,
 		});
 		expect(detailsAfterPrewarm.websocketDisabled).toBe(true);
+		expect(detailsAfterPrewarm.fallbackCount).toBe(1);
 
 		const result = await streamOpenAICodexResponses(model, createCodexTestContext(), {
 			fetch: fetchMock as FetchImpl,
@@ -2887,10 +2894,103 @@ describe("openai-codex streaming", () => {
 			providerSessionState,
 		}).result();
 
-		expect(constructorCount).toBe(1);
+		await Bun.sleep(20);
+
+		expect(constructorCount).toBe(2);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		expect(result.stopReason).toBe("stop");
 		expect(result.content).toEqual([expect.objectContaining({ type: "text", text: "SSE fast path" })]);
+	});
+
+	it("falls back to SSE while a background reconnect restores websocket for later requests", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		Bun.env.PI_CODEX_WEBSOCKET_CONNECT_TIMEOUT_MS = "5";
+		Bun.env.PI_CODEX_WEBSOCKET_RETRY_BUDGET = "0";
+		Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS = "1";
+		Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_TIMEOUT_MS = "5";
+		Bun.env.PI_CODEX_WEBSOCKET_PING_INTERVAL_MS = "0";
+
+		const token = createCodexTestToken();
+		const sse = `${[
+			`data: ${JSON.stringify({
+				type: "response.output_item.added",
+				item: { type: "message", id: "msg_sse", role: "assistant", status: "in_progress", content: [] },
+			})}`,
+			`data: ${JSON.stringify({ type: "response.content_part.added", part: { type: "output_text", text: "" } })}`,
+			`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "SSE fallback" })}`,
+			`data: ${JSON.stringify({
+				type: "response.output_item.done",
+				item: {
+					type: "message",
+					id: "msg_sse",
+					role: "assistant",
+					status: "completed",
+					content: [{ type: "output_text", text: "SSE fallback" }],
+				},
+			})}`,
+			`data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_sse", status: "completed" } })}`,
+		].join("\n\n")}\n\n`;
+		const fetchMock = vi.fn(
+			async () => new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }),
+		);
+
+		let constructorCount = 0;
+		let sendCount = 0;
+		class RecoveringWebSocket extends MockWebSocket {
+			#connectionIndex: number;
+
+			constructor(url: string, options?: { headers?: WsHeaders }) {
+				super(url, options);
+				this.#connectionIndex = constructorCount;
+				constructorCount += 1;
+				if (this.#connectionIndex > 0) {
+					this.scheduleOpen();
+				}
+			}
+
+			send(_data: string): void {
+				sendCount += 1;
+				this.emitCodexResponse({
+					messageId: `msg_recovered_${sendCount}`,
+					responseId: `resp_recovered_${sendCount}`,
+					text: `WS recovered ${sendCount}`,
+				});
+			}
+		}
+		global.WebSocket = RecoveringWebSocket as unknown as typeof WebSocket;
+
+		const model = createCodexTestModel("https://chatgpt.com/backend-api");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const first = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			fetch: fetchMock as FetchImpl,
+			apiKey: token,
+			sessionId: "ws-background-reconnect-session",
+			providerSessionState,
+		}).result();
+
+		await Bun.sleep(20);
+
+		const second = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			fetch: fetchMock as FetchImpl,
+			apiKey: token,
+			sessionId: "ws-background-reconnect-session",
+			providerSessionState,
+		}).result();
+
+		const details = getOpenAICodexTransportDetails(model, {
+			sessionId: "ws-background-reconnect-session",
+			providerSessionState,
+		});
+
+		expect(first.content).toEqual([expect.objectContaining({ type: "text", text: "SSE fallback" })]);
+		expect(second.content).toEqual([expect.objectContaining({ type: "text", text: "WS recovered 1" })]);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(constructorCount).toBeGreaterThanOrEqual(2);
+		expect(details.lastTransport).toBe("websocket");
+		expect(details.websocketConnected).toBe(true);
+		expect(details.websocketDisabled).toBe(false);
+		expect(details.fallbackCount).toBe(1);
 	});
 
 	it("does not disable websocket when prewarm is aborted by the caller", async () => {

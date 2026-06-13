@@ -51,6 +51,7 @@ import {
 	getOpenAIResponsesHistoryItems,
 	getOpenAIResponsesHistoryPayload,
 	normalizeSystemPrompts,
+	sanitizeOpenAIResponsesHistoryImagesForReplay,
 } from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
@@ -100,6 +101,7 @@ const CODEX_MAX_RETRIES = 5;
 const CODEX_RETRY_DELAY_MS = 500;
 const CODEX_WEBSOCKET_CONNECT_TIMEOUT_MS = 10000;
 const CODEX_WEBSOCKET_PREWARM_CONNECT_TIMEOUT_MS = 1500;
+const CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS = 5_000;
 const CODEX_WEBSOCKET_PING_INTERVAL_MS = 10_000;
 const CODEX_WEBSOCKET_PONG_TIMEOUT_MS = 60_000;
 const CODEX_WEBSOCKET_MESSAGE_QUEUE_CAPACITY = 4096;
@@ -245,6 +247,9 @@ type CodexWebSocketSessionState = {
 	lastTransport?: CodexTransport;
 	fallbackCount: number;
 	lastFallbackAt?: number;
+	backgroundReconnect?: Promise<void>;
+	backgroundReconnectAttempts: number;
+	nextReconnectAt?: number;
 	prewarmed: boolean;
 	stats: OpenAICodexWebSocketDebugStats;
 };
@@ -362,6 +367,17 @@ function getCodexWebSocketPrewarmConnectTimeoutMs(): number {
 		$env.PI_CODEX_WEBSOCKET_PREWARM_CONNECT_TIMEOUT_MS,
 		CODEX_WEBSOCKET_PREWARM_CONNECT_TIMEOUT_MS,
 	);
+}
+
+function getCodexWebSocketReconnectCooldownMs(): number {
+	return parseCodexNonNegativeInteger(
+		$env.PI_CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS,
+		CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS,
+	);
+}
+
+function getCodexWebSocketReconnectTimeoutMs(): number {
+	return parseCodexPositiveInteger($env.PI_CODEX_WEBSOCKET_RECONNECT_TIMEOUT_MS, getCodexWebSocketConnectTimeoutMs());
 }
 
 function getCodexWebSocketIdleTimeoutMs(): number {
@@ -957,6 +973,9 @@ async function openCodexSseTransport(
 	requestBodyForState: RequestBody;
 	transport: CodexTransport;
 }> {
+	if (state?.disableWebsocket && isCodexWebSocketPreferred(model, options?.preferWebsockets)) {
+		scheduleCodexWebSocketBackgroundReconnect(model, requestContext, state);
+	}
 	const eventStream = requestSetup.wrapCodexSseStream(
 		await openCodexSseEventStream(
 			requestContext.url,
@@ -972,6 +991,115 @@ async function openCodexSseTransport(
 		),
 	);
 	return { eventStream, requestBodyForState: structuredCloneJSON(body), transport: "sse" };
+}
+
+function scheduleCodexWebSocketBackgroundReconnect(
+	model: Model<"openai-codex-responses">,
+	requestContext: CodexRequestContext,
+	state: CodexWebSocketSessionState,
+): void {
+	const url = toWebSocketUrl(requestContext.url);
+	const telemetry: CodexTransportTelemetryContext = {
+		provider: model.provider,
+		model: model.id,
+		sessionId: requestContext.transportSessionId,
+		url,
+	};
+	const now = Date.now();
+	if (state.connection?.isOpen()) {
+		state.disableWebsocket = false;
+		state.nextReconnectAt = undefined;
+		logCodexTransport({
+			phase: "websocket_background_reconnect_skip",
+			transport: "websocket",
+			reason: "already_connected",
+			...telemetry,
+		});
+		return;
+	}
+	if (state.backgroundReconnect) {
+		logCodexTransport({
+			phase: "websocket_background_reconnect_skip",
+			transport: "websocket",
+			reason: "in_flight",
+			nextRetryAt: state.nextReconnectAt,
+			...telemetry,
+		});
+		return;
+	}
+
+	const nextRetryAt = state.nextReconnectAt ?? now;
+	const cooldownMs = Math.max(0, nextRetryAt - now);
+	const attempt = state.backgroundReconnectAttempts + 1;
+	state.backgroundReconnectAttempts = attempt;
+	state.backgroundReconnect = (async () => {
+		try {
+			if (cooldownMs > 0) {
+				await scheduler.wait(cooldownMs);
+			}
+			if (state.connection?.isOpen()) {
+				state.disableWebsocket = false;
+				state.nextReconnectAt = undefined;
+				logCodexTransport({
+					phase: "websocket_background_reconnect_skip",
+					transport: "websocket",
+					reason: "already_connected",
+					attempt,
+					...telemetry,
+				});
+				return;
+			}
+			const start = Date.now();
+			logCodexTransport({
+				phase: "websocket_background_reconnect_start",
+				transport: "websocket",
+				attempt,
+				cooldownMs,
+				nextRetryAt,
+				...telemetry,
+			});
+			const websocketHeaders = createCodexHeaders(
+				requestContext.requestHeaders,
+				requestContext.accountId,
+				requestContext.apiKey,
+				requestContext.transportSessionId,
+				"websocket",
+				state,
+			);
+			await getOrCreateCodexWebSocketConnection(state, url, websocketHeaders, {
+				connectTimeoutMs: getCodexWebSocketReconnectTimeoutMs(),
+				telemetry,
+			});
+			const durationMs = Date.now() - start;
+			state.disableWebsocket = false;
+			state.nextReconnectAt = undefined;
+			state.prewarmed = true;
+			logCodexTransport({
+				phase: "websocket_background_reconnect_ok",
+				transport: "websocket",
+				attempt,
+				durationMs,
+				...telemetry,
+			});
+		} catch (error) {
+			const durationMs = Date.now() - now;
+			const message = error instanceof Error ? error.message : String(error);
+			recordCodexWebSocketFailure(state, false);
+			state.disableWebsocket = true;
+			state.nextReconnectAt = Date.now() + getCodexWebSocketReconnectCooldownMs();
+			logCodexTransport({
+				phase: "websocket_background_reconnect_fail",
+				transport: "websocket",
+				attempt,
+				durationMs,
+				error: message,
+				nextRetryAt: state.nextReconnectAt,
+				...telemetry,
+			});
+		} finally {
+			state.backgroundReconnect = undefined;
+		}
+	})();
 }
 
 async function reopenCodexWebSocketRuntimeStream(
@@ -2177,6 +2305,7 @@ function getCodexWebSocketSessionState(
 		disableWebsocket: false,
 		canAppend: false,
 		fallbackCount: 0,
+		backgroundReconnectAttempts: 0,
 		prewarmed: false,
 		stats: {
 			fullContextRequests: 0,
@@ -2225,9 +2354,15 @@ function recordCodexWebSocketFailure(state: CodexWebSocketSessionState, activate
 	state.lastFallbackAt = Date.now();
 	if (activateFallback && !state.disableWebsocket) {
 		state.disableWebsocket = true;
+		state.nextReconnectAt = state.lastFallbackAt + getCodexWebSocketReconnectCooldownMs();
 		state.fallbackCount += 1;
 		state.stats.websocketFallbacks += 1;
 	}
+}
+
+function isCodexWebSocketPreferred(model: Model<"openai-codex-responses">, preferWebsockets?: boolean): boolean {
+	if (preferWebsockets === false) return false;
+	return isCodexWebSocketEnvEnabled() || preferWebsockets === true || model.preferWebsockets === true;
 }
 
 function shouldUseCodexWebSocket(
@@ -2236,8 +2371,7 @@ function shouldUseCodexWebSocket(
 	preferWebsockets?: boolean,
 ): boolean {
 	if (!state || state.disableWebsocket) return false;
-	if (preferWebsockets === false) return false;
-	return isCodexWebSocketEnvEnabled() || preferWebsockets === true || model.preferWebsockets === true;
+	return isCodexWebSocketPreferred(model, preferWebsockets);
 }
 
 export interface OpenAICodexTransportDetails {
@@ -3374,17 +3508,18 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 	for (const msg of transformedMessages) {
 		if (msg.role === "user" || msg.role === "developer") {
 			const providerPayload = (msg as { providerPayload?: AssistantMessage["providerPayload"] }).providerPayload;
-			const historyItems = getOpenAIResponsesHistoryItems(providerPayload, model.provider) as
-				| Array<ResponseInput[number]>
-				| undefined;
+			const historyItems = getOpenAIResponsesHistoryItems(providerPayload, model.provider);
 			if (historyItems) {
-				for (const item of historyItems) {
+				const sanitizedHistoryItems = sanitizeOpenAIResponsesHistoryImagesForReplay(
+					historyItems,
+				) as unknown as Array<ResponseInput[number]>;
+				for (const item of sanitizedHistoryItems) {
 					const maybe = item as { type?: string; call_id?: string };
 					if (maybe.type === "custom_tool_call" && typeof maybe.call_id === "string") {
 						customCallIds.add(maybe.call_id);
 					}
 				}
-				messages.push(...historyItems);
+				messages.push(...sanitizedHistoryItems);
 				msgIndex += 1;
 				continue;
 			}
@@ -3405,18 +3540,21 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 				assistantMsg.api === model.api && assistantMsg.model === model.id
 					? getOpenAIResponsesHistoryPayload(assistantMsg.providerPayload, model.provider, assistantMsg.provider)
 					: undefined;
-			const historyItems = providerPayload?.items as Array<ResponseInput[number]> | undefined;
+			const historyItems = providerPayload?.items;
 			if (historyItems) {
-				for (const item of historyItems) {
+				const sanitizedHistoryItems = sanitizeOpenAIResponsesHistoryImagesForReplay(
+					historyItems,
+				) as unknown as Array<ResponseInput[number]>;
+				for (const item of sanitizedHistoryItems) {
 					const maybe = item as { type?: string; call_id?: string };
 					if (maybe.type === "custom_tool_call" && typeof maybe.call_id === "string") {
 						customCallIds.add(maybe.call_id);
 					}
 				}
 				if (providerPayload?.dt) {
-					messages.push(...historyItems);
+					messages.push(...sanitizedHistoryItems);
 				} else {
-					messages.splice(0, messages.length, ...historyItems);
+					messages.splice(0, messages.length, ...sanitizedHistoryItems);
 					// Keep customCallIds from the pre-splice state since historyItems may re-introduce them.
 				}
 				msgIndex += 1;
