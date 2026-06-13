@@ -180,6 +180,11 @@ function expectWeightedPreference(counts: Map<string, number>, preferred: string
 	expect(preferredCount / fallbackCount).toBeLessThan(2.4);
 }
 
+async function warmUsageCache(authStorage: AuthStorage): Promise<void> {
+	const reports = await authStorage.fetchUsageReports();
+	expect(reports).not.toBeNull();
+}
+
 describe("AuthStorage codex oauth ranking", () => {
 	let tempDir = "";
 	let store: AuthCredentialStore | null = null;
@@ -313,6 +318,8 @@ describe("AuthStorage codex oauth ranking", () => {
 			}),
 		);
 
+		await warmUsageCache(authStorage);
+
 		const apiKey = await authStorage.getApiKey("openai-codex", "session-exhausted");
 		expect(apiKey).toBe("api-acct-healthy");
 	});
@@ -387,6 +394,8 @@ describe("AuthStorage codex oauth ranking", () => {
 		});
 		proReport.metadata = { ...proReport.metadata, planType: "pro" };
 		usageByAccount.set("acct-pro", proReport);
+
+		await warmUsageCache(authStorage);
 
 		const apiKey = await authStorage.getApiKey("openai-codex", "session-spark-prefers-pro", {
 			modelId: "gpt-5.3-codex-spark",
@@ -668,6 +677,8 @@ describe("AuthStorage codex oauth ranking", () => {
 				),
 			);
 		}
+
+		await warmUsageCache(authStorage);
 
 		const session = "session-spark-exhausted-spark-model";
 		const modelId = "gpt-5.3-codex-spark";
@@ -1004,6 +1015,8 @@ describe("AuthStorage claude oauth ranking", () => {
 				secondary: { usedFraction: 1, resetInMs: 30 * 60 * 1000 },
 			}),
 		);
+
+		await warmUsageCache(authStorage);
 
 		const apiKey = await authStorage.getApiKey("anthropic", "session-claude-all-exhausted");
 		expect(apiKey).toBe("api-acct-soon");
