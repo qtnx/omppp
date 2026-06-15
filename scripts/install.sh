@@ -219,6 +219,50 @@ verify_release_checksum() {
     fi
 }
 
+migrate_syntax_highlighting_config() {
+    config_file="$1"
+
+    if [ ! -f "$config_file" ]; then
+        return
+    fi
+
+    if grep -Eq '^[[:space:]]*syntaxHighlighting[[:space:]]*:' "$config_file"; then
+        return
+    fi
+
+    if grep -Eq '^display:[[:space:]]*($|#)' "$config_file"; then
+        tmp_config="$(mktemp "${config_file}.XXXXXX")"
+        awk '
+            BEGIN {
+                inserted = 0
+                in_display = 0
+            }
+            {
+                if (in_display == 1 && inserted == 0 && $0 !~ /^([[:space:]]|$|#)/) {
+                    print "  syntaxHighlighting: basic"
+                    inserted = 1
+                    in_display = 0
+                }
+                print
+                if (inserted == 0 && in_display == 0 && $0 ~ /^display:[[:space:]]*($|#)/) {
+                    in_display = 1
+                }
+            }
+            END {
+                if (in_display == 1 && inserted == 0) {
+                    print "  syntaxHighlighting: basic"
+                }
+            }
+        ' "$config_file" > "$tmp_config"
+        mv "$tmp_config" "$config_file"
+    else
+        printf '\ndisplay:\n  syntaxHighlighting: basic\n' >> "$config_file"
+    fi
+
+    chmod 600 "$config_file" 2>/dev/null || true
+    echo "✓ Migrated config syntax highlighting to basic at ${config_file}"
+}
+
 install_standard_config() {
     if [ "${OMPX_INSTALL_SKIP_STANDARD_CONFIG:-}" = "1" ]; then
         return
@@ -228,6 +272,7 @@ install_standard_config() {
     config_file="${config_dir}/config.yml"
     if [ -e "$config_file" ]; then
         echo "✓ Existing config kept at ${config_file}"
+        migrate_syntax_highlighting_config "$config_file"
         return
     fi
 
@@ -283,6 +328,8 @@ providers:
 symbolPreset: unicode
 theme:
   dark: titanium
+display:
+  syntaxHighlighting: basic
 setupVersion: 1
 retry:
   fallbackChains:

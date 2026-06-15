@@ -3,10 +3,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
+import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	type Api,
+	type AssistantMessage,
 	type Context,
 	clearCustomApis,
+	type ImageContent,
 	type Message,
 	type Model,
 	type ModelSpec,
@@ -19,12 +22,18 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { convertToLlm, wrapSteeringForModel } from "@oh-my-pi/pi-coding-agent/session/messages";
+import {
+	convertToLlm,
+	stripOversizedCompactionSummaryImagesForCodex,
+	wrapSteeringForModel,
+} from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
 import { CONTEXT_GC_CUSTOM_TYPE, type ContextGcDelta } from "../../context-gc-plugin/src/schema";
 import { openContextGcStore } from "../../context-gc-plugin/src/storage";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
+
+const originalCodexPrePromptCompactionBytes = Bun.env.PI_CODEX_PRE_PROMPT_COMPACTION_BYTES;
 
 function createAgent(): Agent {
 	return new Agent({
@@ -50,12 +59,34 @@ function getConvertedUserText(message: Message | undefined): string {
 	return text.text;
 }
 
+function containsStringValue(value: unknown, needle: string, seen = new Set<object>()): boolean {
+	if (typeof value === "string") {
+		return value.includes(needle);
+	}
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	if (seen.has(value)) {
+		return false;
+	}
+	seen.add(value);
+	if (Array.isArray(value)) {
+		return value.some(item => containsStringValue(item, needle, seen));
+	}
+	return Object.values(value).some(item => containsStringValue(item, needle, seen));
+}
+
 describe("AgentSession message pipeline", () => {
 	const sessions: AgentSession[] = [];
 
 	afterEach(async () => {
 		vi.restoreAllMocks();
 		clearCustomApis();
+		if (originalCodexPrePromptCompactionBytes === undefined) {
+			delete Bun.env.PI_CODEX_PRE_PROMPT_COMPACTION_BYTES;
+		} else {
+			Bun.env.PI_CODEX_PRE_PROMPT_COMPACTION_BYTES = originalCodexPrePromptCompactionBytes;
+		}
 		for (const session of sessions.splice(0)) {
 			await session.dispose();
 		}
@@ -155,6 +186,234 @@ describe("AgentSession message pipeline", () => {
 		expect(transformContext).toHaveBeenCalledWith(inputMessages, abortController.signal);
 		expect(convertToLlm).toHaveBeenCalledWith(transformedMessages);
 		expect(result).toEqual(convertedMessages);
+	});
+
+	it("trims oldest snapcompact frames first for oversized Codex provider contexts", () => {
+		const oldFrame: ImageContent = {
+			type: "image",
+			data: "old-frame".repeat(160),
+			mimeType: "image/png",
+			detail: "original",
+		};
+		const recentFrame: ImageContent = {
+			type: "image",
+			data: "recent-frame".repeat(8),
+			mimeType: "image/png",
+			detail: "original",
+		};
+		const userImage: ImageContent = {
+			type: "image",
+			data: "user-image".repeat(8),
+			mimeType: "image/png",
+			detail: "high",
+		};
+		const messages = convertToLlm([
+			{
+				role: "compactionSummary",
+				summary: "The old UI investigation was summarized in text.",
+				tokensBefore: 10_000,
+				images: [oldFrame, recentFrame],
+				timestamp: 1,
+			},
+			{
+				role: "user",
+				content: [{ type: "text", text: "current screenshot" }, userImage],
+				timestamp: 2,
+			},
+		]);
+		const context: Context = {
+			systemPrompt: ["system prompt"],
+			messages,
+			tools: [],
+		};
+		const originalBytes = Buffer.byteLength(JSON.stringify(context), "utf8");
+		const result = stripOversizedCompactionSummaryImagesForCodex(context, originalBytes - 300);
+
+		expect(result.changed).toBe(true);
+		expect(result.strippedFrames).toBe(1);
+		expect(result.retainedFrames).toBe(1);
+		const compactionContent = result.context.messages[0]?.content;
+		if (!Array.isArray(compactionContent)) throw new Error("Expected compaction content blocks");
+		const compactionImages = compactionContent.filter((part): part is ImageContent => part.type === "image");
+		expect(compactionImages.map(image => image.data)).toEqual([recentFrame.data]);
+		const userContent = result.context.messages[1]?.content;
+		if (!Array.isArray(userContent)) throw new Error("Expected user content blocks");
+		expect(userContent.some(part => part.type === "image" && part.data === userImage.data)).toBe(true);
+	});
+
+	it("does not re-measure the full Codex provider context once per stripped snapcompact frame", () => {
+		const frames: ImageContent[] = Array.from({ length: 5 }, (_, index) => ({
+			type: "image",
+			data: `frame-${index}-`.repeat(2048),
+			mimeType: "image/png",
+			detail: "original",
+		}));
+		const messages = convertToLlm([
+			{
+				role: "compactionSummary",
+				summary: "The old UI investigation was summarized in text.",
+				tokensBefore: 10_000,
+				images: frames,
+				timestamp: 1,
+			},
+		]);
+		const context: Context = {
+			systemPrompt: ["system prompt"],
+			messages,
+			tools: [],
+		};
+		const originalBytes = Buffer.byteLength(JSON.stringify(context), "utf8");
+		const stringifySpy = vi.spyOn(JSON, "stringify");
+
+		const result = stripOversizedCompactionSummaryImagesForCodex(context, Math.floor(originalBytes / 4));
+		const stringifyCalls = stringifySpy.mock.calls.length;
+
+		expect(result.changed).toBe(true);
+		expect(result.strippedFrames).toBeGreaterThan(1);
+		expect(stringifyCalls).toBeLessThanOrEqual(frames.length + 2);
+	});
+
+	it("does not stringify discarded Codex snapcompact frame data while sizing provider context", () => {
+		const frameData = "discarded-frame-data".repeat(2048);
+		const frames: ImageContent[] = [
+			{
+				type: "image",
+				data: frameData,
+				mimeType: "image/png",
+				detail: "original",
+			},
+		];
+		const messages = convertToLlm([
+			{
+				role: "compactionSummary",
+				summary: "The old UI investigation was summarized in text.",
+				tokensBefore: 10_000,
+				images: frames,
+				timestamp: 1,
+			},
+		]);
+		const context: Context = {
+			systemPrompt: ["system prompt"],
+			messages,
+			tools: [],
+		};
+		const stringifySpy = vi.spyOn(JSON, "stringify");
+
+		const result = stripOversizedCompactionSummaryImagesForCodex(context, 256);
+
+		expect(result.changed).toBe(true);
+		expect(result.strippedFrames).toBe(1);
+		expect(
+			stringifySpy.mock.calls.some(([value]) => {
+				return containsStringValue(value, frameData);
+			}),
+		).toBe(false);
+	});
+
+	it("runs pre-prompt compaction for oversized OpenAI Codex provider payloads", async () => {
+		Bun.env.PI_CODEX_PRE_PROMPT_COMPACTION_BYTES = "1";
+		const model = buildModel({
+			id: "gpt-5.3-codex-spark",
+			name: "GPT-5.3 Codex Spark",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			preferWebsockets: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 200_000,
+		});
+		const usage: AssistantMessage["usage"] = {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const oldUser: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: "old request" }],
+			timestamp: Date.now() - 4,
+		};
+		const oldAssistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "old response" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			stopReason: "stop",
+			usage,
+			timestamp: Date.now() - 3,
+		};
+		const recentUser: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: "recent request" }],
+			timestamp: Date.now() - 2,
+		};
+		const recentAssistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "recent response" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			stopReason: "stop",
+			usage,
+			timestamp: Date.now() - 1,
+		};
+		const sessionManager = SessionManager.inMemory();
+		for (const message of [oldUser, oldAssistant, recentUser, recentAssistant]) {
+			sessionManager.appendMessage(message);
+		}
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "compacted",
+			shortSummary: undefined,
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+		}));
+		const events: AgentSessionEvent[] = [];
+		const agent = new Agent({
+			getApiKey: () => "key",
+			initialState: {
+				model,
+				systemPrompt: ["system prompt"],
+				messages: [oldUser, oldAssistant, recentUser, recentAssistant],
+				tools: [],
+			},
+			streamFn: () => {
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const message = createAssistantMessage("Answer");
+					message.api = model.api;
+					message.provider = model.provider;
+					message.model = model.id;
+					stream.push({ type: "done", reason: "stop", message });
+				});
+				return stream;
+			},
+		});
+		const session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated({
+				"compaction.keepRecentTokens": 1,
+				"contextPromotion.enabled": false,
+			}),
+			modelRegistry: {
+				getAvailable: vi.fn(() => [model]),
+				getApiKey: vi.fn(async () => "key"),
+			} as never,
+		});
+		sessions.push(session);
+		session.subscribe(event => events.push(event));
+
+		await session.prompt("new request");
+
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+		expect(events).toContainEqual(expect.objectContaining({ type: "auto_compaction_start", reason: "threshold" }));
 	});
 
 	it("reports Context GC projected tokens in context usage", async () => {

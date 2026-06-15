@@ -259,6 +259,8 @@ providers:
 symbolPreset: unicode
 theme:
   dark: titanium
+display:
+  syntaxHighlighting: basic
 setupVersion: 1
 retry:
   fallbackChains:

@@ -231,6 +231,70 @@ describe("sandboxOmpxCommand", () => {
 		expect(wrapped?.env?.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED).toBe("1");
 	});
 
+	it("allows update to rewrite the installed binary directory under self-sandbox", () => {
+		setPlatform("darwin");
+		const installDir = createTempDir("ompx-update-install-");
+		const ompxPath = path.join(installDir, "ompx");
+		fs.writeFileSync(ompxPath, "binary");
+		fs.chmodSync(ompxPath, 0o755);
+
+		const wrapped = sandboxCurrentOmpxCommand(["update"], {
+			cwd: "/Users/alice/work",
+			entryPath: ompxPath,
+			env: macEnv({ PATH: `${installDir}:/usr/bin:/bin` }),
+			execPath: ompxPath,
+		});
+		const profile = wrapped?.args[1] ?? "";
+
+		expect(wrapped?.cmd).toBe("/usr/bin/sandbox-exec");
+		expect(profileHasWritableFilter(profile, `(subpath ${JSON.stringify(installDir)})`)).toBe(true);
+	});
+
+	it("allows source-entrypoint update relaunches to rewrite the PATH-selected install directory", () => {
+		setPlatform("darwin");
+		const installDir = createTempDir("ompx-update-source-install-");
+		const ompxPath = path.join(installDir, "ompx");
+		fs.writeFileSync(ompxPath, "binary");
+		fs.chmodSync(ompxPath, 0o755);
+
+		const wrapped = sandboxCurrentOmpxCommand(["update"], {
+			cwd: "/Users/alice/work",
+			entryPath: "/Users/alice/app/dist/cli.js",
+			env: macEnv({ PATH: `${installDir}:/usr/bin:/bin` }),
+			execPath: "/Users/alice/.bun/bin/bun",
+		});
+		const profile = wrapped?.args[1] ?? "";
+
+		expect(wrapped?.args.slice(2)).toEqual(["/Users/alice/.bun/bin/bun", "/Users/alice/app/dist/cli.js", "update"]);
+		expect(profileHasWritableFilter(profile, `(subpath ${JSON.stringify(installDir)})`)).toBe(true);
+	});
+
+	it("does not allow the install directory for non-update argv that mention update later", () => {
+		setPlatform("darwin");
+		const installDir = createTempDir("ompx-non-update-install-");
+		const ompxPath = path.join(installDir, "ompx");
+		fs.writeFileSync(ompxPath, "binary");
+		fs.chmodSync(ompxPath, 0o755);
+		const options = {
+			cwd: "/Users/alice/work",
+			entryPath: ompxPath,
+			env: macEnv({ PATH: `${installDir}:/usr/bin:/bin` }),
+			execPath: ompxPath,
+		};
+
+		for (const args of [
+			["--print", "update"],
+			["--model", "claude", "update"],
+			["--resume", "update"],
+			["./task.js", "update"],
+		]) {
+			const wrapped = sandboxCurrentOmpxCommand(args, options);
+			const profile = wrapped?.args[1] ?? "";
+
+			expect(profileHasWritableFilter(profile, `(subpath ${JSON.stringify(installDir)})`)).toBe(false);
+		}
+	});
+
 	it("does not self-wrap helper or explicitly unsandboxed top-level invocations", () => {
 		setPlatform("darwin");
 		const options = {

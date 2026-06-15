@@ -524,6 +524,51 @@ describe("AuthStorage codex oauth ranking", () => {
 		expect(countFor(counts, "api-acct-slow")).toBeGreaterThan(countFor(counts, "api-acct-fast"));
 	});
 
+	test("spreads concurrent Codex sessions across least-active accounts", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("openai-codex", [
+			{ type: "oauth", ...createCredential("acct-a", "a@example.com") },
+			{ type: "oauth", ...createCredential("acct-b", "b@example.com") },
+			{ type: "oauth", ...createCredential("acct-c", "c@example.com") },
+		]);
+
+		const primaryResetAt = Date.now() + HOUR_MS;
+		const secondaryResetAt = Date.now() + WEEK_MS;
+		for (const accountId of ["acct-a", "acct-b", "acct-c"]) {
+			const report = createCodexUsageReport({
+				accountId,
+				primary: { usedFraction: 0.1, resetInMs: HOUR_MS },
+				secondary: { usedFraction: 0.1, resetInMs: WEEK_MS },
+			});
+			usageByAccount.set(accountId, {
+				...report,
+				limits: report.limits.map(limit => {
+					if (!limit.window) return limit;
+					return {
+						...limit,
+						window: {
+							...limit.window,
+							resetsAt: limit.scope.windowId === "1h" ? primaryResetAt : secondaryResetAt,
+						},
+					};
+				}),
+			});
+		}
+		await warmUsageCache(authStorage);
+
+		const first = await authStorage.getApiKey("openai-codex", "parallel-codex-1");
+		const second = await authStorage.getApiKey("openai-codex", "parallel-codex-2");
+		const third = await authStorage.getApiKey("openai-codex", "parallel-codex-3");
+
+		expect(new Set([first, second, third]).size).toBe(3);
+
+		authStorage.releaseSessionCredentialUse("openai-codex", "parallel-codex-1");
+		const fourth = await authStorage.getApiKey("openai-codex", "parallel-codex-4");
+
+		expect(fourth).toBe(first);
+	});
+
 	test("handles usage fetch failure gracefully (null report)", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 

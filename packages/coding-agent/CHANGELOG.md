@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a `display.syntaxHighlighting` mode (`native`, `basic`, `off`) plus `OMP_DISABLE_SYNTAX_HIGHLIGHT=1`/`PI_DISABLE_SYNTAX_HIGHLIGHT=1` env kill switches so code rendering can avoid native syntax parsing when CPU usage matters more than rich colors.
+
+### Fixed
+
+- Added an OpenAI Codex pre-prompt payload-size guard that runs context compaction before sending very large provider requests, avoiding slow turns caused by oversized continued sessions.
+- Added an installer config migration that sets `display.syntaxHighlighting: basic` when existing shell-installed configs have not chosen a syntax highlighting mode.
+- Pruned older snapcompact image frames from oversized OpenAI Codex provider requests while keeping the newest frames and text summary, preventing archived screenshots from pushing WebSocket payloads over the 16 MiB cap.
+- Skipped native syntax highlighting for pending/running code previews so many parallel subagents no longer spend a full CPU core re-highlighting live tool cells every render frame.
+- Released OpenAI credential active-use reservations when provider streams finish, abort, fresh-session, or dispose so parallel subagents keep spreading across available accounts instead of sticking to stale busy slots.
+- Started OpenAI Codex WebSocket startup prewarm with the session's system prompt and tool set so the first real turn can reuse the warmup response id instead of resending the full baseline payload.
+- Fixed `ompx update` on macOS self-sandboxed installs by allowing the sandbox profile for the update command to rewrite the resolved installation directory, so the install-script backup and direct-download `.new`/`.bak` swap no longer fail with `EPERM` for `~/.local/bin/ompx`.
+- Fixed the browser `annotate` overlay being unusable on pages that run a focus trap: modals built with Radix/focus-trap/Headless UI/MUI yanked focus back into their dialog the instant the overlay's comment box was clicked, so the textarea could never be typed into. The overlay now intercepts its own focus events at the `window` capture phase (ahead of document-level traps), re-asserts focus on its own text fields on `pointerdown` (defeating traps that `preventDefault` the click), and isolates its keystrokes at the shadow boundary, so the comment/note fields hold focus and accept text even atop aggressive modals and keyboard-driven games; the guard no-ops once annotation mode is disabled.
+
 ## [1.3.2] - 2026-06-13
 
 ### Fixed

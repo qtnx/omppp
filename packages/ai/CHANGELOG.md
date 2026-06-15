@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Balanced new OpenAI Codex OAuth sessions across the least-active same-headroom accounts so parallel subagents fan out across available accounts before hitting usage limits.
+- Avoided repeated OpenAI Codex WebSocket retries after close code 1009 by keeping oversized payloads on SSE during a cooldown, skipping WebSocket connects when the request already exceeds the payload cap, and exposing payload-size/backoff diagnostics.
+- Scoped OpenAI Codex WebSocket turn state to each `response.create` request via `client_metadata` instead of replaying it in WebSocket handshake headers.
+- Added upstream-style OpenAI Codex WebSocket warmup requests (`generate: false`) and dedicated overflow WebSockets so overlapping same-session requests no longer fall back to SSE just because the pooled socket is busy.
+
 ## [1.3.2] - 2026-06-13
 
 ### Fixed

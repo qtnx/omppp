@@ -266,9 +266,10 @@ function hasCliFlag(args: readonly string[], targetFlags: ReadonlySet<string>): 
 	return false;
 }
 
-function firstNonFlagArg(args: readonly string[]): string | undefined {
+function firstNonFlagArg(args: readonly string[], startIndex = 0): string | undefined {
 	let skipNext = false;
-	for (const arg of args) {
+	for (let index = startIndex; index < args.length; index++) {
+		const arg = args[index] ?? "";
 		if (skipNext) {
 			skipNext = false;
 			continue;
@@ -285,6 +286,28 @@ function firstNonFlagArg(args: readonly string[]): string | undefined {
 		return arg;
 	}
 	return undefined;
+}
+
+function sourceEntrypointArg(first: string | undefined): boolean {
+	return Boolean(
+		first &&
+			!first.startsWith("-") &&
+			(first.endsWith(".ts") || first.endsWith(".js")) &&
+			(path.isAbsolute(first) || first.includes(path.sep)),
+	);
+}
+
+function isOmpxBinaryPath(inputPath: string): boolean {
+	const base = path.basename(inputPath);
+	return base === APP_NAME || base === `${APP_NAME}.exe`;
+}
+
+function cliArgStartIndex(command: OmpxCommand, resolvedCmd: string): number {
+	return sourceEntrypointArg(command.args[0]) && !isOmpxBinaryPath(resolvedCmd) ? 1 : 0;
+}
+
+function commandInvokesUpdate(command: OmpxCommand, resolvedCmd: string): boolean {
+	return command.args[cliArgStartIndex(command, resolvedCmd)] === "update";
 }
 
 function supportsMacOSSandboxRelaunch(argv: readonly string[]): boolean {
@@ -832,6 +855,20 @@ function addCommandArgumentPaths(sets: SandboxPathSets, args: string[], cwd: str
 	}
 }
 
+function addUpdateInstallDir(
+	sets: SandboxPathSets,
+	command: OmpxCommand,
+	resolvedCmd: string,
+	env: Record<string, string | undefined>,
+	cwd: string,
+): void {
+	if (!commandInvokesUpdate(command, resolvedCmd)) return;
+	const targetPath =
+		findExecutableOnPath(APP_NAME, env, cwd) ?? $which(APP_NAME, env.PATH ? { PATH: env.PATH } : undefined);
+	if (!targetPath) return;
+	addWriteSubpath(sets, path.dirname(targetPath));
+}
+
 function readGitFileTarget(gitFilePath: string): string | null {
 	try {
 		const firstLine = fs.readFileSync(gitFilePath, "utf8").split(/\r?\n/, 1)[0]?.trim();
@@ -911,6 +948,7 @@ function collectSandboxPaths(
 	addSSHSupportSubpaths(sets, env, home);
 	addConfiguredSandboxAllowedPaths(sets, cwd, home);
 	addReadSubpath(sets, resolvedCmd);
+	addUpdateInstallDir(sets, command, resolvedCmd, env, cwd);
 	addCommandArgumentPaths(sets, command.args, cwd);
 
 	for (const tmp of TRUSTED_TEMP_ROOTS) {

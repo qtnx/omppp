@@ -140,6 +140,56 @@
     window.addEventListener("scroll", syncScroll, { capture: true, passive: true });
     window.addEventListener("resize", syncScroll, { passive: true });
 
+    // Coexist with the host page's own modals. Pages commonly run a focus trap
+    // (Radix, focus-trap, Headless UI, MUI, …) that yanks focus back into their
+    // dialog the instant focus lands "outside" it. Our chrome lives in a shadow
+    // host that is outside every such modal, so without this the comment box can
+    // never hold focus — clicking it bounces focus straight back to the page.
+    // Focus listeners only OBSERVE focus (a focus event cannot reassign focus),
+    // so it is enough to stop the page's document/window-level trap from ever
+    // seeing the focus events that belong to this overlay; the browser still
+    // moves focus into our input natively. A capture listener on `window` (the
+    // first node in the event path) runs ahead of document-level capture traps,
+    // and stopImmediatePropagation halts every later phase. The guard no-ops
+    // once annotation mode is disabled so the page's modals behave normally
+    // again, and a re-enable on the same document drops the stale guard first.
+    const focusEventIsOurs = (e) =>
+      e.target === host || (e.type === "focusout" && e.relatedTarget === host);
+    const focusGuard = (e) => {
+      if (globalThis.__ompxAnnotateEnabled === false) return;
+      if (focusEventIsOurs(e)) e.stopImmediatePropagation();
+    };
+    const FOCUS_EVENTS = ["focusin", "focusout", "focus"];
+    const priorGuard = globalThis.__ompxAnnotateFocusGuard;
+    if (priorGuard) for (const t of FOCUS_EVENTS) window.removeEventListener(t, priorGuard, true);
+    globalThis.__ompxAnnotateFocusGuard = focusGuard;
+    for (const t of FOCUS_EVENTS) window.addEventListener(t, focusGuard, true);
+
+    // Keep keystrokes typed into the overlay from reaching the page: games and
+    // SPAs bind global single-key shortcuts on document that would otherwise
+    // fire (or eat) characters as the user types a comment. Stopping at the
+    // shadow boundary runs after the inner inputs' own handlers (note Enter/Esc
+    // already stop themselves) but before the event escapes to the page. Escape
+    // is handled separately on `document` in the capture phase, which fires
+    // earlier, so mode-exit still works.
+    const stopOverlayKeys = (e) => e.stopPropagation();
+    for (const t of ["keydown", "keypress", "keyup"]) shadow.addEventListener(t, stopOverlayKeys);
+
+    // Some focus traps (notably the `focus-trap` library's default config) call
+    // preventDefault() on a document-capture pointerdown/mousedown that lands
+    // outside the trapped container, which cancels the implicit focus before any
+    // focus event is ever dispatched — so the guard above has nothing to protect
+    // and the comment box stays unfocusable. Re-assert focus on our own text
+    // fields explicitly: a programmatic focus() is unaffected by the page's
+    // preventDefault, and the window-capture guard above then keeps it. Scoped
+    // to TEXTAREA/INPUT so toolbar buttons, drag handles, and the draw surface
+    // (which retarget to the same host) keep their native pointer behaviour.
+    shadow.addEventListener("pointerdown", (e) => {
+      if (globalThis.__ompxAnnotateEnabled === false) return;
+      const t = e.target;
+      if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT")) t.focus({ preventScroll: true });
+    });
+
     const rects = [];
     let minimized = false;
 

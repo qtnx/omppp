@@ -16,6 +16,7 @@ import {
 	type ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import {
+	type Context,
 	type CredentialDisabledEvent,
 	type ImageContent,
 	type Message,
@@ -135,6 +136,7 @@ import {
 	type CustomMessage,
 	convertToLlm,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
+	stripOversizedCompactionSummaryImagesForCodex,
 	wrapSteeringForModel,
 } from "./session/messages";
 import { getRestorableSessionModels, SessionManager } from "./session/session-manager";
@@ -627,6 +629,27 @@ function resolveSnapshotTtlMs(): number {
 	if (Number.isFinite(ttlMs) && ttlMs >= 0) return ttlMs;
 	logger.warn("Invalid OMP_AUTH_BROKER_SNAPSHOT_TTL_MS; using default", { value: raw });
 	return DEFAULT_SNAPSHOT_CACHE_TTL_MS;
+}
+
+const CODEX_PRE_PROMPT_COMPACTION_BYTES = 12 * 1024 * 1024;
+const CODEX_WEBSOCKET_MAX_REQUEST_BYTES = 16 * 1024 * 1024;
+
+function parseNonNegativeIntegerEnv(value: string | undefined, fallback: number): number {
+	if (!value) return fallback;
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+	return Math.trunc(parsed);
+}
+
+function getCodexSnapcompactProviderContextMaxBytes(): number {
+	const explicit = Bun.env.PI_CODEX_SNAPCOMPACT_PROVIDER_CONTEXT_MAX_BYTES;
+	if (explicit !== undefined) {
+		return parseNonNegativeIntegerEnv(explicit, CODEX_PRE_PROMPT_COMPACTION_BYTES);
+	}
+	return Math.min(
+		parseNonNegativeIntegerEnv(Bun.env.PI_CODEX_PRE_PROMPT_COMPACTION_BYTES, CODEX_PRE_PROMPT_COMPACTION_BYTES),
+		parseNonNegativeIntegerEnv(Bun.env.PI_CODEX_WEBSOCKET_MAX_REQUEST_BYTES, CODEX_WEBSOCKET_MAX_REQUEST_BYTES),
+	);
 }
 // Discovery Functions
 
@@ -2430,6 +2453,34 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const onResponse: SimpleStreamOptions["onResponse"] = async (response, model) => {
 			await extensionRunner.emitAfterProviderResponse(response, model);
 		};
+		const transformProviderContext = (context: Context): Context => {
+			let transformed = context;
+			const currentModel = agent.state.model;
+			if (currentModel?.provider === "openai-codex") {
+				const maxPayloadBytes = getCodexSnapcompactProviderContextMaxBytes();
+				const pruneStart = performance.now();
+				const result = stripOversizedCompactionSummaryImagesForCodex(transformed, maxPayloadBytes);
+				if (result.changed) {
+					logger.debug("Codex provider context pruned oversized snapcompact frames", {
+						provider: currentModel.provider,
+						model: currentModel.id,
+						durationMs: Math.round(performance.now() - pruneStart),
+						maxPayloadBytes,
+						originalBytes: result.originalBytes,
+						strippedBytes: result.strippedBytes,
+						strippedFrames: result.strippedFrames,
+						retainedFrames: result.retainedFrames,
+						strippedImageBytes: result.strippedImageBytes,
+						withinBudget: result.strippedBytes <= maxPayloadBytes,
+					});
+					transformed = result.context;
+				}
+			}
+			if (obfuscator) {
+				transformed = obfuscateProviderContext(obfuscator, transformed);
+			}
+			return transformed;
+		};
 
 		const setToolUIContext = (uiContext: ExtensionUIContext, hasUI: boolean) => {
 			toolContextStore.setUIContext(uiContext, hasUI);
@@ -2464,7 +2515,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionId: providerSessionId,
 			promptCacheKey: options.providerPromptCacheKey,
 			transformContext,
-			transformProviderContext: obfuscator ? context => obfuscateProviderContext(obfuscator, context) : undefined,
+			transformProviderContext,
 			steeringMode: settings.get("steeringMode") ?? "one-at-a-time",
 			followUpMode: settings.get("followUpMode") ?? "one-at-a-time",
 			interruptMode: settings.get("interruptMode") ?? "immediate",
@@ -2502,10 +2553,38 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				const openrouterRoutingPreset = settings.get("providers.openrouterVariant");
 				const openrouterVariant =
 					openrouterRoutingPreset && openrouterRoutingPreset !== "default" ? openrouterRoutingPreset : undefined;
-				return streamSimple(streamModel, context, {
-					...streamOptions,
-					openrouterVariant: streamOptions?.openrouterVariant ?? openrouterVariant,
-				});
+				let releasedCredentialUse = false;
+				let detachAbortRelease: (() => void) | undefined;
+				const releaseCredentialUse = (): void => {
+					if (releasedCredentialUse) return;
+					releasedCredentialUse = true;
+					modelRegistry.authStorage.releaseSessionCredentialUse(streamModel.provider, agent.sessionId);
+					detachAbortRelease?.();
+					detachAbortRelease = undefined;
+				};
+				const signal = streamOptions?.signal;
+				if (signal) {
+					if (signal.aborted) {
+						releaseCredentialUse();
+					} else {
+						signal.addEventListener("abort", releaseCredentialUse, { once: true });
+						detachAbortRelease = () => signal.removeEventListener("abort", releaseCredentialUse);
+					}
+				}
+				try {
+					const response = streamSimple(streamModel, context, {
+						...streamOptions,
+						openrouterVariant: streamOptions?.openrouterVariant ?? openrouterVariant,
+					});
+					void response
+						.result()
+						.finally(releaseCredentialUse)
+						.catch(() => {});
+					return response;
+				} catch (error) {
+					releaseCredentialUse();
+					throw error;
+				}
 			},
 			cursorExecHandlers,
 			transformToolCallArguments: (args, _toolName) => {
@@ -2679,6 +2758,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							sessionId: providerSessionId,
 							preferWebsockets: preferOpenAICodexWebsockets,
 							providerSessionState: session.providerSessionState,
+							context: {
+								systemPrompt,
+								messages: [],
+								tools: initialTools,
+							},
+							reasoning: toReasoningEffort(effectiveThinkingLevel),
+							serviceTier: initialServiceTier,
+							temperature: settings.get("temperature") >= 0 ? settings.get("temperature") : undefined,
+							topP: settings.get("topP") >= 0 ? settings.get("topP") : undefined,
+							topK: settings.get("topK") >= 0 ? settings.get("topK") : undefined,
+							minP: settings.get("minP") >= 0 ? settings.get("minP") : undefined,
+							presencePenalty:
+								settings.get("presencePenalty") >= 0 ? settings.get("presencePenalty") : undefined,
+							repetitionPenalty:
+								settings.get("repetitionPenalty") >= 0 ? settings.get("repetitionPenalty") : undefined,
 						});
 					} catch (error) {
 						const errorMessage = error instanceof Error ? error.message : String(error);

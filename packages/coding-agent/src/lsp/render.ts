@@ -10,7 +10,7 @@
 import type { RenderResultOptions } from "@oh-my-pi/pi-agent-core";
 import { type HighlightColors, highlightCode as nativeHighlightCode, supportsLanguage } from "@oh-my-pi/pi-natives";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
-import { getLanguageFromPath, type Theme } from "../modes/theme/theme";
+import { basicHighlightCode, getLanguageFromPath, getSyntaxHighlightingMode, type Theme } from "../modes/theme/theme";
 import {
 	formatExpandHint,
 	formatMoreItems,
@@ -278,6 +278,13 @@ function renderHover(
  * Syntax highlight code using native highlighter.
  */
 function highlightCode(codeText: string, language: string, theme: Theme): string[] {
+	const mode = getSyntaxHighlightingMode();
+	if (mode === "off") {
+		return codeText.split("\n");
+	}
+	if (mode === "basic") {
+		return basicHighlightCode(codeText, theme);
+	}
 	const validLang = language && supportsLanguage(language) ? language : undefined;
 	try {
 		const colors: HighlightColors = {

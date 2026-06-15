@@ -816,6 +816,7 @@ type RankedOAuthCandidate = OAuthCandidate & {
 	secondaryDrainRate: number;
 	primaryUsed: number;
 	primaryDrainRate: number;
+	activeUses: number;
 	orderPos: number;
 };
 
@@ -839,6 +840,10 @@ export class AuthStorage {
 	#providerRoundRobinIndex: Map<string, number> = new Map();
 	/** Tracks the last used credential per provider for a session (used for rate-limit switching). */
 	#sessionLastCredential: Map<string, Map<string, { type: AuthCredential["type"]; index: number }>> = new Map();
+	/** Tracks in-flight credential uses by provider/session so new sessions can prefer less-busy accounts. */
+	#activeSessionCredentialUses: Map<string, Map<string, { type: AuthCredential["type"]; index: number }>> = new Map();
+	/** Maps provider:type -> credentialIndex -> active request/session use count. */
+	#activeCredentialUseCounts: Map<string, Map<number, number>> = new Map();
 	/** Maps provider:type -> credentialIndex -> blockedUntilMs for temporary backoff. */
 	#credentialBackoff: Map<string, Map<number, number>> = new Map();
 	#usageProviderResolver?: (provider: Provider) => UsageProvider | undefined;
@@ -1269,6 +1274,60 @@ export class AuthStorage {
 		const sessionMap = this.#sessionLastCredential.get(provider) ?? new Map();
 		sessionMap.set(sessionId, { type, index });
 		this.#sessionLastCredential.set(provider, sessionMap);
+		this.#recordActiveSessionCredentialUse(provider, sessionId, type, index);
+	}
+
+	#getActiveCredentialUseCount(providerKey: string, credentialIndex: number): number {
+		return this.#activeCredentialUseCounts.get(providerKey)?.get(credentialIndex) ?? 0;
+	}
+
+	#incrementActiveCredentialUse(providerKey: string, credentialIndex: number): void {
+		const counts = this.#activeCredentialUseCounts.get(providerKey) ?? new Map<number, number>();
+		counts.set(credentialIndex, (counts.get(credentialIndex) ?? 0) + 1);
+		this.#activeCredentialUseCounts.set(providerKey, counts);
+	}
+
+	#decrementActiveCredentialUse(providerKey: string, credentialIndex: number): void {
+		const counts = this.#activeCredentialUseCounts.get(providerKey);
+		if (!counts) return;
+		const next = (counts.get(credentialIndex) ?? 0) - 1;
+		if (next > 0) {
+			counts.set(credentialIndex, next);
+		} else {
+			counts.delete(credentialIndex);
+		}
+		if (counts.size === 0) {
+			this.#activeCredentialUseCounts.delete(providerKey);
+		}
+	}
+
+	#recordActiveSessionCredentialUse(
+		provider: string,
+		sessionId: string,
+		type: AuthCredential["type"],
+		index: number,
+	): void {
+		const sessionMap = this.#activeSessionCredentialUses.get(provider) ?? new Map();
+		const existing = sessionMap.get(sessionId);
+		if (existing?.type === type && existing.index === index) return;
+		if (existing) {
+			this.#decrementActiveCredentialUse(this.#getProviderTypeKey(provider, existing.type), existing.index);
+		}
+		sessionMap.set(sessionId, { type, index });
+		this.#activeSessionCredentialUses.set(provider, sessionMap);
+		this.#incrementActiveCredentialUse(this.#getProviderTypeKey(provider, type), index);
+	}
+
+	releaseSessionCredentialUse(provider: string, sessionId: string | undefined): void {
+		if (!sessionId) return;
+		const sessionMap = this.#activeSessionCredentialUses.get(provider);
+		const active = sessionMap?.get(sessionId);
+		if (!active) return;
+		this.#decrementActiveCredentialUse(this.#getProviderTypeKey(provider, active.type), active.index);
+		sessionMap?.delete(sessionId);
+		if (sessionMap?.size === 0) {
+			this.#activeSessionCredentialUses.delete(provider);
+		}
 	}
 
 	/** Retrieves the last credential used by a session. */
@@ -1283,6 +1342,7 @@ export class AuthStorage {
 	/** Clears the last credential used by a session for a provider. */
 	#clearSessionCredential(provider: string, sessionId: string | undefined): void {
 		if (!sessionId) return;
+		this.releaseSessionCredentialUse(provider, sessionId);
 		const sessionMap = this.#sessionLastCredential.get(provider);
 		if (!sessionMap) return;
 		sessionMap.delete(sessionId);
@@ -1336,6 +1396,12 @@ export class AuthStorage {
 			}
 		}
 		this.#sessionLastCredential.delete(provider);
+		this.#activeSessionCredentialUses.delete(provider);
+		for (const key of this.#activeCredentialUseCounts.keys()) {
+			if (key.startsWith(`${provider}:`)) {
+				this.#activeCredentialUseCounts.delete(key);
+			}
+		}
 		for (const key of this.#credentialBackoff.keys()) {
 			if (key.startsWith(`${provider}:`)) {
 				this.#credentialBackoff.delete(key);
@@ -2670,7 +2736,7 @@ export class AuthStorage {
 		return usedFraction / elapsedHours;
 	}
 
-	#compareRankedOAuthCandidatePriority(
+	#compareRankedOAuthCandidateHeadroomPriority(
 		left: RankedOAuthCandidate,
 		right: RankedOAuthCandidate,
 		provider: string,
@@ -2695,6 +2761,18 @@ export class AuthStorage {
 		if (metric !== 0) return metric;
 		metric = compareUsageRankingMetric(left.primaryUsed, right.primaryUsed);
 		if (metric !== 0) return metric;
+		return 0;
+	}
+
+	#compareRankedOAuthCandidatePriority(
+		left: RankedOAuthCandidate,
+		right: RankedOAuthCandidate,
+		provider: string,
+		modelId: string | undefined,
+	): number {
+		const headroom = this.#compareRankedOAuthCandidateHeadroomPriority(left, right, provider, modelId);
+		if (headroom !== 0) return headroom;
+		if (left.activeUses !== right.activeUses) return left.activeUses - right.activeUses;
 		return 0;
 	}
 
@@ -2726,6 +2804,29 @@ export class AuthStorage {
 		const unblocked = candidates.filter(candidate => !candidate.blocked);
 		if (unblocked.length <= 1) {
 			return candidates.map(candidate => ({
+				selection: candidate.selection,
+				usage: candidate.usage,
+				usageChecked: candidate.usageChecked,
+			}));
+		}
+
+		const bestHeadroom = unblocked[0];
+		const sameHeadroom = unblocked.filter(
+			candidate =>
+				this.#compareRankedOAuthCandidateHeadroomPriority(bestHeadroom, candidate, provider, modelId) === 0,
+		);
+		const minActiveUses = Math.min(...sameHeadroom.map(candidate => candidate.activeUses));
+		const leastActiveSameHeadroom = sameHeadroom.filter(candidate => candidate.activeUses === minActiveUses);
+		if (leastActiveSameHeadroom.length < sameHeadroom.length) {
+			const hit = Bun.hash.xxHash32(sessionId) % leastActiveSameHeadroom.length;
+			const selected = leastActiveSameHeadroom[hit] ?? leastActiveSameHeadroom[0];
+			const ordered = [
+				selected,
+				...leastActiveSameHeadroom.filter(candidate => candidate !== selected),
+				...unblocked.filter(candidate => !leastActiveSameHeadroom.includes(candidate)),
+				...candidates.filter(candidate => candidate.blocked),
+			];
+			return ordered.map(candidate => ({
 				selection: candidate.selection,
 				usage: candidate.usage,
 				usageChecked: candidate.usageChecked,
@@ -2842,6 +2943,7 @@ export class AuthStorage {
 				),
 				primaryUsed: this.#normalizeUsageFraction(primary),
 				primaryDrainRate: this.#computeWindowDrainRate(primary, nowMs, strategy.windowDefaults.primaryMs),
+				activeUses: this.#getActiveCredentialUseCount(args.providerKey, selection.index),
 				orderPos,
 			});
 		}
@@ -3394,7 +3496,7 @@ export class AuthStorage {
 		// an OAuth miss, the session sticky (if any) is stale — the request will
 		// authenticate via env/fallback, not OAuth, so clear the sticky now so that
 		// getOAuthAccountId() correctly suppresses account_uuid for this session.
-		if (sessionId) this.#sessionLastCredential.get(provider)?.delete(sessionId);
+		this.#clearSessionCredential(provider, sessionId);
 		const envKey = getEnvApiKey(provider);
 		if (envKey) return envKey;
 

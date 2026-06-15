@@ -24,6 +24,8 @@ const originalCodexWebSocketMessageQueueCapacity = Bun.env.PI_CODEX_WEBSOCKET_ME
 const originalCodexWebSocketMaxIdleReuseMs = Bun.env.PI_CODEX_WEBSOCKET_MAX_IDLE_REUSE_MS;
 const originalCodexWebSocketReconnectCooldownMs = Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS;
 const originalCodexWebSocketReconnectTimeoutMs = Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_TIMEOUT_MS;
+const originalCodexWebSocketOversizedCooldownMs = Bun.env.PI_CODEX_WEBSOCKET_OVERSIZED_COOLDOWN_MS;
+const originalCodexWebSocketMaxRequestBytes = Bun.env.PI_CODEX_WEBSOCKET_MAX_REQUEST_BYTES;
 
 function restoreEnv(name: string, value: string | undefined): void {
 	if (value === undefined) {
@@ -49,6 +51,8 @@ afterEach(() => {
 	restoreEnv("PI_CODEX_WEBSOCKET_MAX_IDLE_REUSE_MS", originalCodexWebSocketMaxIdleReuseMs);
 	restoreEnv("PI_CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS", originalCodexWebSocketReconnectCooldownMs);
 	restoreEnv("PI_CODEX_WEBSOCKET_RECONNECT_TIMEOUT_MS", originalCodexWebSocketReconnectTimeoutMs);
+	restoreEnv("PI_CODEX_WEBSOCKET_OVERSIZED_COOLDOWN_MS", originalCodexWebSocketOversizedCooldownMs);
+	restoreEnv("PI_CODEX_WEBSOCKET_MAX_REQUEST_BYTES", originalCodexWebSocketMaxRequestBytes);
 	vi.restoreAllMocks();
 });
 
@@ -557,6 +561,159 @@ describe("openai-codex streaming", () => {
 			sessionId: "ws-queue-overflow-session",
 			providerSessionState,
 		});
+		expect(details.lastTransport).toBe("sse");
+		expect(details.websocketDisabled).toBe(true);
+		expect(details.fallbackCount).toBe(1);
+	});
+
+	it("keeps oversized websocket payloads on SSE during the 1009 backoff", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		Bun.env.PI_CODEX_WEBSOCKET_RETRY_BUDGET = "0";
+		Bun.env.PI_CODEX_WEBSOCKET_RETRY_DELAY_MS = "1";
+		Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS = "0";
+		const token = createCodexTestToken();
+		const makeSse = (text: string) =>
+			`${[
+				`data: ${JSON.stringify({
+					type: "response.output_item.added",
+					item: { type: "message", id: `msg_${text}`, role: "assistant", status: "in_progress", content: [] },
+				})}`,
+				`data: ${JSON.stringify({ type: "response.content_part.added", part: { type: "output_text", text: "" } })}`,
+				`data: ${JSON.stringify({ type: "response.output_text.delta", delta: text })}`,
+				`data: ${JSON.stringify({
+					type: "response.output_item.done",
+					item: {
+						type: "message",
+						id: `msg_${text}`,
+						role: "assistant",
+						status: "completed",
+						content: [{ type: "output_text", text }],
+					},
+				})}`,
+				`data: ${JSON.stringify({ type: "response.done", response: { id: `resp_${text}`, status: "completed" } })}`,
+			].join("\n\n")}\n\n`;
+		const fetchMock = vi
+			.fn()
+			.mockImplementationOnce(
+				async () =>
+					new Response(makeSse("First SSE"), {
+						status: 200,
+						headers: { "content-type": "text/event-stream" },
+					}),
+			)
+			.mockImplementationOnce(
+				async () =>
+					new Response(makeSse("Second SSE"), {
+						status: 200,
+						headers: { "content-type": "text/event-stream" },
+					}),
+			);
+
+		let constructorCount = 0;
+		let sendCount = 0;
+		const closeTooLarge = (): Event => {
+			const event = new Event("close") as Event & { code: number; reason: string };
+			Object.defineProperty(event, "code", { value: 1009 });
+			Object.defineProperty(event, "reason", { value: "" });
+			return event;
+		};
+
+		class OversizedWebSocket extends MockWebSocket {
+			constructor(url: string, options?: { headers?: WsHeaders }) {
+				super(url, options);
+				constructorCount += 1;
+				this.scheduleOpen();
+			}
+
+			send(): void {
+				sendCount += 1;
+				setTimeout(() => {
+					this.readyState = MockWebSocket.CLOSED;
+					this.emit("close", closeTooLarge());
+				}, 0);
+			}
+		}
+		global.WebSocket = OversizedWebSocket as unknown as typeof WebSocket;
+
+		const model = createCodexTestModel("https://chatgpt.com/backend-api");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const first = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			fetch: fetchMock as FetchImpl,
+			apiKey: token,
+			sessionId: "ws-oversized-payload-session",
+			providerSessionState,
+		}).result();
+
+		await Bun.sleep(20);
+
+		const second = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			fetch: fetchMock as FetchImpl,
+			apiKey: token,
+			sessionId: "ws-oversized-payload-session",
+			providerSessionState,
+		}).result();
+
+		const details = getOpenAICodexTransportDetails(model, {
+			sessionId: "ws-oversized-payload-session",
+			providerSessionState,
+		});
+		expect(first.content).toEqual([expect.objectContaining({ type: "text", text: "First SSE" })]);
+		expect(second.content).toEqual([expect.objectContaining({ type: "text", text: "Second SSE" })]);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(constructorCount).toBe(1);
+		expect(sendCount).toBe(1);
+		expect(details.lastTransport).toBe("sse");
+		expect(details.websocketDisabled).toBe(true);
+		expect(details.fallbackCount).toBe(1);
+	});
+
+	it("skips websocket before connect when the request is already too large", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		Bun.env.PI_CODEX_WEBSOCKET_MAX_REQUEST_BYTES = "1";
+		Bun.env.PI_CODEX_WEBSOCKET_RETRY_BUDGET = "0";
+		const token = createCodexTestToken();
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(createCompletedCodexSse("Skipped WS"), {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				}),
+		);
+
+		let constructorCount = 0;
+		class UnexpectedWebSocket extends MockWebSocket {
+			constructor(url: string, options?: { headers?: WsHeaders }) {
+				super(url, options);
+				constructorCount += 1;
+				throw new Error("websocket should have been skipped");
+			}
+		}
+		global.WebSocket = UnexpectedWebSocket as unknown as typeof WebSocket;
+
+		const model = createCodexTestModel("https://chatgpt.com/backend-api");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const result = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			fetch: fetchMock as FetchImpl,
+			apiKey: token,
+			sessionId: "ws-request-too-large-session",
+			providerSessionState,
+		}).result();
+
+		const stats = getOpenAICodexWebSocketDebugStats(model, {
+			sessionId: "ws-request-too-large-session",
+			providerSessionState,
+		});
+		const details = getOpenAICodexTransportDetails(model, {
+			sessionId: "ws-request-too-large-session",
+			providerSessionState,
+		});
+		expect(result.stopReason).toBe("stop");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(constructorCount).toBe(0);
+		expect(stats?.lastWebSocketRequestBytes).toBeGreaterThan(1);
+		expect(stats?.websocketOversizedFallbacks).toBe(1);
 		expect(details.lastTransport).toBe("sse");
 		expect(details.websocketDisabled).toBe(true);
 		expect(details.fallbackCount).toBe(1);
@@ -1769,6 +1926,179 @@ describe("openai-codex streaming", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("sends websocket turn state as request-scoped client metadata for same-turn continuations", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const token = createCodexTestToken();
+		const sentRequests: Array<Record<string, unknown>> = [];
+		const fetchMock = vi.fn(async () => {
+			throw new Error("SSE fallback should not be called");
+		});
+
+		class TurnStateWebSocket extends MockWebSocket {
+			constructor(url: string, options?: { headers?: WsHeaders }) {
+				super(url, options);
+				this.scheduleOpen();
+			}
+
+			send(data: string): void {
+				const request = JSON.parse(data) as Record<string, unknown>;
+				sentRequests.push(request);
+				const requestIndex = sentRequests.length;
+				if (requestIndex === 1) {
+					this.sendJson({
+						type: "response.metadata",
+						headers: { "x-codex-turn-state": "turn-state-1" },
+					});
+					this.sendJson({ type: "response.created", response: { id: "resp_1" } });
+					this.sendJson({
+						type: "response.output_item.added",
+						item: {
+							type: "function_call",
+							id: "fc_1",
+							call_id: "call_1",
+							name: "read_file",
+							arguments: "",
+						},
+					});
+					this.sendJson({
+						type: "response.function_call_arguments.done",
+						item_id: "fc_1",
+						arguments: '{"path":"README.md"}',
+					});
+					this.sendJson({
+						type: "response.output_item.done",
+						item: {
+							type: "function_call",
+							id: "fc_1",
+							call_id: "call_1",
+							name: "read_file",
+							arguments: '{"path":"README.md"}',
+						},
+					});
+					this.sendJson({
+						type: "response.completed",
+						response: { id: "resp_1", status: "completed", usage: DEFAULT_USAGE },
+					});
+					return;
+				}
+
+				this.emitCodexResponse({
+					messageId: "msg_2",
+					responseId: "resp_2",
+					text: "Read result received",
+					terminalType: "response.completed",
+					includeCreated: true,
+				});
+			}
+		}
+
+		global.WebSocket = TurnStateWebSocket as unknown as typeof WebSocket;
+		const model = createCodexTestModel("https://chatgpt.com/backend-api");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const firstContext: Context = {
+			systemPrompt: ["You are a helpful assistant."],
+			messages: [{ role: "user", content: "Read README", timestamp: Date.now() }],
+		};
+		const firstResponse = await streamOpenAICodexResponses(model, firstContext, {
+			fetch: fetchMock as FetchImpl,
+			apiKey: token,
+			sessionId: "ws-turn-state-client-metadata-session",
+			providerSessionState,
+		}).result();
+		const toolCall = firstResponse.content.find(block => block.type === "toolCall");
+		if (toolCall?.type !== "toolCall") throw new Error("expected a tool call");
+
+		const secondContext: Context = {
+			systemPrompt: ["You are a helpful assistant."],
+			messages: [
+				...firstContext.messages,
+				firstResponse,
+				{
+					role: "toolResult",
+					toolCallId: toolCall.id,
+					toolName: toolCall.name,
+					content: [{ type: "text", text: "README contents" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			],
+		};
+		await streamOpenAICodexResponses(model, secondContext, {
+			fetch: fetchMock as FetchImpl,
+			apiKey: token,
+			sessionId: "ws-turn-state-client-metadata-session",
+			providerSessionState,
+		}).result();
+
+		expect(sentRequests).toHaveLength(2);
+		expect((sentRequests[0]?.client_metadata as Record<string, unknown> | undefined)?.["x-codex-turn-state"]).toBe(
+			undefined,
+		);
+		expect(sentRequests[1]?.previous_response_id).toBe("resp_1");
+		expect((sentRequests[1]?.client_metadata as Record<string, unknown> | undefined)?.["x-codex-turn-state"]).toBe(
+			"turn-state-1",
+		);
+		const deltaInput = sentRequests[1]?.input;
+		expect(Array.isArray(deltaInput)).toBe(true);
+		expect((deltaInput as Array<{ type?: string }>)[0]?.type).toBe("function_call_output");
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("does not send stored turn state in websocket handshake headers", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const token = createCodexTestToken();
+		const websocketHeaders: Array<WsHeaders | undefined> = [];
+		let sseCalls = 0;
+		const sse = createCompletedCodexSse("Hello SSE");
+		const fetchMock = vi.fn(async () => {
+			sseCalls += 1;
+			const responseHeaders = new Headers({ "content-type": "text/event-stream" });
+			if (sseCalls === 1) {
+				responseHeaders.set("x-codex-turn-state", "turn-state-from-sse");
+			}
+			return new Response(sse, { status: 200, headers: responseHeaders });
+		});
+
+		class HeaderProbeWebSocket extends MockWebSocket {
+			constructor(url: string, options?: { headers?: WsHeaders }) {
+				super(url, options);
+				websocketHeaders.push(options?.headers);
+				this.scheduleOpen();
+			}
+
+			send(): void {
+				this.emitCodexResponse({ messageId: "msg_ws", responseId: "resp_ws", text: "Hello WS" });
+			}
+		}
+
+		global.WebSocket = HeaderProbeWebSocket as unknown as typeof WebSocket;
+		const websocketModel = createCodexTestModel("https://chatgpt.com/backend-api");
+		const sseModel: Model<"openai-codex-responses"> = buildModel({
+			...websocketModel,
+			preferWebsockets: false,
+			compat: websocketModel.compatConfig,
+		} as ModelSpec<"openai-codex-responses">);
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		await streamOpenAICodexResponses(sseModel, createCodexTestContext(), {
+			fetch: fetchMock as FetchImpl,
+			apiKey: token,
+			sessionId: "ws-turn-state-header-session",
+			providerSessionState,
+		}).result();
+		await streamOpenAICodexResponses(websocketModel, createCodexTestContext(), {
+			fetch: fetchMock as FetchImpl,
+			apiKey: token,
+			sessionId: "ws-turn-state-header-session",
+			providerSessionState,
+		}).result();
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(websocketHeaders).toHaveLength(1);
+		expect(websocketHeaders[0]?.["x-codex-turn-state"]).toBeUndefined();
+	});
+
 	it("records transport telemetry for successful websocket streams", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");
 		setAgentDir(tempDir.path());
@@ -2364,6 +2694,260 @@ describe("openai-codex streaming", () => {
 		expect(sendCount).toBeGreaterThanOrEqual(1);
 		expect(result.stopReason).toBe("aborted");
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("prewarms websocket payloads with generate false and reuses the warmup response id", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const token = createCodexTestToken();
+		const sentRequests: Array<Record<string, unknown>> = [];
+		const fetchMock = vi.fn(async () => {
+			throw new Error("SSE fallback should not be called");
+		});
+
+		class WarmupPayloadWebSocket extends MockWebSocket {
+			constructor(url: string, options?: { headers?: WsHeaders }) {
+				super(url, options);
+				this.scheduleOpen();
+			}
+
+			send(data: string): void {
+				const request = JSON.parse(data) as Record<string, unknown>;
+				sentRequests.push(request);
+				const requestIndex = sentRequests.length;
+				if (requestIndex === 1) {
+					this.sendJson({ type: "response.created", response: { id: "resp_warmup" } });
+					this.sendJson({
+						type: "response.completed",
+						response: { id: "resp_warmup", status: "completed", usage: DEFAULT_USAGE },
+					});
+					return;
+				}
+				this.emitCodexResponse({
+					messageId: "msg_real",
+					responseId: "resp_real",
+					text: "Real response",
+					terminalType: "response.completed",
+					includeCreated: true,
+				});
+			}
+		}
+
+		global.WebSocket = WarmupPayloadWebSocket as unknown as typeof WebSocket;
+		const model = createCodexTestModel("https://chatgpt.com/backend-api");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const startupContext: Context = {
+			systemPrompt: ["You are a helpful assistant.", "Use concise answers."],
+			messages: [],
+		};
+		await prewarmOpenAICodexResponses(model, {
+			apiKey: token,
+			sessionId: "ws-generate-false-warmup-session",
+			providerSessionState,
+			context: startupContext,
+		});
+		const result = await streamOpenAICodexResponses(
+			model,
+			{
+				...startupContext,
+				messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+			},
+			{
+				fetch: fetchMock as FetchImpl,
+				apiKey: token,
+				sessionId: "ws-generate-false-warmup-session",
+				providerSessionState,
+			},
+		).result();
+
+		expect(result.content).toEqual([expect.objectContaining({ type: "text", text: "Real response" })]);
+		expect(sentRequests).toHaveLength(2);
+		expect(sentRequests[0]?.generate).toBe(false);
+		expect(sentRequests[0]?.previous_response_id).toBeUndefined();
+		expect(sentRequests[1]?.generate).toBeUndefined();
+		expect(sentRequests[1]?.previous_response_id).toBe("resp_warmup");
+		const realInput = sentRequests[1]?.input;
+		expect(Array.isArray(realInput)).toBe(true);
+		expect(realInput).toHaveLength(1);
+		expect((realInput as Array<{ role?: string }>)[0]?.role).toBe("user");
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("uses a dedicated websocket instead of SSE when the pooled websocket is busy", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		Bun.env.PI_CODEX_WEBSOCKET_RETRY_BUDGET = "0";
+		const token = createCodexTestToken();
+		const fetchMock = vi.fn(async () => {
+			throw new Error("SSE fallback should not be called");
+		});
+		const firstRequestSent = Promise.withResolvers<void>();
+		const finishFirst = Promise.withResolvers<void>();
+		const sentBySocket: Array<Record<string, unknown>> = [];
+		let constructorCount = 0;
+		let sendCount = 0;
+
+		class BusyPrimaryWebSocket extends MockWebSocket {
+			readonly index: number;
+
+			constructor(url: string, options?: { headers?: WsHeaders }) {
+				super(url, options);
+				constructorCount += 1;
+				this.index = constructorCount;
+				this.scheduleOpen();
+			}
+
+			send(data: string): void {
+				sendCount += 1;
+				sentBySocket.push(JSON.parse(data) as Record<string, unknown>);
+				if (this.index === 1) {
+					firstRequestSent.resolve();
+					void finishFirst.promise.then(() => {
+						this.emitCodexResponse({
+							messageId: "msg_first",
+							responseId: "resp_first",
+							text: "First response",
+							terminalType: "response.completed",
+							includeCreated: true,
+						});
+					});
+					return;
+				}
+				this.emitCodexResponse({
+					messageId: "msg_second",
+					responseId: "resp_second",
+					text: "Second response",
+					terminalType: "response.completed",
+					includeCreated: true,
+				});
+			}
+		}
+
+		global.WebSocket = BusyPrimaryWebSocket as unknown as typeof WebSocket;
+		const model = createCodexTestModel("https://chatgpt.com/backend-api");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const first = streamOpenAICodexResponses(model, createCodexTestContext(), {
+			fetch: fetchMock as FetchImpl,
+			apiKey: token,
+			sessionId: "ws-busy-primary-session",
+			providerSessionState,
+		}).result();
+		await firstRequestSent.promise;
+		const second = await streamOpenAICodexResponses(
+			model,
+			{
+				systemPrompt: ["You are a helpful assistant."],
+				messages: [{ role: "user", content: "Say hello from another worker", timestamp: Date.now() }],
+			},
+			{
+				fetch: fetchMock as FetchImpl,
+				apiKey: token,
+				sessionId: "ws-busy-primary-session",
+				providerSessionState,
+			},
+		).result();
+		finishFirst.resolve();
+		const firstResult = await first;
+
+		expect(firstResult.content).toEqual([expect.objectContaining({ type: "text", text: "First response" })]);
+		expect(second.content).toEqual([expect.objectContaining({ type: "text", text: "Second response" })]);
+		expect(constructorCount).toBe(2);
+		expect(sendCount).toBe(2);
+		expect(sentBySocket).toHaveLength(2);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("keeps the pooled websocket stream alive when a dedicated websocket falls back to SSE", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		Bun.env.PI_CODEX_WEBSOCKET_RETRY_BUDGET = "0";
+		const token = createCodexTestToken();
+		const sse = `${[
+			`data: ${JSON.stringify({ type: "response.output_item.added", item: { type: "message", id: "msg_sse", role: "assistant", status: "in_progress", content: [] } })}`,
+			`data: ${JSON.stringify({ type: "response.content_part.added", part: { type: "output_text", text: "" } })}`,
+			`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Second SSE" })}`,
+			`data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "message", id: "msg_sse", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Second SSE" }] } })}`,
+			`data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", usage: DEFAULT_USAGE } })}`,
+		].join("\n\n")}\n\n`;
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(sse, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				}),
+		);
+		const firstRequestSent = Promise.withResolvers<void>();
+		const finishFirst = Promise.withResolvers<void>();
+		let constructorCount = 0;
+
+		class DedicatedFailureWebSocket extends MockWebSocket {
+			readonly index: number;
+
+			constructor(url: string, options?: { headers?: WsHeaders }) {
+				super(url, options);
+				constructorCount += 1;
+				this.index = constructorCount;
+				if (this.index === 1) {
+					this.scheduleOpen();
+					return;
+				}
+				throw new Error("dedicated websocket failed");
+			}
+
+			close(): void {
+				super.close();
+				if (this.index === 1) {
+					const event = new Event("close") as Event & { code: number; reason: string };
+					Object.defineProperty(event, "code", { value: 1000 });
+					Object.defineProperty(event, "reason", { value: "unexpected-close" });
+					this.emit("close", event);
+				}
+			}
+
+			send(): void {
+				firstRequestSent.resolve();
+				void finishFirst.promise.then(() => {
+					this.emitCodexResponse({
+						messageId: "msg_first",
+						responseId: "resp_first",
+						text: "First response",
+						terminalType: "response.completed",
+						includeCreated: true,
+					});
+				});
+			}
+		}
+
+		global.WebSocket = DedicatedFailureWebSocket as unknown as typeof WebSocket;
+		const model = createCodexTestModel("https://chatgpt.com/backend-api");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const first = streamOpenAICodexResponses(model, createCodexTestContext(), {
+			fetch: fetchMock as FetchImpl,
+			apiKey: token,
+			sessionId: "ws-dedicated-fallback-session",
+			providerSessionState,
+		}).result();
+		await firstRequestSent.promise;
+		const second = await streamOpenAICodexResponses(
+			model,
+			{
+				systemPrompt: ["You are a helpful assistant."],
+				messages: [{ role: "user", content: "Say hello from fallback", timestamp: Date.now() }],
+			},
+			{
+				fetch: fetchMock as FetchImpl,
+				apiKey: token,
+				sessionId: "ws-dedicated-fallback-session",
+				providerSessionState,
+			},
+		).result();
+		finishFirst.resolve();
+		const firstResult = await first;
+
+		expect(firstResult.content).toEqual([expect.objectContaining({ type: "text", text: "First response" })]);
+		expect(second.content).toEqual([expect.objectContaining({ type: "text", text: "Second SSE" })]);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(constructorCount).toBe(2);
 	});
 
 	it("surfaces a websocket idle-timeout error when status events never make semantic progress", async () => {

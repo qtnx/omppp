@@ -180,6 +180,200 @@ describe("annotate-overlay.txt", () => {
 	});
 });
 
+interface FakeListener {
+	type: string;
+	fn: (e: FakeEvent) => void;
+	opts?: unknown;
+}
+interface FakeEvent {
+	type: string;
+	target?: unknown;
+	relatedTarget?: unknown;
+	stopImmediatePropagation?: () => void;
+	stopPropagation?: () => void;
+}
+interface FakeNode {
+	style: Record<string, string>;
+	_listeners: FakeListener[];
+	_children: FakeNode[];
+	_shadow: FakeNode | null;
+	appendChild(child: FakeNode): FakeNode;
+	addEventListener(type: string, fn: (e: FakeEvent) => void, opts?: unknown): void;
+	removeEventListener(...args: unknown[]): void;
+	attachShadow(...args: unknown[]): FakeNode;
+	getElementById(id: string): FakeNode | null;
+	setAttribute(...args: unknown[]): void;
+	remove(): void;
+	[key: string]: unknown;
+}
+
+function fakeNode(): FakeNode {
+	const node: FakeNode = {
+		style: {},
+		_listeners: [],
+		_children: [],
+		_shadow: null,
+		appendChild(child) {
+			node._children.push(child);
+			return child;
+		},
+		addEventListener(type, fn, opts) {
+			node._listeners.push({ type, fn, opts });
+		},
+		removeEventListener() {},
+		attachShadow() {
+			const shadow = fakeNode();
+			node._shadow = shadow;
+			return shadow;
+		},
+		getElementById: () => null,
+		setAttribute() {},
+		remove() {},
+	};
+	return node;
+}
+
+// No jsdom/happy-dom in this repo, so run the injected overlay verbatim in a
+// permissive fake DOM, then capture the focus guard it installs and drive it
+// directly. This defends the observable contract — the overlay preempts a page
+// focus trap ONLY for its own focus, leaves the page's focus untouched, goes
+// inert once annotation mode is disabled, and never lets its keystrokes escape
+// to the page — without coupling to the exact wiring.
+function setupOverlay(): {
+	g: Record<string, unknown>;
+	host: FakeNode;
+	focusGuard: (e: FakeEvent) => void;
+	shadowKeyListener: FakeListener | undefined;
+	shadowPointerListener: FakeListener | undefined;
+	win: { _listeners: FakeListener[] };
+} {
+	const HOST_ID = "__ompx-annotate-host";
+	const docEl = fakeNode();
+	const fakeDocument = {
+		documentElement: docEl,
+		body: fakeNode(),
+		title: "",
+		createElement: () => fakeNode(),
+		getElementById: () => null,
+		addEventListener() {},
+	};
+	const fakeWindow = {
+		scrollX: 0,
+		scrollY: 0,
+		pageXOffset: 0,
+		pageYOffset: 0,
+		innerWidth: 1000,
+		innerHeight: 800,
+		_listeners: [] as FakeListener[],
+		addEventListener(type: string, fn: (e: FakeEvent) => void, opts?: unknown) {
+			fakeWindow._listeners.push({ type, fn, opts });
+		},
+		removeEventListener() {},
+		setTimeout: () => 0,
+		clearTimeout() {},
+	};
+	const fakeStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+	const fakeLocation = { href: "" };
+	const fakeCSS = { escape: (s: string) => s };
+	const g: Record<string, unknown> = {};
+	const run = new Function(
+		"globalThis",
+		"window",
+		"document",
+		"sessionStorage",
+		"location",
+		"CSS",
+		overlayScript,
+	) as unknown as (...args: unknown[]) => void;
+	run(g, fakeWindow, fakeDocument, fakeStorage, fakeLocation, fakeCSS);
+
+	const host = docEl._children.find(child => child.id === HOST_ID);
+	if (!host) throw new Error("overlay did not mount its shadow host");
+	const focusGuard = fakeWindow._listeners.find(l => l.type === "focusin" && l.opts === true)?.fn;
+	if (!focusGuard) throw new Error("overlay did not register a capture-phase focusin guard on window");
+	const shadowKeyListener = host._shadow?._listeners.find(l => l.type === "keydown");
+	const shadowPointerListener = host._shadow?._listeners.find(l => l.type === "pointerdown");
+	return { g, host, focusGuard, shadowKeyListener, shadowPointerListener, win: fakeWindow };
+}
+
+describe("annotate-overlay focus isolation", () => {
+	it("registers capture-phase guards for every focus event on window", () => {
+		const { win } = setupOverlay();
+		for (const type of ["focusin", "focusout", "focus"]) {
+			expect(win._listeners.some(l => l.type === type && l.opts === true)).toBe(true);
+		}
+	});
+
+	it("stops focus events that land on its own shadow host (defeats the page focus trap)", () => {
+		const { host, focusGuard } = setupOverlay();
+		let stopped = 0;
+		focusGuard({ type: "focusin", target: host, stopImmediatePropagation: () => stopped++ });
+		expect(stopped).toBe(1);
+	});
+
+	it("leaves the page's own focus events untouched", () => {
+		const { focusGuard } = setupOverlay();
+		let stopped = 0;
+		focusGuard({ type: "focusin", target: fakeNode(), stopImmediatePropagation: () => stopped++ });
+		expect(stopped).toBe(0);
+	});
+
+	it("goes inert once annotation mode is disabled so page modals work again", () => {
+		const { g, host, focusGuard } = setupOverlay();
+		g.__ompxAnnotateEnabled = false;
+		let stopped = 0;
+		focusGuard({ type: "focusin", target: host, stopImmediatePropagation: () => stopped++ });
+		expect(stopped).toBe(0);
+	});
+
+	it("keeps overlay keystrokes from escaping to the page", () => {
+		const { shadowKeyListener } = setupOverlay();
+		expect(shadowKeyListener).toBeDefined();
+		let stopped = 0;
+		shadowKeyListener?.fn({ type: "keydown", stopPropagation: () => stopped++ });
+		expect(stopped).toBe(1);
+	});
+
+	it("stops focusout when focus moves from the page into the overlay", () => {
+		const { host, focusGuard } = setupOverlay();
+		let stopped = 0;
+		focusGuard({
+			type: "focusout",
+			target: fakeNode(),
+			relatedTarget: host,
+			stopImmediatePropagation: () => stopped++,
+		});
+		expect(stopped).toBe(1);
+	});
+
+	it("does not swallow focus returning from the overlay back to the page", () => {
+		const { host, focusGuard } = setupOverlay();
+		let stopped = 0;
+		focusGuard({
+			type: "focusin",
+			target: fakeNode(),
+			relatedTarget: host,
+			stopImmediatePropagation: () => stopped++,
+		});
+		expect(stopped).toBe(0);
+	});
+
+	it("self-focuses its own text fields on pointerdown (defeats preventDefault focus traps)", () => {
+		const { shadowPointerListener } = setupOverlay();
+		expect(shadowPointerListener).toBeDefined();
+		let focused = 0;
+		shadowPointerListener?.fn({ type: "pointerdown", target: { tagName: "TEXTAREA", focus: () => focused++ } });
+		expect(focused).toBe(1);
+	});
+
+	it("does not steal focus for non-text overlay targets (buttons, drag handles, draw surface)", () => {
+		const { shadowPointerListener } = setupOverlay();
+		let focused = 0;
+		shadowPointerListener?.fn({ type: "pointerdown", target: { tagName: "DIV", focus: () => focused++ } });
+		expect(focused).toBe(0);
+	});
+});
+
 function testSubmission(comment: string): AnnotationSubmission {
 	return {
 		payload: {

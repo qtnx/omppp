@@ -5,9 +5,10 @@
  * and provides a transformer to convert them to LLM-compatible messages.
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { convertMessageToLlm } from "@oh-my-pi/pi-agent-core/compaction/messages";
+import { convertMessageToLlm, renderCompactionSummaryContext } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import type {
 	AssistantMessage,
+	Context,
 	ImageContent,
 	Message,
 	MessageAttribution,
@@ -30,6 +31,10 @@ import { formatOutputNotice } from "../tools/output-meta";
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
 export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
 export const BROWSER_ANNOTATION_MESSAGE_TYPE = "browser-annotation";
+const COMPACTION_SUMMARY_CONTEXT_SENTINEL = "__omp_compaction_summary_context__";
+const COMPACTION_SUMMARY_CONTEXT_PREFIX =
+	renderCompactionSummaryContext(COMPACTION_SUMMARY_CONTEXT_SENTINEL).split(COMPACTION_SUMMARY_CONTEXT_SENTINEL)[0] ??
+	"";
 
 export interface SkillPromptDetails {
 	name: string;
@@ -305,6 +310,166 @@ export function stripImagesFromMessage(message: AgentMessage): number {
 		default:
 			return 0;
 	}
+}
+
+export interface CodexCompactionImageStripResult {
+	context: Context;
+	changed: boolean;
+	originalBytes: number;
+	strippedBytes: number;
+	strippedFrames: number;
+	retainedFrames: number;
+	strippedImageBytes: number;
+}
+
+function estimateJsonBytes(value: unknown): number {
+	return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function estimateImageContentJsonBytes(part: ImageContent): number {
+	const emptyDataPart = { ...part, data: "" };
+	return estimateJsonBytes(emptyDataPart) + Buffer.byteLength(part.data, "utf8");
+}
+
+function isCompactionSummaryProviderMessage(
+	message: Message,
+): message is UserMessage & { content: (TextContent | ImageContent)[] } {
+	if (message.role !== "user" || message.attribution !== "agent" || !Array.isArray(message.content)) {
+		return false;
+	}
+	if (!COMPACTION_SUMMARY_CONTEXT_PREFIX || !message.content.some(part => part.type === "image")) {
+		return false;
+	}
+	const firstText = message.content.find((part): part is TextContent => part.type === "text")?.text;
+	return firstText?.startsWith(COMPACTION_SUMMARY_CONTEXT_PREFIX) ?? false;
+}
+
+function compactionImageKey(messageIndex: number, contentIndex: number): string {
+	return `${messageIndex}:${contentIndex}`;
+}
+
+function buildCompactionSummaryImagePrunedContext(context: Context, strippedKeys: Set<string>): Context {
+	let changed = false;
+	const messages = context.messages.map((message, messageIndex) => {
+		if (!isCompactionSummaryProviderMessage(message)) {
+			return message;
+		}
+		const content = message.content.filter((part, contentIndex) => {
+			return part.type !== "image" || !strippedKeys.has(compactionImageKey(messageIndex, contentIndex));
+		});
+		if (content.length === message.content.length) {
+			return message;
+		}
+		changed = true;
+		return { ...message, content };
+	});
+	return changed ? { ...context, messages } : context;
+}
+
+export function stripOversizedCompactionSummaryImagesForCodex(
+	context: Context,
+	maxPayloadBytes: number,
+): CodexCompactionImageStripResult {
+	if (maxPayloadBytes <= 0) {
+		const originalBytes = estimateJsonBytes(context);
+		return {
+			context,
+			changed: false,
+			originalBytes,
+			strippedBytes: originalBytes,
+			strippedFrames: 0,
+			retainedFrames: 0,
+			strippedImageBytes: 0,
+		};
+	}
+
+	const candidates: Array<{ key: string; bytes: number }> = [];
+	for (let messageIndex = 0; messageIndex < context.messages.length; messageIndex += 1) {
+		const message = context.messages[messageIndex];
+		if (!message || !isCompactionSummaryProviderMessage(message)) continue;
+		for (let contentIndex = 0; contentIndex < message.content.length; contentIndex += 1) {
+			const part = message.content[contentIndex];
+			if (part?.type !== "image") continue;
+			candidates.push({
+				key: compactionImageKey(messageIndex, contentIndex),
+				bytes: estimateImageContentJsonBytes(part),
+			});
+		}
+	}
+
+	if (candidates.length === 0) {
+		const originalBytes = estimateJsonBytes(context);
+		return {
+			context,
+			changed: false,
+			originalBytes,
+			strippedBytes: originalBytes,
+			strippedFrames: 0,
+			retainedFrames: 0,
+			strippedImageBytes: 0,
+		};
+	}
+
+	const allStrippedKeys = new Set(candidates.map(candidate => candidate.key));
+	const allStrippedContext = buildCompactionSummaryImagePrunedContext(context, allStrippedKeys);
+	const allStrippedBytes = estimateJsonBytes(allStrippedContext);
+	const candidateBytes = candidates.reduce((sum, candidate) => sum + candidate.bytes, 0);
+	const originalBytes = allStrippedBytes + candidateBytes + candidates.length;
+	if (originalBytes <= maxPayloadBytes) {
+		return {
+			context,
+			changed: false,
+			originalBytes,
+			strippedBytes: originalBytes,
+			strippedFrames: 0,
+			retainedFrames: candidates.length,
+			strippedImageBytes: 0,
+		};
+	}
+
+	let strippedContext = context;
+	let strippedBytes = originalBytes;
+	let strippedFrames = 0;
+	let strippedImageBytes = 0;
+	const strippedKeys = new Set<string>();
+	for (const candidate of candidates) {
+		strippedKeys.add(candidate.key);
+		strippedFrames += 1;
+		strippedImageBytes += candidate.bytes;
+		strippedBytes = Math.max(0, originalBytes - strippedImageBytes);
+		if (strippedBytes <= maxPayloadBytes) break;
+	}
+
+	if (strippedFrames === candidates.length) {
+		strippedContext = allStrippedContext;
+		strippedBytes = allStrippedBytes;
+	} else {
+		strippedContext = buildCompactionSummaryImagePrunedContext(context, strippedKeys);
+		strippedBytes = estimateJsonBytes(strippedContext);
+	}
+	for (let index = strippedFrames; strippedBytes > maxPayloadBytes && index < candidates.length; index += 1) {
+		const candidate = candidates[index]!;
+		strippedKeys.add(candidate.key);
+		strippedFrames += 1;
+		strippedImageBytes += candidate.bytes;
+		if (strippedFrames === candidates.length) {
+			strippedContext = allStrippedContext;
+			strippedBytes = allStrippedBytes;
+		} else {
+			strippedContext = buildCompactionSummaryImagePrunedContext(context, strippedKeys);
+			strippedBytes = estimateJsonBytes(strippedContext);
+		}
+	}
+
+	return {
+		context: strippedContext,
+		changed: true,
+		originalBytes,
+		strippedBytes,
+		strippedFrames,
+		retainedFrames: candidates.length - strippedFrames,
+		strippedImageBytes,
+	};
 }
 
 /**
