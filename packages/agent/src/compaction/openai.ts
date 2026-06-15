@@ -156,14 +156,73 @@ function estimateOpenAiCompactInputTokens(input: Array<Record<string, unknown>>,
 	return Math.ceil(chars / 4);
 }
 
-function shouldTrimOpenAiCompactInputItem(item: Record<string, unknown>): boolean {
-	return item.type === "function_call_output" || (item.type === "message" && item.role === "developer");
-}
-
 function shouldKeepOpenAiCompactOutputItem(item: Record<string, unknown>): boolean {
 	if (item.type === "compaction" || item.type === "compaction_summary") return true;
 	if (item.type !== "message") return false;
 	return item.role === "assistant" || item.role === "user";
+}
+
+function compactInputCallType(item: Record<string, unknown>): "function_call" | "custom_tool_call" | undefined {
+	if (item.type === "function_call" || item.type === "custom_tool_call") return item.type;
+	return undefined;
+}
+
+function compactInputOutputType(
+	item: Record<string, unknown>,
+): "function_call_output" | "custom_tool_call_output" | undefined {
+	if (item.type === "function_call_output" || item.type === "custom_tool_call_output") return item.type;
+	return undefined;
+}
+
+function removeMatchingCompactToolOutput(
+	input: Array<Record<string, unknown>>,
+	callId: string,
+	callType: "function_call" | "custom_tool_call",
+): void {
+	const outputType = callType === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output";
+	const outputIndex = input.findIndex(item => item.type === outputType && item.call_id === callId);
+	if (outputIndex >= 0) {
+		input.splice(outputIndex, 1);
+	}
+}
+
+function dropOrphanCompactToolOutputs(input: Array<Record<string, unknown>>): void {
+	const knownCallIds = new Set<string>();
+	const customCallIds = new Set<string>();
+	for (const item of input) {
+		if (typeof item.call_id !== "string") continue;
+		const callType = compactInputCallType(item);
+		if (!callType) continue;
+		knownCallIds.add(item.call_id);
+		if (callType === "custom_tool_call") {
+			customCallIds.add(item.call_id);
+		}
+	}
+
+	for (let index = input.length - 1; index >= 0; index -= 1) {
+		const item = input[index];
+		if (!item || typeof item.call_id !== "string") continue;
+		const outputType = compactInputOutputType(item);
+		if (!outputType) continue;
+		const known = knownCallIds.has(item.call_id);
+		const typeMatches = outputType === "custom_tool_call_output" ? customCallIds.has(item.call_id) : known;
+		if (!known || !typeMatches) {
+			input.splice(index, 1);
+		}
+	}
+}
+
+function removeOldestOpenAiCompactInputItem(input: Array<Record<string, unknown>>): boolean {
+	const removed = input.shift();
+	if (!removed) return false;
+	if (typeof removed.call_id === "string") {
+		const callType = compactInputCallType(removed);
+		if (callType) {
+			removeMatchingCompactToolOutput(input, removed.call_id, callType);
+		}
+	}
+	dropOrphanCompactToolOutputs(input);
+	return true;
 }
 
 function trimOpenAiCompactInput(
@@ -173,23 +232,9 @@ function trimOpenAiCompactInput(
 ): Array<Record<string, unknown>> {
 	const trimmed = [...input];
 	while (trimmed.length > 0 && estimateOpenAiCompactInputTokens(trimmed, instructions) > contextWindow) {
-		const last = trimmed[trimmed.length - 1];
-		if (last?.type === "function_call_output" || last?.type === "custom_tool_call_output") {
-			const callId = typeof last.call_id === "string" ? last.call_id : undefined;
-			const callType = last.type === "custom_tool_call_output" ? "custom_tool_call" : "function_call";
-			trimmed.pop();
-			if (callId) {
-				const matchingCallIndex = trimmed.findLastIndex(item => item.type === callType && item.call_id === callId);
-				if (matchingCallIndex >= 0) {
-					trimmed.splice(matchingCallIndex, 1);
-				}
-			}
-			continue;
-		}
-		if (!last || !shouldTrimOpenAiCompactInputItem(last)) {
+		if (!removeOldestOpenAiCompactInputItem(trimmed)) {
 			break;
 		}
-		trimmed.pop();
 	}
 	return trimmed;
 }
