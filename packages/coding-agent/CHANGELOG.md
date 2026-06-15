@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- OpenAI Codex-family sessions now use a compact upstream-style system prompt while preserving OMPx project context, tool inventory, skills, and rules, reducing baseline prompt bytes before provider requests.
+
 ## [1.3.3] - 2026-06-15
 
 ### Added

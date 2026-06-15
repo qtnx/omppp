@@ -9,7 +9,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
+import { buildSystemPrompt, type SystemPromptToolMetadata } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import { cleanupTempHome } from "./helpers/temp-home-cleanup";
 
 const EMPTY_TREE = {
@@ -59,6 +59,33 @@ describe("system prompt model identifier", () => {
 		});
 
 		expect(systemPrompt.join("\n\n")).not.toContain("Model:");
+	});
+
+	it("uses a compact upstream-style prompt for OpenAI Codex models", async () => {
+		const tools = new Map<string, SystemPromptToolMetadata>([
+			["read", { label: "Read", description: "Read files", wireName: "read" }],
+			["bash", { label: "Bash", description: "Run commands", wireName: "bash" }],
+		]);
+
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [{ path: path.join(tempDir, "AGENTS.md"), content: "Project rule", depth: 0 }],
+			skills: [],
+			rules: [],
+			tools,
+			toolNames: ["read", "bash"],
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			model: "openai-codex/gpt-5.2-codex",
+		});
+		const promptText = systemPrompt.join("\n\n");
+
+		expect(promptText).toContain("You are Codex, based on GPT-5");
+		expect(promptText).toContain("read");
+		expect(promptText).toContain("bash");
+		expect(promptText).toContain("Project rule");
+		expect(promptText).not.toContain("<THINKING_FRAMEWORK>");
+		expect(promptText).not.toContain("Your goal is not to produce the first plausible answer");
+		expect(Buffer.byteLength(promptText, "utf8")).toBeLessThan(16_000);
 	});
 });
 
