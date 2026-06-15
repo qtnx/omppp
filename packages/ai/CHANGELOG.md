@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-06-15
+
 ### Fixed
 
 - Balanced new OpenAI Codex OAuth sessions across the least-active same-headroom accounts so parallel subagents fan out across available accounts before hitting usage limits.

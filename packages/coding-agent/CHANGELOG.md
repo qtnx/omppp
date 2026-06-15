@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-06-15
+
 ### Added
 
 - Added a `display.syntaxHighlighting` mode (`native`, `basic`, `off`) plus `OMP_DISABLE_SYNTAX_HIGHLIGHT=1`/`PI_DISABLE_SYNTAX_HIGHLIGHT=1` env kill switches so code rendering can avoid native syntax parsing when CPU usage matters more than rich colors.
