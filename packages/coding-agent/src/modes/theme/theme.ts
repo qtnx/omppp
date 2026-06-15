@@ -2558,8 +2558,172 @@ function getHighlightColors(t: Theme): NativeHighlightColors {
 const HIGHLIGHT_CACHE_MAX = 256;
 const highlightCache = new LRUCache<string, string>({ max: HIGHLIGHT_CACHE_MAX });
 let highlightCacheTheme: Theme | undefined;
+export type SyntaxHighlightingMode = "native" | "basic" | "off";
+let syntaxHighlightingMode: SyntaxHighlightingMode = "native";
+
+const SYNTAX_HIGHLIGHT_DISABLE_ENV_NAMES = ["OMP_DISABLE_SYNTAX_HIGHLIGHT", "PI_DISABLE_SYNTAX_HIGHLIGHT"] as const;
+const BASIC_HIGHLIGHT_KEYWORDS = new Set([
+	"as",
+	"async",
+	"await",
+	"break",
+	"case",
+	"catch",
+	"class",
+	"const",
+	"continue",
+	"def",
+	"do",
+	"else",
+	"enum",
+	"export",
+	"extends",
+	"false",
+	"finally",
+	"fn",
+	"for",
+	"from",
+	"function",
+	"if",
+	"impl",
+	"import",
+	"in",
+	"interface",
+	"let",
+	"match",
+	"mod",
+	"new",
+	"nil",
+	"null",
+	"package",
+	"pub",
+	"return",
+	"struct",
+	"switch",
+	"throw",
+	"true",
+	"try",
+	"type",
+	"undefined",
+	"use",
+	"var",
+	"while",
+]);
+
+function envFlagEnabled(value: string | undefined): boolean {
+	const normalized = value?.trim().toLowerCase();
+	return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function syntaxHighlightingDisabledByEnv(): boolean {
+	return SYNTAX_HIGHLIGHT_DISABLE_ENV_NAMES.some(name => envFlagEnabled(Bun.env[name]));
+}
+
+export function setSyntaxHighlightingMode(mode: SyntaxHighlightingMode): void {
+	if (syntaxHighlightingMode !== mode) {
+		highlightCache.clear();
+	}
+	syntaxHighlightingMode = mode;
+}
+
+export function setSyntaxHighlightingEnabled(enabled: boolean): void {
+	setSyntaxHighlightingMode(enabled ? "native" : "off");
+}
+
+export function getSyntaxHighlightingMode(): SyntaxHighlightingMode {
+	if (syntaxHighlightingDisabledByEnv()) {
+		return "off";
+	}
+	return syntaxHighlightingMode;
+}
+
+export function isSyntaxHighlightingEnabled(): boolean {
+	return getSyntaxHighlightingMode() !== "off";
+}
+
+function isIdentifierStart(char: string): boolean {
+	return (char >= "A" && char <= "Z") || (char >= "a" && char <= "z") || char === "_" || char === "$";
+}
+
+function isIdentifierPart(char: string): boolean {
+	return isIdentifierStart(char) || (char >= "0" && char <= "9");
+}
+
+function isDigit(char: string): boolean {
+	return char >= "0" && char <= "9";
+}
+
+function highlightBasicLine(line: string, currentTheme: Theme): string {
+	let output = "";
+	let index = 0;
+
+	while (index < line.length) {
+		const char = line[index];
+		const next = line[index + 1];
+
+		if (char === "/" && next === "/") {
+			output += currentTheme.fg("syntaxComment", line.slice(index));
+			break;
+		}
+		if (char === "#" && (index === 0 || /\s/.test(line[index - 1]))) {
+			output += currentTheme.fg("syntaxComment", line.slice(index));
+			break;
+		}
+		if (char === '"' || char === "'" || char === "`") {
+			const quote = char;
+			let end = index + 1;
+			while (end < line.length) {
+				if (line[end] === "\\") {
+					end += 2;
+					continue;
+				}
+				if (line[end] === quote) {
+					end++;
+					break;
+				}
+				end++;
+			}
+			output += currentTheme.fg("syntaxString", line.slice(index, end));
+			index = end;
+			continue;
+		}
+		if (isDigit(char)) {
+			let end = index + 1;
+			while (end < line.length) {
+				const current = line[end];
+				if (!isDigit(current) && current !== "." && current !== "_") break;
+				end++;
+			}
+			output += currentTheme.fg("syntaxNumber", line.slice(index, end));
+			index = end;
+			continue;
+		}
+		if (isIdentifierStart(char)) {
+			let end = index + 1;
+			while (end < line.length && isIdentifierPart(line[end])) {
+				end++;
+			}
+			const word = line.slice(index, end);
+			output += BASIC_HIGHLIGHT_KEYWORDS.has(word) ? currentTheme.fg("syntaxKeyword", word) : word;
+			index = end;
+			continue;
+		}
+
+		output += char;
+		index++;
+	}
+
+	return output;
+}
+
+export function basicHighlightCode(code: string, currentTheme: Theme = theme): string[] {
+	return code.split("\n").map(line => highlightBasicLine(line, currentTheme));
+}
 
 function highlightCached(code: string, validLang: string | undefined): string | null {
+	if (getSyntaxHighlightingMode() !== "native") {
+		return null;
+	}
 	if (highlightCacheTheme !== theme) {
 		highlightCache.clear();
 		highlightCacheTheme = theme;
@@ -2584,6 +2748,13 @@ function highlightCached(code: string, validLang: string | undefined): string | 
  * Returns array of highlighted lines.
  */
 export function highlightCode(code: string, lang?: string): string[] {
+	const mode = getSyntaxHighlightingMode();
+	if (mode === "off") {
+		return code.split("\n");
+	}
+	if (mode === "basic") {
+		return basicHighlightCode(code);
+	}
 	const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 	const highlighted = highlightCached(code, validLang);
 	// Always return a fresh array: callers (e.g. renderCodeCell) push extra lines
@@ -2632,6 +2803,13 @@ export function getMarkdownTheme(): MarkdownTheme {
 		symbols: getSymbolTheme(),
 		resolveMermaidAscii,
 		highlightCode: (code: string, lang?: string): string[] => {
+			const mode = getSyntaxHighlightingMode();
+			if (mode === "off") {
+				return code.split("\n").map(line => theme.fg("mdCodeBlock", line));
+			}
+			if (mode === "basic") {
+				return basicHighlightCode(code);
+			}
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 			const highlighted = highlightCached(code, validLang);
 			if (highlighted !== null) return highlighted.split("\n");

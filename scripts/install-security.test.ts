@@ -249,7 +249,7 @@ describe("installer supply-chain hardening", () => {
 		}
 	});
 
-	it("does not overwrite an existing shell installer config", async () => {
+	it("keeps existing shell installer config values while adding config migrations", async () => {
 		const binaryContent = "safe release binary";
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
@@ -259,7 +259,27 @@ describe("installer supply-chain hardening", () => {
 			const result = await runShellInstaller(root, installDir);
 
 			expect(result.exitCode).toBe(0);
-			expect(await Bun.file(configPath).text()).toBe("theme:\n  dark: custom\n");
+			expect(await Bun.file(configPath).text()).toBe(
+				"theme:\n  dark: custom\n\ndisplay:\n  syntaxHighlighting: basic\n",
+			);
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("adds shell installer syntax highlighting migration to an existing display block", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(configPath, "display:\n  smoothStreaming: true\ntheme:\n  dark: custom\n");
+			const result = await runShellInstaller(root, installDir);
+
+			expect(result.exitCode).toBe(0);
+			expect(await Bun.file(configPath).text()).toBe(
+				"display:\n  smoothStreaming: true\n  syntaxHighlighting: basic\ntheme:\n  dark: custom\n",
+			);
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}

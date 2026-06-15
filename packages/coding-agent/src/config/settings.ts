@@ -28,7 +28,13 @@ import { YAML } from "bun";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
-import { isLightTheme, setAutoThemeMapping, setColorBlindMode, setSymbolPreset } from "../modes/theme/theme";
+import {
+	isLightTheme,
+	setAutoThemeMapping,
+	setColorBlindMode,
+	setSymbolPreset,
+	setSyntaxHighlightingMode,
+} from "../modes/theme/theme";
 import { AgentStorage } from "../session/agent-storage";
 import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
 import { withFileLock } from "./file-lock";
@@ -1117,6 +1123,13 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	"display.tabWidth": value => {
 		if (typeof value === "number") {
 			setDefaultTabWidth(value);
+		}
+	},
+	"display.syntaxHighlighting": value => {
+		if (value === "native" || value === "basic" || value === "off") {
+			setSyntaxHighlightingMode(value);
+		} else if (typeof value === "boolean") {
+			setSyntaxHighlightingMode(value ? "native" : "off");
 		}
 	},
 	"provider.appendOnlyContext": value => {

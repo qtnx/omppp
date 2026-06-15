@@ -673,6 +673,22 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.syntaxHighlighting": {
+		type: "enum",
+		values: ["native", "basic", "off"] as const,
+		default: "native",
+		ui: {
+			tab: "appearance",
+			label: "Syntax Highlighting",
+			description: "Control code highlighting cost: native is richest, basic is lightweight, off is plain text",
+			options: [
+				{ value: "native", label: "Native", description: "Full syntax highlighting through the native parser" },
+				{ value: "basic", label: "Basic", description: "Cheap keyword/string/comment/number highlighting only" },
+				{ value: "off", label: "Off", description: "Plain code text with no syntax colors" },
+			],
+		},
+	},
+
 	"display.showTokenUsage": {
 		type: "boolean",
 		default: false,

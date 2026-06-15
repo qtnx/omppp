@@ -261,6 +261,7 @@ import {
 	SILENT_ABORT_MARKER,
 	SKILL_PROMPT_MESSAGE_TYPE,
 	stripImagesFromMessage,
+	stripOversizedCompactionSummaryImagesForCodex,
 } from "./messages";
 import { formatSessionDumpText } from "./session-dump-format";
 import type {
@@ -319,6 +320,7 @@ export type AsyncJobSnapshotItem = Pick<AsyncJob, "id" | "type" | "status" | "la
 const EMPTY_STOP_MAX_RETRIES = 3;
 const RETRY_BACKOFF_MAX_DELAY_MS = 8_000;
 const RETRY_BACKOFF_JITTER_RATIO = 0.25;
+const CODEX_PRE_PROMPT_COMPACTION_BYTES = 12 * 1024 * 1024;
 /**
  * Hysteresis band for the post-shake "did we actually create headroom?" check.
  * Shake counts as having resolved threshold pressure only when residual context
@@ -341,6 +343,17 @@ function calculateRetryBackoffDelayMs(baseDelayMs: number, attempt: number): num
  */
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
 const NON_WHITESPACE_RE = /\S/;
+
+function parseNonNegativeIntegerEnv(value: string | undefined, fallback: number): number {
+	if (!value) return fallback;
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+	return Math.trunc(parsed);
+}
+
+function getCodexPrePromptCompactionBytes(): number {
+	return parseNonNegativeIntegerEnv(Bun.env.PI_CODEX_PRE_PROMPT_COMPACTION_BYTES, CODEX_PRE_PROMPT_COMPACTION_BYTES);
+}
 
 function hasNonWhitespace(value: string): boolean {
 	return NON_WHITESPACE_RE.test(value);
@@ -3195,6 +3208,7 @@ export class AgentSession {
 	 */
 	async dispose(): Promise<void> {
 		this.beginDispose();
+		this.#releaseProviderCredentialUse(this.sessionId);
 		try {
 			if (this.#extensionRunner?.hasHandlers("session_shutdown")) {
 				await this.#extensionRunner.emit({ type: "session_shutdown" });
@@ -3279,9 +3293,16 @@ export class AgentSession {
 		this.#providerSessionState.clear();
 	}
 
+	#releaseProviderCredentialUse(sessionId: string | undefined): void {
+		const provider = this.model?.provider;
+		if (!provider) return;
+		this.#modelRegistry.authStorage?.releaseSessionCredentialUse?.(provider, sessionId);
+	}
+
 	freshSession(): FreshSessionResult | undefined {
 		if (this.isStreaming) return undefined;
 		const previousSessionId = this.sessionId;
+		this.#releaseProviderCredentialUse(previousSessionId);
 		const closedProviderSessions = this.#providerSessionState.size;
 		this.#closeAllProviderSessions("fresh session");
 		this.#freshProviderSessionId = Bun.randomUUIDv7();
@@ -6937,6 +6958,25 @@ export class AgentSession {
 		return tokens;
 	}
 
+	#estimatePendingPromptProviderBytes(messages: AgentMessage[], maxPayloadBytes = 0): number | undefined {
+		try {
+			const providerMessages = this.#convertToLlmForSideRequest([...this.messages, ...messages]);
+			let providerContext: Context = {
+				systemPrompt: this.#obfuscateForProvider(this.agent.state.systemPrompt),
+				messages: providerMessages,
+			};
+			if (this.model?.provider === "openai-codex" && maxPayloadBytes > 0) {
+				providerContext = stripOversizedCompactionSummaryImagesForCodex(providerContext, maxPayloadBytes).context;
+			}
+			return Buffer.byteLength(JSON.stringify(providerContext), "utf8");
+		} catch (error) {
+			logger.debug("Failed to estimate provider prompt payload size", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return undefined;
+		}
+	}
+
 	async #runPrePromptCompactionIfNeeded(messages: AgentMessage[]): Promise<void> {
 		const model = this.model;
 		if (!model) return;
@@ -6944,14 +6984,33 @@ export class AgentSession {
 		if (contextWindow <= 0) return;
 		const compactionSettings = this.settings.getGroup("compaction");
 		const contextTokens = this.#estimatePendingPromptTokens(messages);
-		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) return;
+		const shouldCompactForTokens = shouldCompact(contextTokens, contextWindow, compactionSettings);
+		const providerPayloadLimitBytes =
+			model.provider === "openai-codex" && compactionSettings.enabled && compactionSettings.strategy !== "off"
+				? getCodexPrePromptCompactionBytes()
+				: 0;
+		const providerPromptBytes =
+			providerPayloadLimitBytes > 0
+				? this.#estimatePendingPromptProviderBytes(messages, providerPayloadLimitBytes)
+				: undefined;
+		const shouldCompactForProviderBytes =
+			providerPayloadLimitBytes > 0 &&
+			typeof providerPromptBytes === "number" &&
+			providerPromptBytes > providerPayloadLimitBytes;
+		if (!shouldCompactForTokens && !shouldCompactForProviderBytes) return;
 
 		logger.debug("Pre-prompt context maintenance triggered by pending prompt size", {
 			contextTokens,
 			contextWindow,
 			model: `${model.provider}/${model.id}`,
+			providerPromptBytes,
+			providerPayloadLimitBytes: providerPayloadLimitBytes || undefined,
+			reason: shouldCompactForTokens ? "tokens" : "provider_payload_bytes",
 		});
-		await this.#runAutoCompaction("threshold", false, false, false, { autoContinue: false });
+		await this.#runAutoCompaction("threshold", false, false, false, {
+			autoContinue: false,
+			triggerContextTokens: contextTokens,
+		});
 	}
 
 	/**

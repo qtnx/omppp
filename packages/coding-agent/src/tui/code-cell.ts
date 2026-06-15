@@ -98,6 +98,11 @@ function collapseCarriageReturns(line: string): string {
 	const idx = line.lastIndexOf("\r");
 	return idx < 0 ? line : line.slice(idx + 1);
 }
+
+function shouldHighlightCodePreview(status: CodeCellOptions["status"] | undefined): boolean {
+	return status !== "pending" && status !== "running";
+}
+
 export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[] {
 	const { code, language, output, expanded = false, outputMaxLines = 6, codeMaxLines = 12, width } = options;
 	const { title, meta } = formatHeader(options, theme);
@@ -110,7 +115,9 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	const tail = options.codeTail === true && !expanded && hiddenCodeLines > 0;
 	const startIndex = tail ? rawCodeLines.length - maxCodeLines : 0;
 	const visibleCode = rawCodeLines.slice(startIndex, startIndex + maxCodeLines).join("\n");
-	const codeLines = highlightCode(visibleCode, language);
+	const codeLines = shouldHighlightCodePreview(options.status)
+		? highlightCode(visibleCode, language)
+		: visibleCode.split("\n");
 	if (hiddenCodeLines > 0) {
 		const hint = formatExpandHint(theme, expanded, hiddenCodeLines > 0);
 		if (tail) {
