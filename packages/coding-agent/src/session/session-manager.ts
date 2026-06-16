@@ -1669,6 +1669,13 @@ class NdjsonFileWriter {
 	}
 }
 
+function isRecoverablePersistWriterError(err: unknown): boolean {
+	const error = toError(err);
+	return (
+		hasFsCode(error, "EBADF") || error.message === "Writer closed" || error.message.includes("bad file descriptor")
+	);
+}
+
 /** Get recent sessions for display in welcome screen (which reserves WELCOME_SESSION_SLOTS rows) */
 export async function getRecentSessions(
 	sessionDir: string,
@@ -2538,6 +2545,7 @@ export class SessionManager {
 		// Note: caller must await _closePersistWriter() before calling this if switching files
 		this.#persistWriter = new NdjsonFileWriter(this.storage, this.#sessionFile, {
 			onError: err => {
+				if (isRecoverablePersistWriterError(err)) return;
 				this.#recordPersistError(err);
 			},
 		});
@@ -2619,6 +2627,16 @@ export class SessionManager {
 			await this.#replaceSessionFileAfterEperm(tempPath, targetPath, err);
 		}
 	}
+
+	async #rewriteCurrentEntries(): Promise<void> {
+		const entries = await Promise.all(
+			this.#fileEntries.map(entry => prepareEntryForPersistence(entry, this.#blobStore)),
+		);
+		await this.#writeEntriesAtomically(entries);
+		this.#needsFullRewriteOnNextPersist = false;
+		this.#flushed = true;
+	}
+
 	async #writeEntriesAtomically(entries: FileEntry[]): Promise<void> {
 		if (!this.#sessionFile) return;
 		const dir = path.resolve(this.#sessionFile, "..");
@@ -2651,12 +2669,7 @@ export class SessionManager {
 		if (!this.persist || !this.#sessionFile) return;
 		await this.#queuePersistTask(async () => {
 			await this.#closePersistWriterInternal();
-			const entries = await Promise.all(
-				this.#fileEntries.map(entry => prepareEntryForPersistence(entry, this.#blobStore)),
-			);
-			await this.#writeEntriesAtomically(entries);
-			this.#needsFullRewriteOnNextPersist = false;
-			this.#flushed = true;
+			await this.#rewriteCurrentEntries();
 		});
 	}
 
@@ -2953,6 +2966,30 @@ export class SessionManager {
 		return true;
 	}
 
+	#recoverPersistWriterAfterHotWriteFailure(err: unknown): void {
+		if (!this.persist || !this.#sessionFile) return;
+		const normalized = toError(err);
+		const staleWriter = this.#persistWriter;
+		this.#persistWriter = undefined;
+		this.#persistWriterPath = undefined;
+		this.#needsFullRewriteOnNextPersist = true;
+		this.#flushed = false;
+		logger.warn("Session persistence writer lost; rewriting session file.", {
+			sessionFile: this.#sessionFile,
+			error: normalized.message,
+		});
+		this.#queuePersistTask(async () => {
+			if (staleWriter) {
+				try {
+					await staleWriter.close();
+				} catch {
+					// The writer already failed; the replacement rewrite below is authoritative.
+				}
+			}
+			await this.#rewriteCurrentEntries();
+		}).catch(() => {});
+	}
+
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.#sessionFile) return;
 		if (this.#persistError) throw this.#persistError;
@@ -2997,6 +3034,10 @@ export class SessionManager {
 			const persistedEntry = prepareEntryForPersistenceSync(entry, this.#blobStore);
 			writer.writeSync(persistedEntry);
 		} catch (err) {
+			if (isRecoverablePersistWriterError(err)) {
+				this.#recoverPersistWriterAfterHotWriteFailure(err);
+				return;
+			}
 			this.#recordPersistError(err);
 		}
 	}
