@@ -1,6 +1,6 @@
 import type { UsageStatistics } from "../session/session-manager";
 
-export type GoalStatus = "active" | "paused" | "budget-limited" | "complete" | "dropped";
+export type GoalStatus = "active" | "paused" | "blocked" | "usage-limited" | "budget-limited" | "complete" | "dropped";
 
 export interface Goal {
 	id: string;
@@ -21,7 +21,7 @@ export interface GoalModeState {
 }
 
 export interface GoalToolDetails {
-	op: "create" | "get" | "complete" | "resume" | "drop";
+	op: "create" | "get" | "complete" | "block" | "resume" | "drop";
 	goal?: Goal | null;
 	remainingTokens?: number | null;
 	completionBudgetReport?: string | null;

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Codex-compatible `get_goal`, `create_goal`, and `update_goal` hidden tools, including `blocked` goal status handling and upstream-style continuation guidance.
+
 ### Changed
 
 - OpenAI Codex-family sessions now use a compact upstream-style system prompt while preserving OMPx project context, tool inventory, skills, and rules, reducing baseline prompt bytes before provider requests.

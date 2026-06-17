@@ -1,4 +1,6 @@
-Manage the active goal-mode objective.
+Legacy compatibility tool for the active goal-mode objective.
+
+Prefer get_goal, create_goal, and update_goal when they are available. Use this tool only when the legacy single-tool surface is the only goal tool exposed.
 
 Use a single `op` field:
 - `create` starts a goal. Requires `objective`; optional `token_budget` must be positive. Use only when no goal exists and no goal is paused.
