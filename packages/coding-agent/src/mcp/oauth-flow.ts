@@ -9,6 +9,60 @@ import type { OAuthCallbackFlowOptions } from "@oh-my-pi/pi-ai/oauth/callback-se
 import { OAuthCallbackFlow } from "@oh-my-pi/pi-ai/oauth/callback-server";
 import type { OAuthController, OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
+import { getActiveProfile } from "@oh-my-pi/pi-utils/dirs";
+import type { OAuthCredential } from "../session/auth-storage";
+
+/** Credential-id prefix for OMP-managed MCP OAuth credentials keyed by profile and server URL. */
+const MCP_OAUTH_URL_CREDENTIAL_PREFIX = "mcp_oauth:";
+
+/** Credential-id prefix for profile-scoped MCP OAuth credentials (`mcp_oauth:profile:<profile>:<serverUrl>`). */
+const MCP_OAUTH_PROFILE_CREDENTIAL_PREFIX = `${MCP_OAUTH_URL_CREDENTIAL_PREFIX}profile:`;
+
+/**
+ * Deterministic credential id for an MCP server URL scoped to an OMP profile.
+ *
+ * Local profile stores are already separate, but auth-broker storage shares one
+ * provider namespace across profiles. Including the profile in the provider key
+ * keeps a shared project `mcp.json` definition from making profile B overwrite
+ * or read profile A's OAuth row for the same server URL. The URL is used
+ * verbatim (query string included) because it can carry tenant selectors such
+ * as `?project_ref=`.
+ */
+export function mcpOAuthCredentialId(serverUrl: string, profile: string | undefined = getActiveProfile()): string {
+	return `${MCP_OAUTH_PROFILE_CREDENTIAL_PREFIX}${profile ?? "default"}:${serverUrl}`;
+}
+
+/** Whether a credential id was minted by OMP's MCP OAuth flows (either era). */
+export function isManagedMCPOAuthCredentialId(credentialId: string | undefined): credentialId is string {
+	return (
+		!!credentialId &&
+		(credentialId.startsWith("mcp_oauth_") || credentialId.startsWith(MCP_OAUTH_URL_CREDENTIAL_PREFIX))
+	);
+}
+
+/**
+ * Profile segment of a profile-scoped `mcp_oauth:profile:<profile>:<serverUrl>`
+ * credential id, or `undefined` for legacy non-profile-scoped managed ids
+ * (`mcp_oauth:<url>`, `mcp_oauth_<rand>`). The server URL itself contains `:`
+ * and `/`, so only the segment between the prefix and the FIRST subsequent `:`
+ * is the profile; everything after it is the URL.
+ */
+export function mcpOAuthCredentialProfile(credentialId: string): string | undefined {
+	if (!credentialId.startsWith(MCP_OAUTH_PROFILE_CREDENTIAL_PREFIX)) return undefined;
+	const separator = credentialId.indexOf(":", MCP_OAUTH_PROFILE_CREDENTIAL_PREFIX.length);
+	return separator === -1 ? undefined : credentialId.slice(MCP_OAUTH_PROFILE_CREDENTIAL_PREFIX.length, separator);
+}
+
+/**
+ * Stored MCP OAuth credential. Refresh material is embedded so token refresh
+ * works without any `auth` block persisted in (possibly shared) config files.
+ */
+export interface MCPStoredOAuthCredential extends OAuthCredential {
+	tokenUrl?: string;
+	clientId?: string;
+	clientSecret?: string;
+	resource?: string;
+}
 
 const DEFAULT_PORT = 3000;
 const CALLBACK_PATH = "/callback";
@@ -98,6 +152,23 @@ function resolveCallbackOptions(config: MCPOAuthConfig): OAuthCallbackFlowOption
 	};
 }
 
+function resolveResourceUri(resource: string | undefined): string | undefined {
+	const trimmed = resource?.trim();
+	if (!trimmed) return undefined;
+	if (trimmed !== resource) {
+		throw new Error("OAuth resource URI must not include surrounding whitespace");
+	}
+
+	const parsed = new URL(trimmed);
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		throw new Error("OAuth resource URI must use http or https");
+	}
+	if (parsed.hash) {
+		throw new Error("OAuth resource URI must not include a fragment");
+	}
+	return trimmed;
+}
+
 export interface MCPOAuthConfig {
 	/** Authorization endpoint URL */
 	authorizationUrl: string;
@@ -109,12 +180,23 @@ export interface MCPOAuthConfig {
 	clientSecret?: string;
 	/** OAuth scopes (space-separated) */
 	scopes?: string;
+	/**
+	 * `prompt` parameter for the authorization request. Defaults to `"consent"`
+	 * so the provider always shows its authorize screen instead of silently
+	 * re-approving the browser's current session — without it, reauthorizing to
+	 * switch accounts/workspaces is impossible once a session cookie exists
+	 * (RFC 6749 §3.1 requires servers to ignore the param when unsupported).
+	 * Set to `""` to omit the parameter entirely.
+	 */
+	prompt?: string;
 	/** Exact redirect URI to advertise to the provider */
 	redirectUri?: string;
 	/** Custom callback port (default: 3000) */
 	callbackPort?: number;
 	/** Custom callback path (default: /callback or redirectUri pathname) */
 	callbackPath?: string;
+	/** MCP resource URI for RFC 8707 resource indicators */
+	resource?: string;
 	/** Fetch implementation for token exchange and discovery requests. */
 	fetch?: FetchImpl;
 }
@@ -128,6 +210,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 	#registeredClientSecret?: string;
 	#codeVerifier?: string;
 	#fetch: FetchImpl;
+	#resource?: string;
 
 	constructor(
 		private config: MCPOAuthConfig,
@@ -136,6 +219,9 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 		super(ctrl, resolveCallbackOptions(config));
 		this.#resolvedClientId = this.#resolveClientId(config);
 		this.#fetch = config.fetch ?? ctrl.fetch ?? fetch;
+		this.#resource = resolveResourceUri(
+			config.resource ?? this.#resourceFromAuthorizationUrl(config.authorizationUrl),
+		);
 	}
 
 	/**
@@ -157,6 +243,9 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 	get registeredClientSecret(): string | undefined {
 		return this.#registeredClientSecret;
 	}
+	get resource(): string | undefined {
+		return this.#resource;
+	}
 
 	async generateAuthUrl(state: string, redirectUri: string): Promise<{ url: string; instructions?: string }> {
 		if (!this.#resolvedClientId) {
@@ -175,6 +264,16 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 		}
 		if (this.config.scopes && !params.get("scope")) {
 			params.set("scope", this.config.scopes);
+		}
+		const prompt = this.config.prompt ?? "consent";
+		if (prompt && !params.get("prompt")) {
+			params.set("prompt", prompt);
+		}
+		const existingResource = params.get("resource")?.trim();
+		if (existingResource) {
+			this.#resource = resolveResourceUri(existingResource);
+		} else if (this.#resource) {
+			params.set("resource", this.#resource);
 		}
 		params.set("redirect_uri", redirectUri);
 		params.set("state", state);
@@ -212,6 +311,9 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 		this.#codeVerifier = undefined;
 
 		// Add client secret if provided
+		if (this.#resource) {
+			params.set("resource", this.#resource);
+		}
 		const clientSecret = this.config.clientSecret ?? this.#registeredClientSecret;
 		if (clientSecret) {
 			params.set("client_secret", clientSecret);
@@ -281,6 +383,13 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 
 		try {
 			return new URL(config.authorizationUrl).searchParams.get("client_id") ?? undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	#resourceFromAuthorizationUrl(authorizationUrl: string): string | undefined {
+		try {
+			return new URL(authorizationUrl).searchParams.get("resource") ?? undefined;
 		} catch {
 			return undefined;
 		}
@@ -407,14 +516,18 @@ export async function refreshMCPOAuthToken(
 	refreshToken: string,
 	clientId?: string,
 	clientSecret?: string,
+	resourceOrOpts?: string | { fetch?: FetchImpl },
 	opts?: { fetch?: FetchImpl },
 ): Promise<OAuthCredentials> {
-	const fetchImpl: FetchImpl = opts?.fetch ?? fetch;
+	const fetchImpl: FetchImpl = (typeof resourceOrOpts === "string" ? opts?.fetch : resourceOrOpts?.fetch) ?? fetch;
+	const resource = typeof resourceOrOpts === "string" ? resourceOrOpts : undefined;
 	const params = new URLSearchParams({
 		grant_type: "refresh_token",
 		refresh_token: refreshToken,
 	});
 	if (clientId) params.set("client_id", clientId);
+	const resolvedResource = resolveResourceUri(resource);
+	if (resolvedResource) params.set("resource", resolvedResource);
 	if (clientSecret) params.set("client_secret", clientSecret);
 
 	const response = await fetchImpl(tokenUrl, {

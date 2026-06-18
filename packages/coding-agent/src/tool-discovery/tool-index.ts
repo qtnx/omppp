@@ -1,4 +1,7 @@
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { Tool as AiTool } from "@oh-my-pi/pi-ai";
+import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { TOOL_DISCOVERY_AUTO_THRESHOLD } from "./mode";
 
 // ─── Generic Tool Discovery Types ────────────────────────────────────────────
 
@@ -39,16 +42,25 @@ interface ToolDiscoverySettingsReader {
 function normalizeToolDiscoveryMode(value: unknown): ToolDiscoveryModeSetting {
 	return value === "off" || value === "mcp-only" || value === "all" || value === "auto" ? value : "auto";
 }
-
 export function resolveEffectiveToolDiscoveryMode(
 	settings: ToolDiscoverySettingsReader,
 	model?: { contextWindow?: number },
+	toolCount?: number,
+	mcpEnabled?: boolean,
 ): ToolDiscoveryMode {
 	const toolsMode = normalizeToolDiscoveryMode(settings.get("tools.discoveryMode"));
 	if (toolsMode === "all" || toolsMode === "mcp-only" || toolsMode === "off") return toolsMode;
 	if (settings.get("mcp.discoveryMode") === true) return "mcp-only";
-	if (model?.contextWindow === undefined) return "off";
-	return model.contextWindow < AUTO_TOOL_DISCOVERY_CONTEXT_WINDOW ? "all" : "off";
+	// Built-in discovery for small-context models (keeps the prompt lean without
+	// forcing every tool active). MCP-enabled sessions defer to the toolCount/
+	// deferred-MCP mechanism below — MCP tools load async and may cross the
+	// threshold, so resolving "all" up front would skip that upgrade and break
+	// dispose-reset semantics.
+	if (!mcpEnabled && model?.contextWindow !== undefined && model.contextWindow < AUTO_TOOL_DISCOVERY_CONTEXT_WINDOW) {
+		return "all";
+	}
+	if (toolCount !== undefined && toolCount > TOOL_DISCOVERY_AUTO_THRESHOLD) return "mcp-only";
+	return "off";
 }
 
 export interface DiscoverableToolSearchDocument {
@@ -88,7 +100,13 @@ export function isMCPToolName(name: string): boolean {
 	return name.startsWith("mcp__");
 }
 
-function getSchemaPropertyKeys(parameters: unknown): string[] {
+function getSchemaPropertyKeys(tool: Pick<AiTool, "name" | "description" | "parameters">): string[] {
+	let parameters: unknown = tool.parameters;
+	try {
+		parameters = toolWireSchema(tool as AiTool);
+	} catch {
+		// Schema may contain functions or cycles; fall back to the raw shape.
+	}
 	if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) return [];
 	const properties = (parameters as { properties?: unknown }).properties;
 	if (!properties || typeof properties !== "object" || Array.isArray(properties)) return [];
@@ -171,7 +189,14 @@ export function getDiscoverableTool(
 		source,
 		serverName: typeof toolRecord.mcpServerName === "string" ? toolRecord.mcpServerName : undefined,
 		mcpToolName: typeof toolRecord.mcpToolName === "string" ? toolRecord.mcpToolName : undefined,
-		schemaKeys: getSchemaPropertyKeys(toolRecord.parameters),
+		schemaKeys:
+			toolRecord.parameters === undefined
+				? []
+				: getSchemaPropertyKeys({
+						name: tool.name,
+						description: rawDescription,
+						parameters: toolRecord.parameters as AiTool["parameters"],
+					}),
 	};
 }
 

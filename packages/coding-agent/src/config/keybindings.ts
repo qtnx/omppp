@@ -31,6 +31,7 @@ interface AppKeybindings {
 	"app.tools.expand": true;
 	"app.editor.external": true;
 	"app.message.followUp": true;
+	"app.retry": true;
 	"app.message.dequeue": true;
 	"app.clipboard.pasteImage": true;
 	"app.clipboard.pasteTextRaw": true;
@@ -131,13 +132,17 @@ export const KEYBINDINGS = {
 		defaultKeys: ["ctrl+q", "ctrl+enter"],
 		description: "Send follow-up message",
 	},
+	"app.retry": {
+		defaultKeys: "alt+r",
+		description: "Retry last failed assistant turn",
+	},
 	"app.message.dequeue": {
 		defaultKeys: "alt+up",
 		description: "Dequeue message",
 	},
 	"app.clipboard.pasteImage": {
 		defaultKeys: getDefaultPasteImageKeys(),
-		description: "Paste image from clipboard",
+		description: "Paste image or text from clipboard",
 	},
 	"app.clipboard.pasteTextRaw": {
 		defaultKeys: ["ctrl+shift+v", "alt+shift+v"],
@@ -212,8 +217,8 @@ export const KEYBINDINGS = {
 		description: "Search history",
 	},
 	"app.stt.toggle": {
-		defaultKeys: "alt+h",
-		description: "Toggle speech-to-text",
+		defaultKeys: [],
+		description: "Toggle speech-to-text (default gesture: hold Space)",
 	},
 } as const satisfies KeybindingDefinitions;
 
@@ -238,6 +243,7 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	toggleThinking: "app.thinking.toggle",
 	externalEditor: "app.editor.external",
 	followUp: "app.message.followUp",
+	retry: "app.retry",
 	dequeue: "app.message.dequeue",
 	pasteImage: "app.clipboard.pasteImage",
 	pasteTextRaw: "app.clipboard.pasteTextRaw",

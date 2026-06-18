@@ -156,7 +156,7 @@ async function closeTransport(writable: WritableStream<unknown>): Promise<void> 
 }
 
 describe("ACP lazy startup", () => {
-	it("keeps ACP background jobs disabled by default and preserves explicit opt-ins", async () => {
+	it("applies schema defaults for ACP background jobs and preserves explicit overrides", async () => {
 		const { runRootCommand } = await import("@oh-my-pi/pi-coding-agent/main");
 
 		type ObservedBackgroundSettings = {
@@ -179,6 +179,7 @@ describe("ACP lazy startup", () => {
 						messages: [],
 						fileArgs: [],
 						unknownFlags: new Map(),
+						unrecognizedFlags: [],
 						noSkills: true,
 						noRules: true,
 						noTools: true,
@@ -214,27 +215,182 @@ describe("ACP lazy startup", () => {
 			return observed;
 		};
 
+		// ACP startup must not clobber background-job settings: an unset config
+		// observes the schema defaults (async on since 844c8dbdfe)…
 		await expect(runAcpStartup(Settings.isolated())).resolves.toEqual({
-			asyncEnabled: false,
+			asyncEnabled: true,
 			asyncMaxJobs: 100,
 			bashAutoBackground: false,
 			bashAutoBackgroundThresholdMs: 60000,
 		});
+		// …and explicit overrides survive in both directions (here: async
+		// opted OUT against the default, auto-background opted IN).
 		await expect(
 			runAcpStartup(
 				Settings.isolated({
-					"async.enabled": true,
+					"async.enabled": false,
 					"async.maxJobs": 7,
 					"bash.autoBackground.enabled": true,
 					"bash.autoBackground.thresholdMs": 1234,
 				}),
 			),
 		).resolves.toEqual({
-			asyncEnabled: true,
+			asyncEnabled: false,
 			asyncMaxJobs: 7,
 			bashAutoBackground: true,
 			bashAutoBackgroundThresholdMs: 1234,
 		});
+	});
+
+	it("default-disables advisor for protocol hosts", async () => {
+		const { runRootCommand } = await import("@oh-my-pi/pi-coding-agent/main");
+
+		type ObservedAdvisorSettings = {
+			enabled: boolean;
+			subagents: boolean;
+		};
+
+		const runProtocolStartup = async (mode: "rpc" | "rpc-ui" | "acp"): Promise<ObservedAdvisorSettings> => {
+			using tempDir = TempDir.createSync("@omp-protocol-advisor-settings-");
+			const cwd = tempDir.path();
+			const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
+			const settings = Settings.isolated({
+				"advisor.enabled": true,
+				"advisor.subagents": true,
+			});
+			let observed: ObservedAdvisorSettings | undefined;
+			const stopMessage = "stop test protocol mode";
+
+			try {
+				await runRootCommand(
+					{
+						mode,
+						messages: [],
+						fileArgs: [],
+						unknownFlags: new Map(),
+						unrecognizedFlags: [],
+						noSkills: true,
+						noRules: true,
+						noTools: true,
+						noLsp: true,
+						noExtensions: true,
+						sessionDir: cwd,
+					},
+					[],
+					{
+						discoverAuthStorage: async () => authStorage,
+						settings,
+						createAgentSession: async () => {
+							observed = {
+								enabled: settings.get("advisor.enabled"),
+								subagents: settings.get("advisor.subagents"),
+							};
+							throw new Error(stopMessage);
+						},
+						runAcpMode: async () => {
+							observed = {
+								enabled: settings.get("advisor.enabled"),
+								subagents: settings.get("advisor.subagents"),
+							};
+							throw new Error(stopMessage);
+						},
+					},
+				);
+			} catch (error) {
+				if (!(error instanceof Error) || error.message !== stopMessage) {
+					throw error;
+				}
+			} finally {
+				authStorage.close();
+			}
+
+			if (!observed) {
+				throw new Error("Expected protocol mode to start");
+			}
+			return observed;
+		};
+
+		for (const mode of ["rpc", "rpc-ui", "acp"] as const) {
+			await expect(runProtocolStartup(mode)).resolves.toEqual({
+				enabled: false,
+				subagents: false,
+			});
+		}
+	});
+
+	it("honors explicit todo settings for protocol hosts", async () => {
+		const { runRootCommand } = await import("@oh-my-pi/pi-coding-agent/main");
+
+		type ObservedTodoSettings = {
+			enabled: boolean;
+			reminders: boolean;
+			eager: "default" | "preferred" | "always";
+		};
+
+		const runProtocolStartup = async (mode: "rpc" | "rpc-ui" | "acp"): Promise<ObservedTodoSettings> => {
+			using tempDir = TempDir.createSync("@omp-protocol-todo-settings-");
+			const cwd = tempDir.path();
+			const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
+			const settings = Settings.isolated({
+				"todo.enabled": false,
+				"todo.reminders": false,
+				"todo.eager": "always",
+			});
+			let observed: ObservedTodoSettings | undefined;
+			const stopMessage = "stop test protocol todo settings";
+			const observe = () => {
+				observed = {
+					enabled: settings.get("todo.enabled"),
+					reminders: settings.get("todo.reminders"),
+					eager: settings.get("todo.eager"),
+				};
+				throw new Error(stopMessage);
+			};
+
+			try {
+				await runRootCommand(
+					{
+						mode,
+						messages: [],
+						fileArgs: [],
+						unknownFlags: new Map(),
+						unrecognizedFlags: [],
+						noSkills: true,
+						noRules: true,
+						noTools: true,
+						noLsp: true,
+						noExtensions: true,
+						sessionDir: cwd,
+					},
+					[],
+					{
+						discoverAuthStorage: async () => authStorage,
+						settings,
+						createAgentSession: async () => observe(),
+						runAcpMode: async () => observe(),
+					},
+				);
+			} catch (error) {
+				if (!(error instanceof Error) || error.message !== stopMessage) {
+					throw error;
+				}
+			} finally {
+				authStorage.close();
+			}
+
+			if (!observed) {
+				throw new Error("Expected protocol mode to start");
+			}
+			return observed;
+		};
+
+		for (const mode of ["rpc", "rpc-ui", "acp"] as const) {
+			await expect(runProtocolStartup(mode)).resolves.toEqual({
+				enabled: false,
+				reminders: false,
+				eager: "always",
+			});
+		}
 	});
 	it("answers initialize before creating the first AgentSession", async () => {
 		const clientToAgent = new TransformStream();
@@ -326,6 +482,7 @@ describe("ACP lazy startup", () => {
 					messages: [],
 					fileArgs: [],
 					unknownFlags: new Map(),
+					unrecognizedFlags: [],
 					noSkills: true,
 					noRules: true,
 					noTools: true,

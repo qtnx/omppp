@@ -62,13 +62,14 @@ async function seedFile(
 }
 
 const TS_SOURCE = "function x() {\n  if (y) {\n  }\n}\n";
+const ELISP_SOURCE = ["(ert-deftest ogent-zen-test ()", '  "Doc."', "  (should t))", ""].join("\n");
 
-describe("replace block — native tree-sitter resolution end-to-end", () => {
+describe("SWAP.BLK — native tree-sitter resolution end-to-end", () => {
 	it("resolves the inner `if` block (line 2) and replaces its full span", async () => {
 		await withTempDir(async tempDir => {
 			const session = makeSession(tempDir);
 			const { filePath, header } = await seedFile(tempDir, session, "x.ts", TS_SOURCE);
-			const input = `${header}\nreplace block 2:\n+  if (y || z) {\n+  }`;
+			const input = `${header}\nSWAP.BLK 2:\n+  if (y || z) {\n+  }`;
 
 			await executeHashlineSingle(executeOptions(tempDir, input, session));
 
@@ -80,7 +81,7 @@ describe("replace block — native tree-sitter resolution end-to-end", () => {
 		await withTempDir(async tempDir => {
 			const session = makeSession(tempDir);
 			const { filePath, header } = await seedFile(tempDir, session, "x.ts", TS_SOURCE);
-			const input = `${header}\nreplace block 1:\n+function x() {\n+  return 42;\n+}`;
+			const input = `${header}\nSWAP.BLK 1:\n+function x() {\n+  return 42;\n+}`;
 
 			await executeHashlineSingle(executeOptions(tempDir, input, session));
 
@@ -88,11 +89,11 @@ describe("replace block — native tree-sitter resolution end-to-end", () => {
 		});
 	});
 
-	it("deletes the resolved `if` block (line 2) end-to-end via `delete block`", async () => {
+	it("deletes the resolved `if` block (line 2) end-to-end via `DEL.BLK`", async () => {
 		await withTempDir(async tempDir => {
 			const session = makeSession(tempDir);
 			const { filePath, header } = await seedFile(tempDir, session, "x.ts", TS_SOURCE);
-			const input = `${header}\ndelete block 2`;
+			const input = `${header}\nDEL.BLK 2`;
 
 			await executeHashlineSingle(executeOptions(tempDir, input, session));
 
@@ -100,11 +101,48 @@ describe("replace block — native tree-sitter resolution end-to-end", () => {
 		});
 	});
 
+	it("inserts after an Emacs Lisp top-level macro-style form", async () => {
+		await withTempDir(async tempDir => {
+			const session = makeSession(tempDir);
+			const { filePath, header } = await seedFile(tempDir, session, "ogent-zen-tests.el", ELISP_SOURCE);
+			const input = `${header}\nINS.BLK.POST 1:\n+\n+(ert-deftest ogent-zen-second-test ()\n+  (should-not nil))`;
+
+			const result = await executeHashlineSingle(executeOptions(tempDir, input, session));
+			const text = result.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
+
+			expect(await Bun.file(filePath).text()).toBe(
+				[
+					"(ert-deftest ogent-zen-test ()",
+					'  "Doc."',
+					"  (should t))",
+					"",
+					"(ert-deftest ogent-zen-second-test ()",
+					"  (should-not nil))",
+					"",
+				].join("\n"),
+			);
+			expect(text).toContain("INS.BLK.POST 1 → resolved lines 1-3 (3 lines); body lands after line 3");
+		});
+	});
+	it("inserts after an extensionless .emacs top-level form", async () => {
+		await withTempDir(async tempDir => {
+			const session = makeSession(tempDir);
+			const { filePath, header } = await seedFile(tempDir, session, ".emacs", ELISP_SOURCE);
+			const input = `${header}\nINS.BLK.POST 1:\n+\n+(message "loaded")`;
+
+			await executeHashlineSingle(executeOptions(tempDir, input, session));
+
+			expect(await Bun.file(filePath).text()).toBe(
+				["(ert-deftest ogent-zen-test ()", '  "Doc."', "  (should t))", "", '(message "loaded")', ""].join("\n"),
+			);
+		});
+	});
+
 	it("reports the diff for a resolved block edit", async () => {
 		await withTempDir(async tempDir => {
 			const session = makeSession(tempDir);
 			const { header } = await seedFile(tempDir, session, "x.ts", TS_SOURCE);
-			const input = `${header}\nreplace block 2:\n+  if (y || z) {\n+  }`;
+			const input = `${header}\nSWAP.BLK 2:\n+  if (y || z) {\n+  }`;
 
 			const result = await executeHashlineSingle(executeOptions(tempDir, input, session));
 
@@ -113,44 +151,44 @@ describe("replace block — native tree-sitter resolution end-to-end", () => {
 		});
 	});
 
-	it("echoes the resolved span in the result text for replace block", async () => {
+	it("echoes the resolved span in the result text for SWAP.BLK", async () => {
 		await withTempDir(async tempDir => {
 			const session = makeSession(tempDir);
 			const { header } = await seedFile(tempDir, session, "x.ts", TS_SOURCE);
-			const input = `${header}\nreplace block 1:\n+function x() {\n+  return 42;\n+}`;
+			const input = `${header}\nSWAP.BLK 1:\n+function x() {\n+  return 42;\n+}`;
 
 			const result = await executeHashlineSingle(executeOptions(tempDir, input, session));
 			const text = result.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
 
 			// `function x() {` opens on line 1; tree-sitter resolves the whole body (lines 1-4).
-			expect(text).toContain("replace block 1 → resolved lines 1-4 (4 lines)");
+			expect(text).toContain("SWAP.BLK 1 → resolved lines 1-4 (4 lines)");
 		});
 	});
 
-	it("echoes the resolved span in the result text for delete block", async () => {
+	it("echoes the resolved span in the result text for DEL.BLK", async () => {
 		await withTempDir(async tempDir => {
 			const session = makeSession(tempDir);
 			const { header } = await seedFile(tempDir, session, "x.ts", TS_SOURCE);
-			const input = `${header}\ndelete block 2`;
+			const input = `${header}\nDEL.BLK 2`;
 
 			const result = await executeHashlineSingle(executeOptions(tempDir, input, session));
 			const text = result.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
 
 			// `if (y) {` opens on line 2; resolves lines 2-3.
-			expect(text).toContain("delete block 2 → resolved lines 2-3 (2 lines)");
+			expect(text).toContain("DEL.BLK 2 → resolved lines 2-3 (2 lines)");
 		});
 	});
 
-	it("rejects a lone closing delimiter (no block begins there) and steers to `replace N..M:`", async () => {
+	it("rejects a lone closing delimiter (no block begins there) and steers to `SWAP N.=M:`", async () => {
 		await withTempDir(async tempDir => {
 			const session = makeSession(tempDir);
 			const { filePath, header } = await seedFile(tempDir, session, "x.ts", TS_SOURCE);
 			// Line 3 is `  }` — a closing delimiter, not a block opener.
-			const input = `${header}\nreplace block 3:\n+  }`;
+			const input = `${header}\nSWAP.BLK 3:\n+  }`;
 
 			// Steers to the concrete form and previews the file around the anchor (`*`-marked).
 			await expect(executeHashlineSingle(executeOptions(tempDir, input, session))).rejects.toThrow(
-				/could not resolve a syntactic block beginning on line 3.*replace 3\.\.M:.*^ 1:function x\(\) \{$.*^\*3: {2}\}$/ms,
+				/could not resolve a syntactic block beginning on line 3.*SWAP 3\.=M:.*^ 1:function x\(\) \{$.*^\*3: {2}\}$/ms,
 			);
 			// Disk untouched — refusal never leaves a partial write.
 			expect(await Bun.file(filePath).text()).toBe(TS_SOURCE);
@@ -162,7 +200,7 @@ describe("replace block — native tree-sitter resolution end-to-end", () => {
 			const session = makeSession(tempDir);
 			const source = "alpha\nbeta\ngamma\n";
 			const { filePath, header } = await seedFile(tempDir, session, "data.unknownext", source);
-			const input = `${header}\nreplace block 1:\n+ALPHA`;
+			const input = `${header}\nSWAP.BLK 1:\n+ALPHA`;
 
 			await expect(executeHashlineSingle(executeOptions(tempDir, input, session))).rejects.toThrow(
 				/could not resolve a syntactic block/,

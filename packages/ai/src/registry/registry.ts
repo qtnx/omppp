@@ -3,6 +3,7 @@ import { aimlApiProvider } from "./aimlapi";
 import { alibabaCodingPlanProvider } from "./alibaba-coding-plan";
 import { amazonBedrockProvider } from "./amazon-bedrock";
 import { anthropicProvider } from "./anthropic";
+import { azureProvider } from "./azure";
 import { cerebrasProvider } from "./cerebras";
 import { cloudflareAiGatewayProvider } from "./cloudflare-ai-gateway";
 import { cursorProvider } from "./cursor";
@@ -45,6 +46,7 @@ import { syntheticProvider } from "./synthetic";
 import { tavilyProvider } from "./tavily";
 import { togetherProvider } from "./together";
 import type { ProviderDefinition } from "./types";
+import { umansProvider } from "./umans";
 import { veniceProvider } from "./venice";
 import { vercelAiGatewayProvider } from "./vercel-ai-gateway";
 import { vllmProvider } from "./vllm";
@@ -68,6 +70,7 @@ import { zhipuCodingPlanProvider } from "./zhipu-coding-plan";
  * list for the loginable providers; non-login model providers are appended.
  */
 const ALL = [
+	azureProvider,
 	openaiCodexProvider,
 	anthropicProvider,
 	zaiProvider,
@@ -83,6 +86,7 @@ const ALL = [
 	alibabaCodingPlanProvider,
 	aimlApiProvider,
 	zhipuCodingPlanProvider,
+	umansProvider,
 	qwenPortalProvider,
 	minimaxCodeProvider,
 	minimaxCodeCnProvider,

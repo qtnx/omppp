@@ -1,4 +1,4 @@
-import { prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import { escapeXmlText, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import goalBudgetLimitPrompt from "../prompts/goals/goal-budget-limit.md" with { type: "text" };
 import goalContinuationPrompt from "../prompts/goals/goal-continuation.md" with { type: "text" };
 import goalModeActivePrompt from "../prompts/goals/goal-mode-active.md" with { type: "text" };
@@ -56,28 +56,6 @@ function remainingValue(goal: Goal): string {
 export function remainingTokens(goal: Goal | null | undefined): number | null {
 	if (!goal || goal.tokenBudget === undefined) return null;
 	return Math.max(0, goal.tokenBudget - goal.tokensUsed);
-}
-
-export function escapeXmlText(input: string): string {
-	let firstEscapable = -1;
-	for (let index = 0; index < input.length; index++) {
-		const char = input.charCodeAt(index);
-		if (char === 38 || char === 60 || char === 62) {
-			firstEscapable = index;
-			break;
-		}
-	}
-	if (firstEscapable === -1) return input;
-
-	let output = input.slice(0, firstEscapable);
-	for (let index = firstEscapable; index < input.length; index++) {
-		const char = input[index];
-		if (char === "&") output += "&amp;";
-		else if (char === "<") output += "&lt;";
-		else if (char === ">") output += "&gt;";
-		else output += char;
-	}
-	return output;
 }
 
 export function renderTrustedObjective(objective: string): string {
@@ -356,7 +334,10 @@ export class GoalRuntime {
 			this.#wallClock.lastAccountedAt += wallSeconds * 1000;
 		}
 
-		await this.#commitState(state, { persist: "goal" });
+		// Persisting wall-clock-only accounting on every tool event bloats /goal sessions with full
+		// objective snapshots. Keep the in-memory/UI state fresh, but persist only token/budget changes.
+		const shouldPersistUsage = tokenDelta > 0 || flippedToBudgetLimited;
+		await this.#commitState(state, { persist: shouldPersistUsage ? "goal" : undefined });
 
 		if (state.goal.status !== "budget-limited") {
 			this.#budgetReportedFor = undefined;

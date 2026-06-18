@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { getPluginsLockfile, getPluginsNodeModules, getPluginsPackageJson, isEnoent } from "@oh-my-pi/pi-utils";
 import { getConfigDirPaths } from "../../config";
 import { installLegacyPiSpecifierShim } from "./legacy-pi-compat";
+import { normalizePluginRuntimeConfig } from "./runtime-config";
 import type { InstalledPlugin, PluginManifest, PluginRuntimeConfig, ProjectPluginOverrides } from "./types";
 
 installLegacyPiSpecifierShim();
@@ -28,9 +29,9 @@ installLegacyPiSpecifierShim();
 async function loadRuntimeConfig(home?: string): Promise<PluginRuntimeConfig> {
 	const lockPath = getPluginsLockfile(home);
 	try {
-		return await Bun.file(lockPath).json();
+		return normalizePluginRuntimeConfig(await Bun.file(lockPath).json());
 	} catch (err) {
-		if (isEnoent(err)) return { plugins: {}, settings: {} };
+		if (isEnoent(err)) return normalizePluginRuntimeConfig({});
 		throw err;
 	}
 }
@@ -142,29 +143,161 @@ export async function getEnabledPlugins(cwd: string, opts: { home?: string } = {
 // Path Resolution
 // =============================================================================
 
-const MANIFEST_ENTRY_INDEX_NAMES = ["index.ts", "index.js", "index.mjs", "index.cjs"];
+const MANIFEST_ENTRY_MODULE_EXTENSIONS = [".ts", ".js", ".mjs", ".cjs"];
+const MANIFEST_ENTRY_INDEX_NAMES = MANIFEST_ENTRY_MODULE_EXTENSIONS.map(ext => `index${ext}`);
+
+/** `.d.ts` / `.d.mts` / `.d.cts` TypeScript declaration files — never loadable as modules. */
+const DECLARATION_FILE_RE = /\.d\.[mc]?ts$/;
+
+/** A loadable module file: a .ts/.js/.mjs/.cjs that is not a declaration file. */
+function isModuleFile(name: string): boolean {
+	return MANIFEST_ENTRY_MODULE_EXTENSIONS.includes(path.extname(name)) && !DECLARATION_FILE_RE.test(name);
+}
+
+/** First `index.{ts,js,mjs,cjs}` inside `dir`, or null when none exists. */
+function findDirectoryIndex(dir: string): string | null {
+	for (const name of MANIFEST_ENTRY_INDEX_NAMES) {
+		const candidate = path.join(dir, name);
+		if (fs.existsSync(candidate)) return candidate;
+	}
+	return null;
+}
+
+interface DeclaredManifestEntries {
+	/** True when the directory's package.json declares a non-empty `omp`/`pi` `extensions` array. */
+	declared: boolean;
+	/** Resolved, existing module files for the declared entries (may be empty when declared files are missing). */
+	files: string[];
+}
 
 /**
- * Resolve a plugin manifest entry to a concrete loadable file path. Returns the
- * file path itself when the entry points at a file, the matching index file when
- * the entry points at a directory containing index.{ts,js,mjs,cjs}, and null
- * when no entry exists at the joined path.
+ * Read the extension entries declared by `dir`'s own package.json `omp`/`pi`
+ * manifest. `declared` distinguishes "a manifest explicitly lists extensions"
+ * (authoritative — callers must not fall back to index/scan, so a missing
+ * declared file surfaces as a missing entry instead of silently loading a stale
+ * index) from "no manifest / no extensions field" (callers fall back to
+ * convention). Mirrors the manifest branch of the configured-directory (`-e`)
+ * scanner: a declared entry that is a file resolves to itself; one that is a
+ * directory resolves to its direct index.{ts,js,mjs,cjs}.
  */
-function resolveManifestEntryFile(joined: string): string | null {
+function readDeclaredManifestEntries(dir: string): DeclaredManifestEntries {
+	let raw: string;
+	try {
+		raw = fs.readFileSync(path.join(dir, "package.json"), "utf8");
+	} catch {
+		return { declared: false, files: [] };
+	}
+	let pkg: { omp?: { extensions?: unknown }; pi?: { extensions?: unknown } };
+	try {
+		pkg = JSON.parse(raw) as { omp?: { extensions?: unknown }; pi?: { extensions?: unknown } };
+	} catch {
+		return { declared: false, files: [] };
+	}
+	const declared = (pkg.omp ?? pkg.pi)?.extensions;
+	if (!Array.isArray(declared) || declared.length === 0) {
+		return { declared: false, files: [] };
+	}
+	const files: string[] = [];
+	for (const entry of declared) {
+		if (typeof entry !== "string") continue;
+		const candidate = path.resolve(dir, entry);
+		let candidateStats: fs.Stats;
+		try {
+			candidateStats = fs.statSync(candidate);
+		} catch {
+			continue;
+		}
+		if (candidateStats.isDirectory()) {
+			const index = findDirectoryIndex(candidate);
+			if (index) files.push(index);
+		} else {
+			files.push(candidate);
+		}
+	}
+	return { declared: true, files };
+}
+
+/**
+ * Resolve a directory to its loadable extension module files, mirroring the
+ * configured-directory (`-e`) scanner in extensions/loader.ts:
+ *   1. the directory's own package.json `omp`/`pi` `extensions` entries —
+ *      authoritative: a manifest that lists extensions suppresses the index/scan
+ *      fallback, so a missing declared file is reported rather than silently
+ *      replaced by a decoy index
+ *   2. a direct index.{ts,js,mjs,cjs}
+ *   3. one level of children: each direct *.{ts,js,mjs,cjs} file plus each
+ *      sub-directory resolved by the same precedence (manifest, then index)
+ */
+function resolveDirectoryEntries(dir: string): string[] {
+	const manifest = readDeclaredManifestEntries(dir);
+	if (manifest.declared) return manifest.files;
+
+	const directIndex = findDirectoryIndex(dir);
+	if (directIndex) return [directIndex];
+
+	let children: string[];
+	try {
+		children = fs.readdirSync(dir);
+	} catch {
+		return [];
+	}
+	const resolved: string[] = [];
+	for (const child of children.sort()) {
+		const childPath = path.join(dir, child);
+		let childStats: fs.Stats;
+		try {
+			// statSync follows symlinks, matching the configured-dir loader.
+			childStats = fs.statSync(childPath);
+		} catch {
+			continue;
+		}
+		if (childStats.isDirectory()) {
+			const childManifest = readDeclaredManifestEntries(childPath);
+			if (childManifest.declared) {
+				resolved.push(...childManifest.files);
+			} else {
+				const index = findDirectoryIndex(childPath);
+				if (index) resolved.push(index);
+			}
+		} else if (isModuleFile(child)) {
+			resolved.push(childPath);
+		}
+	}
+	return resolved;
+}
+
+/**
+ * Resolve a plugin manifest entry to the loadable module files it names:
+ * - a file entry → that file
+ * - a directory:
+ *   - when `expandDirectory` (the `extensions` key), resolved by
+ *     {@link resolveDirectoryEntries} — its own package.json `omp`/`pi`
+ *     `extensions`, then a direct index, then a one-level scan of
+ *     sub-extensions — matching the pi `extensions/<name>/index.ts` convention
+ *     and OMP's configured-directory (`-e`) extension loader
+ *   - otherwise (tools/hooks/commands) only a direct index.{ts,js,mjs,cjs}.
+ *     The sub-extension scan and the `omp`/`pi` `extensions` manifest are
+ *     extensions-specific and must not hijack a non-extension directory entry
+ *     (e.g. a `tools: "."` entry must still resolve `./index.ts`).
+ *
+ * Returns an empty array when nothing loadable exists at `joined`, letting
+ * callers flag a missing entry instead of silently dropping it.
+ */
+function resolveManifestEntryFiles(joined: string, expandDirectory: boolean): string[] {
 	let stats: fs.Stats;
 	try {
 		stats = fs.statSync(joined);
 	} catch {
-		return null;
+		return [];
 	}
-	if (stats.isDirectory()) {
-		for (const name of MANIFEST_ENTRY_INDEX_NAMES) {
-			const candidate = path.join(joined, name);
-			if (fs.existsSync(candidate)) return candidate;
-		}
-		return null;
+	if (!stats.isDirectory()) {
+		return [joined];
 	}
-	return joined;
+	if (expandDirectory) {
+		return resolveDirectoryEntries(joined);
+	}
+	const index = findDirectoryIndex(joined);
+	return index ? [index] : [];
 }
 
 /**
@@ -172,34 +305,50 @@ function resolveManifestEntryFile(joined: string): string | null {
  * Handles both single-string and string[] base entries, plus feature-specific entries.
  */
 function resolvePluginPaths(plugin: InstalledPlugin, key: "tools" | "hooks" | "commands" | "extensions"): string[] {
-	const paths: string[] = [];
+	const resolved: string[] = [];
+	for (const entry of resolvePluginManifestEntries(plugin, key)) {
+		if (entry.resolvedPath) {
+			resolved.push(entry.resolvedPath);
+		}
+	}
+	return resolved;
+}
+
+/**
+ * Declared manifest entries paired with their resolved file path. Returns one
+ * record per declared entry — base entries first, then enabled-feature entries
+ * — so callers (e.g. install-time validation) can detect manifest entries that
+ * point at missing files instead of silently skipping them like
+ * {@link resolvePluginPaths} does.
+ */
+export function resolvePluginManifestEntries(
+	plugin: InstalledPlugin,
+	key: "tools" | "hooks" | "commands" | "extensions",
+): Array<{ entry: string; resolvedPath: string | null }> {
+	const declared: Array<{ entry: string; resolvedPath: string | null }> = [];
 	const manifest = plugin.manifest;
 
-	// Base entry (always included if exists)
+	const expandDirectory = key === "extensions";
+	const resolveEntry = (entry: string): Array<{ entry: string; resolvedPath: string | null }> => {
+		const files = resolveManifestEntryFiles(path.join(plugin.path, entry), expandDirectory);
+		return files.length > 0 ? files.map(resolvedPath => ({ entry, resolvedPath })) : [{ entry, resolvedPath: null }];
+	};
+
 	const base = manifest[key];
 	if (base) {
 		const entries = Array.isArray(base) ? base : [base];
 		for (const entry of entries) {
-			const resolved = resolveManifestEntryFile(path.join(plugin.path, entry));
-			if (resolved) {
-				paths.push(resolved);
-			}
+			declared.push(...resolveEntry(entry));
 		}
 	}
 
-	// Feature-specific entries
 	if (manifest.features && plugin.enabledFeatures) {
 		const enabledSet = new Set(plugin.enabledFeatures);
-
 		for (const [featName, feat] of Object.entries(manifest.features)) {
 			if (!enabledSet.has(featName)) continue;
-
 			if (feat[key]) {
 				for (const entry of feat[key]) {
-					const resolved = resolveManifestEntryFile(path.join(plugin.path, entry));
-					if (resolved) {
-						paths.push(resolved);
-					}
+					declared.push(...resolveEntry(entry));
 				}
 			}
 		}
@@ -207,19 +356,15 @@ function resolvePluginPaths(plugin: InstalledPlugin, key: "tools" | "hooks" | "c
 		// null means use defaults - enable features with default: true
 		for (const [_featName, feat] of Object.entries(manifest.features)) {
 			if (!feat.default) continue;
-
 			if (feat[key]) {
 				for (const entry of feat[key]) {
-					const resolved = resolveManifestEntryFile(path.join(plugin.path, entry));
-					if (resolved) {
-						paths.push(resolved);
-					}
+					declared.push(...resolveEntry(entry));
 				}
 			}
 		}
 	}
 
-	return paths;
+	return declared;
 }
 
 export function resolvePluginToolPaths(plugin: InstalledPlugin): string[] {

@@ -1,7 +1,7 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
+import { type } from "arktype";
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { NestedRepoPatch } from "./worktree";
 
@@ -45,6 +45,8 @@ export interface SubagentProgressPayload {
 	assignment?: string;
 	progress: AgentProgress;
 	sessionFile?: string;
+	/** See {@link SubagentLifecyclePayload.detached}. */
+	detached?: boolean;
 }
 
 /** Payload emitted on TASK_SUBAGENT_EVENT_CHANNEL */
@@ -63,31 +65,36 @@ export interface SubagentLifecyclePayload {
 	sessionFile?: string;
 	parentToolCallId?: string;
 	index: number;
+	/**
+	 * Spawn runs as a detached background job: the parent turn keeps working
+	 * while this agent runs. Sync task spawns (parent blocked on the call) and
+	 * eval `agent()` bridge spawns (rendered inside their eval cell) leave this
+	 * unset — surfaces like the subagent HUD only list detached spawns.
+	 */
+	detached?: boolean;
 }
 
-/**
- * One unit of work. The single-spawn schema is `{ agent, ...taskItemSchema }`;
- * the batch schema (`task.batch`) is `{ agent, context, tasks: taskItemSchema[] }`.
- * When task isolation is enabled, `isolated` joins the item shape (per-item in
- * batch form, top-level in the flat form via the spread).
- */
-const taskItemShape = {
-	id: z.string().max(48).optional().describe("stable agent id; default generated"),
-	description: z.string().optional().describe("ui label, not seen by subagent"),
-	assignment: z.string().describe("the work; self-contained instructions"),
-};
-const isolatedShape = {
-	isolated: z.boolean().optional().describe("run in isolated env; returns patches"),
-};
-const agentShape = {
-	agent: z.string().describe("agent type to spawn"),
-};
-const contextShape = {
-	context: z.string().describe("shared background prepended to each assignment"),
-};
+/** Display cap for a normalized one-line label (roster line, registry `displayName`, prompt field). */
+export const ROLE_LABEL_MAX = 80;
+/** Schema bound on the raw `role` input, before it is label-normalized at every use site. */
+export const ROLE_INPUT_MAX = 256;
+const ROLE_INPUT_SCHEMA = `string <= ${ROLE_INPUT_MAX}` as const;
 
-export const taskItemSchema = z.object(taskItemShape);
-const taskItemSchemaIsolated = z.object({ ...taskItemShape, ...isolatedShape });
+export const taskItemSchema = type({
+	"id?": "string",
+	"description?": "string",
+	"role?": ROLE_INPUT_SCHEMA,
+	assignment: "string",
+	"+": "delete",
+});
+const taskItemSchemaIsolated = type({
+	"id?": "string",
+	"description?": "string",
+	"role?": ROLE_INPUT_SCHEMA,
+	assignment: "string",
+	"isolated?": "boolean",
+	"+": "delete",
+});
 
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
@@ -95,23 +102,42 @@ export interface TaskItem {
 	id?: string;
 	/** UI label, not seen by the subagent. */
 	description?: string;
+	/** Specialist role/expertise this subagent embodies; shapes its system-prompt identity and display name. */
+	role?: string;
 	/** The work; required by the schema. */
 	assignment?: string;
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
 	isolated?: boolean;
 }
 
-export const taskSchema = z.object({ ...agentShape, ...taskItemShape, ...isolatedShape });
-const taskSchemaNoIsolation = z.object({ ...agentShape, ...taskItemShape });
-const taskSchemaBatch = z.object({
-	...agentShape,
-	...contextShape,
-	tasks: z.array(taskItemSchemaIsolated).describe("tasks to spawn; one subagent per item"),
+export const taskSchema = type({
+	agent: "string",
+	"id?": "string",
+	"description?": "string",
+	"role?": ROLE_INPUT_SCHEMA,
+	assignment: "string",
+	"isolated?": "boolean",
+	"+": "delete",
 });
-const taskSchemaBatchNoIsolation = z.object({
-	...agentShape,
-	...contextShape,
-	tasks: z.array(taskItemSchema).describe("tasks to spawn; one subagent per item"),
+const taskSchemaNoIsolation = type({
+	agent: "string",
+	"id?": "string",
+	"description?": "string",
+	"role?": ROLE_INPUT_SCHEMA,
+	assignment: "string",
+	"+": "delete",
+});
+const taskSchemaBatch = type({
+	agent: "string",
+	context: "string",
+	tasks: taskItemSchemaIsolated.array(),
+	"+": "delete",
+});
+const taskSchemaBatchNoIsolation = type({
+	agent: "string",
+	context: "string",
+	tasks: taskItemSchema.array(),
+	"+": "delete",
 });
 const ALL_TASK_SCHEMAS = [taskSchema, taskSchemaNoIsolation, taskSchemaBatch, taskSchemaBatchNoIsolation] as const;
 
@@ -140,6 +166,8 @@ export interface TaskParams {
 	id?: string;
 	/** UI label (flat form), not seen by the subagent. */
 	description?: string;
+	/** Specialist role/expertise this subagent embodies; shapes its system-prompt identity and display name. */
+	role?: string;
 	/** The work (flat form). */
 	assignment?: string;
 	/** Batch form (`task.batch`): one subagent per item. */
@@ -148,6 +176,43 @@ export interface TaskParams {
 	context?: string;
 	/** Run in an isolated worktree (flat form; per-item in batch form). */
 	isolated?: boolean;
+}
+
+/**
+ * One-line, length-capped label safe for a single roster line, a registry
+ * `displayName`, or a system-prompt field. Collapses every run of whitespace
+ * AND control/format characters — including U+0085 NEL, ESC/ANSI, and the
+ * zero-width separators that `\s` misses — to a single space, then caps length.
+ * So untrusted text (a spawn `role`, a peer activity gist) can neither break the
+ * line, inject prompt structure, nor smuggle terminal escapes. Caps at `max`
+ * characters (clamped to >= 1; default `ROLE_LABEL_MAX`), appending an ellipsis when truncated.
+ */
+export function oneLineLabel(text: string, max = ROLE_LABEL_MAX): string {
+	const oneLine = text.replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim();
+	const cap = Math.max(1, max);
+	// Count/cut by code point, not UTF-16 code unit, so truncation can never
+	// split an astral character into a lone surrogate.
+	const chars = [...oneLine];
+	return chars.length > cap ? `${chars.slice(0, cap - 1).join("")}…` : oneLine;
+}
+
+/**
+ * Display name for a spawned subagent: its tailored `role` (label-normalized)
+ * when one is given, else the agent type's name. Empty/whitespace roles fall
+ * back to the agent name.
+ */
+export function resolveSubagentDisplayName(role: string | undefined, agentName: string): string {
+	const trimmed = role?.trim();
+	return trimmed ? oneLineLabel(trimmed) : agentName;
+}
+
+/**
+ * Whether an agent at `taskDepth` may still spawn children — i.e. it currently
+ * holds the `task` tool. Mirrors the task-tool availability gate;
+ * `maxRecursionDepth < 0` disables the cap entirely.
+ */
+export function canSpawnAtDepth(maxRecursionDepth: number, taskDepth: number): boolean {
+	return maxRecursionDepth < 0 || taskDepth < maxRecursionDepth;
 }
 
 /** A code review finding reported by the reviewer agent */

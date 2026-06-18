@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { $env, isBunTestRuntime, isCompiledBinary, logger, workerHostEntry } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
+import { TINY_WORKER_ARG } from "../cli/worker-selectors";
 import { settings } from "../config/settings";
 import { tinyModelDeviceSettingToEnv } from "./device";
 import { tinyModelDtypeSettingToEnv } from "./dtype";
@@ -69,7 +70,7 @@ function normalizeTinyTitleGenerateOptions(
  * Hidden subcommand on the main CLI that boots the tiny-model worker in the
  * spawned subprocess. Kept in sync with the dispatch in `cli.ts`.
  */
-export const TINY_WORKER_ARG = "--tiny-worker";
+export { TINY_WORKER_ARG };
 
 function readTinyModelSetting(path: "providers.tinyModelDevice" | "providers.tinyModelDtype"): string | undefined {
 	try {

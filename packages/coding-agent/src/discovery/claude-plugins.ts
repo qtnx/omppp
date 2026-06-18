@@ -140,7 +140,7 @@ async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashComm
 	const results = await Promise.all(
 		roots.map(async root => {
 			const { dir: commandsDir, warning } = await resolvePluginDir(root, ["commands", "slash-commands"], "commands");
-			const result = await loadFilesFromDir<SlashCommand>(ctx, commandsDir, PROVIDER_ID, root.scope, {
+			const commandResult = await loadFilesFromDir<SlashCommand>(ctx, commandsDir, PROVIDER_ID, root.scope, {
 				extensions: ["md"],
 				transform: (name, content, filePath, source) => {
 					const cmdName = name.replace(/\.md$/, "");
@@ -153,14 +153,14 @@ async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashComm
 					};
 				},
 			});
-			return { result, warning };
+			return { commandResult, warning };
 		}),
 	);
 
-	for (const { result, warning } of results) {
+	for (const { commandResult, warning } of results) {
 		if (warning) warnings.push(warning);
-		items.push(...result.items);
-		if (result.warnings) warnings.push(...result.warnings);
+		items.push(...commandResult.items);
+		if (commandResult.warnings) warnings.push(...commandResult.warnings);
 	}
 
 	return { items, warnings };

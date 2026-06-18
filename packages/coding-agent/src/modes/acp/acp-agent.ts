@@ -31,14 +31,11 @@ import {
 	type ResumeSessionResponse,
 	type SessionConfigOption,
 	type SessionInfo,
-	type SessionModelState,
 	type SessionModeState,
 	type SessionNotification,
 	type SessionUpdate,
 	type SetSessionConfigOptionRequest,
 	type SetSessionConfigOptionResponse,
-	type SetSessionModelRequest,
-	type SetSessionModelResponse,
 	type SetSessionModeRequest,
 	type SetSessionModeResponse,
 	type Usage,
@@ -56,12 +53,7 @@ import {
 } from "../../extensibility/extensions";
 import { runExtensionCompact } from "../../extensibility/extensions/compact-handler";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
-import {
-	buildSkillPromptMessage,
-	getSkillSlashCommandName,
-	loadSkills,
-	setActiveSkills,
-} from "../../extensibility/skills";
+import { buildSkillPromptMessage, loadSkills, setActiveSkills } from "../../extensibility/skills";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { resolveLocalUrlToPath } from "../../internal-urls";
 import { MCPManager } from "../../mcp/manager";
@@ -70,22 +62,17 @@ import { loadAllExtensions } from "../../modes/components/extensions/state-manag
 import { theme } from "../../modes/theme/theme";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../../plan-mode/approved-plan";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
-import { isSilentAbort, SKILL_PROMPT_MESSAGE_TYPE } from "../../session/messages";
-import {
-	SessionManager,
-	type SessionInfo as StoredSessionInfo,
-	type UsageStatistics,
-} from "../../session/session-manager";
-import {
-	ACP_BUILTIN_RESERVED_NAMES,
-	ACP_BUILTIN_SLASH_COMMANDS,
-	executeAcpBuiltinSlashCommand,
-	isAcpBuiltinShadowedName,
-} from "../../slash-commands/acp-builtins";
+import { isSilentAbort, SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
+import type { UsageStatistics } from "../../session/session-entries";
+import type { SessionInfo as StoredSessionInfo } from "../../session/session-listing";
+import { SessionManager } from "../../session/session-manager";
+import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
+import { buildAvailableSlashCommands, toAcpAvailableCommands } from "../../slash-commands/available-commands";
 import { AUTO_THINKING, parseConfiguredThinkingLevel } from "../../thinking";
 import { normalizeLocalScheme } from "../../tools/path-utils";
 import { runResolveInvocation } from "../../tools/resolve";
 import { ToolError } from "../../tools/tool-errors";
+import { canonicalizeMessage } from "../../utils/thinking-display";
 import { createAcpClientBridge } from "./acp-client-bridge";
 import {
 	buildToolCallStartUpdate,
@@ -130,7 +117,6 @@ type PromptQueueState = {
 type PromptLifecycleError = Error & { readonly code: "ACP_SESSION_CLOSED" };
 
 type PromptTurnState = {
-	userMessageId: string;
 	cancelRequested: boolean;
 	settled: boolean;
 	/**
@@ -475,7 +461,6 @@ export class AcpAgent implements Agent {
 		const response: NewSessionResponse = {
 			sessionId: record.session.sessionId,
 			configOptions: this.#buildConfigOptions(record.session),
-			models: this.#buildModelState(record.session),
 			modes: this.#buildModeState(record.session),
 		};
 		this.#scheduleBootstrapUpdates(record.session.sessionId);
@@ -488,7 +473,6 @@ export class AcpAgent implements Agent {
 		await this.#replaySessionHistory(record);
 		const response: LoadSessionResponse = {
 			configOptions: this.#buildConfigOptions(record.session),
-			models: this.#buildModelState(record.session),
 			modes: this.#buildModeState(record.session),
 		};
 		this.#scheduleBootstrapUpdates(record.session.sessionId);
@@ -517,7 +501,6 @@ export class AcpAgent implements Agent {
 		const record = await this.#resumeManagedSession(params.sessionId, params.cwd, params.mcpServers ?? []);
 		const response: ResumeSessionResponse = {
 			configOptions: this.#buildConfigOptions(record.session),
-			models: this.#buildModelState(record.session),
 			modes: this.#buildModeState(record.session),
 		};
 		this.#scheduleBootstrapUpdates(record.session.sessionId);
@@ -530,7 +513,6 @@ export class AcpAgent implements Agent {
 		const response: ForkSessionResponse = {
 			sessionId: record.session.sessionId,
 			configOptions: this.#buildConfigOptions(record.session),
-			models: this.#buildModelState(record.session),
 			modes: this.#buildModeState(record.session),
 		};
 		this.#scheduleBootstrapUpdates(record.session.sessionId);
@@ -598,13 +580,6 @@ export class AcpAgent implements Agent {
 		return { configOptions: this.#buildConfigOptions(record.session) };
 	}
 
-	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
-		const record = this.#getSessionRecord(params.sessionId);
-		await this.#setModelById(record.session, params.modelId);
-		await this.#pushConfigOptionUpdate(record);
-		return {};
-	}
-
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
 		const record = this.#getSessionRecord(params.sessionId);
 		const activeTurn = record.promptTurn;
@@ -643,7 +618,6 @@ export class AcpAgent implements Agent {
 			const converted = this.#convertPromptBlocks(params.prompt);
 			const pendingPrompt = Promise.withResolvers<PromptResponse>();
 			record.promptTurn = {
-				userMessageId: params.messageId ?? crypto.randomUUID(),
 				cancelRequested: false,
 				settled: false,
 				cleanup: undefined,
@@ -776,7 +750,6 @@ export class AcpAgent implements Agent {
 						this.#cloneUsageStatistics(record.session.sessionManager.getUsageStatistics()),
 					record.session.sessionManager.getUsageStatistics(),
 				),
-				userMessageId: promptTurn?.userMessageId,
 			});
 			return;
 		}
@@ -854,7 +827,6 @@ export class AcpAgent implements Agent {
 		this.#finishPrompt(record, {
 			stopReason: "cancelled",
 			usage: this.#buildTurnUsage(promptTurn.usageBaseline, record.session.sessionManager.getUsageStatistics()),
-			userMessageId: promptTurn.userMessageId,
 		});
 		return cleanup;
 	}
@@ -865,7 +837,7 @@ export class AcpAgent implements Agent {
 			timer = setTimeout(() => reject(new Error("ACP cancel cleanup timed out")), this.#cancelCleanupTimeoutMs);
 		});
 		try {
-			await Promise.race([record.session.abort(), timeout]);
+			await Promise.race([record.session.abort({ reason: USER_INTERRUPT_LABEL }), timeout]);
 		} finally {
 			if (timer) clearTimeout(timer);
 			// Order matters: clear `cleanup` before evicting the slot so the slot-eviction
@@ -1173,7 +1145,6 @@ export class AcpAgent implements Agent {
 			this.#finishPrompt(record, {
 				stopReason: this.#resolveStopReason(event, promptTurn.cancelRequested),
 				usage: this.#buildTurnUsage(promptTurn.usageBaseline, record.session.sessionManager.getUsageStatistics()),
-				userMessageId: promptTurn.userMessageId,
 			});
 		}
 	}
@@ -1394,28 +1365,6 @@ export class AcpAgent implements Agent {
 			options: this.#buildThinkingOptions(session),
 		});
 		return configOptions;
-	}
-
-	#buildModelState(session: AgentSession): SessionModelState | undefined {
-		const models = session.getAvailableModels();
-		if (models.length === 0) {
-			return undefined;
-		}
-
-		const availableModels = models.map(model => ({
-			modelId: this.#toModelId(model),
-			name: model.name,
-			description: `${model.provider}/${model.id}`,
-		}));
-		const currentModelId = session.model ? this.#toModelId(session.model) : availableModels[0]?.modelId;
-		if (!currentModelId) {
-			return undefined;
-		}
-
-		return {
-			availableModels,
-			currentModelId,
-		};
 	}
 
 	#buildThinkingOptions(session: AgentSession): Array<{ value: string; name: string; description?: string }> {
@@ -1669,66 +1618,7 @@ export class AcpAgent implements Agent {
 	}
 
 	async #buildAvailableCommands(session: AgentSession): Promise<AvailableCommand[]> {
-		const commands: AvailableCommand[] = [];
-		const seenNames = new Set<string>();
-		const appendCommand = (command: AvailableCommand): void => {
-			if (seenNames.has(command.name)) {
-				return;
-			}
-			seenNames.add(command.name);
-			commands.push(command);
-		};
-
-		// Advertise in the order dispatch resolves them (mirrors AgentSession
-		// dispatch: builtins → skills → extensions → custom TS → file-based).
-		// `appendCommand` dedupes by name so earlier entries win; extension
-		// commands therefore correctly shadow custom TS commands of the same
-		// name, matching the runtime behaviour of #tryExecuteExtensionCommand
-		// running before #tryExecuteCustomCommand.
-		for (const command of ACP_BUILTIN_SLASH_COMMANDS) {
-			appendCommand(command);
-		}
-
-		if (session.skillsSettings?.enableSkillCommands) {
-			for (const skill of session.skills) {
-				appendCommand({
-					name: getSkillSlashCommandName(skill),
-					description: skill.description || `Run ${skill.name} skill`,
-					input: { hint: "arguments" },
-				});
-			}
-		}
-
-		for (const command of session.extensionRunner?.getRegisteredCommands(ACP_BUILTIN_RESERVED_NAMES) ?? []) {
-			// Reserved-set filtering in getRegisteredCommands only covers exact
-			// names; colon-namespaced names whose prefix is a builtin (e.g.
-			// `model:foo`) would still dispatch to the builtin in ACP.
-			if (isAcpBuiltinShadowedName(command.name)) {
-				continue;
-			}
-			appendCommand({
-				name: command.name,
-				description: command.description ?? "(extension command)",
-				input: { hint: "arguments" },
-			});
-		}
-
-		for (const command of session.customCommands) {
-			appendCommand({
-				name: command.command.name,
-				description: command.command.description,
-				input: { hint: "arguments" },
-			});
-		}
-
-		for (const command of await loadSlashCommands({ cwd: session.sessionManager.getCwd() })) {
-			appendCommand({
-				name: command.name,
-				description: command.description,
-			});
-		}
-
-		return commands;
+		return toAcpAvailableCommands(await buildAvailableSlashCommands(session));
 	}
 
 	#toSessionInfo(session: StoredSessionInfo): SessionInfo {
@@ -2050,17 +1940,14 @@ export class AcpAgent implements Agent {
 					});
 					continue;
 				}
-				if (
-					item.type === "thinking" &&
-					"thinking" in item &&
-					typeof item.thinking === "string" &&
-					item.thinking.length > 0
-				) {
+				if (item.type === "thinking" && "thinking" in item && typeof item.thinking === "string") {
+					const thinking = canonicalizeMessage(item.thinking);
+					if (thinking.length === 0) continue;
 					notifications.push({
 						sessionId,
 						update: {
 							sessionUpdate: "agent_thought_chunk",
-							content: { type: "text", text: item.thinking },
+							content: { type: "text", text: thinking },
 							messageId,
 						},
 					});
@@ -2246,7 +2133,7 @@ export class AcpAgent implements Agent {
 				isIdle: () => !record.session.isStreaming,
 				getGoalModeState: () => record.session.getGoalModeState(),
 				abort: () => {
-					void record.session.abort();
+					void record.session.abort({ reason: USER_INTERRUPT_LABEL });
 				},
 				hasPendingMessages: () => record.session.queuedMessageCount > 0,
 				shutdown: () => {},

@@ -1,4 +1,4 @@
-import { untilAborted } from "@oh-my-pi/pi-utils";
+import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Markit, StreamInfo } from "markit-ai";
 import { ToolAbortError } from "../tools/tool-errors";
 
@@ -7,6 +7,39 @@ export interface MarkitConversionResult {
 	ok: boolean;
 	error?: string;
 }
+
+export interface MarkitFileConversionOptions {
+	/**
+	 * Directory the PDF converter writes extracted images/diagrams into. When
+	 * set, each embedded image is rendered to `<id>.png` and referenced by path
+	 * in the markdown; when unset, markit emits an `<!-- image: <id> ... -->`
+	 * placeholder comment instead.
+	 */
+	imageDir?: string;
+}
+
+interface MuPdfWasmModuleConfig {
+	print?: (...values: unknown[]) => void;
+	printErr?: (...values: unknown[]) => void;
+}
+
+declare global {
+	var $libmupdf_wasm_Module: MuPdfWasmModuleConfig | undefined;
+}
+
+function logMuPdfWasmOutput(stream: "stdout" | "stderr", values: unknown[]): void {
+	const message = values.length === 1 && typeof values[0] === "string" ? values[0] : values.map(String).join(" ");
+	logger.debug("mupdf wasm output", { stream, message });
+}
+
+function installMuPdfWasmLogger(): void {
+	const moduleConfig = globalThis.$libmupdf_wasm_Module ?? {};
+	moduleConfig.print = (...values) => logMuPdfWasmOutput("stdout", values);
+	moduleConfig.printErr = (...values) => logMuPdfWasmOutput("stderr", values);
+	globalThis.$libmupdf_wasm_Module = moduleConfig;
+}
+
+installMuPdfWasmLogger();
 
 let markit: () => Markit | Promise<Markit> = async () => {
 	const promise = import("markit-ai").then(({ Markit }) => {
@@ -54,9 +87,14 @@ function finalizeConversion(markdown?: string): MarkitConversionResult {
 	return { content: "", ok: false, error: "Conversion produced no output" };
 }
 
-export async function convertFileWithMarkit(filePath: string, signal?: AbortSignal): Promise<MarkitConversionResult> {
+export async function convertFileWithMarkit(
+	filePath: string,
+	signal?: AbortSignal,
+	options?: MarkitFileConversionOptions,
+): Promise<MarkitConversionResult> {
+	const extra = options?.imageDir ? { imageDir: options.imageDir } : undefined;
 	try {
-		const result = await runMarkitConversion(markit => markit.convertFile(filePath), signal);
+		const result = await runMarkitConversion(markit => markit.convertFile(filePath, extra), signal);
 		return finalizeConversion(result.markdown);
 	} catch (error) {
 		if (error instanceof ToolAbortError) {

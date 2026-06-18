@@ -5,6 +5,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { discoverAndLoadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import {
@@ -12,6 +13,7 @@ import {
 	ExtensionRunner,
 	testSetExtensionHandlerTimeoutMs,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -604,6 +606,135 @@ describe("ExtensionRunner", () => {
 		});
 	});
 
+	describe("session_stop", () => {
+		it("invokes handlers with completed main-session messages and returns continuation feedback", async () => {
+			const eventsPath = path.join(tempDir.path(), "session-stop-events.jsonl");
+			const extCode = `
+			import * as fs from "node:fs";
+
+			export default function(pi) {
+				pi.on("session_stop", async (event) => {
+					fs.appendFileSync(
+						${JSON.stringify(eventsPath)},
+						JSON.stringify({
+							type: event.type,
+							messages: event.messages,
+							turn_id: event.turn_id,
+							last_assistant_message: event.last_assistant_message,
+							session_id: event.session_id,
+							session_file: event.session_file,
+							stop_hook_active: event.stop_hook_active,
+						}) + "\\n",
+					);
+					return { continue: true, additionalContext: "Run one more pass." };
+				});
+			}
+		`;
+			await Bun.write(path.join(extensionsDir, "session-stop.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const completedMessage: AgentMessage = {
+				role: "assistant",
+				content: [{ type: "text", text: "main session finished" }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: 123,
+			};
+
+			const stopResult = await runner.emitSessionStop({
+				messages: [completedMessage],
+				turn_id: 2,
+				last_assistant_message: completedMessage,
+				session_id: "session-123",
+				session_file: "/tmp/session.jsonl",
+				stop_hook_active: false,
+			});
+
+			const events = (await Bun.file(eventsPath).text())
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(events).toEqual([
+				{
+					type: "session_stop",
+					messages: [completedMessage],
+					turn_id: 2,
+					last_assistant_message: completedMessage,
+					session_id: "session-123",
+					session_file: "/tmp/session.jsonl",
+					stop_hook_active: false,
+				},
+			]);
+			expect(stopResult).toEqual({ continue: true, additionalContext: "Run one more pass." });
+		});
+
+		it("continues to later handlers after empty continuation feedback", async () => {
+			await Bun.write(
+				path.join(extensionsDir, "session-stop-empty.ts"),
+				`
+				export default function(pi) {
+					pi.on("session_stop", async () => ({ continue: true }));
+					pi.on("session_stop", async () => ({ decision: "block", reason: "Continue from second handler." }));
+				}
+			`,
+			);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const completedMessage: AgentMessage = {
+				role: "assistant",
+				content: [{ type: "text", text: "main session finished" }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: 123,
+			};
+
+			await expect(
+				runner.emitSessionStop({
+					messages: [completedMessage],
+					turn_id: 0,
+					last_assistant_message: completedMessage,
+					session_id: "session-123",
+					session_file: "/tmp/session.jsonl",
+					stop_hook_active: false,
+				}),
+			).resolves.toEqual({ decision: "block", reason: "Continue from second handler." });
+		});
+	});
+
 	describe("tool_result chaining", () => {
 		it("chains content modifications across handlers", async () => {
 			const extCode1 = `
@@ -1059,6 +1190,285 @@ describe("ExtensionRunner", () => {
 		});
 	});
 
+	describe("tool approval lifecycle", () => {
+		const initializeRunner = (
+			runner: ExtensionRunner,
+			select: (title: string, options: string[]) => Promise<string | undefined>,
+		) => {
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: () => {},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+				},
+				undefined,
+				{
+					select,
+					confirm: async () => false,
+					input: async () => undefined,
+					notify: () => {},
+					onTerminalInput: () => () => {},
+					setStatus: () => {},
+					setWorkingMessage: () => {},
+					setWidget: () => {},
+					setFooter: () => {},
+					setHeader: () => {},
+					setTitle: () => {},
+					custom: async <T>() => undefined as T,
+					pasteToEditor: () => {},
+					setEditorText: () => {},
+					getEditorText: () => "",
+					editor: async () => undefined,
+					setEditorComponent: () => {},
+					get theme() {
+						return {} as never;
+					},
+					getAllThemes: async () => [],
+					getTheme: async () => undefined,
+					setTheme: async () => ({ success: false, error: "not implemented" }),
+					getToolsExpanded: () => false,
+					setToolsExpanded: () => {},
+				},
+			);
+		};
+
+		const approvalTool = {
+			name: "dangerous_tool",
+			label: "Dangerous Tool",
+			description: "Test tool",
+			parameters: {} as never,
+			approval: "exec" as const,
+			execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
+		};
+
+		it("emits requested before waiting and resolved after approval", async () => {
+			const events: Array<{ type: string; approved?: boolean }> = [];
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_approval_requested", async (event) => {
+						globalThis.__approvalEvents.push({ type: event.type });
+					});
+					pi.on("tool_approval_resolved", async (event) => {
+						globalThis.__approvalEvents.push({ type: event.type, approved: event.approved });
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "approval-events.ts"), extCode);
+			const globalState = globalThis as typeof globalThis & { __approvalEvents?: typeof events };
+			globalState.__approvalEvents = events;
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const select = vi.fn(async () => {
+				events.push({ type: "ui_select" });
+				return "Approve";
+			});
+			initializeRunner(runner, select);
+
+			const wrapper = new ExtensionToolWrapper(approvalTool, runner);
+			await (wrapper as ExtensionToolWrapper<any>).execute("call-approval", {}, undefined, undefined, {
+				sessionManager,
+				modelRegistry,
+				model: undefined,
+				isIdle: () => true,
+				hasQueuedMessages: () => false,
+				abort: () => {},
+				settings: { get: (key: string) => (key === "tools.approvalMode" ? "always-ask" : {}) } as never,
+			});
+
+			expect(events).toEqual([
+				{ type: "tool_approval_requested" },
+				{ type: "ui_select" },
+				{ type: "tool_approval_resolved", approved: true },
+			]);
+			expect(select).toHaveBeenCalledWith(expect.stringContaining("Allow tool: dangerous_tool"), [
+				"Approve",
+				"Deny",
+			]);
+			delete globalState.__approvalEvents;
+		});
+
+		it("emits resolved false when approval is denied", async () => {
+			const events: Array<{ type: string; approved?: boolean; reason?: string }> = [];
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_approval_requested", async (event) => {
+						globalThis.__deniedApprovalEvents.push({ type: event.type, reason: event.reason });
+					});
+					pi.on("tool_approval_resolved", async (event) => {
+						globalThis.__deniedApprovalEvents.push({
+							type: event.type,
+							approved: event.approved,
+							reason: event.reason,
+						});
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "denied-approval-events.ts"), extCode);
+			const globalState = globalThis as typeof globalThis & { __deniedApprovalEvents?: typeof events };
+			globalState.__deniedApprovalEvents = events;
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			initializeRunner(runner, async () => "Deny");
+
+			const wrapper = new ExtensionToolWrapper(approvalTool, runner);
+			await expect(
+				(wrapper as ExtensionToolWrapper<any>).execute("call-denied", {}, undefined, undefined, {
+					sessionManager,
+					modelRegistry,
+					model: undefined,
+					isIdle: () => true,
+					hasQueuedMessages: () => false,
+					abort: () => {},
+					settings: { get: (key: string) => (key === "tools.approvalMode" ? "always-ask" : {}) } as never,
+				}),
+			).rejects.toThrow("Tool call denied by user: dangerous_tool");
+
+			expect(events).toEqual([
+				{ type: "tool_approval_requested", reason: undefined },
+				{ type: "tool_approval_resolved", approved: false, reason: "denied by user" },
+			]);
+			delete globalState.__deniedApprovalEvents;
+		});
+
+		it("emits resolved false when the approval prompt throws", async () => {
+			const events: Array<{ type: string; approved?: boolean; reason?: string }> = [];
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_approval_requested", async (event) => {
+						globalThis.__thrownApprovalEvents.push({ type: event.type, reason: event.reason });
+					});
+					pi.on("tool_approval_resolved", async (event) => {
+						globalThis.__thrownApprovalEvents.push({
+							type: event.type,
+							approved: event.approved,
+							reason: event.reason,
+						});
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "thrown-approval-events.ts"), extCode);
+			const globalState = globalThis as typeof globalThis & { __thrownApprovalEvents?: typeof events };
+			globalState.__thrownApprovalEvents = events;
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			initializeRunner(runner, async () => {
+				throw new Error("dialog aborted");
+			});
+
+			const wrapper = new ExtensionToolWrapper(approvalTool, runner);
+			await expect(
+				(wrapper as ExtensionToolWrapper<any>).execute("call-thrown", {}, undefined, undefined, {
+					sessionManager,
+					modelRegistry,
+					model: undefined,
+					isIdle: () => true,
+					hasQueuedMessages: () => false,
+					abort: () => {},
+					settings: { get: (key: string) => (key === "tools.approvalMode" ? "always-ask" : {}) } as never,
+				}),
+			).rejects.toThrow("dialog aborted");
+
+			expect(events).toEqual([
+				{ type: "tool_approval_requested", reason: undefined },
+				{ type: "tool_approval_resolved", approved: false, reason: "dialog aborted" },
+			]);
+			delete globalState.__thrownApprovalEvents;
+		});
+
+		it("emits lifecycle events when partial context has no session manager", async () => {
+			const events: Array<{ type: string; approved?: boolean; reason?: string; sessionId?: string }> = [];
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_approval_requested", async (event) => {
+						globalThis.__partialContextApprovalEvents.push({
+							type: event.type,
+							sessionId: event.sessionId,
+							reason: event.reason,
+						});
+					});
+					pi.on("tool_approval_resolved", async (event) => {
+						globalThis.__partialContextApprovalEvents.push({
+							type: event.type,
+							sessionId: event.sessionId,
+							approved: event.approved,
+							reason: event.reason,
+						});
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "partial-context-approval-events.ts"), extCode);
+			const globalState = globalThis as typeof globalThis & { __partialContextApprovalEvents?: typeof events };
+			globalState.__partialContextApprovalEvents = events;
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+
+			const wrapper = new ExtensionToolWrapper(approvalTool, runner);
+			await expect(
+				(wrapper as ExtensionToolWrapper<any>).execute("call-partial-context", {}, undefined, undefined, {
+					settings: { get: (key: string) => (key === "tools.approvalMode" ? "always-ask" : {}) },
+				} as never),
+			).rejects.toThrow('Tool "dangerous_tool" requires approval but no interactive UI available.');
+
+			expect(events).toEqual([
+				{ type: "tool_approval_requested", sessionId: "", reason: undefined },
+				{
+					type: "tool_approval_resolved",
+					sessionId: "",
+					approved: false,
+					reason: "no interactive UI available",
+				},
+			]);
+			delete globalState.__partialContextApprovalEvents;
+		});
+	});
 	describe("hasHandlers", () => {
 		it("returns true when handlers exist for event type", async () => {
 			const extCode = `

@@ -5,7 +5,7 @@ description: Use when creating a new omp marketplace. Covers marketplace.json sc
 
 # Authoring Marketplaces
 
-A marketplace is a Git repository (or local directory) that contains a catalog file at `.claude-plugin/marketplace.json`. Anyone can author one. Users add it with `/marketplace add owner/repo` and then install individual plugins from it.
+A marketplace is a Git repository (or local directory) that contains a catalog file at either `.omp-plugin/marketplace.json` (preferred for omp-specific catalogs) or `.claude-plugin/marketplace.json` (Claude Code-compatible; used as the fallback). Anyone can author one. Users add it with `/marketplace add owner/repo` and then install individual plugins from it.
 
 ## Minimum viable marketplace
 
@@ -15,8 +15,9 @@ my-marketplace/
     marketplace.json
   plugins/
     my-plugin/
-      package.json
-      index.ts
+      skills/
+        my-skill/
+          SKILL.md
 ```
 
 ```json
@@ -42,7 +43,7 @@ Push to GitHub. Users install with:
 
 ## marketplace.json schema
 
-The catalog file must live at `.claude-plugin/marketplace.json` in the repository root.
+The catalog file lives at either `.omp-plugin/marketplace.json` or `.claude-plugin/marketplace.json` in the repository root. omp prefers the `.omp-plugin/` path and falls back to the Claude path; a repository may publish both to expose tool-specific catalogs from a single source tree.
 
 ### Top-level fields
 
@@ -191,26 +192,21 @@ Declares the plugin as an npm package. `version` is optional:
 
 ## Plugin structure
 
-Each plugin directory (regardless of source type) should contain:
+A plugin directory (regardless of source type) ships its content in conventional locations, all optional:
 
 ```
 my-plugin/
-  package.json          ← required: declares omp.extensions entry points
-  src/
-    main.ts             ← extension factory
-  README.md             ← recommended: description + usage
+  skills/<name>/SKILL.md   ← skills
+  commands/*.md            ← slash commands
+  agents/*.md              ← subagent definitions
+  hooks/pre/, hooks/post/  ← hooks
+  tools/                   ← custom tools
+  .mcp.json                ← MCP server definitions
+  package.json             ← optional; its version is a fallback when the catalog entry has no version
+  README.md                ← recommended: description + usage
 ```
 
-Minimum `package.json`:
-
-```json
-{
-  "name": "my-plugin",
-  "omp": {
-    "extensions": ["./src/main.ts"]
-  }
-}
-```
+> Note: extension modules declared via `package.json` `omp.extensions` are **not** loaded from marketplace installs — that mechanism only applies to npm-installed or `omp plugin link`ed plugins. Ship marketplace plugin behavior through the conventional directories above.
 
 ## Install command
 
@@ -249,7 +245,7 @@ Invalid: `-bad-start`, `bad-end-`, `.dot-start`, `Under_score`, `HAS_CAPS`
 
 ## Publishing workflow
 
-1. Create `marketplace.json` at `.claude-plugin/marketplace.json` in a new Git repo.
+1. Create `marketplace.json` at `.omp-plugin/marketplace.json` (omp-only) or `.claude-plugin/marketplace.json` (shared with Claude Code) in a new Git repo.
 2. Add plugin entries pointing to subdirectories (or external sources).
 3. Push to GitHub.
 4. Share the `owner/repo` string. Users add it with `/marketplace add owner/repo`.

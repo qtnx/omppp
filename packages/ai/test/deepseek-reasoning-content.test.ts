@@ -4,6 +4,24 @@ import type { AssistantMessage, Model, ModelSpec, ThinkingContent, ToolCall } fr
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
+interface OpenAICompletionAssistantWireMessage {
+	role: "assistant";
+	content?: unknown;
+	reasoning_content?: unknown;
+	rs_6f3a1b2c4d5e6f7a8b9c0d1e2f3a4b5c?: unknown;
+}
+
+function isOpenAICompletionAssistantWireMessage(message: unknown): message is OpenAICompletionAssistantWireMessage {
+	if (typeof message !== "object" || message === null) return false;
+	return (message as { role?: unknown }).role === "assistant";
+}
+
+function findOpenAICompletionAssistantWireMessage(
+	messages: readonly unknown[] | undefined,
+): OpenAICompletionAssistantWireMessage | undefined {
+	return messages?.find(isOpenAICompletionAssistantWireMessage);
+}
+
 function deepseekModel(overrides: Partial<ModelSpec<"openai-completions">>): Model<"openai-completions"> {
 	const base = getBundledModel("openai", "gpt-4o-mini");
 	return buildModel({
@@ -47,16 +65,16 @@ function assistantToolCall(
 
 describe("DeepSeek reasoning_content tool-call replay", () => {
 	// ----------------------------------------------------------------
-	// Fix 1: reasoningEffortMap for DeepSeek-family on any provider
+	// Fix 1: effortMap for DeepSeek-family on any provider
 	// ----------------------------------------------------------------
-	describe("reasoningEffortMap (Fix 1)", () => {
+	describe("thinking effortMap (Fix 1)", () => {
 		it("maps unsupported lower DeepSeek efforts to high on opencode-go", () => {
-			const compat = deepseekModel({
+			const model = deepseekModel({
 				provider: "opencode-go",
 				baseUrl: "https://opencode.ai/zen/go/v1",
 				id: "deepseek-v4-flash",
-			}).compat;
-			expect(compat.reasoningEffortMap).toMatchObject({
+			});
+			expect(model.thinking?.effortMap).toMatchObject({
 				minimal: "high",
 				low: "high",
 				medium: "high",
@@ -66,12 +84,12 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 		});
 
 		it("maps unsupported lower DeepSeek efforts to high on NVIDIA", () => {
-			const compat = deepseekModel({
+			const model = deepseekModel({
 				provider: "nvidia",
 				baseUrl: "https://integrate.api.nvidia.com/v1",
 				id: "deepseek-ai/deepseek-v4-flash",
-			}).compat;
-			expect(compat.reasoningEffortMap).toMatchObject({
+			});
+			expect(model.thinking?.effortMap).toMatchObject({
 				minimal: "high",
 				low: "high",
 				medium: "high",
@@ -81,12 +99,12 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 		});
 
 		it("maps unsupported lower DeepSeek efforts to high on the official endpoint", () => {
-			const compat = deepseekModel({
+			const model = deepseekModel({
 				provider: "deepseek",
 				baseUrl: "https://api.deepseek.com/v1",
 				id: "deepseek-v4-pro",
-			}).compat;
-			expect(compat.reasoningEffortMap).toMatchObject({
+			});
+			expect(model.thinking?.effortMap).toMatchObject({
 				minimal: "high",
 				low: "high",
 				medium: "high",
@@ -96,13 +114,13 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 		});
 
 		it("does NOT map xhigh for non-DeepSeek models", () => {
-			const compat = deepseekModel({
+			const model = deepseekModel({
 				provider: "openai",
 				baseUrl: "https://api.openai.com/v1",
 				id: "gpt-4o-mini",
 				reasoning: false,
-			}).compat;
-			expect(compat.reasoningEffortMap.xhigh).toBeUndefined();
+			});
+			expect(model.thinking?.effortMap?.xhigh).toBeUndefined();
 		});
 	});
 
@@ -188,10 +206,10 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				timestamp: Date.now(),
 			};
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
 			// The reasoning_content field should be set from the signature, even if empty.
-			expect(Reflect.get(assistant as object, "reasoning_content")).toBe("");
+			expect(assistant?.reasoning_content).toBe("");
 		});
 
 		it("recovers reasoning_content from non-empty thinking block with signature", () => {
@@ -231,9 +249,9 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				timestamp: Date.now(),
 			};
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
-			expect(Reflect.get(assistant as object, "reasoning_content")).toBe("I need to read the file first.");
+			expect(assistant?.reasoning_content).toBe("I need to read the file first.");
 		});
 
 		it("normalizes OpenRouter reasoning deltas to DeepSeek reasoning_content on replay", () => {
@@ -256,9 +274,9 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				} as ToolCall,
 			]);
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
-			expect(Reflect.get(assistant as object, "reasoning_content")).toBe("I should inspect the requested file.");
+			expect(assistant?.reasoning_content).toBe("I should inspect the requested file.");
 		});
 		it("does not use opaque signature as property name but still sets reasoning_content from thinking text", () => {
 			const model = deepseekModel({
@@ -302,12 +320,12 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				timestamp: Date.now(),
 			};
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
 			// Should NOT have used the opaque signature as a property name.
-			expect(Reflect.get(assistant as object, "rs_6f3a1b2c4d5e6f7a8b9c0d1e2f3a4b5c")).toBeUndefined();
+			expect(assistant?.rs_6f3a1b2c4d5e6f7a8b9c0d1e2f3a4b5c).toBeUndefined();
 			// Should have set reasoning_content from the thinking text via the openai path.
-			expect(Reflect.get(assistant as object, "reasoning_content")).toBe("some reasoning");
+			expect(assistant?.reasoning_content).toBe("some reasoning");
 		});
 		it("falls through to empty-string when thinking block has opaque signature and empty text", () => {
 			const model = deepseekModel({
@@ -349,10 +367,10 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				timestamp: Date.now(),
 			};
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
-			expect(Reflect.get(assistant as object, "rs_6f3a1b2c4d5e6f7a8b9c0d1e2f3a4b5c")).toBeUndefined();
-			expect(Reflect.get(assistant as object, "reasoning_content")).toBe("");
+			expect(assistant?.rs_6f3a1b2c4d5e6f7a8b9c0d1e2f3a4b5c).toBeUndefined();
+			expect(assistant?.reasoning_content).toBe("");
 		});
 	});
 
@@ -379,10 +397,10 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				} as ToolCall,
 			]);
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
 			// reasoning_content must be present (empty string) — not absent and not "."
-			const rc = Reflect.get(assistant as object, "reasoning_content");
+			const rc = assistant?.reasoning_content;
 			expect(rc).toBeDefined();
 			expect(rc).toBe("");
 		});
@@ -402,10 +420,10 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				} as ToolCall,
 			]);
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
-			expect(Reflect.get(assistant as object, "reasoning_content")).toBe("");
-			expect((assistant as { content: unknown }).content).toBe("");
+			expect(assistant?.reasoning_content).toBe("");
+			expect(assistant?.content).toBe("");
 		});
 
 		it("sets content to empty string (not null) when reasoning_content is present", () => {
@@ -424,9 +442,9 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				} as ToolCall,
 			]);
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
-			expect((assistant as { content: unknown }).content).toBe("");
+			expect(assistant?.content).toBe("");
 		});
 	});
 
@@ -463,10 +481,10 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				timestamp: Date.now(),
 			};
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
 			// reasoning_content must be present — even on non-tool-call turns
-			const rc = Reflect.get(assistant as object, "reasoning_content");
+			const rc = assistant?.reasoning_content;
 			expect(rc).toBeDefined();
 			expect(rc).toBe("");
 		});
@@ -503,10 +521,10 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				timestamp: Date.now(),
 			};
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
-			expect(Reflect.get(assistant as object, "reasoning_content")).toBe("Let me think about this.");
-			expect((assistant as { content: unknown }).content).toBe("The answer is 42.");
+			expect(assistant?.reasoning_content).toBe("Let me think about this.");
+			expect(assistant?.content).toBe("The answer is 42.");
 		});
 
 		it("does NOT inject reasoning_content on non-tool-call turn for non-DeepSeek providers", () => {
@@ -539,10 +557,10 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				timestamp: Date.now(),
 			};
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
 			// OpenRouter reasoning models only need reasoning_content on tool-call turns
-			expect(Reflect.get(assistant as object, "reasoning_content")).toBeUndefined();
+			expect(assistant?.reasoning_content).toBeUndefined();
 		});
 	});
 
@@ -573,9 +591,9 @@ describe("DeepSeek reasoning_content tool-call replay", () => {
 				} as ToolCall,
 			]);
 			const messages = convertMessages(model, { messages: [msg] }, compat);
-			const assistant = messages.find(m => m.role === "assistant");
+			const assistant = findOpenAICompletionAssistantWireMessage(messages);
 			expect(assistant).toBeDefined();
-			expect(Reflect.get(assistant as object, "reasoning_content")).toBe(".");
+			expect(assistant?.reasoning_content).toBe(".");
 		});
 	});
 });

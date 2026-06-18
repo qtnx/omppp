@@ -23,6 +23,7 @@ function createCtx(pr: TestPr): SegmentContext {
 		planMode: null,
 		loopMode: null,
 		goalMode: null,
+		collab: null,
 		usageStats: {
 			input: 0,
 			output: 0,

@@ -6,6 +6,8 @@ export interface YieldDispatcher<P> {
 	isStale?(entry: P): boolean;
 	/** Produce one batched AgentMessage from non-stale entries. Return null to skip. */
 	build(survivors: P[]): AgentMessage | null;
+	/** If true, entries for this kind are drained only by {@link drainLazy} and never trigger the idle flush. */
+	skipIdleFlush?: boolean;
 }
 
 export interface YieldQueueOptions {
@@ -25,6 +27,7 @@ type YieldFlushMode = "streaming" | "idle";
 interface StoredDispatcher {
 	isStale?: (entry: unknown) => boolean;
 	build: (survivors: unknown[]) => AgentMessage | null;
+	skipIdleFlush?: boolean;
 }
 
 function formatError(error: unknown): string {
@@ -45,6 +48,7 @@ export class YieldQueue {
 		const stored: StoredDispatcher = {
 			...(dispatcher.isStale ? { isStale: entry => dispatcher.isStale?.(entry as P) ?? false } : {}),
 			build: survivors => dispatcher.build(survivors as P[]),
+			...(dispatcher.skipIdleFlush ? { skipIdleFlush: true } : {}),
 		};
 		this.#dispatchers.set(kind, stored);
 		return () => {
@@ -68,7 +72,7 @@ export class YieldQueue {
 		if (options?.maxEntries !== undefined && entries.length > options.maxEntries) {
 			entries.splice(0, entries.length - options.maxEntries);
 		}
-		if (!this.#options.isStreaming()) {
+		if (!this.#options.isStreaming() && !this.#dispatchers.get(kind)!.skipIdleFlush) {
 			this.#scheduleIdleFlush();
 		}
 	}

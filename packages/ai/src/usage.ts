@@ -4,7 +4,7 @@
  * Provides a normalized schema to represent multiple limit windows, model tiers,
  * and shared quotas across providers.
  */
-import * as z from "zod/v4";
+import { type } from "arktype";
 import type { FetchImpl, Provider } from "./types";
 export type UsageUnit = "percent" | "tokens" | "requests" | "usd" | "minutes" | "bytes" | "unknown";
 
@@ -63,65 +63,133 @@ export interface UsageLimit {
 	notes?: string[];
 }
 
+/**
+ * Saved/banked rate-limit resets an account can redeem on demand.
+ *
+ * Surfaced by providers that let users defer a usage-window reset and spend it
+ * later (OpenAI Codex "saved rate limit resets"). The redeem itself is a
+ * separate, provider-specific action; this is the read-only count for display.
+ */
+export interface UsageResetCredits {
+	/** Number of resets available to redeem right now. */
+	availableCount: number;
+}
+
 /** Aggregated usage report for a provider. */
 export interface UsageReport {
 	provider: Provider;
 	fetchedAt: number;
 	limits: UsageLimit[];
+	/** Saved rate-limit resets the account can redeem, when the provider reports them. */
+	resetCredits?: UsageResetCredits;
 	metadata?: Record<string, unknown>;
 	raw?: unknown;
 }
 
+/**
+ * Resolve a limit's used fraction (0..1; >1 means overage) from whichever
+ * amount fields the provider populated. Precedence mirrors the usage UIs:
+ * explicit fraction > used/limit > percent-unit used > inverted remaining.
+ */
+export function resolveUsedFraction(limit: UsageLimit): number | undefined {
+	const amount = limit.amount;
+	if (amount.usedFraction !== undefined) return amount.usedFraction;
+	if (amount.used !== undefined && amount.limit !== undefined && amount.limit > 0) {
+		return amount.used / amount.limit;
+	}
+	if (amount.unit === "percent" && amount.used !== undefined) return amount.used / 100;
+	if (amount.remainingFraction !== undefined) return Math.max(0, 1 - amount.remainingFraction);
+	return undefined;
+}
+
+/**
+ * One recorded usage-limit snapshot: a single limit window of one account at
+ * a point in time. The usage cache itself is latest-snapshot-only; history
+ * rows are appended by the auth storage layer whenever a fresh report is
+ * fetched, so limit utilization stays inspectable over time.
+ */
+export interface UsageHistoryEntry {
+	/** Epoch ms the report was fetched. */
+	recordedAt: number;
+	provider: Provider;
+	/** Stable credential identity key (account/email/project derived). */
+	accountKey: string;
+	email?: string;
+	accountId?: string;
+	/** {@link UsageLimit.id} of the recorded window. */
+	limitId: string;
+	/** Human label of the limit. */
+	label: string;
+	windowLabel?: string;
+	/** Used fraction (0..1) when resolvable. */
+	usedFraction?: number;
+	status?: UsageStatus;
+	/** Epoch ms the window resets, when known. */
+	resetsAt?: number;
+}
+
+/** Filter for reading recorded usage history. */
+export interface UsageHistoryQuery {
+	provider?: string;
+	/** Inclusive lower bound on {@link UsageHistoryEntry.recordedAt} (epoch ms). */
+	sinceMs?: number;
+}
+
 // ─── Zod schemas (wire-shape validation for the broker `/v1/usage` endpoint) ─
 
-export const usageUnitSchema = z.enum(["percent", "tokens", "requests", "usd", "minutes", "bytes", "unknown"]);
-export const usageStatusSchema = z.enum(["ok", "warning", "exhausted", "unknown"]);
+export const usageUnitSchema = type("'percent' | 'tokens' | 'requests' | 'usd' | 'minutes' | 'bytes' | 'unknown'");
+export const usageStatusSchema = type("'ok' | 'warning' | 'exhausted' | 'unknown'");
 
-export const usageWindowSchema = z.object({
-	id: z.string(),
-	label: z.string(),
-	durationMs: z.number().optional(),
-	resetsAt: z.number().optional(),
+export const usageWindowSchema = type({
+	id: "string",
+	label: "string",
+	"durationMs?": "number",
+	"resetsAt?": "number",
 });
 
-export const usageAmountSchema = z.object({
-	used: z.number().optional(),
-	limit: z.number().optional(),
-	remaining: z.number().optional(),
-	usedFraction: z.number().optional(),
-	remainingFraction: z.number().optional(),
+export const usageAmountSchema = type({
+	"used?": "number",
+	"limit?": "number",
+	"remaining?": "number",
+	"usedFraction?": "number",
+	"remainingFraction?": "number",
 	unit: usageUnitSchema,
 });
 
-export const usageScopeSchema = z.object({
-	provider: z.string(),
-	accountId: z.string().optional(),
-	projectId: z.string().optional(),
-	orgId: z.string().optional(),
-	modelId: z.string().optional(),
-	tier: z.string().optional(),
-	windowId: z.string().optional(),
-	shared: z.boolean().optional(),
+export const usageScopeSchema = type({
+	provider: "string",
+	"accountId?": "string",
+	"projectId?": "string",
+	"orgId?": "string",
+	"modelId?": "string",
+	"tier?": "string",
+	"windowId?": "string",
+	"shared?": "boolean",
 });
 
-export const usageLimitSchema = z.object({
-	id: z.string(),
-	label: z.string(),
+export const usageLimitSchema = type({
+	id: "string",
+	label: "string",
 	scope: usageScopeSchema,
-	window: usageWindowSchema.optional(),
+	"window?": usageWindowSchema,
 	amount: usageAmountSchema,
-	status: usageStatusSchema.optional(),
-	notes: z.array(z.string()).optional(),
+	"status?": usageStatusSchema,
+	"notes?": "string[]",
 });
 
-export const usageReportSchema = z.object({
-	provider: z.string(),
-	fetchedAt: z.number(),
-	limits: z.array(usageLimitSchema),
-	metadata: z.record(z.string(), z.unknown()).optional(),
+export const usageResetCreditsSchema = type({
+	availableCount: "number",
+});
+
+export const usageReportSchema = type({
+	provider: "string",
+	fetchedAt: "number",
+	limits: usageLimitSchema.array(),
+	"resetCredits?": usageResetCreditsSchema,
+	"metadata?": { "[string]": "unknown" },
 	// `raw` is provider-specific and may be anything; the broker strips it before
 	// sending the report over the wire, so accept-but-ignore here.
-	raw: z.unknown().optional(),
+	"raw?": "unknown",
 });
 
 /** Optional logger for usage fetchers. */
@@ -142,6 +210,7 @@ export interface UsageCredential {
 	email?: string;
 	enterpriseUrl?: string;
 	metadata?: Record<string, unknown>;
+	apiEndpoint?: string;
 }
 
 /** Parameters provided to a usage fetcher. */

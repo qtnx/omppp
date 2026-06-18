@@ -677,7 +677,18 @@ function generateClaudeJsonUserId(sessionId?: string, accountId?: string): strin
 	return JSON.stringify(userId);
 }
 
-function resolveAnthropicMetadataUserId(
+/**
+ * Resolve the `metadata.user_id` field for an Anthropic Messages request.
+ *
+ * For API-key tokens, an explicit caller-supplied `userId` is forwarded
+ * verbatim and `undefined` yields no metadata. For OAuth tokens the value
+ * must match the Claude Code attribution shape (`isClaudeCloakingUserId` or
+ * the `{session_id, account_uuid?, device_id?}` JSON envelope) — anything
+ * else is dropped and a fresh Claude-Code-style JSON id is generated from
+ * `sessionId`/`accountId` so attribution stays consistent across the main
+ * streaming path and provider-specific request builders (e.g. web search).
+ */
+export function resolveAnthropicMetadataUserId(
 	userId: unknown,
 	isOAuthToken: boolean,
 	sessionId?: string,
@@ -693,6 +704,8 @@ function resolveAnthropicMetadataUserId(
 	return generateClaudeJsonUserId(sessionId, accountId);
 }
 const ANTHROPIC_BUILTIN_TOOL_NAMES = new Set(["web_search", "code_execution", "text_editor", "computer"]);
+const UMANS_WEBSEARCH_PROVIDER_HEADER = "X-Umans-Websearch-Provider";
+const UMANS_WEBSEARCH_TOOL_NAME = "web_search";
 export const applyClaudeToolPrefix = (name: string): string => {
 	if (!claudeToolPrefix) return name;
 	if (ANTHROPIC_BUILTIN_TOOL_NAMES.has(name.toLowerCase())) return name;
@@ -709,6 +722,50 @@ export const stripClaudeToolPrefix = (name: string): string => {
 	if (!name.toLowerCase().startsWith(claudeToolPrefix.toLowerCase())) return name;
 	return name.slice(claudeToolPrefix.length);
 };
+
+function normalizeUmansWebSearchProvider(value: string | undefined): "native" | "exa" | undefined {
+	const normalized = value?.trim().toLowerCase();
+	return normalized === "native" || normalized === "exa" ? normalized : undefined;
+}
+
+function getUmansWebSearchProvider(headers: Record<string, string> | undefined): "native" | "exa" | undefined {
+	const explicit = getHeaderCaseInsensitive(headers, UMANS_WEBSEARCH_PROVIDER_HEADER);
+	if (explicit !== undefined) return normalizeUmansWebSearchProvider(explicit);
+	return normalizeUmansWebSearchProvider($env.UMANS_WEBSEARCH_PROVIDER);
+}
+
+function isUmansAnthropicModel(model: Model<"anthropic-messages">): boolean {
+	return model.provider === "umans" || model.baseUrl.toLowerCase().includes("api.code.umans.ai");
+}
+
+function getUmansWebSearchHeader(
+	model: Model<"anthropic-messages">,
+	headers: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+	if (!isUmansAnthropicModel(model)) return undefined;
+	const provider = getUmansWebSearchProvider(headers);
+	return provider ? { [UMANS_WEBSEARCH_PROVIDER_HEADER]: provider } : undefined;
+}
+
+function shouldUseUmansGatewayWebSearch(name: string, enabled: boolean): boolean {
+	return enabled && name.toLowerCase() === UMANS_WEBSEARCH_TOOL_NAME;
+}
+
+function encodeAnthropicToolName(
+	name: string,
+	isOAuthToken: boolean,
+	escapeBuiltinToolNames: boolean,
+	useUmansGatewayWebSearch = false,
+): string {
+	if (shouldUseUmansGatewayWebSearch(name, useUmansGatewayWebSearch)) return name;
+	if (escapeBuiltinToolNames) return `${claudeToolPrefix}${name}`;
+	return isOAuthToken ? applyClaudeToolPrefix(name) : name;
+}
+
+function decodeAnthropicToolName(name: string, isOAuthToken: boolean, escapeBuiltinToolNames: boolean): string {
+	if (isOAuthToken || escapeBuiltinToolNames) return stripClaudeToolPrefix(name);
+	return name;
+}
 
 const ANTHROPIC_MANY_IMAGE_THRESHOLD = 20;
 const ANTHROPIC_MANY_IMAGE_MAX_DIMENSION = 2000;
@@ -862,13 +919,7 @@ async function prepareAnthropicManyImageContext(context: Context, supportsImages
 	return { ...context, messages };
 }
 
-/**
- * Convert content blocks to Anthropic API format
- */
-function convertContentBlocks(
-	content: (TextContent | ImageContent)[],
-	supportsImages = true,
-):
+type AnthropicToolResultContent =
 	| string
 	| Array<
 			| { type: "text"; text: string }
@@ -880,7 +931,15 @@ function convertContentBlocks(
 						data: string;
 					};
 			  }
-	  > {
+	  >;
+
+/**
+ * Convert content blocks to Anthropic API format
+ */
+function convertContentBlocks(
+	content: (TextContent | ImageContent)[],
+	supportsImages = true,
+): AnthropicToolResultContent {
 	const blocks: Array<
 		| { type: "text"; text: string }
 		| {
@@ -964,6 +1023,11 @@ export interface AnthropicOptions extends StreamOptions {
 	 * Ignored for adaptive-capable models.
 	 */
 	thinkingBudgetTokens?: number;
+	/**
+	 * Upstream wire model id override for collapsed effort-tier variants.
+	 * Serialized as `requestModelId ?? model.requestModelId ?? model.id`.
+	 */
+	requestModelId?: string;
 	/**
 	 * Effort level for adaptive thinking.
 	 * Controls how much thinking Claude allocates:
@@ -1448,6 +1512,19 @@ export function isProviderRetryableError(error: unknown, provider?: string): boo
 	return isRetryableError(error);
 }
 
+const THINKING_ENVELOPE_OPEN = "<thinking>";
+const THINKING_ENVELOPE_CLOSE = "</thinking>";
+
+function unwrapAnthropicThinkingEnvelope(text: string): string | undefined {
+	let current = text.trim();
+	let stripped = false;
+	while (current.startsWith(THINKING_ENVELOPE_OPEN) && current.endsWith(THINKING_ENVELOPE_CLOSE)) {
+		current = current.slice(THINKING_ENVELOPE_OPEN.length, current.length - THINKING_ENVELOPE_CLOSE.length).trim();
+		stripped = true;
+	}
+	return stripped ? current : undefined;
+}
+
 function createEmptyUsage(premiumRequests?: number): Usage {
 	return {
 		input: 0,
@@ -1553,6 +1630,8 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 			let disableStrictTools =
 				(providerSessionState?.strictToolsDisabled ?? false) || (model.compat?.disableStrictTools ?? false);
 			let dropFastMode = providerSessionState?.fastModeDisabled ?? false;
+			const mergedCallerHeaders = mergeHeaders(model.headers, options?.headers);
+			const umansGatewayWebSearchHeader = getUmansWebSearchHeader(model, mergedCallerHeaders);
 
 			let client: AnthropicMessagesClientLike;
 			let isOAuthToken: boolean;
@@ -1614,7 +1693,14 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 			}
 			const preparedContext = await prepareAnthropicManyImageContext(context, model.input.includes("image"));
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
-				let nextParams = buildParams(model, preparedContext, isOAuthToken, options, disableStrictTools);
+				let nextParams = buildParams(
+					model,
+					preparedContext,
+					isOAuthToken,
+					options,
+					disableStrictTools,
+					umansGatewayWebSearchHeader !== undefined,
+				);
 				if (disableStrictTools) {
 					dropAnthropicStrictTools(nextParams);
 				}
@@ -1625,6 +1711,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 				if (replacementPayload !== undefined) {
 					nextParams = replacementPayload as typeof nextParams;
 				}
+				nextParams = toWellFormedDeep(nextParams) as typeof nextParams;
 				rawRequestDump = {
 					provider: model.provider,
 					api: output.api,
@@ -1653,6 +1740,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 				if (block.type === "text") {
 					stream.push({ type: "text_end", contentIndex, content: block.text, partial: output });
 				} else if (block.type === "thinking") {
+					const unwrappedThinking = unwrapAnthropicThinkingEnvelope(block.thinking);
+					if (unwrappedThinking !== undefined) {
+						block.thinking = unwrappedThinking;
+						block.thinkingSignature = undefined;
+					}
 					stream.push({ type: "thinking_end", contentIndex, content: block.thinking, partial: output });
 				} else if (block.type === "toolCall") {
 					const finalJson =
@@ -1686,7 +1778,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 				// to zero even when no watchdog timeout is configured (the helper only
 				// pins it alongside a timeout; a client retry budget of 5 would otherwise
 				// multiply with PROVIDER_MAX_RETRIES into up to 66 wire attempts).
-				const requestOptions = { ...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs), maxRetries: 0 };
+				const requestOptions = {
+					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
+					maxRetries: 0,
+					...(umansGatewayWebSearchHeader ? { headers: umansGatewayWebSearchHeader } : {}),
+				};
 				const anthropicRequest: unknown =
 					isOAuthToken && client.beta
 						? client.beta.messages.create({ ...params, stream: true }, requestOptions)
@@ -1869,9 +1965,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 								const block: Block = {
 									type: "toolCall",
 									id: event.content_block.id,
-									name: isOAuthToken
-										? stripClaudeToolPrefix(event.content_block.name)
-										: event.content_block.name,
+									name: decodeAnthropicToolName(
+										event.content_block.name,
+										isOAuthToken,
+										model.compat.escapeBuiltinToolNames,
+									),
 									arguments: event.content_block.input ?? {},
 									partialJson: "",
 									index: event.index,
@@ -1996,6 +2094,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 							}
 							if (output.stopReason === "error") {
 								const stopDetails = delta?.stop_details;
+								output.stopDetails = stopDetails ?? (rawStopReason ? { type: rawStopReason } : null);
 								if (stopDetails?.type === "refusal") {
 									const explanation = stopDetails.explanation?.trim();
 									const category = stopDetails.category;
@@ -2155,6 +2254,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 					output.content.length = 0;
 					output.responseId = undefined;
 					output.errorMessage = undefined;
+					output.stopDetails = undefined;
 					output.providerPayload = undefined;
 					output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
 					output.stopReason = "stop";
@@ -2288,16 +2388,22 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	const baseUrl = resolveAnthropicBaseUrl(model, apiKey);
 	const foundryCustomHeaders = resolveAnthropicCustomHeaders(model);
 	const tlsFetchOptions = buildClaudeCodeTlsFetchOptions(model, baseUrl);
+	// Disable Bun's native ~300s pre-response fetch timeout (issue #2422).
+	// `AnthropicMessagesClient` already arms its own DEFAULT_TIMEOUT_MS timer
+	// per request, so the native ceiling can only short-circuit slow-prefill
+	// streams before the configured watchdog gets to govern them.
+	const fetchOptions: AnthropicFetchOptions = { ...(tlsFetchOptions ?? {}), timeout: false };
 	const baseFetch = args.fetch ?? fetch;
 	// Only OAuth requests inject the CC billing header; no API-key request can ever
 	// contain it, so there is no need to install the rewriter for those.
 	const cchFetch = oauthToken ? wrapFetchForCch(baseFetch) : baseFetch;
 	if (model.provider === "github-copilot") {
 		const copilotApiKey = parseGitHubCopilotApiKey(apiKey).accessToken;
+		// The GitHub Copilot Anthropic proxy doesn't accept Anthropic beta
+		// features (and the catalog already forces `supportsEagerToolInputStreaming
+		// = false` for this host, so `needsFineGrainedToolStreamingBeta` is true
+		// whenever tools are present). Forward only caller-supplied betas.
 		const betaFeatures = [...extraBetas];
-		if (needsFineGrainedToolStreamingBeta) {
-			betaFeatures.push(fineGrainedToolStreamingBeta);
-		}
 		const defaultHeaders = mergeHeaders(
 			{
 				Accept: stream ? "text/event-stream" : "application/json",
@@ -2320,7 +2426,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			maxRetries: 5,
 			defaultHeaders,
 			fetch: cchFetch,
-			...(tlsFetchOptions ? { fetchOptions: tlsFetchOptions } : {}),
+			fetchOptions,
 		};
 	}
 
@@ -2338,7 +2444,13 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		isOAuth: oauthToken,
 		extraBetas: betaFeatures,
 		stream,
-		modelHeaders: mergeHeaders(model.headers, foundryCustomHeaders, headers, dynamicHeaders),
+		modelHeaders: mergeHeaders(
+			model.headers,
+			foundryCustomHeaders,
+			getUmansWebSearchHeader(model, mergeHeaders(model.headers, headers)),
+			headers,
+			dynamicHeaders,
+		),
 		isCloudflareAiGateway: model.provider === "cloudflare-ai-gateway",
 		claudeCodeSessionId,
 		claudeCodeBetas: oauthToken
@@ -2355,13 +2467,13 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			maxRetries: 5,
 			defaultHeaders,
 			fetch: cchFetch,
+			fetchOptions,
 		};
 	}
 
-	// OpenCode Go's Anthropic-compatible gateway validates API-key auth through
-	// `X-Api-Key`; bearer-only requests reach the endpoint but return
-	// `Missing API key` before token validation.
-	if (model.provider === "opencode-go") {
+	// OpenCode Go and Umans validate Anthropic-compatible API-key auth through
+	// `X-Api-Key`; bearer-only requests reach the endpoint but fail auth.
+	if (model.provider === "opencode-go" || model.provider === "umans") {
 		delete defaultHeaders.Authorization;
 		return {
 			isOAuthToken: false,
@@ -2371,7 +2483,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			maxRetries: 5,
 			defaultHeaders,
 			fetch: cchFetch,
-			...(tlsFetchOptions ? { fetchOptions: tlsFetchOptions } : {}),
+			fetchOptions,
 		};
 	}
 	// OpenCode Zen's Anthropic-compatible gateway accepts bearer auth only;
@@ -2385,7 +2497,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			maxRetries: 5,
 			defaultHeaders,
 			fetch: cchFetch,
-			...(tlsFetchOptions ? { fetchOptions: tlsFetchOptions } : {}),
+			fetchOptions,
 		};
 	}
 
@@ -2404,7 +2516,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		maxRetries: 5,
 		defaultHeaders,
 		fetch: cchFetch,
-		...(tlsFetchOptions ? { fetchOptions: tlsFetchOptions } : {}),
+		fetchOptions,
 	};
 }
 
@@ -2705,6 +2817,7 @@ function buildParams(
 	isOAuthToken: boolean,
 	options?: AnthropicOptions,
 	disableStrictTools = false,
+	useUmansGatewayWebSearch = false,
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, isOAuthToken);
 
@@ -2726,6 +2839,8 @@ function buildParams(
 			isOAuthToken,
 			disableStrictTools || model.provider === "github-copilot",
 			model.compat.supportsEagerToolInputStreaming,
+			model.compat.escapeBuiltinToolNames,
+			useUmansGatewayWebSearch,
 		);
 	} else if (isOAuthToken) {
 		tools = [];
@@ -2800,17 +2915,18 @@ function buildParams(
 	// Claude Code requests at most 64k output tokens; clamp only OAuth requests,
 	// where the wire fingerprint must match. API-key callers keep the full model
 	// ceiling (e.g. 128k on Opus 4.8).
-	const maxOutputTokens = isOAuthToken ? Math.min(CLAUDE_CODE_MAX_OUTPUT_TOKENS, model.maxTokens) : model.maxTokens;
+	const modelMaxTokens = model.maxTokens ?? CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+	const maxOutputTokens = isOAuthToken ? Math.min(CLAUDE_CODE_MAX_OUTPUT_TOKENS, modelMaxTokens) : modelMaxTokens;
 
 	// Build params in the canonical field order: model → messages → system → tools →
 	// metadata → max_tokens → thinking → context_management → output_config → stream.
 	const params: MessageCreateParamsStreaming = {
-		model: model.id,
+		model: options?.requestModelId ?? model.requestModelId ?? model.id,
 		messages: convertAnthropicMessages(context.messages, model, isOAuthToken),
 		...(systemBlocks && { system: systemBlocks }),
 		...(tools !== undefined && { tools }),
 		...(metadata && { metadata }),
-		max_tokens: Math.min(maxOutputTokens, options?.maxTokens || model.maxTokens),
+		max_tokens: Math.min(maxOutputTokens, options?.maxTokens || modelMaxTokens),
 		...(thinking && { thinking }),
 		...(contextManagement && { context_management: contextManagement }),
 		...(outputConfig && { output_config: outputConfig }),
@@ -2850,10 +2966,16 @@ function buildParams(
 	if (options?.toolChoice) {
 		if (typeof options.toolChoice === "string") {
 			params.tool_choice = { type: options.toolChoice };
-		} else if (isOAuthToken && options.toolChoice.name) {
-			params.tool_choice = { ...options.toolChoice, name: applyClaudeToolPrefix(options.toolChoice.name) };
-		} else {
-			params.tool_choice = options.toolChoice;
+		} else if (options.toolChoice.name) {
+			params.tool_choice = {
+				...options.toolChoice,
+				name: encodeAnthropicToolName(
+					options.toolChoice.name,
+					isOAuthToken,
+					model.compat.escapeBuiltinToolNames,
+					useUmansGatewayWebSearch,
+				),
+			};
 		}
 		// Claude Fable/Mythos 5 reject forced tool use outright ("tool_choice forces
 		// tool use is not compatible with this model"). Downgrade any/tool → auto so the
@@ -2874,11 +2996,47 @@ function buildParams(
 	return params;
 }
 
-function buildToolResultBlock(model: Model<"anthropic-messages">, msg: ToolResultMessage): ContentBlockParam {
+const EMPTY_ERROR_TOOL_RESULT_TEXT = "Tool failed with no output.";
+
+function isEmptyToolResultWireContent(content: AnthropicToolResultContent): boolean {
+	if (typeof content === "string") {
+		return content.trim().length === 0;
+	}
+	return content.length === 0;
+}
+
+function ensureErrorToolResultWireContent(
+	content: AnthropicToolResultContent,
+	isError: boolean | undefined,
+): AnthropicToolResultContent {
+	if (!isError || !isEmptyToolResultWireContent(content)) {
+		return content;
+	}
+	return typeof content === "string"
+		? EMPTY_ERROR_TOOL_RESULT_TEXT
+		: [{ type: "text", text: EMPTY_ERROR_TOOL_RESULT_TEXT }];
+}
+
+function buildToolResultBlock(
+	model: Model<"anthropic-messages">,
+	msg: ToolResultMessage,
+	hoistedImages: ContentBlockParam[],
+): ContentBlockParam {
+	let content = convertContentBlocks(msg.content, model.input.includes("image"));
+	// Anthropic rejects images inside error tool results ("all content must be
+	// type `text` if `is_error` is true") — keep the text in the block and
+	// hoist the images after the message's tool_result run.
+	if (msg.isError && typeof content !== "string" && content.some(block => block.type === "image")) {
+		for (const block of content) {
+			if (block.type === "image") hoistedImages.push(block);
+		}
+		content = content.filter(block => block.type === "text");
+	}
+	content = ensureErrorToolResultWireContent(content, msg.isError);
 	const block: ContentBlockParam = {
 		type: "tool_result",
 		tool_use_id: msg.toolCallId,
-		content: convertContentBlocks(msg.content, model.input.includes("image")),
+		content,
 		is_error: msg.isError,
 	};
 	if (model.compat.requiresToolResultId) {
@@ -3022,14 +3180,13 @@ export function convertAnthropicMessages(
 					blocks.push({
 						type: "tool_use",
 						id: block.id,
-						name: isOAuthToken ? applyClaudeToolPrefix(block.name) : block.name,
-						// Anthropic-origin arguments are guaranteed well-formed (they came
-						// from the API's own JSON); cross-API replays can carry lone
-						// surrogates that Anthropic's strict UTF-8 validation rejects.
-						input:
-							msg.api === "anthropic-messages"
-								? (block.arguments ?? {})
-								: toWellFormedDeep(block.arguments ?? {}),
+						name: encodeAnthropicToolName(block.name, isOAuthToken, model.compat.escapeBuiltinToolNames),
+						// Always sanitize: the model itself can emit lone-surrogate escapes
+						// in tool-argument JSON (streamed out fine, rejected with a 400 on
+						// replay by Anthropic's strict UTF-8 validation). toWellFormedDeep
+						// is identity-preserving, so well-formed arguments stay
+						// byte-identical and prompt-cache prefixes are unaffected.
+						input: toWellFormedDeep(block.arguments ?? {}),
 					});
 				}
 			}
@@ -3041,20 +3198,29 @@ export function convertAnthropicMessages(
 		} else if (msg.role === "toolResult") {
 			// Collect all consecutive toolResult messages, needed for z.ai Anthropic endpoint
 			const toolResults: ContentBlockParam[] = [];
+			// Images stripped out of error tool results, re-attached after the run.
+			const hoistedImages: ContentBlockParam[] = [];
 
 			// Add the current tool result
-			toolResults.push(buildToolResultBlock(model, msg));
+			toolResults.push(buildToolResultBlock(model, msg, hoistedImages));
 
 			// Look ahead for consecutive toolResult messages
 			let j = i + 1;
 			while (j < transformedMessages.length && transformedMessages[j].role === "toolResult") {
 				const nextMsg = transformedMessages[j] as ToolResultMessage; // We know it's a toolResult
-				toolResults.push(buildToolResultBlock(model, nextMsg));
+				toolResults.push(buildToolResultBlock(model, nextMsg, hoistedImages));
 				j++;
 			}
 
 			// Skip the messages we've already processed
 			i = j - 1;
+
+			if (hoistedImages.length > 0) {
+				toolResults.push(
+					{ type: "text", text: "Attached image(s) from the tool result(s) above:" },
+					...hoistedImages,
+				);
+			}
 
 			// Add a single user message with all tool results
 			params.push({
@@ -3103,8 +3269,9 @@ export function convertAnthropicMessages(
 /**
  * JSON Schema whitelist for Anthropic tool `input_schema` nodes.
  *
- * Mirrors the Anthropic Python SDK's `lib/_parse/_transform.py::transform_schema`:
- * we keep only structural/metadata keywords Anthropic's validator honors, and demote
+ * Tracks the Anthropic Python SDK's `lib/_parse/_transform.py::transform_schema`,
+ * with live Messages API guardrails for keywords the SDK preserves but the API rejects.
+ * We keep only structural/metadata keywords Anthropic's validator honors, and demote
  * anything else into the node's `description` as `\n\n{key: value, ...}` so the model
  * still sees the constraint as a natural-language hint.
  *
@@ -3119,7 +3286,6 @@ const ANTHROPIC_TOOL_SCHEMA_UNIVERSAL_KEEP = new Set([
 	"definitions",
 	"type",
 	"anyOf",
-	"oneOf",
 	"allOf",
 	"enum",
 	"const",
@@ -3215,13 +3381,16 @@ function anthropicPerTypeKeep(scalarType: string | undefined): Set<string> | und
  * Applies the full whitelist semantics from the Anthropic Python SDK's
  * `lib/_parse/_transform.py::transform_schema`:
  *
- * 1. Universal keys (`$ref`, `$defs`, `type`, `anyOf`/`oneOf`/`allOf`, `enum`, `const`,
- *    `description`, `title`, `default`, `nullable`) are preserved on every node.
+ * 1. Universal keys (`$ref`, `$defs`, `type`, `anyOf`, `allOf`, `enum`, `const`,
+ *    `description`, `title`, `default`, `nullable`) are preserved on every node, with
+ *    one position-dependent exception: the combinator keys. Root `anyOf`/`allOf` are
+ *    spilled (recent Anthropic Messages validators reject combinators at the tool
+ *    `input_schema` root) but kept when nested; `oneOf` is spilled at every position
+ *    (it is not in the documented supported subset).
  * 2. Per-type keys are kept additively (object → `properties`/`required`/`additionalProperties`,
  *    array → `items`/`prefixItems` plus `minItems` only when 0 or 1, string → `format`
  *    only when in the supported value set).
  * 3. Everything else is demoted into the node's `description` as `\n\n{key: value, ...}`
- *    so the model still sees the constraint as a natural-language hint.
  *
  * Object nodes default to `additionalProperties: false`, but explicit open-map
  * declarations (`additionalProperties: true` or a schema literal — Zod's
@@ -3232,6 +3401,7 @@ function anthropicPerTypeKeep(scalarType: string | undefined): Set<string> | und
 function normalizeAnthropicToolSchemaNode(
 	schema: unknown,
 	cache: WeakMap<Record<string, unknown>, Record<string, unknown>>,
+	isRoot = false,
 ): unknown {
 	if (Array.isArray(schema)) return schema.map(entry => normalizeAnthropicToolSchemaNode(entry, cache));
 	if (!isRecord(schema)) return schema;
@@ -3249,7 +3419,8 @@ function normalizeAnthropicToolSchemaNode(
 	for (const key in schema) {
 		if (!Object.hasOwn(schema, key)) continue;
 		const value = schema[key];
-		if (ANTHROPIC_TOOL_SCHEMA_UNIVERSAL_KEEP.has(key) || perTypeKeep?.has(key)) {
+		const isRootCombinator = isRoot && COMBINATOR_KEYS.includes(key as (typeof COMBINATOR_KEYS)[number]);
+		if (!isRootCombinator && (ANTHROPIC_TOOL_SCHEMA_UNIVERSAL_KEEP.has(key) || perTypeKeep?.has(key))) {
 			result[key] = value;
 		} else {
 			spill.push([key, value]);
@@ -3324,7 +3495,7 @@ function normalizeAnthropicToolSchemaNode(
 }
 
 export function normalizeAnthropicToolSchema(schema: unknown): unknown {
-	return normalizeAnthropicToolSchemaNode(schema, new WeakMap());
+	return normalizeAnthropicToolSchemaNode(schema, new WeakMap(), true);
 }
 
 type AnthropicToolSchemaPlan = {
@@ -3600,6 +3771,8 @@ function convertTools(
 	isOAuthToken: boolean,
 	disableStrictTools = false,
 	supportsEagerToolInputStreaming = true,
+	escapeBuiltinToolNames = false,
+	useUmansGatewayWebSearch = false,
 ): AnthropicWireTool[] {
 	if (!tools) return [];
 	const schemaPlans = buildAnthropicToolSchemaPlans(tools, disableStrictTools);
@@ -3607,7 +3780,7 @@ function convertTools(
 	return tools.map((tool, index) => {
 		const plan = schemaPlans[index];
 		const baseTool = {
-			name: isOAuthToken ? applyClaudeToolPrefix(tool.name) : tool.name,
+			name: encodeAnthropicToolName(tool.name, isOAuthToken, escapeBuiltinToolNames, useUmansGatewayWebSearch),
 			description: tool.description || "",
 			input_schema: plan.inputSchema,
 		};

@@ -17,11 +17,13 @@ import type {
 	TerminalInputHandler,
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
+import { createExtensionModelQuery } from "../../extensibility/extensions/model-api";
 import { HookEditorComponent } from "../../modes/components/hook-editor";
 import { HookInputComponent } from "../../modes/components/hook-input";
 import { HookSelectorComponent, type HookSelectorSlider } from "../../modes/components/hook-selector";
 import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "../../modes/types";
+import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { setSessionTerminalTitle, setTerminalTitle } from "../../utils/title-generator";
 
 const MAX_WIDGET_LINES = 10;
@@ -125,7 +127,7 @@ export class ExtensionUiController {
 			getAsyncJobSnapshot: options =>
 				this.ctx.session.getAsyncJobSnapshot({ recentLimit: options?.recentLimit, requireOwner: true }),
 			getGoalModeState: () => this.ctx.session.getGoalModeState(),
-			abort: () => this.ctx.session.abort(),
+			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			shutdown: () => {
 				// Defer the actual teardown to the main loop, which calls
@@ -364,7 +366,7 @@ export class ExtensionUiController {
 			getAsyncJobSnapshot: options =>
 				this.ctx.session.getAsyncJobSnapshot({ recentLimit: options?.recentLimit, requireOwner: true }),
 			getGoalModeState: () => this.ctx.session.getGoalModeState(),
-			abort: () => this.ctx.session.abort(),
+			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			shutdown: () => {
 				// Defer the actual teardown to the main loop, which calls
@@ -497,12 +499,17 @@ export class ExtensionUiController {
 						sessionManager: this.ctx.session.sessionManager,
 						modelRegistry: this.ctx.session.modelRegistry,
 						model: this.ctx.session.model,
+						models: createExtensionModelQuery(
+							this.ctx.session.modelRegistry,
+							this.ctx.session.settings,
+							() => this.ctx.session.model,
+						),
 						isIdle: () => !this.ctx.session.isStreaming,
 						getAsyncJobSnapshot: options => this.ctx.session.getAsyncJobSnapshot(options),
 						getGoalModeState: () => this.ctx.session.getGoalModeState(),
 						hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 						abort: () => {
-							this.ctx.session.abort();
+							this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 						},
 						shutdown: () => {
 							// Signal shutdown request

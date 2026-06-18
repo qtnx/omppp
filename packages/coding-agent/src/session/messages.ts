@@ -35,19 +35,26 @@ const COMPACTION_SUMMARY_CONTEXT_SENTINEL = "__omp_compaction_summary_context__"
 const COMPACTION_SUMMARY_CONTEXT_PREFIX =
 	renderCompactionSummaryContext(COMPACTION_SUMMARY_CONTEXT_SENTINEL).split(COMPACTION_SUMMARY_CONTEXT_SENTINEL)[0] ??
 	"";
+export const BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE = "background-tan-dispatch";
+
+/** Details persisted on a `/tan` background-dispatch breadcrumb. */
+export interface BackgroundTanDispatchDetails {
+	jobId: string;
+	work: string;
+	/** Forked clone session file, named `<agentId>.jsonl`; the Agent Hub reads its transcript. */
+	sessionFile: string;
+}
 
 export interface SkillPromptDetails {
 	name: string;
 	path: string;
 	args?: string;
 	lineCount: number;
-	/** Internal: tag used by AgentSession to remove the pending-display chip
-	 *  from `#steeringMessages` / `#followUpMessages` when the agent consumes
-	 *  this message. Not surfaced to renderers; the `__` prefix signals
-	 *  "private". Optional — non-streaming skill prompts never set it. Stripped
-	 *  from persisted `details` by `SessionManager.appendCustomMessageEntry`
-	 *  via the `INTERNAL_DETAILS_FIELDS` allowlist below. */
-	__pendingDisplayTag?: string;
+	/** Internal: compact label shown for a queued custom message. Optional —
+	 *  non-streaming skill prompts never set it. Stripped from persisted
+	 *  `details` by `SessionManager.appendCustomMessageEntry` via the
+	 *  `INTERNAL_DETAILS_FIELDS` allowlist below. */
+	__queueChipText?: string;
 }
 
 /** Sentinel value for `AssistantMessage.errorMessage` indicating that the abort
@@ -88,7 +95,7 @@ export function shouldRenderAbortReason(errorMessage: string | undefined): boole
 
 /** Sentinel `errorMessage` the agent stamps on any abort that carried no custom
  *  reason (bare `abort()`). Renderers treat it as "no specific reason given". */
-const GENERIC_ABORT_SENTINEL = "Request was aborted";
+export const GENERIC_ABORT_SENTINEL = "Request was aborted";
 
 /** Resolve the operator-facing label for an aborted assistant turn. A custom
  *  abort reason threaded onto `errorMessage` is returned verbatim; aborts with
@@ -105,12 +112,12 @@ export function resolveAbortLabel(errorMessage: string | undefined, retryAttempt
 	return "Operation aborted";
 }
 
-/** Extract the optional `__pendingDisplayTag` field from a CustomMessage's
+/** Extract the optional `__queueChipText` field from a CustomMessage's
  *  `details` blob. Safe over `unknown`; returns undefined when the field is
  *  absent or non-string. */
-export function readPendingDisplayTag(details: unknown): string | undefined {
+export function readQueueChipText(details: unknown): string | undefined {
 	if (typeof details !== "object" || details === null) return undefined;
-	const candidate = (details as { __pendingDisplayTag?: unknown }).__pendingDisplayTag;
+	const candidate = (details as { __queueChipText?: unknown }).__queueChipText;
 	return typeof candidate === "string" ? candidate : undefined;
 }
 
@@ -119,7 +126,7 @@ export function readPendingDisplayTag(details: unknown): string | undefined {
  *  the CustomMessageEntry to disk. Scoped intentionally narrow: only fields
  *  declared here are stripped. Adding a new entry is a deliberate, reviewed
  *  change — unrelated future payload fields are never silently dropped. */
-export const INTERNAL_DETAILS_FIELDS = ["__pendingDisplayTag"] as const;
+export const INTERNAL_DETAILS_FIELDS = ["__queueChipText"] as const;
 
 /** Return a `details` copy with every key in `INTERNAL_DETAILS_FIELDS`
  *  removed. Returns the input unchanged when there is nothing to strip

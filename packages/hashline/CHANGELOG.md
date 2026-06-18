@@ -2,6 +2,81 @@
 
 ## [Unreleased]
 
+## [16.0.2] - 2026-06-16
+
+### Fixed
+
+- Auto-repaired duplicated JSX/XML closing boundary lines at the end of single-line replacement expansions. ([#2705](https://github.com/can1357/oh-my-pi/issues/2705))
+
+## [16.0.1] - 2026-06-15
+
+### Fixed
+
+- Auto-repaired one-sided multi-line boundary echoes by dropping delimiter-neutral duplicated boundary lines and emitted a boundary-echo warning
+- Parser now treats a leading `\` on inline payload bodies as the payload delimiter, matching standalone payload rows.
+- Restored the warning emitted when escaped indented payload rows (`\\    TEXT`) are accepted as payload delimiters.
+
+## [15.13.3] - 2026-06-15
+
+### Changed
+
+- Changed the recommended hashline range separator from `..` to `.=` (e.g. `SWAP 1.=3:`, `DEL 4.=5`) so the inclusive `<=`-style end is self-evident. `HL_RANGE_SEP` is now `.=`; the prompt, grammar, error messages, and emitted headers all use it. The lenient parser still accepts the legacy `..` (and `-`/`…`/space) forms.
+
+## [15.13.2] - 2026-06-15
+
+### Breaking Changes
+
+- Renamed all hashline DSL operators to concise abbreviated keywords:
+  - `replace` -> `SWAP`
+  - `delete` -> `DEL`
+  - `insert before`/`after`/`head`/`tail` -> `INS.PRE`/`POST`/`HEAD`/`TAIL`
+  - `replace_block` -> `SWAP.BLK`
+  - `delete_block` -> `DEL.BLK`
+  - `insert_after_block` -> `INS.BLK.POST`
+
+## [15.13.1] - 2026-06-15
+
+### Breaking Changes
+
+- Rejected edits anchored to lines not displayed in the tagged read/search output, requiring unseen ranges to be re-read before reapplying
+
+### Changed
+
+- Rejected `replace block`, `delete block`, and `insert after block` operations that resolve to a single line and instructed users to use the plain single-line form or anchor the true construct opener
+
+### Fixed
+
+- Normalized cwd-relative hashline paths to forward-slash form on Windows.
+
+## [15.12.5] - 2026-06-13
+
+### Fixed
+
+- Fixed delimiter-balance boundary repair so it does not keep a deleted structural closer when the replacement payload already restates that closer.
+
+## [15.12.0] - 2026-06-12
+
+### Changed
+
+- Condensed all parser/applier/patcher error and warning messages: shorter wording, same diagnostic anchors (op names, line numbers, suggested fallback forms)
+
+## [15.11.4] - 2026-06-12
+
+### Added
+
+- Added inward landing correction for `insert after block N:`: a body indented deeper than the block's closing line now slides back across the block's trailing closer lines and lands inside the block at its claimed depth, with a warning naming the landing line. Same conservative guards as the outward shift — comparable indentation only, closers only, abandoned when another hunk targets a crossed line; plain `insert after M:` stays literal
+- Added closer-anchor lowering for `insert after block N:`: anchoring on a pure closing-delimiter line (where no block begins, so resolution previously failed the whole patch) now applies as plain `insert after N:` with a warning teaching the opener-only rule. `resolveBlockEdits` gained an `onWarning` callback; apply, preview, and patcher paths surface it on `warnings`
+
+### Changed
+
+- Condensed the edit-tool prompt: one-line op definitions, 5–20-word rules, and a tighter `<critical>` recap; landing-correction mechanics are no longer described to the agent
+
+## [15.11.1] - 2026-06-11
+
+### Fixed
+
+- Fixed the `insert after block N:` prompt guidance so it explicitly says N must be the block opener, not the closing delimiter or last visible line, and points visible closing-line edits to plain `insert after M:`. ([#2292](https://github.com/can1357/oh-my-pi/issues/2292))
+
 ## [15.11.0] - 2026-06-10
 
 ### Changed
@@ -87,6 +162,7 @@
 - Fixed hashline replacements that accidentally restated unchanged lines above and below the selected range so they no longer duplicate both boundary lines ([#1664](https://github.com/can1357/oh-my-pi/issues/1664)).
 
 ## [15.7.0] - 2026-05-31
+
 ### Added
 
 - Added `replace block N:` and `delete block N` patch syntax to replace or delete the entire syntactic block that begins on line N using tree-sitter-resolved spans
@@ -94,6 +170,7 @@
 - Added `resolveBlockEdits` and block edit type definitions to the package API for resolving deferred `replace block` / `delete block` edits
 
 ## [15.5.13] - 2026-05-29
+
 ### Breaking Changes
 
 - Changed hashline section tags from 3-hex to 4-hex content-hash tags, so legacy 3-digit tags are no longer valid
@@ -102,7 +179,7 @@
 ### Added
 
 - Added `maxPaths` and `maxVersionsPerPath` options to `InMemorySnapshotStore` to bound tracked paths and per-path snapshot history
-- Re-introduced balance-validated boundary repair in `applyEdits`. A replacement hunk (`replace N..M:` + body) is normalized so its payload preserves the deleted region's delimiter balance: when the body restates a closing delimiter that survives just outside the range (duplicate `}` / `);` / `]`) the echo is dropped, and when the range deletes a structural closer the body never restates (missing closer) the closer is spared instead of deleted. A repair fires only when one boundary operation drives the per-channel `()` / `[]` / `{}` imbalance to exactly zero while leaving surrounding text byte-identical (single-line ops are limited to pure structural-closer lines), so balance-preserving edits and intentional balanced duplicates are never touched. Bracket couples are also bounded by line count: structural balance delta repair is capped to 10 duplicate lines across all channels combined, massive balanced blocks are skipped.
+- Re-introduced balance-validated boundary repair in `applyEdits`. A replacement hunk (`replace N..M:` + body) is normalized so its payload preserves the deleted region's delimiter balance: when the body restates a closing delimiter that survives just outside the range (duplicate `}` / `);` / `]`) the echo is dropped, and when the range deletes a structural closer the body never restates (missing closer) the closer is spared instead of deleted. A repair fires only when one boundary operation drives the per-channel `()` / `[]` / `{}` imbalance to exactly zero while leaving surrounding text byte-identical (single-line ops are limited to pure structural-closer lines), so balance-preserving edits and intentional balanced duplicates are never touched. Bracket counting skips strings, template literals, and comments. Each repair surfaces a `delimiter-balance` warning through `ApplyResult.warnings`.
 
 ### Changed
 
@@ -129,6 +206,7 @@
 - `MismatchError` now distinguishes "hash recognized but file content drifted" from "hash never recorded for this path". The latter (likely fabricated or carried over from a prior session) emits a dedicated `hash #X is not from this session` rejection message with explicit "never invent the tag" guidance. The `MismatchDetails` interface gains an optional `hashRecognized?: boolean` (defaults to `true` for backward compatibility); `MismatchError` exposes it as a readonly field so callers can branch on the cause.
 
 ## [15.5.8] - 2026-05-28
+
 ### Breaking Changes
 
 - Removed the single-number hunk header shorthand. A hunk header now REQUIRES two line numbers (`A A` for a single line, `A B` for a range); a bare `A` row throws `single-number hunk header "A" is no longer accepted`. The `&A` body-row shorthand for `&A..A` is unchanged.
@@ -169,7 +247,7 @@
 
 ### Breaking Changes
 
-- Redesigned hashline syntax around range anchors (`A-B:`, `A:`, `BOF:`, `EOF:`) and per-line payload sigils (`|`, `↑`, `↓`). Old op-line insert syntax and `\` payload continuations are no longer supported.
+- Changed hashline payload continuations from `+TEXT` to `\TEXT`; use `\` for an explicit blank payload line.
 
 ### Added
 
@@ -182,11 +260,12 @@
 
 ### Removed
 
-- Removed legacy deletion semantics that treated bare `A-B:` as a blank-line replacement; a bare range anchor now deletes the range.
+- Removed the `A-B!` / `A!` deletion operator. Use `A-B:` with the desired payload (or empty payload to blank the range) instead.
 
 All notable changes to this package will be documented in this file.
 
 ## [15.5.4] - 2026-05-27
+
 ### Added
 
 - Added a high-level `Patcher` API with all-or-nothing `apply` and staged `prepare`/`commit` flows for multi-file patch updates

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -267,6 +267,13 @@ describe("Coding Agent Tools", () => {
 	let searchTool: SearchTool;
 	let findTool: FindTool;
 	let originalEditVariant: string | undefined;
+
+	beforeAll(async () => {
+		// Warm the process-global shell snapshot + persistent session once. The
+		// first real bash command otherwise folds ~40ms of one-time shell setup
+		// into its own measured body time; this hoists it out of every test.
+		await new BashTool(createTestToolSession(os.tmpdir())).execute("warm-shell", { command: "true" });
+	});
 
 	beforeEach(() => {
 		// Force replace mode for edit tool tests using old_text/new_text
@@ -876,6 +883,20 @@ describe("Coding Agent Tools", () => {
 
 			expect(getTextOutput(result)).toContain("Successfully wrote");
 		});
+		it.skipIf(process.platform === "win32")(
+			"should tell the model when a shebang write was chmodded executable",
+			async () => {
+				const testFile = path.join(testDir, "script.sh");
+				const content = "#!/usr/bin/env bash\nprintf 'ok\\n'\n";
+
+				const result = await writeTool.execute("test-call-3-shebang", { path: testFile, content });
+
+				expect(getTextOutput(result)).toContain("[Notice: Made executable via chmod +x]");
+				expect(result.details?.madeExecutable).toBe(true);
+				expect(fs.statSync(testFile).mode & 0o111).toBe(0o111);
+			},
+		);
+
 		it("should write to a new local:// path under the session local root", async () => {
 			const localPath = "local://handoffs/new-output.json";
 			const content = '{"ok":true}\n';
@@ -1259,7 +1280,7 @@ function b() {
 			const updates: string[] = [];
 			const result = await bashTool.execute(
 				"test-call-8-stream",
-				{ command: "for i in 1 2 3; do echo $i; sleep 0.1; done" },
+				{ command: "printf '1\\n'; sleep 0.03; printf '2\\n3\\n'" },
 				undefined,
 				update => {
 					const text = update.content?.find(c => c.type === "text")?.text ?? "";
@@ -1284,7 +1305,10 @@ function b() {
 
 		it("should write truncated output to artifacts", async () => {
 			const result = await bashTool.execute("test-call-8-artifact", {
-				command: "printf 'a%.0s' {1..60000}",
+				// A single line past the 768-byte column cap is the minimal output
+				// that trips truncation + artifact spill; the old 60K-arg brace
+				// expansion paid ~60ms of shell time to prove the same path.
+				command: "printf 'a%.0s' {1..2000}",
 			});
 
 			const artifactId = result.details?.meta?.truncation?.artifactId;
@@ -1361,7 +1385,7 @@ function b() {
 			);
 
 			const result = await autoBackgroundBashTool.execute("test-call-9-auto-running", {
-				command: "printf 'start\\n'; sleep 0.05; printf 'done\\n'",
+				command: "printf 'start\\n'; sleep 0.03; printf 'done\\n'",
 			});
 
 			expect(result.details?.async?.state).toBe("running");
@@ -1406,18 +1430,19 @@ function b() {
 				),
 			);
 			// Drive the effective timeout via the production clamp seam so the
-			// backgrounded job times out in ~0.5s instead of a real wall-clock
-			// second. 0.5s still renders as "1 seconds" in the executor message
-			// (Math.round), so that delivery assertion is unchanged; the
-			// auto-background-on-timeout decision path is identical.
-			vi.spyOn(toolTimeouts, "clampTimeout").mockReturnValue(0.5);
+			// backgrounded job hits its timeout in ~0.1s instead of a real
+			// wall-clock second. The auto-background-on-timeout decision path is
+			// unchanged; we assert the timeout-notice prefix rather than the
+			// rounded seconds (it reads "0" here only because the seam
+			// deliberately undercuts the 1s production floor).
+			vi.spyOn(toolTimeouts, "clampTimeout").mockReturnValue(0.05);
 
 			const result = await autoBackgroundBashTool.execute("test-call-9-auto-timeout-background", {
-				command: "printf 'start\\n'; sleep 1.2; printf 'done\\n'",
+				command: "printf 'start\\n'; sleep 0.5; printf 'done\\n'",
 				timeout: 1,
 			});
 
-			expect(result.details?.timeoutSeconds).toBe(0.5);
+			expect(result.details?.timeoutSeconds).toBe(0.05);
 			expect(result.details?.async?.state).toBe("running");
 			expect(getTextOutput(result)).toContain("Background job");
 			const jobId = result.details?.async?.jobId;
@@ -1430,7 +1455,7 @@ function b() {
 			await asyncJobManager.drainDeliveries({ timeoutMs: 1 });
 			expect(deliveries).toHaveLength(1);
 			expect(deliveries[0]?.jobId).toBe(jobId);
-			expect(deliveries[0]?.text).toContain("Command timed out after 1 seconds");
+			expect(deliveries[0]?.text).toContain("Command timed out after");
 			await asyncJobManager.dispose();
 		});
 
@@ -1447,7 +1472,7 @@ function b() {
 		it("should respect timeout", async () => {
 			// Reduce the effective timeout through the production clamp seam; the
 			// real subprocess kill-on-timeout path is still exercised, just faster.
-			vi.spyOn(toolTimeouts, "clampTimeout").mockReturnValue(0.1);
+			vi.spyOn(toolTimeouts, "clampTimeout").mockReturnValue(0.05);
 			await expect(bashTool.execute("test-call-10", { command: "sleep 5", timeout: 1 })).rejects.toThrow(
 				/timed out/i,
 			);
@@ -1528,6 +1553,46 @@ function b() {
 			// If it correctly acknowledged, the delivery is suppressed.
 			expect(manager.hasPendingDeliveries()).toBe(false);
 		});
+
+		it("flags still-waiting polls and all-running snapshots as contextually useless", async () => {
+			const manager = new AsyncJobManager({
+				onJobComplete: async () => {},
+			});
+			const session = createTestToolSession(testDir, Settings.isolated({ "bash.autoBackground.enabled": true }), {
+				asyncJobManager: manager,
+			});
+			const jobTool = new JobTool(session);
+			const gate = Promise.withResolvers<string>();
+			const jobId = manager.register("bash", "long job", () => gate.promise);
+
+			// Poll cut short while the job is still running: a pure "still
+			// waiting" snapshot carries no information once consumed.
+			const controller = new AbortController();
+			const pollPromise = jobTool.execute("test-call-useless-poll", { poll: [jobId] }, controller.signal);
+			controller.abort();
+			const polled = await pollPromise;
+			expect(polled.useless).toBe(true);
+
+			// A list snapshot showing only running jobs is equally uneventful.
+			const listed = await jobTool.execute("test-call-useless-list", { list: true });
+			expect(listed.useless).toBe(true);
+
+			// Once the job settles, the result is informative — flag absent.
+			gate.resolve("done");
+			const settled = await jobTool.execute("test-call-useless-settled", { poll: [jobId] });
+			expect(getTextOutput(settled)).toContain("Completed");
+			expect(settled.useless).toBeUndefined();
+
+			// Nothing left to wait for: noise once consumed.
+			const idle = await jobTool.execute("test-call-useless-idle", {});
+			expect(getTextOutput(idle)).toContain("No running background jobs");
+			expect(idle.useless).toBe(true);
+
+			// A poll naming unknown ids found nothing — equally uneventful.
+			const missing = await jobTool.execute("test-call-useless-missing", { poll: ["no-such-job"] });
+			expect(getTextOutput(missing)).toContain("No matching jobs found");
+			expect(missing.useless).toBe(true);
+		});
 	});
 
 	describe("search tool", () => {
@@ -1544,6 +1609,30 @@ function b() {
 			expect(output).not.toContain("# example.txt");
 			// PI_EDIT_VARIANT=replace in beforeEach disables hashlines; expect line-number mode
 			expect(output).toMatch(/\*2\|match line/);
+		});
+
+		it("flags a zero-match search as contextually useless", async () => {
+			fs.writeFileSync(path.join(testDir, "plain.txt"), "nothing interesting here\n");
+
+			const result = await searchTool.execute("test-call-useless-search", {
+				pattern: "ZZZ_NO_SUCH_TOKEN_999",
+				paths: [testDir],
+			});
+
+			expect(getTextOutput(result)).toContain("No matches found");
+			expect(result.useless).toBe(true);
+		});
+
+		it("flags a zero-match search useless even when it reports missing paths", async () => {
+			fs.writeFileSync(path.join(testDir, "plain.txt"), "nothing interesting here\n");
+
+			const result = await searchTool.execute("test-call-useless-search-warn", {
+				pattern: "ZZZ_NO_SUCH_TOKEN_999",
+				paths: [testDir, path.join(testDir, "missing-file.txt")],
+			});
+
+			expect(getTextOutput(result)).toContain("Skipped missing paths");
+			expect(result.useless).toBe(true);
 		});
 
 		it("should accept wildcard patterns in paths", async () => {

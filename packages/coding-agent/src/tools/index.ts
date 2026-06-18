@@ -1,6 +1,6 @@
 import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTelemetryConfig, AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { FetchImpl, ToolChoice } from "@oh-my-pi/pi-ai";
+import type { FetchImpl, Model, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
@@ -22,10 +22,13 @@ import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
 import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
+import type { UsageStatistics } from "../session/session-entries";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import { TaskTool } from "../task";
 import type { MacOSSandboxRelaunchResult } from "../task/omp-command";
 import type { AgentOutputManager } from "../task/output-manager";
+import { canSpawnAtDepth } from "../task/types";
+import { countToolsForAutoDiscovery } from "../tool-discovery/mode";
 import {
 	type DiscoverableTool,
 	type DiscoverableToolSearchIndex,
@@ -41,6 +44,7 @@ import { AstEditTool } from "./ast-edit";
 import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
+import type { BuiltinToolName } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, RewindTool } from "./checkpoint";
 import { CompactTool } from "./compact";
 import { DebugTool } from "./debug";
@@ -51,14 +55,15 @@ import { GithubTool } from "./gh";
 import { InspectImageTool } from "./inspect-image";
 import { IrcTool, isIrcEnabled } from "./irc";
 import { JobTool } from "./job";
+import { LearnTool } from "./learn";
 import { MacOSSandboxTool } from "./macos-sandbox";
+import { ManageSkillTool } from "./manage-skill";
 import { MemoryEditTool } from "./memory-edit";
 import { MemoryRecallTool } from "./memory-recall";
 import { MemoryReflectTool } from "./memory-reflect";
 import { MemoryRetainTool } from "./memory-retain";
 import { wrapToolWithMetaNotice } from "./output-meta";
 import { ReadTool } from "./read";
-import { RenderMermaidTool } from "./render-mermaid";
 import { createReportToolIssueTool, isAutoQaEnabled } from "./report-tool-issue";
 import { ResolveTool } from "./resolve";
 import { reportFindingTool } from "./review";
@@ -92,13 +97,14 @@ export * from "./image-gen";
 export * from "./inspect-image";
 export * from "./irc";
 export * from "./job";
+export * from "./learn";
 export * from "./macos-sandbox";
+export * from "./manage-skill";
 export * from "./memory-edit";
 export * from "./memory-recall";
 export * from "./memory-reflect";
 export * from "./memory-retain";
 export * from "./read";
-export * from "./render-mermaid";
 export * from "./report-tool-issue";
 export * from "./resolve";
 export * from "./review";
@@ -171,6 +177,13 @@ export interface ToolSession {
 	cwd: string;
 	/** Whether UI is available */
 	hasUI: boolean;
+	/**
+	 * Suppress the spawn specialization/coordination advisory appended to `task`
+	 * results. Set by internal/programmatic callers (e.g. the commit agent's
+	 * file-analysis fan-out) whose results are consumed by code — not by a model
+	 * orchestrating further spawns — so the nudge would only be noise.
+	 */
+	suppressSpawnAdvisory?: boolean;
 	/** Optional fetch implementation injected into the URL read pipeline (tests, proxies). Defaults to global fetch. */
 	fetch?: FetchImpl;
 	/** Skip Python kernel availability check and warmup */
@@ -248,6 +261,8 @@ export interface ToolSession {
 	getActiveModelContextWindow?: () => number | undefined;
 	/** Get the current session model string, regardless of how it was chosen */
 	getActiveModelString?: () => string | undefined;
+	/** Get the current session model object (provider/api capabilities), regardless of how it was chosen. */
+	getActiveModel?: () => Model | undefined;
 	/** Auth storage for passing to subagents (avoids re-discovery) */
 	authStorage?: import("../session/auth-storage").AuthStorage;
 	/** Model registry for passing to subagents (avoids re-discovery) */
@@ -284,7 +299,7 @@ export interface ToolSession {
 	/** Goal runtime for the active agent session. */
 	getGoalRuntime?: () => GoalRuntime | undefined;
 	/** Get cumulative session usage statistics (input/output tokens, cost). */
-	getUsageStatistics?: () => import("../session/session-manager").UsageStatistics;
+	getUsageStatistics?: () => UsageStatistics;
 	/** Current per-turn token budget {total, spent, hard} for the eval `budget` helper. */
 	getTurnBudget?: () => { total: number | null; spent: number; hard: boolean };
 	/** Record output tokens consumed by an eval-spawned subagent toward the current turn budget. */
@@ -435,13 +450,12 @@ export function filterInitialToolsForDiscoveryAll(
  * Public callable factory map. External callers may invoke `BUILTIN_TOOLS.read(session)` or
  * `BUILTIN_TOOLS[name](session)` to construct a tool directly.
  */
-export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
+export const BUILTIN_TOOLS: Record<BuiltinToolName | "sandbox", ToolFactory> = {
 	read: s => new ReadTool(s),
 	bash: s => new BashTool(s),
 	edit: s => new EditTool(s),
 	ast_grep: s => new AstGrepTool(s),
 	ast_edit: s => new AstEditTool(s),
-	render_mermaid: s => new RenderMermaidTool(s),
 	ask: AskTool.createIf,
 	debug: DebugTool.createIf,
 	eval: s => new EvalTool(s),
@@ -468,6 +482,8 @@ export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
 	retain: MemoryRetainTool.createIf,
 	recall: MemoryRecallTool.createIf,
 	reflect: MemoryReflectTool.createIf,
+	learn: LearnTool.createIf,
+	manage_skill: ManageSkillTool.createIf,
 };
 
 export const HIDDEN_TOOLS: Record<string, ToolFactory> = {
@@ -478,7 +494,7 @@ export const HIDDEN_TOOLS: Record<string, ToolFactory> = {
 	goal: s => new GoalTool(s),
 };
 
-export type ToolName = keyof typeof BUILTIN_TOOLS;
+export type ToolName = BuiltinToolName;
 
 /**
  * Create tools from BUILTIN_TOOLS registry.
@@ -548,10 +564,27 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				if (!requestedTools.includes(name)) requestedTools.push(name);
 			}
 		}
+		// Auto-learn tools are gated by `autolearn.enabled` but, like the memory
+		// tools above, must also be force-included into an explicit requestedTools
+		// list so a restricted top-level session whose controller/guidance is
+		// active still exposes the tools the nudge points at. Gated to top-level
+		// (taskDepth 0): the controller only runs there, so a subagent's explicit
+		// tool whitelist must never be silently widened with write-capable tools.
+		if (session.settings.get("autolearn.enabled") && (session.taskDepth ?? 0) === 0) {
+			if (!requestedTools.includes("manage_skill")) requestedTools.push("manage_skill");
+			if (
+				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "") &&
+				!requestedTools.includes("learn")
+			) {
+				requestedTools.push("learn");
+			}
+		}
 	}
-	const effectiveDiscoveryMode = resolveEffectiveToolDiscoveryMode(session.settings, {
-		contextWindow: session.getActiveModelContextWindow?.(),
-	});
+	const effectiveDiscoveryMode = resolveEffectiveToolDiscoveryMode(
+		session.settings,
+		{ contextWindow: session.getActiveModelContextWindow?.() },
+		countToolsForAutoDiscovery(requestedTools ?? Object.keys(BUILTIN_TOOLS)),
+	);
 	const discoveryActive = effectiveDiscoveryMode !== "off";
 
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
@@ -567,7 +600,6 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "github") return session.settings.get("github.enabled");
 		if (name === "ast_grep") return session.settings.get("astGrep.enabled");
 		if (name === "ast_edit") return session.settings.get("astEdit.enabled");
-		if (name === "render_mermaid") return session.settings.get("renderMermaid.enabled");
 		if (name === "inspect_image") return session.settings.get("inspect_image.enabled");
 		if (name === "web_search") return session.settings.get("web_search.enabled");
 		if (name === "search_tool_bm25") return discoveryActive;
@@ -578,10 +610,16 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "retain" || name === "recall" || name === "reflect") {
 			return ["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
 		}
+		if (name === "manage_skill") return session.settings.get("autolearn.enabled") && (session.taskDepth ?? 0) === 0;
+		if (name === "learn") {
+			return (
+				session.settings.get("autolearn.enabled") &&
+				(session.taskDepth ?? 0) === 0 &&
+				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "")
+			);
+		}
 		if (name === "task") {
-			const maxDepth = session.settings.get("task.maxRecursionDepth") ?? 2;
-			const currentDepth = session.taskDepth ?? 0;
-			return maxDepth < 0 || currentDepth < maxDepth;
+			return canSpawnAtDepth(session.settings.get("task.maxRecursionDepth") ?? 2, session.taskDepth ?? 0);
 		}
 		if (name === "workflow") {
 			return session.settings.get("workflow.enabled") === true && (session.taskDepth ?? 0) === 0;

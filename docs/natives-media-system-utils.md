@@ -25,7 +25,7 @@ There is no native `PhotonImage` class, `image.rs`, or ProjFS overlay helper mod
 | `copyToClipboard(text)`               | `copy_to_clipboard`            | `clipboard.rs`  |
 | `readImageFromClipboard()`            | `read_image_from_clipboard`    | `clipboard.rs`  |
 | `countTokens(input, encoding?)`       | `count_tokens`                 | `tokens.rs`     |
-| `detectMacOSAppearance()`             | `detect_mac_os_appearance`     | `appearance.rs` |
+| `detectMacOSAppearance()`             | `detect_macos_appearance`      | `appearance.rs` |
 | `MacAppearanceObserver.start(cb)`     | `MacAppearanceObserver::start` | `appearance.rs` |
 | `MacOSPowerAssertion.start(options?)` | `MacOSPowerAssertion::start`   | `power.rs`      |
 | `getWorkProfile(lastSeconds)`         | `get_work_profile`             | `prof.rs`       |
@@ -55,7 +55,7 @@ Conversion behavior:
 
 ### Clipboard (`clipboard`)
 
-- `copyToClipboard(text)` is a synchronous native call using `arboard::Clipboard::set_text`.
+- `copyToClipboard(text)` is a synchronous native call using `arboard::Clipboard::set_text`. On Linux a single process-lifetime `Clipboard` instance is kept alive (X11/Wayland selection ownership); macOS/Windows use a transient instance per call.
 - `readImageFromClipboard()` runs in `task::blocking("clipboard.read_image", (), ...)`.
 - Image read returns `null`/`undefined` when `arboard` reports `ContentNotAvailable`.
 - Successful image read converts clipboard RGBA data into PNG bytes and returns `{ data: Uint8Array, mimeType: "image/png" }`.
@@ -112,7 +112,7 @@ Failure transitions:
 
 ### Clipboard lifecycle
 
-- Text copy constructs an `arboard::Clipboard` and calls `set_text` synchronously.
+- Text copy calls `set_text` synchronously; macOS/Windows construct a transient `arboard::Clipboard` per call, while Linux initializes one process-lifetime instance on first copy and reuses it.
 - Image read constructs an `arboard::Clipboard`, calls `get_image`, encodes PNG on success, maps `ContentNotAvailable` to `None`, and rejects other errors.
 
 ### Work profiling lifecycle

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { chunkForConPTY, ProcessTerminal } from "@oh-my-pi/pi-tui/terminal";
+import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 
 // Regression test for https://github.com/can1357/oh-my-pi/issues/2034
 //
@@ -161,6 +162,9 @@ describe("issue #2034: chunk large terminal writes on Windows ConPTY", () => {
 		const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 		const originalWslDistro = Bun.env.WSL_DISTRO_NAME;
 		const originalWslInterop = Bun.env.WSL_INTEROP;
+		// This block drives the real ProcessTerminal#write path, so it opts out of
+		// the test-default headless suppression for the duration of each case.
+		let previousHeadless = false;
 
 		function setEnv(key: string, value: string | undefined): void {
 			if (value === undefined) delete Bun.env[key];
@@ -173,10 +177,12 @@ describe("issue #2034: chunk large terminal writes on Windows ConPTY", () => {
 			// Clear WSL markers by default; tests opt in.
 			setEnv("WSL_DISTRO_NAME", undefined);
 			setEnv("WSL_INTEROP", undefined);
+			previousHeadless = setTerminalHeadless(false);
 		});
 
 		afterEach(() => {
 			vi.restoreAllMocks();
+			setTerminalHeadless(previousHeadless);
 			if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
 			if (stdinIsTtyDescriptor) Object.defineProperty(process.stdin, "isTTY", stdinIsTtyDescriptor);
 			else Reflect.deleteProperty(process.stdin, "isTTY");
@@ -272,6 +278,43 @@ describe("issue #2034: chunk large terminal writes on Windows ConPTY", () => {
 				expect(Buffer.byteLength(chunk, "utf8")).toBeLessThanOrEqual(16 * 1024);
 			}
 			expect(conptyChunks.join("")).toBe(payload);
+		});
+
+		it("marks the terminal dead when stdout emits EIO after a write (#2284)", () => {
+			const writes = captureStdoutWrites();
+			const terminal = new ProcessTerminal();
+			const err = Object.assign(new Error("EIO: i/o error, write"), {
+				code: "EIO",
+				fd: 5,
+				syscall: "write",
+				errno: -5,
+			});
+
+			try {
+				terminal.write("first frame");
+				process.stdout.emit("error", err);
+				terminal.write("second frame");
+
+				expect(writes).toEqual(["first frame"]);
+			} finally {
+				terminal.stop();
+			}
+		});
+
+		it("keeps stdout error events handled after stop for delayed write failures (#2284)", () => {
+			captureStdoutWrites();
+			const terminal = new ProcessTerminal();
+			const err = Object.assign(new Error("EIO: i/o error, write"), {
+				code: "EIO",
+				fd: 5,
+				syscall: "write",
+				errno: -5,
+			});
+
+			terminal.write("restore frame");
+			terminal.stop();
+
+			expect(() => process.stdout.emit("error", err)).not.toThrow();
 		});
 	});
 });

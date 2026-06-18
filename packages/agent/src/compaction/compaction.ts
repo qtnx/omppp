@@ -6,21 +6,25 @@
  */
 
 import {
+	type ApiKey,
 	type AssistantMessage,
 	Effort,
 	type FetchImpl,
 	type Message,
 	type MessageAttribution,
 	type Model,
+	ProviderHttpError,
 	type Tool,
 	type Usage,
+	withAuth,
 } from "@oh-my-pi/pi-ai";
+import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
-import { countTokens } from "@oh-my-pi/pi-natives";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
-import { SNAPCOMPACT_FRAME_TOKEN_ESTIMATE } from "@oh-my-pi/snapcompact";
+import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type AgentTelemetry, instrumentedCompleteSimple } from "../telemetry";
 import { ThinkingLevel } from "../thinking";
+import { countTokens } from "../tokenizer";
 import type { AgentMessage } from "../types";
 import type { CompactionEntry, SessionEntry } from "./entries";
 import { type ConvertToLlm, createBranchSummaryMessage, createCustomMessage, defaultConvertToLlm } from "./messages";
@@ -324,7 +328,7 @@ export function estimateTokens(message: AgentMessage): number {
 			fragments.push(message.summary);
 			if (message.role === "compactionSummary" && message.images) {
 				// Snapcompact frames render at ≥1568px; providers bill the downscaled cap.
-				extra += message.images.length * SNAPCOMPACT_FRAME_TOKEN_ESTIMATE;
+				extra += message.images.length * snapcompact.FRAME_TOKEN_ESTIMATE;
 			}
 			break;
 		}
@@ -579,11 +583,8 @@ function resolveCompactionEffort(model: Model, level: ThinkingLevel | undefined)
  * message-based check is still required upstream — see issue #986.
  */
 function createSummarizationError(prefix: string, response: AssistantMessage): Error {
-	const error: Error & { status?: number } = new Error(`${prefix}: ${response.errorMessage || "Unknown error"}`);
-	if (response.errorStatus !== undefined) {
-		error.status = response.errorStatus;
-	}
-	return error;
+	const text = `${prefix}: ${response.errorMessage || "Unknown error"}`;
+	return response.errorStatus === undefined ? new Error(text) : new ProviderHttpError(text, response.errorStatus);
 }
 
 /**
@@ -622,7 +623,7 @@ export async function generateSummary(
 	currentMessages: AgentMessage[],
 	model: Model,
 	reserveTokens: number,
-	apiKey: string,
+	apiKey: ApiKey,
 	signal?: AbortSignal,
 	customInstructions?: string,
 	previousSummary?: string,
@@ -642,7 +643,7 @@ export async function generateSummary(
 	// Serialize conversation to text so model doesn't try to continue it
 	// Convert to LLM messages first (handles custom app messages when caller provides a transformer).
 	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(currentMessages);
-	const conversationText = serializeConversation(llmMessages);
+	const conversationText = serializeConversation(llmMessages, preferredDialect(model.id));
 
 	// Build the prompt with conversation wrapped in tags
 	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
@@ -736,7 +737,7 @@ export function renderHandoffPrompt(customInstructions?: string): string {
 export async function generateHandoff(
 	messages: AgentMessage[],
 	model: Model,
-	apiKey: string,
+	apiKey: ApiKey,
 	options: HandoffOptions,
 	signal?: AbortSignal,
 ): Promise<string> {
@@ -784,13 +785,13 @@ async function generateShortSummary(
 	historySummary: string | undefined,
 	model: Model,
 	reserveTokens: number,
-	apiKey: string,
+	apiKey: ApiKey,
 	signal?: AbortSignal,
 	options?: SummaryOptions,
 ): Promise<string> {
 	const maxTokens = Math.min(512, Math.floor(0.2 * reserveTokens));
 	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(recentMessages);
-	const conversationText = serializeConversation(llmMessages);
+	const conversationText = serializeConversation(llmMessages, preferredDialect(model.id));
 
 	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
 	if (historySummary) {
@@ -807,6 +808,7 @@ async function generateShortSummary(
 				prompt: promptText,
 			},
 			signal,
+			{ fetch: options?.fetch },
 		);
 		return remote.summary;
 	}
@@ -981,7 +983,7 @@ const TURN_PREFIX_SUMMARIZATION_PROMPT = prompt.render(compactionTurnPrefixPromp
 export async function compact(
 	preparation: CompactionPreparation,
 	model: Model,
-	apiKey: string,
+	apiKey: ApiKey,
 	customInstructions?: string,
 	signal?: AbortSignal,
 	options?: SummaryOptions,
@@ -1032,16 +1034,25 @@ export async function compact(
 		);
 		if (remoteHistory.length > 0) {
 			try {
-				const remote = await requestOpenAiRemoteCompaction(
-					model,
+				const remote = await withAuth(
 					apiKey,
-					remoteHistory,
-					summaryOptions.remoteInstructions ?? SUMMARIZATION_SYSTEM_PROMPT,
-					signal,
-					{ fetch: summaryOptions.fetch },
+					key =>
+						requestOpenAiRemoteCompaction(
+							model,
+							key,
+							remoteHistory,
+							summaryOptions.remoteInstructions ?? SUMMARIZATION_SYSTEM_PROMPT,
+							signal,
+							{ fetch: summaryOptions.fetch },
+						),
+					{ signal },
 				);
 				preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, remote);
 			} catch (err) {
+				// A user/session abort is a cancellation, not a remote failure —
+				// swallowing it here would downgrade Esc into "fall back to local
+				// summarization" and keep compaction running on an aborted signal.
+				if (signal?.aborted) throw err;
 				logger.warn("OpenAI remote compaction failed, falling back to local summarization", {
 					error: err instanceof Error ? err.message : String(err),
 					model: model.id,
@@ -1109,6 +1120,7 @@ export async function compact(
 			// Same propagation as summaryOptions above — generateShortSummary
 			// resolves its own reasoning via resolveCompactionEffort.
 			thinkingLevel: options?.thinkingLevel,
+			fetch: summaryOptions.fetch,
 		},
 	);
 
@@ -1137,14 +1149,14 @@ async function generateTurnPrefixSummary(
 	messages: AgentMessage[],
 	model: Model,
 	reserveTokens: number,
-	apiKey: string,
+	apiKey: ApiKey,
 	signal?: AbortSignal,
 	options?: SummaryOptions,
 ): Promise<string> {
 	const maxTokens = Math.floor(0.5 * reserveTokens); // Smaller budget for turn prefix
 
 	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(messages);
-	const conversationText = serializeConversation(llmMessages);
+	const conversationText = serializeConversation(llmMessages, preferredDialect(model.id));
 	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
 	const summarizationMessages = [
 		{

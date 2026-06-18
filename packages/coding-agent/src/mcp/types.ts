@@ -55,6 +55,8 @@ export interface MCPAuthConfig {
 	clientId?: string;
 	/** Client secret — persisted for token refresh */
 	clientSecret?: string;
+	/** MCP resource URI — persisted for OAuth resource indicators during refresh */
+	resource?: string;
 }
 
 /** Base server config with shared options */
@@ -72,6 +74,8 @@ interface MCPServerConfigBase {
 		redirectUri?: string;
 		callbackPort?: number;
 		callbackPath?: string;
+		/** `prompt` param for the authorization request (default "consent"; "" to omit) */
+		prompt?: string;
 	};
 }
 

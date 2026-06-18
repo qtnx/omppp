@@ -14,15 +14,20 @@ import type {
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { FetchImpl, Model, Static, TSchema } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
+import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
+import type { type as ArkType } from "arktype";
+import type * as zod from "zod/v4";
 import type { Rule } from "../../capability/rule";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type { HookUIContext } from "../../extensibility/hooks/types";
+import type * as PiCodingAgent from "../../index";
 import type { Theme } from "../../modes/theme/theme";
 import type { ReadonlySessionManager } from "../../session/session-manager";
 import type { TodoItem } from "../../tools/todo";
 import type { AutoCompactionReason } from "../shared-events";
+import type * as TypeBox from "../typebox";
 
 /** Alias for clarity */
 export type CustomToolUIContext = HookUIContext;
@@ -57,13 +62,15 @@ export interface CustomToolAPI {
 	/** Whether UI is available (false in print/RPC mode) */
 	hasUI: boolean;
 	/** File logger for error/warning/debug messages */
-	logger: typeof import("@oh-my-pi/pi-utils").logger;
-	/** Injected zod-backed typebox shim (legacy/compat — Zod-authored tools are preferred). */
-	typebox: typeof import("../typebox");
-	/** Injected zod module for Zod-authored custom tools. */
-	zod: typeof import("zod/v4");
+	logger: typeof PiLogger;
+	/** Injected typebox shim (legacy/compat — arktype-authored tools are preferred). */
+	typebox: typeof TypeBox;
+	/** Injected arktype module for arktype-authored custom tools. */
+	arktype: typeof ArkType;
+	/** Injected zod/v4 module for canonical parameter schemas. */
+	zod: typeof zod;
 	/** Injected pi-coding-agent exports */
-	pi: typeof import("../..");
+	pi: typeof PiCodingAgent;
 	/** Push a preview action that can later be resolved with the hidden resolve tool */
 	pushPendingAction(action: CustomToolPendingAction): void;
 }
@@ -192,7 +199,7 @@ export interface CustomTool<TParams extends TSchema = TSchema, TDetails = any> {
 	strict?: boolean;
 	/** Description for LLM */
 	description: string;
-	/** Parameter schema (Zod or TypeBox; TypeBox is auto-lifted to Zod at registration). */
+	/** Parameter schema (arktype, TypeBox, or legacy formats). */
 	parameters: TParams;
 	/** If true, tool is excluded unless explicitly listed in --tools or agent's tools field */
 	hidden?: boolean;

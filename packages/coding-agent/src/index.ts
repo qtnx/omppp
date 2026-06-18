@@ -8,6 +8,8 @@ import { HookEditorComponent, HookInputComponent, HookSelectorComponent } from "
 export { Container, Markdown, Spacer, Text } from "@oh-my-pi/pi-tui";
 // Logging
 export { getAgentDir, logger, VERSION } from "@oh-my-pi/pi-utils";
+export * as zod from "zod/v4";
+export { z } from "zod/v4";
 export * from "./config/keybindings";
 export * from "./config/model-registry";
 // Prompt templates
@@ -44,8 +46,14 @@ export * from "./session/auth-storage";
 export * from "./session/indexed-session-storage";
 export * from "./session/messages";
 export * from "./session/redis-session-storage";
+export * from "./session/session-context";
 export * from "./session/session-dump-format";
-export * from "./session/session-manager";
+export * from "./session/session-entries";
+export * from "./session/session-listing";
+export * from "./session/session-loader";
+export type { ReadonlySessionManager } from "./session/session-manager";
+export { SessionManager } from "./session/session-manager";
+export * from "./session/session-migrations";
 export * from "./session/session-storage";
 export * from "./session/sql-session-storage";
 export * from "./task/executor";

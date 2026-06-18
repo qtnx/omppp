@@ -102,7 +102,7 @@ interface WorkerHandle {
 function createSyncWorker(): Worker {
 	const hostEntry = workerHostEntry();
 	if (hostEntry) {
-		return new Worker(hostEntry, { type: "module", argv: ["__omp_stats_sync_worker"] });
+		return new Worker(hostEntry, { type: "module", argv: ["__omp_worker_stats_sync"] });
 	}
 	return new Worker(new URL("./sync-worker.ts", import.meta.url).href, { type: "module" });
 }
@@ -264,6 +264,7 @@ export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: 
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+const FIVE_MIN_MS = 5 * 60 * 1000;
 
 type TimeRange = "1h" | "24h" | "7d" | "30d" | "90d" | "all";
 
@@ -283,11 +284,11 @@ const DEFAULT_TIME_RANGE: TimeRange = "24h";
 const TIME_RANGE_TO_CONFIG: Record<TimeRange, Omit<TimeRangeConfig, "cutoff">> = {
 	"1h": {
 		timeSeriesHours: 1,
-		timeSeriesBucketMs: HOUR_MS,
+		timeSeriesBucketMs: FIVE_MIN_MS,
 		modelSeriesDays: 1,
-		modelSeriesBucketMs: HOUR_MS,
+		modelSeriesBucketMs: FIVE_MIN_MS,
 		modelPerformanceDays: 1,
-		modelPerformanceBucketMs: HOUR_MS,
+		modelPerformanceBucketMs: FIVE_MIN_MS,
 		costSeriesDays: 1,
 	},
 	"24h": {

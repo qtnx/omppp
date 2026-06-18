@@ -1,12 +1,13 @@
 import * as path from "node:path";
 import { formatHashlineHeader } from "@oh-my-pi/hashline";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type { ToolExample } from "@oh-my-pi/pi-ai";
 import { type AstFindMatch, astGrep } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
-import { recordFileSnapshot } from "../edit/file-snapshot-store";
+import { type } from "arktype";
+import { recordFileSnapshot, recordSeenLinesFromBody } from "../edit/file-snapshot-store";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import astGrepDescription from "../prompts/tools/ast-grep.md" with { type: "text" };
@@ -33,13 +34,14 @@ import {
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
-const astGrepSchema = z.object({
-	pat: z.string().describe("ast pattern"),
-	paths: z
-		.array(z.string().describe("file, directory, glob, or internal URL to search"))
-		.min(1)
+const astGrepSchema = type({
+	pat: type("string").describe("ast pattern"),
+	paths: type("string")
+		.describe("file, directory, glob, or internal URL to search")
+		.array()
+		.atLeastLength(1)
 		.describe("files, directories, globs, or internal URLs to search"),
-	skip: z.number().default(0).describe("matches to skip").optional(),
+	"skip?": type("number").describe("matches to skip"),
 });
 
 async function runMultiTargetAstGrep(
@@ -130,6 +132,29 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 	readonly description: string;
 	readonly parameters = astGrepSchema;
 	readonly strict = true;
+
+	readonly examples: readonly ToolExample<typeof astGrepSchema.inferIn>[] = [
+		{
+			caption: "Search TypeScript files under src",
+			call: { pat: "console.log($$$)", paths: ["src/**/*.ts"] },
+		},
+		{
+			caption: "Named imports from a specific package",
+			call: { pat: 'import { $$$IMPORTS } from "react"', paths: ["src/**/*.ts"] },
+		},
+		{
+			caption: "Arrow functions assigned to a const",
+			call: { pat: "const $NAME = ($$$ARGS) => $BODY", paths: ["src/utils/**/*.ts"] },
+		},
+		{
+			caption: "Method call on any object, ignoring method name with `$_`",
+			call: { pat: "logger.$_($$$ARGS)", paths: ["src/**/*.ts"] },
+		},
+		{
+			caption: "Loosest existence check for a symbol in one file",
+			call: { pat: "processItems", paths: ["src/worker.ts"] },
+		},
+	];
 	readonly loadMode = "discoverable";
 
 	constructor(private readonly session: ToolSession) {
@@ -138,7 +163,7 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 
 	async execute(
 		_toolCallId: string,
-		params: z.infer<typeof astGrepSchema>,
+		params: typeof astGrepSchema.infer,
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<AstGrepToolDetails>,
 		_context?: AgentToolContext,
@@ -221,7 +246,9 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 				const parseMessage = cappedParseErrors.length
 					? `\n${formatParseErrors(cappedParseErrors, parseErrorsTotal).join("\n")}`
 					: "";
-				return toolResult(baseDetails).text(`${noMatchMessage}${parseMessage}`).done();
+				// Zero matches is useless even with parse issues: the follow-up
+				// call has already corrected course by the time compaction runs.
+				return toolResult(baseDetails).text(`${noMatchMessage}${parseMessage}`).useless().done();
 			}
 
 			const useHashLines = resolveFileDisplayMode(this.session).hashLines;
@@ -267,6 +294,10 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 						displayOut.push(`  meta: ${serializedMeta}`);
 					}
 					fileMatchCounts.set(relativePath, (fileMatchCounts.get(relativePath) ?? 0) + 1);
+				}
+				if (hashContext?.tag) {
+					const absoluteFilePath = path.resolve(this.session.cwd, relativePath);
+					recordSeenLinesFromBody(this.session, absoluteFilePath, hashContext.tag, modelOut.join("\n"));
 				}
 				return { model: modelOut, display: displayOut };
 			};

@@ -5,22 +5,25 @@ import * as path from "node:path";
 import { Effort } from "@oh-my-pi/pi-ai";
 import {
 	getDefault,
+	getEnumValues,
 	onAppendOnlyModeChanged,
 	onStatusLineSessionAccentChanged,
 	resetSettingsForTest,
+	type SettingPath,
 	Settings,
 } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getProjectAgentDir, Snowflake } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 describe("Settings", () => {
-	let testDir: string;
+	let settingsState: SettingsTestState | undefined;
+	let testDir = "";
 	let agentDir: string;
 	let projectDir: string;
 
 	beforeEach(() => {
-		// Reset global singleton so each test gets a fresh instance
-		resetSettingsForTest();
+		settingsState = beginSettingsTest();
 
 		// Use snowflake to isolate parallel test runs (SQLite files can't be shared)
 		testDir = path.join(os.tmpdir(), "test-settings-tmp", Snowflake.next());
@@ -28,7 +31,7 @@ describe("Settings", () => {
 		projectDir = path.join(testDir, "project");
 
 		if (fs.existsSync(testDir)) {
-			fs.rmSync(testDir, { recursive: true });
+			fs.rmSync(testDir, { recursive: true, force: true });
 		}
 		fs.mkdirSync(agentDir, { recursive: true });
 		fs.mkdirSync(getProjectAgentDir(projectDir), { recursive: true });
@@ -50,14 +53,43 @@ describe("Settings", () => {
 	};
 
 	afterEach(() => {
-		if (fs.existsSync(testDir)) {
-			fs.rmSync(testDir, { recursive: true });
+		restoreSettingsTestState(settingsState);
+		settingsState = undefined;
+		if (testDir && fs.existsSync(testDir)) {
+			fs.rmSync(testDir, { recursive: true, force: true });
 		}
+		testDir = "";
 	});
 	describe("defaults", () => {
 		it("keeps eight inline images live by default", async () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			expect(settings.get("tui.maxInlineImages")).toBe(8);
+		});
+
+		it("keeps the normal startup splash disabled by default", async () => {
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("startup.showSplash")).toBe(false);
+			expect(getDefault("startup.showSplash")).toBe(false);
+		});
+
+		it("exposes all tool calling mode options", () => {
+			const values = getEnumValues("tools.format");
+			expect(values).toEqual([
+				"auto",
+				"native",
+				"glm",
+				"hermes",
+				"kimi",
+				"xml",
+				"anthropic",
+				"deepseek",
+				"harmony",
+				"pi",
+				"qwen3",
+				"gemini",
+				"gemma",
+				"minimax",
+			]);
 		});
 	});
 
@@ -120,6 +152,12 @@ describe("Settings", () => {
 
 			expect(settings.get("enabledModels")).toEqual(["always-model", "other-model"]);
 			expect(settings.get("disabledProviders")).toEqual(["always-provider", "other-provider"]);
+		});
+
+		it("migrates legacy snapcompact system prompt booleans to scoped modes", () => {
+			expect(Settings.isolated({ "snapcompact.systemPrompt": true }).get("snapcompact.systemPrompt")).toBe("all");
+			const nestedLegacy = { snapcompact: { systemPrompt: false } } as Partial<Record<SettingPath, unknown>>;
+			expect(Settings.isolated(nestedLegacy).get("snapcompact.systemPrompt")).toBe("none");
 		});
 	});
 
@@ -423,6 +461,33 @@ describe("Settings", () => {
 
 			// The single-segment sibling must survive the flat-dotted migration.
 			expect(settings.get("modelRoles")).toEqual({ smol: "cursor/composer-2.5" });
+		});
+
+		it("migrates boolean task.eager/todo.eager true to always", async () => {
+			await writeSettings({
+				task: { eager: true },
+				todo: { eager: true },
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			// `true` reproduced the previous "on" behavior, now `always`.
+			expect(settings.get("task.eager" as SettingPath) as unknown).toBe("always");
+			expect(settings.get("todo.eager")).toBe("always");
+		});
+
+		it("migrates boolean task.eager/todo.eager false to default", async () => {
+			await writeSettings({
+				task: { eager: false },
+				todo: { eager: false },
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			// Load-bearing direction: consumers treat any non-`default` value as enabled
+			// (`false !== "default"`), so an un-coerced boolean `false` would read as ON.
+			expect(settings.get("task.eager" as SettingPath) as unknown).toBe("default");
+			expect(settings.get("todo.eager")).toBe("default");
 		});
 
 		it("moves legacy lastChangelogVersion out of config.yml into the marker file", async () => {

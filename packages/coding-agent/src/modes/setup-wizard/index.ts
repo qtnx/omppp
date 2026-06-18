@@ -9,6 +9,7 @@ import { SetupWizardComponent } from "./wizard-overlay";
 
 export type { SetupScene, SetupSceneController, SetupSceneHost, SetupSceneResult } from "./scenes/types";
 
+export { runStartupSplash } from "./startup-splash";
 export { CURRENT_SETUP_VERSION };
 
 export const ALL_SCENES = [
@@ -82,6 +83,7 @@ export async function runSetupWizard(
 		maxHeight: "100%",
 		anchor: "top-left",
 		margin: 0,
+		fullscreen: true,
 	});
 	try {
 		await component.run();

@@ -10,7 +10,9 @@
  * that can never receive the thread's postMessage traffic, and the parent
  * hangs waiting for a pong (v1.2.0 darwin release smoke failure).
  */
+export const TINY_WORKER_ARG = "__omp_worker_tiny_inference";
 export const TINY_WORKER_ARGS: Record<string, true> = {
+	[TINY_WORKER_ARG]: true,
 	"--tiny-worker": true,
 	__tiny_worker: true,
 };

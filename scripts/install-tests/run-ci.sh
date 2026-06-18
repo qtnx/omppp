@@ -91,8 +91,9 @@ cp "$natives_pkg_backup" "$ROOT_DIR/packages/natives/package.json"
 [ "$core_rc" -eq 0 ] || exit "$core_rc"
 
 # 3. Pack the remaining workspace packages (natives core and coding-agent
-#    handled separately).
-for pkg in utils hashline catalog ai mnemopi snapcompact agent tui stats context-gc-plugin system-context-reminder-plugin delegation-reminder-plugin; do
+#    handled separately). `collab-web` is private but still packed here so its
+#    prepack build and tarball file list stay release-safe.
+for pkg in utils wire hashline catalog ai mnemopi snapcompact agent tui stats context-gc-plugin system-context-reminder-plugin delegation-reminder-plugin collab-web; do
    (
       cd "$ROOT_DIR/packages/$pkg"
       bun pm pack --destination "$TARBALL_DIR" --quiet >/dev/null
@@ -116,6 +117,7 @@ cp "$agent_pkg_backup" "$ROOT_DIR/packages/coding-agent/package.json"
 [ "$agent_rc" -eq 0 ] || exit "$agent_rc"
 
 utils_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-utils-*.tgz)"
+wire_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-wire-*.tgz)"
 natives_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-natives-[0-9]*.tgz)"
 natives_leaf_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-natives-"$host_tag"-*.tgz)"
 hashline_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-hashline-*.tgz)"
@@ -130,6 +132,7 @@ context_gc_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-context-gc-plugin-*.tgz)"
 system_context_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-system-context-reminder-plugin-*.tgz)"
 delegation_reminder_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-delegation-reminder-plugin-*.tgz)"
 coding_agent_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-coding-agent-*.tgz)"
+collab_web_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-collab-web-*.tgz)"
 
 TARBALL_APP_DIR="$WORK_DIR/tarball-install"
 mkdir -p "$TARBALL_APP_DIR"
@@ -138,11 +141,12 @@ mkdir -p "$TARBALL_APP_DIR"
    bun init -y >/dev/null
 
    # Write overrides so bun resolves inter-package deps from tarballs, not the registry
-   # (version 12.x.y hasn't been published yet when CI runs pre-release)
+   # (the version under test has not necessarily been published yet).
    node -e "
 		const pkg = JSON.parse(require('fs').readFileSync('package.json', 'utf8'));
 		pkg.overrides = {
 			'@oh-my-pi/pi-utils': '$utils_tgz',
+			'@oh-my-pi/pi-wire': '$wire_tgz',
 			'@oh-my-pi/pi-natives': '$natives_tgz',
 			'@oh-my-pi/pi-natives-$host_tag': '$natives_leaf_tgz',
 			'@oh-my-pi/hashline': '$hashline_tgz',
@@ -156,18 +160,28 @@ mkdir -p "$TARBALL_APP_DIR"
 			'@oh-my-pi/context-gc-plugin': '$context_gc_tgz',
 			'@oh-my-pi/system-context-reminder-plugin': '$system_context_tgz',
 			'@oh-my-pi/delegation-reminder-plugin': '$delegation_reminder_tgz',
-			'@oh-my-pi/pi-coding-agent': '$coding_agent_tgz'
+			'@oh-my-pi/pi-coding-agent': '$coding_agent_tgz',
+			'@oh-my-pi/collab-web': '$collab_web_tgz'
 		};
 		require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2));
 	"
 
-   bun add "$utils_tgz" "$natives_tgz" "$hashline_tgz" "$catalog_tgz" "$ai_tgz" "$mnemopi_tgz" "$snapcompact_tgz" "$agent_tgz" "$tui_tgz" "$stats_tgz" "$context_gc_tgz" "$system_context_tgz" "$delegation_reminder_tgz" "$coding_agent_tgz"
+   bun add "$utils_tgz" "$wire_tgz" "$natives_tgz" "$hashline_tgz" "$catalog_tgz" "$ai_tgz" "$mnemopi_tgz" "$snapcompact_tgz" "$agent_tgz" "$tui_tgz" "$stats_tgz" "$context_gc_tgz" "$system_context_tgz" "$delegation_reminder_tgz" "$coding_agent_tgz" "$collab_web_tgz"
    # The platform leaf must arrive through the core's optionalDependencies +
    # override, not as a direct dependency — assert it landed before smoking so a
    # resolution regression is distinguishable from a runtime loader bug.
    leaf_dir="node_modules/@oh-my-pi/pi-natives-$host_tag"
    [ -d "$leaf_dir" ] || {
       echo "Platform leaf package not installed: $leaf_dir"
+      exit 1
+   }
+   wire_proto="$(bun -e 'import { COLLAB_PROTO } from "@oh-my-pi/pi-wire"; process.stdout.write(String(COLLAB_PROTO));')"
+   [ "$wire_proto" = "1" ] || {
+      echo "Unexpected @oh-my-pi/pi-wire COLLAB_PROTO: $wire_proto"
+      exit 1
+   }
+   [ -f "node_modules/@oh-my-pi/collab-web/dist/index.html" ] || {
+      echo "Collab web tarball did not install built dist/index.html"
       exit 1
    }
    smoke_cli ./node_modules/.bin/ompx

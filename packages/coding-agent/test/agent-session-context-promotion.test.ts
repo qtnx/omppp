@@ -285,6 +285,10 @@ describe("AgentSession context promotion", () => {
 		if (!sparkModel || !codexModel) {
 			throw new Error("Expected codex spark and codex models to exist");
 		}
+		if (sparkModel.contextWindow === null) {
+			throw new Error("Expected codex spark model to have a context window");
+		}
+		const sparkContextWindow = sparkModel.contextWindow;
 		const { sessionManager } = await createCompactingSession(sparkModel);
 		let compactionEnded = false;
 		session.subscribe(event => {
@@ -296,11 +300,11 @@ describe("AgentSession context promotion", () => {
 		const thresholdMessage: AssistantMessage = {
 			...createAssistantMessage(sparkModel),
 			usage: {
-				input: sparkModel.contextWindow,
+				input: sparkContextWindow,
 				output: 0,
 				cacheRead: 0,
 				cacheWrite: 0,
-				totalTokens: sparkModel.contextWindow,
+				totalTokens: sparkContextWindow,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 		};
@@ -605,6 +609,38 @@ describe("AgentSession context promotion", () => {
 		expect(session.model?.id).toBe(sparkModel.id);
 		expect(closeSpy).not.toHaveBeenCalled();
 		expect(session.providerSessionState.size).toBe(1);
+	});
+
+	it("does not promote by default", async () => {
+		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.3-codex-spark");
+		if (!sparkModel) {
+			throw new Error("Expected codex spark model to exist");
+		}
+
+		const agent = new Agent({
+			initialState: {
+				model: sparkModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+		});
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+		});
+
+		const overflowMessage = createOverflowMessage(sparkModel);
+		session.agent.emitExternalEvent({ type: "message_end", message: overflowMessage });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [overflowMessage] });
+
+		await settle();
+
+		expect(session.model?.provider).toBe(sparkModel.provider);
+		expect(session.model?.id).toBe(sparkModel.id);
 	});
 
 	it("promotes to a larger-context model on response.incomplete (length stop)", async () => {

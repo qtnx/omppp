@@ -11,6 +11,7 @@ import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { mapEffortToAnthropicAdaptiveEffort, requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { $env, $flag, extractHttpStatusFromError, fetchWithRetry } from "@oh-my-pi/pi-utils";
+import { ProviderHttpError } from "../errors";
 import type {
 	Api,
 	AssistantMessage,
@@ -29,13 +30,19 @@ import type {
 } from "../types";
 import { normalizeToolCallId, resolveCacheRetention } from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
-import { appendRawHttpRequestDumpFor400, type RawHttpRequestDump, withHttpStatus } from "../utils/http-inspector";
+import { appendRawHttpRequestDumpFor400, type RawHttpRequestDump } from "../utils/http-inspector";
+import { armPreResponseTimeout, getStreamFirstEventTimeoutMs } from "../utils/idle-iterator";
 import { parseStreamingJson, parseStreamingJsonThrottled } from "../utils/json-parse";
 import { toolWireSchema } from "../utils/schema/wire";
 import { invalidateAwsCredentialCache, resolveAwsCredentials } from "./aws-credentials";
 import { decodeEventStream } from "./aws-eventstream";
 import { signRequest } from "./aws-sigv4";
 import { transformMessages } from "./transform-messages";
+
+/** Non-2xx response (or in-stream exception event) from the Bedrock runtime API. */
+export class BedrockApiError extends ProviderHttpError {
+	override readonly name = "BedrockApiError";
+}
 
 export type BedrockThinkingDisplay = "summarized" | "omitted";
 
@@ -276,13 +283,30 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 				requestHeaders = { ...baseHeaders, ...signed };
 			}
 
-			const response = await fetchWithRetry(url, {
-				method: "POST",
-				headers: requestHeaders,
-				body,
-				signal: options.signal,
-				fetch: options.fetch,
-			});
+			// Bun's native fetch ceiling is disabled below (`timeout: false`) so
+			// configurable watchdogs govern slow-prefill streams (issue #2422).
+			// Direct callers that bypass `register-builtins` (which installs the
+			// iterator-level first-event watchdog) still need a pre-response
+			// timer, otherwise a Bedrock/proxy that accepts the POST and never
+			// sends headers would hang forever.
+			const firstEventTimeoutMs = options.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs();
+			// Clear the pre-response timer the instant headers arrive (below): an
+			// absolute `AbortSignal.timeout` would keep aborting the actively
+			// streaming body, not just a stalled time-to-first-byte (issue #2422).
+			const watchdog = armPreResponseTimeout(options.signal, firstEventTimeoutMs);
+			let response: Response;
+			try {
+				response = await fetchWithRetry(url, {
+					method: "POST",
+					headers: requestHeaders,
+					body,
+					signal: watchdog.signal,
+					fetch: options.fetch,
+					timeout: false,
+				});
+			} finally {
+				watchdog.clear();
+			}
 
 			if (!response.ok) {
 				if (!bearerToken && (response.status === 401 || response.status === 403)) {
@@ -291,10 +315,9 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 					invalidateAwsCredentialCache({ profile: options.profile, region });
 				}
 				const errBody = await response.text().catch(() => "");
-				throw withHttpStatus(
-					new Error(`Bedrock HTTP ${response.status}: ${errBody.slice(0, 1000)}`),
-					response.status,
-				);
+				throw new BedrockApiError(`Bedrock HTTP ${response.status}: ${errBody.slice(0, 1000)}`, response.status, {
+					headers: response.headers,
+				});
 			}
 			if (!response.body) throw new Error("Bedrock response has no body");
 
@@ -307,9 +330,10 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 					const exceptionType = message.headers[":exception-type"] || "Exception";
 					const payload = safeParsePayload(message.payload) as { message?: string } | undefined;
 					const errorMessage = payload?.message || new TextDecoder().decode(message.payload);
-					const status = exceptionType === "validationException" ? 400 : 0;
-					const err = new Error(`${exceptionType}: ${errorMessage}`);
-					throw status ? withHttpStatus(err, status) : err;
+					const text = `${exceptionType}: ${errorMessage}`;
+					throw exceptionType === "validationException"
+						? new BedrockApiError(text, 400, { code: exceptionType })
+						: new Error(text);
 				}
 				if (messageType === "error") {
 					const code = message.headers[":error-code"] || "UnknownError";

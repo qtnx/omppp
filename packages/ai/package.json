@@ -40,7 +40,7 @@
 		"@bufbuild/protobuf": "catalog:",
 		"@oh-my-pi/pi-catalog": "catalog:",
 		"@oh-my-pi/pi-utils": "catalog:",
-		"openai": "catalog:",
+		"arktype": "catalog:",
 		"partial-json": "catalog:",
 		"zod": "catalog:"
 	},
@@ -91,6 +91,14 @@
 		"./usage/*": {
 			"types": "./src/usage/*.ts",
 			"import": "./src/usage/*.ts"
+		},
+		"./utils/harmony-leak": {
+			"types": "./src/utils/harmony-leak.ts",
+			"import": "./src/utils/harmony-leak.ts"
+		},
+		"./dialect": {
+			"types": "./src/dialect/index.ts",
+			"import": "./src/dialect/index.ts"
 		},
 		"./utils/*": {
 			"types": "./src/utils/*.ts",

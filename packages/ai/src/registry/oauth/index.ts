@@ -136,9 +136,13 @@ export async function getOAuthApiKey(
 	}
 	// For providers that need request-time credential metadata, return JSON.
 	const needsStructuredApiKey =
-		provider === "github-copilot" || provider === "google-gemini-cli" || provider === "google-antigravity";
+		provider === "github-copilot" ||
+		provider === "google-gemini-cli" ||
+		provider === "google-antigravity" ||
+		provider === "alibaba-coding-plan";
 	const apiKey = needsStructuredApiKey
 		? JSON.stringify({
+				apiEndpoint: creds.apiEndpoint,
 				token: creds.access,
 				enterpriseUrl: creds.enterpriseUrl,
 				projectId: creds.projectId,
