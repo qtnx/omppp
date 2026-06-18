@@ -16,6 +16,7 @@ import { expandAtImports } from "./discovery/at-imports";
 import { loadSkills, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
+import openAiCodexSystemPromptTemplate from "./prompts/system/openai-codex-system-prompt.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { shortenPath } from "./tools/render-utils";
@@ -78,6 +79,15 @@ function firstNonEmpty(...values: (string | undefined | null)[]): string | null 
 		if (trimmed) return trimmed;
 	}
 	return null;
+}
+
+function isOpenAiCodexPromptModel(model: string | undefined): boolean {
+	if (!model) return false;
+	const normalized = model.toLowerCase();
+	const slash = normalized.indexOf("/");
+	const provider = slash === -1 ? "" : normalized.slice(0, slash);
+	const id = slash === -1 ? normalized : normalized.slice(slash + 1);
+	return provider === "openai-codex" || id.includes("codex");
 }
 
 function parseWmicTable(output: string, header: string): string | null {
@@ -645,7 +655,14 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		hasMemoryRoot: memoryRootEnabled,
 		hasObsidian: hasObsidian(),
 	};
-	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
+	const rendered = prompt.render(
+		resolvedCustomPrompt
+			? customSystemPromptTemplate
+			: isOpenAiCodexPromptModel(model)
+				? openAiCodexSystemPromptTemplate
+				: systemPromptTemplate,
+		data,
+	);
 	const systemPrompt = [rendered];
 	const projectPrompt = resolvedCustomPrompt ? "" : prompt.render(projectPromptTemplate, data).trim();
 	if (projectPrompt) {

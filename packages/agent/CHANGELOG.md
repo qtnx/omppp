@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed OpenAI remote compaction to trim oversized compact inputs from the oldest history first, preserving recent turns while avoiding oversized `/responses/compact` requests.
+- Changed OpenAI remote compaction to reuse provider-returned compaction summaries directly, avoiding extra local summarizer calls when the compact endpoint already returned summary text.
+- Compacted unusually large tool JSON schemas before provider requests by stripping descriptions, dropping definition tables, and collapsing deeply nested schema branches when needed.
+
 ## [1.3.2] - 2026-06-13
 
 ### Fixed

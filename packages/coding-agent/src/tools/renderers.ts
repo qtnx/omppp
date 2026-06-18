@@ -74,6 +74,9 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	todo: todoToolRenderer as ToolRenderer,
 	github: githubToolRenderer as ToolRenderer,
 	goal: goalToolRenderer as ToolRenderer,
+	get_goal: goalToolRenderer as ToolRenderer,
+	create_goal: goalToolRenderer as ToolRenderer,
+	update_goal: goalToolRenderer as ToolRenderer,
 	web_search: webSearchToolRenderer as ToolRenderer,
 	write: writeToolRenderer as ToolRenderer,
 };

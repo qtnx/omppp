@@ -83,6 +83,24 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("activates Codex-style goal tools by default while keeping the legacy goal tool hidden", async () => {
+		const tempDir = makeTempDir();
+
+		const { session } = await createAgentSession(baseOptions(tempDir));
+
+		try {
+			expect(session.getAllToolNames()).toEqual(
+				expect.arrayContaining(["goal", "get_goal", "create_goal", "update_goal"]),
+			);
+			expect(session.getActiveToolNames()).toContain("get_goal");
+			expect(session.getActiveToolNames()).toContain("create_goal");
+			expect(session.getActiveToolNames()).toContain("update_goal");
+			expect(session.getActiveToolNames()).not.toContain("goal");
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	it("excludes defaultInactive extension tools from the initial active set unless explicitly requested", async () => {
 		const tempDir = makeTempDir();
 
@@ -132,6 +150,8 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				expect.arrayContaining(["read", "default_active_tool", "default_inactive_tool"]),
 			);
 			expect(session.getActiveToolNames()).toContain("read");
+			expect(session.getAllToolNames()).toContain("create_goal");
+			expect(session.getActiveToolNames()).not.toContain("create_goal");
 			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
 
 			await session.setActiveToolsByName([...session.getActiveToolNames(), "default_active_tool"]);

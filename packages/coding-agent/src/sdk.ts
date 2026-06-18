@@ -180,6 +180,7 @@ import {
 	EvalTool,
 	FindTool,
 	filterInitialToolsForDiscoveryAll,
+	GOAL_HIDDEN_TOOL_NAMES,
 	getSearchTools,
 	HIDDEN_TOOLS,
 	isImageProviderPreference,
@@ -2080,10 +2081,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		for (const tool of builtinTools) {
 			toolRegistry.set(tool.name, tool);
 		}
-		if (!toolRegistry.has("goal") && settings.get("goal.enabled")) {
-			const goalTool = await logger.time("createTools:goal:session", HIDDEN_TOOLS.goal, toolSession);
-			if (goalTool) {
-				toolRegistry.set(goalTool.name, wrapToolWithMetaNotice(goalTool));
+		if (settings.get("goal.enabled")) {
+			for (const goalToolName of GOAL_HIDDEN_TOOL_NAMES) {
+				if (toolRegistry.has(goalToolName)) continue;
+				const goalTool = await logger.time(
+					`createTools:${goalToolName}:session`,
+					HIDDEN_TOOLS[goalToolName],
+					toolSession,
+				);
+				if (goalTool) {
+					toolRegistry.set(goalTool.name, wrapToolWithMetaNotice(goalTool));
+				}
 			}
 		}
 		for (const tool of wrappedExtensionTools) {

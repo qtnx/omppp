@@ -317,6 +317,10 @@ export type AgentSessionEvent =
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 export type AsyncJobSnapshotItem = Pick<AsyncJob, "id" | "type" | "status" | "label" | "startTime">;
 
+function isGoalToolExecutionName(name: string): boolean {
+	return name === "goal" || name === "get_goal" || name === "create_goal" || name === "update_goal";
+}
+
 const EMPTY_STOP_MAX_RETRIES = 3;
 const RETRY_BACKOFF_MAX_DELAY_MS = 8_000;
 const RETRY_BACKOFF_JITTER_RATIO = 0.25;
@@ -1752,7 +1756,7 @@ export class AgentSession {
 			}
 		}
 		if (event.type === "tool_execution_end") {
-			if (event.toolName === "goal") {
+			if (isGoalToolExecutionName(event.toolName)) {
 				await this.#goalRuntime.onGoalToolCompleted();
 			} else {
 				await this.#goalRuntime.onToolCompleted(event.toolName);

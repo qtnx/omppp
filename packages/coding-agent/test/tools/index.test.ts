@@ -81,6 +81,9 @@ describe("createTools", () => {
 		expect(names).toContain("task");
 		expect(names).toContain("todo");
 		expect(names).toContain("web_search");
+		expect(names).toContain("get_goal");
+		expect(names).toContain("create_goal");
+		expect(names).toContain("update_goal");
 		expect(names).toContain("resolve");
 		expect(names).not.toContain("fetch");
 		expect(names).not.toContain("vim");
@@ -249,7 +252,7 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["read"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["read", "goal", "resolve"]);
+		expect(names).toEqual(["read", "goal", "get_goal", "create_goal", "update_goal", "resolve"]);
 	});
 
 	it("includes search_tool_bm25 when MCP tool discovery is enabled and executable", async () => {
@@ -267,10 +270,13 @@ describe("createTools", () => {
 
 	it("HIDDEN_TOOLS contains review tools and goal", () => {
 		expect(Object.keys(HIDDEN_TOOLS).sort()).toEqual([
+			"create_goal",
+			"get_goal",
 			"goal",
 			"report_finding",
 			"report_tool_issue",
 			"resolve",
+			"update_goal",
 			"yield",
 		]);
 	});

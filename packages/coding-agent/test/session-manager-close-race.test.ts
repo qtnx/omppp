@@ -114,6 +114,72 @@ class CloseHoldingStorage implements SessionStorage {
 	}
 }
 
+class OneShotBadFdStorage implements SessionStorage {
+	readonly #inner = new MemorySessionStorage();
+	#failNextSyncWritePath: string | undefined;
+
+	failNextSyncWrite(path: string): void {
+		this.#failNextSyncWritePath = path;
+	}
+
+	openWriter(path: string, options?: { flags?: "a" | "w"; onError?: (err: Error) => void }): SessionStorageWriter {
+		const inner = this.#inner.openWriter(path, options);
+		return {
+			writeLine: line => inner.writeLine(line),
+			writeLineSync: line => {
+				if (this.#failNextSyncWritePath === path) {
+					this.#failNextSyncWritePath = undefined;
+					const err = new Error("EBADF: bad file descriptor, write");
+					(err as Error & { code?: string }).code = "EBADF";
+					throw err;
+				}
+				inner.writeLineSync(line);
+			},
+			flush: () => inner.flush(),
+			fsync: () => inner.fsync(),
+			close: () => inner.close(),
+			getError: () => inner.getError(),
+		};
+	}
+
+	ensureDirSync(dir: string): void {
+		this.#inner.ensureDirSync(dir);
+	}
+	existsSync(p: string): boolean {
+		return this.#inner.existsSync(p);
+	}
+	writeTextSync(p: string, content: string): void {
+		this.#inner.writeTextSync(p, content);
+	}
+	statSync(p: string) {
+		return this.#inner.statSync(p);
+	}
+	listFilesSync(dir: string, pattern: string): string[] {
+		return this.#inner.listFilesSync(dir, pattern);
+	}
+	exists(p: string): Promise<boolean> {
+		return this.#inner.exists(p);
+	}
+	readText(p: string): Promise<string> {
+		return this.#inner.readText(p);
+	}
+	readTextSlices(p: string, prefixBytes: number, suffixBytes: number): Promise<[string, string]> {
+		return this.#inner.readTextSlices(p, prefixBytes, suffixBytes);
+	}
+	writeText(p: string, content: string): Promise<void> {
+		return this.#inner.writeText(p, content);
+	}
+	rename(p: string, nextPath: string): Promise<void> {
+		return this.#inner.rename(p, nextPath);
+	}
+	unlink(p: string): Promise<void> {
+		return this.#inner.unlink(p);
+	}
+	deleteSessionWithArtifacts(sessionPath: string): Promise<void> {
+		return this.#inner.deleteSessionWithArtifacts(sessionPath);
+	}
+}
+
 /** Drive microtasks while releasing every parked close until `promise` settles. */
 async function settle<T>(promise: Promise<T>, storage: CloseHoldingStorage): Promise<T> {
 	let done = false;
@@ -220,5 +286,51 @@ describe("SessionManager close/appendMessage race", () => {
 			});
 		}).not.toThrow();
 		await expect(settle(sm.flush(), storage)).resolves.toBeUndefined();
+	});
+
+	it("recovers a hot session append after the cached file descriptor returns EBADF", async () => {
+		const storage = new OneShotBadFdStorage();
+		const sm = SessionManager.create("/cwd", "/sessions", storage);
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected built-in anthropic model to exist");
+
+		sm.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "hello" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+		await sm.flush();
+
+		sm.appendMessage({ role: "user", content: "prime", timestamp: Date.now() });
+		await sm.flush();
+
+		const sessionFile = sm.getSessionFile();
+		if (!sessionFile) throw new Error("Expected persistent session file");
+		storage.failNextSyncWrite(sessionFile);
+
+		expect(() => {
+			sm.appendMessage({ role: "user", content: "after-ebadf", timestamp: Date.now() });
+		}).not.toThrow();
+
+		await expect(sm.flush()).resolves.toBeUndefined();
+		const persisted = await storage.readText(sessionFile);
+		expect(persisted).toContain("after-ebadf");
+
+		sm.appendMessage({ role: "user", content: "still-healthy", timestamp: Date.now() });
+		await expect(sm.flush()).resolves.toBeUndefined();
+		const persistedAfterRecovery = await storage.readText(sessionFile);
+		expect(persistedAfterRecovery).toContain("still-healthy");
 	});
 });
