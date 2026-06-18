@@ -440,6 +440,38 @@ export class GoalRuntime {
 		});
 	}
 
+	async blockGoalFromTool(): Promise<Goal> {
+		return await this.#withAccounting(async () => {
+			await this.#flushUsageLocked("suppressed");
+			const state = this.#getStateClone();
+			if (!state?.goal) {
+				throw new Error("cannot update goal because this session has no goal");
+			}
+			if (state.goal.status === "complete") {
+				throw new Error("goal is already complete");
+			}
+			if (state.goal.status === "dropped") {
+				throw new Error("cannot block a dropped goal");
+			}
+			state.enabled = false;
+			state.mode = "active";
+			state.reason = undefined;
+			state.goal.status = "blocked";
+			state.goal.updatedAt = this.#now();
+			this.#clearActiveAccounting();
+			this.#budgetReportedFor = undefined;
+			await this.#commitState(state, { persist: "goal_paused" });
+			return state.goal;
+		});
+	}
+
+	async updateGoalStatusFromTool(input: { status: "complete" | "blocked" }): Promise<Goal> {
+		if (input.status === "complete") {
+			return await this.completeGoalFromTool();
+		}
+		return await this.blockGoalFromTool();
+	}
+
 	async dropGoal(): Promise<Goal | undefined> {
 		return await this.#withAccounting(async () => {
 			await this.#flushUsageLocked("suppressed");

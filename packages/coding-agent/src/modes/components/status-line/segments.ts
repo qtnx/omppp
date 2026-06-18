@@ -217,6 +217,8 @@ function renderGoalMode(ctx: SegmentContext, mode: { enabled: boolean; paused: b
 			color = "success";
 			break;
 		case "budget-limited":
+		case "blocked":
+		case "usage-limited":
 			icon = theme.symbol("status.warning");
 			color = "warning";
 			break;

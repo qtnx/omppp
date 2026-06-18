@@ -555,6 +555,166 @@ function injectIntentIntoSchema(schema: unknown, mode: "require" | "optional" = 
 	};
 }
 
+const MAX_COMPACT_TOOL_SCHEMA_BYTES = 4_000;
+const MAX_COMPACT_TOOL_SCHEMA_DEPTH = 3;
+const DEFINITION_TABLE_KEYS = ["$defs", "definitions"] as const;
+const SCHEMA_CHILD_KEYS = ["items", "anyOf", "oneOf", "allOf"] as const;
+const COMPOSITION_SCHEMA_KEYS = ["anyOf", "oneOf", "allOf"] as const;
+
+function schemaByteLength(schema: unknown): number {
+	return Buffer.byteLength(JSON.stringify(schema), "utf8");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function schemaFitsCompactionBudget(schema: unknown): boolean {
+	return schemaByteLength(schema) <= MAX_COMPACT_TOOL_SCHEMA_BYTES;
+}
+
+function mutateSchemaChildren(
+	map: Record<string, unknown>,
+	includeDefinitions: boolean,
+	mutator: (value: unknown, depthIncrement: number) => unknown,
+): void {
+	const properties = map.properties;
+	if (isRecord(properties)) {
+		for (const key of Object.keys(properties)) {
+			properties[key] = mutator(properties[key], 1);
+		}
+	}
+
+	for (const key of SCHEMA_CHILD_KEYS) {
+		if (key in map) {
+			map[key] = mutator(map[key], 1);
+		}
+	}
+
+	const additionalProperties = map.additionalProperties;
+	if (additionalProperties !== undefined && typeof additionalProperties !== "boolean") {
+		map.additionalProperties = mutator(additionalProperties, 1);
+	}
+
+	if (!includeDefinitions) return;
+	for (const key of DEFINITION_TABLE_KEYS) {
+		const definitions = map[key];
+		if (!isRecord(definitions)) continue;
+		for (const definitionKey of Object.keys(definitions)) {
+			definitions[definitionKey] = mutator(definitions[definitionKey], 1);
+		}
+	}
+}
+
+function stripSchemaDescriptions(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		for (let index = 0; index < value.length; index += 1) {
+			value[index] = stripSchemaDescriptions(value[index]);
+		}
+		return value;
+	}
+	if (!isRecord(value)) return value;
+	delete value.description;
+	for (const key of Object.keys(value)) {
+		value[key] = stripSchemaDescriptions(value[key]);
+	}
+	return value;
+}
+
+function isLocalDefinitionRef(value: unknown): boolean {
+	return typeof value === "string" && (value.startsWith("#/$defs/") || value.startsWith("#/definitions/"));
+}
+
+function rewriteDefinitionRefsToEmptySchemas(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		for (let index = 0; index < value.length; index += 1) {
+			value[index] = rewriteDefinitionRefsToEmptySchemas(value[index]);
+		}
+		return value;
+	}
+	if (!isRecord(value)) return value;
+	if (isLocalDefinitionRef(value.$ref)) return {};
+	mutateSchemaChildren(value, false, child => rewriteDefinitionRefsToEmptySchemas(child));
+	return value;
+}
+
+function dropSchemaDefinitions(value: unknown): unknown {
+	const rewritten = rewriteDefinitionRefsToEmptySchemas(value);
+	dropSchemaDefinitionsInner(rewritten);
+	return rewritten;
+}
+
+function dropSchemaDefinitionsInner(value: unknown): void {
+	if (Array.isArray(value)) {
+		for (const child of value) {
+			dropSchemaDefinitionsInner(child);
+		}
+		return;
+	}
+	if (!isRecord(value)) return;
+	for (const key of DEFINITION_TABLE_KEYS) {
+		delete value[key];
+	}
+	for (const child of Object.values(value)) {
+		dropSchemaDefinitionsInner(child);
+	}
+}
+
+function isComplexSchemaObject(map: Record<string, unknown>): boolean {
+	return (
+		"properties" in map || "additionalProperties" in map || "$ref" in map || SCHEMA_CHILD_KEYS.some(key => key in map)
+	);
+}
+
+function collapseDeepSchemaObjects(value: unknown, depth = 0): unknown {
+	if (Array.isArray(value)) {
+		for (let index = 0; index < value.length; index += 1) {
+			value[index] = collapseDeepSchemaObjects(value[index], depth);
+		}
+		return value;
+	}
+	if (!isRecord(value)) return value;
+	if (depth >= MAX_COMPACT_TOOL_SCHEMA_DEPTH && isComplexSchemaObject(value)) {
+		return {};
+	}
+	mutateSchemaChildren(value, false, (child, depthIncrement) =>
+		collapseDeepSchemaObjects(child, depth + depthIncrement),
+	);
+	return value;
+}
+
+function pruneSchemaCompositions(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		for (let index = 0; index < value.length; index += 1) {
+			value[index] = pruneSchemaCompositions(value[index]);
+		}
+		return value;
+	}
+	if (!isRecord(value)) return value;
+	if (COMPOSITION_SCHEMA_KEYS.some(key => key in value)) {
+		return {};
+	}
+	mutateSchemaChildren(value, false, child => pruneSchemaCompositions(child));
+	return value;
+}
+
+function compactLargeToolSchema<T>(schema: T): T {
+	if (!isRecord(schema) || isZodSchema(schema) || schemaFitsCompactionBudget(schema)) {
+		return schema;
+	}
+	let compacted = cloneUnknown(schema);
+	for (const pass of [
+		stripSchemaDescriptions,
+		dropSchemaDefinitions,
+		collapseDeepSchemaObjects,
+		pruneSchemaCompositions,
+	]) {
+		if (schemaFitsCompactionBudget(compacted)) break;
+		compacted = pass(compacted);
+	}
+	return compacted as T;
+}
+
 export function normalizeTools(
 	tools: AgentContext["tools"],
 	injectIntent: boolean,
@@ -575,6 +735,7 @@ export function normalizeTools(
 				parameters = injectIntentIntoSchema(parameters, intentMode) as TSchema;
 			}
 		}
+		parameters = compactLargeToolSchema(parameters);
 		const description = t.description ?? "";
 		const injectExampleIntent = injectIntent && intentMode !== "omit";
 		const examplesBlock = exampleDialect

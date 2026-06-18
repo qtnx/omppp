@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ImageContent, Message, MessageAttribution, ServiceTier, TextContent, Usage } from "@oh-my-pi/pi-ai";
-import { getBlobsDir, getProjectDir, getSessionsDir, isEnoent, logger, toError } from "@oh-my-pi/pi-utils";
+import { getBlobsDir, getProjectDir, getSessionsDir, hasFsCode, isEnoent, logger, toError } from "@oh-my-pi/pi-utils";
 import {
 	normalizePersistedWorkspaceRoots,
 	type PersistedWorkspaceRoot,
@@ -526,6 +526,24 @@ export class SessionManager {
 		);
 	}
 
+	#recoverHotAppendFailure(errorLike: unknown): boolean {
+		const error = toError(errorLike);
+		const recoverable =
+			hasFsCode(error, "EBADF") ||
+			error.message === "Writer closed" ||
+			error.message.includes("bad file descriptor");
+		if (!recoverable) return false;
+
+		logger.warn("Session persistence writer lost; rewriting session file.", {
+			sessionFile: this.#sessionFile,
+			error: error.message,
+		});
+		this.#fileIsCurrent = false;
+		this.#rewriteRequired = true;
+		this.#rewriteSynchronously();
+		return true;
+	}
+
 	#appendToSessionFile(entry: SessionEntry): void {
 		if (!this.#persist || !this.#sessionFile) return;
 		if (this.#diskFailure) throw this.#diskFailure;
@@ -553,9 +571,11 @@ export class SessionManager {
 		try {
 			void this.#appendWriter()
 				.append(this.#lineFor(entry))
-				.catch(err => this.#noteDiskFailure(err));
+				.catch(err => {
+					if (!this.#recoverHotAppendFailure(err)) this.#noteDiskFailure(err);
+				});
 		} catch (err) {
-			this.#noteDiskFailure(err);
+			if (!this.#recoverHotAppendFailure(err)) this.#noteDiskFailure(err);
 		}
 	}
 

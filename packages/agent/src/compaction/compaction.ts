@@ -1020,6 +1020,7 @@ export async function compact(
 	};
 
 	let preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, undefined);
+	let remoteSummary: string | undefined;
 	if (settings.remoteEnabled !== false && shouldUseOpenAiRemoteCompaction(model)) {
 		const previousRemoteCompaction = getPreservedOpenAiRemoteCompactionData(previousPreserveData);
 		const remoteMessages = [...messagesToSummarize, ...turnPrefixMessages, ...recentMessages];
@@ -1048,6 +1049,10 @@ export async function compact(
 					{ signal },
 				);
 				preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, remote);
+				const summary = remote.compactionItem.summary?.trim();
+				if (summary) {
+					remoteSummary = summary;
+				}
 			} catch (err) {
 				// A user/session abort is a cancellation, not a remote failure —
 				// swallowing it here would downgrade Esc into "fall back to local
@@ -1064,8 +1069,11 @@ export async function compact(
 
 	// Generate summaries (can be parallel if both needed) and merge into one
 	let summary: string;
+	let shortSummary: string | undefined;
 
-	if (isSplitTurn && turnPrefixMessages.length > 0) {
+	if (remoteSummary) {
+		summary = remoteSummary;
+	} else if (isSplitTurn && turnPrefixMessages.length > 0) {
 		// Generate both summaries in parallel
 		const [historyResult, turnPrefixResult] = await Promise.all([
 			messagesToSummarize.length > 0
@@ -1104,25 +1112,27 @@ export async function compact(
 		summary = "No prior history.";
 	}
 
-	const shortSummary = await generateShortSummary(
-		recentMessages,
-		summary,
-		model,
-		settings.reserveTokens,
-		apiKey,
-		signal,
-		{
-			extraContext: options?.extraContext,
-			remoteEndpoint: summaryOptions.remoteEndpoint,
-			initiatorOverride: summaryOptions.initiatorOverride,
-			metadata: summaryOptions.metadata,
-			telemetry: summaryOptions.telemetry,
-			// Same propagation as summaryOptions above — generateShortSummary
-			// resolves its own reasoning via resolveCompactionEffort.
-			thinkingLevel: options?.thinkingLevel,
-			fetch: summaryOptions.fetch,
-		},
-	);
+	if (!remoteSummary) {
+		shortSummary = await generateShortSummary(
+			recentMessages,
+			summary,
+			model,
+			settings.reserveTokens,
+			apiKey,
+			signal,
+			{
+				extraContext: options?.extraContext,
+				remoteEndpoint: summaryOptions.remoteEndpoint,
+				initiatorOverride: summaryOptions.initiatorOverride,
+				metadata: summaryOptions.metadata,
+				telemetry: summaryOptions.telemetry,
+				// Same propagation as summaryOptions above — generateShortSummary
+				// resolves its own reasoning via resolveCompactionEffort.
+				thinkingLevel: options?.thinkingLevel,
+				fetch: summaryOptions.fetch,
+			},
+		);
+	}
 
 	// Compute file lists and append to summary
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);

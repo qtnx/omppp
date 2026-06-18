@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
+import type { Api, Model } from "@oh-my-pi/pi-ai/types";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
@@ -41,7 +42,7 @@ type GoalHarness = {
 type SharedFixture = {
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
-	model: NonNullable<ReturnType<ModelRegistry["find"]>>;
+	model: Model<Api>;
 	baseDir: TempDir;
 };
 
@@ -162,12 +163,17 @@ describe("InteractiveMode goal mode integration", () => {
 
 	it("toggles goal tool exposure when goal mode enters and pauses", async () => {
 		expect(await toolNamesFor(harness)).not.toContain("goal");
+		expect(await toolNamesFor(harness)).not.toContain("get_goal");
 
 		await harness.mode.handleGoalModeCommand("Ship the release");
 
 		expect(harness.mode.goalModeEnabled).toBe(true);
 		expect(harness.session.getGoalModeState()?.enabled).toBe(true);
-		expect(await toolNamesFor(harness)).toContain("goal");
+		const activeToolNames = await toolNamesFor(harness);
+		expect(activeToolNames).toContain("goal");
+		expect(activeToolNames).toContain("get_goal");
+		expect(activeToolNames).toContain("create_goal");
+		expect(activeToolNames).toContain("update_goal");
 
 		vi.spyOn(harness.mode, "showHookSelector").mockResolvedValue("Pause");
 		await harness.mode.handleGoalModeCommand();
@@ -175,7 +181,11 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(harness.mode.goalModeEnabled).toBe(false);
 		expect(harness.mode.goalModePaused).toBe(true);
 		expect(harness.session.getGoalModeState()?.goal.status).toBe("paused");
-		expect(await toolNamesFor(harness)).not.toContain("goal");
+		const pausedToolNames = await toolNamesFor(harness);
+		expect(pausedToolNames).not.toContain("goal");
+		expect(pausedToolNames).not.toContain("get_goal");
+		expect(pausedToolNames).not.toContain("create_goal");
+		expect(pausedToolNames).not.toContain("update_goal");
 	});
 
 	it("replaces the active goal via /goal set", async () => {

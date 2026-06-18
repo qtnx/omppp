@@ -11,7 +11,7 @@ import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
-import { GoalTool } from "../goals/tools/goal-tool";
+import { CreateGoalTool, GetGoalTool, GoalTool, UpdateGoalTool } from "../goals/tools/goal-tool";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { LspTool } from "../lsp";
@@ -492,9 +492,23 @@ export const HIDDEN_TOOLS: Record<string, ToolFactory> = {
 	report_tool_issue: s => createReportToolIssueTool(s),
 	resolve: s => new ResolveTool(s),
 	goal: s => new GoalTool(s),
+	get_goal: s => new GetGoalTool(s),
+	create_goal: s => new CreateGoalTool(s),
+	update_goal: s => new UpdateGoalTool(s),
 };
 
 export type ToolName = BuiltinToolName;
+
+export const CODEX_GOAL_HIDDEN_TOOL_NAMES = ["get_goal", "create_goal", "update_goal"] as const;
+export const GOAL_HIDDEN_TOOL_NAMES = ["goal", ...CODEX_GOAL_HIDDEN_TOOL_NAMES] as const;
+
+export function isGoalHiddenToolName(name: string): boolean {
+	return GOAL_HIDDEN_TOOL_NAMES.some(goalToolName => goalToolName === name);
+}
+
+function isCodexGoalHiddenToolName(name: string): boolean {
+	return CODEX_GOAL_HIDDEN_TOOL_NAMES.some(goalToolName => goalToolName === name);
+}
 
 /**
  * Create tools from BUILTIN_TOOLS registry.
@@ -502,12 +516,16 @@ export type ToolName = BuiltinToolName;
 export async function createTools(session: ToolSession, toolNames?: string[]): Promise<Tool[]> {
 	const includeYield = session.requireYieldTool === true;
 	const enableLsp = session.enableLsp ?? true;
-	let requestedTools =
+	const requestedTools =
 		toolNames && toolNames.length > 0 ? [...new Set(toolNames.map(name => name.toLowerCase()))] : undefined;
 	const goalEnabled = session.settings.get("goal.enabled");
 	const goalModeActive = goalEnabled && session.getGoalModeState?.()?.enabled === true;
-	if (goalModeActive && requestedTools && !requestedTools.includes("goal")) {
-		requestedTools = [...requestedTools, "goal"];
+	if (goalModeActive && requestedTools) {
+		for (const name of GOAL_HIDDEN_TOOL_NAMES) {
+			if (!requestedTools.includes(name)) {
+				requestedTools.push(name);
+			}
+		}
 	}
 	const backends = resolveEvalBackends(session);
 	const allowPython = backends.python;
@@ -590,6 +608,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 	const isToolAllowed = (name: string) => {
 		if (name === "goal") return goalEnabled && goalModeActive;
+		if (isCodexGoalHiddenToolName(name)) return goalEnabled;
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "eval") return allowEval;
@@ -639,6 +658,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 						.filter(([name]) => isToolAllowed(name))
 						.map(([name, factory]) => [name, factory] as const),
 					...(includeYield ? ([["yield", HIDDEN_TOOLS.yield]] as const) : []),
+					...(goalEnabled ? CODEX_GOAL_HIDDEN_TOOL_NAMES.map(name => [name, HIDDEN_TOOLS[name]] as const) : []),
 					...(goalModeActive ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
 				];
 

@@ -2,25 +2,50 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { formatNumber, prompt } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
+import * as z from "zod/v4";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
+import createGoalDescription from "../../prompts/tools/create-goal.md" with { type: "text" };
+import getGoalDescription from "../../prompts/tools/get-goal.md" with { type: "text" };
 import goalDescription from "../../prompts/tools/goal.md" with { type: "text" };
+import updateGoalDescription from "../../prompts/tools/update-goal.md" with { type: "text" };
 import { formatDuration } from "../../slash-commands/helpers/format";
 import type { ToolSession } from "../../tools";
 import { formatErrorDetail, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { ToolError } from "../../tools/tool-errors";
 import { framedBlock, renderStatusLine, truncateToWidth } from "../../tui";
-import { completionBudgetReport, remainingTokens } from "../runtime";
+import { completionBudgetReport, type GoalRuntime, remainingTokens } from "../runtime";
 import type { Goal, GoalStatus, GoalToolDetails } from "../state";
 
-const goalSchema = type({
-	op: type("'create' | 'get' | 'complete' | 'resume' | 'drop'").describe("goal operation"),
-	"objective?": type("string").describe("goal objective"),
-	"token_budget?": type("number.integer").describe("token budget"),
+const getGoalSchema = z.object({});
+
+const createGoalSchema = z.object({
+	objective: z.string().describe("Required. The concrete objective to start pursuing."),
+	token_budget: z
+		.number()
+		.int()
+		.describe("Positive token budget for the new goal. Omit unless explicitly requested.")
+		.optional(),
 });
 
-export type GoalToolInput = typeof goalSchema.infer;
+const updateGoalSchema = z.object({
+	status: z
+		.enum(["complete", "blocked"])
+		.describe(
+			"Required. Set to complete only when achieved; set to blocked only after the same blocker repeats for at least three consecutive goal turns.",
+		),
+});
+
+const goalSchema = z.object({
+	op: z.enum(["create", "get", "complete", "resume", "drop"]).describe("goal operation"),
+	objective: z.string().describe("goal objective").optional(),
+	token_budget: z.number().int().describe("token budget").optional(),
+});
+
+export type GetGoalToolInput = z.infer<typeof getGoalSchema>;
+export type CreateGoalToolInput = z.infer<typeof createGoalSchema>;
+export type UpdateGoalToolInput = z.infer<typeof updateGoalSchema>;
+export type GoalToolInput = z.infer<typeof goalSchema>;
 
 export interface GoalToolResponse {
 	goal: Goal | null;
@@ -55,6 +80,126 @@ function validateCreateParams(params: GoalToolInput): { objective: string; token
 	return { objective, tokenBudget };
 }
 
+function requireGoalRuntime(session: ToolSession): GoalRuntime {
+	const runtime = session.getGoalRuntime?.();
+	if (!runtime) {
+		throw new ToolError("Goal mode is not active.");
+	}
+	return runtime;
+}
+
+function buildGoalToolText(response: GoalToolResponse): string {
+	if (!response.goal) {
+		return "No active goal.";
+	}
+	let text = `Goal: ${response.goal.objective}\nStatus: ${response.goal.status}\nTokens: ${response.goal.tokensUsed} used`;
+	if (response.goal.tokenBudget !== undefined) {
+		text += ` / ${response.goal.tokenBudget} budget`;
+	}
+	if (response.remainingTokens !== null) {
+		text += `\nRemaining tokens: ${response.remainingTokens}`;
+	}
+	if (response.completionBudgetReport) {
+		text += `\n\n${response.completionBudgetReport}`;
+	}
+	return text;
+}
+
+function buildGoalToolResult(op: GoalToolDetails["op"], response: GoalToolResponse): AgentToolResult<GoalToolDetails> {
+	return {
+		content: [{ type: "text", text: buildGoalToolText(response) }],
+		details: {
+			op,
+			goal: response.goal,
+			remainingTokens: response.remainingTokens,
+			completionBudgetReport: response.completionBudgetReport,
+		},
+	};
+}
+
+export class GetGoalTool implements AgentTool<typeof getGoalSchema, GoalToolDetails> {
+	readonly name = "get_goal";
+	readonly label = "Get Goal";
+	readonly description = prompt.render(getGoalDescription);
+	readonly parameters = getGoalSchema;
+	readonly strict = true;
+	readonly intent = "omit" as const;
+	readonly #session: ToolSession;
+
+	constructor(session: ToolSession) {
+		this.#session = session;
+	}
+
+	async execute(
+		_toolCallId: string,
+		_params: GetGoalToolInput,
+		_signal?: AbortSignal,
+		_onUpdate?: AgentToolUpdateCallback<GoalToolDetails>,
+		_context?: AgentToolContext,
+	): Promise<AgentToolResult<GoalToolDetails>> {
+		const state = this.#session.getGoalModeState?.();
+		return buildGoalToolResult("get", buildGoalToolResponse(state?.goal ?? null));
+	}
+}
+
+export class CreateGoalTool implements AgentTool<typeof createGoalSchema, GoalToolDetails> {
+	readonly name = "create_goal";
+	readonly label = "Create Goal";
+	readonly description = prompt.render(createGoalDescription);
+	readonly parameters = createGoalSchema;
+	readonly strict = true;
+	readonly intent = "omit" as const;
+	readonly #session: ToolSession;
+
+	constructor(session: ToolSession) {
+		this.#session = session;
+	}
+
+	async execute(
+		_toolCallId: string,
+		params: CreateGoalToolInput,
+		_signal?: AbortSignal,
+		_onUpdate?: AgentToolUpdateCallback<GoalToolDetails>,
+		_context?: AgentToolContext,
+	): Promise<AgentToolResult<GoalToolDetails>> {
+		const runtime = requireGoalRuntime(this.#session);
+		const created = await runtime.createGoal({
+			objective: params.objective,
+			tokenBudget: params.token_budget,
+		});
+		return buildGoalToolResult("create", buildGoalToolResponse(created.goal));
+	}
+}
+
+export class UpdateGoalTool implements AgentTool<typeof updateGoalSchema, GoalToolDetails> {
+	readonly name = "update_goal";
+	readonly label = "Update Goal";
+	readonly description = prompt.render(updateGoalDescription);
+	readonly parameters = updateGoalSchema;
+	readonly strict = true;
+	readonly intent = "omit" as const;
+	readonly #session: ToolSession;
+
+	constructor(session: ToolSession) {
+		this.#session = session;
+	}
+
+	async execute(
+		_toolCallId: string,
+		params: UpdateGoalToolInput,
+		_signal?: AbortSignal,
+		_onUpdate?: AgentToolUpdateCallback<GoalToolDetails>,
+		_context?: AgentToolContext,
+	): Promise<AgentToolResult<GoalToolDetails>> {
+		const runtime = requireGoalRuntime(this.#session);
+		const updated = await runtime.updateGoalStatusFromTool(params);
+		return buildGoalToolResult(
+			params.status === "complete" ? "complete" : "block",
+			buildGoalToolResponse(updated, { includeCompletionReport: params.status === "complete" }),
+		);
+	}
+}
+
 export class GoalTool implements AgentTool<typeof goalSchema, GoalToolDetails> {
 	readonly name = "goal";
 	readonly label = "Goal";
@@ -75,12 +220,10 @@ export class GoalTool implements AgentTool<typeof goalSchema, GoalToolDetails> {
 		_onUpdate?: AgentToolUpdateCallback<GoalToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<GoalToolDetails>> {
-		const runtime = this.#session.getGoalRuntime?.();
-		if (!runtime) {
-			throw new ToolError("Goal mode is not active.");
-		}
+		const runtime = requireGoalRuntime(this.#session);
 
 		let response: GoalToolResponse;
+		const op: GoalToolDetails["op"] = params.op;
 		if (params.op === "create") {
 			const created = await runtime.createGoal(validateCreateParams(params));
 			response = buildGoalToolResponse(created.goal);
@@ -97,30 +240,7 @@ export class GoalTool implements AgentTool<typeof goalSchema, GoalToolDetails> {
 			const completed = await runtime.completeGoalFromTool();
 			response = buildGoalToolResponse(completed, { includeCompletionReport: true });
 		}
-		let text: string;
-		if (response.goal) {
-			text = `Goal: ${response.goal.objective}\nStatus: ${response.goal.status}\nTokens: ${response.goal.tokensUsed} used`;
-			if (response.goal.tokenBudget !== undefined) {
-				text += ` / ${response.goal.tokenBudget} budget`;
-			}
-			if (response.remainingTokens !== null) {
-				text += `\nRemaining tokens: ${response.remainingTokens}`;
-			}
-			if (response.completionBudgetReport) {
-				text += `\n\n${response.completionBudgetReport}`;
-			}
-		} else {
-			text = "No active goal.";
-		}
-		return {
-			content: [{ type: "text", text }],
-			details: {
-				op: params.op,
-				goal: response.goal,
-				remainingTokens: response.remainingTokens,
-				completionBudgetReport: response.completionBudgetReport,
-			},
-		};
+		return buildGoalToolResult(op, response);
 	}
 }
 
@@ -145,6 +265,8 @@ function goalBadgeColor(status: GoalStatus): ThemeColor {
 	switch (status) {
 		case "complete":
 			return "success";
+		case "blocked":
+		case "usage-limited":
 		case "budget-limited":
 			return "warning";
 		case "paused":

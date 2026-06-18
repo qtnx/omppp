@@ -9,6 +9,17 @@
 ### Fixed
 
 - Resolved merge regressions across the StatusLine context/branch caches, eager-task prelude gating, MCP/context-window tool discovery, context-promotion overflow recovery, the OpenAI Codex pre-prompt/moderation/websocket-continuation paths, and the grouped follow-up/steering queue.
+### Added
+
+- Added Codex-compatible `get_goal`, `create_goal`, and `update_goal` hidden tools, including `blocked` goal status handling and upstream-style continuation guidance.
+
+### Changed
+
+- OpenAI Codex-family sessions now use a compact upstream-style system prompt while preserving OMPx project context, tool inventory, skills, and rules, reducing baseline prompt bytes before provider requests.
+
+### Fixed
+
+- Recovered session persistence after a cached session writer loses its file descriptor (`EBADF`) by dropping the stale writer and atomically rewriting the current in-memory session instead of permanently poisoning the running session.
 
 ## [1.3.3] - 2026-06-15
 

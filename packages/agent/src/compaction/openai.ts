@@ -166,14 +166,22 @@ export function withOpenAiRemoteCompactionPreserveData(
 // Input/output filtering for OpenAI compact endpoint
 // ============================================================================
 
-function shouldTrimOpenAiCompactInputItem(item: Record<string, unknown>): boolean {
-	return item.type === "function_call_output" || (item.type === "message" && item.role === "developer");
-}
-
 function shouldKeepOpenAiCompactOutputItem(item: Record<string, unknown>): boolean {
 	if (item.type === "compaction" || item.type === "compaction_summary") return true;
 	if (item.type !== "message") return false;
 	return item.role === "assistant" || item.role === "user";
+}
+
+function compactInputCallType(item: Record<string, unknown>): "function_call" | "custom_tool_call" | undefined {
+	if (item.type === "function_call" || item.type === "custom_tool_call") return item.type;
+	return undefined;
+}
+
+function compactInputOutputType(
+	item: Record<string, unknown>,
+): "function_call_output" | "custom_tool_call_output" | undefined {
+	if (item.type === "function_call_output" || item.type === "custom_tool_call_output") return item.type;
+	return undefined;
 }
 
 function trimOpenAiCompactInput(
@@ -183,36 +191,56 @@ function trimOpenAiCompactInput(
 ): Array<Record<string, unknown>> {
 	const trimmed = [...input];
 	// Per-item serialized sizes are cached and decremented on removal.
-	// Re-stringifying the whole input per popped item was O(N²) in total chars
-	// — hundreds of MB of stringify churn on a 200k-token codex history,
-	// blocking the event loop for seconds (same class as the addOpenAiCallIds
-	// fix above).
+	// Re-stringifying the whole input per removed item was O(N²) in total chars
+	// on large codex histories. Remove oldest items so recent context survives
+	// compact input overflow.
 	const sizes = trimmed.map(item => JSON.stringify(item).length);
 	let chars = instructions.length;
 	for (const size of sizes) chars += size;
-	const removeAt = (index: number): void => {
+	const removeAt = (index: number): Record<string, unknown> | undefined => {
+		const [removed] = trimmed.splice(index, 1);
 		chars -= sizes[index] ?? 0;
-		trimmed.splice(index, 1);
 		sizes.splice(index, 1);
+		return removed;
+	};
+	const removeMatchingOutput = (callId: string, callType: "function_call" | "custom_tool_call"): void => {
+		const outputType = callType === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output";
+		const outputIndex = trimmed.findIndex(item => item.type === outputType && item.call_id === callId);
+		if (outputIndex >= 0) removeAt(outputIndex);
+	};
+	const dropOrphanToolOutputs = (): void => {
+		const knownCallIds = new Set<string>();
+		const customCallIds = new Set<string>();
+		for (const item of trimmed) {
+			if (typeof item.call_id !== "string") continue;
+			const callType = compactInputCallType(item);
+			if (!callType) continue;
+			knownCallIds.add(item.call_id);
+			if (callType === "custom_tool_call") customCallIds.add(item.call_id);
+		}
+
+		for (let index = trimmed.length - 1; index >= 0; index -= 1) {
+			const item = trimmed[index];
+			if (!item || typeof item.call_id !== "string") continue;
+			const outputType = compactInputOutputType(item);
+			if (!outputType) continue;
+			const known = knownCallIds.has(item.call_id);
+			const typeMatches = outputType === "custom_tool_call_output" ? customCallIds.has(item.call_id) : known;
+			if (!known || !typeMatches) removeAt(index);
+		}
+	};
+	const removeOldest = (): boolean => {
+		const removed = removeAt(0);
+		if (!removed) return false;
+		if (typeof removed.call_id === "string") {
+			const callType = compactInputCallType(removed);
+			if (callType) removeMatchingOutput(removed.call_id, callType);
+		}
+		dropOrphanToolOutputs();
+		return true;
 	};
 	while (trimmed.length > 0 && Math.ceil(chars / 4) > contextWindow) {
-		const last = trimmed[trimmed.length - 1];
-		if (last?.type === "function_call_output" || last?.type === "custom_tool_call_output") {
-			const callId = typeof last.call_id === "string" ? last.call_id : undefined;
-			const callType = last.type === "custom_tool_call_output" ? "custom_tool_call" : "function_call";
-			removeAt(trimmed.length - 1);
-			if (callId) {
-				const matchingCallIndex = trimmed.findLastIndex(item => item.type === callType && item.call_id === callId);
-				if (matchingCallIndex >= 0) {
-					removeAt(matchingCallIndex);
-				}
-			}
-			continue;
-		}
-		if (!last || !shouldTrimOpenAiCompactInputItem(last)) {
-			break;
-		}
-		removeAt(trimmed.length - 1);
+		if (!removeOldest()) break;
 	}
 	return trimmed;
 }

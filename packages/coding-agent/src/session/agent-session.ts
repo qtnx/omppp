@@ -360,6 +360,10 @@ export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
 const UNEXPECTED_STOP_MAX_RETRIES = 3;
 const UNEXPECTED_STOP_TIMEOUT_MS = 4000;
+
+function isGoalToolExecutionName(name: string): boolean {
+	return name === "goal" || name === "get_goal" || name === "create_goal" || name === "update_goal";
+}
 const EMPTY_STOP_MAX_RETRIES = 3;
 const RETRY_BACKOFF_MAX_DELAY_MS = 8_000;
 
@@ -2462,7 +2466,7 @@ export class AgentSession {
 			}
 		}
 		if (event.type === "tool_execution_end") {
-			if (event.toolName === "goal") {
+			if (isGoalToolExecutionName(event.toolName)) {
 				await this.#goalRuntime.onGoalToolCompleted();
 			} else {
 				await this.#goalRuntime.onToolCompleted(event.toolName);

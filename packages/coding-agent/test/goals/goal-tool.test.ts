@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "bun:test";
 import { completionBudgetReport, GoalRuntime } from "@oh-my-pi/pi-coding-agent/goals/runtime";
 import type { Goal, GoalModeState, GoalTokenUsage } from "@oh-my-pi/pi-coding-agent/goals/state";
-import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
+import { CreateGoalTool, GetGoalTool, GoalTool, UpdateGoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
 function createUsage(overrides: Partial<GoalTokenUsage> = {}): GoalTokenUsage {
@@ -56,6 +56,74 @@ function createRuntimeHarness(initialState?: GoalModeState) {
 }
 
 describe("GoalTool", () => {
+	it("supports Codex-style get_goal/create_goal/update_goal tools", async () => {
+		const harness = createRuntimeHarness();
+		const toolSession = createToolSession({
+			getGoalRuntime: () => harness.runtime,
+			getGoalModeState: () => harness.getState(),
+		});
+		const createTool = new CreateGoalTool(toolSession);
+		const getTool = new GetGoalTool(toolSession);
+		const updateTool = new UpdateGoalTool(toolSession);
+
+		expect(createTool.name).toBe("create_goal");
+		expect(getTool.name).toBe("get_goal");
+		expect(updateTool.name).toBe("update_goal");
+
+		const created = await createTool.execute("call-create", {
+			objective: "  Ship upstream goal tools  ",
+			token_budget: 12,
+		});
+
+		expect(created.details).toMatchObject({
+			op: "create",
+			goal: {
+				objective: "Ship upstream goal tools",
+				status: "active",
+				tokenBudget: 12,
+				tokensUsed: 0,
+			},
+			remainingTokens: 12,
+			completionBudgetReport: null,
+		});
+		expect(harness.getState()?.goal.objective).toBe("Ship upstream goal tools");
+
+		const fetched = await getTool.execute("call-get", {});
+		expect(fetched.details).toMatchObject({
+			op: "get",
+			goal: {
+				objective: "Ship upstream goal tools",
+				status: "active",
+			},
+			remainingTokens: 12,
+			completionBudgetReport: null,
+		});
+
+		const blocked = await updateTool.execute("call-blocked", { status: "blocked" });
+		expect(blocked.details).toMatchObject({
+			op: "block",
+			goal: {
+				objective: "Ship upstream goal tools",
+				status: "blocked",
+			},
+			remainingTokens: 12,
+			completionBudgetReport: null,
+		});
+		expect(harness.getState()?.enabled).toBe(false);
+		expect(harness.getState()?.goal.status).toBe("blocked");
+
+		await harness.runtime.resumeGoal();
+		const completed = await updateTool.execute("call-complete", { status: "complete" });
+		expect(completed.details).toMatchObject({
+			op: "complete",
+			goal: {
+				status: "complete",
+			},
+			remainingTokens: 12,
+			completionBudgetReport: completionBudgetReport(completed.details?.goal as Goal),
+		});
+	});
+
 	it("routes create/get/complete operations and returns completion budget details", async () => {
 		const createGoalState: GoalModeState = {
 			enabled: true,

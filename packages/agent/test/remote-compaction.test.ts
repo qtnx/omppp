@@ -6,6 +6,7 @@ import {
 	DEFAULT_COMPACTION_SETTINGS,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import { buildOpenAiNativeHistory, requestOpenAiRemoteCompaction } from "@oh-my-pi/pi-agent-core/compaction/openai";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core/types";
 import * as ai from "@oh-my-pi/pi-ai";
 import type { AssistantMessage, FetchImpl, Model, ToolResultMessage } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -121,6 +122,24 @@ const ZERO_USAGE = {
 	totalTokens: 0,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+function makePreparation(overrides: Partial<CompactionPreparation> = {}): CompactionPreparation {
+	return {
+		firstKeptEntryId: "kept-1",
+		messagesToSummarize: [{ role: "user", content: "old work", timestamp: 1 } satisfies AgentMessage],
+		turnPrefixMessages: [],
+		recentMessages: [{ role: "user", content: "recent question", timestamp: 2 } satisfies AgentMessage],
+		isSplitTurn: false,
+		tokensBefore: 123,
+		fileOps: createFileOps(),
+		settings: { ...DEFAULT_COMPACTION_SETTINGS, remoteEnabled: true },
+		...overrides,
+	};
+}
 
 // Codex carries native responses-API items on `providerPayload`. The history
 // builder reads call ids from there (not the message content blocks), so each
@@ -252,6 +271,36 @@ describe("buildOpenAiNativeHistory call-id tracking", () => {
 });
 
 describe("remote compaction input trimming", () => {
+	test("trims oldest history first so recent messages survive compact input overflow", async () => {
+		let requestInput: Array<Record<string, unknown>> | undefined;
+		const fetchMock: FetchImpl = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { input: Array<Record<string, unknown>> };
+			requestInput = body.input;
+			return Response.json({
+				output: [{ type: "compaction_summary", summary: "compact" }],
+			});
+		};
+
+		await requestOpenAiRemoteCompaction(
+			makeOpenAiModel({ contextWindow: 100 }),
+			"test-key",
+			[
+				{
+					type: "message",
+					role: "user",
+					content: [{ type: "input_text", text: `old ${"x".repeat(20_000)}` }],
+				},
+				{ type: "message", role: "user", content: [{ type: "input_text", text: "keep-me" }] },
+			],
+			"compact",
+			undefined,
+			{ fetch: fetchMock },
+		);
+
+		expect(JSON.stringify(requestInput)).not.toContain("old ");
+		expect(JSON.stringify(requestInput)).toContain("keep-me");
+	});
+
 	test("trims custom tool outputs with their matching custom calls", async () => {
 		let requestInput: Array<Record<string, unknown>> | undefined;
 		const fetchMock: FetchImpl = async (_input, init) => {
@@ -276,6 +325,26 @@ describe("remote compaction input trimming", () => {
 
 		expect(requestInput?.some(item => item.type === "custom_tool_call")).toBe(false);
 		expect(requestInput?.some(item => item.type === "custom_tool_call_output")).toBe(false);
+	});
+});
+
+describe("compact OpenAI remote summary reuse", () => {
+	test("uses the remote compaction summary without issuing local summarizer requests", async () => {
+		const completeSpy = vi
+			.spyOn(ai, "completeSimple")
+			.mockRejectedValue(new Error("local summarizer should not run"));
+		const fetchMock: FetchImpl = async () =>
+			Response.json({
+				output: [{ type: "compaction_summary", summary: "Remote compact summary" }],
+			});
+
+		const result = await compact(makePreparation(), makeOpenAiModel(), "test-key", undefined, undefined, {
+			fetch: fetchMock,
+		});
+
+		expect(result.summary).toBe("Remote compact summary");
+		expect(result.shortSummary).toBeUndefined();
+		expect(completeSpy).not.toHaveBeenCalled();
 	});
 });
 

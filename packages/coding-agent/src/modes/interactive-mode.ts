@@ -69,7 +69,7 @@ import type { CompactOptions } from "../extensibility/extensions/types";
 import { loadSkills, setActiveSkills } from "../extensibility/skills";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import { type GuidedGoalMessage, runGuidedGoalTurn } from "../goals/guided-setup";
-import type { Goal, GoalModeState } from "../goals/state";
+import type { Goal, GoalModeState, GoalStatus } from "../goals/state";
 import { resolveLocalUrlToPath } from "../internal-urls";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
@@ -277,6 +277,10 @@ function formatHudNoteMarker(count: number): string {
 }
 
 type GoalSubcommand = "set" | "show" | "pause" | "resume" | "drop" | "budget";
+
+function isResumableGoalStatus(status: GoalStatus | undefined): boolean {
+	return status === "paused" || status === "blocked" || status === "usage-limited";
+}
 
 const GOAL_SUBCOMMANDS = new Set<GoalSubcommand>(["set", "show", "pause", "resume", "drop", "budget"]);
 const PLAN_KEEP_CONTEXT_OPTION_INDEX = 2;
@@ -1783,7 +1787,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#getPausedGoalState(): GoalModeState | undefined {
 		const state = this.session.getGoalModeState();
-		if (!state?.goal || state.enabled || state.goal.status !== "paused") {
+		if (!state?.goal || state.enabled || !isResumableGoalStatus(state.goal.status)) {
 			return undefined;
 		}
 		return state;
@@ -1841,7 +1845,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				return;
 			}
 			this.goalModeEnabled = event.state?.enabled === true;
-			this.goalModePaused = event.state?.enabled !== true && event.state?.goal?.status === "paused";
+			this.goalModePaused = event.state?.enabled !== true && isResumableGoalStatus(event.state?.goal?.status);
 			if (!event.state?.enabled) {
 				this.#cancelGoalContinuation();
 			}
