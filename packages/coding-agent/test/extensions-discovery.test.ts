@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { initializeWithSettings } from "@oh-my-pi/pi-coding-agent/discovery";
 import { discoverAndLoadExtensions, loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { filterUserScoped } from "./utils/filter-user-extensions";
@@ -13,8 +15,10 @@ describe("extensions discovery", () => {
 		tempDir = TempDir.createSync("@pi-ext-test-");
 		extensionsDir = path.join(getProjectAgentDir(tempDir.path()), "extensions");
 		fs.mkdirSync(extensionsDir, { recursive: true });
+		resetSettingsForTest();
 	});
 	afterEach(() => {
+		resetSettingsForTest();
 		tempDir.removeSync();
 	});
 
@@ -129,6 +133,55 @@ describe("extensions discovery", () => {
 		expect(result.extensions[0].path).toContain("main.ts");
 	});
 
+	it("discovers a symlinked extension package directory", async () => {
+		const packageDir = path.join(tempDir.path(), "linked-package");
+		const sourceDir = path.join(packageDir, "src");
+		fs.mkdirSync(sourceDir, { recursive: true });
+		fs.writeFileSync(path.join(sourceDir, "main.ts"), extensionCode);
+		fs.writeFileSync(
+			path.join(packageDir, "package.json"),
+			JSON.stringify({
+				name: "linked-package",
+				pi: {
+					extensions: ["./src/main.ts"],
+				},
+			}),
+		);
+		fs.symlinkSync(packageDir, path.join(extensionsDir, "linked-package"), "dir");
+
+		const result = await discoverForTest();
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions).toHaveLength(1);
+		expect(result.extensions[0].path).toContain("linked-package/src/main.ts");
+	});
+
+	it("discovers index.ts in a symlinked extension directory", async () => {
+		const packageDir = path.join(tempDir.path(), "linked-index-ts");
+		fs.mkdirSync(packageDir);
+		fs.writeFileSync(path.join(packageDir, "index.ts"), extensionCode);
+		fs.symlinkSync(packageDir, path.join(extensionsDir, "linked-index-ts"), "dir");
+
+		const result = await discoverForTest();
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions).toHaveLength(1);
+		expect(result.extensions[0].path).toContain("linked-index-ts/index.ts");
+	});
+
+	it("discovers index.js in a symlinked extension directory", async () => {
+		const packageDir = path.join(tempDir.path(), "linked-index-js");
+		fs.mkdirSync(packageDir);
+		fs.writeFileSync(path.join(packageDir, "index.js"), extensionCode);
+		fs.symlinkSync(packageDir, path.join(extensionsDir, "linked-index-js"), "dir");
+
+		const result = await discoverForTest();
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions).toHaveLength(1);
+		expect(result.extensions[0].path).toContain("linked-index-js/index.js");
+	});
+
 	it("package.json can declare multiple extensions", async () => {
 		const subdir = path.join(extensionsDir, "my-package");
 		fs.mkdirSync(subdir);
@@ -239,6 +292,90 @@ describe("extensions discovery", () => {
 
 		expect(result.errors).toHaveLength(0);
 		expect(result.extensions).toHaveLength(3);
+	});
+
+	it("discovers a symlinked extension directory with index.ts", async () => {
+		// A single extension dir shared across profiles via a symlink: the real
+		// directory lives outside extensions/ and is linked into it. Native glob
+		// never descends into the symlink, so this exercises the symlink fallback.
+		const realDir = path.join(tempDir.path(), "external", "shared-ext");
+		fs.mkdirSync(realDir, { recursive: true });
+		fs.writeFileSync(path.join(realDir, "index.ts"), extensionCode);
+		fs.symlinkSync(realDir, path.join(extensionsDir, "linked-ext"), "dir");
+
+		const result = await discoverForTest();
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions).toHaveLength(1);
+		expect(result.extensions[0].path).toContain("linked-ext");
+		expect(result.extensions[0].path).toContain("index.ts");
+	});
+
+	it("discovers a symlinked extension directory with a package.json manifest", async () => {
+		// Mirrors the real-world shape: a packaged extension (package.json + index.ts)
+		// symlinked into a profile's extensions/ dir.
+		const realDir = path.join(tempDir.path(), "external", "ctk");
+		fs.mkdirSync(realDir, { recursive: true });
+		fs.writeFileSync(path.join(realDir, "index.ts"), extensionCodeWithTool("ctk-tool"));
+		fs.writeFileSync(
+			path.join(realDir, "package.json"),
+			JSON.stringify({ name: "ctk", omp: { extensions: ["./index.ts"] } }),
+		);
+		fs.symlinkSync(realDir, path.join(extensionsDir, "ctk"), "dir");
+
+		const result = await discoverForTest();
+
+		expect(result.errors).toHaveLength(0);
+		// Manifest declares index.ts; it must be discovered exactly once (no double
+		// from the synthesized index.ts match colliding with the manifest entry).
+		expect(result.extensions).toHaveLength(1);
+		expect(result.extensions[0].path).toContain("index.ts");
+		expect(result.extensions[0].tools.has("ctk-tool")).toBe(true);
+	});
+
+	it("discovers a symlinked extension file", async () => {
+		// Symlinked *files* resolve through the native file-type filter; guards that
+		// the directory fallback does not regress the file case.
+		const realFile = path.join(tempDir.path(), "external", "shared.ts");
+		fs.mkdirSync(path.dirname(realFile), { recursive: true });
+		fs.writeFileSync(realFile, extensionCode);
+		fs.symlinkSync(realFile, path.join(extensionsDir, "linked.ts"), "file");
+
+		const result = await discoverForTest();
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions).toHaveLength(1);
+		expect(result.extensions[0].path).toContain("linked.ts");
+	});
+
+	it("does not crash on a dangling symlinked extension directory", async () => {
+		// A profile symlink pointing at a since-deleted shared extension. The fallback
+		// reads the (missing) target, gets [], and must yield no extension and no
+		// error rather than throwing.
+		fs.symlinkSync(path.join(tempDir.path(), "external", "gone"), path.join(extensionsDir, "broken"), "dir");
+
+		const result = await discoverForTest();
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions).toHaveLength(0);
+	});
+
+	it("discovers a symlinked extension directory whose name ends in .ts", async () => {
+		// Odd but legal: a *.ts-named symlink that targets a directory. The native
+		// file-type filter rejects it as a direct file (target is a dir), so it must
+		// resolve exactly once via the synthesized subdir index — never double-counted
+		// as both a direct file and a subdir entry.
+		const realDir = path.join(tempDir.path(), "external", "weird");
+		fs.mkdirSync(realDir, { recursive: true });
+		fs.writeFileSync(path.join(realDir, "index.ts"), extensionCode);
+		fs.symlinkSync(realDir, path.join(extensionsDir, "weird.ts"), "dir");
+
+		const result = await discoverForTest();
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions).toHaveLength(1);
+		expect(result.extensions[0].path).toContain("weird.ts");
+		expect(result.extensions[0].path).toContain("index.ts");
 	});
 
 	it("skips non-existent paths declared in package.json", async () => {
@@ -456,6 +593,59 @@ describe("extensions discovery", () => {
 		expect(result.extensions[0].handlers.has("agent_start")).toBe(true);
 		expect(result.extensions[0].handlers.has("tool_call")).toBe(true);
 		expect(result.extensions[0].handlers.has("agent_end")).toBe(true);
+	});
+
+	it("loads hookCapability JS factories as extension handlers", async () => {
+		const hookDir = path.join(getProjectAgentDir(tempDir.path()), "hooks", "pre");
+		fs.mkdirSync(hookDir, { recursive: true });
+		const hookPath = path.join(hookDir, "guard-test.ts");
+		fs.writeFileSync(
+			hookPath,
+			`
+				export default function(pi) {
+					pi.on("tool_call", async () => ({ block: true, reason: "blocked by hook" }));
+				}
+			`,
+		);
+
+		const result = await discoverForTest();
+		const loadedHook = result.extensions.find(extension => extension.path === hookPath);
+
+		expect(result.errors).toHaveLength(0);
+		expect(loadedHook).toBeDefined();
+		expect(loadedHook?.handlers.has("tool_call")).toBe(true);
+	});
+
+	it("keeps discovered hooks separate from disabled extension-module ids", async () => {
+		const extensionPath = path.join(extensionsDir, "guard.ts");
+		fs.writeFileSync(extensionPath, extensionCode);
+
+		const hookDir = path.join(getProjectAgentDir(tempDir.path()), "hooks", "pre");
+		fs.mkdirSync(hookDir, { recursive: true });
+		const hookPath = path.join(hookDir, "guard.ts");
+		fs.writeFileSync(
+			hookPath,
+			`
+				export default function(pi) {
+					pi.on("tool_call", async () => ({ block: true, reason: "blocked by hook" }));
+				}
+			`,
+		);
+
+		const settings = await Settings.init({
+			inMemory: true,
+			cwd: tempDir.path(),
+			overrides: { disabledExtensions: ["extension-module:guard"] },
+		});
+		initializeWithSettings(settings);
+
+		const result = await discoverForTest();
+		const loadedHook = result.extensions.find(extension => extension.path === hookPath);
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions.find(extension => extension.path === extensionPath)).toBeUndefined();
+		expect(loadedHook).toBeDefined();
+		expect(loadedHook?.handlers.has("tool_call")).toBe(true);
 	});
 
 	it("loads extension with shortcuts", async () => {

@@ -20,7 +20,7 @@ The loader is intentionally narrow:
 - On Windows `node_modules` installs, stage addon files into the versioned cache to avoid locked-DLL update failures.
 - Attempt candidates in deterministic order and return the first addon that `require(...)` loads and validates.
 
-For install and compiled-binary paths, the loader verifies a release sentinel export named from `package.json#version` (for example `__piNativesV15_7_2`). Workspace-dev loads skip this validation so a local checkout can rebuild after a pull. The loader does not validate the full export surface; stale same-version or incomplete binaries still surface as missing members or native errors at use sites.
+For install and compiled-binary paths, the loader verifies a release sentinel export named from `package.json#version` (for example `__piNativesV16_0_3`). Workspace-dev loads skip this validation so a local checkout can rebuild after a pull. The loader does not validate the full export surface; stale same-version or incomplete binaries still surface as missing members or native errors at use sites.
 
 ## Runtime inputs and derived state
 
@@ -29,7 +29,7 @@ At module initialization, `native/index.js` computes:
 - **Platform tag**: `${process.platform}-${process.arch}` (for example `darwin-arm64`).
 - **Package version**: from `packages/natives/package.json`.
 - **Core directories**:
-  - `leafPackageDir`: directory of the platform leaf package, resolved via `require.resolve("@oh-my-pi/pi-natives-<tag>/package.json")`; `null` when no leaf is installed (e.g. local dev).
+  - `leafPackageDir`: directory of the platform leaf package, resolved via `require.resolve("@oh-my-pi/pi-natives-<tag>/package.json")`; `null` when no leaf is installed (e.g. local dev) and forced to `null` in compiled-binary mode.
   - `nativeDir`: package-local `packages/natives/native`.
   - `execDir`: directory containing `process.execPath`.
   - `versionedDir`: `<getNativesDir()>/<packageVersion>`.
@@ -95,11 +95,10 @@ The default unsuffixed fallback remains part of the x64 candidate list.
 
 ### Non-compiled runtime
 
-For each filename, candidates are, in order:
+Candidates are grouped by directory class, in order:
 
-1. `<leafPackageDir>/<filename>` (omitted when `leafPackageDir` is `null`)
-2. `<nativeDir>/<filename>`
-3. `<execDir>/<filename>`
+1. `<leafPackageDir>/<filename>` for every filename (omitted when `leafPackageDir` is `null`)
+2. `<nativeDir>/<filename>` then `<execDir>/<filename>`, per filename
 
 The leaf package dir comes first so the optional-dependency binary published with the release is preferred over any `.node` left in the core package's `native/` (e.g. a stale local-dev build).
 
@@ -107,12 +106,10 @@ On Windows installs where `nativeDir` is inside a `node_modules` segment (`shoul
 
 ### Compiled runtime
 
-For each filename, candidates are:
+Candidates are grouped, in order:
 
-1. `<versionedDir>/<filename>`
-2. `<userDataDir>/<filename>`
-3. `<nativeDir>/<filename>`
-4. `<execDir>/<filename>`
+1. `<versionedDir>/<filename>` then `<userDataDir>/<filename>`, per filename
+2. `<nativeDir>/<filename>` then `<execDir>/<filename>`, per filename
 
 At load time, an extracted embedded candidate, or a staged Windows candidate when no embedded candidate exists, is prepended ahead of these de-duplicated candidates.
 

@@ -1,5 +1,6 @@
-import { highlightOrchestrate } from "./orchestrate";
-import { highlightUltrathink } from "./ultrathink";
+import { keywordInProse } from "./markdown-prose";
+import { containsOrchestrate, highlightOrchestrate } from "./orchestrate";
+import { containsUltrathink, highlightUltrathink } from "./ultrathink";
 import { highlightWorkflow } from "./workflow";
 
 /**
@@ -14,7 +15,34 @@ import { highlightWorkflow } from "./workflow";
  * pass the surrounding text color when decorating already-colored content (e.g.
  * a themed message bubble) so the gradient does not bleed into the rest of the
  * line. Defaults to a plain foreground reset for default-colored editor text.
+ *
+ * `phase` ∈ [0, 1) cyclically rotates each gradient — the editor passes a
+ * `Date.now()`-derived value to animate a Claude-Code-style shimmer while a
+ * keyword is on screen and the prompt is focused; sent message bubbles omit it
+ * to keep the static gradient.
  */
-export function highlightMagicKeywords(text: string, resetTo?: string): string {
-	return highlightWorkflow(highlightOrchestrate(highlightUltrathink(text, resetTo), resetTo), resetTo);
+export function highlightMagicKeywords(text: string, resetTo?: string, phase?: number): string {
+	return highlightWorkflow(
+		highlightOrchestrate(highlightUltrathink(text, resetTo, phase), resetTo, phase),
+		resetTo,
+		phase,
+	);
+}
+
+// `hasMagicKeyword` gates editor animation for the fork's `workflowz` keyword.
+// Keep this stricter than `containsWorkflow`, which intentionally preserves the
+// broader OMPx notice trigger for other message-processing paths.
+const WORKFLOWZ_WORD = /(?<!\S)workflowz(?!\S)/;
+
+/**
+ * Cheap test for "does this text contain any magic keyword as standalone prose?".
+ * Short-circuits on a substring probe before paying for the markdown-aware
+ * prose check, so the common "no keyword in buffer" path is just three
+ * `String#indexOf`s. Used by the live editor to gate the shimmer timer.
+ */
+export function hasMagicKeyword(text: string): boolean {
+	if (!text.includes("ultrathink") && !text.includes("orchestrate") && !text.includes("workflowz")) {
+		return false;
+	}
+	return containsUltrathink(text) || containsOrchestrate(text) || keywordInProse(text, WORKFLOWZ_WORD);
 }

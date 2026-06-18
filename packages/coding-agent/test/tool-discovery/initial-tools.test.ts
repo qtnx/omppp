@@ -16,7 +16,6 @@ import {
 const allToolsSettings = Settings.isolated({
 	"astGrep.enabled": true,
 	"astEdit.enabled": true,
-	"renderMermaid.enabled": true,
 	"debug.enabled": true,
 	"find.enabled": true,
 	"search.enabled": true,
@@ -28,6 +27,7 @@ const allToolsSettings = Settings.isolated({
 	"checkpoint.enabled": true,
 	"todo.enabled": true,
 	"memory.backend": "mnemopi",
+	"autolearn.enabled": true,
 	"tools.discoveryMode": "all",
 });
 
@@ -126,13 +126,6 @@ describe("tools.discoveryMode settings schema", () => {
 	it("back-compat: mcp.discoveryMode still accepted", () => {
 		const settings = Settings.isolated({ "mcp.discoveryMode": true });
 		expect(settings.get("mcp.discoveryMode")).toBe(true);
-	});
-});
-
-describe("task.eager settings schema", () => {
-	it("defaults to eager task delegation", () => {
-		const settings = Settings.isolated({});
-		expect(settings.get("task.eager")).toBe(true);
 	});
 });
 

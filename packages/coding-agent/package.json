@@ -40,9 +40,10 @@
 		"fmt": "biome format --write . && bun run format-prompts",
 		"format-prompts": "bun scripts/format-prompts.ts",
 		"generate-docs-index": "bun scripts/generate-docs-index.ts",
-		"prepack": "bun scripts/generate-docs-index.ts && bun scripts/bundle-dist.ts",
+		"prepack": "bun scripts/generate-docs-index.ts && bun --cwd=../collab-web run build:tool-views && bun scripts/bundle-dist.ts",
 		"generate-template": "bun scripts/generate-template.ts",
-		"backfill-review-findings": "bun scripts/backfill-review-findings.ts"
+		"backfill-review-findings": "bun scripts/backfill-review-findings.ts",
+		"bench:guard": "bun scripts/bench-guard.ts"
 	},
 	"dependencies": {
 		"@agentclientprotocol/sdk": "catalog:",
@@ -60,6 +61,7 @@
 		"@oh-my-pi/pi-natives": "catalog:",
 		"@oh-my-pi/pi-tui": "catalog:",
 		"@oh-my-pi/pi-utils": "catalog:",
+		"@oh-my-pi/pi-wire": "catalog:",
 		"@oh-my-pi/snapcompact": "catalog:",
 		"@opentelemetry/api": "catalog:",
 		"@opentelemetry/context-async-hooks": "catalog:",
@@ -70,6 +72,7 @@
 		"@puppeteer/browsers": "catalog:",
 		"@types/turndown": "catalog:",
 		"@xterm/headless": "catalog:",
+		"arktype": "catalog:",
 		"chalk": "catalog:",
 		"diff": "catalog:",
 		"fflate": "catalog:",
@@ -83,7 +86,8 @@
 		"zod": "catalog:"
 	},
 	"optionalDependencies": {
-		"@huggingface/transformers": "catalog:"
+		"@huggingface/transformers": "catalog:",
+		"sherpa-onnx-node": "1.13.2"
 	},
 	"devDependencies": {
 		"@types/bun": "catalog:"

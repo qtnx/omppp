@@ -1,11 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type { ToolExample } from "@oh-my-pi/pi-ai";
 import * as natives from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { formatGroupedPaths, isEnoent, prompt, untilAborted } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
+import { type } from "arktype";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import type { Theme } from "../modes/theme/theme";
@@ -35,17 +36,24 @@ import {
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
-const findSchema = z
-	.object({
-		paths: z.array(z.string().describe("glob including search path")).min(1).describe("globs including search paths"),
-		hidden: z.boolean().default(true).describe("include hidden files").optional(),
-		gitignore: z.boolean().default(true).describe("respect gitignore").optional(),
-		limit: z.number().default(200).describe("max results (clamped to 1-200)").optional(),
-		timeout: z.number().min(0.5).max(60).default(5).describe("timeout in seconds (0.5–60)").optional(),
-	})
-	.strict();
+const findSchema = type({
+	paths: type("string")
+		.describe("glob including search path")
+		.array()
+		.atLeastLength(1)
+		.describe("globs including search paths"),
+	"hidden?": type("boolean").describe("include hidden files"),
+	"gitignore?": type("boolean").describe("respect gitignore"),
+	"limit?": type("number").describe("max results (clamped to 1-200)"),
+	"timeout?": type("number").describe("timeout in seconds (0.5–60)"),
+}).narrow((o, ctx) => {
+	if (o.timeout !== undefined && (o.timeout < 0.5 || o.timeout > 60)) {
+		return ctx.mustBe("a timeout between 0.5 and 60 seconds");
+	}
+	return true;
+});
 
-export type FindToolInput = z.infer<typeof findSchema>;
+export type FindToolInput = typeof findSchema.infer;
 
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 200;
@@ -106,6 +114,29 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 	readonly label = "Find";
 	readonly description: string;
 	readonly parameters = findSchema;
+
+	readonly examples: readonly ToolExample<typeof findSchema.infer>[] = [
+		{
+			caption: "Find files",
+			call: { paths: ["src/**/*.ts"] },
+		},
+		{
+			caption: "Multiple targets — separate array elements",
+			call: { paths: ["src/**/*.ts", "test/**/*.ts"] },
+		},
+		{
+			caption: "Find gitignored files like .env",
+			call: { paths: [".env*"], gitignore: false },
+		},
+		{
+			caption: "Find directories matching a name (returns both files and dirs; directories are suffixed with `/`)",
+			call: { paths: ["**/tests"] },
+		},
+		{
+			caption: "Long-running search on a slow volume",
+			call: { paths: ["/Volumes/Storage/**/*.py"], timeout: 30 },
+		},
+	];
 	readonly strict = true;
 
 	readonly #customOps?: FindOperations;
@@ -120,7 +151,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 
 	async execute(
 		_toolCallId: string,
-		params: z.infer<typeof findSchema>,
+		params: typeof findSchema.infer,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<FindToolDetails>,
 		_context?: AgentToolContext,
@@ -239,7 +270,9 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 					const parts = ["No files found matching pattern"];
 					if (notice) parts.push(notice);
 					if (missingPathsNote) parts.push(missingPathsNote);
-					return toolResult(details).text(parts.join("\n")).done();
+					// Zero results is useless regardless of notices: the follow-up
+					// call has already corrected course by the time compaction runs.
+					return toolResult(details).text(parts.join("\n")).useless().done();
 				}
 
 				const listLimit = applyListLimit(files, { limit: effectiveLimit });

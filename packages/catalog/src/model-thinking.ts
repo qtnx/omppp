@@ -10,15 +10,24 @@ import { Effort, THINKING_EFFORTS } from "./effort";
 import { modelMatchesHost } from "./hosts";
 import {
 	type AnthropicModel,
+	bareModelId,
 	type GeminiModel,
 	isFableOrMythos,
 	type OpenAIModel,
 	type ParsedModel,
+	parseAnthropicModel,
 	parseKnownModel,
 	semverEqual,
 	semverGte,
 } from "./identity/classify";
-import { supportsAdaptiveThinkingDisplay } from "./identity/family";
+import {
+	findThinkingVariantToken,
+	isDeepseekModelIdOrName,
+	isGlm52ReasoningEffortModelId,
+	isMinimaxM2FamilyModelId,
+	isOpenAIGptOssModelId,
+	supportsAdaptiveThinkingDisplay,
+} from "./identity/family";
 import type {
 	Api,
 	CompatOf,
@@ -47,6 +56,38 @@ const GEMINI_3_PRO_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High];
 const GEMINI_3_FLASH_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
 const GPT_5_2_PLUS_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
 const GPT_5_1_CODEX_MINI_EFFORTS: readonly Effort[] = [Effort.Medium, Effort.High];
+const LOW_MEDIUM_HIGH_REASONING_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High];
+const GLM_52_HIGH_MAX_REASONING_EFFORTS: readonly Effort[] = [Effort.High, Effort.XHigh];
+
+type EffortMap = Partial<Record<Effort, string>>;
+
+const GROQ_QWEN3_32B_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
+	[Effort.Minimal]: "default",
+	[Effort.Low]: "default",
+	[Effort.Medium]: "default",
+	[Effort.High]: "default",
+	[Effort.XHigh]: "default",
+};
+const DEEPSEEK_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
+	[Effort.Minimal]: "high",
+	[Effort.Low]: "high",
+	[Effort.Medium]: "high",
+	[Effort.High]: "high",
+	[Effort.XHigh]: "max",
+};
+const FIREWORKS_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
+	[Effort.Minimal]: "none",
+};
+const ZAI_GLM_52_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
+	[Effort.Minimal]: "none",
+	[Effort.Low]: "high",
+	[Effort.Medium]: "high",
+	[Effort.High]: "high",
+	[Effort.XHigh]: "max",
+};
+const OLLAMA_CLOUD_GLM_52_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
+	[Effort.XHigh]: "max",
+};
 
 /**
  * Effort → wire-value map for the 5-tier adaptive scale (Opus 4.7+ and
@@ -88,7 +129,7 @@ export const ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER: Readonly<Partial<Record<Effor
  * - Explicit spec thinking (generator-baked or user-authored) owns the
  *   capability surface (`mode`, `efforts`, `defaultLevel`); the wire facts
  *   (`effortMap`, `supportsDisplay`) are backfilled from identity when not
- *   explicitly set, so configs never need to know Anthropic's tier tables.
+ *   explicitly set, so configs never need to know provider wire tier tables.
  * - Sparse specs go through full inference.
  */
 export function resolveModelThinking<TApi extends Api>(
@@ -98,7 +139,7 @@ export function resolveModelThinking<TApi extends Api>(
 	if (!spec.reasoning) return undefined;
 	if (omitsWireReasoningEffort(spec.api, compat)) return undefined;
 	if (spec.thinking && Array.isArray(spec.thinking.efforts) && spec.thinking.efforts.length > 0) {
-		return fillThinkingWireDefaults(spec, spec.thinking);
+		return fillThinkingWireDefaults(spec, compat, spec.thinking);
 	}
 	// Empty/malformed explicit metadata is treated as absent — infer instead.
 	return deriveThinking(spec, compat);
@@ -106,26 +147,49 @@ export function resolveModelThinking<TApi extends Api>(
 
 /**
  * Backfill identity-derived wire facts onto explicit thinking metadata.
- * Explicit `effortMap` / `supportsDisplay` (including `false`) always win;
- * untouched configs are returned as-is with zero allocation.
+ * Explicit `effortMap` / `supportsDisplay` (including `false`) win, except
+ * model-defined effort restrictions still normalize stale cached capability
+ * surfaces before request-time code can observe them.
  */
-function fillThinkingWireDefaults<TApi extends Api>(spec: ModelSpec<TApi>, thinking: ThinkingConfig): ThinkingConfig {
-	const needsEffortMap = thinking.mode === "anthropic-adaptive" && thinking.effortMap === undefined;
+function fillThinkingWireDefaults<TApi extends Api>(
+	spec: ModelSpec<TApi>,
+	compat: CompatOf<TApi>,
+	thinking: ThinkingConfig,
+): ThinkingConfig {
+	const parsed = parseKnownModel(spec.id);
+	const normalizedEfforts = getModelDefinedEfforts(spec) ?? thinking.efforts;
+	const effortsChanged = !sameEffortList(normalizedEfforts, thinking.efforts);
+	const effortMap =
+		thinking.effortMap === undefined
+			? inferEffortMap(spec, compat, parsed, thinking.mode, normalizedEfforts)
+			: effortsChanged
+				? filterEffortMapToSupportedEfforts(thinking.effortMap, normalizedEfforts)
+				: undefined;
+	const shouldReplaceEffortMap = thinking.effortMap === undefined ? effortMap !== undefined : effortsChanged;
 	const needsDisplay =
 		thinking.supportsDisplay === undefined &&
 		(spec.api === "anthropic-messages" || spec.api === "bedrock-converse-stream") &&
 		supportsAdaptiveThinkingDisplay(spec.id);
-	if (!needsEffortMap && !needsDisplay) {
+	const needsRequiresEffort = thinking.requiresEffort === undefined && impliesMandatoryReasoning(parsed, spec.id);
+	if (!effortsChanged && !shouldReplaceEffortMap && !needsDisplay && !needsRequiresEffort) {
 		return thinking;
 	}
 	const filled: ThinkingConfig = { ...thinking };
-	if (needsEffortMap) {
-		filled.effortMap = anthropicModelHasRealXHighEffort(spec, parseKnownModel(spec.id))
-			? ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER
-			: ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER;
+	if (effortsChanged) {
+		filled.efforts = normalizedEfforts;
+	}
+	if (shouldReplaceEffortMap) {
+		if (effortMap === undefined) {
+			delete filled.effortMap;
+		} else {
+			filled.effortMap = effortMap;
+		}
 	}
 	if (needsDisplay) {
 		filled.supportsDisplay = true;
+	}
+	if (needsRequiresEffort) {
+		filled.requiresEffort = true;
 	}
 	return filled;
 }
@@ -141,16 +205,18 @@ export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: 
 		mode: inferThinkingControlMode(spec, parsed),
 		efforts,
 	};
-	if (config.mode === "anthropic-adaptive") {
-		config.effortMap = anthropicModelHasRealXHighEffort(spec, parsed)
-			? ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER
-			: ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER;
+	const effortMap = inferEffortMap(spec, compat, parsed, config.mode, config.efforts);
+	if (effortMap !== undefined) {
+		config.effortMap = effortMap;
 	}
 	if (
 		(spec.api === "anthropic-messages" || spec.api === "bedrock-converse-stream") &&
 		supportsAdaptiveThinkingDisplay(spec.id)
 	) {
 		config.supportsDisplay = true;
+	}
+	if (impliesMandatoryReasoning(parsed, spec.id)) {
+		config.requiresEffort = true;
 	}
 	return config;
 }
@@ -159,16 +225,143 @@ export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: 
  * True when the model reasons natively but rejects the wire `reasoning.effort`
  * param. Scoped to openai-responses* because that's the only API surface where
  * `compat.supportsReasoningEffort: false` means "omit the field entirely"
- * (xAI Grok off the GROK_EFFORT_CAPABLE_PREFIXES allowlist: grok-build,
+ * (xAI Grok off the `isGrokReasoningEffortCapable` allowlist: grok-build,
  * grok-4.20-0309-reasoning). openai-completions keeps its thinking config even
  * without effort support — binary thinking formats (zai/qwen) drive reasoning
  * through other request fields.
  */
 function omitsWireReasoningEffort(api: Api, compat: CompatOf<Api>): boolean {
-	if (api !== "openai-responses" && api !== "openai-codex-responses") {
+	if (api !== "openai-responses" && api !== "openai-codex-responses" && api !== "azure-openai-responses") {
 		return false;
 	}
 	return (compat as ResolvedOpenAIResponsesCompat | undefined)?.supportsReasoningEffort === false;
+}
+
+function inferEffortMap<TApi extends Api>(
+	spec: ModelSpec<TApi>,
+	compat: CompatOf<TApi>,
+	parsedModel: ParsedModel,
+	mode: ThinkingConfig["mode"],
+	efforts: readonly Effort[],
+): EffortMap | undefined {
+	const detected = inferDetectedEffortMap(spec, parsedModel, mode);
+	const configured = readCompatEffortMap(compat);
+	const merged =
+		detected === undefined ? configured : configured === undefined ? detected : { ...detected, ...configured };
+	return merged === undefined ? undefined : filterEffortMapToSupportedEfforts(merged, efforts);
+}
+
+function filterEffortMapToSupportedEfforts(map: EffortMap, efforts: readonly Effort[]): EffortMap | undefined {
+	let filtered: EffortMap | undefined;
+	for (const effort of efforts) {
+		const mapped = map[effort];
+		if (mapped === undefined) continue;
+		if (filtered === undefined) filtered = {};
+		filtered[effort] = mapped;
+	}
+	return filtered;
+}
+
+function sameEffortList(left: readonly Effort[], right: readonly Effort[]): boolean {
+	if (left.length !== right.length) return false;
+	for (let index = 0; index < left.length; index++) {
+		if (left[index] !== right[index]) return false;
+	}
+	return true;
+}
+
+function isOpenAICompatReasoningApi(api: Api): boolean {
+	return api === "openai-completions" || api === "openrouter";
+}
+
+function getModelDefinedEfforts<TApi extends Api>(spec: ModelSpec<TApi>): readonly Effort[] | undefined {
+	if (isOpenAICompatReasoningApi(spec.api) && isZaiGlm52ReasoningEffortModel(spec)) {
+		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
+	}
+	if (isOllamaCloudGlm52ReasoningEffortModel(spec)) {
+		return GLM_52_HIGH_MAX_REASONING_EFFORTS;
+	}
+	return isOpenAICompatReasoningApi(spec.api) && (isMinimaxM2FamilyModelId(spec.id) || isOpenAIGptOssModelId(spec.id))
+		? LOW_MEDIUM_HIGH_REASONING_EFFORTS
+		: undefined;
+}
+
+function isZaiGlm52ReasoningEffortModel<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
+	if (!isGlm52ReasoningEffortModelId(spec.id)) return false;
+	return modelMatchesHost(spec, "zai") || modelMatchesHost(spec, "zhipu");
+}
+
+function isOllamaCloudGlm52ReasoningEffortModel<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
+	return spec.api === "ollama-chat" && spec.provider === "ollama-cloud" && isGlm52ReasoningEffortModelId(spec.id);
+}
+
+function readCompatEffortMap(compat: CompatOf<Api>): EffortMap | undefined {
+	if (compat === undefined || !("reasoningEffortMap" in compat)) {
+		return undefined;
+	}
+	const map = compat.reasoningEffortMap;
+	return map && Object.keys(map).length > 0 ? map : undefined;
+}
+
+function inferDetectedEffortMap<TApi extends Api>(
+	spec: ModelSpec<TApi>,
+	parsedModel: ParsedModel,
+	mode: ThinkingConfig["mode"],
+): EffortMap | undefined {
+	if (mode === "anthropic-adaptive") {
+		return anthropicModelHasRealXHighEffort(spec, parsedModel)
+			? ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER
+			: ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER;
+	}
+	if (isOllamaCloudGlm52ReasoningEffortModel(spec)) {
+		return OLLAMA_CLOUD_GLM_52_REASONING_EFFORT_MAP;
+	}
+	if (!isOpenAICompatReasoningApi(spec.api)) {
+		return undefined;
+	}
+	if (spec.provider === "groq" && spec.id === "qwen/qwen3-32b") {
+		return GROQ_QWEN3_32B_REASONING_EFFORT_MAP;
+	}
+	if (isZaiGlm52ReasoningEffortModel(spec)) {
+		return ZAI_GLM_52_REASONING_EFFORT_MAP;
+	}
+	if (isDeepseekReasoningModel(spec)) {
+		return DEEPSEEK_REASONING_EFFORT_MAP;
+	}
+	if (modelMatchesHost(spec, "openrouter")) {
+		const openRouterAnthropicMap = getOpenRouterAnthropicReasoningEffortMap(spec.id);
+		if (openRouterAnthropicMap !== undefined) return openRouterAnthropicMap;
+	}
+	if (modelMatchesHost(spec, "fireworks")) {
+		return FIREWORKS_REASONING_EFFORT_MAP;
+	}
+	return undefined;
+}
+
+function isDeepseekReasoningModel<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
+	if (!spec.reasoning) return false;
+	const lowerId = spec.id.toLowerCase();
+	const lowerName = (spec.name ?? "").toLowerCase();
+	const isOpenCodeDeepseekAlias =
+		spec.provider === "opencode-zen" && (lowerId === "big-pickle" || lowerName === "big pickle");
+	return (
+		modelMatchesHost(spec, "deepseekFamily") ||
+		isDeepseekModelIdOrName(spec.id) ||
+		isDeepseekModelIdOrName(spec.name ?? "") ||
+		isOpenCodeDeepseekAlias
+	);
+}
+
+function getOpenRouterAnthropicReasoningEffortMap(modelId: string): EffortMap | undefined {
+	const parsed = parseAnthropicModel(bareModelId(modelId));
+	if (!parsed) return undefined;
+	// Adaptive efforts on OpenRouter's completions front: Fable/Mythos and
+	// Opus 4.6+ only — Sonnet stays on the plain effort vocabulary there.
+	const isOpusAdaptive = parsed.kind === "opus" && semverGte(parsed.version, "4.6");
+	if (!isFableOrMythos(parsed.kind) && !isOpusAdaptive) return undefined;
+
+	const hasRealXHigh = isFableOrMythos(parsed.kind) || semverGte(parsed.version, "4.7");
+	return hasRealXHigh ? ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER : ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER;
 }
 
 function inferSupportedEfforts<TApi extends Api>(
@@ -176,6 +369,10 @@ function inferSupportedEfforts<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
 ): readonly Effort[] {
+	const modelDefinedEfforts = getModelDefinedEfforts(spec);
+	if (modelDefinedEfforts !== undefined) {
+		return modelDefinedEfforts;
+	}
 	switch (parsedModel.family) {
 		case "openai":
 			return inferOpenAISupportedEfforts(parsedModel);
@@ -203,6 +400,30 @@ function inferGeminiSupportedEfforts(model: GeminiModel): readonly Effort[] {
 		return DEFAULT_REASONING_EFFORTS;
 	}
 	return model.kind === "pro" ? GEMINI_3_PRO_EFFORTS : GEMINI_3_FLASH_EFFORTS;
+}
+
+const OPENAI_O_SERIES_RE = /^o[134](?:$|[-:.])/i;
+
+/**
+ * Reasoning-only upstreams reject disabled or omitted thinking ("Reasoning is
+ * mandatory for this endpoint and cannot be disabled") — the floor is the
+ * lowest effort, never off:
+ * - Gemini 3.x exposes levels only; Gemini 2.5 Pro floors thinkingBudget at
+ *   128 and rejects 0 (2.5 Flash/Flash-Lite keep the off switch).
+ * - OpenAI o-series and MiniMax M2 are reasoning-first architectures.
+ * - Thinking-variant SKUs (`*-thinking`, `*-reasoner`, `*-reasoning`) ARE the
+ *   thinking checkpoint; live bare twins pair-collapse away
+ *   (variant-collapse) and the collapsed entry owns off — this floor protects
+ *   the orphans.
+ */
+function impliesMandatoryReasoning(parsed: ParsedModel, modelId: string): boolean {
+	if (parsed.family === "gemini") {
+		if (semverGte(parsed.version, "3.0")) return true;
+		if (parsed.kind === "pro" && semverGte(parsed.version, "2.5")) return true;
+	}
+	if (isMinimaxM2FamilyModelId(modelId)) return true;
+	if (OPENAI_O_SERIES_RE.test(bareModelId(modelId))) return true;
+	return findThinkingVariantToken(modelId) !== undefined;
 }
 
 function inferAnthropicSupportedEfforts<TApi extends Api>(
@@ -234,7 +455,7 @@ function inferFallbackEfforts<TApi extends Api>(spec: ModelSpec<TApi>, compat: C
 	if (spec.api === "bedrock-converse-stream") {
 		return DEFAULT_REASONING_EFFORTS;
 	}
-	if (spec.api === "openai-completions") {
+	if (isOpenAICompatReasoningApi(spec.api)) {
 		const resolved = compat as ResolvedOpenAICompat;
 		if (resolved.thinkingFormat === "openai" && resolved.supportsReasoningEffort) {
 			return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
@@ -242,7 +463,11 @@ function inferFallbackEfforts<TApi extends Api>(spec: ModelSpec<TApi>, compat: C
 		return DEFAULT_REASONING_EFFORTS;
 	}
 	// OpenAI Responses APIs encode discrete effort levels, including xhigh.
-	if (spec.api === "openai-responses" || spec.api === "openai-codex-responses") {
+	if (
+		spec.api === "openai-responses" ||
+		spec.api === "openai-codex-responses" ||
+		spec.api === "azure-openai-responses"
+	) {
 		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
 	}
 	return DEFAULT_REASONING_EFFORTS;
@@ -296,7 +521,7 @@ function isOpenRouterAnthropicAdaptiveReasoningModel<TApi extends Api>(
 	parsedModel: AnthropicModel,
 	spec: ModelSpec<TApi>,
 ): boolean {
-	if (spec.api !== "openai-completions") return false;
+	if (!isOpenAICompatReasoningApi(spec.api)) return false;
 	if (!modelMatchesHost(spec, "openrouter")) return false;
 	return isFableOrMythos(parsedModel.kind) || (parsedModel.kind === "opus" && semverGte(parsedModel.version, "4.6"));
 }
@@ -404,4 +629,27 @@ export function mapEffortToAnthropicAdaptiveEffort<TApi extends Api>(
 ): "low" | "medium" | "high" | "xhigh" | "max" {
 	const supported = requireSupportedEffort(model, effort);
 	return (model.thinking?.effortMap?.[supported] ?? supported) as "low" | "medium" | "high" | "xhigh" | "max";
+}
+
+/**
+ * Resolves the upstream wire model id for a request at the given effort
+ * (`undefined` = thinking off). Collapsed effort-tier variants route through
+ * `thinking.effortRouting`; everything else falls back to
+ * `requestModelId ?? id`.
+ */
+export function resolveWireModelId<TApi extends Api>(model: ApiModel<TApi>, effort: Effort | undefined): string {
+	return model.thinking?.effortRouting?.[effort ?? "off"] ?? model.requestModelId ?? model.id;
+}
+
+/**
+ * Lowest supported effort in canonical order — the clamp target for
+ * thinking-off requests on `thinking.requiresEffort` models.
+ */
+export function minimumSupportedEffort<TApi extends Api>(model: ApiModel<TApi>): Effort | undefined {
+	const efforts = model.thinking?.efforts;
+	if (!efforts || efforts.length === 0) return undefined;
+	for (const effort of THINKING_EFFORTS) {
+		if (efforts.includes(effort)) return effort;
+	}
+	return efforts[0];
 }

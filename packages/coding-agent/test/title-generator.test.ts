@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { type GeneratedProvider, getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import { logger } from "@oh-my-pi/pi-utils";
 
@@ -9,6 +9,16 @@ function getModelOrThrow(id: string): Model<Api> {
 	const model = getBundledModel("anthropic", id);
 	if (!model) throw new Error(`Expected model ${id}`);
 	return model;
+}
+
+function getModelFor(provider: GeneratedProvider, id: string): Model<Api> {
+	const model = getBundledModel(provider, id);
+	if (!model) throw new Error(`Expected model ${provider}/${id}`);
+	return model;
+}
+
+function withoutForcedToolChoice(model: Model<Api>): Model<Api> {
+	return { ...model, compat: { ...model.compat, supportsForcedToolChoice: false } } as Model<Api>;
 }
 
 function createSettings(model: Model<Api>, tinyModel = "online") {
@@ -301,5 +311,184 @@ describe("title generator", () => {
 		const userContent = sentMessages?.[0]?.content ?? "";
 		expect(userContent).not.toContain("Claude Code v2.1.158");
 		expect(userContent).toContain("pick provider then theme");
+	});
+
+	it("uses <title> markers instead of a forced tool call when the model lacks tool_choice support", async () => {
+		const model = getModelFor("deepseek", "deepseek-v4-pro");
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [{ type: "text", text: "<title>Add OAuth authentication</title>" }],
+		} as never);
+
+		const title = await generateSessionTitle(
+			"Add OAuth authentication",
+			createRegistry(model),
+			createSettings(model),
+		);
+
+		expect(title).toBe("Add OAuth Authentication");
+		const request = completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt?: string[]; tools?: unknown };
+		const options = completeSimpleMock.mock.calls[0]?.[2] as { toolChoice?: unknown };
+		expect(request?.tools).toBeUndefined();
+		expect(options?.toolChoice).toBeUndefined();
+		expect(request?.systemPrompt?.[0]).toContain("<title>");
+	});
+
+	it("uses the marker path when the model rejects forced tool choice", async () => {
+		const model = withoutForcedToolChoice(getModelOrThrow("claude-sonnet-4-5"));
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [{ type: "text", text: "<title>Investigate the resolver</title>" }],
+		} as never);
+
+		const title = await generateSessionTitle(
+			"Investigate the resolver",
+			createRegistry(model),
+			createSettings(model),
+		);
+
+		expect(title).toBe("Investigate The Resolver");
+		expect((completeSimpleMock.mock.calls[0]?.[1] as { tools?: unknown }).tools).toBeUndefined();
+		expect((completeSimpleMock.mock.calls[0]?.[2] as { toolChoice?: unknown }).toolChoice).toBeUndefined();
+	});
+
+	it("accepts a plain sentence when the model omits the <title> markers", async () => {
+		const model = getModelFor("deepseek", "deepseek-v4-pro");
+		vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [{ type: "text", text: "Fix login button on mobile" }],
+		} as never);
+
+		const title = await generateSessionTitle(
+			"the login button is broken on mobile",
+			createRegistry(model),
+			createSettings(model),
+		);
+
+		expect(title).toBe("Fix Login Button On Mobile");
+	});
+
+	it("strips an unclosed <title> tag from a truncated response", async () => {
+		const model = getModelFor("deepseek", "deepseek-v4-pro");
+		vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [{ type: "text", text: "<title>Refactor API client error handling" }],
+		} as never);
+
+		const title = await generateSessionTitle(
+			"refactor the error handling in the api client",
+			createRegistry(model),
+			createSettings(model),
+		);
+
+		expect(title).toBe("Refactor API Client Error Handling");
+	});
+
+	it("appends the marker instruction after a custom prompt in marker mode", async () => {
+		const model = getModelFor("deepseek", "deepseek-v4-pro");
+		const customPrompt = "Generate lowercase colon-delimited session names.";
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [{ type: "text", text: "<title>fix:resolver</title>" }],
+		} as never);
+
+		const title = await generateSessionTitle(
+			"Investigate the resolver",
+			createRegistry(model),
+			createSettings(model),
+			undefined,
+			undefined,
+			undefined,
+			customPrompt,
+		);
+
+		expect(title).toBe("Fix:Resolver");
+		const request = completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt?: string[] };
+		expect(request?.systemPrompt).toHaveLength(2);
+		expect(request?.systemPrompt?.[0]).toBe(customPrompt);
+		expect(request?.systemPrompt?.[1]).toContain("<title>");
+	});
+
+	it("resolves the model roles in precedence order: title -> commit -> smol", async () => {
+		const titleModel = getModelOrThrow("claude-haiku-4-5");
+		const commitModel = getModelOrThrow("claude-sonnet-4-5");
+		const smolModel = getModelOrThrow("claude-opus-4-8");
+
+		const mockComplete = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [{ type: "text", text: "<title>Test Title</title>" }],
+		} as never);
+
+		// Case 1: All three roles configured. 'title' should be used.
+		let currentSettings = {
+			get(path: string) {
+				if (path === "providers.tinyModel") return "online";
+				return undefined;
+			},
+			getModelRole(role: string) {
+				if (role === "title") return `${titleModel.provider}/${titleModel.id}`;
+				if (role === "commit") return `${commitModel.provider}/${commitModel.id}`;
+				if (role === "smol") return `${smolModel.provider}/${smolModel.id}`;
+				return undefined;
+			},
+			getStorage() {
+				return undefined;
+			},
+		} as never;
+
+		const registry = {
+			getAvailable: () => [titleModel, commitModel, smolModel],
+			getApiKey: async () => "test-key",
+			getApiKeyForProvider: async () => "test-key",
+			authStorage: { rotateSessionCredential: async () => false },
+			resolver: () => async () => "test-key",
+		} as never;
+
+		await generateSessionTitle("Some message", registry, currentSettings);
+		expect(mockComplete).toHaveBeenCalled();
+		expect(mockComplete.mock.calls[0]?.[0]).toBe(titleModel);
+
+		mockComplete.mockClear();
+
+		// Case 2: 'title' role not configured, 'commit' and 'smol' configured. 'commit' should be used.
+		currentSettings = {
+			get(path: string) {
+				if (path === "providers.tinyModel") return "online";
+				return undefined;
+			},
+			getModelRole(role: string) {
+				if (role === "commit") return `${commitModel.provider}/${commitModel.id}`;
+				if (role === "smol") return `${smolModel.provider}/${smolModel.id}`;
+				return undefined;
+			},
+			getStorage() {
+				return undefined;
+			},
+		} as never;
+
+		await generateSessionTitle("Some message", registry, currentSettings);
+		expect(mockComplete).toHaveBeenCalled();
+		expect(mockComplete.mock.calls[0]?.[0]).toBe(commitModel);
+
+		mockComplete.mockClear();
+
+		// Case 3: Only 'smol' role configured. 'smol' should be used.
+		currentSettings = {
+			get(path: string) {
+				if (path === "providers.tinyModel") return "online";
+				return undefined;
+			},
+			getModelRole(role: string) {
+				if (role === "smol") return `${smolModel.provider}/${smolModel.id}`;
+				return undefined;
+			},
+			getStorage() {
+				return undefined;
+			},
+		} as never;
+
+		await generateSessionTitle("Some message", registry, currentSettings);
+		expect(mockComplete).toHaveBeenCalled();
+		expect(mockComplete.mock.calls[0]?.[0]).toBe(smolModel);
 	});
 });

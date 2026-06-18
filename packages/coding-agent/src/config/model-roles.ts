@@ -5,12 +5,24 @@
 import { isValidThemeColor, type ThemeColor } from "../modes/theme/theme";
 import type { Settings } from "./settings";
 
-export type ModelRole = "default" | "smol" | "slow" | "vision" | "plan" | "designer" | "commit" | "task";
+export type ModelRole =
+	| "default"
+	| "smol"
+	| "slow"
+	| "vision"
+	| "plan"
+	| "designer"
+	| "commit"
+	| "title"
+	| "task"
+	| "advisor";
 
 export interface ModelRoleInfo {
 	tag?: string;
 	name: string;
 	color?: ThemeColor;
+	/** If true, the role is functional but not shown in the model selector UI. */
+	hidden?: boolean;
 }
 
 export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
@@ -21,12 +33,24 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 	plan: { tag: "PLAN", name: "Architect", color: "muted" },
 	designer: { tag: "DESIGNER", name: "Designer", color: "muted" },
 	commit: { tag: "COMMIT", name: "Commit", color: "dim" },
+	title: { tag: "TITLE", name: "Title", color: "dim", hidden: true },
 	task: { tag: "TASK", name: "Subtask", color: "muted" },
+	advisor: { tag: "ADVISOR", name: "Advisor", color: "accent" },
 };
 
-export const MODEL_ROLE_IDS: ModelRole[] = ["default", "smol", "slow", "vision", "plan", "designer", "commit", "task"];
+export const MODEL_ROLE_IDS: ModelRole[] = [
+	"default",
+	"smol",
+	"slow",
+	"vision",
+	"plan",
+	"designer",
+	"commit",
+	"title",
+	"task",
+	"advisor",
+];
 
-/** Alias for ModelRoleInfo - used for both built-in and custom roles */
 export type RoleInfo = ModelRoleInfo;
 
 /**
@@ -37,7 +61,7 @@ export type RoleInfo = ModelRoleInfo;
  * entries across settings.
  */
 export function getKnownRoleIds(settings: Settings): string[] {
-	const roles = [...MODEL_ROLE_IDS] as string[];
+	const roles = MODEL_ROLE_IDS.filter(role => !MODEL_ROLES[role as ModelRole]?.hidden) as string[];
 	const seen = new Set<string>(roles);
 	const addRole = (role: string) => {
 		if (seen.has(role)) return;
@@ -65,6 +89,7 @@ export function getRoleInfo(role: string, settings: Settings): RoleInfo {
 			tag: builtIn?.tag,
 			name: configured.name || builtIn?.name || role,
 			color: configured.color && isValidThemeColor(configured.color) ? configured.color : builtIn?.color,
+			hidden: configured.hidden ?? builtIn?.hidden,
 		};
 	}
 

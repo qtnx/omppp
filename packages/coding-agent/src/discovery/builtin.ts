@@ -4,8 +4,9 @@
  * Primary provider for OMP native configs. Supports all capabilities.
  */
 import * as path from "node:path";
-import { logger, parseFrontmatter, tryParseJson } from "@oh-my-pi/pi-utils";
+import { getAgentDir, logger, parseFrontmatter, tryParseJson } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
+import { getManagedSkillsDir, MANAGED_SKILLS_PROVIDER_ID } from "../autolearn/managed-skills";
 import { registerProvider } from "../capability";
 import { type ContextFile, contextFileCapability } from "../capability/context-file";
 import { type Extension, type ExtensionManifest, extensionCapability } from "../capability/extension";
@@ -60,7 +61,9 @@ async function getConfigDirs(ctx: LoadContext): Promise<Array<{ dir: string; lev
 	if (projectDir) {
 		result.push({ dir: projectDir, level: "project" });
 	}
-	const userDir = await ifNonEmptyDir(ctx.home, PATHS.userAgent);
+	// Native user config is profile-scoped: getAgentDir() points at the active
+	// profile's agent dir (~/.omp/profiles/<name>/agent), like sessions and MCP.
+	const userDir = await ifNonEmptyDir(getAgentDir());
 	if (userDir) {
 		result.push({ dir: userDir, level: "user" });
 	}
@@ -177,6 +180,7 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 							redirectUri?: string;
 							callbackPort?: number;
 							callbackPath?: string;
+							prompt?: string;
 					  }
 					| undefined,
 				transport: serverConfig.type as "stdio" | "sse" | "http" | undefined,
@@ -186,11 +190,14 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 		return result;
 	};
 
+	// User scope tracks the active profile via getAgentDir() (not ctx.home), so it
+	// stays in sync with getMCPConfigPath("user") and the /mcp config writer.
+	const userAgentDir = getAgentDir();
 	const paths = [
 		{ path: path.join(ctx.cwd, PATHS.projectDir, "mcp.json"), level: "project" as const },
 		{ path: path.join(ctx.cwd, PATHS.projectDir, ".mcp.json"), level: "project" as const },
-		{ path: path.join(ctx.home, PATHS.userAgent, "mcp.json"), level: "user" as const },
-		{ path: path.join(ctx.home, PATHS.userAgent, ".mcp.json"), level: "user" as const },
+		{ path: path.join(userAgentDir, "mcp.json"), level: "user" as const },
+		{ path: path.join(userAgentDir, ".mcp.json"), level: "user" as const },
 	];
 
 	const contents = await Promise.allSettled(
@@ -225,7 +232,7 @@ registerProvider<MCPServer>(mcpCapability.id, {
 async function loadSystemPrompt(ctx: LoadContext): Promise<LoadResult<SystemPrompt>> {
 	const items: SystemPrompt[] = [];
 
-	const userPath = path.join(ctx.home, PATHS.userAgent, "SYSTEM.md");
+	const userPath = path.join(getAgentDir(), "SYSTEM.md");
 	const userContent = await readFile(userPath);
 	if (userContent) {
 		items.push({
@@ -276,18 +283,31 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 
 	// User-level scan from ~/.omp/agent/skills/
 	const userScan = scanSkillsFromDir(ctx, {
-		dir: path.join(ctx.home, PATHS.userAgent, "skills"),
+		dir: path.join(getAgentDir(), "skills"),
 		providerId: PROVIDER_ID,
 		level: "user",
 		requireDescription: true,
 	});
 
 	const results = await Promise.all([...projectScans, userScan]);
-
 	return {
 		items: results.flatMap(r => r.items),
 		warnings: results.flatMap(r => r.warnings ?? []),
 	};
+}
+
+// Managed skills (auto-learn) are a SEPARATE provider at the lowest skill
+// priority, so an authored skill of the same name from ANY other provider wins
+// the capability-level priority dedup. Discovery is unconditional (an empty
+// managed dir is a no-op); only writing/nudging is gated by `autolearn.enabled`.
+const MANAGED_SKILLS_PRIORITY = 5;
+async function loadManagedSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
+	return scanSkillsFromDir(ctx, {
+		dir: getManagedSkillsDir(),
+		providerId: MANAGED_SKILLS_PROVIDER_ID,
+		level: "user",
+		requireDescription: true,
+	});
 }
 
 registerProvider<Skill>(skillCapability.id, {
@@ -296,6 +316,14 @@ registerProvider<Skill>(skillCapability.id, {
 	description: DESCRIPTION,
 	priority: PRIORITY,
 	load: loadSkills,
+});
+
+registerProvider<Skill>(skillCapability.id, {
+	id: MANAGED_SKILLS_PROVIDER_ID,
+	displayName: "Managed Skills (auto-learn)",
+	description: "Auto-generated managed skills from ~/.omp/agent/managed-skills",
+	priority: MANAGED_SKILLS_PRIORITY,
+	load: loadManagedSkills,
 });
 
 // Slash Commands
@@ -351,7 +379,7 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 	// the current turn so they keep hold across long conversations".
 	// User scope:    ~/.omp/agent/RULES.md
 	// Project scope: nearest .omp/RULES.md walking up from cwd to repoRoot
-	const userRulesFile = path.join(ctx.home, PATHS.userAgent, "RULES.md");
+	const userRulesFile = path.join(getAgentDir(), "RULES.md");
 	const userRule = await loadStickyRulesFile(userRulesFile, "user");
 	if (userRule) items.push(userRule);
 
@@ -868,7 +896,7 @@ async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFil
 	const items: ContextFile[] = [];
 	const warnings: string[] = [];
 
-	const userPath = path.join(ctx.home, PATHS.userAgent, "AGENTS.md");
+	const userPath = path.join(getAgentDir(), "AGENTS.md");
 	const userContent = await readFile(userPath);
 	if (userContent) {
 		items.push({

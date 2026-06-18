@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { type Component, replaceTabs, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { getMCPConfigPath, getProjectDir } from "@oh-my-pi/pi-utils";
 import type { SourceMeta } from "../../capability/types";
+import { expandEnvVarsDeep } from "../../discovery/helpers";
 import { analyzeAuthError, discoverOAuthEndpoints, MCPManager } from "../../mcp";
 import { connectToServer, disconnectServer, listTools } from "../../mcp/client";
 import {
@@ -17,7 +18,13 @@ import {
 	setServerDisabled,
 	updateMCPServer,
 } from "../../mcp/config-writer";
-import { MCPOAuthFlow } from "../../mcp/oauth-flow";
+import {
+	lookupMcpOAuthCredentialForServer,
+	mcpOAuthCredentialIdsForServerUrl,
+	removeManagedMcpOAuthCredential,
+	removeManagedMcpOAuthCredentials,
+} from "../../mcp/oauth-credentials";
+import { MCPOAuthFlow, type MCPStoredOAuthCredential, mcpOAuthCredentialId } from "../../mcp/oauth-flow";
 import {
 	clearSmitheryApiKey,
 	createSmitheryCliAuthSession,
@@ -34,7 +41,6 @@ import {
 	toConfigName,
 } from "../../mcp/smithery-registry";
 import type { MCPAuthConfig, MCPServerConfig, MCPServerConnection } from "../../mcp/types";
-import type { OAuthCredential } from "../../session/auth-storage";
 import { shortenPath } from "../../tools/render-utils";
 import { urlHyperlinkAlways } from "../../tui";
 import { openPath } from "../../utils/open";
@@ -116,17 +122,17 @@ class McpConnectingBlock extends ChatBlock {
 /**
  * Outcome of {@link MCPCommandController}'s OAuth handler.
  *
- * `clientId`/`clientSecret` are populated when the OAuth provider required (or
- * accepted) dynamic client registration; callers MUST persist them alongside
- * `credentialId` so subsequent token refreshes and reauthorizations can reuse
- * the same registered client. Both are also set when the caller pre-supplied a
- * client id via the wizard or `oauth.clientId` in `mcp.json`, in which case the
- * write-back is a no-op.
+ * `credentialId` is deterministic per server URL when the URL was supplied, so
+ * every profile resolves its own credential row under the same id. Refresh
+ * material (token URL, client id/secret) is embedded in the stored credential;
+ * the returned `clientId` may be folded into `mcp.json` for pre-auth reuse.
+ * DCR-issued client secrets stay embedded in the stored credential and are
+ * deliberately not surfaced here, so they cannot leak into config files.
  */
 interface OAuthFlowResult {
 	credentialId: string;
 	clientId?: string;
-	clientSecret?: string;
+	resource?: string;
 }
 
 type MCPAddScope = "user" | "project";
@@ -489,34 +495,28 @@ export class MCPCommandController {
 						}
 
 						try {
-							const oauthClientSecret = finalConfig.oauth?.clientSecret ?? "";
+							const oauthResource = oauth.resource ?? finalConfig.url;
 							const oauthResult = await this.#handleOAuthFlow(
 								oauth.authorizationUrl,
 								oauth.tokenUrl,
 								oauth.clientId ?? finalConfig.oauth?.clientId ?? "",
-								oauthClientSecret,
+								finalConfig.oauth?.clientSecret ?? "",
 								oauth.scopes ?? "",
-								finalConfig.oauth?.callbackPort,
-								finalConfig.oauth?.callbackPath,
-								finalConfig.oauth?.redirectUri,
+								{
+									callbackPort: finalConfig.oauth?.callbackPort,
+									callbackPath: finalConfig.oauth?.callbackPath,
+									redirectUri: finalConfig.oauth?.redirectUri,
+									prompt: finalConfig.oauth?.prompt,
+									serverUrl: finalConfig.url,
+									resource: oauthResource,
+								},
 							);
-							const persistedClientId = oauthResult.clientId ?? oauth.clientId ?? finalConfig.oauth?.clientId;
-							const persistedClientSecret = oauthResult.clientSecret ?? finalConfig.oauth?.clientSecret;
-							finalConfig = {
-								...finalConfig,
-								auth: {
-									type: "oauth",
-									credentialId: oauthResult.credentialId,
-									tokenUrl: oauth.tokenUrl,
-									clientId: persistedClientId,
-									clientSecret: persistedClientSecret,
-								},
-								oauth: {
-									...finalConfig.oauth,
-									clientId: persistedClientId ?? finalConfig.oauth?.clientId,
-									clientSecret: persistedClientSecret ?? finalConfig.oauth?.clientSecret,
-								},
-							};
+							finalConfig = this.#persistOAuthResult(finalConfig, oauthResult, {
+								tokenUrl: oauth.tokenUrl,
+								resource: oauthResource,
+								clientId: oauth.clientId,
+								userClientSecret: finalConfig.oauth?.clientSecret,
+							});
 						} catch (oauthError) {
 							this.ctx.showError(
 								`OAuth flow failed for "${parsed.initialName}": ${oauthError instanceof Error ? oauthError.message : String(oauthError)}`,
@@ -548,8 +548,8 @@ export class MCPCommandController {
 				done();
 				this.#handleWizardCancel();
 			},
-			async (authUrl: string, tokenUrl: string, clientId: string, clientSecret: string, scopes: string) => {
-				return await this.#handleOAuthFlow(authUrl, tokenUrl, clientId, clientSecret, scopes);
+			async (authUrl: string, tokenUrl: string, clientId: string, clientSecret: string, scopes: string, options) => {
+				return await this.#handleOAuthFlow(authUrl, tokenUrl, clientId, clientSecret, scopes, options);
 			},
 			async (config: MCPServerConfig) => {
 				return await this.#handleTestConnection(config);
@@ -576,9 +576,14 @@ export class MCPCommandController {
 		clientId: string,
 		clientSecret: string,
 		scopes: string,
-		callbackPort?: number,
-		callbackPath?: string,
-		redirectUri?: string,
+		opts?: {
+			callbackPort?: number;
+			callbackPath?: string;
+			redirectUri?: string;
+			prompt?: string;
+			serverUrl?: string;
+			resource?: string;
+		},
 	): Promise<OAuthFlowResult> {
 		const authStorage = this.ctx.session.modelRegistry.authStorage;
 		let parsedAuthUrl: URL;
@@ -614,9 +619,11 @@ export class MCPCommandController {
 					clientId: resolvedClientId,
 					clientSecret: resolvedClientSecret,
 					scopes: scopes || undefined,
-					redirectUri,
-					callbackPort,
-					callbackPath,
+					prompt: opts?.prompt,
+					redirectUri: opts?.redirectUri,
+					callbackPort: opts?.callbackPort,
+					callbackPath: opts?.callbackPath,
+					resource: opts?.resource,
 				},
 				{
 					onAuth: (info: { url: string; instructions?: string }) => {
@@ -688,22 +695,30 @@ export class MCPCommandController {
 				new Text(theme.fg("success", "✓ Authorization completed in browser."), 1, 0),
 			]);
 
-			// Generate a unique credential ID
-			const credentialId = `mcp_oauth_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+			// Deterministic per-URL id: every profile resolves its own credential row
+			// under the same key, so shared project configs stay profile-isolated.
+			// Random fallback only for flows that never knew the server URL.
+			const credentialId = opts?.serverUrl
+				? mcpOAuthCredentialId(opts.serverUrl)
+				: `mcp_oauth_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
-			// Store credentials in auth storage
-			const oauthCredential: OAuthCredential = {
+			// Embed refresh material so the credential is self-contained: token
+			// refresh must work for configs that carry no auth block at all.
+			const oauthCredential: MCPStoredOAuthCredential = {
 				type: "oauth",
 				...credentials,
+				tokenUrl,
+				clientId: flow.resolvedClientId ?? resolvedClientId,
+				clientSecret: flow.registeredClientSecret ?? resolvedClientSecret,
+				resource: flow.resource,
 			};
 
-			// Store under a synthetic provider name
 			await authStorage.set(credentialId, oauthCredential);
 
 			return {
 				credentialId,
 				clientId: flow.resolvedClientId,
-				clientSecret: flow.registeredClientSecret,
+				resource: flow.resource,
 			};
 		} catch (error) {
 			const errorMsg = error instanceof Error ? error.message : String(error);
@@ -726,19 +741,51 @@ export class MCPCommandController {
 	}
 
 	/**
+	 * Fold a completed OAuth flow back into a server config. Owns the
+	 * persistence policy in one place: the auth block records the credential
+	 * pointer plus refresh material, the oauth block echoes the client id for
+	 * pre-auth reuse, and only a user-supplied client secret is ever written —
+	 * DCR-issued secrets stay embedded in the stored credential so they cannot
+	 * leak into (possibly shared/committed) config files.
+	 */
+	#persistOAuthResult(
+		config: MCPServerConfig,
+		result: OAuthFlowResult,
+		opts: { tokenUrl: string; resource?: string; clientId?: string; userClientSecret?: string },
+	): MCPServerConfig {
+		const clientId = result.clientId ?? opts.clientId ?? config.oauth?.clientId;
+		const resource = result.resource ?? opts.resource ?? config.auth?.resource;
+		return {
+			...config,
+			auth: {
+				type: "oauth",
+				credentialId: result.credentialId,
+				tokenUrl: opts.tokenUrl,
+				clientId,
+				clientSecret: opts.userClientSecret,
+				resource,
+			},
+			oauth: {
+				...config.oauth,
+				clientId,
+			},
+		};
+	}
+
+	/**
 	 * Test connection to an MCP server.
 	 * Throws an error if connection fails (used for auto-detection).
 	 */
-	async #handleTestConnection(config: MCPServerConfig): Promise<void> {
+	async #handleTestConnection(config: MCPServerConfig, options?: { oauth?: boolean }): Promise<void> {
 		// Create temporary connection using a test name
 		const testName = `test_${Date.now()}`;
 		let resolvedConfig: MCPServerConfig;
 		if (this.ctx.mcpManager) {
-			resolvedConfig = await this.ctx.mcpManager.prepareConfig(config);
+			resolvedConfig = await this.ctx.mcpManager.prepareConfig(config, options);
 		} else {
 			const tempManager = new MCPManager(getProjectDir());
 			tempManager.setAuthStorage(this.ctx.session.modelRegistry.authStorage);
-			resolvedConfig = await tempManager.prepareConfig(config);
+			resolvedConfig = await tempManager.prepareConfig(config, options);
 		}
 
 		const connection = await connectToServer(testName, resolvedConfig);
@@ -788,9 +835,41 @@ export class MCPCommandController {
 		return null;
 	}
 
-	async #removeManagedOAuthCredential(credentialId: string | undefined): Promise<void> {
-		if (!credentialId?.startsWith("mcp_oauth_")) return;
-		await this.ctx.session.modelRegistry.authStorage.remove(credentialId);
+	/**
+	 * Resolve a server for an auth/test operation.
+	 *
+	 * Unlike {@link #findConfiguredServer} (which only reads writable OMP config
+	 * files), this also recognizes runtime-discovered servers that `/mcp list`
+	 * surfaces but that live in no writable config — e.g. servers from a Claude
+	 * Code marketplace plugin (`cloudflare:cloudflare-api`), `.cursor/mcp.json`,
+	 * etc. Without this, `/mcp reauth|test|unauth` reports "not found" for a
+	 * server the list just showed.
+	 *
+	 * For a discovered server, any persisted change is written into the *user*
+	 * config under the same (namespaced) name; the native provider (priority 100)
+	 * shadows the discovered entry on the next reload, so an OAuth `auth` block
+	 * persisted by `/mcp reauth` takes effect. `discovered` lets callers tailor
+	 * messaging and skip pointless writes when there is nothing to persist.
+	 */
+	async #resolveServerForAuth(name: string): Promise<{
+		filePath: string;
+		scope: "user" | "project";
+		config: MCPServerConfig;
+		discovered: boolean;
+	} | null> {
+		const found = await this.#findConfiguredServer(name);
+		if (found) return { ...found, discovered: false };
+
+		const config = this.ctx.mcpManager?.getServerConfig(name);
+		const source = this.ctx.mcpManager?.getSource(name);
+		if (!config || !source) return null;
+
+		return {
+			filePath: getMCPConfigPath("user", getProjectDir()),
+			scope: "user",
+			config,
+			discovered: true,
+		};
 	}
 
 	#stripOAuthAuth(config: MCPServerConfig): MCPServerConfig {
@@ -804,12 +883,28 @@ export class MCPCommandController {
 		tokenUrl: string;
 		clientId?: string;
 		scopes?: string;
+		resource?: string;
 	}> {
+		// Stdio servers manage credentials inside the child process; OMP's OAuth
+		// flow only applies to http/sse transports. Without this guard the
+		// unauthenticated preflight below spawns the child, which happily reuses
+		// its own cached tokens (e.g. mcp-remote's machine-wide ~/.mcp-auth) and
+		// produces the misleading "reauthorization is not required".
+		if (config.type !== "http" && config.type !== "sse") {
+			const remoteUrl = config.args?.find(arg => /^https?:\/\//.test(arg));
+			const httpHint = `{ "type": "http", "url": ${JSON.stringify(remoteUrl ?? "<remote url>")} }`;
+			const usesMcpRemote = [config.command, ...(config.args ?? [])].some(part => part?.includes("mcp-remote"));
+			throw new Error(
+				usesMcpRemote
+					? `this server proxies OAuth through mcp-remote, which caches tokens machine-wide in ~/.mcp-auth (shared across every OMP profile). Clear ~/.mcp-auth to force a fresh login, or replace the proxy with ${httpHint} so OMP manages OAuth per profile.`
+					: `stdio servers manage their own credentials, so OMP has no OAuth to reauthorize. If the service supports OAuth over HTTP, configure it as ${httpHint} instead.`,
+			);
+		}
 		// First test if server actually needs auth by connecting without OAuth
 		let connectionSucceeded = false;
 		let connectionError: Error | undefined;
 		try {
-			await this.#handleTestConnection(this.#stripOAuthAuth(config));
+			await this.#handleTestConnection(this.#stripOAuthAuth(config), { oauth: false });
 			connectionSucceeded = true;
 		} catch (error) {
 			connectionError = error as Error;
@@ -1173,7 +1268,7 @@ export class MCPCommandController {
 
 		let connection: MCPServerConnection | undefined;
 		try {
-			const found = await this.#findConfiguredServer(name);
+			const found = await this.#resolveServerForAuth(name);
 
 			if (!found) {
 				this.ctx.showError(
@@ -1363,15 +1458,41 @@ export class MCPCommandController {
 		}
 
 		try {
-			const found = await this.#findConfiguredServer(name);
+			const found = await this.#resolveServerForAuth(name);
 			if (!found) {
 				this.ctx.showError(`Server "${name}" not found.`);
 				return;
 			}
 
 			const currentAuth = (found.config as MCPServerConfig & { auth?: MCPAuthConfig }).auth;
+			const authStorage = this.ctx.session.modelRegistry.authStorage;
 			if (currentAuth?.type === "oauth") {
-				await this.#removeManagedOAuthCredential(currentAuth.credentialId);
+				await removeManagedMcpOAuthCredential(authStorage, currentAuth.credentialId);
+			}
+			// Also drop this profile's url-keyed binding so the server is truly
+			// signed out even when the config carries no auth block. Runtime
+			// discovery expands `${...}` URL values before MCPManager looks up the
+			// deterministic credential row, so unauth must clear that same key.
+			let removedUrlKeyedCredential = false;
+			if ((found.config.type === "http" || found.config.type === "sse") && found.config.url) {
+				removedUrlKeyedCredential = await removeManagedMcpOAuthCredentials(
+					authStorage,
+					mcpOAuthCredentialIdsForServerUrl(found.config.url),
+				);
+			}
+
+			if (found.discovered && currentAuth?.type !== "oauth") {
+				if (!removedUrlKeyedCredential) {
+					this.#showMessage(
+						["", theme.fg("muted", `No stored OAuth auth to remove for "${name}".`), ""].join("\n"),
+					);
+					return;
+				}
+				await this.#reloadMCP();
+				this.#showMessage(
+					["", theme.fg("success", `- Cleared auth for "${name}" (${found.scope} config)`), ""].join("\n"),
+				);
+				return;
 			}
 
 			const updated = this.#stripOAuthAuth(found.config);
@@ -1393,7 +1514,7 @@ export class MCPCommandController {
 		}
 
 		try {
-			const found = await this.#findConfiguredServer(name);
+			const found = await this.#resolveServerForAuth(name);
 			if (!found) {
 				this.ctx.showError(`Server "${name}" not found.`);
 				return;
@@ -1405,46 +1526,70 @@ export class MCPCommandController {
 			}
 
 			const currentAuth = (found.config as MCPServerConfig & { auth?: MCPAuthConfig }).auth;
-			if (currentAuth?.type === "oauth") {
-				await this.#removeManagedOAuthCredential(currentAuth.credentialId);
-			}
-
+			const authStorage = this.ctx.session.modelRegistry.authStorage;
 			const baseConfig = this.#stripOAuthAuth(found.config);
-			const oauth = await this.#resolveOAuthEndpointsFromServer(baseConfig);
-			const oauthClientSecret = found.config.oauth?.clientSecret ?? currentAuth?.clientSecret ?? "";
+			const runtimeBaseConfig = expandEnvVarsDeep(baseConfig);
+			// Resolve endpoints first: this fails fast for stdio transports and
+			// probes http/sse with { oauth: false }, so nothing destructive has
+			// happened yet if the server turns out not to need (or support) OAuth.
+			// Use the same env-expanded config shape runtime discovery passes to
+			// MCPManager; the raw file value may contain `${...}` placeholders.
+			const oauth = await this.#resolveOAuthEndpointsFromServer(runtimeBaseConfig);
+			const serverUrl =
+				runtimeBaseConfig.type === "http" || runtimeBaseConfig.type === "sse" ? runtimeBaseConfig.url : undefined;
+			// A user-supplied client secret may live in either block (the wizard
+			// writes it to auth.clientSecret); DCR secrets are embedded in the
+			// stored credential and never echoed back into config files.
+			const configuredClientId = found.config.oauth?.clientId ?? currentAuth?.clientId;
+			const existingCredential = lookupMcpOAuthCredentialForServer(authStorage, currentAuth, serverUrl)?.credential;
+			const flowClientId = oauth.clientId ?? configuredClientId ?? existingCredential?.clientId ?? "";
+			const storedClientSecret =
+				existingCredential?.clientId === flowClientId ? existingCredential.clientSecret : undefined;
+			const userClientSecret = found.config.oauth?.clientSecret ?? currentAuth?.clientSecret;
+			const flowClientSecret = userClientSecret ?? storedClientSecret ?? "";
 
 			this.#showMessage(["", theme.fg("muted", `Reauthorizing "${name}"...`), ""].join("\n"));
+
+			const currentAuthResource = currentAuth?.resource ? expandEnvVarsDeep(currentAuth.resource) : undefined;
+			const oauthResource =
+				oauth.resource ?? currentAuthResource ?? ("url" in runtimeBaseConfig ? runtimeBaseConfig.url : undefined);
 
 			const oauthResult = await this.#handleOAuthFlow(
 				oauth.authorizationUrl,
 				oauth.tokenUrl,
-				oauth.clientId ?? found.config.oauth?.clientId ?? "",
-				oauthClientSecret,
+				flowClientId,
+				flowClientSecret,
 				oauth.scopes ?? "",
-				found.config.oauth?.callbackPort,
-				found.config.oauth?.callbackPath,
-				found.config.oauth?.redirectUri,
+				{
+					callbackPort: found.config.oauth?.callbackPort,
+					callbackPath: found.config.oauth?.callbackPath,
+					redirectUri: found.config.oauth?.redirectUri,
+					prompt: found.config.oauth?.prompt,
+					serverUrl,
+					resource: oauthResource,
+				},
 			);
 
-			const persistedClientId = oauthResult.clientId ?? oauth.clientId ?? found.config.oauth?.clientId;
-			const persistedClientSecret = oauthResult.clientSecret ?? (oauthClientSecret || undefined);
+			// The flow overwrote (or minted) this profile's row; a superseded
+			// pointer row from the legacy random-id era is now orphaned. GC only
+			// after success so cancelling the browser step leaves the previous
+			// session signed in.
+			if (currentAuth?.type === "oauth" && currentAuth.credentialId !== oauthResult.credentialId) {
+				await removeManagedMcpOAuthCredential(authStorage, currentAuth.credentialId);
+			}
 
-			const updated: MCPServerConfig = {
-				...baseConfig,
-				auth: {
-					type: "oauth",
-					credentialId: oauthResult.credentialId,
+			// Definition-only entries resolve through the url-keyed binding alone;
+			// skip the write-back so a committed project mcp.json stays clean.
+			const urlKeyedId = serverUrl ? mcpOAuthCredentialId(serverUrl) : undefined;
+			if (currentAuth || oauthResult.credentialId !== urlKeyedId) {
+				const updated = this.#persistOAuthResult(baseConfig, oauthResult, {
 					tokenUrl: oauth.tokenUrl,
-					clientId: persistedClientId,
-					clientSecret: persistedClientSecret,
-				},
-				oauth: {
-					...found.config.oauth,
-					clientId: persistedClientId ?? found.config.oauth?.clientId,
-					clientSecret: persistedClientSecret ?? found.config.oauth?.clientSecret,
-				},
-			};
-			await updateMCPServer(found.filePath, name, updated);
+					clientId: oauth.clientId,
+					userClientSecret,
+					resource: oauthResource,
+				});
+				await updateMCPServer(found.filePath, name, updated);
+			}
 			await this.#reloadMCP();
 			const state = await this.#waitForServerConnectionWithAnimation(name);
 

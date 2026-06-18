@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { type Component, CURSOR_MARKER, TUI } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
@@ -110,7 +110,35 @@ async function flushRender(term: VirtualTerminal): Promise<void> {
 	await term.flush();
 }
 
+// A non-multiplexer resize paints the viewport immediately and defers the
+// authoritative full replay (the native-scrollback rebuild) until the drag has
+// been quiet for the resize settle window (120 ms). Integration test against the
+// real render scheduler, so the window is driven with a real delay.
+async function settleResize(term: VirtualTerminal): Promise<void> {
+	await Bun.sleep(160);
+	await flushRender(term);
+}
+
 describe("TUI overlays", () => {
+	let savedTerminalEnv: Record<string, string | undefined> = {};
+	beforeEach(() => {
+		// A resize on Warp takes the in-place path (no ED3), so neutralize the
+		// ambient terminal identity to keep the direct-terminal resize/scrollback
+		// assertions below deterministic on any dev machine.
+		for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE"]) {
+			savedTerminalEnv[key] = Bun.env[key];
+			delete Bun.env[key];
+		}
+	});
+	afterEach(() => {
+		for (const key in savedTerminalEnv) {
+			const value = savedTerminalEnv[key];
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
+		savedTerminalEnv = {};
+	});
+
 	it("does not scroll the terminal when an overlay is shown with a large historical working area", async () => {
 		const term = new VirtualTerminal(80, 24);
 		const tui = new TUI(term);
@@ -129,6 +157,49 @@ describe("TUI overlays", () => {
 
 		// The scroll buffer should stay small; we should not have printed hundreds/thousands of blank lines.
 		expect(term.getScrollBuffer().length).toBeLessThan(200);
+	});
+
+	it("clamps tall overlays without an explicit maxHeight to the available rows", async () => {
+		const term = new VirtualTerminal(80, 24);
+		const tui = new TUI(term);
+
+		tui.addChild(new LineComponent("base-", 3));
+
+		tui.start();
+		await flushRender(term);
+
+		// A bottom margin reserves rows the overlay must NOT paint into. The overlay
+		// has no explicit maxHeight, so before the fix it rendered all 40 lines and
+		// the compositor only skipped rows past the terminal edge — ov-0..ov-(rows-1)
+		// were painted, including the reserved bottom band. The maxHeight=availHeight
+		// default slices the overlay to availHeight = rows - marginBottom.
+		const marginBottom = 6;
+		tui.showOverlay(new LineComponent("ov-", 40), { anchor: "top-center", margin: { bottom: marginBottom } });
+		await flushRender(term);
+
+		const maxVisibleOverlayIndex = (): number => {
+			let max = -1;
+			for (const line of term.getViewport()) {
+				const match = line.trim().match(/^ov-(\d+)$/);
+				if (!match) continue;
+				max = Math.max(max, Number.parseInt(match[1], 10));
+			}
+			return max;
+		};
+
+		// availHeight = 24 - 6 = 18 → overlay sliced to ov-0..ov-17, nothing in the
+		// reserved bottom 6 rows. The old unclamped behavior surfaced ov-18..ov-23.
+		expect(maxVisibleOverlayIndex()).toBeGreaterThanOrEqual(0);
+		expect(maxVisibleOverlayIndex()).toBeLessThan(24 - marginBottom);
+
+		term.resize(80, 10);
+		await settleResize(term);
+
+		// availHeight = 10 - 6 = 4 → overlay re-clamped to ov-0..ov-3.
+		expect(maxVisibleOverlayIndex()).toBeGreaterThanOrEqual(0);
+		expect(maxVisibleOverlayIndex()).toBeLessThan(10 - marginBottom);
+
+		tui.stop();
 	});
 
 	it("clears stale viewport content on launch", async () => {
@@ -383,7 +454,7 @@ describe("TUI overlays", () => {
 			expect(term.getScrollBuffer().join("\n").includes("wide-row-0")).toBeTruthy();
 
 			term.resize(20, 4);
-			await flushRender(term);
+			await settleResize(term);
 
 			const scrollback = term.getScrollBuffer().join("\n");
 			expect(scrollback.includes("narrow-row-0")).toBeTruthy();
@@ -408,6 +479,9 @@ describe("TUI overlays", () => {
 				term.resize(40, count % 2 === 0 ? 4 : 5);
 				await flushRender(term);
 			}
+			// The drag only painted the viewport; let the settle window elapse so
+			// the authoritative rebuild commits the overflow into native scrollback.
+			await settleResize(term);
 
 			const scrollbackLines = term.getScrollBuffer().map(line => line.trim());
 			expect(scrollbackLines).toContain("row-0");

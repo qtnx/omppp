@@ -6,11 +6,12 @@
  */
 import type { AgentMessage, AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
-import type { Effort, ImageContent, Model } from "@oh-my-pi/pi-ai";
+import type { Effort, ImageContent, Model, ToolExample } from "@oh-my-pi/pi-ai";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
-import type { FileEntry } from "../../session/session-manager";
+import type { FileEntry } from "../../session/session-entries";
+import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
 import type {
 	AgentProgress,
 	SubagentEventPayload,
@@ -34,6 +35,7 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "get_available_commands" }
 	| { id?: string; type: "set_todos"; phases: TodoPhase[] }
 	| { id?: string; type: "set_host_tools"; tools: RpcHostToolDefinition[] }
 	| { id?: string; type: "set_host_uri_schemes"; schemes: RpcHostUriSchemeDefinition[] }
@@ -105,9 +107,29 @@ export interface RpcSessionState {
 	todoPhases: TodoPhase[];
 	/** For session dump / export (plain-text parity with /dump). */
 	systemPrompt?: string[];
-	dumpTools?: Array<{ name: string; description: string; parameters: unknown }>;
-	/** Current context window usage. Null tokens/percent when unknown (e.g. right after compaction). */
+	dumpTools?: Array<{ name: string; description: string; parameters: unknown; examples?: readonly ToolExample[] }>;
+	/** Current context window usage. */
 	contextUsage?: ContextUsage;
+}
+
+export interface RpcAvailableSlashCommand {
+	name: string;
+	aliases?: string[];
+	description?: string;
+	input?: { hint?: string };
+	subcommands?: Array<{ name: string; description?: string; usage?: string }>;
+	source: AvailableSlashCommandSource;
+}
+
+export interface RpcAvailableCommandsUpdateFrame {
+	type: "available_commands_update";
+	commands: RpcAvailableSlashCommand[];
+}
+
+export interface RpcPromptResultFrame {
+	type: "prompt_result";
+	id?: string;
+	agentInvoked: boolean;
 }
 
 export interface RpcHandoffResult {
@@ -147,7 +169,7 @@ export interface RpcSubagentMessagesResult {
 // Success responses with data
 export type RpcResponse =
 	// Prompting (async - events follow)
-	| { id?: string; type: "response"; command: "prompt"; success: true }
+	| { id?: string; type: "response"; command: "prompt"; success: true; data?: { agentInvoked: boolean } }
 	| { id?: string; type: "response"; command: "steer"; success: true }
 	| { id?: string; type: "response"; command: "follow_up"; success: true }
 	| { id?: string; type: "response"; command: "abort"; success: true }
@@ -156,6 +178,13 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_available_commands";
+			success: true;
+			data: { commands: RpcAvailableSlashCommand[] };
+	  }
 	| { id?: string; type: "response"; command: "set_todos"; success: true; data: { todoPhases: TodoPhase[] } }
 	| { id?: string; type: "response"; command: "set_host_tools"; success: true; data: { toolNames: string[] } }
 	| { id?: string; type: "response"; command: "set_host_uri_schemes"; success: true; data: { schemes: string[] } }

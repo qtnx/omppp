@@ -10,14 +10,33 @@ export const OPENCODE_HEADERS = {
 	"User-Agent": COPILOT_USER_AGENT,
 } as const;
 
+/**
+ * Copilot API version sent on `api.githubcopilot.com` requests (`/models`,
+ * chat endpoints). Newer versions unlock tiered context metadata: `/models`
+ * reports the full long-context window in `capabilities.limits` plus per-tier
+ * boundaries/prices under `billing.token_prices.{default,long_context}`.
+ * Without it the endpoint serves default-tier limits only (e.g. 264k instead
+ * of 1M for Claude Opus). Never send this to `api.github.com` REST endpoints —
+ * they validate `X-GitHub-Api-Version` against the REST version vocabulary.
+ */
+export const COPILOT_API_VERSION = "2026-06-01" as const;
+
+/** Headers for `api.githubcopilot.com` (capi) requests: discovery, chat, policy. */
+export const COPILOT_API_HEADERS = {
+	...OPENCODE_HEADERS,
+	"X-GitHub-Api-Version": COPILOT_API_VERSION,
+} as const;
+
 type GitHubCopilotApiKeyPayload = {
 	token?: unknown;
 	enterpriseUrl?: unknown;
+	apiEndpoint?: unknown;
 };
 
 export type ParsedGitHubCopilotApiKey = {
 	accessToken: string;
 	enterpriseUrl?: string;
+	apiEndpoint?: string;
 };
 
 const PUBLIC_GITHUB_HOSTS = new Set(["api.github.com", "github.com", "www.github.com"]);
@@ -34,6 +53,18 @@ export function normalizeGitHubCopilotEnterpriseDomain(input: string | undefined
 	return normalized;
 }
 
+export function normalizeGitHubCopilotApiEndpoint(input: string | undefined): string | undefined {
+	const trimmed = input?.trim();
+	if (!trimmed?.startsWith("https://")) return undefined;
+	try {
+		const url = new URL(trimmed);
+		if (url.protocol !== "https:" || !url.hostname) return undefined;
+		return trimmed.replace(/\/+$/, "");
+	} catch {
+		return undefined;
+	}
+}
+
 export function parseGitHubCopilotApiKey(apiKeyRaw: string): ParsedGitHubCopilotApiKey {
 	try {
 		const parsed = JSON.parse(apiKeyRaw) as GitHubCopilotApiKeyPayload;
@@ -43,6 +74,10 @@ export function parseGitHubCopilotApiKey(apiKeyRaw: string): ParsedGitHubCopilot
 				enterpriseUrl:
 					typeof parsed.enterpriseUrl === "string"
 						? normalizeGitHubCopilotEnterpriseDomain(parsed.enterpriseUrl)
+						: undefined,
+				apiEndpoint:
+					typeof parsed.apiEndpoint === "string"
+						? normalizeGitHubCopilotApiEndpoint(parsed.apiEndpoint)
 						: undefined,
 			};
 		}

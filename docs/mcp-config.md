@@ -15,7 +15,7 @@ Source of truth in code:
 OMP can discover MCP servers from multiple tools (`.claude/`, `.cursor/`, `.vscode/`, `opencode.json`, and more), but for OMP-native configuration you should usually use one of these primary files:
 
 - Project: `.omp/mcp.json`
-- User: `~/.omp/agent/mcp.json`
+- User: `~/.omp/agent/mcp.json` (or `~/.omp/profiles/<name>/agent/mcp.json` when a named profile is active — see [Profiles](#profiles))
 
 The native provider also reads `.omp/.mcp.json` and `~/.omp/agent/.mcp.json` for compatibility, but OMP writes to the primary `mcp.json` paths above.
 
@@ -25,6 +25,19 @@ OMP also accepts fallback standalone files in the project root:
 - `.mcp.json`
 
 Use `.omp/mcp.json` or `~/.omp/agent/mcp.json` when you want OMP to own the configuration. Use root `mcp.json` / `.mcp.json` only when you want a portable fallback file that other MCP clients may also read.
+
+### Profiles
+
+Named profiles (`omp --profile <name>`, the `--alias` shortcut, or `OMP_PROFILE`/`PI_PROFILE`) isolate user-level MCP config. When a profile is active, the **user** scope resolves to the profile's agent directory instead of the default one:
+
+- Default profile: `~/.omp/agent/mcp.json`
+- Profile `<name>`: `~/.omp/profiles/<name>/agent/mcp.json`
+
+Discovery, the `/mcp` commands, and the config writer all follow the active profile, so a profile sees **only** its own user-level servers — never the default profile's `~/.omp/agent/mcp.json`. Add a server to a profile by launching under it (`omp --profile <name>`) and running `/mcp add` → User level, or by editing `~/.omp/profiles/<name>/agent/mcp.json` directly.
+
+Project-scoped MCP config (`.omp/mcp.json`) is keyed to the working directory, not the profile, so it applies under every profile. External-tool configs (`.claude/`, `.cursor/`, etc.) are also profile-independent because they belong to those tools rather than to an OMP profile.
+
+MCP follows the same profile rules as the rest of OMP-native config; see [Configuration Discovery → Profiles](./config-usage.md#profiles).
 
 ## Add a schema reference
 
@@ -61,7 +74,7 @@ Top-level keys:
 
 - `$schema` — optional JSON Schema URL for tooling
 - `mcpServers` — map of server name to server config
-- `disabledServers` — user-level denylist used to turn off discovered servers by name; runtime loading reads this list from `~/.omp/agent/mcp.json`
+- `disabledServers` — user-level denylist used to turn off discovered servers by name; runtime loading reads this list from the active profile's user MCP file (`~/.omp/agent/mcp.json`, or `~/.omp/profiles/<name>/agent/mcp.json` under a named profile)
 
 Server names must match `^[a-zA-Z0-9_.-]{1,100}$`.
 
@@ -178,11 +191,39 @@ OMP understands two auth-related objects.
   "credentialId": "optional-stored-credential-id",
   "tokenUrl": "optional-token-endpoint",
   "clientId": "optional-client-id",
-  "clientSecret": "optional-client-secret"
+  "clientSecret": "optional-client-secret",
+  "resource": "optional-mcp-resource-uri"
 }
 ```
 
 Use this when OMP should remember how to rehydrate credentials for a server.
+
+You normally do not need to write this block: when OMP completes an OAuth flow
+for an `http`/`sse` server it stores the credential under a deterministic id
+derived from the active profile and server URL
+(`mcp_oauth:profile:<profile>:<url>`), with the refresh material embedded. Any
+config that points at the same URL — including a *definition-only* entry in a
+shared project `mcp.json` with no `auth` block at all — resolves the active
+profile's own credential automatically, including when auth storage is backed by
+a shared auth broker. This is what makes project-scoped servers safe across
+profiles: commit the definition, and each profile authorizes (and stays signed
+in as) its own account via `/mcp reauth <name>`. An explicit `credentialId` is
+still honored when it resolves; if it points at another profile's row, OMP falls
+back to the profile-scoped url-keyed binding.
+
+`/mcp reauth` on a definition-only entry leaves the file untouched — the
+credential (refresh material included) lives entirely in the active profile's
+auth storage (local `agent.db` or broker), so a committed project config never
+picks up local auth state. An explicitly
+configured `Authorization` header always wins over the url-keyed binding.
+
+The binding is per profile but not per project: once a profile has authorized
+a URL, *any* checkout whose `mcp.json` defines a server at that URL connects
+with that profile's credential automatically. Committed MCP definitions are
+trusted input — the same already applies to `stdio` entries, which run
+arbitrary commands — so review a repository's `mcp.json` before opening it
+with a profile that holds credentials you care about, or use a dedicated
+profile for untrusted checkouts.
 
 ### `oauth`
 
@@ -192,11 +233,14 @@ Use this when OMP should remember how to rehydrate credentials for a server.
   "clientSecret": "...",
   "redirectUri": "...",
   "callbackPort": 3334,
-  "callbackPath": "/oauth/callback"
+  "callbackPath": "/oauth/callback",
+  "prompt": "consent"
 }
 ```
 
 Use this when the MCP server requires explicit OAuth client settings.
+
+`prompt` controls the OAuth `prompt` parameter sent with the authorization request. It defaults to `"consent"` so the provider always shows its consent/account screen — without it, a provider with an active browser session silently re-approves the same account, making it impossible to switch accounts or workspaces when reauthorizing (e.g. to use a different Linear workspace per OMP profile). Set it to `""` to omit the parameter for providers that reject it, or to another value the provider understands (e.g. `"select_account"`).
 
 Slack is the clearest current example. Slack's MCP server is hosted at `https://mcp.slack.com/mcp`, uses Streamable HTTP, and requires confidential OAuth with your Slack app's client credentials.
 

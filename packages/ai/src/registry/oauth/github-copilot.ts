@@ -4,9 +4,11 @@
 import { scheduler } from "node:timers/promises";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import {
+	COPILOT_API_HEADERS,
 	getGitHubCopilotBaseUrl,
 	isPublicGitHubHost,
 	normalizeDomain,
+	normalizeGitHubCopilotApiEndpoint,
 	normalizeGitHubCopilotEnterpriseDomain,
 	OPENCODE_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/github-copilot";
@@ -202,13 +204,39 @@ const FAR_FUTURE_MS = Date.now() + 10 * 365.25 * 24 * 60 * 60 * 1000;
  * Refresh GitHub Copilot token.
  * With the opencode OAuth flow, the GitHub token is used directly — no JWT exchange needed.
  */
-export function refreshGitHubCopilotToken(refreshToken: string, enterpriseDomain?: string): OAuthCredentials {
+export function refreshGitHubCopilotToken(
+	refreshToken: string,
+	enterpriseDomain?: string,
+	apiEndpoint?: string,
+): OAuthCredentials {
 	return {
 		refresh: refreshToken,
 		access: refreshToken,
 		expires: FAR_FUTURE_MS,
 		enterpriseUrl: enterpriseDomain,
+		apiEndpoint,
 	};
+}
+
+async function discoverGitHubCopilotApiEndpoint(token: string, fetchImpl: FetchImpl): Promise<string | undefined> {
+	try {
+		const data = await fetchJson(
+			"https://api.github.com/copilot_internal/user",
+			{
+				headers: {
+					Accept: "application/json",
+					Authorization: `token ${token}`,
+					...OPENCODE_HEADERS,
+				},
+			},
+			fetchImpl,
+		);
+		if (!data || typeof data !== "object") return undefined;
+		const endpoints = (data as { endpoints?: { api?: unknown } }).endpoints;
+		return typeof endpoints?.api === "string" ? normalizeGitHubCopilotApiEndpoint(endpoints.api) : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -219,9 +247,10 @@ async function enableGitHubCopilotModel(
 	token: string,
 	modelId: string,
 	fetchImpl: FetchImpl,
-	enterpriseDomain?: string,
+	enterpriseDomain: string | undefined,
+	apiEndpoint: string | undefined,
 ): Promise<boolean> {
-	const baseUrl = getGitHubCopilotBaseUrl(enterpriseDomain);
+	const baseUrl = apiEndpoint ?? getGitHubCopilotBaseUrl(enterpriseDomain);
 	const url = `${baseUrl}/models/${modelId}/policy`;
 
 	try {
@@ -230,7 +259,7 @@ async function enableGitHubCopilotModel(
 			headers: {
 				"Content-Type": "application/json",
 				Authorization: `Bearer ${token}`,
-				...OPENCODE_HEADERS,
+				...COPILOT_API_HEADERS,
 				"openai-intent": "chat-policy",
 				"x-interaction-type": "chat-policy",
 			},
@@ -249,17 +278,20 @@ async function enableGitHubCopilotModel(
 async function enableAllGitHubCopilotModels(
 	token: string,
 	enterpriseDomain: string | undefined,
+	apiEndpoint: string | undefined,
 	fetchImpl: FetchImpl,
 	onProgress?: (model: string, success: boolean) => void,
 ): Promise<void> {
-	const models = getBundledModels("github-copilot");
+	// Synthesized catalog variants (Copilot long-context `-1m` entries) share
+	// the upstream model id; enable each wire id exactly once.
+	const wireModelIds = [...new Set(getBundledModels("github-copilot").map(model => model.requestModelId ?? model.id))];
 	const BATCH_SIZE = 5;
-	for (let i = 0; i < models.length; i += BATCH_SIZE) {
-		const batch = models.slice(i, i + BATCH_SIZE);
+	for (let i = 0; i < wireModelIds.length; i += BATCH_SIZE) {
+		const batch = wireModelIds.slice(i, i + BATCH_SIZE);
 		await Promise.all(
-			batch.map(async model => {
-				const success = await enableGitHubCopilotModel(token, model.id, fetchImpl, enterpriseDomain);
-				onProgress?.(model.id, success);
+			batch.map(async modelId => {
+				const success = await enableGitHubCopilotModel(token, modelId, fetchImpl, enterpriseDomain, apiEndpoint);
+				onProgress?.(modelId, success);
 			}),
 		);
 	}
@@ -308,16 +340,19 @@ export async function loginGitHubCopilot(options: GitHubCopilotLoginOptions): Pr
 		options.pollIntervalScaleMs,
 	);
 
+	const apiEndpoint = await discoverGitHubCopilotApiEndpoint(githubAccessToken, fetchImpl);
+
 	// With opencode OAuth, the GitHub token is used directly for all API requests
 	const credentials: OAuthCredentials = {
 		refresh: githubAccessToken,
 		access: githubAccessToken,
 		expires: FAR_FUTURE_MS,
 		enterpriseUrl: enterpriseDomain ?? undefined,
+		apiEndpoint,
 	};
 
 	// Enable all models after successful login
 	options.onProgress?.("Enabling models...");
-	await enableAllGitHubCopilotModels(githubAccessToken, enterpriseDomain ?? undefined, fetchImpl);
+	await enableAllGitHubCopilotModels(githubAccessToken, enterpriseDomain ?? undefined, apiEndpoint, fetchImpl);
 	return credentials;
 }

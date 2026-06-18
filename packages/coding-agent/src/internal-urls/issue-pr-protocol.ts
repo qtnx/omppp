@@ -23,11 +23,12 @@ import {
 	getOrFetchIssue,
 	getOrFetchPr,
 	getOrFetchPrDiff,
+	githubIssueJsonWithStateReasonFallback,
 	type PrDiffFile,
 	parsePositiveDecimalInt,
 	resolveDefaultRepoMemoized,
 } from "../tools/gh";
-import { formatFreshnessNote } from "../tools/github-cache";
+import { type CacheStatus, formatFreshnessNote } from "../tools/github-cache";
 import * as git from "../utils/git";
 import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext } from "./types";
 
@@ -294,7 +295,7 @@ async function fetchAndRenderList(
 	const cwd = resolveCwd(context);
 	const fields =
 		scheme === "issue"
-			? ["number", "title", "state", "stateReason", "author", "labels", "createdAt", "updatedAt", "url"]
+			? ["number", "title", "state", "author", "labels", "createdAt", "updatedAt", "url"]
 			: [
 					"number",
 					"title",
@@ -323,9 +324,14 @@ async function fetchAndRenderList(
 	if (options.author) args.push("--author", options.author);
 	if (options.label) args.push("--label", options.label);
 
-	const items = await git.github.json<Array<IssueListItem | PrListItem>>(cwd, args, context?.signal, {
-		repoProvided: true,
-	});
+	const items =
+		scheme === "issue"
+			? await githubIssueJsonWithStateReasonFallback<Array<IssueListItem>>(cwd, args, context?.signal, {
+					repoProvided: true,
+				})
+			: await git.github.json<Array<PrListItem>>(cwd, args, context?.signal, {
+					repoProvided: true,
+				});
 	const header =
 		scheme === "issue"
 			? `# Issues in ${repo} (${options.state}, up to ${options.limit})`
@@ -349,7 +355,7 @@ interface BuildSingleArgs {
 	scheme: Scheme;
 	parsed: ParsedSingle;
 	rendered: string;
-	status: "miss" | "fresh" | "stale" | "disabled";
+	status: CacheStatus;
 	fetchedAt: number;
 	/** Resolved repo (post short-form expansion) — used for the PR-only diff hint. */
 	repo?: string;
@@ -371,11 +377,15 @@ function buildSingleResource({
 		const diffUrl = repoSegment ? `pr://${repoSegment}/${parsed.number}/diff` : `pr://${parsed.number}/diff`;
 		notes.push(`Diff: ${diffUrl}`);
 	}
+	const content =
+		status === "stale"
+			? `> WARNING: Live GitHub refresh failed; this ${scheme} content is cached and may be stale.\n\n${rendered}`
+			: rendered;
 	return {
 		url: url.href,
-		content: rendered,
+		content,
 		contentType: "text/markdown",
-		size: Buffer.byteLength(rendered, "utf-8"),
+		size: Buffer.byteLength(content, "utf-8"),
 		notes,
 	};
 }

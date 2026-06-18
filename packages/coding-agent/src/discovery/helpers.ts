@@ -5,6 +5,7 @@ import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { FileType, glob } from "@oh-my-pi/pi-natives";
 import {
 	CONFIG_DIR_NAME,
+	getAgentDir,
 	getConfigDirName,
 	getPluginsDir,
 	getProjectDir,
@@ -87,6 +88,11 @@ export type SourceId = keyof typeof SOURCE_PATHS;
  * Get user-level path for a source.
  */
 export function getUserPath(ctx: LoadContext, source: SourceId, subpath: string): string | null {
+	// Native user config is profile-scoped via getAgentDir() (the active profile's
+	// agent dir), matching builtin.ts and getMCPConfigPath("user"). External tools
+	// (~/.claude, ~/.gemini, …) are intentionally not profile-scoped, so they keep
+	// resolving against ctx.home below.
+	if (source === "native") return path.join(getAgentDir(), subpath);
 	const paths = SOURCE_PATHS[source];
 	if (!paths.userAgent) return null;
 	return path.join(ctx.home, paths.userAgent, subpath);
@@ -100,6 +106,17 @@ export function getProjectPath(ctx: LoadContext, source: SourceId, subpath: stri
 	if (!paths.projectDir) return null;
 
 	return path.join(ctx.cwd, paths.projectDir, subpath);
+}
+
+/**
+ * Resolve GitHub Copilot CLI's user-global config root. Copilot stores per-user
+ * instructions/prompts/agents/MCP under `~/.copilot`, relocatable via the
+ * `COPILOT_HOME` env var (mirrors Copilot CLI's `--config-dir`). Falls back to
+ * `<home>/.copilot` when the override is unset.
+ */
+export function resolveCopilotHome(home: string): string {
+	const override = process.env.COPILOT_HOME?.trim();
+	return override ? override : path.join(home, ".copilot");
 }
 
 /**
@@ -559,6 +576,42 @@ interface ExtensionModuleManifest {
 	extensions?: string[];
 }
 
+async function discoverLinkedExtensionModuleFiles(dir: string): Promise<{
+	indexFiles: Array<{ path: string }>;
+	packageJsonFiles: Array<{ path: string }>;
+}> {
+	const entries = await readDirEntries(dir);
+	const indexFiles: Array<{ path: string }> = [];
+	const packageJsonFiles: Array<{ path: string }> = [];
+
+	await Promise.all(
+		entries.map(async entry => {
+			if (entry.name.startsWith(".") || entry.isDirectory()) return;
+
+			const entryPath = path.join(dir, entry.name);
+			const stat = await fs.promises.stat(entryPath).catch(() => null);
+			if (!stat?.isDirectory()) return;
+
+			const [packageJsonContent, indexTsContent, indexJsContent] = await Promise.all([
+				readFile(path.join(entryPath, "package.json")),
+				readFile(path.join(entryPath, "index.ts")),
+				readFile(path.join(entryPath, "index.js")),
+			]);
+
+			if (packageJsonContent !== null) {
+				packageJsonFiles.push({ path: `${entry.name}/package.json` });
+			}
+			if (indexTsContent !== null) {
+				indexFiles.push({ path: `${entry.name}/index.ts` });
+			} else if (indexJsContent !== null) {
+				indexFiles.push({ path: `${entry.name}/index.js` });
+			}
+		}),
+	);
+
+	return { indexFiles, packageJsonFiles };
+}
+
 async function readExtensionModuleManifest(
 	_ctx: LoadContext,
 	packageJsonPath: string,
@@ -588,14 +641,37 @@ async function readExtensionModuleManifest(
 export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: string): Promise<string[]> {
 	const discovered = new Set<string>();
 	// Find all candidate files in parallel using glob
-	const [directFiles, indexFiles, packageJsonFiles] = await Promise.all([
+	const [directFiles, globIndexFiles, globPackageJsonFiles, linkedFiles] = await Promise.all([
 		// 1. Direct *.ts or *.js files
 		globIf(dir, "*.{ts,js}", FileType.File, false),
 		// 2. Subdirectory index files
 		globIf(dir, "*/index.{ts,js}", FileType.File, false),
 		// 3. Subdirectory package.json files
 		globIf(dir, "*/package.json", FileType.File, false),
+		// Native glob does not follow linked extension directories.
+		discoverLinkedExtensionModuleFiles(dir),
 	]);
+	const indexFiles = [...globIndexFiles, ...linkedFiles.indexFiles];
+	const packageJsonFiles = [...globPackageJsonFiles, ...linkedFiles.packageJsonFiles];
+
+	// The native glob walker runs with follow_links=false, so a symlinked extension
+	// directory is yielded as a Symlink entry but never descended into: its inner
+	// index.{ts,js}/package.json are invisible to the `*/...` patterns above.
+	// Detect top-level symlinked directories and synthesize the equivalent subdir
+	// matches so the resolution below treats them like real directories. Symlinked
+	// *files* already match, because the native file-type filter resolves a
+	// symlink's target type for File filters.
+	const topLevelEntries = await readDirEntries(dir);
+	for (const entry of topLevelEntries) {
+		if (!entry.isSymbolicLink()) continue;
+		// readDirEntries follows the symlink: a link to a file/dangling link yields [].
+		const subEntries = await readDirEntries(path.join(dir, entry.name));
+		const hasEntry = (name: string): boolean =>
+			subEntries.some(e => e.name === name && (e.isFile() || e.isSymbolicLink()));
+		if (hasEntry("package.json")) packageJsonFiles.push({ path: `${entry.name}/package.json` });
+		if (hasEntry("index.ts")) indexFiles.push({ path: `${entry.name}/index.ts` });
+		else if (hasEntry("index.js")) indexFiles.push({ path: `${entry.name}/index.js` });
+	}
 
 	// Process direct files
 	for (const match of directFiles) {

@@ -7,13 +7,16 @@
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
+import { type } from "arktype";
+import * as zodModule from "zod/v4";
 import { toolCapability } from "../../capability/tool";
 import { type CustomTool, loadCapability } from "../../discovery";
 import type { ExecOptions } from "../../exec/exec";
 import { execCommand } from "../../exec/exec";
 import type { HookUIContext } from "../../extensibility/hooks/types";
 import { getAllPluginToolPaths } from "../../extensibility/plugins/loader";
+// Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
+import * as PiCodingAgent from "../../index";
 import * as typebox from "../typebox";
 import { createNoOpUIContext, resolvePath } from "../utils";
 import type { CustomToolAPI, CustomToolFactory, LoadedCustomTool, ToolLoadError } from "./types";
@@ -88,7 +91,7 @@ export class CustomToolLoader {
 	#seenNames: Set<string>;
 
 	constructor(
-		pi: typeof import("@oh-my-pi/pi-coding-agent"),
+		pi: typeof PiCodingAgent,
 		cwd: string,
 		builtInToolNames: string[],
 		pushPendingAction?: (action: {
@@ -106,7 +109,8 @@ export class CustomToolLoader {
 			hasUI: false,
 			logger,
 			typebox,
-			zod: z,
+			arktype: type,
+			zod: zodModule,
 			pi,
 			pushPendingAction: action => {
 				if (!pushPendingAction) {
@@ -174,12 +178,7 @@ export async function loadCustomTools(
 		reject?(reason: string): Promise<AgentToolResult<unknown> | undefined>;
 	}) => void,
 ) {
-	const loader = new CustomToolLoader(
-		await import("@oh-my-pi/pi-coding-agent"),
-		cwd,
-		builtInToolNames,
-		pushPendingAction,
-	);
+	const loader = new CustomToolLoader(PiCodingAgent, cwd, builtInToolNames, pushPendingAction);
 	await loader.load(pathsWithSources);
 	return {
 		tools: loader.tools,

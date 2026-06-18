@@ -1,5 +1,7 @@
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { getSegmenter } from "@oh-my-pi/pi-tui";
+import { LRUCache } from "lru-cache/raw";
+import { canonicalizeMessage } from "../../utils/thinking-display";
 import type { AssistantMessageComponent } from "../components/assistant-message";
 
 export const STREAMING_REVEAL_FRAME_MS = 1000 / 30;
@@ -22,8 +24,7 @@ type StreamingRevealControllerOptions = {
 // ASCII grapheme cluster is CRLF — so skip the segmenter entirely; (2) memoize counts
 // in a small LRU so the repeated passes over the same snapshot (within a frame) and
 // over stable blocks (across frames) don't re-segment.
-const GRAPHEME_COUNT_CACHE_MAX = 16;
-const graphemeCountCache = new Map<string, number>();
+const graphemeCountCache = new LRUCache<string, number>({ max: 128 });
 
 function isFastAsciiText(text: string): boolean {
 	for (let i = 0; i < text.length; i++) {
@@ -36,12 +37,7 @@ function isFastAsciiText(text: string): boolean {
 function countGraphemes(text: string): number {
 	if (text.length === 0) return 0;
 	const cached = graphemeCountCache.get(text);
-	if (cached !== undefined) {
-		// Refresh LRU position so stable blocks survive churn from the growing block.
-		graphemeCountCache.delete(text);
-		graphemeCountCache.set(text, cached);
-		return cached;
-	}
+	if (cached !== undefined) return cached;
 	let count: number;
 	if (isFastAsciiText(text)) {
 		count = text.length;
@@ -50,10 +46,6 @@ function countGraphemes(text: string): number {
 		for (const _segment of getSegmenter().segment(text)) count += 1;
 	}
 	graphemeCountCache.set(text, count);
-	if (graphemeCountCache.size > GRAPHEME_COUNT_CACHE_MAX) {
-		const oldest = graphemeCountCache.keys().next().value;
-		if (oldest !== undefined) graphemeCountCache.delete(oldest);
-	}
 	return count;
 }
 
@@ -117,7 +109,7 @@ export function visibleUnits(message: AssistantMessage, hideThinking: boolean): 
 	for (const block of message.content) {
 		if (block.type === "text") {
 			total += countGraphemes(block.text);
-		} else if (block.type === "thinking" && !hideThinking) {
+		} else if (block.type === "thinking" && !hideThinking && canonicalizeMessage(block.thinking)) {
 			total += countGraphemes(block.thinking);
 		}
 	}
@@ -158,7 +150,7 @@ export function buildDisplayMessage(
 			const units = countOf(i, block.text);
 			content.push(revealTextBlock(block, remaining, units));
 			remaining = Math.max(0, remaining - units);
-		} else if (block.type === "thinking" && !hideThinking) {
+		} else if (block.type === "thinking" && !hideThinking && canonicalizeMessage(block.thinking)) {
 			const units = countOf(i, block.thinking);
 			content.push(revealThinkingBlock(block, remaining, units));
 			remaining = Math.max(0, remaining - units);
@@ -201,7 +193,7 @@ export class StreamingRevealController {
 		this.#hideThinkingBlock = this.#getHideThinkingBlock();
 		this.#smoothStreaming = this.#getSmoothStreaming();
 		if (!this.#smoothStreaming) {
-			component.updateContent(message);
+			component.updateContent(message, { transient: true });
 			return;
 		}
 		const total = this.#visibleUnits(message);
@@ -210,10 +202,12 @@ export class StreamingRevealController {
 			// A tool call is a transcript-order boundary: finish any leading
 			// assistant text before EventController renders the separate tool card.
 			this.#revealed = total;
-			component.updateContent(buildDisplayMessage(message, this.#revealed, this.#hideThinkingBlock, this.#countOf));
+			component.updateContent(buildDisplayMessage(message, this.#revealed, this.#hideThinkingBlock, this.#countOf), {
+				transient: true,
+			});
 			return;
 		}
-		this.#renderCurrent(total);
+		this.#renderCurrent();
 		this.#syncTimer(total);
 	}
 
@@ -221,7 +215,7 @@ export class StreamingRevealController {
 		this.#target = message;
 		if (!this.#component) return;
 		if (!this.#smoothStreaming) {
-			this.#component.updateContent(message);
+			this.#component.updateContent(message, { transient: true });
 			return;
 		}
 		const total = this.#visibleUnits(message);
@@ -233,17 +227,21 @@ export class StreamingRevealController {
 			this.#stopTimer();
 			this.#component.updateContent(
 				buildDisplayMessage(message, this.#revealed, this.#hideThinkingBlock, this.#countOf),
+				{
+					transient: true,
+				},
 			);
 			return;
 		}
 		if (this.#revealed > total) {
 			this.#revealed = total;
 		}
+
 		this.#syncTimer(total);
 		// When the reveal is animating, the 30fps #tick performs the single build+render;
 		// avoid the O(N) buildDisplayMessage on the per-delta event-thread path. Only render
 		// synchronously when no tick will fire (already fully revealed, timer stopped).
-		if (!this.#timer) this.#renderCurrent(total);
+		if (!this.#timer) this.#renderCurrent();
 	}
 
 	stop(): void {
@@ -262,18 +260,21 @@ export class StreamingRevealController {
 			const block = message.content[i]!;
 			if (block.type === "text") {
 				total += this.#unitCounter.count(i, block.text);
-			} else if (block.type === "thinking" && !this.#hideThinkingBlock) {
+			} else if (block.type === "thinking" && !this.#hideThinkingBlock && canonicalizeMessage(block.thinking)) {
 				total += this.#unitCounter.count(i, block.thinking);
 			}
 		}
 		return total;
 	}
 
-	#renderCurrent(total = this.#target ? this.#visibleUnits(this.#target) : 0): void {
+	#renderCurrent(): void {
 		if (!this.#target || !this.#component) return;
+		// Every controller render is an in-flight streaming snapshot, even when
+		// smooth reveal has temporarily caught up to the current target. The
+		// message_end handler performs the only stable non-transient render.
 		this.#component.updateContent(
 			buildDisplayMessage(this.#target, this.#revealed, this.#hideThinkingBlock, this.#countOf),
-			{ transient: this.#revealed < total },
+			{ transient: true },
 		);
 	}
 
@@ -313,7 +314,7 @@ export class StreamingRevealController {
 		}
 		this.#revealed = Math.min(total, this.#revealed + nextStep(total - this.#revealed));
 		component.updateContent(buildDisplayMessage(target, this.#revealed, this.#hideThinkingBlock, this.#countOf), {
-			transient: this.#revealed < total,
+			transient: true,
 		});
 		this.#requestRender();
 		if (this.#revealed >= total) {

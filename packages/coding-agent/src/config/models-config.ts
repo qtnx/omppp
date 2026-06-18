@@ -17,6 +17,7 @@ export interface ProviderValidationModel {
 	id: string;
 	api?: Api;
 	contextWindow?: number;
+	supportsTools?: boolean;
 	maxTokens?: number;
 }
 
@@ -50,12 +51,13 @@ export function validateProviderConfiguration(
 				!config.headers &&
 				!config.compat &&
 				!config.apiKey &&
+				config.auth !== "none" &&
 				!config.disableStrictTools &&
 				!hasModelOverrides &&
 				!config.discovery
 			) {
 				throw new Error(
-					`Provider ${providerName}: must specify "baseUrl", "headers", "apiKey", "compat", "disableStrictTools", "modelOverrides", "discovery", or "models"`,
+					`Provider ${providerName}: must specify "baseUrl", "headers", "apiKey", "auth: none", "compat", "disableStrictTools", "modelOverrides", "discovery", or "models"`,
 				);
 			}
 		}

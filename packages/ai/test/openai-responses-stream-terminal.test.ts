@@ -8,10 +8,10 @@
 //    input on the stored content block and drop the transient `partialJson`
 //    accumulation buffer, mirroring the function_call branch.
 import { describe, expect, test } from "bun:test";
-import { processResponsesStream } from "@oh-my-pi/pi-ai/providers/openai-responses-shared";
+import type { ResponseStreamEvent } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
+import { processResponsesStream } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import type { ResponseStreamEvent } from "openai/resources/responses/responses";
 
 function makeModel(): Model<"openai-responses"> {
 	return buildModel({
@@ -168,6 +168,46 @@ describe("processResponsesStream: terminal events", () => {
 			| undefined;
 		expect(end?.toolCall.arguments).toEqual({ input: patch });
 	});
+
+	test("maps end_turn=false on response.completed to a pause_turn stop", async () => {
+		const stream = { push: () => {}, end: () => {} } as never;
+		const completedWith = (extra: Record<string, unknown>): unknown[] => [
+			{
+				type: "response.output_item.added",
+				output_index: 0,
+				item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] },
+			},
+			{
+				type: "response.output_item.done",
+				output_index: 0,
+				item: {
+					type: "message",
+					id: "msg_1",
+					role: "assistant",
+					status: "completed",
+					phase: "commentary",
+					content: [{ type: "output_text", text: "Scanning the repo first.", annotations: [] }],
+				},
+			},
+			{
+				type: "response.completed",
+				response: { id: "resp_paused", status: "completed", ...extra },
+			},
+		];
+
+		// Codex-lineage `end_turn: false` -> non-terminal stop the agent loop can
+		// act on.
+		const paused = makeOutput();
+		await processResponsesStream(makeStream(completedWith({ end_turn: false })), paused, stream, makeModel());
+		expect(paused.stopReason).toBe("stop");
+		expect(paused.stopDetails).toEqual({ type: "pause_turn" });
+
+		// Platform responses carry no end_turn field -> no pause marker.
+		const finished = makeOutput();
+		await processResponsesStream(makeStream(completedWith({})), finished, stream, makeModel());
+		expect(finished.stopReason).toBe("stop");
+		expect(finished.stopDetails).toBeUndefined();
+	});
 });
 
 describe("processResponsesStream: lost output_item.added recovery", () => {
@@ -294,6 +334,28 @@ describe("processResponsesStream: lost output_item.added recovery", () => {
 		).rejects.toThrow("incomplete: content_filter");
 	});
 
+	test("handles nested error object in error events", async () => {
+		const output = makeOutput();
+		const stream = { push: () => {}, end: () => {} } as never;
+
+		await expect(
+			processResponsesStream(
+				makeStream([
+					{
+						type: "error",
+						error: {
+							code: "context_length_exceeded",
+							message: "Your input exceeds the context window limit",
+						},
+					},
+				]),
+				output,
+				stream,
+				makeModel(),
+			),
+		).rejects.toThrow("Error Code context_length_exceeded: Your input exceeds the context window limit");
+	});
+
 	test("preserves premiumRequests across usage population", async () => {
 		const output = makeOutput();
 		output.usage.premiumRequests = 3;
@@ -318,5 +380,31 @@ describe("processResponsesStream: lost output_item.added recovery", () => {
 		expect(output.usage.premiumRequests).toBe(3);
 		expect(output.usage.input).toBe(4);
 		expect(output.usage.output).toBe(2);
+	});
+
+	test("stops pulling after response.completed even when the source never ends", async () => {
+		const output = makeOutput();
+		const stream = { push: () => {}, end: () => {} } as never;
+		let onCompletedCalled = false;
+
+		// Misbehaving providers deliver the terminal event but never close the
+		// connection. The processor must break out instead of parking on
+		// `iterator.next()` until the idle watchdog errors the turn.
+		async function* neverEndingStream(): AsyncIterable<ResponseStreamEvent> {
+			yield {
+				type: "response.completed",
+				response: { id: "resp_open", status: "completed", usage: { input_tokens: 1, output_tokens: 1 } },
+			} as unknown as ResponseStreamEvent;
+			await new Promise<never>(() => {}); // connection held open forever
+		}
+
+		await processResponsesStream(neverEndingStream(), output, stream, makeModel(), {
+			onCompleted: () => {
+				onCompletedCalled = true;
+			},
+		});
+
+		expect(onCompletedCalled).toBe(true);
+		expect(output.responseId).toBe("resp_open");
 	});
 });

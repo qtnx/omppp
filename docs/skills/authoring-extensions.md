@@ -81,7 +81,7 @@ omp loads extension modules from these sources:
    - `<cwd>/.omp/extensions/`
    - `~/.omp/agent/extensions/`
    - legacy extension paths listed in `.omp/settings.json#extensions` or `~/.omp/agent/settings.json#extensions`
-2. Marketplace-installed plugins from the OMP and Claude plugin registries.
+2. Installed plugins under `~/.omp/plugins/node_modules` (`omp plugin install` npm/git specs, or `omp plugin link`) via their `omp.extensions`/`pi.extensions` manifests. Marketplace cache installs do not feed extension modules — they surface skills/commands/hooks/tools/MCP only.
 3. Explicit configured paths passed by the CLI (`omp --extension ./my-ext.ts`, also `-e`; `--hook` is treated as an alias) and by the `extensions:` setting in config.
 
 The runtime de-duplicates by resolved absolute path — first seen wins.
@@ -201,9 +201,14 @@ pi.on("tool_call", async (event, ctx) => {
 pi.on("turn_end", async (_event, ctx) => {
   ctx.ui.setStatus("tokens", `~${ctx.getContextUsage()?.tokens ?? "?"} tokens`);
 });
+
+pi.on("session_stop", async (event) => {
+  if (event.stop_hook_active) return;
+  return { continue: true, additionalContext: `Review final status after turn ${event.turn_id}.` };
+});
 ```
 
-Full event catalog: see [hooks authoring guide](./authoring-hooks.md).
+Full event catalog: see [extension authoring guide](../extensions.md).
 
 ## Extension vs hook — when to use which
 
@@ -212,17 +217,17 @@ Full event catalog: see [hooks authoring guide](./authoring-hooks.md).
 | Tools + commands + events in one module | **Extension** (`ExtensionAPI`) |
 | Pure event interception (policy, redaction) | **Extension** or **Hook** (both work; extension is preferred) |
 | Legacy hook module already exists | **Hook** (`HookAPI` from `@oh-my-pi/pi-coding-agent/extensibility/hooks`) |
-| Registering provider / custom message renderer | **Extension only** |
+| Registering a provider, shortcut, or CLI flag | **Extension only** |
 | Shipping as a marketplace plugin | **Extension** (use `package.json` manifest) |
 
 Extensions are a strict superset of hooks. New authoring should use `ExtensionAPI`.
 
 ## Debugging
 
-Start omp with `--log-level debug` to see extension load diagnostics:
+omp writes structured logs to a rotating file under `~/.omp/logs/` (debug level is always on; nothing is written to the console, which would corrupt the TUI). Tail today's log to see extension load diagnostics:
 
 ```
-omp --log-level debug
+tail -f ~/.omp/logs/omp.$(date +%F).log
 ```
 
 Failed extension loads are logged with their path and error. Loaded extensions may also emit their own debug logs via `pi.logger`.

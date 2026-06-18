@@ -2,6 +2,7 @@ import { MismatchError as HashlineMismatchError } from "@oh-my-pi/hashline";
 import hashlineGrammar from "@oh-my-pi/hashline/grammar.lark" with { type: "text" };
 import hashlineDescription from "@oh-my-pi/hashline/prompt.md" with { type: "text" };
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type { ToolExample } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
 import {
 	createLspWritethrough,
@@ -18,7 +19,7 @@ import type { DeferredDiagnosticsEntry, ToolSession } from "../tools";
 import { truncateForPrompt } from "../tools/approval";
 import { isInternalUrlPath } from "../tools/path-utils";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
-import { executeHashlineSingle, type HashlineParams, hashlineEditParamsSchema } from "./hashline";
+import { executeHashlineSingle, hashlineEditParamsSchema } from "./hashline";
 import { type ApplyPatchParams, applyPatchSchema, expandApplyPatchToEntries } from "./modes/apply-patch";
 import applyPatchGrammar from "./modes/apply-patch.lark" with { type: "text" };
 import { executePatchSingle, type PatchEditEntry, type PatchParams, patchEditSchema } from "./modes/patch";
@@ -45,11 +46,14 @@ type TInput =
 	| typeof hashlineEditParamsSchema
 	| typeof applyPatchSchema;
 
+type HashlineParams = typeof hashlineEditParamsSchema.infer;
+
 type EditParams = ReplaceParams | PatchParams | HashlineParams | ApplyPatchParams;
 
 type EditModeDefinition = {
 	description: (session: ToolSession) => string;
 	parameters: TInput;
+	examples?: readonly ToolExample[];
 	execute: (
 		tool: EditTool,
 		params: EditParams,
@@ -356,6 +360,10 @@ export class EditTool implements AgentTool<TInput> {
 		return this.#getModeDefinition().parameters;
 	}
 
+	get examples(): readonly ToolExample[] | undefined {
+		return this.#getModeDefinition().examples;
+	}
+
 	/**
 	 * When in `apply_patch` mode, expose the Codex Lark grammar so providers
 	 * that support OpenAI-style custom tools can emit a grammar-constrained
@@ -404,6 +412,39 @@ export class EditTool implements AgentTool<TInput> {
 			patch: {
 				description: () => prompt.render(patchDescription),
 				parameters: patchEditSchema,
+				examples: [
+					{
+						caption: "Create",
+						call: { path: "hello.txt", edits: [{ op: "create", diff: "Hello\n" }] },
+					},
+					{
+						caption: "Update",
+						call: {
+							path: "src/app.py",
+							edits: [
+								{
+									op: "update",
+									diff: "@@ def greet():\n def greet():\n-print('Hi')\n+print('Hello')\n",
+								},
+							],
+						},
+					},
+					{
+						caption: "Rename",
+						call: {
+							path: "src/app.py",
+							edits: [{ op: "update", rename: "src/main.py", diff: "@@\n …\n" }],
+						},
+					},
+					{
+						caption: "Delete",
+						call: { path: "obsolete.txt", edits: [{ op: "delete" }] },
+					},
+					{
+						caption: "Multiple entries",
+						note: "All entries in one call apply to the top-level `path`; use separate calls for different files.",
+					},
+				] satisfies readonly ToolExample<PatchParams>[],
 				execute: (
 					tool: EditTool,
 					params: EditParams,
@@ -432,6 +473,14 @@ export class EditTool implements AgentTool<TInput> {
 			apply_patch: {
 				description: () => prompt.render(applyPatchDescription),
 				parameters: applyPatchSchema,
+				examples: [
+					{
+						caption: "Apply a combined patch file",
+						call: {
+							input: '*** Begin Patch\n*** Add File: hello.txt\n+Hello world\n*** Update File: src/app.py\n*** Move to: src/main.py\n@@ def greet():\n-print("Hi")\n+print("Hello, world!")\n*** Delete File: obsolete.txt\n*** End Patch\n',
+						},
+					},
+				] satisfies readonly ToolExample<ApplyPatchParams>[],
 				execute: (
 					tool: EditTool,
 					params: EditParams,

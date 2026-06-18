@@ -1,5 +1,6 @@
 export * from "./bundled";
 export * from "./classify";
+export * from "./dialect";
 export * from "./equivalence";
 export * from "./family";
 export * from "./id";

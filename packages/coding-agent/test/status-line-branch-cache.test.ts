@@ -52,12 +52,12 @@ function stubGit() {
 	return resolveSync;
 }
 
-/** Construct the component with no rendered segments so the test exercises
- * branch resolution (#getCurrentBranch runs in #buildSegmentContext) without
- * dragging in every segment renderer's session dependencies. */
+/** Construct the component with a single git-backed segment so the test
+ * exercises branch resolution (#getCurrentBranch runs in #buildSegmentContext
+ * only when a git segment is visible) without other renderers' session deps. */
 function makeComp(): StatusLineComponent {
 	const comp = new StatusLineComponent(makeSession());
-	comp.updateSettings({ preset: "custom", leftSegments: [], rightSegments: [], segmentOptions: {} });
+	comp.updateSettings({ preset: "custom", leftSegments: ["git"], rightSegments: [], segmentOptions: {} });
 	return comp;
 }
 

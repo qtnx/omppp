@@ -1,7 +1,7 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent, ToolExample } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
+import { type } from "arktype";
 import { jsBackend, pythonBackend } from "../eval";
 import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-timeout";
@@ -10,6 +10,7 @@ import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
+import { webpExclusionForModel } from "../utils/image-loading";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
@@ -26,25 +27,24 @@ export { EVAL_DEFAULT_PREVIEW_LINES, evalToolRenderer } from "./eval-render";
  * Per-cell input. Each cell runs in order; state persists within a language
  * across cells and across tool calls.
  */
-const evalCellSchema = z.object({
-	language: z.enum(["py", "js"]).describe('runtime: "py" for the IPython kernel, "js" for the persistent JS VM'),
-	code: z.string().describe("cell body, verbatim. Use top-level await freely."),
-	title: z.string().optional().describe('short label shown in transcript (e.g. "imports", "load config")'),
-	timeout: z.number().int().min(1).max(3600).optional().describe("per-cell timeout in seconds (1-3600, default 30)"),
-	reset: z
-		.boolean()
-		.optional()
-		.describe("wipe this cell's language kernel before running. Other languages are untouched."),
+const evalCellSchema = type({
+	language: type("'py' | 'js'").describe('runtime: "py" for the IPython kernel, "js" for the persistent JS VM'),
+	code: type("string").describe("cell body, verbatim. Use top-level await freely."),
+	"title?": type("string").describe('short label shown in transcript (e.g. "imports", "load config")'),
+	"timeout?": type("number").describe("per-cell timeout in seconds (1-3600, default 30)"),
+	"reset?": type("boolean").describe(
+		"wipe this cell's language kernel before running. Other languages are untouched.",
+	),
 });
-export type EvalCellInput = z.infer<typeof evalCellSchema>;
+export type EvalCellInput = typeof evalCellSchema.infer;
 
-export const evalSchema = z.object({
-	cells: z
-		.array(evalCellSchema)
-		.min(1)
+export const evalSchema = type({
+	cells: evalCellSchema
+		.array()
+		.atLeastLength(1)
 		.describe("cells executed in order. State persists within each language across cells and tool calls."),
 });
-export type EvalToolParams = z.infer<typeof evalSchema>;
+export type EvalToolParams = typeof evalSchema.infer;
 
 export type EvalToolResult = {
 	content: Array<{ type: "text"; text: string }>;
@@ -182,10 +182,29 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		const spawnsAllowed = sessionSpawns !== "" && sessionSpawns !== null;
 		return getEvalToolDescription({ py: backends.python, js: backends.js, spawns: spawnsAllowed });
 	}
+	readonly examples: readonly ToolExample<typeof evalSchema.infer>[] = [
+		{
+			call: {
+				cells: [
+					{
+						language: "py",
+						title: "imports",
+						timeout: 10,
+						code: "import json\nfrom pathlib import Path",
+					},
+					{
+						language: "py",
+						title: "load config",
+						code: "data = json.loads(read('package.json'))\ndisplay(data)",
+					},
+				],
+			},
+		},
+	];
 	readonly parameters = evalSchema;
 	readonly concurrency = "exclusive";
 	readonly strict = true;
-	readonly intent = (args: Partial<z.infer<typeof evalSchema>>): string | undefined => {
+	readonly intent = (args: Partial<typeof evalSchema.infer>): string | undefined => {
 		const cells = Array.isArray(args.cells) ? args.cells : [];
 		const first = cells.find(c => c && typeof c === "object");
 		if (!first) return "evaluating";
@@ -206,7 +225,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 
 	async execute(
 		_toolCallId: string,
-		params: z.infer<typeof evalSchema>,
+		params: typeof evalSchema.infer,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback,
 		_ctx?: AgentToolContext,
@@ -219,6 +238,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			throw new ToolError("Eval tool requires a session when not using proxy executor");
 		}
 		const session = this.session;
+		const excludeWebP = webpExclusionForModel(session.getActiveModel?.());
 
 		const cells: ResolvedEvalCell[] = [];
 		for (let i = 0; i < params.cells.length; i++) {
@@ -390,11 +410,14 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 							cellDisplayOutputs.push(output);
 						}
 						if (output.type === "image") {
-							const resized = await resizeImage({
-								type: "image",
-								data: output.data,
-								mimeType: output.mimeType,
-							});
+							const resized = await resizeImage(
+								{
+									type: "image",
+									data: output.data,
+									mimeType: output.mimeType,
+								},
+								{ excludeWebP },
+							);
 							const image: ImageContent = {
 								type: "image",
 								data: resized.data,

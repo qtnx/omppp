@@ -16,8 +16,41 @@
 - Added a Learning Audit dashboard tab with API endpoints for inspecting persisted live-learning classifier and writer artifacts.
 - Added per-model System Context Reminder counts and rates to the model stats table.
 
+## [16.0.5] - 2026-06-17
+
+### Added
+
+- New Projects view summarizing usage, cost, and reliability per project folder (backed by the existing `/api/stats/folders` endpoint).
+- System-aware light/dark theme toggle — follows the OS by default, and an explicit choice persists across reloads.
+
+### Changed
+
+- Redesigned the local stats dashboard with an OMP-themed product shell, dedicated per-section views, accessible loading/empty/error states, and flicker-free navigation between screens and time ranges.
+
+### Fixed
+
+- The 1h time-range chart rendered an empty/single-point line; it now buckets at 5-minute granularity for a real trend.
+
+## [15.13.3] - 2026-06-15
+
+### Changed
+
+- Renamed `__omp_stats_sync_worker` to `__omp_worker_stats_sync`.
+
+## [15.13.1] - 2026-06-15
+
+### Fixed
+
+- Dropped `git` from the profanity list so normal repository mentions no longer count as profanity
+
+## [15.12.4] - 2026-06-13
+
+### Fixed
+
+- Fixed the stats dashboard's SQLite init never setting `PRAGMA busy_timeout`, so a concurrent `omp` startup hitting WAL recovery could crash `initDb()` with `SQLITE_BUSY` instead of waiting through it. The busy handler is now installed before `PRAGMA journal_mode=WAL` ([#2421](https://github.com/can1357/oh-my-pi/issues/2421)).
 
 ## [15.11.0] - 2026-06-10
+
 ### Added
 
 - Added support for prebuilt npm bundle mode via `PI_BUNDLED`, allowing the stats server to use an embedded dashboard bundle in packaged CLI distributions
@@ -47,6 +80,7 @@
 - Fixed incremental `parseSessionFile(path, fromOffset)` losing the active service tier when resuming past a `service_tier_change` entry, so priority OpenAI replies appended after the offset are now credited with `premiumRequests: 1` (regression introduced by 13f59162e which stopped folding priority-tier into per-message premium counts)
 
 ## [15.0.1] - 2026-05-14
+
 ### Breaking Changes
 
 - Raised the minimum required Bun version to >=1.3.14 in package metadata
@@ -67,6 +101,7 @@
 - Fixed behavior backfills after failed compiled-binary sync attempts by marking the backfill sentinel only after a successful full sync.
 
 ## [14.9.7] - 2026-05-12
+
 ### Breaking Changes
 
 - Broke backward compatibility of behavior stats fields by replacing `yellingSentences`/`dramaRuns` with `yelling`/`anguish` and adding `negation`, `repetition`, `blame` in query result types and persisted `user_messages` schema
@@ -118,6 +153,7 @@
 - Fixed GPT cost reporting by deriving missing OpenAI Codex costs from the model catalog and backfilling existing zero-cost rows.
 
 ## [13.6.0] - 2026-03-03
+
 ### Fixed
 
 - Include subtask session files in usage stats ([#250](https://github.com/can1357/oh-my-pi/issues/250))

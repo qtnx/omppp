@@ -1,15 +1,18 @@
 import { describe, expect, it } from "bun:test";
 import type { Tool, ToolCall } from "@oh-my-pi/pi-ai/types";
 import {
+	adaptSchemaForStrict,
 	enforceStrictSchema,
 	isJsonSchemaValueValid,
 	isValidJsonSchema,
+	sanitizeSchemaForOpenAIResponses,
 	sanitizeSchemaForStrictMode,
+	toolWireSchema,
 	tryEnforceStrictSchema,
 	zodToWireSchema,
 } from "@oh-my-pi/pi-ai/utils/schema";
 import { validateToolArguments } from "@oh-my-pi/pi-ai/utils/validation";
-import * as z from "zod/v4";
+import { z } from "zod/v4";
 
 describe("sanitizeSchemaForStrictMode", () => {
 	it("infers object type, strips non-structural keywords, and converts const to enum", () => {
@@ -84,6 +87,68 @@ describe("sanitizeSchemaForStrictMode", () => {
 		expect(nullVariant).toEqual({ type: "null" });
 		expect((objectVariant as Record<string, unknown>).required).toEqual(["data"]);
 		expect((objectVariant as Record<string, unknown>).properties).toEqual({ data: { type: "string" } });
+	});
+
+	it("distributes enum values to matching nullable type-array branches", () => {
+		const sanitized = sanitizeSchemaForStrictMode({
+			type: ["string", "null"],
+			enum: ["javascript", "python", null],
+			description: "guide",
+		});
+
+		expect(sanitized).toEqual({
+			anyOf: [
+				{ enum: ["javascript", "python"], type: "string" },
+				{ enum: [null], type: "null" },
+			],
+			description: "guide",
+		});
+	});
+
+	it("drops type-array branches that cannot satisfy enum constraints", () => {
+		const sanitized = sanitizeSchemaForStrictMode({
+			type: ["string", "null"],
+			enum: ["javascript", "python"],
+		});
+
+		expect(sanitized).toEqual({
+			enum: ["javascript", "python"],
+			type: "string",
+		});
+	});
+
+	it("keeps OpenAI Responses strict schemas valid for nullable MCP enum parameters", () => {
+		const guideEnum = ["javascript", "python"];
+		const raw = {
+			type: "object",
+			properties: {
+				guide: {
+					anyOf: [{ type: "string", enum: guideEnum, description: "guide" }, { type: "null" }],
+					default: null,
+					description: "guide",
+				},
+			},
+			required: ["guide"],
+			additionalProperties: false,
+		};
+
+		const wired = toolWireSchema({
+			name: "mcp__sentry_search_docs",
+			description: "",
+			parameters: structuredClone(raw),
+		});
+		const responses = sanitizeSchemaForOpenAIResponses(wired);
+		const strict = adaptSchemaForStrict(responses, true);
+		const properties = strict.schema.properties as Record<string, Record<string, unknown>>;
+
+		expect(strict.strict).toBe(true);
+		expect(properties.guide).toEqual({
+			anyOf: [
+				{ enum: ["javascript", "python"], type: "string" },
+				{ enum: [null], type: "null" },
+			],
+			description: "guide (default: null)",
+		});
 	});
 
 	it("keeps existing anyOf constraints inside each normalized type variant", () => {
@@ -953,5 +1018,50 @@ describe("Zod root extras preserved through normalize", () => {
 		expect(result.assignment).toBe("do thing");
 		expect("schema" in result).toBe(true);
 		expect(result.schema).toBeNull();
+	});
+});
+
+describe("adaptSchemaForStrict — unrepresentable open branches fall back to non-strict", () => {
+	it("falls back when a property schema is an open `true` (z.unknown())", () => {
+		// `z.unknown()` normalizes to `meta: true` (issue #1179); strict providers
+		// reject a typeless property, so the schema must downgrade to non-strict
+		// rather than emit `strict: true` with a `true` property.
+		const wire = toolWireSchema({
+			name: "t",
+			description: "d",
+			parameters: z.object({ a: z.string(), meta: z.unknown() }),
+		} as Tool);
+		expect((wire.properties as Record<string, unknown>).meta).toBe(true);
+		expect(adaptSchemaForStrict(wire, true).strict).toBe(false);
+	});
+
+	it("falls back when a combiner branch is a boolean schema", () => {
+		const schema: Record<string, unknown> = {
+			type: "object",
+			properties: { a: { anyOf: [true, { type: "string" }] } },
+			required: ["a"],
+			additionalProperties: false,
+		};
+		expect(adaptSchemaForStrict(schema, true).strict).toBe(false);
+	});
+
+	it("falls back when an array `items` schema is unconstrained", () => {
+		const schema: Record<string, unknown> = {
+			type: "object",
+			properties: { xs: { type: "array", items: true } },
+			required: ["xs"],
+			additionalProperties: false,
+		};
+		expect(adaptSchemaForStrict(schema, true).strict).toBe(false);
+	});
+
+	it("still enforces strict for fully-typed schemas (no false positives)", () => {
+		const schema: Record<string, unknown> = {
+			type: "object",
+			properties: { a: { type: "string" }, b: { type: "number" } },
+			required: ["a", "b"],
+			additionalProperties: false,
+		};
+		expect(adaptSchemaForStrict(schema, true).strict).toBe(true);
 	});
 });

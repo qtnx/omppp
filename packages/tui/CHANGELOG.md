@@ -13,8 +13,206 @@
 - Eliminated the dominant streaming-render CPU cost. The assistant message was re-lexed in full by `marked.lexer` on every ~30fps reveal frame — O(n) per frame, O(n²) over a reply (measured ~9s of CPU for a 16KB answer; the render cache is keyed on the full text, so every growing frame missed). Markdown block lexing is now append-only incremental: tokens of blocks sealed by a blank line are cached at module level (surviving the per-frame Markdown component recreation) and only the still-growing trailing block is re-lexed. Output is provably identical to a full lex — a link reference definition or any non-append change falls back to a full lex — and an equivalence test covers headings/lists/loose lists/fences/blockquotes/tables/setext across every streamed prefix. ~400x less lexing work on a 16KB streamed reply.
 - Extended the streaming-render optimization from lexing to the full render path. Even with incremental lexing, every ~30fps reveal frame still re-rendered, re-wrapped, and re-highlighted the whole growing message — the render cache is keyed on the full text, so a growing message missed every frame — keeping it O(n)/frame, O(n²)/reply. `Markdown.render()` now reuses the rendered+wrapped+padded output lines of every blank-line-sealed block (keyed by the reused token objects, so it survives the per-frame `Markdown` component recreation) and re-renders only the still-growing tail; a sealed code fence is highlighted once instead of on every frame it stays open. ~19x faster on a representative streamed reply, widening with length. Output is byte-identical to a full render (a non-append edit or a layout/theme change falls back to a full render), proven by an equivalence test across headings, prose, tight/loose lists, fenced code, tables, blockquotes, horizontal rules, text-sizing (OSC 66) headings, and background styles at multiple widths.
 - Fixed the incremental block lexer splitting a loose list that seals mid-stream into adjacent single-item list tokens, so a streamed loose list could render with wrong inter-item spacing (extra blank lines) versus its final full-document parse. A sealed list followed only by blank-line `space` tokens is now re-lexed with the tail (loose continuation can still add another item); every other top-level block remains definitively sealed by the blank line.
+## [16.0.5] - 2026-06-17
+
+### Added
+
+- Added tight layout support (`setTuiTight`/`getPaddingX`) to dynamically remove 1-character horizontal padding from Text, Markdown, Box, and TruncatedText components.
+
+### Changed
+
+- Coalesced byte-adjacent SGR sequences in emitted lines into a single `CSI … m`. The component tree styles each span as `<set>text<reset>`, so adjacent spans emit runs of back-to-back SGR sequences (e.g. a `CSI 39 m` fg-reset immediately followed by the next span's `CSI 38;2;r;g;b m`); merging the run is behavior-preserving because SGR parameters apply left-to-right regardless of framing. On a real transcript this drops ~30-40% of all SGR sequences, cutting the per-frame byte volume and SGR-dispatch count a slow terminal engine (e.g. xterm.js/WebGL under a large viewport) must process. Each emitted sequence is capped at 16 parameter tokens so a long adjacent run is split across several valid CSIs instead of overflowing a terminal's parameter buffer (xterm.js caps at 32 and silently truncates, corrupting colors). A run is never extended past a parameter list that ends in an incomplete semicolon-form extended color (`38/48/58;2` missing a channel or `;5` missing the index), so a following code can't be absorbed as the missing component. Disable with `PI_NO_SGR_COALESCE=1`.
+
+### Fixed
+
+- Fixed image cache invalidation when terminal image protocol, Kitty placeholder mode, or cell dimensions change, preventing stale rendered output
+- Fixed direct inline-image placements leaving the cursor inside the reserved image block, which let following chat rows overwrite the middle of rendered screenshots ([#2863](https://github.com/can1357/oh-my-pi/issues/2863)).
+- Fixed inline-image replay after startup or resume fallback paints by invalidating cached image rows when the terminal image protocol, Kitty placeholder mode, or cell dimensions change.
+
+## [16.0.3] - 2026-06-16
+
+### Added
+
+- Added `\tfrac` support to stacked display-math rendering so it now displays as a vertical fraction in `latexToBlock` output
+- Added markdown parsing for own-line display-math blocks (`$$...$$` and `\[...\]`) and delimiter-free `\begin{...}...\end{...}` math environments so block equations render via LaTeX-to-Unicode
+- Added stacked rendering of display-math fractions (`\frac`, `\dfrac`, `\cfrac`): the numerator is drawn over a horizontal bar over the denominator, with surrounding terms and `align`/`equation`-style environment rows aligned to the bar. Triggered for own-line `$$`/`\[` blocks, bare `\begin{...}` environments, and a paragraph whose sole content is a single display-math span; inline `$...$` fractions stay single-line (`½`, `(a+b)/c`)
+- Added bare math auto-rendering in `renderMathInText` for math-shaped lines and math environment blocks that omit `$`/`\(` delimiters
+- Added LaTeX-to-Unicode rendering for markdown math spans, converting `$$...$$`, `$...$`, `\(...\)`, and `\[...\]` into readable Unicode in Markdown output
+- Exported LaTeX conversion helpers from the package entrypoint so consumers can call `latexToUnicode`, `latexToBlock`, `renderMathInText`, `inlineMathSpanEnd`, and `isBareMathEnvironment` directly
+- Expanded LaTeX-to-Unicode conversion coverage for additional math fonts, delimiters, extensible arrows, layout environments, cancel/brace annotations, references, and AMS symbols
+- Added ANSI color rendering for LaTeX `\textcolor`, scoped `\color`, `\colorbox`, and `\fcolorbox`, including xcolor/CSS color parsing and truecolor/256-color terminal output
+- Added an optional `maxWidth` parameter to `MarkdownTheme.resolveMermaidAscii` to allow diagram resolvers to fit ASCII output to the available content width
+
+### Changed
+
+- Changed markdown math rendering to preserve multiline layout for display equations, keeping `\\` row breaks as separate output lines (including inside list items)
+
+### Fixed
+
+- Fixed `alignat`/`alignedat`/`gatheredat` rendering in `latexToBlock` so the required `{n}` preamble is not rendered as visible math content
+- Fixed math parsing to leave non-math LaTeX snippets (for example `\begin{itemize}`) and fenced code blocks as literal text instead of rendering them as math
+- Fixed `renderInlineMarkdown` to handle top-level display-math tokens so raw `$$...$$` delimiters are no longer leaked
+- Fixed inline math span detection so escaped dollars and currency-like patterns (such as `$5` and `$10`) are not converted as math
+- Fixed Mermaid diagram rendering in Markdown code blocks to clip each ASCII line to content width before wrapping, preventing preformatted diagram rows from fragmenting
+- Fixed fullscreen overlays losing keyboard focus to hidden prompt surfaces, which could make settings unresponsive while a background approval request was pending ([#2789](https://github.com/can1357/oh-my-pi/issues/2789)).
+- Fixed `bun test` runs inside a real terminal leaking TUI output: `ProcessTerminal` now honors a headless test-runtime default, so frame paints, `start()` capability probes (OSC 11 / DA1 / kitty), the progress keepalive, notifications, and teardown escapes no longer reach the developer's terminal, and stdin raw mode is never engaged. Previously `#safeWrite` only skipped on `!process.stdout.isTTY`, so a developer running the suite in an interactive terminal saw stray status/editor boxes and probe queries. Terminal-contract suites opt back into real I/O via `setTerminalHeadless(false)`
+
+## [16.0.2] - 2026-06-16
+
+### Fixed
+
+- Fixed VS Code integrated terminal keypad digit CSI-u input being handled as navigation instead of text.
+- Fixed xterm-compatible terminals scrolling the native viewport to the bottom on prompt-editor keypresses by disabling `?1010`/`?1011` while the TUI owns the TTY and restoring the prior set modes on exit ([#2732](https://github.com/can1357/oh-my-pi/issues/2732)).
+- Fixed CMUX sessions being treated as direct terminals during resize/reset because they do not set `TMUX`/`STY`/`ZELLIJ` and may run with `TERM=dumb`; the renderer now treats CMUX workspace/surface env markers as multiplexer signals and preserves pane scrollback instead of emitting ED3 (`CSI 3 J`).
+- Fixed a self-sustaining resize-redraw storm in Warp: the non-multiplexer resize fast path borrows the alternate screen, and Warp re-reports a one-row-different size whenever the alt buffer is toggled, so each drag frame fed back a fresh resize event and the TUI flooded ED3 full repaints with stable geometry. Resize now repaints in place (no alt-screen borrow, no ED3 rewrap) on terminals that re-report size on alt-screen toggles, matching the multiplexer path. Overridable with `PI_TUI_RESIZE_IN_PLACE=1|0`.
+
+## [16.0.1] - 2026-06-15
+
+### Added
+
+- Added Zellij and WezTerm pane environment fallbacks for terminal-specific session continuation when no TTY path is available.
+
+### Fixed
+
+- Fixed slash command autocomplete acceptance replacing only a stale rendered prefix, which could leave fast-typed characters before `/skills:` completions and corrupt the submitted command ([#1745](https://github.com/can1357/oh-my-pi/issues/1745)).
+
+## [15.13.1] - 2026-06-15
+
+### Added
+
+- Added volatile speech-to-text preview support to `Editor` with `setVolatileText(text)`, `clearVolatileText()`, and `commitVolatileText(text)` so hosts can replace, discard, or commit live dictated text at the cursor without appending
+- Added an always-on `LoopWatchdog` armed in `TUI.start()`/`TUI.stop()` that logs `ui.loop-blocked` (rising-edge deduped, with `blockedMs` and the phase active during the elapsed interval) when a self-scheduled probe tick runs late, plus a `ui.select-filter` breadcrumb around the `SelectList` fuzzy filter. The phase is read via `takeRecentLoopPhase`, so a synchronous block whose breadcrumb was pushed and popped before the delayed tick runs is still attributed to its phase instead of "unknown". `stop()` cancels the armed timer (via `clearTimeout` on the default handle) so repeated start/stop cycles leave no pending probe, with the generation guard as a fallback ([#2485](https://github.com/can1357/oh-my-pi/issues/2485))
+- Added `ctrl+j` as a second default binding for the `tui.input.newLine` action alongside `shift+enter`, so terminals that cannot emit `shift+enter` still have a newline key. On terminals with Kitty-protocol / `modifyOtherKeys` disambiguation `ctrl+j` inserts a newline while `Enter` still submits; on legacy terminals where `ctrl+j` and `Enter` are both byte-identical `LF` it submits (documented limitation). User keybinding overrides still take precedence ([#2473](https://github.com/can1357/oh-my-pi/issues/2473))
+- Added an `Editor.onLargePaste(text, lineCount)` hook, fired for a "marker-sized" paste (the point where the editor would otherwise collapse it into a `[Paste #N]` token). Returning `true` lets the host intercept the paste — e.g. to offer wrap-in-code-block / wrap-in-XML / attach-as-file choices — and suppresses the default marker (no undo state is recorded). Added `Editor.insertPaste(content)` so the host can re-insert a (possibly transformed) collapsed paste marker without re-triggering the hook.
+- Added `Editor.deleteBeforeCursor(count)`, which removes up to `count` characters immediately before the cursor on the current line (capped at the cursor column, single line, records one undo state). Hosts use it to "track back" optimistically-inserted characters — e.g. the coding-agent hold-`Space` push-to-talk gesture deleting the space-bar auto-repeat burst.
+- Added an optional `getNativeScrollbackSnapshotSafeEnd()` to the `NativeScrollbackLiveRegion` contract: a *durable* commit boundary (D ≥ the byte-stable `commitSafeEnd`) for live rows whose current snapshot is permanent content but may still drift bytes later (a streaming markdown table re-aligning its columns). The engine commits these rows when they scroll above the window — never dropping them — but **audit-exempt** (tracked via a new byte-stable `auditRows` prefix), so a later layout change of an already-committed row freezes a stale row in history (duplication never loss) instead of re-anchoring the committed-prefix audit and spraying duplicate snapshots. Components that omit it are unchanged: `durableBoundary === byteStableBoundary` and `auditRows === committedRows`, so the ledger math is byte-identical.
+
+### Fixed
+
+- Fixed overlays without an explicit `maxHeight` dropping their bottom rows off-screen when taller than the terminal: `#resolveOverlayLayout` now defaults the height cap to the available rows, so a tall overlay is sliced to fit (and re-clamps on resize) instead of overflowing the visible region.
+- Fixed `Editor.#decorate` rejecting keyword matches glued to the cursor: `CURSOR_MARKER` begins with ESC (non-whitespace), so decorators with a right-boundary lookahead (e.g. `/(?<!\S)ultrathink(?!\S)/`) failed at the seam and dropped highlighting until a trailing character was typed. The decorate hook now splits around the marker and decorates each user-text segment in isolation so word-boundary lookarounds resolve correctly on both sides ([#2475](https://github.com/can1357/oh-my-pi/issues/2475)).
+- Fixed non-multiplexer resize drags with width changes briefly showing terminal-reflowed wrapped fragments: transient resize frames now borrow the alternate screen and return to the normal screen for the settled authoritative replay.
+- Fixed `isMultiplexerSession()` only checking the `TMUX`/`STY`/`ZELLIJ` env vars and missing the `TERM=tmux-*`/`screen-*` fallback every sibling detector uses. When the multiplexer env was stripped but `TERM` survived (`sudo` without `-E`, `su`, env-sanitizing launchers/ssh), the renderer misclassified the pane as a direct terminal and emitted ED3 (`CSI 3 J`) on resize/replace/`resetDisplay`, which wipes tmux pane history — scrollback only reappeared after a full rerender (Ctrl+L). The check now aligns with `shouldEnableSynchronizedOutputByDefault`, `detectRectangularSgrSupport`, and `getFallbackImageProtocol` in `terminal-capabilities.ts` ([#2544](https://github.com/can1357/oh-my-pi/issues/2544)).
+
+## [15.12.6] - 2026-06-14
+
+### Fixed
+
+- Fixed live transcript rows duplicating into native scrollback during a non-multiplexer resize drag: the viewport fast-path repaint now parks the hardware cursor at the real content bottom (mirroring the authoritative paint) instead of the padded viewport bottom, so a subsequent height shrink no longer scrolls live rows into history before the settle replay
+- Fixed inline images flipping to their text fallback during a non-multiplexer resize drag: the viewport fast path now drives the image budget as a stable partial pass that replays the committed per-image live/text split by id, instead of deriving it from the reversed, tail-only walk order
+
+## [15.12.5] - 2026-06-13
+
+### Added
+
+- Added `ViewportTailProvider` to let child components provide their visible tail rows during fast-path non-multiplexer resize rendering
+- Added `TUI.resizeViewportPaints` and `TUI.resizeViewportActive` getters to expose deferred resize viewport repaint diagnostics
+
+### Changed
+
+- Changed non-multiplexer terminal resize handling so each SIGWINCH paints only the visible viewport and defers the full rewrap and native scrollback replay until the resize settles
+
+### Fixed
+
+- Fixed issue #2088 viewport flash and repeated full rewrites during rapid terminal drags outside multiplexers by replaying the full transcript only after the resize settle window
+
+## [15.12.4] - 2026-06-13
+
+### Added
+
+- `PI_FORCE_HYPERLINKS=1` / `PI_NO_HYPERLINKS=1` env overrides for the OSC 8 hyperlink capability, mirroring the `PI_FORCE_SYNC_OUTPUT`/`PI_NO_SYNC_OUTPUT` shape (opt-out beats force-on).
+
+### Changed
+
+- Auto-enable OSC 8 hyperlinks inside tmux when tmux self-reports >= 3.4 via `TERM_PROGRAM_VERSION`; tmux 3.4 stores OSC 8 as a cell attribute and forwards it to outer terminals whose `terminal-features` include `hyperlinks`. Older tmux, GNU screen, and tmux without a reported version still default off. Resolution is factored into `hyperlinksUserOverride()` and `shouldEnableHyperlinksByDefault()` mirroring the sync-output helpers ([#2403](https://github.com/can1357/oh-my-pi/issues/2403)).
+
+## [15.11.8] - 2026-06-12
+
+### Changed
+
+- Markdown rendering during streaming re-lexes only the grown tail instead of the whole buffer on every reveal tick. marked has no resumable lexer, but block tokenization is local across a blank-line boundary with balanced fences, so the largest blank-line-bounded prefix's block tokens are frozen and reused (`lex(prefix) ++ lex(tail)`), with a full-lex fallback for non-append edits, reference-link definitions, and CRLF input. The output is byte-identical to a full lex (covered by a contract test), turning the O(N²) cost of revealing a long single-block message into O(N): a 6,000-grapheme reveal dropped from ~575 ms to ~89 ms of CPU in benchmarks.
+
+## [15.11.5] - 2026-06-12
+
+### Added
+
+- Added `fuzzyRank` to return sorted matches together with a fuzzy score
+- Added a configurable `Input.prompt` field (defaults to `"> "`; set to `""` for chrome-less embedding inside custom banners)
+
+### Changed
+
+- Changed fuzzy matching to normalize queries and text into words, including camelCase and punctuation separators, before scoring
+- Changed `Input.setValue` to place the cursor at the end of the new value instead of clamping it to its previous position, so typing after seeding a prefilled value appends rather than prepends
+
+### Fixed
+
+- Fixed multi-word searches so `fuzzyMatch` no longer matches when query letters are only scattered across unrelated words
+
+## [15.11.4] - 2026-06-12
+
+### Added
+
+- Added `partialHoldTimeout` to `StdinBufferOptions` to control the maximum extra delay held for unambiguous incomplete escape sequences before they are flushed
+- Added `SettingsList.sidebarWidth` option for a fixed split-layout sidebar width
+- Added mouse pointer support APIs to `SettingsList` with `setHoverItem`, `hitTest`, `hoverTest`, and `routeSubmenuMouse` for row targeting and submenu routing
+- Added `SettingsList.setMaxVisible(rows)` and `SettingsList.handleWheel(delta)` for dynamic viewport sizing and mouse-wheel step selection
+- Added compact tab features with new `Tab.short` labels and `TabBar.selectTab(id)` for id-based activation of non-muted tabs
+- Added pointer-hover and hit-testing APIs to `TabBar` with `setHoverTab`, `tabAt`, and `hoverTab` theme
+- Added exported SGR mouse utilities `parseSgrMouse`, `SgrMouseEvent`, and `MouseRoutable`
+- Added section support to `SettingsList`: `SettingItem.heading` rows split the list into sections, PgUp/PgDn (`tui.select.pageUp`/`pageDown`) jump between sections (or page when none exist), and wide renders use a split layout — section sidebar on the left, the active section's items on the right — falling back to inline heading rows when the width cannot fit both panes. Headings are skipped by navigation, excluded from search, and styled through the optional `SettingsListTheme.heading` (which receives a `dimmed` flag for headings outside the active section) and `section`.
+- Added a host-integration surface to `SettingsList`: a `SettingsListOptions` constructor arg (`layout` to force the flat layout, `typeToSearch: false` to hand the query to a parent, `emptyText`, `hint`), `selectItem(id)`, `getSelectedItem()`, `onSelectionChange`, `hasOpenSubmenu()`, and the exported `getSettingItemFilterText` helper.
+- Added keyboard section focus to `SettingsList`: `toggleSectionFocus()` / `sectionFocused` / `hasSectionFocusTargets()` flip Up/Down between row navigation and whole-section jumps — the cursor glyph parks on the active sidebar entry (or the active heading row in the flat layout) while the row cursor hides, Enter/Esc drop focus back to the rows, and any explicit row selection (`selectItem`, wheel, filtering) exits it.
+- Added muted tabs to `TabBar` (`Tab.muted` + `TabBarTheme.mutedTab`, skipped by keyboard navigation), `setTabs(tabs, activeId?)`/`setActiveById(id)` for re-rendering the strip without firing `onTabChange`, an optional empty label (drops the `Label:` prefix), and a `showHint` switch for the trailing "(tab to cycle)" hint.
+
+### Changed
+
+- Changed `SettingsList` section-focused keyboard handling so `Up`/`Down` now jump between sections and `Enter`/`Escape` exit section focus before confirming or cancelling a setting
+- Changed `SettingsList` split layout at wide widths to render the full list in the right pane and dim items outside the active section instead of showing only the active-section rows
+- Changed `SettingsList` to omit the default hint row (and preceding blank line) when `options.hint` is set to an empty string
+- Changed tab-bar overflow handling to collapse tabs to their `short` forms before wrapping to multiple lines
+
+### Fixed
+
+- Fixed `StdinBuffer` handling of split SGR mouse reports so fragmented sequences are reassembled instead of leaking their tail bytes as literal input
+- Fixed Esc being unreliable (or seconds-slow) inside fullscreen overlays such as `/settings` on kitty-protocol terminals (Ghostty/kitty): the kitty keyboard mode stack is per-screen, so entering the alternate screen silently reverted keys to legacy encoding while the app still parsed them as kitty input. The TUI now re-pushes the active kitty flags right after `\x1b[?1049h` and pops them before `\x1b[?1049l`.
+- Fixed `StdinBuffer` tearing a buffered bare `ESC` followed by another escape sequence: the `\x1b\x1b` candidate was consumed as alt+esc before the CSI/SS3 continuation byte was ever inspected, swallowing the Esc keypress and leaking the follower's tail (`[B`, `[<35;22;17M`) as typed text into focused components. Meta-CSI chords (`\x1b\x1b[A`) now stay whole, and `ESC` + SGR mouse report is split into a real Esc keypress plus a parseable report.
+- Lowered `PARTIAL_HOLD_MAX_MS` from 500ms to 150ms so a dangling escape partial that never completes (e.g. a bare `ESC` arriving while the kitty-active flag is stale) is delivered after at most ~200ms instead of half a second.
+- Fixed deferred partial-flush behavior so pending incomplete escapes are not split across timer boundaries and can still complete when the next chunk arrives
+- Fixed kitty keyboard-mode handling of a dangling `ESC` so it can be joined with subsequent CSI mouse/kitty input instead of being emitted as a standalone sequence
+- Fixed `SettingsList` to clear section-focus state when filtering items, changing data, scrolling with the mouse wheel, or selecting by ID so stale heading focus does not persist across interactions
+- `SettingsList` now renders every state — list, open submenu, filtered results, empty — at one stable height, so interacting with a bottom-anchored settings panel no longer resizes the live terminal region on each keystroke (which forced re-anchoring and could strand stale scrollback rows).
+
+## [15.11.3] - 2026-06-11
+
+### Fixed
+
+- Fixed the root compose letting a lower child's native-scrollback live seam overwrite a higher one: the topmost seam (and its commit-safe extension) now defines the commit boundary, so a status loader below a streaming transcript can no longer cause still-mutable transcript rows to be committed as stale history ([#2328](https://github.com/can1357/oh-my-pi/pull/2328)).
+
+## [15.11.2] - 2026-06-11
+
+### Fixed
+
+- Fixed Ctrl+C/exit corrupting the parent shell on Windows: `emergencyTerminalRestore()` wrote `\x1b[?1049l` (leave alternate screen) unconditionally on every exit path, and conhost/Windows Terminal execute an unconditional cursor restore for it even when the alt buffer was never entered — with no prior save the cursor jumped to the viewport home, so the shell prompt landed on top of the dead frame. The leave sequence is now gated on tracked alt-screen state (set/cleared by the TUI's fullscreen-overlay enter/leave and stop paths).
+- Skipped native syntax highlighting for transient markdown streaming renders, including nested list code blocks, leaving code blocks plain until their content stabilizes to avoid main-thread highlighter spikes.
+
+## [15.11.1] - 2026-06-11
+
+### Added
+
+- Added `TUI.requestComponentRender(component)` to schedule component-scoped renders for self-contained updates
+
+### Changed
+
+- Changed the render pipeline to reuse only affected root subtrees for component-scoped updates, avoiding full-tree compose when animations or other isolated component changes occur
+
+### Fixed
+
+- Fixed component-scoped renders to preserve prior live scrollback seam data for skipped root children, preventing duplicate or missing rows during spinner-only updates
+- Reported committed native scrollback row counts to interested child components so immutable history can be skipped without breaking live-region commit bookkeeping.
+- Fixed `ProcessTerminal` treating asynchronous stdout `EIO` errors as uncaught exceptions: stdout `error` events now mark the terminal dead, disable future renders, and keep the active session process alive ([#2284](https://github.com/can1357/oh-my-pi/issues/2284)).
 
 ## [15.11.0] - 2026-06-10
+
 ### Added
 
 - Added support for asynchronous `onSubmit` handlers by allowing the callback to return a `Promise<void>`
@@ -57,6 +255,27 @@
 - Fixed committed transcript rows silently vanishing when a component re-laid-out content the engine had already scrolled into native history — a TTSR stream rewind truncating a streamed block, or the image budget demoting a committed inline image to its one-line fallback, shifted every row below by the height delta and the engine kept committing from the stale index, skipping that many rows of everything after (missing interruption banners, half-cut images in scrollback). The engine now audits its committed prefix every ordinary frame: an in-place edit or restyle keeps its alignment (stale styling in history remains the accepted artifact), while any shift re-anchors the commit index at the first moved row and recommits from there — history keeps the stale copy and gains a fresh one. Duplication, never loss. The detector (`findCommittedPrefixResync`, exported for the stress harness's shadow ledger) samples the prefix tail SGR-stripped so theme restyles and single-row edits never trigger spurious recommits.
 - Fixed budget-demoted inline images shrinking their transcript block: the text fallback is now height-preserving once a graphic has rendered (reserved rows plus the fallback line), so demotion never shifts content below a committed image.
 - Fixed stale trailing cells bleeding into committed history on combining-heavy rows: the native width model can over-count Arabic/combining clusters, classifying a short-rendering row as full-width and skipping the trailing erase — the previous occupant's cells then scrolled into scrollback baked into the committed row. Non-ASCII row rewrites now erase the line before writing.
+
+### Removed
+
+- Removed the probe/defer API surface: `TUI.setEagerNativeScrollbackRebuild()`, `TUI.refreshNativeScrollbackIfDirty()`, `TUI.setClearOnShrink()`/`getClearOnShrink()`, `RenderRequestOptions.allowUnknownViewportMutation`, `NativeScrollbackRefreshOptions`, `Terminal.isNativeViewportAtBottom()`, `Terminal.hasEagerEraseScrollbackRisk()`, and the `eagerEraseScrollbackRisk`/`submitPinsViewportToTail` capability fields with their detectors.
+- Removed the `PI_TUI_ED3_SAFE`, `PI_CLEAR_ON_SHRINK`, and `PI_TUI_DEBUG` environment variables (the levers they tuned no longer exist; `PI_DEBUG_REDRAW` now logs the commit-ledger state per frame).
+
+## [15.10.10] - 2026-06-09
+
+### Fixed
+
+- Fixed committed transcript rows silently vanishing when a component re-laid-out content the engine had already scrolled into native history — a TTSR stream rewind truncating a streamed block, or the image budget demoting a committed inline image to its one-line fallback, shifted every row below by the height delta and the engine kept committing from the stale index, skipping that many rows of everything after (missing interruption banners, half-cut images in scrollback). The engine now audits its committed prefix every ordinary frame: an in-place edit or restyle keeps its alignment (stale styling in history remains the accepted artifact), while any shift re-anchors the commit index at the first moved row and recommits from there — history keeps the stale copy and gains a fresh one. Duplication, never loss. The detector (`findCommittedPrefixResync`, exported for the stress harness's shadow ledger) samples the prefix tail SGR-stripped so theme restyles and single-row edits never trigger spurious recommits.
+- Fixed budget-demoted inline images shrinking their transcript block: the text fallback is now height-preserving once a graphic has rendered (reserved rows plus the fallback line), so demotion never shifts content below a committed image.
+- Fixed stale trailing cells bleeding into committed history on combining-heavy rows: the native width model can over-count Arabic/combining clusters, classifying a short-rendering row as full-width and skipping the trailing erase — the previous occupant's cells then scrolled into scrollback baked into the committed row. Non-ASCII row rewrites now erase the line before writing.
+
+### Changed
+
+- Rewrote the render core around an append-only native-scrollback contract. Committed rows are immutable: rows enter terminal history exactly once, in order, when the component-reported commit boundary (`NativeScrollbackLiveRegion`) marks them final, and the visible window repaints in place with relative moves. The engine no longer probes the terminal's scroll position or guesses whether a destructive rebuild is safe — the entire ED3-risk/defer/checkpoint machinery (viewport probes, eager streaming mode, dirty-scrollback reconciliation, deferred shrink/mutation intents, streaming high-water rebuilds, ConPTY-specific defer paths) is deleted. ED3 (`CSI 3 J`) now fires only on explicit user gestures: session replace, resize outside multiplexers, and `resetDisplay()`. This structurally removes the yank / flash / duplicated-rows / invisible-until-resize failure families tracked across #1610, #1635, #1651, #1682, #1719, #1746, #1799, #1823, #1962, #1974, #2000, #2011, #2154.
+- A frame that shrinks into its committed prefix re-anchors the visible window at the new tail and restarts commit bookkeeping; previously committed rows stay in history (history is never rewritten without a gesture).
+- Overlays now composite into the visible window slice only and freeze commits while visible, so overlay pixels can never enter native scrollback and closing an overlay no longer triggers a destructive history rebuild.
+- Inline-image budget demotion now deletes the demoted image's graphics by id and lets the window diff repaint the text fallback — no more mid-session destructive full replay when the image cap is exceeded.
+- The render-stress harness now validates the contract with a shadow commit ledger (an independent reimplementation of the ledger math fed only by observed frames and bytes), asserting scrollback equals the committed prefix row-for-row and that tape growth matches physical scroll exactly, across randomized op sequences, resizes, overlays, and multiplexer scenarios. The ghostty-web virtual terminal additionally survives libghostty-vt 0.4's WASM allocator traps via an event-log replay/compaction recovery, and strips non-spacing combining marks on input (a margin-aligned combining cluster deterministically corrupts that engine; mark placement through it was already unverifiable).
 
 ### Removed
 
@@ -162,7 +381,6 @@
 ### Fixed
 
 - Fixed `Loader` text updates to skip identical messages and preserve the rendered `Text` cache instead of invalidating it every timer tick.
-
 - Fixed fullscreen overlay alt-frame rendering to reuse the current line-preparation path instead of calling removed fitting helpers.
 - Reduced TUI render-path line fitting by deferring overlay base-frame fitting until an overlay rebuild and by reusing already-fitted lines in emitters.
 - Reduced live-region pinned repaint output by diffing unchanged viewport rows when no sealed rows are being committed to native scrollback.
@@ -238,7 +456,7 @@
 
 ### Changed
 
-- Changed native-scrollback safety defaults to treat unknown POSIX, SSH, and multiplexer-shaped terminals as ED3-risk for passive rendering; checkpoint replay now requires a positive at-tail viewport proof instead of assuming prompt submit makes host scrollback safe.
+- Changed native-scrollback safety defaults to treat unknown POSIX, SSH, and multiplexer-shaped terminals as ED3-risk for passive rendering; checkpoint replay now requires a positive at-tail viewport proof instead of assuming prompt submit makes host scrollback safe ([#1799](https://github.com/can1357/oh-my-pi/issues/1799)).
 - Changed synchronized-output defaults to a conservative opt-in profile: DEC 2026 paint wrappers stay disabled for remote/multiplexer/VTE/unknown terminals unless explicitly forced, while the autowrap guards remain active.
 
 ### Fixed
@@ -301,7 +519,6 @@
 - Fixed the DECCARA background-fill optimizer rejecting or repainting the wrong cells when a trailing fill crossed from default-background spaces into colored spaces.
 - Fixed DEC private-mode reports with DECRPM status 3/4 being treated as unsupported, so permanent 2026/2048 reports stay recognized.
 - Fixed OSC 66 text-sizing width and slicing edge cases, including ZWJ emoji payloads and partial slices through scaled spans.
-
 - Fixed focused `Input` components following `TUI#setShowHardwareCursor`, so single-line prompts render either the terminal cursor or software cursor consistently with the editor.
 - Fixed the DECCARA background-fill optimizer painting fills on the wrong rows ("split into unaligned halves") in the differential repaint path. When a diff grew the transcript past the viewport, writing the rewritten rows scrolled the terminal, but the absolute DECCARA rectangle coordinates were derived from the pre-scroll viewport top, so every fill landed `scrollAmount` rows too low while the relatively-positioned text settled correctly; rows scrolled into history were also shortened, dropping their background padding from native scrollback. Rectangles now target the post-scroll rows and only rows remaining in the final viewport are optimized.
 - Fixed native scrollback desynchronization after terminal width or height changes reflowed overflowing content while the viewport was not at the bottom
@@ -441,7 +658,6 @@
 ### Fixed
 
 - Fixed `matchesKey(data, "ctrl+m")` (and the other named-key collisions: `ctrl+h`/`ctrl+i`/`ctrl+j`/`ctrl+[`) returning true for the bare `\r`/`\x08`/`\t`/`\n`/`\x1b` byte terminals send for Enter/Backspace/Tab/Escape in legacy mode. Binding a command to `Ctrl+M` no longer fires when the user presses Enter — the named key wins, and `ctrl+<colliding-letter>` matches only when the terminal disambiguates via the Kitty keyboard protocol or `modifyOtherKeys`. ([#1354](https://github.com/can1357/oh-my-pi/issues/1354))
-- Fixed full TUI redraws clearing terminal scrollback with `CSI 3 J`, preserving manual scrollback inspection while active sessions continue updating. ([#1295](https://github.com/can1357/oh-my-pi/issues/1295))
 
 ## [15.2.3] - 2026-05-22
 
@@ -476,19 +692,6 @@
 ### Breaking Changes
 
 - Increased the minimum required Bun version for the TUI package from >=1.3.7 to >=1.3.14
-- Fixed `TerminalInfo.sendNotification` not delivering desktop notifications on macOS. macOS requires per-app notification permission, which terminal emulators (kitty, ghostty, alacritty, …) almost never have, so OSC 9/99 sequences were silently dropped at the OS layer. `sendNotification` now shells out to `alerter` or `terminal-notifier` when either is on `$PATH` (both register their own LSApplication and ship a "Terminal" / `>_` icon). When neither is installed the dispatch is a deliberate no-op + a single `logger.warn` line on the first miss (subsequent dispatches stay silent) so the user can spot the missing binary in `~/.omp/logs/omp.YYYY-MM-DD.log` and `brew install alerter`. Linux/Windows still go through the OSC/Bell path.
-- Fixed `TerminalInfo.formatNotification` losing OSC 9/99 desktop notifications when running inside tmux. The OSC sequence is now wrapped in tmux's DCS passthrough envelope (`\ePtmux;…\e\\` with embedded ESC bytes doubled) when `TMUX` is set, so notifications reach the parent terminal. `set -g allow-passthrough on` is still required on the tmux side for the wrapped sequence to be forwarded. Bell-only terminals are unchanged.
-- Fixed alerter desktop notifications staying on screen indefinitely. `scripts/mac-alerter.sh` previously passed `--timeout 30` (which makes alerter call `removeDeliveredNotification` after 30 s, also purging the Notification Center entry) and forced Alert-style via `--actions "Open"` (persistent until user click). It now ships Banner-style argv (no `--actions`, no `--timeout`): macOS auto-dismisses the toast after ~10 s and archives the entry to Notification Center for later review. Click-to-focus is preserved through `@CONTENTCLICKED` body clicks. NC archival also requires "Show in Notification Center" enabled for Terminal under macOS System Settings → Notifications.
-- Fixed `composeNotificationSubtitle` showing a stale tmux `pane_title` (typically `π: kitty & tmux` or the cwd prefix written before auto-naming runs) instead of the live OMP session name. The OMP-supplied `fallback` is now consulted first for the pane component; the cached tmux pane title is only used when no session name is available. Window name handling is unchanged.
-- Fixed `sendDesktopNotification` always routing through `alerter` / `terminal-notifier` on darwin, even for terminals (ghostty / iTerm2 / wezterm) that surface OSC 9 / OSC 99 as native notifications through their own bundle. The dispatch now prefers the OSC path on darwin when the terminal advertises native macOS notification capability; the fallback only kicks in for kitty / alacritty / vscode / unknown shells whose host app isn't a notification-capable bundle. This unblocks the user-controlled per-app notification settings flow for ghostty / iTerm2 / wezterm — toast style, NC archival, and click-to-focus all attach to the terminal app's own System Settings entry rather than to `com.apple.Terminal` (which `alerter` would post under).
-- Fixed Korean IME composition leaving a growing horizontal gap between typed jamo and the cursor inside the OMP prompt under tmux + ghostty (and other macOS terminals). `Bun.stringWidth` and the underlying UAX#11 East Asian Width tables classify Hangul Compatibility Jamo (U+3131..U+318E — ㄱ ㄴ ㄷ ㄹ ㅁ ㅂ ㅅ ㅇ ㅈ ㅊ ㅋ ㅌ ㅍ ㅎ + filler) as Wide (2 cells), but every macOS terminal we ship to (Ghostty / Terminal.app / iTerm2) actually renders them as a single cell in monospace fonts. `#extractCursorPosition` was computing `col = visibleWidth(beforeMarker)` and feeding the doubled value to `\x1b[(col+1)G`, placing the hardware cursor (and therefore the IME candidate window) `N_jamo` cells past the visible glyph — exactly the gap the user saw growing as they typed. `visibleWidthRaw` now subtracts 1 cell for each Compatibility Jamo character, returning the column count macOS terminals actually use. Hangul Syllables (U+AC00..U+D7A3, e.g. `안`) stay at 2 cells in both Bun and the terminal — unaffected. Other CJK widths (Chinese / Japanese / Halfwidth Hangul) are unchanged. NOTE: the Rust `pi-natives` width tables (used by `sliceWithWidth` / `truncateToWidth` / `wrapTextWithAnsi`) also count Compatibility Jamo as 2 cells; truncation and word-wrap on jamo-heavy lines will still be slightly aggressive. The defect is invisible in normal use because the AI composes Korean as syllables, not jamo, and users type syllables once IME composition completes. A follow-up will reconcile the Rust side.
-- Fixed a brief black-flash flicker in the TUI when streaming long markdown responses inside tmux (especially noticeable in ghostty with multiple panes open). Root cause: when a markdown fence line above the viewport changed between two streaming tokens (e.g. `` ``` `` → `` ```python ``), `#doRender()` would take the `firstChanged < prevViewportTop` branch and emit `\x1b[2J\x1b[H` (full screen clear + cursor home) wrapped in BSU. The BSU envelope can split across PTY reads, leaving tmux briefly displaying a blank pane before the rest of the buffer arrives — multiplied across panes during repaint. The viewport-above branch now calls a new `viewportRefresh()` helper that does cursor-home + per-line `\x1b[2K` + line content (no `\x1b[2J`), so the visible viewport content is repainted without ever clearing the screen. Scrollback above the viewport may briefly show stale rendering, but only of the SAME lines that just changed — invisible during streaming when the user isn't scrolled up. Other full-redraw paths (resize, first render, etc.) keep the hard `fullRender(true)` behavior unchanged.
-
-### Tests
-
-- Added `test/no-2k-anywhere.test.ts` — lint guard that scans `packages/tui/src/` for `\x1b[2K` string literals outside comments. The earlier streaming-flicker fix re-introduced the BSU-split flash bug by moving `\x1b[2K`-before-content from `fullRender` to `viewportRefresh` (same anti-pattern in a new location). This test catches that class of regression at CI time so future changes can't silently revive it.
-- Added `test/render-emit-snapshot.test.ts` — four scenario-based byte-snapshot guards (single-line mutation, streaming append, above-viewport mutation triggering `viewportRefresh`, trailing-line clear on shrink). Asserts structural invariants on the EMITTED BYTES from `terminal.write(…)`: no `\x1b[2K`, no `\x1b[2J`, the new content appears, the BSU close `\x1b[?2026l` is present. Catches render-path changes that achieve the right final viewport state via a transient blank frame (which is exactly how the typing-flicker bug slipped past `render-regressions.test.ts`).
-- Added `test/ime-jamo-cursor.test.ts` — six cases asserting the Input component's hardware cursor marker column does not grow at 2× per typed Korean compatibility jamo. Before commit `79e3170c6` typing 14 jamo produced a 14-cell gap between the visible text and the IME candidate window; the test caps the cursor column at `PROMPT_WIDTH + N_jamo` and asserts the per-keystroke delta is at most 1. NOTE: the Rust `pi-natives` `sliceWithWidth` still treats jamo as 2 cells (binary package, follow-up); the test guard accepts a small residual offset but flags the doubling regression.
 
 ## [14.9.8] - 2026-05-12
 
@@ -521,7 +724,6 @@
 - Fixed `super`-modified Kitty shortcuts (`super+k`, `ctrl+super+enter`, …) to parse and match via the new `KITTY_MOD_SUPER` mask (ports pi-mono `ddb8454c` + `5ed46003`)
 - Fixed `ctrl+alt+<letter>` in tmux falling through to CSI-u / `modifyOtherKeys` when the legacy `ESC<ctrl-char>` form does not match (ports pi-mono `6cf5098f`)
 - Fixed Markdown strikethrough requiring strict `~~text~~` delimiters with non-whitespace boundaries; single tildes no longer render strikethrough (ports pi-mono `db5274b4`)
-
 - Allowed `SlashCommand.getArgumentCompletions` to return asynchronous results by accepting Promise-based completions
 - Added `argumentHint` support to slash command definitions and displayed it in command suggestion descriptions
 - Added support for xterm `modifyOtherKeys` printable key sequences by decoding `CSI 27;mod;key~` into text input
@@ -555,10 +757,6 @@
 ### Changed
 
 - Changed truncation debug logging to run only when `debugRedraw` is enabled
-
-### Fixed
-
-- Fixed viewport jumping during streaming and session swap by tracking actual content height instead of high-water mark
 
 ## [14.0.5] - 2026-04-11
 
@@ -1257,6 +1455,236 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.0] - 2026-01-03
+
+### Added
+
+- Added `getText()` method to Text component for retrieving current text content
+
+## [0.50.0] - 2026-01-26
+
+### Added
+
+- Added `fullRedraws` readonly property to TUI class for tracking full screen redraws
+- Added `PI_TUI_WRITE_LOG` environment variable to capture raw ANSI output for debugging
+
+### Fixed
+
+- Fixed appended lines not being committed to scrollback, causing earlier content to be overwritten when viewport fills ([#954](https://github.com/badlogic/pi-mono/issues/954))
+- Slash command menu now only triggers when the editor input is otherwise empty ([#904](https://github.com/badlogic/pi-mono/issues/904))
+- Center-anchored overlays now stay vertically centered when resizing the terminal taller after a shrink ([#950](https://github.com/badlogic/pi-mono/pull/950) by [@nicobailon](https://github.com/nicobailon))
+- Fixed editor multi-line insertion handling and lastAction tracking ([#945](https://github.com/badlogic/pi-mono/pull/945) by [@Perlence](https://github.com/Perlence))
+- Fixed editor word wrapping to reserve a cursor column ([#934](https://github.com/badlogic/pi-mono/pull/934) by [@Perlence](https://github.com/Perlence))
+- Fixed editor word wrapping to use single-pass backtracking for whitespace handling ([#924](https://github.com/badlogic/pi-mono/pull/924) by [@Perlence](https://github.com/Perlence))
+- Fixed Kitty image ID allocation and cleanup to prevent image ID collisions between modules
+
+## [0.49.3] - 2026-01-22
+
+### Added
+
+- `codeBlockIndent` property on `MarkdownTheme` to customize code block content indentation (default: 2 spaces) ([#855](https://github.com/badlogic/pi-mono/pull/855) by [@terrorobe](https://github.com/terrorobe))
+- Added Alt+Delete as hotkey for delete word forwards ([#878](https://github.com/badlogic/pi-mono/pull/878) by [@Perlence](https://github.com/Perlence))
+
+### Changed
+
+- Fuzzy matching now scores consecutive matches higher and penalizes gaps more heavily for better relevance ([#860](https://github.com/badlogic/pi-mono/pull/860) by [@mitsuhiko](https://github.com/mitsuhiko))
+
+### Fixed
+
+- Autolinked emails no longer display redundant `(mailto:...)` suffix in markdown output ([#888](https://github.com/badlogic/pi-mono/pull/888) by [@terrorobe](https://github.com/terrorobe))
+- Fixed viewport tracking and cursor positioning for overlays and content shrink scenarios
+- Autocomplete now allows searches with `/` characters (e.g., `folder1/folder2`) ([#882](https://github.com/badlogic/pi-mono/pull/882) by [@richardgill](https://github.com/richardgill))
+- Directory completions for `@` file attachments no longer add trailing space, allowing continued autocomplete into subdirectories
+
+## [0.49.1] - 2026-01-18
+
+### Added
+
+- Added undo support to Editor with Ctrl+- hotkey. Undo coalesces consecutive word characters into one unit (fish-style). ([#831](https://github.com/badlogic/pi-mono/pull/831) by [@Perlence](https://github.com/Perlence))
+- Added legacy terminal support for Ctrl+symbol keys (Ctrl+\, Ctrl+], Ctrl+-) and their Ctrl+Alt variants. ([#831](https://github.com/badlogic/pi-mono/pull/831) by [@Perlence](https://github.com/Perlence))
+
+## [0.49.0] - 2026-01-17
+
+### Added
+
+- Added `showHardwareCursor` getter and setter to control cursor visibility while keeping IME positioning active. ([#800](https://github.com/badlogic/pi-mono/pull/800) by [@ghoulr](https://github.com/ghoulr))
+- Added Emacs-style kill ring editing with yank and yank-pop keybindings. ([#810](https://github.com/badlogic/pi-mono/pull/810) by [@Perlence](https://github.com/Perlence))
+- Added legacy Alt+letter handling and Alt+D delete word forward support in the editor keymap. ([#810](https://github.com/badlogic/pi-mono/pull/810) by [@Perlence](https://github.com/Perlence))
+
+## [0.48.0] - 2026-01-16
+
+### Added
+
+- `EditorOptions` with optional `paddingX` for horizontal content padding, plus `getPaddingX()`/`setPaddingX()` methods ([#791](https://github.com/badlogic/pi-mono/pull/791) by [@ferologics](https://github.com/ferologics))
+
+### Changed
+
+- Hardware cursor is now disabled by default for better terminal compatibility. Set `PI_HARDWARE_CURSOR=1` to enable (replaces `PI_NO_HARDWARE_CURSOR=1` which disabled it).
+
+### Fixed
+
+- Decode Kitty CSI-u printable sequences in the editor so shifted symbol keys (e.g., `@`, `?`) work in terminals that enable Kitty keyboard protocol ([#779](https://github.com/badlogic/pi-mono/pull/779) by [@iamd3vil](https://github.com/iamd3vil))
+
+## [0.47.0] - 2026-01-16
+
+### Breaking Changes
+
+- `Editor` constructor now requires `TUI` as first parameter: `new Editor(tui, theme)`. This enables automatic vertical scrolling when content exceeds terminal height. ([#732](https://github.com/badlogic/pi-mono/issues/732))
+
+### Added
+
+- Hardware cursor positioning for IME support in `Editor` and `Input` components. The terminal cursor now follows the text cursor position, enabling proper IME candidate window placement for CJK input. ([#719](https://github.com/badlogic/pi-mono/pull/719))
+- `Focusable` interface for components that need hardware cursor positioning. Implement `focused: boolean` and emit `CURSOR_MARKER` in render output when focused.
+- `CURSOR_MARKER` constant and `isFocusable()` type guard exported from the package
+- Editor now supports Page Up/Down keys (Fn+Up/Down on MacBook) for scrolling through large content ([#732](https://github.com/badlogic/pi-mono/issues/732))
+- Expanded keymap coverage for terminal compatibility: added support for Home/End keys in tmux, additional modifier combinations, and improved key sequence parsing ([#752](https://github.com/badlogic/pi-mono/pull/752) by [@richardgill](https://github.com/richardgill))
+
+### Fixed
+
+- Editor no longer corrupts terminal display when text exceeds screen height. Content now scrolls vertically with indicators showing lines above/below the viewport. Max height is 30% of terminal (minimum 5 lines). ([#732](https://github.com/badlogic/pi-mono/issues/732))
+- `visibleWidth()` and `extractAnsiCode()` now handle APC escape sequences (`ESC _ ... BEL`), fixing width calculation and string slicing for strings containing cursor markers
+- SelectList now handles multi-line descriptions by replacing newlines with spaces ([#728](https://github.com/badlogic/pi-mono/pull/728) by [@richardgill](https://github.com/richardgill))
+
+## [0.46.0] - 2026-01-15
+
+### Fixed
+
+- Keyboard shortcuts (Ctrl+C, Ctrl+D, etc.) now work on non-Latin keyboard layouts (Russian, Ukrainian, Bulgarian, etc.) in terminals supporting Kitty keyboard protocol with alternate key reporting ([#718](https://github.com/badlogic/pi-mono/pull/718) by [@dannote](https://github.com/dannote))
+
+## [0.45.6] - 2026-01-13
+
+### Added
+
+- `OverlayOptions` API for overlay positioning and sizing with CSS-like values: `width`, `maxHeight`, `row`, `col` accept numbers (absolute) or percentage strings (e.g., `"50%"`). Also supports `minWidth`, `anchor`, `offsetX`, `offsetY`, `margin`. ([#667](https://github.com/badlogic/pi-mono/pull/667) by [@nicobailon](https://github.com/nicobailon))
+- `OverlayOptions.visible` callback for responsive overlays - receives terminal dimensions, return false to hide ([#667](https://github.com/badlogic/pi-mono/pull/667) by [@nicobailon](https://github.com/nicobailon))
+- `showOverlay()` now returns `OverlayHandle` with `hide()`, `setHidden(boolean)`, `isHidden()` for programmatic visibility control ([#667](https://github.com/badlogic/pi-mono/pull/667) by [@nicobailon](https://github.com/nicobailon))
+- New exported types: `OverlayAnchor`, `OverlayHandle`, `OverlayMargin`, `OverlayOptions`, `SizeValue` ([#667](https://github.com/badlogic/pi-mono/pull/667) by [@nicobailon](https://github.com/nicobailon))
+- `truncateToWidth()` now accepts optional `pad` parameter to pad result with spaces to exactly `maxWidth` ([#667](https://github.com/badlogic/pi-mono/pull/667) by [@nicobailon](https://github.com/nicobailon))
+
+### Fixed
+
+- Overlay compositing crash when rendered lines exceed terminal width due to complex ANSI/OSC sequences (e.g., hyperlinks in subagent output) ([#667](https://github.com/badlogic/pi-mono/pull/667) by [@nicobailon](https://github.com/nicobailon))
+
+## [0.44.0] - 2026-01-12
+
+### Added
+
+- `SettingsListOptions` with `enableSearch` for fuzzy filtering in `SettingsList` ([#643](https://github.com/badlogic/pi-mono/pull/643) by [@ninlds](https://github.com/ninlds))
+- `pageUp` and `pageDown` key support with `selectPageUp`/`selectPageDown` editor actions ([#662](https://github.com/badlogic/pi-mono/pull/662) by [@aliou](https://github.com/aliou))
+
+### Fixed
+
+- Numbered list items showing "1." for all items when code blocks break list continuity ([#660](https://github.com/badlogic/pi-mono/pull/660) by [@ogulcancelik](https://github.com/ogulcancelik))
+
+## [0.43.0] - 2026-01-11
+
+### Added
+
+- `fuzzyFilter()` and `fuzzyMatch()` utilities for fuzzy text matching
+- Slash command autocomplete now uses fuzzy matching instead of prefix matching
+
+### Fixed
+
+- Cursor now moves to end of content on exit, preventing status line from being overwritten ([#629](https://github.com/badlogic/pi-mono/pull/629) by [@tallshort](https://github.com/tallshort))
+- Reset ANSI styles after each rendered line to prevent style leakage
+
+## [0.42.5] - 2026-01-11
+
+### Fixed
+
+- Reduced flicker by only re-rendering changed lines ([#617](https://github.com/badlogic/pi-mono/pull/617) by [@ogulcancelik](https://github.com/ogulcancelik))
+- Cursor position tracking when content shrinks with unchanged remaining lines
+- TUI renders with wrong dimensions after suspend/resume if terminal was resized while suspended ([#599](https://github.com/badlogic/pi-mono/issues/599))
+- Pasted content containing Kitty key release patterns (e.g., `:3F` in MAC addresses) was incorrectly filtered out ([#623](https://github.com/badlogic/pi-mono/pull/623) by [@ogulcancelik](https://github.com/ogulcancelik))
+
+## [0.39.0] - 2026-01-08
+
+### Added
+
+- **Experimental:** Overlay compositing for `ctx.ui.custom()` with `{ overlay: true }` option ([#558](https://github.com/badlogic/pi-mono/pull/558) by [@nicobailon](https://github.com/nicobailon))
+
+## [0.38.0] - 2026-01-08
+
+### Added
+
+- `EditorComponent` interface for custom editor implementations
+- `StdinBuffer` class to split batched stdin into individual sequences (adapted from [OpenTUI](https://github.com/anomalyco/opentui), MIT license)
+
+### Fixed
+
+- Key presses no longer dropped when batched with other events over SSH ([#538](https://github.com/badlogic/pi-mono/pull/538))
+
+## [0.37.8] - 2026-01-07
+
+### Added
+
+- `Component.wantsKeyRelease` property to opt-in to key release events (default false)
+
+### Fixed
+
+- TUI now filters out key release events by default, preventing double-processing of keys in editors and other components
+
+## [0.37.7] - 2026-01-07
+
+### Fixed
+
+- `matchesKey()` now correctly matches Kitty protocol sequences for unmodified letter keys (needed for key release events)
+
+## [0.37.6] - 2026-01-06
+
+### Added
+
+- Kitty keyboard protocol flag 2 support for key release events. New exports: `isKeyRelease(data)`, `isKeyRepeat(data)`, `KeyEventType` type. Terminals supporting Kitty protocol (Kitty, Ghostty, WezTerm) now send proper key-up events.
+
+## [0.37.0] - 2026-01-05
+
+### Fixed
+
+- Crash when pasting text with trailing whitespace exceeding terminal width through Markdown rendering ([#457](https://github.com/badlogic/pi-mono/pull/457) by [@robinwander](https://github.com/robinwander))
+
+## [0.34.1] - 2026-01-04
+
+### Added
+
+- Symbol key support in keybinding system: `SymbolKey` type with 32 symbol keys, `Key` constants (e.g., `Key.backtick`, `Key.comma`), updated `matchesKey()` and `parseKey()` to handle symbol input ([#450](https://github.com/badlogic/pi-mono/pull/450) by [@kaofelix](https://github.com/kaofelix))
+
+## [0.34.0] - 2026-01-04
+
+### Added
+
+- `Editor.getExpandedText()` method that returns text with paste markers expanded to their actual content ([#444](https://github.com/badlogic/pi-mono/pull/444) by [@aliou](https://github.com/aliou))
+
+## [0.33.0] - 2026-01-04
+
+### Breaking Changes
+
+- **Key detection functions removed**: All `isXxx()` key detection functions (`isEnter()`, `isEscape()`, `isCtrlC()`, etc.) have been removed. Use `matchesKey(data, keyId)` instead (e.g., `matchesKey(data, "enter")`, `matchesKey(data, "ctrl+c")`). This affects hooks and custom tools that use `ctx.ui.custom()` with keyboard input handling. ([#405](https://github.com/badlogic/pi-mono/pull/405))
+
+### Added
+
+- `Editor.insertTextAtCursor(text)` method for programmatic text insertion ([#419](https://github.com/badlogic/pi-mono/issues/419))
+- `EditorKeybindingsManager` for configurable editor keybindings. Components now use `matchesKey()` and keybindings manager instead of individual `isXxx()` functions. ([#405](https://github.com/badlogic/pi-mono/pull/405) by [@hjanuschka](https://github.com/hjanuschka))
+
+### Changed
+
+- Key detection refactored: consolidated `is*()` functions into generic `matchesKey(data, keyId)` function that accepts key identifiers like `"ctrl+c"`, `"shift+enter"`, `"alt+left"`, etc.
+
+## [0.32.2] - 2026-01-03
+
+### Fixed
+
+- Slash command autocomplete now triggers for commands starting with `.`, `-`, or `_` (e.g., `/.land`, `/-foo`) ([#422](https://github.com/badlogic/pi-mono/issues/422))
+
+## [0.32.0] - 2026-01-03
+
+### Changed
+
+- Editor component now uses word wrapping instead of character-level wrapping for better readability ([#382](https://github.com/badlogic/pi-mono/pull/382) by [@nickseelert](https://github.com/nickseelert))
+
+### Fixed
+
+- Shift+Space, Shift+Backspace, and Shift+Delete now work correctly in Kitty-protocol terminals (Kitty, WezTerm, etc.) instead of being silently ignored ([#411](https://github.com/badlogic/pi-mono/pull/411) by [@nathyong](https://github.com/nathyong))
 
 ## [0.31.1] - 2026-01-02
 

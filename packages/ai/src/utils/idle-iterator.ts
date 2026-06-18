@@ -87,6 +87,40 @@ export function getOpenAIStreamFirstEventTimeoutMs(
 	return Math.max(base, idleTimeoutMs);
 }
 
+/**
+ * Arms a clearable pre-response (time-to-first-byte) abort guard for a streaming
+ * fetch, combined with the caller's signal.
+ *
+ * `AbortSignal.timeout(ms)` is an *absolute* wall-clock deadline: once handed to
+ * `fetch` it keeps governing the request after the response headers arrive, so
+ * it aborts an actively-streaming body the moment it fires — not just a stalled
+ * pre-response request (issue #2422 regression: large `write` tool-call streams
+ * died at the budget with `TimeoutError: The operation timed out.` despite
+ * deltas actively flowing). This arms a `clearTimeout`-able timer instead;
+ * callers MUST `clear()` as soon as `fetchWithRetry` resolves (headers in) so
+ * the body stream is left to the iterator-level idle watchdog. The timer aborts
+ * with a `TimeoutError` matching `AbortSignal.timeout`, so a genuine pre-response
+ * stall behaves exactly as the prior code did — `fetchWithRetry` normalizes the
+ * abort to "Request was aborted" either way (only a post-headers abort ever
+ * surfaced the raw `"The operation timed out."`, which clearing now prevents).
+ *
+ * Returns the caller signal unchanged (and a no-op `clear`) when no positive
+ * timeout is configured.
+ */
+export function armPreResponseTimeout(
+	callerSignal: AbortSignal | undefined,
+	timeoutMs: number | undefined,
+): { signal: AbortSignal | undefined; clear: () => void } {
+	if (timeoutMs === undefined || timeoutMs <= 0) return { signal: callerSignal, clear: () => {} };
+	const controller = new AbortController();
+	const timer = setTimeout(() => {
+		controller.abort(new DOMException("The operation timed out.", "TimeoutError"));
+	}, timeoutMs);
+	timer.unref?.();
+	const signal = callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal;
+	return { signal, clear: () => clearTimeout(timer) };
+}
+
 export interface IdleTimeoutIteratorOptions {
 	idleTimeoutMs?: number;
 	firstItemTimeoutMs?: number;
@@ -344,6 +378,89 @@ export async function* iterateWithIdleTimeout<T>(
 			abortSignal.removeEventListener("abort", abortListener);
 		}
 		resolveAbort?.({ kind: "abort" });
+	}
+}
+
+export interface TerminalGraceIteratorOptions {
+	/**
+	 * Epoch-ms timestamp at which the consumer observed a logically terminal
+	 * item (e.g. a chat-completions chunk carrying `finish_reason`), or
+	 * `undefined` while the stream is still mid-response. Read before every
+	 * pull, so the consumer can flip it between yields.
+	 */
+	finishedAtMs: () => number | undefined;
+	/**
+	 * Post-terminal budget: how long after `finishedAtMs()` to keep draining
+	 * trailing items (e.g. a usage-only chunk or the `[DONE]` sentinel) before
+	 * ending the iteration cleanly. The deadline is fixed at
+	 * `finishedAtMs() + graceMs`; trailing items do not extend it, so
+	 * keepalive-only servers cannot hold the stream open.
+	 */
+	graceMs: number;
+	/**
+	 * Invoked when the grace window closes with the source still open. Use it
+	 * to abort the underlying request: the source generator is typically parked
+	 * mid-`next()` (not at a yield), so a queued `.return()` alone cannot reach
+	 * the transport until that pending read settles.
+	 */
+	onGraceEnd?: () => void;
+}
+
+/**
+ * Yields items from an async iterable until the consumer marks the stream
+ * logically finished AND the source stays silent past a short grace window.
+ *
+ * Misbehaving OpenAI-compatible servers deliver the terminal chunk but never
+ * send `[DONE]` nor close the connection; without this guard the consumer
+ * hangs on `iterator.next()` until the idle watchdog converts an
+ * already-successful turn into a timeout error. Grace expiry is a clean end
+ * of iteration, never an error.
+ */
+export async function* iterateWithTerminalGrace<T>(
+	iterable: AsyncIterable<T>,
+	options: TerminalGraceIteratorOptions,
+): AsyncGenerator<T> {
+	const iterator = iterable[Symbol.asyncIterator]();
+	try {
+		while (true) {
+			const finishedAtMs = options.finishedAtMs();
+			if (finishedAtMs === undefined) {
+				const result = await iterator.next();
+				if (result.done) return;
+				yield result.value;
+				continue;
+			}
+			const remainingMs = finishedAtMs + options.graceMs - Date.now();
+			if (remainingMs <= 0) {
+				options.onGraceEnd?.();
+				return;
+			}
+			const nextPromise = iterator.next();
+			let timer: NodeJS.Timeout | undefined;
+			const timeoutPromise = new Promise<"timeout">(resolve => {
+				timer = setTimeout(() => resolve("timeout"), remainingMs);
+			});
+			try {
+				const outcome = await Promise.race([nextPromise, timeoutPromise]);
+				if (outcome === "timeout") {
+					// The abandoned read settles (likely rejects) once onGraceEnd
+					// aborts the transport — mark it handled so it cannot surface
+					// as an unhandled rejection.
+					nextPromise.catch(() => {});
+					options.onGraceEnd?.();
+					return;
+				}
+				if (outcome.done) return;
+				yield outcome.value;
+			} finally {
+				if (timer !== undefined) clearTimeout(timer);
+			}
+		}
+	} finally {
+		const returnPromise = iterator.return?.();
+		if (returnPromise) {
+			void Promise.resolve(returnPromise).catch(() => {});
+		}
 	}
 }
 

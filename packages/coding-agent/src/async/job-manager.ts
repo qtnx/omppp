@@ -14,6 +14,27 @@ function toErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Adaptive ("smart") `job` poll-wait ladder (ms). A tight poll loop climbs
+ * these rungs so each immediate re-poll backs off and stops spending turns on
+ * "still running" frames; the floor (first rung) is the shortest wait and the
+ * top rung is the longest a smart poll will ever block. Only used when
+ * `async.pollWaitDuration` is set to `smart`; fixed durations wait verbatim.
+ */
+const POLL_WAIT_LADDER_MS = [5_000, 10_000, 30_000, 60_000, 300_000] as const;
+/**
+ * Going at least this long between poll calls means the agent stepped out of
+ * the poll loop to do real work — the next poll drops back to the ladder floor.
+ */
+const POLL_ESCALATION_RESET_MS = 60_000;
+
+interface PollEscalationState {
+	/** Index into POLL_WAIT_LADDER_MS used for the most recent poll wait. */
+	level: number;
+	/** Timestamp (ms) when the most recent poll wait returned. */
+	lastPollEndAt: number;
+}
+
 export interface AsyncJob {
 	id: string;
 	type: "bash" | "task" | "workflow";
@@ -119,6 +140,7 @@ export class AsyncJobManager {
 	readonly #suppressedDeliveries = new Set<string>();
 	readonly #watchedJobs = new Set<string>();
 	readonly #evictionTimers = new Map<string, NodeJS.Timeout>();
+	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
 	readonly #retentionMs: number;
@@ -357,6 +379,32 @@ export class AsyncJobManager {
 		return removed;
 	}
 
+	/**
+	 * Compute the next adaptive ("smart") wait (ms) for a blocking `job` poll by
+	 * the given owner. Consecutive polls — those starting within
+	 * POLL_ESCALATION_RESET_MS of the previous poll returning — climb
+	 * POLL_WAIT_LADDER_MS so a tight wait loop backs off; a longer gap means the
+	 * agent left to do real work, so the wait resets to the floor. Pair each call
+	 * with `recordPollWaitEnd()` once the wait returns.
+	 */
+	nextPollWaitMs(ownerId: string | undefined, now: number = Date.now()): number {
+		const prev = this.#pollEscalation.get(ownerId);
+		const reset = !prev || now - prev.lastPollEndAt >= POLL_ESCALATION_RESET_MS;
+		const level = reset ? 0 : Math.min(prev.level + 1, POLL_WAIT_LADDER_MS.length - 1);
+		this.#pollEscalation.set(ownerId, { level, lastPollEndAt: prev?.lastPollEndAt ?? now });
+		return POLL_WAIT_LADDER_MS[level];
+	}
+
+	/**
+	 * Mark a blocking poll wait as finished so the idle-reset window is measured
+	 * from now. Polling again before POLL_ESCALATION_RESET_MS elapses keeps
+	 * climbing the ladder; waiting longer resets it to the floor.
+	 */
+	recordPollWaitEnd(ownerId: string | undefined, now: number = Date.now()): void {
+		const prev = this.#pollEscalation.get(ownerId);
+		this.#pollEscalation.set(ownerId, { level: prev?.level ?? 0, lastPollEndAt: now });
+	}
+
 	acknowledgeDeliveries(jobIds: string[]): number {
 		const uniqueJobIds = this.#normalizeJobIds(jobIds);
 		if (uniqueJobIds.length === 0) return 0;
@@ -468,6 +516,7 @@ export class AsyncJobManager {
 		this.#inFlightDeliveries.length = 0;
 		this.#suppressedDeliveries.clear();
 		this.#watchedJobs.clear();
+		this.#pollEscalation.clear();
 		return drained;
 	}
 

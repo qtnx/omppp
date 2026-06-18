@@ -55,6 +55,9 @@ These are consumed via `getEnvApiKey()` (`packages/ai/src/stream.ts`) unless not
 | `OLLAMA_API_KEY`                | Ollama auth (optional)                           | Using `ollama` provider with authenticated hosts               | Local Ollama usually runs without auth; any non-empty token works when a key is required            |
 | `LLAMA_CPP_API_KEY`             | llama.cpp auth (optional)                        | Using `llama.cpp` provider with authenticated hosts            | Local llama.cpp usually runs without auth; any non-empty token works when a key is configured       |
 | `XIAOMI_API_KEY`                | Xiaomi MiMo auth                                 | Using `xiaomi` provider                                        |                                                                                                     |
+| `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | Xiaomi MiMo Token Plan auth (AMS)                | Using `xiaomi-token-plan-ams` provider                         |                                                                                                     |
+| `XIAOMI_TOKEN_PLAN_CN_API_KEY`  | Xiaomi MiMo Token Plan auth (CN)                 | Using `xiaomi-token-plan-cn` provider                          |                                                                                                     |
+| `XIAOMI_TOKEN_PLAN_SGP_API_KEY` | Xiaomi MiMo Token Plan auth (SGP)                | Using `xiaomi-token-plan-sgp` provider                         |                                                                                                     |
 | `MOONSHOT_API_KEY`              | Moonshot auth                                    | Using `moonshot` provider                                      |                                                                                                     |
 | `XAI_API_KEY`                   | xAI auth                                         | Using xAI models or as fallback for `xai-oauth`                |                                                                                                     |
 | `XAI_OAUTH_TOKEN`               | xAI OAuth/SuperGrok auth                         | Using `xai-oauth` provider                                     | Takes precedence over `XAI_API_KEY` for `xai-oauth`                                                 |
@@ -62,6 +65,7 @@ These are consumed via `getEnvApiKey()` (`packages/ai/src/stream.ts`) unless not
 | `MISTRAL_API_KEY`               | Mistral auth                                     | Using Mistral models                                           |                                                                                                     |
 | `ZAI_API_KEY`                   | z.ai auth                                        | Using z.ai models                                              | Also used by z.ai web search provider                                                               |
 | `ZHIPU_API_KEY`                 | Zhipu Coding Plan auth                           | Using `zhipu-coding-plan` provider                             |                                                                                                     |
+| `UMANS_AI_CODING_PLAN_API_KEY` | Umans AI Coding Plan auth                        | Using `umans` provider                                         |                                                                                                     |
 | `MINIMAX_API_KEY`               | MiniMax auth                                     | Using `minimax` provider                                       |                                                                                                     |
 | `MINIMAX_CODE_API_KEY`          | MiniMax Code auth                                | Using `minimax-code` provider                                  |                                                                                                     |
 | `MINIMAX_CODE_CN_API_KEY`       | MiniMax Code CN auth                             | Using `minimax-code-cn` provider                               |                                                                                                     |
@@ -144,12 +148,11 @@ When `CLAUDE_CODE_USE_FOUNDRY` is enabled, Anthropic requests switch to Foundry 
 | `AWS_PROFILE`                                                                   | Enables named profile auth path                                                               |
 | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`                                   | Enables IAM key auth path                                                                     |
 | `AWS_BEARER_TOKEN_BEDROCK`                                                      | Highest-precedence bearer token auth path; skips AWS profile/credential-chain lookup when set |
-| `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` / `AWS_CONTAINER_CREDENTIALS_FULL_URI` | Enables ECS task credential path                                                              |
-| `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`                                  | Enables web identity auth path                                                                |
+| `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` / `AWS_CONTAINER_CREDENTIALS_FULL_URI` | Marks Bedrock as available in provider detection (credential resolution itself covers env keys, profiles/SSO/`credential_process`, then IMDSv2) |
+| `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`                                  | Marks Bedrock as available in provider detection (same caveat as the ECS variables above)     |
 | `AWS_BEDROCK_SKIP_AUTH`                                                         | If `1`, injects dummy credentials (proxy/non-auth scenarios)                                  |
-| `AWS_BEDROCK_FORCE_HTTP1`                                                       | If `1`, forces Node HTTP/1 request handler                                                    |
-| `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`                                      | Routes Bedrock runtime and AWS SSO credential calls through the configured proxy using HTTP/1 |
-| `NO_PROXY`                                                                      | Excludes matching hosts from proxy routing when a proxy variable is configured                |
+| `HTTPS_PROXY` / `HTTP_PROXY`                                                    | Honored via Bun's native fetch proxy support (the provider no longer ships an AWS SDK / proxy-agent transport) |
+| `NO_PROXY`                                                                      | Excludes matching hosts from Bun's native proxy routing                                       |
 
 Region fallback in provider code: `options.region` → `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1`.
 
@@ -201,7 +204,7 @@ OAuth host chain: `KIMI_CODE_OAUTH_HOST` → `KIMI_OAUTH_HOST` → `https://auth
 | ------------------------------------------ | ---------------------------------------------------- |
 | `PI_CODEX_DEBUG`                           | `1`/`true` enables Codex provider debug logging      |
 | `PI_CODEX_WEBSOCKET`                       | `1`/`true` enables websocket transport preference    |
-| `PI_CODEX_WEBSOCKET_V2`                    | `1`/`true` enables websocket v2 path                 |
+| `PI_OPENAI_STATEFUL`                       | Overrides the stateful-chaining default for the platform OpenAI Responses API (`previous_response_id`, forces `store: true`): on by default against api.openai.com, off elsewhere |
 | `PI_CODEX_WEBSOCKET_IDLE_TIMEOUT_MS`       | Positive integer override (default 300000)           |
 | `PI_CODEX_WEBSOCKET_RETRY_BUDGET`          | Non-negative integer override (default 5)            |
 | `PI_CODEX_WEBSOCKET_RETRY_DELAY_MS`        | Positive integer base backoff override (default 500) |
@@ -284,7 +287,8 @@ Use `ANTHROPIC_SEARCH_BASE_URL` (optionally with `ANTHROPIC_SEARCH_API_KEY`) to 
 
 | Variable                | Default / behavior                                                                                                  |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `PI_PY`                 | Eval backend override: `0`/`bash`=JavaScript only, `1`/`py`=Python only, `mix`/`both`=both; invalid values ignored  |
+| `PI_PY`                 | Boolean-like override for the Python eval backend: truthy (`1`/`true`/`yes`/`on`) enables, any other value disables; unset defers to the `eval.py` setting (default enabled)        |
+| `PI_JS`                 | Same boolean-like override for the JavaScript eval backend; unset defers to the `eval.js` setting (default enabled)                                                                 |
 | `PI_PYTHON_SKIP_CHECK`  | If `1`, skips Python interpreter availability checks (subprocess runner still starts on demand)                     |
 | `PI_PYTHON_INTEGRATION` | If `1`, opts gated integration tests in (e.g. `python-runner.integration.test.ts`) into running against real Python |
 | `PI_PYTHON_IPC_TRACE`   | If `1`, logs NDJSON frames exchanged with the Python runner subprocess                                              |
@@ -322,6 +326,7 @@ Extra conditional behavior:
 | `SMITHERY_API_URL`           | Smithery API base URL override (default `https://api.smithery.ai`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `SMITHERY_API_KEY`           | Smithery API key for managed MCP auth lookup                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `PUPPETEER_EXECUTABLE_PATH`  | Browser tool Chromium executable override                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `LITELLM_BASE_URL`          | LiteLLM proxy base URL fallback (`http://localhost:4000/v1` if unset); explicit `providers.litellm.baseUrl` / `models.yml` config wins                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `LM_STUDIO_BASE_URL`         | Default implicit LM Studio discovery base URL override (`http://127.0.0.1:1234/v1` if unset)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `OLLAMA_BASE_URL`            | Default implicit Ollama discovery base URL override (`OLLAMA_HOST` if unset, then `http://127.0.0.1:11434`)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `OLLAMA_HOST`                | Ollama host used for implicit Ollama discovery when `OLLAMA_BASE_URL` is unset; accepts Ollama-style values such as `127.0.0.1:11434` or `http://host:11434`                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -378,7 +383,6 @@ These are read as runtime signals; they are usually set by the terminal/OS rathe
 | `COLORTERM`, `TERM`, `WT_SESSION`                                                                                  | Color capability detection (theme color mode)             |
 | `COLORFGBG`                                                                                                        | Terminal background light/dark auto-detection             |
 | `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `TERMINAL_EMULATOR`                                                        | Terminal identity in system prompt/context                |
-| `KDE_FULL_SESSION`, `XDG_CURRENT_DESKTOP`, `DESKTOP_SESSION`, `XDG_SESSION_DESKTOP`, `GDMSESSION`, `WINDOWMANAGER` | Desktop/window-manager detection in system prompt/context |
 | `TMUX_PANE`, `CMUX_SURFACE_ID`, `KITTY_WINDOW_ID`, `TERM_SESSION_ID`, `WT_SESSION`                                 | Stable per-terminal session breadcrumb IDs                |
 | `SHELL`, `ComSpec`, `TERM_PROGRAM`, `TERM`                                                                         | System info diagnostics                                   |
 | `APPDATA`, `XDG_CONFIG_HOME`                                                                                       | lspmux config path resolution                             |
@@ -393,10 +397,11 @@ These are read as runtime signals; they are usually set by the terminal/OS rathe
 | `PI_NOTIFICATIONS`        | `off` / `0` / `false` suppress desktop notifications                                  |
 | `PI_TUI_WRITE_LOG`        | If set, logs TUI writes to file                                                       |
 | `PI_HARDWARE_CURSOR`      | If `1`, enables hardware cursor mode                                                  |
-| `PI_NO_SYNC_OUTPUT`       | If `1`, disables DEC 2026 synchronized-output wrappers while keeping TUI autowrap guards |
+| `PI_NO_SYNC_OUTPUT`       | If set (any non-empty value), disables DEC 2026 synchronized-output wrappers while keeping TUI autowrap guards |
 | `PI_NO_DECCARA`           | If set (truthy), disables Kitty DECCARA rectangular-SGR background fills (forces padded-string rendering) |
 | `PI_DEBUG_REDRAW`         | If `1`, enables redraw debug logging                                                  |
 | `PI_FORCE_IMAGE_PROTOCOL` | Forces terminal image protocol detection (`kitty`, `iterm2`/`iterm`, `sixel`, `none`) |
+| `PI_TUI_RESIZE_IN_PLACE`  | `1`/`true` force in-place resize (no alt-screen borrow, no ED3 rewrap); `0`/`false` force the alt-screen fast path. Default-on for Warp, which re-reports its size on alt-screen toggles |
 
 ---
 

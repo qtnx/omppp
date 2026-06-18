@@ -1,4 +1,5 @@
 import { extractHttpStatusFromError, fetchWithRetry } from "@oh-my-pi/pi-utils";
+import { ProviderHttpError } from "../errors";
 import { getEnvApiKey } from "../stream";
 import type {
 	Api,
@@ -16,12 +17,12 @@ import type {
 } from "../types";
 import { normalizeSystemPrompts } from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
+import { type CapturedHttpErrorResponse, finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
 import {
-	type CapturedHttpErrorResponse,
-	finalizeErrorMessage,
-	type RawHttpRequestDump,
-	withHttpStatus,
-} from "../utils/http-inspector";
+	armPreResponseTimeout,
+	getOpenAIStreamFirstEventTimeoutMs,
+	getOpenAIStreamIdleTimeoutMs,
+} from "../utils/idle-iterator";
 import { parseStreamingJson } from "../utils/json-parse";
 import { toolWireSchema } from "../utils/schema/wire";
 import {
@@ -31,6 +32,11 @@ import {
 	type StreamMarkupHealingEvent,
 } from "../utils/stream-markup-healing";
 import { transformMessages } from "./transform-messages";
+
+/** Non-2xx response from the Ollama `/api/chat` endpoint. */
+export class OllamaApiError extends ProviderHttpError {
+	override readonly name = "OllamaApiError";
+}
 
 export interface OllamaChatOptions extends StreamOptions {
 	reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -97,21 +103,31 @@ function normalizeBaseUrl(baseUrl?: string): string {
 	return trimmed.endsWith("/api") ? trimmed.slice(0, -4) : trimmed;
 }
 
+type OllamaThinkValue = boolean | "low" | "medium" | "high" | "max" | undefined;
+
 function mapReasoning(
+	model: Model<"ollama-chat">,
 	reasoning: OllamaChatOptions["reasoning"],
 	disableReasoning: boolean | undefined,
-	modelReasoning: boolean,
-): boolean | "low" | "medium" | "high" | undefined {
+): OllamaThinkValue {
+	const modelReasoning = model.reasoning;
 	if (disableReasoning && modelReasoning) {
 		return false;
 	}
-	switch (reasoning) {
+	const mappedReasoning =
+		model.provider === "ollama-cloud" && reasoning
+			? (model.thinking?.effortMap?.[reasoning] ?? reasoning)
+			: reasoning;
+	switch (mappedReasoning) {
 		case "minimal":
 		case "low":
 			return "low";
 		case "medium":
 			return "medium";
 		case "high":
+			return "high";
+		case "max":
+			return "max";
 		case "xhigh":
 			return "high";
 		default:
@@ -271,7 +287,7 @@ function convertTools(tools: Tool[] | undefined): OllamaFunctionTool[] | undefin
 }
 
 function createChatBody(model: Model<"ollama-chat">, context: Context, options: OllamaChatOptions | undefined) {
-	const think = mapReasoning(options?.reasoning, options?.disableReasoning, model.reasoning);
+	const think = mapReasoning(model, options?.reasoning, options?.disableReasoning);
 	const toolChoice = mapToolChoice(options?.toolChoice);
 	const selectedTools = selectToolsForToolChoice(context.tools, options?.toolChoice);
 	const tools = convertTools(selectedTools);
@@ -524,22 +540,41 @@ export const streamOllama: StreamFunction<"ollama-chat"> = (
 				url: `${baseUrl}/api/chat`,
 				body,
 			};
-			const response = await fetchWithRetry(`${baseUrl}/api/chat`, {
-				method: "POST",
-				headers: {
-					...model.headers,
-					...options.headers,
-					Authorization: `Bearer ${apiKey}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify(body),
-				signal: options.signal,
-				defaultDelayMs: OLLAMA_RETRY_DELAYS_MS,
-				fetch: options.fetch,
-			});
+			// Direct callers that bypass `register-builtins` (which installs
+			// the iterator-level watchdog) need a pre-response timer alongside
+			// `timeout: false`; otherwise an Ollama server that accepts the
+			// POST and never streams headers would hang forever (issue #2422).
+			const idleTimeoutMs = options.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs();
+			const firstEventTimeoutMs =
+				options.streamFirstEventTimeoutMs ?? getOpenAIStreamFirstEventTimeoutMs(idleTimeoutMs);
+			// Cleared the instant headers arrive (below) so the pre-response timer
+			// never aborts the actively streaming body — an absolute
+			// `AbortSignal.timeout` would (issue #2422).
+			const watchdog = armPreResponseTimeout(options.signal, firstEventTimeoutMs);
+			let response: Response;
+			try {
+				response = await fetchWithRetry(`${baseUrl}/api/chat`, {
+					method: "POST",
+					headers: {
+						...model.headers,
+						...options.headers,
+						Authorization: `Bearer ${apiKey}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify(body),
+					signal: watchdog.signal,
+					defaultDelayMs: OLLAMA_RETRY_DELAYS_MS,
+					fetch: options.fetch,
+					timeout: false,
+				});
+			} finally {
+				watchdog.clear();
+			}
 			if (!response.ok) {
 				capturedErrorResponse = await captureHttpErrorResponse(response);
-				throw withHttpStatus(new Error(`HTTP ${response.status} from ${baseUrl}/api/chat`), response.status);
+				throw new OllamaApiError(`HTTP ${response.status} from ${baseUrl}/api/chat`, response.status, {
+					headers: response.headers,
+				});
 			}
 			if (!response.body) {
 				throw new Error("Ollama returned an empty response body");
@@ -571,12 +606,11 @@ export const streamOllama: StreamFunction<"ollama-chat"> = (
 				const structuredCalls = chunk.message?.tool_calls?.length ? chunk.message.tool_calls : undefined;
 				if (chunkContent) {
 					if (streamMarkupHealing) {
-						if (structuredCalls) {
-							appendVisibleText(streamMarkupHealing.consumeWithoutCalls(chunkContent));
-						} else {
-							for (const event of streamMarkupHealing.feedEvents(chunkContent)) {
-								emitHealingEvent(event);
-							}
+						const healingEvents = structuredCalls
+							? streamMarkupHealing.feedEventsWithoutCalls(chunkContent)
+							: streamMarkupHealing.feedEvents(chunkContent);
+						for (const event of healingEvents) {
+							emitHealingEvent(event);
 						}
 					} else {
 						appendVisibleText(chunkContent);

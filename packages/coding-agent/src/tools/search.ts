@@ -7,8 +7,8 @@ import { type GrepMatch, GrepOutputMode, type GrepResult, grep } from "@oh-my-pi
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
-import { recordFileSnapshot } from "../edit/file-snapshot-store";
+import { type } from "arktype";
+import { recordFileSnapshot, recordSeenLinesFromBody } from "../edit/file-snapshot-store";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { LocalProtocolOptions } from "../internal-urls/local-protocol";
 import { InternalUrlRouter } from "../internal-urls/router";
@@ -65,31 +65,24 @@ import {
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
-const searchPathEntrySchema = z
-	.string()
-	.describe(
-		'file, directory, glob, internal URL, or "<file>:<lines>" selector (e.g. "src/foo.ts:50-100", "src/foo.ts:50+10", "src/foo.ts:50-100,200-300")',
-	);
-const searchSchema = z
-	.object({
-		pattern: z.string().describe("regex pattern"),
-		paths: z
-			.union([searchPathEntrySchema, z.array(searchPathEntrySchema)])
-			.optional()
-			.describe(
-				'file, directory, glob, internal URL, or array of those to search; append `:<lines>` to scope a file to specific line ranges. Omitted or empty -> searches the workspace root (".")',
-			),
-		i: z.boolean().optional().describe("case-insensitive search"),
-		gitignore: z.boolean().optional().describe("respect gitignore"),
-		skip: z
-			.number()
-			.nullable()
-			.optional()
-			.describe("files to skip before collecting results — use to paginate when the prior call hit the file limit"),
-	})
-	.strict();
+const searchPathEntry = type("string").describe(
+	'file, directory, glob, internal URL, or "<file>:<lines>" selector (e.g. "src/foo.ts:50-100", "src/foo.ts:50+10", "src/foo.ts:50-100,200-300")',
+);
+const searchSchema = type({
+	pattern: type("string").describe("regex pattern"),
+	"paths?": searchPathEntry
+		.or(searchPathEntry.array())
+		.describe(
+			'file, directory, glob, internal URL, or array of those to search; append `:<lines>` to scope a file to specific line ranges. Omitted or empty -> searches the workspace root (".")',
+		),
+	"i?": type("boolean").describe("case-insensitive search"),
+	"gitignore?": type("boolean").describe("respect gitignore"),
+	"skip?": type("number")
+		.or("null")
+		.describe("files to skip before collecting results — use to paginate when the prior call hit the file limit"),
+});
 
-export type SearchToolInput = z.infer<typeof searchSchema>;
+export type SearchToolInput = typeof searchSchema.infer;
 export function toPathList(input: string | string[] | undefined): string[] {
 	return typeof input === "string" ? [input] : (input ?? []);
 }
@@ -665,7 +658,7 @@ export interface SearchToolDetails {
 	missingPaths?: string[];
 }
 
-type SearchParams = z.infer<typeof searchSchema>;
+type SearchParams = typeof searchSchema.infer;
 
 export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDetails> {
 	readonly name = "search";
@@ -795,6 +788,7 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 						internalUrlAction: "search",
 						trackImmutableSources: true,
 						surfaceExactFilePaths: true,
+						fanOutFileTargets: true,
 						multipathStatHint: " (`paths` entries must each exist relative to cwd)",
 						settings: this.session.settings,
 						signal,
@@ -863,6 +857,7 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 					if (searchablePaths.length > 0) {
 						if (exactFilePaths || multiTargets) {
 							const matches: GrepMatch[] = [];
+							const seenMatchKeys = new Set<string>();
 							let limitReached = false;
 							let totalMatches = 0;
 							let filesSearched = 0;
@@ -882,7 +877,6 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 										multiline: effectiveMultiline,
 										hidden: true,
 										gitignore: useGitignore,
-										cache: false,
 										maxCount: INTERNAL_TOTAL_CAP,
 										contextBefore: normalizedContextBefore,
 										contextAfter: normalizedContextAfter,
@@ -900,6 +894,15 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 								filesSearched += targetResult.filesSearched;
 								for (const match of targetResult.matches) {
 									const absolute = path.resolve(target.basePath, match.path);
+									// Overlapping targets (a directory plus a file nested
+									// inside it) surface the same physical line twice;
+									// keep the first occurrence.
+									const matchKey = `${absolute}\0${match.lineNumber}`;
+									if (seenMatchKeys.has(matchKey)) {
+										totalMatches = Math.max(0, totalMatches - 1);
+										continue;
+									}
+									seenMatchKeys.add(matchKey);
 									const rebased = path.relative(searchPath, absolute).replace(/\\/g, "/");
 									matches.push({ ...match, path: rebased });
 								}
@@ -921,7 +924,6 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 									multiline: effectiveMultiline,
 									hidden: true,
 									gitignore: useGitignore,
-									cache: false,
 									maxCount: INTERNAL_TOTAL_CAP,
 									contextBefore: normalizedContextBefore,
 									contextAfter: normalizedContextAfter,
@@ -1113,7 +1115,9 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 						? `No more results (${totalFilesLabel} files total; skip=${normalizedSkip} is past the end)`
 						: "No matches found";
 					const text = warningNote ? `${noMatchText}\n${warningNote}` : noMatchText;
-					return toolResult(details).text(text).done();
+					// Zero matches is useless regardless of warnings: by the time
+					// compaction runs, the follow-up call has already corrected course.
+					return toolResult(details).text(text).useless().done();
 				}
 				const outputLines: string[] = [];
 				let linesTruncated = false;
@@ -1183,6 +1187,10 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 							}
 						}
 						fileMatchCounts.set(relativePath, (fileMatchCounts.get(relativePath) ?? 0) + 1);
+					}
+					if (hashContext?.tag) {
+						const absoluteFilePath = path.resolve(this.session.cwd, relativePath);
+						recordSeenLinesFromBody(this.session, absoluteFilePath, hashContext.tag, modelOut.join("\n"));
 					}
 					return { model: modelOut, display: displayOut };
 				};

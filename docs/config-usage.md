@@ -7,6 +7,7 @@ This document describes how the coding-agent resolves configuration today: which
 Primary implementation:
 
 - `packages/coding-agent/src/config.ts`
+- `packages/coding-agent/src/config/config-file.ts` (re-exported from `config.ts`)
 - `packages/coding-agent/src/config/settings.ts`
 - `packages/coding-agent/src/config/settings-schema.ts`
 - `packages/coding-agent/src/discovery/builtin.ts`
@@ -72,6 +73,14 @@ Project-level bases:
 
 `CONFIG_DIR_NAME` is `.omp` (`packages/utils/src/dirs.ts`).
 
+## Profiles
+
+A named profile (`omp --profile <name>`, the `--alias` shortcut, or `OMP_PROFILE` / `PI_PROFILE`) relocates the OMP user base. When a profile is active, every OMP-native user-level path written here as `~/.omp/agent/...` resolves to `~/.omp/profiles/<name>/agent/...` instead.
+
+The relocation is uniform across the native provider (`builtin.ts`) and the generic `config.ts` helpers, so it covers slash commands, rules, prompts, instructions, hooks, tools, extensions, settings, skills, and MCP, plus the top-level `SYSTEM.md` / `RULES.md` / `AGENTS.md` files and runtime state (sessions, blobs, `agent.db`). A profile sees only its own OMP config, never the default profile's `~/.omp/agent`.
+
+The other source bases are not profile-scoped and load identically under every profile: the external-tool bases (`~/.claude`, `~/.codex`, `~/.gemini`) belong to those tools, and the project-level bases (`<cwd>/.omp`, `<cwd>/.claude`, ...) are keyed to the working directory. Throughout this document, read `~/.omp/agent` as shorthand for the active profile's agent directory.
+
 ## Important constraint
 
 The generic helpers in `src/config.ts` do **not** include `.pi` in source discovery order.
@@ -108,7 +117,7 @@ Use this when project config should be inherited from ancestor directories (mono
 
 ---
 
-## 3) File config wrapper (`ConfigFile<T>` in `src/config.ts`)
+## 3) File config wrapper (`ConfigFile<T>` in `src/config/config-file.ts`, re-exported from `src/config.ts`)
 
 `ConfigFile<T>` is the schema-validated loader for single config files.
 
@@ -259,7 +268,7 @@ Generate a session name using lowercase `<type>:<primary-objective>`.
 - Missing `TITLE_SYSTEM.md` keeps the bundled title prompts.
 - Discovery uses the same project-then-user config directory pattern as `SYSTEM.md`: project `.omp/TITLE_SYSTEM.md` first, then user `~/.omp/agent/TITLE_SYSTEM.md` and the other supported config bases.
 - The override replaces only the automatic session-title generation system prompt; normal `SYSTEM.md` / `APPEND_SYSTEM.md` prompt customization is unaffected.
-- The online path still forces the `set_title` tool call. The local tiny-title path keeps the `<title>...</title>` prefill/stop wrapper and uses this file as its system turn.
+- The online path forces the `set_title` tool call when the title model honors a forced `tool_choice`. Tool-choice-less providers (chat-completions hosts without `tool_choice` support, Claude Fable/Mythos) instead receive a marker-based prompt and emit the title wrapped in `<title>...</title>`, which is parsed leniently (a plain sentence or a truncated/unclosed tag still works). A `TITLE_SYSTEM.md` override is reused in both modes; in marker mode the wrap-in-`<title>` instruction is appended after it. The local tiny-title path keeps the `<title>...</title>` prefill/stop wrapper and uses this file as its system turn.
 
 ## Skills subsystem
 

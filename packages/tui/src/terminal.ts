@@ -1,6 +1,6 @@
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import * as fs from "node:fs";
-import { $env, isBunTestRuntime, logger } from "@oh-my-pi/pi-utils";
+import { $env, isBunTestRuntime, isTerminalHeadless, logger } from "@oh-my-pi/pi-utils";
 import { setKittyProtocolActive } from "./keys";
 import { StdinBuffer } from "./stdin-buffer";
 import { NotifyProtocol, setCellDimensions, setOsc99Supported, TERMINAL } from "./terminal-capabilities";
@@ -122,6 +122,37 @@ export function chunkForConPTY(data: string, maxChunkBytes: number = MAX_CONPTY_
 let activeTerminal: ProcessTerminal | null = null;
 // Track if a terminal was ever started (for emergency restore logic)
 let terminalEverStarted = false;
+// Whether the alternate screen buffer is currently active (mirrors the TUI's
+// overlay enter/leave writes). Consulted by emergencyTerminalRestore: DECRST
+// 1049 must never be written blindly, because Windows' shared VT dispatcher
+// (conhost and Windows Terminal both use AdaptDispatch) executes an
+// unconditional cursor restore on it — with no prior DECSC save the cursor
+// jumps to the viewport home, dropping the parent shell prompt on top of the
+// dead frame after exit.
+let altScreenActive = false;
+
+/** Record alternate-screen state (called by the TUI on `?1049h`/`?1049l` writes). */
+export function setAltScreenActive(active: boolean): void {
+	altScreenActive = active;
+}
+
+const stdoutErrorHandlers = new Set<(err: Error) => void>();
+let stdoutErrorListenerInstalled = false;
+
+function onStdoutError(err: Error): void {
+	for (const handler of stdoutErrorHandlers) handler(err);
+}
+
+function registerStdoutErrorHandler(handler: (err: Error) => void): () => void {
+	stdoutErrorHandlers.add(handler);
+	if (!stdoutErrorListenerInstalled) {
+		process.stdout.on("error", onStdoutError);
+		stdoutErrorListenerInstalled = true;
+	}
+	return () => {
+		stdoutErrorHandlers.delete(handler);
+	};
+}
 
 const STD_INPUT_HANDLE = -10;
 const ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200;
@@ -208,12 +239,17 @@ export function emergencyTerminalRestore(): void {
 		if (terminal) {
 			terminal.stop();
 			// stop() never touches the alternate screen — the TUI owns that
-			// state and exits it on the normal shutdown path. A crash while a
-			// fullscreen overlay is up would otherwise strand the shell on the
-			// alt buffer. Safe no-op when the alt screen is not active.
-			terminal.write("\x1b[?1049l");
+			// state and exits it on the normal shutdown path. Only crash paths
+			// with a fullscreen overlay still hold the alt buffer here. The
+			// leave sequence is gated on the tracked state because it is NOT a
+			// universally safe no-op: Windows' VT dispatcher homes the cursor
+			// on DECRST 1049 even when the alt buffer is inactive.
+			if (altScreenActive) {
+				terminal.write("\x1b[?1049l");
+				altScreenActive = false;
+			}
 			terminal.showCursor();
-		} else if (terminalEverStarted) {
+		} else if (terminalEverStarted && !isTerminalHeadless()) {
 			// Blind restore only if we know a terminal was started but lost track of it
 			// This avoids writing escape sequences for non-TUI commands (grep, commit, etc.)
 			process.stdout.write(
@@ -226,9 +262,14 @@ export function emergencyTerminalRestore(): void {
 					"\x1b[<u" + // Pop kitty keyboard protocol
 					"\x1b[>4;0m" + // Disable modifyOtherKeys fallback
 					"\x1b[?1006l\x1b[?1003l\x1b[?1000l" + // Disable mouse tracking (fullscreen overlays)
-					"\x1b[?1049l" + // Leave the alternate screen (fullscreen overlays)
+					// Leave the alternate screen only when a fullscreen overlay
+					// actually holds it — on Windows, DECRST 1049 on the main
+					// buffer homes the cursor (unconditional CursorRestoreState
+					// with no prior save), corrupting the shell handoff on exit.
+					(altScreenActive ? "\x1b[?1049l" : "") +
 					"\x1b[?25h", // Show cursor
 			);
+			altScreenActive = false;
 			if (process.stdin.setRawMode) {
 				process.stdin.setRawMode(false);
 			}
@@ -263,6 +304,11 @@ export interface Terminal {
 
 	// Whether Kitty keyboard protocol is active
 	get kittyProtocolActive(): boolean;
+
+	// The exact kitty keyboard push sequence in effect ("\x1b[>1u" or "\x1b[>7u"),
+	// or null when the protocol is not active. Kitty keyboard flags are per-screen,
+	// so the TUI re-pushes this after entering the alternate screen.
+	get kittyEnableSequence(): string | null;
 
 	// Cursor positioning (relative to current position)
 	moveBy(lines: number): void; // Move cursor up (negative) or down (positive) by N lines
@@ -329,6 +375,20 @@ function parseOsc99KeyValues(section: string): Map<string, string> {
 	}
 	return values;
 }
+const XTERM_SCROLL_TO_BOTTOM_MODES = [1010, 1011] as const;
+
+function isXtermScrollToBottomMode(mode: number): boolean {
+	return mode === 1010 || mode === 1011;
+}
+
+function isPrivateModeSet(status: string): boolean {
+	return status === "1" || status === "3";
+}
+
+function isPrivateModeSupported(status: string): boolean {
+	return status !== "0" && status !== "4";
+}
+
 /**
  * Real terminal using process.stdin/stdout
  */
@@ -338,13 +398,24 @@ export class ProcessTerminal implements Terminal {
 	#resizeHandler?: () => void;
 	#stdoutResizeListener?: () => void;
 	#kittyProtocolActive = false;
+	#kittyEnableSeq: string | null = null;
 	#modifyOtherKeysActive = false;
 	#modifyOtherKeysTimeout?: Timer;
 	#stdinBuffer?: StdinBuffer;
 	#stdinDataHandler?: (data: string) => void;
 	#dead = false;
+	// Captured at construction and re-read at start(): when true, every real
+	// terminal side effect (writes, probes, raw mode, SIGWINCH, timers) is
+	// suppressed. Defaults on under `bun test` — see isTerminalHeadless().
+	#headless = isTerminalHeadless();
 	#writeLogPath = $env.PI_TUI_WRITE_LOG || "";
+	#stdoutErrorCleanup?: () => void;
+	#stdoutErrorHandler = (err: Error) => {
+		this.#markTerminalWriteFailed(err);
+	};
+
 	#windowsVTInputRestore?: () => void;
+	#xtermScrollToBottomRestoreModes = new Set<number>();
 	#appearanceCallbacks: Array<(appearance: TerminalAppearance) => void> = [];
 	#appearance: TerminalAppearance | undefined;
 	#osc11Pending = false;
@@ -372,6 +443,10 @@ export class ProcessTerminal implements Terminal {
 		return this.#kittyProtocolActive;
 	}
 
+	get kittyEnableSequence(): string | null {
+		return this.#kittyProtocolActive ? this.#kittyEnableSeq : null;
+	}
+
 	get appearance(): TerminalAppearance | undefined {
 		return this.#appearance;
 	}
@@ -387,6 +462,13 @@ export class ProcessTerminal implements Terminal {
 	start(onInput: (data: string) => void, onResize: () => void): void {
 		this.#inputHandler = onInput;
 		this.#resizeHandler = onResize;
+
+		// Headless (tests): suppress every real-terminal side effect. Skip raw
+		// mode, stdin listeners, capability probes, SIGWINCH, and emergency-restore
+		// ownership; #safeWrite is also a no-op, so frame paints and teardown
+		// escapes never reach the developer's terminal during `bun test`.
+		this.#headless = isTerminalHeadless();
+		if (this.#headless) return;
 
 		// Register for emergency cleanup
 		activeTerminal = this;
@@ -462,13 +544,17 @@ export class ProcessTerminal implements Terminal {
 		// Probe DEC private-mode support via DECRQM. 2026 (synchronized output)
 		// gates the renderer's begin/end markers; 2048 (in-band resize) is enabled
 		// only after the terminal confirms support; 2031 (appearance change
-		// notifications) stops the OSC 11 poll once confirmed, since push
-		// notifications make polling redundant. Each probe rides the shared DA1
-		// sentinel FIFO, so a terminal that ignores DECRQM still resolves (as
-		// unsupported) when the DA1 reply arrives.
+		// notifications) stops the OSC 11 poll once confirmed. Xterm ?1010/?1011
+		// are disabled while OMP owns the TTY so typing in the editor does not
+		// force a reader scrolled into native history back to the tail. Each probe
+		// rides the shared DA1 sentinel, so terminals that ignore DECRQM resolve as
+		// unsupported when the DA1 reply arrives.
 		this.#queryPrivateMode(2026);
 		this.#queryPrivateMode(2048);
 		this.#queryPrivateMode(2031);
+		for (const mode of XTERM_SCROLL_TO_BOTTOM_MODES) {
+			this.#queryPrivateMode(mode);
+		}
 	}
 
 	/**
@@ -653,11 +739,10 @@ export class ProcessTerminal implements Terminal {
 			// DECRPM private-mode report. Resolves the matching probe by mode; the
 			// owner stays in the FIFO and is drained by its DA1 sentinel (a no-op
 			// once resolved). Per DECRPM, status 0 = unrecognized, 1/2 =
-			// set/reset, 3 = permanently set, and 4 = permanently reset. Only
-			// settable or permanently-set modes are useful for features we enable.
+			// set/reset, 3 = permanently set, and 4 = permanently reset.
 			const decrpmMatch = sequence.match(decrpmResponsePattern);
 			if (decrpmMatch) {
-				this.#resolvePrivateMode(parseInt(decrpmMatch[1]!, 10), decrpmMatch[2] !== "0" && decrpmMatch[2] !== "4");
+				this.#handlePrivateModeReport(parseInt(decrpmMatch[1]!, 10), decrpmMatch[2]!);
 				return;
 			}
 
@@ -734,11 +819,13 @@ export class ProcessTerminal implements Terminal {
 				if (reportedFlags >= 3) {
 					// Already enriched (Ghostty/foot may keep flags from a parent app).
 					// Push level-2 to lock in event reporting.
-					this.#safeWrite("\x1b[>7u");
+					this.#kittyEnableSeq = "\x1b[>7u";
+					this.#safeWrite(this.#kittyEnableSeq);
 				} else {
 					// Level 1 (disambiguate escape codes) — enough for Shift+Enter
 					// without the modifyOtherKeys fallback that caused regression #3259.
-					this.#safeWrite("\x1b[>1u");
+					this.#kittyEnableSeq = "\x1b[>1u";
+					this.#safeWrite(this.#kittyEnableSeq);
 				}
 				return;
 			}
@@ -963,6 +1050,13 @@ export class ProcessTerminal implements Terminal {
 		this.#safeWrite(`\x1b[?${mode}$p\x1b[c`);
 	}
 
+	#handlePrivateModeReport(mode: number, status: string): void {
+		this.#resolvePrivateMode(mode, isPrivateModeSupported(status));
+		if (isXtermScrollToBottomMode(mode) && isPrivateModeSet(status)) {
+			this.#disableXtermScrollToBottomMode(mode);
+		}
+	}
+
 	/**
 	 * Record DECRQM support for a private mode (idempotent — first result wins)
 	 * and notify subscribers. Enables DEC 2048 in-band resize when 2048 resolves
@@ -982,6 +1076,12 @@ export class ProcessTerminal implements Terminal {
 		}
 		if (mode === 2048 && supported) this.#enableInBandResize();
 		if (mode === 2031 && supported) this.#stopOsc11Poll();
+	}
+
+	#disableXtermScrollToBottomMode(mode: number): void {
+		if (this.#xtermScrollToBottomRestoreModes.has(mode) || this.#dead) return;
+		this.#xtermScrollToBottomRestoreModes.add(mode);
+		this.#safeWrite(`\x1b[?${mode}l`);
 	}
 
 	/**
@@ -1045,6 +1145,7 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	async drainInput(maxMs = 1000, idleMs = 50): Promise<void> {
+		if (this.#headless) return;
 		if (this.#kittyProtocolActive) {
 			// Disable Kitty keyboard protocol first so any late key releases
 			// do not generate new Kitty escape sequences.
@@ -1087,6 +1188,7 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	stop(): void {
+		if (this.#headless) return;
 		// Unregister from emergency cleanup
 		if (activeTerminal === this) {
 			activeTerminal = null;
@@ -1112,7 +1214,12 @@ export class ProcessTerminal implements Terminal {
 		// Disable Mode 2031 appearance change notifications
 		this.#safeWrite("\x1b[?2031l");
 
-		// Disable DEC 2048 in-band resize notifications if we enabled them.
+		// Restore xterm scroll-to-bottom modes that were set before startup.
+		for (const mode of this.#xtermScrollToBottomRestoreModes) {
+			this.#safeWrite(`\x1b[?${mode}h`);
+		}
+		this.#xtermScrollToBottomRestoreModes.clear();
+
 		if (this.#inBandResizeActive) {
 			this.#safeWrite("\x1b[?2048l");
 			this.#inBandResizeActive = false;
@@ -1135,6 +1242,7 @@ export class ProcessTerminal implements Terminal {
 		this.#da1SentinelOwners.length = 0;
 		this.#privateModeCallbacks = [];
 		this.#privateModeSupport.clear();
+		this.#xtermScrollToBottomRestoreModes.clear();
 		this.#reportedColumns = undefined;
 		this.#reportedRows = undefined;
 
@@ -1182,6 +1290,18 @@ export class ProcessTerminal implements Terminal {
 		if (process.stdin.setRawMode) {
 			process.stdin.setRawMode(this.#wasRaw);
 		}
+		this.#stdoutErrorCleanup?.();
+		this.#stdoutErrorCleanup = undefined;
+	}
+
+	#ensureStdoutErrorHandler(): void {
+		this.#stdoutErrorCleanup ??= registerStdoutErrorHandler(this.#stdoutErrorHandler);
+	}
+
+	#markTerminalWriteFailed(err: unknown): void {
+		if (this.#dead) return;
+		this.#dead = true;
+		logger.warn("terminal write failed; disabling terminal rendering", { err });
 	}
 
 	write(data: string): void {
@@ -1196,10 +1316,12 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	#safeWrite(data: string): void {
+		if (this.#headless) return;
 		if (this.#dead) return;
 		// Skip control sequences when stdout isn't a TTY (piped output, tests, log
 		// files). They serve no purpose there and would surface as visible noise.
 		if (!process.stdout.isTTY) return;
+		this.#ensureStdoutErrorHandler();
 		// A console-sharing child process may have flipped the console codepage
 		// away from UTF-8; repair it before any bytes hit WriteFile so no frame
 		// is ever translated through an OEM codepage. See ensureWindowsConsoleUtf8.
@@ -1219,15 +1341,14 @@ export class ProcessTerminal implements Terminal {
 			// threshold. See #2034 and #2095.
 			if (isConPTYHosted() && Buffer.byteLength(data, "utf8") > MAX_CONPTY_WRITE_CHUNK_BYTES) {
 				for (const chunk of chunkForConPTY(data, MAX_CONPTY_WRITE_CHUNK_BYTES)) {
+					if (this.#dead) break;
 					process.stdout.write(chunk);
 				}
 			} else {
 				process.stdout.write(data);
 			}
 		} catch (err) {
-			// Any write failure means terminal is dead - no recovery possible
-			this.#dead = true;
-			logger.warn("terminal is dead - no recovery possible", { error: err, data });
+			this.#markTerminalWriteFailed(err);
 		}
 	}
 
@@ -1278,6 +1399,7 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	setProgress(active: boolean): void {
+		if (this.#headless) return;
 		if (active) {
 			this.#safeWrite(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
 			if (!this.#progressTimer) {

@@ -10,7 +10,8 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { type SessionInitEntry, SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { SessionInitEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getSessionsDir, Snowflake } from "@oh-my-pi/pi-utils";
 
 function createTtsrRule(name: string): Rule {

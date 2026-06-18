@@ -40,17 +40,14 @@ class CloseHoldingStorage implements SessionStorage {
 		const inner = this.#inner.openWriter(path, options);
 		const gates = this.#closeGates;
 		return {
-			writeLine(line) {
-				return inner.writeLine(line);
-			},
-			writeLineSync(line) {
-				inner.writeLineSync(line);
+			append(line) {
+				return inner.append(line);
 			},
 			flush() {
 				return inner.flush();
 			},
-			fsync() {
-				return inner.fsync();
+			isOpen() {
+				return inner.isOpen();
 			},
 			async close() {
 				const gate = Promise.withResolvers<void>();
@@ -103,6 +100,9 @@ class CloseHoldingStorage implements SessionStorage {
 	writeText(p: string, content: string): Promise<void> {
 		return this.#inner.writeText(p, content);
 	}
+	writeTextAtomic(p: string, content: string): Promise<void> {
+		return this.#inner.writeTextAtomic(p, content);
+	}
 	rename(p: string, nextPath: string): Promise<void> {
 		return this.#inner.rename(p, nextPath);
 	}
@@ -125,18 +125,17 @@ class OneShotBadFdStorage implements SessionStorage {
 	openWriter(path: string, options?: { flags?: "a" | "w"; onError?: (err: Error) => void }): SessionStorageWriter {
 		const inner = this.#inner.openWriter(path, options);
 		return {
-			writeLine: line => inner.writeLine(line),
-			writeLineSync: line => {
+			append: line => {
 				if (this.#failNextSyncWritePath === path) {
 					this.#failNextSyncWritePath = undefined;
 					const err = new Error("EBADF: bad file descriptor, write");
 					(err as Error & { code?: string }).code = "EBADF";
 					throw err;
 				}
-				inner.writeLineSync(line);
+				return inner.append(line);
 			},
 			flush: () => inner.flush(),
-			fsync: () => inner.fsync(),
+			isOpen: () => inner.isOpen(),
 			close: () => inner.close(),
 			getError: () => inner.getError(),
 		};
@@ -168,6 +167,9 @@ class OneShotBadFdStorage implements SessionStorage {
 	}
 	writeText(p: string, content: string): Promise<void> {
 		return this.#inner.writeText(p, content);
+	}
+	writeTextAtomic(p: string, content: string): Promise<void> {
+		return this.#inner.writeTextAtomic(p, content);
 	}
 	rename(p: string, nextPath: string): Promise<void> {
 		return this.#inner.rename(p, nextPath);
@@ -269,6 +271,11 @@ describe("SessionManager close/appendMessage race", () => {
 				timestamp: Date.now(),
 			});
 		}).not.toThrow();
+
+		const sessionFile = sm.getSessionFile();
+		if (!sessionFile) throw new Error("Expected session file");
+		const duringCloseContent = await storage.readText(sessionFile);
+		expect(duringCloseContent).toContain('"content":"during-close"');
 
 		// Drain everything.
 		await settle(closePromise, storage);

@@ -8,10 +8,11 @@
  *   helpers swallow open/IO failures and degrade to "no cache" so a corrupt or
  *   unreadable DB never blocks a `gh` call.
  *
- * TTL:
  *   Soft TTL → return cached row directly.
- *   Past soft TTL but within hard TTL → return cached row AND schedule a
- *     background refresh (errors logged, never thrown).
+ *   Stateful issue/PR rows past soft TTL but within hard TTL → refresh
+ *     synchronously, falling back to the cached row if the live fetch fails.
+ *   Expensive PR diff rows past soft TTL but within hard TTL → return cached
+ *     row AND schedule a background refresh (errors logged, never thrown).
  *   Past hard TTL → treat as miss and fetch fresh.
  */
 
@@ -21,6 +22,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getGithubCacheDbPath, logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import { ToolAbortError } from "./tool-errors";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Storage layer
@@ -93,10 +95,11 @@ export function openDb(): Database | null {
 		const dbPath = getGithubCacheDbPath();
 		ensureParentDir(dbPath);
 		const db = new Database(dbPath);
+		// Install the busy handler BEFORE any lock-taking statement. See #2421.
+		db.run("PRAGMA busy_timeout = 5000");
 		db.run(`
 			PRAGMA journal_mode=WAL;
 			PRAGMA synchronous=NORMAL;
-			PRAGMA busy_timeout=5000;
 		`);
 		// Migrate any pre-existing table whose key/check constraint predates
 		// the current schema. The cache is regenerable, so we drop rows rather
@@ -448,7 +451,7 @@ export interface CacheLookupOptions<T> {
 	now?: number;
 }
 
-export type CacheStatus = "miss" | "fresh" | "stale" | "disabled";
+export type CacheStatus = "miss" | "fresh" | "refreshed" | "stale" | "disabled";
 
 export interface CacheLookupResult<T> {
 	rendered: string;
@@ -594,7 +597,7 @@ export async function getOrFetchView<T>(options: CacheLookupOptions<T>): Promise
 				status: "fresh",
 				fetchedAt: cached.fetchedAt,
 			};
-		} else {
+		} else if (options.kind === "pr-diff") {
 			scheduleBackgroundRefresh(
 				authKey,
 				options.repo,
@@ -610,6 +613,28 @@ export async function getOrFetchView<T>(options: CacheLookupOptions<T>): Promise
 				status: "stale",
 				fetchedAt: cached.fetchedAt,
 			};
+		} else {
+			try {
+				const fresh = await options.fetchFresh();
+				const fetchedAt = Date.now();
+				storeResult(authKey, options.repo, options.kind, options.number, options.includeComments, fresh, fetchedAt);
+				return { ...fresh, status: "refreshed", fetchedAt };
+			} catch (err) {
+				if (err instanceof ToolAbortError) throw err;
+				logger.debug("github cache: synchronous refresh failed; returning stale view", {
+					err: String(err),
+					repo: options.repo,
+					kind: options.kind,
+					number: options.number,
+				});
+				return {
+					rendered: cached.rendered,
+					sourceUrl: cached.sourceUrl,
+					payload: cached.payload,
+					status: "stale",
+					fetchedAt: cached.fetchedAt,
+				};
+			}
 		}
 	}
 
@@ -623,7 +648,7 @@ export async function getOrFetchView<T>(options: CacheLookupOptions<T>): Promise
  * Human-friendly freshness note for protocol-handler `notes[]` rendering.
  */
 export function formatFreshnessNote(status: CacheStatus, fetchedAtMs: number, now: number = Date.now()): string {
-	if (status === "miss") return "Fetched live";
+	if (status === "miss" || status === "refreshed") return "Fetched live";
 	if (status === "disabled") return "Cache disabled; fetched live";
 	const ageSec = Math.max(0, Math.round((now - fetchedAtMs) / 1000));
 	const human =
@@ -632,6 +657,7 @@ export function formatFreshnessNote(status: CacheStatus, fetchedAtMs: number, no
 			: ageSec < 3600
 				? `${Math.round(ageSec / 60)}m ago`
 				: `${Math.round(ageSec / 3600)}h ago`;
-	if (status === "stale") return `Cached: ${human} (refreshing in background)`;
+	if (status === "stale")
+		return `WARNING: showing cached content from ${human}; live refresh failed or is still running`;
 	return `Cached: ${human}`;
 }

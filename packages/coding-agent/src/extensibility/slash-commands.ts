@@ -18,6 +18,8 @@ export interface SlashCommandInfo {
 	path?: string;
 }
 
+export type { BuiltinSlashCommand, SubcommandDef } from "../slash-commands/types";
+
 /**
  * Represents a custom slash command loaded from a file
  */

@@ -12,7 +12,8 @@
  *   with `{ summary, shortSummary? }`.
  */
 
-import { parseTextSignature } from "@oh-my-pi/pi-ai/providers/openai-responses-shared";
+import { ProviderHttpError } from "@oh-my-pi/pi-ai/errors";
+import { parseTextSignature } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { transformMessages } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { isImageContentAvailable } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import type { AssistantMessage, FetchImpl, ImageContent, Message, Model } from "@oh-my-pi/pi-ai/types";
@@ -35,6 +36,23 @@ import { logger } from "@oh-my-pi/pi-utils";
 // ============================================================================
 
 export const OPENAI_REMOTE_COMPACTION_PRESERVE_KEY = "openaiRemoteCompaction";
+
+/**
+ * Hard ceiling on remote compaction HTTP requests. Unlike every provider
+ * stream (guarded by first-event/idle watchdogs in pi-ai), these are raw
+ * fetches awaiting one non-streamed JSON body — a connection silently dropped
+ * by a middlebox would otherwise hang the whole compaction pipeline forever
+ * (frozen "Auto context-full maintenance…" spinner, manual /compact queueing
+ * behind it). On timeout the caller falls back to local summarization.
+ */
+export const REMOTE_COMPACTION_TIMEOUT_MS = 180_000;
+
+/** Race the caller's signal against the request timeout; `timeoutMs <= 0` disables the watchdog. */
+function withRequestTimeout(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal | undefined {
+	if (timeoutMs <= 0) return signal;
+	const timeout = AbortSignal.timeout(timeoutMs);
+	return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
 
 export type OpenAiRemoteCompactionItem = {
 	type: "compaction" | "compaction_summary";
@@ -148,14 +166,6 @@ export function withOpenAiRemoteCompactionPreserveData(
 // Input/output filtering for OpenAI compact endpoint
 // ============================================================================
 
-function estimateOpenAiCompactInputTokens(input: Array<Record<string, unknown>>, instructions: string): number {
-	let chars = instructions.length;
-	for (const item of input) {
-		chars += JSON.stringify(item).length;
-	}
-	return Math.ceil(chars / 4);
-}
-
 function shouldKeepOpenAiCompactOutputItem(item: Record<string, unknown>): boolean {
 	if (item.type === "compaction" || item.type === "compaction_summary") return true;
 	if (item.type !== "message") return false;
@@ -174,67 +184,63 @@ function compactInputOutputType(
 	return undefined;
 }
 
-function removeMatchingCompactToolOutput(
-	input: Array<Record<string, unknown>>,
-	callId: string,
-	callType: "function_call" | "custom_tool_call",
-): void {
-	const outputType = callType === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output";
-	const outputIndex = input.findIndex(item => item.type === outputType && item.call_id === callId);
-	if (outputIndex >= 0) {
-		input.splice(outputIndex, 1);
-	}
-}
-
-function dropOrphanCompactToolOutputs(input: Array<Record<string, unknown>>): void {
-	const knownCallIds = new Set<string>();
-	const customCallIds = new Set<string>();
-	for (const item of input) {
-		if (typeof item.call_id !== "string") continue;
-		const callType = compactInputCallType(item);
-		if (!callType) continue;
-		knownCallIds.add(item.call_id);
-		if (callType === "custom_tool_call") {
-			customCallIds.add(item.call_id);
-		}
-	}
-
-	for (let index = input.length - 1; index >= 0; index -= 1) {
-		const item = input[index];
-		if (!item || typeof item.call_id !== "string") continue;
-		const outputType = compactInputOutputType(item);
-		if (!outputType) continue;
-		const known = knownCallIds.has(item.call_id);
-		const typeMatches = outputType === "custom_tool_call_output" ? customCallIds.has(item.call_id) : known;
-		if (!known || !typeMatches) {
-			input.splice(index, 1);
-		}
-	}
-}
-
-function removeOldestOpenAiCompactInputItem(input: Array<Record<string, unknown>>): boolean {
-	const removed = input.shift();
-	if (!removed) return false;
-	if (typeof removed.call_id === "string") {
-		const callType = compactInputCallType(removed);
-		if (callType) {
-			removeMatchingCompactToolOutput(input, removed.call_id, callType);
-		}
-	}
-	dropOrphanCompactToolOutputs(input);
-	return true;
-}
-
 function trimOpenAiCompactInput(
 	input: Array<Record<string, unknown>>,
 	contextWindow: number,
 	instructions: string,
 ): Array<Record<string, unknown>> {
 	const trimmed = [...input];
-	while (trimmed.length > 0 && estimateOpenAiCompactInputTokens(trimmed, instructions) > contextWindow) {
-		if (!removeOldestOpenAiCompactInputItem(trimmed)) {
-			break;
+	// Per-item serialized sizes are cached and decremented on removal.
+	// Re-stringifying the whole input per removed item was O(N²) in total chars
+	// on large codex histories. Remove oldest items so recent context survives
+	// compact input overflow.
+	const sizes = trimmed.map(item => JSON.stringify(item).length);
+	let chars = instructions.length;
+	for (const size of sizes) chars += size;
+	const removeAt = (index: number): Record<string, unknown> | undefined => {
+		const [removed] = trimmed.splice(index, 1);
+		chars -= sizes[index] ?? 0;
+		sizes.splice(index, 1);
+		return removed;
+	};
+	const removeMatchingOutput = (callId: string, callType: "function_call" | "custom_tool_call"): void => {
+		const outputType = callType === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output";
+		const outputIndex = trimmed.findIndex(item => item.type === outputType && item.call_id === callId);
+		if (outputIndex >= 0) removeAt(outputIndex);
+	};
+	const dropOrphanToolOutputs = (): void => {
+		const knownCallIds = new Set<string>();
+		const customCallIds = new Set<string>();
+		for (const item of trimmed) {
+			if (typeof item.call_id !== "string") continue;
+			const callType = compactInputCallType(item);
+			if (!callType) continue;
+			knownCallIds.add(item.call_id);
+			if (callType === "custom_tool_call") customCallIds.add(item.call_id);
 		}
+
+		for (let index = trimmed.length - 1; index >= 0; index -= 1) {
+			const item = trimmed[index];
+			if (!item || typeof item.call_id !== "string") continue;
+			const outputType = compactInputOutputType(item);
+			if (!outputType) continue;
+			const known = knownCallIds.has(item.call_id);
+			const typeMatches = outputType === "custom_tool_call_output" ? customCallIds.has(item.call_id) : known;
+			if (!known || !typeMatches) removeAt(index);
+		}
+	};
+	const removeOldest = (): boolean => {
+		const removed = removeAt(0);
+		if (!removed) return false;
+		if (typeof removed.call_id === "string") {
+			const callType = compactInputCallType(removed);
+			if (callType) removeMatchingOutput(removed.call_id, callType);
+		}
+		dropOrphanToolOutputs();
+		return true;
+	};
+	while (trimmed.length > 0 && Math.ceil(chars / 4) > contextWindow) {
+		if (!removeOldest()) break;
 	}
 	return trimmed;
 }
@@ -481,12 +487,12 @@ export async function requestOpenAiRemoteCompaction(
 	compactInput: Array<Record<string, unknown>>,
 	instructions: string,
 	signal?: AbortSignal,
-	opts?: { fetch?: FetchImpl },
+	opts?: { fetch?: FetchImpl; timeoutMs?: number },
 ): Promise<OpenAiRemoteCompactionResponse> {
 	const endpoint = resolveOpenAiCompactEndpoint(model);
 	const request: OpenAiRemoteCompactionRequest = {
 		model: model.id,
-		input: trimOpenAiCompactInput(compactInput, model.contextWindow, instructions),
+		input: trimOpenAiCompactInput(compactInput, model.contextWindow ?? Number.POSITIVE_INFINITY, instructions),
 		instructions,
 	};
 	const headers: Record<string, string> = {
@@ -509,7 +515,7 @@ export async function requestOpenAiRemoteCompaction(
 		method: "POST",
 		headers,
 		body: JSON.stringify(request),
-		signal,
+		signal: withRequestTimeout(signal, opts?.timeoutMs ?? REMOTE_COMPACTION_TIMEOUT_MS),
 	});
 
 	if (!response.ok) {
@@ -520,7 +526,13 @@ export async function requestOpenAiRemoteCompaction(
 			statusText: response.statusText,
 			errorText,
 		});
-		throw new Error(`Remote compaction failed (${response.status} ${response.statusText})`);
+		throw new ProviderHttpError(
+			`Remote compaction failed (${response.status} ${response.statusText})`,
+			response.status,
+			{
+				headers: response.headers,
+			},
+		);
 	}
 
 	const data = (await response.json()) as { output?: unknown[] } | undefined;
@@ -555,13 +567,13 @@ export async function requestRemoteCompaction(
 	endpoint: string,
 	request: RemoteCompactionRequest,
 	signal?: AbortSignal,
-	opts?: { fetch?: FetchImpl },
+	opts?: { fetch?: FetchImpl; timeoutMs?: number },
 ): Promise<RemoteCompactionResponse> {
 	const response = await (opts?.fetch ?? fetch)(endpoint, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(request),
-		signal,
+		signal: withRequestTimeout(signal, opts?.timeoutMs ?? REMOTE_COMPACTION_TIMEOUT_MS),
 	});
 
 	if (!response.ok) {
@@ -572,7 +584,13 @@ export async function requestRemoteCompaction(
 			statusText: response.statusText,
 			errorText,
 		});
-		throw new Error(`Remote compaction failed (${response.status} ${response.statusText})`);
+		throw new ProviderHttpError(
+			`Remote compaction failed (${response.status} ${response.statusText})`,
+			response.status,
+			{
+				headers: response.headers,
+			},
+		);
 	}
 
 	const data = (await response.json()) as RemoteCompactionResponse | undefined;

@@ -1,10 +1,12 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type { ToolExample } from "@oh-my-pi/pi-ai";
 import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
+import { type } from "arktype";
 import browserDescription from "../prompts/tools/browser.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { enforceInlineByteCap } from "../session/streaming-output";
 import { truncateForPrompt } from "./approval";
+import { resolveCmuxKind } from "./browser/cmux/rpc";
 import { acquireBrowser, type BrowserHandle, type BrowserKind, type BrowserKindTag } from "./browser/registry";
 import type { AnnotationSubmission, Observation, ScreenshotResult } from "./browser/tab-protocol";
 import {
@@ -24,48 +26,44 @@ import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
 
+export { cmuxSnapshotToObservation, mapWaitUntil, resolveCmuxKind, serializeEval } from "./browser/cmux/rpc";
+export { CmuxSocketClient } from "./browser/cmux/socket-client";
 export { extractReadableFromHtml, type ReadableFormat, type ReadableResult } from "./browser/readable";
 export type { Observation, ObservationEntry } from "./browser/tab-protocol";
 
 const DEFAULT_TAB_NAME = "main";
 
-const appSchema = z.object({
-	path: z.string().describe("binary path to spawn").optional(),
-	cdp_url: z.string().describe("existing cdp endpoint").optional(),
-	args: z.array(z.string()).describe("extra cli args").optional(),
-	target: z.string().describe("substring to pick a window").optional(),
+const appSchema = type({
+	"path?": type("string").describe("binary path to spawn"),
+	"cdp_url?": type("string").describe("existing cdp endpoint"),
+	"args?": type("string[]").describe("extra cli args"),
+	"target?": type("string").describe("substring to pick a window"),
 });
 
-const browserSchema = z.object({
-	action: z.enum(["open", "close", "run", "annotate"] as const).describe("operation"),
-	name: z.string().describe("tab id (default 'main')").optional(),
-	url: z.string().describe("url to open (open; annotate auto-launch)").optional(),
-	app: appSchema.optional(),
-	viewport: z
-		.object({
-			width: z.number(),
-			height: z.number(),
-			scale: z.number().optional(),
-		})
-		.optional(),
-	wait_until: z
-		.enum(["load", "domcontentloaded", "networkidle0", "networkidle2"] as const)
-		.describe("navigation wait condition")
-		.optional(),
-	dialogs: z
-		.enum(["accept", "dismiss"] as const)
-		.describe("auto-handle dialogs")
-		.optional(),
-	code: z.string().describe("js body to run in tab").optional(),
-	timeout: z.number().default(30).describe("timeout in seconds (default 30, max 300)").optional(),
-	all: z.boolean().describe("close every tab").optional(),
-	kill: z.boolean().describe("also kill spawned-app browsers").optional(),
-	enabled: z.boolean().describe("annotate: enable (default) or disable the overlay").optional(),
-	wait: z.boolean().describe("annotate: wait for a human submission (default true)").optional(),
+const browserSchema = type({
+	action: type("'open' | 'close' | 'run' | 'annotate'").describe("operation"),
+	"name?": type("string").describe("tab id (default 'main')"),
+	"url?": type("string").describe("url to open (open; annotate auto-launch)"),
+	"app?": appSchema,
+	"viewport?": {
+		width: "number",
+		height: "number",
+		"scale?": "number",
+	},
+	"wait_until?": type("'load' | 'domcontentloaded' | 'networkidle0' | 'networkidle2'").describe(
+		"navigation wait condition",
+	),
+	"dialogs?": type("'accept' | 'dismiss'").describe("auto-handle dialogs"),
+	"code?": type("string").describe("js body to run in tab"),
+	"timeout?": type("number").describe("timeout in seconds (default 30, max 300)"),
+	"all?": type("boolean").describe("close every tab"),
+	"kill?": type("boolean").describe("also kill spawned-app browsers"),
+	"enabled?": type("boolean").describe("annotate: enable (default) or disable the overlay"),
+	"wait?": type("boolean").describe("annotate: wait for a human submission (default true)"),
 });
 
 /** Input schema for the browser tool. */
-export type BrowserParams = z.infer<typeof browserSchema>;
+export type BrowserParams = typeof browserSchema.infer;
 
 /** Details describing a browser tool execution result (for renderers + transcript). */
 export interface BrowserToolDetails {
@@ -88,6 +86,12 @@ function resolveBrowserKind(params: BrowserParams, session: ToolSession): Browse
 	if (app?.path) {
 		const exe = resolveToCwd(app.path, session.cwd);
 		return { kind: "spawned", path: exe };
+	}
+	const cmuxKind = resolveCmuxKind({
+		settingEnabled: session.settings.get("browser.cmux") as boolean | undefined,
+	});
+	if (cmuxKind) {
+		return cmuxKind;
 	}
 	const headless = session.settings.get("browser.headless") as boolean;
 	return { kind: "headless", headless };
@@ -121,6 +125,57 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 	readonly summary = "Control a headless browser to navigate and interact with web pages";
 	readonly parameters = browserSchema;
 	readonly strict = true;
+
+	readonly examples: readonly ToolExample<typeof browserSchema.infer>[] = [
+		{
+			caption: "Open a tab",
+			call: { action: "open", name: "docs", url: "https://example.com" },
+		},
+		{
+			caption: "Read structured page data in the opened tab",
+			call: {
+				action: "run",
+				name: "docs",
+				code: "const obs = await tab.observe(); display(obs); return obs.elements.length;",
+			},
+		},
+		{
+			caption: "Click an observed element by id",
+			call: {
+				action: "run",
+				name: "docs",
+				code: "const obs = await tab.observe(); const link = obs.elements.find(e => e.role === 'link' && e.name === 'Sign in'); assert(link, 'Sign in link missing'); await (await tab.id(link.id)).click();",
+			},
+		},
+		{
+			caption: "Fill and submit a form via selectors",
+			call: {
+				action: "run",
+				name: "docs",
+				code: "await tab.fill('input[name=email]', 'me@example.com'); await tab.click('text/Continue');",
+			},
+		},
+		{
+			caption: "Screenshot to look at the page — no save path",
+			call: {
+				action: "run",
+				name: "docs",
+				code: "await tab.screenshot();",
+			},
+		},
+		{
+			caption: "Attach to an existing Electron app",
+			call: {
+				action: "open",
+				name: "cursor",
+				app: { path: "/Applications/Cursor.app/Contents/MacOS/Cursor" },
+			},
+		},
+		{
+			caption: "Close every tab and kill spawned-app processes",
+			call: { action: "close", all: true, kill: true },
+		},
+	];
 
 	constructor(private readonly session: ToolSession) {}
 	#description?: string;
@@ -449,6 +504,9 @@ async function saveBrowserOutputArtifact(session: ToolSession, fullText: string)
 }
 
 function describeBrowser(handle: BrowserHandle): string {
+	if (!("browser" in handle)) {
+		return `cmux browser (${handle.kind.surface ?? "split"})`;
+	}
 	switch (handle.kind.kind) {
 		case "headless":
 			return `headless browser (${handle.kind.headless ? "hidden" : "visible"})`;
@@ -467,6 +525,8 @@ function describeKind(kind: BrowserKind): string {
 			return `spawned:${kind.path}`;
 		case "connected":
 			return `connected:${kind.cdpUrl}`;
+		case "cmux":
+			return `cmux:${kind.surface ?? "split"}`;
 	}
 }
 
@@ -475,6 +535,7 @@ function sameBrowserKind(a: BrowserKind, b: BrowserKind): boolean {
 	if (a.kind === "headless" && b.kind === "headless") return a.headless === b.headless;
 	if (a.kind === "spawned" && b.kind === "spawned") return a.path === b.path;
 	if (a.kind === "connected" && b.kind === "connected") return a.cdpUrl === b.cdpUrl;
+	if (a.kind === "cmux" && b.kind === "cmux") return a.socketPath === b.socketPath;
 	return false;
 }
 
