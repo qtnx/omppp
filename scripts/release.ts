@@ -205,12 +205,18 @@ async function cmdRelease(version: string): Promise<void> {
 	}
 	console.log("  Working directory clean");
 
-	const latestTag = (await git(["describe", "--tags", "--abbrev=0", "--match", "v*"]).text()).trim();
-	if (compareVersions(version, latestTag) <= 0) {
-		console.error(`Error: Version ${version} must be greater than latest tag ${latestTag}`);
+	// The fork releases on its own 1.x line (source of truth: root package.json).
+	// After merging upstream `oh-my-pi`, upstream's tags (v1.337+, v15.x, v16.x)
+	// are reachable from HEAD, so `git describe --tags` would resolve to an
+	// upstream tag (e.g. v16.0.6) and wrongly reject a fork version bump. Compare
+	// against the current package.json version instead — the last released fork
+	// version — so the guard tracks the fork's line independent of upstream tags.
+	const currentVersion = (((await Bun.file("package.json").json()) as { version?: string }).version ?? "0.0.0").trim();
+	if (compareVersions(version, currentVersion) <= 0) {
+		console.error(`Error: Version ${version} must be greater than current version ${currentVersion}`);
 		process.exit(1);
 	}
-	console.log(`  Version ${version} > ${latestTag}\n`);
+	console.log(`  Version ${version} > ${currentVersion} (fork release line)\n`);
 
 	// 2. Update package versions
 	console.log(`Updating package versions to ${version}…`);
