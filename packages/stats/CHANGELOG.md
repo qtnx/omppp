@@ -2,20 +2,6 @@
 
 ## [Unreleased]
 
-## [1.3.0] - 2026-06-11
-
-
-### Added
-
-- Added per-model Delegation Reminder ingestion, aggregation, and model-table count/rate display.
-
-## [1.0.7] - 2026-06-09
-
-### Added
-
-- Added a Learning Audit dashboard tab with API endpoints for inspecting persisted live-learning classifier and writer artifacts.
-- Added per-model System Context Reminder counts and rates to the model stats table.
-
 ## [16.0.5] - 2026-06-17
 
 ### Added
@@ -157,3 +143,16 @@
 ### Fixed
 
 - Include subtask session files in usage stats ([#250](https://github.com/can1357/oh-my-pi/issues/250))
+
+## [1.3.0] - 2026-06-11
+
+### Added
+
+- Added per-model Delegation Reminder ingestion, aggregation, and model-table count/rate display.
+
+## [1.0.7] - 2026-06-09
+
+### Added
+
+- Added a Learning Audit dashboard tab with API endpoints for inspecting persisted live-learning classifier and writer artifacts.
+- Added per-model System Context Reminder counts and rates to the model stats table.

@@ -2,17 +2,15 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-19
+
 ### Changed
 
 - Changed OpenAI remote compaction to trim oversized compact inputs from the oldest history first, preserving recent turns while avoiding oversized `/responses/compact` requests.
 - Changed OpenAI remote compaction to reuse provider-returned compaction summaries directly, avoiding extra local summarizer calls when the compact endpoint already returned summary text.
 - Compacted unusually large tool JSON schemas before provider requests by stripping descriptions, dropping definition tables, and collapsing deeply nested schema branches when needed.
+- Widened the `getApiKey` callback (`AgentOptions`/`AgentLoopConfig`) to receive the current `Model<Api>` as an optional second argument (`(provider, model?) => …`). The agent loop now passes the in-flight model so credential resolution can be model-aware (e.g. provider rate-limit pool selection). Backward compatible: existing provider-only callbacks are unaffected.
 
-## [1.3.2] - 2026-06-13
-
-### Fixed
-
-- Skipped unavailable image blobs when building OpenAI remote-compaction native history so stale session blob refs cannot produce malformed image data URLs.
 ## [16.0.6] - 2026-06-18
 
 ### Added
@@ -302,10 +300,6 @@
 ### Fixed
 
 - Fixed the agent loop wedging the model when a `write`/`edit` tool call is truncated by `stop_reason: length` (e.g. an OpenCode Zen / Claude-3.5-Haiku turn that emits >~1000 lines of code, blowing past the 8K `max_tokens` output cap). The skipped tool result now surfaces an actionable hint — naming `stop_reason: length` and telling the model to split the payload into multiple smaller calls — instead of the generic "Tool call was not executed because the assistant ended its turn" placeholder, which left the auto-continue loop re-emitting the same oversized payload until the user gave up. Tools are still NOT executed when the arguments are truncated. ([#1785](https://github.com/can1357/oh-my-pi/issues/1785))
-
-### Changed
-
-- Widened the `getApiKey` callback (`AgentOptions`/`AgentLoopConfig`) to receive the current `Model<Api>` as an optional second argument (`(provider, model?) => …`). The agent loop now passes the in-flight model so credential resolution can be model-aware (e.g. provider rate-limit pool selection). Backward compatible: existing provider-only callbacks are unaffected.
 
 ## [15.8.0] - 2026-06-02
 
@@ -817,6 +811,12 @@
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
 
+## [1.3.2] - 2026-06-13
+
+### Fixed
+
+- Skipped unavailable image blobs when building OpenAI remote-compaction native history so stale session blob refs cannot produce malformed image data URLs.
+
 ## [0.38.0] - 2026-01-08
 
 ### Added
@@ -878,5 +878,4 @@ Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mon
 ### Changed
 
 - `Agent` constructor now has all options optional (empty options use defaults).
-
 - `queueMessage()` is now synchronous (no longer returns a Promise).

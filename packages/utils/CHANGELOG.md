@@ -2,11 +2,6 @@
 
 ## [Unreleased]
 
-## [1.0.7] - 2026-06-09
-
-### Changed
-
-- Renamed the shared CLI app name constant to `ompx` and added OMPx display/tagline constants for runtime branding.
 ## [16.0.3] - 2026-06-16
 
 ### Added
@@ -156,3 +151,9 @@
 ### Added
 
 - Added an XDG-aware tiny-title model cache directory helper for coding-agent local title models.
+
+## [1.0.7] - 2026-06-09
+
+### Changed
+
+- Renamed the shared CLI app name constant to `ompx` and added OMPx display/tagline constants for runtime branding.

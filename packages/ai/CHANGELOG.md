@@ -2,20 +2,19 @@
 
 ## [Unreleased]
 
-## [1.3.3] - 2026-06-15
+## [1.4.0] - 2026-06-19
+
+### Added
+
+- Added optional `CredentialRankingStrategy.selectGatingLimits(report, modelId)` and `backoffScope(modelId)` so a provider can scope usage-limit gating and backoff to the rate-limit pool a given model actually draws from. Implemented for OpenAI Codex (`spark` vs shared `main` pool) and Anthropic (shared `5h`/`7d` windows plus the matching `opus`/`sonnet` tier window).
 
 ### Fixed
 
-- Balanced new OpenAI Codex OAuth sessions across the least-active same-headroom accounts so parallel subagents fan out across available accounts before hitting usage limits.
-- Avoided repeated OpenAI Codex WebSocket retries after close code 1009 by keeping oversized payloads on SSE during a cooldown, skipping WebSocket connects when the request already exceeds the payload cap, and exposing payload-size/backoff diagnostics.
-- Scoped OpenAI Codex WebSocket turn state to each `response.create` request via `client_metadata` instead of replaying it in WebSocket handshake headers.
-- Added upstream-style OpenAI Codex WebSocket warmup requests (`generate: false`) and dedicated overflow WebSockets so overlapping same-session requests no longer fall back to SSE just because the pooled socket is busy.
+- Fixed credential rotation parking healthy OpenAI Codex accounts when only a model-specific rate-limit pool was exhausted. A Codex usage report carries multiple pools per account (shared `openai-codex:primary`/`:secondary` plus model-specific `openai-codex:spark:*` and other `additional_rate_limits`). `AuthStorage.#isUsageLimitReached` previously treated **any** exhausted window as a block, so an exhausted Spark pool marked otherwise-free accounts as rate-limited, made every sibling look blocked, and left `markUsageLimitReached` returning `false` — the agent then waited out the full usage-limit window instead of rotating to an account with free quota. Usage-limit gating now consults `selectGatingLimits(report, modelId)`, so a general (non-`-spark`) request is gated only by the shared pool and a `-spark` request only by the spark pool. `modelId` is threaded into `markUsageLimitReached` and every credential-selection gating path.
+- Fixed cross-model usage-limit backoff contamination: usage-limit blocks for OAuth credentials are now keyed by the model's `backoffScope`, so an exhausted Codex spark pool (or Claude tier) no longer parks a credential for requests in a different scope whose shared quota is still free. Auth/refresh/transient failures remain globally scoped (they park the credential for every model). Stored API-key credentials keep global usage-limit blocks (they have no per-model pools), so API-key rotation is unaffected.
+- Fixed Anthropic credential rotation parking accounts on a tier window the request does not use — an exhausted `anthropic:7d:opus` window no longer blocks Sonnet/Haiku requests (and vice versa), via `claudeRankingStrategy.selectGatingLimits`/`backoffScope`.
+- Fixed OpenAI Codex multi-account routing so an invalidated/expired OAuth access token (e.g. `Encountered invalidated oauth token for user, failing request`) no longer surfaces as a hard failure. The codex provider tags OAuth-token rejections — whether they arrive as in-stream `error`/`response.failed` events or non-401 HTTP bodies — as HTTP 401 so the auth-retry path engages. On that retry the agent now force-refreshes the matching credential via the new `AuthStorage.refreshCredentialMatching` (the access token is dead but the refresh token is still valid) and retries the same account with a freshly minted token, only falling back to blocking + rotating to a sibling account when the force-refresh genuinely fails.
 
-## [1.3.2] - 2026-06-13
-
-### Fixed
-
-- Dropped unavailable session image blobs from provider payloads instead of serializing `blob:` refs or empty data into OpenAI/Codex, Anthropic, and Gemini image requests.
 ## [16.0.6] - 2026-06-18
 
 ### Added
@@ -795,13 +794,6 @@
 
 - Fixed `opencode-zen/minimax-m3-free` (and forward-compat `opencode-zen/minimax-m3`) and `opencode-go/minimax-m3` being routed to `anthropic-messages` despite the OpenCode Zen/Go gateways only serving these ids at `/v1/chat/completions`, which surfaced raw MiniMax/tool-call markup (`<invoke name="bash">`, `<tool_call>`, `<description>`, `<cwd>`, `<|minimax|>`) in the UI. Resolver overrides now pin these ids to `openai-completions` and the bundled `models.json` entries are flipped to match. ([#1617](https://github.com/can1357/oh-my-pi/issues/1617))
 - Fixed MiniMax Coding Plan China login opening the international `platform.minimax.io` subscription page instead of the China `platform.minimaxi.com` page.
-- Fixed credential rotation parking healthy OpenAI Codex accounts when only a model-specific rate-limit pool was exhausted. A Codex usage report carries multiple pools per account (shared `openai-codex:primary`/`:secondary` plus model-specific `openai-codex:spark:*` and other `additional_rate_limits`). `AuthStorage.#isUsageLimitReached` previously treated **any** exhausted window as a block, so an exhausted Spark pool marked otherwise-free accounts as rate-limited, made every sibling look blocked, and left `markUsageLimitReached` returning `false` — the agent then waited out the full usage-limit window instead of rotating to an account with free quota. Usage-limit gating now consults `selectGatingLimits(report, modelId)`, so a general (non-`-spark`) request is gated only by the shared pool and a `-spark` request only by the spark pool. `modelId` is threaded into `markUsageLimitReached` and every credential-selection gating path.
-- Fixed cross-model usage-limit backoff contamination: usage-limit blocks for OAuth credentials are now keyed by the model's `backoffScope`, so an exhausted Codex spark pool (or Claude tier) no longer parks a credential for requests in a different scope whose shared quota is still free. Auth/refresh/transient failures remain globally scoped (they park the credential for every model). Stored API-key credentials keep global usage-limit blocks (they have no per-model pools), so API-key rotation is unaffected.
-- Fixed Anthropic credential rotation parking accounts on a tier window the request does not use — an exhausted `anthropic:7d:opus` window no longer blocks Sonnet/Haiku requests (and vice versa), via `claudeRankingStrategy.selectGatingLimits`/`backoffScope`.
-
-### Added
-
-- Added optional `CredentialRankingStrategy.selectGatingLimits(report, modelId)` and `backoffScope(modelId)` so a provider can scope usage-limit gating and backoff to the rate-limit pool a given model actually draws from. Implemented for OpenAI Codex (`spark` vs shared `main` pool) and Anthropic (shared `5h`/`7d` windows plus the matching `opus`/`sonnet` tier window).
 
 ## [15.8.0] - 2026-06-02
 
@@ -872,7 +864,6 @@
 ### Fixed
 
 - Fixed Anthropic adaptive-thinking replay preserving signed thinking blocks on the latest abandoned tool-use assistant message, avoiding `thinking blocks in the latest assistant message cannot be modified` 400s. ([#1531](https://github.com/can1357/oh-my-pi/issues/1531))
-- Fixed OpenAI Codex multi-account routing so an invalidated/expired OAuth access token (e.g. `Encountered invalidated oauth token for user, failing request`) no longer surfaces as a hard failure. The codex provider tags OAuth-token rejections — whether they arrive as in-stream `error`/`response.failed` events or non-401 HTTP bodies — as HTTP 401 so the auth-retry path engages. On that retry the agent now force-refreshes the matching credential via the new `AuthStorage.refreshCredentialMatching` (the access token is dead but the refresh token is still valid) and retries the same account with a freshly minted token, only falling back to blocking + rotating to a sibling account when the force-refresh genuinely fails.
 
 ## [15.5.15] - 2026-05-30
 
@@ -3462,6 +3453,21 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.3.3] - 2026-06-15
+
+### Fixed
+
+- Balanced new OpenAI Codex OAuth sessions across the least-active same-headroom accounts so parallel subagents fan out across available accounts before hitting usage limits.
+- Avoided repeated OpenAI Codex WebSocket retries after close code 1009 by keeping oversized payloads on SSE during a cooldown, skipping WebSocket connects when the request already exceeds the payload cap, and exposing payload-size/backoff diagnostics.
+- Scoped OpenAI Codex WebSocket turn state to each `response.create` request via `client_metadata` instead of replaying it in WebSocket handshake headers.
+- Added upstream-style OpenAI Codex WebSocket warmup requests (`generate: false`) and dedicated overflow WebSockets so overlapping same-session requests no longer fall back to SSE just because the pooled socket is busy.
+
+## [1.3.2] - 2026-06-13
+
+### Fixed
+
+- Dropped unavailable session image blobs from provider payloads instead of serializing `blob:` refs or empty data into OpenAI/Codex, Anthropic, and Gemini image requests.
 
 ## [0.50.1] - 2026-01-26
 

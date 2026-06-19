@@ -2,17 +2,12 @@
 
 ## [Unreleased]
 
-## [1.0.7] - 2026-06-09
+## [1.4.0] - 2026-06-19
 
-### Changed
+### Added
 
-- Updated terminal notification app metadata to the OMPx brand.
+- Added workspace-root alias support to `CombinedAutocompleteProvider`, allowing callers to surface tagged roots such as `@be/` and complete files inside them without changing the primary cwd.
 
-### Fixed
-
-- Eliminated the dominant streaming-render CPU cost. The assistant message was re-lexed in full by `marked.lexer` on every ~30fps reveal frame — O(n) per frame, O(n²) over a reply (measured ~9s of CPU for a 16KB answer; the render cache is keyed on the full text, so every growing frame missed). Markdown block lexing is now append-only incremental: tokens of blocks sealed by a blank line are cached at module level (surviving the per-frame Markdown component recreation) and only the still-growing trailing block is re-lexed. Output is provably identical to a full lex — a link reference definition or any non-append change falls back to a full lex — and an equivalence test covers headings/lists/loose lists/fences/blockquotes/tables/setext across every streamed prefix. ~400x less lexing work on a 16KB streamed reply.
-- Extended the streaming-render optimization from lexing to the full render path. Even with incremental lexing, every ~30fps reveal frame still re-rendered, re-wrapped, and re-highlighted the whole growing message — the render cache is keyed on the full text, so a growing message missed every frame — keeping it O(n)/frame, O(n²)/reply. `Markdown.render()` now reuses the rendered+wrapped+padded output lines of every blank-line-sealed block (keyed by the reused token objects, so it survives the per-frame `Markdown` component recreation) and re-renders only the still-growing tail; a sealed code fence is highlighted once instead of on every frame it stays open. ~19x faster on a representative streamed reply, widening with length. Output is byte-identical to a full render (a non-append edit or a layout/theme change falls back to a full render), proven by an equivalence test across headings, prose, tight/loose lists, fenced code, tables, blockquotes, horizontal rules, text-sizing (OSC 66) headings, and background styles at multiple widths.
-- Fixed the incremental block lexer splitting a loose list that seals mid-stream into adjacent single-item list tokens, so a streamed loose list could render with wrong inter-item spacing (extra blank lines) versus its final full-document parse. A sealed list followed only by blank-line `space` tokens is now re-lexed with the tail (loose continuation can still add another item); every other top-level block remains definitively sealed by the blank line.
 ## [16.0.5] - 2026-06-17
 
 ### Added
@@ -634,10 +629,6 @@
 ### Fixed
 
 - Fixed terminal resizes corrupting native scrollback with duplicated rows. The 15.4.0 change that defers a destructive scrollback clear+replay (so a user scrolled into history is not yanked while a streaming tail cell mutates) also caught genuine width/height resizes: a resize reflows the terminal's own committed scrollback at the new geometry, but repainting only the viewport left the stale old-size rows in history, so every overflowed row showed up twice (old-size wrap + new-size copy) when scrolling back, until the next prompt submit cleaned it up. `#planRender` now rebuilds history synchronously when the frame's geometry actually changed (`widthChanged || heightChanged`) via the restored `historyRebuild` intent, and defers the rebuild only for pure content mutations where the user may be reading scrollback mid-stream.
-
-### Added
-
-- Added workspace-root alias support to `CombinedAutocompleteProvider`, allowing callers to surface tagged roots such as `@be/` and complete files inside them without changing the primary cwd.
 
 ## [15.5.0] - 2026-05-26
 
@@ -1461,6 +1452,18 @@ Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mon
 ### Added
 
 - Added `getText()` method to Text component for retrieving current text content
+
+## [1.0.7] - 2026-06-09
+
+### Changed
+
+- Updated terminal notification app metadata to the OMPx brand.
+
+### Fixed
+
+- Eliminated the dominant streaming-render CPU cost. The assistant message was re-lexed in full by `marked.lexer` on every ~30fps reveal frame — O(n) per frame, O(n²) over a reply (measured ~9s of CPU for a 16KB answer; the render cache is keyed on the full text, so every growing frame missed). Markdown block lexing is now append-only incremental: tokens of blocks sealed by a blank line are cached at module level (surviving the per-frame Markdown component recreation) and only the still-growing trailing block is re-lexed. Output is provably identical to a full lex — a link reference definition or any non-append change falls back to a full lex — and an equivalence test covers headings/lists/loose lists/fences/blockquotes/tables/setext across every streamed prefix. ~400x less lexing work on a 16KB streamed reply.
+- Extended the streaming-render optimization from lexing to the full render path. Even with incremental lexing, every ~30fps reveal frame still re-rendered, re-wrapped, and re-highlighted the whole growing message — the render cache is keyed on the full text, so a growing message missed every frame — keeping it O(n)/frame, O(n²)/reply. `Markdown.render()` now reuses the rendered+wrapped+padded output lines of every blank-line-sealed block (keyed by the reused token objects, so it survives the per-frame `Markdown` component recreation) and re-renders only the still-growing tail; a sealed code fence is highlighted once instead of on every frame it stays open. ~19x faster on a representative streamed reply, widening with length. Output is byte-identical to a full render (a non-append edit or a layout/theme change falls back to a full render), proven by an equivalence test across headings, prose, tight/loose lists, fenced code, tables, blockquotes, horizontal rules, text-sizing (OSC 66) headings, and background styles at multiple widths.
+- Fixed the incremental block lexer splitting a loose list that seals mid-stream into adjacent single-item list tokens, so a streamed loose list could render with wrong inter-item spacing (extra blank lines) versus its final full-document parse. A sealed list followed only by blank-line `space` tokens is now re-lexed with the tail (loose continuation can still add another item); every other top-level block remains definitively sealed by the blank line.
 
 ## [0.50.0] - 2026-01-26
 

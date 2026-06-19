@@ -2,140 +2,73 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-19
+
+### Added
+
+- Added Codex-compatible `get_goal`, `create_goal`, and `update_goal` hidden tools, including `blocked` goal status handling and upstream-style continuation guidance.
+- Added status-line PR state detection via `gh pr view`, showing the current branch's PR number plus draft, mergeability, review, or terminal state.
+- Added a native System Context Reminder plugin that keeps system-context drift guidance in the default prompt and queues a hidden next-turn reminder when final prose omits required persona context or uses forbidden replacement terms like `tôi`, `mình`, or `bạn`.
+- Added live-learning audit artifacts for every classifier and writer run, including classifier request/response dumps, writer request/result dumps, and persisted writer-agent JSONL paths.
+- Added `/skills` to report active session skills, source toggles, include/ignore filters, disabled skill extensions, and skill discovery warnings.
+- Added `/context-gc global` for database-wide Context GC stats across persisted sessions.
+- `omp plugin install` now accepts GitHub/GitLab/Bitbucket shorthand (`github:user/repo`, `gitlab:user/repo`, …) and full git URLs (`https://github.com/user/repo`, `git@github.com:user/repo`, …) in addition to npm specs and marketplace refs.
+- Added an auto-summary of each completed turn so a session left open is self-explanatory at a glance. When the agent finishes a run, a one-line past-tense recap of what it did (e.g. `✔ Fixed OAuth token rotation and added tests`) is appended to the transcript in the foreground, or folded into the desktop completion notification (replacing the bare "Complete") when the session is backgrounded. Summaries are produced by the smol/commit model via a forced `set_summary` tool call and are gated to turns that actually used tools — pure-chat turns are skipped. Toggle with the new `completion.summarize` setting (default on).
+- Added the `learning.writerModels` setting — an ordered model/role fallback chain for the live-learning writer agent, paralleling `learning.classifierModels`. When unset it keeps the previous `pi/plan` → `pi/default` default chain.
+- Added live reload for `.omp/SYSTEM.md` and `.omp/APPEND_SYSTEM.md` prompt overlays, a `/reload-prompt` command, and `/restart` self-resume support so running TUI sessions can apply prompt-overlay edits or a replaced binary without manually exiting first.
+- Added live learning for user-authored complain/reminder/guideline messages. When `learning.enabled` is on, the fast classifier role classifies the latest user message after each completed turn, the `plan` role rewrites durable repo/global guidelines, and the next turn receives the stored guidance without depending on the memory backend. `/learning` inspects the live-learning payload, shows recent live-learning logs, and clears repo/global learning scopes. `learning.classifierModels` can now define an ordered classifier fallback chain, and classifier output accepts strict JSON fallback when the selected fast model does not emit tool calls.
+- Added multi-root workspace flags. `--be <repo>` / `--fe <repo>` resolve a git repository and create an isolated worktree on a fresh `omp/<name>` branch checked out from the repo's origin default branch (best-effort `git fetch`), tagging each root as `be`/`fe`. `--worktree <name>` names the worktree (auto-generated via the two-word task-name generator when omitted); `--no-worktree` instead tags the repos in place on their current branch. `--add-dir <path>` (repeatable) tags an additional existing directory by its basename. The first repo (`--be` before `--fe`, else the first `--add-dir`) becomes the session's primary cwd; every root is surfaced to the model in a new `<workspace-roots>` system-prompt block (tag, absolute path, branch, and a bounded directory tree for non-primary roots), forwarded to subagents, available to `@` file mentions/autocomplete through tagged aliases such as `@be/src/api.ts`, usable as `bash.cwd` tags such as `cwd: "fe"`, and accepted by `/move <tag>` for persistent cwd switches. Worktrees live under `~/.omp/wt/` and are cleanable via `omp worktree clear`; reusing the same `--worktree` name is idempotent and never touches the user's main checkout, so a dirty tree is safe.
+- Added the `workflow` tool: deterministic multi-subagent orchestration. The model writes a plain-JS script (beginning with a pure-literal `export const meta = { name, description }`) that runs in a `node:vm` sandbox with injected globals — `agent(prompt, opts?)` (spawns a subagent via the existing executor; `opts.schema` forces structured output), `parallel(thunks)` (barrier; throwing thunks resolve to `null`), `pipeline(items, ...stages)` (no barrier between stages; `(prev, item, index)` callbacks; a throwing stage drops the item to `null`), `phase(title)`, `log(message)`, `budget` (`{total, spent(), remaining()}` hard ceiling), `workflow(nameOrRef, args?)` (one-level inline nesting), and `args`. Concurrency is capped at `min(16, cores-2)` per run with a 1000-agent lifetime backstop; `Date.now()`/`new Date()`/`Math.random()` are shimmed to throw so journal-based resume is sound. Runs in the background via `AsyncJobManager` (returns a run id immediately, delivers the result on completion) with a synchronous fallback when no background runner exists (e.g. `--print`). Enabled by default via `workflow.enabled` (set `false` to remove the tool); `workflow.maxConcurrency` and `workflow.tokenBudget` tune limits.
+- Added the `/workflows` slash command and a live progress panel (phase → agent tree with state/duration/token glyphs), fed by the `workflow:progress` event channel.
+- Added bundled `bugfix` and `investigate` workflows plus discovery of project (`.omp/workflows/*.js`) and user (`~/.omp/agent/workflows/*.js`) workflows, and a built-in `workflow-subagent` agent used as the default `agent()` worker. Resume a run after editing its persisted script with `workflow({scriptPath, resumeFromRunId})` — the longest unchanged prefix of `agent()` calls replays cached results from a per-run journal.
+- Added a just-in-time keyword trigger: when the user's message mentions "workflow" (and `workflow.enabled` is on), a hidden `<system-reminder>` is injected into that turn instructing the agent to author and run a dynamic workflow for the task itself — so users get orchestration by simply saying "use a workflow to …" without writing a script.
+- Added idle topic-switch compaction: when a session has been idle past `compaction.topicSwitchIdleSeconds` (default 30m) and the next user request arrives, the fast (`smol`) model classifies whether that request still relates to the prior conversation. An unrelated request triggers a context-full compaction (summary + recent tail) before the turn runs, so a brand-new topic doesn't inherit the stale context's tokens — surfaced with the usual auto-compaction status spinner ("Topic changed, …"). Gated by `compaction.topicSwitchEnabled` (default on), skipped when the context is under `compaction.topicSwitchMinContextTokens` (default 30K). The classifier fails open: any missing model/key, error, or timeout leaves the turn untouched.
+
 ### Changed
 
 - Merged the upstream `oh-my-pi` project (1526 commits since the last sync) into the OMPx fork. Notable upstream integrations: ArkType-based settings validation, the agent loop-guard, the TTSR injection lifecycle, PDF document reads, the startup splash, app-level retry, the Perplexity/OpenRouter providers, consolidated OpenAI streaming, the rewritten STT setup, the rewritten local stats client, collab-web, and pi-wire. OMPx features are preserved: the delegation contract, the enum `task.eager` (`default`/`preferred`/`always`), `display.syntaxHighlighting`, snapcompact image frames, IRC, the sandbox, the Codex guards, browser annotate, the image-vision fallback, robomp, session-stats, and the stats reminder columns.
+- OpenAI Codex-family sessions now use a compact upstream-style system prompt while preserving OMPx project context, tool inventory, skills, and rules, reducing baseline prompt bytes before provider requests.
+- Changed the completed-turn recap from a one-line (≤10-word) summary to a concise 2-3 sentence past-tense paragraph (≤~60 words) that names the files, commands, and outcomes touched. The foreground transcript now renders it as a width-wrapped block instead of a single truncated line.
+- Changed `todo` result rendering to animate completed items in place: the checkbox flips checked first, then the strikethrough reveals across the task text.
+- Kept the task delegation tool in the default active built-in tool set when full tool discovery is enabled, and enabled eager task delegation by default.
+- Updated the workflow progress panel to render workflow agents with the task subagent UI, including agent name, resolved model, task-style status, and latest tool activity.
+- Changed the live-learning writer agent to use high reasoning, a 60s default timeout, and an explicit store/skip decision so it can refuse false-positive classifier results before writing a learning.
 
 ### Fixed
 
 - Resolved merge regressions across the StatusLine context/branch caches, eager-task prelude gating, MCP/context-window tool discovery, context-promotion overflow recovery, the OpenAI Codex pre-prompt/moderation/websocket-continuation paths, and the grouped follow-up/steering queue.
-### Added
-
-- Added Codex-compatible `get_goal`, `create_goal`, and `update_goal` hidden tools, including `blocked` goal status handling and upstream-style continuation guidance.
-
-### Changed
-
-- OpenAI Codex-family sessions now use a compact upstream-style system prompt while preserving OMPx project context, tool inventory, skills, and rules, reducing baseline prompt bytes before provider requests.
-
-### Fixed
-
 - Recovered session persistence after a cached session writer loses its file descriptor (`EBADF`) by dropping the stale writer and atomically rewriting the current in-memory session instead of permanently poisoning the running session.
+- Fixed native Context GC guidance being absent from the persisted root system prompt metadata.
+- Fixed plugin reload and Claude Code plugin discovery so OMP refreshes the active skill snapshot, MCP tool snapshot, system prompt, and `skill://` catalog after Claude-side skill/plugin changes, reads plugin manifest `mcpServers`, and respects Claude `enabledPlugins: false` entries when hiding plugin skills/MCP servers.
+- Fixed the status-line PR segment clearing stale cached PRs when branch or repo context changes.
+- Fixed the status-line PR segment rejecting unsafe PR hyperlinks and unknown status values before rendering terminal control sequences.
+- Fixed Herdr/agent-state monitors missing foreground and auto-background work by emitting async job lifecycle/progress events and tracking running tool/background job ids.
+- Fixed restricted explore subagents inheriting IRC access, full skill catalogs, broad extension runtime, and unrelated parent MCP tools, which could inflate prompts and RAM usage during parallel explore batches.
+- Fixed the bundled `explore` agent lacking read-only shell access for diagnostics/tracing while tightening its prompt to cap tool/read scope, avoid web/context-GC tools, and report blockers instead of expanding into unrelated searches.
+- Fixed workflow keyword prompts injecting conflicting eval-based and workflow-tool reminders. Workflow requests now inject a single workflow-tool notice.
+- Fixed `/dump copy` over SSH/tmux by using Vim-style OSC 52 passthrough wrapping, and added `/dump file` for writing the transcript to a private temporary `.txt` file.
+- Fixed usage-limit credential rotation re-selecting the same rate-limit pool by threading the active model into credential acquisition (the Agent `getApiKey` callback) and the post-usage-limit re-pick in `onAuthError`. OpenAI Codex `-spark` requests now select and rotate on the spark pool while general requests use the shared pool, instead of dropping the model id and always gating on the shared pool.
+- Fixed auto context maintenance to include the pending prompt in the pre-send token estimate, so large user turns compact history before the provider rejects an over-limit request ([#1618](https://github.com/can1357/oh-my-pi/issues/1618)).
+- Fixed workflow subagents to honor structured-output schemas, fail failed subagent calls instead of returning error JSON as success, resolve returned `agent()` promises before serializing the workflow return value, wait for orphaned spawned agents before reporting completion, and default through the task model role instead of inheriting the active session model.
+- Fixed `/dump copy` so the interactive slash command is consumed as an explicit clipboard copy request, including SSH terminals that rely on OSC 52 clipboard forwarding.
+- Fixed Hindsight per-project-tagged memory scoping so recall/reflect and mental-model injection require the current `project:<repo>` tag, while resolving that repo identity through Git's primary checkout so sibling worktrees share memory without leaking unrelated repositories.
+- Fixed live-learning classifier requests for Codex Responses models by sending the rendered classifier prompt as provider instructions, preventing Codex fallback classifiers from failing with `Instructions are required`.
+- Fixed live-learning writer failure logs to include abort/model/duration details and avoid a misleading generic "returned no content" follow-up when the writer agent times out or fails.
+- Fixed multi-root sessions so `AGENTS.md` context is loaded across tagged roots, `/move <tag>` refreshes the active root prompt context, and the status line shows the current tagged root.
+- Fixed `task` and `heavy_task` review gates so they can review and run fixer cycles in the original task context when task isolation is disabled, instead of failing before the implementer runs.
+- Fixed the missing-git-repository diagnostic for task review gates so non-isolated gates no longer report the stale "isolated task execution" helper message.
+- Fixed task review-gate diff capture in unborn git repositories (git init with no commits) so baseline untracked files are compared against an empty tree instead of failing with `fatal: Not a valid object name`.
+- Fixed task diff capture for untracked files whose path begins with `-` by passing an explicit `--` separator to `git diff --no-index`.
+- Fixed task review-gate visibility so live task progress now shows the reviewer/fixer agent pass currently running, and final review-gate summaries include the reviewer and fixer agent names.
+- Fixed task review-gate blocks so unsafe diffs are surfaced as review feedback without turning the subagent execution into an exit-code failure; blocked isolated patches/branches are withheld from application and shown as `review blocked`.
 
-## [1.3.3] - 2026-06-15
+### Removed
 
-### Added
+- Removed the standalone `ask`, `task`, and `yield` tools along with their obsolete prompts, docs, and tests; delegation now routes through persistent `delegate` agents plus IRC coordination.
+- Removed the `/orchestrate` slash command; orchestration is now triggered by the `orchestrate` keyword (see Added) so the contract rides alongside the user's own prompt instead of replacing it.
+- Removed the sticky Todos panel all-done drop/collapse animation; completed todo state now stays visible until the next explicit todo update changes it.
+- `omp plugin install` now accepts GitHub/GitLab/Bitbucket shorthand (`github:user/repo`, `gitlab:user/repo`, …) and full git URLs (`https://github.com/user/repo`, `git@github.com:user/repo`, …) in addition to npm specs and marketplace refs.
 
-- Added a `display.syntaxHighlighting` mode (`native`, `basic`, `off`) plus `OMP_DISABLE_SYNTAX_HIGHLIGHT=1`/`PI_DISABLE_SYNTAX_HIGHLIGHT=1` env kill switches so code rendering can avoid native syntax parsing when CPU usage matters more than rich colors.
-
-### Fixed
-
-- Added an OpenAI Codex pre-prompt payload-size guard that runs context compaction before sending very large provider requests, avoiding slow turns caused by oversized continued sessions.
-- Added an installer config migration that sets `display.syntaxHighlighting: basic` when existing shell-installed configs have not chosen a syntax highlighting mode.
-- Pruned older snapcompact image frames from oversized OpenAI Codex provider requests while keeping the newest frames and text summary, preventing archived screenshots from pushing WebSocket payloads over the 16 MiB cap.
-- Skipped native syntax highlighting for pending/running code previews so many parallel subagents no longer spend a full CPU core re-highlighting live tool cells every render frame.
-- Released OpenAI credential active-use reservations when provider streams finish, abort, fresh-session, or dispose so parallel subagents keep spreading across available accounts instead of sticking to stale busy slots.
-- Started OpenAI Codex WebSocket startup prewarm with the session's system prompt and tool set so the first real turn can reuse the warmup response id instead of resending the full baseline payload.
-- Fixed `ompx update` on macOS self-sandboxed installs by allowing the sandbox profile for the update command to rewrite the resolved installation directory, so the install-script backup and direct-download `.new`/`.bak` swap no longer fail with `EPERM` for `~/.local/bin/ompx`.
-- Fixed the browser `annotate` overlay being unusable on pages that run a focus trap: modals built with Radix/focus-trap/Headless UI/MUI yanked focus back into their dialog the instant the overlay's comment box was clicked, so the textarea could never be typed into. The overlay now intercepts its own focus events at the `window` capture phase (ahead of document-level traps), re-asserts focus on its own text fields on `pointerdown` (defeating traps that `preventDefault` the click), and isolates its keystrokes at the shadow boundary, so the comment/note fields hold focus and accept text even atop aggressive modals and keyboard-driven games; the guard no-ops once annotation mode is disabled.
-
-## [1.3.2] - 2026-06-13
-
-### Fixed
-
-- Missing externalized session image blobs now reload as unavailable image data instead of preserving the raw `blob:` reference that could later be sent to providers as malformed base64.
-
-## [1.3.1] - 2026-06-12
-
-### Fixed
-
-- Browser annotation mode now keeps a background listener after activation, so repeated overlay submissions are queued into the conversation and wake idle agents instead of requiring another blocking `annotate` call.
-- Fixed `search_tool_bm25` transcript rendering when a persisted error result has empty or malformed `details`, avoiding a renderer crash while rebuilding prior sessions.
-
-## [1.3.0] - 2026-06-11
-
-### Added
-
-- Added a native-loaded Delegation Reminder extension (`@oh-my-pi/delegation-reminder-plugin`) for main interactive sessions running in Orchestrator Mode (`task.eager` on with the `task` tool available). It tracks per-turn hands-on tool calls (`edit`, `write`, `ast_edit`, `bash`) and, once the `delegation.reminder.threshold` (default 6) is crossed without any `task` delegation, appends a one-time mid-turn `<system-notice>` nudging the model to delegate via subagents, then records a session-log-only `delegation-reminder` stats entry (`{ model, provider, api, handsOnCount, taskCount, threshold }`) for per-model offender stats. Subagent sessions never nudge. Toggle with the `delegation.reminder.enabled` setting
-
-### Changed
-
-- `ompx update` now runs the repo install script (`scripts/install.sh`, pinned to the release tag) on Linux/macOS instead of only swapping the binary asset, so updates share one source of truth with fresh installs — SHA256SUMS verification, standard-config seeding, and future installer migrations apply automatically. The previous binary is backed up and restored when the script fails or the updated binary reports the wrong version; Windows and failed script fetches fall back to the direct binary swap
-- `task.showResolvedModelBadge` now defaults to `true`, so the task widget and eval renderer show the actual model each running subagent resolved to (the badge previously existed but was opt-in and effectively invisible)
-- Tightened the task-delegation prompt contract end to end: the task tool's `assignment-fmt` now mandates four sections (`# Target` scope + forbidden files, `# Change` locked implementation, `# Acceptance` per-item self-verifiable checks, `# Done` report contents + escalation conditions) with a quality bar and a WRONG/RIGHT example; the system prompt's WORK PACKAGE CONTRACT uses the same vocabulary; subagents now receive the assignment framed as a contract (scope boundary, exit conditions, no silent guessing) and the `task`/`quick_task`/`heavy_task` worker prompts treat unmet Acceptance items as explicit blockers
-
-### Fixed
-
-- Fixed the working spinner disappearing for the rest of the turn after an automatic compaction ran when a prompt was submitted (and after mid-turn context maintenance or auto-retry): the compaction/retry status handlers cleared the status container without releasing the spinner handle, turning every later `ensureLoadingAnimation()` into a no-op. The handlers now stop and release the spinner before showing their own loader, and restore it afterwards while a prompt is still in flight
-
-## [1.2.0] - 2026-06-11
-
-### Fixed
-
-- Fixed `ompx --smoke-test` hanging on macOS ("sync worker did not pong"): internal worker re-entry argv selectors (`__omp_stats_sync_worker`, `__omp_tab_worker`, `__omp_js_eval_worker`, `--tiny-worker`) were dispatched after the macOS self-sandbox relaunch check, so a worker thread re-entering the CLI in an unsandboxed process spawned a detached `sandbox-exec` clone with no postMessage channel. Worker dispatch now runs before the relaunch check, and the selectors are excluded from self-sandboxing
-
-### Changed
-
-- When a natural-language compact instruction in a new user message runs the inline compaction, the consumed instruction is now stripped from the outgoing message (so the stale imperative cannot steer the model into compacting again) and a hidden notice telling the model the compaction already ran is appended after the message
-
-## [1.1.0] - 2026-06-11
-
-### Added
-
-- Added `compact` tool: the agent can schedule a context compaction at the next turn boundary when it judges older history is no longer needed (honors `compaction.strategy`, including snapcompact)
-- Added natural-language compact intent: an imperative "compact" instruction in a new user message ("compact đi", "please compact", bare `compact`) runs the compaction inline before the prompt is answered, bypassing the token threshold; questions and discussion about compaction do not trigger it
-- Added a `# Context Compaction` system prompt section (rendered when the `compact` tool is available) that proactively lists the boundary cases where the agent should compact and requires restating next steps before calling
-- Added a tier quick-reference (`quick_task` / `task` / `heavy_task`) at the top of the eager-orchestrator system prompt section so tier selection guidance is visible before the detailed PHASE 3 case lists
-
-## [1.0.9] - 2026-06-10
-
-### Fixed
-
-- Fixed the agent stalling after a macOS sandbox relaunch. When the model calls the `sandbox` tool (or the user runs `/add-dir`) mid-turn, the supervisor SIGTERMs the session and respawns it via `--resume` — but the resumed child restored the message history and then idled at the prompt, silently dropping the model's interrupted turn so it never retried the blocked operation. The resumed session now detects that the model still owes a response (the conversation ends with the `sandbox` tool result, via `conversationAwaitsAssistant`) and auto-continues the turn so the agent retries; a `/add-dir` between completed turns stays a no-op. Also bounded the supervisor's relaunch wait — if a child's SIGTERM cleanup hangs (an unbounded ssh/sshfs unmount in `postmortem` could block `process.exit`), it now escalates to SIGKILL after 10s so the relaunch can't freeze indefinitely.
-- macOS sandbox SSH agent auto-discovery now probes `/var/run` (and `/private/var/run`), where the system launchd `com.openssh.ssh-agent` (Keychain) socket lives. Previously only per-user temp roots were scanned, so sessions launched without an inherited `SSH_AUTH_SOCK` fell back to blocked key files and SSH auth failed.
-
-### Added
-
-- Added a human-in-the-loop `annotate` action to the `browser` tool: it overlays an in-page feedback UI (draw red boxes with optional notes, write a comment, "Send to agent") on a live tab, waits for a submission, and returns the structured feedback plus a screenshot with the marked regions burned in and the toolbar hidden. Each marked region also carries the DOM element under it (CSS selector, role, accessible name, text snippet) captured at draw time, so the agent can target it in follow-up `run` calls. The overlay survives navigations, stays glued to page content while scrolling, and `enabled: false` / `wait: false` toggle it without blocking.
-- Extended the browser `annotate` overlay with a DevTools-style **Pick** mode (hovering highlights the element under the cursor with a selector/size tooltip; clicking marks its viewport box with the element context attached) and made the floating toolbar draggable by its header and minimizable to a Vercel-comments-style pill that shows the marked-region count.
-- The `annotate` action now auto-launches a **visible** browser (fresh profile, sandbox-safe launch flags) when the target tab is missing or lives on a hidden headless browser, migrating the tab's URL — pass `url` to annotate without opening a tab first. Previously annotate on the default headless browser waited on an overlay no human could see.
-- The annotate overlay now keeps an offline queue: submissions made while no agent is connected (or whose dispatch fails) are saved page-side in `sessionStorage` (in-memory fallback), surviving reloads, and are delivered automatically the next time annotation mode is enabled — calling `{action:"annotate"}` again pulls them immediately. The toolbar reports "saved locally (N pending)" instead of silently dropping the feedback.
-
-## [1.0.7] - 2026-06-09
-
-### Added
-
-- The macOS sandbox now auto-discovers the user's running SSH agent so `git`/`ssh` over SSH works with zero config even when the launching context doesn't export `SSH_AUTH_SOCK` (e.g. a supervisor that strips it). It probes 1Password, Secretive, the launchd agent, and classic `ssh-agent` sockets, trusting only sockets owned by the current user, exposes the discovered socket to sandboxed children as `SSH_AUTH_SOCK`, and allows it in the Seatbelt profile (sockets only — private keys stay blocked). Override the path with the `sandbox.sshAuthSock` setting or `PI_OMPX_SSH_AUTH_SOCK` env var, or set `sandbox.sshAuthSock: off` to disable.
-
-### Changed
-
-- Sandboxed top-level and nested `ompx` runs on macOS by default with a sandvault-inspired Seatbelt profile scoped to the effective working directory, associated Git metadata, OMPx runtime paths, sandbox-allowed inherited SSH agent sockets, public SSH client metadata/public identity files, and trusted configured sandbox allowlist paths (defaulting to `~/.gitconfig`, the shared `~/.bun/install/cache`, `~/.cargo`, `~/go`, and `~/.cache` toolchain caches, and `~/.kube/config`), plus `--no-sandbox`, `/add-dir`, the `sandbox` tool, sandbox-denial notices, and sandbox awareness for commands/hooks.
-
-- Rebranded the CLI invocation from `omp` to `ompx`, updated release/install binary names, and seeded fresh installs with the standard `~/.omp/agent/config.yml` backup.
-
-- Disabled OMP-compatible Claude hook discovery from `.claude/hooks/**` and Cursor rule prompt injection by default; enable `hooks.enableClaudeUser` / `hooks.enableClaudeProject` or `rules.enableCursorUser` / `rules.enableCursorProject` from trusted operator config or runtime overrides to opt back in.
-
-### Fixed
-
-- Reduced sustained CPU during assistant streaming and tool execution. The status line was rebuilt on every agent event (every token delta): it re-ran a synchronous git HEAD resolve (an uncached filesystem tree-walk) and, on non-default branches, defeated the PR cache's 60s TTL so `gh pr view` was re-spawned back-to-back for the whole turn; it also re-tokenized the still-growing assistant message on every delta. Branch resolution is now cwd-cached (refreshed by the existing HEAD watcher, on `/cd`, and once per turn at `agent_end`), the per-event git/PR cache invalidation was removed, the growing message's token estimate is TTL-throttled, and pending edit/write tool spinners repaint at their glyph cadence instead of 30fps (the `task`-row name shimmer keeps its 30fps cadence).
-
-- Cut grapheme-counting CPU in the streaming reveal. `visibleUnits`/`buildDisplayMessage` ran full `Intl.Segmenter` passes over the whole growing message on every 30fps frame and every delta. `countGraphemes` and `sliceGraphemes` now take an ASCII fast-path (pure-ASCII text with no CR maps 1 char == 1 grapheme — CRLF is the only ASCII cluster), and grapheme counts are memoized in a small LRU, so stable blocks and repeated same-snapshot passes don't re-segment. Verified against an independent `Intl.Segmenter` oracle (ASCII/CRLF/accent/emoji/ZWJ) and that `buildDisplayMessage` never splits a cluster.
-- Further cut streaming-reveal CPU by removing redundant per-frame work. The 30fps reveal recomputed `visibleUnits` (a full grapheme pass over the whole message) on every tick on top of the pass already inside `buildDisplayMessage`, and `setTarget` rebuilt the revealed message synchronously on every model delta ahead of the render throttle. The target's visible-unit total is now cached and recomputed only when the target changes (the tick and timer reuse it), and the per-delta rebuild is deferred to the throttled 30fps tick so a burst of deltas in one frame window coalesces into a single build; the synchronous build is kept only when the reveal is already fully caught up. The non-smooth-streaming and tool-call-boundary paths are unchanged.
-
-- Fixed runtime macOS sandbox allowlist relaunches to keep the active project as the primary workspace root, so adding another trusted directory no longer trips the cross-project resume/fork prompt.
-
-- Fixed release publishing and `ompx update` to use version GitHub tags as the binary release source, build release assets from tag pushes, delay public GitHub release publication until after npm publish, and verify binary update downloads against `SHA256SUMS`.
-
-- Fixed `ompx update` reinstalling the upstream `@oh-my-pi/pi-coding-agent` npm package (from `registry.npmjs.org`) whenever `ompx` lived in bun's global bin directory — the documented fork install location — which pulled a different project's build instead of the latest OMPx release. `ompx update` now always downloads the matching `qtnx/omppp` GitHub release binary and swaps it in place regardless of install location, dropping the npm/bun reinstall path entirely; the post-swap backup cleanup is now best-effort so a still-open previous binary on Windows no longer fails an otherwise-verified update.
-
-- Fixed `ompx update` rolling back every downloaded update during verification. `verifyInstalledVersion` parsed the post-swap `ompx --version` output with a regex that required an `ompx/` prefix, but the binary prints the bare `X.Y.Z` (`main.ts` writes `${VERSION}`), so the reported version never matched, the freshly downloaded binary was treated as unverified, and the previous binary was restored — leaving `ompx update` permanently unable to complete a swap. The parser now reads the bare semver (still tolerating optional `ompx/`/`v` prefixes). Also added a release-CI guard that fails the build when a release binary's `--version` does not equal its `vX.Y.Z` tag, so a tag cut without the matching `package.json` version bump — which makes both `ompx --version` and the `ompx update` "is newer?" comparison report a stale version — can no longer ship.
-
-- Fixed compiled binary builds with the patched `tar` dependency by applying a `fastembed` ESM import compatibility patch.
-
-- Hardened binary installers to verify GitHub release SHA256SUMS before installing, removed remote Bun bootstrap execution from source-install paths, and pinned vulnerable transitive `tar` resolution to a patched version.
-
-- Fixed Herdr agent-state reporting for Goal Mode sessions by exposing live goal state to extensions, so active goal/subagent work no longer falls back to idle-only context heuristics.
-
-- Fixed Context GC cleanup not reducing visible status-line and `/context` usage by applying projection-adjusted token estimates when Context GC actually lowered model-visible context.
 ## [16.0.6] - 2026-06-18
 
 ### Added
@@ -1823,21 +1756,6 @@
 - Fixed an unhandled `EPIPE` rejection when an MCP stdio server exits between returning the `initialize` response and the client's `notifications/initialized` send. `StdioTransport.notify()` and `#sendResponse()` now route stdin writes through a shared helper that catches synchronous sink failures: `notify()` tears the transport down (firing `onClose`) and surfaces a `Transport closed while sending notification` rejection so `connectToServer()` treats the handshake as a failed connection instead of returning a "connected" handle wrapping a dead transport; `#sendResponse()` stays silent because a dead subprocess has no use for the response. `StdioTransport.close()` is now the authoritative resource teardown — it no longer early-returns when `#handleClose()` has already flipped `#connected`, so the subprocess and read loop are always cleaned up (including in the `connectToServer()` failure path) ([#1710](https://github.com/can1357/oh-my-pi/issues/1710)).
 - Fixed startup model resolution ignoring cached discovery rows for special built-in providers (`google-antigravity`, `google-gemini-cli`, `openai-codex`) until the background refresh completed ([#1721](https://github.com/can1357/oh-my-pi/issues/1721)).
 - Fixed Windows clipboard-image paste keeping `Ctrl+V` unregistered by default. The TUI now registers `Ctrl+V` plus the Windows Terminal-safe `Alt+V` fallback, and the keybinding docs call out when to use the fallback ([#1708](https://github.com/can1357/oh-my-pi/issues/1708)).
-- Fixed native Context GC guidance being absent from the persisted root system prompt metadata.
-- Fixed plugin reload and Claude Code plugin discovery so OMP refreshes the active skill snapshot, MCP tool snapshot, system prompt, and `skill://` catalog after Claude-side skill/plugin changes, reads plugin manifest `mcpServers`, and respects Claude `enabledPlugins: false` entries when hiding plugin skills/MCP servers.
-- Fixed the status-line PR segment clearing stale cached PRs when branch or repo context changes.
-- Fixed the status-line PR segment rejecting unsafe PR hyperlinks and unknown status values before rendering terminal control sequences.
-- Fixed Herdr/agent-state monitors missing foreground and auto-background work by emitting async job lifecycle/progress events and tracking running tool/background job ids.
-- Fixed restricted explore subagents inheriting IRC access, full skill catalogs, broad extension runtime, and unrelated parent MCP tools, which could inflate prompts and RAM usage during parallel explore batches.
-- Fixed the bundled `explore` agent lacking read-only shell access for diagnostics/tracing while tightening its prompt to cap tool/read scope, avoid web/context-GC tools, and report blockers instead of expanding into unrelated searches.
-- Fixed workflow keyword prompts injecting conflicting eval-based and workflow-tool reminders. Workflow requests now inject a single workflow-tool notice.
-- Fixed `/dump copy` over SSH/tmux by using Vim-style OSC 52 passthrough wrapping, and added `/dump file` for writing the transcript to a private temporary `.txt` file.
-- Fixed usage-limit credential rotation re-selecting the same rate-limit pool by threading the active model into credential acquisition (the Agent `getApiKey` callback) and the post-usage-limit re-pick in `onAuthError`. OpenAI Codex `-spark` requests now select and rotate on the spark pool while general requests use the shared pool, instead of dropping the model id and always gating on the shared pool.
-
-### Added
-
-- Added status-line PR state detection via `gh pr view`, showing the current branch's PR number plus draft, mergeability, review, or terminal state.
-- Added a native System Context Reminder plugin that keeps system-context drift guidance in the default prompt and queues a hidden next-turn reminder when final prose omits required persona context or uses forbidden replacement terms like `tôi`, `mình`, or `bạn`.
 
 ## [15.8.0] - 2026-06-02
 
@@ -1900,19 +1818,6 @@
 - Fixed `read local://<file>` resolving to the wrong session's artifacts directory in multi-session ACP hosts (e.g. cmux). `LocalProtocolHandler.resolve` now honors `context.localProtocolOptions` supplied by the calling tool before falling back to the process-wide override or the first `main`-kind session in the global `AgentRegistry`; `read`, `find`, `search`, `ast_grep`, and `ast_edit` thread their session's options through so a `local://PLAN.md` lookup hits the calling session's `local` root instead of a sibling session's ([#1608](https://github.com/can1357/oh-my-pi/issues/1608)).
 - Fixed `omp` segfaulting on exit on Windows after the tiny title/memory model loaded `onnxruntime-node` (issue [#1606](https://github.com/can1357/oh-my-pi/issues/1606)). The tiny model now runs in a Bun subprocess instead of a Worker thread, so the NAPI finalizer that crashes during shutdown never executes in the agent's address space; the subprocess is `SIGKILL`'d on dispose to skip every native destructor on every platform.
 - Fixed unbounded MCP reconnect loop that could fork-bomb the host when a stdio MCP server completes the `initialize`/`tools/list` handshake and then exits. `MCPManager` now enforces a per-server crash circuit breaker (5 reconnects per 30 s window) on the automatic `transport.onClose` path; manual `/mcp reconnect` resets the window so users can recover after fixing the misconfiguration ([#1592](https://github.com/can1357/oh-my-pi/issues/1592)).
-- Fixed auto context maintenance to include the pending prompt in the pre-send token estimate, so large user turns compact history before the provider rejects an over-limit request ([#1618](https://github.com/can1357/oh-my-pi/issues/1618)).
-- Fixed workflow subagents to honor structured-output schemas, fail failed subagent calls instead of returning error JSON as success, resolve returned `agent()` promises before serializing the workflow return value, wait for orphaned spawned agents before reporting completion, and default through the task model role instead of inheriting the active session model.
-- Fixed `/dump copy` so the interactive slash command is consumed as an explicit clipboard copy request, including SSH terminals that rely on OSC 52 clipboard forwarding.
-
-### Added
-
-- Added live-learning audit artifacts for every classifier and writer run, including classifier request/response dumps, writer request/result dumps, and persisted writer-agent JSONL paths.
-- Added `/skills` to report active session skills, source toggles, include/ignore filters, disabled skill extensions, and skill discovery warnings.
-- Added `/context-gc global` for database-wide Context GC stats across persisted sessions.
-
-### Changed
-
-- Changed the completed-turn recap from a one-line (≤10-word) summary to a concise 2-3 sentence past-tense paragraph (≤~60 words) that names the files, commands, and outcomes touched. The foreground transcript now renders it as a width-wrapped block instead of a single truncated line.
 
 ## [15.7.4] - 2026-05-31
 
@@ -2049,10 +1954,6 @@
 - Added a Mnemosyne-only `memory_edit` agent tool for updating, forgetting, or invalidating recalled memories by id, and added `/memory stats` plus `/memory diagnose` slash commands for backend maintenance visibility.
 - Added an `orchestrate` magic keyword that mirrors `ultrathink`: dropping the standalone word in a message paints it with a cool teal→violet gradient in the editor and appends a hidden system notice that switches the model into the multi-phase, parallel-subagent orchestration contract. Matching is word-bounded and case-insensitive, so `orchestrated`/`orchestrating` never trigger it.
 - Added a model-tier slider to the plan-approval prompt ("Plan mode - next step"). Left/right arrows move it from any list position to pick which configured role model (`cycleOrder`, e.g. `smol › default › slow`) executes the approved plan, with each tier colored by its role and the resolved model name shown beneath the track. The chosen tier is applied before dispatch and carries through the fresh/compacted execution session; the slider is hidden when fewer than two role models resolve.
-- `omp plugin install` now accepts GitHub/GitLab/Bitbucket shorthand (`github:user/repo`, `gitlab:user/repo`, …) and full git URLs (`https://github.com/user/repo`, `git@github.com:user/repo`, …) in addition to npm specs and marketplace refs.
-- Added an auto-summary of each completed turn so a session left open is self-explanatory at a glance. When the agent finishes a run, a one-line past-tense recap of what it did (e.g. `✔ Fixed OAuth token rotation and added tests`) is appended to the transcript in the foreground, or folded into the desktop completion notification (replacing the bare "Complete") when the session is backgrounded. Summaries are produced by the smol/commit model via a forced `set_summary` tool call and are gated to turns that actually used tools — pure-chat turns are skipped. Toggle with the new `completion.summarize` setting (default on).
-- Added the `learning.writerModels` setting — an ordered model/role fallback chain for the live-learning writer agent, paralleling `learning.classifierModels`. When unset it keeps the previous `pi/plan` → `pi/default` default chain.
-- Added live reload for `.omp/SYSTEM.md` and `.omp/APPEND_SYSTEM.md` prompt overlays, a `/reload-prompt` command, and `/restart` self-resume support so running TUI sessions can apply prompt-overlay edits or a replaced binary without manually exiting first.
 
 ### Changed
 
@@ -2061,8 +1962,6 @@
 - Changed the `task` tool's streaming call preview to list each dispatched agent's `id` and UI description as a tree instead of a bare `N agents` count, so the individual agents are visible while the tool-call arguments are still streaming. The collapsed view caps at 12 entries (`… N more agents`); the expanded view shows all.
 - Changed Mnemosyne `recall` tool output to include memory ids for explicit recall results so agents can target `memory_edit`; auto-injected memory context and `reflect` remain id-free.
 - Changed the system prompt to advertise `memory://root` only when the local memory backend is active.
-- Changed `todo` result rendering to animate completed items in place: the checkbox flips checked first, then the strikethrough reveals across the task text.
-- Kept the task delegation tool in the default active built-in tool set when full tool discovery is enabled, and enabled eager task delegation by default.
 - Changed `todo_write` result rendering to animate completed items in place: the checkbox flips checked first, then the strikethrough reveals across the task text.
 
 ### Removed
@@ -2084,15 +1983,6 @@
 - Fixed selector-style UI components to honor `tui.select.up` and `tui.select.down` keybindings instead of hard-coding raw Up/Down arrow bytes ([#1535](https://github.com/can1357/oh-my-pi/issues/1535)).
 - Fixed the bash (and `recipe`) tool result footer not rendering for failed commands. A non-zero exit threw a `ToolError`, which dropped the result details, so the styled `⟨Wall … | Timeout …⟩` footer was replaced by the raw `Wall time: … seconds` / `Command exited with code N` lines. Non-zero exits now resolve as a non-throwing error result that keeps `wallTimeMs`/`timeoutSeconds`/`exitCode`, and the footer shows `⟨Wall … | Timeout … | Exit: N⟩` with the textual notices folded out of the output pane. Aborts, timeouts, and missing-exit-status still throw as before.
 - Fixed selector-style UI components to honor `tui.select.up` and `tui.select.down` keybindings instead of hard-coding raw Up/Down arrow bytes ([#1535](https://github.com/can1357/oh-my-pi/issues/1535)).
-- Fixed Hindsight per-project-tagged memory scoping so recall/reflect and mental-model injection require the current `project:<repo>` tag, while resolving that repo identity through Git's primary checkout so sibling worktrees share memory without leaking unrelated repositories.
-
-### Removed
-
-- Removed the standalone `ask`, `task`, and `yield` tools along with their obsolete prompts, docs, and tests; delegation now routes through persistent `delegate` agents plus IRC coordination.
-- Removed the `/orchestrate` slash command; orchestration is now triggered by the `orchestrate` keyword (see Added) so the contract rides alongside the user's own prompt instead of replacing it.
-- Removed the sticky Todos panel all-done drop/collapse animation; completed todo state now stays visible until the next explicit todo update changes it.
-
-- `omp plugin install` now accepts GitHub/GitLab/Bitbucket shorthand (`github:user/repo`, `gitlab:user/repo`, …) and full git URLs (`https://github.com/user/repo`, `git@github.com:user/repo`, …) in addition to npm specs and marketplace refs.
 
 ## [15.5.15] - 2026-05-30
 
@@ -2148,29 +2038,12 @@
 
 - Added the `omp-plugins` discovery provider, which scans every extension package directory configured via `extensions:` (in `~/.omp/agent/settings.json` or `<cwd>/.omp/settings.json`) or `--extension`/`-e` on the CLI for `skills/`, `hooks/pre|post/`, `tools/`, `commands/`, `rules/`, `prompts/`, and `.mcp.json`. Prior to this, only the extension's TypeScript factory module ran; every sibling capability the docs (https://omp.sh/docs/extension-authoring) advertised was silently ignored ([#1496](https://github.com/can1357/oh-my-pi/issues/1496)).
 - Added the top-level `omp install <target>` subcommand documented at https://omp.sh/docs/extension-authoring. Local paths route to `omp plugin link` (so the directory is symlinked into the plugin set), and npm/marketplace specs route to `omp plugin install`. Before this, `install` was not a registered subcommand and the CLI runner silently forwarded `install ./my-extension` to `launch` as an initial LLM prompt ([#1496](https://github.com/can1357/oh-my-pi/issues/1496)).
-- Added live learning for user-authored complain/reminder/guideline messages. When `learning.enabled` is on, the fast classifier role classifies the latest user message after each completed turn, the `plan` role rewrites durable repo/global guidelines, and the next turn receives the stored guidance without depending on the memory backend. `/learning` inspects the live-learning payload, shows recent live-learning logs, and clears repo/global learning scopes. `learning.classifierModels` can now define an ordered classifier fallback chain, and classifier output accepts strict JSON fallback when the selected fast model does not emit tool calls.
-
-- Added multi-root workspace flags. `--be <repo>` / `--fe <repo>` resolve a git repository and create an isolated worktree on a fresh `omp/<name>` branch checked out from the repo's origin default branch (best-effort `git fetch`), tagging each root as `be`/`fe`. `--worktree <name>` names the worktree (auto-generated via the two-word task-name generator when omitted); `--no-worktree` instead tags the repos in place on their current branch. `--add-dir <path>` (repeatable) tags an additional existing directory by its basename. The first repo (`--be` before `--fe`, else the first `--add-dir`) becomes the session's primary cwd; every root is surfaced to the model in a new `<workspace-roots>` system-prompt block (tag, absolute path, branch, and a bounded directory tree for non-primary roots), forwarded to subagents, available to `@` file mentions/autocomplete through tagged aliases such as `@be/src/api.ts`, usable as `bash.cwd` tags such as `cwd: "fe"`, and accepted by `/move <tag>` for persistent cwd switches. Worktrees live under `~/.omp/wt/` and are cleanable via `omp worktree clear`; reusing the same `--worktree` name is idempotent and never touches the user's main checkout, so a dirty tree is safe.
 
 ### Changed
 
 - Changed the sticky `Todos` panel above the editor to advance as tasks close, instead of pinning to the first 5 tasks of the active phase. `selectStickyTodoWindow` now shows up to 5 open (pending / in_progress) tasks in original phase order and reports the count of remaining open tasks for the `+N more` hint, so every `todo_write` flip produces a visible row shift. Closed-phase tail falls back to the last 5 tasks (with the `+N more` line suppressed) until `getActivePhase` walks to the next phase.
 - Linked the sticky `Todos` panel to the live `SessionObserverRegistry` so pending todos that have an in-flight subagent doing their work light up green with an animated spinner — the same `theme.spinnerFrames` ("status" preset) the `task` tool uses for its agent rows — instead of staying greyed out as if nothing is happening. A new exported `todoMatchesAnyDescription(content, descriptions)` does case- and whitespace-insensitive equality first with a 6-char minimum-overlap substring fallback in either direction, so "Sonnet #2: shallow bug scan" and a subagent description of "Sonnet #2" still link up. Completed todos now render with `theme.status.success` (✔ / `\uf00c` / `[ok]` per symbol preset, still wrapped in the `success` colour so themed palettes can keep their purple/green/whatever) and in_progress rows render with `theme.status.running`, matching the `task` tool's icon vocabulary. The spinner interval only ticks while at least one visible open todo has a matched active subagent, and self-stops once subagents finish, so plain in_progress todos do not animate forever in the absence of subagent activity.
 - Extracted the top-level CLI command table from `src/cli.ts` into a side-effect-free `src/cli-commands.ts` so test code can introspect the registered subcommands without triggering the entrypoint's top-level await.
-- Updated the workflow progress panel to render workflow agents with the task subagent UI, including agent name, resolved model, task-style status, and latest tool activity.
-- Changed the live-learning writer agent to use high reasoning, a 60s default timeout, and an explicit store/skip decision so it can refuse false-positive classifier results before writing a learning.
-
-### Fixed
-
-- Fixed live-learning classifier requests for Codex Responses models by sending the rendered classifier prompt as provider instructions, preventing Codex fallback classifiers from failing with `Instructions are required`.
-- Fixed live-learning writer failure logs to include abort/model/duration details and avoid a misleading generic "returned no content" follow-up when the writer agent times out or fails.
-- Fixed multi-root sessions so `AGENTS.md` context is loaded across tagged roots, `/move <tag>` refreshes the active root prompt context, and the status line shows the current tagged root.
-- Fixed `task` and `heavy_task` review gates so they can review and run fixer cycles in the original task context when task isolation is disabled, instead of failing before the implementer runs.
-- Fixed the missing-git-repository diagnostic for task review gates so non-isolated gates no longer report the stale "isolated task execution" helper message.
-- Fixed task review-gate diff capture in unborn git repositories (git init with no commits) so baseline untracked files are compared against an empty tree instead of failing with `fatal: Not a valid object name`.
-- Fixed task diff capture for untracked files whose path begins with `-` by passing an explicit `--` separator to `git diff --no-index`.
-- Fixed task review-gate visibility so live task progress now shows the reviewer/fixer agent pass currently running, and final review-gate summaries include the reviewer and fixer agent names.
-- Fixed task review-gate blocks so unsafe diffs are surfaced as review feedback without turning the subagent execution into an exit-code failure; blocked isolated patches/branches are withheld from application and shown as `review blocked`.
 
 ## [15.5.11] - 2026-05-29
 
@@ -2180,11 +2053,6 @@
 - Added `RedisSessionStorage`, a `bun:redis`-backed implementation of the `SessionStorage` interface that lets API consumers route session JSONL through Redis instead of local disk. Pass a connected `Bun.RedisClient` (or any compatible adapter) to `RedisSessionStorage.create({ client, prefix? })` and hand the returned storage to `SessionManager.create(cwd, sessionDir, storage)` (or any other static factory that accepts a storage argument). An in-memory mirror is loaded on creation so the interface's synchronous methods (`existsSync`, `statSync`, `listFilesSync`, …) keep their contracts; `drain()` waits for queued background writes. Tool artifacts and image blobs still live on disk via `ArtifactManager`/`BlobStore` — Redis only owns the session JSONL keyspace under the configured prefix.
 - Exported the `SessionStorage` / `SessionStorageWriter` / `FileSessionStorage` / `MemorySessionStorage` symbols (already reachable via the `./session/session-storage` subpath) from the package root so SDK consumers can construct alternative storage backends without deep-importing.
 - Added a fresh `¶<relative-path>#TAG` snapshot header to the `write` tool's success text in hashline display mode, covering plain disk writes, ACP-bridge writes, and conflict resolutions (bulk resolutions emit a trailing `Snapshots:` block with one header per successfully written file). The header records a current snapshot in the file-snapshot store so the next `edit` can land without an extra `read` round-trip. Suppressed when the session is not in hashline mode and skipped for archive/SQLite writes and host-managed internal URL targets where hashline anchors do not apply.
-- Added the `workflow` tool: deterministic multi-subagent orchestration. The model writes a plain-JS script (beginning with a pure-literal `export const meta = { name, description }`) that runs in a `node:vm` sandbox with injected globals — `agent(prompt, opts?)` (spawns a subagent via the existing executor; `opts.schema` forces structured output), `parallel(thunks)` (barrier; throwing thunks resolve to `null`), `pipeline(items, ...stages)` (no barrier between stages; `(prev, item, index)` callbacks; a throwing stage drops the item to `null`), `phase(title)`, `log(message)`, `budget` (`{total, spent(), remaining()}` hard ceiling), `workflow(nameOrRef, args?)` (one-level inline nesting), and `args`. Concurrency is capped at `min(16, cores-2)` per run with a 1000-agent lifetime backstop; `Date.now()`/`new Date()`/`Math.random()` are shimmed to throw so journal-based resume is sound. Runs in the background via `AsyncJobManager` (returns a run id immediately, delivers the result on completion) with a synchronous fallback when no background runner exists (e.g. `--print`). Enabled by default via `workflow.enabled` (set `false` to remove the tool); `workflow.maxConcurrency` and `workflow.tokenBudget` tune limits.
-- Added the `/workflows` slash command and a live progress panel (phase → agent tree with state/duration/token glyphs), fed by the `workflow:progress` event channel.
-- Added bundled `bugfix` and `investigate` workflows plus discovery of project (`.omp/workflows/*.js`) and user (`~/.omp/agent/workflows/*.js`) workflows, and a built-in `workflow-subagent` agent used as the default `agent()` worker. Resume a run after editing its persisted script with `workflow({scriptPath, resumeFromRunId})` — the longest unchanged prefix of `agent()` calls replays cached results from a per-run journal.
-- Added a just-in-time keyword trigger: when the user's message mentions "workflow" (and `workflow.enabled` is on), a hidden `<system-reminder>` is injected into that turn instructing the agent to author and run a dynamic workflow for the task itself — so users get orchestration by simply saying "use a workflow to …" without writing a script.
-- Added idle topic-switch compaction: when a session has been idle past `compaction.topicSwitchIdleSeconds` (default 30m) and the next user request arrives, the fast (`smol`) model classifies whether that request still relates to the prior conversation. An unrelated request triggers a context-full compaction (summary + recent tail) before the turn runs, so a brand-new topic doesn't inherit the stale context's tokens — surfaced with the usual auto-compaction status spinner ("Topic changed, …"). Gated by `compaction.topicSwitchEnabled` (default on), skipped when the context is under `compaction.topicSwitchMinContextTokens` (default 30K). The classifier fails open: any missing model/key, error, or timeout leaves the turn untouched.
 
 ### Changed
 
@@ -9849,6 +9717,111 @@ Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mon
 - Fixed Task tool progress display showing repeated nearly-identical lines during streaming
 - Fixed Task tool subprocess model selection ignoring agent's configured model and falling back to settings default. The `--model` flag now accepts `provider/model` format directly.
 - Fixed Task tool showing "done + succeeded" when aborted; now correctly displays "⊘ aborted" status
+
+## [1.3.3] - 2026-06-15
+
+### Added
+
+- Added a `display.syntaxHighlighting` mode (`native`, `basic`, `off`) plus `OMP_DISABLE_SYNTAX_HIGHLIGHT=1`/`PI_DISABLE_SYNTAX_HIGHLIGHT=1` env kill switches so code rendering can avoid native syntax parsing when CPU usage matters more than rich colors.
+
+### Fixed
+
+- Added an OpenAI Codex pre-prompt payload-size guard that runs context compaction before sending very large provider requests, avoiding slow turns caused by oversized continued sessions.
+- Added an installer config migration that sets `display.syntaxHighlighting: basic` when existing shell-installed configs have not chosen a syntax highlighting mode.
+- Pruned older snapcompact image frames from oversized OpenAI Codex provider requests while keeping the newest frames and text summary, preventing archived screenshots from pushing WebSocket payloads over the 16 MiB cap.
+- Skipped native syntax highlighting for pending/running code previews so many parallel subagents no longer spend a full CPU core re-highlighting live tool cells every render frame.
+- Released OpenAI credential active-use reservations when provider streams finish, abort, fresh-session, or dispose so parallel subagents keep spreading across available accounts instead of sticking to stale busy slots.
+- Started OpenAI Codex WebSocket startup prewarm with the session's system prompt and tool set so the first real turn can reuse the warmup response id instead of resending the full baseline payload.
+- Fixed `ompx update` on macOS self-sandboxed installs by allowing the sandbox profile for the update command to rewrite the resolved installation directory, so the install-script backup and direct-download `.new`/`.bak` swap no longer fail with `EPERM` for `~/.local/bin/ompx`.
+- Fixed the browser `annotate` overlay being unusable on pages that run a focus trap: modals built with Radix/focus-trap/Headless UI/MUI yanked focus back into their dialog the instant the overlay's comment box was clicked, so the textarea could never be typed into. The overlay now intercepts its own focus events at the `window` capture phase (ahead of document-level traps), re-asserts focus on its own text fields on `pointerdown` (defeating traps that `preventDefault` the click), and isolates its keystrokes at the shadow boundary, so the comment/note fields hold focus and accept text even atop aggressive modals and keyboard-driven games; the guard no-ops once annotation mode is disabled.
+
+## [1.3.2] - 2026-06-13
+
+### Fixed
+
+- Missing externalized session image blobs now reload as unavailable image data instead of preserving the raw `blob:` reference that could later be sent to providers as malformed base64.
+
+## [1.3.1] - 2026-06-12
+
+### Fixed
+
+- Browser annotation mode now keeps a background listener after activation, so repeated overlay submissions are queued into the conversation and wake idle agents instead of requiring another blocking `annotate` call.
+- Fixed `search_tool_bm25` transcript rendering when a persisted error result has empty or malformed `details`, avoiding a renderer crash while rebuilding prior sessions.
+
+## [1.3.0] - 2026-06-11
+
+### Added
+
+- Added a native-loaded Delegation Reminder extension (`@oh-my-pi/delegation-reminder-plugin`) for main interactive sessions running in Orchestrator Mode (`task.eager` on with the `task` tool available). It tracks per-turn hands-on tool calls (`edit`, `write`, `ast_edit`, `bash`) and, once the `delegation.reminder.threshold` (default 6) is crossed without any `task` delegation, appends a one-time mid-turn `<system-notice>` nudging the model to delegate via subagents, then records a session-log-only `delegation-reminder` stats entry (`{ model, provider, api, handsOnCount, taskCount, threshold }`) for per-model offender stats. Subagent sessions never nudge. Toggle with the `delegation.reminder.enabled` setting
+
+### Changed
+
+- `ompx update` now runs the repo install script (`scripts/install.sh`, pinned to the release tag) on Linux/macOS instead of only swapping the binary asset, so updates share one source of truth with fresh installs — SHA256SUMS verification, standard-config seeding, and future installer migrations apply automatically. The previous binary is backed up and restored when the script fails or the updated binary reports the wrong version; Windows and failed script fetches fall back to the direct binary swap
+- `task.showResolvedModelBadge` now defaults to `true`, so the task widget and eval renderer show the actual model each running subagent resolved to (the badge previously existed but was opt-in and effectively invisible)
+- Tightened the task-delegation prompt contract end to end: the task tool's `assignment-fmt` now mandates four sections (`# Target` scope + forbidden files, `# Change` locked implementation, `# Acceptance` per-item self-verifiable checks, `# Done` report contents + escalation conditions) with a quality bar and a WRONG/RIGHT example; the system prompt's WORK PACKAGE CONTRACT uses the same vocabulary; subagents now receive the assignment framed as a contract (scope boundary, exit conditions, no silent guessing) and the `task`/`quick_task`/`heavy_task` worker prompts treat unmet Acceptance items as explicit blockers
+
+### Fixed
+
+- Fixed the working spinner disappearing for the rest of the turn after an automatic compaction ran when a prompt was submitted (and after mid-turn context maintenance or auto-retry): the compaction/retry status handlers cleared the status container without releasing the spinner handle, turning every later `ensureLoadingAnimation()` into a no-op. The handlers now stop and release the spinner before showing their own loader, and restore it afterwards while a prompt is still in flight
+
+## [1.2.0] - 2026-06-11
+
+### Fixed
+
+- Fixed `ompx --smoke-test` hanging on macOS ("sync worker did not pong"): internal worker re-entry argv selectors (`__omp_stats_sync_worker`, `__omp_tab_worker`, `__omp_js_eval_worker`, `--tiny-worker`) were dispatched after the macOS self-sandbox relaunch check, so a worker thread re-entering the CLI in an unsandboxed process spawned a detached `sandbox-exec` clone with no postMessage channel. Worker dispatch now runs before the relaunch check, and the selectors are excluded from self-sandboxing
+
+### Changed
+
+- When a natural-language compact instruction in a new user message runs the inline compaction, the consumed instruction is now stripped from the outgoing message (so the stale imperative cannot steer the model into compacting again) and a hidden notice telling the model the compaction already ran is appended after the message
+
+## [1.1.0] - 2026-06-11
+
+### Added
+
+- Added `compact` tool: the agent can schedule a context compaction at the next turn boundary when it judges older history is no longer needed (honors `compaction.strategy`, including snapcompact)
+- Added natural-language compact intent: an imperative "compact" instruction in a new user message ("compact đi", "please compact", bare `compact`) runs the compaction inline before the prompt is answered, bypassing the token threshold; questions and discussion about compaction do not trigger it
+- Added a `# Context Compaction` system prompt section (rendered when the `compact` tool is available) that proactively lists the boundary cases where the agent should compact and requires restating next steps before calling
+- Added a tier quick-reference (`quick_task` / `task` / `heavy_task`) at the top of the eager-orchestrator system prompt section so tier selection guidance is visible before the detailed PHASE 3 case lists
+
+## [1.0.9] - 2026-06-10
+
+### Fixed
+
+- Fixed the agent stalling after a macOS sandbox relaunch. When the model calls the `sandbox` tool (or the user runs `/add-dir`) mid-turn, the supervisor SIGTERMs the session and respawns it via `--resume` — but the resumed child restored the message history and then idled at the prompt, silently dropping the model's interrupted turn so it never retried the blocked operation. The resumed session now detects that the model still owes a response (the conversation ends with the `sandbox` tool result, via `conversationAwaitsAssistant`) and auto-continues the turn so the agent retries; a `/add-dir` between completed turns stays a no-op. Also bounded the supervisor's relaunch wait — if a child's SIGTERM cleanup hangs (an unbounded ssh/sshfs unmount in `postmortem` could block `process.exit`), it now escalates to SIGKILL after 10s so the relaunch can't freeze indefinitely.
+- macOS sandbox SSH agent auto-discovery now probes `/var/run` (and `/private/var/run`), where the system launchd `com.openssh.ssh-agent` (Keychain) socket lives. Previously only per-user temp roots were scanned, so sessions launched without an inherited `SSH_AUTH_SOCK` fell back to blocked key files and SSH auth failed.
+
+### Added
+
+- Added a human-in-the-loop `annotate` action to the `browser` tool: it overlays an in-page feedback UI (draw red boxes with optional notes, write a comment, "Send to agent") on a live tab, waits for a submission, and returns the structured feedback plus a screenshot with the marked regions burned in and the toolbar hidden. Each marked region also carries the DOM element under it (CSS selector, role, accessible name, text snippet) captured at draw time, so the agent can target it in follow-up `run` calls. The overlay survives navigations, stays glued to page content while scrolling, and `enabled: false` / `wait: false` toggle it without blocking.
+- Extended the browser `annotate` overlay with a DevTools-style **Pick** mode (hovering highlights the element under the cursor with a selector/size tooltip; clicking marks its viewport box with the element context attached) and made the floating toolbar draggable by its header and minimizable to a Vercel-comments-style pill that shows the marked-region count.
+- The `annotate` action now auto-launches a **visible** browser (fresh profile, sandbox-safe launch flags) when the target tab is missing or lives on a hidden headless browser, migrating the tab's URL — pass `url` to annotate without opening a tab first. Previously annotate on the default headless browser waited on an overlay no human could see.
+- The annotate overlay now keeps an offline queue: submissions made while no agent is connected (or whose dispatch fails) are saved page-side in `sessionStorage` (in-memory fallback), surviving reloads, and are delivered automatically the next time annotation mode is enabled — calling `{action:"annotate"}` again pulls them immediately. The toolbar reports "saved locally (N pending)" instead of silently dropping the feedback.
+
+## [1.0.7] - 2026-06-09
+
+### Added
+
+- The macOS sandbox now auto-discovers the user's running SSH agent so `git`/`ssh` over SSH works with zero config even when the launching context doesn't export `SSH_AUTH_SOCK` (e.g. a supervisor that strips it). It probes 1Password, Secretive, the launchd agent, and classic `ssh-agent` sockets, trusting only sockets owned by the current user, exposes the discovered socket to sandboxed children as `SSH_AUTH_SOCK`, and allows it in the Seatbelt profile (sockets only — private keys stay blocked). Override the path with the `sandbox.sshAuthSock` setting or `PI_OMPX_SSH_AUTH_SOCK` env var, or set `sandbox.sshAuthSock: off` to disable.
+
+### Changed
+
+- Sandboxed top-level and nested `ompx` runs on macOS by default with a sandvault-inspired Seatbelt profile scoped to the effective working directory, associated Git metadata, OMPx runtime paths, sandbox-allowed inherited SSH agent sockets, public SSH client metadata/public identity files, and trusted configured sandbox allowlist paths (defaulting to `~/.gitconfig`, the shared `~/.bun/install/cache`, `~/.cargo`, `~/go`, and `~/.cache` toolchain caches, and `~/.kube/config`), plus `--no-sandbox`, `/add-dir`, the `sandbox` tool, sandbox-denial notices, and sandbox awareness for commands/hooks.
+- Rebranded the CLI invocation from `omp` to `ompx`, updated release/install binary names, and seeded fresh installs with the standard `~/.omp/agent/config.yml` backup.
+- Disabled OMP-compatible Claude hook discovery from `.claude/hooks/**` and Cursor rule prompt injection by default; enable `hooks.enableClaudeUser` / `hooks.enableClaudeProject` or `rules.enableCursorUser` / `rules.enableCursorProject` from trusted operator config or runtime overrides to opt back in.
+
+### Fixed
+
+- Reduced sustained CPU during assistant streaming and tool execution. The status line was rebuilt on every agent event (every token delta): it re-ran a synchronous git HEAD resolve (an uncached filesystem tree-walk) and, on non-default branches, defeated the PR cache's 60s TTL so `gh pr view` was re-spawned back-to-back for the whole turn; it also re-tokenized the still-growing assistant message on every delta. Branch resolution is now cwd-cached (refreshed by the existing HEAD watcher, on `/cd`, and once per turn at `agent_end`), the per-event git/PR cache invalidation was removed, the growing message's token estimate is TTL-throttled, and pending edit/write tool spinners repaint at their glyph cadence instead of 30fps (the `task`-row name shimmer keeps its 30fps cadence).
+- Cut grapheme-counting CPU in the streaming reveal. `visibleUnits`/`buildDisplayMessage` ran full `Intl.Segmenter` passes over the whole growing message on every 30fps frame and every delta. `countGraphemes` and `sliceGraphemes` now take an ASCII fast-path (pure-ASCII text with no CR maps 1 char == 1 grapheme — CRLF is the only ASCII cluster), and grapheme counts are memoized in a small LRU, so stable blocks and repeated same-snapshot passes don't re-segment. Verified against an independent `Intl.Segmenter` oracle (ASCII/CRLF/accent/emoji/ZWJ) and that `buildDisplayMessage` never splits a cluster.
+- Further cut streaming-reveal CPU by removing redundant per-frame work. The 30fps reveal recomputed `visibleUnits` (a full grapheme pass over the whole message) on every tick on top of the pass already inside `buildDisplayMessage`, and `setTarget` rebuilt the revealed message synchronously on every model delta ahead of the render throttle. The target's visible-unit total is now cached and recomputed only when the target changes (the tick and timer reuse it), and the per-delta rebuild is deferred to the throttled 30fps tick so a burst of deltas in one frame window coalesces into a single build; the synchronous build is kept only when the reveal is already fully caught up. The non-smooth-streaming and tool-call-boundary paths are unchanged.
+- Fixed runtime macOS sandbox allowlist relaunches to keep the active project as the primary workspace root, so adding another trusted directory no longer trips the cross-project resume/fork prompt.
+- Fixed release publishing and `ompx update` to use version GitHub tags as the binary release source, build release assets from tag pushes, delay public GitHub release publication until after npm publish, and verify binary update downloads against `SHA256SUMS`.
+- Fixed `ompx update` reinstalling the upstream `@oh-my-pi/pi-coding-agent` npm package (from `registry.npmjs.org`) whenever `ompx` lived in bun's global bin directory — the documented fork install location — which pulled a different project's build instead of the latest OMPx release. `ompx update` now always downloads the matching `qtnx/omppp` GitHub release binary and swaps it in place regardless of install location, dropping the npm/bun reinstall path entirely; the post-swap backup cleanup is now best-effort so a still-open previous binary on Windows no longer fails an otherwise-verified update.
+- Fixed `ompx update` rolling back every downloaded update during verification. `verifyInstalledVersion` parsed the post-swap `ompx --version` output with a regex that required an `ompx/` prefix, but the binary prints the bare `X.Y.Z` (`main.ts` writes `${VERSION}`), so the reported version never matched, the freshly downloaded binary was treated as unverified, and the previous binary was restored — leaving `ompx update` permanently unable to complete a swap. The parser now reads the bare semver (still tolerating optional `ompx/`/`v` prefixes). Also added a release-CI guard that fails the build when a release binary's `--version` does not equal its `vX.Y.Z` tag, so a tag cut without the matching `package.json` version bump — which makes both `ompx --version` and the `ompx update` "is newer?" comparison report a stale version — can no longer ship.
+- Fixed compiled binary builds with the patched `tar` dependency by applying a `fastembed` ESM import compatibility patch.
+- Hardened binary installers to verify GitHub release SHA256SUMS before installing, removed remote Bun bootstrap execution from source-install paths, and pinned vulnerable transitive `tar` resolution to a patched version.
+- Fixed Herdr agent-state reporting for Goal Mode sessions by exposing live goal state to extensions, so active goal/subagent work no longer falls back to idle-only context heuristics.
+- Fixed Context GC cleanup not reducing visible status-line and `/context` usage by applying projection-adjusted token estimates when Context GC actually lowered model-visible context.
 
 ## [0.50.1] - 2026-01-26
 
