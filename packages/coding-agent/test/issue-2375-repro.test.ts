@@ -13,7 +13,11 @@
  * text paste; the user must see an SSH-aware diagnostic so they know to
  * paste image bytes directly instead.
  */
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as os from "node:os";
+import * as path from "node:path";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
@@ -38,14 +42,18 @@ function createContext() {
 	const requestRender = vi.fn();
 	const showStatus = vi.fn();
 	const ctx = {
-		editor: { pasteText, insertText, imageLinks: undefined } as unknown as InteractiveModeContext["editor"],
+		editor: {
+			pasteText,
+			insertText,
+			imageLinks: undefined,
+			pendingImages: [] as ImageContent[],
+			pendingImageLinks: [] as (string | undefined)[],
+		} as unknown as InteractiveModeContext["editor"],
 		ui: { requestRender, getFocused: () => null } as unknown as InteractiveModeContext["ui"],
 		sessionManager: {
 			getCwd: () => process.cwd(),
 			putBlob: async () => ({ hash: "h", path: "/tmp/h.png", displayPath: "/tmp/h.png" }),
 		} as unknown as InteractiveModeContext["sessionManager"],
-		pendingImages: [] as InteractiveModeContext["pendingImages"],
-		pendingImageLinks: [] as InteractiveModeContext["pendingImageLinks"],
 		showStatus,
 	} as unknown as InteractiveModeContext;
 	return { ctx, spies: { pasteText, insertText, requestRender, showStatus } };
@@ -147,8 +155,8 @@ describe("InputController.handleImagePathPaste (issue #2375)", () => {
 
 		expect(spies.pasteText).not.toHaveBeenCalled();
 		expect(spies.showStatus).not.toHaveBeenCalled();
-		expect(ctx.pendingImages.length).toBe(1);
-		expect(ctx.pendingImages[0]?.mimeType).toBe("image/png");
+		expect(ctx.editor.pendingImages.length).toBe(1);
+		expect(ctx.editor.pendingImages[0]?.mimeType).toBe("image/png");
 	});
 
 	it("locally: attaches the clipboard image when the pasted path resolves to a non-image file", async () => {
@@ -162,7 +170,7 @@ describe("InputController.handleImagePathPaste (issue #2375)", () => {
 			readText: async () => "",
 		});
 		// This test file itself: resolvable, readable, but not an image.
-		const nonImage = import.meta.path.replace(/\.ts$/, ".png");
+		const nonImage = path.join(os.tmpdir(), `issue-2375-not-png-${Math.random().toString(36).slice(2)}.png`);
 		await Bun.write(nonImage, "not really a png");
 		try {
 			await controller.handleImagePathPaste(nonImage);
@@ -171,7 +179,7 @@ describe("InputController.handleImagePathPaste (issue #2375)", () => {
 		}
 
 		expect(spies.pasteText).not.toHaveBeenCalled();
-		expect(ctx.pendingImages.length).toBe(1);
-		expect(ctx.pendingImages[0]?.mimeType).toBe("image/png");
+		expect(ctx.editor.pendingImages.length).toBe(1);
+		expect(ctx.editor.pendingImages[0]?.mimeType).toBe("image/png");
 	});
 });

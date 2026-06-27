@@ -14,7 +14,7 @@ import {
 	type ExtensionFactory,
 } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { Snowflake } from "@oh-my-pi/pi-utils";
+import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { SYSTEM_CONTEXT_REMINDER_LABEL } from "@oh-my-pi/system-context-reminder-plugin";
 import { type } from "arktype";
 import { getBundledAgent } from "../src/task/agents";
@@ -96,14 +96,14 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 	afterEach(() => {
 		for (const tempDir of tempDirs.splice(0)) {
-			fs.rmSync(tempDir, { recursive: true, force: true });
+			removeSyncWithRetries(tempDir);
 		}
 
 		vi.restoreAllMocks();
 	});
 
 	afterAll(() => {
-		fs.rmSync(registryAuthDir, { recursive: true, force: true });
+		removeSyncWithRetries(registryAuthDir);
 	});
 
 	it("activates Codex-style goal tools by default while keeping the legacy goal tool hidden", async () => {
@@ -585,7 +585,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 	it("activates the yield tool when requireYieldTool is set and toolNames is explicit", async () => {
 		// Regression for #1408: plan-mode subagents pass an explicit `toolNames` list
-		// (e.g. `["read", "search", "find", "lsp", "web_search"]`). Without this
+		// (e.g. `["read", "grep", "glob", "lsp", "web_search"]`). Without this
 		// invariant, `yield` ended up registered but not active, and the model
 		// could not satisfy the idle-reminder contract that demands a `yield` call.
 		const tempDir = makeTempDir();
@@ -593,11 +593,32 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
 			requireYieldTool: true,
-			toolNames: ["read", "search", "find", "web_search"],
+			toolNames: ["read", "grep", "glob", "web_search"],
 		});
 
 		try {
 			expect(session.getActiveToolNames()).toContain("yield");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("normalizes legacy builtin toolNames before selecting the active SDK tools", async () => {
+		const tempDir = makeTempDir();
+
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			toolNames: ["read", "search", "find"],
+		});
+
+		try {
+			const activeToolNames = session.getActiveToolNames();
+
+			expect(activeToolNames).toContain("read");
+			expect(activeToolNames).toContain("grep");
+			expect(activeToolNames).toContain("glob");
+			expect(activeToolNames).not.toContain("search");
+			expect(activeToolNames).not.toContain("find");
 		} finally {
 			await session.dispose();
 		}
@@ -615,7 +636,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
-			toolNames: ["read", "search", "find", "web_search"],
+			toolNames: ["read", "grep", "glob", "web_search"],
 		});
 
 		try {
@@ -634,7 +655,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
 			settings,
-			toolNames: ["read", "search", "find", "web_search"],
+			toolNames: ["read", "grep", "glob", "web_search"],
 		});
 
 		try {

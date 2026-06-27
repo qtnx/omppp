@@ -1,4 +1,7 @@
-import { createAbortableStream } from "./abortable";
+const trailingEvents = new WeakSet<ServerSentEvent>();
+
+import { abortableSource } from "./abortable";
+import { parseStreamingJson } from "./json-parse";
 
 const LF = 0x0a;
 type JsonlChunkResult = {
@@ -23,7 +26,7 @@ function parseJsonlChunkCompat(input: Uint8Array | string, beg?: number, end?: n
 
 export async function* readLines(stream: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<Uint8Array> {
 	const buffer = new ConcatSink();
-	const source = createAbortableStream(stream, signal);
+	const source = abortableSource(stream, signal);
 	try {
 		for await (const chunk of source) {
 			for (const line of buffer.appendAndFlushLines(chunk)) {
@@ -46,7 +49,7 @@ export async function* readLines(stream: ReadableStream<Uint8Array>, signal?: Ab
 
 export async function* readJsonl<T>(stream: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<T> {
 	const buffer = new ConcatSink();
-	const source = createAbortableStream(stream, signal);
+	const source = abortableSource(stream, signal);
 	try {
 		for await (const chunk of source) {
 			yield* buffer.pullJSONL<T>(chunk, 0, chunk.length);
@@ -210,19 +213,39 @@ function notifySseEventObserver(observer: SseEventObserver | undefined, event: S
 	}
 }
 
+function isRecoverableTrailingJson(data: string): boolean {
+	const first = data.trimStart()[0];
+	if (first !== "{" && first !== "[") return false;
+	// Best-effort relaxed recovery via the shared streaming JSON parser: a
+	// container-shaped final event that fails strict `JSON.parse` is treated as a
+	// cut-off (or lightly malformed) stream tail and ends iteration cleanly instead
+	// of throwing. Non-container final events (plain-text errors, bare scalars) are
+	// not recoverable and still surface as a SyntaxError.
+	const recovered = parseStreamingJson<unknown>(data);
+	return typeof recovered === "object" && recovered !== null;
+}
+
 export async function* readSseJson<T>(
 	stream: ReadableStream<Uint8Array>,
 	signal?: AbortSignal,
 	onEvent?: SseEventObserver,
 ): AsyncGenerator<T> {
 	for await (const sse of readSseEvents(stream, signal)) {
+		const isTrailing = trailingEvents.has(sse);
 		notifySseEventObserver(onEvent, sse);
 		const data = sse.data;
 		if (data === "" || data === "[DONE]") {
 			if (data === "[DONE]") return;
 			continue;
 		}
-		yield JSON.parse(data) as T;
+		try {
+			yield JSON.parse(data) as T;
+		} catch (err) {
+			if (err instanceof SyntaxError && isTrailing && isRecoverableTrailingJson(data)) {
+				return;
+			}
+			throw err;
+		}
 	}
 }
 
@@ -339,7 +362,7 @@ export async function* readSseEvents(
 ): AsyncGenerator<ServerSentEvent> {
 	const lineBuffer = new ConcatSink();
 	const state: SseEventState = { event: null, data: null, raw: [] };
-	const source = createAbortableStream(stream, signal);
+	const source = abortableSource(stream, signal);
 	try {
 		for await (const chunk of source) {
 			for (const line of lineBuffer.appendAndFlushLines(chunk)) {
@@ -353,12 +376,18 @@ export async function* readSseEvents(
 			if (tail) {
 				lineBuffer.clear();
 				const event = pushSseLine(tail, state);
-				if (event) yield event;
+				if (event) {
+					trailingEvents.add(event);
+					yield event;
+				}
 			}
 		}
 		// Real services don't always close on a blank line — flush any pending event.
 		const trailing = flushSseEvent(state);
-		if (trailing) yield trailing;
+		if (trailing) {
+			trailingEvents.add(trailing);
+			yield trailing;
+		}
 	} catch (err) {
 		if (signal?.aborted) return;
 		throw err;

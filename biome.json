@@ -60,8 +60,8 @@
 			"!**/vendor/**/*",
 			"!**/node_modules/**/*",
 			"!**/test-sessions.ts",
-			"!**/docs-index.generated.ts",
 			"!**/agent_pb.ts",
+			"!**/devin-gen/**/*",
 			"!.worktrees/**/*",
 			"!.wt/**/*"
 		]

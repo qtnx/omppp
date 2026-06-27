@@ -12,13 +12,19 @@ function fakeGlobals(spawn: (p: string, o: unknown) => Promise<string | null>, a
 }
 
 describe("parallel", () => {
-	it("is a barrier and maps thrown thunks to null", async () => {
+	it("is a barrier and maps rejected or thrown thunks to null", async () => {
 		const g = fakeGlobals(async p => (p === "boom" ? Promise.reject(new Error("x")) : `ok:${p}`));
-		expect(await g.parallel([() => g.agent("a"), () => g.agent("boom"), () => g.agent("b")])).toEqual([
-			"ok:a",
-			null,
-			"ok:b",
-		]);
+		expect(
+			await g.parallel([
+				() => g.agent("a"),
+				() => {
+					throw new Error("sync");
+				},
+				() => g.agent("boom"),
+				() => "sync-value",
+				() => g.agent("b"),
+			]),
+		).toEqual(["ok:a", null, null, "sync-value", "ok:b"]);
 	});
 	it("rejects non-array input", async () => {
 		await expect(fakeGlobals(async p => p).parallel("nope" as never)).rejects.toThrow(/array of functions/);

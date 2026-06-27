@@ -1,10 +1,17 @@
 import { describe, expect, it } from "bun:test";
+import {
+	type Dialect,
+	getDialectDefinition,
+	type InbandScanEvent,
+	ThinkingInbandScanner,
+} from "@oh-my-pi/pi-ai/dialect";
 import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
 import { stream } from "@oh-my-pi/pi-ai/stream";
 import type { Context, FetchImpl, Model, ThinkingContent, Tool, ToolCall } from "@oh-my-pi/pi-ai/types";
 import { getStreamMarkupHealingPattern, StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 
 interface SseToolCallDelta {
 	index: number;
@@ -71,7 +78,7 @@ function chunk(model: string, delta: SseChoiceDelta, finish: SseChunk["choices"]
 const REPORTED_DSML_LEAK =
 	"<｜DSML｜tool_calls>\n" +
 	' <｜DSML｜invoke name="bash">\n' +
-	' <｜DSML｜parameter name="_i" string="true">Check Fedora 42 available packages</｜DSML｜parameter>\n' +
+	' <｜DSML｜parameter name="i" string="true">Check Fedora 42 available packages</｜DSML｜parameter>\n' +
 	' <｜DSML｜parameter name="command" string="true">docker run --rm --platform linux/arm64 fedora:42 bash -c \'type python3; type git; type sed; type cp; ls /usr/bin/python3 2>/dev/null; rpm -qa | grep -E "^python3|^git-|^sed-|^bash-" | sort\'</｜DSML｜parameter>\n' +
 	' <｜DSML｜parameter name="timeout" string="false">15</｜DSML｜parameter>\n' +
 	" </｜DSML｜invoke>\n" +
@@ -83,7 +90,7 @@ const bashTool: Tool = {
 	parameters: {
 		type: "object",
 		properties: {
-			_i: { type: "string" },
+			[INTENT_FIELD]: { type: "string" },
 			command: { type: "string" },
 			timeout: { type: "number" },
 		},
@@ -163,7 +170,7 @@ describe("StreamMarkupHealing DSML envelope pattern", () => {
 		expect(call.id).toMatch(/^call_[0-9a-f]+$/);
 
 		const args = JSON.parse(call.arguments) as Record<string, unknown>;
-		expect(args._i).toBe("Check Fedora 42 available packages");
+		expect(args[INTENT_FIELD]).toBe("Check Fedora 42 available packages");
 		expect(args.timeout).toBe(15);
 		expect(String(args.command)).toContain("2>/dev/null");
 		expect(String(args.command)).toContain('grep -E "^python3|^git-|^sed-|^bash-"');
@@ -247,6 +254,80 @@ describe("StreamMarkupHealing thinking pattern", () => {
 		expect(healing.feedEvents("visible <thin")).toEqual([{ type: "text", text: "visible " }]);
 		expect(healing.feedEvents("king>hidden</think")).toEqual([{ type: "thinking", thinking: "hidden" }]);
 		expect(healing.feedEvents("ing> answer")).toEqual([{ type: "text", text: " answer" }]);
+	});
+
+	// Heal input (one or more chunks) through the public entry point, returning the
+	// visible text and the recovered thinking. Spread a string to stream per char.
+	const heal = (...chunks: string[]): { text: string; thinking: string } => {
+		const healing = new StreamMarkupHealing({ pattern: "thinking" });
+		const events = [...chunks.flatMap(chunk => healing.feedEvents(chunk)), ...healing.flushEvents()];
+		let text = "";
+		let thinking = "";
+		for (const event of events) {
+			if (event.type === "text") text += event.text;
+			else if (event.type === "thinking") thinking += event.thinking;
+		}
+		return { text, thinking };
+	};
+
+	// Exhaustive over the dialect union: a missing case is a compile error, so the
+	// healer is proven to recover every dialect's canonical `renderThinking` form.
+	const DIALECT_CASES: { [K in Dialect]: K } = {
+		anthropic: "anthropic",
+		deepseek: "deepseek",
+		gemini: "gemini",
+		gemma: "gemma",
+		glm: "glm",
+		harmony: "harmony",
+		hermes: "hermes",
+		kimi: "kimi",
+		minimax: "minimax",
+		qwen3: "qwen3",
+		xml: "xml",
+	};
+
+	for (const dialect of Object.values(DIALECT_CASES)) {
+		it(`heals leaked ${dialect} reasoning back into thinking`, () => {
+			const rendered = getDialectDefinition(dialect).renderThinking("REASONING_SENTINEL");
+			const { text, thinking } = heal(`prefix ${rendered} suffix`);
+			expect(thinking).toContain("REASONING_SENTINEL");
+			expect(text).toBe("prefix  suffix");
+		});
+	}
+
+	it("heals a gemini ```thinking fence streamed character by character", () => {
+		const { text, thinking } = heal(..."Sure.```thinking\nweigh options\n```Done.");
+		expect(thinking).toBe("weigh options\n");
+		expect(text).toBe("Sure.Done.");
+	});
+
+	it("heals a bare harmony analysis channel leak", () => {
+		const { text, thinking } = heal("<|channel|>analysis<|message|>planning the edit<|end|>Final answer.");
+		expect(thinking).toBe("planning the edit");
+		expect(text).toBe("Final answer.");
+	});
+
+	it("heals a leaked <scratchpad> section", () => {
+		const { text, thinking } = heal("<scratchpad>jot</scratchpad>visible");
+		expect(thinking).toBe("jot");
+		expect(text).toBe("visible");
+	});
+
+	it("passes a bare '<' in idle prose through without holding it back", () => {
+		expect(heal("if a < b:\n    return a")).toEqual({ text: "if a < b:\n    return a", thinking: "" });
+	});
+
+	it("leaves unrelated markup as visible text", () => {
+		expect(heal("see <div>content</div> end")).toEqual({ text: "see <div>content</div> end", thinking: "" });
+	});
+
+	it("emits one balanced thinking boundary for a healed fence", () => {
+		const scanner = new ThinkingInbandScanner();
+		const events: InbandScanEvent[] = [...scanner.feed("a```thinking\nx\n```b"), ...scanner.flush()];
+		expect(events.filter(e => e.type === "thinkingStart")).toHaveLength(1);
+		expect(events.filter(e => e.type === "thinkingEnd")).toHaveLength(1);
+		const thinking = events.map(e => (e.type === "thinkingDelta" ? e.delta : "")).join("");
+		expect(thinking).toBe("x\n");
 	});
 });
 describe("Kimi K2 leaked markup healing", () => {
@@ -615,7 +696,7 @@ describe("Ollama provider DSML envelope healing", () => {
 		expect(toolCalls).toHaveLength(1);
 		expect(toolCalls[0].name).toBe("bash");
 		expect(toolCalls[0].arguments).toMatchObject({
-			_i: "Check Fedora 42 available packages",
+			[INTENT_FIELD]: "Check Fedora 42 available packages",
 			timeout: 15,
 		});
 		expect(String(toolCalls[0].arguments.command)).toContain("docker run");
@@ -736,7 +817,7 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 		expect(toolCalls).toHaveLength(1);
 		expect(toolCalls[0].name).toBe("bash");
 		expect(toolCalls[0].arguments).toMatchObject({
-			_i: "Check Fedora 42 available packages",
+			[INTENT_FIELD]: "Check Fedora 42 available packages",
 			timeout: 15,
 		});
 		expect(result.stopReason).toBe("toolUse");
@@ -784,7 +865,7 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 		expect(toolCalls).toHaveLength(1);
 		expect(toolCalls[0].name).toBe("bash");
 		expect(toolCalls[0].arguments).toMatchObject({
-			_i: "Check Fedora 42 available packages",
+			[INTENT_FIELD]: "Check Fedora 42 available packages",
 			timeout: 15,
 		});
 		expect(result.stopReason).toBe("toolUse");

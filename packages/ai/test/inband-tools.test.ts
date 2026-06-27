@@ -41,7 +41,6 @@ const DIALECTS: readonly Dialect[] = [
 	"minimax",
 	"deepseek",
 	"harmony",
-	"pi",
 	"qwen3",
 	"gemini",
 	"gemma",
@@ -154,11 +153,6 @@ describe("in-band tool dialects", () => {
 			'<|start|>assistant<|channel|>commentary to=functions.read<|message|>{"path":"src/a.ts"}<|call|>',
 			'<|start|>assistant<|channel|>commentary to=functions.read<|message|>{"path":"src/a.ts"}<|call|>',
 		);
-		expectRawBlock(
-			"pi",
-			'<call:write path="out.ts">\nhello\n</call:write>',
-			'<call:write path="out.ts">\nhello\n</call:write>',
-		);
 	});
 
 	it("projects raw tool blocks onto parsed ToolCall content", () => {
@@ -242,9 +236,6 @@ describe("in-band tool dialects", () => {
 			"<function_results>\n<result>\n<tool_name>read</tool_name>\n<stdout>FILE</stdout>\n</result>\n</function_results>",
 		);
 		expect(getDialectDefinition("qwen3").renderToolResults([resultBlock])).toBe(
-			"<tool_response>\nFILE\n</tool_response>",
-		);
-		expect(getDialectDefinition("pi").renderToolResults([resultBlock])).toBe(
 			"<tool_response>\nFILE\n</tool_response>",
 		);
 		expect(getDialectDefinition("gemini").renderToolResults([resultBlock])).toBe("```tool_outputs\nFILE\n```");

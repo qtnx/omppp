@@ -25,16 +25,22 @@ Common shapes:
 </workflow-use>
 
 <helpers>
-- `agent(prompt, { agent_type, model, label, schema }?)` — run one subagent; returns final text, or a validated object when `schema` is provided. Shared background belongs in a `local://` file referenced from each prompt. The call blocks until the subagent finishes.
-- `parallel(thunks)` — run zero-arg functions concurrently through the session task concurrency limit, preserving input order. Catch expected failures inside each thunk if partial results are useful. In loops, bind each closure's value (`const item = items[i]`) before creating the thunk.
-- `pipeline(items, ...stages)` — map items through stages left-to-right. There is a barrier between stages: all items finish stage N before stage N+1 begins. Use it only when a stage needs all prior results.
-- `log(message)` emits progress; `phase(title)` groups status lines under a phase.
+Workflow scripts run in the `workflow` tool and have these globals:
+
+- `agent(prompt, { agentType, model, label, phase, schema }?)` — run ONE subagent; returns its final text, or the validated object when `schema` (a JSON Schema object) is provided. `agentType` picks a discovered agent (`workflow-subagent` by default; `"explore"`, `"reviewer"`, `"oracle"`, …); `label` names the artifact; `phase` overrides the current phase for that spawn. Shared background goes in a `local://` file referenced from each prompt, not a parameter. `agent()` blocks until the subagent finishes.
+- `parallel(thunks)` — BARRIER. Start zero-arg functions concurrently, preserving input order; returns once all finish. `agent()` calls inside those thunks are limited by the workflow concurrency cap. Rejected/throwing thunks become `null` in the returned array instead of rejecting the whole call. In loops, bind each closure's value (`const item = items[i]`) before creating the thunk.
+- `pipeline(items, ...stages)` — NO barrier. Each item flows through all stages independently; each stage gets `(prevResult, originalItem, index)`. If a stage throws, that item becomes `null` and skips its remaining stages. Use this as the default for multi-stage per-item chains.
+- `log(message)` — emit a progress line above the status tree. `phase(title)` — start a phase; subsequent status lines group under it.
+- `budget` — `{ total, spent(), remaining() }`. `total` is the workflow token-budget setting or `null` when none is set; `spent()` counts output tokens from workflow `agent()` calls; `remaining()` is `Infinity` when `total` is `null`. Once `spent() >= total`, further `agent()` calls throw. Guard loops on `budget.total` first: `while (budget.total && budget.remaining() > 50000) { … }`.
+- `workflow(nameOrRef, args?)` — run another workflow inline (one level of nesting only). `args` is the value passed to this workflow invocation.
+
+Workflows run through the `workflow` tool; with a background runner they launch in the background and report progress in `/workflows`. In headless/no-background contexts they run synchronously. Each workflow script is one well-scoped fan-out; chain phases by reading results before deciding the next workflow call.
 </helpers>
 
 <structure>
-For independent per-item chains (review → verify, fetch → extract → score), wrap the whole chain in one function and run it with `parallel()` so each item flows through its own steps without waiting on unrelated work.
+For independent per-item chains (review → verify, fetch → extract), use `pipeline()` so each item flows through its own steps without waiting on unrelated items.
 
-Reach for `pipeline()` only when a stage genuinely needs all previous-stage results first: dedup/merge across the whole set, early-exit on zero, or compare against other findings. Do not add a barrier just to flatten/map/filter; do that with plain JavaScript between calls.
+Reach for `pipeline()` for per-item multi-stage chains where each item can advance independently. Use `parallel()` when you need a barrier because all results must be gathered before the next step: dedup/merge across the whole set, early-exit on zero, or compare against other findings. Do not add a barrier just to flatten/map/filter; do that with plain JavaScript between calls.
 </structure>
 
 <patterns>

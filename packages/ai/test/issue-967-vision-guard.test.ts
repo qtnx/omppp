@@ -34,6 +34,7 @@ const compat: ResolvedOpenAICompat = {
 	supportsUsageInStreaming: true,
 	supportsToolChoice: true,
 	supportsForcedToolChoice: true,
+	supportsNamedToolChoice: true,
 	disableReasoningOnForcedToolChoice: false,
 	disableReasoningOnToolChoice: false,
 	maxTokensField: "max_completion_tokens",
@@ -50,6 +51,8 @@ const compat: ResolvedOpenAICompat = {
 	requiresReasoningContentForToolCalls: false,
 	requiresReasoningContentForAllAssistantTurns: false,
 	allowsSyntheticReasoningContentForToolCalls: true,
+	replayReasoningContent: false,
+	qwenPreserveThinking: false,
 	requiresAssistantContentForToolCalls: false,
 	openRouterRouting: {},
 	vercelGatewayRouting: {},
@@ -200,6 +203,7 @@ describe("issue #967 vision guard", () => {
 				{ type: "image", mimeType: "image/png", data: "ZmFrZQ==" },
 			],
 			false,
+			model.compat.supportsImageDetailOriginal,
 		);
 		expect(countTaggedValues(userContent, "input_image")).toBe(0);
 		expect(userContent).toEqual([
@@ -216,6 +220,7 @@ describe("issue #967 vision guard", () => {
 			]),
 			model,
 			true,
+			model.compat.supportsImageDetailOriginal,
 			new Set(["call_1"]),
 		);
 		expect(countTaggedValues(payload, "input_image")).toBe(0);
@@ -267,6 +272,7 @@ describe("issue #967 vision guard", () => {
 		const wrappedMissingBlobRef = `data:image/png;base64,${missingBlobRef}`;
 		const emptyDataUrl = "data:image/png;base64,";
 		const truncatedImageUrl = `data:image/png;base64,${truncatedImageData}`;
+		const responsesModel = makeModel("openai-responses", "openai", ["text", "image"]);
 		const responsesContent = convertResponsesInputContent(
 			[
 				{ type: "text", text: "plot summary" },
@@ -275,6 +281,7 @@ describe("issue #967 vision guard", () => {
 				{ type: "image", mimeType: "image/png", data: truncatedImageData },
 			],
 			true,
+			responsesModel.compat.supportsImageDetailOriginal,
 		);
 		expect(countTaggedValues(responsesContent, "input_image")).toBe(0);
 		expect(responsesContent).toEqual([
@@ -282,7 +289,6 @@ describe("issue #967 vision guard", () => {
 			{ type: "input_text", text: UNAVAILABLE_IMAGE_PLACEHOLDER },
 		]);
 
-		const responsesModel = makeModel("openai-responses", "openai", ["text", "image"]);
 		const payload: unknown[] = [];
 		appendResponsesToolResultMessages(
 			payload as never,
@@ -293,6 +299,7 @@ describe("issue #967 vision guard", () => {
 			]),
 			responsesModel,
 			true,
+			responsesModel.compat.supportsImageDetailOriginal,
 			new Set(["call_1"]),
 		);
 		expect(countTaggedValues(payload, "input_image")).toBe(0);
@@ -376,6 +383,7 @@ describe("issue #967 vision guard", () => {
 		const missingBlobRef = "blob:sha256:missing";
 		const emptyImageData = "";
 		const validImageUrl = `data:image/png;base64,${validImageData}`;
+		const model = makeModel("openai-responses", "openai", ["text", "image"]);
 		const responsesContent = convertResponsesInputContent(
 			[
 				{ type: "text", text: "plot summary" },
@@ -383,6 +391,7 @@ describe("issue #967 vision guard", () => {
 				{ type: "image", mimeType: "image/png", data: missingBlobRef },
 			],
 			true,
+			model.compat.supportsImageDetailOriginal,
 		);
 
 		expect(countTaggedValues(responsesContent, "input_image")).toBe(1);
@@ -390,7 +399,6 @@ describe("issue #967 vision guard", () => {
 		expect(countStringValuesContaining(responsesContent, "blob:")).toBe(0);
 		expect(responsesContent).toContainEqual({ type: "input_text", text: UNAVAILABLE_IMAGE_PLACEHOLDER });
 
-		const model = makeModel("openai-responses", "openai", ["text", "image"]);
 		const payload: unknown[] = [];
 		appendResponsesToolResultMessages(
 			payload as never,
@@ -401,6 +409,7 @@ describe("issue #967 vision guard", () => {
 			]),
 			model,
 			true,
+			model.compat.supportsImageDetailOriginal,
 			new Set(["call_1"]),
 		);
 		expect(countTaggedValues(payload, "input_image")).toBe(1);

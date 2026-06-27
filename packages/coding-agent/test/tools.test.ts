@@ -11,15 +11,15 @@ import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
-import { FindTool } from "@oh-my-pi/pi-coding-agent/tools/find";
 import { JobTool } from "@oh-my-pi/pi-coding-agent/tools/job";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
-import { DEFAULT_FILE_LIMIT, MULTI_FILE_PER_FILE_MATCHES, SearchTool } from "@oh-my-pi/pi-coding-agent/tools/search";
 import * as toolTimeouts from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
-import { $which, Snowflake } from "@oh-my-pi/pi-utils";
-import { unzipSync } from "fflate";
+import { unzip } from "@oh-my-pi/pi-coding-agent/utils/zip";
+import { $which, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { GlobTool } from "../src/tools/glob";
+import { DEFAULT_FILE_LIMIT, GrepTool, MULTI_FILE_PER_FILE_MATCHES } from "../src/tools/grep";
 
 // Helper to extract text from content blocks
 function getTextOutput(result: any): string {
@@ -36,6 +36,10 @@ function writeFileWithMtime(filePath: string, content: string, mtimeMs: number):
 	fs.writeFileSync(filePath, content);
 	const mtime = new Date(mtimeMs);
 	fs.utimesSync(filePath, mtime, mtime);
+}
+
+function shellEscape(value: string): string {
+	return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function createFifoOrSkip(fifoPath: string): boolean {
@@ -264,8 +268,8 @@ describe("Coding Agent Tools", () => {
 	let writeTool: WriteTool;
 	let editTool: EditTool;
 	let bashTool: BashTool;
-	let searchTool: SearchTool;
-	let findTool: FindTool;
+	let searchTool: GrepTool;
+	let findTool: GlobTool;
 	let originalEditVariant: string | undefined;
 
 	beforeAll(async () => {
@@ -290,15 +294,15 @@ describe("Coding Agent Tools", () => {
 		writeTool = wrapToolWithMetaNotice(new WriteTool(session));
 		editTool = wrapToolWithMetaNotice(new EditTool(session));
 		bashTool = wrapToolWithMetaNotice(new BashTool(session));
-		searchTool = wrapToolWithMetaNotice(new SearchTool(session));
-		findTool = wrapToolWithMetaNotice(new FindTool(session));
+		searchTool = wrapToolWithMetaNotice(new GrepTool(session));
+		findTool = wrapToolWithMetaNotice(new GlobTool(session));
 	});
 
 	afterEach(() => {
 		vi.restoreAllMocks();
 
 		// Clean up test directory
-		fs.rmSync(testDir, { recursive: true, force: true });
+		removeSyncWithRetries(testDir);
 
 		// Restore original edit variant
 		if (originalEditVariant === undefined) {
@@ -799,7 +803,12 @@ describe("Coding Agent Tools", () => {
 			fs.writeFileSync(testFile, pngBuffer);
 
 			const legacyReadTool = wrapToolWithMetaNotice(
-				new ReadTool(createTestToolSession(testDir, Settings.isolated({ "inspect_image.enabled": false }))),
+				new ReadTool(
+					createTestToolSession(
+						testDir,
+						Settings.isolated({ "inspect_image.enabled": false, "images.autoResize": false }),
+					),
+				),
 			);
 			const result = await legacyReadTool.execute("test-call-img-1", { path: testFile });
 
@@ -931,7 +940,7 @@ describe("Coding Agent Tools", () => {
 				`Successfully wrote ${content.length} bytes to ${path.basename(archivePath)}:pkg/README.md`,
 			);
 
-			const unzipped = unzipSync(new Uint8Array(fs.readFileSync(archivePath)));
+			const unzipped = unzip(new Uint8Array(fs.readFileSync(archivePath)));
 			expect(new TextDecoder().decode(unzipped["pkg/README.md"])).toBe(content);
 			expect(new TextDecoder().decode(unzipped["pkg/src/index.ts"])).toBe("export const archiveValue = 1;\n");
 		});
@@ -1199,7 +1208,7 @@ function b() {
 
 			const result = await interceptedBashTool.execute(
 				"test-call-8-intercept-empty",
-				{ command: `cat ${allowedFile}` },
+				{ command: `cat ${shellEscape(allowedFile)}` },
 				undefined,
 				undefined,
 				createTestToolContext(["read"]),
@@ -1269,7 +1278,9 @@ function b() {
 			const targetPath = path.join(testDir, "session", "local", "moved-via-bash.json");
 			fs.writeFileSync(sourcePath, '{"move":true}\n');
 
-			await bashTool.execute("test-call-8-local-mv", { command: `mv ${sourcePath} local://moved-via-bash.json` });
+			await bashTool.execute("test-call-8-local-mv", {
+				command: `mv ${shellEscape(sourcePath)} local://moved-via-bash.json`,
+			});
 
 			expect(fs.existsSync(sourcePath)).toBe(false);
 			expect(fs.existsSync(targetPath)).toBe(true);
@@ -1680,9 +1691,9 @@ function b() {
 			const content = ["before", "match one", "after", "middle", "match two", "after two"].join("\n");
 			fs.writeFileSync(testFile, content);
 
-			const contextSettings = Settings.isolated({ "search.contextBefore": 1, "search.contextAfter": 1 });
+			const contextSettings = Settings.isolated({ "grep.contextBefore": 1, "grep.contextAfter": 1 });
 			const contextSearchTool = wrapToolWithMetaNotice(
-				new SearchTool(createTestToolSession(testDir, contextSettings)),
+				new GrepTool(createTestToolSession(testDir, contextSettings)),
 			);
 			const result = await contextSearchTool.execute("test-call-12", {
 				pattern: "match",
@@ -1702,9 +1713,9 @@ function b() {
 			const lines = Array.from({ length: 10 }, (_, idx) => (idx === 0 || idx === 5 ? "match" : `filler ${idx}`));
 			fs.writeFileSync(testFile, lines.join("\n"));
 
-			const noContextSettings = Settings.isolated({ "search.contextBefore": 0, "search.contextAfter": 0 });
+			const noContextSettings = Settings.isolated({ "grep.contextBefore": 0, "grep.contextAfter": 0 });
 			const noContextSearchTool = wrapToolWithMetaNotice(
-				new SearchTool(createTestToolSession(testDir, noContextSettings)),
+				new GrepTool(createTestToolSession(testDir, noContextSettings)),
 			);
 			const result = await noContextSearchTool.execute("test-call-12-gap", {
 				pattern: "match",
@@ -1739,6 +1750,34 @@ function b() {
 			expect(secondOutput).not.toContain("# file-2.txt");
 			expect(secondOutput).toContain("# file-3.txt");
 			expect(secondOutput).toContain("# file-4.txt");
+		});
+
+		it("respects the case parameter (case-sensitive by default, case-insensitive if false)", async () => {
+			const caseFile = path.join(testDir, "case.txt");
+			fs.writeFileSync(caseFile, "Hello World\nhello world\n");
+
+			// 1. By default, search is case-sensitive (only matches the lowercase pattern "hello")
+			const defaultResult = await searchTool.execute("test-case-default", {
+				pattern: "hello",
+				paths: [caseFile],
+			});
+			expect(defaultResult.details?.matchCount).toBe(1);
+
+			// 2. With case: true, search is case-sensitive (only matches "hello")
+			const sensitiveResult = await searchTool.execute("test-case-sensitive", {
+				pattern: "hello",
+				paths: [caseFile],
+				case: true,
+			});
+			expect(sensitiveResult.details?.matchCount).toBe(1);
+
+			// 3. With case: false, search is case-insensitive (matches both "Hello World" and "hello world")
+			const insensitiveResult = await searchTool.execute("test-case-insensitive", {
+				pattern: "hello",
+				paths: [caseFile],
+				case: false,
+			});
+			expect(insensitiveResult.details?.matchCount).toBe(2);
 		});
 
 		it("should group multi-file matches", async () => {
@@ -2100,7 +2139,7 @@ describe("edit tool CRLF handling", () => {
 	});
 
 	afterEach(() => {
-		fs.rmSync(testDir, { recursive: true, force: true });
+		removeSyncWithRetries(testDir);
 
 		// Restore original edit variant
 		if (originalEditVariant === undefined) {

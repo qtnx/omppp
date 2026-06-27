@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { type AssistantMessage, getPriorityPremiumRequests, type ServiceTier } from "@oh-my-pi/pi-ai";
 import { getSessionsDir, isEnoent } from "@oh-my-pi/pi-utils";
 import type {
+	AgentType,
 	DelegationReminderStats,
 	MessageStats,
 	ReminderStats,
@@ -15,6 +16,25 @@ import type {
 	UserMessageStats,
 } from "./types";
 import { computeUserMessageMetrics } from "./user-metrics";
+
+/** Basename of an advisor agent's transcript inside a session artifacts dir. */
+const ADVISOR_TRANSCRIPT_BASENAME = "__advisor.jsonl";
+
+/**
+ * Classify which agent produced a transcript from its path within the sessions
+ * directory. Layout: `<sessionsDir>/<project>/<file>.jsonl` is the `main`
+ * agent; subagent and advisor transcripts live nested one level deeper inside
+ * the session's artifacts dir (`<project>/<session>/<id>.jsonl`,
+ * `<project>/<session>/__advisor.jsonl`). Any `__advisor.jsonl` — at any depth,
+ * including a subagent's own advisor — counts as `advisor`; every other nested
+ * transcript is a task `subagent`.
+ */
+export function classifyAgentType(sessionPath: string): AgentType {
+	if (path.basename(sessionPath) === ADVISOR_TRANSCRIPT_BASENAME) return "advisor";
+	const rel = path.relative(getSessionsDir(), sessionPath);
+	// `<project>/<file>.jsonl` -> 2 segments. Deeper nesting is a subagent.
+	return rel.split(path.sep).length <= 2 ? "main" : "subagent";
+}
 
 /**
  * Extract folder name from session filename.
@@ -195,6 +215,7 @@ function extractStats(
 	folder: string,
 	entry: SessionMessageEntry,
 	currentServiceTier: ServiceTier | undefined,
+	agentType: AgentType,
 ): MessageStats | null {
 	const msg = entry.message as AssistantMessage;
 	if (msg?.role !== "assistant") return null;
@@ -222,6 +243,7 @@ function extractStats(
 		stopReason: msg.stopReason,
 		errorMessage: msg.errorMessage ?? null,
 		usage,
+		agentType,
 	};
 }
 
@@ -319,6 +341,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	}
 
 	const folder = extractFolderFromPath(sessionPath);
+	const agentType = classifyAgentType(sessionPath);
 	const stats: MessageStats[] = [];
 	const userStats: UserMessageStats[] = [];
 	const userLinks: UserMessageLink[] = [];
@@ -362,7 +385,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 			continue;
 		}
 		if (isAssistantMessage(entry)) {
-			const msgStats = extractStats(sessionPath, folder, entry, currentServiceTier);
+			const msgStats = extractStats(sessionPath, folder, entry, currentServiceTier, agentType);
 			if (msgStats) stats.push(msgStats);
 			// Link assistant's responding model back to the user message it answered.
 			const parentId = (entry as SessionMessageEntry).parentId;

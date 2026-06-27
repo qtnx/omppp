@@ -70,14 +70,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { complete } from "@oh-my-pi/pi-ai/stream";
 import type { Api, Context, ImageContent, Model, OptionsForApi, UserMessage } from "@oh-my-pi/pi-ai/types";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { $which } from "@oh-my-pi/pi-utils";
+import { $which, removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { e2eApiKey } from "./oauth";
 
-const TEMP_DIR = path.join(import.meta.dir, ".temp-images");
+const TEMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omp-temp-images-"));
 
 /**
  * Generate a valid PNG image of specified dimensions using ImageMagick
@@ -231,8 +232,6 @@ describe("Image Limits E2E Tests", () => {
 
 	beforeAll(async () => {
 		if (!$which("magick")) return;
-		// Create temp directory
-		fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 		// Generate small test image for count tests
 		smallImage = await generateImage(100, 100, "small.png");
@@ -240,7 +239,7 @@ describe("Image Limits E2E Tests", () => {
 
 	afterAll(() => {
 		// Clean up temp directory
-		fs.rmSync(TEMP_DIR, { recursive: true, force: true });
+		removeSyncWithRetries(TEMP_DIR);
 	});
 
 	// -------------------------------------------------------------------------

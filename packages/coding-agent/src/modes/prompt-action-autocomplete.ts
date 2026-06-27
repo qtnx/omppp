@@ -154,6 +154,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 	#dollarMentions?: DollarMentionAutocompleteOptions;
 	#baseProvider: CombinedAutocompleteProvider;
 	#actions: PromptActionDefinition[];
+	#basePath: string;
 
 	constructor(
 		commands: SlashCommand[],
@@ -163,6 +164,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		workspaceRoots?: readonly WorkspaceAutocompleteRoot[],
 	) {
 		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath, { workspaceRoots });
+		this.#basePath = basePath;
 		this.#actions = actions;
 		this.#dollarMentions = dollarMentions;
 	}
@@ -204,7 +206,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			}
 		}
 
-		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor);
+		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor, this.#basePath);
 		if (urlSuggestions) return urlSuggestions;
 
 		if (!isSettingsInitialized() || settings.get("emojiAutocomplete")) {

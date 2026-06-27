@@ -116,6 +116,13 @@ export declare class Shell {
    * Returns `Ok(())` even when no commands are running.
    */
   abort(): Promise<void>
+  /**
+   * Count live background jobs (`&`/`nohup` children still running) on this
+   * session. Completed jobs are reaped first. The host uses this to retain a
+   * per-call shell whose background processes are still running instead of
+   * dropping it (which would SIGKILL them via kill-on-drop).
+   */
+  liveBackgroundJobCount(): Promise<number>
 }
 
 /**
@@ -1302,8 +1309,8 @@ export interface PtyStartOptions {
 export declare function readImageFromClipboard(): Promise<ClipboardImage | undefined | null>
 
 /**
- * Render one snapcompact frame: print pre-normalized text onto a
- * `size`-wide bitmap and encode it as PNG.
+ * Render one snapcompact frame on a libuv worker: print pre-normalized text
+ * onto a `size`-wide bitmap and encode it as PNG.
  *
  * The bitmap height hugs the rows the text actually occupies
  * (`usedRows * lineRepeat * cellHeight`), so a partially filled frame never
@@ -1315,11 +1322,11 @@ export declare function readImageFromClipboard(): Promise<ClipboardImage | undef
  * requested cell box; `columns: 2` flows pre-wrapped newline-separated lines
  * down two newspaper columns. `U+000E`/`U+000F` in `text` toggle dim-gray ink
  * spans without occupying a cell.
- * Returns the PNG encoded as base64, created as a one-byte (Latin-1) JS
- * string straight from native code — no `Uint8Array` hop or JS-side
- * re-encode.
+ * Returns a promise for the PNG encoded as base64, created as a one-byte
+ * (Latin-1) JS string straight from native code — no `Uint8Array` hop or
+ * JS-side re-encode.
  */
-export declare function renderSnapcompactPng(text: string, options: SnapcompactRenderOptions): string
+export declare function renderSnapcompactPng(text: string, options: SnapcompactRenderOptions): Promise<string>
 
 /**
  * Search content for a pattern (one-shot, compiles pattern each time).
@@ -1369,6 +1376,8 @@ export interface SearchResult {
   /** Error message, if any. */
   error?: string
 }
+
+export declare function setHangulCompatJamoWidthOverride(value: number): void
 
 /** Options for executing a shell command via brush-core. */
 export interface ShellExecuteOptions {

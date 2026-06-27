@@ -1,4 +1,5 @@
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { ToolSession } from "../../tools";
 import { ToolError } from "../../tools/tool-errors";
 import { EVAL_AGENT_BRIDGE_NAME, runEvalAgent } from "../agent-bridge";
@@ -48,8 +49,8 @@ function normalizeArgs(args: unknown): unknown {
 		return args;
 	}
 	const record = { ...(args as Record<string, unknown>) };
-	if (record._i === undefined) {
-		record._i = "js prelude";
+	if (record[INTENT_FIELD] === undefined) {
+		record[INTENT_FIELD] = "js prelude";
 	}
 	return record;
 }
@@ -87,9 +88,9 @@ function summarizeToolResult(
 				path: record.path,
 				count: details.matchCount ?? undefined,
 			});
-		case "find":
+		case "glob":
 			return withError({
-				op: "find",
+				op: "glob",
 				pattern: record.pattern,
 				count: details.fileCount ?? undefined,
 				matches: Array.isArray(details.files) ? details.files.slice(0, 20) : undefined,

@@ -1,6 +1,10 @@
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
-import type { AutocompleteProvider, CombinedAutocompleteProvider } from "../autocomplete";
-import { BracketedPasteHandler } from "../bracketed-paste";
+import {
+	type AutocompleteProvider,
+	type CombinedAutocompleteProvider,
+	findLeadingSlashCommandStart,
+} from "../autocomplete";
+import { BracketedPasteHandler, decodeReencodedPasteControls } from "../bracketed-paste";
 import { getKeybindings, type KeybindingsManager } from "../keybindings";
 import { extractPrintableText, matchesKey } from "../keys";
 import { KillRing } from "../kill-ring";
@@ -833,7 +837,7 @@ export class Editor implements Component, Focusable {
 			const layoutLine = visibleLayoutLines[visibleIndex]!;
 			let displayText = layoutLine.text;
 			let displayWidth = visibleWidth(layoutLine.text);
-			let cursorInPadding = false;
+			let cursorPaddingOverflow = 0;
 			let decorated = false;
 			const showPromptGutter = promptGutter !== undefined && visibleIndex === 0;
 			const gutterText =
@@ -959,7 +963,7 @@ export class Editor implements Component, Focusable {
 						displayWidth += cursorWidth;
 					}
 					if (displayWidth > lineContentWidth && paddingX > 0) {
-						cursorInPadding = true;
+						cursorPaddingOverflow = displayWidth - lineContentWidth;
 					}
 				}
 			}
@@ -978,18 +982,22 @@ export class Editor implements Component, Focusable {
 				continue;
 			}
 
-			// All lines have consistent borders based on padding
+			// All lines have consistent borders based on padding. When the end-of-line cursor
+			// glyph (or a wide trailing grapheme) extends past `lineContentWidth`, shrink the
+			// right chrome by the exact overflow count: drop padding spaces first, then the
+			// trailing `─`, but never the corner/vertical bar itself.
 			const isLastLine = visibleIndex === visibleLayoutLines.length - 1;
-			const rightPaddingWidth = Math.max(0, paddingX - (cursorInPadding ? 1 : 0));
+			const rightChromeCells = Math.max(1, paddingX + 1 - cursorPaddingOverflow);
 			if (isLastLine) {
-				const bottomRightPadding = Math.max(0, paddingX - 1 - (cursorInPadding ? 1 : 0));
+				const rightPad = Math.max(0, rightChromeCells - 2);
+				const includeHorizontal = rightChromeCells >= 2;
 				const bottomRightAdjusted = this.borderColor(
-					`${padding(bottomRightPadding)}${box.horizontal}${box.bottomRight}`,
+					`${padding(rightPad)}${includeHorizontal ? box.horizontal : ""}${box.bottomRight}`,
 				);
 				result.push(`${bottomLeft}${displayText}${linePad}${bottomRightAdjusted}`);
 			} else {
 				const leftBorder = this.borderColor(`${box.vertical}${padding(paddingX)}`);
-				const rightBorder = this.borderColor(`${padding(rightPaddingWidth)}${box.vertical}`);
+				const rightBorder = this.borderColor(`${padding(Math.max(0, rightChromeCells - 1))}${box.vertical}`);
 				result.push(leftBorder + displayText + linePad + rightBorder);
 			}
 		}
@@ -1116,7 +1124,10 @@ export class Editor implements Component, Focusable {
 				}
 
 				// If Enter was pressed on a slash command, apply completion and submit
-				if ((kb.matches(data, "tui.input.submit") || data === "\n") && this.#autocompletePrefix.startsWith("/")) {
+				if (
+					(kb.matches(data, "tui.input.submit") || data === "\n") &&
+					findLeadingSlashCommandStart(this.#autocompletePrefix) !== null
+				) {
 					// Check for stale autocomplete state due to debounce
 					const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
 					const currentTextBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
@@ -1263,7 +1274,7 @@ export class Editor implements Component, Focusable {
 				const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
 				const textBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
 				if (
-					textBeforeCursor.startsWith("/") &&
+					findLeadingSlashCommandStart(textBeforeCursor) !== null &&
 					this.#isInSubmittedSlashCommandContext() &&
 					this.#autocompleteProvider?.trySyncSlashCompletion
 				) {
@@ -1843,20 +1854,14 @@ export class Editor implements Component, Focusable {
 		});
 	}
 
-	/** Normalize raw pasted text: decode tmux CSI-u re-encoded control bytes, normalize CRLF and
+	/** Normalize raw pasted text: decode tmux re-encoded control bytes (both extended-keys formats),
+	 *  normalize CRLF and
 	 *  NFC (macOS NFD filename drag-drops), expand tabs, and strip control characters except newline. */
 	#sanitizePastedText(pastedText: string): string {
-		// Some terminals (e.g. tmux popups with extended-keys-format=csi-u) re-encode
-		// control bytes inside bracketed paste as CSI-u Ctrl+<letter> sequences
-		// (ESC [ <codepoint> ; 5 u). Decode those back to their literal byte so the
-		// per-char filter below preserves newlines instead of stripping ESC and
-		// leaking the printable tail (e.g. "[106;5u") into the editor.
-		const decodedText = pastedText.replace(/\x1b\[(\d+);5u/g, (match, code) => {
-			const cp = Number(code);
-			if (cp >= 97 && cp <= 122) return String.fromCharCode(cp - 96);
-			if (cp >= 65 && cp <= 90) return String.fromCharCode(cp - 64);
-			return match;
-		});
+		// Decode tmux's re-encoded control bytes (both extended-keys formats) back to
+		// their literal byte so the per-char filter below preserves newlines instead of
+		// stripping ESC and leaking the printable tail into the editor. See the decoder.
+		const decodedText = decodeReencodedPasteControls(pastedText);
 
 		// Clean the pasted text. NFC-normalize so macOS Finder drag-drops of
 		// Korean filenames (which arrive as NFD: e.g. `ᄒ`+`ᅪ` instead of `화`)

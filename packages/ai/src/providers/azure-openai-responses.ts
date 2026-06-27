@@ -1,4 +1,5 @@
-import { $env, extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
+import { $env } from "@oh-my-pi/pi-utils";
+import * as AIError from "../error";
 import { getEnvApiKey } from "../stream";
 import type {
 	AssistantMessage,
@@ -12,15 +13,21 @@ import type {
 } from "../types";
 import { createAbortSourceTracker } from "../utils/abort";
 import { AssistantMessageEventStream } from "../utils/event-stream";
-import { finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
+import type { RawHttpRequestDump } from "../utils/http-inspector";
 import {
 	getOpenAIStreamFirstEventTimeoutMs,
 	getOpenAIStreamIdleTimeoutMs,
 	iterateWithIdleTimeout,
 } from "../utils/idle-iterator";
-import { postOpenAIStream } from "../utils/openai-http";
+import { OpenAIHttpError, postOpenAIStream } from "../utils/openai-http";
 import { sanitizeSchemaForOpenAIResponses, toolWireSchema } from "../utils/schema";
 import { mapToOpenAIResponsesToolChoice } from "../utils/tool-choice";
+import {
+	applyOpenAIReasoningEffortFallback,
+	createOpenAIReasoningEffortFallbackKey,
+	type OpenAIReasoningEffortFallback,
+	resolveOpenAIReasoningEffortFallback,
+} from "./openai-reasoning-fallback";
 import type { ResponseCreateParamsStreaming, ResponseStreamEvent } from "./openai-responses-wire";
 import {
 	applyCommonResponsesSamplingParams,
@@ -79,7 +86,7 @@ export const streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses"
 
 	// Start async processing
 	(async () => {
-		const startTime = Date.now();
+		const startTime = performance.now();
 		let firstTokenTime: number | undefined;
 		const deploymentName = resolveDeploymentName(model, options);
 
@@ -90,7 +97,9 @@ export const streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses"
 		);
 		let rawRequestDump: RawHttpRequestDump | undefined;
 		const abortTracker = createAbortSourceTracker(options?.signal);
-		const firstEventTimeoutAbortError = new Error(AZURE_OPENAI_RESPONSES_FIRST_EVENT_TIMEOUT_MESSAGE);
+		const firstEventTimeoutAbortError = new AIError.StreamTimeoutError(
+			AZURE_OPENAI_RESPONSES_FIRST_EVENT_TIMEOUT_MESSAGE,
+		);
 		const { requestAbortController, requestSignal } = abortTracker;
 		const onSseEvent = options?.onSseEvent;
 		const rawSseObserver = onSseEvent
@@ -135,29 +144,52 @@ export const streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses"
 				url,
 				body: params,
 			};
-			let requestTimeout: NodeJS.Timeout | undefined;
-			if (requestTimeoutMs !== undefined) {
-				requestTimeout = setTimeout(() => abortTracker.abortLocally(firstEventTimeoutAbortError), requestTimeoutMs);
-			}
+			const reasoningEffortFallbackKey = createOpenAIReasoningEffortFallbackKey(
+				"azure-responses",
+				url,
+				typeof params.model === "string" ? params.model : model.id,
+			);
+			const attemptedReasoningEffortFallbacks = new Set<string>();
 			let openaiStream: AsyncIterable<ResponseStreamEvent>;
-			try {
-				const headersWithTimeout = { ...headers };
+			while (true) {
+				let requestTimeout: NodeJS.Timeout | undefined;
 				if (requestTimeoutMs !== undefined) {
-					headersWithTimeout["X-Stainless-Timeout"] = Math.floor(requestTimeoutMs / 1000).toString();
+					requestTimeout = setTimeout(
+						() => abortTracker.abortLocally(firstEventTimeoutAbortError),
+						requestTimeoutMs,
+					);
 				}
-				const handle = await postOpenAIStream<ResponseStreamEvent>({
-					url,
-					headers: headersWithTimeout,
-					body: params,
-					signal: requestSignal,
-					fetch: options?.fetch,
-					// Watchdog armed → no retries, so they cannot silently extend the deadline.
-					maxAttempts: requestTimeoutMs !== undefined ? 1 : undefined,
-					onSseEvent: rawSseObserver,
-				});
-				openaiStream = handle.events;
-			} finally {
-				if (requestTimeout !== undefined) clearTimeout(requestTimeout);
+				try {
+					const headersWithTimeout = { ...headers };
+					if (requestTimeoutMs !== undefined) {
+						headersWithTimeout["X-Stainless-Timeout"] = Math.floor(requestTimeoutMs / 1000).toString();
+					}
+					const handle = await postOpenAIStream<ResponseStreamEvent>({
+						url,
+						headers: headersWithTimeout,
+						body: params,
+						signal: requestSignal,
+						fetch: options?.fetch,
+						// Watchdog armed → no retries, so they cannot silently extend the deadline.
+						maxAttempts: requestTimeoutMs !== undefined ? 1 : undefined,
+						onSseEvent: rawSseObserver,
+					});
+					openaiStream = handle.events;
+					break;
+				} catch (error) {
+					const capturedErrorResponse = error instanceof OpenAIHttpError ? error.captured : undefined;
+					const reasoningEffortFallback: OpenAIReasoningEffortFallback | undefined = !requestSignal.aborted
+						? resolveOpenAIReasoningEffortFallback(error, capturedErrorResponse, params)
+						: undefined;
+					if (reasoningEffortFallback === undefined) throw error;
+					const retryMarker = `${reasoningEffortFallbackKey}:${String(reasoningEffortFallback)}`;
+					if (attemptedReasoningEffortFallbacks.has(retryMarker)) throw error;
+					attemptedReasoningEffortFallbacks.add(retryMarker);
+					applyOpenAIReasoningEffortFallback(params, reasoningEffortFallback);
+					rawRequestDump.body = params;
+				} finally {
+					if (requestTimeout !== undefined) clearTimeout(requestTimeout);
+				}
 			}
 			stream.push({ type: "start", partial: output });
 
@@ -174,7 +206,7 @@ export const streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses"
 			let sawTerminalResponseEvent = false;
 			await processResponsesStream(timedOpenaiStream, output, stream, model, {
 				onFirstToken: () => {
-					if (!firstTokenTime) firstTokenTime = Date.now();
+					if (!firstTokenTime) firstTokenTime = performance.now();
 				},
 				onCompleted: () => {
 					sawTerminalResponseEvent = true;
@@ -187,28 +219,34 @@ export const streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses"
 			}
 
 			if (abortTracker.wasCallerAbort()) {
-				throw new Error("Request was aborted");
+				throw new AIError.AbortError();
 			}
 
 			if (!sawTerminalResponseEvent) {
-				throw new Error("Azure OpenAI responses stream closed before a terminal response event was received");
+				throw new AIError.ProviderResponseError(
+					"Azure OpenAI responses stream closed before a terminal response event was received",
+					{ provider: model.provider, kind: "incomplete-stream" },
+				);
 			}
 
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				throw new Error(output.errorMessage ?? "An unknown error occurred");
+				throw new AIError.ProviderResponseError(output.errorMessage ?? "An unknown error occurred", {
+					provider: model.provider,
+					kind: "output",
+				});
 			}
 
-			output.duration = Date.now() - startTime;
+			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			for (const block of output.content) delete (block as { index?: number }).index;
-			const firstEventTimeoutError = abortTracker.getLocalAbortReason();
-			output.stopReason = abortTracker.wasCallerAbort() ? "aborted" : "error";
-			output.errorStatus = extractHttpStatusFromError(error);
-			output.errorMessage = firstEventTimeoutError?.message ?? (await finalizeErrorMessage(error, rawRequestDump));
-			output.duration = Date.now() - startTime;
+			const result = await AIError.finalize(error, { api: model.api, abortTracker, rawRequestDump });
+			output.stopReason = result.stopReason;
+			output.errorStatus = result.status;
+			output.errorId = result.id;
+			output.errorMessage = result.message;
+			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -238,7 +276,7 @@ function resolveAzureConfig(
 	}
 
 	if (!resolvedBaseUrl) {
-		throw new Error(
+		throw new AIError.ConfigurationError(
 			"Azure OpenAI base URL is required. Set AZURE_OPENAI_BASE_URL or AZURE_OPENAI_RESOURCE_NAME, or pass azureBaseUrl, azureResourceName, or model.baseUrl.",
 		);
 	}
@@ -266,7 +304,8 @@ function buildAzureResponsesRequest(
 	if (!apiKey) {
 		const envKey = $env.AZURE_OPENAI_API_KEY;
 		if (!envKey) {
-			throw new Error(
+			throw new AIError.MissingApiKeyError(
+				undefined,
 				"Azure OpenAI API key is required. Set AZURE_OPENAI_API_KEY environment variable or pass it as an argument.",
 			);
 		}
@@ -297,6 +336,7 @@ function buildParams(
 		model,
 		context,
 		strictResponsesPairing: true,
+		supportsImageDetailOriginal: model.compat.supportsImageDetailOriginal,
 		systemRole,
 		includeThinkingSignatures: true,
 		developerStringContent: true,

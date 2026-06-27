@@ -1,7 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	SETTING_TABS,
 	SETTINGS_SCHEMA,
+	type SettingPath,
 	type SettingTab,
 	TAB_GROUPS,
 } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
@@ -13,6 +15,15 @@ interface UiShape {
 }
 
 describe("settings layout", () => {
+	beforeEach(async () => {
+		resetSettingsForTest();
+		await Settings.init({ inMemory: true });
+	});
+
+	afterEach(() => {
+		resetSettingsForTest();
+	});
+
 	it("every UI setting declares a group registered in TAB_GROUPS for its tab", () => {
 		const violations: string[] = [];
 		for (const path in SETTINGS_SCHEMA) {
@@ -47,5 +58,43 @@ describe("settings layout", () => {
 			const expected = TAB_GROUPS[tab].filter(group => grouped.includes(group));
 			expect(grouped).toEqual(expected);
 		}
+	});
+
+	it("exposes native terminal progress in the appearance settings menu", () => {
+		const def = getSettingsForTab("appearance").find(def => def.path === "terminal.showProgress");
+
+		expect(def).toMatchObject({
+			type: "boolean",
+			label: "Native Terminal Progress",
+			group: "Display",
+		});
+	});
+
+	it("hides advisor dependent settings when advisor is disabled", () => {
+		const advisorDependentPaths: SettingPath[] = ["advisor.subagents", "advisor.syncBacklog", "advisor.immuneTurns"];
+		const advisorDependentPathSet = new Set(advisorDependentPaths);
+		const defs = getSettingsForTab("model").filter(def => advisorDependentPathSet.has(def.path));
+
+		expect(defs.map(def => def.path)).toEqual(advisorDependentPaths);
+		for (const def of defs) {
+			expect(def.condition?.()).toBe(false);
+		}
+
+		Settings.instance.set("advisor.enabled", true);
+
+		for (const def of defs) {
+			expect(def.condition?.()).toBe(true);
+		}
+	});
+
+	it("shows provider request limits as a providers services submenu setting", () => {
+		const [def] = getSettingsForTab("providers").filter(item => item.path === "providers.maxInFlightRequests");
+
+		expect(def).toMatchObject({
+			path: "providers.maxInFlightRequests",
+			type: "providerLimits",
+			tab: "providers",
+			group: "Services",
+		});
 	});
 });

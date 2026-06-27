@@ -26,6 +26,11 @@ import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
 
+export {
+	type AriaSnapshotOptions,
+	buildAriaSnapshotScript,
+	parseAriaRefSelector,
+} from "./browser/aria/aria-snapshot";
 export { cmuxSnapshotToObservation, mapWaitUntil, resolveCmuxKind, serializeEval } from "./browser/cmux/rpc";
 export { CmuxSocketClient } from "./browser/cmux/socket-client";
 export { extractReadableFromHtml, type ReadableFormat, type ReadableResult } from "./browser/readable";
@@ -55,7 +60,7 @@ const browserSchema = type({
 	),
 	"dialogs?": type("'accept' | 'dismiss'").describe("auto-handle dialogs"),
 	"code?": type("string").describe("js body to run in tab"),
-	"timeout?": type("number").describe("timeout in seconds (default 30, max 300)"),
+	"timeout?": type("number").describe("timeout in seconds"),
 	"all?": type("boolean").describe("close every tab"),
 	"kill?": type("boolean").describe("also kill spawned-app browsers"),
 	"enabled?": type("boolean").describe("annotate: enable (default) or disable the overlay"),
@@ -347,7 +352,6 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 		// text inline; the full text stays recoverable via the artifact footer
 		// when allocation succeeds.
 		const cappedText = await enforceInlineByteCap(textOnly, {
-			label: "browser output",
 			saveArtifact: full => saveBrowserOutputArtifact(this.session, full),
 		});
 		details.result = cappedText;

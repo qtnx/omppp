@@ -4,7 +4,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
-import { shortenPath } from "../../../tools/render-utils";
+import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { findWorkspaceRootForPath } from "../../../workspace-roots";
 import { sanitizeStatusText } from "../../shared";
@@ -24,7 +24,7 @@ function withIcon(icon: string, text: string): string {
 }
 
 function stripDisplayRoot(pwd: string): string {
-	for (const root of ["/work", path.join(os.homedir(), "Projects")]) {
+	for (const root of [path.join(os.homedir(), "Projects"), "/work"]) {
 		const relative = relativePathWithinRoot(root, pwd);
 		if (relative) return relative;
 	}
@@ -270,7 +270,7 @@ const pathSegment: StatusLineSegment = {
 	id: "path",
 	render(ctx) {
 		const opts = ctx.options.path ?? {};
-		const projectDir = getProjectDir();
+		const projectDir = ctx.activeRepo?.cwd ?? getProjectDir();
 		const workspaceRoot = findWorkspaceRootForPath(projectDir, ctx.session.workspaceRoots);
 		let pwd: string;
 		let showScratchIcon = false;
@@ -290,9 +290,11 @@ const pathSegment: StatusLineSegment = {
 					pwd = stripDisplayRoot(pwd);
 				}
 			}
-			if (opts.abbreviate !== false) {
-				pwd = shortenPath(pwd);
-			}
+		}
+
+		const repoSuffix = ctx.activeRepo ? ` ↳ ${ctx.activeRepo.relativeRepoRoot}` : "";
+		if (opts.abbreviate !== false) {
+			pwd = shortenPath(pwd);
 		}
 
 		const maxLen = opts.maxLength ?? 40;
@@ -300,6 +302,9 @@ const pathSegment: StatusLineSegment = {
 			const ellipsis = "…";
 			const sliceLen = Math.max(0, maxLen - ellipsis.length);
 			pwd = `${ellipsis}${pwd.slice(-sliceLen)}`;
+		}
+		if (repoSuffix) {
+			pwd = `${pwd}${repoSuffix}`;
 		}
 
 		const icon = showScratchIcon ? theme.icon.scratchFolder : theme.icon.folder;
@@ -453,7 +458,7 @@ const contextPctSegment: StatusLineSegment = {
 		const window = ctx.contextWindow;
 
 		const autoIcon = ctx.autoCompactEnabled && theme.icon.auto ? ` ${theme.icon.auto}` : "";
-		const text = `${formatContextUsage(pct, window)}${autoIcon}`;
+		const text = `${formatContextUsage(pct, window, ctx.contextTokens)}${autoIcon}`;
 
 		const color = getContextUsageThemeColor(getContextUsageLevel(pct ?? 0, window));
 		const content = withIcon(theme.icon.context, theme.fg(color, text));
@@ -629,6 +634,10 @@ const usageSegment: StatusLineSegment = {
 			return { content: "", visible: false };
 		}
 		const parts: string[] = [];
+		if (u.tier) {
+			const tier = truncateToWidth(sanitizeStatusText(u.tier), TRUNCATE_LENGTHS.SHORT);
+			if (tier) parts.push(theme.fg("accent", tier));
+		}
 		if (u.fiveHour) {
 			const pct = u.fiveHour.percent;
 			const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);

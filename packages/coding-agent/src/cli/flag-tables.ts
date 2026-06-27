@@ -30,7 +30,7 @@
  * real implementations at the dispatch site.
  */
 
-import type { Effort } from "@oh-my-pi/pi-ai";
+import type { ConfiguredThinkingLevel } from "../thinking";
 import type { Args } from "./args";
 
 /**
@@ -44,8 +44,9 @@ import type { Args } from "./args";
  */
 export interface ParseDeps {
 	logger: { warn: (message: string, meta?: Record<string, unknown>) => void };
-	parseEffort: (value: string | null | undefined) => Effort | undefined;
+	parseThinking: (value: string | null | undefined) => ConfiguredThinkingLevel | undefined;
 	builtinToolNames: readonly string[];
+	normalizeToolNames: (values: Iterable<string>) => string[];
 	thinkingEfforts: readonly string[];
 }
 
@@ -147,10 +148,12 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 		result.models = value.split(",").map(s => s.trim());
 	},
 	"--tools": (result, value, deps) => {
-		const names = value
-			.split(",")
-			.map(s => s.trim().toLowerCase())
-			.filter(Boolean);
+		const names = deps.normalizeToolNames(
+			value
+				.split(",")
+				.map(s => s.trim())
+				.filter(Boolean),
+		);
 		const validToolNames = new Set<string>([...deps.builtinToolNames, "sandbox"]);
 		const valid: string[] = [];
 		for (const name of names) {
@@ -166,7 +169,7 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 		(result as Args & { tools?: string[] }).tools = valid;
 	},
 	"--thinking": (result, value, deps) => {
-		const thinking = deps.parseEffort(value);
+		const thinking = deps.parseThinking(value);
 		if (thinking !== undefined) {
 			result.thinking = thinking;
 		} else {
@@ -271,6 +274,7 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--hide-thinking",
 	"--advisor",
 	"--print",
+	"--print-thoughts",
 	"--no-extensions",
 	"--no-skills",
 	"--no-rules",
@@ -278,3 +282,45 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--auto-approve",
 	"--yolo",
 ]);
+
+/**
+ * Whether a bare long option (`--xxx`, no `=`) is unclassified — not a known
+ * string-, optional-, or value-less flag. The bootstrap and subcommand
+ * resolver treat these as possible extension string flags that may consume a
+ * value-like successor (the extension flag table is not yet loaded). Shared so
+ * both call sites classify identically.
+ */
+export function isUnknownLongValueCandidate(arg: string): boolean {
+	return (
+		arg.startsWith("--") &&
+		!arg.includes("=") &&
+		!STRING_VALUE_FLAGS.has(arg) &&
+		!OPTIONAL_VALUE_FLAGS.has(arg) &&
+		!VALUELESS_FLAGS.has(arg)
+	);
+}
+
+/**
+ * Whether a leading option `flag` consumes the following argv token `next` as
+ * its value, applying the same contract as `extractProfileFlags` / `parseArgs`.
+ * Single source of truth so subcommand detection ({@link resolveCliArgv}) skips
+ * a flag's value instead of mistaking it for the subcommand — `omp --model acp`
+ * means model `acp`, not the `acp` subcommand, exactly as the launch parser
+ * reads it.
+ */
+export function flagConsumesValue(flag: string, next: string | undefined): boolean {
+	// `--flag=value` carries its own value inline.
+	if (flag.startsWith("--") && flag.includes("=")) return false;
+	if (next === undefined) return false;
+	// Known string flags consume any successor, even a flag-looking one
+	// (`--system-prompt --foo` ⇒ the system prompt is literally `--foo`).
+	if (STRING_VALUE_FLAGS.has(flag)) return true;
+	const valueLike = !next.startsWith("-");
+	if (EXTENSION_SHADOWABLE_STRING_FLAGS.has(flag)) return valueLike;
+	if (OPTIONAL_VALUE_FLAGS.has(flag)) {
+		const config = OPTIONAL_FLAGS[flag];
+		return valueLike && !(config.rejectEmpty === true && next.length === 0);
+	}
+	if (isUnknownLongValueCandidate(flag)) return valueLike;
+	return false;
+}

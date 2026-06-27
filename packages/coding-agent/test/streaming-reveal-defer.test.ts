@@ -50,6 +50,7 @@ function makeController(options: { smooth?: boolean; hideThinking?: boolean; req
 	const controller = new StreamingRevealController({
 		getSmoothStreaming: () => options.smooth ?? true,
 		getHideThinkingBlock: () => options.hideThinking ?? false,
+		getProseOnlyThinking: () => true,
 		requestRender: options.requestRender ?? (() => {}),
 	});
 	return { component, controller };
@@ -106,8 +107,10 @@ describe("streaming reveal deferred target updates", () => {
 		const updates = component.messages.length;
 		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 10);
 
-		expect(component.messages[0]).toBe(first);
-		expect(component.messages[1]).toBe(second);
+		expect(component.messages[0]).toEqual(first);
+		expect(component.messages[1]).toEqual(second);
+		expect(textAt(component.messages[0]!, 0)).toBe("chunk");
+		expect(textAt(component.messages[1]!, 0)).toBe("chunky");
 		expect(component.messages).toHaveLength(updates);
 		expect(requestRender).not.toHaveBeenCalled();
 	});

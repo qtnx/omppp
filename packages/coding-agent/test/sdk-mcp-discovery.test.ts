@@ -12,7 +12,7 @@ import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TOOL_DISCOVERY_AUTO_THRESHOLD } from "@oh-my-pi/pi-coding-agent/tool-discovery/mode";
-import { Snowflake } from "@oh-my-pi/pi-utils";
+import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 
 function createMcpCustomTool(name: string, serverName: string, mcpToolName: string): CustomTool {
@@ -76,7 +76,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 	afterAll(() => {
 		authStorage.close();
 		if (registryDir && fs.existsSync(registryDir)) {
-			fs.rmSync(registryDir, { recursive: true, force: true });
+			removeSyncWithRetries(registryDir);
 		}
 	});
 
@@ -87,7 +87,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 
 	afterEach(() => {
 		if (tempDir && fs.existsSync(tempDir)) {
-			fs.rmSync(tempDir, { recursive: true, force: true });
+			removeSyncWithRetries(tempDir);
 		}
 	});
 
@@ -164,9 +164,11 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		const prompt = session.systemPrompt.join("\n");
 		const searchTool = session.agent.state.tools.find(tool => tool.name === "search_tool_bm25");
 		expect(session.getActiveToolNames()).not.toContain("find");
+		expect(session.getActiveToolNames()).not.toContain("search");
 		expect(session.getActiveToolNames()).toContain("task");
 		expect(prompt).toContain("Discoverable native tools are hidden until activated.");
-		expect(prompt).toContain("Find (`find`):");
+		expect(prompt).toContain("Grep (`grep`):");
+		expect(prompt).not.toContain("Find (`find`):");
 		expect(prompt).toContain("# Orchestrator Mode / Eager Delegation");
 		expect(prompt).toContain("call `search_tool_bm25` before concluding no such tool exists");
 		expect(searchTool?.description).toContain("Total discoverable tools available:");
@@ -190,60 +192,6 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		});
 
 		expect(session.getActiveToolNames()).toContain("task");
-		const prompt = session.systemPrompt.join("\n");
-		expect(prompt).toContain("# Eager Tasks");
-		// `preferred` renders the soft delegation nudge, not the hard MUST/ONLY wording.
-		expect(prompt).toContain("Delegation is preferred here");
-		expect(prompt).toContain("batch them into one parallel");
-		expect(prompt).not.toContain("you MUST fan the work out");
-		await session.dispose();
-	});
-
-	it("uses hard delegation wording in the Eager Tasks section when task.eager is always", async () => {
-		const { session } = await createAgentSession({
-			cwd: tempDir,
-			agentDir: tempDir,
-			modelRegistry,
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "tools.discoveryMode": "all", "task.eager": "always" }),
-			model: getBundledModel("openai", "gpt-4o-mini"),
-			disableExtensionDiscovery: true,
-			skills: [],
-			contextFiles: [],
-			promptTemplates: [],
-			slashCommands: [],
-			enableMCP: false,
-			enableLsp: false,
-		});
-
-		const prompt = session.systemPrompt.join("\n");
-		expect(prompt).toContain("# Eager Tasks");
-		expect(prompt).toContain("you MUST fan the work out");
-		expect(prompt).toContain("Batch independent slices");
-		expect(prompt).not.toContain("Delegation is preferred here");
-		await session.dispose();
-	});
-
-	it("omits batch guidance from the Eager Tasks section when task.batch is disabled", async () => {
-		const { session } = await createAgentSession({
-			cwd: tempDir,
-			agentDir: tempDir,
-			modelRegistry,
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "tools.discoveryMode": "all", "task.eager": "preferred", "task.batch": false }),
-			model: getBundledModel("openai", "gpt-4o-mini"),
-			disableExtensionDiscovery: true,
-			skills: [],
-			contextFiles: [],
-			promptTemplates: [],
-			slashCommands: [],
-			enableMCP: false,
-			enableLsp: false,
-		});
-
-		const prompt = session.systemPrompt.join("\n");
-		expect(prompt).toContain("# Eager Tasks");
-		expect(prompt).not.toContain("batch them into one parallel");
 		await session.dispose();
 	});
 
@@ -268,6 +216,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(session.getActiveToolNames()).toContain("search_tool_bm25");
 		expect(session.getActiveToolNames()).not.toContain("find");
 		expect(prompt).toContain("Discoverable native tools are hidden until activated.");
+		await session.dispose();
 	});
 
 	it("keeps discovery off by default for 1M context models", async () => {
@@ -289,7 +238,9 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 
 		const prompt = session.systemPrompt.join("\n");
 		expect(session.getActiveToolNames()).not.toContain("search_tool_bm25");
-		expect(session.getActiveToolNames()).toContain("find");
+		expect(session.getActiveToolNames()).toContain("grep");
+		expect(session.getActiveToolNames()).toContain("glob");
+		expect(session.getActiveToolNames()).not.toContain("find");
 		expect(prompt).not.toContain("Discoverable native tools are hidden until activated.");
 	});
 
@@ -405,15 +356,15 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			enableLsp: false,
 		});
 
-		expect(await session.activateDiscoveredTools(["find"])).toEqual(["find"]);
-		expect(session.getSelectedDiscoveredToolNames()).toContain("find");
+		expect(await session.activateDiscoveredTools(["grep"])).toEqual(["grep"]);
+		expect(session.getSelectedDiscoveredToolNames()).toContain("grep");
 
 		await session.setActiveToolsByName(["read", "search_tool_bm25"]);
 
-		expect(session.getActiveToolNames()).not.toContain("find");
-		expect(session.getSelectedDiscoveredToolNames()).not.toContain("find");
-		expect(await session.activateDiscoveredTools(["find"])).toEqual(["find"]);
-		expect(session.getActiveToolNames()).toContain("find");
+		expect(session.getActiveToolNames()).not.toContain("grep");
+		expect(session.getSelectedDiscoveredToolNames()).not.toContain("grep");
+		expect(await session.activateDiscoveredTools(["grep"])).toEqual(["grep"]);
+		expect(session.getActiveToolNames()).toContain("grep");
 	});
 	it("restores explicit MCP, thinking, and service-tier entries when resuming without rewriting the session file", async () => {
 		const firstManager = SessionManager.create(tempDir, tempDir);

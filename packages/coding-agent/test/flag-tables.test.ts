@@ -48,6 +48,14 @@ describe("OPTIONAL_VALUE_FLAGS table is honored by args.ts parseArgs", () => {
 	}
 });
 
+describe("--tools legacy aliases", () => {
+	it("maps search and find to grep and glob", () => {
+		const result = parseArgs(["--tools", "search,find,grep"]);
+
+		expect((result as typeof result & { tools?: string[] }).tools).toEqual(["grep", "glob"]);
+	});
+});
+
 describe("OPTIONAL_FLAGS per-flag quirks", () => {
 	it("treats empty string as bare resume for --resume", () => {
 		const result = parseArgs(["--resume", ""]);
@@ -87,5 +95,22 @@ describe("parseArgs end-of-options (--)", () => {
 		expect(result.print).toBe(true);
 		expect(result.noTools).toBeUndefined();
 		expect(result.messages).toEqual(["hello", "--no-tools"]);
+	});
+});
+
+describe("parseArgs @file parsing with quotes", () => {
+	it("parses unquoted @file arguments normally", () => {
+		const result = parseArgs(["@foo.png"]);
+		expect(result.fileArgs).toEqual(["foo.png"]);
+	});
+
+	it('parses double-quoted @"file" arguments', () => {
+		const result = parseArgs(['@"foo bar.png"']);
+		expect(result.fileArgs).toEqual(["foo bar.png"]);
+	});
+
+	it("parses single-quoted @'file' arguments", () => {
+		const result = parseArgs(["@'foo bar.png'"]);
+		expect(result.fileArgs).toEqual(["foo bar.png"]);
 	});
 });

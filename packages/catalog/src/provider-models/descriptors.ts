@@ -14,6 +14,7 @@ import {
 	anthropicModelManagerOptions,
 	cerebrasModelManagerOptions,
 	cloudflareAiGatewayModelManagerOptions,
+	coreWeaveModelManagerOptions,
 	deepseekModelManagerOptions,
 	firepassModelManagerOptions,
 	fireworksModelManagerOptions,
@@ -35,13 +36,13 @@ import {
 	openrouterModelManagerOptions,
 	qianfanModelManagerOptions,
 	qwenPortalModelManagerOptions,
+	sakanaModelManagerOptions,
 	syntheticModelManagerOptions,
 	togetherModelManagerOptions,
 	umansModelManagerOptions,
 	veniceModelManagerOptions,
 	vercelAiGatewayModelManagerOptions,
 	vllmModelManagerOptions,
-	waferPassModelManagerOptions,
 	waferServerlessModelManagerOptions,
 	xaiModelManagerOptions,
 	xaiOAuthModelManagerOptions,
@@ -49,7 +50,12 @@ import {
 	zenmuxModelManagerOptions,
 	zhipuCodingPlanModelManagerOptions,
 } from "./openai-compat";
-import { cursorModelManagerOptions, zaiModelManagerOptions } from "./special";
+import {
+	cursorModelManagerOptions,
+	devinModelManagerOptions,
+	gitLabDuoWorkflowModelManagerOptions,
+	zaiModelManagerOptions,
+} from "./special";
 
 export const CATALOG_PROVIDERS = [
 	{
@@ -110,6 +116,14 @@ export const CATALOG_PROVIDERS = [
 		catalogDiscovery: { label: "DeepSeek" },
 	},
 	{
+		id: "devin",
+		defaultModel: "swe-1-6",
+		envVars: ["DEVIN_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => devinModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Devin", envVars: ["DEVIN_API_KEY"], oauthProvider: "devin" },
+	},
+	{
 		id: "firepass",
 		defaultModel: "kimi-k2.6-turbo",
 		envVars: ["FIREPASS_API_KEY"],
@@ -132,6 +146,13 @@ export const CATALOG_PROVIDERS = [
 		id: "gitlab-duo",
 		defaultModel: "duo-chat-opus-4-6",
 		envVars: ["GITLAB_TOKEN"],
+	},
+	{
+		id: "gitlab-duo-agent",
+		defaultModel: "claude_sonnet_4_6_vertex",
+		envVars: ["GITLAB_TOKEN"],
+		createModelManagerOptions: (config: ModelManagerConfig) => gitLabDuoWorkflowModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
 	},
 	{
 		id: "google",
@@ -219,7 +240,9 @@ export const CATALOG_PROVIDERS = [
 	{
 		id: "moonshot",
 		defaultModel: "kimi-k2.7-code",
-		envVars: ["MOONSHOT_API_KEY"],
+		// KIMI_API_KEY is the most intuitive name for a Kimi/Moonshot key; accept it
+		// as a fallback so China users need not learn MOONSHOT_API_KEY. (#2883)
+		envVars: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => moonshotModelManagerOptions(config),
 		catalogDiscovery: { label: "Moonshot" },
 	},
@@ -300,6 +323,14 @@ export const CATALOG_PROVIDERS = [
 		},
 	},
 	{
+		id: "sakana",
+		defaultModel: "fugu",
+		envVars: ["SAKANA_API_KEY", "FUGU_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => sakanaModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Sakana AI" },
+	},
+	{
 		id: "synthetic",
 		defaultModel: "hf:zai-org/GLM-5.1",
 		envVars: ["SYNTHETIC_API_KEY"],
@@ -348,13 +379,6 @@ export const CATALOG_PROVIDERS = [
 		catalogDiscovery: { label: "vLLM", allowUnauthenticated: true },
 	},
 	{
-		id: "wafer-pass",
-		defaultModel: "GLM-5.1",
-		envVars: ["WAFER_PASS_API_KEY"],
-		createModelManagerOptions: (config: ModelManagerConfig) => waferPassModelManagerOptions(config),
-		catalogDiscovery: { label: "Wafer Pass", oauthProvider: "wafer-pass" },
-	},
-	{
 		id: "wafer-serverless",
 		defaultModel: "GLM-5.1",
 		envVars: ["WAFER_SERVERLESS_API_KEY"],
@@ -363,6 +387,13 @@ export const CATALOG_PROVIDERS = [
 			label: "Wafer Serverless",
 			oauthProvider: "wafer-serverless",
 		},
+	},
+	{
+		id: "coreweave",
+		defaultModel: "openai/gpt-oss-120b",
+		envVars: ["COREWEAVE_API_KEY", "WANDB_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => coreWeaveModelManagerOptions(config),
+		catalogDiscovery: { label: "CoreWeave Serverless Inference" },
 	},
 	{
 		id: "xai",

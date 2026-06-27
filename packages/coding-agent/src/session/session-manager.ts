@@ -1,7 +1,16 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ImageContent, Message, MessageAttribution, ServiceTier, TextContent, Usage } from "@oh-my-pi/pi-ai";
-import { getBlobsDir, getProjectDir, getSessionsDir, hasFsCode, isEnoent, logger, toError } from "@oh-my-pi/pi-utils";
+import {
+	directoryExists,
+	getBlobsDir,
+	getProjectDir,
+	getSessionsDir,
+	hasFsCode,
+	isEnoent,
+	logger,
+	toError,
+} from "@oh-my-pi/pi-utils";
 import {
 	normalizePersistedWorkspaceRoots,
 	type PersistedWorkspaceRoot,
@@ -769,9 +778,12 @@ export class SessionManager {
 
 		// Adopt the loaded session's working directory. Sessions live in a dir
 		// keyed by their cwd, so resuming a session from another project must
-		// re-point cwd/sessionDir at that project.
+		// re-point cwd/sessionDir at that project — unless that project directory
+		// no longer exists on disk, in which case adopting it (and the process
+		// chdir interactive mode then performs) would fail with ENOENT. Keep the
+		// current cwd so the resumed session stays where the user already is.
 		const headerCwd = header.cwd ? path.resolve(header.cwd) : undefined;
-		if (headerCwd && headerCwd !== path.resolve(this.#cwd)) {
+		if (headerCwd && headerCwd !== path.resolve(this.#cwd) && (await directoryExists(headerCwd))) {
 			this.#cwd = headerCwd;
 			this.#sessionDir = path.dirname(resolvedSessionFile);
 			this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
@@ -1173,11 +1185,13 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	appendThinkingLevelChange(thinkingLevel?: string): string {
+	/** Append a thinking level change as child of current leaf, then advance leaf. Returns entry id. */
+	appendThinkingLevelChange(thinkingLevel?: string, configured?: string): string {
 		const entry: ThinkingLevelChangeEntry = {
 			type: "thinking_level_change",
 			...this.#freshEntryFields(),
 			thinkingLevel: thinkingLevel ?? null,
+			configured: configured ?? null,
 		};
 		this.#recordEntry(entry);
 		return entry.id;
@@ -1570,6 +1584,29 @@ export class SessionManager {
 	}
 
 	/**
+	 * Create a fresh empty session file in the default session directory for
+	 * `cwd`, writing only the session header. The returned path can be passed to
+	 * `setSessionFile` / `AgentSession.switchSession` to start a new empty
+	 * session in that directory. Used by `/move` to switch projects without
+	 * dragging the current conversation along.
+	 */
+	static createEmptySessionFile(cwd: string, storage: SessionStorage = new FileSessionStorage()): string {
+		const sessionDir = SessionManager.getDefaultSessionDir(cwd, undefined, storage);
+		const id = mintSessionId();
+		const timestamp = nowIso();
+		const header: SessionHeader = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id,
+			timestamp,
+			cwd: path.resolve(cwd),
+		};
+		const file = path.join(sessionDir, `${fileSafeTimestamp(timestamp)}_${id}.jsonl`);
+		storage.writeTextSync(file, `${JSON.stringify(header)}\n`);
+		return file;
+	}
+
+	/**
 	 * Fork a session into the current project directory: copy history from another
 	 * session file while creating a fresh session file in this sessionDir.
 	 *
@@ -1621,8 +1658,19 @@ export class SessionManager {
 	): Promise<SessionManager> {
 		const loaded = await loadEntriesFromFile(filePath, storage);
 		const header = loaded.find(entry => entry.type === "session") as SessionHeader | undefined;
-		const cwd = header?.cwd ?? options?.initialCwd ?? getProjectDir();
-		const dir = sessionDir ?? path.dirname(path.resolve(filePath));
+		// Resume into the session's recorded cwd only when that directory still
+		// exists. A deleted project dir would make the constructor's #cwd — and the
+		// `setProjectDir` chdir interactive mode runs next — point at (and fail on)
+		// a missing path, so fall back to the launch cwd and anchor /new and /branch
+		// there too, keeping the resumed session where the user already is.
+		const recordedCwd = header?.cwd;
+		const recordedCwdUsable = !!recordedCwd && (await directoryExists(recordedCwd));
+		const cwd = recordedCwdUsable ? recordedCwd : (options?.initialCwd ?? getProjectDir());
+		const dir =
+			sessionDir ??
+			(recordedCwd && !recordedCwdUsable
+				? SessionManager.getDefaultSessionDir(cwd, undefined, storage)
+				: path.dirname(path.resolve(filePath)));
 		const manager = new SessionManager(cwd, dir, true, storage);
 		manager.#suppressBreadcrumb = options?.suppressBreadcrumb === true;
 		await manager.setSessionFile(filePath);
@@ -1733,7 +1781,12 @@ export class SessionManager {
 					(newestInTargetDir === null || (newestIsBreadcrumb && !currentProjectAlreadyHasSession));
 				if (looksLikeMovedProject) {
 					logger.info("Re-rooting moved session", { from: breadcrumbCwd, to: resolvedCwd });
-					const manager = await SessionManager.open(breadcrumb.sessionFile, undefined, storage);
+					// Anchor at the gone breadcrumb cwd so the moveTo below relocates the
+					// session: open() now falls back to the launch cwd for a missing
+					// recorded cwd, which would no-op moveTo when it equals `cwd`.
+					const manager = await SessionManager.open(breadcrumb.sessionFile, undefined, storage, {
+						initialCwd: breadcrumbCwd,
+					});
 					await manager.moveTo(cwd, sessionDir);
 					return manager;
 				}
@@ -1776,5 +1829,28 @@ export class SessionManager {
 	/** List all sessions across all project directories. */
 	static listAll(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
 		return listAllSessions(storage);
+	}
+}
+
+/**
+ * If the current session was created by `/move` and contains no real
+ * user/assistant messages, delete it so empty move sessions don't accumulate.
+ */
+export async function cleanupEmptyMoveSession(
+	sessionManager: SessionManager,
+	movedFromEmptySessionFile: string | undefined,
+): Promise<void> {
+	const sessionFile = sessionManager.getSessionFile();
+	if (!sessionFile || !movedFromEmptySessionFile) return;
+	if (path.resolve(sessionFile) !== path.resolve(movedFromEmptySessionFile)) return;
+	const entries = sessionManager.getEntries();
+	const hasRealMessages = entries.some(
+		e => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"),
+	);
+	if (hasRealMessages) return;
+	try {
+		await sessionManager.dropSession(sessionFile);
+	} catch (err) {
+		logger.warn("Failed to clean up empty move session", { sessionFile, error: String(err) });
 	}
 }

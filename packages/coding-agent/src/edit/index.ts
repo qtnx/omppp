@@ -1,4 +1,4 @@
-import { MismatchError as HashlineMismatchError } from "@oh-my-pi/hashline";
+import { MismatchError as HashlineMismatchError, Patch as HashlinePatch } from "@oh-my-pi/hashline";
 import hashlineGrammar from "@oh-my-pi/hashline/grammar.lark" with { type: "text" };
 import hashlineDescription from "@oh-my-pi/hashline/prompt.md" with { type: "text" };
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
@@ -154,6 +154,7 @@ async function executeApplyPatchPerFile(
 				diagnostics: details?.diagnostics,
 				op: details?.op,
 				move: details?.move,
+				sourcePath: details?.sourcePath,
 				meta: details?.meta,
 				oldText: details?.oldText,
 				newText: details?.newText,
@@ -290,28 +291,51 @@ async function executeSinglePathEntries(
 	};
 }
 
-function extractApprovalPath(args: unknown): string {
+function extractHashlineApprovalPaths(input: string, cwd: string | undefined): string[] | undefined {
+	try {
+		const patch = cwd ? HashlinePatch.parse(input, { cwd }) : HashlinePatch.parse(input);
+		if (patch.sections.length === 0) return undefined;
+		const paths: string[] = [];
+		for (const section of patch.sections) {
+			paths.push(section.path);
+			const fileOp = section.fileOp;
+			if (fileOp?.kind === "move") paths.push(fileOp.dest);
+		}
+		return paths;
+	} catch {
+		return undefined;
+	}
+}
+
+function extractApprovalPaths(args: unknown, cwd?: string): readonly string[] {
 	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
 	const input = typeof record.input === "string" ? record.input : undefined;
 	if (input) {
+		const hashlinePaths = extractHashlineApprovalPaths(input, cwd);
+		if (hashlinePaths !== undefined) return hashlinePaths;
+
 		const hashlineMatch = /^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/m.exec(input);
-		if (hashlineMatch?.[1]) return hashlineMatch[1];
+		if (hashlineMatch?.[1]) return [hashlineMatch[1]];
 
 		const applyPatchMatch = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/m.exec(input);
-		if (applyPatchMatch?.[1]) return applyPatchMatch[1].trim();
+		if (applyPatchMatch?.[1]) return [applyPatchMatch[1].trim()];
 	}
 
 	const targetPath = record.path;
-	return typeof targetPath === "string" && targetPath.length > 0 ? targetPath : "(unknown)";
+	return typeof targetPath === "string" && targetPath.length > 0 ? [targetPath] : [];
+}
+
+function extractApprovalPath(args: unknown, cwd?: string): string {
+	return extractApprovalPaths(args, cwd)[0] ?? "(unknown)";
 }
 
 export class EditTool implements AgentTool<TInput> {
 	readonly approval = (args: unknown) => {
-		const targetPath = extractApprovalPath(args);
-		return targetPath !== "(unknown)" && isInternalUrlPath(targetPath) ? "read" : "write";
+		const targetPaths = extractApprovalPaths(args, this.session.cwd);
+		return targetPaths.length > 0 && targetPaths.every(isInternalUrlPath) ? "read" : "write";
 	};
 	readonly formatApprovalDetails = (args: unknown): string[] => [
-		`File: ${truncateForPrompt(extractApprovalPath(args))}`,
+		`File: ${truncateForPrompt(extractApprovalPath(args, this.session.cwd))}`,
 	];
 	readonly name = "edit";
 	readonly label = "Edit";
@@ -394,6 +418,27 @@ export class EditTool implements AgentTool<TInput> {
 	 */
 	matcherDigest(args: unknown): string | undefined {
 		return EDIT_MODE_STRATEGIES[this.mode].matcherDigest(args);
+	}
+
+	/**
+	 * Project the streamed args onto their target file paths so path-scoped
+	 * stream matchers (e.g. TTSR `tool:edit(*.ts)` globs) match hashline and
+	 * apply_patch edits even though the path lives in the wire payload (a
+	 * section header / envelope marker) rather than a top-level argument.
+	 */
+	matcherPaths(args: unknown): readonly string[] | undefined {
+		return EDIT_MODE_STRATEGIES[this.mode].matcherPaths(args);
+	}
+
+	/**
+	 * Per-file projection of the streamed args, splitting multi-section
+	 * hashline / multi-hunk apply_patch payloads into one (path, digest) entry
+	 * per touched file. Path-scoped stream matchers (TTSR) then evaluate each
+	 * file in isolation, so a `tool:edit(*.ts)` rule never fires on text that
+	 * actually belongs to a sibling Markdown hunk.
+	 */
+	matcherEntries(args: unknown): readonly { path: string; digest: string }[] | undefined {
+		return EDIT_MODE_STRATEGIES[this.mode].matcherEntries(args);
 	}
 
 	async execute(

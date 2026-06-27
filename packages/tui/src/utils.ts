@@ -2,16 +2,45 @@ import {
 	Ellipsis,
 	type ExtractSegmentsResult,
 	extractSegments as nativeExtractSegments,
+	setHangulCompatJamoWidthOverride as nativeSetHangulCompatJamoWidthOverride,
 	sliceWithWidth as nativeSliceWithWidth,
 	truncateToWidth as nativeTruncateToWidth,
 	wrapTextWithAnsi as nativeWrapTextWithAnsi,
 	type SliceResult,
 } from "@oh-my-pi/pi-natives";
-import { getDefaultTabWidth, getIndentation } from "@oh-my-pi/pi-utils";
+import { DEFAULT_TAB_WIDTH } from "@oh-my-pi/pi-utils";
 
 export { Ellipsis } from "@oh-my-pi/pi-natives";
 
-export { getDefaultTabWidth, getIndentation } from "@oh-my-pi/pi-utils";
+export { DEFAULT_TAB_WIDTH } from "@oh-my-pi/pi-utils";
+
+export type HangulCompatibilityJamoWidth = "platform" | "unicode" | 1 | 2;
+
+let hangulCompatibilityJamoWidth: HangulCompatibilityJamoWidth = "platform";
+
+// Wire encoding for the native override (see crates/pi-natives text.rs):
+// 0 = platform default, 1 = narrow, 2 = wide, 3 = unicode (no correction).
+function nativeHangulCompatibilityJamoOverride(width: HangulCompatibilityJamoWidth): number {
+	if (width === "unicode") return 3;
+	if (typeof width === "number") return width;
+	return 0;
+}
+
+export function getHangulCompatibilityJamoWidth(): HangulCompatibilityJamoWidth {
+	return hangulCompatibilityJamoWidth;
+}
+
+export function setHangulCompatibilityJamoWidth(width: HangulCompatibilityJamoWidth): boolean {
+	const changed = hangulCompatibilityJamoWidth !== width;
+	hangulCompatibilityJamoWidth = width;
+	nativeSetHangulCompatJamoWidthOverride(nativeHangulCompatibilityJamoOverride(width));
+	return changed;
+}
+
+export function resetHangulCompatibilityJamoWidthForTests(): void {
+	hangulCompatibilityJamoWidth = "platform";
+	nativeSetHangulCompatJamoWidthOverride(0);
+}
 
 export type TextSizingScale = 1 | 2 | 3;
 export type TextSizingVerticalAlign = "top" | "bottom" | "center";
@@ -74,35 +103,32 @@ export function encodeTextSized(text: string, options: TextSizingOptions = {}): 
 }
 
 export function sliceWithWidth(line: string, startCol: number, length: number, strict?: boolean | null): SliceResult {
-	return nativeSliceWithWidth(line, startCol, length, strict ?? null, getDefaultTabWidth());
+	return nativeSliceWithWidth(line, startCol, length, strict ?? null, DEFAULT_TAB_WIDTH);
 }
 
 export function truncateToWidth(
 	text: string,
 	maxWidth: number,
-	ellipsisKind?: Ellipsis | null,
+	ellipsisKind?: Ellipsis | null | "",
 	pad?: boolean | null,
 ): string {
-	// Guard nullish napi inputs: napi-rs 3 on the Windows prebuilt rejects
-	// `null` for `Option<u8>` (Ellipsis) / `Option<bool>` (pad) (issue #848),
-	// and `maxWidth` is a required `u32` that throws on `null`/`undefined`
-	// everywhere. Pass concrete defaults that mirror the Rust `unwrap_or`s.
-	const safeWidth = Number.isFinite(maxWidth) ? Math.max(0, Math.trunc(maxWidth)) : 0;
-	let resolvedEllipsis: Ellipsis | null | undefined | string = ellipsisKind;
-	if (typeof resolvedEllipsis === "string") {
-		resolvedEllipsis = resolvedEllipsis === "" ? Ellipsis.Omit : Ellipsis.Unicode;
+	maxWidth = Math.max(0, maxWidth | 0);
+	// Fast path: every UTF-16 unit is at most 3 cells wide, so a string whose
+	// `length * 3` already fits within `safeWidth` cannot need truncation.
+	if (!pad && text.length * 3 <= maxWidth) {
+		return text;
 	}
 	return nativeTruncateToWidth(
 		text,
-		safeWidth,
-		resolvedEllipsis ?? Ellipsis.Unicode,
+		maxWidth,
+		(typeof ellipsisKind === "string" ? Ellipsis.Omit : ellipsisKind) ?? Ellipsis.Unicode,
 		pad ?? false,
-		getDefaultTabWidth(),
+		DEFAULT_TAB_WIDTH,
 	);
 }
 
 export function wrapTextWithAnsi(text: string, width: number): string[] {
-	return nativeWrapTextWithAnsi(text, width, getDefaultTabWidth());
+	return nativeWrapTextWithAnsi(text, width, DEFAULT_TAB_WIDTH);
 }
 
 export function extractSegments(
@@ -112,24 +138,17 @@ export function extractSegments(
 	afterLen: number,
 	strictAfter: boolean,
 ): ExtractSegmentsResult {
-	return nativeExtractSegments(line, beforeEnd, afterStart, afterLen, strictAfter, getDefaultTabWidth());
+	return nativeExtractSegments(line, beforeEnd, afterStart, afterLen, strictAfter, DEFAULT_TAB_WIDTH);
 }
 
 // Pre-allocated space buffer for padding
 const SPACE_BUFFER = " ".repeat(512);
 
-/**
- * Tab width in columns for `file`, using `process.cwd()` as the project root for relative paths.
- */
-export function getIndentationNoescape(file?: string): number {
-	return getIndentation(file, process.cwd());
-}
-
 /*
- * Replace tabs with configured spacing for consistent rendering.
+ * Replace tabs with the fixed display tab width for consistent rendering.
  */
-export function replaceTabs(text: string, file?: string): string {
-	return text.replaceAll("\t", " ".repeat(getIndentation(file)));
+export function replaceTabs(text: string): string {
+	return text.replaceAll("\t", " ".repeat(DEFAULT_TAB_WIDTH));
 }
 
 /**
@@ -167,6 +186,58 @@ const LONG_WIDTH_FAST_PATH_MIN = 128;
 // non-CJK tables that back truncate/slice/wrap. Hoisted so no per-call alloc.
 const STRING_WIDTH_OPTS = { countAnsiEscapeCodes: false, ambiguousIsNarrow: true } as const;
 
+// Hangul Compatibility Jamo (U+3131..=U+318E). `Bun.stringWidth` follows UAX#11
+// and reports these at 2 cells (the U+3164 HANGUL FILLER at 0), but the actual
+// rendered width is decided by the *client* terminal (1 cell on Terminal.app /
+// iTerm2, 2 on Ghostty and most Linux terminals). The width is resolved from
+// the terminal identity and pushed into the native engine through
+// `setHangulCompatibilityJamoWidth`; mirror the same correction here so the TS
+// width stays in parity with the native truncate/slice/wrap model — and so the
+// hardware cursor column lands on the actual glyph during Korean IME input.
+const HANGUL_COMPAT_JAMO_REGEX = /[\u3131-\u318e]/;
+const HANGUL_COMPAT_JAMO_GLOBAL_REGEX = /[\u3131-\u318e]/g;
+const HANGUL_FILLER_CODE_POINT = 0x3164;
+// `Bun.stringWidth` counts every code point in the Compatibility Jamo block as
+// 2 cells (even the U+3164 filler that `unicode-width` treats as zero-width).
+const HANGUL_COMPAT_JAMO_BUN_WIDTH = 2;
+
+// Effective target cell width for Compatibility Jamo, or `null` to follow the
+// Unicode width (no correction). Mirrors `hangul_compat_jamo_target_width` in
+// crates/pi-natives/src/text.rs.
+function hangulCompatibilityJamoTargetWidth(): 1 | 2 | null {
+	switch (hangulCompatibilityJamoWidth) {
+		case 1:
+			return 1;
+		case 2:
+			return 2;
+		case "unicode":
+			return null;
+		default:
+			// "platform": macOS terminals historically render these narrow.
+			return process.platform === "darwin" ? 1 : null;
+	}
+}
+
+// Reconcile the `Bun.stringWidth` count for Compatibility Jamo to the native
+// width engine: subtract Bun's per-jamo cell count and add back the effective
+// width — the runtime target when one is active, otherwise the `unicode-width`
+// value. Mirrors `char_width_corrected` / `apply_hangul_compat_jamo_delta` in
+// crates/pi-natives/src/text.rs, including the rule that the zero-width filler
+// (U+3164) is never widened past the narrow correction (a wide terminal still
+// renders it at its Unicode width of 0).
+function correctHangulCompatibilityJamoWidth(width: number, str: string): number {
+	if (!HANGUL_COMPAT_JAMO_REGEX.test(str)) return width;
+	const target = hangulCompatibilityJamoTargetWidth();
+	let corrected = width;
+	HANGUL_COMPAT_JAMO_GLOBAL_REGEX.lastIndex = 0;
+	for (let m = HANGUL_COMPAT_JAMO_GLOBAL_REGEX.exec(str); m !== null; m = HANGUL_COMPAT_JAMO_GLOBAL_REGEX.exec(str)) {
+		const unicodeWidth = m[0].codePointAt(0) === HANGUL_FILLER_CODE_POINT ? 0 : 2;
+		const finalWidth = target === null || (unicodeWidth === 0 && target > 1) ? unicodeWidth : target;
+		corrected += finalWidth - HANGUL_COMPAT_JAMO_BUN_WIDTH;
+	}
+	return corrected;
+}
+
 /**
  * Visible width of a string in terminal columns, excluding ANSI/OSC escapes.
  *
@@ -186,8 +257,8 @@ export function visibleWidth(str: string): number {
 		for (let tabIndex = str.indexOf(TAB); tabIndex !== -1; tabIndex = str.indexOf(TAB, tabIndex + 1)) {
 			tabCount++;
 		}
-		if (tabCount > 0) width += tabCount * getDefaultTabWidth();
-		return width;
+		if (tabCount > 0) width += tabCount * DEFAULT_TAB_WIDTH;
+		return correctHangulCompatibilityJamoWidth(width, str);
 	}
 
 	let tabCount = 0;
@@ -203,7 +274,7 @@ export function visibleWidth(str: string): number {
 		}
 	}
 	if (i === str.length) {
-		return tabCount === 0 ? str.length : str.length + tabCount * (getDefaultTabWidth() - 1);
+		return tabCount === 0 ? str.length : str.length + tabCount * (DEFAULT_TAB_WIDTH - 1);
 	}
 
 	if (tabCount === 0) {
@@ -224,7 +295,7 @@ export function visibleWidth(str: string): number {
 	// the native scanner that traps under Bun 1.3.x GC/N-API load). It strips
 	// CSI/OSC to zero cells and shares the native engine's UAX#11 width tables.
 	let width = Bun.stringWidth(str, STRING_WIDTH_OPTS);
-	if (tabCount > 0) width += tabCount * getDefaultTabWidth();
+	if (tabCount > 0) width += tabCount * DEFAULT_TAB_WIDTH;
 
 	// OSC 66: add back each stripped span as `scale * (explicit w ?? payload
 	// width)`. Matched rather than replaced to avoid reallocating the string.
@@ -248,7 +319,7 @@ export function visibleWidth(str: string): number {
 		}
 	}
 
-	return width;
+	return correctHangulCompatibilityJamoWidth(width, str);
 }
 
 const THAI_LAO_AM_GLOBAL_REGEX = /[\u0e33\u0eb3]/g;

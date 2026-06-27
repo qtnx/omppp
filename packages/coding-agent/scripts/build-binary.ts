@@ -5,7 +5,15 @@ import * as path from "node:path";
 
 const packageDir = path.join(import.meta.dir, "..");
 const repoRoot = path.join(packageDir, "..", "..");
-const outputPath = path.join(packageDir, "dist", "ompx");
+// Optional cross-compile target, e.g. CROSS_TARGET=linux-arm64 → bun build
+// --target=bun-linux-arm64, embeds the matching native, outputs dist/ompx-<target>.
+const crossTarget = Bun.env.CROSS_TARGET || null;
+const [crossPlatform, crossArch] = crossTarget ? crossTarget.split("-") : [null, null];
+// x64 uses the baseline bun runtime so it runs under Rosetta / pre-AVX2 CPUs
+// (the modern bun-linux-x64 target SIGILLs under Apple-Silicon Rosetta).
+const bunTarget = crossTarget ? (crossTarget === "linux-x64" ? "bun-linux-x64-baseline" : `bun-${crossTarget}`) : null;
+const outName = crossTarget ? `ompx-${crossTarget}` : "ompx";
+const outputPath = path.join(packageDir, "dist", outName);
 
 // Transformers.js is an optional, native-heavy dependency that is never bundled
 // into the binary; the tiny-model worker `bun install`s it into a runtime cache
@@ -17,7 +25,7 @@ const transformersVersion = (
 ).version;
 
 function shouldAdhocSignDarwinBinary(): boolean {
-	return process.platform === "darwin";
+	return process.platform === "darwin" && !crossTarget;
 }
 
 async function runCommand(
@@ -38,9 +46,38 @@ async function runCommand(
 }
 
 async function main(): Promise<void> {
-	await runCommand(["bun", "--cwd=../stats", "scripts/generate-client-bundle.ts", "--generate"]);
+	// Generate inside the try so the finally always restores the empty checked-in
+	// placeholders (stats client archive, docs index) even on failure.
 	try {
-		await runCommand(["bun", "--cwd=../natives", "run", "embed:native"]);
+		await runCommand(["bun", "--cwd=../stats", "run", "gen:stats"]);
+		await runCommand(["bun", "run", "gen:docs"]);
+		// `legacy-pi-bundled-registry.ts` static-imports
+		// `@oh-my-pi/pi-coding-agent/export/html` (one of pi-coding-agent's
+		// named subpath exports, see scripts/generate-legacy-pi-bundled-registry.ts),
+		// whose source pulls in `tool-views.generated.js`. The root
+		// `package.json` "prepare" lifecycle hook builds that file on
+		// `bun install`, but a clean binary build that skips install hooks
+		// would `bun build --compile` against the registry entry and fail
+		// resolving the missing generated bundle. Rebuilding the tool views
+		// here makes the compile self-contained and matches what `prepack`
+		// does for the npm bundle.
+		await runCommand(["bun", "--cwd=../collab-web", "run", "gen:tool-views"]);
+		await runCommand(
+			["bun", "--cwd=../natives", "run", "gen:native"],
+			crossTarget
+				? { ...Bun.env, TARGET_PLATFORM: crossPlatform as string, TARGET_ARCH: crossArch as string }
+				: Bun.env,
+		);
+		await runCommand(["bun", "run", "gen:mupdf"]);
+		// Regenerate the bundled-pi registry + key set before the compile so any
+		// new pi-* subpath export added under `packages/*/package.json` is served
+		// from the host's in-process copy. Without this, `bun build --compile`
+		// would freeze whatever the committed registry happened to enumerate at
+		// the time of the last manual `--generate`, and a new subpath added
+		// since then would crash extension validation with `Cannot find module`
+		// (issue #3442). The generator also normalizes formatting, so the diff
+		// against the committed copy stays clean.
+		await runCommand(["bun", "scripts/generate-legacy-pi-bundled-registry.ts", "--generate"]);
 		try {
 			const buildEnv = shouldAdhocSignDarwinBinary() ? { ...Bun.env, BUN_NO_CODESIGN_MACHO_BINARY: "1" } : Bun.env;
 			await runCommand(
@@ -48,6 +85,7 @@ async function main(): Promise<void> {
 					"bun",
 					"build",
 					"--compile",
+					...(bunTarget ? ["--target", bunTarget] : []),
 					"--no-compile-autoload-bunfig",
 					"--no-compile-autoload-dotenv",
 					"--no-compile-autoload-tsconfig",
@@ -58,40 +96,20 @@ async function main(): Promise<void> {
 					"--define",
 					`process.env.PI_TINY_TRANSFORMERS_VERSION=${JSON.stringify(transformersVersion)}`,
 					"--external",
-					"mupdf",
-					"--external",
 					"fastembed",
 					"--external",
 					"onnxruntime-node",
 					"--root",
 					".",
 					"./packages/coding-agent/src/cli.ts",
-					// Worker entrypoints. Bun's `--compile` discovers the literal in
-					// `new Worker("…", …)` at each spawn site, but only actually
-					// emits the worker into the bunfs root when it is listed here as
-					// an explicit additional entry. Paths are relative to the repo root
-					// because this build runs with `--root .` from `repoRoot`.
-					"./packages/stats/src/sync-worker.ts",
-					"./packages/coding-agent/src/tools/browser/tab-worker-entry.ts",
-					"./packages/coding-agent/src/eval/js/worker-entry.ts",
-					// Legacy pi-* extension compat entrypoints served by
-					// `legacy-pi-compat.ts`. These are reached via computed bunfs paths
-					// (which `--compile`'s static analyzer cannot trace), so each must be
-					// listed here to land in bunfs at
-					// `/$bunfs/root/packages/<pkg>/<entry>.js`. The coding-agent's own
-					// `./src/index.ts` is intentionally NOT listed: bun --compile silently
-					// breaks the CLI entry when the same package's barrel appears as an
-					// extra entrypoint (issue #1474), so legacy `pi-coding-agent` imports
-					// resolve through `legacy-pi-coding-agent-shim.ts` instead.
-					"./packages/agent/src/index.ts",
-					"./packages/natives/native/index.js",
-					"./packages/tui/src/index.ts",
-					"./packages/utils/src/index.ts",
-					"./packages/coding-agent/src/extensibility/typebox.ts",
-					"./packages/coding-agent/src/extensibility/legacy-pi-ai-shim.ts",
-					"./packages/coding-agent/src/extensibility/legacy-pi-coding-agent-shim.ts",
+					// Worker re-entry dispatch is handled by `cli.ts` declaring the
+					// compiled binary as the worker host and routing hidden argv
+					// selectors before command registration. Legacy pi-* extension
+					// compat surfaces are served through the virtual registry backed by
+					// `legacy-pi-bundled-registry.ts`, which static-imports each
+					// surface so the bundler includes them via the main module graph.
 					"--outfile",
-					"packages/coding-agent/dist/ompx",
+					`packages/coding-agent/dist/${outName}`,
 				],
 				buildEnv,
 				repoRoot,
@@ -102,10 +120,12 @@ async function main(): Promise<void> {
 				await runCommand(["codesign", "--force", "--sign", "-", outputPath]);
 			}
 		} finally {
-			await runCommand(["bun", "--cwd=../natives", "run", "embed:native", "--reset"]);
+			await runCommand(["bun", "run", "gen:mupdf:reset"]);
+			await runCommand(["bun", "--cwd=../natives", "run", "gen:native:reset"]);
 		}
 	} finally {
-		await runCommand(["bun", "--cwd=../stats", "scripts/generate-client-bundle.ts", "--reset"]);
+		await runCommand(["bun", "--cwd=../stats", "run", "gen:stats:reset"]);
+		await runCommand(["bun", "run", "gen:docs:reset"]);
 	}
 }
 

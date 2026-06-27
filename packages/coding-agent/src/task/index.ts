@@ -49,12 +49,18 @@ import type { AsyncJobManager } from "../async";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { loadOverallPlanReference } from "../plan-mode/plan-handoff";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
-import { generateCommitMessage } from "../utils/commit-message-generator";
 import * as git from "../utils/git";
 import type { DiscoveryResult } from "./discovery";
 import * as taskDiscovery from "./discovery";
 import { getAgent } from "./discovery";
 import { runSubprocess } from "./executor";
+import {
+	applyEligibleNestedPatches,
+	type IsolationContext,
+	makeIsolationCommitMessage,
+	mergeIsolatedChanges,
+	prepareIsolationContext,
+} from "./isolation-runner";
 import { generateTaskName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimit, Semaphore } from "./parallel";
@@ -63,17 +69,14 @@ import { repairTaskParams } from "./repair-args";
 import { persistTaskReviewFindings } from "./review-findings";
 import { type ReviewGateConfig, runReviewGate } from "./review-gate";
 import {
-	applyNestedPatches,
 	captureBaseline,
 	captureDeltaPatch,
 	cleanupIsolation,
-	cleanupTaskBranches,
 	commitToBranch,
 	type DeltaPatchResult,
 	ensureIsolation,
 	getRepoRoot,
 	type IsolationHandle,
-	mergeTaskBranches,
 	parseIsolationMode,
 	type WorktreeBaseline,
 } from "./worktree";
@@ -161,8 +164,8 @@ export {
 // Fail-safe: any unknown tool makes the agent not read-only.
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"read",
-	"search",
-	"find",
+	"grep",
+	"glob",
 	"web_search",
 	"ast_grep",
 	"yield",
@@ -849,19 +852,20 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				const startedAt = Date.now();
 				const semaphore = this.#getSpawnSemaphore();
 				await semaphore.acquire();
+				const acquiredAt = Date.now();
 				if (runSignal.aborted) {
 					semaphore.release();
 					progress.status = "aborted";
 					onSettled?.(true);
 					throw new Error("Aborted before execution");
 				}
-				markRunning();
-				progress.status = "running";
-				await reportProgress(
-					`Running background task ${agentId}...`,
-					buildDetails("running", ownJobId) as unknown as Record<string, unknown>,
-				);
 				try {
+					markRunning();
+					progress.status = "running";
+					await reportProgress(
+						`Running background task ${agentId}...`,
+						buildDetails("running", ownJobId) as unknown as Record<string, unknown>,
+					);
 					const result = await this.#executeSync(
 						toolCallId,
 						spawnParams,
@@ -870,6 +874,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						agentId,
 						progress.index,
 						true,
+						{ invokedAt: startedAt, acquiredAt },
 					);
 					const finalText = result.content.find(part => part.type === "text")?.text ?? "(no output)";
 					const singleResult = result.details?.results[0];
@@ -951,7 +956,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const semaphore = this.#getSpawnSemaphore();
 		if (spawnItems.length === 1) {
+			const invokedAt = Date.now();
 			await semaphore.acquire();
+			const acquiredAt = Date.now();
 			try {
 				return await this.#executeSync(
 					toolCallId,
@@ -960,6 +967,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					onUpdate,
 					undefined,
 					0,
+					false,
+					{ invokedAt, acquiredAt },
 				);
 			} finally {
 				semaphore.release();
@@ -986,7 +995,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			spawnItems,
 			spawnItems.length,
 			async (item, index, workerSignal) => {
+				const invokedAt = Date.now();
 				await semaphore.acquire();
+				const acquiredAt = Date.now();
 				try {
 					const itemOnUpdate: AgentToolUpdateCallback<TaskToolDetails> | undefined = onUpdate
 						? update => {
@@ -1004,6 +1015,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						itemOnUpdate,
 						undefined,
 						index,
+						false,
+						{ invokedAt, acquiredAt },
 					);
 				} finally {
 					semaphore.release();
@@ -1063,8 +1076,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		preAllocatedId?: string,
 		spawnIndex = 0,
 		detached = false,
+		launchTiming?: { invokedAt: number; acquiredAt: number },
 	): Promise<AgentToolResult<TaskToolDetails>> {
-		return this.#runSpawn(toolCallId, params, signal, onUpdate, preAllocatedId, spawnIndex, detached);
+		return this.#runSpawn(toolCallId, params, signal, onUpdate, preAllocatedId, spawnIndex, detached, launchTiming);
 	}
 
 	/** Spawn a fresh subagent and run it to completion. */
@@ -1076,6 +1090,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		preAllocatedId?: string,
 		spawnIndex = 0,
 		detached = false,
+		launchTiming?: { invokedAt: number; acquiredAt: number },
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
 		const { agents, projectAgentsDir } = await taskDiscovery.discoverAgents(this.session.cwd);
@@ -1086,7 +1101,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const isolationRequested = "isolated" in params ? params.isolated === true : false;
 		const isIsolated = isolationMode !== "none" && isolationRequested;
 		const mergeMode = this.session.settings.get("task.isolation.merge");
-		const commitStyle = this.session.settings.get("task.isolation.commits");
 		const taskDepth = this.session.taskDepth ?? 0;
 		const subagentLspEnabled = (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp");
 
@@ -1123,7 +1137,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 
 		const planModeState = this.session.getPlanModeState?.();
-		const planModeBaseTools = ["read", "search", "find", "lsp", "web_search"];
+		const planModeBaseTools = ["read", "grep", "glob", "lsp", "web_search"];
 		const planModeTools = [
 			...planModeBaseTools,
 			...(agent.tools ?? []).filter(
@@ -1201,13 +1215,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// structured output go through eval agent(prompt, schema).
 		const effectiveOutputSchema = effectiveAgent.output ?? this.session.outputSchema;
 
+		let isolationContext: IsolationContext | null = null;
 		let repoRoot: string | null = null;
-		let baseline: WorktreeBaseline | null = null;
 		if (isIsolated || reviewGateConfig) {
 			try {
-				repoRoot = await getRepoRoot(this.session.cwd);
 				if (isIsolated) {
-					baseline = await captureBaseline(repoRoot);
+					isolationContext = await prepareIsolationContext(this.session.cwd);
+					repoRoot = isolationContext.repoRoot;
+				} else {
+					repoRoot = await getRepoRoot(this.session.cwd);
 				}
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
@@ -1525,17 +1541,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				};
 			};
 
-			const buildCommitMessageFn = () =>
-				commitStyle === "ai" && this.session.modelRegistry
-					? async (diff: string) => {
-							return generateCommitMessage(
-								diff,
-								this.session.modelRegistry!,
-								this.session.settings,
-								this.session.getSessionId?.() ?? undefined,
-							);
-						}
-					: undefined;
+			const buildCommitMessageFn = makeIsolationCommitMessage(this.session);
 
 			const sharedRunOptions = {
 				cwd: this.session.cwd,
@@ -1551,6 +1557,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				detached,
 				id: agentId,
 				taskDepth,
+				invokedAt: launchTiming?.invokedAt,
+				acquiredAt: launchTiming?.acquiredAt,
 				modelOverride,
 				parentActiveModelPattern,
 				thinkingLevel: thinkingLevelOverride,
@@ -1588,6 +1596,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				parentTelemetry: this.session.getTelemetry?.(),
 				parentEvalSessionId,
 				parentAgentId: this.session.getAgentId?.() ?? MAIN_AGENT_ID,
+				// Live source of truth for `serviceTierSubagent: inherit`. When the
+				// session exposes a tier accessor, pass tier-or-null (null = explicit
+				// none, e.g. /fast off); otherwise leave undefined so inherit falls
+				// back to the configured serviceTier setting.
+				parentServiceTier: this.session.getServiceTier ? (this.session.getServiceTier() ?? null) : undefined,
 			};
 
 			const runTask = async (): Promise<SingleResult> => {
@@ -1640,10 +1653,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				const taskStart = Date.now();
 				let isolationHandle: IsolationHandle | undefined;
 				try {
-					if (!repoRoot || !baseline) {
+					if (!repoRoot || !isolationContext) {
 						throw new Error("Isolated task execution not initialized.");
 					}
-					const taskBaseline = structuredClone(baseline);
+					const taskBaseline = structuredClone(isolationContext.baseline);
 
 					isolationHandle = await ensureIsolation(repoRoot, agentId, preferredIsolationBackend);
 					const isolationDir = isolationHandle.mergedDir;
@@ -1745,103 +1758,24 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 			let mergeSummary = "";
 			let changesApplied: boolean | null = null;
-			let hadAnyChanges = false;
 			let mergedBranchForNestedPatches = false;
 			if (isIsolated && repoRoot) {
-				try {
-					if (mergeMode === "branch") {
-						if (!result.branchName || !isTaskResultAccepted(result)) {
-							changesApplied = true;
-							mergeSummary = "\n\nNo changes to apply.";
-						} else {
-							const mergeResult = await mergeTaskBranches(repoRoot, [
-								{ branchName: result.branchName, taskId: result.id, description: result.description },
-							]);
-							mergedBranchForNestedPatches = mergeResult.merged.includes(result.branchName);
-							changesApplied = mergeResult.failed.length === 0;
-							hadAnyChanges = changesApplied && mergeResult.merged.length > 0;
-
-							if (changesApplied) {
-								mergeSummary = hadAnyChanges
-									? `\n\nMerged branch: ${result.branchName}`
-									: "\n\nNo changes to apply.";
-							} else {
-								const conflictPart = mergeResult.conflict ? `\nConflict: ${mergeResult.conflict}` : "";
-								mergeSummary = `\n\n<system-notification>Branch merge failed: ${result.branchName}.${conflictPart}\nThe unmerged branch remains for manual resolution.</system-notification>`;
-							}
-							if (mergeResult.stashConflict) {
-								mergeSummary += `\n\n<system-notification>${mergeResult.stashConflict}</system-notification>`;
-							}
-
-							// Clean up the merged branch (keep failed ones for manual resolution)
-							if (changesApplied) {
-								await cleanupTaskBranches(repoRoot, [result.branchName]);
-							}
-						}
-					} else {
-						// Patch mode: apply the patch from an accepted run. A failed,
-						// aborted, or review-blocked run has nothing to apply and must
-						// not block the result.
-						const succeeded = isTaskResultAccepted(result);
-						if (!succeeded) {
-							changesApplied = true;
-							hadAnyChanges = false;
-						} else if (!result.patchPath) {
-							changesApplied = false;
-							hadAnyChanges = false;
-						} else {
-							const patchText = await Bun.file(result.patchPath).text();
-							if (!patchText.trim()) {
-								changesApplied = true;
-								hadAnyChanges = false;
-							} else {
-								const normalized = patchText.endsWith("\n") ? patchText : `${patchText}\n`;
-								changesApplied = await git.patch.canApplyText(repoRoot, normalized);
-								if (changesApplied) {
-									try {
-										await git.patch.applyText(repoRoot, normalized);
-										hadAnyChanges = true;
-									} catch {
-										changesApplied = false;
-										hadAnyChanges = false;
-									}
-								}
-							}
-						}
-
-						if (changesApplied) {
-							mergeSummary = hadAnyChanges ? "\n\nApplied patches: yes" : "\n\nNo changes to apply.";
-						} else {
-							const notification =
-								"<system-notification>Patches were not applied and must be handled manually.</system-notification>";
-							const patchList = result.patchPath ? `\n\nPatch artifact:\n- ${result.patchPath}` : "";
-							mergeSummary = `\n\n${notification}${patchList}`;
-						}
-					}
-				} catch (mergeErr) {
-					const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-					changesApplied = false;
-					hadAnyChanges = false;
-					mergeSummary = `\n\n<system-notification>Merge phase failed: ${msg}\nTask outputs are preserved but changes were not applied.</system-notification>`;
-				}
+				const outcome = await mergeIsolatedChanges({ result, repoRoot, mergeMode });
+				mergeSummary = outcome.summary;
+				changesApplied = outcome.changesApplied;
+				mergedBranchForNestedPatches = outcome.mergedBranchForNestedPatches;
 			}
 
-			// Apply nested repo patches (separate from parent git)
-			if (isIsolated && repoRoot && (mergeMode === "branch" || changesApplied !== false)) {
-				const nestedPatches = result.nestedPatches ?? [];
-				const eligible =
-					nestedPatches.length > 0 &&
-					isTaskResultAccepted(result) &&
-					(mergeMode !== "branch" || mergedBranchForNestedPatches);
-				if (eligible) {
-					try {
-						await applyNestedPatches(repoRoot, nestedPatches, buildCommitMessageFn());
-					} catch {
-						// Nested patch failures are non-fatal to the parent merge
-						mergeSummary +=
-							"\n\n<system-notification>Some nested repository patches failed to apply.</system-notification>";
-					}
-				}
+			// Apply nested repo patches (separate from parent git).
+			if (isIsolated && repoRoot) {
+				mergeSummary += await applyEligibleNestedPatches({
+					result,
+					repoRoot,
+					mergeMode,
+					changesApplied,
+					mergedBranchForNestedPatches,
+					commitMessage: buildCommitMessageFn(),
+				});
 			}
 
 			if (isReviewGateBlockedResult(result)) {

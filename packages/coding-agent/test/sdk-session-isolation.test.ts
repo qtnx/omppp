@@ -12,7 +12,7 @@ import { SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { SessionInitEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getSessionsDir, Snowflake } from "@oh-my-pi/pi-utils";
+import { getSessionsDir, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
 function createTtsrRule(name: string): Rule {
 	return {
@@ -83,7 +83,7 @@ describe("createAgentSession session storage isolation", () => {
 
 	afterEach(async () => {
 		for (const tempDir of tempDirs.splice(0)) {
-			fs.rmSync(tempDir, { recursive: true, force: true });
+			removeSyncWithRetries(tempDir);
 		}
 	});
 
@@ -442,9 +442,8 @@ describe("createAgentSession session storage isolation", () => {
 			await session.dispose();
 		}
 	});
-	it("shows redaction guidance only when secrets are actually loaded", async () => {
+	it("loads obfuscator only when secrets exist", async () => {
 		await withClearedSecretEnv(async () => {
-			const redactionGuidance = "redacted as `#XXXX#` tokens";
 			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-secrets-${Snowflake.next()}-`));
 			tempDirs.push(tempDir);
 			const cwd = path.join(tempDir, "project");
@@ -467,7 +466,7 @@ describe("createAgentSession session storage isolation", () => {
 
 			const withoutSecrets = await createAgentSession(commonOptions);
 			try {
-				expect(withoutSecrets.session.systemPrompt.join("\n")).not.toContain(redactionGuidance);
+				expect(withoutSecrets.session.obfuscator?.hasSecrets()).toBeFalsy();
 			} finally {
 				await withoutSecrets.session.dispose();
 			}
@@ -477,7 +476,7 @@ describe("createAgentSession session storage isolation", () => {
 
 			const withSecrets = await createAgentSession(commonOptions);
 			try {
-				expect(withSecrets.session.systemPrompt.join("\n")).toContain(redactionGuidance);
+				expect(withSecrets.session.obfuscator?.hasSecrets()).toBe(true);
 			} finally {
 				await withSecrets.session.dispose();
 			}

@@ -13,6 +13,7 @@ import {
 	getModelPerformanceSeries,
 	getModelTimeSeries,
 	getOverallStats,
+	getStatsByAgentType,
 	getStatsByFolder,
 	getStatsByModel,
 	getTimeSeries,
@@ -338,7 +339,7 @@ const TIME_RANGE_TO_CONFIG: Record<TimeRange, Omit<TimeRangeConfig, "cutoff">> =
 	},
 };
 
-function getTimeRangeConfig(range?: string | null): TimeRangeConfig {
+export function getTimeRangeConfig(range?: string | null): TimeRangeConfig {
 	const normalized = range?.trim().toLowerCase() ?? DEFAULT_TIME_RANGE;
 	const config = TIME_RANGE_TO_CONFIG[normalized as TimeRange];
 	if (config) {
@@ -373,6 +374,7 @@ export async function getDashboardStats(range?: string | null): Promise<Dashboar
 		overall: getOverallStats(cutoff ?? undefined),
 		byModel: getStatsByModel(cutoff ?? undefined),
 		byFolder: getStatsByFolder(cutoff ?? undefined),
+		byAgentType: getStatsByAgentType(cutoff ?? undefined),
 		timeSeries: getTimeSeries(timeSeriesHours, cutoff, timeSeriesBucketMs),
 		modelSeries: getModelTimeSeries(modelSeriesDays, cutoff, modelSeriesBucketMs),
 		modelPerformanceSeries: getModelPerformanceSeries(modelPerformanceDays, cutoff, modelPerformanceBucketMs),
@@ -380,12 +382,15 @@ export async function getDashboardStats(range?: string | null): Promise<Dashboar
 	};
 }
 
-export async function getOverviewStats(range?: string | null): Promise<Pick<DashboardStats, "overall" | "timeSeries">> {
+export async function getOverviewStats(
+	range?: string | null,
+): Promise<Pick<DashboardStats, "overall" | "byAgentType" | "timeSeries">> {
 	await initDb();
 	const { timeSeriesHours, timeSeriesBucketMs, cutoff } = getTimeRangeConfig(range);
 
 	return {
 		overall: getOverallStats(cutoff ?? undefined),
+		byAgentType: getStatsByAgentType(cutoff ?? undefined),
 		timeSeries: getTimeSeries(timeSeriesHours, cutoff, timeSeriesBucketMs),
 	};
 }

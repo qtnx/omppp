@@ -1,6 +1,7 @@
 import type { CollabSessionState } from "../../../collab/protocol";
 import type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../../config/settings-schema";
 import type { AgentSession } from "../../../session/agent-session";
+import type { ActiveRepoContext } from "../../../utils/active-repo-context";
 
 export type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
 
@@ -56,6 +57,7 @@ export interface SegmentContext {
 	session: AgentSession;
 	/** Focused subagent id while the view is proxied at its session, undefined otherwise. */
 	focusedAgentId?: string | undefined;
+	activeRepo: ActiveRepoContext | null;
 	width: number;
 	options: StatusLineSegmentOptions;
 	planMode: {
@@ -82,6 +84,7 @@ export interface SegmentContext {
 	};
 	/** Context usage percent, or null when unknown (e.g. right after compaction). */
 	contextPercent: number | null;
+	contextTokens: number;
 	contextWindow: number;
 	autoCompactEnabled: boolean;
 	subagentCount: number;
@@ -92,6 +95,7 @@ export interface SegmentContext {
 		pr: PrStatusInfo | null;
 	};
 	usage: {
+		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
 	} | null;

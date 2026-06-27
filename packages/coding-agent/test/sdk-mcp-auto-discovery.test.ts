@@ -8,7 +8,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { Snowflake } from "@oh-my-pi/pi-utils";
+import { getAgentDir, removeSyncWithRetries, Snowflake, setAgentDir } from "@oh-my-pi/pi-utils";
 import { MANY_TOOL_COUNT } from "./fixtures/many-tools-mcp";
 
 // Contracts for deferred (hasUI) MCP discovery follow-ups:
@@ -30,6 +30,7 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 	let tempDir: string;
 	let authStorage: AuthStorage;
 	let modelRegistry: ModelRegistry;
+	let originalAgentDir: string;
 	// Discovery resolves user-level MCP config from `os.homedir()`; redirect it
 	// to an empty dir so the test connects ONLY to the fixture server and never
 	// spawns the developer's real MCP servers.
@@ -40,6 +41,7 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 		fs.mkdirSync(registryDir, { recursive: true });
 		isolatedHome = path.join(os.tmpdir(), `pi-sdk-mcp-auto-home-${Snowflake.next()}`);
 		fs.mkdirSync(isolatedHome, { recursive: true });
+		originalAgentDir = getAgentDir();
 		authStorage = await AuthStorage.create(path.join(registryDir, "auth.db"));
 		modelRegistry = new ModelRegistry(authStorage);
 	});
@@ -48,7 +50,7 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 		authStorage.close();
 		for (const dir of [registryDir, isolatedHome]) {
 			if (dir && fs.existsSync(dir)) {
-				fs.rmSync(dir, { recursive: true, force: true });
+				removeSyncWithRetries(dir);
 			}
 		}
 	});
@@ -56,12 +58,14 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 	beforeEach(() => {
 		tempDir = path.join(os.tmpdir(), `pi-sdk-mcp-auto-${Snowflake.next()}`);
 		fs.mkdirSync(tempDir, { recursive: true });
+		setAgentDir(tempDir);
 		spyOn(os, "homedir").mockReturnValue(isolatedHome);
 	});
 
 	afterEach(() => {
+		setAgentDir(originalAgentDir);
 		if (tempDir && fs.existsSync(tempDir)) {
-			fs.rmSync(tempDir, { recursive: true, force: true });
+			removeSyncWithRetries(tempDir);
 		}
 		mock.restore();
 	});
@@ -150,5 +154,63 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 		expect(session.getActiveToolNames().filter(name => name.startsWith("mcp__"))).toEqual([]);
 		expect(session.getActiveToolNames()).not.toContain("search_tool_bm25");
 		expect(session.isMCPDiscoveryEnabled()).toBe(false);
+	}, 40_000);
+
+	it("disconnects the owned MCP manager when a top-level session disposes", async () => {
+		writeMcpConfig();
+		const { session, mcpManager } = await createAgentSession({
+			...baseOptions(),
+			toolNames: ["read", "edit", "bash"],
+		});
+		expect(mcpManager).toBeDefined();
+		if (!mcpManager) throw new Error("expected owning session to create an MCPManager");
+		try {
+			// Let the deferred connect FINISH first, so a later disconnectAll can
+			// only originate from dispose() itself — not the mid-connect disposal
+			// path (covered by the test above). Genuine integration wait: discovery
+			// connects a real subprocess fire-and-forget with no awaitable signal,
+			// and fake timers cannot drive a child process; poll the live session
+			// with a generous ceiling, exiting the instant discovery flips on.
+			const deadline = Date.now() + 30_000;
+			while (!session.isMCPDiscoveryEnabled() && Date.now() < deadline) {
+				await Bun.sleep(50);
+			}
+			expect(session.isMCPDiscoveryEnabled()).toBe(true);
+			expect(mcpManager.getConnectedServers()).toContain("many");
+
+			const disconnectSpy = spyOn(mcpManager, "disconnectAll");
+			await session.dispose();
+			expect(disconnectSpy).toHaveBeenCalled();
+		} finally {
+			// dispose() already tore it down; this is idempotent belt-and-braces.
+			await mcpManager.disconnectAll();
+		}
+	}, 40_000);
+
+	it("does not disconnect a reused parent MCP manager when a child session disposes", async () => {
+		writeMcpConfig();
+		const parent = await createAgentSession({
+			...baseOptions(),
+			toolNames: ["read", "edit", "bash"],
+		});
+		expect(parent.mcpManager).toBeDefined();
+		if (!parent.mcpManager) throw new Error("expected parent session to create an MCPManager");
+		const parentManager = parent.mcpManager;
+		try {
+			// A subagent-style session reuses the parent's manager via
+			// `mcpManager` and therefore does NOT own it.
+			const child = await createAgentSession({
+				...baseOptions(),
+				hasUI: false,
+				toolNames: ["read"],
+				mcpManager: parentManager,
+			});
+			const disconnectSpy = spyOn(parentManager, "disconnectAll");
+			await child.session.dispose();
+			expect(disconnectSpy).not.toHaveBeenCalled();
+		} finally {
+			await parent.session.dispose();
+			await parentManager.disconnectAll();
+		}
 	}, 40_000);
 });

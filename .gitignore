@@ -44,6 +44,7 @@ packages/ai/test/.temp-images/
 .pi_config/
 .opencode/
 .worktrees/
+.worktree/
 compaction-results/
 changes/
 __pycache__/
@@ -55,9 +56,9 @@ out.html
 pi-*.html
 
 # Generated files
-packages/coding-agent/src/internal-urls/docs-index.generated.ts
 packages/coding-agent/src/export/html/tool-views.generated.js
 packages/natives/npm/
+packages/coding-agent/src/utils/mupdf-wasm.wasm
 /runs/
 python/omp-rpc/src/omp_rpc.egg-info/
 # parallel-agent worktrees
@@ -70,6 +71,8 @@ python/robomp/data/
 python/robomp/.cache/
 python/robomp/src/robomp/static/
 python/robomp/web/dist/
+python/robomp/web/verify-out/
+/verify-out/
 python/robomp/.env
 
 # Local, machine-specific boot perf baseline (see packages/coding-agent/scripts/bench-guard.ts)

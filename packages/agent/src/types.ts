@@ -8,6 +8,7 @@ import type {
 	ImageContent,
 	Message,
 	Model,
+	ServiceTier,
 	SimpleStreamOptions,
 	Static,
 	streamSimple,
@@ -35,6 +36,52 @@ export type StreamFn = (
  * (e.g. dropping late diagnostics a newer edit superseded).
  */
 export type AsideMessage = AgentMessage | (() => AgentMessage | null);
+
+export interface AgentTurnEndContext {
+	/** Assistant/user message that just completed this turn boundary. */
+	message: AgentMessage;
+	/** Tool results produced by this turn, already paired with `message` in the live context. */
+	toolResults: ToolResultMessage[];
+	/** True when the current tool-loop batch is continuing without yielding to post-turn steering. */
+	willContinue: boolean;
+}
+
+/**
+ * A soft tool requirement: the host wants `toolName` called before the loop
+ * runs other tools or yields, but WITHOUT paying the forced-`toolChoice` cost
+ * up front (changing `tool_choice` invalidates the provider message cache).
+ * Returned from {@link AgentLoopConfig.getToolChoice} in place of a hard
+ * {@link ToolChoice}: the loop injects `reminder` once when a new `id` becomes
+ * active, runs with `toolChoice` unchanged, and escalates to a one-turn forced
+ * choice only if the model fails to call `toolName`. Auto-clears when the host
+ * stops returning it or `toolName` is no longer an active tool.
+ */
+export interface SoftToolRequirement {
+	/** Discriminates a soft requirement from a hard {@link ToolChoice}. */
+	soft: true;
+	/**
+	 * Stable id of the *current* requirement. The loop injects `reminder` when
+	 * this id first becomes active and again whenever it changes (e.g. one
+	 * stacked preview resolves and the next becomes the head), but never
+	 * re-injects for an unchanged id across turns.
+	 */
+	id: string;
+	/** Tool that must be called before the loop runs other tools or yields. */
+	toolName: string;
+	/** Host-owned reminder messages, injected once per `id` activation. */
+	reminder: AgentMessage[];
+}
+
+/**
+ * A per-turn tool-choice directive: either a hard provider {@link ToolChoice}
+ * (applied verbatim) or a {@link SoftToolRequirement} (remind-then-escalate).
+ */
+export type ToolChoiceDirective = ToolChoice | SoftToolRequirement;
+
+/** True when a {@link ToolChoiceDirective} is a soft requirement, not a hard choice. */
+export function isSoftToolRequirement(directive: ToolChoiceDirective | undefined): directive is SoftToolRequirement {
+	return typeof directive === "object" && directive !== null && (directive as SoftToolRequirement).soft === true;
+}
 
 /**
  * Configuration for the agent loop.
@@ -117,7 +164,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * normalization, and append-only context handling, but before telemetry capture
 	 * and provider send.
 	 */
-	transformProviderContext?: (context: Context, model: Model) => Context;
+	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 
 	/**
 	 * Resolves the API key or resolver for the current model before each LLM call.
@@ -204,6 +251,12 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 */
 	intentTracing?: boolean;
 	/**
+	 * Strip tool descriptions (top-level + nested schema annotations) from the
+	 * provider-bound tool specs. Use when the full catalog is rendered into the
+	 * system prompt instead, so descriptions are not duplicated on the wire.
+	 */
+	pruneToolDescriptions?: boolean;
+	/**
 	 * Owned tool calling dialect.
 	 *
 	 * Undefined keeps provider-native tool calling. A dialect value sends no
@@ -230,7 +283,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 *
 	 * When set, the loop reads messages from the append-only log (stable
 	 * byte prefix) and caches system prompt + tools. Tools exclude per-turn
-	 * `_i` intent fields.
+	 * `i` intent fields.
 	 */
 	appendOnlyContext?: AppendOnlyContextManager;
 
@@ -246,10 +299,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	onHarmonyLeak?: (event: HarmonyAuditEvent) => void | Promise<void>;
 
 	/**
-	 * Dynamic tool choice override, resolved per LLM call.
-	 * When set and returns a value, overrides the static `toolChoice`.
+	 * Dynamic tool-choice directive, resolved once per turn. Returns a hard
+	 * {@link ToolChoice} (applied verbatim, overriding the static `toolChoice`),
+	 * a {@link SoftToolRequirement} (the loop reminds-then-escalates instead of
+	 * forcing `tool_choice` immediately, so a model that complies with the
+	 * reminder pays no message-cache invalidation), or `undefined` to fall back
+	 * to the static `toolChoice`.
 	 */
-	getToolChoice?: () => ToolChoice | undefined;
+	getToolChoice?: () => ToolChoiceDirective | undefined;
 
 	/**
 	 * Dynamic reasoning effort override, resolved per LLM call.
@@ -267,6 +324,28 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * to the next provider call.
 	 */
 	getDisableReasoning?: () => boolean | undefined;
+
+	/**
+	 * Per-call effective service-tier resolver. Unlike {@link getReasoning},
+	 * this is *authoritative*: when set, its return value (including
+	 * `undefined`) fully replaces the static `serviceTier` for the request and
+	 * its telemetry. The resolver receives the model being requested so the
+	 * caller can scope the tier per provider/model without mutating the shared
+	 * session `serviceTier` (e.g. opting a Fireworks model into the Priority
+	 * serving path while leaving the OpenAI/Anthropic tier untouched).
+	 */
+	getServiceTier?: (model: Model) => ServiceTier | undefined;
+
+	/**
+	 * Per-call working-directory resolver, read once per LLM call. When set, its
+	 * return value overrides the static {@link SimpleStreamOptions.cwd} for the
+	 * request (falling back to that static `cwd` when it returns `undefined`).
+	 * Lets the host reflect a session move (`/move`, which updates the working
+	 * directory without reconstructing the loop config) into provider options —
+	 * e.g. GitLab Duo Agent namespace/project discovery keys off this cwd's git
+	 * remote, so a stale value would strand discovery on the original repo.
+	 */
+	getCwd?: () => string | undefined;
 
 	/**
 	 * Called after a tool call has been validated and is about to execute.
@@ -287,11 +366,11 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	) => Promise<BeforeToolCallResult | undefined> | BeforeToolCallResult | undefined;
 	/**
 	 * Called after a turn ends and before the loop polls steering/asides for the
-	 * next iteration. Use this for awaited per-turn bookkeeping that must be
-	 * visible before the next model request (e.g. synchronizing an advisor's
-	 * backlog so advice produced during the wait is injected as an aside).
+	 * next iteration. `context` carries the just-finished turn; `context.willContinue`
+	 * is true when the current tool-loop batch is continuing without yielding to
+	 * post-turn steering.
 	 */
-	onTurnEnd?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<void> | void;
+	onTurnEnd?: (messages: AgentMessage[], signal?: AbortSignal, context?: AgentTurnEndContext) => Promise<void> | void;
 
 	/**
 	 * Called once an assistant message is finalized from the model stream, before
@@ -537,11 +616,11 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 */
 	interruptible?: boolean;
 	/**
-	 * Controls how the INTENT_FIELD (`_i`) is handled for this tool.
-	 * - `"require"` (default): `_i` is injected and required in the parameter schema.
-	 * - `"optional"`: `_i` is injected as an optional/nullable field.
-	 * - `"omit"`: `_i` is NOT injected. Use for tools where intent is obvious (yield, resolve, todo, …).
-	 * - function: `_i` is NOT injected; intent is derived dynamically from (potentially partial / streaming) args.
+	 * Controls how the INTENT_FIELD (`i`) is handled for this tool.
+	 * - `"require"` (default): `i` is injected and required in the parameter schema.
+	 * - `"optional"`: `i` is injected as an optional/nullable field.
+	 * - `"omit"`: `i` is NOT injected. Use for tools where intent is obvious (yield, resolve, todo, …).
+	 * - function: `i` is NOT injected; intent is derived dynamically from (potentially partial / streaming) args.
 	 */
 	intent?: "omit" | "optional" | "require" | ((args: Partial<Static<TParameters>>) => string | undefined);
 
@@ -553,6 +632,27 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 * matching.
 	 */
 	matcherDigest?: (args: unknown) => string | undefined;
+
+	/**
+	 * Surface the target file paths a (potentially partial) streamed call would
+	 * touch, so path-scoped stream matchers (e.g. TTSR `tool:edit(*.ts)` globs)
+	 * can match without a top-level `path`/`paths` argument. Used for tools whose
+	 * wire grammar embeds paths inside the streamed payload (hashline section
+	 * headers, apply_patch envelope markers). Return `undefined` (or an empty
+	 * array) to fall back to the caller's top-level argument scan.
+	 */
+	matcherPaths?: (args: unknown) => readonly string[] | undefined;
+
+	/**
+	 * Per-file projection of a (potentially partial) streamed call, pairing each
+	 * touched file path with the digest of only the lines added to that file.
+	 * Path-scoped stream matchers (TTSR) evaluate each entry in isolation, so a
+	 * scoped rule like `tool:edit(*.ts)` never fires on text that actually
+	 * belongs to a sibling Markdown hunk in a multi-file payload. Takes
+	 * precedence over {@link matcherDigest} + {@link matcherPaths} when present;
+	 * returns `undefined` (or empty) to fall back to the combined hooks.
+	 */
+	matcherEntries?: (args: unknown) => readonly { path: string; digest: string }[] | undefined;
 
 	/** Capability tier declaration used by approval gates. Omitted means "exec". */
 	approval?: ToolApproval;

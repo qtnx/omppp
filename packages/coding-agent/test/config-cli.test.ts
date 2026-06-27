@@ -1,23 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import { runConfigCommand } from "@oh-my-pi/pi-coding-agent/cli/config-cli";
 import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getConfigRootDir, setAgentDir } from "@oh-my-pi/pi-utils";
+import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
+import { getConfigRootDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
-let testAgentDir = "";
+let testAgentDir: TempDir | undefined;
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
-beforeEach(async () => {
+beforeEach(() => {
 	resetSettingsForTest();
-	testAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-config-cli-"));
-	setAgentDir(testAgentDir);
+	testAgentDir = TempDir.createSync("omp-config-cli-");
+	setAgentDir(testAgentDir.path());
 });
 
 afterEach(async () => {
 	vi.restoreAllMocks();
+	AgentStorage.resetInstance();
 	resetSettingsForTest();
 	if (originalAgentDir) {
 		setAgentDir(originalAgentDir);
@@ -25,7 +25,12 @@ afterEach(async () => {
 		setAgentDir(fallbackAgentDir);
 		delete process.env.PI_CODING_AGENT_DIR;
 	}
-	await fs.rm(testAgentDir, { recursive: true, force: true });
+	if (testAgentDir) {
+		try {
+			await testAgentDir.remove();
+		} catch {}
+		testAgentDir = undefined;
+	}
 });
 
 describe("config CLI schema coverage", () => {
@@ -59,6 +64,46 @@ describe("config CLI schema coverage", () => {
 		expect(parsed.key).toBe("modelRoles");
 		expect(parsed.type).toBe("record");
 		expect(parsed.value).toEqual({ default: "claude-opus-4-6" });
+	});
+
+	it("normalizes valid provider in-flight request limits from JSON objects", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await runConfigCommand({
+			action: "set",
+			key: "providers.maxInFlightRequests",
+			value: '{"openai":2.8,"anthropic":1}',
+			flags: { json: true },
+		});
+		await runConfigCommand({ action: "get", key: "providers.maxInFlightRequests", flags: { json: true } });
+
+		const payload = logSpy.mock.calls.at(-1)?.[0];
+		expect(typeof payload).toBe("string");
+		const parsed = JSON.parse(String(payload)) as { key: string; value: unknown; type: string };
+		expect(parsed.key).toBe("providers.maxInFlightRequests");
+		expect(parsed.type).toBe("record");
+		expect(parsed.value).toEqual({ openai: 2, anthropic: 1 });
+	});
+
+	it("rejects invalid provider in-flight request limit entries", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+			throw new Error("process.exit");
+		}) as typeof process.exit);
+
+		await expect(
+			runConfigCommand({
+				action: "set",
+				key: "providers.maxInFlightRequests",
+				value: '{"openai":"2","anthropic":0}',
+				flags: { json: true },
+			}),
+		).rejects.toThrow("process.exit");
+		expect(exitSpy).toHaveBeenCalledWith(1);
+		expect(console.error).toHaveBeenCalledWith(
+			expect.stringContaining("Provider request limits must be positive numbers: openai, anthropic"),
+		);
 	});
 
 	it("sets and gets array settings as JSON arrays", async () => {
@@ -106,5 +151,19 @@ describe("config CLI schema coverage", () => {
 			type: "number",
 			value: 600,
 		});
+	});
+
+	it("accepts max as a persisted default thinking level", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await runConfigCommand({ action: "set", key: "defaultThinkingLevel", value: "max", flags: { json: true } });
+		await runConfigCommand({ action: "get", key: "defaultThinkingLevel", flags: { json: true } });
+
+		const payload = logSpy.mock.calls.at(-1)?.[0];
+		expect(typeof payload).toBe("string");
+		const parsed = JSON.parse(String(payload)) as { key: string; value: unknown; type: string };
+		expect(parsed.key).toBe("defaultThinkingLevel");
+		expect(parsed.type).toBe("enum");
+		expect(parsed.value).toBe("max");
 	});
 });

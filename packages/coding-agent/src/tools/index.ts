@@ -1,13 +1,15 @@
 import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTelemetryConfig, AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { FetchImpl, Model, ToolChoice } from "@oh-my-pi/pi-ai";
+import type { FetchImpl, ImageContent, Model, ServiceTier, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import { EditTool } from "../edit";
+import { checkJuliaKernelAvailability } from "../eval/jl/kernel";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
+import { checkRubyKernelAvailability } from "../eval/rb/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
@@ -44,14 +46,15 @@ import { AstEditTool } from "./ast-edit";
 import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
-import type { BuiltinToolName } from "./builtin-names";
+import { type BuiltinToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, RewindTool } from "./checkpoint";
 import { CompactTool } from "./compact";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
-import { FindTool } from "./find";
 import { GithubTool } from "./gh";
+import { GlobTool } from "./glob";
+import { GrepTool } from "./grep";
 import { InspectImageTool } from "./inspect-image";
 import { IrcTool, isIrcEnabled } from "./irc";
 import { JobTool } from "./job";
@@ -67,7 +70,6 @@ import { ReadTool } from "./read";
 import { createReportToolIssueTool, isAutoQaEnabled } from "./report-tool-issue";
 import { ResolveTool } from "./resolve";
 import { reportFindingTool } from "./review";
-import { SearchTool } from "./search";
 import { SearchToolBm25Tool } from "./search-tool-bm25";
 import { loadSshTool } from "./ssh";
 import { type TodoPhase, TodoTool } from "./todo";
@@ -91,8 +93,9 @@ export * from "./compact";
 export * from "./debug";
 export * from "./eval";
 export * from "./eval-backends";
-export * from "./find";
 export * from "./gh";
+export * from "./glob";
+export * from "./grep";
 export * from "./image-gen";
 export * from "./inspect-image";
 export * from "./irc";
@@ -108,7 +111,6 @@ export * from "./read";
 export * from "./report-tool-issue";
 export * from "./resolve";
 export * from "./review";
-export * from "./search";
 export * from "./search-tool-bm25";
 export * from "./ssh";
 export * from "./todo";
@@ -123,6 +125,13 @@ export type ContextFileEntry = {
 	path: string;
 	content: string;
 	depth?: number;
+};
+
+/** Image attachment handle exposed to tools for user-facing labels such as `Image #1`. */
+export type ImageAttachmentEntry = {
+	label: string;
+	uri: string;
+	image: ImageContent;
 };
 
 export type {
@@ -186,7 +195,7 @@ export interface ToolSession {
 	suppressSpawnAdvisory?: boolean;
 	/** Optional fetch implementation injected into the URL read pipeline (tests, proxies). Defaults to global fetch. */
 	fetch?: FetchImpl;
-	/** Skip Python kernel availability check and warmup */
+	/** Skip subprocess-kernel availability checks and warmup */
 	skipPythonPreflight?: boolean;
 	/** Pre-loaded context files (AGENTS.md, etc) */
 	contextFiles?: ContextFileEntry[];
@@ -225,13 +234,13 @@ export interface ToolSession {
 	requireYieldTool?: boolean;
 	/** Task recursion depth (0 = top-level, 1 = first child, etc.) */
 	taskDepth?: number;
-	/** Get shared eval executor session ID. Subagents inherit this to share JS/Python state. */
+	/** Get shared eval executor session ID. Subagents inherit this to share JS/Python/Ruby/Julia state. */
 	getEvalSessionId?: () => string | null;
 	/** Get session file */
 	getSessionFile: () => string | null;
 	/** Get eval kernel owner ID for session-scoped retained-kernel cleanup. */
 	getEvalKernelOwnerId?: () => string | null;
-	/** Reject new eval (python or js) work once session disposal has started. */
+	/** Reject new eval work once session disposal has started. */
 	assertEvalExecutionAllowed?: () => void;
 	/** Track tool-owned eval work so session disposal can await/abort it like direct session eval runs. */
 	trackEvalExecution?<T>(execution: Promise<T>, abortController: AbortController): Promise<T>;
@@ -263,6 +272,8 @@ export interface ToolSession {
 	getActiveModelString?: () => string | undefined;
 	/** Get the current session model object (provider/api capabilities), regardless of how it was chosen. */
 	getActiveModel?: () => Model | undefined;
+	/** Get the session's live effective service tier (undefined = none). Source of truth for subagent `serviceTierSubagent: inherit`. */
+	getServiceTier?: () => ServiceTier | undefined;
 	/** Auth storage for passing to subagents (avoids re-discovery) */
 	authStorage?: import("../session/auth-storage").AuthStorage;
 	/** Model registry for passing to subagents (avoids re-discovery) */
@@ -337,6 +348,12 @@ export interface ToolSession {
 	steer?(message: { customType: string; content: string; details?: unknown }): void;
 	/** Peek the currently in-flight tool-choice queue directive's invocation handler. Used by the `resolve` tool to dispatch to the pending action. */
 	peekQueueInvoker?(): ((input: unknown) => Promise<unknown> | unknown) | undefined;
+	/** Peek the most-recently registered non-forcing pending preview invoker. The `resolve`
+	 *  tool dispatches to it so a staged preview resolves WITHOUT forcing tool_choice — the
+	 *  agent-loop's SoftToolRequirement lifecycle owns reminder injection and escalation. */
+	peekPendingInvoker?(): ((input: unknown) => Promise<unknown> | unknown) | undefined;
+	/** Clear stale pending preview markers when `resolve` cannot dispatch them. */
+	clearPendingInvokers?(): void;
 	/** Peek the long-lived "standing" resolve handler registered by a mode (e.g. plan mode).
 	 *  Consulted by the `resolve` tool as a fallback when no queue invoker is in flight,
 	 *  letting modes accept `resolve` invocations without forcing the tool choice every turn. */
@@ -391,6 +408,8 @@ export interface ToolSession {
 	/** Get the active OpenTelemetry config so subagent dispatch can forward
 	 *  the parent's tracer/hooks with the subagent's own identity stamped. */
 	getTelemetry?: () => AgentTelemetryConfig | undefined;
+	/** Return image attachments visible to tools for resolving labels such as `Image #1`. */
+	getImageAttachments?: () => ImageAttachmentEntry[];
 }
 
 export type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool | null>;
@@ -398,7 +417,15 @@ export type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool |
 export type BuiltinToolLoadMode = "essential" | "discoverable";
 
 /** Default essential tool names when tools.essentialOverride is empty. */
-export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = ["read", "bash", "edit", "task"] as const;
+export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = [
+	"read",
+	"bash",
+	"edit",
+	"write",
+	"glob",
+	"eval",
+	"task",
+] as const;
 
 /**
  * Resolve the active essential built-in tool names from settings.
@@ -407,7 +434,7 @@ export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = ["read", "bash", 
  */
 export function computeEssentialBuiltinNames(settings: Settings): string[] {
 	const override = settings.get("tools.essentialOverride") ?? [];
-	const cleaned = override.map(name => name.trim()).filter(Boolean);
+	const cleaned = normalizeToolNames(override.map(name => name.trim()).filter(Boolean));
 	if (cleaned.length > 0) {
 		return cleaned.filter(name => name in BUILTIN_TOOLS);
 	}
@@ -462,8 +489,8 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "sandbox", ToolFactory> = {
 	ssh: loadSshTool,
 	sandbox: s => new MacOSSandboxTool(s),
 	github: GithubTool.createIf,
-	find: s => new FindTool(s),
-	search: s => new SearchTool(s),
+	glob: s => new GlobTool(s),
+	grep: s => new GrepTool(s),
 	lsp: LspTool.createIf,
 	inspect_image: s => new InspectImageTool(s),
 	browser: s => new BrowserTool(s),
@@ -516,8 +543,7 @@ function isCodexGoalHiddenToolName(name: string): boolean {
 export async function createTools(session: ToolSession, toolNames?: string[]): Promise<Tool[]> {
 	const includeYield = session.requireYieldTool === true;
 	const enableLsp = session.enableLsp ?? true;
-	const requestedTools =
-		toolNames && toolNames.length > 0 ? [...new Set(toolNames.map(name => name.toLowerCase()))] : undefined;
+	const requestedTools = toolNames && toolNames.length > 0 ? normalizeToolNames(toolNames) : undefined;
 	const goalEnabled = session.settings.get("goal.enabled");
 	const goalModeActive = goalEnabled && session.getGoalModeState?.()?.enabled === true;
 	if (goalModeActive && requestedTools) {
@@ -530,41 +556,62 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const backends = resolveEvalBackends(session);
 	const allowPython = backends.python;
 	const allowJs = backends.js;
-	const skipPythonPreflight = session.skipPythonPreflight === true;
-	// Eval tool is enabled if EITHER backend is reachable. We only need to know
-	// whether python is reachable when JS is disabled — otherwise allowEval is
-	// already true and the python-availability check can be deferred to first
-	// invocation of the python backend (already handled inside the executor).
+	const allowRuby = backends.ruby;
+	const allowJulia = backends.julia;
+	const skipEvalPreflight = session.skipPythonPreflight === true;
+	// Eval tool is enabled if ANY backend is reachable. JS needs no preflight, so
+	// we only probe Python/Ruby/Julia when JS is disabled — otherwise allowEval is
+	// already true and per-backend availability is checked at first invocation.
 	let pythonAvailable = true;
-	if (
-		!skipPythonPreflight &&
-		allowPython &&
-		!allowJs &&
-		(requestedTools === undefined || requestedTools.includes("eval"))
-	) {
-		const availability = await logger.time(
-			"createTools:pythonCheck",
-			checkPythonKernelAvailability,
-			session.cwd,
-			session.settings.get("python.interpreter")?.trim() || undefined,
-		);
-		pythonAvailable = availability.ok;
-		if (!availability.ok) {
-			logger.warn("Python kernel unavailable and JS backend disabled; eval will be unavailable", {
-				reason: availability.reason,
-			});
+	let rubyAvailable = true;
+	let juliaAvailable = true;
+	const evalRequested = requestedTools === undefined || requestedTools.includes("eval");
+	if (!skipEvalPreflight && !allowJs && evalRequested) {
+		if (allowPython) {
+			const availability = await logger.time(
+				"createTools:pythonCheck",
+				checkPythonKernelAvailability,
+				session.cwd,
+				session.settings.get("python.interpreter")?.trim() || undefined,
+			);
+			pythonAvailable = availability.ok;
+			if (!availability.ok) {
+				logger.warn("Python kernel unavailable and JS backend disabled", { reason: availability.reason });
+			}
+		}
+		if (allowRuby) {
+			const availability = await checkRubyKernelAvailability(
+				session.cwd,
+				session.settings.get("ruby.interpreter")?.trim() || undefined,
+			);
+			rubyAvailable = availability.ok;
+			if (!availability.ok) {
+				logger.warn("Ruby kernel unavailable and JS backend disabled", { reason: availability.reason });
+			}
+		}
+		if (allowJulia) {
+			const availability = await checkJuliaKernelAvailability(
+				session.cwd,
+				session.settings.get("julia.interpreter")?.trim() || undefined,
+			);
+			juliaAvailable = availability.ok;
+			if (!availability.ok) {
+				logger.warn("Julia kernel unavailable and JS backend disabled", { reason: availability.reason });
+			}
 		}
 	}
 
 	const effectivePythonAllowed = allowPython && pythonAvailable;
-	// Eval is exposed whenever any backend is reachable. The python backend may
-	// be unreachable, in which case eval dispatches exclusively to js.
-	const allowEval = effectivePythonAllowed || allowJs;
+	const effectiveRubyAllowed = allowRuby && rubyAvailable;
+	const effectiveJuliaAllowed = allowJulia && juliaAvailable;
+	// Eval is exposed whenever any backend is reachable. A backend may be
+	// unreachable, in which case eval dispatches exclusively to the others.
+	const allowEval = effectivePythonAllowed || allowJs || effectiveRubyAllowed || effectiveJuliaAllowed;
 
 	// Auto-include AST counterparts when their text-based sibling is present
 	if (requestedTools) {
 		if (
-			requestedTools.includes("search") &&
+			requestedTools.includes("grep") &&
 			!requestedTools.includes("ast_grep") &&
 			session.settings.get("astGrep.enabled")
 		) {
@@ -614,8 +661,8 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "eval") return allowEval;
 		if (name === "debug") return session.settings.get("debug.enabled");
 		if (name === "todo") return !includeYield && session.settings.get("todo.enabled");
-		if (name === "find") return session.settings.get("find.enabled");
-		if (name === "search") return session.settings.get("search.enabled");
+		if (name === "glob") return session.settings.get("glob.enabled");
+		if (name === "grep") return session.settings.get("grep.enabled");
 		if (name === "github") return session.settings.get("github.enabled");
 		if (name === "ast_grep") return session.settings.get("astGrep.enabled");
 		if (name === "ast_edit") return session.settings.get("astEdit.enabled");

@@ -3,12 +3,14 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
+import { getBundledModel, getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import {
 	__resetLegacyPiResolutionCache,
 	installLegacyPiSpecifierShim,
 	loadLegacyPiModule,
 } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/legacy-pi-compat";
 import { Type as TypeBoxShimType } from "@oh-my-pi/pi-coding-agent/extensibility/typebox";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 // pi-ai 15.1.0 removed the runtime `Type` export from `@oh-my-pi/pi-ai`'s
 // package root. Legacy extensions (and their aliased-scope variants such as
@@ -28,7 +30,7 @@ afterEach(() => {
 
 afterAll(async () => {
 	for (const dir of tempRoots) {
-		await fs.rm(dir, { recursive: true, force: true });
+		await removeWithRetries(dir);
 	}
 });
 
@@ -102,6 +104,39 @@ describe("legacy-pi @(scope)/pi-ai root `Type` remap (issue #1437)", () => {
 
 		const loaded = (await loadLegacyPiModule(entry)) as { fn: unknown };
 		expect(typeof loaded.fn).toBe("function");
+	});
+
+	it("exports getModel as getBundledModel", async () => {
+		const loaded = (await loadLegacyPiModule(
+			await writeFixtureExtension(
+				'import { getModel } from "@oh-my-pi/pi-ai"; export const testGetModel = getModel;',
+			),
+		)) as { testGetModel: unknown };
+		expect(loaded.testGetModel).toBe(getBundledModel);
+	});
+
+	it("exports getModels as getBundledModels", async () => {
+		const loaded = (await loadLegacyPiModule(
+			await writeFixtureExtension(
+				'import { getModels } from "@oh-my-pi/pi-ai"; export const testGetModels = getModels;',
+			),
+		)) as { testGetModels: unknown };
+		expect(loaded.testGetModels).toBe(getBundledModels);
+	});
+
+	it("exports StringEnum as a schema builder with options support", async () => {
+		const loaded = (await loadLegacyPiModule(
+			await writeFixtureExtension(
+				[
+					'import { StringEnum } from "@oh-my-pi/pi-ai";',
+					'export const schema = StringEnum(["red", "green"] as const, { description: "primary colors" });',
+				].join("\n"),
+			),
+		)) as { schema: { safeParse: (input: unknown) => { success: boolean }; toJSON?: () => any } };
+
+		expect(loaded.schema.safeParse("red").success).toBe(true);
+		expect(loaded.schema.safeParse("blue").success).toBe(false);
+		expect(loaded.schema.toJSON?.()?.description).toBe("primary colors");
 	});
 });
 

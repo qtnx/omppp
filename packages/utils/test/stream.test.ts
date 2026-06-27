@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { createAbortableStream } from "@oh-my-pi/pi-utils";
 import { sanitizeText } from "@oh-my-pi/pi-utils/sanitize-text";
 import {
 	parseJsonlLenient,
@@ -64,26 +63,59 @@ describe("readLines", () => {
 	});
 });
 
-describe("createAbortableStream", () => {
-	it("cancels the source stream when the abort signal fires", async () => {
+describe("abortableSource (via readLines)", () => {
+	it("cancels the source and stops yielding when aborted mid-stream", async () => {
 		let cancelReason: unknown;
+		let cancelled = false;
 		const controller = new AbortController();
 		const readable = new ReadableStream<Uint8Array>({
 			start(streamController) {
+				// One complete line, then leave the stream open so the next read blocks.
 				streamController.enqueue(encoder.encode("alpha\n"));
 			},
 			cancel(reason) {
+				cancelled = true;
 				cancelReason = reason;
 			},
 		});
-		const reader = createAbortableStream(readable, controller.signal).getReader();
 
-		const first = await reader.read();
+		const dec = new TextDecoder();
+		const iter = readLines(readable, controller.signal)[Symbol.asyncIterator]();
+
+		const first = await iter.next();
 		expect(first.done).toBe(false);
-		controller.abort("timeout");
-		await reader.read().catch(() => undefined);
+		expect(dec.decode(first.value as Uint8Array)).toBe("alpha");
 
+		controller.abort("timeout");
+		const next = await iter.next();
+
+		expect(next.done).toBe(true);
+		expect(cancelled).toBe(true);
 		expect(cancelReason).toBe("timeout");
+	});
+
+	it("cancels the source when the consumer breaks early", async () => {
+		let cancelled = false;
+		const readable = new ReadableStream<Uint8Array>({
+			start(streamController) {
+				streamController.enqueue(encoder.encode("alpha\n"));
+				streamController.enqueue(encoder.encode("beta\n"));
+				// Stays open: only a `break` (not EOF) should trigger cancel.
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+
+		const dec = new TextDecoder();
+		const lines: string[] = [];
+		for await (const line of readLines(readable)) {
+			lines.push(dec.decode(line));
+			break;
+		}
+
+		expect(lines).toEqual(["alpha"]);
+		expect(cancelled).toBe(true);
 	});
 });
 
@@ -206,6 +238,107 @@ describe("readSseJson", () => {
 
 		const output = await collectAsync(readSseJson(stream));
 		expect(output).toEqual([{ a: 1 }]);
+	});
+
+	it("completes cleanly when the final data chunk is truncated JSON", async () => {
+		const testCases = [
+			'data: {"b":2',
+			'data: {"id":"x", "na',
+			'data: {"id":"x", "name"',
+			'data: {"id":"x", "name":',
+			'data: {"id":"x", "name": "y',
+			'data: {"id":"x",',
+			"data: [1,2,",
+			'data: {"s":"n',
+			'data: {"n',
+			'data: {"s":"abc\\',
+			'data: {"s":"\\u12',
+		];
+		for (const dataChunk of testCases) {
+			const chunks = [encoder.encode('data: {"a":1}\n\n'), encoder.encode(dataChunk)];
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					for (const chunk of chunks) controller.enqueue(chunk);
+					controller.close();
+				},
+			});
+
+			const output = await collectAsync(readSseJson(stream));
+			expect(output).toEqual([{ a: 1 }]);
+		}
+	});
+
+	it("completes cleanly when the final data chunk is cut inside a JSON literal at EOF", async () => {
+		const testCases = ['data: {"finish_reason":nul', 'data: {"ok":tru', "data: [fal"];
+		for (const dataChunk of testCases) {
+			const chunks = [encoder.encode('data: {"a":1}\n\n'), encoder.encode(dataChunk)];
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					for (const chunk of chunks) controller.enqueue(chunk);
+					controller.close();
+				},
+			});
+
+			const output = await collectAsync(readSseJson(stream));
+			expect(output).toEqual([{ a: 1 }]);
+		}
+	});
+
+	it("throws SyntaxError when a middle data chunk is malformed JSON", async () => {
+		const chunks = [encoder.encode('data: {"a":1\n\n'), encoder.encode('data: {"b":2}\n\n')];
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const chunk of chunks) controller.enqueue(chunk);
+				controller.close();
+			},
+		});
+
+		await expect(collectAsync(readSseJson(stream))).rejects.toThrow(SyntaxError);
+	});
+
+	it("throws SyntaxError when a final event is not JSON-container-shaped", async () => {
+		// Non-object/array final events are not recoverable as a truncated stream tail
+		// and still surface as errors (e.g. provider error text, bare scalars).
+		const testCases = ["data: Internal Server Error", 'data: "an unterminated string', "data: 42 then junk"];
+		for (const dataChunk of testCases) {
+			const chunks = [encoder.encode('data: {"a":1}\n\n'), encoder.encode(dataChunk)];
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					for (const chunk of chunks) controller.enqueue(chunk);
+					controller.close();
+				},
+			});
+
+			await expect(collectAsync(readSseJson(stream))).rejects.toThrow(SyntaxError);
+		}
+	});
+
+	it("stops cleanly on a container-shaped final event that fails strict parse", async () => {
+		// Lenient recovery: any object/array-shaped final event JSON.parse rejects is
+		// treated as a cut-off or lightly malformed stream tail and ends iteration after
+		// the last valid event, rather than throwing.
+		const testCases = [
+			'data: {"b":2,}', // trailing comma
+			"data: [{]", // mismatched closer
+			'data: {"b" 2}', // missing colon
+			"data: {unterminated}", // bareword body
+			'data: {"b": true garbage', // trailing garbage after a value
+			'data: {"b":1 "c":2', // missing comma
+			'data: {"b": ]', // mismatched closer
+			'data: {"b": @', // invalid character
+		];
+		for (const dataChunk of testCases) {
+			const chunks = [encoder.encode('data: {"a":1}\n\n'), encoder.encode(dataChunk)];
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					for (const chunk of chunks) controller.enqueue(chunk);
+					controller.close();
+				},
+			});
+
+			const output = await collectAsync(readSseJson(stream));
+			expect(output).toEqual([{ a: 1 }]);
+		}
 	});
 });
 

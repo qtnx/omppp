@@ -1,16 +1,21 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import * as fs from "node:fs/promises";
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import type { CustomToolContext } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
 import type { ReadonlySessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { imageGenTool, setPreferredImageProvider } from "@oh-my-pi/pi-coding-agent/tools/image-gen";
+import {
+	getImageGenTools,
+	getImageGenToolsWithRegistry,
+	imageGenTool,
+	setPreferredImageProvider,
+} from "@oh-my-pi/pi-coding-agent/tools/image-gen";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const originalOpenRouterKey = Bun.env.OPENROUTER_API_KEY;
 const generatedImagePaths: string[] = [];
 
 afterEach(async () => {
-	await Promise.all(generatedImagePaths.splice(0).map(imagePath => fs.rm(imagePath, { force: true })));
+	await Promise.all(generatedImagePaths.splice(0).map(imagePath => removeWithRetries(imagePath)));
 	if (originalOpenRouterKey === undefined) {
 		delete Bun.env.OPENROUTER_API_KEY;
 	} else {
@@ -20,6 +25,45 @@ afterEach(async () => {
 });
 
 describe("imageGenTool", () => {
+	it("registers without resolving image provider credentials", async () => {
+		const modelRegistry = {
+			getApiKey: async () => {
+				throw new Error("active model credentials should not be resolved during registration");
+			},
+			getApiKeyForProvider: async () => {
+				throw new Error("provider credentials should not be resolved during registration");
+			},
+		} as unknown as ModelRegistry;
+
+		expect(await getImageGenTools(modelRegistry, undefined)).toEqual([imageGenTool]);
+		expect(await getImageGenToolsWithRegistry(modelRegistry, undefined)).toEqual([imageGenTool]);
+	});
+
+	it("resolves image provider credentials on execution", async () => {
+		setPreferredImageProvider("antigravity");
+		const ctx: CustomToolContext = {
+			fetch: async () => new Response(null),
+			sessionManager: {
+				getCwd: () => "/tmp",
+				getSessionId: () => "test-session",
+			} as unknown as ReadonlySessionManager,
+			modelRegistry: {
+				getApiKey: async () => undefined,
+				getApiKeyForProvider: async () => {
+					throw new Error("provider credentials resolved during execution");
+				},
+			} as unknown as ModelRegistry,
+			model: undefined,
+			isIdle: () => true,
+			hasQueuedMessages: () => false,
+			abort: () => {},
+		};
+
+		await expect(imageGenTool.execute("call-registration", { subject: "a cat" }, undefined, ctx)).rejects.toThrow(
+			"provider credentials resolved during execution",
+		);
+	});
+
 	it("e2e writes OpenAI Responses image_generation WebP output to a temp file", async () => {
 		let requestUrl: string | undefined;
 		let requestBody: unknown;

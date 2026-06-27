@@ -3,7 +3,7 @@
  *
  * Asserts that `#handleAgentEvent`:
  *   - stamps `SILENT_ABORT_MARKER` on aborted assistant `message_end` events
- *     when the `#planCompactAbortPending` flag is set and consumes the flag
+ *     when the `#planInternalAbortPending` flag is set and consumes the flag
  *     in the process (A1);
  *   - leaves `errorMessage` untouched (and the flag untouched) when the flag
  *     was never set (A2);
@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -103,8 +104,8 @@ describe("AgentSession silent-abort marker stamping", () => {
 	it("A1: flag set + aborted assistant message_end stamps the marker and clears the flag", async () => {
 		fixture = await createSessionWithObfuscator();
 		const { session } = fixture;
-		session.markPlanCompactAbortPending();
-		expect(session.isPlanCompactAbortPending).toBe(true);
+		session.markPlanInternalAbortPending();
+		expect(session.isPlanInternalAbortPending).toBe(true);
 
 		const message = makeAbortedAssistantMessage();
 		session.agent.emitExternalEvent({ type: "message_end", message });
@@ -115,13 +116,14 @@ describe("AgentSession silent-abort marker stamping", () => {
 		await Promise.resolve();
 
 		expect(message.errorMessage).toBe(SILENT_ABORT_MARKER);
-		expect(session.isPlanCompactAbortPending).toBe(false);
+		expect(AIError.is(message.errorId, AIError.Flag.SilentAbort)).toBe(true);
+		expect(session.isPlanInternalAbortPending).toBe(false);
 	});
 
 	it("A2: flag unset + aborted assistant message_end leaves errorMessage and flag alone", async () => {
 		fixture = await createSessionWithObfuscator();
 		const { session } = fixture;
-		expect(session.isPlanCompactAbortPending).toBe(false);
+		expect(session.isPlanInternalAbortPending).toBe(false);
 
 		const message = makeAbortedAssistantMessage();
 		session.agent.emitExternalEvent({ type: "message_end", message });
@@ -129,13 +131,13 @@ describe("AgentSession silent-abort marker stamping", () => {
 		await Promise.resolve();
 
 		expect(message.errorMessage).toBeUndefined();
-		expect(session.isPlanCompactAbortPending).toBe(false);
+		expect(session.isPlanInternalAbortPending).toBe(false);
 	});
 
 	it("A3: flag set + non-aborted message_end does NOT consume the flag", async () => {
 		fixture = await createSessionWithObfuscator();
 		const { session } = fixture;
-		session.markPlanCompactAbortPending();
+		session.markPlanInternalAbortPending();
 
 		// stop reason "stop" — the marker must NOT be stamped and the flag must stay armed.
 		const stopMsg = makeStoppedAssistantMessage();
@@ -144,7 +146,7 @@ describe("AgentSession silent-abort marker stamping", () => {
 		await Promise.resolve();
 
 		expect(stopMsg.errorMessage).toBeUndefined();
-		expect(session.isPlanCompactAbortPending).toBe(true);
+		expect(session.isPlanInternalAbortPending).toBe(true);
 
 		// Drive an explicit `error` stopReason next — same expectation.
 		const errMsg: AssistantMessage = { ...makeStoppedAssistantMessage("err"), stopReason: "error" };
@@ -153,11 +155,11 @@ describe("AgentSession silent-abort marker stamping", () => {
 		await Promise.resolve();
 
 		expect(errMsg.errorMessage).toBeUndefined();
-		expect(session.isPlanCompactAbortPending).toBe(true);
+		expect(session.isPlanInternalAbortPending).toBe(true);
 	});
 
 	it("A4: marker is stamped on event.message BEFORE the obfuscator's displayEvent copy", async () => {
-		// Build a real obfuscator with a `plain` secret so `deobfuscateObject(content)`
+		// Build a real obfuscator with a `plain` secret so `deobfuscateAssistantContent(content)`
 		// returns a NEW content array — that's the only path that triggers the
 		// `displayEvent = { ...event, message: { ...message, content } }` spread copy
 		// in `#handleAgentEvent`. The marker must be stamped BEFORE that spread so
@@ -182,7 +184,7 @@ describe("AgentSession silent-abort marker stamping", () => {
 			seen.push(event);
 		});
 
-		session.markPlanCompactAbortPending();
+		session.markPlanInternalAbortPending();
 
 		// Use the obfuscated text as the message content so the deobfuscation walk
 		// produces a different content array, exercising the spread-copy branch.
@@ -200,6 +202,7 @@ describe("AgentSession silent-abort marker stamping", () => {
 		// `event.message` (the persistence-side reference) carries the marker via the
 		// in-place stamp.
 		expect(message.errorMessage).toBe(SILENT_ABORT_MARKER);
+		expect(AIError.is(message.errorId, AIError.Flag.SilentAbort)).toBe(true);
 
 		// The emitted display event ALSO carries the marker because the spread copy
 		// happened AFTER the stamp.
@@ -218,6 +221,7 @@ describe("AgentSession silent-abort marker stamping", () => {
 			throw new Error("expected emitted message_end to be an assistant message");
 		}
 		expect(emittedMessage.errorMessage).toBe(SILENT_ABORT_MARKER);
+		expect(AIError.is(emittedMessage.errorId, AIError.Flag.SilentAbort)).toBe(true);
 
 		// Prove the obfuscator branch actually ran by asserting the emitted message
 		// is a distinct object (post-spread) AND its content was deobfuscated back to
@@ -229,6 +233,6 @@ describe("AgentSession silent-abort marker stamping", () => {
 		expect(emittedText).toBe("hello SECRET_VALUE world");
 
 		// Flag is consumed.
-		expect(session.isPlanCompactAbortPending).toBe(false);
+		expect(session.isPlanInternalAbortPending).toBe(false);
 	});
 });

@@ -42,7 +42,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
-import { APP_DISPLAY_NAME, APP_NAME, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
+import { APP_DISPLAY_NAME, APP_NAME, getBlobsDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
 import { disableProvider, enableProvider, reset as resetCapabilities } from "../../capability";
 import { Settings } from "../../config/settings";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
@@ -62,16 +62,24 @@ import { loadAllExtensions } from "../../modes/components/extensions/state-manag
 import { theme } from "../../modes/theme/theme";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../../plan-mode/approved-plan";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
+import { BlobStore, resolveImageDataSync } from "../../session/blob-store";
 import { isSilentAbort, SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import type { UsageStatistics } from "../../session/session-entries";
 import type { SessionInfo as StoredSessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands, toAcpAvailableCommands } from "../../slash-commands/available-commands";
+import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS } from "../../stt/models";
 import { AUTO_THINKING, parseConfiguredThinkingLevel } from "../../thinking";
 import { normalizeLocalScheme } from "../../tools/path-utils";
 import { runResolveInvocation } from "../../tools/resolve";
 import { ToolError } from "../../tools/tool-errors";
+import {
+	DEFAULT_TTS_LOCAL_MODEL_KEY,
+	DEFAULT_TTS_VOICE,
+	TTS_LOCAL_MODELS,
+	TTS_LOCAL_VOICE_OPTIONS,
+} from "../../tts/models";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { createAcpClientBridge } from "./acp-client-bridge";
 import {
@@ -91,6 +99,7 @@ const MODEL_CONFIG_ID = "model";
 const THINKING_CONFIG_ID = "thinking";
 const THINKING_OFF = "off";
 const SESSION_PAGE_SIZE = 50;
+const SPEECH_MODELS_LIST_METHOD = "speech.models.list";
 /**
  * Delay between `session/new` (or `session/load` / `session/resume` /
  * `unstable_session/fork`) returning and the agent firing the first
@@ -195,6 +204,59 @@ type MCPSourceMap = {
 };
 
 type CreateAcpSession = (cwd: string) => Promise<AgentSession>;
+
+type AcpSpeechOption = {
+	value: string;
+	label: string;
+	description?: string;
+};
+
+type AcpSpeechVoiceOption = {
+	value: string;
+	label: string;
+};
+
+type AcpSpeechTtsModelOption = AcpSpeechOption & {
+	voices: AcpSpeechVoiceOption[];
+};
+
+function buildAcpSpeechModelsCatalog(): Record<string, unknown> {
+	const voices = TTS_LOCAL_VOICE_OPTIONS.map(({ value, label }) => ({ value, label }));
+	return {
+		settings: {
+			speechToTextModel: "stt.modelName",
+			textToSpeechModel: "tts.localModel",
+			textToSpeechVoice: "tts.localVoice",
+			speechVoice: "speech.voice",
+		},
+		defaults: {
+			speechToTextModel: DEFAULT_STT_MODEL_KEY,
+			textToSpeechModel: DEFAULT_TTS_LOCAL_MODEL_KEY,
+			voice: DEFAULT_TTS_VOICE,
+		},
+		speechToText: {
+			setting: "stt.modelName",
+			defaultValue: DEFAULT_STT_MODEL_KEY,
+			models: STT_MODEL_OPTIONS.map(({ value, label, description }) => ({ value, label, description })),
+		},
+		textToSpeech: {
+			modelSetting: "tts.localModel",
+			voiceSetting: "tts.localVoice",
+			speechVoiceSetting: "speech.voice",
+			defaultModel: DEFAULT_TTS_LOCAL_MODEL_KEY,
+			defaultVoice: DEFAULT_TTS_VOICE,
+			models: TTS_LOCAL_MODELS.map(
+				({ key, label, description, voices: modelVoices }): AcpSpeechTtsModelOption => ({
+					value: key,
+					label,
+					description,
+					voices: modelVoices.map(({ id, label: voiceLabel }) => ({ value: id, label: voiceLabel })),
+				}),
+			),
+			voices,
+		},
+	};
+}
 
 /**
  * Bridge a single ExtensionUIContext call to the ACP `unstable_createElicitation`
@@ -385,6 +447,7 @@ export class AcpAgent implements Agent {
 	#cleanupRegistered = false;
 	#clientCapabilities: ClientCapabilities | undefined;
 	#cancelCleanupTimeoutMs = ACP_CANCEL_CLEANUP_TIMEOUT_MS;
+	#blobs = new BlobStore(getBlobsDir());
 
 	constructor(connection: AgentSideConnection, createSession: CreateAcpSession, initialSession?: AgentSession) {
 		this.#connection = connection;
@@ -851,6 +914,8 @@ export class AcpAgent implements Agent {
 
 	async extMethod(method: string, params: { [key: string]: unknown }): Promise<{ [key: string]: unknown }> {
 		switch (method) {
+			case SPEECH_MODELS_LIST_METHOD:
+				return buildAcpSpeechModelsCatalog();
 			case "_omp/sessions/listAll": {
 				const limit = typeof params.limit === "number" ? Math.max(1, Math.min(5000, params.limit as number)) : 1000;
 				const sessions = await SessionManager.listAll();
@@ -1126,11 +1191,21 @@ export class AcpAgent implements Agent {
 		}
 
 		this.#prepareLiveAssistantMessage(record, event);
+		const imageDataCache = new Map<string, string>();
+		const resolveImageDataForAcp = (data: string, mimeType: string | undefined): string => {
+			const key = `${mimeType ?? ""}\u0000${data}`;
+			const cached = imageDataCache.get(key);
+			if (cached !== undefined) return cached;
+			const resolved = resolveImageDataSync(this.#blobs, data);
+			imageDataCache.set(key, resolved);
+			return resolved;
+		};
 		for (const notification of mapAgentSessionEventToAcpSessionUpdates(event, record.session.sessionId, {
 			getMessageId: message => this.#getLiveMessageId(record, message),
 			getMessageProgress: message => this.#getLiveMessageProgress(record, message),
 			getToolArgs: toolCallId => record.toolArgsById.get(toolCallId),
 			cwd: record.session.sessionManager.getCwd(),
+			resolveImageData: resolveImageDataForAcp,
 		})) {
 			await this.#connection.sessionUpdate(notification);
 		}
@@ -1973,7 +2048,7 @@ export class AcpAgent implements Agent {
 				}
 			}
 		}
-		if (notifications.length === 0 && message.errorMessage && !isSilentAbort(message.errorMessage)) {
+		if (notifications.length === 0 && message.errorMessage && !isSilentAbort(message)) {
 			notifications.push({
 				sessionId,
 				update: {
@@ -2023,6 +2098,7 @@ export class AcpAgent implements Agent {
 		const notifications = mapAgentSessionEventToAcpSessionUpdates(endEvent, sessionId, {
 			cwd,
 			getToolArgs: toolCallId => (toolCallId === message.toolCallId ? options.toolArgs : undefined),
+			resolveImageData: (data, _mimeType) => resolveImageDataSync(this.#blobs, data),
 		});
 		if (options.includeStart === false) {
 			return notifications;

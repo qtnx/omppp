@@ -2,8 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-
+import * as url from "node:url";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 // Regression coverage for #1589: `git.clone({ sha })` used to hardcode
 // `--depth 1`, producing a shallow clone whose object store never contained
@@ -44,7 +45,7 @@ describe("git.clone with options.sha", () => {
 
 		// `file://` is required: local-path clones ignore `--depth`, which would
 		// mask the bug. See git-clone(1) "GIT URLS" / "LOCAL PROTOCOL".
-		upstreamUrl = `file://${upstream}`;
+		upstreamUrl = url.pathToFileURL(upstream).href;
 
 		gitRun(upstream, ["init", "-q", "-b", "main"]);
 		gitRun(upstream, ["commit", "-q", "--allow-empty", "-m", "first"]);
@@ -55,7 +56,7 @@ describe("git.clone with options.sha", () => {
 	});
 
 	afterAll(async () => {
-		await fs.rm(tmpRoot, { recursive: true, force: true });
+		await removeWithRetries(tmpRoot);
 	});
 
 	test("checks out a non-tip SHA (regression for #1589)", async () => {

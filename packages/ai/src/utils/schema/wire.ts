@@ -152,6 +152,7 @@ function arkJsonAstToWire(value: unknown): unknown {
 const kZodWireSchema = Symbol("pi.schema.zod.wire");
 const kJsonWireSchema = Symbol("pi.schema.json.wire");
 const kArkWireSchema = Symbol("pi.schema.ark.wire");
+const kStrippedSchema = Symbol("pi.schema.descriptions.stripped");
 
 /**
  * Post-process Zod-emitted JSON Schema so it matches the wire shape providers
@@ -387,6 +388,73 @@ function inferBareEnumScalarType(obj: Record<string, unknown>): void {
 	if (inferred !== undefined) obj.type = inferred;
 }
 
+/**
+ * ArkType serializes a *described* literal union — `type.enumerated(...).describe(d)`
+ * or a `"a" | "b"` union carrying a description — as an `anyOf` of
+ * `{ const, description }` branches that repeat the description on every branch
+ * *and* the union root. The meta is distributed across the union's constituents
+ * at the type level (each `unit` node inherits it), so the duplication is baked
+ * in before serialization rather than added by this pipeline.
+ *
+ * Collapse such a homogeneous all-`const` union into one typed
+ * `{ type, enum, description }` node: a shorter wire and a single description in
+ * the place providers expect it. The collapse is conservative — applied only
+ * when it is lossless:
+ *   - every branch is a bare `{ const }` (optionally `{ const, description }`),
+ *   - all branch values share one scalar JSON type (so `enum` gets a `type`,
+ *     which Gemini/Vertex require),
+ *   - branch descriptions are either all absent or all identical,
+ * so a union whose branches carry *distinct* per-variant descriptions is left
+ * untouched (a flat `enum` has nowhere to keep them). The union root's own
+ * description wins when present; otherwise the shared branch description is kept.
+ */
+function collapseConstUnionAnyOf(obj: Record<string, unknown>): void {
+	// `hasSchemaDefiningSibling` already rejects a sibling `enum`/`const`/etc.; it
+	// does not list `type`, so guard it here — collapsing would overwrite a
+	// wrapper `type` constraint paired with the `anyOf`.
+	if (hasSchemaDefiningSibling(obj) || "type" in obj) return;
+	const variants = obj.anyOf;
+	if (!Array.isArray(variants) || variants.length < 2) return;
+
+	const values: unknown[] = [];
+	let branchDescription: string | undefined;
+	let describedCount = 0;
+	for (const variant of variants) {
+		if (!isSchemaRecord(variant) || !Object.hasOwn(variant, "const")) return;
+		for (const key in variant) {
+			if (key !== "const" && key !== "description") return; // extra constraints — not a bare const
+		}
+		const desc = variant.description;
+		if (typeof desc === "string") {
+			if (describedCount === 0) branchDescription = desc;
+			else if (desc !== branchDescription) return; // distinct per-variant descriptions — preserve them
+			describedCount++;
+		}
+		values.push(variant.const);
+	}
+	if (describedCount !== 0 && describedCount !== variants.length) return; // mixed described/undescribed
+	// A shared branch description that disagrees with the union root's own
+	// description would be silently dropped by the collapse — keep the anyOf so
+	// neither annotation is lost. (Equal descriptions, the ArkType case, collapse.)
+	if (
+		describedCount === variants.length &&
+		typeof obj.description === "string" &&
+		obj.description !== branchDescription
+	) {
+		return;
+	}
+
+	const scalarType = homogeneousEnumScalarType(values);
+	if (scalarType === undefined) return; // mixed / non-scalar (incl. null) — leave as anyOf
+
+	delete obj.anyOf;
+	obj.type = scalarType;
+	obj.enum = values;
+	if (typeof obj.description !== "string" && branchDescription !== undefined) {
+		obj.description = branchDescription;
+	}
+}
+
 function walk(node: unknown, zodCleanup: boolean): void {
 	if (Array.isArray(node)) {
 		for (const child of node) walk(child, zodCleanup);
@@ -396,6 +464,7 @@ function walk(node: unknown, zodCleanup: boolean): void {
 	const obj = node as Record<string, unknown>;
 	rewriteNullableScalarAnyOf(obj);
 	inferBareEnumScalarType(obj);
+	collapseConstUnionAnyOf(obj);
 
 	if (zodCleanup) {
 		// Drop noise injected for `z.number().int()`.
@@ -633,4 +702,88 @@ export function toolWireSchema(tool: Tool): Record<string, unknown> {
 		const upgraded = upgradeJsonSchemaTo202012(raw) as Record<string, unknown>;
 		return postProcessJsonSchema(upgraded);
 	});
+}
+
+/**
+ * Schema-valued keywords whose value is a single subschema (or an array of
+ * subschemas — the recursion dispatches on array-ness, so tuple forms like
+ * draft-07 `items: []` are handled too). Covers the draft 2020-12 surface plus
+ * the legacy `additionalItems` that may survive an incomplete upgrade.
+ */
+const STRIP_SCHEMA_VALUE_KEYS = [
+	"additionalProperties",
+	"unevaluatedProperties",
+	"unevaluatedItems",
+	"items",
+	"additionalItems",
+	"contains",
+	"propertyNames",
+	"contentSchema",
+	"if",
+	"then",
+	"else",
+	"not",
+	"anyOf",
+	"oneOf",
+	"allOf",
+	"prefixItems",
+] as const;
+
+/** Keywords whose value is a `{ name: Schema }` map — names are NOT annotations. */
+const STRIP_SCHEMA_MAP_KEYS = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"] as const;
+
+/**
+ * Recursively strip human-readable `description` annotations from a JSON Schema,
+ * descending only through schema-valued keywords so a property literally named
+ * `"description"` inside a `properties`/`$defs` map keeps its schema (only its own
+ * annotation is dropped), and data-bearing keywords (`default`/`const`/`examples`)
+ * are never traversed. Mutates `node` in place — callers pass a clone.
+ */
+function stripSchemaDescriptionsInPlace(node: unknown): void {
+	if (Array.isArray(node)) {
+		for (const child of node) stripSchemaDescriptionsInPlace(child);
+		return;
+	}
+	if (!isSchemaRecord(node)) return;
+	delete node.description;
+	for (const key of STRIP_SCHEMA_VALUE_KEYS) {
+		if (Object.hasOwn(node, key)) stripSchemaDescriptionsInPlace(node[key]);
+	}
+	for (const mapKey of STRIP_SCHEMA_MAP_KEYS) {
+		const map = node[mapKey];
+		if (isSchemaRecord(map)) {
+			for (const key in map) stripSchemaDescriptionsInPlace(map[key]);
+		}
+	}
+}
+
+/**
+ * Return a deep clone of `schema` with every `description` annotation removed.
+ * The result is memoized on the input via a non-enumerable symbol (`stamp`) so
+ * repeated provider requests reuse the same stripped object; the input is never
+ * mutated, so the stamped `toolWireSchema` cache stays intact for
+ * system-prompt/UI rendering.
+ */
+export function stripSchemaDescriptions(schema: Record<string, unknown>): Record<string, unknown> {
+	return stamp(schema, kStrippedSchema, source => {
+		const clone = structuredClone(source);
+		stripSchemaDescriptionsInPlace(clone);
+		return clone;
+	});
+}
+
+/**
+ * Strip a tool's human-readable text from its provider-bound spec: empties the
+ * top-level `description` and removes nested schema `description` annotations.
+ * Used when the full tool catalog is rendered into the system prompt instead, so
+ * the descriptions ride the wire once (in the prompt) rather than duplicated on
+ * every tool definition. Parameters are resolved to wire JSON Schema and cloned,
+ * leaving the original tool objects and the stamped schema cache untouched.
+ */
+export function stripToolDescriptions(tools: readonly Tool[]): Tool[] {
+	return tools.map(tool => ({
+		...tool,
+		description: "",
+		parameters: stripSchemaDescriptions(toolWireSchema(tool)),
+	}));
 }

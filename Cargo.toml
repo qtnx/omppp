@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/*"]
-exclude = ["crates/brush-core-vendored", "crates/brush-builtins-vendored"]
+members = ["crates/pi-*", "crates/vendor/*"]
+exclude = ["crates/vendor/brush-core", "crates/vendor/brush-builtins"]
 resolver = "3"
 
 [workspace.package]
@@ -12,8 +12,8 @@ homepage = "https://github.com/qtnx/omppp"
 repository = "https://github.com/qtnx/omppp"
 
 [patch.crates-io]
-brush-core = { path = "crates/brush-core-vendored" }
-brush-builtins = { path = "crates/brush-builtins-vendored" }
+brush-core = { path = "crates/vendor/brush-core" }
+brush-builtins = { path = "crates/vendor/brush-builtins" }
 
 [profile.release]
 opt-level = 3
@@ -166,8 +166,8 @@ too_many_lines = "allow"     # Arbitrary limits don't account for necessary comp
 pi-ast = { path = "crates/pi-ast" }
 pi-iso = { path = "crates/pi-iso" }
 pi-shell = { path = "crates/pi-shell" }
-brush-core = { path = "crates/brush-core-vendored" }
-brush-builtins = { path = "crates/brush-builtins-vendored" }
+brush-core = { path = "crates/vendor/brush-core" }
+brush-builtins = { path = "crates/vendor/brush-builtins" }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Async Runtime & Concurrency
@@ -281,6 +281,7 @@ syntect = { version = "5.3", default-features = false, features = [
    "default-syntaxes",
    "default-themes",
    "regex-fancy",
+   "yaml-load",
 ] }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -319,6 +320,7 @@ tree-sitter-dockerfile = { version = "0.2.0", package = "tree-sitter-dockerfile-
 tree-sitter-elixir = "0.3"
 tree-sitter-elisp = "1.6.1"
 tree-sitter-erlang = "0.16.0"
+tree-sitter-fortran = "0.6.0"
 tree-sitter-go = "0.25"
 tree-sitter-graphql = "0.1.0"
 tree-sitter-haskell = "0.23"

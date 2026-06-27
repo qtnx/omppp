@@ -64,6 +64,23 @@ export interface UsageLimit {
 }
 
 /**
+ * Per-credit detail for a saved/banked rate-limit reset.
+ *
+ * Populated when the provider's listing endpoint returns individual credit
+ * metadata (e.g. OpenAI Codex `wham/rate-limit-reset-credits`). Callers that
+ * only need the count can ignore this; display layers use `expiresAt` to show
+ * when banked resets expire ([#3339](https://github.com/can1357/oh-my-pi/issues/3339)).
+ */
+export interface UsageResetCreditDetail {
+	/** ISO timestamp when the credit was granted. */
+	grantedAt?: string;
+	/** ISO timestamp when the credit expires and can no longer be redeemed. */
+	expiresAt?: string;
+	/** Backend status, e.g. `available`, `redeemed`. */
+	status?: string;
+}
+
+/**
  * Saved/banked rate-limit resets an account can redeem on demand.
  *
  * Surfaced by providers that let users defer a usage-window reset and spend it
@@ -73,6 +90,8 @@ export interface UsageLimit {
 export interface UsageResetCredits {
 	/** Number of resets available to redeem right now. */
 	availableCount: number;
+	/** Individual credit details (expiry dates, etc.) when the provider exposes them. */
+	credits?: UsageResetCreditDetail[];
 }
 
 /** Aggregated usage report for a provider. */
@@ -82,6 +101,13 @@ export interface UsageReport {
 	limits: UsageLimit[];
 	/** Saved rate-limit resets the account can redeem, when the provider reports them. */
 	resetCredits?: UsageResetCredits;
+	/**
+	 * Provider-wide disclaimers shown once above per-account sections.
+	 * Use this for caveats that apply to every limit (e.g. "OMP-observed
+	 * spend only"). Per-limit notes that differ per window (e.g. "Overage
+	 * requests: N") stay on {@link UsageLimit.notes}.
+	 */
+	notes?: string[];
 	metadata?: Record<string, unknown>;
 	raw?: unknown;
 }
@@ -134,6 +160,24 @@ export interface UsageHistoryQuery {
 	/** Inclusive lower bound on {@link UsageHistoryEntry.recordedAt} (epoch ms). */
 	sinceMs?: number;
 }
+/** One observed provider request cost, attributed to the credential that made it. */
+export interface UsageCostHistoryEntry {
+	/** Epoch ms the request completed. */
+	recordedAt: number;
+	provider: Provider;
+	/** Stable credential identity key (account/email/project/secret derived). */
+	accountKey: string;
+	/** Estimated request cost in USD. */
+	costUsd: number;
+}
+
+/** Filter for reading observed request costs. */
+export interface UsageCostHistoryQuery {
+	provider?: string;
+	accountKey?: string;
+	/** Inclusive lower bound on {@link UsageCostHistoryEntry.recordedAt} (epoch ms). */
+	sinceMs?: number;
+}
 
 // ─── Zod schemas (wire-shape validation for the broker `/v1/usage` endpoint) ─
 
@@ -177,8 +221,15 @@ export const usageLimitSchema = type({
 	"notes?": "string[]",
 });
 
+export const usageResetCreditDetailSchema = type({
+	"grantedAt?": "string",
+	"expiresAt?": "string",
+	"status?": "string",
+});
+
 export const usageResetCreditsSchema = type({
 	availableCount: "number",
+	"credits?": usageResetCreditDetailSchema.array(),
 });
 
 export const usageReportSchema = type({
@@ -186,6 +237,7 @@ export const usageReportSchema = type({
 	fetchedAt: "number",
 	limits: usageLimitSchema.array(),
 	"resetCredits?": usageResetCreditsSchema,
+	"notes?": "string[]",
 	"metadata?": { "[string]": "unknown" },
 	// `raw` is provider-specific and may be anything; the broker strips it before
 	// sending the report over the wire, so accept-but-ignore here.
@@ -217,6 +269,8 @@ export interface UsageCredential {
 export interface UsageFetchParams {
 	provider: Provider;
 	credential: UsageCredential;
+	/** Stable credential identity key derived by the auth storage layer. */
+	accountKey?: string;
 	baseUrl?: string;
 	signal?: AbortSignal;
 }
@@ -226,6 +280,8 @@ export interface UsageFetchContext {
 	fetch: FetchImpl;
 	logger?: UsageLogger;
 	retryWait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+	/** Observed request-cost history for providers without upstream usage APIs. */
+	listUsageCosts?: (query?: UsageCostHistoryQuery) => UsageCostHistoryEntry[];
 }
 
 /** Provider implementation for fetching usage information. */
@@ -235,6 +291,8 @@ export interface UsageProvider {
 	/** Parse provider rate-limit response headers (lowercased keys) into a usage report, if supported. */
 	parseRateLimitHeaders?(headers: Record<string, string>, now?: number): UsageReport | null;
 	supports?(params: UsageFetchParams): boolean;
+	/** True when fetchUsage contacts upstream and can authenticate the credential for health checks. */
+	validatesCredentials?: boolean;
 }
 
 /** Request context used when ranking usage for a specific model. */

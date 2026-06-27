@@ -1,4 +1,4 @@
-export { createAbortableStream, once, untilAborted } from "./abortable";
+export { once, untilAborted } from "./abortable";
 export * from "./async";
 export * from "./color";
 export * from "./dirs";
@@ -9,6 +9,7 @@ export * from "./frontmatter";
 export * from "./fs-error";
 export * from "./glob";
 export * from "./json";
+export * from "./json-parse";
 export * as logger from "./logger";
 export * from "./loop-phase";
 export * from "./mermaid-ascii";

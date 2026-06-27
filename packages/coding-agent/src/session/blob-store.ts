@@ -152,6 +152,17 @@ export class BlobStore {
 		}
 	}
 
+	/** Synchronous variant of {@link get}. */
+	getSync(hash: string): Buffer | null {
+		const blobPath = path.join(this.dir, hash);
+		try {
+			return fs.readFileSync(blobPath);
+		} catch (err) {
+			if (isEnoent(err)) return null;
+			throw err;
+		}
+	}
+
 	/** Check if a blob exists. */
 	async has(hash: string): Promise<boolean> {
 		try {
@@ -254,6 +265,19 @@ export async function resolveImageData(blobStore: BlobStore, data: string): Prom
 	if (!buffer) {
 		logger.warn("Blob not found for image reference", { hash });
 		return "";
+	}
+	return buffer.toString("base64");
+}
+
+/** Synchronous variant of {@link resolveImageData}. */
+export function resolveImageDataSync(blobStore: BlobStore, data: string): string {
+	const hash = parseBlobRef(data);
+	if (!hash) return data;
+
+	const buffer = blobStore.getSync(hash);
+	if (!buffer) {
+		logger.warn("Blob not found for image reference", { hash });
+		return data;
 	}
 	return buffer.toString("base64");
 }

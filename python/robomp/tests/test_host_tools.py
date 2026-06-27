@@ -172,6 +172,110 @@ def test_run_repo_command_uses_slot_identity_kwargs(
     assert kwargs["env"]["BUN_INSTALL_CACHE_DIR"].endswith("/.omp-xdg/cache/bun-install")
 
 
+def _write_bun_repo(repo_dir: Path) -> None:
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    (repo_dir / "package.json").write_text('{"name":"x"}', encoding="utf-8")
+    (repo_dir / "bun.lock").write_text("{}", encoding="utf-8")
+
+
+def test_ensure_workspace_dependencies_installs_when_missing(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    bindings, loop, thread = _bindings(db, tmp_path, httpx.MockTransport(lambda _r: httpx.Response(500)))
+    _write_bun_repo(bindings.workspace.repo_dir)
+    captured: list[tuple[str, ...]] = []
+
+    def fake_run_repo_command(
+        _b: ToolBindings, cmd: list[str] | tuple[str, ...], *, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        captured.append(tuple(cmd))
+        return subprocess.CompletedProcess(list(cmd), 0, "449 packages installed", "")
+
+    monkeypatch.setattr(host_tools, "_run_repo_command", fake_run_repo_command)
+    try:
+        host_tools.ensure_workspace_dependencies(bindings)
+    finally:
+        _stop_loop(loop, thread)
+
+    assert captured == [("bun", "install", "--frozen-lockfile", "--ignore-scripts")]
+
+
+def test_ensure_workspace_dependencies_reinstalls_when_node_modules_present(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A bare node_modules/ dir is NOT a "fully installed" sentinel: a prior
+    # install that timed out or crashed half-way leaves a partial tree. The
+    # frozen install must still run so bun re-links anything missing, instead
+    # of skipping forever and leaving the resolver broken.
+    import subprocess
+
+    bindings, loop, thread = _bindings(db, tmp_path, httpx.MockTransport(lambda _r: httpx.Response(500)))
+    _write_bun_repo(bindings.workspace.repo_dir)
+    (bindings.workspace.repo_dir / "node_modules").mkdir()
+    captured: list[tuple[str, ...]] = []
+
+    def fake_run_repo_command(
+        _b: ToolBindings, cmd: list[str] | tuple[str, ...], *, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        captured.append(tuple(cmd))
+        return subprocess.CompletedProcess(list(cmd), 0, "Checked 449 packages", "")
+
+    monkeypatch.setattr(host_tools, "_run_repo_command", fake_run_repo_command)
+    try:
+        host_tools.ensure_workspace_dependencies(bindings)
+    finally:
+        _stop_loop(loop, thread)
+
+    assert captured == [("bun", "install", "--frozen-lockfile", "--ignore-scripts")]
+
+
+def test_ensure_workspace_dependencies_skips_non_bun_repo(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # repo_dir exists (created by _stub_workspace) but has no package.json/bun.lock.
+    bindings, loop, thread = _bindings(db, tmp_path, httpx.MockTransport(lambda _r: httpx.Response(500)))
+    called = False
+
+    def fail_run(*_a: Any, **_k: Any) -> Any:
+        nonlocal called
+        called = True
+        raise AssertionError("must not install in a non-bun repo")
+
+    monkeypatch.setattr(host_tools, "_run_repo_command", fail_run)
+    try:
+        host_tools.ensure_workspace_dependencies(bindings)
+    finally:
+        _stop_loop(loop, thread)
+
+    assert called is False
+
+
+def test_ensure_workspace_dependencies_swallows_install_failure(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    bindings, loop, thread = _bindings(db, tmp_path, httpx.MockTransport(lambda _r: httpx.Response(500)))
+    _write_bun_repo(bindings.workspace.repo_dir)
+
+    def failing_run(
+        _b: ToolBindings, cmd: list[str] | tuple[str, ...], *, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(list(cmd), 1, "", "lockfile out of date")
+
+    monkeypatch.setattr(host_tools, "_run_repo_command", failing_run)
+    try:
+        # A stale frozen lockfile (e.g. a PR that bumped deps) must not raise —
+        # the agent can still install itself or report the gap.
+        host_tools.ensure_workspace_dependencies(bindings)
+    finally:
+        _stop_loop(loop, thread)
+
+    assert not (bindings.workspace.repo_dir / "node_modules").exists()
+
+
 def test_guarded_push_branch_rev_parse_runs_via_repo_command_and_passes_slot_uid(
     db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1077,8 +1181,9 @@ def test_review_mode_rejects_push_and_open_pr_before_repo_commands(db: Database,
     assert calls == []
 
 
-def test_impl_gate_rejects_unauthorized_proposal_before_repo_commands(
-    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("classification", ["enhancement", "proposal"])
+def test_impl_gate_rejects_unauthorized_non_auto_classification_before_repo_commands(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, classification: str
 ) -> None:
     calls: list[list[str] | tuple[str, ...]] = []
 
@@ -1088,7 +1193,7 @@ def test_impl_gate_rejects_unauthorized_proposal_before_repo_commands(
         raise AssertionError("repo command must not run before implementation authorization")
 
     bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(lambda _r: httpx.Response(500)))
-    db.set_issue_classification(bindings.issue_key, "proposal")
+    db.set_issue_classification(bindings.issue_key, classification)
     monkeypatch.setattr(host_tools, "_run_repo_command", record_repo_command)
     try:
         push = next(x for x in build(bindings) if x.name == "gh_push_branch")
@@ -1101,7 +1206,7 @@ def test_impl_gate_rejects_unauthorized_proposal_before_repo_commands(
         _stop_loop(loop, t)
 
     for msg in (str(push_exc.value), str(pr_exc.value)):
-        assert "classified `proposal`" in msg
+        assert f"classified `{classification}`" in msg
         assert "OWNER or allowlisted maintainer" in msg
         assert "gh_post_comment" in msg
     assert calls == []
@@ -1109,14 +1214,17 @@ def test_impl_gate_rejects_unauthorized_proposal_before_repo_commands(
         "SELECT tool, error FROM tool_calls WHERE tool IN ('gh_push_branch', 'gh_open_pr') ORDER BY id"
     ).fetchall()
     assert [row["tool"] for row in rows] == ["gh_push_branch", "gh_open_pr"]
-    assert all("classified `proposal`" in row["error"] for row in rows)
+    assert all(f"classified `{classification}`" in row["error"] for row in rows)
 
 
-def test_impl_gate_allows_authorized_proposal_to_reach_pr_validation(db: Database, tmp_path: Path) -> None:
+@pytest.mark.parametrize("classification", ["enhancement", "proposal"])
+def test_impl_gate_allows_authorized_non_auto_classification_to_reach_pr_validation(
+    db: Database, tmp_path: Path, classification: str
+) -> None:
     from dataclasses import replace
 
     bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(lambda _r: httpx.Response(500)))
-    db.set_issue_classification(bindings.issue_key, "proposal")
+    db.set_issue_classification(bindings.issue_key, classification)
     bindings = replace(bindings, impl_authorized=True)
     try:
         tool = next(x for x in build(bindings) if x.name == "gh_open_pr")
@@ -1128,6 +1236,107 @@ def test_impl_gate_allows_authorized_proposal_to_reach_pr_validation(db: Databas
     msg = str(exc.value)
     assert "requires a non-empty 'body'" in msg
     assert "OWNER or allowlisted maintainer" not in msg
+
+
+@pytest.mark.parametrize("classification", ["enhancement", "proposal"])
+def test_impl_gate_allows_authorized_non_auto_classification_push_to_reach_repo_commands(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, classification: str
+) -> None:
+    from dataclasses import replace
+
+    calls: list[list[str] | tuple[str, ...]] = []
+
+    def record_repo_command(_bindings: ToolBindings, cmd: list[str] | tuple[str, ...], *, timeout: float | None = None):
+        del timeout
+        calls.append(cmd)
+        raise RuntimeError("authorized non-auto issue reached gh_push_branch repo command")
+
+    bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(lambda _r: httpx.Response(500)))
+    db.set_issue_classification(bindings.issue_key, classification)
+    bindings = replace(bindings, impl_authorized=True)
+    monkeypatch.setattr(host_tools, "_run_repo_command", record_repo_command)
+    try:
+        tool = next(x for x in build(bindings) if x.name == "gh_push_branch")
+        with pytest.raises(RuntimeError, match="authorized non-auto issue reached gh_push_branch repo command"):
+            tool.execute({}, _ctx())
+    finally:
+        _stop_loop(loop, t)
+
+    assert calls
+
+
+def test_impl_gate_allows_later_authorized_event_to_reach_repo_commands(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str] | tuple[str, ...]] = []
+
+    def record_repo_command(_bindings: ToolBindings, cmd: list[str] | tuple[str, ...], *, timeout: float | None = None):
+        del timeout
+        calls.append(cmd)
+        raise RuntimeError("later authorized event reached gh_push_branch repo command")
+
+    bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(lambda _r: httpx.Response(500)))
+    db.set_issue_classification(bindings.issue_key, "enhancement")
+    db.record_event(
+        delivery_id="auth-event",
+        event_type="issue_comment",
+        repo=bindings.issue.repo,
+        issue_key=bindings.issue_key,
+        payload={
+            "_robomp_directive": {
+                "body": "go ahead",
+                "author": "can1357",
+                "pragmas": [],
+                "authorizes_impl": True,
+            }
+        },
+    )
+    monkeypatch.setattr(host_tools, "_run_repo_command", record_repo_command)
+    try:
+        tool = next(x for x in build(bindings) if x.name == "gh_push_branch")
+        with pytest.raises(RuntimeError, match="later authorized event reached gh_push_branch repo command"):
+            tool.execute({}, _ctx())
+    finally:
+        _stop_loop(loop, t)
+
+    assert calls
+
+
+def test_impl_gate_ignores_skipped_authorized_event(db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str] | tuple[str, ...]] = []
+
+    def record_repo_command(_bindings: ToolBindings, cmd: list[str] | tuple[str, ...], *, timeout: float | None = None):
+        del timeout
+        calls.append(cmd)
+        raise AssertionError("skipped authorization must not reach repo command")
+
+    bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(lambda _r: httpx.Response(500)))
+    db.set_issue_classification(bindings.issue_key, "enhancement")
+    db.record_event(
+        delivery_id="skipped-auth-event",
+        event_type="issue_comment",
+        repo=bindings.issue.repo,
+        issue_key=bindings.issue_key,
+        payload={
+            "_robomp_directive": {
+                "body": "go ahead",
+                "author": "can1357",
+                "pragmas": [],
+                "authorizes_impl": True,
+            }
+        },
+        state="skipped",
+    )
+    monkeypatch.setattr(host_tools, "_run_repo_command", record_repo_command)
+    try:
+        tool = next(x for x in build(bindings) if x.name == "gh_push_branch")
+        with pytest.raises(RpcCommandError) as exc:
+            tool.execute({}, _ctx())
+    finally:
+        _stop_loop(loop, t)
+
+    assert "OWNER or allowlisted maintainer" in str(exc.value)
+    assert calls == []
 
 
 def test_impl_gate_allows_bug_without_directive_to_reach_pr_validation(db: Database, tmp_path: Path) -> None:

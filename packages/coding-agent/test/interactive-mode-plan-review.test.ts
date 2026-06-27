@@ -1,8 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { Agent, AgentBusyError } from "@oh-my-pi/pi-agent-core";
+import { Agent, AgentBusyError, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -320,7 +321,7 @@ describe("InteractiveMode plan review rendering", () => {
 		}
 	});
 
-	it("Refine with no annotations does not re-prompt the model", async () => {
+	it("Refine with no annotations silently aborts approval and returns to the editor", async () => {
 		const planFilePath = "local://PLAN.md";
 		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
 			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
@@ -330,7 +331,20 @@ describe("InteractiveMode plan review rendering", () => {
 
 		mode.planModeEnabled = true;
 		mode.planModePlanFilePath = planFilePath;
-		vi.spyOn(mode, "showPlanReview").mockResolvedValue("Refine plan");
+		let streaming = false;
+		Object.defineProperty(session, "isStreaming", {
+			configurable: true,
+			get: () => streaming,
+		});
+		const abortSpy = vi.spyOn(session, "abort").mockImplementation(async () => {
+			streaming = false;
+		});
+		vi.spyOn(mode, "showPlanReview").mockImplementation(async () => {
+			streaming = true;
+			return "Refine plan";
+		});
+		const statusSpy = vi.spyOn(mode, "showStatus");
+		const errorSpy = vi.spyOn(mode, "showError");
 		const startSpy = vi.spyOn(mode, "startPendingSubmission");
 		const onInput = vi.fn();
 		mode.onInputCallback = onInput;
@@ -341,8 +355,12 @@ describe("InteractiveMode plan review rendering", () => {
 			title: "PLAN",
 		});
 
+		expect(abortSpy).toHaveBeenCalledTimes(1);
+		expect(statusSpy).toHaveBeenCalledWith("Refine plan: enter a follow-up prompt.");
+		expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining("Failed to refine plan"));
 		expect(startSpy).not.toHaveBeenCalled();
 		expect(onInput).not.toHaveBeenCalled();
+		expect(session.isPlanInternalAbortPending).toBe(false);
 	});
 
 	it("approves with in-overlay edits and mirrors them to the plan file", async () => {
@@ -726,6 +744,138 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(session.model?.id).toBe(slow.id);
 	});
 
+	it("retains the plan model when the slider selection matches the active plan tier", async () => {
+		const planModel = session.modelRegistry.find("anthropic", "claude-opus-4-5");
+		const prePlanModel = session.modelRegistry.find("anthropic", "claude-sonnet-4-5");
+		if (!planModel || !prePlanModel) throw new Error("Expected sonnet + opus to exist in registry");
+
+		session.settings.setModelRole("default", "anthropic/claude-sonnet-4-5");
+		session.settings.setModelRole("slow", "anthropic/claude-opus-4-5");
+		session.settings.setModelRole("plan", "anthropic/claude-opus-4-5");
+
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Plan\n\nKeep executing on the planning tier.");
+
+		await mode.handlePlanModeCommand();
+		expect(session.model?.id).toBe(planModel.id);
+
+		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
+		vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+
+		vi.spyOn(mode, "showPlanReview").mockImplementation(
+			async (_planContent, _title, _options, _dialogOptions, extra?: { slider?: HookSelectorSlider }) => {
+				const slider = extra?.slider;
+				expect(slider).toBeDefined();
+				const slowIndex = slider!.segments.findIndex(segment => segment.label === "slow");
+				expect(slowIndex).toBeGreaterThanOrEqual(0);
+				slider!.onChange?.(slowIndex);
+				return "Approve and keep context";
+			},
+		);
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "PLAN",
+		});
+
+		expect(session.model?.id).toBe(planModel.id);
+	});
+
+	it("treats matching-model slider tier as explicit when its thinking differs from the pre-plan thinking", async () => {
+		const sonnet = session.modelRegistry.find("anthropic", "claude-sonnet-4-5");
+		const opus = session.modelRegistry.find("anthropic", "claude-opus-4-5");
+		if (!sonnet || !opus) throw new Error("Expected sonnet + opus to exist in registry");
+
+		// default tier explicitly turns thinking off on sonnet; the session enters
+		// plan mode with thinking already bumped to high. A model-only match check
+		// treats the slider's "stay on default" pick as implicit, so #exitPlanMode
+		// restores thinking=high instead of the configured off override. The fix
+		// must compare thinking levels too and pass the default entry through
+		// applyRoleModel.
+		session.settings.setModelRole("default", "anthropic/claude-sonnet-4-5:off");
+		session.settings.setModelRole("slow", "anthropic/claude-opus-4-5");
+		session.settings.setModelRole("plan", "anthropic/claude-opus-4-5");
+		session.setThinkingLevel(ThinkingLevel.High);
+
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Plan\n\nDifferent thinking on the same model.");
+
+		await mode.handlePlanModeCommand();
+		expect(session.model?.id).toBe(opus.id);
+
+		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
+		vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+		const applyRoleSpy = vi.spyOn(session, "applyRoleModel");
+
+		vi.spyOn(mode, "showPlanReview").mockImplementation(
+			async (_planContent, _title, _options, _dialogOptions, extra?: { slider?: HookSelectorSlider }) => {
+				const slider = extra?.slider;
+				expect(slider).toBeDefined();
+				const defaultIndex = slider!.segments.findIndex(segment => segment.label === "default");
+				expect(defaultIndex).toBeGreaterThanOrEqual(0);
+				slider!.onChange?.(defaultIndex);
+				return "Approve and keep context";
+			},
+		);
+
+		await mode.handlePlanApproval({ planFilePath, planExists: true, title: "PLAN" });
+
+		const defaultApply = applyRoleSpy.mock.calls.find(call => call[0]?.role === "default");
+		expect(defaultApply).toBeDefined();
+		expect(defaultApply?.[0]?.model.id).toBe(sonnet.id);
+		expect(defaultApply?.[0]?.thinkingLevel).toBe(ThinkingLevel.Off);
+		expect(defaultApply?.[0]?.explicitThinkingLevel).toBe(true);
+	});
+
+	it("falls back to the pre-plan model when only plan is configured and the slider is hidden", async () => {
+		const sonnet = session.modelRegistry.find("anthropic", "claude-sonnet-4-5");
+		const opus = session.modelRegistry.find("anthropic", "claude-opus-4-5");
+		if (!sonnet || !opus) throw new Error("Expected sonnet + opus to exist in registry");
+		expect(session.model?.id).toBe(sonnet.id);
+
+		// Only the plan role is configured. getRoleModelCycle synthesizes a
+		// singleton `default` entry from the active plan model (opus), so the
+		// slider is hidden — the operator made no selection and approval must
+		// fall through to the pre-plan sonnet restore instead of pinning the
+		// lone plan tier.
+		session.settings.setModelRole("plan", "anthropic/claude-opus-4-5");
+
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Plan\n\nNo slider, restore default.");
+
+		await mode.handlePlanModeCommand();
+		expect(session.model?.id).toBe(opus.id);
+
+		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
+		vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+
+		let sliderShown: HookSelectorSlider | undefined;
+		vi.spyOn(mode, "showPlanReview").mockImplementation(
+			async (_planContent, _title, _options, _dialogOptions, extra?: { slider?: HookSelectorSlider }) => {
+				sliderShown = extra?.slider;
+				return "Approve and keep context";
+			},
+		);
+
+		await mode.handlePlanApproval({ planFilePath, planExists: true, title: "PLAN" });
+
+		expect(sliderShown).toBeUndefined();
+		expect(session.model?.id).toBe(sonnet.id);
+	});
+
 	it("compaction runs on the plan model and restores the pre-plan model after success", async () => {
 		const planModel = session.modelRegistry.find("anthropic", "claude-opus-4-5");
 		const prePlanModel = session.modelRegistry.find("anthropic", "claude-sonnet-4-5");
@@ -808,10 +958,8 @@ describe("InteractiveMode plan review rendering", () => {
 		if (!planModel || !execModel) throw new Error("Expected sonnet + opus to exist in registry");
 
 		// Plan model (opus) differs from the execution tier the operator slides to
-		// (default = sonnet) so the assertions distinguish the new defer-restore +
-		// success-gated transition from the old "restore pre-plan before compaction"
-		// path: under the old behavior compaction would have run on sonnet and the
-		// restore (not applyRoleModel) would have produced the final model.
+		// (default = sonnet). Successful compaction must keep running on opus, then
+		// end on the slider-selected default tier.
 		session.settings.setModelRole("default", "anthropic/claude-sonnet-4-5");
 		session.settings.setModelRole("slow", "anthropic/claude-opus-4-5");
 		session.settings.setModelRole("plan", "anthropic/claude-opus-4-5");
@@ -834,7 +982,6 @@ describe("InteractiveMode plan review rendering", () => {
 			compactModelId = session.model?.id;
 			return "ok";
 		});
-		const applyRoleSpy = vi.spyOn(session, "applyRoleModel");
 
 		vi.spyOn(mode, "showPlanReview").mockImplementation(
 			async (_planContent, _title, _options, _dialogOptions, extra?: { slider?: HookSelectorSlider }) => {
@@ -854,12 +1001,9 @@ describe("InteractiveMode plan review rendering", () => {
 			title: "PLAN",
 		});
 
-		// Compaction ran on the plan model (defer-restore kept it warm) …
+		// Compaction ran on the plan model (defer-restore kept it warm), then the
+		// successful transition ended on the slider-selected default tier.
 		expect(compactModelId).toBe(planModel.id);
-		// … and the slider-selected execution tier was applied via applyRoleModel
-		// (the executionModel branch, not the pre-plan restore which goes through
-		// setModelTemporary), only after the successful compaction.
-		expect(applyRoleSpy.mock.calls.some(call => call[0]?.model?.id === execModel.id)).toBe(true);
 		expect(session.model?.id).toBe(execModel.id);
 	});
 
@@ -940,7 +1084,7 @@ describe("InteractiveMode plan review rendering", () => {
 		let modelAtFlushTime: string | undefined;
 		// Mirror executeCompaction's ordering: invoke beforeFlush, THEN observe the
 		// model the queue would flush on.
-		vi.spyOn(mode, "handleCompactCommand").mockImplementation(async (_instructions, beforeFlush) => {
+		vi.spyOn(mode, "handleCompactCommand").mockImplementation(async (_instructions, _mode, beforeFlush) => {
 			hookWasFunction = typeof beforeFlush === "function";
 			if (beforeFlush) await beforeFlush("ok");
 			modelAtFlushTime = session.model?.id;
@@ -1139,8 +1283,7 @@ describe("InteractiveMode plan review rendering", () => {
 	// ==========================================================================
 	// Phase 6 — B layer: #approvePlan flag lifecycle via try/finally.
 	//
-	// Drives `handlePlanApproval` with each CompactionOutcome variant and
-	// asserts `session.isPlanCompactAbortPending === false` after `#approvePlan`
+	// asserts `session.isPlanInternalAbortPending === false` after `#approvePlan`
 	// resolves/rejects. The flag is the only state that can leak into later
 	// unrelated aborts; the `try/finally` in `#approvePlan` is what protects it.
 	// ==========================================================================
@@ -1189,7 +1332,7 @@ describe("InteractiveMode plan review rendering", () => {
 		"failed",
 	] as const)("B1-B3: Approve and compact context + %s outcome → flag cleared by finally", async outcome => {
 		await approveWithCompact(outcome);
-		expect(session.isPlanCompactAbortPending).toBe(false);
+		expect(session.isPlanInternalAbortPending).toBe(false);
 	});
 
 	it("B4: Approve and compact context + handleCompactCommand throws → showError surfaces the failure AND flag cleared by finally before the outer catch", async () => {
@@ -1202,11 +1345,11 @@ describe("InteractiveMode plan review rendering", () => {
 		//      silenced).
 		const showErrorSpy = vi.spyOn(mode, "showError");
 		await approveWithCompact("throw", new Error("synthetic compaction failure"));
-		expect(session.isPlanCompactAbortPending).toBe(false);
+		expect(session.isPlanInternalAbortPending).toBe(false);
 		expect(showErrorSpy).toHaveBeenCalledWith(expect.stringContaining("synthetic compaction failure"));
 	});
 
-	it("B5: Approve and execute (no compact) → markPlanCompactAbortPending never called; flag stays false", async () => {
+	it("B5: Approve and execute (no compact) → internal abort flag is cleared", async () => {
 		const planFilePath = "local://PLAN.md";
 		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
 			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
@@ -1216,7 +1359,7 @@ describe("InteractiveMode plan review rendering", () => {
 		mode.planModeEnabled = true;
 		mode.planModePlanFilePath = planFilePath;
 		vi.spyOn(mode, "showPlanReview").mockResolvedValue("Approve and execute");
-		const markSpy = vi.spyOn(session, "markPlanCompactAbortPending");
+		const markSpy = vi.spyOn(session, "markPlanInternalAbortPending");
 		vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
 
 		await mode.handlePlanApproval({
@@ -1225,8 +1368,8 @@ describe("InteractiveMode plan review rendering", () => {
 			title: "PLAN",
 		});
 
-		expect(markSpy).not.toHaveBeenCalled();
-		expect(session.isPlanCompactAbortPending).toBe(false);
+		expect(markSpy).toHaveBeenCalledTimes(1);
+		expect(session.isPlanInternalAbortPending).toBe(false);
 	});
 
 	it("re-enters plan mode on the approved titled artifact after approval", async () => {
@@ -1314,6 +1457,17 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(rendered).not.toContain(USER_INTERRUPT_LABEL);
 		// The marker itself MUST NOT leak into rendered output either.
 		expect(rendered).not.toContain(SILENT_ABORT_MARKER);
+	});
+
+	it("D1b: Replay of an assistant message with silent-abort errorId contains no abort line", () => {
+		const message = buildAbortedAssistantMessage({
+			content: [],
+			errorId: AIError.create(AIError.Flag.SilentAbort),
+			errorMessage: undefined,
+		});
+		const rendered = renderAssistant(message);
+		expect(rendered).not.toContain("Operation aborted");
+		expect(rendered).not.toContain("Error:");
 	});
 
 	it("D2: Replay of an aborted message with no threaded reason + empty content: rendered component DOES contain the generic label", () => {

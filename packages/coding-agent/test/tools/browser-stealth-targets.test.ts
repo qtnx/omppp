@@ -84,9 +84,11 @@ const override = {
 	userAgentMetadata: {
 		brands: [{ brand: "Chromium", version: "142" }],
 		fullVersion: "142.0.0.0",
+		fullVersionList: [{ brand: "Chromium", version: "142.0.0.0" }],
 		platform: "Windows",
 		platformVersion: "10.0.0",
 		architecture: "x86",
+		bitness: "64",
 		model: "",
 		mobile: false,
 	},

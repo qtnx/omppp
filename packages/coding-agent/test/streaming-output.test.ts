@@ -15,6 +15,7 @@ import {
 	truncateTail,
 	truncateTailBytes,
 } from "@oh-my-pi/pi-coding-agent/session/streaming-output";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const createdTempDirs: string[] = [];
 const originalForceProtocol = Bun.env.PI_FORCE_IMAGE_PROTOCOL;
@@ -32,7 +33,7 @@ function byteLength(text: string): number {
 
 afterEach(async () => {
 	for (const dir of createdTempDirs.splice(0)) {
-		await fs.rm(dir, { recursive: true, force: true });
+		await removeWithRetries(dir);
 	}
 	if (originalForceProtocol === undefined) delete Bun.env.PI_FORCE_IMAGE_PROTOCOL;
 	else Bun.env.PI_FORCE_IMAGE_PROTOCOL = originalForceProtocol;
@@ -560,9 +561,10 @@ describe("truncateMiddle", () => {
 		expect(result.content).not.toContain("elided");
 	});
 
-	test("formatMiddleElisionMarker pluralises and formats bytes", () => {
-		expect(formatMiddleElisionMarker(1, 100)).toBe("[… 1 line elided (100B) …]");
-		expect(formatMiddleElisionMarker(123, 4096)).toBe("[… 123 lines elided (4.0KB) …]");
+	test("formatMiddleElisionMarker uses lines, falling back to bytes for <=1 line", () => {
+		expect(formatMiddleElisionMarker(0, 512)).toBe("[…512B elided…]");
+		expect(formatMiddleElisionMarker(1, 100)).toBe("[…100B elided…]");
+		expect(formatMiddleElisionMarker(123, 4096)).toBe("[…123ln elided…]");
 	});
 });
 

@@ -13,7 +13,7 @@ export const DEFAULT_LOOP_INTERVAL_MS = 800;
 export const MAX_LOOP_INTERVAL_MS = 2_147_483_647;
 
 const LOOP_USAGE =
-	"Usage: /loop [time] [iteration]. Omit iteration for unlimited repeats. Examples: /loop 10, /loop 10s 5, /loop 2m.";
+	"Usage: /loop [time] [iteration] [prompt]. Omit iteration for unlimited repeats. Examples: /loop 10, /loop 10s 5, /loop 2m keep going.";
 
 const TIME_UNITS_MS = new Map<string, number>([
 	["ms", 1],
@@ -43,35 +43,67 @@ type ParsedInterval = {
 	nextIndex: number;
 };
 
+export interface ParsedLoopArgs {
+	/** Repeat cadence / iteration budget, when the user supplied a leading time token. */
+	limit?: LoopConfig;
+	/** Inline loop prompt: text after the parsed time / iteration, or the whole argument when no time was supplied. */
+	prompt?: string;
+}
+
 export function parseLoopArgs(args: string): LoopConfig | string {
-	const trimmed = args.trim().toLowerCase();
-	if (!trimmed) return { intervalMs: DEFAULT_LOOP_INTERVAL_MS };
+	const parsed = parseLoopLimitArgs(args);
+	if (typeof parsed === "string") return parsed;
+	if (parsed.prompt) return LOOP_USAGE;
+	return parsed.limit ?? { intervalMs: DEFAULT_LOOP_INTERVAL_MS };
+}
+
+/**
+ * Parse `/loop` arguments into OMPx's repeat interval / optional iteration
+ * count plus upstream's optional inline prompt. Tokens that look numeric but
+ * fail interval parsing are hard errors; plain prose is treated as an unbounded
+ * default-interval loop prompt.
+ */
+export function parseLoopLimitArgs(args: string): ParsedLoopArgs | string {
+	const trimmed = args.trim();
+	if (!trimmed) return {};
 
 	const parts = trimmed.split(/\s+/);
-	if (parts.length > 3) return LOOP_USAGE;
+	const firstToken = parts[0].toLowerCase();
+	if (!/^[+-]?\d/.test(firstToken)) {
+		return { prompt: trimmed };
+	}
 
 	const parsedInterval = parseInterval(parts);
 	if (typeof parsedInterval === "string") return parsedInterval;
-	if (parsedInterval.nextIndex === parts.length) return { intervalMs: parsedInterval.intervalMs };
-	if (parsedInterval.nextIndex !== parts.length - 1) return LOOP_USAGE;
 
-	const iterations = parseIterationCount(parts[parsedInterval.nextIndex]);
-	if (typeof iterations === "string") return iterations;
-	return { intervalMs: parsedInterval.intervalMs, iterations };
+	let nextIndex = parsedInterval.nextIndex;
+	let iterations: number | undefined;
+	if (nextIndex < parts.length && /^\d+$/.test(parts[nextIndex])) {
+		const parsedIterations = parseIterationCount(parts[nextIndex]);
+		if (typeof parsedIterations === "string") return parsedIterations;
+		iterations = parsedIterations;
+		nextIndex += 1;
+	}
+
+	const prompt = parts.slice(nextIndex).join(" ").trim() || undefined;
+	return { limit: { intervalMs: parsedInterval.intervalMs, iterations }, prompt };
 }
 
 function parseInterval(parts: string[]): ParsedInterval | string {
-	if (parts.length >= 2 && /^\d+$/.test(parts[0]) && /^[a-z]+$/.test(parts[1])) {
+	if (parts.length >= 2 && /^\d+$/.test(parts[0]) && TIME_UNITS_MS.has(parts[1].toLowerCase())) {
 		const amount = parsePositiveInteger(
 			parts[0],
 			"Loop sleep time must use a positive integer amount.",
 			"Loop sleep time must be positive.",
 		);
 		if (typeof amount === "string") return amount;
-		return parseIntervalAmount(amount, parts[1], 2);
+		return parseIntervalAmount(amount, parts[1].toLowerCase(), 2);
 	}
 
-	const compactMatch = /^(\d+)([a-z]+)?$/.exec(parts[0]);
+	const compoundInterval = parseCompoundInterval(parts[0].toLowerCase());
+	if (compoundInterval !== undefined) return compoundInterval;
+
+	const compactMatch = /^(\d+)([a-z]+)?$/.exec(parts[0].toLowerCase());
 	if (compactMatch) {
 		const amount = parsePositiveInteger(
 			compactMatch[1],
@@ -83,6 +115,44 @@ function parseInterval(parts: string[]): ParsedInterval | string {
 	}
 
 	return LOOP_USAGE;
+}
+
+function parseCompoundInterval(token: string): ParsedInterval | string | undefined {
+	const segmentPattern = /(\d+)([a-z]+)/g;
+	let match = segmentPattern.exec(token);
+	let nextOffset = 0;
+	let segmentCount = 0;
+	let intervalMs = 0;
+
+	while (match !== null) {
+		if (match.index !== nextOffset) return undefined;
+		segmentCount += 1;
+
+		const amount = parsePositiveInteger(
+			match[1],
+			"Loop sleep time must use a positive integer amount.",
+			"Loop sleep time must be positive.",
+		);
+		if (typeof amount === "string") return amount;
+
+		const unitMs = TIME_UNITS_MS.get(match[2]);
+		if (unitMs === undefined) {
+			return "Loop sleep time unit must be milliseconds, seconds, minutes, or hours.";
+		}
+
+		intervalMs += amount * unitMs;
+		if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
+			return "Loop sleep time must be positive.";
+		}
+		nextOffset = segmentPattern.lastIndex;
+		match = segmentPattern.exec(token);
+	}
+
+	if (segmentCount < 2 || nextOffset !== token.length) return undefined;
+	if (intervalMs > MAX_LOOP_INTERVAL_MS) {
+		return `Loop sleep time must be at most ${MAX_LOOP_INTERVAL_MS} milliseconds.`;
+	}
+	return { intervalMs, nextIndex: 1 };
 }
 
 function parseIntervalAmount(amount: number, unitText: string, nextIndex: number): ParsedInterval | string {
@@ -152,7 +222,6 @@ export function describeLoopRuntime(runtime: LoopRuntime): string | undefined {
 
 export type LoopLimitConfig = LoopConfig;
 export type LoopLimitRuntime = LoopRuntime;
-export const parseLoopLimitArgs = parseLoopArgs;
 export const createLoopLimitRuntime = createLoopRuntime;
 export const consumeLoopLimitIteration = consumeLoopIteration;
 export const describeLoopLimit = describeLoopConfig;

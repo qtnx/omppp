@@ -38,6 +38,18 @@ class Settings(BaseSettings):
     git_author_email: str = Field(..., alias="ROBOMP_GIT_AUTHOR_EMAIL")
     repo_allowlist_raw: str = Field("", alias="ROBOMP_REPO_ALLOWLIST")
     pr_review_enabled: bool = Field(True, alias="ROBOMP_PR_REVIEW_ENABLED")
+    # PR review trigger. "open" (default) reviews incoming PRs on
+    # opened/reopened/ready_for_review. "vouched_label" DEFERS review until the
+    # vouch GitHub Action labels the PR `vouch_review_label`, so robomp reviews
+    # only PRs that survive the vouch gate. `pr_review_enabled` remains the
+    # master switch (False disables review under either trigger).
+    pr_review_trigger: Literal["open", "vouched_label"] = Field("open", alias="ROBOMP_PR_REVIEW_TRIGGER")
+    vouch_review_label: str = Field("vouched", alias="ROBOMP_VOUCH_REVIEW_LABEL")
+    # In vouched_label mode, only `labeled` events from this actor trigger a
+    # review, so a manual label by a triage/maintainer cannot bypass the gate.
+    # Default is the actor for the stock GITHUB_TOKEN; set to your App's bot
+    # login (e.g. "vouch-bot[bot]") if the vouch workflow labels via an App.
+    vouch_review_labeler: str = Field("github-actions[bot]", alias="ROBOMP_VOUCH_REVIEW_LABELER")
 
     # gh-proxy. Set BOTH to route GitHub through the proxy; leave both empty
     # to keep PAT-on-orchestrator behavior. Mixing the two (PAT + proxy) is
@@ -117,7 +129,7 @@ class Settings(BaseSettings):
     rate_limit_default: int = Field(3, alias="ROBOMP_RATE_LIMIT_DEFAULT")
     rate_limit_contributor: int = Field(10, alias="ROBOMP_RATE_LIMIT_CONTRIBUTOR")
     rate_limit_unlimited_raw: str = Field("", alias="ROBOMP_RATE_LIMIT_UNLIMITED")
-    # Logins (comma-separated, `@` prefix optional) whose `@bot_login`
+    # Logins (comma-separated, `@` prefix optional, case-insensitive) whose `@bot_login`
     # mentions are treated as authoritative directives. These accounts also
     # bypass rate limiting regardless of `author_association`.
     maintainer_logins_raw: str = Field("", alias="ROBOMP_MAINTAINER_LOGINS")
@@ -151,7 +163,9 @@ class Settings(BaseSettings):
     @field_validator("bot_login", mode="after")
     @classmethod
     def _require_bot_login(cls, value: str) -> str:
-        cleaned = value.strip()
+        cleaned = value.strip().removeprefix("@").lower()
+        if cleaned.endswith("[bot]"):
+            cleaned = cleaned[:-5]
         if not cleaned:
             raise ValueError("ROBOMP_BOT_LOGIN must be a non-empty GitHub login")
         return cleaned
@@ -291,7 +305,10 @@ class Settings(BaseSettings):
 
     @property
     def maintainer_logins(self) -> frozenset[str]:
-        items = [piece.strip().lstrip("@").lower() for piece in self.maintainer_logins_raw.split(",")]
+        items = [
+            piece.strip().lstrip("@").lower().removesuffix("[bot]")
+            for piece in self.maintainer_logins_raw.split(",")
+        ]
         return frozenset(item for item in items if item)
 
     def allows(self, full_name: str) -> bool:

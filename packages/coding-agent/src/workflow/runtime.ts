@@ -13,7 +13,7 @@ export interface WorkflowGlobalDeps {
 
 export interface WorkflowGlobals {
 	agent: (prompt: string, opts?: WorkflowAgentOpts) => Promise<unknown | null>;
-	parallel: <T>(thunks: Array<() => Promise<T>>) => Promise<(T | null)[]>;
+	parallel: <T>(thunks: Array<() => Promise<T> | T>) => Promise<(T | null)[]>;
 	pipeline: (
 		items: unknown[],
 		...stages: Array<(prev: unknown, item: unknown, index: number) => unknown>
@@ -28,13 +28,21 @@ export interface WorkflowGlobals {
 export function createWorkflowGlobals(run: WorkflowRun, args: unknown, deps: WorkflowGlobalDeps = {}): WorkflowGlobals {
 	const agent = (prompt: string, opts: WorkflowAgentOpts = {}) => run.spawn(prompt, opts);
 
-	const parallel = async <T>(thunks: Array<() => Promise<T>>): Promise<(T | null)[]> => {
+	const parallel = async <T>(thunks: Array<() => Promise<T> | T>): Promise<(T | null)[]> => {
 		if (!Array.isArray(thunks)) {
 			throw new TypeError(
 				"parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)",
 			);
 		}
-		const settled = await Promise.allSettled(thunks.map(t => t()));
+		const settled = await Promise.allSettled(
+			thunks.map(thunk => {
+				try {
+					return thunk();
+				} catch (error) {
+					return Promise.reject(error);
+				}
+			}),
+		);
 		return settled.map(r => (r.status === "fulfilled" ? r.value : null));
 	};
 

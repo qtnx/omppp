@@ -3,7 +3,13 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { formatHashlineHeader, stripHashlinePrefixes } from "@oh-my-pi/hashline";
-import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type {
+	AgentTool,
+	AgentToolContext,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+	ToolTier,
+} from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { isEnoent, isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
@@ -20,8 +26,15 @@ import writeDescription from "../prompts/tools/write.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { fileHyperlink, framedBlock, renderStatusLine } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
+import {
+	type ArchiveMemberContent,
+	archiveFormatFromPath,
+	parseArchivePathCandidates,
+	readArchiveEntries,
+	writeArchive,
+} from "../utils/zip";
+import { routeWriteThroughBridge } from "./acp-bridge";
 import { truncateForPrompt } from "./approval";
-import { parseArchivePathCandidates } from "./archive-reader";
 import { assertEditableFile } from "./auto-generated-guard";
 import {
 	type ConflictEntry,
@@ -34,7 +47,7 @@ import {
 } from "./conflict-detect";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
-import { formatPathRelativeToCwd, isInternalUrlPath } from "./path-utils";
+import { formatPathRelativeToCwd, isInternalUrlPath, pathTargetsSsh, peelWriteUrlSelector } from "./path-utils";
 import { enforcePlanModeWrite, resolvePlanPath, unwrapHashlineHeaderPath } from "./plan-mode-guard";
 import {
 	cachedRenderedString,
@@ -64,12 +77,6 @@ import { toolResult } from "./tool-result";
 
 const LOOSE_HASHLINE_HEADER_RE = /^\s*\[[^#\r\n]+#[^ \t\r\n]*\]\s*$/;
 const EXECUTABLE_NOTICE = "[Notice: Made executable via chmod +x]";
-
-let fflateModulePromise: Promise<typeof import("fflate")> | undefined;
-async function loadFflate(): Promise<typeof import("fflate")> {
-	if (!fflateModulePromise) fflateModulePromise = import("fflate");
-	return fflateModulePromise;
-}
 
 const writeSchema = type({
 	path: type("string").describe("file path"),
@@ -141,15 +148,6 @@ function maybeWriteSnapshotHeader(session: ToolSession, absolutePath: string, co
 	const normalized = normalizeToLF(content);
 	const tag = getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized);
 	return formatHashlineHeader(formatPathRelativeToCwd(absolutePath, session.cwd), tag);
-}
-
-function shouldRouteWriteThroughBridge(session: ToolSession, requestedPath: string, absolutePath: string): boolean {
-	if (isInternalUrlPath(requestedPath)) return false;
-
-	const state = session.getPlanModeState?.();
-	if (!state?.enabled || !isInternalUrlPath(state.planFilePath)) return true;
-
-	return absolutePath !== resolvePlanPath(session, state.planFilePath);
 }
 
 /**
@@ -271,14 +269,22 @@ function parseSqliteWriteTarget(subPath: string, queryString: string): { table: 
  */
 export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails> {
 	readonly name = "write";
-	readonly approval = (args: unknown) => {
+	readonly approval = (args: unknown): ToolTier => {
 		const rawPath = (args as Partial<WriteParams>).path;
-		if (typeof rawPath !== "string" || !isInternalUrlPath(rawPath)) return "write";
+		if (typeof rawPath !== "string") return "write";
+		// Unwrap a hashline `[path#TAG]` wrapper first (parity with execute) so a
+		// wrapped `[ssh://h/x#ABCD]` can't dodge scheme detection and the tier checks below.
+		const path = unwrapHashlineHeaderPath(rawPath);
+		// Remote SSH writes open an outbound connection and run a remote shell —
+		// gate them like the exec-tier `ssh` tool, ahead of the handler-write
+		// logic. Substring match also covers selector-suffixed targets.
+		if (pathTargetsSsh(path)) return "exec";
+		if (!isInternalUrlPath(path)) return "write";
 		// Internal URLs are usually session-local artifacts (read tier), but a
-		// scheme whose handler exposes a `write` hook mutates handler-owned
-		// user data (e.g. vault:// notes, host-owned mcp:// URIs) and must take
-		// the write tier so always-ask mode actually prompts.
-		const match = /^([a-z][a-z0-9+.-]*):\/\//i.exec(rawPath.trim());
+		// scheme whose handler exposes a `write` hook mutates handler-owned user
+		// data (e.g. vault:// notes) and must take the write tier so always-ask
+		// mode actually prompts.
+		const match = /^([a-z][a-z0-9+.-]*):\/\//i.exec(path.trim());
 		const handler = match ? InternalUrlRouter.instance().getHandler(match[1]!.toLowerCase()) : undefined;
 		return handler?.write ? "write" : "read";
 	};
@@ -293,8 +299,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 	readonly parameters = writeSchema;
 	readonly strict = true;
 	readonly concurrency = "exclusive";
-	readonly loadMode = "discoverable";
-	readonly summary = "Write content to a file (creates or overwrites)";
+	readonly loadMode = "essential";
 
 	/** Stream matchers should see the real file content, not its JSON-escaped argument encoding. */
 	matcherDigest(args: unknown): string | undefined {
@@ -369,9 +374,10 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const finalPath = resolvedArchivePath.exists
 			? await fs.realpath(resolvedArchivePath.absolutePath).catch(() => resolvedArchivePath.absolutePath)
 			: resolvedArchivePath.absolutePath;
-		const lowerPath = finalPath.toLowerCase();
-		const isZip = lowerPath.endsWith(".zip");
-		const isGzip = lowerPath.endsWith(".tar.gz") || lowerPath.endsWith(".tgz");
+		// A realpath swap can land on a name without an archive extension; a
+		// whole-archive rewrite then defaults to an uncompressed tar, matching the
+		// previous `isZip`/`isGzip`/else fallthrough.
+		const format = archiveFormatFromPath(finalPath) ?? "tar";
 		// Rewrites are whole-archive: write to a temp file and rename so a
 		// crash/disk-full mid-write can't destroy the original archive.
 		const tmpPath = `${finalPath}.tmp-${process.pid}`;
@@ -381,66 +387,25 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			await fs.mkdir(parentDir, { recursive: true });
 		}
 
-		if (isZip) {
-			const zipEntries: Record<string, Uint8Array> = {};
-
-			if (resolvedArchivePath.exists) {
-				try {
-					const bytes = await Bun.file(resolvedArchivePath.absolutePath).bytes();
-					const { unzipSync } = await loadFflate();
-					const existing = unzipSync(new Uint8Array(bytes));
-					for (const [entryPath, data] of Object.entries(existing)) {
-						zipEntries[entryPath.replace(/\\/g, "/")] = data;
-					}
-				} catch (error) {
-					throw new ToolError(error instanceof Error ? error.message : String(error));
-				}
-			}
-
-			zipEntries[resolvedArchivePath.archiveSubPath] = new TextEncoder().encode(content);
-
+		const entries = new Map<string, ArchiveMemberContent>();
+		if (resolvedArchivePath.exists) {
 			try {
-				const { zipSync } = await loadFflate();
-				const zipBuffer = zipSync(zipEntries);
-				await Bun.write(tmpPath, zipBuffer);
-				await fs.rename(tmpPath, finalPath);
+				const existing = await readArchiveEntries({ bytes: await Bun.file(finalPath).bytes(), format });
+				for (const [entryPath, data] of existing) {
+					entries.set(entryPath, data);
+				}
 			} catch (error) {
-				await fs.rm(tmpPath, { force: true }).catch(() => {});
 				throw new ToolError(error instanceof Error ? error.message : String(error));
 			}
-		} else {
-			const archiveEntries: Record<string, string | File> = {};
-			if (resolvedArchivePath.exists) {
-				let archive: Bun.Archive;
-				try {
-					archive = new Bun.Archive(await Bun.file(resolvedArchivePath.absolutePath).bytes());
-				} catch (error) {
-					throw new ToolError(error instanceof Error ? error.message : String(error));
-				}
+		}
+		entries.set(resolvedArchivePath.archiveSubPath, content);
 
-				let files: Map<string, File>;
-				try {
-					files = await archive.files();
-				} catch (error) {
-					throw new ToolError(error instanceof Error ? error.message : String(error));
-				}
-
-				for (const [entryPath, file] of files) {
-					archiveEntries[entryPath.replace(/\\/g, "/")] = file;
-				}
-			}
-
-			archiveEntries[resolvedArchivePath.archiveSubPath] = content;
-
-			try {
-				// `Bun.Archive.write` never infers compression from the extension;
-				// request gzip explicitly so `.tar.gz`/`.tgz` stay compressed.
-				await Bun.Archive.write(tmpPath, archiveEntries, isGzip ? { compress: "gzip" } : undefined);
-				await fs.rename(tmpPath, finalPath);
-			} catch (error) {
-				await fs.rm(tmpPath, { force: true }).catch(() => {});
-				throw new ToolError(error instanceof Error ? error.message : String(error));
-			}
+		try {
+			await writeArchive(tmpPath, format, entries);
+			await fs.rename(tmpPath, finalPath);
+		} catch (error) {
+			await fs.rm(tmpPath, { force: true }).catch(() => {});
+			throw new ToolError(error instanceof Error ? error.message : String(error));
 		}
 
 		invalidateFsScanAfterWrite(resolvedArchivePath.absolutePath);
@@ -812,11 +777,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		};
 	}
 
-	#routeWriteThroughBridge(absolutePath: string, content: string): Promise<void> | undefined {
-		const bridge = this.session.getClientBridge?.();
-		if (!bridge?.capabilities.writeTextFile || !bridge.writeTextFile) return undefined;
-		return bridge.writeTextFile({ path: absolutePath, content });
-	}
 	async execute(
 		_toolCallId: string,
 		{ path: rawPath, content }: WriteParams,
@@ -832,7 +792,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		// (which fails on a leading `[`) and the bridge router would send a
 		// `[local://scratch.md#ABCD]` write to the editor instead of the
 		// session-local sandbox.
-		const path = unwrapHashlineHeaderPath(rawPath);
+		// Peel a read-tool selector (`:raw`, `:1-20`, …) so the write target matches
+		// what `read` resolves for the same URL; line-range/malformed selectors throw.
+		const path = peelWriteUrlSelector(unwrapHashlineHeaderPath(rawPath));
 		return untilAborted(signal, async () => {
 			// Strip hashline display prefixes ([PATH#HASH] + LINE:) if the model copied them from read output
 			const { text: cleanContent, stripped } = stripWriteContent(this.session, content);
@@ -923,17 +885,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			// Try ACP bridge first for editor-visible filesystem paths. Internal
 			// artifacts such as local:// plans are owned by OMP, not the editor.
-			const bridgePromise = shouldRouteWriteThroughBridge(this.session, path, absolutePath)
-				? this.#routeWriteThroughBridge(absolutePath, cleanContent)
-				: undefined;
-			if (bridgePromise !== undefined) {
-				try {
-					await bridgePromise;
-				} catch (error) {
-					throw new ToolError(error instanceof Error ? error.message : String(error));
-				}
-				invalidateFsScanAfterWrite(absolutePath);
-				this.session.bumpFileMutationVersion?.(absolutePath);
+			if (await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent)) {
 				const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
 				const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 				const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
@@ -1108,14 +1060,12 @@ export const writeToolRenderer = {
 		const lang = getLanguageFromPath(rawPath) ?? "text";
 		const langIcon = uiTheme.fg("muted", uiTheme.getLangIcon(lang));
 		const pathDisplay = filePath ? uiTheme.fg("accent", filePath) : uiTheme.fg("toolOutput", "…");
-		// Static pending icon, never the animated glyph: the header is the head
-		// row of the framed block, and native-scrollback commits are prefix-only
-		// — an animating head row would pin the commit boundary at the top and
-		// keep a tall expanded preview from scroll-appending mid-stream. The
-		// liveness cue rides the trailing "(streaming)" line instead.
+		// No status icon on the head row: it's the head of the framed block, and
+		// native-scrollback commits are prefix-only — an animated glyph would pin
+		// the commit boundary at the top, and the pending hourglass just adds
+		// noise. The liveness cue rides the trailing "(streaming)" line instead.
 		const header = renderStatusLine(
 			{
-				icon: "pending",
 				title: "Write",
 				description: `${langIcon} ${pathDisplay}`,
 			},

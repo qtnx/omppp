@@ -4,6 +4,7 @@
  * Handles `ompx stats` subcommand for viewing AI usage statistics.
  */
 
+import { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
 import { APP_NAME, formatDuration, formatNumber, formatPercent } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { createReviewFindingLessonGenerator } from "../stats/review-finding-lesson-generator";
@@ -33,7 +34,7 @@ function createSyncProgressReporter(): {
 			const counter = chalk.cyan(`[${event.current}/${event.total}]`);
 			const line = `${counter} ${pct}%  ${label}`;
 			const columns = stream.columns ?? 120;
-			const trimmed = truncateToColumns(line, columns - 1);
+			const trimmed = truncateToWidth(line, columns - 1);
 			stream.write(`\r${trimmed.padEnd(lastWidth)}`);
 			lastWidth = trimmed.length;
 		},
@@ -49,16 +50,6 @@ function shortenSessionFile(p: string): string {
 	const marker = "/sessions/";
 	const idx = p.indexOf(marker);
 	return idx >= 0 ? p.slice(idx + marker.length) : p;
-}
-
-function truncateToColumns(s: string, max: number): string {
-	if (max <= 0) return "";
-	const width = Bun.stringWidth(s, { countAnsiEscapeCodes: false });
-	if (width <= max) return s;
-	// Cheap right-trim with an ellipsis - we don't need ANSI-aware slicing
-	// because the colored prefix is short and the truncated tail is the
-	// dim filename, where dropping bytes is fine.
-	return `${s.slice(0, Math.max(0, max - 1))}\u2026`;
 }
 
 // =============================================================================

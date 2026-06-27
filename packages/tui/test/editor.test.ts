@@ -6,7 +6,6 @@ import { Editor } from "@oh-my-pi/pi-tui/components/editor";
 import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@oh-my-pi/pi-tui/keybindings";
 import { setKittyProtocolActive } from "@oh-my-pi/pi-tui/keys";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
-import { setDefaultTabWidth } from "@oh-my-pi/pi-utils";
 import { defaultEditorTheme } from "./test-themes";
 
 describe("Editor component", () => {
@@ -545,16 +544,10 @@ describe("Editor component", () => {
 			expect(text).toBe("Hällö Wörld! 😀 äöüÄÖÜß");
 		});
 
-		it("uses the configured tab width when loading text programmatically", () => {
+		it("expands tabs to the fixed display width when loading text programmatically", () => {
 			const editor = new Editor(defaultEditorTheme);
-
-			try {
-				setDefaultTabWidth(5);
-				editor.setText("foo\tbar");
-				expect(editor.getText()).toBe("foo     bar");
-			} finally {
-				setDefaultTabWidth(3);
-			}
+			editor.setText("foo\tbar");
+			expect(editor.getText()).toBe("foo   bar");
 		});
 
 		it("strips control characters from programmatically loaded text before render", () => {
@@ -759,6 +752,28 @@ describe("Editor component", () => {
 			expect(contentLine).not.toContain("\x1b[5m");
 			// Line should still be correct width
 			expect(visibleWidth(contentLine)).toBeLessThanOrEqual(width);
+		});
+
+		it("keeps the bordered editor inside `width` when the cursor lands past a wide trailing grapheme (#3431)", () => {
+			// Regression: typing a fullwidth char (e.g. CJK comma `，`, U+FF0C) at the end
+			// of the input used to push the bottom-right `─╯` 1–2 cells past the terminal
+			// edge, wrapping `╯` to its own row. The end-of-line cursor glyph + wide grapheme
+			// extends into the right padding zone; the right chrome must shrink by the exact
+			// overflow cell count.
+			for (const paddingX of [1, 2]) {
+				const theme = { ...defaultEditorTheme, editorPaddingX: paddingX };
+				const minContentWidth = 2 * (paddingX + 1) + 3; // chrome + "，" (2) + cursor (1)
+				for (let width = minContentWidth; width <= minContentWidth + 6; width++) {
+					const editor = new Editor(theme);
+					editor.focused = true;
+					for (const c of "asd，") editor.handleInput(c);
+					const lines = editor.render(width);
+					for (const line of lines) {
+						const stripped = line.replaceAll(CURSOR_MARKER, "");
+						expect(visibleWidth(stripped)).toBeLessThanOrEqual(width);
+					}
+				}
+			}
 		});
 
 		it("shows cursor at end before wrap and wraps on next char", () => {
@@ -1827,6 +1842,22 @@ describe("Editor component", () => {
 			// BEL (\x07) and NUL (\x00) must be removed; the newline must survive.
 			editor.handleInput("\x1b[200~a\x07b\x00c\ndef\x1b[201~");
 			expect(editor.getText()).toBe("abc\ndef");
+		});
+
+		it("decodes tmux xterm-format re-encoded control bytes in bracketed paste (kitty+tmux)", () => {
+			const editor = new Editor(defaultEditorTheme);
+			// tmux extended-keys-format=xterm (the default under kitty) re-encodes the
+			// newline (Ctrl+J) inside the paste as ESC[27;5;106~. It must land as a real
+			// newline, not leak the literal escape tail "[27;5;106~" into the buffer.
+			editor.handleInput("\x1b[200~line1\x1b[27;5;106~line2\x1b[201~");
+			expect(editor.getText()).toBe("line1\nline2");
+		});
+
+		it("decodes tmux csi-u-format re-encoded control bytes in bracketed paste", () => {
+			const editor = new Editor(defaultEditorTheme);
+			// tmux extended-keys-format=csi-u re-encodes the newline (Ctrl+J) as ESC[106;5u.
+			editor.handleInput("\x1b[200~line1\x1b[106;5uline2\x1b[201~");
+			expect(editor.getText()).toBe("line1\nline2");
 		});
 
 		it("undoes the last paste when a transient #undo trigger is executed", () => {

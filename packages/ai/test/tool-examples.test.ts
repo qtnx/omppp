@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { renderToolExamples } from "../src/dialect/examples";
 import type { InbandTool } from "../src/dialect/types";
 
@@ -28,31 +29,6 @@ describe("renderToolExamples", () => {
 		expect(rendered).toContain('<invoke name="find">');
 		expect(rendered).toContain('<parameter name="paths"');
 		expect(rendered).toContain("</examples>");
-	});
-
-	it("renders call example in pi format", () => {
-		const tool: InbandTool = {
-			name: "find",
-			description: "Find files.",
-			parameters: {
-				type: "object",
-				properties: {
-					paths: { type: "array", items: { type: "string" } },
-				},
-				required: ["paths"],
-			},
-			examples: [
-				{
-					caption: "Find files",
-					call: { paths: ["src/**/*.ts"] },
-				},
-			],
-		};
-
-		const rendered = renderToolExamples(tool, "pi");
-		expect(rendered).toContain("<call:find>");
-		expect(rendered).toContain("<paths>");
-		expect(rendered).toContain("src/**/*.ts");
 	});
 
 	it("renders call example in hermes format", () => {
@@ -155,10 +131,10 @@ describe("renderToolExamples", () => {
 			parameters: {
 				type: "object",
 				properties: {
-					_i: { type: "string" },
+					[INTENT_FIELD]: { type: "string" },
 					paths: { type: "array", items: { type: "string" } },
 				},
-				required: ["_i", "paths"],
+				required: [INTENT_FIELD, "paths"],
 			},
 			examples: [
 				{
@@ -168,11 +144,11 @@ describe("renderToolExamples", () => {
 			],
 		};
 
-		const rendered = renderToolExamples(tool, "anthropic", "_i");
-		expect(rendered).toContain('<parameter name="_i"');
+		const rendered = renderToolExamples(tool, "anthropic", INTENT_FIELD);
+		expect(rendered).toContain(`<parameter name="${INTENT_FIELD}"`);
 		expect(rendered).toContain("…");
 		// Placeholder leads the args, matching schema-injection order.
-		expect(rendered.indexOf('name="_i"')).toBeLessThan(rendered.indexOf('name="paths"'));
+		expect(rendered.indexOf(`name="${INTENT_FIELD}"`)).toBeLessThan(rendered.indexOf('name="paths"'));
 	});
 
 	it("omits the intent-field placeholder when intentField is undefined", () => {
@@ -187,6 +163,6 @@ describe("renderToolExamples", () => {
 			examples: [{ caption: "Find files", call: { paths: ["src/**/*.ts"] } }],
 		};
 
-		expect(renderToolExamples(tool, "anthropic")).not.toContain("_i");
+		expect(renderToolExamples(tool, "anthropic")).not.toContain(`<parameter name="${INTENT_FIELD}"`);
 	});
 });

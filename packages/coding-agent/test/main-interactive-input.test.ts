@@ -5,11 +5,13 @@ import * as path from "node:path";
 import { submitInteractiveInput } from "@oh-my-pi/pi-coding-agent/main";
 import type { SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { discoverTitleSystemPromptFile } from "@oh-my-pi/pi-coding-agent/system-prompt";
+import { applySystemPromptOverlay } from "@oh-my-pi/pi-coding-agent/system-prompt-overrides";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const cleanupDirs: string[] = [];
 
 afterEach(async () => {
-	await Promise.all(cleanupDirs.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true })));
+	await Promise.all(cleanupDirs.splice(0).map(dir => removeWithRetries(dir)));
 });
 
 function createInput(overrides: Partial<SubmittedUserInput> = {}): SubmittedUserInput {
@@ -32,6 +34,20 @@ describe("discoverTitleSystemPromptFile", () => {
 		await fs.writeFile(promptPath, "custom title prompt");
 
 		expect(discoverTitleSystemPromptFile(projectDir)).toBe(promptPath);
+	});
+});
+
+describe("applySystemPromptOverlay", () => {
+	it("routes SYSTEM.md content through the template-aware system prompt override", () => {
+		const defaultPrompt = ["default system prompt", "default append prompt"];
+
+		const prompt = applySystemPromptOverlay(defaultPrompt, {
+			systemPrompt: { path: "<test>", content: "project system prompt", hash: "" },
+			appendPrompt: { path: "<test>", content: "append prompt", hash: "" },
+			signature: "",
+		});
+
+		expect(prompt).toEqual(["project system prompt", "append prompt", "default append prompt"]);
 	});
 });
 

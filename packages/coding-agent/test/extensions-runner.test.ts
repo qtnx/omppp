@@ -5,7 +5,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { discoverAndLoadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import {
@@ -14,6 +14,7 @@ import {
 	testSetExtensionHandlerTimeoutMs,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
+import { Type } from "@oh-my-pi/pi-coding-agent/extensibility/typebox";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -1469,6 +1470,191 @@ describe("ExtensionRunner", () => {
 			delete globalState.__partialContextApprovalEvents;
 		});
 	});
+
+	describe("tool_call input", () => {
+		function createHashlineEditTool(): AgentTool {
+			return {
+				name: "edit",
+				label: "Edit",
+				description: "Test edit tool",
+				parameters: Type.Object({ input: Type.String() }),
+				strict: true,
+				execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+			};
+		}
+
+		it("exposes a single hashline edit path to extension gate handlers", async () => {
+			const eventsPath = path.join(tempDir.path(), "tool-call-events.jsonl");
+			const extCode = `
+				import * as fs from "node:fs";
+
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "edit") return;
+						fs.appendFileSync(
+							${JSON.stringify(eventsPath)},
+							JSON.stringify({ path: event.input.path, paths: event.input.paths }) + "\\n",
+						);
+						if (typeof event.input.path !== "string") {
+							return { block: true, reason: \`Blocked: \${event.input.path}\` };
+						}
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-path.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createHashlineEditTool(), runner);
+
+			const resultMessage = await wrapped.execute("tool-call-id", {
+				input: "¶plans/switch-case-array-syntax.md#ABC1\n27 27\n+new content",
+			});
+
+			expect(resultMessage.content).toEqual([{ type: "text", text: "ok" }]);
+			const events = fs
+				.readFileSync(eventsPath, "utf8")
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(events).toEqual([
+				{ path: "plans/switch-case-array-syntax.md", paths: ["plans/switch-case-array-syntax.md"] },
+			]);
+		});
+		it("keeps non-tag hash suffixes in hashline edit paths", async () => {
+			const eventsPath = path.join(tempDir.path(), "tool-call-non-tag-path-events.jsonl");
+			const extCode = `
+				import * as fs from "node:fs";
+
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "edit") return;
+						fs.appendFileSync(
+							${JSON.stringify(eventsPath)},
+							JSON.stringify({ path: event.input.path, paths: event.input.paths }) + "\\n",
+						);
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-non-tag-path.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createHashlineEditTool(), runner);
+
+			await wrapped.execute("tool-call-id", {
+				input: "¶plans/foo.md#notatag\n27 27\n+new content",
+			});
+
+			const events = fs
+				.readFileSync(eventsPath, "utf8")
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(events).toEqual([{ path: "plans/foo.md#notatag", paths: ["plans/foo.md#notatag"] }]);
+		});
+
+		it("ignores _path passthrough when the hashline input names a different target", async () => {
+			const eventsPath = path.join(tempDir.path(), "tool-call-spoof-path-events.jsonl");
+			const extCode = `
+				import * as fs from "node:fs";
+
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "edit") return;
+						fs.appendFileSync(
+							${JSON.stringify(eventsPath)},
+							JSON.stringify({ path: event.input.path, paths: event.input.paths }) + "\\n",
+						);
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-spoof-path.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createHashlineEditTool(), runner);
+
+			await wrapped.execute("tool-call-id", {
+				_path: "plans/allowed.md",
+				input: "¶src/secret.ts#ABC1\n27 27\n+evil content",
+			});
+
+			const events = fs
+				.readFileSync(eventsPath, "utf8")
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(events).toEqual([{ path: "src/secret.ts", paths: ["src/secret.ts"] }]);
+		});
+
+		it("leaves path unset and reports all targets for multi-file hashline edits", async () => {
+			const eventsPath = path.join(tempDir.path(), "tool-call-multi-path-events.jsonl");
+			const extCode = `
+				import * as fs from "node:fs";
+
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "edit") return;
+						fs.appendFileSync(
+							${JSON.stringify(eventsPath)},
+							JSON.stringify({ path: event.input.path ?? null, paths: event.input.paths }) + "\\n",
+						);
+						if (typeof event.input.path !== "string") {
+							return { block: true, reason: \`Blocked: \${event.input.path}\` };
+						}
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-multi-path.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createHashlineEditTool(), runner);
+
+			await expect(
+				wrapped.execute("tool-call-id", {
+					input: "¶plans/switch-case-array-syntax.md#ABC1\n27 27\n+new content\n¶packages/coding-agent/src/main.ts#DEF2\n1 1\n+changed",
+				}),
+			).rejects.toThrow("Blocked: undefined");
+
+			const events = fs
+				.readFileSync(eventsPath, "utf8")
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(events).toEqual([
+				{
+					path: null,
+					paths: ["plans/switch-case-array-syntax.md", "packages/coding-agent/src/main.ts"],
+				},
+			]);
+		});
+	});
 	describe("hasHandlers", () => {
 		it("returns true when handlers exist for event type", async () => {
 			const extCode = `
@@ -1489,6 +1675,54 @@ describe("ExtensionRunner", () => {
 
 			expect(runner.hasHandlers("tool_call")).toBe(true);
 			expect(runner.hasHandlers("agent_end")).toBe(false);
+		});
+	});
+
+	describe("zero-handler fast path", () => {
+		it("skips context allocation and handler machinery for an unsubscribed event type, but still fires when subscribed", async () => {
+			// The fast path in ExtensionRunner.emit is event-type agnostic; the hot
+			// streaming events (message_update / tool_execution_*) traverse the same
+			// path. `turn_start` stands in as a subscribed event with a trivial payload.
+			const extCode = `
+				export default function(pi) {
+					pi.on("turn_start", async () => {
+						throw new Error("turn_start handler ran");
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "turn-start-handler.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+
+			// createContext is the per-event allocation the fast path defers; spying on
+			// it (call-through preserved) proves the slow path is entered only when a
+			// handler exists for the emitted event type.
+			const createContextSpy = vi.spyOn(runner, "createContext");
+			const errors: Array<{ event: string; error: string }> = [];
+			runner.onError(err => {
+				errors.push({ event: err.event, error: err.error });
+			});
+
+			// No extension subscribes to `agent_start`: no context allocation, and the
+			// handler-timeout machinery is never entered.
+			await runner.emit({ type: "agent_start" });
+			expect(createContextSpy).not.toHaveBeenCalled();
+			expect(errors).toHaveLength(0);
+
+			// `turn_start` has a handler: context is allocated once and the handler runs
+			// (its throw surfaces via onError, proving #runHandlerWithTimeout executed).
+			await runner.emit({ type: "turn_start", turnIndex: 0, timestamp: Date.now() });
+			expect(createContextSpy).toHaveBeenCalledTimes(1);
+			expect(errors).toHaveLength(1);
+			expect(errors[0]?.event).toBe("turn_start");
+			expect(errors[0]?.error).toContain("turn_start handler ran");
 		});
 	});
 

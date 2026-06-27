@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, ImageContent, Message, UsageReport } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, Message, Usage, UsageReport } from "@oh-my-pi/pi-ai";
 import type { Component, Container, EditorTheme, Loader, Spacer, Text, TUI } from "@oh-my-pi/pi-tui";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
@@ -17,6 +17,7 @@ import type { CompactOptions } from "../extensibility/extensions/types";
 import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
 import type { AgentSession } from "../session/agent-session";
+import type { CompactMode } from "../session/compact-modes";
 import type { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
 import type { SessionManager } from "../session/session-manager";
@@ -136,6 +137,17 @@ export interface InteractiveModeContext {
 
 	// State
 	isInitialized: boolean;
+	/**
+	 * `true` once `renderInitialMessages` has rendered the session transcript
+	 * into `chatContainer` at least once.
+	 *
+	 * Extension chat-rebuilds (`ExtensionUiController.#applyCustomMessageDisplay`)
+	 * are gated on this: rebuilding before the initial render would plant a
+	 * session-derived component into the chat that `renderInitialMessages` then
+	 * both re-renders from session entries AND re-appends via
+	 * `preserveExistingChat`, duplicating the message (issue #1955).
+	 */
+	initialChatRendered: boolean;
 	isBashMode: boolean;
 	toolOutputExpanded: boolean;
 	todoExpanded: boolean;
@@ -148,8 +160,13 @@ export interface InteractiveModeContext {
 	loopLimit?: LoopRuntime;
 	planModePlanFilePath?: string;
 	hideThinkingBlock: boolean;
-	pendingImages: ImageContent[];
-	pendingImageLinks: (string | undefined)[];
+	/**
+	 * Effective thinking-block visibility: true when hidden by user setting OR
+	 * thinking level is "off". Read this in render paths instead of
+	 * {@link hideThinkingBlock} so blocks are auto-hidden when thinking is off.
+	 */
+	readonly effectiveHideThinkingBlock: boolean;
+	proseOnlyThinking: boolean;
 	compactionQueuedMessages: CompactionQueuedMessage[];
 	pendingTools: Map<string, ToolExecutionHandle>;
 	pendingBashComponents: BashExecutionComponent[];
@@ -159,6 +176,12 @@ export interface InteractiveModeContext {
 	isPythonMode: boolean;
 	streamingComponent: AssistantMessageComponent | undefined;
 	streamingMessage: AssistantMessage | undefined;
+	/**
+	 * Usage of the most recently rendered assistant turn, used to detect a
+	 * prompt-cache invalidation on the next turn (cache footprint collapse).
+	 * Reseeded by `renderSessionContext` on every rebuild/session switch.
+	 */
+	lastAssistantUsage: Usage | undefined;
 	loadingAnimation: Loader | undefined;
 	autoCompactionLoader: Loader | undefined;
 	retryLoader: Loader | undefined;
@@ -254,6 +277,13 @@ export interface InteractiveModeContext {
 	 * delivery error should leave the signature set untouched.
 	 */
 	withLocalSubmission<T>(text: string, fn: () => Promise<T>, options?: { imageCount?: number }): Promise<T>;
+	/** Clears bookkeeping for an optimistic local user message once the matching session event arrives. */
+	clearOptimisticUserMessage(): void;
+	/** Replaces the raw optimistic user render with the canonical message emitted by the session. */
+	replaceOptimisticUserMessage(
+		message: AgentMessage,
+		options?: { imageLinks?: readonly (string | undefined)[] },
+	): void;
 	isKnownSlashCommand(text: string): boolean;
 	addMessageToChat(
 		message: AgentMessage,
@@ -268,6 +298,8 @@ export interface InteractiveModeContext {
 	findLastAssistantMessage(): AssistantMessage | undefined;
 	extractAssistantText(message: AssistantMessage): string;
 	updateEditorTopBorder(): void;
+	/** Refresh the running-subagents status badge from the active local or collab registry. */
+	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
 	rebuildChatFromMessages(): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
@@ -297,10 +329,10 @@ export interface InteractiveModeContext {
 	handlePythonCommand(code: string, excludeFromContext?: boolean): Promise<void>;
 	handleMCPCommand(text: string): Promise<void>;
 	handleSSHCommand(text: string): Promise<void>;
-	handleCompactCommand(customInstructions?: string): Promise<CompactionOutcome>;
+	handleCompactCommand(customInstructions?: string, mode?: CompactMode): Promise<CompactionOutcome>;
 	handleHandoffCommand(customInstructions?: string): Promise<void>;
 	handleShakeCommand(mode: ShakeMode): Promise<void>;
-	handleMoveCommand(targetPath: string): Promise<void>;
+	handleMoveCommand(targetPath?: string): Promise<void>;
 	handleRenameCommand(title: string): Promise<void>;
 	handleMemoryCommand(text: string): Promise<void>;
 	handleLearningCommand(text: string): Promise<void>;
@@ -348,6 +380,8 @@ export interface InteractiveModeContext {
 	handleBtwEscape(): boolean;
 	handleBtwBranchKey(): Promise<boolean>;
 	canBranchBtw(): boolean;
+	canCopyBtw(): boolean;
+	handleBtwCopyKey(): Promise<boolean>;
 	handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void>;
 	handleOmfgCommand(complaint: string): Promise<void>;
 	hasActiveOmfg(): boolean;
@@ -362,7 +396,7 @@ export interface InteractiveModeContext {
 	handlePlanModeCommand(initialPrompt?: string): Promise<void>;
 	handleGoalModeCommand(rest?: string): Promise<void>;
 	handleGuidedGoalCommand(rest?: string): Promise<void>;
-	handleLoopCommand(args?: string): Promise<void>;
+	handleLoopCommand(args?: string): Promise<string | undefined>;
 	disableLoopMode(): void;
 	pauseLoop(): void;
 	handlePlanApproval(details: PlanApprovalDetails): Promise<void>;

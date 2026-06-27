@@ -290,6 +290,14 @@ it("edit, write, and ast_edit do not request ACP permission", async () => {
 	expect(astEditTool.executeCalls).toBe(1);
 });
 
+it("hashline internal-url moves to working tree require write approval", () => {
+	const editTool = new EditTool(makeToolSession(makeBridge({ outcome: "cancelled" })));
+
+	expect(editTool.approval({ input: "[local://PLAN.md#ABCD]\nINS.TAIL:\n+x" })).toBe("read");
+	expect(editTool.approval({ input: "[local://PLAN.md#ABCD]\nMV local://renamed-plan.md" })).toBe("read");
+	expect(editTool.approval({ input: "[local://PLAN.md#ABCD]\nMV docs/PLAN.md" })).toBe("write");
+});
+
 it("edit delete and move operations request ACP permission before executing", async () => {
 	const editTool = makeFakeTool("edit");
 	const requests: ClientBridgePermissionToolCall[] = [];
@@ -328,6 +336,36 @@ it("edit delete and move operations request ACP permission before executing", as
 		{ title: "Move /tmp/old.ts to /tmp/new.ts", locations: [{ path: "/tmp/old.ts" }, { path: "/tmp/new.ts" }] },
 	]);
 	expect(editTool.executeCalls).toBe(2);
+});
+
+it("hashline delete operations take precedence over earlier moves", async () => {
+	const editTool = makeFakeTool("edit");
+	const requests: ClientBridgePermissionToolCall[] = [];
+	const bridge: ClientBridge = {
+		capabilities: { requestPermission: true },
+		async requestPermission(toolCall, _options, _signal) {
+			requests.push(toolCall);
+			return { outcome: "selected", optionId: "allow_once", kind: "allow_once" };
+		},
+	};
+	session = await createSession([editTool], bridge);
+
+	await session.setActiveToolsByName(["edit"]);
+	const wrappedEdit = session.agent.state.tools.find(t => t.name === "edit");
+	expect(wrappedEdit).toBeDefined();
+
+	await wrappedEdit!.execute(
+		"call-hashline-delete-after-move",
+		{ input: "[/tmp/old.ts#ABCD]\nMV /tmp/new.ts\n[/tmp/gone.ts#BCDE]\nREM" },
+		undefined,
+		undefined as never,
+		undefined as never,
+	);
+
+	expect(requests.map(({ title, locations }) => ({ title, locations }))).toEqual([
+		{ title: "Delete /tmp/gone.ts", locations: [{ path: "/tmp/gone.ts" }] },
+	]);
+	expect(editTool.executeCalls).toBe(1);
 });
 
 it("edit delete operations take precedence over stale rename metadata", async () => {
@@ -784,4 +822,14 @@ it("read tool: requestPermission is never called for non-gated tools", async () 
 
 	expect(permissionSpy).toHaveBeenCalledTimes(0);
 	expect(readTool.executeCalls).toBe(1);
+});
+
+it("setActiveToolsByName normalizes legacy tool names", async () => {
+	const grepTool = makeFakeTool("grep");
+	const globTool = makeFakeTool("glob");
+	session = await createSession([grepTool, globTool]);
+
+	await session.setActiveToolsByName(["Search", "find", "grep"]);
+
+	expect(session.getActiveToolNames()).toEqual(["grep", "glob"]);
 });

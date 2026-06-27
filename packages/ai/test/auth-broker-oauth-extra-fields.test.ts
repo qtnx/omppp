@@ -2,16 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { AuthStorage, type OAuthCredential, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import {
 	AuthBrokerClient,
 	type AuthBrokerServerHandle,
-	AuthStorage,
-	type OAuthCredential,
-	REMOTE_REFRESH_SENTINEL,
 	RemoteAuthCredentialStore,
-	SqliteAuthCredentialStore,
 	startAuthBroker,
-} from "@oh-my-pi/pi-ai";
+} from "@oh-my-pi/pi-ai/auth-broker";
+import { removeWithRetries } from "../../utils/src/temp";
 
 // MCP OAuth credentials extend the base OAuthCredential with refresh material
 // (tokenUrl/clientId/clientSecret/resource) embedded so token refresh works for
@@ -71,7 +69,7 @@ describe("auth-broker preserves extra OAuth credential fields", () => {
 		await handle?.close();
 		serverStorage?.close();
 		serverStore?.close();
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetries(tempDir);
 	});
 
 	test("broker set -> get round-trips tokenUrl/clientId/clientSecret/resource", async () => {

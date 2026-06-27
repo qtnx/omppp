@@ -12,6 +12,7 @@ import {
 	formatExpandHint,
 	formatParseErrors,
 	formatScreenshot,
+	shortenPath,
 	truncateDiffByHunk,
 } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
 import { getKeybindings, setKeybindings, type KeybindingsManager as TuiKeybindingsManager } from "@oh-my-pi/pi-tui";
@@ -56,6 +57,7 @@ describe("formatScreenshot", () => {
 			wasResized: boolean;
 			buffer: Uint8Array;
 			mimeType: string;
+			decodeFailed: boolean;
 		}>,
 	): {
 		buffer: Uint8Array;
@@ -65,6 +67,7 @@ describe("formatScreenshot", () => {
 		width: number;
 		height: number;
 		wasResized: boolean;
+		decodeFailed?: boolean;
 		get data(): string;
 	} {
 		const buf = overrides?.buffer ?? new Uint8Array(2048);
@@ -76,6 +79,7 @@ describe("formatScreenshot", () => {
 			width: overrides?.width ?? 800,
 			height: overrides?.height ?? 600,
 			wasResized: overrides?.wasResized ?? false,
+			decodeFailed: overrides?.decodeFailed,
 			get data() {
 				return Buffer.from(buf).toString("base64");
 			},
@@ -101,7 +105,19 @@ describe("formatScreenshot", () => {
 		]);
 	});
 
+	it("uses forward slashes after a shortened Windows home", () => {
+		const home = String.raw`C:\Users\me`;
+		expect(shortenPath(String.raw`C:\Users\me\projects\demo`, home)).toBe("~/projects/demo");
+	});
+
+	it("does not shorten paths outside the home boundary", () => {
+		const home = String.raw`C:\Users\me`;
+		const sibling = String.raw`C:\Users\me2\projects\demo`;
+		expect(shortenPath(sibling, home)).toBe(sibling);
+	});
+
 	it("formats non-home path without tilde", () => {
+		const filePath = path.join(path.parse(os.homedir()).root, "omp-render-utils", "capture.png");
 		const resized = fakeResized({ mimeType: "image/webp", buffer: new Uint8Array(1024) });
 
 		expect(
@@ -109,12 +125,12 @@ describe("formatScreenshot", () => {
 				saveFullRes: true,
 				savedMimeType: "image/png",
 				savedByteLength: 2048,
-				dest: "/tmp/capture.png",
+				dest: filePath,
 				resized,
 			}),
 		).toEqual([
 			"Screenshot captured",
-			"Saved: image/png (2.00 KB) to /tmp/capture.png",
+			`Saved: image/png (2.00 KB) to ${filePath}`,
 			"Model: image/webp (1.00 KB, 800x600)",
 		]);
 	});
@@ -127,10 +143,24 @@ describe("formatScreenshot", () => {
 				saveFullRes: false,
 				savedMimeType: "image/webp",
 				savedByteLength: 3072,
-				dest: "/tmp/omp-sshots-123.png",
+				dest: path.join(os.tmpdir(), "omp-sshots-123.png"),
 				resized,
 			}),
 		).toEqual(["Screenshot captured", "Format: image/webp (3.00 KB)", "Dimensions: 800x600"]);
+	});
+
+	it("surfaces screenshots that could not be resized", () => {
+		const resized = fakeResized({ decodeFailed: true, mimeType: "image/png", buffer: new Uint8Array(4096) });
+
+		expect(
+			formatScreenshot({
+				saveFullRes: false,
+				savedMimeType: "image/png",
+				savedByteLength: 4096,
+				dest: path.join(os.tmpdir(), "omp-sshots-123.png"),
+				resized,
+			}),
+		).toContain("Resize: image decoder failed; using original image bytes");
 	});
 
 	it("appends dimension note when image was resized", () => {
@@ -146,7 +176,7 @@ describe("formatScreenshot", () => {
 			saveFullRes: false,
 			savedMimeType: "image/webp",
 			savedByteLength: 2048,
-			dest: "/tmp/shot.png",
+			dest: path.join(os.tmpdir(), "shot.png"),
 			resized,
 		});
 

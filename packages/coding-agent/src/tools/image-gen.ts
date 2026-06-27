@@ -1,6 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { type ApiKey, type FetchImpl, getEnvApiKey, type Model, ProviderHttpError, withAuth } from "@oh-my-pi/pi-ai";
+import { type ApiKey, type FetchImpl, getEnvApiKey, type Model, withAuth } from "@oh-my-pi/pi-ai";
+import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import {
 	CODEX_BASE_URL,
 	getCodexAccountId,
@@ -1572,19 +1573,15 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 };
 
 export async function getImageGenTools(
-	modelRegistry?: ModelRegistry,
-	activeModel?: Model,
+	_modelRegistry?: ModelRegistry,
+	_activeModel?: Model,
 ): Promise<Array<CustomTool<typeof imageGenSchema, ImageGenToolDetails>>> {
-	const apiKey = await findImageApiKey(modelRegistry, activeModel);
-	if (!apiKey) return [];
 	return [imageGenTool];
 }
 
 export async function getImageGenToolsWithRegistry(
-	modelRegistry: ModelRegistry,
-	activeModel?: Model,
+	_modelRegistry: ModelRegistry,
+	_activeModel?: Model,
 ): Promise<Array<CustomTool<typeof imageGenSchema, ImageGenToolDetails>>> {
-	const apiKey = await findImageApiKey(modelRegistry, activeModel);
-	if (!apiKey) return [];
 	return [imageGenTool];
 }

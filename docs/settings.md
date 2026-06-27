@@ -198,7 +198,7 @@ tools:
     bash: prompt
 
 compaction:
-  strategy: context-full
+  strategy: snapcompact
   thresholdPercent: 80
 
 theme:
@@ -308,7 +308,7 @@ enabledModels:
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `modelRoles` | record | `{}` | Map of role name -> model id. Built-in roles: `default`, `smol`, `slow`, `vision`, `plan`, `designer`, `commit`, `title`, `task`, `advisor`. Per-role env/flags exist only for `--model`/`--smol`/`--slow`/`--plan`; configure the advisor with `modelRoles.advisor`. |
+| `modelRoles` | record | `{}` | Map of role name -> model id. Built-in roles: `default`, `smol`, `slow`, `vision`, `plan`, `designer`, `commit`, `tiny`, `task`, `advisor`. The `tiny` role overrides the online model for lightweight background tasks (titles, memory, auto-thinking, unexpected-stop), else `pi/smol`. Per-role env/flags exist only for `--model`/`--smol`/`--slow`/`--plan`; configure the advisor with `modelRoles.advisor`. |
 | `modelTags` | record | `{}` | Custom role/tag metadata; can introduce additional roles. |
 | `modelProviderOrder` | array | `[]` | Preferred provider order when a model id is ambiguous. |
 | `cycleOrder` | array | `["smol","default","slow"]` | Roles cycled by the model switcher. |
@@ -329,7 +329,7 @@ See [Advisor and WATCHDOG.md](./advisor-watchdog.md) for runtime behavior, `WATC
 | `advisor.enabled` | boolean | `false` | Enable the advisor runtime when `modelRoles.advisor` resolves to an available model. |
 | `advisor.subagents` | boolean | `false` | Also enable advisor runtimes for spawned task/eval subagents. |
 | `advisor.syncBacklog` | enum | `off` | Bounded advisor catch-up delay: `off`, `1`, `3`, or `5`. The primary waits up to 30 seconds only while advisor backlog is at or above the threshold. |
-| `advisor.immuneTurns` | number | `1` | After a `concern`/`blocker` interrupts, route further concerns/blockers as non-interrupting asides for this many completed primary turns. |
+| `advisor.immuneTurns` | number | `3` | After a `concern`/`blocker` interrupts, route further concerns/blockers as non-interrupting asides for this many completed primary turns. |
 
 ### Thinking
 
@@ -418,7 +418,7 @@ tools:
 | `tools.artifactTailBytes` | number | `20` | KB of tail kept inline on spill. |
 | `tools.artifactTailLines` | number | `500` | Max tail lines kept inline on spill. |
 
-Individual built-in tools are toggled by their own keys, e.g. `bash.enabled`, `eval.py`, `eval.js`, `find.enabled`, `search.enabled`, `fetch.enabled`, `browser.enabled`, `astEdit.enabled`, `astGrep.enabled`, `web_search.enabled`, `inspect_image.enabled`.
+Individual built-in tools are toggled by their own keys, e.g. `bash.enabled`, `eval.py`, `eval.js`, `glob.enabled`, `grep.enabled`, `fetch.enabled`, `browser.enabled`, `astEdit.enabled`, `astGrep.enabled`, `web_search.enabled`, `inspect_image.enabled`.
 
 ### Shell, eval, and LSP
 
@@ -492,7 +492,6 @@ read:
 | `read.summarize.enabled` | boolean | `true` | Structural summaries for code reads. |
 | `read.summarize.prose` | boolean | `false` | Summarize prose files too. |
 | `read.toolResultPreview` | boolean | `false` | Inline preview of tool results. |
-| `readHashLines` | boolean | `true` | Show hashline tags in read output. |
 | `readLineNumbers` | boolean | `false` | Show plain line numbers. |
 
 ### Context, compaction, and memory
@@ -503,7 +502,8 @@ contextPromotion:
 
 compaction:
   enabled: true
-  strategy: context-full     # context-full, handoff, shake, snapcompact, off
+  strategy: snapcompact     # context-full, handoff, shake, snapcompact, off
+  midTurnEnabled: true      # check thresholds between tool-loop provider requests
   thresholdPercent: -1       # -1 = default reserve-based behavior
   thresholdTokens: -1        # fixed token limit when > 0
   remoteEnabled: true
@@ -516,7 +516,8 @@ memory:
 |---|---|---|---|
 | `contextPromotion.enabled` | boolean | `true` | Promote relevant earlier context. |
 | `compaction.enabled` | boolean | `true` | Automatic conversation compaction. |
-| `compaction.strategy` | enum | `context-full` | `context-full`, `handoff`, `shake`, `snapcompact`, `off`. |
+| `compaction.midTurnEnabled` | boolean | `true` | Check thresholds at safe mid-turn tool-loop boundaries before the next provider request. |
+| `compaction.strategy` | enum | `snapcompact` | `context-full`, `handoff`, `shake`, `snapcompact`, `off`. |
 | `compaction.thresholdPercent` | number | `-1` | Percent-of-context trigger; `-1` = reserve-based default. |
 | `compaction.thresholdTokens` | number | `-1` | Fixed token trigger when `> 0`. |
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for the next turn. |

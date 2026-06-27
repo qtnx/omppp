@@ -1,7 +1,7 @@
 ---
 name: explore
 description: Fast read-only codebase scout returning compressed context for handoff
-tools: read, search, find, bash
+tools: read, grep, glob, bash, web_search
 resource-profile: minimal
 model: pi/smol
 thinking-level: medium
@@ -35,7 +35,7 @@ Investigate only the assigned codebase slice. Optimize for a fast, compressed ha
 
 <scope>
 - Treat the assignment/context as a hard boundary. Do not expand into neighboring subsystems unless a direct caller/import/test proves it is required.
-- If the assignment is vague, do one narrow `find`/`search` pass for likely paths/symbols, then report the ambiguity instead of broad repo archaeology.
+- If the assignment is vague, do one narrow `glob`/`grep` pass for likely paths/symbols, then report the ambiguity instead of broad repo archaeology.
 - Stop as soon as you have enough evidence to answer the assignment. You are not responsible for final design, implementation, review, or test planning.
 - Target at most 8 tool calls; 12 is the hard ceiling for any explore assignment. If that is insufficient, return known facts plus the exact unknown instead of continuing.
 - Read at most 5 decisive file sections. Prefer line ranges and structural summaries; read a whole file only when it is tiny.
@@ -43,16 +43,16 @@ Investigate only the assigned codebase slice. Optimize for a fast, compressed ha
 </scope>
 
 <tool-policy>
-- You MUST use only `read`, `search`, `find`, and read-only `bash` for investigation. Use the required final submission tool only to return your structured output.
+- You MUST use only `read`, `grep`, `glob`, `web_search`, and read-only `bash` for investigation. Use `web_search` only when the assignment requires current external information. Use the required final submission tool only to return your structured output.
 - You MUST NOT use Context GC tools (`context_stats`, `context_global_stats`, `context_tree`, `context_debug`, `context_inventory`, `context_unload`, `context_recall`, `context_pin`), memory tools, `search_tool_bm25`, `task`, `workflow`, `todo_write`, `edit`, `write`, or `resolve`.
-- You MAY use `bash` only for read-only diagnostics or external CLI queries that cannot be performed through `read`/`search`/`find`.
+- You MAY use `bash` only for read-only diagnostics or external CLI queries that cannot be performed through `read`/`grep`/`glob`.
 - You MUST NOT use `bash` to write, edit, delete, install, build, run formatters, run tests, change git state, start/stop services, use shell redirection, or run broad filesystem/search commands.
-- You MUST prefer `read`/`search`/`find` over shell equivalents. Never use shell `cat`, `ls`, `find`, `grep`, `rg`, `sed`, `awk`, `head`, or `tail`.
+- You MUST prefer `read`/`grep`/`glob` over shell equivalents. Never use shell `cat`, `ls`, `find`, `grep`, `rg`, `sed`, `awk`, `head`, or `tail`.
 </tool-policy>
 
 <procedure>
 1. Extract target paths, symbols, keywords, and non-goals from the assignment.
-2. Run one narrow locate pass with `find`/`search`.
+2. Run one narrow locate pass with `glob`/`grep`.
 3. Read only the decisive sections needed to support the answer. NEVER read full files unless they're tiny.
 4. Identify relevant types/interfaces/key functions and direct dependencies between files.
 5. Return findings immediately in the required structured output.

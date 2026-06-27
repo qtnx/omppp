@@ -20,7 +20,7 @@ import type { ClientBridgeTerminalExitStatus, ClientBridgeTerminalOutput } from 
 import { DEFAULT_MAX_BYTES, enforceInlineByteCap, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import { isMacOSSandboxActive } from "../task/omp-command";
 import { renderStatusLine } from "../tui";
-import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
+import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
 import { getSixelLineMask } from "../utils/sixel";
 import { resolveWorkspaceRootReference } from "../workspace-roots";
 import type { ToolSession } from ".";
@@ -420,8 +420,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			autoBackgroundThresholdSeconds: Math.max(0, Math.floor(this.#autoBackgroundThresholdMs / 1000)),
 			hasAstGrep: this.session.settings.get("astGrep.enabled"),
 			hasAstEdit: this.session.settings.get("astEdit.enabled"),
-			hasSearch: this.session.settings.get("search.enabled"),
-			hasFind: this.session.settings.get("find.enabled"),
+			hasGrep: this.session.settings.get("grep.enabled"),
+			hasGlob: this.session.settings.get("glob.enabled"),
 		});
 	}
 
@@ -512,7 +512,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// head-retention spill, minimizer miss) may emit more than
 		// ~DEFAULT_MAX_BYTES inline. No-op for already-bounded output.
 		const cappedOutputText = await enforceInlineByteCap(outputText, {
-			label: "bash output",
 			saveArtifact: full => saveBashOriginalArtifact(this.session, full),
 		});
 
@@ -1196,9 +1195,9 @@ function getPartialJson<TArgs>(args: TArgs | undefined): string | undefined {
 }
 
 export function getBashEnvForDisplay(args: BashRenderArgs): Record<string, string> | undefined {
-	// During streaming, partial-json parsing often does not surface env values until the object closes.
-	// Recover them from the raw JSON buffer so the pending bash preview can show `NAME="..." cmd` immediately,
-	// instead of rendering only the command and making the env assignment appear at the very end.
+	// The parsed args don't always mirror the exact current stream prefix, so recover
+	// env from the raw JSON buffer to surface `NAME="..." cmd` in the preview as it
+	// streams rather than only once the args object finishes.
 	const partialEnv = extractPartialBashEnv(args.__partialJson);
 	if (partialEnv && args.env) return { ...partialEnv, ...args.env };
 	return args.env ?? partialEnv;
@@ -1398,7 +1397,14 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								.map(line => uiTheme.fg("toolOutput", replaceTabs(line)))
 								.join("\n");
 							const textContent = styledOutput;
-							const result = truncateToVisualLines(textContent, previewLines, width);
+							// Cap the collapsed/streaming output to a viewport-sized tail and
+							// measure it at the box's INNER width. Otherwise a growing tail
+							// window scrolls its (mutating) rows above the live-region window
+							// and the engine re-commits a fresh snapshot every frame —
+							// spraying duplicate "… ctrl+o to expand" banners into native
+							// scrollback (the box never overflows the viewport now).
+							const previewBudget = Math.min(previewLines, previewWindow);
+							const result = truncateToVisualLines(textContent, previewBudget, outputBlockContentWidth(width));
 							if (result.skippedCount > 0) {
 								outputLines.push(
 									uiTheme.fg(

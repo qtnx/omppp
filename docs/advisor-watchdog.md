@@ -8,7 +8,9 @@ The advisor is not a second executor. It cannot edit files, run commands, approv
 
 - [`src/advisor/runtime.ts`](../packages/coding-agent/src/advisor/runtime.ts)
 - [`src/advisor/advise-tool.ts`](../packages/coding-agent/src/advisor/advise-tool.ts)
+- [`src/advisor/emission-guard.ts`](../packages/coding-agent/src/advisor/emission-guard.ts)
 - [`src/advisor/watchdog.ts`](../packages/coding-agent/src/advisor/watchdog.ts)
+- [`src/advisor/transcript-recorder.ts`](../packages/coding-agent/src/advisor/transcript-recorder.ts)
 - [`src/prompts/advisor/system.md`](../packages/coding-agent/src/prompts/advisor/system.md)
 - [`src/prompts/advisor/advise-tool.md`](../packages/coding-agent/src/prompts/advisor/advise-tool.md)
 - [`src/session/agent-session.ts`](../packages/coding-agent/src/session/agent-session.ts)
@@ -51,7 +53,9 @@ If `advisor.enabled` is true but no `modelRoles.advisor` value resolves to an av
 
 ## What the advisor sees
 
-At each primary turn end, `AdvisorRuntime` receives only the new transcript delta since the last advisor update. Deltas are rendered with `formatSessionHistoryMarkdown(..., { includeThinking: true, includeToolIntent: true, watchedRoles: true })`, so the advisor can review assistant reasoning as well as user-visible text, tool calls, and tool results.
+At each primary turn end, `AdvisorRuntime` receives only the new transcript delta since the last advisor update. Deltas are rendered with `formatSessionHistoryMarkdown(..., { includeThinking: true, includeToolIntent: true, watchedRoles: true, expandPrimaryContext: true })`, so the advisor can review assistant reasoning as well as user-visible text, tool calls, and tool results.
+
+Most hidden `custom` messages collapse to a one-line summary in the delta. The exception is the primary agent's injected constraint context — the types in `PRIMARY_CONTEXT_CUSTOM_TYPES` (`plan-mode-context`, `plan-mode-reference`). `expandPrimaryContext` renders these verbatim inside a `<primary-context kind="…">` wrapper (XML-escaped, so plan/objective text cannot break out or read as advisor instructions). Without this the advisor only saw a 120-char truncation of the plan-mode rules — which cut off mid-sentence at `NEVER create, edit, or delete files — excep…`, hiding the "except the single plan file" carve-out and producing false blockers against the agent writing its own plan file. Because these prompts are re-injected verbatim every primary turn, `AdvisorRuntime` dedupes them: a byte-identical re-injection collapses to a `(unchanged — still in effect)` marker, and the full body re-expands whenever the content changes or the advisor re-primes. `goal-mode-context` is deliberately excluded — its live budget counters change every turn, so it can neither dedupe nor expand cheaply.
 
 Advisor messages already injected into the primary transcript are filtered out before the next delta is rendered. This prevents the advisor from recursively reviewing its own advice.
 
@@ -95,7 +99,20 @@ note text
 
 When you deliberately interrupt the agent (Esc, or a cancel from collab, ACP, RPC, the SDK, or an extension), the advisor stops auto-resuming it. An interrupting `concern`/`blocker` raised while the run is stopped is recorded as a visible advisor card instead of restarting the turn, and a concern already in flight when you interrupt is preserved the same way rather than driving a surprise resume. The advice re-enters context the next time you resume — a new message, the `.`/`c` continue shortcut, or a steer/follow-up. A normal yield is unaffected: the advisor can still steer and resume a run the agent ended on its own.
 
-`advisor.immuneTurns` limits interruption frequency. After the advisor successfully delivers a `concern` or `blocker` through the steering channel, later concerns/blockers are routed as non-interrupting asides until the configured number of primary turns has completed. The default is `1`. `nit` notes are unchanged, and advice raised while user-interrupt auto-resume suppression is active is still preserved instead of restarting a stopped run.
+`advisor.immuneTurns` limits interruption frequency. After the advisor successfully delivers a `concern` or `blocker` through the steering channel, later concerns/blockers are routed as non-interrupting asides until the configured number of primary turns has completed. The default is `3`. `nit` notes are unchanged, and advice raised while user-interrupt auto-resume suppression is active is still preserved instead of restarting a stopped run.
+
+### Emission guard
+
+`AdvisorEmissionGuard` (in `src/advisor/emission-guard.ts`) sits on the `enqueueAdvice` boundary in `AgentSession` and enforces — in code — the advisor system prompt's "at most one `advise` per update" and "NEVER send the same advice twice" rules. Each call to the advisor's `advise` tool runs through the guard before it routes to the YieldQueue / steer channel:
+
+1. **Normalization.** Lowercase, NFKC, collapse every run of non-alphanumeric characters to a single space, trim. `"Stop."`, `"*Stop*"`, and `"  stop  "` all key to `stop`.
+2. **Content-free phrase filter.** A small allowlist of normalized phrases the advisor occasionally emits but that carry no concrete reason — `stop`, `done`, `complete`, `no issue continue`, `lgtm`, `nothing to add`, `no further input`, and similar — is suppressed silently. Silence is the correct expression of "no concerns".
+3. **Exact-text dedupe.** Any normalized note already accepted in this session is dropped. The dedupe history is bounded by a FIFO ring (default 4096 entries).
+4. **Per-update rate limit.** At most one note per advisor model `prompt()` cycle is accepted; the runtime calls `host.beginAdvisorUpdate?.()` before each cycle to reset the gate. Suppressed calls never consume the budget — a noise call doesn't displace a real concern that follows in the same update.
+
+Suppression is invisible to the advisor model: `AdviseTool` still returns `Recorded.` for a dropped call. Surfacing "suppressed" back into advisor context risks the model rephrasing the same useless note to bypass the dedupe.
+
+The guard's full state — dedupe history and per-update gate — clears on every advisor reset (compaction, session switch, `/new`), so a re-primed reviewer can re-raise issues it already raised against the rewritten transcript.
 
 ## Bounded catch-up with `advisor.syncBacklog`
 
@@ -203,4 +220,22 @@ The advisor has its own append-only context. Before each advisor prompt, `AgentS
 2. if promotion cannot fit enough context, compact the advisor's own message history
 3. if compaction has no candidates or still cannot fit, re-prime from the current bounded primary transcript
 
-The advisor transcript is in-memory for the session. It is retained while the session runs so `/advisor dump` can inspect it, but advisor state is not a replacement for the primary persisted transcript.
+The advisor's live context is in-memory and append-only; it is retained while the session runs so `/advisor dump` can inspect it, and is independently promoted/compacted/re-primed (above). It is not a replacement for the primary persisted transcript.
+
+## Transcript persistence and observability
+
+The advisor is a passive reviewer with its own model usage, so — like a task subagent — every finalized advisor turn is appended to a JSONL inside the owning session's artifacts dir:
+
+- main session: `<session>/__advisor.jsonl`
+- subagent advisor (`advisor.subagents: true`): `<session>/<SubId>/__advisor.jsonl`
+
+The path is derived from the session file (not the artifacts dir, which subagents share with their parent), so each advisor writes a distinct file. The reserved `__advisor` stem cannot collide with a task subagent's `<id>.jsonl` (task id allocation reserves it).
+
+Why a file:
+
+- **Usage attribution.** `omp stats` scans each session folder recursively, so advisor assistant turns (with their usage/cost) are attributed to the same project/session like any other subagent. Advisor "session update" prompts are persisted as `synthetic`, agent-attributed user messages so they never inflate user-message metrics.
+- **Observability.** The Agent Hub discovers `__advisor.jsonl` on open and shows it as a read-only `advisor`-kind transcript under its owning session.
+
+The file follows session switches: on `/new`, resume/switch, and branch the recorder reopens at the new session's path on the next advisor turn; before a `/drop` deletes the old artifacts dir the recorder feed is detached and drained so a queued write cannot recreate the deleted file. The on-disk log is append-only and independent of the in-memory context — re-primes and compaction never truncate it.
+
+The advisor is never a peer. The `advisor`-kind registry ref is excluded from every agent-facing surface — the `irc` peer roster and broadcast targets, the subagent peer prompt, and the `history://` index/lookup/completions — and cannot be messaged (`irc send` and collab chat refuse it) or revived/killed from the Agent Hub or collab. It is observability only.

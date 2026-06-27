@@ -21,18 +21,30 @@ const context: Context = {
 
 function createSseResponse(): Response {
 	return new Response(
-		`data: ${JSON.stringify({
-			type: "response.completed",
-			response: {
-				status: "completed",
-				usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2, input_tokens_details: { cached_tokens: 0 } },
-			},
-		})}\n\n`,
+		`data: ${JSON.stringify({ type: "response.content_part.added", part: { type: "output_text", text: "" } })}\n\n` +
+			`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\n` +
+			`data: ${JSON.stringify({
+				type: "response.completed",
+				response: {
+					status: "completed",
+					usage: {
+						input_tokens: 1,
+						output_tokens: 1,
+						total_tokens: 2,
+						input_tokens_details: { cached_tokens: 0 },
+					},
+				},
+			})}\n\n`,
 		{ status: 200, headers: { "content-type": "text/event-stream" } },
 	);
 }
 function createChatDoneResponse(): Response {
-	return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+	return new Response(
+		`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "ok" }, finish_reason: null }] })}\n\n` +
+			`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n` +
+			`data: [DONE]\n\n`,
+		{ status: 200, headers: { "content-type": "text/event-stream" } },
+	);
 }
 
 function buildOpenRouterModel(
@@ -203,6 +215,7 @@ describe("OpenRouter pseudo API dual-surface request parity", () => {
 			session_id: "workflow-123",
 			provider: routing,
 			include: ["reasoning.encrypted_content"],
+			cache_control: { type: "ephemeral" },
 		});
 		expect(chatBody).not.toHaveProperty("max_tokens");
 		expect(chatBody).not.toHaveProperty("max_completion_tokens");
@@ -333,17 +346,13 @@ describe("OpenRouter Responses request shape", () => {
 		expect(headers.get("X-OpenRouter-Cache-TTL")).toBe("7");
 	});
 
-	it("replays native Responses history after a pseudo OpenRouter turn", async () => {
+	it("omits native reasoning history for OpenRouter Anthropic turns", async () => {
 		const nativeItem = {
 			type: "reasoning",
 			id: "rs_1",
 			encrypted_content: "encrypted-reasoning",
 			summary: [],
-		};
-		const replayItem = {
-			type: nativeItem.type,
-			encrypted_content: nativeItem.encrypted_content,
-			summary: nativeItem.summary,
+			format: "google-gemini-v1",
 		};
 		const firstResponse = new Response(
 			`${[
@@ -403,10 +412,7 @@ describe("OpenRouter Responses request shape", () => {
 			if (event.type === "error") throw event.error;
 		}
 
-		expect(bodies[1]?.input).toEqual([
-			replayItem,
-			{ role: "user", content: [{ type: "input_text", text: "continue" }] },
-		]);
+		expect(bodies[1]?.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "continue" }] }]);
 	});
 });
 

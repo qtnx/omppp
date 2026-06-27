@@ -65,6 +65,7 @@ function makeMessage(timestamp: number, entryId: string, model = "gpt-5.4", prov
 				total: 0,
 			},
 		},
+		agentType: "main",
 	};
 }
 
@@ -129,6 +130,15 @@ describe("getDashboardStats time range", () => {
 				api: "openai-codex-responses",
 			},
 			{
+				sessionFile: "/tmp/fork.jsonl",
+				entryId: "reminder-a-in-range",
+				folder: "/tmp/project",
+				timestamp: now,
+				model: "gpt-5.4",
+				provider: "openai-codex",
+				api: "openai-codex-responses",
+			},
+			{
 				sessionFile: "/tmp/session.jsonl",
 				entryId: "reminder-a-out-of-range",
 				folder: "/tmp/project",
@@ -167,6 +177,18 @@ describe("getDashboardStats time range", () => {
 				provider: "openai-codex",
 				api: "openai-codex-responses",
 				handsOnCount: 7,
+				taskCount: 0,
+				threshold: 6,
+			},
+			{
+				sessionFile: "/tmp/fork.jsonl",
+				entryId: "delegation-a-in-range",
+				folder: "/tmp/project",
+				timestamp: now,
+				model: "gpt-5.4",
+				provider: "openai-codex",
+				api: "openai-codex-responses",
+				handsOnCount: 9,
 				taskCount: 0,
 				threshold: 6,
 			},

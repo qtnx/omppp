@@ -3,26 +3,54 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type * as MnemopiNs from "@oh-my-pi/pi-mnemopi";
 import type { Mnemopi, RecallResult } from "@oh-my-pi/pi-mnemopi";
 import type * as MnemopiCoreNs from "@oh-my-pi/pi-mnemopi/core";
+import type { LocalModelInitializer } from "@oh-my-pi/pi-mnemopi/core";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
 	composeRecallQuery,
 	formatCurrentTime,
 	prepareRetentionTranscript,
+	prepareUserRetentionTranscript,
 	truncateRecallQuery,
 } from "../hindsight/content";
 import { extractMessages } from "../hindsight/transcript";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import type { MnemopiBackendConfig, MnemopiScoping } from "./config";
+import { mnemopiEmbedClient } from "./embed-client";
 
 // The mnemopi package pulls the embeddings stack; keep it off the CLI startup
 // module graph by loading it lazily at the async boundaries that need it.
 let mnemopiMod: typeof MnemopiNs | undefined;
 let mnemopiCoreMod: typeof MnemopiCoreNs | undefined;
 
-/** Lazily load `@oh-my-pi/pi-mnemopi` (memoized). */
+// `setLocalModelInitializer` writes a single module-level slot shared by
+// both the root and `/core` re-exports, so install at most once across both
+// loaders. Either entry point is enough to wire up the override.
+let localModelInitializerInstalled = false;
+
+function installLocalModelInitializer(setInitializer: (initializer: LocalModelInitializer) => void): void {
+	if (localModelInitializerInstalled) return;
+	localModelInitializerInstalled = true;
+	setInitializer(({ model, cacheDir }) =>
+		mnemopiEmbedClient.initialize(model, cacheDir).then(handle => {
+			if (handle) return handle;
+			throw new Error("mnemopi embed subprocess unavailable");
+		}),
+	);
+}
+
+/**
+ * Lazily load `@oh-my-pi/pi-mnemopi` (memoized) and route fastembed loads
+ * through the dedicated embeddings subprocess. The override is installed once
+ * — before any consumer gets the chance to call `embed()` — so
+ * `onnxruntime-node`'s NAPI constructor + finalizer never run inside the
+ * agent's address space (issue #3031). Test seams that swap the initializer
+ * with `setLocalModelInitializerForTests` still win because both go through
+ * the same module-level slot.
+ */
 export async function loadMnemopi(): Promise<typeof MnemopiNs> {
 	if (!mnemopiMod) {
 		mnemopiMod = await import("@oh-my-pi/pi-mnemopi");
+		installLocalModelInitializer(mnemopiMod.setLocalModelInitializer);
 	}
 	return mnemopiMod;
 }
@@ -31,6 +59,7 @@ export async function loadMnemopi(): Promise<typeof MnemopiNs> {
 export async function loadMnemopiCore(): Promise<typeof MnemopiCoreNs> {
 	if (!mnemopiCoreMod) {
 		mnemopiCoreMod = await import("@oh-my-pi/pi-mnemopi/core");
+		installLocalModelInitializer(mnemopiCoreMod.setLocalModelInitializer);
 	}
 	return mnemopiCoreMod;
 }
@@ -324,6 +353,7 @@ export class MnemopiSessionState {
 	async retainMessages(messages: Array<{ role: string; content: string }>, sourceId: string): Promise<void> {
 		const { transcript, messageCount } = prepareRetentionTranscript(messages, true);
 		if (!transcript) return;
+		const { transcript: extractText } = prepareUserRetentionTranscript(messages);
 		this.rememberInScope(transcript, {
 			source: "coding-agent-transcript",
 			importance: 0.65,
@@ -334,8 +364,9 @@ export class MnemopiSessionState {
 				cwd: this.session.sessionManager.getCwd(),
 			},
 			scope: "bank",
-			extract: true,
-			extractEntities: true,
+			extract: extractText !== null,
+			extractEntities: extractText !== null,
+			extractText,
 			veracity: "unknown",
 			memoryType: "episode",
 		});
@@ -422,7 +453,8 @@ export class MnemopiSessionState {
 // shared bank, then merging recall results while keeping writes project-local.
 function createScopedResources(config: MnemopiBackendConfig): MnemopiScopedResources {
 	// Env vars (MNEMOPI_POLYPHONIC_RECALL / MNEMOPI_ENHANCED_RECALL) still override
-	// these config-driven defaults inside the core gates.
+	// these config-driven defaults inside the core gates. Proactive linking is
+	// per-memory instance below so concurrent sessions cannot clobber each other.
 	requireMnemopi().configureRecallFeatures({
 		polyphonicRecall: config.polyphonicRecall,
 		enhancedRecall: config.enhancedRecall,
@@ -548,6 +580,7 @@ function createMemory(config: MnemopiBackendConfig, bank: string): Mnemopi {
 		authorType: "agent",
 		channelId: bank,
 		...providerOptions,
+		proactiveLinking: config.proactiveLinking,
 	} as ConstructorParameters<typeof Mnemopi>[0]);
 }
 

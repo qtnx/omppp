@@ -6,6 +6,7 @@ import { adaptSchemaForStrict, toolWireSchema } from "@oh-my-pi/pi-ai/utils/sche
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-queue";
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 type InvokedToolResult = {
 	content: Array<{ type: string; text?: string }>;
@@ -85,7 +86,7 @@ describe("ast_edit tool schema", () => {
 			expect(addedLine).toMatch(/^\+\d+:/);
 			expect(removedLine?.split(":", 1)[0].length).toBe(addedLine?.split(":", 1)[0].length);
 		} finally {
-			await fs.rm(tempDir, { recursive: true, force: true });
+			await removeWithRetries(tempDir);
 		}
 	});
 
@@ -113,9 +114,8 @@ describe("ast_edit tool schema", () => {
 			expect(previewResult.details).toBeDefined();
 			expect((previewResult.details as { applied?: boolean }).applied).toBe(false);
 
-			expect(queue.inspect().some(l => l.startsWith("pending-action:ast_edit"))).toBe(true);
-			queue.nextToolChoice();
-			const invoker = queue.peekInFlightInvoker()!;
+			expect(queue.hasPendingInvoker).toBe(true);
+			const invoker = queue.peekPendingInvoker()!;
 			const applyResult = (await invoker({
 				action: "apply",
 				reason: "apply previewed AST edit",
@@ -130,7 +130,7 @@ describe("ast_edit tool schema", () => {
 			const updated = await Bun.file(filePath).text();
 			expect(updated).toContain("modernWrap(x, value)");
 		} finally {
-			await fs.rm(tempDir, { recursive: true, force: true });
+			await removeWithRetries(tempDir);
 		}
 	});
 
@@ -160,8 +160,7 @@ describe("ast_edit tool schema", () => {
 			const mutatedContent = "otherWrap(x, value)\n";
 			await Bun.write(filePath, mutatedContent);
 
-			queue.nextToolChoice();
-			const invoker = queue.peekInFlightInvoker()!;
+			const invoker = queue.peekPendingInvoker()!;
 			const applyResult = (await invoker({ action: "apply", reason: "apply stale preview" })) as InvokedToolResult;
 			const applyText = applyResult.content.find(content => content.type === "text")?.text ?? "";
 
@@ -174,7 +173,7 @@ describe("ast_edit tool schema", () => {
 			).toBe(0);
 			expect(await Bun.file(filePath).text()).toBe(mutatedContent);
 		} finally {
-			await fs.rm(tempDir, { recursive: true, force: true });
+			await removeWithRetries(tempDir);
 		}
 	});
 
@@ -225,8 +224,7 @@ describe("ast_edit tool schema", () => {
 				]),
 			);
 
-			queue.nextToolChoice();
-			const invoker = queue.peekInFlightInvoker()!;
+			const invoker = queue.peekPendingInvoker()!;
 			await invoker({ action: "apply", reason: "apply previewed AST edit with combined globs" });
 
 			expect(await Bun.file(path.join(sourceDir, "root.ts")).text()).toContain("modernWrap(rootValue, rootArg)");
@@ -238,7 +236,7 @@ describe("ast_edit tool schema", () => {
 				"legacyWrap(outsideValue, outsideArg)",
 			);
 		} finally {
-			await fs.rm(tempDir, { recursive: true, force: true });
+			await removeWithRetries(tempDir);
 		}
 	});
 
@@ -270,12 +268,11 @@ describe("ast_edit tool schema", () => {
 			expect(details?.totalReplacements).toBe(1);
 			expect(details?.parseErrors).toBeUndefined();
 
-			queue.nextToolChoice();
-			const invoker = queue.peekInFlightInvoker()!;
+			const invoker = queue.peekPendingInvoker()!;
 			await invoker({ action: "apply", reason: "apply tlaplus AST edit" });
 			expect(await Bun.file(filePath).text()).toContain("Start == x = 0");
 		} finally {
-			await fs.rm(tempDir, { recursive: true, force: true });
+			await removeWithRetries(tempDir);
 		}
 	});
 });

@@ -10,6 +10,7 @@ import type { Settings } from "../../config/settings";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { SessionManager } from "../../session/session-manager";
+import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { createExtensionModelQuery } from "./model-api";
 import type {
 	AfterProviderResponseEvent,
@@ -141,17 +142,9 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 						? SessionStopEventResult | undefined
 						: undefined;
 
-export type NewSessionHandler = (options?: {
-	parentSession?: string;
-	setup?: (sessionManager: SessionManager) => Promise<void>;
-}) => Promise<{ cancelled: boolean }>;
-
-export type BranchHandler = (entryId: string) => Promise<{ cancelled: boolean }>;
-
-export type NavigateTreeHandler = (
-	targetId: string,
-	options?: { summarize?: boolean },
-) => Promise<{ cancelled: boolean }>;
+// Session-lifecycle handler types live once in session-handler-types (imported
+// above for local use); re-exported here to keep this module's public API stable.
+export type { BranchHandler, NavigateTreeHandler, NewSessionHandler };
 
 export type SwitchSessionHandler = (sessionPath: string) => Promise<{ cancelled: boolean }>;
 
@@ -601,7 +594,11 @@ export class ExtensionRunner {
 	}
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
-		const ctx = this.createContext();
+		// Defer the per-event context allocation (and the Promise.race/Bun.sleep
+		// timeout machinery) to the first matching handler. Streaming sessions emit
+		// message_update / tool_execution_* per delta with usually no extension
+		// subscribed; building `ctx` for a zero-handler event is pure waste.
+		let ctx: ExtensionContext | undefined;
 		let result: SessionBeforeEventResult | SessionCompactingResult | SessionStopEventResult | undefined;
 
 		if (this.#isSessionShutdownEvent(event)) {
@@ -610,17 +607,19 @@ export class ExtensionRunner {
 			for (const ext of this.extensions) {
 				const handlers = ext.handlers.get(event.type);
 				if (!handlers || handlers.length === 0) continue;
+				ctx ??= this.createContext();
 				for (const handler of handlers) {
 					promises.push(this.#runHandlerWithTimeout(handler, event, ctx, ext, timeoutMs));
 				}
 			}
-			await Promise.all(promises);
+			if (promises.length > 0) await Promise.all(promises);
 			return result as RunnerEmitResult<TEvent>;
 		}
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
 			if (!handlers || handlers.length === 0) continue;
+			ctx ??= this.createContext();
 
 			for (const handler of handlers) {
 				const handlerResult = await this.#runHandlerWithTimeout(

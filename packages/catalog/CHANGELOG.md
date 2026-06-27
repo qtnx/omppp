@@ -2,6 +2,164 @@
 
 ## [Unreleased]
 
+## [16.2.2] - 2026-06-27
+
+### Removed
+
+- Removed 'pi' from the list of supported dialects.
+
+## [16.2.0] - 2026-06-27
+
+### Added
+
+- Added GitLab Duo Agent catalog discovery, including namespace selection, live model mapping, and a bundled fallback model for fresh installs.
+- Added OpenAICompat.supportsNamedToolChoice to support forced tool use on string-only OpenAI-compatible chat servers without emitting the named function-object tool_choice shape.
+- Added model metadata support for provider-native remote compaction and compaction-only model selection.
+
+### Changed
+
+- Disabled the thinking-effort selector for GitLab Duo Agent models since the underlying platform parameters are server-fixed.
+
+### Fixed
+
+- Improved GitLab Duo Agent and Duo Workflow namespace and project discovery to robustly handle paginated groups, SSH remotes with custom ports, Git worktrees, self-managed GitLab instances with relative paths, and configuration via GITLAB_DUO_PROJECT_PATH or GITLAB_DUO_PROJECT_ID.
+- Fixed built-in LiteLLM discovery to prefer rich proxy metadata from management endpoints and avoid caching stale capability data.
+- Fixed GitLab Duo Workflow model specifications to resolve correct static context windows, enabling accurate context usage tracking and auto-compaction.
+
+## [16.1.23] - 2026-06-26
+
+### Added
+
+- Added `OpenAICompat.qwenPreserveThinking` — auto-enabled when the resolved `thinkingFormat` is `"qwen"` or `"qwen-chat-template"` AND `replayReasoningContent` is on (i.e. the four built-in local OpenAI-compatible providers, or a custom provider pointed at a loopback / RFC1918 / `*.local` baseUrl). Pairs with the chat-completions encoder change so the request body carries `preserve_thinking: true` (twin top-level + `chat_template_kwargs` emission), keeping Qwen3.6+ from stripping `<think>...</think>` off older assistant turns and breaking the local slot's KV cache between user messages. Non-Qwen chat templates ignore the parameter, so the flag stays a no-op outside the Qwen path; users on a cloud Qwen host (Alibaba Dashscope / Qwen Portal) can opt in with `compat.qwenPreserveThinking: true`. ([#3541](https://github.com/can1357/oh-my-pi/issues/3541))
+- Added CoreWeave Serverless Inference as an OpenAI-compatible provider with models.dev-backed bundled catalog metadata.
+
+## [16.1.22] - 2026-06-26
+
+### Added
+
+- Added `OpenAICompat.replayReasoningContent` — auto-enabled for the built-in local OpenAI-compatible providers (`llama.cpp`, `lm-studio`, `vllm`, `ollama` on `openai-completions`) and for any provider pointed at a loopback / RFC1918 / `*.local` baseUrl. NOT gated on `spec.reasoning`: the runtime discovery paths for `llama.cpp` / `lm-studio` / `openai-models-list` hardcode `reasoning: false` because the upstream `/models` endpoints don't advertise the capability, while the stream parser still records incoming `reasoning_content` deltas as thinking blocks — gating on the spec flag would leave every discovered local Qwen / DeepSeek model re-triggering #3528. The encoder only writes `reasoning_content` when a thinking block actually exists on the turn, so the flag is a no-op on pure-text histories. Built-in proxy providers (currently `litellm`) are excluded from both checks because they forward to an unrelated upstream that gains no KV-cache benefit and may 400 on the extra field; users running a custom proxy in front of a llama.cpp-style backend can opt in via the sparse `compat.replayReasoningContent: true` override. Signals to the `openai-completions` encoder that preserved `thinking` blocks must be re-emitted as `reasoning_content` on every assistant turn so chat templates that reconstruct `<think>…</think>` from the field (Qwen3, DeepSeek-R1, GLM-5.x) keep the prior turn's tokens byte-stable and llama.cpp's prefix KV cache survives. ([#3528](https://github.com/can1357/oh-my-pi/issues/3528))
+
+## [16.1.20] - 2026-06-25
+
+### Fixed
+
+- Fixed direct Anthropic Claude Sonnet/Haiku 4.5 advisor/agent turns crashing every call with HTTP 400 `This model does not support the effort parameter.` The catalog classified the whole Claude 4.5 family on `anthropic-messages` (and `bedrock-converse-stream`) as `anthropic-budget-effort`, which made the Anthropic provider serialize `output_config.effort` alongside `thinking.budget_tokens`. Anthropic only honors `output_config.effort` on Opus 4.5 and adaptive (4.6+) Messages-API models, so Sonnet 4.5 / Haiku 4.5 rejected the field. `inferThinkingControlMode` now gates `anthropic-budget-effort` to `parsedModel.kind === "opus" && semverGte(version, "4.5")` on both Anthropic-routed APIs, so Sonnet 4.5 / Haiku 4.5 on direct Anthropic + Cloudflare-AI-Gateway + Vertex + GitLab-Duo + Copilot + Bedrock fall through to plain `mode: "budget"` (thinking budget still scales with the selected effort tier). Opus 4.5 keeps `anthropic-budget-effort`. `anthropic-budget-effort` also stays in use for Anthropic-compatible third-party backends that natively support the field (Umans GLM 5.2). ([#3497](https://github.com/can1357/oh-my-pi/issues/3497))
+
+## [16.1.17] - 2026-06-24
+
+### Fixed
+
+- Fixed the Umans GLM-5.2 thinking-level picker collapsing to a single `high` tier after dynamic discovery: the `max` upstream level now resolves to the internal `xhigh` effort, the picker shows both `high` and `xhigh`, and the metadata maps `xhigh` back to Umans's native `max` wire tier. ([#3192](https://github.com/can1357/oh-my-pi/issues/3192))
+- Fixed GitHub Copilot business and enterprise endpoints accepting image inputs that they reject with `400 vision is not supported`. The Copilot `/models` response advertises `capabilities.supports.vision = true` for Claude/GPT chat models on every host, but only the canonical personal endpoint (`https://api.githubcopilot.com`) actually serves them; `githubCopilotModelManagerOptions` now forces `input: ["text"]` whenever discovery resolves to a non-personal base URL, and `mergeDynamicModel` honours the dynamic value (instead of OR-upgrading) when the merged endpoint differs from the bundled reference. ([#3387](https://github.com/can1357/oh-my-pi/issues/3387))
+- Fixed OpenRouter Anthropic compat to strip Responses reasoning history during replay so signed thinking blocks are not sent back to routed Anthropic providers. ([#3399](https://github.com/can1357/oh-my-pi/issues/3399))
+
+## [16.1.14] - 2026-06-22
+
+### Added
+
+- Added Sakana AI provider support with Fugu model integration
+- Added Sakana AI/Fugu provider catalog entries with Fugu model discovery and Responses API metadata
+- Added support for "xhigh" reasoning tier across model configurations
+- Added configuration for new models GCP-5.4 Mini, GPT-5.5, and variants
+- Added `devin` variant collapse table to streamline model tiering
+
+### Changed
+
+- Updated reasoning label pattern to include "minimal" and "max" efforts
+- Simplified model identification logic for Devin-powered reasoning models
+- Refactored variant routing to consolidate and standardize tier definitions
+
+## [16.1.13] - 2026-06-22
+
+### Added
+
+- Added support for Devin as a model provider
+- Added capability to fetch dynamic models from the Devin model manager
+
+## [16.1.11] - 2026-06-21
+
+### Fixed
+
+- Fixed Umans `umans-glm-5.1` / `umans-glm-5.2` advertising native image input. The `models/info` endpoint reports `supports_vision: "via-handoff"` for the GLM models, meaning vision routes through a separate handoff pre-analysis step instead of accepting raw image blocks; `umansSupportsVision` treated any non-empty string as native vision support, so image prompts went directly to GLM and were rejected with `400 This model does not support image inputs`. The helper now requires `supports_vision === true`, the bundled GLM 5.1/5.2 rows are corrected to text-only, and stale mismatched Umans cache rows for those ids are dropped so the vision-handoff path runs even before a successful refresh. ([#3184](https://github.com/can1357/oh-my-pi/issues/3184))
+
+## [16.1.9] - 2026-06-21
+
+### Fixed
+
+- Fixed the `moonshot` provider with no path to the Kimi China API: model discovery now honors a `MOONSHOT_BASE_URL` override (redirecting to `api.moonshot.cn`), and `KIMI_API_KEY` resolves as a fallback for `MOONSHOT_API_KEY`. ([#2883](https://github.com/can1357/oh-my-pi/issues/2883))
+- Fixed LiteLLM model discovery preserving colliding models.dev transport metadata (for example `ollama-cloud` `deepseek-v4-flash`) instead of keeping the LiteLLM `openai-completions` provider transport. ([#3162](https://github.com/can1357/oh-my-pi/issues/3162))
+
+### Removed
+
+- Removed bundled Wafer Pass (`wafer-pass`) catalog entries and generation support; Wafer Serverless remains available as `wafer-serverless`.
+
+## [16.1.8] - 2026-06-20
+
+### Fixed
+
+- Fixed Fireworks-hosted Qwen turns (e.g. `fireworks/qwen3.7-plus`) failing with `400 Extra inputs are not permitted, field: 'enable_thinking'`. Fireworks serves Qwen3 with controllable thinking via OpenAI-style `reasoning_effort` and rejects the top-level `enable_thinking` boolean that Alibaba DashScope speaks; `buildOpenAICompat` was selecting `thinkingFormat: "qwen"` from the `qwen` id pattern regardless of host. Fireworks-hosted Qwen models now resolve to `thinkingFormat: "openai"`.
+- Fixed MiMo models on OpenAI-compatible gateways to expose only accepted `low`, `medium`, and `high` reasoning tiers and map unsupported raw `minimal`/`xhigh` requests to safe wire values. ([#2864](https://github.com/can1357/oh-my-pi/issues/2864))
+
+## [16.1.7] - 2026-06-20
+
+### Fixed
+
+- Fixed MiniMax-M3 catalog context for the MiniMax Coding/Token Plan providers `minimax-code` and `minimax-code-cn` to report the documented 1M long-context tier instead of the upstream 512K pricing boundary; the previous patch only covered `minimax`/`minimax-cn`, so the Coding Plan picker still showed 512K in the status bar ([#3097](https://github.com/can1357/oh-my-pi/issues/3097)).
+
+## [16.1.4] - 2026-06-19
+
+### Fixed
+
+- Fixed Claude 4.6 routing on the `google-antigravity` (and `google-gemini-cli`) Cloud Code Assist providers, whose backend exposes the models asymmetrically: `claude-sonnet-4-6` has no `-thinking` twin and `claude-opus-4-6` has only the `-thinking` twin. The shared `thinkingPair` family was routing thinking efforts on `claude-sonnet-4-6` to a non-existent `claude-sonnet-4-6-thinking` wire id (404 `Requested entity was not found`); replaced both 4.6 entries with bespoke single-wire families that declare the dead ids as `retiredMembers` so `reconcileRetiredRouting` re-points stale bundled-catalog and SQLite-cache rows away from the 404 wire id. Refreshed the bundled `models.json` Sonnet 4.6 entry whose stored `effortRouting` still targeted the dead `-thinking` id. Added `claude-sonnet-4-6` and `claude-opus-4-6-thinking` entries to `ANTIGRAVITY_MODEL_WIRE_PROFILES` capped at the backend's 64000-output-token limit (over-cap requests 400'd with `Request contains an invalid argument`); `modelEnum` is now optional on `AntigravityModelWireProfile` since the Claude wire ids are accepted without a captured `labels.model_enum`. ([#3067](https://github.com/can1357/oh-my-pi/issues/3067))
+
+## [16.1.3] - 2026-06-19
+
+### Fixed
+
+- Marked Ollama Cloud catalog models to omit on-the-wire output-token caps, preventing context-window-sized `num_predict` values from causing HTTP 400s for models whose true output cap is not discoverable. ([#2984](https://github.com/can1357/oh-my-pi/issues/2984))
+- Fixed `readModelCache`/`writeModelCache` using a process-global shared database even when a custom `dbPath` was provided. Custom-path cache operations now open and close a per-call database via `withModelCacheDb`, preventing leaked SQLite handles on Windows
+
+## [16.1.2] - 2026-06-19
+
+### Added
+
+- Added support for Gemini 2.5 Flash-Lite, 3.1 Flash-Lite, and 3.5 Flash models
+- Added support for Moonshot V1 model family
+
+### Changed
+
+- Updated context window and token limits for various Claude, Gemini, and GPT-OSS models
+- Refined thinking mode behaviors and routing for supported LLM families
+
+### Fixed
+
+- Fixed GLM-5.2 `reasoning_effort` so the top thinking tier reaches each host's genuine maximum instead of 400ing, mapping the internal `xhigh` tier per host dialect (verified against live endpoints): Z.ai/Zhipu collapse onto the model's `none`/`high`/`max` scale (`xhigh → max`); Fireworks, resellers, and Ollama Cloud keep their distinct lower tiers and remap only the top `xhigh → max` (merged over host quirks such as Fireworks' `minimal → none`); and OpenRouter — whose API rejects `max` and treats `xhigh` as its own max tier — now exposes the `xhigh` tier and forwards it verbatim. Dialect detection keys off resolved `compat.thinkingFormat`, so custom OpenRouter/Z.ai-format providers are covered too.
+- Maintained thinking effort routing when discovery only returns the base model ID
+- Improved credential retrieval logic for Antigravity and Codex providers via auth discovery
+
+## [16.0.9] - 2026-06-18
+
+### Fixed
+
+- Fixed GitHub Copilot's `anthropic-messages` proxy being misclassified as a non-signing reasoning endpoint (`replayUnsignedThinking: true`). It forwards to signature-enforcing Anthropic, so replaying a stripped/unsigned historical `thinking` block as `signature: ""` — most visibly an end_turn-bound checkpoint/branch-return turn whose signature the transform must strip — caused a `400 Invalid signature` that corrupted the session and re-tripped on every full history re-send (e.g. after toggling MCP servers). Copilot now degrades such blocks to text like the official API. ([#2851](https://github.com/can1357/oh-my-pi/issues/2851))
+- Added a `supportsImageDetailOriginal` compat flag that resolves to `false` for GitHub Copilot, whose Responses endpoint rejects the `detail: "original"` image hint with a 400, and `true` for every other host. ([#2822](https://github.com/can1357/oh-my-pi/issues/2822))
+
+## [16.0.8] - 2026-06-18
+
+### Changed
+
+- Refactored model family ID predicates and capability checkers to use a shared, uniform process-lifetime `memo` utility to eliminate caching boilerplate.
+
+### Fixed
+
+- Fixed LM Studio dynamic discovery to use native `/api/v0/models` metadata so VLM models advertise image input. ([#2945](https://github.com/can1357/oh-my-pi/issues/2945))
+
+## [16.0.7] - 2026-06-18
+
+### Fixed
+
+- Fixed MiniMax Anthropic-compatible M2/M3 thinking metadata to expose the adaptive transport and keep M2 mandatory reasoning floored ([#2928](https://github.com/can1357/oh-my-pi/issues/2928)).
+
 ## [16.0.6] - 2026-06-18
 
 ### Added

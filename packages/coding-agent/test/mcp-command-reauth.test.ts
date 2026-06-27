@@ -9,7 +9,14 @@ import * as oauthFlow from "@oh-my-pi/pi-coding-agent/mcp/oauth-flow";
 import type { MCPServerConfig } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import { MCPCommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/mcp-command-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { getConfigRootDir, getMCPConfigPath, getProjectDir, setAgentDir, setProjectDir } from "@oh-my-pi/pi-utils";
+import {
+	getConfigRootDir,
+	getMCPConfigPath,
+	getProjectDir,
+	removeWithRetries,
+	setAgentDir,
+	setProjectDir,
+} from "@oh-my-pi/pi-utils";
 
 const RAW_SERVER_URL = `https://\${MCP_HOST}/mcp`;
 const EXPANDED_SERVER_URL = "https://mcp.example.com/mcp";
@@ -73,6 +80,17 @@ describe("/mcp auth commands", () => {
 	let agentDir = "";
 	let configPath = "";
 	let originalMcpHost: string | undefined;
+	// Track every in-memory auth store so afterEach can close the underlying
+	// bun:sqlite Database. Leaked Database handles are JSDestructibleObjects that
+	// JSC otherwise finalizes during an arbitrary later GC sweep — under
+	// `bun test --parallel` that sweep can run mid-suite on the shared VM and
+	// trip a Bun GC crash (SIGABRT "Pure virtual function called").
+	const openAuthStores: AuthStorage[] = [];
+	function freshAuthStorage(): AuthStorage {
+		const storage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
+		openAuthStores.push(storage);
+		return storage;
+	}
 
 	beforeAll(() => {
 		initTheme();
@@ -105,6 +123,7 @@ describe("/mcp auth commands", () => {
 	});
 
 	afterEach(async () => {
+		while (openAuthStores.length > 0) openAuthStores.pop()?.close();
 		vi.restoreAllMocks();
 		restoreEnvValue("MCP_HOST", originalMcpHost);
 		setProjectDir(originalProjectDir);
@@ -114,12 +133,12 @@ describe("/mcp auth commands", () => {
 			setAgentDir(fallbackAgentDir);
 			delete process.env.PI_CODING_AGENT_DIR;
 		}
-		await fs.rm(projectDir, { recursive: true, force: true });
-		await fs.rm(agentDir, { recursive: true, force: true });
+		await removeWithRetries(projectDir);
+		await removeWithRetries(agentDir);
 	});
 
 	test("stores definition-only OAuth credentials under the expanded URL key", async () => {
-		const authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
+		const authStorage = freshAuthStorage();
 		await authStorage.reload();
 		const connectToServer = vi.spyOn(mcpClient, "connectToServer").mockRejectedValue(AUTH_ERROR);
 		vi.spyOn(oauthFlow.MCPOAuthFlow.prototype, "login").mockResolvedValue({
@@ -156,7 +175,7 @@ describe("/mcp auth commands", () => {
 	});
 
 	test("reuses embedded DCR client secret during reauth token exchange", async () => {
-		const authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
+		const authStorage = freshAuthStorage();
 		await authStorage.reload();
 		await authStorage.set(oauthFlow.mcpOAuthCredentialId(EXPANDED_SERVER_URL), {
 			type: "oauth",
@@ -201,7 +220,7 @@ describe("/mcp auth commands", () => {
 	});
 
 	test("clears both expanded and stale raw URL-keyed credentials on unauth", async () => {
-		const authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
+		const authStorage = freshAuthStorage();
 		await authStorage.reload();
 		await authStorage.set(oauthFlow.mcpOAuthCredentialId(EXPANDED_SERVER_URL), {
 			type: "oauth",
@@ -230,7 +249,7 @@ describe("/mcp auth commands", () => {
 	});
 
 	test("clears url-keyed auth for discovered definition-only servers", async () => {
-		const authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
+		const authStorage = freshAuthStorage();
 		await authStorage.reload();
 		await authStorage.set(oauthFlow.mcpOAuthCredentialId(EXPANDED_SERVER_URL), {
 			type: "oauth",

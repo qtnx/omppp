@@ -19,6 +19,7 @@ import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import type { AgentReviewGatePolicy } from "../task/types";
 import { parseThinkingLevel } from "../thinking";
+import { normalizeToolNames } from "../tools/builtin-names";
 
 import { buildPluginDirRoot } from "./plugin-dir-roots";
 
@@ -291,12 +292,8 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		return null;
 	}
 
-	const rawTools = frontmatter.tools;
-	let tools = (
-		Array.isArray(rawTools)
-			? rawTools.filter((item): item is string => typeof item === "string")
-			: parseArrayOrCSV(rawTools)
-	)?.map(tool => tool.toLowerCase());
+	let tools = parseArrayOrCSV(frontmatter.tools);
+	if (tools) tools = normalizeToolNames(tools);
 
 	// Non-empty explicit tool lists always need yield. Preserve `tools: []`
 	// until runtime so it stays distinguishable from an omitted tools field.

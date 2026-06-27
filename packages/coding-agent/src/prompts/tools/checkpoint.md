@@ -1,10 +1,9 @@
 Creates a context checkpoint before exploratory work so you can later rewind and keep only a concise report.
 
-Use this when you need to investigate with many intermediate tool calls (read/search/find/lsp/etc.) and want to minimize context cost afterward.
+Use this when you need to investigate with many intermediate tool calls (read/grep/glob/lsp/etc.) and want to minimize context cost afterward.
 
 Rules:
 - You MUST call `rewind` before yielding after starting a checkpoint.
-- You MUST provide a clear `goal` explaining what you are investigating.
 - You NEVER call `checkpoint` while another checkpoint is active.
 - Not available in subagents.
 
