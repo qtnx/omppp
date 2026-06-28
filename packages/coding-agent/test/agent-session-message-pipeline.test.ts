@@ -427,6 +427,7 @@ describe("AgentSession message pipeline", () => {
 			sessionManager,
 			settings: Settings.isolated({
 				"compaction.keepRecentTokens": 1,
+				"compaction.strategy": "context-full",
 				"contextPromotion.enabled": false,
 			}),
 			modelRegistry: {

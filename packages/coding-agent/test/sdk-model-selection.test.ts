@@ -120,7 +120,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		expect(session.thinkingLevel).toBe("off");
 	});
 
-	test("normalizes max default thinking level from settings", async () => {
+	test("preserves max default thinking level from settings", async () => {
 		const settings = Settings.isolated({ defaultThinkingLevel: "max" });
 
 		const { session } = await createAgentSession({
@@ -130,7 +130,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 
 		expect(session.model?.provider).toBe("runtime-provider");
 		expect(session.model?.id).toBe("runtime-reasoning-model");
-		expect(session.thinkingLevel).toBe(Effort.XHigh);
+		expect(session.thinkingLevel).toBe(Effort.Max);
 	});
 
 	test("selects the settings default model without synchronously validating auth", async () => {

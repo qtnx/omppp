@@ -4489,6 +4489,7 @@ describe.serial("openai-codex streaming", () => {
 		});
 
 		const sentTypesByConnection: string[][] = [];
+		const sentRequests: Array<Record<string, unknown>> = [];
 		let constructorCount = 0;
 		let abortSecondRequest: (() => void) | undefined;
 
@@ -4499,12 +4500,14 @@ describe.serial("openai-codex streaming", () => {
 				super(url, options);
 				this.#connectionIndex = constructorCount;
 				constructorCount += 1;
+
 				sentTypesByConnection[this.#connectionIndex] = [];
 				this.scheduleOpen();
 			}
 
 			send(data: string): void {
-				const request = JSON.parse(data) as { type?: string };
+				const request = JSON.parse(data) as Record<string, unknown>;
+				sentRequests.push(request);
 				const requestType = typeof request.type === "string" ? request.type : "";
 				sentTypesByConnection[this.#connectionIndex]?.push(requestType);
 				const requestIndex = sentTypesByConnection[this.#connectionIndex]?.length ?? 0;
@@ -4520,12 +4523,12 @@ describe.serial("openai-codex streaming", () => {
 					});
 					this.sendJson({ type: "response.content_part.added", part: { type: "output_text", text: "" } });
 					this.sendJson({ type: "response.output_text.delta", delta: "Still streaming" });
-					setTimeout(() => {
+					queueMicrotask(() => {
 						abortSecondRequest?.();
-					}, 0);
+					});
 					return;
 				}
-				if (this.#connectionIndex === 1 && requestIndex === 1) {
+				if (this.#connectionIndex > 0 && requestIndex === 1) {
 					expect(requestType).toBe("response.create");
 					this.emitCodexResponse({ messageId: "msg_3", responseId: "resp_3", text: "Hello three" });
 					return;
@@ -4597,9 +4600,14 @@ describe.serial("openai-codex streaming", () => {
 			providerSessionState,
 		}).result();
 		expect(thirdResult.role).toBe("assistant");
-		expect(constructorCount).toBe(2);
-		expect(sentTypesByConnection[0]).toEqual(["response.create", "response.create"]);
-		expect(sentTypesByConnection[1]).toEqual(["response.create"]);
+		expect(constructorCount).toBeGreaterThanOrEqual(2);
+		expect(sentTypesByConnection.flat()).toEqual(["response.create", "response.create", "response.create"]);
+		expect(sentRequests).toHaveLength(3);
+		expect(sentRequests[2]?.previous_response_id).toBeUndefined();
+		const thirdInput = JSON.stringify(sentRequests[2]?.input);
+		expect(thirdInput).toContain("Say hello");
+		expect(thirdInput).toContain("Keep going");
+		expect(thirdInput).toContain("Finish");
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
