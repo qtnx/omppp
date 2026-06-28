@@ -227,8 +227,7 @@ describe("subagent resource profile", () => {
 			mcpManager: createMcpManager(["mcp__server__context_debug"]),
 		});
 
-		expect(capturedOptions?.toolNames).toEqual(["read", "search", "find", "bash", "yield"]);
-		expect(capturedOptions?.toolNames).not.toContain("web_search");
+		expect(capturedOptions?.toolNames).toEqual(["read", "grep", "glob", "bash", "web_search", "yield"]);
 		expect(capturedOptions?.toolNames).not.toContain("context_debug");
 		expect(capturedOptions?.minimalExtensionRuntime).toBe(true);
 		expect(capturedOptions?.respectToolNamesForCustomTools).toBe(true);

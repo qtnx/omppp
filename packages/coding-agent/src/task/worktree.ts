@@ -41,7 +41,7 @@ export async function getRepoRoot(cwd: string): Promise<string> {
 	const repoRoot = await git.repo.root(cwd);
 	if (repoRoot) return repoRoot;
 
-	throw new Error("Git repository not found for isolated task execution.");
+	throw new Error("Git repository not found.");
 }
 
 const GIT_NO_INDEX_NULL_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
