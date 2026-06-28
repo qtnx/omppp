@@ -2,11 +2,6 @@
 
 ## [Unreleased]
 
-## [1.4.0] - 2026-06-19
-
-### Added
-
-- Added workspace-root alias support to `CombinedAutocompleteProvider`, allowing callers to surface tagged roots such as `@be/` and complete files inside them without changing the primary cwd.
 ## [16.2.0] - 2026-06-27
 
 ### Added
@@ -1556,6 +1551,12 @@ Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mon
 ### Added
 
 - Added `getText()` method to Text component for retrieving current text content
+
+## [1.4.0] - 2026-06-19
+
+### Added
+
+- Added workspace-root alias support to `CombinedAutocompleteProvider`, allowing callers to surface tagged roots such as `@be/` and complete files inside them without changing the primary cwd.
 
 ## [1.0.7] - 2026-06-09
 

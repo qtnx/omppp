@@ -10,16 +10,10 @@
 - Added `parseStreamingJson` and `parseStreamingJsonThrottled` for robust, efficient parsing of truncated or incremental streaming JSON.
 - Added an XDG-aware document conversion cache directory helper.
 - Exported `removeWithRetries()` as a standalone asynchronous function to handle retry-on-EBUSY cleanup logic.
+
 ### Fixed
 
 - Blocked project `.env` files from reintroducing host directory override variables inside the Linux Podman workspace sandbox.
-
-## [1.0.7] - 2026-06-09
-
-### Changed
-
-- Improved `readSseJson` to gracefully recover truncated or malformed final events using the streaming JSON parser, ending the stream cleanly instead of throwing.
-- Increased the retry delay for EBUSY file-lock errors from 25ms to 50ms (extending the total retry window to 2 seconds) to improve reliability on Windows.
 
 ## [16.1.8] - 2026-06-20
 
@@ -212,6 +206,13 @@
 ### Added
 
 - Added an XDG-aware tiny-title model cache directory helper for coding-agent local title models.
+
+## [1.0.7] - 2026-06-09
+
+### Changed
+
+- Improved `readSseJson` to gracefully recover truncated or malformed final events using the streaming JSON parser, ending the stream cleanly instead of throwing.
+- Increased the retry delay for EBUSY file-lock errors from 25ms to 50ms (extending the total retry window to 2 seconds) to improve reliability on Windows.
 
 ## [1.0.7] - 2026-06-09
 

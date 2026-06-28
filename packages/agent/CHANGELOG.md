@@ -2,14 +2,6 @@
 
 ## [Unreleased]
 
-## [1.4.0] - 2026-06-19
-
-### Changed
-
-- Changed OpenAI remote compaction to trim oversized compact inputs from the oldest history first, preserving recent turns while avoiding oversized `/responses/compact` requests.
-- Changed OpenAI remote compaction to reuse provider-returned compaction summaries directly, avoiding extra local summarizer calls when the compact endpoint already returned summary text.
-- Compacted unusually large tool JSON schemas before provider requests by stripping descriptions, dropping definition tables, and collapsing deeply nested schema branches when needed.
-- Widened the `getApiKey` callback (`AgentOptions`/`AgentLoopConfig`) to receive the current `Model<Api>` as an optional second argument (`(provider, model?) => …`). The agent loop now passes the in-flight model so credential resolution can be model-aware (e.g. provider rate-limit pool selection). Backward compatible: existing provider-only callbacks are unaffected.
 ## [16.2.2] - 2026-06-27
 
 ### Added
@@ -25,18 +17,7 @@
 ### Added
 
 - Added an optional `cwdResolver` to `Agent` and `getCwd` to `AgentLoopConfig` to dynamically resolve the working directory per LLM call, allowing workspace-scoped provider discovery (such as GitLab Duo Agent) to follow live directory changes without reconstructing the agent.
-### Added
-
 - Added `ThinkingLevel.Max` so callers can request model-scoped maximum reasoning and compaction preserves that level when the target model supports it.
-
-## [1.3.2] - 2026-06-13
-
-### Fixed
-
-- Fixed an issue where API-level provider refusals were replayed as assistant dialogue on subsequent requests, preventing repeated refusals after a single blocked turn.
-- Fixed a bug where internal streaming state (`partialJson`) could leak onto the final `AssistantMessage` if a stream ended without a `toolcall_end` event.
-- Fixed `Agent` to correctly forward the working directory (`cwd`) into provider stream options, enabling providers like GitLab Duo Agent to scope local tool execution to the workspace.
-- Enabled custom OpenAI-compatible providers to use native remote compaction instead of falling back to local summarization.
 
 ## [16.1.23] - 2026-06-26
 
@@ -929,6 +910,24 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.4.0] - 2026-06-19
+
+### Changed
+
+- Changed OpenAI remote compaction to trim oversized compact inputs from the oldest history first, preserving recent turns while avoiding oversized `/responses/compact` requests.
+- Changed OpenAI remote compaction to reuse provider-returned compaction summaries directly, avoiding extra local summarizer calls when the compact endpoint already returned summary text.
+- Compacted unusually large tool JSON schemas before provider requests by stripping descriptions, dropping definition tables, and collapsing deeply nested schema branches when needed.
+- Widened the `getApiKey` callback (`AgentOptions`/`AgentLoopConfig`) to receive the current `Model<Api>` as an optional second argument (`(provider, model?) => …`). The agent loop now passes the in-flight model so credential resolution can be model-aware (e.g. provider rate-limit pool selection). Backward compatible: existing provider-only callbacks are unaffected.
+
+## [1.3.2] - 2026-06-13
+
+### Fixed
+
+- Fixed an issue where API-level provider refusals were replayed as assistant dialogue on subsequent requests, preventing repeated refusals after a single blocked turn.
+- Fixed a bug where internal streaming state (`partialJson`) could leak onto the final `AssistantMessage` if a stream ended without a `toolcall_end` event.
+- Fixed `Agent` to correctly forward the working directory (`cwd`) into provider stream options, enabling providers like GitLab Duo Agent to scope local tool execution to the workspace.
+- Enabled custom OpenAI-compatible providers to use native remote compaction instead of falling back to local summarization.
 
 ## [1.3.2] - 2026-06-13
 
