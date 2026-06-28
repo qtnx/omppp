@@ -2479,7 +2479,6 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&tmp);
 	}
 
-
 	/// `grep -q` must suppress all stdout and drive the exit status (0 on match,
 	/// 1 otherwise) so shell conditionals work; `-x` must anchor whole lines.
 	/// Mirrors busybox applet probing: `grep -qx "$applet" <(strings bin)`.
