@@ -287,10 +287,15 @@ export async function runCli(argv: string[]): Promise<void> {
 		return;
 	}
 
-	// Internal worker re-entries dispatch before any workspace-sandbox relaunch:
-	// a worker thread re-entering this module must never be wrapped into a
-	// detached sandbox/container clone — the clone has no postMessage channel to
-	// the spawning thread, so the worker would hang.
+	// Internal entrypoints (smoke probe, worker re-entries) dispatch before any
+	// workspace-sandbox relaunch: a worker thread re-entering this module must
+	// never be wrapped into a detached sandbox/container clone - the clone has no
+	// postMessage channel to the spawning thread, so the worker would hang.
+	if (resolvedArgv[0] === "--smoke-test") {
+		if (import.meta.main) declareWorkerHostEntry();
+		await runSmokeTest();
+		return;
+	}
 	if (await runWorkerEntrypoint(resolvedArgv[0])) {
 		return;
 	}
@@ -303,13 +308,6 @@ export async function runCli(argv: string[]): Promise<void> {
 	// `__omp_worker_`/legacy dispatch, and importers (`runCli` in profile-CLI
 	// tests, SDK embedding) have `import.meta.main === false`.
 	if (import.meta.main) declareWorkerHostEntry();
-
-	// The smoke probe itself spawns bundled workers, so it also needs the compiled
-	// binary to declare this CLI entry as the worker host before it runs.
-	if (resolvedArgv[0] === "--smoke-test") {
-		await runSmokeTest();
-		return;
-	}
 
 	// Profile bootstrap must complete before loading omp-command because it imports pi-utils/env eagerly.
 	const { reexecUnderWorkspaceSandboxIfNeeded } = await import("./task/omp-command");
