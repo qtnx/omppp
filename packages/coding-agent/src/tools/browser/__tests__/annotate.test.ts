@@ -418,6 +418,7 @@ function fakeAnnotationTab(name: string): { tab: TabSession; emit(submission: An
 	};
 	const tab = {
 		name,
+		backend: "worker",
 		browser: { kind: { kind: "headless", headless: false } },
 		targetId: "target",
 		worker,

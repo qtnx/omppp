@@ -5337,7 +5337,12 @@ export class AgentSession {
 		currentMode: ToolDiscoveryMode,
 	): Promise<boolean> {
 		this.#invalidateDiscoveryCaches();
-		if (previousMode === currentMode) return false;
+		const mcpDiscoveryWasEnabled = this.#mcpDiscoveryEnabled;
+		if (currentMode === "off") {
+			this.#mcpDiscoveryEnabled = false;
+		}
+		const mcpDiscoveryDisabled = mcpDiscoveryWasEnabled && currentMode === "off";
+		if (previousMode === currentMode && !mcpDiscoveryDisabled) return false;
 
 		const activeToolNames = this.getActiveToolNames();
 		let nextActiveToolNames = activeToolNames;
