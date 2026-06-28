@@ -2321,24 +2321,25 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&tmp);
 	}
 
-	/// `rg` is not an alias for `grep`: it recurses by default, respects
-	/// ripgrep's ignore/hidden/binary filters, and keeps `-h` as help.
+	/// `rg` is registered as a disabled external-only command: bare `rg`
+	/// must resolve through PATH instead of falling back to the vendored
+	/// in-process grep implementation.
 	#[tokio::test(flavor = "multi_thread")]
-	async fn rg_builtin_uses_ripgrep_defaults() {
-		let tmp = std::env::temp_dir().join(format!("pi-rg-defaults-{}", std::process::id()));
+	async fn rg_registration_is_external_only() {
+		let tmp = std::env::temp_dir().join(format!("pi-rg-external-only-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&tmp);
-		std::fs::create_dir_all(tmp.join("sub")).expect("sub dir");
-		std::fs::create_dir_all(tmp.join(".git")).expect("git dir");
-		std::fs::write(tmp.join("data.txt"), "alpha\nneedle\n").expect("data");
-		std::fs::write(tmp.join("sub/nested.txt"), "needle\n").expect("nested");
-		std::fs::write(tmp.join(".hidden.txt"), "needle\n").expect("hidden");
-		std::fs::write(tmp.join("ignored.log"), "needle\n").expect("ignored");
-		std::fs::write(tmp.join(".gitignore"), "ignored.log\n").expect("gitignore");
-		std::fs::write(tmp.join("binary.bin"), b"needle\0hidden\n").expect("binary");
+		std::fs::create_dir_all(tmp.join("bin")).expect("bin dir");
+		std::fs::write(tmp.join("data.txt"), "needle\n").expect("data");
 		let tmp_str = tmp.to_str().expect("utf8");
+		let bin_str = tmp.join("bin").to_string_lossy().into_owned();
 
-		let config = ShellConfig { session_env: None, snapshot_path: None, minimizer: None };
+		let mut env = HashMap::new();
+		env.insert("PATH".to_string(), bin_str);
+		let config = ShellConfig { session_env: Some(env), snapshot_path: None, minimizer: None };
 		let mut session = create_session(&config).await.expect("create_session");
+		let rg = session.shell.builtin_mut("rg").expect("rg registered by default");
+		assert!(rg.disabled, "rg must be a disabled registration so PATH resolution wins");
+
 		session.shell.set_working_dir(tmp_str).expect("cwd");
 		let mut params = session.shell.default_exec_params();
 		params.set_fd(OpenFiles::STDIN_FD, null_file().expect("null"));
@@ -2349,43 +2350,11 @@ mod tests {
 
 		let exec = session
 			.shell
-			.run_string("rg needle > rg.txt", &si, &params)
+			.run_string("rg needle > rg.txt 2> rg.err", &si, &params)
 			.await
-			.expect("rg");
-		assert_eq!(exit_code(&exec), 0, "rg recursive search should match");
-		let out = read("rg.txt");
-		assert!(out.contains("data.txt:needle"), "rg missed visible file: {out:?}");
-		assert!(out.contains("sub/nested.txt:needle"), "rg missed nested file: {out:?}");
-		assert!(!out.contains(".hidden.txt"), "rg searched hidden file by default: {out:?}");
-		assert!(!out.contains("ignored.log"), "rg ignored .gitignore by default: {out:?}");
-		assert!(!out.contains("binary.bin"), "rg printed binary file by default: {out:?}");
-
-		let single = session
-			.shell
-			.run_string("rg -nH needle data.txt > single.txt", &si, &params)
-			.await
-			.expect("rg single");
-		assert_eq!(exit_code(&single), 0, "rg explicit file should match");
-		assert_eq!(read("single.txt"), "data.txt:2:needle\n");
-
-		let explicit_binary = session
-			.shell
-			.run_string("rg needle binary.bin > explicit-binary.txt", &si, &params)
-			.await
-			.expect("rg explicit binary");
-		assert_eq!(exit_code(&explicit_binary), 0, "explicit binary file should be searched");
-		assert_eq!(read("explicit-binary.txt"), "needle\n");
-
-		let help = session
-			.shell
-			.run_string("rg -h > help.txt", &si, &params)
-			.await
-			.expect("rg help");
-		assert_eq!(exit_code(&help), 0, "rg -h should be help, not no-filename");
-		assert!(
-			read("help.txt").contains("ripgrep recursively searches"),
-			"help text should describe ripgrep"
-		);
+			.expect("rg external resolution");
+		assert_eq!(exit_code(&exec), 127, "missing external rg should be command-not-found");
+		assert_eq!(read("rg.txt"), "", "disabled rg must not run the in-process search");
 
 		let _ = std::fs::remove_dir_all(&tmp);
 	}
@@ -2506,59 +2475,6 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&tmp);
 	}
 
-	/// Plain `rg PATTERN` uses the shell working directory when the host wired
-	/// stdin to null, but a real pipeline remains stdin input. Pattern stdin
-	/// (`-f -`) must not consume the implicit search path decision.
-	#[tokio::test(flavor = "multi_thread")]
-	async fn rg_builtin_defaults_to_cwd_unless_stdin_is_pipeline() {
-		let tmp = std::env::temp_dir().join(format!("pi-rg-stdin-{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&tmp);
-		std::fs::create_dir_all(&tmp).expect("temp dir");
-		std::fs::write(tmp.join("data.txt"), "from-cwd\nfrom-pattern\n").expect("data");
-		let tmp_str = tmp.to_str().expect("utf8");
-
-		let config = ShellConfig { session_env: None, snapshot_path: None, minimizer: None };
-		let mut session = create_session(&config).await.expect("create_session");
-		session.shell.set_working_dir(tmp_str).expect("cwd");
-		let mut params = session.shell.default_exec_params();
-		params.set_fd(OpenFiles::STDIN_FD, null_file().expect("null"));
-		params.set_fd(OpenFiles::STDOUT_FD, null_file().expect("null"));
-		params.set_fd(OpenFiles::STDERR_FD, null_file().expect("null"));
-		let si = SourceInfo::from("pi-natives:test");
-		let read = |name: &str| std::fs::read_to_string(tmp.join(name)).unwrap_or_default();
-
-		session
-			.shell
-			.run_string("rg from-cwd > cwd.txt", &si, &params)
-			.await
-			.expect("rg cwd");
-		assert_eq!(read("cwd.txt"), "data.txt:from-cwd\n");
-
-		session
-			.shell
-			.run_string("printf 'from-pipe\\n' | rg from-pipe > pipe.txt", &si, &params)
-			.await
-			.expect("rg pipe");
-		assert_eq!(read("pipe.txt"), "from-pipe\n");
-
-		session
-			.shell
-			.run_string("printf 'from-pattern\\n' | rg -f - > pattern.txt", &si, &params)
-			.await
-			.expect("rg pattern stdin");
-		assert_eq!(read("pattern.txt"), "data.txt:from-pattern\n");
-
-		session
-			.shell
-			.run_string("printf 'not-a-path\\n' | rg --files > files.txt", &si, &params)
-			.await
-			.expect("rg files");
-		let files = read("files.txt");
-		assert!(files.contains("data.txt"), "--files should list cwd files: {files:?}");
-		assert!(!files.contains("not-a-path"), "--files must not read piped stdin: {files:?}");
-
-		let _ = std::fs::remove_dir_all(&tmp);
-	}
 
 	/// `grep -q` must suppress all stdout and drive the exit status (0 on match,
 	/// 1 otherwise) so shell conditionals work; `-x` must anchor whole lines.
