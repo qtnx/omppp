@@ -2335,9 +2335,13 @@ mod tests {
 
 		let mut env = HashMap::new();
 		env.insert("PATH".to_string(), bin_str);
-		let config = ShellConfig { session_env: Some(env), snapshot_path: None, minimizer: None };
+		let config =
+			ShellConfig { session_env: Some(env), snapshot_path: None, minimizer: None };
 		let mut session = create_session(&config).await.expect("create_session");
-		let rg = session.shell.builtin_mut("rg").expect("rg registered by default");
+		let rg = session
+			.shell
+			.builtin_mut("rg")
+			.expect("rg registered by default");
 		assert!(rg.disabled, "rg must be a disabled registration so PATH resolution wins");
 
 		session.shell.set_working_dir(tmp_str).expect("cwd");
