@@ -4228,7 +4228,7 @@ describe.serial("openai-codex streaming", () => {
 		setAgentDir(tempDir.path());
 		Bun.env.PI_CODEX_WEBSOCKET_CONNECT_TIMEOUT_MS = "5";
 		Bun.env.PI_CODEX_WEBSOCKET_RETRY_BUDGET = "0";
-		Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS = "1";
+		Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_COOLDOWN_MS = "0";
 		Bun.env.PI_CODEX_WEBSOCKET_RECONNECT_TIMEOUT_MS = "5";
 		Bun.env.PI_CODEX_WEBSOCKET_PING_INTERVAL_MS = "0";
 
@@ -4258,6 +4258,7 @@ describe.serial("openai-codex streaming", () => {
 
 		let constructorCount = 0;
 		let sendCount = 0;
+		const backgroundReconnectOpened = Promise.withResolvers<void>();
 		class RecoveringWebSocket extends MockWebSocket {
 			#connectionIndex: number;
 
@@ -4266,7 +4267,11 @@ describe.serial("openai-codex streaming", () => {
 				this.#connectionIndex = constructorCount;
 				constructorCount += 1;
 				if (this.#connectionIndex > 0) {
-					this.scheduleOpen();
+					queueMicrotask(() => {
+						this.readyState = MockWebSocket.OPEN;
+						this.emit("open", new Event("open"));
+						queueMicrotask(() => backgroundReconnectOpened.resolve());
+					});
 				}
 			}
 
@@ -4290,7 +4295,7 @@ describe.serial("openai-codex streaming", () => {
 			providerSessionState,
 		}).result();
 
-		await Bun.sleep(20);
+		await backgroundReconnectOpened.promise;
 
 		const second = await streamOpenAICodexResponses(model, createCodexTestContext(), {
 			fetch: fetchMock as FetchImpl,
