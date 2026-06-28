@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
-import { $env, getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
+import { $env, getAgentDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import packageJson from "../../../package.json" with { type: "json" };
 import * as AIError from "../../error";
 import type { OAuthController, OAuthCredentials } from "./types";
@@ -58,7 +58,8 @@ function getDeviceModel(): string {
 }
 
 let getDeviceId = (): string => {
-	const deviceIdPath = path.join(getAgentDir(), DEVICE_ID_FILENAME);
+	const agentDir = getAgentDir();
+	const deviceIdPath = path.join(agentDir, DEVICE_ID_FILENAME);
 	try {
 		const existing = fs.readFileSync(deviceIdPath, "utf-8");
 		const trimmed = existing.trim();
@@ -71,7 +72,15 @@ let getDeviceId = (): string => {
 	}
 
 	const deviceId = crypto.randomUUID().replace(/-/g, "");
-	fs.writeFileSync(deviceIdPath, `${deviceId}\n`, { mode: 0o600 });
+	// Persist best-effort: a fresh install may not have created the agent dir
+	// yet, and read-only/sandboxed environments may reject the write. Never let
+	// a persistence failure break header construction for a Kimi request.
+	try {
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.writeFileSync(deviceIdPath, `${deviceId}\n`, { mode: 0o600 });
+	} catch (error) {
+		logger.debug("Failed to persist Kimi device id", { error: String(error) });
+	}
 	getDeviceId = () => deviceId;
 	return deviceId;
 };
