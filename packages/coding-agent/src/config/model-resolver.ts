@@ -167,11 +167,14 @@ export function parseModelString(
 	if (slashIdx <= 0) return undefined;
 	const id = modelStr.slice(slashIdx + 1);
 	const provider = modelStr.slice(0, slashIdx);
+	if (id.endsWith(":max") && options?.isLiteralModelId?.(provider, id) === true) {
+		return { provider, id };
+	}
 	// Strip strict thinking level suffixes first (e.g. "claude-sonnet-4-6:high" -> id "claude-sonnet-4-6", thinkingLevel "high").
 	const strict = splitThinkingSuffix(id);
 	if (strict.level) return { provider, id: strict.base, thinkingLevel: strict.level };
-	// `max` is a provider-facing alias for xhigh, but real model IDs can end in
-	// `:max`. Context-aware callers pass a literal lookup so those models win.
+	// Real model IDs can end in `:max`. Context-aware callers pass a literal
+	// lookup so those models win over suffix extraction.
 	const maxAlias = splitThinkingSuffix(id, -1, options);
 	if (maxAlias.level) {
 		return options?.isLiteralModelId?.(provider, id) === true
@@ -1080,7 +1083,7 @@ interface ExplicitThinkingSelectorOptions {
 }
 
 function isLiteralModelSelector(value: string, options?: ExplicitThinkingSelectorOptions): boolean {
-	const parsed = parseModelString(value);
+	const parsed = parseModelString(value, { isLiteralModelId: options?.isLiteralModelId });
 	return parsed !== undefined && options?.isLiteralModelId?.(parsed.provider, parsed.id) === true;
 }
 
@@ -1097,7 +1100,9 @@ export function extractExplicitThinkingSelector(
 	let current = normalized;
 	while (!visited.has(current)) {
 		visited.add(current);
-		const strictSelector = splitThinkingSuffix(current, PREFIX_MODEL_ROLE.length).level;
+		const strictSelector = isLiteralModelSelector(current, options)
+			? undefined
+			: splitThinkingSuffix(current, PREFIX_MODEL_ROLE.length).level;
 		if (strictSelector) {
 			return strictSelector;
 		}

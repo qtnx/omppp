@@ -293,6 +293,9 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	}
 
 	let tools = parseArrayOrCSV(frontmatter.tools);
+	if (!tools && Array.isArray(frontmatter.tools) && frontmatter.tools.length === 0) {
+		tools = [];
+	}
 	if (tools) tools = normalizeToolNames(tools);
 
 	// Non-empty explicit tool lists always need yield. Preserve `tools: []`

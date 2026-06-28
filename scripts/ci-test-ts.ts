@@ -48,11 +48,12 @@ const validModes = new Set<Mode>([
 // `chunkSize` splits a bucket's file list into that-many-file groups, each run as a
 // separate `bun --smol test` child process. A fresh process per chunk resets Bun's
 // heap and reaps any dangling spawned children between groups, keeping peak RSS
-// under the CI runner's OOM ceiling (a single 170–370-file invocation gets
-// SIGKILLed at 137). The singleton/global-state bucket is left whole: its suites
-// co-locate in one process to exercise process-wide state, so they must not split.
+// under the CI runner's OOM ceiling (a single 170-370-file invocation gets
+// SIGKILLed at 137). The singleton/global-state bucket also uses small chunks:
+// Bun 1.3.14 can segfault when the full 61-file singleton bucket runs in one
+// process, while chunking keeps all files covered without blanket skips.
 const codingAgentBucketPlans: Record<CodingAgentBucket, { label: string; parallel: number; chunkSize?: number }> = {
-	singleton: { label: "singleton/global-state bucket", parallel: 1 },
+	singleton: { label: "singleton/global-state bucket", parallel: 1, chunkSize: 10 },
 	ui: { label: "UI/TUI bucket", parallel: 1, chunkSize: 10 },
 	runtime: { label: "runtime/session bucket", parallel: 1, chunkSize: 10 },
 	native: { label: "native/tooling/browser/unit bucket", parallel: 1, chunkSize: 10 },
