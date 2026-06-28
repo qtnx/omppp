@@ -46,18 +46,17 @@ export function resolveEffectiveToolDiscoveryMode(
 	settings: ToolDiscoverySettingsReader,
 	model?: { contextWindow?: number },
 	toolCount?: number,
-	mcpEnabled?: boolean,
+	_mcpEnabled?: boolean,
 ): ToolDiscoveryMode {
 	const toolsMode = normalizeToolDiscoveryMode(settings.get("tools.discoveryMode"));
 	if (toolsMode === "all" || toolsMode === "mcp-only" || toolsMode === "off") return toolsMode;
 	if (settings.get("mcp.discoveryMode") === true) return "mcp-only";
-	// Built-in discovery for small-context models (keeps the prompt lean without
-	// forcing every tool active). MCP-enabled sessions defer to the toolCount/
-	// deferred-MCP mechanism below — MCP tools load async and may cross the
-	// threshold, so resolving "all" up front would skip that upgrade and break
-	// dispose-reset semantics.
-	if (!mcpEnabled && model?.contextWindow !== undefined && model.contextWindow < AUTO_TOOL_DISCOVERY_CONTEXT_WINDOW) {
-		return "all";
+	// Built-in discovery is only for sub-1M context models, where the prompt
+	// needs to stay lean. Larger models keep built-ins direct but leave MCP
+	// discovery available so MCP/custom tool catalogs do not have to be injected
+	// wholesale.
+	if (model?.contextWindow !== undefined) {
+		return model.contextWindow < AUTO_TOOL_DISCOVERY_CONTEXT_WINDOW ? "all" : "mcp-only";
 	}
 	if (toolCount !== undefined && toolCount > TOOL_DISCOVERY_AUTO_THRESHOLD) return "mcp-only";
 	return "off";

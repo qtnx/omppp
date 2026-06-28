@@ -16,7 +16,7 @@ export default class Acp extends Command {
 	static strict = false;
 	static flags = {
 		"no-sandbox": Flags.boolean({
-			description: "Disable macOS sandboxing for nested OMPx spawns in this session",
+			description: "Disable workspace sandboxing for nested OMPx spawns in this session",
 		}),
 	};
 

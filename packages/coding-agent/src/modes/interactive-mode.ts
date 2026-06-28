@@ -85,6 +85,7 @@ import {
 	resolveApprovedPlan,
 	resolvePlanTitle,
 } from "../plan-mode/approved-plan";
+import loopPromptFilePrompt from "../prompts/system/loop-prompt-file.md" with { type: "text" };
 import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" with { type: "text" };
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with {
 	type: "text",
@@ -156,10 +157,10 @@ import { TanCommandController } from "./controllers/tan-command-controller";
 import { TodoCommandController } from "./controllers/todo-command-controller";
 import {
 	consumeLoopIteration,
-	createLoopLimitRuntime,
+	createLoopRuntime,
 	DEFAULT_LOOP_INTERVAL_MS,
-	describeLoopLimit,
-	describeLoopLimitRuntime,
+	describeLoopConfig,
+	describeLoopRuntime,
 	hasLoopIterationRemaining,
 	type LoopRuntime,
 	parseLoopLimitArgs,
@@ -200,6 +201,9 @@ const HINT_SHIMMER_PALETTE: ShimmerPalette = {
 };
 
 const LOOP_READY_RETRY_MS = 100;
+const DEFAULT_LOOP_PROMPT_FILE_URL = "local://LOOP_PROMPT.md";
+
+type LoopPromptSource = { promptFilePath: string } | { prompt: string };
 
 interface WorkingMessageAccent {
 	main: string;
@@ -422,6 +426,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	planModePlanFilePath: string | undefined = undefined;
 	loopModeEnabled = false;
 	loopPrompt: string | undefined = undefined;
+	loopPromptFilePath: string | undefined = undefined;
+	#loopPromptFileContextSentFor: string | undefined = undefined;
+	#loopPromptCapture: Promise<void> | undefined = undefined;
+	#loopPromptReplaceOnCapture = false;
 	loopRuntime: LoopRuntime | undefined = undefined;
 
 	get loopLimit(): LoopRuntime | undefined {
@@ -1232,11 +1240,12 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#scheduleLoopAutoSubmit(): void {
 		this.#cancelLoopAutoSubmit();
-		if (!this.loopModeEnabled || !this.loopPrompt) return;
-		const prompt = this.loopPrompt;
+		if (!this.loopModeEnabled) return;
+		const source = this.#currentLoopPromptSource();
+		if (!source) return;
 		const loopAction = settings.get("loop.mode");
 		this.#deferLoopAutoSubmit(() => {
-			void this.#runLoopIteration(loopAction, prompt);
+			void this.#runLoopIteration(loopAction, source);
 		});
 	}
 
@@ -1262,6 +1271,192 @@ export class InteractiveMode implements InteractiveModeContext {
 			clearTimeout(this.#loopAutoSubmitTimer);
 			this.#loopAutoSubmitTimer = undefined;
 		}
+	}
+
+	#currentLoopPromptSource(): LoopPromptSource | undefined {
+		if (this.loopPromptFilePath) return { promptFilePath: this.loopPromptFilePath };
+		if (this.loopPrompt) return { prompt: this.loopPrompt };
+		return undefined;
+	}
+
+	#isCurrentLoopPromptSource(source: LoopPromptSource): boolean {
+		if (!this.loopModeEnabled) return false;
+		if ("promptFilePath" in source) return this.loopPromptFilePath === source.promptFilePath;
+		return this.loopPrompt === source.prompt;
+	}
+
+	#resolveLoopPromptFilePath(filePath: string): string {
+		if (!filePath.startsWith("local:")) {
+			throw new Error("Loop prompt file must use local://");
+		}
+		return resolveLocalUrlToPath(normalizeLocalScheme(filePath), {
+			getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
+			getSessionId: () => this.sessionManager.getSessionId(),
+		});
+	}
+
+	async #readLoopPromptFile(filePath: string): Promise<string> {
+		return await Bun.file(this.#resolveLoopPromptFilePath(filePath)).text();
+	}
+
+	async #loopPromptFileExists(filePath: string): Promise<boolean> {
+		try {
+			const text = await this.#readLoopPromptFile(filePath);
+			return text.trim().length > 0;
+		} catch {
+			return false;
+		}
+	}
+
+	async #readLoopPromptSource(source: LoopPromptSource): Promise<string> {
+		if ("promptFilePath" in source) return await this.#readLoopPromptFile(source.promptFilePath);
+		return source.prompt;
+	}
+
+	async #readValidatedLoopPromptSource(source: LoopPromptSource): Promise<string | undefined> {
+		let promptText: string;
+		try {
+			promptText = await this.#readLoopPromptSource(source);
+		} catch (error) {
+			if (isEnoent(error)) {
+				this.disableLoopMode("Loop prompt file is missing. Loop mode disabled.");
+				return undefined;
+			}
+			throw error;
+		}
+		if (!promptText.trim()) {
+			this.disableLoopMode("Loop prompt file is empty. Loop mode disabled.");
+			return undefined;
+		}
+		return promptText;
+	}
+
+	async #restoreLoopPromptFileInCurrentSession(
+		promptFilePath: string,
+		promptText: string,
+		options?: { persistModeChange?: boolean; forceContext?: boolean },
+	): Promise<void> {
+		if (!this.loopModeEnabled) return;
+		this.loopPromptFilePath = promptFilePath;
+		this.loopPrompt = promptText;
+		await this.#writeLoopPromptFile(promptFilePath, promptText);
+		if (options?.forceContext) {
+			this.#loopPromptFileContextSentFor = undefined;
+		}
+		await this.#sendLoopPromptFileContext(promptFilePath);
+		if (options?.persistModeChange) {
+			this.sessionManager.appendModeChange("loop", this.#loopModeData());
+		}
+	}
+
+	async #writeLoopPromptFile(filePath: string, text: string): Promise<void> {
+		await Bun.write(this.#resolveLoopPromptFilePath(filePath), text);
+	}
+
+	#loopModeData(): Record<string, unknown> {
+		return {
+			promptFilePath: this.loopPromptFilePath,
+			intervalMs: this.loopRuntime?.intervalMs,
+			initialIterations: this.loopRuntime?.initialIterations,
+			remainingIterations: this.loopRuntime?.remainingIterations,
+		};
+	}
+
+	#loopRuntimeFromModeData(modeData: Record<string, unknown> | undefined): LoopRuntime | undefined {
+		const intervalMs = modeData?.intervalMs;
+		if (typeof intervalMs !== "number" || !Number.isFinite(intervalMs) || intervalMs <= 0) return undefined;
+		const runtime: LoopRuntime = { intervalMs };
+		const initialIterations = modeData?.initialIterations;
+		if (typeof initialIterations === "number" && Number.isInteger(initialIterations) && initialIterations > 0) {
+			runtime.initialIterations = initialIterations;
+		}
+		const remainingIterations = modeData?.remainingIterations;
+		if (
+			typeof remainingIterations === "number" &&
+			Number.isInteger(remainingIterations) &&
+			remainingIterations >= 0
+		) {
+			runtime.remainingIterations = remainingIterations;
+		}
+		return runtime;
+	}
+
+	#lastLoopPromptFilePath(): string | undefined {
+		const branch = this.sessionManager.getBranch();
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (entry.type !== "mode_change") continue;
+			const promptFilePath = entry.data?.promptFilePath;
+			if (typeof promptFilePath === "string" && promptFilePath.startsWith("local:") && promptFilePath.length > 0) {
+				return normalizeLocalScheme(promptFilePath);
+			}
+		}
+		return undefined;
+	}
+
+	async #reusableLoopPromptFilePath(): Promise<string | undefined> {
+		const promptFilePath = this.loopPromptFilePath ?? this.#lastLoopPromptFilePath();
+		if (!promptFilePath) return undefined;
+		if (await this.#loopPromptFileExists(promptFilePath)) return promptFilePath;
+		return undefined;
+	}
+
+	async #sendLoopPromptFileContext(promptFilePath: string): Promise<void> {
+		const contextKey = `${this.sessionManager.getSessionId()}:${promptFilePath}`;
+		if (this.#loopPromptFileContextSentFor === contextKey) return;
+		this.#loopPromptFileContextSentFor = contextKey;
+		await this.session.sendCustomMessage(
+			{
+				customType: "loop-prompt-file-context",
+				content: prompt.render(loopPromptFilePrompt, { loopPromptFilePath: promptFilePath }),
+				display: false,
+				attribution: "agent",
+			},
+			{ deliverAs: this.session.isStreaming ? "nextTurn" : undefined },
+		);
+	}
+
+	async captureLoopPrompt(text: string): Promise<void> {
+		if (!this.loopModeEnabled) return;
+		if (this.#loopPromptCapture) {
+			await this.#loopPromptCapture;
+			return;
+		}
+		const capture = this.#captureLoopPrompt(text);
+		this.#loopPromptCapture = capture;
+		try {
+			await capture;
+		} finally {
+			if (this.#loopPromptCapture === capture) {
+				this.#loopPromptCapture = undefined;
+			}
+		}
+	}
+
+	async #captureLoopPrompt(text: string): Promise<void> {
+		if (!this.loopModeEnabled) return;
+		if (this.loopPromptFilePath) {
+			if (!this.loopPrompt) {
+				this.loopPrompt = await this.#readLoopPromptFile(this.loopPromptFilePath);
+			}
+			return;
+		}
+		const reusablePromptFilePath = this.#loopPromptReplaceOnCapture
+			? undefined
+			: await this.#reusableLoopPromptFilePath();
+		if (!this.loopModeEnabled) return;
+		const promptFilePath = reusablePromptFilePath ?? DEFAULT_LOOP_PROMPT_FILE_URL;
+		if (!reusablePromptFilePath) {
+			await this.#writeLoopPromptFile(promptFilePath, text);
+			if (!this.loopModeEnabled) return;
+		}
+		this.loopPromptFilePath = promptFilePath;
+		this.#loopPromptReplaceOnCapture = false;
+		if (!this.loopModeEnabled || this.loopPromptFilePath !== promptFilePath) return;
+		this.loopPrompt = await this.#readLoopPromptFile(promptFilePath);
+		if (!this.loopModeEnabled || this.loopPromptFilePath !== promptFilePath) return;
+		this.sessionManager.appendModeChange("loop", this.#loopModeData());
+		await this.#sendLoopPromptFileContext(promptFilePath);
 	}
 
 	#scheduleGoalContinuation(): void {
@@ -1318,24 +1513,37 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.session.isStreaming || this.session.isCompacting || this.session.hasPostPromptWork;
 	}
 
-	#submitLoopPromptWhenReady(prompt: string): void {
-		if (!this.loopModeEnabled || this.loopPrompt !== prompt || !this.onInputCallback) return;
+	async #submitLoopPromptWhenReady(
+		source: LoopPromptSource,
+		options?: { persistModeChange?: boolean },
+	): Promise<void> {
+		if (!this.#isCurrentLoopPromptSource(source) || !this.onInputCallback) return;
 		if (this.#isAutoSubmitBlocked()) {
-			this.#deferLoopReadinessCheck(() => this.#submitLoopPromptWhenReady(prompt));
+			this.#deferLoopReadinessCheck(() => {
+				void this.#submitLoopPromptWhenReady(source, options);
+			});
 			return;
 		}
+		const promptText = await this.#readValidatedLoopPromptSource(source);
+		if (promptText === undefined) return;
+		const inputCallback = this.onInputCallback;
+		if (!this.#isCurrentLoopPromptSource(source) || !inputCallback) return;
 		if (!consumeLoopIteration(this.loopRuntime)) {
 			this.disableLoopMode("Loop iteration limit reached. Loop mode disabled.");
 			return;
 		}
-		this.onInputCallback(this.startPendingSubmission({ text: prompt }));
+		this.loopPrompt = promptText;
+		if (options?.persistModeChange ?? this.loopRuntime?.remainingIterations !== undefined) {
+			this.sessionManager.appendModeChange("loop", this.#loopModeData());
+		}
+		inputCallback(this.startPendingSubmission({ text: promptText }));
 	}
 
-	async #runLoopIteration(action: "prompt" | "compact" | "reset", prompt: string): Promise<void> {
-		if (!this.loopModeEnabled || this.loopPrompt !== prompt || !this.onInputCallback) return;
+	async #runLoopIteration(action: "prompt" | "compact" | "reset", source: LoopPromptSource): Promise<void> {
+		if (!this.#isCurrentLoopPromptSource(source) || !this.onInputCallback) return;
 		if (this.#isAutoSubmitBlocked()) {
 			this.#deferLoopReadinessCheck(() => {
-				void this.#runLoopIteration(action, prompt);
+				void this.#runLoopIteration(action, source);
 			});
 			return;
 		}
@@ -1345,24 +1553,41 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 
-		if (action === "compact") {
+		let submitSource = source;
+		if (action === "reset" && "promptFilePath" in source) {
+			const promptText = await this.#readValidatedLoopPromptSource(source);
+			if (promptText === undefined) return;
+			if (!this.#isCurrentLoopPromptSource(source) || !this.onInputCallback) return;
+			submitSource = { promptFilePath: source.promptFilePath };
+			await this.handleClearCommand({ preserveLoopPrompt: false });
+			await this.#restoreLoopPromptFileInCurrentSession(source.promptFilePath, promptText, {
+				forceContext: true,
+			});
+		} else if (action === "compact") {
 			await this.handleCompactCommand();
+			if ("promptFilePath" in source) {
+				this.#loopPromptFileContextSentFor = undefined;
+				await this.#sendLoopPromptFileContext(source.promptFilePath);
+			}
 		} else if (action === "reset") {
 			await this.handleClearCommand();
 		}
-		this.#submitLoopPromptWhenReady(prompt);
+		void this.#submitLoopPromptWhenReady(submitSource, { persistModeChange: action === "reset" });
 	}
 
 	disableLoopMode(message = "Loop mode disabled."): void {
 		const wasEnabled = this.loopModeEnabled;
 		this.loopModeEnabled = false;
 		this.loopPrompt = undefined;
+		this.loopPromptFilePath = undefined;
+		this.#loopPromptFileContextSentFor = undefined;
 		this.loopRuntime = undefined;
 		this.#cancelLoopAutoSubmit();
 		this.statusLine.setLoopModeStatus(undefined);
 		this.updateEditorTopBorder();
 		this.ui.requestRender();
 		if (wasEnabled) {
+			this.sessionManager.appendModeChange("none");
 			this.showStatus(message);
 		}
 	}
@@ -1374,6 +1599,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	 */
 	pauseLoop(): void {
 		this.loopPrompt = undefined;
+		this.loopPromptFilePath = undefined;
+		this.#loopPromptFileContextSentFor = undefined;
+		this.#loopPromptReplaceOnCapture = true;
+		this.sessionManager.appendModeChange("none");
 		this.#cancelLoopAutoSubmit();
 	}
 
@@ -1387,19 +1616,27 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showError(parsed);
 			return undefined;
 		}
-		const loopLimit = parsed.limit ?? { intervalMs: DEFAULT_LOOP_INTERVAL_MS };
+		const loopConfig = parsed.limit ?? { intervalMs: DEFAULT_LOOP_INTERVAL_MS };
+		const reusablePromptFilePath = await this.#reusableLoopPromptFilePath();
 		this.loopModeEnabled = true;
-		this.loopPrompt = undefined;
-		this.loopRuntime = createLoopLimitRuntime(loopLimit);
+		this.loopPromptFilePath = reusablePromptFilePath;
+		this.loopPrompt = reusablePromptFilePath ? await this.#readLoopPromptFile(reusablePromptFilePath) : undefined;
+		this.loopRuntime = createLoopRuntime(loopConfig);
 		this.statusLine.setLoopModeStatus({ enabled: true });
 		this.updateEditorTopBorder();
 		this.ui.requestRender();
-		const limitSuffix = ` Repeating ${describeLoopLimit(loopLimit)}.`;
-		const remaining = this.loopRuntime ? describeLoopLimitRuntime(this.loopRuntime) : undefined;
+		if (reusablePromptFilePath) {
+			this.sessionManager.appendModeChange("loop", this.#loopModeData());
+			await this.#sendLoopPromptFileContext(reusablePromptFilePath);
+			this.#scheduleLoopAutoSubmit();
+		}
+		const remaining = describeLoopRuntime(this.loopRuntime);
 		const remainingSuffix = remaining ? ` ${remaining}.` : "";
-		const tail = parsed.prompt ? "Repeating it after each turn." : "Your next prompt will repeat after each turn.";
+		const promptFileSuffix = reusablePromptFilePath
+			? ` Reusing loop prompt file ${reusablePromptFilePath}.`
+			: " Your next prompt will be saved to a loop prompt file and repeated after each turn.";
 		this.showStatus(
-			`Loop mode enabled.${limitSuffix}${remainingSuffix} ${tail} Esc cancels the current iteration; /loop again to disable.`,
+			`Loop mode enabled. Repeating ${describeLoopConfig(loopConfig)}.${remainingSuffix}${promptFileSuffix} Esc cancels the current iteration; /loop again to disable.`,
 		);
 		// Hand any inline prompt back to the dispatcher so the normal submit flow
 		// runs the first iteration — it records the text as the loop prompt and
@@ -2104,6 +2341,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#cancelGoalContinuation();
 			this.#updateGoalModeStatus();
 		}
+
+		if (this.loopModeEnabled || this.loopPrompt || this.loopPromptFilePath) {
+			this.loopModeEnabled = false;
+			this.loopPrompt = undefined;
+			this.loopPromptFilePath = undefined;
+			this.loopRuntime = undefined;
+			this.#loopPromptFileContextSentFor = undefined;
+			this.#cancelLoopAutoSubmit();
+			this.statusLine.setLoopModeStatus(undefined);
+		}
 	}
 
 	/** Reconcile mode state from session entries on resume/switch. */
@@ -2143,6 +2390,28 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		this.session.goalRuntime.clearAccounting();
+		if (sessionContext.mode === "loop") {
+			const promptFilePath =
+				typeof sessionContext.modeData?.promptFilePath === "string"
+					? normalizeLocalScheme(sessionContext.modeData.promptFilePath)
+					: undefined;
+			if (!promptFilePath || !(await this.#loopPromptFileExists(promptFilePath))) {
+				this.sessionManager.appendModeChange("none");
+				return;
+			}
+			this.loopModeEnabled = true;
+			this.loopPromptFilePath = promptFilePath;
+			this.loopPrompt = await this.#readLoopPromptFile(promptFilePath);
+			this.loopRuntime = this.#loopRuntimeFromModeData(sessionContext.modeData) ?? {
+				intervalMs: DEFAULT_LOOP_INTERVAL_MS,
+			};
+			this.statusLine.setLoopModeStatus({ enabled: true });
+			this.updateEditorTopBorder();
+			this.ui.requestRender();
+			await this.#sendLoopPromptFileContext(promptFilePath);
+			this.#scheduleLoopAutoSubmit();
+			return;
+		}
 		if (!this.session.settings.get("plan.enabled")) {
 			// Clear stale plan/plan_paused mode so re-enabling the setting
 			// later doesn't unexpectedly restore an old plan session.
@@ -3902,9 +4171,25 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#workflowPanel = undefined;
 	}
 
-	handleClearCommand(): Promise<void> {
+	async handleClearCommand(options?: { preserveLoopPrompt?: boolean }): Promise<void> {
+		const shouldPreserveLoopPrompt = options?.preserveLoopPrompt !== false;
+		const promptFilePath = shouldPreserveLoopPrompt && this.loopModeEnabled ? this.loopPromptFilePath : undefined;
+		let promptText: string | undefined;
+		if (promptFilePath) {
+			try {
+				promptText = await this.#readLoopPromptFile(promptFilePath);
+			} catch {
+				promptText = this.loopPrompt;
+			}
+		}
 		this.#prepareSessionSwitch();
-		return this.#commandController.handleClearCommand();
+		await this.#commandController.handleClearCommand();
+		if (promptFilePath && promptText?.trim() && this.loopModeEnabled) {
+			await this.#restoreLoopPromptFileInCurrentSession(promptFilePath, promptText, {
+				forceContext: true,
+				persistModeChange: true,
+			});
+		}
 	}
 
 	handleFreshCommand(): Promise<void> {

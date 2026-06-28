@@ -7,15 +7,17 @@ import * as path from "node:path";
 import { $which, APP_NAME, getProjectDir, getPythonEnvDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import chalk from "chalk";
+import { DEFAULT_LINUX_PODMAN_IMAGE } from "../config/sandbox-defaults";
 import { Settings, settings } from "../config/settings";
 import { theme } from "../modes/theme/theme";
 import { downloadSttModel, isSttModelCached } from "../stt/downloader";
 import { isSttModelKey, STT_MODEL_OPTIONS } from "../stt/models";
 import { detectRecorder, ensureRecorder } from "../stt/recorder";
+import { resolveLinuxPodmanSandboxImage, validateLinuxPodmanSandboxImage } from "../task/omp-command";
 import { downloadTtsModel, isTtsLocalModelKey, isTtsModelCached, TTS_LOCAL_MODEL_OPTIONS } from "../tts";
 import { selectSetupModel } from "./setup-model-picker";
 
-export type SetupComponent = "python" | "speech";
+export type SetupComponent = "python" | "speech" | "podman";
 
 export interface SetupCommandArgs {
 	component: SetupComponent;
@@ -25,7 +27,7 @@ export interface SetupCommandArgs {
 	};
 }
 
-const VALID_COMPONENTS: SetupComponent[] = ["python", "speech"];
+const VALID_COMPONENTS: SetupComponent[] = ["python", "speech", "podman"];
 
 const MANAGED_PYTHON_ENV = getPythonEnvDir();
 
@@ -122,6 +124,9 @@ export async function runSetupCommand(cmd: SetupCommandArgs): Promise<void> {
 			break;
 		case "speech":
 			await handleSpeechSetup(cmd.flags);
+			break;
+		case "podman":
+			await handlePodmanSetup(cmd.flags);
 			break;
 	}
 }
@@ -304,6 +309,86 @@ async function handleSpeechSetup(flags: { json?: boolean; check?: boolean }): Pr
 	);
 }
 
+interface PodmanCheckResult {
+	available: boolean;
+	podmanPath?: string;
+	version?: string;
+	rootless?: boolean;
+	graphDriver?: string;
+	ociRuntime?: string;
+	image?: string;
+	imageValid?: boolean;
+	installHint: string;
+}
+
+async function checkPodmanSetup(): Promise<PodmanCheckResult> {
+	const podmanPath = $which("podman");
+	const image = resolveLinuxPodmanSandboxImage(process.env);
+	const imageValid = image ? validateLinuxPodmanSandboxImage(image) : undefined;
+	const result: PodmanCheckResult = {
+		available: false,
+		image,
+		imageValid,
+		installHint:
+			"Install rootless Podman plus uidmap/newuidmap/newgidmap and fuse-overlayfs from your OS package manager.",
+	};
+	if (!podmanPath) return result;
+	result.podmanPath = podmanPath;
+	const version = await $`${podmanPath} --version`.quiet().nothrow();
+	if (version.exitCode === 0) result.version = version.text().trim();
+	const info =
+		await $`${podmanPath} info --format "{{.Host.Security.Rootless}} {{.Store.GraphDriverName}} {{.Host.OCIRuntime.Name}}"`
+			.quiet()
+			.nothrow();
+	if (info.exitCode !== 0) return result;
+	const [rootless, graphDriver, ociRuntime] = info.text().trim().split(/\s+/, 3);
+	result.available = true;
+	result.rootless = rootless === "true";
+	result.graphDriver = graphDriver;
+	result.ociRuntime = ociRuntime;
+	return result;
+}
+
+async function handlePodmanSetup(flags: { json?: boolean; check?: boolean }): Promise<void> {
+	const status = await checkPodmanSetup();
+	if (flags.json) {
+		process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
+		if (!status.available || status.rootless === false || !status.image || status.imageValid === false)
+			process.exit(1);
+		return;
+	}
+
+	if (!status.available) {
+		process.stderr.write(`${chalk.red(`${theme.status.error} Podman not ready`)}\n`);
+		process.stderr.write(`${chalk.dim(status.installHint)}\n`);
+		process.exit(1);
+	}
+	process.stdout.write(`${chalk.dim(`Podman: ${status.podmanPath ?? "podman"}`)}\n`);
+	if (status.version) process.stdout.write(`${chalk.dim(`Version: ${status.version}`)}\n`);
+	process.stdout.write(`${chalk.dim(`Rootless: ${status.rootless === true ? "yes" : "no"}`)}\n`);
+	if (status.graphDriver) process.stdout.write(`${chalk.dim(`Storage: ${status.graphDriver}`)}\n`);
+	if (status.image) process.stdout.write(`${chalk.dim(`Image: ${status.image}`)}\n`);
+	if (status.image === DEFAULT_LINUX_PODMAN_IMAGE) {
+		process.stdout.write(
+			`${chalk.dim("Default dev image: build with `bun run pi:image` from a source checkout, or override with PI_OMPX_PODMAN_IMAGE/sandbox.podman.image.")}\n`,
+		);
+	}
+	if (status.ociRuntime) process.stdout.write(`${chalk.dim(`Runtime: ${status.ociRuntime}`)}\n`);
+	if (!status.rootless) {
+		process.stderr.write(chalk.red(`\n${theme.status.error} Rootless Podman is required for workspace sandboxing\n`));
+		process.exit(1);
+	}
+	if (!status.image) {
+		process.stderr.write(chalk.red(`\n${theme.status.error} Podman image could not be resolved\n`));
+		process.exit(1);
+	}
+	if (status.imageValid === false) {
+		process.stderr.write(chalk.red(`\n${theme.status.error} Podman image must be a single OCI image reference\n`));
+		process.exit(1);
+	}
+	process.stdout.write(chalk.green(`\n${theme.status.success} Linux Podman sandbox prerequisites are ready\n`));
+}
+
 /**
  * Print setup command help.
  */
@@ -314,9 +399,9 @@ ${chalk.bold("Usage:")}
   ${APP_NAME} setup                     Run the onboarding wizard
   ${APP_NAME} setup <component> [options]
 
-${chalk.bold("Components:")}
   python    Verify a Python 3 interpreter is reachable for code execution
   speech    Pick + download the speech-to-text and text-to-speech models and an audio recorder
+  podman    Check Linux Podman prerequisites for workspace sandboxing
 
 ${chalk.bold("Options:")}
   -c, --check   Check if dependencies are installed without installing
@@ -327,6 +412,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} setup python           Check Python execution dependencies
   ${APP_NAME} setup speech           Set up speech (pick STT + TTS models, install a recorder)
   ${APP_NAME} setup speech --check   Check if speech dependencies are available
+  ${APP_NAME} setup podman --check   Check Linux Podman workspace sandbox prerequisites
   ${APP_NAME} setup python --check   Check if Python execution is available
 `);
 }

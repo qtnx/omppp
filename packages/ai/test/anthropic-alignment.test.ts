@@ -130,6 +130,19 @@ function captureSimpleAnthropicPayload(
 	return promise;
 }
 
+it("rejects max reasoning before budgeting on Anthropic models without max support", () => {
+	expect(() =>
+		streamSimple(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["Stay concise."],
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			},
+			{ apiKey: "sk-ant-test", reasoning: Effort.Max },
+		),
+	).toThrow(/Thinking effort max is not supported/);
+});
+
 function expectClaudeMetadataUserId(userId: string | undefined, expectedSessionId?: string): void {
 	expect(typeof userId).toBe("string");
 	const parsed = JSON.parse(userId ?? "{}") as {
@@ -1985,7 +1998,7 @@ describe("Anthropic request fingerprint alignment", () => {
 				name: "Claude Opus 4.7",
 				thinking: {
 					mode: "anthropic-adaptive",
-					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
 				},
 			}),
 			{
@@ -1994,7 +2007,7 @@ describe("Anthropic request fingerprint alignment", () => {
 			},
 			{
 				thinkingEnabled: true,
-				reasoning: Effort.XHigh,
+				reasoning: Effort.Max,
 			},
 		)) as {
 			thinking?: { type?: string; display?: string };

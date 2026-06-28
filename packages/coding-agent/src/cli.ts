@@ -31,6 +31,16 @@ import {
 	TINY_WORKER_ARGS,
 } from "./cli/worker-selectors";
 
+const MACOS_SANDBOX_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_INHERITED";
+const LINUX_SANDBOX_INHERITED_ENV = "PI_OMPX_LINUX_SANDBOX_INHERITED";
+
+function disableWorkspaceSandboxForProcess(): void {
+	Bun.env[MACOS_SANDBOX_INHERITED_ENV] = "0";
+	Bun.env.PI_OMPX_MACOS_SANDBOX = "0";
+	Bun.env[LINUX_SANDBOX_INHERITED_ENV] = "0";
+	Bun.env.PI_OMPX_LINUX_SANDBOX = "0";
+}
+
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 	process.stderr.write(
 		`error: Bun runtime must be >= ${MIN_BUN_VERSION} (found v${Bun.version}). Please upgrade: bun upgrade\n`,
@@ -234,8 +244,7 @@ export async function runCli(argv: string[]): Promise<void> {
 	let resolvedArgv = argv;
 	const rootSandbox = extractRootNoSandboxFlag(resolvedArgv);
 	if (rootSandbox.noSandbox) {
-		Bun.env.PI_OMPX_MACOS_SANDBOX_INHERITED = "0";
-		Bun.env.PI_OMPX_MACOS_SANDBOX = "0";
+		disableWorkspaceSandboxForProcess();
 	}
 	resolvedArgv = rootSandbox.argv;
 	try {
@@ -278,14 +287,10 @@ export async function runCli(argv: string[]): Promise<void> {
 		return;
 	}
 
-	// Internal entrypoints (smoke probe, worker re-entries) dispatch before the
-	// macOS self-sandbox relaunch: a worker thread re-entering this module must
-	// never be wrapped into a detached sandbox-exec clone — the clone has no
-	// postMessage channel to the spawning thread, so the worker would hang.
-	if (resolvedArgv[0] === "--smoke-test") {
-		await runSmokeTest();
-		return;
-	}
+	// Internal worker re-entries dispatch before any workspace-sandbox relaunch:
+	// a worker thread re-entering this module must never be wrapped into a
+	// detached sandbox/container clone — the clone has no postMessage channel to
+	// the spawning thread, so the worker would hang.
 	if (await runWorkerEntrypoint(resolvedArgv[0])) {
 		return;
 	}
@@ -299,8 +304,16 @@ export async function runCli(argv: string[]): Promise<void> {
 	// tests, SDK embedding) have `import.meta.main === false`.
 	if (import.meta.main) declareWorkerHostEntry();
 
-	const { reexecUnderMacOSSandboxIfNeeded } = await import("./task/omp-command");
-	if (await reexecUnderMacOSSandboxIfNeeded(resolvedArgv)) return;
+	// The smoke probe itself spawns bundled workers, so it also needs the compiled
+	// binary to declare this CLI entry as the worker host before it runs.
+	if (resolvedArgv[0] === "--smoke-test") {
+		await runSmokeTest();
+		return;
+	}
+
+	// Profile bootstrap must complete before loading omp-command because it imports pi-utils/env eagerly.
+	const { reexecUnderWorkspaceSandboxIfNeeded } = await import("./task/omp-command");
+	if (await reexecUnderWorkspaceSandboxIfNeeded(resolvedArgv)) return;
 	const [{ run }, { commands, resolveCliArgv }] = await Promise.all([
 		import("@oh-my-pi/pi-utils/cli"),
 		import("./cli-commands"),
@@ -331,6 +344,7 @@ if (import.meta.main || !Bun.isMainThread) {
 			process.exit(1);
 		})
 		.finally(async () => {
+			// Profile bootstrap must complete before loading omp-command because it imports pi-utils/env eagerly.
 			const { disconnectMacOSSandboxSupervisor } = await import("./task/omp-command");
 			disconnectMacOSSandboxSupervisor();
 		});

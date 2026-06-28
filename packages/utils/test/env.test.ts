@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { filterProcessEnv, parseEnvFile } from "@oh-my-pi/pi-utils/env";
+import { filterProcessEnv, isLinuxSandboxEnvFileBlockedKey, parseEnvFile } from "@oh-my-pi/pi-utils/env";
 
 const tempDirs: string[] = [];
 
@@ -48,6 +48,26 @@ describe("parseEnvFile", () => {
 			OMP_FEATURE: "enabled",
 			PI_FEATURE: "enabled",
 		});
+	});
+});
+
+describe("isLinuxSandboxEnvFileBlockedKey", () => {
+	it("blocks directory override env files inside the Linux workspace sandbox", () => {
+		const activeEnv = { PI_OMPX_LINUX_SANDBOX_ACTIVE_INHERITED: "1" };
+
+		for (const key of [
+			"PI_CONFIG_DIR",
+			"PI_CODING_AGENT_DIR",
+			"PI_PACKAGE_DIR",
+			"PI_SUBPROCESS_CMD",
+			"XDG_DATA_HOME",
+			"XDG_STATE_HOME",
+			"XDG_CACHE_HOME",
+		]) {
+			expect(isLinuxSandboxEnvFileBlockedKey(key, activeEnv)).toBe(true);
+		}
+		expect(isLinuxSandboxEnvFileBlockedKey("OPENAI_API_KEY", activeEnv)).toBe(false);
+		expect(isLinuxSandboxEnvFileBlockedKey("PI_CONFIG_DIR", {})).toBe(false);
 	});
 });
 

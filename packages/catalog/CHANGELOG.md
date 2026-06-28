@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `max` as a model-scoped thinking effort for providers/models that expose it, including Anthropic adaptive models (Opus/Fable/Mythos) and GLM 5.2+, while keeping older GLM and fixed Z.ai reasoning formats on their narrower effort sets.
+
 ## [16.2.2] - 2026-06-27
 
 ### Removed

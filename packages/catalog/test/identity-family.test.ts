@@ -142,6 +142,9 @@ describe("isReasoningGlmModelId", () => {
 		expect(isReasoningGlmModelId("glm-6")).toBe(true);
 		// Namespaced ids are stripped before classification.
 		expect(isReasoningGlmModelId("z-ai/glm-5-turbo")).toBe(true);
+		expect(isReasoningGlmModelId("coreweave/zai-org/GLM-5.2")).toBe(true);
+		expect(isReasoningGlmModelId("huggingface/zai-org/GLM-5.2")).toBe(true);
+		expect(isReasoningGlmModelId("together/zai-org/GLM-5.2")).toBe(true);
 	});
 
 	test("excludes pre-4.5, vision, flash, and preview SKUs", () => {

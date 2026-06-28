@@ -100,9 +100,11 @@ describe("computeEssentialBuiltinNames", () => {
 		expect(computeEssentialBuiltinNames(settings).sort()).toEqual([...DEFAULT_ESSENTIAL_TOOL_NAMES].sort());
 	});
 
-	it("keeps task in the default essential tool set", () => {
+	it("keeps todo and browser in the default essential tool set", () => {
 		const settings = Settings.isolated({});
-		expect(computeEssentialBuiltinNames(settings).sort()).toEqual(["bash", "edit", "read", "task"].sort());
+		expect(computeEssentialBuiltinNames(settings).sort()).toEqual(
+			["bash", "browser", "edit", "read", "task", "todo"].sort(),
+		);
 	});
 
 	it("respects tools.essentialOverride when provided", () => {
@@ -154,9 +156,13 @@ describe("tools.discoveryMode settings schema", () => {
 describe("filterInitialToolsForDiscoveryAll", () => {
 	const loadModes: Record<string, BuiltinToolLoadMode> = {
 		read: "essential",
+		bash: "essential",
 		edit: "essential",
+		task: "essential",
 		todo: "discoverable",
 		grep: "discoverable",
+		browser: "discoverable",
+		find: "discoverable",
 	};
 	const base = {
 		loadModeOf: (name: string): BuiltinToolLoadMode | undefined => loadModes[name],
@@ -168,6 +174,14 @@ describe("filterInitialToolsForDiscoveryAll", () => {
 
 	it("hides non-essential discoverable built-ins", () => {
 		expect(filterInitialToolsForDiscoveryAll(["read", "edit", "todo", "grep"], base)).toEqual(["read", "edit"]);
+	});
+
+	it("keeps default essential tools visible under discovery-all filtering", () => {
+		const result = filterInitialToolsForDiscoveryAll(["read", "bash", "edit", "task", "todo", "browser", "find"], {
+			...base,
+			essentialNames: new Set(DEFAULT_ESSENTIAL_TOOL_NAMES),
+		});
+		expect(result).toEqual(["read", "bash", "edit", "task", "todo", "browser"]);
 	});
 
 	it("keeps discoverable tools required by a forced tool_choice (eager todo)", () => {

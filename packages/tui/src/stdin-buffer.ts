@@ -37,6 +37,7 @@ const KITTY_PRINTABLE_DEDUP_WINDOW_MS = 25;
 // any-motion tracking, so report floods plus render stalls make the split
 // routine — see the settings search leaking `[<35;8;16M`).
 const SGR_MOUSE_PARTIAL = /^\x1b\[<[\d;]*$/;
+const DOUBLE_ESC_CSI_WINDOW_REPORT = /^\x1b\x1b\[(?:\d+;){2}\d+t$/;
 // Upper bound on how long an unambiguous partial is held past the flush
 // timeout before being delivered raw anyway (terminal died mid-sequence).
 // This is also the worst-case added latency for a partial that never
@@ -230,6 +231,18 @@ function extractCompleteSequences(buffer: string): { sequences: string[]; remain
 	// buffer (or Array.from-ing it) per iteration would make plain-text bursts
 	// O(n²) — a 100KB non-bracketed paste must stay O(n).
 	while (pos < length) {
+		if (
+			buffer.charCodeAt(pos) === 0x1b &&
+			buffer.charCodeAt(pos + 1) === 0x1b &&
+			(buffer.charCodeAt(pos + 2) === 0x5d ||
+				buffer.charCodeAt(pos + 2) === 0x50 ||
+				buffer.charCodeAt(pos + 2) === 0x5f)
+		) {
+			sequences.push(ESC);
+			pos++;
+			continue;
+		}
+
 		if (buffer.charCodeAt(pos) === 0x1b) {
 			// Find the end of this escape sequence by growing the candidate.
 			let end = pos + 1;
@@ -262,6 +275,12 @@ function extractCompleteSequences(buffer: string): { sequences: string[]; remain
 				// reports carry the modifier in the button bits, not an ESC prefix.
 				// Deliver the bare ESC (a real Esc keypress) and the report separately.
 				if (candidate.startsWith(`${ESC}${ESC}[<`)) {
+					sequences.push(ESC, candidate.slice(1));
+					pos = end;
+					consumed = true;
+					break;
+				}
+				if (DOUBLE_ESC_CSI_WINDOW_REPORT.test(candidate)) {
 					sequences.push(ESC, candidate.slice(1));
 					pos = end;
 					consumed = true;

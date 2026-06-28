@@ -9,6 +9,7 @@
  */
 
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { ANTHROPIC_THINKING, mapAnthropicToolChoice } from "../stream";
 import type { Context, Model, ModelSpec, SimpleStreamOptions } from "../types";
 import { AssistantMessageEventStream } from "../utils/event-stream";
@@ -71,11 +72,15 @@ export function streamOpenAIAnthropicShim(
 					cost: model.cost,
 				} as ModelSpec<"anthropic-messages">);
 
-				const reasoningEffort = options?.reasoning;
-				const thinkingEnabled = !!reasoningEffort && model.reasoning && !options?.disableReasoning;
-				const thinkingBudget = reasoningEffort
-					? (options?.thinkingBudgets?.[reasoningEffort] ?? ANTHROPIC_THINKING[reasoningEffort])
-					: undefined;
+				const reasoningEffort =
+					options?.reasoning && model.reasoning && !options?.disableReasoning
+						? requireSupportedEffort(model, options.reasoning)
+						: undefined;
+				const thinkingEnabled = reasoningEffort !== undefined;
+				const thinkingBudget =
+					reasoningEffort !== undefined
+						? (options?.thinkingBudgets?.[reasoningEffort] ?? ANTHROPIC_THINKING[reasoningEffort])
+						: undefined;
 
 				const innerStream = streamAnthropic(anthropicModel, context, {
 					apiKey,

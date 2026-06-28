@@ -225,6 +225,7 @@ describe("model thinking derivation", () => {
 			medium: "high",
 			high: "xhigh",
 			xhigh: "max",
+			max: "max",
 		});
 	});
 
@@ -421,7 +422,7 @@ describe("model thinking derivation", () => {
 		});
 		expect(mapEffortToAnthropicAdaptiveEffort(minimaxM3, Effort.High)).toBe("adaptive");
 		// Opus 4.6 has no real xhigh level — the baked 4-tier map aliases XHigh to "max".
-		expect(opus46.thinking?.effortMap).toEqual({ minimal: "low", xhigh: "max" });
+		expect(opus46.thinking?.effortMap).toEqual({ minimal: "low", xhigh: "max", max: "max" });
 		expect(mapEffortToAnthropicAdaptiveEffort(opus46, Effort.XHigh)).toBe("max");
 		// Opus 4.7+ on the Messages API exposes the full five-tier scale: the baked
 		// map shifts each user-facing effort up one notch so the top tier reaches "max".
@@ -431,13 +432,18 @@ describe("model thinking derivation", () => {
 			medium: "high",
 			high: "xhigh",
 			xhigh: "max",
+			max: "max",
 		});
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Minimal)).toBe("low");
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.High)).toBe("xhigh");
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.XHigh)).toBe("max");
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Max)).toBe("max");
+		expect(() => mapEffortToAnthropicAdaptiveEffort(sonnet46, Effort.Max)).toThrow(/not supported/);
 		expect(mapEffortToAnthropicAdaptiveEffort(mythos, Effort.High)).toBe("xhigh");
 		expect(mapEffortToAnthropicAdaptiveEffort(mythosBedrock, Effort.XHigh)).toBe("max");
-		// Bedrock Converse keeps the four-tier legacy mapping; xhigh aliases to "max".
+		// Bedrock Converse keeps the four-tier legacy mapping; xhigh aliases to "max" for callers that support it.
+		expect(opus47Bedrock.thinking?.efforts).not.toContain(Effort.Max);
+		expect(() => mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.Max)).toThrow(/not supported/);
 		expect(opus47Bedrock.thinking?.effortMap).toEqual({ minimal: "low", xhigh: "max" });
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.High)).toBe("high");
 		expect(() => mapEffortToAnthropicAdaptiveEffort(sonnet46, Effort.XHigh)).toThrow(/not supported/);
@@ -669,7 +675,7 @@ describe("model thinking runtime helpers", () => {
 		);
 	});
 
-	it("exposes xhigh for OpenRouter-hosted Anthropic adaptive models", () => {
+	it("exposes max for OpenRouter-hosted Anthropic adaptive models", () => {
 		const fable = createModel({
 			id: "anthropic/claude-fable-5",
 			api: "openai-completions",
@@ -686,12 +692,40 @@ describe("model thinking runtime helpers", () => {
 			provider: "openrouter",
 		});
 
-		expect(fable.thinking?.efforts.at(-1)).toBe(Effort.XHigh);
-		expect(opus46.thinking?.efforts.at(-1)).toBe(Effort.XHigh);
+		expect(fable.thinking?.efforts.at(-1)).toBe(Effort.Max);
+		expect(opus46.thinking?.efforts.at(-1)).toBe(Effort.Max);
 		expect(sonnet46.thinking?.efforts.at(-1)).toBe(Effort.High);
-		expect(requireSupportedEffort(fable, Effort.XHigh)).toBe(Effort.XHigh);
+		expect(requireSupportedEffort(fable, Effort.Max)).toBe(Effort.Max);
+		expect(requireSupportedEffort(opus46, Effort.Max)).toBe(Effort.Max);
 	});
 
+	it("exposes max for GLM 5.2 without widening older or binary GLM models", () => {
+		const glm51 = createModel({
+			id: "glm-5.1",
+			api: "openai-completions",
+			provider: "zai",
+			compat: { thinkingFormat: "openai", supportsReasoningEffort: true },
+		});
+		const glm52 = createModel({
+			id: "glm-5.2",
+			api: "openai-completions",
+			provider: "zai",
+			compat: { thinkingFormat: "openai", supportsReasoningEffort: true },
+		});
+		const glm52Qwen = createModel({
+			id: "glm-5.2",
+			api: "openai-completions",
+			provider: "alibaba-coding-plan",
+			compat: { thinkingFormat: "qwen" },
+		});
+
+		expect(glm51.thinking?.efforts.at(-1)).toBe(Effort.XHigh);
+		expect(glm52.thinking?.efforts.at(-1)).toBe(Effort.Max);
+		expect(glm52Qwen.thinking?.efforts.at(-1)).toBe(Effort.High);
+		expect(requireSupportedEffort(glm52, Effort.Max)).toBe(Effort.Max);
+		expect(() => requireSupportedEffort(glm51, Effort.Max)).toThrow(/not supported/);
+		expect(() => requireSupportedEffort(glm52Qwen, Effort.Max)).toThrow(/not supported/);
+	});
 	it("enables xhigh for openai-responses and openai-codex-responses APIs", () => {
 		const responsesModel = createModel({ id: "custom-responses", api: "openai-responses", provider: "custom" });
 		const codexModel = createModel({ id: "custom-codex", api: "openai-codex-responses", provider: "custom" });

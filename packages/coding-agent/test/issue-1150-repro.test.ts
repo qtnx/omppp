@@ -25,6 +25,7 @@ describe("issue #1150 — release/dev builds route workers through the CLI entry
 	const repoRoot = path.resolve(import.meta.dir, "../../..");
 	const ciScriptPath = path.join(repoRoot, "scripts/ci-release-build-binaries.ts");
 	const devScriptPath = path.join(repoRoot, "packages/coding-agent/scripts/build-binary.ts");
+	const cliSourcePath = path.join(repoRoot, "packages/coding-agent/src/cli.ts");
 
 	// Repo-root-relative CLI literal — every runtime worker spawn site uses this
 	// same entry plus a hidden argv selector.
@@ -47,5 +48,18 @@ describe("issue #1150 — release/dev builds route workers through the CLI entry
 		]) {
 			expect(devSource).not.toContain(`"${entry}"`);
 		}
+	});
+
+	it("smoke-test declares the CLI as worker host before spawning workers", async () => {
+		const cliSource = await Bun.file(cliSourcePath).text();
+		const workerDispatchIndex = cliSource.indexOf("runWorkerEntrypoint(resolvedArgv[0])");
+		const hostDeclarationIndex = cliSource.indexOf("declareWorkerHostEntry()");
+		const smokeDispatchIndex = cliSource.indexOf("await runSmokeTest()");
+
+		expect(workerDispatchIndex).toBeGreaterThanOrEqual(0);
+		expect(hostDeclarationIndex).toBeGreaterThanOrEqual(0);
+		expect(smokeDispatchIndex).toBeGreaterThanOrEqual(0);
+		expect(workerDispatchIndex).toBeLessThan(hostDeclarationIndex);
+		expect(hostDeclarationIndex).toBeLessThan(smokeDispatchIndex);
 	});
 });

@@ -48,7 +48,7 @@ export interface UnknownModel {
 	id: string;
 }
 
-export type ParsedModel = GeminiModel | AnthropicModel | OpenAIModel | UnknownModel;
+export type ParsedModel = GeminiModel | AnthropicModel | OpenAIModel | GlmModel | UnknownModel;
 
 /** Strip a provider namespace prefix (`openai/gpt-5.4` → `gpt-5.4`). */
 // Cache keyed by model id (a bounded set of bundled/aggregator ids), so no eviction is needed.
@@ -67,7 +67,8 @@ export function parseKnownModel(modelId: string): ParsedModel {
 	return (
 		parseGeminiModel(canonicalId) ??
 		parseAnthropicModel(canonicalId) ??
-		parseOpenAIModel(canonicalId) ?? { family: "unknown", id: canonicalId }
+		parseOpenAIModel(canonicalId) ??
+		parseGlmModel(canonicalId) ?? { family: "unknown", id: canonicalId }
 	);
 }
 
@@ -138,7 +139,7 @@ export const parseOpenAIModel = parser((modelId): OpenAIModel | null => {
  * `parseKnownModel`.
  */
 export const parseGlmModel = parser((modelId): GlmModel | null => {
-	const match = /glm-(\d{1,2}(?:\.\d+)?)(v)?(?:-(air|turbo|flashx|flash|preview))?\b/.exec(modelId);
+	const match = /glm-(\d{1,2}(?:\.\d+)?)(v)?(?:-(air|turbo|flashx|flash|preview))?\b/i.exec(modelId);
 	if (!match) {
 		return null;
 	}
@@ -148,8 +149,8 @@ export const parseGlmModel = parser((modelId): GlmModel | null => {
 	}
 	return {
 		family: "glm",
-		variant: (match[3] as GlmVariant | undefined) ?? "base",
-		vision: match[2] === "v",
+		variant: (match[3]?.toLowerCase() as GlmVariant | undefined) ?? "base",
+		vision: match[2]?.toLowerCase() === "v",
 		version,
 	};
 });

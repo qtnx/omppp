@@ -6,7 +6,7 @@ import type { Api, Model } from "../../types";
 export type CodexReasoningContext = "auto" | "current_turn" | "all_turns";
 
 export interface ReasoningConfig {
-	effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	summary?: "auto" | "concise" | "detailed";
 	context?: CodexReasoningContext;
 }

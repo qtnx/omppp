@@ -1,4 +1,5 @@
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import * as AIError from "../error";
 import { ANTHROPIC_THINKING, mapAnthropicToolChoice } from "../stream";
 import type { Api, Context, FetchImpl, Model, ModelSpec, SimpleStreamOptions } from "../types";
@@ -269,7 +270,8 @@ export function streamGitLabDuo(
 				...options.headers,
 			};
 
-			const reasoningEffort = options.reasoning;
+			const reasoningEffort =
+				options.reasoning && model.reasoning ? requireSupportedEffort(model, options.reasoning) : undefined;
 
 			const inner =
 				mapping.provider === "anthropic"

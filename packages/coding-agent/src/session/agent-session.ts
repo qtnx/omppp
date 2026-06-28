@@ -271,7 +271,7 @@ import {
 	toReasoningEffort,
 } from "../thinking";
 import { shutdownTinyTitleClient } from "../tiny/title-client";
-import { TOOL_DISCOVERY_SEARCH_TOOL_NAME } from "../tool-discovery/mode";
+import { countToolsForAutoDiscovery, TOOL_DISCOVERY_SEARCH_TOOL_NAME } from "../tool-discovery/mode";
 import {
 	buildDiscoverableToolSearchIndex,
 	collectDiscoverableTools,
@@ -283,7 +283,7 @@ import {
 	selectDiscoverableToolNamesByServer,
 	type ToolDiscoveryMode,
 } from "../tool-discovery/tool-index";
-import type { ToolCompactionRequest } from "../tools";
+import { computeEssentialBuiltinNames, filterInitialToolsForDiscoveryAll, type ToolCompactionRequest } from "../tools";
 import { assertEditableFile } from "../tools/auto-generated-guard";
 import { normalizeToolNames } from "../tools/builtin-names";
 import type { CheckpointState } from "../tools/checkpoint";
@@ -597,6 +597,8 @@ export interface AgentSessionConfig {
 	/** Rebuild the SSH tool from current capability discovery results. */
 	reloadSshTool?: () => Promise<AgentTool | null>;
 	requestedToolNames?: ReadonlySet<string>;
+	/** User-provided explicit tool allowlist; empty when the default registry-driven set is in use. */
+	explicitlyRequestedToolNames?: ReadonlySet<string>;
 	/**
 	 * Optional accessor for live MCP server instructions. Read by the session's
 	 * `rebuildSystemPrompt`-skip optimization to detect server-side instruction
@@ -606,6 +608,8 @@ export interface AgentSessionConfig {
 	getMcpServerInstructions?: () => Map<string, string> | undefined;
 	/** Enable hidden-by-default MCP tool discovery for this session. */
 	mcpDiscoveryEnabled?: boolean;
+	/** Whether MCP loading is enabled for this session; keeps auto discovery resolution count-aware. */
+	mcpEnabled?: boolean;
 	/** MCP tool names to activate for the current session when discovery mode is enabled. */
 	initialSelectedMCPToolNames?: string[];
 	/** Whether constructor-provided MCP defaults should be persisted immediately. */
@@ -1457,6 +1461,7 @@ export class AgentSession {
 		| ((toolNames: string[], tools: Map<string, AgentTool>) => Promise<{ systemPrompt: string[] }>)
 		| undefined;
 	#getMcpServerInstructions: (() => Map<string, string> | undefined) | undefined;
+	#explicitlyRequestedToolNames: ReadonlySet<string>;
 	#reloadSshTool: (() => Promise<AgentTool | null>) | undefined;
 	#disconnectOwnedMcpManager: (() => Promise<void>) | undefined;
 	#requestedToolNames: ReadonlySet<string> | undefined;
@@ -1475,8 +1480,10 @@ export class AgentSession {
 	 * trigger a rebuild. Compared against the live model after every model change
 	 * to decide whether the cached prompt is stale.
 	 */
+	#lastEffectiveDiscoveryMode: ToolDiscoveryMode | undefined;
 	#promptModelKey: string | undefined;
 	#mcpDiscoveryEnabled = false;
+	#mcpEnabled = false;
 	#discoverableMCPTools = new Map<string, DiscoverableTool>();
 	#selectedMCPToolNames = new Set<string>();
 	// Generic tool discovery (covers built-in + MCP + extension when tools.discoveryMode === "all")
@@ -1781,6 +1788,7 @@ export class AgentSession {
 		this.#toolRegistry = config.toolRegistry ?? new Map();
 		this.#builtInToolNames = new Set(config.builtInToolNames ?? []);
 		this.#requestedToolNames = config.requestedToolNames;
+		this.#explicitlyRequestedToolNames = config.explicitlyRequestedToolNames ?? new Set();
 		this.#contextGcDbPath = config.contextGcDbPath;
 		this.#transformContext = config.transformContext ?? (messages => messages);
 		this.#transformProviderContext = config.transformProviderContext;
@@ -1864,6 +1872,8 @@ export class AgentSession {
 		this.#disconnectOwnedMcpManager = config.disconnectOwnedMcpManager;
 		this.#baseSystemPrompt = this.agent.state.systemPrompt;
 		this.#promptModelKey = this.#currentPromptModelKey();
+		this.#mcpEnabled = config.mcpEnabled ?? false;
+		this.#lastEffectiveDiscoveryMode = this.#resolveEffectiveDiscoveryMode();
 		this.#mcpDiscoveryEnabled = config.mcpDiscoveryEnabled ?? false;
 		this.#setDiscoverableMCPTools(this.#collectDiscoverableMCPToolsFromRegistry());
 		this.#selectedMCPToolNames = new Set(config.initialSelectedMCPToolNames ?? []);
@@ -5159,10 +5169,17 @@ export class AgentSession {
 	}
 
 	#isRequestedToolAllowed(name: string): boolean {
-		if (this.#requestedToolNames === undefined) return true;
 		const normalized = name.toLowerCase();
+		// The discovery search tool is only permitted while tool discovery is
+		// effectively enabled. When discovery resolves to "off" it must not be
+		// activatable, even though it stays registered so a later model/settings
+		// change can re-enable discovery. This is independent of the explicit
+		// allowlist below (which never names it).
+		if (normalized === TOOL_DISCOVERY_SEARCH_TOOL_NAME) {
+			return this.isToolDiscoveryEnabled();
+		}
+		if (this.#requestedToolNames === undefined) return true;
 		return (
-			normalized === TOOL_DISCOVERY_SEARCH_TOOL_NAME ||
 			(normalized === "report_tool_issue" && isAutoQaEnabled(this.settings)) ||
 			this.#requestedToolNames.has(normalized)
 		);
@@ -5277,7 +5294,14 @@ export class AgentSession {
 	 * Get all configured tool names (built-in via --tools or default, plus custom tools).
 	 */
 	getAllToolNames(): string[] {
-		return Array.from(this.#toolRegistry.keys());
+		const names = Array.from(this.#toolRegistry.keys());
+		// The discovery search tool stays registered so a later model/settings
+		// change can re-enable discovery, but it must not surface on the public
+		// registry listing while discovery is effectively off.
+		if (!this.isToolDiscoveryEnabled()) {
+			return names.filter(name => name !== TOOL_DISCOVERY_SEARCH_TOOL_NAME);
+		}
+		return names;
 	}
 
 	#getEditModeSession() {
@@ -5300,12 +5324,106 @@ export class AgentSession {
 		return this.model ? formatModelString(this.model) : undefined;
 	}
 
+	#forceActiveDiscoveryToolNames(): Set<string> {
+		const forceActive = new Set<string>();
+		if (this.settings.get("todo.eager") && this.settings.get("todo.enabled") && this.#toolRegistry.has("todo")) {
+			forceActive.add("todo");
+		}
+		return forceActive;
+	}
+
+	async #reconcileActiveToolsForDiscoveryMode(
+		previousMode: ToolDiscoveryMode,
+		currentMode: ToolDiscoveryMode,
+	): Promise<boolean> {
+		this.#invalidateDiscoveryCaches();
+		if (previousMode === currentMode) return false;
+
+		const activeToolNames = this.getActiveToolNames();
+		let nextActiveToolNames = activeToolNames;
+
+		if (currentMode === "all" && this.#toolRegistry.has("search_tool_bm25")) {
+			const activeNamesWithDiscovery = activeToolNames.includes("search_tool_bm25")
+				? activeToolNames
+				: [...activeToolNames, "search_tool_bm25"];
+			nextActiveToolNames = filterInitialToolsForDiscoveryAll(activeNamesWithDiscovery, {
+				loadModeOf: name => this.#toolRegistry.get(name)?.loadMode,
+				essentialNames: new Set(computeEssentialBuiltinNames(this.settings)),
+				explicitlyRequested: this.#explicitlyRequestedToolNames,
+				restored: this.#selectedDiscoveredToolNames,
+				forceActive: this.#forceActiveDiscoveryToolNames(),
+			}).filter(name => {
+				if (!isMCPToolName(name)) return true;
+				return this.#explicitlyRequestedToolNames.has(name) || this.#selectedMCPToolNames.has(name);
+			});
+		} else if (previousMode === "all") {
+			const activeNameSet = new Set(activeToolNames);
+			const restoredBuiltins: string[] = [];
+			for (const [name, tool] of this.#toolRegistry) {
+				if (activeNameSet.has(name)) continue;
+				if (isMCPToolName(name)) continue;
+				if (tool.loadMode !== "discoverable") continue;
+				if (!this.#isRequestedToolAllowed(name)) continue;
+				restoredBuiltins.push(name);
+				this.#selectedDiscoveredToolNames.delete(name);
+			}
+			if (restoredBuiltins.length > 0) {
+				nextActiveToolNames = [...activeToolNames, ...restoredBuiltins];
+			}
+		}
+		if (currentMode === "mcp-only") {
+			nextActiveToolNames = nextActiveToolNames.filter(name => {
+				if (!isMCPToolName(name)) return true;
+				return this.#explicitlyRequestedToolNames.has(name) || this.#selectedMCPToolNames.has(name);
+			});
+		}
+		if (currentMode === "off") {
+			// Discovery is leaving the picture: mirror initial discovery-off
+			// selection by re-exposing every allowed MCP tool that was hidden
+			// only because discovery was active.
+			const activeNameSet = new Set(nextActiveToolNames);
+			const restoredMcpToolNames: string[] = [];
+			for (const name of this.#toolRegistry.keys()) {
+				if (!isMCPToolName(name)) continue;
+				if (activeNameSet.has(name)) continue;
+				if (!this.#isRequestedToolAllowed(name)) continue;
+				restoredMcpToolNames.push(name);
+			}
+			if (restoredMcpToolNames.length > 0) {
+				nextActiveToolNames = [...nextActiveToolNames, ...restoredMcpToolNames];
+			}
+			// Strip the discovery search tool only after restoring real tools.
+			nextActiveToolNames = nextActiveToolNames.filter(name => name !== "search_tool_bm25");
+		}
+
+		if (
+			nextActiveToolNames.length === activeToolNames.length &&
+			nextActiveToolNames.every((name, index) => name === activeToolNames[index])
+		) {
+			return false;
+		}
+
+		await this.#applyActiveToolsByName(nextActiveToolNames);
+		return true;
+	}
+
 	async #syncAfterModelChange(previousEditMode: EditMode): Promise<void> {
+		const previousDiscoveryMode = this.#lastEffectiveDiscoveryMode ?? this.#resolveEffectiveDiscoveryMode();
+		const currentDiscoveryMode = this.#resolveEffectiveDiscoveryMode();
+		const discoveryToolsChanged = await this.#reconcileActiveToolsForDiscoveryMode(
+			previousDiscoveryMode,
+			currentDiscoveryMode,
+		);
+		this.#lastEffectiveDiscoveryMode = currentDiscoveryMode;
+
 		const currentEditMode = this.#resolveActiveEditMode();
 		const editModeChanged = previousEditMode !== currentEditMode && this.getActiveToolNames().includes("edit");
 		// The system prompt may surface the active model; a switch makes the cached prompt stale.
 		const modelChanged = this.#currentPromptModelKey() !== this.#promptModelKey;
-		if (editModeChanged || modelChanged) {
+		if (
+			!discoveryToolsChanged &&
+			(editModeChanged || modelChanged || previousDiscoveryMode !== currentDiscoveryMode)
+		) {
 			await this.refreshBaseSystemPrompt();
 		}
 	}
@@ -5359,6 +5477,8 @@ export class AgentSession {
 		return resolveEffectiveToolDiscoveryMode(
 			this.settings,
 			this.model ? { contextWindow: this.model.contextWindow ?? undefined } : undefined,
+			countToolsForAutoDiscovery(this.#toolRegistry.keys()),
+			this.#mcpEnabled,
 		);
 	}
 
@@ -6997,7 +7117,7 @@ export class AgentSession {
 				cutoffCount: this.messages.length + messages.length,
 			});
 			try {
-				await this.#promptAgentWithIdleRetry(messages, agentPromptOptions);
+				await this.#promptAgentWithIdleRetry(messages, agentPromptOptions, generation);
 			} finally {
 				this.#setPendingContextSnapshot(undefined);
 			}
@@ -12494,9 +12614,16 @@ export class AgentSession {
 		}
 	}
 
-	async #promptAgentWithIdleRetry(messages: AgentMessage[], options?: { toolChoice?: ToolChoice }): Promise<void> {
+	async #promptAgentWithIdleRetry(
+		messages: AgentMessage[],
+		options: { toolChoice?: ToolChoice } | undefined,
+		generation: number,
+	): Promise<void> {
 		const deadline = Date.now() + 30_000;
 		for (;;) {
+			if (this.#promptGeneration !== generation) {
+				return;
+			}
 			try {
 				await this.agent.prompt(messages, options);
 				return;
@@ -13451,6 +13578,15 @@ export class AgentSession {
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 		}
 
+		try {
+			await this.#sessionSwitchReconciler?.();
+		} catch (error) {
+			logger.warn("Failed to reconcile session mode after branch", {
+				previousSessionFile,
+				error: String(error),
+			});
+		}
+
 		return { selectedText, cancelled: false };
 	}
 
@@ -13703,6 +13839,14 @@ export class AgentSession {
 		this.agent.replaceMessages(displayContext.messages);
 		this.#resetAdvisorSessionState();
 		this.#syncTodoPhasesFromBranch();
+		try {
+			await this.#sessionSwitchReconciler?.();
+		} catch (error) {
+			logger.warn("Failed to reconcile session mode after tree navigation", {
+				newLeafId,
+				error: String(error),
+			});
+		}
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
 		this.#branchSummaryAbortController = undefined;

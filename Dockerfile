@@ -15,7 +15,7 @@
 #
 # Run:
 #     docker run --rm oh-my-pi/pi:dev --help
-#     docker run --rm -it -v "$PWD":/work oh-my-pi/pi:dev cli    # interactive omp
+#     docker run --rm -it -v "$PWD":/work oh-my-pi/pi:dev cli    # interactive ompx
 #
 # Consume as a base in another Dockerfile (see Dockerfile.robomp):
 #     ARG PI_BASE=oh-my-pi/pi:dev
@@ -141,8 +141,8 @@ COPY --from=natives-builder /out/pi_natives.linux-*.node /opt/bun/bin/
 COPY --from=wheel-builder /out/*.whl /tmp/wheels/
 RUN pip install /tmp/wheels/omp_rpc-*.whl && rm -rf /tmp/wheels
 
-# `omp` shim — runs the coding-agent CLI against $PI_ROOT via Bun. Derived
-# images override PI_ROOT to point at wherever their pi source lives.
+# `ompx`/`omp` shims — run the coding-agent CLI against $PI_ROOT via Bun.
+# Derived images override PI_ROOT to point at wherever their pi source lives.
 RUN printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
@@ -152,13 +152,13 @@ RUN printf '%s\n' \
     '  exit 127' \
     'fi' \
     'exec bun "$PI_ROOT/packages/coding-agent/src/cli.ts" "$@"' \
-    > /usr/local/bin/omp \
-    && chmod +x /usr/local/bin/omp
+    > /usr/local/bin/ompx \
+    && chmod +x /usr/local/bin/ompx \
+    && ln -sf /usr/local/bin/ompx /usr/local/bin/omp
 
 ############################
 # 4) pi-runtime — pi-base + pi source + bun install (DEFAULT)
-#
-# A self-contained, runnable omp image. `docker run oh-my-pi/pi:dev --help`
+# A self-contained, runnable OMPx image. `docker run oh-my-pi/pi:dev --help`
 # Just Works without a host checkout.
 ############################
 FROM pi-base AS pi-runtime
@@ -188,5 +188,4 @@ COPY . /pi/
 # package.json's `prepare` script normally handles this on a vanilla install.
 RUN bun --cwd=packages/coding-agent run gen:docs
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/omp"]
-CMD ["--help"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/ompx"]

@@ -425,6 +425,8 @@ export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = [
 	"glob",
 	"eval",
 	"task",
+	"todo",
+	"browser",
 ] as const;
 
 /**

@@ -5,10 +5,10 @@
  * {@link Effort}, clamped into the active model's supported range (never below
  * {@link Effort.Low}). Two backends, selected by `providers.autoThinkingModel`:
  *
- * - `online` (default): a smol model classifies into `low|medium|high|xhigh`.
+ * - `online` (default): a smol model classifies into `low|medium|high|xhigh|max`.
  * - a local key: an on-device memory model classifies into the coarser
- *   `trivial|moderate|hard` scheme (3-class is more reliable than 4-way ordinal
- *   on sub-2B models), mapped to `low|high|xhigh`.
+ *   `trivial|moderate|hard|maximum` scheme (4-class is more reliable than a
+ *   full ordinal scale on sub-2B models), mapped to `low|high|xhigh|max`.
  *
  * Throws on any failure (no model, no key, unparseable output, abort/timeout);
  * the caller falls back to a concrete level and continues the turn.
@@ -136,43 +136,91 @@ async function classifyLocal(input: string, modelKey: string, deps: ClassifyDiff
 	return effort;
 }
 
-/** Map the online 4-way level keyword to an {@link Effort}; earliest match wins. */
+const ONLINE_MARKED_LABEL =
+	/(?:answer|classification|label)\s*(?:is|:|-)?\s*(max(?:imum)?|x[\s_-]?high|high|med(?:ium)?|low)\b/;
+const ONLINE_START_LABEL = /^\W*(max(?:imum)?|x[\s_-]?high|high|med(?:ium)?|low)\b/;
+const ONLINE_LABEL = /\b(max(?:imum)?|x[\s_-]?high|high|med(?:ium)?|low)\b/g;
+
+const LOCAL_MARKED_LABEL = /(?:answer|classification|label)\s*(?:is|:|-)?\s*(max(?:imum)?|trivial|moderate|hard)\b/;
+const LOCAL_START_LABEL = /^\W*(max(?:imum)?|trivial|moderate|hard)\b/;
+const LOCAL_LABEL = /\b(max(?:imum)?|trivial|moderate|hard)\b/g;
+
+/** Map the online 5-way level keyword to an {@link Effort}; classifier labels beat incidental prose. */
 export function parseDifficultyLevel(text: string): Effort | undefined {
 	const lower = text.toLowerCase();
-	const candidates: Array<[number, Effort]> = [];
-	// `xhigh` must be probed as its own token: `\bhigh\b` cannot match the "high"
-	// inside "xhigh" (no word boundary between `x` and `h`), so the two never collide.
-	const xhigh = lower.search(/x[\s_-]?high/);
-	if (xhigh >= 0) candidates.push([xhigh, Effort.XHigh]);
-	const high = lower.search(/\bhigh\b/);
-	if (high >= 0) candidates.push([high, Effort.High]);
-	const medium = lower.search(/\bmed(?:ium)?\b/);
-	if (medium >= 0) candidates.push([medium, Effort.Medium]);
-	const low = lower.search(/\blow\b/);
-	if (low >= 0) candidates.push([low, Effort.Low]);
-	return earliest(candidates);
+	return parseClassifierLabel(lower, ONLINE_MARKED_LABEL, ONLINE_START_LABEL, ONLINE_LABEL, onlineLabelToEffort);
 }
 
-/** Map the local 3-way bucket keyword to an {@link Effort}; earliest match wins. */
+/** Map the local bucket keyword to an {@link Effort}; classifier labels beat incidental prose. */
 export function parseDifficultyBucket(text: string): Effort | undefined {
 	const lower = text.toLowerCase();
-	const candidates: Array<[number, Effort]> = [];
-	const trivial = lower.search(/\btrivial\b/);
-	if (trivial >= 0) candidates.push([trivial, Effort.Low]);
-	const moderate = lower.search(/\bmoderate\b/);
-	if (moderate >= 0) candidates.push([moderate, Effort.High]);
-	const hard = lower.search(/\bhard\b/);
-	if (hard >= 0) candidates.push([hard, Effort.XHigh]);
-	return earliest(candidates);
+	return parseClassifierLabel(lower, LOCAL_MARKED_LABEL, LOCAL_START_LABEL, LOCAL_LABEL, localLabelToEffort);
 }
 
-function earliest(candidates: Array<[number, Effort]>): Effort | undefined {
-	if (candidates.length === 0) return undefined;
-	let best = candidates[0];
-	for (const candidate of candidates) {
-		if (candidate[0] < best[0]) best = candidate;
+function parseClassifierLabel(
+	lower: string,
+	markedPattern: RegExp,
+	startPattern: RegExp,
+	labelPattern: RegExp,
+	toEffort: (label: string) => Effort | undefined,
+): Effort | undefined {
+	let match = markedPattern.exec(lower) ?? startPattern.exec(lower);
+	const markedLabel = match?.[1];
+	if (markedLabel !== undefined) return toEffort(markedLabel);
+
+	let last: Effort | undefined;
+	labelPattern.lastIndex = 0;
+	while (true) {
+		match = labelPattern.exec(lower);
+		if (match === null) break;
+		const label = match[1];
+		const effort = label !== undefined ? toEffort(label) : undefined;
+		if (effort === Effort.Max && isNegatedLabel(lower, match.index)) continue;
+		if (effort !== undefined) last = effort;
 	}
-	return best[1];
+	return last;
+}
+function isNegatedLabel(lower: string, index: number): boolean {
+	const prefix = lower.slice(Math.max(0, index - 24), index);
+	return /\b(?:not|no)(?:\W+\w+){0,3}\W*$/.test(prefix);
+}
+
+function onlineLabelToEffort(label: string): Effort | undefined {
+	switch (label) {
+		case "max":
+		case "maximum":
+			return Effort.Max;
+		case "xhigh":
+		case "x-high":
+		case "x_high":
+		case "x high":
+			return Effort.XHigh;
+		case "high":
+			return Effort.High;
+		case "med":
+		case "medium":
+			return Effort.Medium;
+		case "low":
+			return Effort.Low;
+		default:
+			return undefined;
+	}
+}
+
+function localLabelToEffort(label: string): Effort | undefined {
+	switch (label) {
+		case "max":
+		case "maximum":
+			return Effort.Max;
+		case "hard":
+			return Effort.XHigh;
+		case "moderate":
+			return Effort.High;
+		case "trivial":
+			return Effort.Low;
+		default:
+			return undefined;
+	}
 }
 
 function extractText(content: AssistantMessage["content"]): string {

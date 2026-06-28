@@ -102,6 +102,15 @@ describe("StdinBuffer", () => {
 
 			expect(emittedSequences).toEqual(["\x1b[<35;20;5m"]);
 		});
+		it("emits a pending bare Escape before a following terminal response", () => {
+			processInput("\x1b");
+			expect(emittedSequences).toEqual([]);
+			expect(buffer.getBuffer()).toBe("\x1b");
+
+			processInput("\x1b[6;24;80t");
+			expect(emittedSequences).toEqual(["\x1b", "\x1b[6;24;80t"]);
+			expect(buffer.getBuffer()).toBe("");
+		});
 
 		it("should flush incomplete sequence after timeout", async () => {
 			// Non-mouse CSI partial: ambiguous, so it flushes after the timeout.

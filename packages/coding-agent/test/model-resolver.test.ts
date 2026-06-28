@@ -442,6 +442,30 @@ describe("parseModelPattern", () => {
 			expect(result.warning).toBeUndefined();
 		});
 
+		test("opus:max returns a max-capable model with max thinking level", () => {
+			const maxCapable = buildModel({
+				id: "claude-opus-4-7",
+				name: "Claude Opus 4.7",
+				api: "anthropic-messages",
+				provider: "anthropic",
+				baseUrl: "https://api.anthropic.com",
+				reasoning: true,
+				thinking: {
+					mode: "anthropic-adaptive",
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+				},
+				input: ["text", "image"],
+				cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+				contextWindow: 200000,
+				maxTokens: 32000,
+			});
+
+			const result = parseModelPattern("opus:max", [...allModels, maxCapable]);
+			expect(result.model?.id).toBe("claude-opus-4-7");
+			expect(result.thinkingLevel).toBe(Effort.Max);
+			expect(result.warning).toBeUndefined();
+		});
+
 		test("all valid thinking levels work", () => {
 			const levels = ["off", Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] as const;
 			for (const level of levels) {
@@ -713,7 +737,17 @@ describe("resolveModelRoleValue", () => {
 		expect(result.thinkingLevel).toBe(Effort.High);
 		expect(result.explicitThinkingLevel).toBe(true);
 	});
+
+	test("clamps explicit max selectors on models without max support", () => {
+		const result = resolveModelRoleValue("anthropic/claude-sonnet-4-5:max", allModels);
+
+		expect(result.model?.provider).toBe("anthropic");
+		expect(result.model?.id).toBe("claude-sonnet-4-5");
+		expect(result.thinkingLevel).toBe(Effort.High);
+		expect(result.explicitThinkingLevel).toBe(true);
+	});
 });
+
 describe("resolveAgentModelPatterns", () => {
 	test("falls back to the active session model when pi/task is unset", () => {
 		const settings = Settings.isolated({
@@ -1169,7 +1203,15 @@ describe("parseModelString", () => {
 		});
 
 		test("extracts all valid thinking levels", () => {
-			const levels = ["off", Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] as const;
+			const levels = [
+				"off",
+				Effort.Minimal,
+				Effort.Low,
+				Effort.Medium,
+				Effort.High,
+				Effort.XHigh,
+				Effort.Max,
+			] as const;
 			for (const level of levels) {
 				const result = parseModelString(`anthropic/claude-sonnet-4-5:${level}`);
 				expect(result?.id).toBe("claude-sonnet-4-5");

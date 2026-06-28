@@ -3,6 +3,17 @@
 ## [Unreleased]
 
 ## [1.4.0] - 2026-06-19
+### Added
+
+- Added opt-in Linux Podman workspace sandbox re-exec support for the bundled OMPx CLI. It defaults to the dev image `oh-my-pi/pi:dev` when sandboxing is explicitly enabled, supports trusted image overrides via `PI_OMPX_PODMAN_IMAGE` or `sandbox.podman.image`, uses rootless `podman run --userns=keep-id` with scoped workspace/runtime bind mounts, and exposes `ompx setup podman --check` for host prerequisite checks.
+- Added native Herdr agent-state reporting that maps OMP running work to Herdr's `working` state with a `running` visual status, tracks tool/subagent/async-job lifecycle events, and disables the managed Herdr extension when native reporting is active.
+- Added `max` thinking selection support in auto-thinking parsing, theme rendering, settings schemas, and model configuration for models that advertise the `max` effort.
+
+### Changed
+
+- Kept `todo` and `browser` active by default when `tools.discoveryMode=auto` hides discoverable built-ins for models below a 1M context window, so small-context sessions can track plans and use browser automation without rediscovering those tools first.
+
+## [1.3.3] - 2026-06-15
 
 ### Added
 

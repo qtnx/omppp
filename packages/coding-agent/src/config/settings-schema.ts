@@ -35,7 +35,11 @@ import {
 } from "../tts/models";
 import { EDIT_MODES } from "../utils/edit-mode";
 import { SEARCH_PROVIDER_OPTIONS, SEARCH_PROVIDER_PREFERENCES, type SearchProviderId } from "../web/search/types";
-import { DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS } from "./sandbox-defaults";
+import {
+	DEFAULT_LINUX_PODMAN_IMAGE,
+	DEFAULT_LINUX_SANDBOX_ALLOWED_PATHS,
+	DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS,
+} from "./sandbox-defaults";
 import {
 	SERVICE_TIER_INHERIT_OPTIONS,
 	SERVICE_TIER_INHERIT_SETTING_VALUES,
@@ -3370,6 +3374,38 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"sandbox.linux.allowedPaths": {
+		type: "array",
+		default: DEFAULT_LINUX_SANDBOX_ALLOWED_PATHS,
+		ui: {
+			tab: "tools",
+			label: "Linux Podman Sandbox Allowlist",
+			description:
+				"Trusted file or directory paths the Linux Podman sandbox may bind-mount read/write. Supports ~. Empty by default; only user/global config is trusted for sandboxing.",
+		},
+	},
+
+	"sandbox.podman.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			label: "Linux Podman Sandbox",
+			description:
+				"Run top-level OMPx sessions inside a rootless Podman container on Linux. Disabled by default; uses the default dev image unless sandbox.podman.image or PI_OMPX_PODMAN_IMAGE overrides it. Only trusted user/global config is honored; project settings cannot enable the sandbox.",
+		},
+	},
+
+	"sandbox.podman.image": {
+		type: "string",
+		default: DEFAULT_LINUX_PODMAN_IMAGE,
+		ui: {
+			tab: "tools",
+			label: "Linux Podman Image",
+			description: `Trusted OCI image containing the matching OMPx CLI used for Linux Podman workspace sandboxing. Defaults to ${DEFAULT_LINUX_PODMAN_IMAGE}. Only trusted user/global config is honored for sandbox bootstrap; project settings cannot override it.`,
+		},
+	},
+
 	"sandbox.sshAuthSock": {
 		type: "string",
 		default: undefined,
@@ -3821,7 +3857,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Discovery & MCP",
 			label: "Tool Discovery",
 			description:
-				"Hide tools behind a search tool to save tokens. 'auto' uses discovery for models below 1M context tokens; 'mcp-only' hides MCP tools; 'all' hides MCP and non-essential built-ins.",
+				"Hide tools behind a search tool to save tokens. 'auto' hides non-essential built-ins below 1M context tokens; at 1M+ it keeps built-ins visible and uses discovery for MCP tools.",
 		},
 	},
 
@@ -3833,7 +3869,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Discovery & MCP",
 			label: "Essential Tools Override",
 			description:
-				"Override the always-loaded built-in tools (default: read, bash, edit, task, write, glob, eval). Leave empty to use defaults.",
+				"Override the always-loaded built-in tools (default: read, bash, edit, write, glob, eval, task, todo, browser). Leave empty to use defaults.",
 		},
 	},
 
@@ -5100,6 +5136,8 @@ export const SETTINGS_SCHEMA = {
 	"thinkingBudgets.high": { type: "number", default: 16384 },
 
 	"thinkingBudgets.xhigh": { type: "number", default: 32768 },
+
+	"thinkingBudgets.max": { type: "number", default: 65536 },
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5317,6 +5355,7 @@ export interface ThinkingBudgetsSettings {
 	medium: number;
 	high: number;
 	xhigh: number;
+	max: number;
 }
 
 export interface SttSettings {
@@ -5354,6 +5393,9 @@ export interface CodexResetsSettings {
 export interface SandboxSettings {
 	allowedPaths: string[];
 	sshAuthSock: string | undefined;
+	"linux.allowedPaths": string[];
+	"podman.enabled": boolean;
+	"podman.image": string;
 }
 
 export interface GcSettings {

@@ -93,6 +93,11 @@ import {
 	wrapRegisteredTools,
 } from "./extensibility/extensions";
 import {
+	createHerdrAgentStateExtension,
+	markNativeHerdrAgentStateEnabled,
+} from "./extensibility/extensions/herdr-agent-state";
+
+import {
 	loadSkills as loadSkillsInternal,
 	type Skill,
 	type SkillWarning,
@@ -226,6 +231,24 @@ import { EventBus } from "./utils/event-bus";
 import { buildNamedToolChoice } from "./utils/tool-choice";
 import { hydrateWorkspaceRoots, type WorkspaceRoot } from "./workspace-roots";
 import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
+
+const HERDR_MANAGED_AGENT_STATE_EXTENSION_FILENAME = "herdr-omp-agent-state.ts";
+const HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH = "<native-herdr-agent-state>";
+
+function isManagedHerdrAgentStateExtensionPath(extensionPath: string): boolean {
+	return path.basename(extensionPath) === HERDR_MANAGED_AGENT_STATE_EXTENSION_FILENAME;
+}
+
+function isHerdrAgentStateExtensionPath(extensionPath: string): boolean {
+	return (
+		extensionPath === HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH || isManagedHerdrAgentStateExtensionPath(extensionPath)
+	);
+}
+
+function filterSubagentExtensionPaths(extensionPaths: string[], isSubagentSession: boolean): string[] {
+	if (!isSubagentSession) return extensionPaths;
+	return extensionPaths.filter(extensionPath => !isHerdrAgentStateExtensionPath(extensionPath));
+}
 
 type AsyncResultEntry = {
 	jobId: string;
@@ -840,6 +863,7 @@ export async function loadSessionExtensions(
 ): Promise<LoadExtensionsResult> {
 	const contextGcDbPath =
 		options.contextGcDbPath ?? path.join(options.agentDir ?? getDefaultAgentDir(), "context-gc.sqlite");
+	markNativeHerdrAgentStateEnabled();
 	return await withContextGcDbPath(contextGcDbPath, async () => {
 		const paths = await discoverSessionExtensionPaths(options, cwd, settings);
 		const result = await logger.time("loadExtensions", loadExtensions, paths, cwd, eventBus);
@@ -2039,6 +2063,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 
 		const contextGcDbPath = options.contextGcDbPath ?? path.join(agentDir, "context-gc.sqlite");
+		const isHerdrSubagentSession = options.parentTaskPrefix !== undefined || (options.taskDepth ?? 0) > 0;
+		const nativeHerdrAgentStateEnabled =
+			!minimalExtensionRuntime && !isHerdrSubagentSession && markNativeHerdrAgentStateEnabled();
 
 		// Load extensions. Four paths:
 		//   1. Minimal subagent runtime: skip the preloaded/discovered/native
@@ -2059,17 +2086,26 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (minimalExtensionRuntime) {
 			extensionsResult = await logger.time("loadExtensions", loadExtensions, [], cwd, eventBus);
 		} else if (options.preloadedExtensions) {
+			const preloadedExtensions = isHerdrSubagentSession
+				? options.preloadedExtensions.extensions.filter(
+						extension =>
+							!isHerdrAgentStateExtensionPath(extension.path) &&
+							!isHerdrAgentStateExtensionPath(extension.resolvedPath),
+					)
+				: options.preloadedExtensions.extensions;
 			extensionsResult = {
 				...options.preloadedExtensions,
-				extensions: [...options.preloadedExtensions.extensions],
+				extensions: [...preloadedExtensions],
 			};
 			// Capture paths for downstream forwarding; filter inline-factory
-			// entries (`<inline-N>`) — those are per-session, not source paths.
-			extensionPaths = extensionsResult.extensions
-				.map(ext => ext.resolvedPath)
-				.filter(p => !p.startsWith("<inline"));
+			// entries plus Herdr state reporters — those are per-session, not
+			// subagent source paths.
+			extensionPaths = filterSubagentExtensionPaths(
+				extensionsResult.extensions.map(ext => ext.resolvedPath).filter(p => !p.startsWith("<inline")),
+				true,
+			);
 		} else if (options.preloadedExtensionPaths) {
-			extensionPaths = options.preloadedExtensionPaths;
+			extensionPaths = filterSubagentExtensionPaths(options.preloadedExtensionPaths, isHerdrSubagentSession);
 			extensionsResult = await withContextGcDbPath(contextGcDbPath, async () =>
 				logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus),
 			);
@@ -2077,9 +2113,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				logger.error("Failed to load extension", { path, error });
 			}
 		} else {
-			extensionPaths = await logger.time("discoverSessionExtensionPaths", () =>
+			const discoveredExtensionPaths = await logger.time("discoverSessionExtensionPaths", () =>
 				discoverSessionExtensionPaths(options, cwd, settings),
 			);
+			extensionPaths = filterSubagentExtensionPaths(discoveredExtensionPaths, isHerdrSubagentSession);
 			extensionsResult = await withContextGcDbPath(contextGcDbPath, async () =>
 				logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus),
 			);
@@ -2108,6 +2145,19 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}
 			}
 
+			if (
+				nativeHerdrAgentStateEnabled &&
+				!extensionsResult.extensions.some(extension => extension.path === HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH)
+			) {
+				const loaded = await loadExtensionFromFactory(
+					createHerdrAgentStateExtension(),
+					cwd,
+					eventBus,
+					extensionsResult.runtime,
+					HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH,
+				);
+				extensionsResult.extensions.push(loaded);
+			}
 			// Context GC is shipped as a plugin package for external reuse, but loaded natively in
 			// bundled OMPx so users get durable unload/recall without `ompx plugin install`. This runs
 			// after user inline factories so wrappers that set the same label are deduped too.
@@ -2420,7 +2470,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			countToolsForAutoDiscovery(toolRegistry.keys()),
 			enableMCP,
 		);
-		if (effectiveDiscoveryMode !== "off" && !toolRegistry.has("search_tool_bm25")) {
+		if (!toolRegistry.has("search_tool_bm25")) {
 			const searchTool: Tool = new SearchToolBm25Tool(toolSession);
 			toolRegistry.set(
 				searchTool.name,
@@ -2476,12 +2526,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						buildWorkspaceTree(currentCwd, { timeoutMs: STARTUP_SCAN_DEADLINE_MS }),
 					);
 			toolContextStore.setToolNames(toolNames);
-			const discoverableMCPTools: DiscoverableTool[] = mcpDiscoveryEnabled
+			const currentModel = agent?.state.model ?? model;
+			const currentEffectiveDiscoveryMode = resolveEffectiveToolDiscoveryMode(
+				settings,
+				currentModel ? { contextWindow: currentModel.contextWindow ?? undefined } : undefined,
+				countToolsForAutoDiscovery(tools.keys()),
+				enableMCP,
+			);
+			const currentMcpDiscoveryEnabled = currentEffectiveDiscoveryMode !== "off";
+			const discoverableMCPTools: DiscoverableTool[] = currentMcpDiscoveryEnabled
 				? filterBySource(collectDiscoverableTools(tools.values()), "mcp")
 				: [];
 			const activeToolNames = new Set(toolNames);
 			const discoverableBuiltinTools: DiscoverableTool[] =
-				effectiveDiscoveryMode === "all"
+				currentEffectiveDiscoveryMode === "all"
 					? collectDiscoverableTools(
 							Array.from(tools.values()).filter(
 								tool => tool.loadMode === "discoverable" && !activeToolNames.has(tool.name),
@@ -2493,7 +2551,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const discoverableToolsForDesc: DiscoverableTool[] = [...discoverableBuiltinTools, ...discoverableMCPTools];
 			const discoverableToolSummary = summarizeDiscoverableTools(discoverableToolsForDesc);
 			const hasDiscoverableTools =
-				mcpDiscoveryEnabled && toolNames.includes("search_tool_bm25") && discoverableToolsForDesc.length > 0;
+				currentMcpDiscoveryEnabled && toolNames.includes("search_tool_bm25") && discoverableToolsForDesc.length > 0;
 			const promptTools = buildSystemPromptToolMetadata(tools, {
 				search_tool_bm25: { description: renderSearchToolBm25Description(discoverableToolsForDesc) },
 			});
@@ -2621,7 +2679,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 		}
 		const requestedToolNames = explicitlyRequestedToolNames ?? toolNamesFromRegistry;
-		const normalizedRequested = requestedToolNames.filter(name => toolRegistry.has(name));
+		const normalizedRequested = requestedToolNames.filter(
+			name => toolRegistry.has(name) && (effectiveDiscoveryMode !== "off" || name !== "search_tool_bm25"),
+		);
 		const requestedToolNameSet = new Set(normalizedRequested);
 		const defaultInactiveToolNames = new Set(
 			registeredTools.filter(tool => tool.definition.defaultInactive).map(tool => tool.definition.name),
@@ -3125,6 +3185,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			rebuildSystemPrompt,
 			reloadSshTool,
 			requestedToolNames: requestedToolNameSet,
+			explicitlyRequestedToolNames: new Set(explicitlyRequestedToolNames ?? []),
 			getMcpServerInstructions: mcpManager
 				? () => {
 						const raw = mcpManager.getServerInstructions();
@@ -3141,6 +3202,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				: undefined,
 			disconnectOwnedMcpManager: ownedMcpManager ? () => ownedMcpManager.disconnectAll() : undefined,
 			mcpDiscoveryEnabled,
+			mcpEnabled: enableMCP,
 			initialSelectedMCPToolNames,
 			defaultSelectedMCPToolNames,
 			persistInitialMCPToolSelection: !hasExistingSession,
