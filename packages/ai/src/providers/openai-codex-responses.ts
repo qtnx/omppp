@@ -1397,6 +1397,21 @@ async function openCodexSseTransport(
 	};
 }
 
+// In-flight background-reconnect cancellers. Production never aborts these; the
+// registry exists only so tests that swap `global.WebSocket` per-case can cancel
+// a still-waiting reconnect before the next test installs its mock — otherwise a
+// reconnect timer delayed under CI load fires against the wrong mock and skews
+// that test's websocket-construction count (a cross-test flake).
+const inFlightCodexBackgroundReconnects = new Set<AbortController>();
+
+/** Test-only: abort every still-waiting background reconnect so none leaks across tests. */
+export function cancelCodexWebSocketBackgroundReconnectsForTesting(): void {
+	for (const controller of inFlightCodexBackgroundReconnects) {
+		controller.abort();
+	}
+	inFlightCodexBackgroundReconnects.clear();
+}
+
 function scheduleCodexWebSocketBackgroundReconnect(
 	model: Model<"openai-codex-responses">,
 	requestContext: CodexRequestContext,
@@ -1453,11 +1468,14 @@ function scheduleCodexWebSocketBackgroundReconnect(
 	const cooldownMs = Math.max(0, nextRetryAt - now);
 	const attempt = state.backgroundReconnectAttempts + 1;
 	state.backgroundReconnectAttempts = attempt;
+	const abortController = new AbortController();
+	inFlightCodexBackgroundReconnects.add(abortController);
 	state.backgroundReconnect = (async () => {
 		try {
 			if (cooldownMs > 0) {
-				await scheduler.wait(cooldownMs);
+				await scheduler.wait(cooldownMs, { signal: abortController.signal });
 			}
+			if (abortController.signal.aborted) return;
 			if (state.connection?.isOpen()) {
 				state.disableWebsocket = false;
 				state.nextReconnectAt = undefined;
@@ -1504,6 +1522,7 @@ function scheduleCodexWebSocketBackgroundReconnect(
 				...telemetry,
 			});
 		} catch (error) {
+			if (abortController.signal.aborted) return;
 			const durationMs = Date.now() - now;
 			const message = error instanceof Error ? error.message : String(error);
 			recordCodexWebSocketFailure(state, false, {
@@ -1522,6 +1541,7 @@ function scheduleCodexWebSocketBackgroundReconnect(
 			});
 		} finally {
 			state.backgroundReconnect = undefined;
+			inFlightCodexBackgroundReconnects.delete(abortController);
 		}
 	})();
 }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { streamSimple } from "@oh-my-pi/pi-ai";
 import {
+	cancelCodexWebSocketBackgroundReconnectsForTesting,
 	getOpenAICodexTransportDetails,
 	getOpenAICodexWebSocketDebugStats,
 	prewarmOpenAICodexResponses,
@@ -38,6 +39,10 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 afterEach(() => {
+	// Abort any still-waiting background reconnect so its timer cannot fire
+	// against the next test's `global.WebSocket` mock (a cross-test reconnect
+	// construction-count flake under CI timer contention).
+	cancelCodexWebSocketBackgroundReconnectsForTesting();
 	global.WebSocket = originalWebSocket;
 	global.fetch = originalFetch;
 	setAgentDir(originalAgentDir);
