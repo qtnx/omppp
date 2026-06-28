@@ -587,6 +587,8 @@ function effortFromThinkingLevel(level: ThinkingLevel): Effort {
 			return Effort.High;
 		case ThinkingLevel.XHigh:
 			return Effort.XHigh;
+		case ThinkingLevel.Max:
+			return Effort.Max;
 		case ThinkingLevel.Off:
 		case ThinkingLevel.Inherit:
 			throw new Error(`effortFromThinkingLevel: ${level} must be handled by caller`);
@@ -1171,10 +1173,40 @@ export async function compact(
 						),
 					{ signal },
 				);
-				preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, remote);
-				const summary = remote.compactionItem.summary?.trim();
-				if (summary) {
-					remoteSummary = summary;
+				const canUseRemoteSummary =
+					!customInstructions &&
+					!summaryOptions.promptOverride &&
+					(!summaryOptions.extraContext || summaryOptions.extraContext.length === 0) &&
+					(!previousSummary || previousReplacementHistory !== undefined);
+				const isRemoteSummary = remote.compactionItem.type === "compaction_summary";
+				const candidateSummary = isRemoteSummary ? remote.compactionItem.summary?.trim() : undefined;
+				if (!isRemoteSummary) {
+					preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, remote);
+					logger.debug("OpenAI remote compaction state preserved", {
+						model: model.id,
+						provider: model.provider,
+						remoteItemType: remote.compactionItem.type,
+					});
+				} else if (canUseRemoteSummary && candidateSummary) {
+					remoteSummary = candidateSummary;
+					preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, remote);
+					logger.debug("OpenAI remote compaction summary accepted", {
+						model: model.id,
+						provider: model.provider,
+						summaryChars: candidateSummary.length,
+					});
+				} else {
+					logger.debug("OpenAI remote compaction summary ignored, falling back to local summarization", {
+						model: model.id,
+						provider: model.provider,
+						remoteItemType: remote.compactionItem.type,
+						hasSummary: Boolean(candidateSummary),
+						hasCustomInstructions: Boolean(customInstructions),
+						hasPromptOverride: Boolean(summaryOptions.promptOverride),
+						extraContextCount: summaryOptions.extraContext?.length ?? 0,
+						hasPreviousSummary: Boolean(previousSummary),
+						hasPreviousReplacementHistory: previousReplacementHistory !== undefined,
+					});
 				}
 			} catch (err) {
 				// A user/session abort is a cancellation, not a remote failure —

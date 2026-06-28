@@ -20,7 +20,7 @@ import { TtsrManager } from "@oh-my-pi/pi-coding-agent/export/ttsr";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { convertToLlm, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
@@ -125,6 +125,53 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		throw new Error("Timed out waiting for condition");
 	}
+
+	it("does not retry a busy prompt after an abort supersedes setup", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+			},
+			streamFn: () => new AssistantMessageEventStream(),
+		});
+		const sessionManager = SessionManager.inMemory();
+		const settings = Settings.isolated();
+		const authStorage = await AuthStorage.create(path.join(tempDir, "testauth-abort-busy-retry.db"));
+		authStorages.push(authStorage);
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models-abort-busy-retry.yml"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const waitGate = Promise.withResolvers<void>();
+		const waitEntered = Promise.withResolvers<void>();
+		let promptCalls = 0;
+		let waitCalls = 0;
+		const promptSpy = vi.spyOn(agent, "prompt").mockImplementation(async () => {
+			promptCalls++;
+			if (promptCalls === 1) {
+				throw new AgentBusyError();
+			}
+		});
+		vi.spyOn(agent, "waitForIdle").mockImplementation(async () => {
+			waitCalls++;
+			if (waitCalls === 1) {
+				waitEntered.resolve();
+			}
+			await waitGate.promise;
+		});
+
+		session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
+		const promptPromise = session.prompt("First message");
+		await waitEntered.promise;
+
+		const abortPromise = session.abort({ reason: USER_INTERRUPT_LABEL });
+		waitGate.resolve();
+		await Promise.all([promptPromise, abortPromise]);
+
+		expect(promptSpy).toHaveBeenCalledTimes(1);
+		expect(session.isStreaming).toBe(false);
+	});
 
 	it("should throw when prompt() called while streaming", async () => {
 		await createSession();

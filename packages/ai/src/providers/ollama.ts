@@ -34,7 +34,7 @@ import { transformMessages } from "./transform-messages";
 import { joinTextWithImagePlaceholder, partitionVisionContent } from "./vision-guard";
 
 export interface OllamaChatOptions extends StreamOptions {
-	reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh";
+	reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	disableReasoning?: boolean;
 	toolChoice?: ToolChoice;
 }
@@ -124,7 +124,7 @@ function mapReasoning(
 		case "max":
 			return "max";
 		case "xhigh":
-			return "high";
+			return "max";
 		default:
 			return undefined;
 	}

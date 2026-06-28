@@ -58,6 +58,12 @@ function getAnthropicModel(): Model {
 	return model;
 }
 
+function getMaxAnthropicModel(): Model {
+	const model = getBundledModel("anthropic", "claude-opus-4-7");
+	if (!model) throw new Error("Expected built-in anthropic/claude-opus-4-7 to exist");
+	return model;
+}
+
 function getGrokBuildModel(): Model {
 	const model = getBundledModel("xai-oauth", "grok-build");
 	if (!model) throw new Error("Expected built-in xai-oauth/grok-build to exist");
@@ -217,6 +223,21 @@ describe("compact() propagates thinkingLevel to all three summarizers (regressio
 		expect(spy).toHaveBeenCalledTimes(3);
 		for (const [, , opts] of spy.mock.calls) {
 			expect(opts?.reasoning).toBe(ai.Effort.Low);
+		}
+	});
+
+	test("ThinkingLevel.Max on max-capable Anthropic → every fan-out call gets reasoning=max", async () => {
+		const spy = vi
+			.spyOn(ai, "completeSimple")
+			.mockResolvedValue(createAssistantMessage([{ type: "text", text: "summary" }]));
+
+		await compact(makePreparation(), getMaxAnthropicModel(), "test-key", undefined, undefined, {
+			thinkingLevel: ThinkingLevel.Max,
+		});
+
+		expect(spy).toHaveBeenCalledTimes(3);
+		for (const [, , opts] of spy.mock.calls) {
+			expect(opts?.reasoning).toBe(ai.Effort.Max);
 		}
 	});
 

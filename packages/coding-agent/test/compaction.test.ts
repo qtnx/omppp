@@ -27,6 +27,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { parseSessionEntries } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { migrateSessionEntries } from "@oh-my-pi/pi-coding-agent/session/session-migrations";
+import { logger } from "@oh-my-pi/pi-utils";
 import { mockFetch } from "./helpers/fetch-mock";
 import { e2eApiKey } from "./utilities";
 
@@ -441,6 +442,110 @@ describe("remote compaction setting", () => {
 		expect(completeSpy).toHaveBeenCalledTimes(3);
 		expect(result.summary).toContain("Local history summary");
 		expect(result.shortSummary).toBe("Local short summary");
+	});
+
+	it("uses an OpenAI remote compaction summary as the primary summary without re-summarizing history", async () => {
+		const model = getBundledModel("openai", "gpt-5.1");
+		if (!model) throw new Error("Expected openai/gpt-5.1 model to exist");
+
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("Turn 1")),
+			createMessageEntry(createOpenAiAssistantMessage("Answer 1", model, createMockUsage(0, 100, 4000, 0))),
+			createMessageEntry(createUserMessage("Turn 2")),
+			createMessageEntry(createOpenAiAssistantMessage("Answer 2", model, createMockUsage(0, 100, 9000, 0))),
+		];
+		const preparation = prepareCompaction(entries, {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 1,
+			remoteEnabled: true,
+		});
+		if (!preparation) throw new Error("Expected compaction preparation");
+
+		const remoteOutput = [
+			{ type: "message", role: "user", content: [{ type: "input_text", text: "Remote retained user" }] },
+			{ type: "compaction_summary", summary: "Remote compacted history" },
+		];
+		const fetchHandler = vi.fn(
+			async (_input, _init) =>
+				new Response(JSON.stringify({ output: remoteOutput }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+		);
+		const fetchSpy = mockFetch(fetchHandler);
+		const completeSimpleSpy = vi
+			.spyOn(ai, "completeSimple")
+			.mockResolvedValue(createAssistantMessage("Short summary"));
+		const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
+
+		const result = await compact(preparation, model, "test-api-key", undefined, undefined, { fetch: fetchSpy });
+
+		expect(fetchHandler).toHaveBeenCalledTimes(1);
+		expect(completeSimpleSpy).not.toHaveBeenCalled();
+		expect(result.summary).toBe("Remote compacted history");
+		expect(result.shortSummary).toBeUndefined();
+		expect(debugSpy).toHaveBeenCalledWith("OpenAI remote compaction summary accepted", {
+			model: model.id,
+			provider: model.provider,
+			summaryChars: "Remote compacted history".length,
+		});
+		expect(result.preserveData).toEqual({
+			openaiRemoteCompaction: {
+				provider: "openai",
+				replacementHistory: remoteOutput,
+				compactionItem: { type: "compaction_summary", summary: "Remote compacted history" },
+			},
+		});
+	});
+
+	it("drops ignored remote summary state when falling back to local compaction", async () => {
+		const model = getBundledModel("openai", "gpt-5.1");
+		if (!model) throw new Error("Expected openai/gpt-5.1 model to exist");
+
+		const oldAssistant = createMessageEntry(createAssistantMessage("Older answer"));
+		const previousCompaction = createCompactionEntry("Previous summary", oldAssistant.id);
+		previousCompaction.preserveData = { otherState: "keep-me" };
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("Older turn")),
+			oldAssistant,
+			previousCompaction,
+			createMessageEntry(createUserMessage("Turn 1")),
+			createMessageEntry(createOpenAiAssistantMessage("Answer 1", model, createMockUsage(0, 100, 4000, 0))),
+			createMessageEntry(createUserMessage("Turn 2")),
+			createMessageEntry(createOpenAiAssistantMessage("Answer 2", model, createMockUsage(0, 100, 9000, 0))),
+		];
+		const preparation = prepareCompaction(entries, {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 1,
+			remoteEnabled: true,
+		});
+		if (!preparation) throw new Error("Expected compaction preparation");
+
+		const remoteOutput = [
+			{ type: "message", role: "user", content: [{ type: "input_text", text: "Remote retained user" }] },
+			{ type: "compaction_summary", summary: "Remote summary that lacks previous history" },
+		];
+		const fetchSpy = mockFetch(
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ output: remoteOutput }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					}),
+			),
+		);
+		const completeSimpleSpy = vi.spyOn(ai, "completeSimple");
+		completeSimpleSpy
+			.mockResolvedValueOnce(createAssistantMessage("Local merged history summary"))
+			.mockResolvedValueOnce(createAssistantMessage("Local turn summary"))
+			.mockResolvedValueOnce(createAssistantMessage("Local short summary"));
+
+		const result = await compact(preparation, model, "test-api-key", undefined, undefined, { fetch: fetchSpy });
+
+		expect(completeSimpleSpy).toHaveBeenCalledTimes(3);
+		expect(result.summary).toContain("Local merged history summary");
+		expect(result.summary).not.toContain("Remote summary that lacks previous history");
+		expect(result.preserveData).toEqual({ otherState: "keep-me" });
 	});
 
 	it("preserves prior compaction items and encrypted reasoning for OpenAI remote compaction", async () => {

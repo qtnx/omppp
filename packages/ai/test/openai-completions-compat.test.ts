@@ -5,6 +5,7 @@ import {
 	convertMessages,
 	streamOpenAICompletions,
 } from "@oh-my-pi/pi-ai/providers/openai-completions";
+import { streamSimple } from "@oh-my-pi/pi-ai/stream";
 import type {
 	AssistantMessage,
 	Context,
@@ -114,7 +115,7 @@ function kimiZaiModel(): Model<"openai-completions"> {
 async function captureOpenAICompletionsPayload(
 	model: Model<"openai-completions">,
 	context: Context = baseContext(),
-	options?: { reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh" },
+	options?: { reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" },
 ): Promise<unknown> {
 	const { promise, resolve } = Promise.withResolvers<unknown>();
 	const fetchMock = createMockFetch(["[DONE]"]);
@@ -1053,10 +1054,63 @@ describe("kimi model detection via detectCompat", () => {
 		} as ModelSpec<"openai-completions">);
 
 		const highPayload = await captureOpenAICompletionsPayload(model, baseContext(), { reasoning: "high" });
+		const maxPayload = await captureOpenAICompletionsPayload(model, baseContext(), { reasoning: "max" });
 		const xhighPayload = await captureOpenAICompletionsPayload(model, baseContext(), { reasoning: "xhigh" });
 
 		expect(getNestedObject(highPayload, "reasoning")).toEqual({ effort: "xhigh" });
+		expect(getNestedObject(maxPayload, "reasoning")).toEqual({ effort: "max" });
 		expect(getNestedObject(xhighPayload, "reasoning")).toEqual({ effort: "max" });
+	});
+	it("serializes max reasoning for max-capable GLM 5.2 OpenAI-compatible models", async () => {
+		const model: Model<"openai-completions"> = buildModel({
+			...gpt4oMiniSpec,
+			api: "openai-completions",
+			provider: "opencode-go",
+			baseUrl: "https://opencode.ai/zen/go/v1",
+			id: "glm-5.2",
+			reasoning: true,
+		} as ModelSpec<"openai-completions">);
+
+		const payload = await captureOpenAICompletionsPayload(model, baseContext(), { reasoning: "max" });
+		const body = toObject(payload);
+		expect(body ? Reflect.get(body, "reasoning_effort") : undefined).toBe("max");
+	});
+
+	it("rejects unsupported max before Anthropic shim budget serialization", async () => {
+		const model: Model<"openai-completions"> = buildModel({
+			...gpt4oMiniSpec,
+			api: "openai-completions",
+			provider: "kimi-code",
+			baseUrl: "https://api.moonshot.cn/v1",
+			id: "kimi-k2.5",
+			reasoning: true,
+			thinking: {
+				mode: "effort",
+				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High],
+			},
+		} as ModelSpec<"openai-completions">);
+		const fetchMock: FetchImpl = async () => createSseResponse(["[DONE]"]);
+		const { promise: payloadSeen, resolve: resolvePayload } = Promise.withResolvers<string>();
+		const stream = streamSimple(model, baseContext(), {
+			apiKey: "test-key",
+			kimiApiFormat: "anthropic",
+			reasoning: Effort.Max,
+			fetch: fetchMock,
+			signal: createAbortedSignal(),
+			onPayload: () => resolvePayload("payload sent"),
+		});
+
+		const outcome = await Promise.race([
+			payloadSeen,
+			stream.result().then(
+				message =>
+					message.errorMessage ||
+					message.content.map(block => (block.type === "text" ? block.text : "")).join(" ") ||
+					message.stopReason,
+				error => (error instanceof Error ? error.message : String(error)),
+			),
+		]);
+		expect(outcome).toContain("Thinking effort max is not supported");
 	});
 
 	// Regression for #1071: OpenCode-Go/Zen handle reasoning content server-side

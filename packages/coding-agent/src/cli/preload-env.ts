@@ -16,6 +16,22 @@ if (!process.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED?.trim()) {
 		: "0";
 }
 
+if (!process.env.PI_OMPX_LINUX_SANDBOX_INHERITED?.trim()) {
+	const inheritedLinuxSandbox = process.env.OMP_OMPX_LINUX_SANDBOX ?? process.env.PI_OMPX_LINUX_SANDBOX;
+	process.env.PI_OMPX_LINUX_SANDBOX_INHERITED = inheritedLinuxSandbox?.trim() ? inheritedLinuxSandbox : "default";
+}
+
+if (!process.env.PI_OMPX_LINUX_SANDBOX_ACTIVE_INHERITED?.trim()) {
+	process.env.PI_OMPX_LINUX_SANDBOX_ACTIVE_INHERITED = process.env.PI_OMPX_LINUX_SANDBOX_ACTIVE?.trim()
+		? process.env.PI_OMPX_LINUX_SANDBOX_ACTIVE
+		: "0";
+}
+
+if (!process.env.PI_OMPX_PODMAN_IMAGE_INHERITED?.trim()) {
+	const inheritedPodmanImage = process.env.OMP_OMPX_PODMAN_IMAGE ?? process.env.PI_OMPX_PODMAN_IMAGE;
+	process.env.PI_OMPX_PODMAN_IMAGE_INHERITED = inheritedPodmanImage?.trim() ? inheritedPodmanImage : "default";
+}
+
 if (!process.env.PI_OMPX_TRUSTED_CONFIG_DIR?.trim()) {
 	process.env.PI_OMPX_TRUSTED_CONFIG_DIR = process.env.PI_CONFIG_DIR?.trim() ? process.env.PI_CONFIG_DIR : "default";
 }

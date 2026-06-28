@@ -342,7 +342,7 @@ describe("InputController escape behavior", () => {
 
 	it("aborts active handoff generation before default Esc handling", () => {
 		const { ctx, editor, spies } = createContext();
-		(ctx.viewSession as { isGeneratingHandoff: boolean }).isGeneratingHandoff = true;
+		Object.defineProperty(ctx.viewSession, "isGeneratingHandoff", { value: true, configurable: true });
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
@@ -351,6 +351,22 @@ describe("InputController escape behavior", () => {
 		expect(spies.abortHandoff).toHaveBeenCalledTimes(1);
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
+	});
+
+	it("aborts streaming immediately while the working loader is present", () => {
+		const { ctx, editor, spies } = createContext();
+		Object.defineProperty(ctx.session, "isStreaming", { value: true, configurable: true });
+		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
+		spies.cancelPendingSubmission.mockReturnValue(true);
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
+		expect(spies.clearQueue).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 	});
 
 	it("prefers aborting bash before aborting an overlapping stream", () => {

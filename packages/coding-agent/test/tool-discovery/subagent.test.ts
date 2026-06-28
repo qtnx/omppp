@@ -26,6 +26,11 @@ describe("effective discovery mode resolution", () => {
 		const s = Settings.isolated({ "mcp.discoveryMode": true });
 		expect(resolveEffectiveToolDiscoveryMode(s, { contextWindow: 999_999 })).toBe("mcp-only");
 	});
+	it("legacy mcp.discoveryMode=false does not disable auto discovery", () => {
+		const s = Settings.isolated({ "mcp.discoveryMode": false });
+		expect(resolveEffectiveToolDiscoveryMode(s, { contextWindow: 999_999 })).toBe("all");
+		expect(resolveEffectiveToolDiscoveryMode(s, { contextWindow: 1_000_000 })).toBe("mcp-only");
+	});
 
 	it("tools.discoveryMode=off + mcp.discoveryMode=false → off", () => {
 		const s = Settings.isolated({ "tools.discoveryMode": "off", "mcp.discoveryMode": false });
@@ -37,8 +42,18 @@ describe("effective discovery mode resolution", () => {
 		expect(resolveEffectiveToolDiscoveryMode(s, { contextWindow: 999_999 })).toBe("all");
 	});
 
-	it("default auto settings stay off at 1M context tokens", () => {
+	it("default auto settings keep built-ins direct and use MCP discovery at 1M context tokens", () => {
 		const s = Settings.isolated({});
-		expect(resolveEffectiveToolDiscoveryMode(s, { contextWindow: 1_000_000 })).toBe("off");
+		expect(resolveEffectiveToolDiscoveryMode(s, { contextWindow: 1_000_000 })).toBe("mcp-only");
+	});
+
+	it("default auto settings keep built-ins direct and use MCP discovery above 1M context tokens", () => {
+		const s = Settings.isolated({});
+		expect(resolveEffectiveToolDiscoveryMode(s, { contextWindow: 2_000_000 })).toBe("mcp-only");
+	});
+
+	it("default auto settings stay off when the context window is unknown", () => {
+		const s = Settings.isolated({});
+		expect(resolveEffectiveToolDiscoveryMode(s)).toBe("off");
 	});
 });

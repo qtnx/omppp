@@ -33,7 +33,12 @@ const THINKING_LEVEL_METADATA: Record<ThinkingLevel, ThinkingLevelMetadata> = {
 	[ThinkingLevel.XHigh]: {
 		value: ThinkingLevel.XHigh,
 		label: "xhigh",
-		description: "Maximum reasoning (~32k tokens)",
+		description: "Extra-high reasoning (~32k tokens)",
+	},
+	[ThinkingLevel.Max]: {
+		value: ThinkingLevel.Max,
+		label: "max",
+		description: "Maximum supported reasoning",
 	},
 };
 
@@ -43,7 +48,7 @@ const EFFORT_BY_SELECTOR: Readonly<Record<string, Effort>> = {
 	[Effort.Medium]: Effort.Medium,
 	[Effort.High]: Effort.High,
 	[Effort.XHigh]: Effort.XHigh,
-	max: Effort.XHigh,
+	[Effort.Max]: Effort.Max,
 };
 const THINKING_LEVEL_BY_SELECTOR: Readonly<Record<string, ThinkingLevel>> = {
 	[ThinkingLevel.Inherit]: ThinkingLevel.Inherit,
@@ -53,6 +58,7 @@ const THINKING_LEVEL_BY_SELECTOR: Readonly<Record<string, ThinkingLevel>> = {
 	[ThinkingLevel.Medium]: ThinkingLevel.Medium,
 	[ThinkingLevel.High]: ThinkingLevel.High,
 	[ThinkingLevel.XHigh]: ThinkingLevel.XHigh,
+	[ThinkingLevel.Max]: ThinkingLevel.Max,
 };
 
 function getOwnSelector<T>(selectors: Readonly<Record<string, T>>, value: string | null | undefined): T | undefined {
@@ -134,7 +140,7 @@ export interface ConfiguredThinkingLevelMetadata {
 const AUTO_THINKING_METADATA: ConfiguredThinkingLevelMetadata = {
 	value: AUTO_THINKING,
 	label: "auto",
-	description: "Auto-detect per prompt (low–xhigh)",
+	description: "Auto-detect per prompt (low–max)",
 };
 
 /**
@@ -144,7 +150,6 @@ const AUTO_THINKING_METADATA: ConfiguredThinkingLevelMetadata = {
  */
 export function parseConfiguredThinkingLevel(value: string | null | undefined): ConfiguredThinkingLevel | undefined {
 	if (value === AUTO_THINKING) return AUTO_THINKING;
-	if (value === "max") return ThinkingLevel.XHigh;
 	return parseThinkingLevel(value);
 }
 

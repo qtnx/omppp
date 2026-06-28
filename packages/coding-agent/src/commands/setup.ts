@@ -9,7 +9,7 @@ import { runSetupCommand, type SetupCommandArgs, type SetupComponent } from "../
 import { runRootCommand } from "../main";
 import { initTheme } from "../modes/theme/theme";
 
-const COMPONENTS: SetupComponent[] = ["python", "speech"];
+const COMPONENTS: SetupComponent[] = ["python", "speech", "podman"];
 
 export interface OnboardingSetupDependencies {
 	runRoot?: typeof runRootCommand;

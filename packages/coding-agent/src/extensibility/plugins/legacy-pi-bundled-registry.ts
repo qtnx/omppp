@@ -429,6 +429,7 @@ import * as bundledPiCodingAgentExtensibilityCustomToolsWrapper from "@oh-my-pi/
 import * as bundledPiCodingAgentExtensibilityExtensions from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import * as bundledPiCodingAgentExtensibilityExtensionsCompactHandler from "@oh-my-pi/pi-coding-agent/extensibility/extensions/compact-handler";
 import * as bundledPiCodingAgentExtensibilityExtensionsGetCommandsHandler from "@oh-my-pi/pi-coding-agent/extensibility/extensions/get-commands-handler";
+import * as bundledPiCodingAgentExtensibilityExtensionsHerdrAgentState from "@oh-my-pi/pi-coding-agent/extensibility/extensions/herdr-agent-state";
 import * as bundledPiCodingAgentExtensibilityExtensionsLoader from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import * as bundledPiCodingAgentExtensibilityExtensionsModelApi from "@oh-my-pi/pi-coding-agent/extensibility/extensions/model-api";
 import * as bundledPiCodingAgentExtensibilityExtensionsRunner from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
@@ -2067,6 +2068,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		bundledPiCodingAgentExtensibilityExtensionsCompactHandler as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/extensibility/extensions/get-commands-handler":
 		bundledPiCodingAgentExtensibilityExtensionsGetCommandsHandler as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/extensibility/extensions/herdr-agent-state":
+		bundledPiCodingAgentExtensibilityExtensionsHerdrAgentState as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/extensibility/extensions/loader":
 		bundledPiCodingAgentExtensibilityExtensionsLoader as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/extensibility/extensions/model-api":

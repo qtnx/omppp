@@ -15,7 +15,11 @@ import {
 	getConfigRootDir,
 } from "@oh-my-pi/pi-utils";
 import { INTERNAL_WORKER_ENTRY_ARGS } from "../cli/worker-selectors";
-import { DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS } from "../config/sandbox-defaults";
+import {
+	DEFAULT_LINUX_PODMAN_IMAGE,
+	DEFAULT_LINUX_SANDBOX_ALLOWED_PATHS,
+	DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS,
+} from "../config/sandbox-defaults";
 
 export interface OmpxCommand {
 	cmd: string;
@@ -59,6 +63,12 @@ interface SandboxPathSets {
 	writeLiterals: Set<string>;
 }
 
+interface LinuxPodmanMount {
+	source: string;
+	target: string;
+	readOnly: boolean;
+}
+
 const DEFAULT_CMD = process.platform === "win32" ? `${APP_NAME}.cmd` : APP_NAME;
 const DEFAULT_SHELL = process.platform === "win32";
 const MACOS_SANDBOX_EXEC = "/usr/bin/sandbox-exec";
@@ -68,8 +78,115 @@ const MACOS_SANDBOX_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_INHERITED";
 const MACOS_SANDBOX_RELAUNCH_MESSAGE_TYPE = "ompx:macos-sandbox:relaunch";
 const MACOS_SANDBOX_RELAUNCH_SUPPORTED_ENV = "PI_OMPX_MACOS_SANDBOX_RELAUNCH_SUPPORTED";
 const MACOS_SANDBOX_RELAUNCH_FORCE_KILL_MS = 10_000;
+export const LINUX_SANDBOX_ACTIVE_ENV = "PI_OMPX_LINUX_SANDBOX_ACTIVE";
+const LINUX_SANDBOX_ACTIVE_INHERITED_ENV = "PI_OMPX_LINUX_SANDBOX_ACTIVE_INHERITED";
+const LINUX_SANDBOX_INHERITED_ENV = "PI_OMPX_LINUX_SANDBOX_INHERITED";
+const LINUX_PODMAN_IMAGE_INHERITED_ENV = "PI_OMPX_PODMAN_IMAGE_INHERITED";
+const LINUX_PODMAN_EXEC = "podman";
+const LINUX_PODMAN_INNER_COMMAND = APP_NAME;
 const MACOS_SANDBOX_DEFAULT_SENTINEL = "default";
 const DISABLE_SANDBOX_VALUES = new Set(["0", "false", "no", "off"]);
+const ENABLE_SANDBOX_VALUES = new Set(["1", "true", "yes", "on", "podman", "auto"]);
+const LINUX_UNSAFE_EXACT_PATHS = new Set([
+	"/",
+	"/home",
+	"/root",
+	"/etc",
+	"/proc",
+	"/sys",
+	"/dev",
+	"/run",
+	"/var/run",
+	"/tmp",
+	"/var/tmp",
+]);
+const LINUX_SECRET_HOME_SUBPATHS = [
+	".ssh",
+	".gnupg",
+	".aws",
+	".azure",
+	path.join(".config", "gh"),
+	".docker",
+	path.join(".local", "share", "containers"),
+];
+const LINUX_SECRET_ABSOLUTE_ROOTS = [
+	"/run/docker.sock",
+	"/run/podman",
+	"/run/user",
+	"/var/run/docker.sock",
+	"/var/run/podman",
+];
+const LINUX_PODMAN_ENV_NAMES = new Set([
+	"HOME",
+	"TERM",
+	"COLORTERM",
+	"NO_COLOR",
+	"FORCE_COLOR",
+	"LANG",
+	"LC_ALL",
+	"NODE_EXTRA_CA_CERTS",
+]);
+const LINUX_PODMAN_ENV_PREFIXES = [
+	"PI_",
+	"OMP_",
+	"ANTHROPIC_",
+	"CLAUDE_CODE_",
+	"FOUNDRY_",
+	"OPENAI_",
+	"AI_GATEWAY_",
+	"GEMINI_",
+	"GOOGLE_",
+	"AWS_",
+	"AZURE_",
+	"GROQ_",
+	"CEREBRAS_",
+	"XAI_",
+	"OPENROUTER_",
+	"MISTRAL_",
+	"ZAI_",
+	"DEEPSEEK_",
+	"KILO_",
+	"MINIMAX_",
+	"WAFER_",
+	"CURSOR_",
+	"OLLAMA_",
+	"LM_STUDIO_",
+	"LLAMA_CPP_",
+	"EXA_",
+	"BRAVE_",
+	"PERPLEXITY_",
+	"TAVILY_",
+	"JINA_",
+	"KAGI_",
+	"SEARXNG_",
+	"SMITHERY_",
+	"PARALLEL_",
+	"OPENCODE_",
+	"GITHUB_",
+	"GH_",
+	"GITLAB_",
+	"COPILOT_",
+	"HF_",
+	"HUGGINGFACE_",
+	"MOONSHOT_",
+	"KIMI_",
+	"NVIDIA_",
+	"NANO_GPT_",
+	"VENICE_",
+	"LITELLM_",
+	"TOGETHER_",
+	"AIMLAPI_",
+	"FIREWORKS_",
+	"SYNTHETIC_",
+	"QWEN_",
+	"ZENMUX_",
+	"VLLM_",
+	"CLOUDFLARE_",
+	"ALIBABA_",
+	"QIANFAN_",
+	"ZHIPU_",
+	"XIAOMI_",
+];
 const READ_DENY_ROOTS = ["/Volumes", "/System/Volumes/Data/Volumes", "/Users", "/System/Volumes/Data/Users"];
 const KEYCHAIN_DENY_ROOTS = ["/Library/Keychains", "/System/Volumes/Data/Library/Keychains"];
 const TRAVERSAL_ROOTS = ["/Volumes", "/System/Volumes/Data/Volumes", "/Users", "/System/Volumes/Data/Users"];
@@ -110,6 +227,8 @@ const CLI_VALUE_FLAGS = new Set([
 	"--approval-mode",
 	"--add-dir",
 	"--sandbox-add-dir",
+	"--config",
+	"--cwd",
 	"--append-system-prompt",
 	"--be",
 	"--fe",
@@ -178,15 +297,23 @@ function isDisabledEnvValue(value: string | undefined): boolean {
 	return value !== undefined && DISABLE_SANDBOX_VALUES.has(value.trim().toLowerCase());
 }
 
-function resolveSandboxEnvValue(env: Record<string, string | undefined>): string | undefined {
-	const inherited = env[MACOS_SANDBOX_INHERITED_ENV];
+function resolveInheritedSandboxEnvValue(env: Record<string, string | undefined>, key: string): string | undefined {
+	const inherited = env[key];
 	if (inherited === undefined) return undefined;
 	const trimmed = inherited.trim();
 	return trimmed === "" || trimmed === MACOS_SANDBOX_DEFAULT_SENTINEL ? undefined : inherited;
 }
 
+function resolveMacOSSandboxEnvValue(env: Record<string, string | undefined>): string | undefined {
+	return resolveInheritedSandboxEnvValue(env, MACOS_SANDBOX_INHERITED_ENV);
+}
+
 export function isMacOSSandboxActive(env: Record<string, string | undefined> = Bun.env): boolean {
 	return process.platform === "darwin" && env[MACOS_SANDBOX_ACTIVE_INHERITED_ENV]?.trim() === "1";
+}
+
+export function isLinuxSandboxActive(env: Record<string, string | undefined> = Bun.env): boolean {
+	return process.platform === "linux" && env[LINUX_SANDBOX_ACTIVE_INHERITED_ENV]?.trim() === "1";
 }
 
 export function disableMacOSSandboxForProcess(): void {
@@ -194,8 +321,22 @@ export function disableMacOSSandboxForProcess(): void {
 	Bun.env.PI_OMPX_MACOS_SANDBOX = "0";
 }
 
+export function disableLinuxSandboxForProcess(): void {
+	Bun.env[LINUX_SANDBOX_INHERITED_ENV] = "0";
+	Bun.env.PI_OMPX_LINUX_SANDBOX = "0";
+}
+
+export function disableWorkspaceSandboxForProcess(): void {
+	disableMacOSSandboxForProcess();
+	disableLinuxSandboxForProcess();
+}
+
+export function isWorkspaceSandboxActive(env: Record<string, string | undefined> = Bun.env): boolean {
+	return isMacOSSandboxActive(env) || isLinuxSandboxActive(env);
+}
+
 function shouldSandboxOmpxCommand(env: Record<string, string | undefined>): boolean {
-	return process.platform === "darwin" && !isDisabledEnvValue(resolveSandboxEnvValue(env));
+	return process.platform === "darwin" && !isDisabledEnvValue(resolveMacOSSandboxEnvValue(env));
 }
 
 function commandRequestsNoSandbox(args: readonly string[]): boolean {
@@ -569,26 +710,97 @@ function stringArraySetting(value: unknown): string[] | null {
 	return null;
 }
 
-function readConfiguredMacOSSandboxAllowedPaths(): string[] {
+interface RawSandboxConfig {
+	sandbox?: {
+		allowedPaths?: unknown;
+		linux?: {
+			allowedPaths?: unknown;
+		};
+		podman?: {
+			enabled?: unknown;
+			image?: unknown;
+		};
+		podmanEnabled?: unknown;
+		podmanImage?: unknown;
+	};
+	"sandbox.allowedPaths"?: unknown;
+	"sandbox.linux.allowedPaths"?: unknown;
+	"sandbox.podman.enabled"?: unknown;
+	"sandbox.podman.image"?: unknown;
+	"sandbox.podmanEnabled"?: unknown;
+	"sandbox.podmanImage"?: unknown;
+}
+
+function stringSetting(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function booleanSetting(value: unknown): boolean | null {
+	if (typeof value === "boolean") return value;
+	if (typeof value !== "string") return null;
+	const normalized = value.trim().toLowerCase();
+	if (ENABLE_SANDBOX_VALUES.has(normalized)) return true;
+	if (DISABLE_SANDBOX_VALUES.has(normalized)) return false;
+	return null;
+}
+
+function readSandboxConfig(): RawSandboxConfig | null {
 	try {
 		const configPath = path.join(getAgentDir(), "config.yml");
 		const parsed = YAML.parse(fs.readFileSync(configPath, "utf8"));
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			return DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS;
-		}
-		const raw = parsed as { sandbox?: { allowedPaths?: unknown }; "sandbox.allowedPaths"?: unknown };
-		return (
-			stringArraySetting(raw.sandbox?.allowedPaths) ??
-			stringArraySetting(raw["sandbox.allowedPaths"]) ??
-			DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS
-		);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		return parsed as RawSandboxConfig;
 	} catch {
-		return DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS;
+		return null;
 	}
 }
 
+function readConfiguredSandboxAllowedPaths(defaultPaths: string[]): string[] {
+	const raw = readSandboxConfig();
+	if (!raw) return defaultPaths;
+	return (
+		stringArraySetting(raw.sandbox?.allowedPaths) ?? stringArraySetting(raw["sandbox.allowedPaths"]) ?? defaultPaths
+	);
+}
+
+function readConfiguredLinuxSandboxAllowedPaths(): string[] {
+	const raw = readSandboxConfig();
+	if (!raw) return DEFAULT_LINUX_SANDBOX_ALLOWED_PATHS;
+	return (
+		stringArraySetting(raw.sandbox?.linux?.allowedPaths) ??
+		stringArraySetting(raw["sandbox.linux.allowedPaths"]) ??
+		DEFAULT_LINUX_SANDBOX_ALLOWED_PATHS
+	);
+}
+
+function readConfiguredLinuxPodmanEnabled(): boolean | null {
+	const raw = readSandboxConfig();
+	if (!raw) return null;
+	return (
+		booleanSetting(raw.sandbox?.podman?.enabled) ??
+		booleanSetting(raw.sandbox?.podmanEnabled) ??
+		booleanSetting(raw["sandbox.podman.enabled"]) ??
+		booleanSetting(raw["sandbox.podmanEnabled"])
+	);
+}
+
+function readConfiguredLinuxPodmanImage(): string | undefined {
+	const raw = readSandboxConfig();
+	if (!raw) return undefined;
+	return (
+		stringSetting(raw.sandbox?.podman?.image) ??
+		stringSetting(raw.sandbox?.podmanImage) ??
+		stringSetting(raw["sandbox.podman.image"]) ??
+		stringSetting(raw["sandbox.podmanImage"])
+	);
+}
+
 function addConfiguredSandboxAllowedPaths(sets: SandboxPathSets, cwd: string, home: string): void {
-	const resolved = resolveMacOSSandboxAllowedPaths(readConfiguredMacOSSandboxAllowedPaths(), cwd, home);
+	const resolved = resolveMacOSSandboxAllowedPaths(
+		readConfiguredSandboxAllowedPaths(DEFAULT_MACOS_SANDBOX_ALLOWED_PATHS),
+		cwd,
+		home,
+	);
 	if (resolved.error) return;
 	for (const allowedPath of resolved.paths) {
 		addSandboxAllowedPath(sets, allowedPath);
@@ -881,6 +1093,10 @@ function readGitFileTarget(gitFilePath: string): string | null {
 	}
 }
 
+export function resolveLinuxPodmanSandboxImage(env: Record<string, string | undefined> = Bun.env): string {
+	return resolveLinuxPodmanImage(env);
+}
+
 function isAssociatedExternalGitDir(candidate: string): boolean {
 	const parts = path.resolve(candidate).split(path.sep);
 	const gitIndex = parts.lastIndexOf(".git");
@@ -960,6 +1176,306 @@ function collectSandboxPaths(
 	addWriteSubpath(sets, "/dev");
 
 	return sets;
+}
+
+function resolveLinuxSandboxEnvValue(env: Record<string, string | undefined>): string | undefined {
+	return resolveInheritedSandboxEnvValue(env, LINUX_SANDBOX_INHERITED_ENV);
+}
+
+function resolveLinuxPodmanImageOverride(env: Record<string, string | undefined>): string | undefined {
+	return resolveInheritedSandboxEnvValue(env, LINUX_PODMAN_IMAGE_INHERITED_ENV) ?? readConfiguredLinuxPodmanImage();
+}
+
+function resolveLinuxPodmanImage(env: Record<string, string | undefined>): string {
+	return resolveLinuxPodmanImageOverride(env) ?? DEFAULT_LINUX_PODMAN_IMAGE;
+}
+
+function resolveLinuxPodmanEnabled(env: Record<string, string | undefined>): boolean {
+	const inherited = resolveLinuxSandboxEnvValue(env);
+	if (inherited !== undefined) {
+		const normalized = inherited.trim().toLowerCase();
+		if (DISABLE_SANDBOX_VALUES.has(normalized)) return false;
+		if (ENABLE_SANDBOX_VALUES.has(normalized)) return true;
+		throw new Error(
+			`Invalid PI_OMPX_LINUX_SANDBOX value ${JSON.stringify(inherited)}. Use podman/1/true or 0/false/off.`,
+		);
+	}
+	const configured = readConfiguredLinuxPodmanEnabled();
+	if (configured !== null) return configured;
+	return false;
+}
+
+export function validateLinuxPodmanSandboxImage(image: string): boolean {
+	return (
+		image.trim().length > 0 &&
+		image === image.trim() &&
+		!image.includes("\0") &&
+		!/\s/.test(image) &&
+		!image.startsWith("-")
+	);
+}
+
+function linuxPodmanImageOrThrow(env: Record<string, string | undefined>): string {
+	const image = resolveLinuxPodmanImage(env);
+	if (!validateLinuxPodmanSandboxImage(image)) {
+		throw new Error("Linux Podman sandbox image must be a single OCI image reference.");
+	}
+	return image;
+}
+
+function shouldLinuxPodmanSandboxCommand(env: Record<string, string | undefined>): boolean {
+	return process.platform === "linux" && !isLinuxSandboxActive(env) && resolveLinuxPodmanEnabled(env);
+}
+
+function linuxHomeRoots(home: string): string[] {
+	const resolvedHome = path.resolve(home);
+	try {
+		const realHome = fs.realpathSync.native(resolvedHome);
+		return realHome === resolvedHome ? [resolvedHome] : [resolvedHome, realHome];
+	} catch {
+		return [resolvedHome];
+	}
+}
+
+function linuxPathIsUnsafe(candidate: string, home: string): boolean {
+	const resolved = path.resolve(candidate);
+	if (LINUX_UNSAFE_EXACT_PATHS.has(resolved)) return true;
+	for (const homeRoot of linuxHomeRoots(home)) {
+		if (resolved === homeRoot) return true;
+		for (const relative of LINUX_SECRET_HOME_SUBPATHS) {
+			const secretPath = path.join(homeRoot, relative);
+			if (pathIsWithin(secretPath, resolved) || pathIsWithin(resolved, secretPath)) return true;
+		}
+	}
+	for (const secretRoot of LINUX_SECRET_ABSOLUTE_ROOTS) {
+		if (pathIsWithin(secretRoot, resolved) || pathIsWithin(resolved, secretRoot)) return true;
+	}
+	return false;
+}
+
+function resolveLinuxSandboxPath(inputPath: string, cwd: string, home: string): string | null {
+	const trimmed = inputPath.trim();
+	if (!trimmed || trimmed.includes("\0")) return null;
+	const expanded = trimmed === "~" ? home : trimmed.startsWith("~/") ? path.join(home, trimmed.slice(2)) : trimmed;
+	const resolved = path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(cwd, expanded);
+	return linuxPathIsUnsafe(resolved, home) ? null : resolved;
+}
+
+function addLinuxPodmanMount(
+	mounts: LinuxPodmanMount[],
+	inputPath: string | undefined,
+	cwd: string,
+	home: string,
+	readOnly: boolean,
+	createMissingDirectory = false,
+): void {
+	if (!inputPath?.trim()) return;
+	const resolved = resolveLinuxSandboxPath(inputPath, cwd, home);
+	if (!resolved) return;
+	if (resolved.includes(",")) throw new Error("Linux Podman sandbox bind paths must not contain commas.");
+	if (createMissingDirectory) {
+		try {
+			fs.mkdirSync(resolved, { recursive: true });
+		} catch {
+			return;
+		}
+	}
+	let source: string;
+	try {
+		source = fs.realpathSync.native(resolved);
+	} catch {
+		return;
+	}
+	if (source.includes(",")) throw new Error("Linux Podman sandbox bind paths must not contain commas.");
+	if (linuxPathIsUnsafe(source, home)) return;
+	if (mounts.some(mount => mount.source === source && mount.target === resolved)) return;
+	mounts.push({ source, target: resolved, readOnly });
+}
+
+function addLinuxRuntimeMounts(
+	mounts: LinuxPodmanMount[],
+	env: Record<string, string | undefined>,
+	cwd: string,
+	home: string,
+): void {
+	const trustedConfigDir = env[TRUSTED_CONFIG_DIR_ENV]?.trim();
+	const configDirName =
+		trustedConfigDir && trustedConfigDir !== MACOS_SANDBOX_DEFAULT_SENTINEL ? trustedConfigDir : CONFIG_DIR_NAME;
+	const configRoot = path.join(home, configDirName);
+	const trustedAgentDir = env[TRUSTED_AGENT_DIR_ENV]?.trim();
+	const agentDir =
+		trustedAgentDir && trustedAgentDir !== MACOS_SANDBOX_DEFAULT_SENTINEL
+			? trustedAgentDir
+			: path.join(configRoot, "agent");
+
+	for (const candidate of [configRoot, agentDir]) {
+		addLinuxPodmanMount(mounts, candidate, cwd, home, false, true);
+	}
+}
+
+function addLinuxGitMetadataMounts(mounts: LinuxPodmanMount[], cwd: string, home: string): void {
+	let current = cwd;
+	while (true) {
+		const gitPath = path.join(current, ".git");
+		try {
+			const stat = fs.statSync(gitPath);
+			if (stat.isDirectory()) {
+				addLinuxPodmanMount(mounts, gitPath, cwd, home, false);
+				return;
+			}
+			if (stat.isFile()) {
+				addLinuxPodmanMount(mounts, gitPath, cwd, home, true);
+				const gitDir = readGitFileTarget(gitPath);
+				if (!gitDir || (!pathIsWithin(cwd, gitDir) && !isAssociatedExternalGitDir(gitDir))) return;
+				addLinuxPodmanMount(mounts, gitDir, cwd, home, false);
+				const commonGitDir = readCommonGitDir(gitDir);
+				if (commonGitDir && pathIsWithin(commonGitDir, gitDir)) {
+					addLinuxPodmanMount(mounts, commonGitDir, cwd, home, false);
+				}
+				return;
+			}
+		} catch {}
+		const parent = path.dirname(current);
+		if (parent === current) return;
+		current = parent;
+	}
+}
+
+function addLinuxCommandArgumentMounts(mounts: LinuxPodmanMount[], args: string[], cwd: string, home: string): void {
+	for (const sessionDir of extractCliFlagValues(args, "--session-dir")) {
+		addLinuxPodmanMount(mounts, resolveChildPath(sessionDir, cwd), cwd, home, false, true);
+	}
+	for (const workspaceDir of extractCliFlagValues(args, "--add-dir")) {
+		addLinuxPodmanMount(mounts, workspaceDir, cwd, home, false);
+	}
+	for (const allowedPath of extractCliFlagValues(args, "--sandbox-add-dir")) {
+		addLinuxPodmanMount(mounts, allowedPath, cwd, home, false);
+	}
+}
+
+function collectLinuxPodmanMounts(
+	command: OmpxCommand,
+	cwd: string,
+	env: Record<string, string | undefined>,
+): LinuxPodmanMount[] {
+	const home = env.HOME ?? os.homedir();
+	const mounts: LinuxPodmanMount[] = [];
+	addLinuxPodmanMount(mounts, cwd, cwd, home, false);
+	addLinuxGitMetadataMounts(mounts, cwd, home);
+	addLinuxRuntimeMounts(mounts, env, cwd, home);
+	addLinuxCommandArgumentMounts(mounts, command.args, cwd, home);
+	for (const allowedPath of readConfiguredLinuxSandboxAllowedPaths()) {
+		addLinuxPodmanMount(mounts, allowedPath, cwd, home, false);
+	}
+	return mounts;
+}
+
+function linuxPodmanMountArg(mount: LinuxPodmanMount): string {
+	const base = `type=bind,source=${mount.source},target=${mount.target}`;
+	return mount.readOnly ? `${base},readonly` : base;
+}
+
+function shouldPassLinuxPodmanEnv(name: string): boolean {
+	return LINUX_PODMAN_ENV_NAMES.has(name) || LINUX_PODMAN_ENV_PREFIXES.some(prefix => name.startsWith(prefix));
+}
+
+function trustedCapturedEnvValue(env: Record<string, string | undefined>, key: string): string | undefined {
+	const value = env[key]?.trim();
+	return value && value !== MACOS_SANDBOX_DEFAULT_SENTINEL ? value : undefined;
+}
+
+function copyDefinedEnv(env: Record<string, string | undefined>): Record<string, string> {
+	const childEnv: Record<string, string> = {};
+	for (const [name, value] of Object.entries(env)) {
+		if (value !== undefined) childEnv[name] = value;
+	}
+	return childEnv;
+}
+
+function withLinuxPodmanSandboxEnv(env: Record<string, string | undefined>): Record<string, string> {
+	const childEnv = copyDefinedEnv(env);
+	childEnv[LINUX_SANDBOX_ACTIVE_ENV] = "1";
+	childEnv[LINUX_SANDBOX_ACTIVE_INHERITED_ENV] = "1";
+
+	const trustedConfigDir = trustedCapturedEnvValue(env, TRUSTED_CONFIG_DIR_ENV);
+	if (trustedConfigDir !== undefined) {
+		childEnv.PI_CONFIG_DIR = trustedConfigDir;
+	} else {
+		delete childEnv.PI_CONFIG_DIR;
+	}
+	const trustedAgentDir = trustedCapturedEnvValue(env, TRUSTED_AGENT_DIR_ENV);
+	if (trustedAgentDir !== undefined) {
+		childEnv.PI_CODING_AGENT_DIR = trustedAgentDir;
+	} else {
+		delete childEnv.PI_CODING_AGENT_DIR;
+	}
+	delete childEnv.PI_PACKAGE_DIR;
+	delete childEnv.PI_SUBPROCESS_CMD;
+	delete childEnv.XDG_DATA_HOME;
+	delete childEnv.XDG_STATE_HOME;
+	delete childEnv.XDG_CACHE_HOME;
+	return childEnv;
+}
+
+function commandInvokesLinuxHostOnlySubcommand(command: OmpxCommand, resolvedCmd: string): boolean {
+	const firstArg = firstNonFlagArg(command.args, cliArgStartIndex(command, resolvedCmd));
+	return firstArg === "update" || firstArg === "setup" || firstArg === "install";
+}
+
+function linuxPodmanContainerArgs(
+	command: OmpxCommand,
+	resolvedCmd: string,
+	cwd: string,
+	env: Record<string, string | undefined>,
+	image: string,
+): string[] {
+	const childEnv = withLinuxPodmanSandboxEnv(env);
+	const args = [
+		"run",
+		"--rm",
+		"-i",
+		"--http-proxy=false",
+		"--userns=keep-id",
+		"--security-opt",
+		"no-new-privileges",
+		"--workdir",
+		cwd,
+		"--entrypoint",
+		LINUX_PODMAN_INNER_COMMAND,
+	];
+	for (const [name, value] of Object.entries(childEnv)) {
+		if (value !== undefined && shouldPassLinuxPodmanEnv(name)) {
+			args.push("--env", name);
+		}
+	}
+	for (const mount of collectLinuxPodmanMounts(command, cwd, childEnv)) {
+		args.push("--mount", linuxPodmanMountArg(mount));
+	}
+	const innerArgs = command.args.slice(cliArgStartIndex(command, resolvedCmd));
+	args.push(image, ...innerArgs);
+	return args;
+}
+
+function linuxPodmanOmpxCommand(
+	command: OmpxCommand,
+	resolvedCmd: string,
+	cwd: string,
+	env: Record<string, string | undefined>,
+): OmpxCommand {
+	if (
+		(process.platform === "linux" && command.cmd === LINUX_PODMAN_EXEC) ||
+		commandInvokesLinuxHostOnlySubcommand(command, resolvedCmd)
+	) {
+		return command;
+	}
+	const image = linuxPodmanImageOrThrow(env);
+	const childEnv = withLinuxPodmanSandboxEnv(env);
+	return {
+		cmd: LINUX_PODMAN_EXEC,
+		args: linuxPodmanContainerArgs(command, resolvedCmd, cwd, env, image),
+		shell: false,
+		env: childEnv,
+	};
 }
 
 function seatbeltString(value: string): string {
@@ -1167,7 +1683,7 @@ export function buildMacOSSandboxRelaunchArgv(
 }
 
 export function shouldSelfSandboxArgv(argv: readonly string[], env: Record<string, string | undefined>): boolean {
-	if (isMacOSSandboxActive(env) || commandRequestsNoSandbox(argv)) return false;
+	if (isWorkspaceSandboxActive(env) || commandRequestsNoSandbox(argv)) return false;
 	const first = argv[0];
 	// Internal worker re-entries never self-sandbox: they run inside (or on
 	// behalf of) an already-dispatched parent and a sandbox-exec wrapper would
@@ -1271,13 +1787,38 @@ export async function reexecUnderMacOSSandboxIfNeeded(argv: string[]): Promise<b
 	return false;
 }
 
+export async function reexecUnderLinuxPodmanSandboxIfNeeded(argv: string[]): Promise<boolean> {
+	const command = sandboxCurrentOmpxCommand(argv);
+	if (!command) return false;
+	const child = Bun.spawn({
+		cmd: [command.cmd, ...command.args],
+		env: command.env ?? Bun.env,
+		stderr: "inherit",
+		stdin: "inherit",
+		stdout: "inherit",
+	});
+	process.exit(await child.exited);
+}
+
+export async function reexecUnderWorkspaceSandboxIfNeeded(argv: string[]): Promise<boolean> {
+	if (process.platform === "darwin") return reexecUnderMacOSSandboxIfNeeded(argv);
+	if (process.platform === "linux") return reexecUnderLinuxPodmanSandboxIfNeeded(argv);
+	return false;
+}
+
 export function sandboxOmpxCommand(command: OmpxCommand, options: OmpxSandboxOptions = {}): OmpxCommand {
-	if (command.cmd === MACOS_SANDBOX_EXEC) return command;
+	if (command.cmd === MACOS_SANDBOX_EXEC || (process.platform === "linux" && command.cmd === LINUX_PODMAN_EXEC))
+		return command;
 	const env = options.env ?? Bun.env;
-	if (commandRequestsNoSandbox(command.args) || !shouldSandboxOmpxCommand(env)) return command;
+	if (commandRequestsNoSandbox(command.args)) return command;
 
 	const cwd = path.resolve(options.cwd?.trim() ? options.cwd : process.cwd());
 	const resolvedCmd = resolveExecutable(command.cmd, env, cwd);
+	if (shouldLinuxPodmanSandboxCommand(env)) {
+		return linuxPodmanOmpxCommand(command, resolvedCmd, cwd, env);
+	}
+	if (!shouldSandboxOmpxCommand(env)) return command;
+
 	const childEnv = withActiveMacOSSandboxEnv(env);
 	const sshAuthSock = resolveSandboxSSHAuthSock(childEnv, childEnv.HOME ?? os.homedir());
 	if (sshAuthSock) {

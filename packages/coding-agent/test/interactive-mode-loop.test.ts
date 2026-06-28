@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
@@ -11,10 +12,17 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
-async function flushMicrotasks(): Promise<void> {
-	await Promise.resolve();
-	await Promise.resolve();
-	await Promise.resolve();
+async function flushMicrotasks(turns = 12): Promise<void> {
+	for (let i = 0; i < turns; i += 1) {
+		await Promise.resolve();
+	}
+}
+
+function resolveLocalPromptFile(mode: InteractiveMode, filePath = "local://LOOP_PROMPT.md"): string {
+	return resolveLocalUrlToPath(filePath, {
+		getArtifactsDir: () => mode.sessionManager.getArtifactsDir(),
+		getSessionId: () => mode.sessionManager.getSessionId(),
+	});
 }
 
 describe("InteractiveMode loop auto-submit", () => {
@@ -173,5 +181,106 @@ describe("InteractiveMode loop auto-submit", () => {
 
 		expect(resolved).toHaveLength(1);
 		expect(resolved[0].text).toBe("deliver this");
+	});
+
+	it("locks only the first loop prompt into a session-local prompt file", async () => {
+		await mode.handleLoopCommand("2s");
+
+		await mode.captureLoopPrompt("first repeat prompt");
+		await mode.captureLoopPrompt("later chat should not replace it");
+
+		expect(mode.loopPromptFilePath).toBe("local://LOOP_PROMPT.md");
+		expect(await Bun.file(resolveLocalPromptFile(mode)).text()).toBe("first repeat prompt");
+	});
+
+	it("overwrites an untracked default prompt file on first capture", async () => {
+		await Bun.write(resolveLocalPromptFile(mode), "stale scratch content");
+		await mode.handleLoopCommand("2s");
+
+		await mode.captureLoopPrompt("fresh first prompt");
+
+		expect(await Bun.file(resolveLocalPromptFile(mode)).text()).toBe("fresh first prompt");
+	});
+	it("uses the prompt file contents for later loop iterations", async () => {
+		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
+		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
+		Object.defineProperty(session, "hasPostPromptWork", { configurable: true, get: () => false });
+
+		await mode.handleLoopCommand("1ms");
+		await mode.captureLoopPrompt("first repeat prompt");
+		await Bun.write(resolveLocalPromptFile(mode), "model-approved prompt update");
+
+		const input = await mode.getUserInput();
+
+		expect(input.text).toBe("model-approved prompt update");
+	});
+
+	it("lets pause recapture the next prompt into the same prompt file", async () => {
+		await mode.handleLoopCommand("2s");
+		await mode.captureLoopPrompt("first prompt");
+		mode.pauseLoop();
+
+		await mode.captureLoopPrompt("replacement prompt");
+
+		expect(mode.loopPromptFilePath).toBe("local://LOOP_PROMPT.md");
+		expect(await Bun.file(resolveLocalPromptFile(mode)).text()).toBe("replacement prompt");
+	});
+
+	it("persists pause as inactive until a replacement prompt is captured", async () => {
+		await mode.handleLoopCommand("2s");
+		await mode.captureLoopPrompt("first prompt");
+
+		mode.pauseLoop();
+
+		expect(mode.sessionManager.buildSessionContext().mode).toBe("none");
+	});
+	it("reactivates the previous loop prompt file instead of creating a new prompt", async () => {
+		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
+		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
+		Object.defineProperty(session, "hasPostPromptWork", { configurable: true, get: () => false });
+
+		await mode.handleLoopCommand("1ms");
+		await mode.captureLoopPrompt("persistent repeat prompt");
+		mode.disableLoopMode();
+		await mode.handleLoopCommand("1ms");
+		await mode.captureLoopPrompt("new chat should not become the repeat prompt");
+
+		const input = await mode.getUserInput();
+
+		expect(mode.loopPromptFilePath).toBe("local://LOOP_PROMPT.md");
+		expect(input.text).toBe("persistent repeat prompt");
+	});
+
+	it("auto-submits a reused prompt file when loop is re-enabled while input is idle", async () => {
+		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
+		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
+		Object.defineProperty(session, "hasPostPromptWork", { configurable: true, get: () => false });
+
+		await mode.handleLoopCommand("1ms");
+		await mode.captureLoopPrompt("idle reuse prompt");
+		mode.disableLoopMode();
+		const inputPromise = mode.getUserInput();
+
+		await mode.handleLoopCommand("1ms");
+
+		const input = await inputPromise;
+		expect(input.text).toBe("idle reuse prompt");
+	});
+
+	it("preserves the prompt file across reset-mode loop iterations", async () => {
+		settings.set("loop.mode", "reset");
+		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
+		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
+		Object.defineProperty(session, "hasPostPromptWork", { configurable: true, get: () => false });
+
+		await mode.handleLoopCommand("1ms");
+		await mode.captureLoopPrompt("reset survives");
+		const originalSessionId = mode.sessionManager.getSessionId();
+
+		const input = await mode.getUserInput();
+
+		expect(mode.sessionManager.getSessionId()).not.toBe(originalSessionId);
+		expect(input.text).toBe("reset survives");
+		expect(await Bun.file(resolveLocalPromptFile(mode)).text()).toBe("reset survives");
 	});
 });

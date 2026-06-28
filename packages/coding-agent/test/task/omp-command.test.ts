@@ -3,8 +3,10 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DEFAULT_LINUX_PODMAN_IMAGE } from "@oh-my-pi/pi-coding-agent/config/sandbox-defaults";
 import {
 	buildMacOSSandboxRelaunchArgv,
+	LINUX_SANDBOX_ACTIVE_ENV,
 	MACOS_SANDBOX_ACTIVE_ENV,
 	reexecUnderMacOSSandboxIfNeeded,
 	requestMacOSSandboxRelaunch,
@@ -30,6 +32,17 @@ function macEnv(overrides: Record<string, string | undefined> = {}): Record<stri
 		HOME: "/Users/alice",
 		PATH: "/Users/alice/.bun/bin:/usr/bin:/bin",
 		TMPDIR: "/var/folders/alice/T/",
+		...overrides,
+	};
+}
+
+function linuxEnv(overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
+	return {
+		HOME: "/home/alice",
+		PATH: "/usr/local/bin:/usr/bin:/bin",
+		PI_OMPX_PODMAN_IMAGE_INHERITED: "default",
+		PI_OMPX_LINUX_SANDBOX_INHERITED: "default",
+		PI_OMPX_LINUX_SANDBOX_ACTIVE_INHERITED: "0",
 		...overrides,
 	};
 }
@@ -138,11 +151,296 @@ describe("sandboxOmpxCommand", () => {
 		expect(wrapped.args[1]).toContain(`(subpath ${JSON.stringify(cwd)})`);
 	});
 
-	it("does not sandbox non-macOS commands", () => {
+	it("does not enable Linux Podman sandboxing solely because an image is configured", () => {
 		setPlatform("linux");
 		const command = { cmd: "bun", args: ["dist/cli.js"], shell: false };
+		setAgentDir(createTempDir("ompx-linux-default-off-agent-"));
 
-		expect(sandboxOmpxCommand(command, { cwd: "/Users/alice/work", env: macEnv() })).toBe(command);
+		expect(
+			sandboxOmpxCommand(command, {
+				cwd: "/Users/alice/work",
+				env: linuxEnv(),
+			}),
+		).toBe(command);
+		expect(
+			sandboxOmpxCommand(command, {
+				cwd: "/Users/alice/work",
+				env: linuxEnv({ PI_OMPX_PODMAN_IMAGE_INHERITED: "ghcr.io/qtnx/omppp/ompx:dev" }),
+			}),
+		).toBe(command);
+
+		const configAgentDir = createTempDir("ompx-linux-default-off-config-agent-");
+		setAgentDir(configAgentDir);
+		fs.writeFileSync(
+			path.join(configAgentDir, "config.yml"),
+			"sandbox:\n  podman:\n    image: ghcr.io/qtnx/omppp/ompx:dev\n",
+		);
+		expect(
+			sandboxOmpxCommand(command, {
+				cwd: "/Users/alice/work",
+				env: linuxEnv(),
+			}),
+		).toBe(command);
+	});
+
+	it("uses the default dev image when Linux Podman sandboxing is explicitly enabled without an override", () => {
+		setPlatform("linux");
+		setAgentDir(createTempDir("ompx-linux-default-image-agent-"));
+		const command = { cmd: "/usr/local/bin/ompx", args: ["--print", "hi"], shell: false };
+
+		const wrapped = sandboxOmpxCommand(command, {
+			cwd: createWorkspaceTempDir("ompx-linux-default-image-"),
+			env: linuxEnv({ PI_OMPX_LINUX_SANDBOX_INHERITED: "podman" }),
+		});
+
+		expect(DEFAULT_LINUX_PODMAN_IMAGE).toBe("oh-my-pi/pi:dev");
+		expect(wrapped.cmd).toBe("podman");
+		const imageIndex = wrapped.args.indexOf(DEFAULT_LINUX_PODMAN_IMAGE);
+		expect(imageIndex).toBeGreaterThan(0);
+		expect(wrapped.args.slice(imageIndex)).toEqual([DEFAULT_LINUX_PODMAN_IMAGE, "--print", "hi"]);
+
+		const bareWrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: [], shell: false },
+			{
+				cwd: createWorkspaceTempDir("ompx-linux-default-image-bare-"),
+				env: linuxEnv({ PI_OMPX_LINUX_SANDBOX_INHERITED: "podman" }),
+			},
+		);
+		const bareImageIndex = bareWrapped.args.indexOf(DEFAULT_LINUX_PODMAN_IMAGE);
+		expect(bareImageIndex).toBeGreaterThan(0);
+		expect(bareWrapped.args.slice(bareImageIndex)).toEqual([DEFAULT_LINUX_PODMAN_IMAGE]);
+		expect(bareWrapped.args).not.toContain("--help");
+	});
+
+	it("rejects option-like Linux Podman image overrides", () => {
+		setPlatform("linux");
+		setAgentDir(createTempDir("ompx-linux-invalid-image-agent-"));
+
+		expect(() =>
+			sandboxOmpxCommand(
+				{ cmd: "/usr/local/bin/ompx", args: ["--print", "hi"], shell: false },
+				{
+					cwd: createWorkspaceTempDir("ompx-linux-invalid-image-"),
+					env: linuxEnv({
+						PI_OMPX_LINUX_SANDBOX_INHERITED: "podman",
+						PI_OMPX_PODMAN_IMAGE_INHERITED: "--privileged",
+					}),
+				},
+			),
+		).toThrow("single OCI image reference");
+
+		const configAgentDir = createTempDir("ompx-linux-invalid-config-image-agent-");
+		setAgentDir(configAgentDir);
+		fs.writeFileSync(path.join(configAgentDir, "config.yml"), "sandbox:\n  podman:\n    image: --privileged\n");
+		expect(() =>
+			sandboxOmpxCommand(
+				{ cmd: "/usr/local/bin/ompx", args: ["--print", "hi"], shell: false },
+				{
+					cwd: createWorkspaceTempDir("ompx-linux-invalid-config-image-"),
+					env: linuxEnv({ PI_OMPX_LINUX_SANDBOX_INHERITED: "podman" }),
+				},
+			),
+		).toThrow("single OCI image reference");
+	});
+
+	it("wraps explicitly enabled Linux sessions with rootless Podman and scoped mounts", () => {
+		setPlatform("linux");
+		const agentDir = createTempDir("ompx-linux-agent-");
+		setAgentDir(agentDir);
+		const workspace = createWorkspaceTempDir("ompx-linux-work-");
+		const sessionDir = path.join(workspace, "sessions");
+		const extraDir = createWorkspaceTempDir("ompx-linux-extra-");
+		fs.mkdirSync(sessionDir, { recursive: true });
+		const command = {
+			cmd: "/usr/local/bin/ompx",
+			args: ["--session-dir", sessionDir, "--add-dir", extraDir, "--print", "hi"],
+			shell: false,
+		};
+
+		const wrapped = sandboxOmpxCommand(command, {
+			cwd: workspace,
+			env: linuxEnv({
+				OPENAI_API_KEY: "sk-test",
+				CLAUDE_CODE_USE_FOUNDRY: "1",
+				OPENCODE_API_KEY: "opencode-test",
+				PI_CONFIG_DIR: "/tmp/project-config",
+				PI_CODING_AGENT_DIR: "/tmp/project-agent",
+				XDG_DATA_HOME: "/tmp/project-xdg",
+				PI_PACKAGE_DIR: "/tmp/project-package",
+				PI_SUBPROCESS_CMD: "/tmp/project-ompx",
+				XDG_STATE_HOME: "/tmp/project-xdg-state",
+				XDG_CACHE_HOME: "/tmp/project-xdg-cache",
+				PI_OMPX_TRUSTED_CODING_AGENT_DIR: agentDir,
+				PI_OMPX_LINUX_SANDBOX_INHERITED: "podman",
+				PI_OMPX_PODMAN_IMAGE_INHERITED: "ghcr.io/qtnx/omppp/ompx:1.2.3",
+			}),
+		});
+
+		expect(wrapped.cmd).toBe("podman");
+		expect(wrapped.shell).toBe(false);
+		expect(wrapped.env?.[LINUX_SANDBOX_ACTIVE_ENV]).toBe("1");
+		expect(wrapped.env?.PI_CONFIG_DIR).toBeUndefined();
+		expect(wrapped.env?.PI_CODING_AGENT_DIR).toBe(agentDir);
+		expect(wrapped.env?.XDG_DATA_HOME).toBeUndefined();
+		expect(wrapped.env?.PI_PACKAGE_DIR).toBeUndefined();
+		expect(wrapped.env?.PI_SUBPROCESS_CMD).toBeUndefined();
+		expect(wrapped.env?.XDG_STATE_HOME).toBeUndefined();
+		expect(wrapped.env?.XDG_CACHE_HOME).toBeUndefined();
+		expect(Object.entries(wrapped.env ?? {}).every(([, value]) => value !== undefined)).toBe(true);
+		for (const blockedEnvName of [
+			"PI_CONFIG_DIR",
+			"PI_PACKAGE_DIR",
+			"PI_SUBPROCESS_CMD",
+			"XDG_DATA_HOME",
+			"XDG_STATE_HOME",
+			"XDG_CACHE_HOME",
+		]) {
+			expect(Object.hasOwn(wrapped.env ?? {}, blockedEnvName)).toBe(false);
+		}
+		expect(wrapped.args).toContain("--userns=keep-id");
+		expect(wrapped.args).toContain("--http-proxy=false");
+		expect(wrapped.args).toContain("--entrypoint");
+		expect(wrapped.args[wrapped.args.indexOf("--entrypoint") + 1]).toBe("ompx");
+		expect(wrapped.args).toContain("no-new-privileges");
+		expect(wrapped.args).toContain("--workdir");
+		expect(wrapped.args[wrapped.args.indexOf("--workdir") + 1]).toBe(workspace);
+		expect(wrapped.args).toContain("--env");
+		expect(wrapped.args).toContain("OPENAI_API_KEY");
+		expect(wrapped.args).toContain("CLAUDE_CODE_USE_FOUNDRY");
+		expect(wrapped.args).toContain("OPENCODE_API_KEY");
+		expect(wrapped.args).toContain(LINUX_SANDBOX_ACTIVE_ENV);
+		for (const blockedEnvName of [
+			"PI_CONFIG_DIR",
+			"PI_PACKAGE_DIR",
+			"PI_SUBPROCESS_CMD",
+			"XDG_DATA_HOME",
+			"XDG_STATE_HOME",
+			"XDG_CACHE_HOME",
+		]) {
+			expect(wrapped.args).not.toContain(blockedEnvName);
+		}
+		expect(wrapped.args).not.toContain("--env-host");
+		expect(wrapped.args).not.toContain("--privileged");
+		expect(wrapped.args).not.toContain("--network=host");
+		const mountArgs = wrapped.args
+			.map((arg, index) => (wrapped.args[index - 1] === "--mount" ? arg : ""))
+			.filter(Boolean);
+		expect(mountArgs).toContain(`type=bind,source=${workspace},target=${workspace}`);
+		expect(mountArgs).toContain(`type=bind,source=${sessionDir},target=${sessionDir}`);
+		expect(mountArgs).toContain(`type=bind,source=${extraDir},target=${extraDir}`);
+		expect(mountArgs).toContain(`type=bind,source=${agentDir},target=${agentDir}`);
+		const imageIndex = wrapped.args.indexOf("ghcr.io/qtnx/omppp/ompx:1.2.3");
+		expect(imageIndex).toBeGreaterThan(0);
+		expect(wrapped.args.slice(imageIndex)).toEqual([
+			"ghcr.io/qtnx/omppp/ompx:1.2.3",
+			"--session-dir",
+			sessionDir,
+			"--add-dir",
+			extraDir,
+			"--print",
+			"hi",
+		]);
+	});
+	it("does not bind-mount symlinks to unsafe Linux credential paths", () => {
+		setPlatform("linux");
+		const realHome = createWorkspaceTempDir("ompx-linux-real-home-");
+		const homeParent = createWorkspaceTempDir("ompx-linux-home-parent-");
+		const home = path.join(homeParent, "home");
+		const sshDir = path.join(realHome, ".ssh");
+		const workspace = createWorkspaceTempDir("ompx-linux-symlink-work-");
+		const symlinkPath = path.join(workspace, "keys");
+		fs.mkdirSync(sshDir, { recursive: true });
+		fs.symlinkSync(realHome, home);
+		fs.symlinkSync(sshDir, symlinkPath);
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--add-dir", symlinkPath, "--print", "hi"], shell: false },
+			{
+				cwd: workspace,
+				env: linuxEnv({
+					HOME: home,
+					PI_OMPX_LINUX_SANDBOX_INHERITED: "podman",
+					PI_OMPX_PODMAN_IMAGE_INHERITED: "ghcr.io/qtnx/omppp/ompx:1.2.3",
+				}),
+			},
+		);
+
+		const mountArgs = wrapped.args
+			.map((arg, index) => (wrapped.args[index - 1] === "--mount" ? arg : ""))
+			.filter(Boolean);
+		expect(mountArgs.some(arg => arg.includes(symlinkPath))).toBe(false);
+		expect(mountArgs.some(arg => arg.includes(sshDir))).toBe(false);
+	});
+
+	it("does not bind-mount Linux directory ancestors that contain credential paths", () => {
+		setPlatform("linux");
+		const home = createWorkspaceTempDir("ompx-linux-ancestor-home-");
+		const configDir = path.join(home, ".config");
+		const ghDir = path.join(configDir, "gh");
+		const workspace = createWorkspaceTempDir("ompx-linux-ancestor-work-");
+		fs.mkdirSync(ghDir, { recursive: true });
+
+		const wrapped = sandboxOmpxCommand(
+			{ cmd: "/usr/local/bin/ompx", args: ["--add-dir", configDir, "--print", "hi"], shell: false },
+			{
+				cwd: workspace,
+				env: linuxEnv({
+					HOME: home,
+					PI_OMPX_LINUX_SANDBOX_INHERITED: "podman",
+					PI_OMPX_PODMAN_IMAGE_INHERITED: "ghcr.io/qtnx/omppp/ompx:1.2.3",
+				}),
+			},
+		);
+
+		const mountArgs = wrapped.args
+			.map((arg, index) => (wrapped.args[index - 1] === "--mount" ? arg : ""))
+			.filter(Boolean);
+		expect(mountArgs.some(arg => arg.includes(configDir))).toBe(false);
+		expect(mountArgs.some(arg => arg.includes(ghDir))).toBe(false);
+	});
+
+	it("does not wrap Linux commands that are active, host-only, or explicitly unsandboxed", () => {
+		setPlatform("linux");
+		const command = { cmd: "/usr/local/bin/ompx", args: ["--print", "hi"], shell: false };
+		const env = linuxEnv({
+			PI_OMPX_LINUX_SANDBOX_INHERITED: "podman",
+			PI_OMPX_PODMAN_IMAGE_INHERITED: "ghcr.io/qtnx/omppp/ompx:1.2.3",
+		});
+
+		expect(sandboxOmpxCommand({ ...command, args: ["--no-sandbox", "--print", "hi"] }, { env })).toEqual({
+			...command,
+			args: ["--no-sandbox", "--print", "hi"],
+		});
+		expect(
+			sandboxOmpxCommand(command, {
+				env: linuxEnv({
+					PI_OMPX_LINUX_SANDBOX_ACTIVE_INHERITED: "1",
+					PI_OMPX_LINUX_SANDBOX_INHERITED: "podman",
+					PI_OMPX_PODMAN_IMAGE_INHERITED: "ghcr.io/qtnx/omppp/ompx:1.2.3",
+				}),
+			}),
+		).toBe(command);
+		expect(sandboxOmpxCommand({ ...command, args: ["update"] }, { env })).toEqual({ ...command, args: ["update"] });
+		expect(
+			sandboxOmpxCommand({ ...command, args: ["--session-dir", "/tmp/ompx-s", "setup", "podman"] }, { env }),
+		).toEqual({
+			...command,
+			args: ["--session-dir", "/tmp/ompx-s", "setup", "podman"],
+		});
+		expect(
+			sandboxOmpxCommand({ ...command, args: ["--config", "/tmp/ompx-cfg.yml", "setup", "podman"] }, { env }),
+		).toEqual({
+			...command,
+			args: ["--config", "/tmp/ompx-cfg.yml", "setup", "podman"],
+		});
+		expect(sandboxOmpxCommand({ ...command, args: ["--cwd", "/tmp/ompx-work", "update"] }, { env })).toEqual({
+			...command,
+			args: ["--cwd", "/tmp/ompx-work", "update"],
+		});
+		expect(sandboxOmpxCommand({ ...command, args: ["setup", "podman"] }, { env })).toEqual({
+			...command,
+			args: ["setup", "podman"],
+		});
 	});
 
 	it("honors explicit inherited opt-out values without project env overriding the default", () => {

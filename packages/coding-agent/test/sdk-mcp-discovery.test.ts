@@ -53,6 +53,14 @@ function createLargeContextModel(): Model<"openai-responses"> {
 		contextWindow: 1_000_000,
 	};
 }
+function createUnknownContextModel(): Model<"openai-responses"> {
+	return {
+		...createReasoningModel(),
+		id: "mock-unknown-context",
+		name: "mock-unknown-context",
+		contextWindow: undefined as unknown as number,
+	};
+}
 
 const oldSessionMtime = new Date("2000-01-01T00:00:00.000Z");
 
@@ -219,7 +227,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		await session.dispose();
 	});
 
-	it("keeps discovery off by default for 1M context models", async () => {
+	it("keeps built-ins direct and uses MCP discovery by default for 1M context models", async () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir: tempDir,
@@ -234,14 +242,181 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
+			customTools: [createMcpCustomTool("mcp__github_create_issue", "github", "create_issue")],
 		});
 
 		const prompt = session.systemPrompt.join("\n");
-		expect(session.getActiveToolNames()).not.toContain("search_tool_bm25");
+		expect(session.getActiveToolNames()).toContain("search_tool_bm25");
 		expect(session.getActiveToolNames()).toContain("grep");
 		expect(session.getActiveToolNames()).toContain("glob");
 		expect(session.getActiveToolNames()).not.toContain("find");
 		expect(prompt).not.toContain("Discoverable native tools are hidden until activated.");
+		expect(session.getDiscoverableTools({ source: "mcp" }).map(tool => tool.name)).toEqual([
+			"mcp__github_create_issue",
+		]);
+		await session.dispose();
+	});
+	it("restores hidden built-ins when auto model switching moves from all discovery to MCP-only", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			customTools: [createMcpCustomTool("mcp__github_create_issue", "github", "create_issue")],
+		});
+
+		expect(session.getActiveToolNames()).toContain("glob");
+		expect(session.getDiscoverableTools({ source: "builtin" }).map(tool => tool.name)).toContain("grep");
+
+		await authStorage.set("openai", { type: "api_key", key: "test-openai-key" });
+
+		await session.setModel(createLargeContextModel());
+
+		const prompt = session.systemPrompt.join("\n");
+		expect(session.getActiveToolNames()).toContain("glob");
+		expect(session.getActiveToolNames()).not.toContain("mcp__github_create_issue");
+		expect(session.getDiscoverableTools({ source: "builtin" })).toEqual([]);
+		expect(session.getDiscoverableTools({ source: "mcp" }).map(tool => tool.name)).toEqual([
+			"mcp__github_create_issue",
+		]);
+		expect(prompt).not.toContain("Discoverable native tools are hidden until activated.");
+	});
+	it("hides non-essential built-ins when auto model switching moves from MCP-only to all discovery", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			model: createLargeContextModel(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			customTools: [createMcpCustomTool("mcp__github_create_issue", "github", "create_issue")],
+		});
+
+		expect(session.getActiveToolNames()).toContain("glob");
+		expect(session.getDiscoverableTools({ source: "builtin" })).toEqual([]);
+
+		await authStorage.set("openai", { type: "api_key", key: "test-openai-key" });
+
+		await session.setModel(getBundledModel("openai", "gpt-4o-mini"));
+
+		const prompt = session.systemPrompt.join("\n");
+		expect(session.getActiveToolNames()).toContain("glob");
+		expect(session.getActiveToolNames()).not.toContain("grep");
+		expect(session.getActiveToolNames()).not.toContain("mcp__github_create_issue");
+		expect(session.getDiscoverableTools({ source: "builtin" }).map(tool => tool.name)).toContain("grep");
+		expect(session.getDiscoverableTools({ source: "mcp" }).map(tool => tool.name)).toEqual([
+			"mcp__github_create_issue",
+		]);
+		expect(prompt).toContain("Discoverable native tools are hidden until activated.");
+	});
+	it("removes discovery search when auto model switching moves from all discovery to off", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			model: createLargeContextModel(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			customTools: [createMcpCustomTool("mcp__github_create_issue", "github", "create_issue")],
+		});
+
+		await authStorage.set("openai", { type: "api_key", key: "test-openai-key" });
+		await session.setModel(getBundledModel("openai", "gpt-4o-mini"));
+
+		expect(session.getActiveToolNames()).toContain("search_tool_bm25");
+
+		await session.setModel(createUnknownContextModel());
+
+		expect(session.getActiveToolNames()).not.toContain("search_tool_bm25");
+		expect(session.systemPrompt.join("\n")).not.toContain("Discoverable native tools are hidden until activated.");
+	});
+
+	it("keeps auto discovery active after model switch when MCP tool count requires it", async () => {
+		const mcpTools = Array.from({ length: TOOL_DISCOVERY_AUTO_THRESHOLD + 1 }, (_, index) =>
+			createMcpCustomTool(`mcp__switch_tool_${index}`, "switch", `tool_${index}`),
+		);
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			model: createLargeContextModel(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			customTools: mcpTools,
+		});
+
+		expect(session.getActiveToolNames()).toContain("search_tool_bm25");
+		expect(session.getActiveToolNames()).not.toContain("mcp__switch_tool_0");
+		expect(session.getDiscoverableTools({ source: "mcp" })).toHaveLength(TOOL_DISCOVERY_AUTO_THRESHOLD + 1);
+
+		await authStorage.set("openai", { type: "api_key", key: "test-openai-key" });
+		await session.setModel(createUnknownContextModel());
+
+		expect(session.getActiveToolNames()).toContain("search_tool_bm25");
+		expect(session.getActiveToolNames()).not.toContain("mcp__switch_tool_0");
+		expect(session.getDiscoverableTools({ source: "mcp" })).toHaveLength(TOOL_DISCOVERY_AUTO_THRESHOLD + 1);
+		const searchTool = session.agent.state.tools.find(tool => tool.name === "search_tool_bm25");
+		expect(searchTool?.description).toContain("Total discoverable tools available:");
+		expect(searchTool?.description).toContain("switch");
+	});
+	it("enables discovery after switching from discovery-off into all discovery without MCP tools", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			model: createUnknownContextModel(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		expect(session.getActiveToolNames()).toContain("glob");
+		expect(session.getActiveToolNames()).not.toContain("search_tool_bm25");
+
+		await authStorage.set("openai", { type: "api_key", key: "test-openai-key" });
+
+		await session.setModel(getBundledModel("openai", "gpt-4o-mini"));
+
+		expect(session.getActiveToolNames()).toContain("search_tool_bm25");
+		expect(session.getActiveToolNames()).not.toContain("grep");
+		expect(session.getDiscoverableTools({ source: "builtin" }).map(tool => tool.name)).toContain("grep");
+		expect(session.systemPrompt.join("\n")).toContain("Discoverable native tools are hidden until activated.");
 	});
 
 	it("keeps unrequested MCP tools outside explicit tool allowlists in discovery mode", async () => {

@@ -12,6 +12,7 @@ import {
 	type AnthropicModel,
 	bareModelId,
 	type GeminiModel,
+	type GlmModel,
 	isFableOrMythos,
 	type OpenAIModel,
 	type ParsedModel,
@@ -54,6 +55,14 @@ const DEFAULT_REASONING_EFFORTS_WITH_XHIGH: readonly Effort[] = [
 	Effort.Medium,
 	Effort.High,
 	Effort.XHigh,
+];
+const DEFAULT_REASONING_EFFORTS_WITH_MAX: readonly Effort[] = [
+	Effort.Minimal,
+	Effort.Low,
+	Effort.Medium,
+	Effort.High,
+	Effort.XHigh,
+	Effort.Max,
 ];
 const GEMINI_3_PRO_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High];
 const GEMINI_3_FLASH_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
@@ -101,10 +110,10 @@ const MIMO_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
 };
 
 /**
- * Effort → wire-value map for the 5-tier adaptive scale (Opus 4.7+ and
- * Fable/Mythos 5 on the Messages API). User-facing efforts shift up one notch
- * so the top tier reaches the genuine "max" and "high" lands on Anthropic's
- * recommended "xhigh" coding/agentic default.
+ * Effort → wire-value map for the adaptive Anthropic scale (Opus 4.7+ and
+ * Fable/Mythos 5 on the Messages API). Existing user-facing levels keep their
+ * historical shifted mapping (`high` → `xhigh`, `xhigh` → `max`); the explicit
+ * `max` selector is an alias for the same unconstrained wire tier.
  */
 export const ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER: Readonly<Partial<Record<Effort, string>>> = {
 	[Effort.Minimal]: "low",
@@ -112,6 +121,7 @@ export const ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER: Readonly<Partial<Record<Effor
 	[Effort.Medium]: "high",
 	[Effort.High]: "xhigh",
 	[Effort.XHigh]: "max",
+	[Effort.Max]: "max",
 };
 
 /**
@@ -122,6 +132,7 @@ export const ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER: Readonly<Partial<Record<Effor
 export const ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER: Readonly<Partial<Record<Effort, string>>> = {
 	[Effort.Minimal]: "low",
 	[Effort.XHigh]: "max",
+	[Effort.Max]: "max",
 };
 
 const MINIMAX_ANTHROPIC_ADAPTIVE_EFFORT_MAP: Readonly<EffortMap> = {
@@ -466,6 +477,8 @@ function inferSupportedEfforts<TApi extends Api>(
 			return inferGeminiSupportedEfforts(parsedModel);
 		case "anthropic":
 			return inferAnthropicSupportedEfforts(parsedModel, spec, compat);
+		case "glm":
+			return inferGlmSupportedEfforts(parsedModel, spec, compat);
 		case "unknown":
 			return inferFallbackEfforts(spec, compat);
 	}
@@ -517,18 +530,41 @@ function inferAnthropicSupportedEfforts<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
 ): readonly Effort[] {
-	if (
-		(spec.api === "anthropic-messages" || spec.api === "bedrock-converse-stream") &&
-		semverGte(parsedModel.version, "4.6")
-	) {
+	if (spec.api === "anthropic-messages" && semverGte(parsedModel.version, "4.6")) {
+		return parsedModel.kind === "opus" || isFableOrMythos(parsedModel.kind)
+			? DEFAULT_REASONING_EFFORTS_WITH_MAX
+			: DEFAULT_REASONING_EFFORTS;
+	}
+	if (spec.api === "bedrock-converse-stream" && semverGte(parsedModel.version, "4.6")) {
 		return parsedModel.kind === "opus" || isFableOrMythos(parsedModel.kind)
 			? DEFAULT_REASONING_EFFORTS_WITH_XHIGH
 			: DEFAULT_REASONING_EFFORTS;
 	}
 	if (isOpenRouterAnthropicAdaptiveReasoningModel(parsedModel, spec)) {
-		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
+		return parsedModel.kind === "opus" || isFableOrMythos(parsedModel.kind)
+			? DEFAULT_REASONING_EFFORTS_WITH_MAX
+			: DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
 	}
 	return inferFallbackEfforts(spec, compat);
+}
+
+function inferGlmSupportedEfforts<TApi extends Api>(
+	model: GlmModel,
+	spec: ModelSpec<TApi>,
+	compat: CompatOf<TApi>,
+): readonly Effort[] {
+	if (spec.api === "openai-completions") {
+		const resolved = compat as ResolvedOpenAICompat;
+		if (
+			resolved.thinkingFormat === "zai" ||
+			resolved.thinkingFormat === "qwen" ||
+			resolved.thinkingFormat === "qwen-chat-template" ||
+			!resolved.supportsReasoningEffort
+		) {
+			return DEFAULT_REASONING_EFFORTS;
+		}
+	}
+	return semverGte(model.version, "5.2") ? DEFAULT_REASONING_EFFORTS_WITH_MAX : DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
 }
 
 function inferFallbackEfforts<TApi extends Api>(spec: ModelSpec<TApi>, compat: CompatOf<TApi>): readonly Effort[] {
@@ -719,6 +755,7 @@ export function mapEffortToGoogleThinkingLevel(effort: Effort): "MINIMAL" | "LOW
 			return "MEDIUM";
 		case Effort.High:
 		case Effort.XHigh:
+		case Effort.Max:
 			return "HIGH";
 	}
 }

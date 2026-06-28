@@ -363,6 +363,10 @@ export class InputController {
 				return;
 			}
 			if (this.ctx.loadingAnimation) {
+				if (this.ctx.session.isStreaming) {
+					this.restoreQueuedMessagesToEditor({ abort: true });
+					return;
+				}
 				if (this.ctx.cancelPendingSubmission()) {
 					return;
 				}
@@ -760,10 +764,10 @@ export class InputController {
 				}
 			}
 
-			// While loop mode is on, every user-typed prompt becomes the new loop
-			// prompt that auto-resubmits after each yield.
+			// While loop mode is on, the first user-typed prompt locks the session-local
+			// loop prompt file. Later chat stays normal unless the model edits that file.
 			if (this.ctx.loopModeEnabled) {
-				this.ctx.loopPrompt = text;
+				await this.ctx.captureLoopPrompt(text);
 			}
 
 			// Queue input during compaction
@@ -1164,7 +1168,9 @@ export class InputController {
 		// the queued entry is later re-parsed into a skill invocation is a
 		// separate concern owned by the compaction-resume path.
 		if (this.ctx.session.isCompacting) {
-			const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
+			if (this.ctx.loopModeEnabled) {
+				await this.ctx.captureLoopPrompt(text);
+			}
 			this.ctx.queueCompactionMessage(text, "followUp", images);
 			return;
 		}
@@ -1190,6 +1196,10 @@ export class InputController {
 		// Ctrl+Enter (this handler) routes them as `followUp`.
 		if (text && (await this.#invokeSkillCommand(text, "followUp"))) {
 			return;
+		}
+
+		if (this.ctx.loopModeEnabled) {
+			await this.ctx.captureLoopPrompt(text);
 		}
 
 		// Hand the message back on dispatch failure (model/API-key validation,

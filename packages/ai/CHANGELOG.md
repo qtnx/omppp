@@ -2,11 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `max` reasoning-effort payload support for providers whose model metadata exposes it, including Anthropic adaptive thinking and OpenAI-compatible GLM 5.2 requests.
+
 ## [1.4.0] - 2026-06-19
 
 ### Added
 
 - Added optional `CredentialRankingStrategy.selectGatingLimits(report, modelId)` and `backoffScope(modelId)` so a provider can scope usage-limit gating and backoff to the rate-limit pool a given model actually draws from. Implemented for OpenAI Codex (`spark` vs shared `main` pool) and Anthropic (shared `5h`/`7d` windows plus the matching `opus`/`sonnet` tier window).
+
 
 ### Fixed
 

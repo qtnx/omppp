@@ -156,6 +156,7 @@ export interface InteractiveModeContext {
 	goalModePaused: boolean;
 	loopModeEnabled: boolean;
 	loopPrompt?: string;
+	loopPromptFilePath?: string;
 	loopRuntime?: LoopRuntime;
 	loopLimit?: LoopRuntime;
 	planModePlanFilePath?: string;
@@ -399,6 +400,7 @@ export interface InteractiveModeContext {
 	handleLoopCommand(args?: string): Promise<string | undefined>;
 	disableLoopMode(): void;
 	pauseLoop(): void;
+	captureLoopPrompt(text: string): Promise<void>;
 	handlePlanApproval(details: PlanApprovalDetails): Promise<void>;
 	openPlanReview(): Promise<void>;
 

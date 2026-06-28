@@ -3,6 +3,7 @@
  */
 import { APP_DISPLAY_NAME, APP_NAME, APP_TAGLINE, CONFIG_DIR_NAME, logger } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { DEFAULT_LINUX_PODMAN_IMAGE } from "../config/sandbox-defaults";
 import { CLI_THINKING_LEVELS, type ConfiguredThinkingLevel, parseCliThinkingLevel } from "../thinking";
 import { BUILTIN_TOOL_NAMES, normalizeToolNames } from "../tools/builtin-names";
 import {
@@ -356,6 +357,8 @@ export function getExtraHelpText(): string {
   PI_PLAN_MODEL              - Override planning model (see --plan)
   PI_NO_PTY                  - Disable PTY-based interactive bash execution
   PI_OMPX_MACOS_SANDBOX     - Set to 0/false/no/off before startup to disable nested macOS sandboxing
+  PI_OMPX_LINUX_SANDBOX     - Set to podman/1/true before startup to opt into Linux Podman workspace sandboxing
+  PI_OMPX_PODMAN_IMAGE      - Override Linux Podman image (default: ${DEFAULT_LINUX_PODMAN_IMAGE})
 
   For complete environment variable reference, see:
   ${chalk.dim("docs/environment-variables.md")}

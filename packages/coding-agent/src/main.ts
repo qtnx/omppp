@@ -47,6 +47,7 @@ import {
 	resolveActiveProjectRegistryPath,
 } from "./discovery/helpers";
 import { injectOmpExtensionCliRoots } from "./discovery/omp-extension-roots";
+import { markNativeHerdrAgentStateEnabled } from "./extensibility/extensions/herdr-agent-state";
 import { ExtensionRunner } from "./extensibility/extensions/runner";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
@@ -73,7 +74,7 @@ import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
 import { shouldShowStartupSplash } from "./startup-splash";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
 import { applySystemPromptOverlay, loadAutoDiscoveredSystemPromptOverlay } from "./system-prompt-overrides";
-import { disableMacOSSandboxForProcess, isMacOSSandboxActive } from "./task/omp-command";
+import { disableWorkspaceSandboxForProcess, isMacOSSandboxActive, isWorkspaceSandboxActive } from "./task/omp-command";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { AUTO_THINKING, parseConfiguredThinkingLevel } from "./thinking";
@@ -955,16 +956,16 @@ export async function runRootCommand(
 
 	const parsedArgs = parsed;
 	if (parsedArgs.noSandbox) {
-		disableMacOSSandboxForProcess();
+		disableWorkspaceSandboxForProcess();
 	}
 	await logger.time("applyStartupCwd", applyStartupCwd, parsedArgs);
 
 	const notifs: (InteractiveModeNotify | null)[] = [];
-	if (parsedArgs.noSandbox && isMacOSSandboxActive()) {
+	if (parsedArgs.noSandbox && isWorkspaceSandboxActive()) {
 		notifs.push({
 			kind: "warn",
 			message:
-				"--no-sandbox prevents new macOS sandbox wrappers only; this process is already sandboxed. Restart the top-level OMPx process with --no-sandbox to run without the inherited sandbox.",
+				"--no-sandbox prevents new workspace sandbox wrappers only; this process is already sandboxed. Restart the top-level OMPx process with --no-sandbox to run without the inherited sandbox.",
 		});
 	}
 
@@ -1290,6 +1291,7 @@ export async function runRootCommand(
 		// file — and the same result is handed to createAgentSession via
 		// `preloadedExtensions` so the discovery work is not repeated.
 		const eventBus = new EventBus();
+		markNativeHerdrAgentStateEnabled();
 		const extensionsResult = await loadSessionExtensions(sessionOptions, cwd, settingsInstance, eventBus);
 		const extensionFlagSink: ExtensionFlagSink = {
 			getFlags: () => ExtensionRunner.aggregateFlags(extensionsResult.extensions),

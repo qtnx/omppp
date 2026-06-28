@@ -6,6 +6,23 @@ import { getAgentDir, getConfigRootDir, refreshDirsFromEnv } from "./dirs";
 export * from "./worker-host";
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const LINUX_SANDBOX_ACTIVE_INHERITED_ENV = "PI_OMPX_LINUX_SANDBOX_ACTIVE_INHERITED";
+const LINUX_SANDBOX_DOTENV_BLOCKED_KEYS = new Set([
+	"PI_CONFIG_DIR",
+	"PI_CODING_AGENT_DIR",
+	"PI_PACKAGE_DIR",
+	"PI_SUBPROCESS_CMD",
+	"XDG_DATA_HOME",
+	"XDG_STATE_HOME",
+	"XDG_CACHE_HOME",
+]);
+
+export function isLinuxSandboxEnvFileBlockedKey(
+	name: string,
+	env: Record<string, string | undefined> = Bun.env,
+): boolean {
+	return env[LINUX_SANDBOX_ACTIVE_INHERITED_ENV]?.trim() === "1" && LINUX_SANDBOX_DOTENV_BLOCKED_KEYS.has(name);
+}
 
 /**
  * Strict shell-identifier shape. Used for dotenv keys we accept into
@@ -113,7 +130,7 @@ for (const key of Object.keys(Bun.env)) {
 
 for (const file of [projectEnv, agentEnv, piEnv, homeEnv]) {
 	for (const key in file) {
-		if (!isMacosMallocStackLoggingEnvName(key) && !Bun.env[key]) {
+		if (!Bun.env[key] && !isMacosMallocStackLoggingEnvName(key) && !isLinuxSandboxEnvFileBlockedKey(key)) {
 			Bun.env[key] = file[key];
 		}
 	}

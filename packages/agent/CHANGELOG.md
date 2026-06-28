@@ -25,6 +25,11 @@
 ### Added
 
 - Added an optional `cwdResolver` to `Agent` and `getCwd` to `AgentLoopConfig` to dynamically resolve the working directory per LLM call, allowing workspace-scoped provider discovery (such as GitLab Duo Agent) to follow live directory changes without reconstructing the agent.
+### Added
+
+- Added `ThinkingLevel.Max` so callers can request model-scoped maximum reasoning and compaction preserves that level when the target model supports it.
+
+## [1.3.2] - 2026-06-13
 
 ### Fixed
 

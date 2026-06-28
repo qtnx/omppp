@@ -10,6 +10,11 @@
 - Added `parseStreamingJson` and `parseStreamingJsonThrottled` for robust, efficient parsing of truncated or incremental streaming JSON.
 - Added an XDG-aware document conversion cache directory helper.
 - Exported `removeWithRetries()` as a standalone asynchronous function to handle retry-on-EBUSY cleanup logic.
+### Fixed
+
+- Blocked project `.env` files from reintroducing host directory override variables inside the Linux Podman workspace sandbox.
+
+## [1.0.7] - 2026-06-09
 
 ### Changed
 

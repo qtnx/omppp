@@ -65,28 +65,40 @@ describe("auto thinking classifier helpers", () => {
 		expect(parseConfiguredThinkingLevel("bogus")).toBeUndefined();
 		expect(parseThinkingLevel(AUTO_THINKING)).toBeUndefined();
 		expect(parseThinkingLevel(ThinkingLevel.Off)).toBe(ThinkingLevel.Off);
+		expect(parseConfiguredThinkingLevel(Effort.Max)).toBe(Effort.Max);
+		expect(parseThinkingLevel(Effort.Max)).toBe(Effort.Max);
 	});
 
 	it("parses CLI --thinking selectors while rejecting inherit", () => {
 		expect(parseCliThinkingLevel(ThinkingLevel.Off)).toBe(ThinkingLevel.Off);
 		expect(parseCliThinkingLevel(AUTO_THINKING)).toBe(AUTO_THINKING);
-		expect(parseCliThinkingLevel("max")).toBe(ThinkingLevel.XHigh);
+		expect(parseCliThinkingLevel("max")).toBe(ThinkingLevel.Max);
 		expect(parseCliThinkingLevel(ThinkingLevel.Inherit)).toBeUndefined();
 		expect(parseCliThinkingLevel("bogus")).toBeUndefined();
 	});
 
-	it("maps online 4-way classifier labels to effort levels", () => {
+	it("maps online 5-way classifier labels to effort levels", () => {
 		expect(parseDifficultyLevel("x-high")).toBe(Effort.XHigh);
 		expect(parseDifficultyLevel("The answer is HIGH.")).toBe(Effort.High);
 		expect(parseDifficultyLevel("med")).toBe(Effort.Medium);
 		expect(parseDifficultyLevel("low")).toBe(Effort.Low);
+		expect(parseDifficultyLevel("maximum")).toBe(Effort.Max);
 		expect(parseDifficultyLevel("unknown")).toBeUndefined();
 	});
 
-	it("maps local 3-bucket labels to coarse effort levels", () => {
+	it("uses the classifier label instead of incidental maximum prose", () => {
+		expect(parseDifficultyLevel("This does not require maximum effort; high")).toBe(Effort.High);
+		expect(parseDifficultyLevel("This does not require maximum effort.")).toBeUndefined();
+		expect(parseDifficultyBucket("No maximum bucket needed.")).toBeUndefined();
+		expect(parseDifficultyLevel("I would choose high, not maximum")).toBe(Effort.High);
+		expect(parseDifficultyBucket("This is hard, not maximum")).toBe(Effort.XHigh);
+		expect(parseDifficultyLevel("Classification: maximum")).toBe(Effort.Max);
+	});
+	it("maps local bucket labels including maximum to effort levels", () => {
 		expect(parseDifficultyBucket("trivial")).toBe(Effort.Low);
 		expect(parseDifficultyBucket("moderate")).toBe(Effort.High);
 		expect(parseDifficultyBucket("hard")).toBe(Effort.XHigh);
+		expect(parseDifficultyBucket("maximum")).toBe(Effort.Max);
 		expect(parseDifficultyBucket("medium")).toBeUndefined();
 	});
 
@@ -165,10 +177,10 @@ describe("auto thinking classifier helpers", () => {
 		expect(resolveProvisionalAutoLevel(devinModel)).toBeUndefined();
 	});
 
-	it("accepts max as the top configured thinking alias", () => {
-		expect(parseEffort("max")).toBe(Effort.XHigh);
-		expect(parseThinkingLevel("max")).toBeUndefined();
-		expect(parseConfiguredThinkingLevel("max")).toBe(ThinkingLevel.XHigh);
+	it("accepts max as the top configured thinking selector", () => {
+		expect(parseEffort("max")).toBe(Effort.Max);
+		expect(parseThinkingLevel("max")).toBe(ThinkingLevel.Max);
+		expect(parseConfiguredThinkingLevel("max")).toBe(ThinkingLevel.Max);
 	});
 
 	it("rejects inherited object keys as thinking selectors", () => {
