@@ -4412,22 +4412,34 @@ export class AuthStorage {
 		// no-match reload.
 		await this.reload();
 		const stored = this.#getStoredCredentials(provider);
-		let matched: { id: number; type: AuthCredential["type"] } | undefined;
+		let matched: { id: number; credential: AuthCredential } | undefined;
 		for (const entry of stored) {
 			if (await this.#credentialMatchesApiKey(entry.credential, apiKey)) {
-				matched = { id: entry.id, type: entry.credential.type };
+				matched = { id: entry.id, credential: entry.credential };
 				break;
 			}
 		}
-		if (matched?.type !== "oauth") {
+		if (matched?.credential.type !== "oauth") {
 			return undefined;
 		}
 		const matchedId = matched.id;
+		const attempted = matched.credential;
+		const stale: OAuthCredential = { ...attempted, expires: 0 };
 		try {
-			await this.forceRefreshCredentialById(matchedId, options?.signal);
-			const refreshedEntry = this.#getStoredCredentials(provider).find(entry => entry.id === matchedId);
-			if (refreshedEntry?.credential.type !== "oauth") return undefined;
-			return await this.#resolveRefreshedOAuthApiKey(provider as Provider, refreshedEntry.credential);
+			const refreshed = await this.#refreshOAuthCredential(provider as Provider, stale, matchedId, options?.signal);
+			const updated: OAuthCredential = {
+				type: "oauth",
+				access: refreshed.access,
+				refresh: refreshed.refresh,
+				expires: refreshed.expires,
+				accountId: refreshed.accountId ?? attempted.accountId,
+				email: refreshed.email ?? attempted.email,
+				projectId: refreshed.projectId ?? attempted.projectId,
+				enterpriseUrl: refreshed.enterpriseUrl ?? attempted.enterpriseUrl,
+				apiEndpoint: refreshed.apiEndpoint ?? attempted.apiEndpoint,
+			};
+			if (this.#replaceCredentialById(provider, matchedId, updated) === -1) return undefined;
+			return await this.#resolveRefreshedOAuthApiKey(provider as Provider, updated);
 		} catch (error) {
 			logger.debug("Force-refresh of matched credential failed; falling back to rotation", {
 				provider,

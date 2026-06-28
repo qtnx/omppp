@@ -5433,14 +5433,18 @@ export class AgentSession {
 	}
 
 	/**
-	 * Flip MCP discovery on after deferred discovery learns the real tool count.
-	 * UI sessions resolve `tools.discoveryMode: "auto"` before MCP servers
-	 * connect, so a large MCP toolset discovered later must be able to upgrade
-	 * the session from the force-activate path to the discovery path. One-way:
-	 * discovery is never downgraded mid-session.
+	 * Flip MCP discovery on after deferred discovery learns the real tool count,
+	 * and make the discovery search tool active in the same synchronous tool-set
+	 * update. UI sessions resolve `tools.discoveryMode: "auto"` before MCP
+	 * servers connect, so a large MCP toolset discovered later must be able to
+	 * upgrade from the force-activate path to the discovery path.
 	 */
-	enableMCPDiscovery(): void {
+	async enableMCPDiscoveryWithSearchTool(): Promise<void> {
+		if (!this.#toolRegistry.has(TOOL_DISCOVERY_SEARCH_TOOL_NAME)) return;
 		this.#mcpDiscoveryEnabled = true;
+		const activeToolNames = this.getActiveToolNames();
+		if (activeToolNames.includes(TOOL_DISCOVERY_SEARCH_TOOL_NAME)) return;
+		await this.#applyActiveToolsByName([...activeToolNames, TOOL_DISCOVERY_SEARCH_TOOL_NAME]);
 	}
 
 	getSelectedMCPToolNames(): string[] {
@@ -5483,7 +5487,7 @@ export class AgentSession {
 	}
 
 	isToolDiscoveryEnabled(): boolean {
-		return this.#resolveEffectiveDiscoveryMode() !== "off";
+		return this.#mcpDiscoveryEnabled || this.#resolveEffectiveDiscoveryMode() !== "off";
 	}
 
 	getDiscoverableTools(filter?: { source?: DiscoverableTool["source"] }): DiscoverableTool[] {
@@ -9793,18 +9797,9 @@ export class AgentSession {
 			contextPromotionEnabled: this.settings.get("contextPromotion.enabled") === true,
 		});
 		if (shouldThresholdCompact) {
-			// Try promotion first — if a larger model is available, switch instead of compacting
-			const promoted = await this.#tryContextPromotion(assistantMessage);
-			if (!promoted) {
-				return await this.#runAutoCompaction("threshold", false, false, allowDefer, {
-					autoContinue,
-					triggerContextTokens: postMaintenanceContextTokens,
-				});
-			}
-			logger.debug("Auto-compaction threshold satisfied but context promotion took over", {
-				contextTokens,
-				contextWindow,
-				model: `${assistantMessage.provider}/${assistantMessage.model}`,
+			return await this.#runAutoCompaction("threshold", false, false, allowDefer, {
+				autoContinue,
+				triggerContextTokens: postMaintenanceContextTokens,
 			});
 		}
 		return COMPACTION_CHECK_NONE;

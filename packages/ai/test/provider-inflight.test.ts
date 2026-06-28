@@ -39,7 +39,7 @@ function limiterDir(provider: string): string {
 	return __providerInFlightForTesting.providerDir(provider);
 }
 
-describe("provider in-flight request limits", () => {
+describe.serial("provider in-flight request limits", () => {
 	beforeEach(async () => {
 		await useIsolatedLimiterRoot();
 	});

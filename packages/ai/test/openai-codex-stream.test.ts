@@ -12,6 +12,7 @@ import { getAgentDir, logger, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
 const originalAgentDir = getAgentDir();
 const originalWebSocket = global.WebSocket;
+const originalFetch = global.fetch;
 const originalCodexWebSocketV2 = Bun.env.PI_CODEX_WEBSOCKET_V2;
 const originalCodexWebSocketConnectTimeoutMs = Bun.env.PI_CODEX_WEBSOCKET_CONNECT_TIMEOUT_MS;
 const originalCodexWebSocketPrewarmConnectTimeoutMs = Bun.env.PI_CODEX_WEBSOCKET_PREWARM_CONNECT_TIMEOUT_MS;
@@ -38,6 +39,7 @@ function restoreEnv(name: string, value: string | undefined): void {
 
 afterEach(() => {
 	global.WebSocket = originalWebSocket;
+	global.fetch = originalFetch;
 	setAgentDir(originalAgentDir);
 	restoreEnv("PI_CODEX_WEBSOCKET_V2", originalCodexWebSocketV2);
 	restoreEnv("PI_CODEX_WEBSOCKET_CONNECT_TIMEOUT_MS", originalCodexWebSocketConnectTimeoutMs);
@@ -270,7 +272,7 @@ class MockWebSocket {
 	}
 }
 
-describe("openai-codex streaming", () => {
+describe.serial("openai-codex streaming", () => {
 	it("normalizes Codex response endpoint base URLs", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");
 		setAgentDir(tempDir.path());

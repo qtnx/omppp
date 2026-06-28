@@ -1937,25 +1937,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 											new ExtensionToolWrapper(wrapToolWithMetaNotice(searchTool), extensionRunner) as Tool,
 										);
 									}
-									await liveSession.setActiveToolsByName([
-										...liveSession.getActiveToolNames(),
-										"search_tool_bm25",
-									]);
 								}
 							}
 							await liveSession.refreshMCPTools(mcpResult.tools, { activateAll });
 							// refreshMCPTools rebuilds the active set from the explicit tool
-							// whitelist, dropping the discovery tool added above; re-assert it
-							// (the whitelist permits search_tool_bm25 via #isRequestedToolAllowed)
-							// and flip the discovery flag only afterward, so observers polling
-							// isMCPDiscoveryEnabled() never see it on before the search tool is
-							// active. Fixes the deferred-MCP discovery race.
+							// whitelist, dropping the discovery tool added above. Re-enable MCP
+							// discovery and search together so observers never see discovery on
+							// before the activation tool is available.
 							if (discoveryEnabled && !activation.mcpDiscoveryEnabled) {
-								await liveSession.setActiveToolsByName([
-									...liveSession.getActiveToolNames(),
-									"search_tool_bm25",
-								]);
-								liveSession.enableMCPDiscovery();
+								await liveSession.enableMCPDiscoveryWithSearchTool();
 							}
 							if (activation.explicitlyRequestedMCPToolNames.length > 0) {
 								if (discoveryEnabled && !activation.mcpDiscoveryEnabled) {
@@ -2478,7 +2468,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			);
 			builtInRegistryToolNames.add(searchTool.name);
 		}
-		let mcpDiscoveryEnabled = effectiveDiscoveryMode !== "off"; // back-compat: true when any discovery active
+		let mcpDiscoveryEnabled = effectiveDiscoveryMode !== "off" && !deferMCPDiscoveryForUI;
 
 		const reloadSshTool = async (): Promise<AgentTool | null> => {
 			if (!requestedToolNameSet.has("ssh")) return null;

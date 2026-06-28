@@ -59,7 +59,7 @@ export function estimateContextGcEffectiveTokens(options: ContextGcEffectiveToke
 		const projectedTokens = estimateMessages(projectedMessages);
 		const savedTokens = Math.max(0, rawTokens - projectedTokens);
 		if (savedTokens === 0) return undefined;
-		return Math.max(0, options.baseTokens - savedTokens);
+		return Math.max(options.baseTokens > 0 ? 1 : 0, options.baseTokens - savedTokens);
 	} finally {
 		store.close();
 	}
