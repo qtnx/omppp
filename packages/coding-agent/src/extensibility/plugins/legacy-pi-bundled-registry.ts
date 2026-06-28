@@ -233,9 +233,11 @@ import * as bundledPiCodingAgentCliGrievancesCli from "@oh-my-pi/pi-coding-agent
 import * as bundledPiCodingAgentCliInitialMessage from "@oh-my-pi/pi-coding-agent/cli/initial-message";
 import * as bundledPiCodingAgentCliModelsCli from "@oh-my-pi/pi-coding-agent/cli/models-cli";
 import * as bundledPiCodingAgentCliPluginCli from "@oh-my-pi/pi-coding-agent/cli/plugin-cli";
+import * as bundledPiCodingAgentCliPreloadEnv from "@oh-my-pi/pi-coding-agent/cli/preload-env";
 import * as bundledPiCodingAgentCliProfileAlias from "@oh-my-pi/pi-coding-agent/cli/profile-alias";
 import * as bundledPiCodingAgentCliProfileBootstrap from "@oh-my-pi/pi-coding-agent/cli/profile-bootstrap";
 import * as bundledPiCodingAgentCliReadCli from "@oh-my-pi/pi-coding-agent/cli/read-cli";
+import * as bundledPiCodingAgentCliSandboxFlags from "@oh-my-pi/pi-coding-agent/cli/sandbox-flags";
 import * as bundledPiCodingAgentCliSessionPicker from "@oh-my-pi/pi-coding-agent/cli/session-picker";
 import * as bundledPiCodingAgentCliSetupCli from "@oh-my-pi/pi-coding-agent/cli/setup-cli";
 import * as bundledPiCodingAgentCliSetupModelPicker from "@oh-my-pi/pi-coding-agent/cli/setup-model-picker";
@@ -246,8 +248,10 @@ import * as bundledPiCodingAgentCliStatsCli from "@oh-my-pi/pi-coding-agent/cli/
 import * as bundledPiCodingAgentCliTinyModelsCli from "@oh-my-pi/pi-coding-agent/cli/tiny-models-cli";
 import * as bundledPiCodingAgentCliTtsrCli from "@oh-my-pi/pi-coding-agent/cli/ttsr-cli";
 import * as bundledPiCodingAgentCliUpdateCli from "@oh-my-pi/pi-coding-agent/cli/update-cli";
+import * as bundledPiCodingAgentCliUpdateRelease from "@oh-my-pi/pi-coding-agent/cli/update-release";
 import * as bundledPiCodingAgentCliUsageCli from "@oh-my-pi/pi-coding-agent/cli/usage-cli";
 import * as bundledPiCodingAgentCliWebSearchCli from "@oh-my-pi/pi-coding-agent/cli/web-search-cli";
+import * as bundledPiCodingAgentCliWorkerSelectors from "@oh-my-pi/pi-coding-agent/cli/worker-selectors";
 import * as bundledPiCodingAgentCliWorktreeCli from "@oh-my-pi/pi-coding-agent/cli/worktree-cli";
 import * as bundledPiCodingAgentCommandsAcp from "@oh-my-pi/pi-coding-agent/commands/acp";
 import * as bundledPiCodingAgentCommandsAgents from "@oh-my-pi/pi-coding-agent/commands/agents";
@@ -335,6 +339,7 @@ import * as bundledPiCodingAgentConfigModelsConfig from "@oh-my-pi/pi-coding-age
 import * as bundledPiCodingAgentConfigModelsConfigSchema from "@oh-my-pi/pi-coding-agent/config/models-config-schema";
 import * as bundledPiCodingAgentConfigPromptTemplates from "@oh-my-pi/pi-coding-agent/config/prompt-templates";
 import * as bundledPiCodingAgentConfigResolveConfigValue from "@oh-my-pi/pi-coding-agent/config/resolve-config-value";
+import * as bundledPiCodingAgentConfigSandboxDefaults from "@oh-my-pi/pi-coding-agent/config/sandbox-defaults";
 import * as bundledPiCodingAgentConfigServiceTier from "@oh-my-pi/pi-coding-agent/config/service-tier";
 import * as bundledPiCodingAgentConfigSettings from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as bundledPiCodingAgentConfigSettingsSchema from "@oh-my-pi/pi-coding-agent/config/settings-schema";
@@ -708,6 +713,7 @@ import * as bundledPiCodingAgentSessionBlobStore from "@oh-my-pi/pi-coding-agent
 import * as bundledPiCodingAgentSessionClientBridge from "@oh-my-pi/pi-coding-agent/session/client-bridge";
 import * as bundledPiCodingAgentSessionCodexAutoReset from "@oh-my-pi/pi-coding-agent/session/codex-auto-reset";
 import * as bundledPiCodingAgentSessionCompactModes from "@oh-my-pi/pi-coding-agent/session/compact-modes";
+import * as bundledPiCodingAgentSessionDollarMentions from "@oh-my-pi/pi-coding-agent/session/dollar-mentions";
 import * as bundledPiCodingAgentSessionHistoryStorage from "@oh-my-pi/pi-coding-agent/session/history-storage";
 import * as bundledPiCodingAgentSessionIndexedSessionStorage from "@oh-my-pi/pi-coding-agent/session/indexed-session-storage";
 import * as bundledPiCodingAgentSessionMessages from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -769,6 +775,9 @@ import * as bundledPiCodingAgentTaskParallel from "@oh-my-pi/pi-coding-agent/tas
 import * as bundledPiCodingAgentTaskPersistedRevive from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
 import * as bundledPiCodingAgentTaskRender from "@oh-my-pi/pi-coding-agent/task/render";
 import * as bundledPiCodingAgentTaskRepairArgs from "@oh-my-pi/pi-coding-agent/task/repair-args";
+import * as bundledPiCodingAgentTaskReviewFindings from "@oh-my-pi/pi-coding-agent/task/review-findings";
+import * as bundledPiCodingAgentTaskReviewFindingsBackfill from "@oh-my-pi/pi-coding-agent/task/review-findings-backfill";
+import * as bundledPiCodingAgentTaskReviewGate from "@oh-my-pi/pi-coding-agent/task/review-gate";
 import * as bundledPiCodingAgentTaskSubprocessToolRegistry from "@oh-my-pi/pi-coding-agent/task/subprocess-tool-registry";
 import * as bundledPiCodingAgentTaskTypes from "@oh-my-pi/pi-coding-agent/task/types";
 import * as bundledPiCodingAgentTaskWorktree from "@oh-my-pi/pi-coding-agent/task/worktree";
@@ -790,6 +799,7 @@ import * as bundledPiCodingAgentToolsBashSkillUrls from "@oh-my-pi/pi-coding-age
 import * as bundledPiCodingAgentToolsBrowser from "@oh-my-pi/pi-coding-agent/tools/browser";
 import * as bundledPiCodingAgentToolsBuiltinNames from "@oh-my-pi/pi-coding-agent/tools/builtin-names";
 import * as bundledPiCodingAgentToolsCheckpoint from "@oh-my-pi/pi-coding-agent/tools/checkpoint";
+import * as bundledPiCodingAgentToolsCompact from "@oh-my-pi/pi-coding-agent/tools/compact";
 import * as bundledPiCodingAgentToolsConflictDetect from "@oh-my-pi/pi-coding-agent/tools/conflict-detect";
 import * as bundledPiCodingAgentToolsContext from "@oh-my-pi/pi-coding-agent/tools/context";
 import * as bundledPiCodingAgentToolsDebug from "@oh-my-pi/pi-coding-agent/tools/debug";
@@ -818,6 +828,7 @@ import * as bundledPiCodingAgentToolsJtdToTypescript from "@oh-my-pi/pi-coding-a
 import * as bundledPiCodingAgentToolsJtdUtils from "@oh-my-pi/pi-coding-agent/tools/jtd-utils";
 import * as bundledPiCodingAgentToolsLearn from "@oh-my-pi/pi-coding-agent/tools/learn";
 import * as bundledPiCodingAgentToolsListLimit from "@oh-my-pi/pi-coding-agent/tools/list-limit";
+import * as bundledPiCodingAgentToolsMacosSandbox from "@oh-my-pi/pi-coding-agent/tools/macos-sandbox";
 import * as bundledPiCodingAgentToolsManageSkill from "@oh-my-pi/pi-coding-agent/tools/manage-skill";
 import * as bundledPiCodingAgentToolsMatchLineFormat from "@oh-my-pi/pi-coding-agent/tools/match-line-format";
 import * as bundledPiCodingAgentToolsMemoryEdit from "@oh-my-pi/pi-coding-agent/tools/memory-edit";
@@ -881,12 +892,15 @@ import * as bundledPiCodingAgentUtilsOpen from "@oh-my-pi/pi-coding-agent/utils/
 import * as bundledPiCodingAgentUtilsPromptPath from "@oh-my-pi/pi-coding-agent/utils/prompt-path";
 import * as bundledPiCodingAgentUtilsQrcode from "@oh-my-pi/pi-coding-agent/utils/qrcode";
 import * as bundledPiCodingAgentUtilsSessionColor from "@oh-my-pi/pi-coding-agent/utils/session-color";
+import * as bundledPiCodingAgentUtilsSessionDump from "@oh-my-pi/pi-coding-agent/utils/session-dump";
 import * as bundledPiCodingAgentUtilsShellSnapshot from "@oh-my-pi/pi-coding-agent/utils/shell-snapshot";
 import * as bundledPiCodingAgentUtilsSixel from "@oh-my-pi/pi-coding-agent/utils/sixel";
 import * as bundledPiCodingAgentUtilsThinkingDisplay from "@oh-my-pi/pi-coding-agent/utils/thinking-display";
 import * as bundledPiCodingAgentUtilsTitleGenerator from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import * as bundledPiCodingAgentUtilsToolChoice from "@oh-my-pi/pi-coding-agent/utils/tool-choice";
 import * as bundledPiCodingAgentUtilsToolsManager from "@oh-my-pi/pi-coding-agent/utils/tools-manager";
+import * as bundledPiCodingAgentUtilsTopicRelevance from "@oh-my-pi/pi-coding-agent/utils/topic-relevance";
+import * as bundledPiCodingAgentUtilsTurnSummaryGenerator from "@oh-my-pi/pi-coding-agent/utils/turn-summary-generator";
 import * as bundledPiCodingAgentUtilsTurndown from "@oh-my-pi/pi-coding-agent/utils/turndown";
 import * as bundledPiCodingAgentUtilsZip from "@oh-my-pi/pi-coding-agent/utils/zip";
 import * as bundledPiCodingAgentWebKagi from "@oh-my-pi/pi-coding-agent/web/kagi";
@@ -1554,6 +1568,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/cli/plugin-cli": bundledPiCodingAgentCliPluginCli as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/cli/preload-env": bundledPiCodingAgentCliPreloadEnv as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/cli/profile-alias": bundledPiCodingAgentCliProfileAlias as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -1561,6 +1578,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/cli/read-cli": bundledPiCodingAgentCliReadCli as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/cli/sandbox-flags": bundledPiCodingAgentCliSandboxFlags as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/cli/session-picker": bundledPiCodingAgentCliSessionPicker as unknown as Readonly<
@@ -1593,10 +1613,16 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/cli/update-cli": bundledPiCodingAgentCliUpdateCli as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/cli/update-release": bundledPiCodingAgentCliUpdateRelease as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/cli/usage-cli": bundledPiCodingAgentCliUsageCli as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/cli/web-search-cli": bundledPiCodingAgentCliWebSearchCli as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/cli/worker-selectors": bundledPiCodingAgentCliWorkerSelectors as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/cli/worktree-cli": bundledPiCodingAgentCliWorktreeCli as unknown as Readonly<
@@ -1843,6 +1869,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		bundledPiCodingAgentConfigPromptTemplates as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/config/resolve-config-value":
 		bundledPiCodingAgentConfigResolveConfigValue as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/config/sandbox-defaults":
+		bundledPiCodingAgentConfigSandboxDefaults as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/config/service-tier": bundledPiCodingAgentConfigServiceTier as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -2661,6 +2689,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/session/compact-modes": bundledPiCodingAgentSessionCompactModes as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/session/dollar-mentions":
+		bundledPiCodingAgentSessionDollarMentions as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/history-storage":
 		bundledPiCodingAgentSessionHistoryStorage as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/indexed-session-storage":
@@ -2809,6 +2839,14 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/task/repair-args": bundledPiCodingAgentTaskRepairArgs as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/task/review-findings-backfill":
+		bundledPiCodingAgentTaskReviewFindingsBackfill as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/task/review-findings": bundledPiCodingAgentTaskReviewFindings as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/task/review-gate": bundledPiCodingAgentTaskReviewGate as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/task/subprocess-tool-registry":
 		bundledPiCodingAgentTaskSubprocessToolRegistry as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/task/types": bundledPiCodingAgentTaskTypes as unknown as Readonly<
@@ -2860,6 +2898,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/checkpoint": bundledPiCodingAgentToolsCheckpoint as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/tools/compact": bundledPiCodingAgentToolsCompact as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/conflict-detect": bundledPiCodingAgentToolsConflictDetect as unknown as Readonly<
@@ -2933,6 +2974,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/list-limit": bundledPiCodingAgentToolsListLimit as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/tools/macos-sandbox": bundledPiCodingAgentToolsMacosSandbox as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/manage-skill": bundledPiCodingAgentToolsManageSkill as unknown as Readonly<
@@ -3103,6 +3147,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/utils/session-color": bundledPiCodingAgentUtilsSessionColor as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/utils/session-dump": bundledPiCodingAgentUtilsSessionDump as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/utils/shell-snapshot": bundledPiCodingAgentUtilsShellSnapshot as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -3121,6 +3168,11 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/utils/tools-manager": bundledPiCodingAgentUtilsToolsManager as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/utils/topic-relevance": bundledPiCodingAgentUtilsTopicRelevance as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/utils/turn-summary-generator":
+		bundledPiCodingAgentUtilsTurnSummaryGenerator as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/utils/turndown": bundledPiCodingAgentUtilsTurndown as unknown as Readonly<
 		Record<string, unknown>
 	>,

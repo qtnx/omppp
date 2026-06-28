@@ -48,4 +48,16 @@ describe("issue #1150 — release/dev builds route workers through the CLI entry
 			expect(devSource).not.toContain(`"${entry}"`);
 		}
 	});
+
+	it("smoke-test declares the CLI as worker-host before spawning workers", async () => {
+		const cliSource = await Bun.file(path.join(repoRoot, "packages/coding-agent/src/cli.ts")).text();
+		const smokeBranchStart = cliSource.indexOf('if (resolvedArgv[0] === "--smoke-test")');
+		const workerBranchStart = cliSource.indexOf("if (await runWorkerEntrypoint", smokeBranchStart);
+		const smokeBranch = cliSource.slice(smokeBranchStart, workerBranchStart);
+
+		expect(smokeBranchStart).toBeGreaterThan(-1);
+		expect(workerBranchStart).toBeGreaterThan(smokeBranchStart);
+		expect(smokeBranch.indexOf("declareWorkerHostEntry()")).toBeLessThan(smokeBranch.indexOf("runSmokeTest()"));
+		expect(smokeBranch).toContain("declareWorkerHostEntry()");
+	});
 });

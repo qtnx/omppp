@@ -46,7 +46,20 @@ const IS_BUN_COMPILED =
 const IS_PREBUILT = IS_BUN_COMPILED || Boolean(process.env.PI_BUNDLED || Bun.env.PI_BUNDLED);
 const USE_EMBEDDED_CLIENT = EMBEDDED_CLIENT_ARCHIVE !== null || IS_PREBUILT;
 
-const EMBEDDED_CLIENT_DIR_ROOT = path.join(os.tmpdir(), "omp-stats-client");
+function getEmbeddedClientCacheDiscriminator(): string {
+	try {
+		return os.userInfo().username.replace(/[^A-Za-z0-9._-]/g, "_") || "unknown";
+	} catch {
+		return "unknown";
+	}
+}
+
+export function getEmbeddedClientCacheRoot(tmpDir = os.tmpdir(), uid = process.getuid?.()): string {
+	const discriminator = uid === undefined ? getEmbeddedClientCacheDiscriminator() : String(uid);
+	return path.join(tmpDir, `omp-stats-client-${discriminator}`);
+}
+
+const EMBEDDED_CLIENT_DIR_ROOT = getEmbeddedClientCacheRoot();
 let embeddedClientDirPromise: Promise<string> | null = null;
 
 interface StatsApiOptions extends ReviewFindingStorageOptions {}

@@ -283,6 +283,7 @@ export async function runCli(argv: string[]): Promise<void> {
 	// never be wrapped into a detached sandbox-exec clone — the clone has no
 	// postMessage channel to the spawning thread, so the worker would hang.
 	if (resolvedArgv[0] === "--smoke-test") {
+		if (import.meta.main) declareWorkerHostEntry();
 		await runSmokeTest();
 		return;
 	}
