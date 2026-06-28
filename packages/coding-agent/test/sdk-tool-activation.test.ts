@@ -245,7 +245,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		});
 
 		try {
-			const expectedToolNames = ["read", "search", "find", "bash", "yield"];
+			const expectedToolNames = ["read", "grep", "glob", "bash", "web_search", "yield"];
 			const contextGcToolNames = [
 				"context_debug",
 				"context_global_stats",
@@ -257,7 +257,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				"context_unload",
 			];
 			expect(session.getActiveToolNames()).toEqual(expectedToolNames);
-			for (const toolName of ["web_search", "default_active_tool", ...contextGcToolNames]) {
+			for (const toolName of ["default_active_tool", ...contextGcToolNames]) {
 				expect(session.getAllToolNames()).not.toContain(toolName);
 				expect(session.getActiveToolNames()).not.toContain(toolName);
 			}

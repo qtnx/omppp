@@ -3379,6 +3379,7 @@ export const SETTINGS_SCHEMA = {
 		default: DEFAULT_LINUX_SANDBOX_ALLOWED_PATHS,
 		ui: {
 			tab: "tools",
+			group: "Execution",
 			label: "Linux Podman Sandbox Allowlist",
 			description:
 				"Trusted file or directory paths the Linux Podman sandbox may bind-mount read/write. Supports ~. Empty by default; only user/global config is trusted for sandboxing.",
@@ -3390,6 +3391,7 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
+			group: "Execution",
 			label: "Linux Podman Sandbox",
 			description:
 				"Run top-level OMPx sessions inside a rootless Podman container on Linux. Disabled by default; uses the default dev image unless sandbox.podman.image or PI_OMPX_PODMAN_IMAGE overrides it. Only trusted user/global config is honored; project settings cannot enable the sandbox.",
@@ -3401,6 +3403,7 @@ export const SETTINGS_SCHEMA = {
 		default: DEFAULT_LINUX_PODMAN_IMAGE,
 		ui: {
 			tab: "tools",
+			group: "Execution",
 			label: "Linux Podman Image",
 			description: `Trusted OCI image containing the matching OMPx CLI used for Linux Podman workspace sandboxing. Defaults to ${DEFAULT_LINUX_PODMAN_IMAGE}. Only trusted user/global config is honored for sandbox bootstrap; project settings cannot override it.`,
 		},

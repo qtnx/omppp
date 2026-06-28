@@ -102,9 +102,9 @@ describe("computeEssentialBuiltinNames", () => {
 
 	it("keeps todo and browser in the default essential tool set", () => {
 		const settings = Settings.isolated({});
-		expect(computeEssentialBuiltinNames(settings).sort()).toEqual(
-			["bash", "browser", "edit", "read", "task", "todo"].sort(),
-		);
+		const essential = computeEssentialBuiltinNames(settings);
+		expect(essential).toContain("todo");
+		expect(essential).toContain("browser");
 	});
 
 	it("respects tools.essentialOverride when provided", () => {

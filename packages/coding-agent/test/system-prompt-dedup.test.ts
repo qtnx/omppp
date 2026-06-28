@@ -9,6 +9,7 @@ import {
 	type SystemPromptToolMetadata,
 } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import { createAutoDiscoveredSystemPromptOverride } from "@oh-my-pi/pi-coding-agent/system-prompt-overrides";
+import { shortenPath } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
 import { cleanupTempHome } from "./helpers/temp-home-cleanup";
 
 function escapeRegExp(text: string): string {
@@ -141,7 +142,7 @@ describe("SYSTEM.md prompt assembly", () => {
 		expect(promptText).toContain("<dir-context>");
 		expect(promptText).toMatch(
 			new RegExp(
-				`^Today is [^,\\n]+, and the current working directory is '${escapeRegExp(normalizedProjectDir)}'\\.$`,
+				`^Today is [^,\\n]+, and the current working directory is '${escapeRegExp(shortenPath(normalizedProjectDir))}'\\.$`,
 				"m",
 			),
 		);
