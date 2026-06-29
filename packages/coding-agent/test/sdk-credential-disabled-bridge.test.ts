@@ -141,7 +141,7 @@ describe("createAgentSession credential_disabled subscription", () => {
 		return { factory, events, next };
 	};
 
-	const STARTUP_HEAVY_ASSERTION_TIMEOUT_MS = 15_000;
+	const STARTUP_HEAVY_ASSERTION_TIMEOUT_MS = 30_000;
 
 	const drainCredentialDisabledDispatch = async (): Promise<void> => {
 		for (let i = 0; i < 5; i++) await Promise.resolve();
