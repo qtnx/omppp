@@ -50,11 +50,11 @@ const validModes = new Set<Mode>([
 // heap and reaps any dangling spawned children between groups, keeping peak RSS
 // under the CI runner's OOM ceiling (a single 170-370-file invocation gets
 // SIGKILLed at 137). The singleton/global-state bucket uses an even smaller chunk:
-// Bun 1.3.14 can segfault (SIGSEGV, exit 132) when ~10 singleton/global-state
-// files accumulate native state in one process, while 5-file chunks stay stable
-// and keep every file covered without blanket skips.
+// Bun 1.3.14 can segfault (SIGSEGV, exit 132) when several singleton/global-state
+// files accumulate native state in one process, while 3-file chunks keep the known
+// CI-crashing group split without blanket skips.
 const codingAgentBucketPlans: Record<CodingAgentBucket, { label: string; parallel: number; chunkSize?: number }> = {
-	singleton: { label: "singleton/global-state bucket", parallel: 1, chunkSize: 5 },
+	singleton: { label: "singleton/global-state bucket", parallel: 1, chunkSize: 3 },
 	ui: { label: "UI/TUI bucket", parallel: 1, chunkSize: 10 },
 	runtime: { label: "runtime/session bucket", parallel: 1, chunkSize: 10 },
 	native: { label: "native/tooling/browser/unit bucket", parallel: 1, chunkSize: 10 },

@@ -15,6 +15,7 @@ import * as path from "node:path";
 import {
 	clearClaudePluginRootsCache,
 	listClaudePluginRoots,
+	preloadPluginRoots,
 	resolveActiveProjectRegistryPath,
 } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import type { InstalledPluginEntry } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace";
@@ -45,6 +46,7 @@ describe("resolveActiveProjectRegistryPath", () => {
 
 	beforeEach(() => {
 		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-proj-scope-"));
+		vi.spyOn(os, "homedir").mockReturnValue(path.dirname(tmpDir));
 	});
 
 	afterEach(() => {
@@ -180,5 +182,32 @@ describe("listClaudePluginRoots — project shadows user", () => {
 		expect(matching).toHaveLength(1);
 		expect(matching[0]?.path).toBe("/project/install/shared-plugin");
 		expect(matching[0]?.scope).toBe("project");
+	});
+});
+
+describe("clearClaudePluginRootsCache", () => {
+	let tmpHome: string;
+	let tmpProject: string;
+
+	beforeEach(() => {
+		tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cache-home-"));
+		tmpProject = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cache-proj-"));
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		clearClaudePluginRootsCache();
+		removeSyncWithRetries(tmpHome);
+		removeSyncWithRetries(tmpProject);
+	});
+
+	it("does not start an ambient project discovery after clearing the cache", async () => {
+		await preloadPluginRoots(tmpHome, tmpProject);
+		const statSpy = vi.spyOn(fs.promises, "stat");
+
+		clearClaudePluginRootsCache();
+		await Promise.resolve();
+
+		expect(statSpy).not.toHaveBeenCalled();
 	});
 });

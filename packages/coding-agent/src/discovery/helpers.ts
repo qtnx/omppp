@@ -8,7 +8,6 @@ import {
 	getAgentDir,
 	getConfigDirName,
 	getPluginsDir,
-	getProjectDir,
 	parseFrontmatter,
 	tryParseJson,
 } from "@oh-my-pi/pi-utils";
@@ -1144,10 +1143,9 @@ export async function listClaudePluginRoots(
 export function clearClaudePluginRootsCache(): void {
 	pluginRootsCache.clear();
 	preloadedPluginRoots = [...injectedPluginDirRoots];
-	// Re-warm preloaded roots asynchronously so sync LSP config reads stay valid
-	if (lastPreloadHome) {
-		void preloadPluginRoots(lastPreloadHome, getProjectDir());
-	}
+	// Do not re-warm here: callers use this to discard stale project/home state,
+	// and a fire-and-forget discovery would race the next test/session against
+	// getProjectDir() and possibly removed temp registries.
 }
 
 /**
@@ -1170,7 +1168,6 @@ export function clearPluginRootsAndCaches(extraPaths?: readonly string[]): void 
 
 let preloadedPluginRoots: ClaudePluginRoot[] = [];
 let injectedPluginDirRoots: ClaudePluginRoot[] = [];
-let lastPreloadHome: string | undefined;
 
 /**
  * Populate the module-level plugin roots cache for sync consumers.
@@ -1178,7 +1175,6 @@ let lastPreloadHome: string | undefined;
  * but before any LSP config is read.
  */
 export async function preloadPluginRoots(home: string, cwd?: string): Promise<void> {
-	lastPreloadHome = home;
 	const { roots } = await listClaudePluginRoots(home, cwd);
 	preloadedPluginRoots = roots;
 }
@@ -1220,7 +1216,6 @@ export async function injectPluginDirRoots(home: string, dirs: string[], cwd?: s
 
 	// Set injected roots BEFORE populating cache so listClaudePluginRoots merges them.
 	injectedPluginDirRoots = injected;
-	lastPreloadHome = home; // ensure cache-clear re-warm fires even when injectPluginDirRoots was the startup path
 	// Clear any stale cache entries (populated before injected roots were set).
 	pluginRootsCache.clear();
 	// Rebuild — cache miss triggers fresh load that includes both user+project registries
