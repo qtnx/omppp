@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
 	appendContextGcSystemPrompt,
@@ -1062,6 +1063,10 @@ function registerSshCleanup(): void {
 	postmortem.register("ssh-cleanup", cleanupSshResources);
 }
 
+async function ensureAgentDirLayout(agentDir: string): Promise<void> {
+	await fs.mkdir(path.join(agentDir, "workflows"), { recursive: true });
+}
+
 let evalCleanupRegistered = false;
 
 function registerEvalCleanup(): void {
@@ -1276,6 +1281,7 @@ function buildMCPPromptCommands(manager: MCPManager): LoadedCustomCommand[] {
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	const cwd = options.cwd ?? getProjectDir();
 	const agentDir = options.agentDir ?? getAgentDir();
+	await ensureAgentDirLayout(agentDir);
 	const eventBus = options.eventBus ?? new EventBus();
 
 	registerSshCleanup();

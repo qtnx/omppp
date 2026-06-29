@@ -358,6 +358,38 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			await result?.session.dispose();
 		}
 	});
+
+	it("creates fresh agentDir layout before loading native bundled extensions", async () => {
+		const root = path.join(os.tmpdir(), `pi-sdk-fresh-agent-dir-${Snowflake.next()}`);
+		const cwd = path.join(root, "project");
+		const agentDir = path.join(root, "agent");
+		tempDirs.push(root);
+		fs.mkdirSync(cwd, { recursive: true });
+
+		let result: CreateAgentSessionResult | undefined;
+		try {
+			result = await createAgentSession({
+				cwd,
+				agentDir,
+				sessionManager: SessionManager.inMemory(cwd),
+				settings: Settings.isolated(),
+				model: getBundledModel("openai", "gpt-4o-mini"),
+				disableExtensionDiscovery: true,
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+			});
+
+			expect(result.session.getToolByName("context_inventory")).toBeDefined();
+			expect(fs.existsSync(path.join(agentDir, "context-gc.sqlite"))).toBe(true);
+			expect(fs.existsSync(path.join(agentDir, "workflows"))).toBe(true);
+		} finally {
+			await result?.session.dispose();
+		}
+	});
 	it("loads system context reminder as a native bundled extension without plugin discovery", async () => {
 		const tempDir = path.join(os.tmpdir(), `pi-sdk-system-reminder-${Snowflake.next()}`);
 		tempDirs.push(tempDir);
