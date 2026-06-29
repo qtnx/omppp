@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed inaccurate Herdr pane agent state when a stale herdr-installed managed reporter (`herdr-omp-agent-state.ts`) loaded alongside the native reporter: both wrote conflicting `pane.report_agent` updates to the same pane with independent sequence numbers. Main-session discovery now drops the managed file whenever native Herdr reporting is active, so there is exactly one reporter.
+
 ## [16.2.2] - 2026-06-27
 
 ### Added

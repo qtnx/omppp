@@ -95,6 +95,7 @@ import {
 } from "./extensibility/extensions";
 import {
 	createHerdrAgentStateExtension,
+	isNativeHerdrAgentStateEnabled,
 	markNativeHerdrAgentStateEnabled,
 } from "./extensibility/extensions/herdr-agent-state";
 
@@ -841,7 +842,19 @@ export async function discoverSessionExtensionPaths(
 	}
 	const configuredPaths = [...(options.additionalExtensionPaths ?? []), ...(settings.get("extensions") ?? [])];
 	const disabledExtensionIds = settings.get("disabledExtensions") ?? [];
-	return discoverExtensionPaths(configuredPaths, cwd, disabledExtensionIds);
+	const discovered = await discoverExtensionPaths(configuredPaths, cwd, disabledExtensionIds);
+	// The native Herdr agent-state reporter supersedes the herdr-installed managed
+	// file reporter. The managed file is expected to self-disable when the native
+	// marker (OMP_NATIVE_HERDR_AGENT_STATE) is set, but a stale install (older
+	// integration version that predates the marker check) would otherwise load
+	// alongside native and both report conflicting state + independent seq numbers
+	// to the same pane. Drop the managed file from main-session discovery whenever
+	// native is active so there is exactly one reporter regardless of file version.
+	// (Subagent sessions already strip both reporters via filterSubagentExtensionPaths.)
+	if (isNativeHerdrAgentStateEnabled()) {
+		return discovered.filter(extensionPath => !isManagedHerdrAgentStateExtensionPath(extensionPath));
+	}
+	return discovered;
 }
 
 /**

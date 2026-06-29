@@ -14,7 +14,11 @@ import {
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/herdr-agent-state";
 import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
-import { createAgentSession, loadSessionExtensions } from "@oh-my-pi/pi-coding-agent/sdk";
+import {
+	createAgentSession,
+	discoverSessionExtensionPaths,
+	loadSessionExtensions,
+} from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { Snowflake } from "@oh-my-pi/pi-utils";
@@ -758,6 +762,39 @@ describe("native Herdr agent state extension", () => {
 
 		expect(process.env[HERDR_NATIVE_AGENT_STATE_ENV]).toBe("1");
 		expect(result.extensions.some(extension => extension.label === "managed fallback active")).toBe(false);
+	});
+
+	it("drops the discovered managed Herdr fallback from main sessions when native is active", async () => {
+		vi.useRealTimers();
+		configureHerdrEnv(); // native marker unset -> native reporter is active by default under Herdr env
+		const tempDir = makeTempDir();
+		const managedPath = path.join(tempDir, "herdr-omp-agent-state.ts");
+		await Bun.write(managedPath, 'export default function(pi) {\n\tpi.setLabel("managed fallback active");\n}\n');
+
+		const paths = await discoverSessionExtensionPaths(
+			{ additionalExtensionPaths: [managedPath] },
+			tempDir,
+			Settings.isolated(),
+		);
+
+		expect(paths.some(extensionPath => path.basename(extensionPath) === "herdr-omp-agent-state.ts")).toBe(false);
+	});
+
+	it("keeps the managed Herdr fallback discoverable when native reporting is disabled", async () => {
+		vi.useRealTimers();
+		configureHerdrEnv();
+		process.env[HERDR_NATIVE_AGENT_STATE_ENV] = "0";
+		const tempDir = makeTempDir();
+		const managedPath = path.join(tempDir, "herdr-omp-agent-state.ts");
+		await Bun.write(managedPath, 'export default function(pi) {\n\tpi.setLabel("managed fallback active");\n}\n');
+
+		const paths = await discoverSessionExtensionPaths(
+			{ additionalExtensionPaths: [managedPath] },
+			tempDir,
+			Settings.isolated(),
+		);
+
+		expect(paths.some(extensionPath => path.basename(extensionPath) === "herdr-omp-agent-state.ts")).toBe(true);
 	});
 
 	it("does not preload managed Herdr fallback paths into subagent sessions", async () => {
