@@ -378,37 +378,44 @@ describe("createAgentSession credential_disabled subscription", () => {
 		"releases the session subscription if createAgentSession throws mid-startup",
 		async () => {
 			const dirs = makeDirs("startup-failure");
-			const embedderEvents: CredentialDisabledEvent[] = [];
-			const authStorage = await AuthStorage.create(path.join(dirs.agentDir, "agent.db"), {
-				onCredentialDisabled: event => {
-					embedderEvents.push(event);
-				},
-			});
+			const authStorage = await AuthStorage.create(path.join(dirs.agentDir, "agent.db"));
+			const ext = makeRecordingExtension();
 
-			const throwingFactory: ExtensionFactory = () => {
-				throw new Error("simulated mid-startup failure");
+			const failAfterSubscription = () => {
+				const options = baseOptions(dirs, authStorage);
+				Object.defineProperty(options, "settings", {
+					get() {
+						throw new Error("simulated mid-startup failure");
+					},
+				});
+				return createAgentSession(options);
 			};
 
-			await expect(createAgentSession(baseOptions(dirs, authStorage, [throwingFactory]))).rejects.toThrow(
-				/simulated mid-startup failure/,
-			);
+			await expect(failAfterSubscription()).rejects.toThrow(/simulated mid-startup failure/);
 
 			// A retry must also fail without accumulating stale subscribers (this is what the
 			// outer-catch cleanup in createAgentSession exists to guarantee).
-			await expect(createAgentSession(baseOptions(dirs, authStorage, [throwingFactory]))).rejects.toThrow(
-				/simulated mid-startup failure/,
-			);
+			await expect(failAfterSubscription()).rejects.toThrow(/simulated mid-startup failure/);
 
-			// Now fire a real disable. Only the embedder must observe it — no leftover listener
-			// from either failed startup attempt.
+			// Fire a real disable while no live session is subscribed. If either failed
+			// startup leaked its bridge listener, AuthStorage will fan out to that stale
+			// listener instead of buffering the event for the next real session.
 			failOAuthRefresh();
 			await authStorage.set("anthropic", [expiredOAuth()]);
 			await authStorage.getApiKey("anthropic", "post-failure");
-			await drainCredentialDisabledDispatch();
 
-			expect(embedderEvents).toEqual([
-				{ provider: "anthropic", disabledCause: expect.stringContaining("invalid_grant") },
-			]);
+			const { session } = await createAgentSession(baseOptions(dirs, authStorage, [ext.factory]));
+			try {
+				const observed = ext.next();
+				initializeRunnerForTest(session.extensionRunner);
+				const extEvent = await observed;
+
+				expect(extEvent.provider).toBe("anthropic");
+				expect(extEvent.disabledCause).toContain("invalid_grant");
+				expect(ext.events).toHaveLength(1);
+			} finally {
+				await session.dispose();
+			}
 		},
 		STARTUP_HEAVY_ASSERTION_TIMEOUT_MS,
 	);
