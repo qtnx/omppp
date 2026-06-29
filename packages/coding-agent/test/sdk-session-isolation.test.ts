@@ -61,6 +61,10 @@ function countOccurrences(text: string, needle: string): number {
 	return text.split(needle).length - 1;
 }
 
+function emptyWorkspaceTree(cwd: string) {
+	return { rootPath: cwd, rendered: ".\n", truncated: false, totalLines: 1, agentsMdFiles: [] };
+}
+
 describe("createAgentSession session storage isolation", () => {
 	const tempDirs: string[] = [];
 	// One shared, fully-populated (bundled models load synchronously in the
@@ -103,6 +107,7 @@ describe("createAgentSession session storage isolation", () => {
 			skills: [],
 			contextFiles: [],
 			promptTemplates: [],
+			workspaceTree: emptyWorkspaceTree(cwd),
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
@@ -136,6 +141,7 @@ describe("createAgentSession session storage isolation", () => {
 			skills: [],
 			contextFiles: [],
 			promptTemplates: [],
+			workspaceTree: emptyWorkspaceTree(cwd),
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
@@ -168,6 +174,7 @@ describe("createAgentSession session storage isolation", () => {
 			skills: [],
 			contextFiles: [],
 			promptTemplates: [],
+			workspaceTree: emptyWorkspaceTree(cwd),
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
@@ -208,6 +215,7 @@ describe("createAgentSession session storage isolation", () => {
 			skills: [],
 			contextFiles: [],
 			promptTemplates: [],
+			workspaceTree: emptyWorkspaceTree(cwd),
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
@@ -252,6 +260,7 @@ describe("createAgentSession session storage isolation", () => {
 			contextFiles: [],
 			promptTemplates: [],
 			slashCommands: [],
+			workspaceTree: emptyWorkspaceTree(cwd),
 			enableMCP: false,
 			enableLsp: false,
 		});
@@ -292,6 +301,7 @@ describe("createAgentSession session storage isolation", () => {
 			contextFiles: [],
 			promptTemplates: [],
 			slashCommands: [],
+			workspaceTree: emptyWorkspaceTree(cwd),
 			enableMCP: false,
 			enableLsp: false,
 		});
@@ -331,6 +341,7 @@ describe("createAgentSession session storage isolation", () => {
 			contextFiles: [],
 			promptTemplates: [],
 			slashCommands: [],
+			workspaceTree: emptyWorkspaceTree(cwd),
 			enableMCP: false,
 			enableLsp: false,
 		});
@@ -366,6 +377,7 @@ describe("createAgentSession session storage isolation", () => {
 			contextFiles: [],
 			promptTemplates: [],
 			slashCommands: [],
+			workspaceTree: emptyWorkspaceTree(cwd),
 			enableMCP: false,
 			enableLsp: false,
 		});
@@ -398,6 +410,7 @@ describe("createAgentSession session storage isolation", () => {
 			skills: [],
 			contextFiles: [],
 			promptTemplates: [],
+			workspaceTree: emptyWorkspaceTree(cwd),
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
@@ -429,6 +442,7 @@ describe("createAgentSession session storage isolation", () => {
 			contextFiles: [],
 			promptTemplates: [],
 			slashCommands: [],
+			workspaceTree: emptyWorkspaceTree(cwd),
 			enableMCP: false,
 			enableLsp: false,
 		});
@@ -459,6 +473,7 @@ describe("createAgentSession session storage isolation", () => {
 				skills: [],
 				contextFiles: [],
 				promptTemplates: [],
+				workspaceTree: emptyWorkspaceTree(cwd),
 				slashCommands: [],
 				enableMCP: false,
 				enableLsp: false,
@@ -531,6 +546,7 @@ describe("createAgentSession session storage isolation", () => {
 				skills: [],
 				contextFiles: [],
 				promptTemplates: [],
+				workspaceTree: emptyWorkspaceTree(cwd),
 				slashCommands: [],
 				enableMCP: false,
 				enableLsp: false,

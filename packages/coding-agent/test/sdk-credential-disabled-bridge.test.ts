@@ -141,6 +141,8 @@ describe("createAgentSession credential_disabled subscription", () => {
 		return { factory, events, next };
 	};
 
+	const STARTUP_HEAVY_ASSERTION_TIMEOUT_MS = 15_000;
+
 	const drainCredentialDisabledDispatch = async (): Promise<void> => {
 		for (let i = 0; i < 5; i++) await Promise.resolve();
 	};
@@ -372,40 +374,44 @@ describe("createAgentSession credential_disabled subscription", () => {
 		}
 	});
 
-	it("releases the session subscription if createAgentSession throws mid-startup", async () => {
-		const dirs = makeDirs("startup-failure");
-		const embedderEvents: CredentialDisabledEvent[] = [];
-		const authStorage = await AuthStorage.create(path.join(dirs.agentDir, "agent.db"), {
-			onCredentialDisabled: event => {
-				embedderEvents.push(event);
-			},
-		});
+	it(
+		"releases the session subscription if createAgentSession throws mid-startup",
+		async () => {
+			const dirs = makeDirs("startup-failure");
+			const embedderEvents: CredentialDisabledEvent[] = [];
+			const authStorage = await AuthStorage.create(path.join(dirs.agentDir, "agent.db"), {
+				onCredentialDisabled: event => {
+					embedderEvents.push(event);
+				},
+			});
 
-		const throwingFactory: ExtensionFactory = () => {
-			throw new Error("simulated mid-startup failure");
-		};
+			const throwingFactory: ExtensionFactory = () => {
+				throw new Error("simulated mid-startup failure");
+			};
 
-		await expect(createAgentSession(baseOptions(dirs, authStorage, [throwingFactory]))).rejects.toThrow(
-			/simulated mid-startup failure/,
-		);
+			await expect(createAgentSession(baseOptions(dirs, authStorage, [throwingFactory]))).rejects.toThrow(
+				/simulated mid-startup failure/,
+			);
 
-		// A retry must also fail without accumulating stale subscribers (this is what the
-		// outer-catch cleanup in createAgentSession exists to guarantee).
-		await expect(createAgentSession(baseOptions(dirs, authStorage, [throwingFactory]))).rejects.toThrow(
-			/simulated mid-startup failure/,
-		);
+			// A retry must also fail without accumulating stale subscribers (this is what the
+			// outer-catch cleanup in createAgentSession exists to guarantee).
+			await expect(createAgentSession(baseOptions(dirs, authStorage, [throwingFactory]))).rejects.toThrow(
+				/simulated mid-startup failure/,
+			);
 
-		// Now fire a real disable. Only the embedder must observe it — no leftover listener
-		// from either failed startup attempt.
-		failOAuthRefresh();
-		await authStorage.set("anthropic", [expiredOAuth()]);
-		await authStorage.getApiKey("anthropic", "post-failure");
-		await drainCredentialDisabledDispatch();
+			// Now fire a real disable. Only the embedder must observe it — no leftover listener
+			// from either failed startup attempt.
+			failOAuthRefresh();
+			await authStorage.set("anthropic", [expiredOAuth()]);
+			await authStorage.getApiKey("anthropic", "post-failure");
+			await drainCredentialDisabledDispatch();
 
-		expect(embedderEvents).toEqual([
-			{ provider: "anthropic", disabledCause: expect.stringContaining("invalid_grant") },
-		]);
-	});
+			expect(embedderEvents).toEqual([
+				{ provider: "anthropic", disabledCause: expect.stringContaining("invalid_grant") },
+			]);
+		},
+		STARTUP_HEAVY_ASSERTION_TIMEOUT_MS,
+	);
 	it("subscribes through the registry's auth storage when only options.modelRegistry is provided", async () => {
 		const dirs = makeDirs("registry-only");
 		const embedderEvents: CredentialDisabledEvent[] = [];
@@ -452,31 +458,35 @@ describe("createAgentSession credential_disabled subscription", () => {
 		}
 	});
 
-	it("rejects when options.authStorage and options.modelRegistry.authStorage are different instances", async () => {
-		const dirs = makeDirs("mismatch");
-		const registryStorage = await AuthStorage.create(path.join(dirs.agentDir, "agent-registry.db"));
-		const otherStorage = await AuthStorage.create(path.join(dirs.agentDir, "agent-other.db"));
-		const modelRegistry = new ModelRegistry(registryStorage, path.join(dirs.agentDir, "models-registry.json"));
+	it(
+		"rejects when options.authStorage and options.modelRegistry.authStorage are different instances",
+		async () => {
+			const dirs = makeDirs("mismatch");
+			const registryStorage = await AuthStorage.create(path.join(dirs.agentDir, "agent-registry.db"));
+			const otherStorage = await AuthStorage.create(path.join(dirs.agentDir, "agent-other.db"));
+			const modelRegistry = new ModelRegistry(registryStorage, path.join(dirs.agentDir, "models-registry.json"));
 
-		await expect(
-			createAgentSession({
-				cwd: dirs.cwd,
-				agentDir: dirs.agentDir,
-				authStorage: otherStorage,
-				modelRegistry,
-				settings: Settings.isolated(),
-				disableExtensionDiscovery: true,
-				extensions: [],
-				skills: [],
-				contextFiles: [],
-				promptTemplates: [],
-				workspaceTree: emptyWorkspaceTree(dirs.cwd),
-				slashCommands: [],
-				enableMCP: false,
-				enableLsp: false,
-			}),
-		).rejects.toThrow(/options\.authStorage.*modelRegistry\.authStorage/);
-	});
+			await expect(
+				createAgentSession({
+					cwd: dirs.cwd,
+					agentDir: dirs.agentDir,
+					authStorage: otherStorage,
+					modelRegistry,
+					settings: Settings.isolated(),
+					disableExtensionDiscovery: true,
+					extensions: [],
+					skills: [],
+					contextFiles: [],
+					promptTemplates: [],
+					workspaceTree: emptyWorkspaceTree(dirs.cwd),
+					slashCommands: [],
+					enableMCP: false,
+					enableLsp: false,
+				}),
+			).rejects.toThrow(/options\.authStorage.*modelRegistry\.authStorage/);
+		},
+		STARTUP_HEAVY_ASSERTION_TIMEOUT_MS,
+	);
 
 	it("routes handler errors through onError when listener is registered synchronously after initialize()", async () => {
 		// Regression: the flush of #pendingCredentialDisabled used to run synchronously
