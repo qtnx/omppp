@@ -19,6 +19,8 @@ interface TestCommand {
 	label: string;
 	cwd: string;
 	command: string[];
+	group?: string;
+	isolatedHome?: boolean;
 }
 
 type CodingAgentTestPartition = Record<CodingAgentBucket, string[]>;
@@ -49,15 +51,20 @@ const validModes = new Set<Mode>([
 // separate `bun --smol test` child process. A fresh process per chunk resets Bun's
 // heap and reaps any dangling spawned children between groups, keeping peak RSS
 // under the CI runner's OOM ceiling (a single 170-370-file invocation gets
-// SIGKILLed at 137). The singleton/global-state bucket uses an even smaller chunk:
+// SIGKILLed at 137). The singleton/global-state bucket uses one-file chunks:
 // Bun 1.3.14 can segfault (SIGSEGV, exit 132) when several singleton/global-state
-// files accumulate native state in one process. One-file chunks keep singleton
-// tests isolated without blanket skips.
+// files accumulate native state in one process. Runtime/session keeps in-process
+// test parallelism disabled because marketplace/session tests share process-local
+// registries, but the runner may execute separate runtime chunks concurrently.
 const codingAgentBucketPlans: Record<CodingAgentBucket, { label: string; parallel: number; chunkSize?: number }> = {
 	singleton: { label: "singleton/global-state bucket", parallel: 1, chunkSize: 1 },
 	ui: { label: "UI/TUI bucket", parallel: 1, chunkSize: 10 },
 	runtime: { label: "runtime/session bucket", parallel: 1, chunkSize: 10 },
 	native: { label: "native/tooling/browser/unit bucket", parallel: 1, chunkSize: 10 },
+};
+
+const commandGroupParallel: Record<string, number> = {
+	"coding-agent-runtime": 2,
 };
 
 // Smaller workspace packages stay separate from native/TUI/integration suites so
@@ -292,6 +299,8 @@ async function codingAgentTestCommands(bucket: CodingAgentBucket): Promise<TestC
 			label: `packages/coding-agent (${plan.label}; ${testFiles.length} files; parallel=${plan.parallel}${chunkLabel}; ${chunk.length} files)`,
 			cwd: "packages/coding-agent",
 			command: ["bun", "--smol", "test", `--parallel=${plan.parallel}`, ...onlyFailuresArgs, ...chunk],
+			group: bucket === "runtime" ? "coding-agent-runtime" : undefined,
+			isolatedHome: true,
 		});
 	}
 	return commands;
@@ -374,20 +383,58 @@ async function runTestCommand(testCommand: TestCommand): Promise<void> {
 	}
 
 	const env: Record<string, string | undefined> = { ...Bun.env, GITHUB_ACTIONS: "" };
+	let isolatedHome: string | undefined;
+	if (testCommand.isolatedHome) {
+		isolatedHome = await fs.mkdtemp(path.join(env.TMPDIR ?? "/tmp", "omppp-ci-home-"));
+		env.HOME = isolatedHome;
+	}
 	for (const key of Object.keys(env)) {
 		if (isScrubbedEnvVar(key)) {
 			delete env[key];
 		}
 	}
-	const proc = Bun.spawn(testCommand.command, {
-		cwd,
-		env,
-		stdout: "inherit",
-		stderr: "inherit",
-	});
-	const exitCode = await proc.exited;
-	if (exitCode !== 0) {
-		throw new Error(`${testCommand.label} failed with exit code ${exitCode}: ${renderedCommand}`);
+	try {
+		const proc = Bun.spawn(testCommand.command, {
+			cwd,
+			env,
+			stdout: "inherit",
+			stderr: "inherit",
+		});
+		const exitCode = await proc.exited;
+		if (exitCode !== 0) {
+			throw new Error(`${testCommand.label} failed with exit code ${exitCode}: ${renderedCommand}`);
+		}
+	} finally {
+		if (isolatedHome) {
+			await fs.rm(isolatedHome, { recursive: true, force: true });
+		}
+	}
+}
+
+async function runTestCommands(testCommands: TestCommand[]): Promise<void> {
+	for (let index = 0; index < testCommands.length; ) {
+		const group = testCommands[index]?.group;
+		const parallel = group ? (commandGroupParallel[group] ?? 1) : 1;
+		if (!group || parallel <= 1) {
+			await runTestCommand(testCommands[index]);
+			index += 1;
+			continue;
+		}
+
+		const groupStart = index;
+		while (index < testCommands.length && testCommands[index]?.group === group) {
+			index += 1;
+		}
+		const groupCommands = testCommands.slice(groupStart, index);
+		let next = 0;
+		const workers = Array.from({ length: Math.min(parallel, groupCommands.length) }, async () => {
+			while (next < groupCommands.length) {
+				const command = groupCommands[next];
+				next += 1;
+				await runTestCommand(command);
+			}
+		});
+		await Promise.all(workers);
 	}
 }
 
@@ -395,6 +442,4 @@ if (!validModes.has(requestedMode as Mode)) {
 	throw new Error(`Unknown mode ${shellQuote(requestedMode)}. Expected one of: ${[...validModes].join(", ")}`);
 }
 
-for (const testCommand of await commandsForMode(requestedMode as Mode)) {
-	await runTestCommand(testCommand);
-}
+await runTestCommands(await commandsForMode(requestedMode as Mode));

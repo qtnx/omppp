@@ -251,6 +251,8 @@ describe("MarketplaceManager", () => {
 
 	it("installPlugin exposes marketplace package to the runtime loader", async () => {
 		const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mgr-home-"));
+		const runtimeCwd = path.join(tmpHome, "project");
+		fs.mkdirSync(runtimeCwd, { recursive: true });
 		try {
 			const pluginsDir = path.join(tmpHome, ".omp", "plugins");
 			const manager = new MarketplaceManager({
@@ -263,7 +265,7 @@ describe("MarketplaceManager", () => {
 			await manager.addMarketplace(FIXTURE_DIR);
 			await manager.installPlugin("hello-plugin", "test-marketplace");
 
-			const enabled = await getEnabledPlugins(ctx.tmpDir, { home: tmpHome });
+			const enabled = await getEnabledPlugins(runtimeCwd, { home: tmpHome });
 			expect(enabled.map(plugin => plugin.name)).toEqual(["hello-plugin"]);
 			expect(enabled[0].path).toBe(path.join(pluginsDir, "node_modules", "hello-plugin"));
 		} finally {
