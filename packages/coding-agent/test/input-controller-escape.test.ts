@@ -353,17 +353,25 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
-	it("aborts streaming immediately while the working loader is present", () => {
+	it("requires a second Esc before aborting while the working loader is present", () => {
+		const now = vi.spyOn(Date, "now");
+		now.mockReturnValue(1_000);
 		const { ctx, editor, spies } = createContext();
 		Object.defineProperty(ctx.session, "isStreaming", { value: true, configurable: true });
 		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
-		spies.cancelPendingSubmission.mockReturnValue(true);
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
 		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
+		expect(spies.clearQueue).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+		expect(spies.showStatus).toHaveBeenCalledWith("Press Esc again within 2s to cancel streaming.");
+
+		now.mockReturnValue(1_500);
+		editor.onEscape?.();
+
 		expect(spies.clearQueue).toHaveBeenCalledTimes(1);
 		expect(spies.abort).toHaveBeenCalledTimes(1);
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
