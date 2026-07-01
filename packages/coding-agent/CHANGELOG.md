@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed `Esc` interrupting an active chat stream immediately while the `Working...` loader was visible; it now uses the same second-press confirmation as other streaming states.
+
 - Fixed inaccurate Herdr pane agent state when a stale herdr-installed managed reporter (`herdr-omp-agent-state.ts`) loaded alongside the native reporter: both wrote conflicting `pane.report_agent` updates to the same pane with independent sequence numbers. Main-session discovery now drops the managed file whenever native Herdr reporting is active, so there is exactly one reporter.
 
 ## [16.2.2] - 2026-06-27

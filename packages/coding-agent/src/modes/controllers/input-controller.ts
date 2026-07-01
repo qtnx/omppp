@@ -219,7 +219,9 @@ export class InputController {
 		}
 	}
 
-	#handleStreamingEscape(): void {
+	#handleStreamingEscape(
+		onConfirm: () => void = () => void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
+	): void {
 		if (!this.#streamingEscapeTurnSentinel) {
 			this.#streamingEscapeTurnSentinel = {};
 		}
@@ -227,7 +229,7 @@ export class InputController {
 		const now = Date.now();
 		if (this.#streamingEscapeArmedToken === token && now <= this.#streamingEscapeArmedUntil) {
 			this.#clearStreamingEscapeArm();
-			void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+			onConfirm();
 			return;
 		}
 
@@ -364,7 +366,7 @@ export class InputController {
 			}
 			if (this.ctx.loadingAnimation) {
 				if (this.ctx.session.isStreaming) {
-					this.restoreQueuedMessagesToEditor({ abort: true });
+					this.#handleStreamingEscape(() => this.restoreQueuedMessagesToEditor({ abort: true }));
 					return;
 				}
 				if (this.ctx.cancelPendingSubmission()) {
