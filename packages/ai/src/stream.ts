@@ -68,6 +68,7 @@ import type {
 	SimpleStreamOptions,
 	StreamOptions,
 	ThinkingBudgets,
+	ThinkingDisplay,
 	ToolChoice,
 } from "./types";
 import { AssistantMessageEventStream } from "./utils/event-stream";
@@ -1331,6 +1332,12 @@ function normalizeMandatoryReasoningOptions<TApi extends Api>(
 	return { ...options, reasoning: floor, disableReasoning: undefined };
 }
 
+export function resolveAnthropicThinkingDisplayOption(
+	options?: Pick<SimpleStreamOptions, "thinkingDisplay" | "hideThinkingSummary">,
+): ThinkingDisplay | undefined {
+	return options?.thinkingDisplay ?? (options?.hideThinkingSummary ? "omitted" : undefined);
+}
+
 function mapOptionsForApi<TApi extends Api>(
 	model: Model<TApi>,
 	rawOptions?: SimpleStreamOptions,
@@ -1376,7 +1383,7 @@ function mapOptionsForApi<TApi extends Api>(
 					requestModelId: resolveWireModelId(model, undefined),
 					thinkingEnabled: false,
 					toolChoice: mapAnthropicToolChoice(options?.toolChoice),
-					thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
+					thinkingDisplay: resolveAnthropicThinkingDisplayOption(options),
 					serviceTier: options?.serviceTier,
 				});
 			}
@@ -1389,7 +1396,7 @@ function mapOptionsForApi<TApi extends Api>(
 					requestModelId: resolveWireModelId(model, undefined),
 					thinkingEnabled: false,
 					toolChoice: mapAnthropicToolChoice(options?.toolChoice),
-					thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
+					thinkingDisplay: resolveAnthropicThinkingDisplayOption(options),
 					serviceTier: options?.serviceTier,
 				});
 			}
@@ -1409,7 +1416,7 @@ function mapOptionsForApi<TApi extends Api>(
 					thinkingEnabled: true,
 					effort,
 					toolChoice: mapAnthropicToolChoice(options?.toolChoice),
-					thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
+					thinkingDisplay: resolveAnthropicThinkingDisplayOption(options),
 					serviceTier: options?.serviceTier,
 				});
 			}
@@ -1422,7 +1429,7 @@ function mapOptionsForApi<TApi extends Api>(
 					thinkingBudgetTokens: thinkingBudget,
 					effort,
 					toolChoice: mapAnthropicToolChoice(options?.toolChoice),
-					thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
+					thinkingDisplay: resolveAnthropicThinkingDisplayOption(options),
 					serviceTier: options?.serviceTier,
 				});
 			}
@@ -1442,7 +1449,7 @@ function mapOptionsForApi<TApi extends Api>(
 					requestModelId: resolveWireModelId(model, undefined),
 					thinkingEnabled: false,
 					toolChoice: mapAnthropicToolChoice(options?.toolChoice),
-					thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
+					thinkingDisplay: resolveAnthropicThinkingDisplayOption(options),
 					serviceTier: options?.serviceTier,
 				});
 			} else {
@@ -1454,7 +1461,7 @@ function mapOptionsForApi<TApi extends Api>(
 					thinkingBudgetTokens: thinkingBudget,
 					effort,
 					toolChoice: mapAnthropicToolChoice(options?.toolChoice),
-					thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
+					thinkingDisplay: resolveAnthropicThinkingDisplayOption(options),
 					serviceTier: options?.serviceTier,
 				});
 			}
@@ -1466,7 +1473,7 @@ function mapOptionsForApi<TApi extends Api>(
 				reasoning: options?.reasoning,
 				thinkingBudgets: options?.thinkingBudgets,
 				toolChoice: mapAnthropicToolChoice(options?.toolChoice),
-				thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
+				thinkingDisplay: resolveAnthropicThinkingDisplayOption(options),
 			};
 			// Adaptive mode sends effort directly, no budget_tokens — skip budget inflation.
 			if (model.thinking?.mode === "anthropic-adaptive") {

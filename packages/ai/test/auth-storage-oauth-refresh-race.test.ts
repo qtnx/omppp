@@ -35,6 +35,7 @@ describe("AuthStorage OAuth refresh race", () => {
 	});
 
 	afterEach(async () => {
+		vi.useRealTimers();
 		vi.restoreAllMocks();
 		oauthUtils.unregisterOAuthProviders("auth-storage-oauth-refresh-race-test");
 		store?.close();
@@ -431,5 +432,304 @@ describe("AuthStorage OAuth refresh race", () => {
 		if (bRow?.credential.type === "oauth") expect(bRow.credential.refresh).toBe("b-fresh-ref");
 		expect(cRow?.credential.type).toBe("oauth");
 		if (cRow?.credential.type === "oauth") expect(cRow.credential.refresh).toBe("c-ref");
+	});
+
+	test("serializes cross-process refreshes through a SQLite lease", async () => {
+		if (!authStorage || !store || !(store instanceof SqliteAuthCredentialStore)) throw new Error("test setup failed");
+		vi.useFakeTimers();
+
+		const dbPath = path.join(tempDir, "agent.db");
+		const secondStore = await SqliteAuthCredentialStore.open(dbPath);
+		const secondAuthStorage = new AuthStorage(secondStore);
+		const refreshedExpires = Date.now() + 60 * 60_000;
+		const refreshStarted = Promise.withResolvers<void>();
+		const allowRefresh = Promise.withResolvers<void>();
+		let refreshCalls = 0;
+
+		oauthUtils.registerOAuthProvider({
+			id: "unit-oauth-cross-process-lease",
+			name: "Unit OAuth Cross Process Lease",
+			sourceId: "auth-storage-oauth-refresh-race-test",
+			async login() {
+				return { access: "unused", refresh: "unused", expires: refreshedExpires };
+			},
+			async refreshToken() {
+				refreshCalls += 1;
+				refreshStarted.resolve();
+				await allowRefresh.promise;
+				return { access: "access-rotated", refresh: "refresh-rotated", expires: refreshedExpires };
+			},
+			getApiKey(credentials) {
+				return credentials.access;
+			},
+		});
+
+		try {
+			await authStorage.set("unit-oauth-cross-process-lease", [
+				{ type: "oauth", access: "access-old", refresh: "refresh-old", expires: Date.now() - 60_000 },
+			]);
+			await secondAuthStorage.reload();
+
+			const first = authStorage.getApiKey("unit-oauth-cross-process-lease", "lease-a");
+			await refreshStarted.promise;
+			const second = secondAuthStorage.getApiKey("unit-oauth-cross-process-lease", "lease-b");
+			allowRefresh.resolve();
+
+			await expect(first).resolves.toBe("access-rotated");
+			vi.advanceTimersByTime(300);
+			await Promise.resolve();
+			await expect(second).resolves.toBe("access-rotated");
+			expect(refreshCalls).toBe(1);
+
+			const stored = secondStore.listAuthCredentials("unit-oauth-cross-process-lease");
+			expect(stored).toHaveLength(1);
+			expect(stored[0]?.credential.type).toBe("oauth");
+			if (stored[0]?.credential.type === "oauth") {
+				expect(stored[0].credential.refresh).toBe("refresh-rotated");
+			}
+		} finally {
+			secondAuthStorage.close();
+			secondStore.close();
+		}
+	});
+
+	test("non-holder adopts peer tokens without posting while a refresh lease is held", async () => {
+		if (!authStorage || !store || !(store instanceof SqliteAuthCredentialStore)) throw new Error("test setup failed");
+		vi.useFakeTimers();
+
+		const secondStore = await SqliteAuthCredentialStore.open(path.join(tempDir, "agent.db"));
+		const secondAuthStorage = new AuthStorage(secondStore);
+		let refreshCalls = 0;
+
+		oauthUtils.registerOAuthProvider({
+			id: "unit-oauth-lease-adopt",
+			name: "Unit OAuth Lease Adopt",
+			sourceId: "auth-storage-oauth-refresh-race-test",
+			async login() {
+				return { access: "unused", refresh: "unused", expires: Date.now() + 60 * 60_000 };
+			},
+			async refreshToken(credentials) {
+				refreshCalls += 1;
+				return { ...credentials, access: "posted", refresh: "posted-refresh", expires: Date.now() + 60 * 60_000 };
+			},
+			getApiKey(credentials) {
+				return credentials.access;
+			},
+		});
+
+		try {
+			await authStorage.set("unit-oauth-lease-adopt", [
+				{ type: "oauth", access: "access-old", refresh: "refresh-old", expires: Date.now() - 60_000 },
+			]);
+			const credentialId = store.listAuthCredentials("unit-oauth-lease-adopt")[0]!.id;
+			expect(store.tryAcquireRefreshLease(credentialId, 30_000)).toBe(true);
+			await secondAuthStorage.reload();
+
+			const adopted = secondAuthStorage.getApiKey("unit-oauth-lease-adopt", "lease-adopt");
+			await Promise.resolve();
+			store.updateAuthCredential(credentialId, {
+				type: "oauth",
+				access: "peer-access",
+				refresh: "peer-refresh",
+				expires: Date.now() + 60 * 60_000,
+			});
+			vi.advanceTimersByTime(300);
+			await Promise.resolve();
+
+			await expect(adopted).resolves.toBe("peer-access");
+			expect(refreshCalls).toBe(0);
+		} finally {
+			secondAuthStorage.close();
+			secondStore.close();
+		}
+	});
+
+	test("takes over an expired refresh lease left by a crashed holder", async () => {
+		if (!authStorage || !store || !(store instanceof SqliteAuthCredentialStore)) throw new Error("test setup failed");
+		vi.useFakeTimers();
+
+		let refreshCalls = 0;
+		oauthUtils.registerOAuthProvider({
+			id: "unit-oauth-lease-takeover",
+			name: "Unit OAuth Lease Takeover",
+			sourceId: "auth-storage-oauth-refresh-race-test",
+			async login() {
+				return { access: "unused", refresh: "unused", expires: Date.now() + 60 * 60_000 };
+			},
+			async refreshToken(credentials) {
+				refreshCalls += 1;
+				return {
+					...credentials,
+					access: "takeover-access",
+					refresh: "takeover-refresh",
+					expires: Date.now() + 60 * 60_000,
+				};
+			},
+			getApiKey(credentials) {
+				return credentials.access;
+			},
+		});
+
+		await authStorage.set("unit-oauth-lease-takeover", [
+			{ type: "oauth", access: "access-old", refresh: "refresh-old", expires: Date.now() - 60_000 },
+		]);
+		const credentialId = store.listAuthCredentials("unit-oauth-lease-takeover")[0]!.id;
+		expect(store.tryAcquireRefreshLease(credentialId, -1)).toBe(true);
+
+		await expect(authStorage.getApiKey("unit-oauth-lease-takeover", "lease-takeover")).resolves.toBe(
+			"takeover-access",
+		);
+		expect(refreshCalls).toBe(1);
+	});
+
+	test("force refresh does not freshness-adopt the same rejected persisted token", async () => {
+		if (!authStorage || !store) throw new Error("test setup failed");
+		const refreshedExpires = Date.now() + 60 * 60_000;
+		let refreshCalls = 0;
+
+		oauthUtils.registerOAuthProvider({
+			id: "unit-oauth-force-no-self-adopt",
+			name: "Unit OAuth Force No Self Adopt",
+			sourceId: "auth-storage-oauth-refresh-race-test",
+			async login() {
+				return { access: "unused", refresh: "unused", expires: refreshedExpires };
+			},
+			async refreshToken() {
+				refreshCalls += 1;
+				return { access: "fresh-access", refresh: "fresh-refresh", expires: refreshedExpires };
+			},
+			getApiKey(credentials) {
+				return credentials.access;
+			},
+		});
+
+		await authStorage.set("unit-oauth-force-no-self-adopt", [
+			{
+				type: "oauth",
+				access: "rejected-access",
+				refresh: "still-valid-refresh",
+				expires: refreshedExpires,
+			},
+		]);
+
+		await expect(
+			authStorage.refreshCredentialMatching("unit-oauth-force-no-self-adopt", "rejected-access"),
+		).resolves.toBe("fresh-access");
+		expect(refreshCalls).toBe(1);
+
+		const stored = store.listAuthCredentials("unit-oauth-force-no-self-adopt");
+		expect(stored[0]?.credential.type).toBe("oauth");
+		if (stored[0]?.credential.type === "oauth") {
+			expect(stored[0].credential.access).toBe("fresh-access");
+			expect(stored[0].credential.refresh).toBe("fresh-refresh");
+		}
+	});
+
+	test("waiter under a valid refresh lease does not post before lease expiry", async () => {
+		if (!authStorage || !store || !(store instanceof SqliteAuthCredentialStore)) throw new Error("test setup failed");
+
+		const secondStore = await SqliteAuthCredentialStore.open(path.join(tempDir, "agent.db"));
+		const secondAuthStorage = new AuthStorage(secondStore, {
+			oauthRefreshLeasePollMs: 1,
+			oauthRefreshLeaseTimeoutMs: 3,
+		});
+		let refreshCalls = 0;
+
+		oauthUtils.registerOAuthProvider({
+			id: "unit-oauth-lease-no-early-post",
+			name: "Unit OAuth Lease No Early Post",
+			sourceId: "auth-storage-oauth-refresh-race-test",
+			async login() {
+				return { access: "unused", refresh: "unused", expires: Date.now() + 60 * 60_000 };
+			},
+			async refreshToken(credentials) {
+				refreshCalls += 1;
+				return {
+					...credentials,
+					access: "unexpected-post",
+					refresh: "unexpected-refresh",
+					expires: Date.now() + 60 * 60_000,
+				};
+			},
+			getApiKey(credentials) {
+				return credentials.access;
+			},
+		});
+
+		try {
+			await authStorage.set("unit-oauth-lease-no-early-post", [
+				{ type: "oauth", access: "access-old", refresh: "refresh-old", expires: Date.now() - 60_000 },
+			]);
+			const credentialId = store.listAuthCredentials("unit-oauth-lease-no-early-post")[0]!.id;
+			expect(store.tryAcquireRefreshLease(credentialId, 90_000)).toBe(true);
+			await secondAuthStorage.reload();
+			vi.spyOn(secondStore, "tryAcquireRefreshLease").mockReturnValue(false);
+
+			vi.useFakeTimers();
+			const pending = secondAuthStorage.getApiKey("unit-oauth-lease-no-early-post", "no-early-post");
+			await Promise.resolve();
+			for (let index = 0; index < 20; index += 1) {
+				vi.advanceTimersByTime(1);
+				await Promise.resolve();
+				await Promise.resolve();
+				await Promise.resolve();
+			}
+			await expect(pending).resolves.toBe("access-old");
+			expect(refreshCalls).toBe(0);
+		} finally {
+			secondAuthStorage.close();
+			secondStore.close();
+		}
+	});
+	test("freshness-adopt skips POST when a row rotates after the stale snapshot", async () => {
+		if (!authStorage || !store) throw new Error("test setup failed");
+		vi.useFakeTimers();
+
+		let refreshCalls = 0;
+		oauthUtils.registerOAuthProvider({
+			id: "unit-oauth-freshness-adopt",
+			name: "Unit OAuth Freshness Adopt",
+			sourceId: "auth-storage-oauth-refresh-race-test",
+			async login() {
+				return { access: "unused", refresh: "unused", expires: Date.now() + 60 * 60_000 };
+			},
+			async refreshToken(credentials) {
+				refreshCalls += 1;
+				return { ...credentials, access: "posted", refresh: "posted-refresh", expires: Date.now() + 60 * 60_000 };
+			},
+			getApiKey(credentials) {
+				return credentials.access;
+			},
+		});
+
+		await authStorage.set("unit-oauth-freshness-adopt", [
+			{ type: "oauth", access: "access-old", refresh: "refresh-old", expires: Date.now() - 60_000 },
+		]);
+		const credentialId = store.listAuthCredentials("unit-oauth-freshness-adopt")[0]!.id;
+		const listAuthCredentials = store.listAuthCredentials.bind(store);
+		let providerReads = 0;
+		vi.spyOn(store, "listAuthCredentials").mockImplementation(provider => {
+			if (provider === "unit-oauth-freshness-adopt") {
+				providerReads += 1;
+				if (providerReads === 2) {
+					listAuthCredentials(provider);
+					store!.updateAuthCredential(credentialId, {
+						type: "oauth",
+						access: "peer-access",
+						refresh: "peer-refresh",
+						expires: Date.now() + 60 * 60_000,
+					});
+				}
+			}
+			return listAuthCredentials(provider);
+		});
+
+		await expect(authStorage.getApiKey("unit-oauth-freshness-adopt", "freshness-adopt")).resolves.toBe("peer-access");
+		expect(refreshCalls).toBe(0);
+		const stored = store.listAuthCredentials("unit-oauth-freshness-adopt");
+		expect(stored[0]?.credential.type).toBe("oauth");
+		if (stored[0]?.credential.type === "oauth") {
+			expect(stored[0].credential.refresh).toBe("peer-refresh");
+		}
 	});
 });

@@ -2248,7 +2248,8 @@ describe("Anthropic request fingerprint alignment", () => {
 			};
 
 			expect(payload.tool_choice).toEqual({ type: "auto" });
-			expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
+			// Fable/Mythos default to omitted display (CLI parity, avoids reasoning_extraction).
+			expect(payload.thinking).toEqual({ type: "adaptive", display: "omitted" });
 			expect(payload.output_config).toEqual({ effort: "xhigh" });
 		}
 	});
