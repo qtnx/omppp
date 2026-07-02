@@ -455,6 +455,18 @@ export const SETTINGS_SCHEMA = {
 			condition: "advisorEnabled",
 		},
 	},
+	"advisor.thinkingClampChars": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Thinking Clamp Chars",
+			description:
+				"Max characters of a primary thinking block fed to the advisor before it is clamped (head/tail + gist marker, full text spilled to an artifact). 0 = pass full thinking untruncated (default); set e.g. 2000 to re-enable clamping.",
+			condition: "advisorEnabled",
+		},
+	},
 	"advisor.consult": {
 		type: "boolean",
 		default: true,

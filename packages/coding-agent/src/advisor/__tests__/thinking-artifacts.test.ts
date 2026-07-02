@@ -90,6 +90,37 @@ describe("ThinkingArtifactStore.renderThinking", () => {
 		expect(artifact).toContain("REDACTED-tail");
 	});
 
+	it("passes full obfuscated text without writing an artifact when clamp threshold is disabled", async () => {
+		const dir = await makeTmpDir();
+		const store = new ThinkingArtifactStore({
+			artifactsDir: () => dir,
+			obfuscate,
+			gistEnabled: () => true,
+			clampThreshold: () => 0,
+		});
+		const text = largeText();
+		const out = store.renderThinking(text);
+
+		expect(out).toBe(obfuscate(text));
+		expect(out).not.toContain("SECRET");
+		expect(out).toContain("REDACTED-head");
+		expect(out).toContain("REDACTED-tail");
+		expect(out).not.toContain("{{GIST:");
+		expect(await Bun.file(join(dir, "__advisor-artifacts")).exists()).toBe(false);
+	});
+
+	it("clamps text that exceeds a configured positive threshold", () => {
+		const store = new ThinkingArtifactStore({
+			artifactsDir: () => undefined,
+			obfuscate,
+			gistEnabled: () => true,
+			clampThreshold: () => 500,
+		});
+		const out = store.renderThinking("x".repeat(600));
+
+		expect(out).toMatch(/\{\{GIST:[a-z0-9]+\}\}/);
+	});
+
 	it("omits the artifact path from the marker when no artifactsDir is configured", () => {
 		const store = new ThinkingArtifactStore({
 			artifactsDir: () => undefined,

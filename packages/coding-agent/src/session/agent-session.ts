@@ -2584,6 +2584,7 @@ export class AgentSession {
 				sessionId: this.sessionId,
 			}),
 			gistEnabled: () => this.settings.get("advisor.thinkingGist"),
+			clampThreshold: () => this.settings.get("advisor.thinkingClampChars") ?? 0,
 		});
 
 		const appendOnlyContext = new AppendOnlyContextManager();

@@ -46,6 +46,8 @@ export interface ThinkingArtifactDeps {
 	gistFn?: (excerpts: Array<{ id: string; text: string }>, signal: AbortSignal) => Promise<Map<string, string> | null>;
 	/** Setting gate for the smol call (advisor.thinkingGist). */
 	gistEnabled: () => boolean;
+	/** Optional character budget for clamping; 0 or less disables clamping. */
+	clampThreshold?: () => number;
 }
 
 export class ThinkingArtifactStore {
@@ -54,9 +56,11 @@ export class ThinkingArtifactStore {
 	readonly #middles = new Map<string, string>();
 	/** id → resolved gist bullets (survives re-renders; substituted verbatim). */
 	readonly #gistCache = new Map<string, string>();
+	readonly #clampThreshold?: () => number;
 
 	constructor(deps: ThinkingArtifactDeps) {
 		this.#deps = deps;
+		this.#clampThreshold = deps.clampThreshold;
 	}
 
 	/**
@@ -66,13 +70,12 @@ export class ThinkingArtifactStore {
 	 * artifact (fire-and-forget). Always obfuscates — this text feeds the model.
 	 */
 	renderThinking(text: string): string {
-		if (text.length <= CLAMP_THRESHOLD) {
-			return this.#deps.obfuscate(text);
-		}
+		const obfuscated = this.#deps.obfuscate(text);
+		const threshold = this.#clampThreshold?.() ?? CLAMP_THRESHOLD;
+		if (threshold <= 0 || text.length <= threshold) return obfuscated;
 		// Content hash → stable id across re-renders (natural dedupe of the same
 		// block re-rendered each turn) and a natural artifact filename.
 		const id = Bun.hash(text).toString(36);
-		const obfuscated = this.#deps.obfuscate(text);
 		const head = obfuscated.slice(0, HEAD_TAIL_CHARS);
 		const tail = obfuscated.slice(Math.max(HEAD_TAIL_CHARS, obfuscated.length - HEAD_TAIL_CHARS));
 		const middle = obfuscated.slice(HEAD_TAIL_CHARS, Math.max(HEAD_TAIL_CHARS, obfuscated.length - HEAD_TAIL_CHARS));
