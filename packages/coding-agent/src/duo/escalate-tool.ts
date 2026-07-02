@@ -17,6 +17,7 @@ type DuoEscalateParams = typeof escalateSchema.infer & Record<never, TakeoverPur
 export class DuoEscalateTool implements AgentTool<typeof escalateSchema, undefined> {
 	readonly name = "duo_escalate";
 	readonly label = "Duo escalate";
+	readonly loadMode = "essential";
 	readonly description: string;
 	readonly parameters = escalateSchema;
 

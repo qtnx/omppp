@@ -2036,11 +2036,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							let discoveryEnabled = activation.mcpDiscoveryEnabled;
 							let activateAll = activation.activateAllMCPTools;
 							if (!discoveryEnabled) {
-								const nonMCPToolNames = [...toolRegistry.keys()].filter(name => !isMCPToolName(name));
 								const projectedMode = resolveEffectiveToolDiscoveryMode(
 									settings,
 									model ? { contextWindow: model.contextWindow ?? undefined } : undefined,
-									countToolsForAutoDiscovery([...nonMCPToolNames, ...mcpResult.tools.map(tool => tool.name)]),
+									countToolsForAutoDiscovery(mcpResult.tools.map(tool => tool.name)),
 									true,
 								);
 								if (projectedMode !== "off") {
@@ -2585,7 +2584,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		let effectiveDiscoveryMode = resolveEffectiveToolDiscoveryMode(
 			settings,
 			model ? { contextWindow: model.contextWindow ?? undefined } : undefined,
-			countToolsForAutoDiscovery(toolRegistry.keys()),
+			countToolsForAutoDiscovery([...toolRegistry.keys()].filter(isMCPToolName)),
 			enableMCP,
 		);
 		if (!toolRegistry.has("search_tool_bm25")) {
@@ -2648,7 +2647,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const currentEffectiveDiscoveryMode = resolveEffectiveToolDiscoveryMode(
 				settings,
 				currentModel ? { contextWindow: currentModel.contextWindow ?? undefined } : undefined,
-				countToolsForAutoDiscovery(tools.keys()),
+				countToolsForAutoDiscovery([...tools.keys()].filter(isMCPToolName)),
 				enableMCP,
 			);
 			const currentMcpDiscoveryEnabled = currentEffectiveDiscoveryMode !== "off";

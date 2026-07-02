@@ -116,6 +116,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { GeminiHeaderRunDetector, isGeminiThinkingModel } from "@oh-my-pi/pi-ai/utils/thinking-loop";
 import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
+import { isFableOrMythos, parseAnthropicModel } from "@oh-my-pi/pi-catalog/identity";
 import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { MacOSPowerAssertion } from "@oh-my-pi/pi-natives";
@@ -2168,9 +2169,18 @@ export class AgentSession {
 		this.#unsubscribeAppendOnly = onAppendOnlyModeChanged(_value => this.#syncAppendOnlyContext(this.model));
 	}
 
+	#duoCouldActivate(): boolean {
+		const mode = this.settings.get("duo.mode");
+		if (mode === "off") return false;
+		if (mode === "on") return true;
+		const parsed = parseAnthropicModel(this.model?.id ?? "");
+		return this.getOrchestratorModeState()?.enabled === true || (parsed !== null && isFableOrMythos(parsed.kind));
+	}
+
 	#ensureDuoController(restored?: DuoStateSnapshot): DuoController | undefined {
 		if (this.#duoController) return this.#duoController;
 		if (this.#agentKind !== "main") return undefined;
+		if (!restored && !this.#duoCouldActivate()) return undefined;
 		const config = resolveDuoConfig(this.settings, this.#modelRegistry.getAvailable(), this.#modelRegistry);
 		if (!config) return undefined;
 		this.#duoController = new DuoController(this.#buildDuoHost(), config, restored);
@@ -6200,7 +6210,7 @@ export class AgentSession {
 		return resolveEffectiveToolDiscoveryMode(
 			this.settings,
 			this.model ? { contextWindow: this.model.contextWindow ?? undefined } : undefined,
-			countToolsForAutoDiscovery(this.#toolRegistry.keys()),
+			countToolsForAutoDiscovery([...this.#toolRegistry.keys()].filter(isMCPToolName)),
 			this.#mcpEnabled,
 		);
 	}

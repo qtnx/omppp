@@ -42,6 +42,8 @@ const toolSession: ToolSession = {
 	getSelectedDiscoveredToolNames: () => [],
 	activateDiscoveredTools: async names => names,
 	requestCompaction: () => ({ status: "scheduled" }),
+	requestShake: () => ({ status: "scheduled" }),
+	isAdvisorActive: () => true,
 };
 
 async function getToolMetadata(): Promise<Map<string, { loadMode?: string; summary?: string }>> {
