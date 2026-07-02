@@ -19,7 +19,12 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, Effort, KnownProvider, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
-import { buildModelProviderPriorityRank } from "@oh-my-pi/pi-catalog/identity";
+import {
+	type AnthropicKind,
+	buildModelProviderPriorityRank,
+	isFableOrMythos,
+	parseAnthropicModel,
+} from "@oh-my-pi/pi-catalog/identity";
 import { stripThinkingVariantToken } from "@oh-my-pi/pi-catalog/identity/family";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
@@ -28,8 +33,15 @@ import { resolveBareVariantAlias, resolveVariantAlias } from "@oh-my-pi/pi-catal
 import { fuzzyMatch } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import type { DuoMode } from "../duo/state";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
-import { parseThinkingLevel, resolveThinkingLevelForModel } from "../thinking";
+import {
+	AUTO_THINKING,
+	type ConfiguredThinkingLevel,
+	parseConfiguredThinkingLevel,
+	parseThinkingLevel,
+	resolveThinkingLevelForModel,
+} from "../thinking";
 import { isAuthenticated, kNoAuth, type ModelRegistry } from "./model-registry";
 import { MODEL_ROLE_IDS, type ModelRole } from "./model-roles";
 import type { Settings } from "./settings";
@@ -1290,6 +1302,104 @@ export function resolveAdvisorRoleSelection(
 		modelRegistry,
 	});
 	return resolved.model ? { model: resolved.model, thinkingLevel: resolved.thinkingLevel } : undefined;
+}
+
+export interface DuoResolvedConfig {
+	mode: DuoMode;
+	planner: Model;
+	plannerThinking: ConfiguredThinkingLevel;
+	executor: Model;
+	executorThinking: ConfiguredThinkingLevel;
+	cooldownTurns: number;
+	maxConsecutive: number;
+	doneGate: "strict" | "inherit";
+}
+
+function compareAnthropicVersion(
+	a: { major: number; minor: number; patch: number },
+	b: { major: number; minor: number; patch: number },
+): number {
+	if (a.major !== b.major) return a.major - b.major;
+	if (a.minor !== b.minor) return a.minor - b.minor;
+	return a.patch - b.patch;
+}
+
+function resolveExplicitDuoModel(
+	pattern: string,
+	availableModels: Model<Api>[],
+	settings: Settings,
+	modelRegistry: CanonicalModelRegistry,
+): { model: Model<Api>; thinkingLevel?: ThinkingLevel } | undefined {
+	const resolved = parseModelPattern(pattern, availableModels, getModelMatchPreferences(settings), {
+		modelRegistry,
+	});
+	return resolved.model ? { model: resolved.model, thinkingLevel: resolved.thinkingLevel } : undefined;
+}
+
+function resolveNewestAnthropicDuoModel(
+	availableModels: Model<Api>[],
+	matchesKind: (kind: AnthropicKind) => boolean,
+): Model<Api> | undefined {
+	let selected: { model: Model<Api>; version: { major: number; minor: number; patch: number } } | undefined;
+	for (const model of availableModels) {
+		const parsed = parseAnthropicModel(stripThinkingVariantToken(model.id) ?? model.id);
+		if (!parsed || !matchesKind(parsed.kind)) continue;
+		if (!selected || compareAnthropicVersion(parsed.version, selected.version) > 0) {
+			selected = { model, version: parsed.version };
+		}
+	}
+	return selected?.model;
+}
+
+function resolveDuoSide(
+	pattern: string | undefined,
+	availableModels: Model<Api>[],
+	settings: Settings,
+	modelRegistry: CanonicalModelRegistry,
+	matchesKind: (kind: AnthropicKind) => boolean,
+): { model: Model<Api>; thinkingLevel?: ThinkingLevel } | undefined {
+	const normalized = pattern?.trim();
+	if (normalized) {
+		return resolveExplicitDuoModel(normalized, availableModels, settings, modelRegistry);
+	}
+	const model = resolveNewestAnthropicDuoModel(availableModels, matchesKind);
+	return model ? { model } : undefined;
+}
+
+export function resolveDuoConfig(
+	settings: Settings,
+	available: Model[],
+	registry: ModelRegistry,
+): DuoResolvedConfig | undefined {
+	const availableModels = available.filter(model => registry.hasConfiguredAuth(model));
+	if (availableModels.length === 0) return undefined;
+
+	const planner = resolveDuoSide(settings.get("duo.plannerModel"), availableModels, settings, registry, kind =>
+		isFableOrMythos(kind),
+	);
+	const executor = resolveDuoSide(
+		settings.get("duo.executorModel"),
+		availableModels,
+		settings,
+		registry,
+		kind => kind === "opus",
+	);
+	if (!planner || !executor) return undefined;
+
+	return {
+		mode: settings.get("duo.mode"),
+		planner: planner.model,
+		plannerThinking:
+			planner.thinkingLevel ?? parseConfiguredThinkingLevel(settings.get("duo.plannerThinking")) ?? AUTO_THINKING,
+		executor: executor.model,
+		executorThinking:
+			executor.thinkingLevel ??
+			parseConfiguredThinkingLevel(settings.get("duo.executorThinking")) ??
+			ThinkingLevel.Max,
+		cooldownTurns: settings.get("duo.takeover.cooldownTurns"),
+		maxConsecutive: settings.get("duo.takeover.maxConsecutive"),
+		doneGate: settings.get("duo.doneGate"),
+	};
 }
 
 function resolveExactCanonicalScopePattern(

@@ -3,6 +3,7 @@ import type { AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core
 import { type } from "arktype";
 import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
 import { getThemeByName } from "../../modes/theme/theme";
+import doneReviewTemplate from "../../prompts/advisor/done-review.md" with { type: "text" };
 import advisorSystemPrompt from "../../prompts/advisor/system.md" with { type: "text" };
 import { SecretObfuscator } from "../../secrets/obfuscator";
 import { formatSessionHistoryMarkdown } from "../../session/session-history-format";
@@ -55,6 +56,19 @@ describe("advisor", () => {
 			expect(advisorSystemPrompt).toContain("Arguments absent from the rendered transcript are UNKNOWN");
 			expect(advisorSystemPrompt).toContain("NEVER assert concrete values, array indexes");
 			expect(advisorSystemPrompt).toContain("NEVER claim `paths[0]`, array flattening, or malformed `paths`");
+			expect(advisorSystemPrompt).toContain("verification watchdog");
+			expect(advisorSystemPrompt).toContain("Skipping, narrowing, or deferring tests/QA");
+			expect(advisorSystemPrompt).toContain("verdicts are missing");
+		});
+
+		it("documents the consultation and done-review protocols", () => {
+			expect(advisorSystemPrompt).toContain("Consultation request");
+			expect(advisorSystemPrompt).toContain("done_verdict");
+			expect(advisorSystemPrompt).toContain("done-review");
+		});
+
+		it("ships the done-review request template", () => {
+			expect(doneReviewTemplate).toContain("DONE-REVIEW REQUEST");
 		});
 	});
 
@@ -407,14 +421,19 @@ describe("advisor", () => {
 	});
 
 	describe("AdvisorRuntime", () => {
-		function makeAgent(promptInputs: string[]): AdvisorAgent {
+		function makeAgent(promptInputs: string[], opts?: { respond?: (input: string) => AgentMessage[] }): AdvisorAgent {
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
 			return {
 				prompt: async input => {
 					promptInputs.push(input);
+					if (opts?.respond) state.messages.push(...opts.respond(input));
 				},
 				abort: () => {},
-				reset: () => {},
-				state: { messages: [] },
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				state,
 			};
 		}
 
@@ -452,6 +471,129 @@ describe("advisor", () => {
 			await Promise.resolve();
 			expect(promptInputs).toHaveLength(2);
 			expect(promptInputs[1]).toContain("second");
+		});
+
+		it("queues onTurnEnd deltas while paused without prompting the advisor", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeAgent(promptInputs);
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.pause();
+			messages.push({ role: "user", content: "first paused turn", timestamp: 1 } as AgentMessage);
+			runtime.onTurnEnd();
+			messages.push({ role: "user", content: "second paused turn", timestamp: 2 } as AgentMessage);
+			runtime.onTurnEnd();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(runtime.paused).toBe(true);
+			expect(runtime.backlog).toBe(2);
+			expect(promptInputs).toHaveLength(0);
+		});
+
+		it("resolves consults null immediately while paused", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeAgent(promptInputs);
+			const messages: AgentMessage[] = [{ role: "user", content: "current context", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.pause();
+			const answer = await runtime.consult("Should the done gate pass?");
+
+			expect(answer).toBeNull();
+			expect(promptInputs).toHaveLength(0);
+			expect(runtime.backlog).toBe(0);
+		});
+
+		it("drains the coalesced paused backlog with one prompt on resume", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeAgent(promptInputs);
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.pause();
+			messages.push({ role: "user", content: "first queued turn", timestamp: 1 } as AgentMessage);
+			runtime.onTurnEnd();
+			messages.push({
+				role: "assistant",
+				content: [{ type: "text", text: "second queued turn" }],
+				stopReason: "stop",
+				timestamp: 2,
+			} as unknown as AgentMessage);
+			runtime.onTurnEnd();
+			expect(promptInputs).toHaveLength(0);
+
+			runtime.resume();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(runtime.paused).toBe(false);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("first queued turn");
+			expect(promptInputs[0]).toContain("second queued turn");
+			expect(runtime.backlog).toBe(0);
+		});
+
+		it("makes pause idempotent", () => {
+			const promptInputs: string[] = [];
+			const agent = makeAgent(promptInputs);
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => [],
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.pause();
+			runtime.pause();
+			expect(runtime.paused).toBe(true);
+			runtime.resume();
+			runtime.resume();
+			expect(runtime.paused).toBe(false);
+			expect(promptInputs).toHaveLength(0);
+		});
+
+		it("resolves queued consults null when disposed while paused", async () => {
+			const promptInputs: string[] = [];
+			const { promise: started, resolve: markStarted } = Promise.withResolvers<void>();
+			const { promise: hold } = Promise.withResolvers<void>();
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					markStarted();
+					await hold;
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			void runtime.consult("in flight");
+			await started;
+			const queued = runtime.consult("queued while busy");
+			runtime.pause();
+			runtime.dispose();
+
+			expect(await queued).toBeNull();
+			expect(promptInputs).toHaveLength(1);
 		});
 
 		it("budgets only the batch sent after async context maintenance", async () => {
@@ -1256,6 +1398,384 @@ describe("advisor", () => {
 			expect(promptInputs).toHaveLength(2);
 			expect(promptInputs[1]).toContain("new-conversation");
 			expect(promptInputs[1]).not.toContain("old-conversation");
+		});
+	});
+
+	describe("AdvisorRuntime consult", () => {
+		function makeConsultAgent(promptInputs: string[], respond: (input: string) => AgentMessage[]): AdvisorAgent {
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			return {
+				prompt: async input => {
+					promptInputs.push(input);
+					state.messages.push(...respond(input));
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				state,
+			};
+		}
+
+		const text = (t: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [{ type: "text", text: t }],
+				stopReason: "stop",
+				timestamp: Date.now(),
+			}) as unknown as AgentMessage;
+
+		it("resolves with the last non-empty assistant text (after tool calls / thinking-only tail)", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeConsultAgent(promptInputs, () => [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "t1", name: "read", arguments: {} }],
+					stopReason: "toolUse",
+					timestamp: Date.now(),
+				} as unknown as AgentMessage,
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Use approach B, it is reversible." }],
+					stopReason: "stop",
+					timestamp: Date.now(),
+				} as unknown as AgentMessage,
+				// A trailing thinking-only assistant message must be skipped.
+				{
+					role: "assistant",
+					content: [{ type: "thinking", thinking: "internal" }],
+					stopReason: "stop",
+					timestamp: Date.now(),
+				} as unknown as AgentMessage,
+			]);
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			const answer = await runtime.consult("Which approach?");
+			expect(answer).toBe("Use approach B, it is reversible.");
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("### Consultation request");
+			expect(promptInputs[0]).toContain("Which approach?");
+		});
+
+		it("sends a queued delta and the consult in the SAME prompt, delta before the request", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeConsultAgent(promptInputs, () => [text("answer")]);
+			const messages: AgentMessage[] = [{ role: "user", content: "delta-marker", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			const answer = await runtime.consult("my-question");
+			expect(answer).toBe("answer");
+			expect(promptInputs).toHaveLength(1);
+			const prompt = promptInputs[0];
+			expect(prompt).toContain("delta-marker");
+			expect(prompt).toContain("### Consultation request");
+			expect(prompt).toContain("my-question");
+			expect(prompt.indexOf("delta-marker")).toBeLessThan(prompt.indexOf("### Consultation request"));
+		});
+
+		it("chunks two queued consults into two separate prompts, both resolving", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeConsultAgent(promptInputs, input => [text(input.includes("q-one") ? "ans-one" : "ans-two")]);
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			const [a, b] = await Promise.all([runtime.consult("q-one"), runtime.consult("q-two")]);
+			expect(a).toBe("ans-one");
+			expect(b).toBe("ans-two");
+			expect(promptInputs).toHaveLength(2);
+			expect(promptInputs[0]).toContain("q-one");
+			expect(promptInputs[0]).not.toContain("q-two");
+			expect(promptInputs[1]).toContain("q-two");
+		});
+
+		it("keeps the resolver alive across a single prompt failure, then delivers the answer", async () => {
+			const promptInputs: string[] = [];
+			let fail = true;
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					if (fail) {
+						fail = false;
+						throw new Error("transient");
+					}
+					state.messages.push(text("recovered-answer"));
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host, 1);
+
+			const answer = await runtime.consult("survive?");
+			expect(answer).toBe("recovered-answer");
+			expect(promptInputs.length).toBeGreaterThanOrEqual(2);
+			expect(promptInputs.every(p => p.includes("survive?"))).toBe(true);
+		});
+
+		it("resolves null (no hang) after three consecutive failures drop the batch", async () => {
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					throw new Error("down");
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host, 0);
+
+			const answer = await runtime.consult("doomed");
+			expect(answer).toBeNull();
+			expect(promptInputs).toHaveLength(3);
+		});
+
+		it("resolves a queued consult to null on reset()", async () => {
+			const promptInputs: string[] = [];
+			const { promise: started, resolve: markStarted } = Promise.withResolvers<void>();
+			const { promise: hold } = Promise.withResolvers<void>();
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					markStarted();
+					await hold;
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			void runtime.consult("interrupted");
+			await started;
+			// A second consult sits in the queue and must be resolved null by reset.
+			const queued = runtime.consult("also-interrupted");
+			runtime.reset();
+			expect(await queued).toBeNull();
+		});
+
+		it("resolves a queued consult to null on dispose()", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeConsultAgent(promptInputs, () => [text("late")]);
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+			runtime.dispose();
+			// consult after dispose short-circuits to null.
+			expect(await runtime.consult("q")).toBeNull();
+		});
+
+		it("times out to null when the advisor never answers", async () => {
+			const { promise: hold } = Promise.withResolvers<void>();
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					await hold;
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			expect(await runtime.consult("slow", { timeoutMs: 10 })).toBeNull();
+		});
+
+		it("resolves null when opts.signal is aborted", async () => {
+			const { promise: hold } = Promise.withResolvers<void>();
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					await hold;
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+			const controller = new AbortController();
+			const answer = runtime.consult("q", { signal: controller.signal });
+			controller.abort();
+			expect(await answer).toBeNull();
+		});
+
+		it("does not increment backlog for the mid-turn pre-delta (turns 0)", async () => {
+			const promptInputs: string[] = [];
+			const { promise: started, resolve: markStarted } = Promise.withResolvers<void>();
+			const { promise: hold } = Promise.withResolvers<void>();
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					markStarted();
+					await hold;
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "ctx", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			expect(runtime.backlog).toBe(0);
+			void runtime.consult("q");
+			await started;
+			// The pre-delta + consult are both turns:0, so backlog is untouched.
+			expect(runtime.backlog).toBe(0);
+		});
+
+		it("preserves the consultation request across a re-prime", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeConsultAgent(promptInputs, () => [text("re-primed-answer")]);
+			const messages: AgentMessage[] = [{ role: "user", content: "hello", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				maintainContext: async () => true,
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			const answer = await runtime.consult("reprime-question");
+			expect(answer).toBe("re-primed-answer");
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("### Consultation request");
+			expect(promptInputs[0]).toContain("reprime-question");
+		});
+
+		it("applies resolveGists to the final batch and passes unknown markers through when absent", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeConsultAgent(promptInputs, () => [text("ok")]);
+			const messages: AgentMessage[] = [
+				{ role: "user", content: "with {{GIST:xyz}} inside", timestamp: 1 } as AgentMessage,
+			];
+			let received: string | undefined;
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				resolveGists: async batch => {
+					received = batch;
+					return batch.replace("{{GIST:xyz}}", "SUBSTITUTED");
+				},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			await runtime.consult("q");
+			expect(received).toContain("{{GIST:xyz}}");
+			expect(received).toContain("### Consultation request");
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("SUBSTITUTED");
+			expect(promptInputs[0]).not.toContain("{{GIST:xyz}}");
+
+			// Without a hook, an unknown marker passes through untouched.
+			const promptInputs2: string[] = [];
+			const agent2 = makeConsultAgent(promptInputs2, () => [text("ok")]);
+			const hostNoHook: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime2 = new AdvisorRuntime(agent2, hostNoHook);
+			await runtime2.consult("q");
+			expect(promptInputs2[0]).toContain("{{GIST:xyz}}");
+		});
+	});
+
+	describe("AdvisorRuntime #renderDelta partial handling", () => {
+		function makeAgent(promptInputs: string[]): AdvisorAgent {
+			return {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+		}
+
+		it("excludes a trailing partial assistant message, then renders it once finalized", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeAgent(promptInputs);
+			const messages: AgentMessage[] = [
+				{ role: "user", content: "prompt", timestamp: 1 } as AgentMessage,
+				// Streaming partial: no stopReason yet.
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "PARTIAL_STREAM" }],
+					timestamp: 2,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.onTurnEnd();
+			await Promise.resolve();
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("prompt");
+			expect(promptInputs[0]).not.toContain("PARTIAL_STREAM");
+
+			// The message finalizes (stopReason set) — it must now render exactly once.
+			(messages[1] as unknown as { stopReason: string }).stopReason = "stop";
+			runtime.onTurnEnd();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(promptInputs).toHaveLength(2);
+			expect(promptInputs[1]).toContain("PARTIAL_STREAM");
+			expect(promptInputs[1].split("PARTIAL_STREAM").length - 1).toBe(1);
+		});
+	});
+
+	describe("AdvisorRuntime thinking obfuscation", () => {
+		function makeAgent(promptInputs: string[]): AdvisorAgent {
+			return {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+		}
+
+		it("redacts secrets inside assistant thinking blocks before prompting", async () => {
+			const secret = "THINKING_SECRET_TOKEN_123";
+			const obfuscator = new SecretObfuscator([{ type: "plain", content: secret }]);
+			const placeholder = obfuscator.obfuscate(secret);
+			const promptInputs: string[] = [];
+			const agent = makeAgent(promptInputs);
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [{ type: "thinking", thinking: `plan uses ${secret} internally` }],
+					stopReason: "stop",
+					timestamp: 1,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				obfuscator,
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.onTurnEnd();
+			await Promise.resolve();
+
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain(placeholder);
+			expect(promptInputs[0]).not.toContain(secret);
 		});
 	});
 

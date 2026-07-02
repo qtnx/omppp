@@ -1,3 +1,4 @@
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
@@ -61,6 +62,8 @@ export class EventController {
 	#lastVisibleBlockCount = 0;
 	#renderedCustomMessages = new Set<string>();
 	#lastIntent: string | undefined = undefined;
+	#thinkingWaitStartedAt: number | undefined;
+	#thinkingWaitTimer: NodeJS.Timeout | undefined;
 	#backgroundToolCallIds = new Set<string>();
 	#readToolCallArgs = new Map<string, Record<string, unknown>>();
 	#readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
@@ -152,6 +155,7 @@ export class EventController {
 				this.ctx.ui.resetDisplay();
 			},
 			goal_updated: async () => {},
+			mode_changed: async () => {},
 		} satisfies AgentSessionEventHandlers;
 	}
 
@@ -159,6 +163,7 @@ export class EventController {
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
 		this.#cancelIdleCompaction();
+		this.#exitThinkingWait(false);
 		this.#setTerminalProgress(false);
 		for (const timer of this.#ircExpiryTimers.values()) {
 			clearTimeout(timer);
@@ -217,6 +222,47 @@ export class EventController {
 		assistantComponent.setToolResultImages(toolCallId, images);
 		return true;
 	}
+	/**
+	 * Live `thinking… Ns` working-message while a reasoning turn waits for its
+	 * first content. With Anthropic omitted-display thinking (the Fable/Mythos
+	 * default) the provider holds the whole stream — including message_start —
+	 * until reasoning completes, so the status loader is the only surface that
+	 * can show liveness during the wait (verified on a live Fable turn: the
+	 * empty thinking block exists client-side for ~36ms, so a transcript
+	 * placeholder can never be seen). The 1s timer owns the label; any visible
+	 * content, tool activity, or turn end exits back to the default message.
+	 */
+	#enterThinkingWait(): void {
+		const viewSession = this.ctx.viewSession ?? this.ctx.session;
+		if (!viewSession.isStreaming) return;
+		if ((viewSession.thinkingLevel ?? ThinkingLevel.Off) === ThinkingLevel.Off) return;
+		this.#thinkingWaitStartedAt = Date.now();
+		this.#applyThinkingWaitMessage();
+		if (!this.#thinkingWaitTimer) {
+			this.#thinkingWaitTimer = setInterval(() => this.#applyThinkingWaitMessage(), 1000);
+			this.#thinkingWaitTimer.unref?.();
+		}
+	}
+
+	#applyThinkingWaitMessage(): void {
+		if (this.#thinkingWaitStartedAt === undefined) return;
+		if (this.ctx.session.isAborting) return;
+		const seconds = Math.floor((Date.now() - this.#thinkingWaitStartedAt) / 1000);
+		this.ctx.setWorkingMessage(`thinking… ${seconds}s${interruptHint()}`);
+	}
+
+	#exitThinkingWait(restoreDefault: boolean): void {
+		if (this.#thinkingWaitTimer) {
+			clearInterval(this.#thinkingWaitTimer);
+			this.#thinkingWaitTimer = undefined;
+		}
+		if (this.#thinkingWaitStartedAt === undefined) return;
+		this.#thinkingWaitStartedAt = undefined;
+		if (restoreDefault && !this.ctx.session.isAborting) {
+			this.ctx.setWorkingMessage(undefined);
+		}
+	}
+
 	#updateWorkingMessageFromIntent(intent: unknown): void {
 		if (this.ctx.session.isAborting) return;
 		// Streamed JSON can deliver non-string `i` (object, number, boolean) before
@@ -305,6 +351,7 @@ export class EventController {
 		this.#cancelIdleCompaction();
 		this.#setTerminalProgress(true);
 		this.ctx.ensureLoadingAnimation();
+		this.#enterThinkingWait();
 		this.ctx.ui.requestRender();
 	}
 
@@ -383,6 +430,7 @@ export class EventController {
 			this.ctx.streamingMessage = event.message;
 			this.ctx.chatContainer.addChild(this.ctx.streamingComponent);
 			this.#streamingReveal.begin(this.ctx.streamingComponent, this.ctx.streamingMessage);
+			this.#enterThinkingWait();
 			this.ctx.ui.requestRender();
 		}
 	}
@@ -554,6 +602,21 @@ export class EventController {
 	async #handleMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.#vocalizeDelta(event);
+		// Exit the thinking-wait label on ANY assistant stream progress — not just
+		// the streamingComponent path: duo/plan phases stream assistant messages
+		// through other render paths, and the label must not outlive the wait.
+		if (
+			this.#thinkingWaitStartedAt !== undefined &&
+			event.message.role === "assistant" &&
+			event.message.content.some(
+				content =>
+					(content.type === "text" && canonicalizeMessage(content.text)) ||
+					(content.type === "thinking" && canonicalizeMessage(content.thinking)) ||
+					content.type === "toolCall",
+			)
+		) {
+			this.#exitThinkingWait(true);
+		}
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
 			this.ctx.streamingMessage = event.message;
 			this.#streamingReveal.setTarget(this.ctx.streamingMessage);
@@ -697,6 +760,7 @@ export class EventController {
 			this.ctx.streamingMessage = event.message;
 			this.#streamingReveal.stop();
 			this.#toolArgsReveal.flushAll();
+			this.#exitThinkingWait(true);
 			let errorMessage: string | undefined;
 			const aborted = this.ctx.streamingMessage.stopReason === "aborted";
 			const silentlyAborted = aborted && isSilentAbort(this.ctx.streamingMessage);
@@ -774,6 +838,7 @@ export class EventController {
 
 	async #handleToolExecutionStart(event: Extract<AgentSessionEvent, { type: "tool_execution_start" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
+		this.#exitThinkingWait(false);
 		this.#updateWorkingMessageFromIntent(event.intent);
 		this.#resolveDisplaceablePoll(event.toolName);
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
@@ -970,6 +1035,7 @@ export class EventController {
 		this.#setTerminalProgress(false);
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.flushAll();
+		this.#exitThinkingWait(false);
 		if (this.ctx.loadingAnimation) {
 			this.ctx.loadingAnimation.stop();
 			this.ctx.loadingAnimation = undefined;
@@ -1029,6 +1095,7 @@ export class EventController {
 	 * the reference here lets the next `agent_start` recreate and re-attach it.
 	 */
 	#stopWorkingLoader(): void {
+		this.#exitThinkingWait(false);
 		if (this.ctx.loadingAnimation) {
 			this.ctx.loadingAnimation.stop();
 			this.ctx.loadingAnimation = undefined;

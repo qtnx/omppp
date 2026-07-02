@@ -50,12 +50,47 @@ export interface AdvisorRuntimeHost {
 	beginAdvisorUpdate?(): void;
 	/** Surface a non-recovering advisor failure to the host UI without adding model-visible context. */
 	notifyFailure?(error: unknown): void;
+	/**
+	 * Optional gist-substitution hook. Called once immediately before each
+	 * `agent.prompt(batch)` with the final prompt string; returns the same string
+	 * with any `{{GIST:<hash>}}` placeholders (emitted by the thinking-artifact
+	 * clamp) replaced by resolved gist text. Only placeholders whose hash the host
+	 * knows are substituted; text that merely resembles the marker passes through
+	 * untouched. Implementations must be idempotent + cache-stable so a retried
+	 * batch re-substitutes to the identical string (prompt-cache safe). A rejection
+	 * leaves the batch unsubstituted.
+	 */
+	resolveGists?(batch: string): Promise<string>;
+	/**
+	 * Optional renderer for primary `thinking` block bodies before they reach the
+	 * advisor (clamp head/tail + gist marker). Defined here for host wiring; the
+	 * session-history formatter consumes it in a later wave, so the runtime does
+	 * not yet forward it into `formatSessionHistoryMarkdown` opts.
+	 */
+	renderThinking?: (text: string) => string;
 }
 
+/** A queued advisor session-update delta (one or more coalesced primary turns). */
 interface PendingDelta {
+	kind: "delta";
 	text: string;
 	turns: number;
 }
+
+/**
+ * A queued "phone a friend" consultation. Carries its own `resolve` so the
+ * primary agent (blocked in the consult tool) is answered exactly once —
+ * whichever settles first (answer, timeout, abort, disposal/reset) wins.
+ */
+interface PendingConsult {
+	kind: "consult";
+	question: string;
+	turns: 0;
+	epoch: number;
+	resolve: (answer: string | null) => void;
+}
+
+type PendingItem = PendingDelta | PendingConsult;
 
 interface CatchupWaiter {
 	threshold: number;
@@ -72,8 +107,9 @@ export class AdvisorRuntime {
 	 *  marker so the advisor isn't re-fed the full ~1k-token rules each turn.
 	 *  Cleared on every re-prime/seed and when a failed batch is dropped. */
 	#seenContext = new Map<string, string>();
-	#pending: PendingDelta[] = [];
+	#pending: PendingItem[] = [];
 	#busy = false;
+	#paused = false;
 	#backlog = 0;
 	#consecutiveFailures = 0;
 	#failureNotified = false;
@@ -96,17 +132,103 @@ export class AdvisorRuntime {
 		return this.#backlog;
 	}
 
+	get paused(): boolean {
+		return this.#paused;
+	}
+
+	pause(): void {
+		this.#paused = true;
+	}
+
+	resume(): void {
+		this.#paused = false;
+		void this.#drain();
+	}
+
 	onTurnEnd(messages?: AgentMessage[]): void {
 		if (this.disposed) return;
 		const all = messages ?? this.host.snapshotMessages();
 		this.#latestMessages = all;
 		const render = this.#renderDelta(all);
 		if (render) {
-			this.#pending.push({ text: render, turns: 1 });
+			this.#pending.push({ kind: "delta", text: render, turns: 1 });
 			this.#backlog++;
 			this.#notifyWaiters();
 			void this.#drain();
 		}
+	}
+
+	/**
+	 * "Phone a friend": ask the advisor a question mid-turn and block until it
+	 * answers. Resolves with the advisor's plain-text reply, or `null` on timeout
+	 * (default 120s), `opts.signal` abort, or disposal/reset. Renders a fresh
+	 * mid-turn delta first so the advisor sees current context alongside the
+	 * question, then enqueues the consult and drains.
+	 */
+	consult(question: string, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<string | null> {
+		if (this.disposed || this.#paused) return Promise.resolve(null);
+
+		// Render a fresh mid-turn delta so the advisor sees everything up to the
+		// current (possibly still-streaming) point before the question. `turns: 0`
+		// because the enclosing primary turn is counted by its own later
+		// `onTurnEnd`; adding turns here would double-count the backlog.
+		const snapshot = this.host.snapshotMessages();
+		const render = this.#renderDelta(snapshot);
+		if (render) {
+			this.#pending.push({ kind: "delta", text: render, turns: 0 });
+		}
+		// Point `#latestMessages` at this snapshot so a mid-consult re-prime
+		// (`#renderDelta(this.#latestMessages)`) renders current context rather
+		// than a stale transcript.
+		this.#latestMessages = snapshot;
+
+		const { promise, resolve } = Promise.withResolvers<string | null>();
+		let settled = false;
+		const signal = opts?.signal;
+		let timer: NodeJS.Timeout | undefined;
+		// First resolution wins; later ones (a late model answer racing a timeout,
+		// or a reset that already resolved the item) are no-ops.
+		const settle = (answer: string | null): void => {
+			if (settled) return;
+			settled = true;
+			if (timer) clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+			resolve(answer);
+		};
+		function onAbort(): void {
+			settle(null);
+		}
+
+		this.#pending.push({ kind: "consult", question, turns: 0, epoch: this.#epoch, resolve: settle });
+		void this.#drain();
+
+		const timeoutMs = opts?.timeoutMs ?? 120_000;
+		timer = setTimeout(() => settle(null), timeoutMs);
+		if (signal) {
+			if (signal.aborted) settle(null);
+			else signal.addEventListener("abort", onAbort, { once: true });
+		}
+		return promise;
+	}
+
+	/**
+	 * Route every `#pending` clear through here so an orphaned consult never
+	 * leaves the primary agent hanging: resolve `null` on every queued consult
+	 * before dropping the queue.
+	 */
+	#clearPending(reason: string): void {
+		if (this.#pending.length) {
+			for (const item of this.#pending) {
+				if (item.kind === "consult") {
+					try {
+						item.resolve(null);
+					} catch (err) {
+						logger.debug("advisor consult resolve failed during clear", { reason, err: String(err) });
+					}
+				}
+			}
+		}
+		this.#pending = [];
 	}
 
 	waitForCatchup(maxMs: number, threshold: number, signal?: AbortSignal): Promise<void> {
@@ -132,7 +254,7 @@ export class AdvisorRuntime {
 	dispose(): void {
 		this.disposed = true;
 		this.#epoch++;
-		this.#pending = [];
+		this.#clearPending("dispose");
 		this.#backlog = 0;
 		this.#consecutiveFailures = 0;
 		this.#failureNotified = false;
@@ -144,7 +266,7 @@ export class AdvisorRuntime {
 
 	#resetAdvisorContext(clearBacklog: boolean, wakeWaiters: boolean): void {
 		this.#lastCount = 0;
-		this.#pending = [];
+		this.#clearPending("reset");
 		this.#consecutiveFailures = 0;
 		this.#failureNotified = false;
 		this.#seenContext.clear();
@@ -181,7 +303,7 @@ export class AdvisorRuntime {
 	 */
 	seedTo(count: number): void {
 		this.#lastCount = count;
-		this.#pending = [];
+		this.#clearPending("seedTo");
 		this.#backlog = 0;
 		this.#consecutiveFailures = 0;
 		this.#failureNotified = false;
@@ -196,11 +318,20 @@ export class AdvisorRuntime {
 			this.#seenContext.clear();
 			return null;
 		}
+		// `onTurnEnd`/`consult` can hand a live array whose last message is a
+		// still-streaming PARTIAL assistant turn (no `stopReason` set yet).
+		// Exclude it and DON'T advance the cursor past it, so its finalized form
+		// renders exactly once on the next delta instead of being frozen partial.
+		let effectiveEnd = all.length;
+		const last = all[all.length - 1];
+		if (last?.role === "assistant" && (last as AssistantMessage).stopReason === undefined) {
+			effectiveEnd = all.length - 1;
+		}
 		const delta = all
-			.slice(this.#lastCount)
+			.slice(this.#lastCount, effectiveEnd)
 			.filter(m => !(m.role === "custom" && (m as { customType?: string }).customType === "advisor"))
 			.map(m => this.#dedupContextMessage(m));
-		this.#lastCount = all.length;
+		this.#lastCount = effectiveEnd;
 		if (delta.length === 0) return null;
 		const obfuscator = this.host.obfuscator;
 		const formattedDelta = obfuscator?.hasSecrets() ? obfuscateAdvisorDelta(obfuscator, delta) : delta;
@@ -209,6 +340,9 @@ export class AdvisorRuntime {
 			includeToolIntent: true,
 			watchedRoles: true,
 			expandPrimaryContext: true,
+			renderThinking: this.host.renderThinking,
+			errorResultLines: 10,
+			expandAsyncResults: true,
 		});
 		if (!md.trim()) return null;
 		return `### Session update\n\n${md}`;
@@ -272,20 +406,71 @@ export class AdvisorRuntime {
 		}
 	}
 
+	/**
+	 * Extract a consultation answer from the advisor turns appended past
+	 * `snapshot`. The advisor may make read/grep tool calls (multiple assistant
+	 * messages) and the final message may be thinking-only, so scan BACKWARDS for
+	 * the last assistant message carrying at least one non-empty text block and
+	 * join its text blocks. Returns `null` when no textual answer was produced.
+	 */
+	#extractConsultAnswer(snapshot: number): string | null {
+		const messages = this.agent.state.messages;
+		for (let i = messages.length - 1; i >= snapshot; i--) {
+			const msg = messages[i];
+			if (msg.role !== "assistant") continue;
+			const texts = (msg as AssistantMessage).content
+				.filter((b): b is TextContent => b.type === "text" && b.text.trim().length > 0)
+				.map(b => b.text);
+			if (texts.length > 0) return texts.join("\n");
+		}
+		return null;
+	}
+
 	async #drain(): Promise<void> {
-		if (this.#busy) return;
+		if (this.#paused || this.#busy) return;
 		this.#busy = true;
 		try {
-			while (!this.disposed && this.#pending.length) {
-				const popped = this.#pending.splice(0);
+			while (!this.#paused && !this.disposed && this.#pending.length) {
 				const epoch = this.#epoch;
+				// Chunk at the first consult boundary: coalesce the leading deltas,
+				// attach at most ONE consult so its answer maps to a single prompt;
+				// anything queued after that consult goes back to the FRONT (order
+				// preserved) for the next loop iteration.
+				const popped = this.#pending.splice(0);
+				const deltaItems: PendingDelta[] = [];
+				let consult: PendingConsult | undefined;
+				let cut = popped.length;
+				for (let i = 0; i < popped.length; i++) {
+					const item = popped[i];
+					if (item.kind === "consult") {
+						consult = item;
+						cut = i + 1;
+						break;
+					}
+					deltaItems.push(item);
+				}
+				if (cut < popped.length) {
+					this.#pending.unshift(...popped.slice(cut));
+				}
+
 				// Each delta already opens with a `### Session update` heading, so
-				// join with a blank line rather than a `---` rule.
-				const candidateBatch = popped.map(b => b.text).join("\n\n");
-				const turnsCovered = popped.reduce((sum, b) => sum + b.turns, 0);
+				// join with a blank line rather than a `---` rule. The consultation
+				// question stays STRUCTURAL (kept off `deltasText`) so it survives a
+				// re-prime and can be re-appended identically for prompt-cache stability.
+				const deltasText = deltaItems.map(b => b.text).join("\n\n");
+				const turnsCovered = deltaItems.reduce((sum, b) => sum + b.turns, 0) + (consult?.turns ?? 0);
+				const buildBatch = (deltaPart: string): string | null => {
+					if (consult) {
+						const suffix = `### Consultation request\n${consult.question}\n\nReply with your consultation answer as plain text.`;
+						return deltaPart ? `${deltaPart}\n\n${suffix}` : suffix;
+					}
+					return deltaPart || null;
+				};
+
+				const candidateBatch = buildBatch(deltasText);
 				const incomingTokens = estimateTokens({
 					role: "user",
-					content: candidateBatch,
+					content: candidateBatch ?? "",
 					timestamp: Date.now(),
 				});
 
@@ -298,25 +483,58 @@ export class AdvisorRuntime {
 					}
 				}
 				// A reset/dispose during context maintenance invalidates this batch.
-				if (this.#epoch !== epoch) continue;
+				if (this.#epoch !== epoch) {
+					consult?.resolve(null);
+					continue;
+				}
 
-				let batch: string | null;
+				let deltaPart: string;
 				let finalTurns: number;
 				if (shouldReprime) {
-					// Promotion could not fit the advisor's context — re-prime.
-					const newTurns = this.#pending.reduce((sum, b) => sum + b.turns, 0);
+					// Promotion could not fit the advisor's context — re-prime. The full
+					// re-render subsumes any remaining pending deltas, so fold their turns
+					// and drop them; but PRESERVE queued consults (they carry resolvers the
+					// primary is blocked on). Clear #pending before the reset so
+					// #clearPending inside it has no consults to null out, then restore them.
+					const remaining = this.#pending;
+					const newTurns = remaining.reduce((sum, b) => sum + b.turns, 0);
+					const survivingConsults = remaining.filter((b): b is PendingConsult => b.kind === "consult");
+					this.#pending = [];
 					this.#resetAdvisorContext(false, false);
-					batch = this.#renderDelta(this.#latestMessages);
+					this.#pending = survivingConsults;
+					deltaPart = this.#renderDelta(this.#latestMessages) ?? "";
 					finalTurns = turnsCovered + newTurns;
 				} else {
-					batch = candidateBatch;
+					deltaPart = deltasText;
 					finalTurns = turnsCovered;
 				}
 
-				if (this.disposed || batch === null) {
+				const finalBatchBase = buildBatch(deltaPart);
+				if (this.disposed || finalBatchBase === null) {
+					consult?.resolve(null);
 					this.#backlog = Math.max(0, this.#backlog - finalTurns);
 					this.#notifyWaiters();
 					continue;
+				}
+
+				// Gist substitution: single point, after the re-prime branch and after
+				// the consultation suffix is baked in. Failure falls back to the
+				// unsubstituted batch. The retried delta text below stays PRE-substitution
+				// (resolveGists is idempotent/cached upstream) so the retry re-substitutes
+				// to the identical string.
+				let finalBatch = finalBatchBase;
+				if (this.host.resolveGists) {
+					try {
+						finalBatch = await this.host.resolveGists(finalBatchBase);
+					} catch (err) {
+						logger.debug("advisor gist substitution failed", { err: String(err) });
+						finalBatch = finalBatchBase;
+					}
+					// A reset/dispose during substitution invalidates this batch.
+					if (this.#epoch !== epoch) {
+						consult?.resolve(null);
+						continue;
+					}
 				}
 
 				let success = false;
@@ -324,14 +542,15 @@ export class AdvisorRuntime {
 				// roll back the user batch + synthetic assistant-error turn `Agent.#runLoop`
 				// appends to internal state. Without this, a retry would replay the
 				// failed batch on top of the stale turns and the dropped-after-3 path
-				// would leak orphan failures into the next successful run's context.
+				// would leak orphan failures into the next successful run's context. It
+				// also bounds the answer-extraction scan to this consult's turns.
 				const messageSnapshot = this.agent.state.messages.length;
 				try {
 					// Reset the host's per-update advisor state (one-advise-per-update
 					// gate) before each model cycle, so the new batch starts with a
 					// fresh budget. Dedupe history persists across cycles.
 					this.host.beginAdvisorUpdate?.();
-					await this.agent.prompt(batch);
+					await this.agent.prompt(finalBatch);
 					// `Agent.#runLoop` catches provider/stream failures internally and
 					// resolves `prompt()` cleanly with the assistant turn ending in
 					// `stopReason: "error"` and the message recorded on `state.error`.
@@ -343,12 +562,16 @@ export class AdvisorRuntime {
 					success = true;
 					this.#consecutiveFailures = 0;
 					this.#failureNotified = false;
+					consult?.resolve(this.#extractConsultAnswer(messageSnapshot));
 				} catch (err) {
 					// reset()/dispose() aborts the in-flight prompt; the rejection is the
 					// reset itself, not a transient advisor failure. Drop the stale batch
 					// (reset already cleared #pending and rewound the cursor) instead of
 					// requeuing it into the post-reset conversation.
-					if (this.#epoch !== epoch) continue;
+					if (this.#epoch !== epoch) {
+						consult?.resolve(null);
+						continue;
+					}
 					this.#rollbackFailedTurn(messageSnapshot);
 					logger.debug("advisor turn failed", { err: String(err) });
 					this.#consecutiveFailures++;
@@ -367,9 +590,17 @@ export class AdvisorRuntime {
 						// the seen-state too so the next turn re-expands it instead of marking
 						// it "unchanged" against content the advisor never received.
 						this.#seenContext.clear();
+						// The consult is part of the dropped batch — unblock the primary.
+						consult?.resolve(null);
 						success = true;
 					} else {
-						this.#pending.unshift({ text: batch, turns: finalTurns });
+						// Unshift the STRUCTURAL items so the resolver survives the retry and
+						// the next attempt re-appends the suffix identically. The delta item
+						// carries all the covered turns; the consult carries 0.
+						const requeue: PendingItem[] = [];
+						if (deltaPart) requeue.push({ kind: "delta", text: deltaPart, turns: finalTurns });
+						if (consult) requeue.push(consult);
+						if (requeue.length) this.#pending.unshift(...requeue);
 						await Bun.sleep(this.retryDelayMs);
 					}
 				}
@@ -414,6 +645,12 @@ function obfuscateAssistantMessage(obfuscator: SecretObfuscator, message: Assist
 			if (args === block.arguments) return block;
 			changed = true;
 			return { ...block, arguments: args };
+		}
+		if (block.type === "thinking") {
+			const thinking = obfuscator.obfuscate(block.thinking);
+			if (thinking === block.thinking) return block;
+			changed = true;
+			return { ...block, thinking };
 		}
 		return block;
 	});

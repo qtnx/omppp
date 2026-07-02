@@ -535,6 +535,23 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "orchestrator",
+		description: "Toggle Safe orchestrator mode",
+		inlineHint: "[prompt]",
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			if (runtime.ctx.planModeEnabled || runtime.ctx.planModePaused) return "Orchestrator: blocked by plan mode";
+			if (runtime.ctx.goalModeEnabled || runtime.ctx.goalModePaused) return "Orchestrator: blocked by goal mode";
+			return runtime.ctx.orchestratorModeEnabled || runtime.ctx.session.getOrchestratorModeState()?.enabled
+				? "Orchestrator: on"
+				: "Orchestrator: off";
+		},
+		handleTui: async (command, runtime) => {
+			await runtime.ctx.handleOrchestratorModeCommand(command.args || undefined);
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "plan-review",
 		description: "Re-open the plan review for the latest plan (plan mode only)",
 		getTuiAutocompleteDescription: runtime =>
@@ -821,6 +838,161 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				return;
 			}
 			runtime.ctx.showStatus("Usage: /advisor [on|off|status|dump [raw]]");
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "duo",
+		description: "Duo auto model switch (planner⇄executor with advisor monitoring)",
+		acpInputHint: "[on|off|status|exec|plan]",
+		subcommands: [
+			{ name: "on", description: "Enable duo" },
+			{ name: "off", description: "Disable duo" },
+			{ name: "status", description: "Show duo status" },
+			{ name: "exec", description: "Hand the main stream to the executor" },
+			{ name: "plan", description: "Return the stream to the planner (re-plan)" },
+		],
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const status = runtime.ctx.session.getDuoStatus();
+			if (!status) return "Duo: unavailable";
+			return `Duo: ${status.phase}`;
+		},
+		handle: async (command, runtime) => {
+			const { verb } = parseSubcommand(command.args);
+			const showEnabled = async (): Promise<void> => {
+				await runtime.session.setDuoEnabled(true);
+				const status = runtime.session.getDuoStatus();
+				await runtime.output(
+					status
+						? `Duo enabled. (phase: ${status.phase})`
+						: "Duo could not start: no Fable/Opus pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
+				);
+			};
+			const showStatus = async (): Promise<void> => {
+				const status = runtime.session.getDuoStatus();
+				if (!status) {
+					await runtime.output(
+						"Duo is unavailable: no Fable/Opus pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
+					);
+					return;
+				}
+				await runtime.output(
+					`Duo: ${status.phase} — planner ${status.planner ?? "?"}, executor ${
+						status.executor ?? "?"
+					}, takeovers ${status.takeoverCount}${status.advisorPaused ? ", advisor paused" : ""}`,
+				);
+			};
+			if (!verb || verb === "toggle") {
+				const status = runtime.session.getDuoStatus();
+				if (!status || status.phase === "inactive") {
+					await showEnabled();
+				} else {
+					await showStatus();
+				}
+				return commandConsumed();
+			}
+			if (verb === "on") {
+				await showEnabled();
+				return commandConsumed();
+			}
+			if (verb === "off") {
+				await runtime.session.setDuoEnabled(false);
+				await runtime.output("Duo disabled.");
+				return commandConsumed();
+			}
+			if (verb === "status") {
+				await showStatus();
+				return commandConsumed();
+			}
+			if (verb === "exec") {
+				const handedOff = await runtime.session.duoForceExec();
+				await runtime.output(handedOff ? "Handed off to executor." : "Duo is not in a hand-off-able phase.");
+				return commandConsumed();
+			}
+			if (verb === "plan") {
+				const replanned = await runtime.session.duoReplan();
+				await runtime.output(
+					replanned
+						? "Duo returned to planning; the planner holds the main stream."
+						: "Duo is not executing — nothing to re-plan.",
+				);
+				return commandConsumed();
+			}
+			return usage("Usage: /duo [on|off|status|exec|plan]", runtime);
+		},
+		handleTui: async (command, runtime) => {
+			const { verb } = parseSubcommand(command.args);
+			const showEnabled = async (): Promise<void> => {
+				await runtime.ctx.session.setDuoEnabled(true);
+				const status = runtime.ctx.session.getDuoStatus();
+				runtime.ctx.showStatus(
+					status
+						? `Duo enabled. (phase: ${status.phase})`
+						: "Duo could not start: no Fable/Opus pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
+				);
+				refreshStatusLine(runtime.ctx);
+				runtime.ctx.editor.setText("");
+			};
+			const showStatus = (): void => {
+				const status = runtime.ctx.session.getDuoStatus();
+				if (!status) {
+					runtime.ctx.showStatus(
+						"Duo is unavailable: no Fable/Opus pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
+					);
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				runtime.ctx.showStatus(
+					`Duo: ${status.phase} — planner ${status.planner ?? "?"}, executor ${
+						status.executor ?? "?"
+					}, takeovers ${status.takeoverCount}${status.advisorPaused ? ", advisor paused" : ""}`,
+				);
+				runtime.ctx.editor.setText("");
+			};
+			if (!verb || verb === "toggle") {
+				const status = runtime.ctx.session.getDuoStatus();
+				if (!status || status.phase === "inactive") {
+					await showEnabled();
+				} else {
+					showStatus();
+				}
+				return;
+			}
+			if (verb === "on") {
+				await showEnabled();
+				return;
+			}
+			if (verb === "off") {
+				await runtime.ctx.session.setDuoEnabled(false);
+				runtime.ctx.showStatus("Duo disabled.");
+				refreshStatusLine(runtime.ctx);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (verb === "status") {
+				showStatus();
+				return;
+			}
+			if (verb === "exec") {
+				const handedOff = await runtime.ctx.session.duoForceExec();
+				runtime.ctx.showStatus(handedOff ? "Handed off to executor." : "Duo is not in a hand-off-able phase.");
+				refreshStatusLine(runtime.ctx);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (verb === "plan") {
+				const replanned = await runtime.ctx.session.duoReplan();
+				runtime.ctx.showStatus(
+					replanned
+						? "Duo returned to planning; the planner holds the main stream."
+						: "Duo is not executing — nothing to re-plan.",
+				);
+				refreshStatusLine(runtime.ctx);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			runtime.ctx.showStatus("Usage: /duo [on|off|status|exec|plan]");
 			runtime.ctx.editor.setText("");
 		},
 	},
