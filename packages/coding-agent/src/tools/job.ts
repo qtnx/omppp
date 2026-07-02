@@ -39,10 +39,6 @@ const WAIT_DURATION_MS: Record<string, number> = {
 	"5m": 5 * 60_000,
 };
 
-function parseWaitDurationMs(value: string | undefined): number {
-	return (value ? WAIT_DURATION_MS[value] : undefined) ?? WAIT_DURATION_MS["30s"];
-}
-
 interface JobSnapshot {
 	id: string;
 	type: "bash" | "task" | "workflow";
@@ -185,19 +181,21 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 			return this.#buildResult(manager, [...cancelledJobs, ...jobsToWatch], cancelOutcomes);
 		}
 
-		// Wait until at least one running job finishes, the wait window elapses,
-		// or the call is aborted. With `async.pollWaitDuration` set to `smart`,
-		// the window adapts: it starts at the ladder floor and climbs as the agent
-		// polls in a tight loop, then resets to the floor once the agent steps
-		// away from polling (see AsyncJobManager.nextPollWaitMs). Any fixed value
-		// waits that exact duration every time.
+		// Wait until at least one running job finishes, pending agent context
+		// arrives, the call is aborted, or a fixed configured window elapses.
+		// `async.pollWaitDuration=block` and unknown/legacy values (including
+		// `smart`) have no timeout and block until another wake condition fires.
 		const racePromises: Promise<unknown>[] = runningJobs.map(j => j.promise);
 		const pollSetting = this.session.settings.get("async.pollWaitDuration");
-		const smartPoll = pollSetting === "smart";
-		const waitMs = smartPoll ? manager.nextPollWaitMs(ownerId) : parseWaitDurationMs(pollSetting);
-		const { promise: timeoutPromise, resolve: timeoutResolve } = Promise.withResolvers<void>();
-		const timeoutHandle = setTimeout(() => timeoutResolve(), waitMs);
-		racePromises.push(timeoutPromise);
+		const waitMs: number | undefined = WAIT_DURATION_MS[pollSetting];
+		const { promise: asideWake, resolve: asideWakeResolve } = Promise.withResolvers<void>();
+		racePromises.push(asideWake);
+		let timeoutHandle: NodeJS.Timeout | undefined;
+		if (waitMs !== undefined) {
+			const { promise: timeoutPromise, resolve: timeoutResolve } = Promise.withResolvers<void>();
+			timeoutHandle = setTimeout(() => timeoutResolve(), waitMs);
+			racePromises.push(timeoutPromise);
+		}
 
 		const watchedJobIds = runningJobs.map(job => job.id);
 		manager.watchJobs(watchedJobIds);
@@ -219,8 +217,16 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 				},
 			});
 		};
-		const progressTimer = onUpdate ? setInterval(emitProgress, PROGRESS_INTERVAL_MS) : undefined;
+		const progressTimer = setInterval(() => {
+			emitProgress();
+			if (this.session.hasPendingAgentAsides?.()) {
+				asideWakeResolve();
+			}
+		}, PROGRESS_INTERVAL_MS);
 		emitProgress();
+		if (this.session.hasPendingAgentAsides?.()) {
+			asideWakeResolve();
+		}
 
 		try {
 			if (signal) {
@@ -239,12 +245,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		} finally {
 			manager.unwatchJobs(watchedJobIds);
 			clearTimeout(timeoutHandle);
-			if (progressTimer) clearInterval(progressTimer);
-			if (smartPoll) {
-				// Reset the idle-gap clock: escalate if the agent polls again soon,
-				// drop back to the floor once it goes quiet for a while.
-				manager.recordPollWaitEnd(ownerId);
-			}
+			clearInterval(progressTimer);
 		}
 
 		return this.#buildResult(manager, allTrackedJobs, cancelOutcomes);

@@ -948,6 +948,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		toolCount: 0,
 		requests: 0,
 		tokens: 0,
+		inputTokens: 0,
+		outputTokens: 0,
 		cost: 0,
 		durationMs: 0,
 		modelOverride: args.modelOverride,
@@ -1073,6 +1075,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 
 	const emitProgressNow = () => {
 		progress.durationMs = Date.now() - startTime;
+		progress.inputTokens = accumulatedUsage.input;
+		progress.outputTokens = accumulatedUsage.output;
 		onProgress?.({ ...progress });
 		const activityGist =
 			progress.lastIntent ?? (progress.currentTool ? `running ${progress.currentTool}` : undefined);

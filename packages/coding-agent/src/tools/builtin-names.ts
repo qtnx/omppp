@@ -1,4 +1,7 @@
 export const BUILTIN_TOOL_NAMES = [
+	"orchestrator_mode",
+	"duo_handoff",
+	"duo_escalate",
 	"read",
 	"bash",
 	"edit",
@@ -17,6 +20,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"checkpoint",
 	"rewind",
 	"compact",
+	"shake",
 	"workflow",
 	"task",
 	"job",
@@ -31,6 +35,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"reflect",
 	"learn",
 	"manage_skill",
+	"consult",
 ] as const;
 
 export type BuiltinToolName = (typeof BUILTIN_TOOL_NAMES)[number];

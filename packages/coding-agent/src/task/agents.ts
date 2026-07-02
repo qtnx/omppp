@@ -6,6 +6,7 @@
 import { Effort } from "@oh-my-pi/pi-ai";
 import { parseFrontmatter, prompt } from "@oh-my-pi/pi-utils";
 import { parseAgentFields } from "../discovery/helpers";
+import browserQaMd from "../prompts/agents/browser_qa.md" with { type: "text" };
 import designerMd from "../prompts/agents/designer.md" with { type: "text" };
 import exploreMd from "../prompts/agents/explore.md" with { type: "text" };
 // Embed agent markdown files at build time
@@ -14,6 +15,7 @@ import heavyTaskMd from "../prompts/agents/heavy_task.md" with { type: "text" };
 import librarianMd from "../prompts/agents/librarian.md" with { type: "text" };
 import oracleMd from "../prompts/agents/oracle.md" with { type: "text" };
 import planMd from "../prompts/agents/plan.md" with { type: "text" };
+import qaMd from "../prompts/agents/qa.md" with { type: "text" };
 import quickTaskMd from "../prompts/agents/quick_task.md" with { type: "text" };
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
@@ -49,7 +51,9 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "explore.md", template: exploreMd },
 	{ fileName: "plan.md", template: planMd },
 	{ fileName: "designer.md", template: designerMd },
+	{ fileName: "browser_qa.md", template: browserQaMd },
 	{ fileName: "reviewer.md", template: reviewerMd },
+	{ fileName: "qa.md", template: qaMd },
 	{ fileName: "librarian.md", template: librarianMd },
 	{ fileName: "oracle.md", template: oracleMd },
 	{
@@ -57,7 +61,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 		frontmatter: {
 			name: "heavy_task",
 			description:
-				"High-accuracy implementer for heavy feature work with a strict review gate and concrete deliverables",
+				"High-accuracy implementer for heavy feature work with concrete deliverables; opt-in reviewer+fixer pass via self_review",
 			spawns: "*",
 			model: ["pi/task", "pi/slow"],
 			thinkingLevel: Effort.High,
@@ -77,7 +81,8 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 		fileName: "task.md",
 		frontmatter: {
 			name: "task",
-			description: "Medium-complexity implementer for routine feature work with a lighter review gate",
+			description:
+				"Medium-complexity implementer for routine feature work; opt-in reviewer+fixer pass via self_review",
 			spawns: "*",
 			model: "pi/task",
 			thinkingLevel: Effort.Medium,
@@ -98,7 +103,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 		frontmatter: {
 			name: "quick_task",
 			description:
-				"Fast implementer for light mechanical work; optimized for speed and parallel execution with no review gate",
+				"Fast implementer for light mechanical work; optimized for speed and parallel execution; review opt-in via self_review",
 			model: "pi/smol",
 			thinkingLevel: Effort.Minimal,
 			reviewGate: {

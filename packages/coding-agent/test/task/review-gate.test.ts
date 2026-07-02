@@ -22,6 +22,7 @@ import { EventBus } from "../../src/utils/event-bus";
 
 const TASK_PARAMS: TaskParams = {
 	agent: "task",
+	self_review: true,
 	tasks: [{ id: "FixBug", description: "Fix the bug", assignment: "Implement the fix end-to-end." }],
 };
 
@@ -612,7 +613,7 @@ describe("task review gate", () => {
 		expect(single.exitCode).toBe(0);
 	});
 
-	it("uses the heavy_task native policy to enable a strict review gate even when global reviewGate is off", async () => {
+	it("uses the heavy_task native review config when self_review is set, even with the global reviewGate setting off", async () => {
 		mockDiscoveredAgents([
 			{
 				name: "heavy_task",
@@ -664,7 +665,7 @@ describe("task review gate", () => {
 		expect(firstResult(result).exitCode).toBe(0);
 	});
 
-	it("uses the quick_task native policy to skip review even when global reviewGate is on", async () => {
+	it("skips review for quick_task without self_review even when the global reviewGate setting is on", async () => {
 		mockDiscoveredAgents([
 			{
 				name: "quick_task",
@@ -700,12 +701,52 @@ describe("task review gate", () => {
 		const result = await tool.execute("call-quick-policy", {
 			...TASK_PARAMS,
 			agent: "quick_task",
+			self_review: false,
 			isolated: true,
 		});
 
 		expect(trace.map(t => t.role)).toEqual(["implementer"]);
 		expect(isolation.captureDeltaPatch).toHaveBeenCalledTimes(1);
 		expect(firstResult(result).exitCode).toBe(0);
+	});
+
+	it("does not run the review gate when self_review is omitted", async () => {
+		mockAgents();
+		mockIsolation();
+		const { trace } = mockSessionQueue([{ role: "implementer" }]);
+
+		const tool = await TaskTool.create(createSession(reviewGateSettings()));
+		const result = await tool.execute("call-no-self-review", {
+			agent: "task",
+			tasks: [{ id: "FixBug", description: "Fix the bug", assignment: "Implement the fix end-to-end." }],
+			isolated: true,
+		});
+
+		expect(trace.map(t => t.role)).toEqual(["implementer"]);
+		expect(firstResult(result).reviewGate).toBeUndefined();
+	});
+
+	it("runs the gate from an item-level self_review flag in batch form", async () => {
+		mockAgents();
+		mockIsolation();
+		const { trace } = mockSessionQueue([{ role: "implementer" }, { role: "reviewer", verdict: correctVerdict() }]);
+
+		const tool = await TaskTool.create(createSession(reviewGateSettings()));
+		const result = await tool.execute("call-item-self-review", {
+			agent: "task",
+			tasks: [
+				{
+					id: "FixBug",
+					description: "Fix the bug",
+					assignment: "Implement the fix end-to-end.",
+					self_review: true,
+				},
+			],
+			isolated: true,
+		});
+
+		expect(trace.map(t => t.role)).toEqual(["implementer", "reviewer"]);
+		expect(firstResult(result).reviewGate?.outcome).toBe("passed");
 	});
 
 	it("runs the gate in the original task context when isolation is disabled", async () => {

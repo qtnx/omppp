@@ -385,6 +385,22 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 			}
 		}
 		lines.push(line);
+		const progress = session.progress;
+		if (progress) {
+			const telemetryParts: string[] = [];
+			const modelLabel =
+				progress.resolvedModel ??
+				(Array.isArray(progress.modelOverride) ? progress.modelOverride.join(",") : progress.modelOverride);
+			if (modelLabel) telemetryParts.push(modelLabel);
+			telemetryParts.push(`${formatNumber(progress.toolCount)} tools`);
+			telemetryParts.push(`in ${formatNumber(progress.inputTokens)}`);
+			telemetryParts.push(`out ${formatNumber(progress.outputTokens)}`);
+			if (progress.durationMs > 0 && progress.outputTokens > 0) {
+				const tokensPerSecond = progress.outputTokens / (progress.durationMs / 1000);
+				telemetryParts.push(`${tokensPerSecond.toFixed(1)} tok/s`);
+			}
+			lines.push(theme.fg("muted", truncateToWidth(`${indent}    ${telemetryParts.join(theme.sep.dot)}`, columns)));
+		}
 	});
 	return lines;
 }
@@ -423,6 +439,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	planModePaused = false;
 	goalModeEnabled = false;
 	goalModePaused = false;
+	orchestratorModeEnabled = false;
 	planModePlanFilePath: string | undefined = undefined;
 	loopModeEnabled = false;
 	loopPrompt: string | undefined = undefined;
@@ -2182,6 +2199,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
+	#updateOrchestratorModeStatus(): void {
+		const status = this.orchestratorModeEnabled ? { enabled: true as const } : undefined;
+		this.statusLine.setOrchestratorModeStatus(status);
+		this.updateEditorTopBorder();
+		this.ui.requestRender();
+	}
+
 	#resetGoalContinuationSuppression(): void {
 		this.#goalSuppressNextContinuation = false;
 	}
@@ -2221,7 +2245,27 @@ export class InteractiveMode implements InteractiveModeContext {
 		};
 	}
 
+	async #handleModeChangedEvent(event: Extract<AgentSessionEvent, { type: "mode_changed" }>): Promise<void> {
+		if (event.mode === "orchestrator") {
+			this.planModeEnabled = false;
+			this.planModePaused = false;
+			this.goalModeEnabled = false;
+			this.goalModePaused = false;
+			this.orchestratorModeEnabled = true;
+			this.#updatePlanModeStatus();
+			this.#updateGoalModeStatus();
+			this.#updateOrchestratorModeStatus();
+			return;
+		}
+		this.orchestratorModeEnabled = false;
+		this.#updateOrchestratorModeStatus();
+	}
+
 	async #handleGoalSessionEvent(event: AgentSessionEvent): Promise<void> {
+		if (event.type === "mode_changed") {
+			await this.#handleModeChangedEvent(event);
+			return;
+		}
 		if (event.type === "agent_start") {
 			this.#goalTurnHadToolCalls = false;
 			this.#cancelGoalContinuation();
@@ -2310,7 +2354,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
-	async #clearTransientModeState(): Promise<void> {
+	async #clearTransientModeState(options?: {
+		preserveOrchestrator?: boolean;
+		persistOrchestratorClear?: boolean;
+	}): Promise<void> {
 		if (this.planModeEnabled || this.planModePaused) {
 			if (this.#planModePreviousTools !== undefined) {
 				await this.session.setActiveToolsByName(this.#planModePreviousTools);
@@ -2342,6 +2389,18 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#updateGoalModeStatus();
 		}
 
+		if (
+			(this.orchestratorModeEnabled || this.session.getOrchestratorModeState()?.enabled) &&
+			!options?.preserveOrchestrator
+		) {
+			await this.session.setOrchestratorModeState(undefined, {
+				persistModeChange: options?.persistOrchestratorClear !== false,
+				restorePreviousTools: options?.persistOrchestratorClear !== false,
+			});
+			this.orchestratorModeEnabled = false;
+			this.#updateOrchestratorModeStatus();
+		}
+
 		if (this.loopModeEnabled || this.loopPrompt || this.loopPromptFilePath) {
 			this.loopModeEnabled = false;
 			this.loopPrompt = undefined;
@@ -2355,8 +2414,11 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Reconcile mode state from session entries on resume/switch. */
 	async #reconcileModeFromSession(options?: { preserveActiveGoal?: boolean }): Promise<void> {
-		await this.#clearTransientModeState();
 		const sessionContext = this.sessionManager.buildSessionContext();
+		await this.#clearTransientModeState({
+			preserveOrchestrator: sessionContext.mode === "orchestrator",
+			persistOrchestratorClear: false,
+		});
 		const goalEnabled = this.session.settings.get("goal.enabled");
 		if (!goalEnabled && (sessionContext.mode === "goal" || sessionContext.mode === "goal_paused")) {
 			this.session.goalRuntime.clearAccounting();
@@ -2390,6 +2452,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		this.session.goalRuntime.clearAccounting();
+		if (sessionContext.mode === "orchestrator") {
+			await this.session.setOrchestratorModeState({ enabled: true }, { reuseRestoreSnapshot: false });
+			this.orchestratorModeEnabled = true;
+			this.#updateOrchestratorModeStatus();
+			return;
+		}
+
 		if (sessionContext.mode === "loop") {
 			const promptFilePath =
 				typeof sessionContext.modeData?.promptFilePath === "string"
@@ -3065,6 +3134,31 @@ export class InteractiveMode implements InteractiveModeContext {
 			await this.session.abort();
 		} finally {
 			this.session.clearPlanInternalAbortPending();
+		}
+	}
+
+	async handleOrchestratorModeCommand(initialPrompt?: string): Promise<void> {
+		if (this.planModeEnabled || this.planModePaused) {
+			this.showWarning("Exit plan mode first.");
+			return;
+		}
+		if (this.goalModeEnabled || this.goalModePaused) {
+			this.showWarning("Exit goal mode first.");
+			return;
+		}
+		if (this.orchestratorModeEnabled || this.session.getOrchestratorModeState()?.enabled) {
+			await this.session.setOrchestratorModeState(undefined);
+			this.orchestratorModeEnabled = false;
+			this.#updateOrchestratorModeStatus();
+			this.showStatus("Orchestrator mode disabled.");
+			return;
+		}
+		await this.session.setOrchestratorModeState({ enabled: true });
+		this.orchestratorModeEnabled = true;
+		this.#updateOrchestratorModeStatus();
+		this.showStatus("Orchestrator mode enabled.");
+		if (initialPrompt && this.onInputCallback) {
+			this.onInputCallback(this.startPendingSubmission({ text: initialPrompt }));
 		}
 	}
 

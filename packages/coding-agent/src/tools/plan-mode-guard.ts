@@ -149,7 +149,10 @@ export function enforcePlanModeWrite(
 
 	if (targetsLocalSandbox(session, targetPath)) return;
 
+	const duoPlanning = session.getDuoStatus?.()?.phase === "planning";
 	throw new ToolError(
-		"Plan mode: the working tree is read-only. Write your plan to a local://<slug>-plan.md file instead.",
+		duoPlanning
+			? "Plan mode: the working tree is read-only. Write your plan to a local://<slug>-plan.md file. Plan locked and ready to implement? Call `duo_handoff` with the executor brief to enter the implement phase — do not edit from the planning phase."
+			: "Plan mode: the working tree is read-only. Write your plan to a local://<slug>-plan.md file instead.",
 	);
 }

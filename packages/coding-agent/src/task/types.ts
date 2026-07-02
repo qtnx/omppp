@@ -85,6 +85,7 @@ export const taskItemSchema = type({
 	"description?": "string",
 	"role?": ROLE_INPUT_SCHEMA,
 	assignment: "string",
+	"self_review?": "boolean",
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
@@ -93,6 +94,7 @@ const taskItemSchemaIsolated = type({
 	"role?": ROLE_INPUT_SCHEMA,
 	assignment: "string",
 	"isolated?": "boolean",
+	"self_review?": "boolean",
 	"+": "delete",
 });
 
@@ -108,6 +110,8 @@ export interface TaskItem {
 	assignment?: string;
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
 	isolated?: boolean;
+	/** Opt into the review-and-fix gate for this spawn. Default false (no review, faster). */
+	self_review?: boolean;
 }
 
 export const taskSchema = type({
@@ -117,6 +121,7 @@ export const taskSchema = type({
 	"role?": ROLE_INPUT_SCHEMA,
 	assignment: "string",
 	"isolated?": "boolean",
+	"self_review?": "boolean",
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
@@ -125,6 +130,7 @@ const taskSchemaNoIsolation = type({
 	"description?": "string",
 	"role?": ROLE_INPUT_SCHEMA,
 	assignment: "string",
+	"self_review?": "boolean",
 	"+": "delete",
 });
 const taskSchemaBatch = type({
@@ -176,6 +182,8 @@ export interface TaskParams {
 	context?: string;
 	/** Run in an isolated worktree (flat form; per-item in batch form). */
 	isolated?: boolean;
+	/** Opt into the review-and-fix gate for this spawn. Default false (no review, faster). */
+	self_review?: boolean;
 }
 
 /**
@@ -353,6 +361,10 @@ export interface AgentProgress {
 	requests: number;
 	/** Cumulative input + output + cacheWrite tokens across all turns. Excludes cacheRead (re-reads cached context every turn, making cumulative sum misleading). */
 	tokens: number;
+	/** Cumulative input tokens in the billing-volume split. Excludes cacheRead, matching `tokens`. */
+	inputTokens: number;
+	/** Cumulative output tokens in the billing-volume split. Excludes cacheRead, matching `tokens`. */
+	outputTokens: number;
 	/**
 	 * Current per-turn context size: latest assistant message's `usage.totalTokens`.
 	 * This is the number to compare against `contextWindow` — what compaction

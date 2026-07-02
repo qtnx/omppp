@@ -19,6 +19,8 @@ function runningProgress(overrides: Partial<AgentProgress> = {}): AgentProgress 
 		toolCount: 0,
 		requests: 0,
 		tokens: 0,
+		inputTokens: 0,
+		outputTokens: 0,
 		cost: 0,
 		durationMs: 0,
 		...overrides,
