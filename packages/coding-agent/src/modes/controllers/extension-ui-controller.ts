@@ -129,6 +129,7 @@ export class ExtensionUiController {
 			getGoalModeState: () => this.ctx.session.getGoalModeState(),
 			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
+			hasPendingAgentWork: () => this.ctx.session.hasPendingAgentWork(),
 			shutdown: () => {
 				// Defer the actual teardown to the main loop, which calls
 				// `checkShutdownRequested()` at idle boundaries so any queued
@@ -368,6 +369,7 @@ export class ExtensionUiController {
 			getGoalModeState: () => this.ctx.session.getGoalModeState(),
 			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
+			hasPendingAgentWork: () => this.ctx.session.hasPendingAgentWork(),
 			shutdown: () => {
 				// Defer the actual teardown to the main loop, which calls
 				// `checkShutdownRequested()` at idle boundaries so any queued
@@ -508,6 +510,7 @@ export class ExtensionUiController {
 						getAsyncJobSnapshot: options => this.ctx.session.getAsyncJobSnapshot(options),
 						getGoalModeState: () => this.ctx.session.getGoalModeState(),
 						hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
+						hasPendingAgentWork: () => this.ctx.session.hasPendingAgentWork(),
 						abort: () => {
 							this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 						},

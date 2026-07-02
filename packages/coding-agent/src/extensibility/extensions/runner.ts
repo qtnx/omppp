@@ -202,6 +202,7 @@ export class ExtensionRunner {
 	#waitForIdleFn: () => Promise<void> = async () => {};
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
+	#hasPendingAgentWorkFn: () => boolean = () => false;
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
@@ -263,6 +264,7 @@ export class ExtensionRunner {
 		this.#getGoalModeStateFn = contextActions.getGoalModeState ?? (() => undefined);
 		this.#abortFn = contextActions.abort;
 		this.#hasPendingMessagesFn = contextActions.hasPendingMessages;
+		this.#hasPendingAgentWorkFn = contextActions.hasPendingAgentWork ?? contextActions.hasPendingMessages;
 		this.#shutdownHandler = contextActions.shutdown;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
 
@@ -515,6 +517,7 @@ export class ExtensionRunner {
 			getGoalModeState: () => this.#getGoalModeStateFn(),
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
+			hasPendingAgentWork: () => this.#hasPendingAgentWorkFn(),
 			shutdown: () => this.#shutdownHandler(),
 			getSystemPrompt: () => this.#getSystemPromptFn(),
 			memory: this.#getMemoryFn?.(),

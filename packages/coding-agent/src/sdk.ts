@@ -95,8 +95,8 @@ import {
 } from "./extensibility/extensions";
 import {
 	createHerdrAgentStateExtension,
+	HERDR_MANAGED_FALLBACK_SENTINEL,
 	isNativeHerdrAgentStateEnabled,
-	markNativeHerdrAgentStateEnabled,
 } from "./extensibility/extensions/herdr-agent-state";
 
 import {
@@ -843,16 +843,33 @@ export async function discoverSessionExtensionPaths(
 	const configuredPaths = [...(options.additionalExtensionPaths ?? []), ...(settings.get("extensions") ?? [])];
 	const disabledExtensionIds = settings.get("disabledExtensions") ?? [];
 	const discovered = await discoverExtensionPaths(configuredPaths, cwd, disabledExtensionIds);
-	// The native Herdr agent-state reporter supersedes the herdr-installed managed
-	// file reporter. The managed file is expected to self-disable when the native
-	// marker (OMP_NATIVE_HERDR_AGENT_STATE) is set, but a stale install (older
-	// integration version that predates the marker check) would otherwise load
-	// alongside native and both report conflicting state + independent seq numbers
-	// to the same pane. Drop the managed file from main-session discovery whenever
-	// native is active so there is exactly one reporter regardless of file version.
-	// (Subagent sessions already strip both reporters via filterSubagentExtensionPaths.)
+	// The native Herdr agent-state reporter supersedes herdr-installed managed
+	// reporters once it registers and marks OMP_NATIVE_HERDR_AGENT_STATE=1.
+	// Only V3 managed fallback files have a per-send marker gate and can safely
+	// stay loaded as live fallback until native marks itself live.
 	if (isNativeHerdrAgentStateEnabled()) {
-		return discovered.filter(extensionPath => !isManagedHerdrAgentStateExtensionPath(extensionPath));
+		const filtered: string[] = [];
+		let dropped = 0;
+		for (const extensionPath of discovered) {
+			if (!isManagedHerdrAgentStateExtensionPath(extensionPath)) {
+				filtered.push(extensionPath);
+				continue;
+			}
+			try {
+				const content = await Bun.file(extensionPath).text();
+				if (content.includes(HERDR_MANAGED_FALLBACK_SENTINEL)) {
+					filtered.push(extensionPath);
+					continue;
+				}
+			} catch {
+				// Treat unreadable managed files as stale so native remains authoritative.
+			}
+			dropped += 1;
+		}
+		if (dropped > 0) {
+			logger.debug("herdr-agent-state: dropped managed reporter from discovery", { dropped });
+		}
+		return filtered;
 	}
 	return discovered;
 }
@@ -877,7 +894,6 @@ export async function loadSessionExtensions(
 ): Promise<LoadExtensionsResult> {
 	const contextGcDbPath =
 		options.contextGcDbPath ?? path.join(options.agentDir ?? getDefaultAgentDir(), "context-gc.sqlite");
-	markNativeHerdrAgentStateEnabled();
 	return await withContextGcDbPath(contextGcDbPath, async () => {
 		const paths = await discoverSessionExtensionPaths(options, cwd, settings);
 		const result = await logger.time("loadExtensions", loadExtensions, paths, cwd, eventBus);
@@ -2081,7 +2097,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const contextGcDbPath = options.contextGcDbPath ?? path.join(agentDir, "context-gc.sqlite");
 		const isHerdrSubagentSession = options.parentTaskPrefix !== undefined || (options.taskDepth ?? 0) > 0;
 		const nativeHerdrAgentStateEnabled =
-			!minimalExtensionRuntime && !isHerdrSubagentSession && markNativeHerdrAgentStateEnabled();
+			!minimalExtensionRuntime && !isHerdrSubagentSession && isNativeHerdrAgentStateEnabled();
 
 		// Load extensions. Four paths:
 		//   1. Minimal subagent runtime: skip the preloaded/discovered/native
@@ -2161,18 +2177,28 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}
 			}
 
-			if (
-				nativeHerdrAgentStateEnabled &&
-				!extensionsResult.extensions.some(extension => extension.path === HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH)
-			) {
-				const loaded = await loadExtensionFromFactory(
-					createHerdrAgentStateExtension(),
-					cwd,
-					eventBus,
-					extensionsResult.runtime,
-					HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH,
-				);
-				extensionsResult.extensions.push(loaded);
+			if (nativeHerdrAgentStateEnabled) {
+				if (
+					extensionsResult.extensions.some(extension => extension.path === HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH)
+				) {
+					logger.debug("herdr-agent-state: native append skipped (already present)");
+				} else {
+					const loaded = await loadExtensionFromFactory(
+						createHerdrAgentStateExtension(),
+						cwd,
+						eventBus,
+						extensionsResult.runtime,
+						HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH,
+					);
+					extensionsResult.extensions.push(loaded);
+					logger.debug("herdr-agent-state: native reporter appended");
+				}
+			} else if (process.env.HERDR_ENV === "1") {
+				logger.warn("herdr-agent-state: reporter NOT enabled in a herdr pane", {
+					minimalExtensionRuntime,
+					isHerdrSubagentSession,
+					marker: process.env.OMP_NATIVE_HERDR_AGENT_STATE,
+				});
 			}
 			// Context GC is shipped as a plugin package for external reuse, but loaded natively in
 			// bundled OMPx so users get durable unload/recall without `ompx plugin install`. This runs

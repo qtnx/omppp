@@ -6,7 +6,13 @@
 
 - Fixed `Esc` interrupting an active chat stream immediately while the `Working...` loader was visible; it now uses the same second-press confirmation as other streaming states.
 
-- Fixed inaccurate Herdr pane agent state when a stale herdr-installed managed reporter (`herdr-omp-agent-state.ts`) loaded alongside the native reporter: both wrote conflicting `pane.report_agent` updates to the same pane with independent sequence numbers. Main-session discovery now drops the managed file whenever native Herdr reporting is active, so there is exactly one reporter.
+- Fixed inaccurate Herdr pane agent state when a stale herdr-installed managed reporter (`herdr-omp-agent-state.ts`) loaded alongside the native reporter: both wrote conflicting `pane.report_agent` updates to the same pane with independent sequence numbers. Main-session discovery now drops only stale managed files (those without the per-send fallback sentinel), the native reporter marks itself authoritative only after its handlers actually register, and sentinel-carrying managed files stay loaded as a live fallback — a Herdr pane can no longer end up with zero reporters.
+
+- Fixed the native Herdr reporter staying completely silent when registration was skipped or raced: it now publishes the pane's `idle` state immediately at registration instead of waiting for the first lifecycle event, and enable/filter/append/transport decisions leave `logger` breadcrumbs in `~/.omp/logs` for diagnosis.
+
+- Fixed Herdr pane state permanently dying after killing and respawning `ompx` in the same pane: Herdr tombstones a `(pane, source)` pair once that source sends `pane.release_agent`, silently ignoring every later `pane.report_agent` from it. The reporter (native and managed fallback) now uses a unique per-session source (`herdr:omp:<suffix>`), so each new process claims the pane cleanly while a dying process only tombstones its own source.
+
+- Fixed Herdr pane agent state reporting so panes reflect what actually needs the user's attention: successful runs now report `done` instead of fading to plain idle, waiting on the `ask` tool or a tool-approval prompt now reports `need review` instead of `running`, and non-retryable run errors now report `need review` instead of silently going idle. Stale states can no longer strand a pane: review waits are dropped when a run ends, `session_switch` resets run-scoped state, and user input clears a stranded failure without disturbing live retry holds.
 
 ## [16.2.2] - 2026-06-27
 

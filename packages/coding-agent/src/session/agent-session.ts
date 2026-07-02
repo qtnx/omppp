@@ -7190,6 +7190,7 @@ export class AgentSession {
 				void this.abort();
 			},
 			hasPendingMessages: () => this.queuedMessageCount > 0,
+			hasPendingAgentWork: () => this.hasPendingAgentWork(),
 			shutdown: () => {
 				void this.dispose();
 				process.exit(0);
@@ -7686,6 +7687,20 @@ export class AgentSession {
 			this.agent.peekSteeringQueue().filter(isDisplayableQueuedMessage).length +
 			this.agent.peekFollowUpQueue().filter(isDisplayableQueuedMessage).length +
 			this.#pendingNextTurnMessages.length
+		);
+	}
+
+	/**
+	 * Queued work that should keep external lifecycle integrations in a working
+	 * state. Hidden next-turn context that waits for a future user prompt (for
+	 * example system-context-reminder) is deliberately excluded; scheduled hidden
+	 * next-turn continuations are included because they will resume automatically.
+	 */
+	hasPendingAgentWork(): boolean {
+		return (
+			this.agent.peekSteeringQueue().some(isDisplayableQueuedMessage) ||
+			this.agent.peekFollowUpQueue().some(isDisplayableQueuedMessage) ||
+			this.#scheduledHiddenNextTurnGeneration !== undefined
 		);
 	}
 
