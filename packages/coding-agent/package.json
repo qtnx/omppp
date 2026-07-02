@@ -505,6 +505,10 @@
       "types": "./src/plan-mode/*.ts",
       "import": "./src/plan-mode/*.ts"
     },
+    "./orchestrator-mode/*": {
+      "types": "./src/orchestrator-mode/*.ts",
+      "import": "./src/orchestrator-mode/*.ts"
+    },
     "./prompts/*": "./src/prompts/*.md",
     "./secrets": {
       "types": "./src/secrets/index.ts",

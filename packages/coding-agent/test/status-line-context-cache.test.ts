@@ -17,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ContextUsage } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
+import { STATUS_LINE_PRESETS } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/presets";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
 	computeContextBreakdown,
@@ -24,6 +25,7 @@ import {
 	estimateToolSchemaTokens,
 } from "@oh-my-pi/pi-coding-agent/modes/utils/context-usage";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { formatNumber } from "@oh-my-pi/pi-utils";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -57,6 +59,16 @@ function makeSession(opts: {
 	contextUsageTokens?: number | null;
 	contextUsageAdjusted?: boolean;
 	usage?: ContextUsage | undefined;
+	isStreaming?: boolean;
+	streamMessage?: unknown;
+	usageSnapshot?: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		premiumRequests: number;
+		cost: number;
+	};
 }): FakeSession {
 	const contextWindow = opts.contextWindow ?? 200_000;
 	const messages = opts.messages;
@@ -80,18 +92,20 @@ function makeSession(opts: {
 		skills: opts.skills ?? [],
 		model: { id: opts.modelId ?? "test-model", contextWindow },
 		settings: { getGroup: () => ({ enabled: false, strategy: "off" }) },
-		state: { messages, model: { contextWindow } },
+		state: { messages, streamMessage: opts.streamMessage ?? null, model: { contextWindow } },
 		sessionManager: {
-			getUsageStatistics: () => ({
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				premiumRequests: 0,
-				cost: 0,
-			}),
+			getUsageStatistics: () =>
+				opts.usageSnapshot ?? {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					premiumRequests: 0,
+					cost: 0,
+				},
 			getSessionName: () => "test",
 		},
+		isStreaming: opts.isStreaming ?? false,
 		getAsyncJobSnapshot: () => ({ running: [] }),
 		getContextUsage: () => {
 			calls++;
@@ -118,6 +132,72 @@ function userMessage(text: string): unknown {
 function assistantMessage(text: string): unknown {
 	return { role: "assistant", content: [{ type: "text", text }] };
 }
+
+function assistantUsageMessage(input: number, output: number, stopReason?: string): unknown {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "partial" }],
+		api: "messages",
+		provider: "anthropic",
+		model: "claude-test",
+		usage: {
+			input,
+			output,
+			cacheRead: 0,
+			cacheWrite: 0,
+			premiumRequests: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason,
+		timestamp: Date.now(),
+	};
+}
+
+function renderTokenUsage(session: AgentSession): string {
+	const comp = new StatusLineComponent(session);
+	comp.updateSettings({
+		preset: "custom",
+		leftSegments: [],
+		rightSegments: ["token_in", "token_out", "session_name"],
+		separator: "ascii",
+	});
+	return comp.getTopBorder(160).content.replaceAll(/\x1b\[[0-9;]*m/g, "");
+}
+
+describe("StatusLineComponent live token usage", () => {
+	it("overlays the streaming in-flight assistant usage onto the cumulative snapshot", () => {
+		const { session } = makeSession({
+			messages: [userMessage("hi")],
+			streamMessage: assistantUsageMessage(1000, 250),
+			isStreaming: true,
+			usageSnapshot: { input: 5000, output: 2000, cacheRead: 0, cacheWrite: 0, premiumRequests: 0, cost: 0 },
+		});
+
+		const plain = renderTokenUsage(session);
+
+		expect(plain).toContain(formatNumber(6000));
+		expect(plain).toContain(formatNumber(2250));
+	});
+
+	it("uses only the cumulative snapshot after streaming completes", () => {
+		const { session } = makeSession({
+			messages: [userMessage("hi"), assistantUsageMessage(1000, 250, "stop")],
+			isStreaming: false,
+			usageSnapshot: { input: 5000, output: 2000, cacheRead: 0, cacheWrite: 0, premiumRequests: 0, cost: 0 },
+		});
+
+		const plain = renderTokenUsage(session);
+
+		expect(plain).toContain(formatNumber(5000));
+		expect(plain).toContain(formatNumber(2000));
+		expect(plain).not.toContain(formatNumber(6000));
+		expect(plain).not.toContain(formatNumber(2250));
+	});
+
+	it("shows token counters before the session name in the default preset", () => {
+		expect(STATUS_LINE_PRESETS.default.rightSegments).toEqual(["token_in", "token_out", "session_name"]);
+	});
+});
 
 describe("StatusLineComponent context breakdown", () => {
 	it("surfaces the provider-anchored tokens and context window from getContextUsage", () => {

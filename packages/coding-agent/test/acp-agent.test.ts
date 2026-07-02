@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -26,6 +26,7 @@ import {
 	AcpAgent,
 	createAcpExtensionUiContext,
 } from "@oh-my-pi/pi-coding-agent/modes/acp/acp-agent";
+import type { OrchestratorModeState } from "@oh-my-pi/pi-coding-agent/orchestrator-mode/state";
 import type { PlanModeState } from "@oh-my-pi/pi-coding-agent/plan-mode/state";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -135,6 +136,7 @@ class FakeAgentSession {
 	skillsSettings: Record<string, unknown> = { enableSkillCommands: true };
 	skills: FakeSkill[] = [];
 	planModeState: PlanModeState | undefined;
+	orchestratorModeState: OrchestratorModeState | undefined;
 	waitForIdleCalls = 0;
 	waitForIdleBlocker: (() => Promise<void>) | undefined;
 	asyncJobDrain: ((options?: { timeoutMs?: number }) => Promise<boolean>) | undefined;
@@ -326,6 +328,21 @@ class FakeAgentSession {
 
 	setPlanModeState(state: PlanModeState | undefined): void {
 		this.planModeState = state;
+	}
+
+	getOrchestratorModeState(): OrchestratorModeState | undefined {
+		return this.orchestratorModeState;
+	}
+
+	setOrchestratorModeState(state: OrchestratorModeState | undefined): void {
+		const changed = this.orchestratorModeState?.enabled !== state?.enabled;
+		this.orchestratorModeState = state;
+		if (changed) {
+			const mode = state?.enabled ? "orchestrator" : "none";
+			for (const listener of this.#listeners) {
+				listener({ type: "mode_changed", mode } as AgentSessionEvent);
+			}
+		}
 	}
 
 	standingResolveHandler: ((input: unknown) => Promise<unknown> | unknown) | undefined;
@@ -587,12 +604,12 @@ describe("ACP agent", () => {
 
 		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
 		expectAcpStructure(zNewSessionResponse, created);
-		expect(created.modes?.availableModes.map(mode => mode.id)).toEqual(["default", "plan"]);
+		expect(created.modes?.availableModes.map(mode => mode.id)).toEqual(["default", "orchestrator", "plan"]);
 		const initialModeConfig = created.configOptions?.find(option => option.id === "mode") as
 			| { currentValue?: unknown; options?: Array<{ value: string }> }
 			| undefined;
 		expect(initialModeConfig?.currentValue).toBe("default");
-		expect(initialModeConfig?.options?.map(option => option.value)).toEqual(["default", "plan"]);
+		expect(initialModeConfig?.options?.map(option => option.value)).toEqual(["default", "orchestrator", "plan"]);
 
 		await harness.agent.setSessionMode({ sessionId: created.sessionId, modeId: "plan" });
 
@@ -636,6 +653,46 @@ describe("ACP agent", () => {
 
 		harness.abortController.abort();
 		await Bun.sleep(0);
+	});
+
+	it("pushes ACP mode updates when the agent switches orchestrator mode", async () => {
+		vi.useFakeTimers();
+		const harness = await createHarness();
+		try {
+			const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+			vi.advanceTimersByTime(ACP_BOOTSTRAP_RACE_GUARD_MS + 1);
+			await Promise.resolve();
+			const session = harness.findSession(created.sessionId)!;
+
+			session.setOrchestratorModeState({ enabled: true });
+			await Promise.resolve();
+			await Promise.resolve();
+
+			const modeNotification = harness.updates.findLast(
+				notification =>
+					notification.sessionId === created.sessionId &&
+					notification.update.sessionUpdate === "current_mode_update",
+			);
+			expect(modeNotification?.update).toEqual({
+				sessionUpdate: "current_mode_update",
+				currentModeId: "orchestrator",
+			});
+			const configNotification = harness.updates.findLast(
+				notification =>
+					notification.sessionId === created.sessionId &&
+					notification.update.sessionUpdate === "config_option_update",
+			);
+			const modeConfig =
+				configNotification?.update.sessionUpdate === "config_option_update"
+					? (configNotification.update.configOptions.find(option => option.id === "mode") as
+							| { currentValue?: unknown }
+							| undefined)
+					: undefined;
+			expect(modeConfig?.currentValue).toBe("orchestrator");
+			harness.abortController.abort();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("plan-approval standing handler errors when the plan file is missing", async () => {

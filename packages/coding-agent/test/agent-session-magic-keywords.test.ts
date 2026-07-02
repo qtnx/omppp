@@ -61,6 +61,11 @@ describe("AgentSession magic keyword settings", () => {
 		authStorage = undefined;
 	});
 
+	function customTypesFromPrompt(promptSpy: { mock: { calls: unknown[][] } }): string[] {
+		const promptMessages = promptSpy.mock.calls[0]![0] as Array<{ customType?: string }>;
+		return promptMessages.map(message => message.customType).filter(type => type !== undefined);
+	}
+
 	it("does not append magic keyword notices when disabled", async () => {
 		const created = await createMagicKeywordSession(root);
 		session = created.session;
@@ -94,13 +99,9 @@ describe("AgentSession magic keyword settings", () => {
 		authStorage = created.authStorage;
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
-		await session.prompt("please orchestrate and workflowz this");
+		await session.prompt("please workflowz this");
 
-		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
-		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([
-			"orchestrate-notice",
-			"workflow-notice",
-		]);
+		expect(customTypesFromPrompt(promptSpy)).toEqual(["workflow-notice"]);
 	});
 
 	it("does not use a disabled ultrathink keyword to force auto thinking", async () => {
@@ -133,5 +134,81 @@ describe("AgentSession magic keyword settings", () => {
 		expect(noticeIdx).toBeGreaterThanOrEqual(0);
 		expect(userIdx).toBeGreaterThanOrEqual(0);
 		expect(noticeIdx).toBeLessThan(userIdx);
+	});
+
+	it("auto-enters orchestrator mode without injecting orchestrate notice", async () => {
+		const created = await createMagicKeywordSession(root);
+		session = created.session;
+		authStorage = created.authStorage;
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await session.prompt("please orchestrate these independent changes");
+
+		expect(session.getOrchestratorModeState()?.enabled).toBe(true);
+		expect(customTypesFromPrompt(promptSpy)).not.toContain("orchestrate-notice");
+	});
+
+	it("keeps plan mode active and injects orchestrate notice without throwing", async () => {
+		const created = await createMagicKeywordSession(root);
+		session = created.session;
+		authStorage = created.authStorage;
+		session.setPlanModeState({ enabled: true, planFilePath: path.join(root, "PLAN.md") });
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await expect(session.prompt("please orchestrate the plan work")).resolves.toBe(true);
+
+		expect(session.getOrchestratorModeState()?.enabled).toBeUndefined();
+		expect(customTypesFromPrompt(promptSpy)).toContain("orchestrate-notice");
+	});
+
+	it("keeps a paused goal and injects orchestrate notice without switching", async () => {
+		const created = await createMagicKeywordSession(root);
+		session = created.session;
+		authStorage = created.authStorage;
+		const goal = {
+			id: "goal-1",
+			objective: "finish the migration",
+			status: "paused" as const,
+			tokensUsed: 0,
+			timeUsedSeconds: 0,
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+		};
+		session.setGoalModeState({ enabled: false, mode: "active", goal });
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await expect(session.prompt("please orchestrate the remaining goal work")).resolves.toBe(true);
+
+		expect(session.getOrchestratorModeState()?.enabled).not.toBe(true);
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+		expect(customTypesFromPrompt(promptSpy)).toContain("orchestrate-notice");
+	});
+
+	it("keeps paused plan session context from auto-entering orchestrator mode", async () => {
+		const created = await createMagicKeywordSession(root);
+		session = created.session;
+		authStorage = created.authStorage;
+		session.sessionManager.appendModeChange("plan_paused");
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await session.prompt("please orchestrate the paused plan work");
+
+		expect(session.getPlanModeState()).toBeUndefined();
+		expect(session.sessionManager.buildSessionContext().mode).toBe("plan_paused");
+		expect(session.getOrchestratorModeState()?.enabled).not.toBe(true);
+		expect(customTypesFromPrompt(promptSpy)).toContain("orchestrate-notice");
+	});
+
+	it("does not auto-enter or inject notice when orchestrate magic keyword is disabled", async () => {
+		const created = await createMagicKeywordSession(root);
+		session = created.session;
+		authStorage = created.authStorage;
+		created.settings.set("magicKeywords.orchestrate", false);
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await session.prompt("please orchestrate these independent changes");
+
+		expect(session.getOrchestratorModeState()?.enabled).toBeUndefined();
+		expect(customTypesFromPrompt(promptSpy)).not.toContain("orchestrate-notice");
 	});
 });

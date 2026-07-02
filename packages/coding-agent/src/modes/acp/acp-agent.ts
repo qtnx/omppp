@@ -91,6 +91,7 @@ import { ACP_TERMINAL_AUTH_FLAG } from "./terminal-auth";
 
 const ACP_DEFAULT_MODE_ID = "default";
 const ACP_PLAN_MODE_ID = "plan";
+const ACP_ORCHESTRATOR_MODE_ID = "orchestrator";
 const DEFAULT_PLAN_FILE_URL = "local://PLAN.md";
 const APPROVE_OPTION = "Approve and execute";
 const REFINE_OPTION = "Refine plan";
@@ -214,6 +215,13 @@ type AcpSpeechOption = {
 type AcpSpeechVoiceOption = {
 	value: string;
 	label: string;
+};
+
+type AcpOrchestratorModeState = { enabled: true };
+
+type OrchestratorModeCapableSession = AgentSession & {
+	getOrchestratorModeState?: () => AcpOrchestratorModeState | undefined;
+	setOrchestratorModeState?: (state: AcpOrchestratorModeState | undefined) => void | Promise<void>;
 };
 
 type AcpSpeechTtsModelOption = AcpSpeechOption & {
@@ -593,7 +601,7 @@ export class AcpAgent implements Agent {
 
 	async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
 		const record = this.#getSessionRecord(params.sessionId);
-		this.#applyModeChange(record.session, params.modeId);
+		await this.#applyModeChange(record.session, params.modeId);
 		await this.#connection.sessionUpdate({
 			sessionId: record.session.sessionId,
 			update: this.#buildCurrentModeUpdate(record.session),
@@ -610,7 +618,7 @@ export class AcpAgent implements Agent {
 
 		switch (params.configId) {
 			case MODE_CONFIG_ID:
-				this.#applyModeChange(record.session, params.value);
+				await this.#applyModeChange(record.session, params.value);
 				break;
 			case MODEL_CONFIG_ID:
 				await this.#setModelById(record.session, params.value);
@@ -1130,14 +1138,22 @@ export class AcpAgent implements Agent {
 	}
 
 	async #handleLifetimeEvent(record: ManagedSessionRecord, event: AgentSessionEvent): Promise<void> {
-		if (event.type !== "thinking_level_changed") {
-			return;
-		}
 		try {
-			await this.#pushConfigOptionUpdate(record);
+			if (event.type === "thinking_level_changed") {
+				await this.#pushConfigOptionUpdate(record);
+				return;
+			}
+			if (event.type === "mode_changed") {
+				await this.#connection.sessionUpdate({
+					sessionId: record.session.sessionId,
+					update: this.#buildCurrentModeUpdate(record.session),
+				});
+				await this.#pushConfigOptionUpdate(record);
+			}
 		} catch (error) {
-			logger.warn("Failed to push thinking-level config_option_update", {
+			logger.warn("Failed to push lifetime session update", {
 				sessionId: record.session.sessionId,
+				eventType: event.type,
 				error,
 			});
 		}
@@ -1183,6 +1199,11 @@ export class AcpAgent implements Agent {
 	async #handlePromptEvent(record: ManagedSessionRecord, event: AgentSessionEvent): Promise<void> {
 		const promptTurn = record.promptTurn;
 		if (!promptTurn || promptTurn.settled || promptTurn.cancelRequested) {
+			return;
+		}
+
+		if (event.type === "mode_changed") {
+			await this.#handleLifetimeEvent(record, event);
 			return;
 		}
 
@@ -1485,7 +1506,14 @@ export class AcpAgent implements Agent {
 	}
 
 	#getAvailableModes(session: AgentSession): Array<{ id: string; name: string; description: string }> {
-		const modes = [{ id: ACP_DEFAULT_MODE_ID, name: "Default", description: "Standard ACP headless mode" }];
+		const modes = [
+			{ id: ACP_DEFAULT_MODE_ID, name: "Default", description: "Standard ACP headless mode" },
+			{
+				id: ACP_ORCHESTRATOR_MODE_ID,
+				name: "Orchestrator",
+				description: "Safe orchestration mode for delegation-first work",
+			},
+		];
 		if (session.settings.get("plan.enabled")) {
 			modes.push({
 				id: ACP_PLAN_MODE_ID,
@@ -1493,20 +1521,35 @@ export class AcpAgent implements Agent {
 				description: "Read-only planning mode that drafts a plan to a markdown file before any code changes",
 			});
 		}
-		void session;
 		return modes;
 	}
 
 	#getCurrentModeId(session: AgentSession): string {
+		const orchestratorSession = session as OrchestratorModeCapableSession;
+		if (orchestratorSession.getOrchestratorModeState?.()?.enabled) {
+			return ACP_ORCHESTRATOR_MODE_ID;
+		}
 		return session.getPlanModeState()?.enabled ? ACP_PLAN_MODE_ID : ACP_DEFAULT_MODE_ID;
 	}
 
-	#applyModeChange(session: AgentSession, modeId: string): void {
+	async #applyModeChange(session: AgentSession, modeId: string): Promise<void> {
 		const availableModes = this.#getAvailableModes(session);
 		if (!availableModes.some(mode => mode.id === modeId)) {
 			throw new Error(`Unsupported ACP mode: ${modeId}`);
 		}
-		if (modeId === ACP_PLAN_MODE_ID) {
+		const orchestratorSession = session as OrchestratorModeCapableSession;
+		const setOrchestratorModeState = orchestratorSession.setOrchestratorModeState?.bind(orchestratorSession);
+		if (modeId === ACP_ORCHESTRATOR_MODE_ID) {
+			if (!setOrchestratorModeState) {
+				throw new Error("Orchestrator mode is unavailable in this ACP session.");
+			}
+			session.setStandingResolveHandler?.(null);
+			session.setPlanModeState(undefined);
+			await setOrchestratorModeState({ enabled: true });
+		} else if (modeId === ACP_PLAN_MODE_ID) {
+			if (setOrchestratorModeState && orchestratorSession.getOrchestratorModeState?.()?.enabled) {
+				await setOrchestratorModeState(undefined);
+			}
 			const previous = session.getPlanModeState();
 			session.setPlanModeState({
 				enabled: true,
@@ -1522,6 +1565,9 @@ export class AcpAgent implements Agent {
 		} else {
 			session.setStandingResolveHandler?.(null);
 			session.setPlanModeState(undefined);
+			if (setOrchestratorModeState && orchestratorSession.getOrchestratorModeState?.()?.enabled) {
+				await setOrchestratorModeState(undefined);
+			}
 		}
 	}
 

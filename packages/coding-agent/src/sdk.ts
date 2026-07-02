@@ -12,6 +12,9 @@ import {
 	type AgentMessage,
 	type AgentTelemetryConfig,
 	type AgentTool,
+	type AgentToolContext,
+	type AgentToolResult,
+	type AgentToolUpdateCallback,
 	AppendOnlyContextManager,
 	filterProviderReplayMessages,
 	type ThinkingLevel,
@@ -64,7 +67,7 @@ import {
 	resolveModelRoleValue,
 } from "./config/model-resolver";
 import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate } from "./config/prompt-templates";
-import { Settings, type SkillsSettings } from "./config/settings";
+import { resolveThinkingDisplay, Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import { initializeWithSettings } from "./discovery";
@@ -433,6 +436,66 @@ type DeferredMCPActivation = {
 	explicitlyRequestedMCPToolNames: string[];
 	activateAllMCPTools: boolean;
 };
+
+/** Combined text-block cap for advisor read-only tool results (chars). */
+const ADVISOR_TOOL_OUTPUT_CAP = 12_000;
+/** Marker so double-wrapping a tool's execute is a no-op. */
+const kAdvisorOutputClamped = Symbol("advisorOutputClamped");
+
+/** Cap the combined text content of an advisor tool result, truncating the last text block. */
+function clampAdvisorResultText(result: AgentToolResult): AgentToolResult {
+	let total = 0;
+	let lastTextIdx = -1;
+	for (let i = 0; i < result.content.length; i++) {
+		const block = result.content[i];
+		if (block.type === "text") {
+			total += block.text.length;
+			lastTextIdx = i;
+		}
+	}
+	if (total <= ADVISOR_TOOL_OUTPUT_CAP || lastTextIdx < 0) return result;
+	const overBy = total - ADVISOR_TOOL_OUTPUT_CAP;
+	const content = result.content.slice();
+	const last = content[lastTextIdx];
+	if (last.type === "text") {
+		const keep = Math.max(0, last.text.length - overBy);
+		content[lastTextIdx] = {
+			...last,
+			text: `${last.text.slice(0, keep)}\n[truncated for advisor context — request a narrower range]`,
+		};
+	}
+	return { ...result, content };
+}
+
+/**
+ * Compose over an already-`wrapToolWithMetaNotice`d advisor read-only tool to cap
+ * its combined text output at {@link ADVISOR_TOOL_OUTPUT_CAP}. Mutates in place
+ * (like the meta wrapper) and guards with a marker Symbol so double-wrapping is a
+ * no-op. Non-text blocks (images) and `details` are left untouched.
+ */
+function clampAdvisorToolOutput<T extends AgentTool>(tool: T): T {
+	if (kAdvisorOutputClamped in tool) return tool;
+	const inner = tool.execute;
+	return Object.defineProperties(tool, {
+		[kAdvisorOutputClamped]: { value: true, enumerable: false, configurable: true },
+		execute: {
+			value: async function (
+				this: AgentTool,
+				toolCallId: string,
+				params: any,
+				signal?: AbortSignal,
+				onUpdate?: AgentToolUpdateCallback,
+				context?: AgentToolContext,
+			): Promise<AgentToolResult> {
+				const result = await inner.call(this, toolCallId, params, signal, onUpdate, context);
+				return clampAdvisorResultText(result);
+			},
+			enumerable: false,
+			configurable: true,
+			writable: true,
+		},
+	});
+}
 
 function createPendingMCPTool(name: string): Tool {
 	const parsed = parseMCPToolName(name);
@@ -1772,6 +1835,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			assertEvalExecutionAllowed: () => session?.assertEvalExecutionAllowed(),
 			trackEvalExecution: (execution, abortController) =>
 				session ? session.trackEvalExecution(execution, abortController) : execution,
+			hasPendingAgentAsides: () => session?.hasPendingDeliverableAsides() ?? false,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
 			requestMacOSSandboxRelaunch: paths => {
 				const sessionFile = sessionManager.getSessionFile();
@@ -1791,7 +1855,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getActiveModel: () => agent?.state.model ?? model,
 			getServiceTier: () => session?.serviceTier,
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
+			consultAdvisor: (question, signal) => session?.consultAdvisor(question, signal) ?? Promise.resolve(null),
+			isAdvisorActive: () => session?.isAdvisorActive() ?? false,
+			duoHandoffToExecutor: resolution =>
+				session?.duoHandoffToExecutor(resolution) ?? Promise.resolve("no-controller"),
+			duoEscalateToPlanner: reason => session?.duoEscalateToPlanner(reason) ?? Promise.resolve("unavailable"),
 			getPlanModeState: () => session?.getPlanModeState(),
+			getOrchestratorModeState: () => session?.getOrchestratorModeState(),
+			setOrchestratorModeState: state => session?.setOrchestratorModeState(state),
 			getPlanReferencePath: () => session?.getPlanReferencePath() ?? "local://PLAN.md",
 			getGoalModeState: () => session?.getGoalModeState(),
 			getGoalRuntime: () => session?.goalRuntime,
@@ -1806,6 +1877,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}),
 			requestCompaction: reason =>
 				session?.requestCompactionFromAgent(reason) ?? {
+					status: "unavailable",
+					detail: "session is not ready yet",
+				},
+			requestShake: mode =>
+				session?.requestShakeFromAgent(mode) ?? {
 					status: "unavailable",
 					detail: "session is not ready yet",
 				},
@@ -3016,6 +3092,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}
 			};
 		};
+		const thinkingDisplay = resolveThinkingDisplay(settings);
 		agent = new Agent({
 			initialState: {
 				systemPrompt,
@@ -3049,7 +3126,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			presencePenalty: settings.get("presencePenalty") >= 0 ? settings.get("presencePenalty") : undefined,
 			repetitionPenalty: settings.get("repetitionPenalty") >= 0 ? settings.get("repetitionPenalty") : undefined,
 			serviceTier: initialServiceTier,
-			hideThinkingSummary: settings.get("omitThinking"),
+			hideThinkingSummary: thinkingDisplay === "omitted",
+			thinkingDisplay,
 			kimiApiFormat: settings.get("providers.kimiApiFormat") ?? "anthropic",
 			preferWebsockets: preferOpenAICodexWebsockets,
 			getToolContext: tc => toolContextStore.getContext(tc),
@@ -3175,7 +3253,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		);
 		const advisorReadOnlyTools: Tool[] = built
 			.filter((tool): tool is Tool => tool != null)
-			.map(wrapToolWithMetaNotice);
+			.map(wrapToolWithMetaNotice)
+			.map(clampAdvisorToolOutput);
 
 		const advisorWatchdogPrompts = [...watchdogFiles];
 		if (activeRepoContext) {

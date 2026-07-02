@@ -698,6 +698,7 @@ import * as bundledPiCodingAgentModesUtilsToolsMarkdown from "@oh-my-pi/pi-codin
 import * as bundledPiCodingAgentModesUtilsTranscriptRenderHelpers from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
 import * as bundledPiCodingAgentModesUtilsUiHelpers from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import * as bundledPiCodingAgentModesWorkflow from "@oh-my-pi/pi-coding-agent/modes/workflow";
+import * as bundledPiCodingAgentOrchestratorModeState from "@oh-my-pi/pi-coding-agent/orchestrator-mode/state";
 import * as bundledPiCodingAgentPlanModeApprovedPlan from "@oh-my-pi/pi-coding-agent/plan-mode/approved-plan";
 import * as bundledPiCodingAgentPlanModePlanHandoff from "@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff";
 import * as bundledPiCodingAgentPlanModePlanProtection from "@oh-my-pi/pi-coding-agent/plan-mode/plan-protection";
@@ -802,6 +803,7 @@ import * as bundledPiCodingAgentToolsBuiltinNames from "@oh-my-pi/pi-coding-agen
 import * as bundledPiCodingAgentToolsCheckpoint from "@oh-my-pi/pi-coding-agent/tools/checkpoint";
 import * as bundledPiCodingAgentToolsCompact from "@oh-my-pi/pi-coding-agent/tools/compact";
 import * as bundledPiCodingAgentToolsConflictDetect from "@oh-my-pi/pi-coding-agent/tools/conflict-detect";
+import * as bundledPiCodingAgentToolsConsult from "@oh-my-pi/pi-coding-agent/tools/consult";
 import * as bundledPiCodingAgentToolsContext from "@oh-my-pi/pi-coding-agent/tools/context";
 import * as bundledPiCodingAgentToolsDebug from "@oh-my-pi/pi-coding-agent/tools/debug";
 import * as bundledPiCodingAgentToolsEval from "@oh-my-pi/pi-coding-agent/tools/eval";
@@ -837,6 +839,7 @@ import * as bundledPiCodingAgentToolsMemoryRecall from "@oh-my-pi/pi-coding-agen
 import * as bundledPiCodingAgentToolsMemoryReflect from "@oh-my-pi/pi-coding-agent/tools/memory-reflect";
 import * as bundledPiCodingAgentToolsMemoryRender from "@oh-my-pi/pi-coding-agent/tools/memory-render";
 import * as bundledPiCodingAgentToolsMemoryRetain from "@oh-my-pi/pi-coding-agent/tools/memory-retain";
+import * as bundledPiCodingAgentToolsOrchestratorMode from "@oh-my-pi/pi-coding-agent/tools/orchestrator-mode";
 import * as bundledPiCodingAgentToolsOutputMeta from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import * as bundledPiCodingAgentToolsOutputSchemaValidator from "@oh-my-pi/pi-coding-agent/tools/output-schema-validator";
 import * as bundledPiCodingAgentToolsPathUtils from "@oh-my-pi/pi-coding-agent/tools/path-utils";
@@ -848,6 +851,7 @@ import * as bundledPiCodingAgentToolsReportToolIssue from "@oh-my-pi/pi-coding-a
 import * as bundledPiCodingAgentToolsResolve from "@oh-my-pi/pi-coding-agent/tools/resolve";
 import * as bundledPiCodingAgentToolsReview from "@oh-my-pi/pi-coding-agent/tools/review";
 import * as bundledPiCodingAgentToolsSearchToolBm25 from "@oh-my-pi/pi-coding-agent/tools/search-tool-bm25";
+import * as bundledPiCodingAgentToolsShake from "@oh-my-pi/pi-coding-agent/tools/shake";
 import * as bundledPiCodingAgentToolsSqliteReader from "@oh-my-pi/pi-coding-agent/tools/sqlite-reader";
 import * as bundledPiCodingAgentToolsSsh from "@oh-my-pi/pi-coding-agent/tools/ssh";
 import * as bundledPiCodingAgentToolsTodo from "@oh-my-pi/pi-coding-agent/tools/todo";
@@ -2661,6 +2665,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/plan-mode/state": bundledPiCodingAgentPlanModeState as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/orchestrator-mode/state":
+		bundledPiCodingAgentOrchestratorModeState as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/secrets/obfuscator": bundledPiCodingAgentSecretsObfuscator as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -2909,6 +2915,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/tools/conflict-detect": bundledPiCodingAgentToolsConflictDetect as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/tools/consult": bundledPiCodingAgentToolsConsult as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/tools/context": bundledPiCodingAgentToolsContext as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -3003,6 +3012,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/tools/memory-retain": bundledPiCodingAgentToolsMemoryRetain as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/tools/orchestrator-mode":
+		bundledPiCodingAgentToolsOrchestratorMode as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/tools/output-meta": bundledPiCodingAgentToolsOutputMeta as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -3033,6 +3044,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/search-tool-bm25": bundledPiCodingAgentToolsSearchToolBm25 as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/tools/shake": bundledPiCodingAgentToolsShake as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/sqlite-reader": bundledPiCodingAgentToolsSqliteReader as unknown as Readonly<
