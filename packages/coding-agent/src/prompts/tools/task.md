@@ -21,6 +21,7 @@
   - `id`: stable agent id, CamelCase, ≤32 chars; generated when omitted
   - `description`: UI label only — subagent never sees it
   - `role`: specialist identity this subagent embodies (e.g. "Auth-flow security reviewer") — sets its system-prompt persona and roster display name; tailor every spawn rather than cloning a generic worker
+  - `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
 {{#if isolationEnabled}}
   - `isolated`: run this spawn in an isolated env; returns patches. Isolated agents are torn down at completion — not addressable afterwards
 {{/if}}
@@ -28,6 +29,7 @@
 - `id`: stable agent id, CamelCase, ≤32 chars; generated when omitted
 - `description`: UI label only — subagent never sees it
 - `role`: specialist identity this subagent embodies (e.g. "Auth-flow security reviewer") — sets its system-prompt persona and roster display name; tailor every spawn rather than cloning a generic worker
+- `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
 - `assignment`: complete self-contained instructions following assignment-fmt; one-liners and missing Acceptance/Done sections are PROHIBITED
 {{#if isolationEnabled}}
 - `isolated`: run in isolated env; returns patches. Isolated agents are torn down at completion — not addressable afterwards
@@ -104,11 +106,11 @@ RIGHT:
 {{#if spawningDisabled}}
 Agent spawning is disabled for this context.
 {{else}}
-Prefer delegating implementation here. Decompose the work into the smallest independent units, dispatch each to the most fitting agent, and run disjoint units in parallel. Pick the implementer tier per unit:
-- `heavy_task` — load-bearing or high-accuracy work: a full feature, a cross-module change, tricky logic, anything where a bug is expensive. Strict built-in review gate.
-- `task` — routine medium-complexity work: a contained feature slice or a well-scoped change across a few files. Lighter built-in review gate.
-- `quick_task` — light mechanical work or a small contained feature with a locked spec: rename, move, boilerplate, localized edits, data collection. No review gate; fastest, and safe to fan out widely — verify its output yourself.
-Mix tiers in one batch; only escalate a unit's tier when its blast radius or required accuracy demands it.
+Prefer delegating implementation here. Decompose the work into the smallest independent units, dispatch each to the most fitting agent, and run disjoint units in parallel. Pick the implementer tier per unit by speed/model/review depth:
+- `heavy_task` — load-bearing or high-accuracy work: a full feature, a cross-module change, tricky logic, anything where a bug is expensive. Richest review depth when `self_review: true`.
+- `task` — routine medium-complexity work: a contained feature slice or a well-scoped change across a few files. Moderate review depth when `self_review: true`.
+- `quick_task` — light mechanical work or a small contained feature with a locked spec: rename, move, boilerplate, localized edits, data collection. Fastest and safe to fan out widely.
+Review is opt-in per spawn: leave `self_review` false (default) for faster mechanical/boilerplate/parallel/low-risk work you will verify yourself; set `self_review: true` for an automatic reviewer+fixer pass on load-bearing, cross-module, correctness/security-critical work, or work you will not verify yourself. This works on any tier.
 
 {{#list agents join="\n"}}
 # {{name}}{{#if readOnly}} — READ-ONLY (no edit/write/exec tools){{/if}}

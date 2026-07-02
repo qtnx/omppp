@@ -64,6 +64,8 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 						toolCount: 9,
 						requests: 6,
 						tokens: 61_400,
+						inputTokens: 52_600,
+						outputTokens: 8_800,
 						contextTokens: 23_100,
 						contextWindow: 200_000,
 						cost: 0.12,

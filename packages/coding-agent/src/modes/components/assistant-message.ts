@@ -1,7 +1,5 @@
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { Container, Image, type ImageBudget, ImageProtocol, Markdown, Spacer, TERMINAL, Text } from "@oh-my-pi/pi-tui";
-import { formatNumber } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { resolveAbortLabel, shouldRenderAbortReason } from "../../session/messages";
@@ -159,25 +157,6 @@ export function resetThinkingSpeedTracker(): void {
 }
 
 /**
- * Linear-interpolate two `#rrggbb` colors in sRGB space. `t` clamps to [0,1]:
- * `t = 0` → `from`, `t = 1` → `to`. Drives the streaming speed badge, fading
- * from a dim gray toward the theme accent as tok/s rises.
- */
-function lerpHex(from: string, to: string, t: number): string {
-	const k = t < 0 ? 0 : t > 1 ? 1 : t;
-	const fr = Number.parseInt(from.slice(1, 3), 16);
-	const fg = Number.parseInt(from.slice(3, 5), 16);
-	const fb = Number.parseInt(from.slice(5, 7), 16);
-	const tr = Number.parseInt(to.slice(1, 3), 16);
-	const tg = Number.parseInt(to.slice(3, 5), 16);
-	const tb = Number.parseInt(to.slice(5, 7), 16);
-	const r = Math.round(fr + (tr - fr) * k);
-	const g = Math.round(fg + (tg - fg) * k);
-	const b = Math.round(fb + (tb - fb) * k);
-	return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
-}
-
-/**
  * Component that renders a complete assistant message
  */
 export class AssistantMessageComponent extends Container {
@@ -227,15 +206,13 @@ export class AssistantMessageComponent extends Container {
 	#thinkingDots: Text | undefined;
 	#thinkingDotsTimer: NodeJS.Timeout | undefined;
 	#thinkingDotsFrame = 0;
+	#thinkingPhaseStartedAt: number | undefined;
+	#finalThinkingMarkerSeconds: number | undefined;
 	/** Previous cumulative provider token count + timestamp, for deriving this
 	 *  block's instantaneous streaming rate fed into {@link sharedSpeedTracker}.
 	 *  Undefined until the first thinking update of this block. */
 	#lastTokenCount: number | undefined;
 	#lastTokenTime = 0;
-	/** Provider-reported tokens in the live thinking block — reasoning tokens when
-	 *  the provider streams them, else total output — shown dimmed beside the
-	 *  speed badge. 0 when no thinking is streaming. */
-	#thinkingTokens = 0;
 	/** Whether this block has observed a positive provider-token delta — i.e. it is
 	 *  genuinely streaming tokens right now. Gates the numeric speed badge so the
 	 *  session-wide {@link sharedSpeedTracker} can't surface a previous turn's rate
@@ -308,47 +285,60 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	/**
-	 * Whether to render the animated "thinking" pulse in place of the suppressed
+	 * Whether to render the animated "thinking" pulse in place of invisible
 	 * reasoning: only while this block is still streaming (not yet finalized — the
 	 * in-flight message always carries `stopReason: "stop"`, so finalization is the
-	 * only reliable live signal), thinking is hidden, no tool call has started, and
-	 * the active tail block is a thinking block (the model is reasoning right now).
-	 * Once text starts, a tool call streams, or the block is sealed, the pulse ends.
+	 * only reliable live signal), no tool call has started, and the active tail
+	 * block is thinking that is either provider-omitted (empty) or hidden by the
+	 * user. Non-empty visible thinking does not animate because its content already
+	 * streams on screen.
 	 */
 	#shouldAnimateThinking(message: AssistantMessage): boolean {
-		if (!this.hideThinkingBlock || this.#transcriptBlockFinalized) return false;
-		let tail: "text" | "thinking" | undefined;
+		if (this.#transcriptBlockFinalized) return false;
+		const tail = this.#invisibleThinkingTail(message);
+		return tail !== "none";
+	}
+
+	#invisibleThinkingTail(message: AssistantMessage): "empty" | "hidden" | "none" {
+		let tail: "text" | "emptyThinking" | "nonEmptyThinking" | undefined;
 		for (const content of message.content) {
-			if (content.type === "toolCall") return false;
-			if (content.type === "text" && canonicalizeMessage(content.text)) tail = "text";
-			else if (content.type === "thinking" && canonicalizeMessage(content.thinking)) tail = "thinking";
+			if (content.type === "toolCall") return "none";
+			if (content.type === "text" && canonicalizeMessage(content.text)) {
+				tail = "text";
+			} else if (content.type === "thinking") {
+				tail = canonicalizeMessage(content.thinking) ? "nonEmptyThinking" : "emptyThinking";
+			}
 		}
-		return tail === "thinking";
+		if (tail === "emptyThinking") return "empty";
+		if (tail === "nonEmptyThinking" && this.hideThinkingBlock) return "hidden";
+		return "none";
+	}
+
+	#hasInvisibleThinkingBeforeTool(message: AssistantMessage): boolean {
+		let hasInvisibleThinking = false;
+		for (const content of message.content) {
+			if (content.type === "toolCall") return hasInvisibleThinking;
+			if (content.type !== "thinking") continue;
+			if (!canonicalizeMessage(content.thinking) || this.hideThinkingBlock) {
+				hasInvisibleThinking = true;
+			}
+		}
+		return false;
 	}
 
 	#thinkingDotsLabel(): string {
 		const glyph = THINKING_DOTS_FRAMES[this.#thinkingDotsFrame % THINKING_DOTS_FRAMES.length] ?? "…";
 		const coloredGlyph = theme.fg("thinkingText", glyph);
-		const rate = Math.min(SPEED_MAX, sharedSpeedTracker.getSpeed());
-		// The numeric badge ("<total> · <rate> toks/s") only renders while this block
-		// is genuinely streaming provider tokens. A block that has observed no token
-		// delta (e.g. a provider that reports usage only at turn end) or whose rate
-		// has decayed to zero (a streaming lull) drops it entirely — the bare pulse
-		// keeps signalling that the model is thinking. The liveness flag also stops
-		// the session-wide gauge from leaking a previous turn's rate onto a fresh
-		// token-less block.
-		if (!this.#thinkingRateLive || rate < 0.05) return coloredGlyph;
-		// Total provider tokens, dimmed, sit next to the pulse.
-		const totalSpan = this.#thinkingTokens > 0 ? theme.fg("dim", ` ${formatNumber(this.#thinkingTokens)}`) : "";
-		// Speed badge color: dim gray at rest, brightening toward the theme accent as
-		// streaming speed climbs (gray → bright accent). Ease (sqrt) so typical
-		// mid-stream rates already read as clearly accent-tinted instead of staying
-		// gray until the rarely-hit SPEED_MAX ceiling.
-		const ratio = Math.sqrt(rate / SPEED_MAX);
-		const hex = lerpHex(theme.getColorHex("dim"), theme.getAccentColorHex(), ratio);
-		const rateText = ` · ${rate.toFixed(1)} toks/s`;
-		const rateSpan = theme.getColorMode() === "truecolor" ? chalk.hex(hex)(rateText) : theme.fg("muted", rateText);
-		return coloredGlyph + totalSpan + rateSpan;
+		const startedAt = this.#thinkingPhaseStartedAt;
+		const elapsed =
+			startedAt === undefined ? "" : theme.fg("dim", ` ${Math.floor((Date.now() - startedAt) / 1000)}s`);
+		return `${coloredGlyph}${theme.fg("dim", " thinking…")}${elapsed}`;
+	}
+
+	#finalThinkingMarkerLabel(): string | undefined {
+		const seconds = this.#finalThinkingMarkerSeconds;
+		if (seconds === undefined) return undefined;
+		return theme.fg("dim", `✻ thought for ${seconds}s`);
 	}
 
 	#startThinkingAnimation(): void {
@@ -428,14 +418,42 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	markTranscriptBlockFinalized(): void {
+		// Finalize can fire twice on the real tool-call path: once when the first
+		// toolCall appears mid-stream (event-controller message_update) and again at
+		// message_end. The thinking phase ended at the FIRST call — recomputing the
+		// marker later would fold tool execution time into "thought for Ns".
+		if (this.#transcriptBlockFinalized) return;
+		const startedAt = this.#thinkingPhaseStartedAt;
+		const lastMessage = this.#lastMessage;
 		this.#transcriptBlockFinalized = true;
+		const hasInvisibleThinking =
+			lastMessage &&
+			(this.#invisibleThinkingTail(lastMessage) !== "none" || this.#hasInvisibleThinkingBeforeTool(lastMessage));
+		if (startedAt !== undefined && hasInvisibleThinking) {
+			this.#finalThinkingMarkerSeconds = Math.floor((Date.now() - startedAt) / 1000);
+		} else {
+			this.#finalThinkingMarkerSeconds = undefined;
+		}
 		this.#stopThinkingAnimation();
-		// If the live pulse was on screen when the block sealed, drop the fast path
-		// and rebuild so the placeholder is removed — finalized blocks never animate.
+		const finalMarker = this.#finalThinkingMarkerLabel();
+		if (this.#thinkingDots && finalMarker) {
+			if (this.#thinkingDots.setText(finalMarker)) {
+				this.onImageUpdate?.();
+			}
+			return;
+		}
+		if (finalMarker && lastMessage) {
+			this.#fastPathKey = undefined;
+			this.#fastPathItems = undefined;
+			this.updateContent(lastMessage, { transient: this.#lastUpdateTransient });
+			return;
+		}
+		// If the live pulse was on screen when the block sealed without a static
+		// marker, drop the fast path and rebuild so the placeholder is removed.
 		if (this.#thinkingDots) {
 			this.#fastPathKey = undefined;
 			this.#fastPathItems = undefined;
-			if (this.#lastMessage) this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+			if (lastMessage) this.updateContent(lastMessage, { transient: this.#lastUpdateTransient });
 		}
 	}
 
@@ -644,7 +662,9 @@ export class AssistantMessageComponent extends Container {
 			}
 		}
 		if (this.#thinkingDots) {
-			if (this.#thinkingDots.setText(this.#thinkingDotsLabel())) {
+			const marker = this.#finalThinkingMarkerLabel();
+			const label = marker ?? this.#thinkingDotsLabel();
+			if (this.#thinkingDots.setText(label)) {
 				this.onImageUpdate?.();
 			}
 		}
@@ -668,10 +688,17 @@ export class AssistantMessageComponent extends Container {
 		// the gauge and pollute the next block. Providers that report usage only at
 		// turn end leave the live count flat, so the rate stays 0 and the badge
 		// self-suppresses (see #thinkingDotsLabel).
-		const isThinkingNow = this.#lastUpdateTransient && this.#shouldAnimateThinking(message);
+		const shouldAnimateThinking = this.#shouldAnimateThinking(message);
+		if (shouldAnimateThinking) {
+			this.#thinkingPhaseStartedAt ??= Date.now();
+			this.#finalThinkingMarkerSeconds = undefined;
+		} else if (!this.#transcriptBlockFinalized && !message.content.some(content => content.type === "toolCall")) {
+			this.#thinkingPhaseStartedAt = undefined;
+			this.#finalThinkingMarkerSeconds = undefined;
+		}
+		const isThinkingNow = this.#lastUpdateTransient && shouldAnimateThinking;
 		if (isThinkingNow) {
 			const currentTokens = message.usage.reasoningTokens ?? message.usage.output;
-			this.#thinkingTokens = currentTokens;
 			const now = performance.now();
 			if (this.#lastTokenCount !== undefined) {
 				const tokenDelta = currentTokens - this.#lastTokenCount;
@@ -688,7 +715,6 @@ export class AssistantMessageComponent extends Container {
 			this.#lastTokenTime = now;
 		} else {
 			this.#lastTokenCount = undefined;
-			this.#thinkingTokens = 0;
 			this.#thinkingRateLive = false;
 		}
 
@@ -765,13 +791,19 @@ export class AssistantMessageComponent extends Container {
 			}
 		}
 
-		if (this.#shouldAnimateThinking(message)) {
+		if (shouldAnimateThinking) {
 			if (hasVisibleContent) this.#contentContainer.addChild(new Spacer(1));
 			this.#thinkingDots = new Text(this.#thinkingDotsLabel(), 1, 0);
 			this.#contentContainer.addChild(this.#thinkingDots);
 			this.#startThinkingAnimation();
 		} else {
 			this.#stopThinkingAnimation();
+			const finalMarker = this.#finalThinkingMarkerLabel();
+			if (finalMarker) {
+				if (hasVisibleContent) this.#contentContainer.addChild(new Spacer(1));
+				this.#thinkingDots = new Text(finalMarker, 1, 0);
+				this.#contentContainer.addChild(this.#thinkingDots);
+			}
 		}
 
 		this.#renderToolImages();

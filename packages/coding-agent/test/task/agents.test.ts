@@ -66,6 +66,109 @@ describe("bundled task agents", () => {
 		expect(getBundledAgent("librarian")?.resourceProfile).toBeUndefined();
 	});
 
+	test("registers browser_qa as a browser-driven QA specialist", () => {
+		expect(() => loadBundledAgents()).not.toThrow();
+
+		const browserQa = getBundledAgent("browser_qa");
+
+		expect(browserQa).toBeDefined();
+		expect(browserQa?.description).toContain("QA");
+		expect(browserQa?.tools).toEqual(["browser", "read", "grep", "glob", "bash", "yield"]);
+		expect(browserQa?.tools).not.toContain("edit");
+		expect(browserQa?.tools).not.toContain("write");
+		expect(browserQa?.model).toEqual(["pi/task"]);
+		expect(browserQa?.thinkingLevel).toBe(Effort.Medium);
+		expect(browserQa?.output).toEqual({
+			properties: {
+				summary: { type: "string" },
+				cases: {
+					elements: {
+						properties: {
+							name: { type: "string" },
+							status: { enum: ["pass", "fail", "blocked"] },
+							expected: { type: "string" },
+							observed: { type: "string" },
+							evidence: { type: "string" },
+						},
+					},
+				},
+			},
+		});
+	});
+
+	test("registers qa as an adversarial read-only verification gate", () => {
+		expect(() => loadBundledAgents()).not.toThrow();
+
+		const qa = getBundledAgent("qa");
+
+		expect(qa).toBeDefined();
+		expect(qa?.tools).toEqual(["read", "grep", "glob", "bash", "lsp", "yield"]);
+		expect(qa?.tools).not.toContain("edit");
+		expect(qa?.tools).not.toContain("write");
+		expect(qa?.spawns).toEqual(["browser_qa"]);
+		expect(qa?.model).toEqual(["pi/task"]);
+		expect(qa?.thinkingLevel).toBe(Effort.High);
+		expect(qa?.blocking).toBeFalsy();
+		expect(qa?.output).toEqual({
+			properties: {
+				verdict: { enum: ["pass", "fail", "blocked"] },
+				summary: {
+					metadata: {
+						description: "One paragraph, verdict first, most important defect first",
+					},
+					type: "string",
+				},
+				coverage: {
+					elements: {
+						properties: {
+							case: { type: "string" },
+							status: { enum: ["pass", "fail", "blocked"] },
+							evidence: {
+								metadata: {
+									description: "Exact command + decisive output, or screenshot/artifact path",
+								},
+								type: "string",
+							},
+						},
+					},
+				},
+			},
+			optionalProperties: {
+				findings: {
+					elements: {
+						properties: {
+							severity: { enum: ["critical", "major", "minor"] },
+							title: { type: "string" },
+							location: {
+								metadata: {
+									description: "file:line or URL/flow step",
+								},
+								type: "string",
+							},
+							repro: {
+								metadata: {
+									description: "Exact commands or steps to reproduce",
+								},
+								type: "string",
+							},
+							evidence: { type: "string" },
+						},
+					},
+				},
+				harness_gaps: {
+					metadata: {
+						description: "Missing handoff items; REQUIRED when verdict is blocked",
+					},
+					elements: { type: "string" },
+				},
+			},
+		});
+		expect(qa?.systemPrompt).toContain("at least one bug");
+		expect(qa?.systemPrompt).toContain("harness_gaps");
+		expect(qa?.systemPrompt).toContain("NEVER edit source files");
+		expect(qa?.systemPrompt).toContain("Default-deny");
+	});
+
 	test("preserves explicit empty tool lists through parsing", () => {
 		const parsed = parseAgentFields({
 			name: "empty-tools",

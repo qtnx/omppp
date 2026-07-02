@@ -40,6 +40,29 @@ export interface HistoryFormatOptions {
 	 * still collapse to a one-liner.
 	 */
 	expandPrimaryContext?: boolean;
+	/**
+	 * Transform each rendered thinking block's text before it is emitted (requires
+	 * {@link includeThinking}). The advisor clamps huge thinking blocks — keeping
+	 * head/tail verbatim and eliding the middle behind a `{{GIST:<id>}}` marker
+	 * plus an artifact pointer — so its feed stays cheap. Absent → thinking text
+	 * is rendered verbatim (existing behavior).
+	 */
+	renderThinking?: (text: string) => string;
+	/**
+	 * When a tool result is an error, append up to this many lines of the error
+	 * text (indented) below the existing one-liner. `≤ N` lines → all shown; more
+	 * → first `ceil(N/2)` + an elision marker + last `floor(N/2)`. `0`/absent →
+	 * only the existing one-liner (existing behavior). The advisor sets this so it
+	 * can see why a step failed instead of just the first line.
+	 */
+	errorResultLines?: number;
+	/**
+	 * Append an excerpt of an `async-result` custom message's content (capped at
+	 * 15 lines / 1500 chars) below the `[async-result] labels` one-liner. The
+	 * advisor sets this so it can read subagent/QA verdicts, which otherwise
+	 * collapse to a bare label. Absent → the one-liner only (existing behavior).
+	 */
+	expandAsyncResults?: boolean;
 }
 
 /** Max length of the primary-arg summary inside `→ tool(...)` lines. */
@@ -139,12 +162,50 @@ function primaryArg(name: string, args: Record<string, unknown> | undefined): st
 	}
 }
 
+/**
+ * Indent an error excerpt under a tool one-liner, keeping at most `n` lines.
+ * `≤ n` lines → all; more → first `ceil(n/2)` + `… (+K lines) …` + last
+ * `floor(n/2)`. Every kept line is prefixed with four spaces.
+ */
+function errorExcerpt(text: string, n: number): string {
+	const all = text.split("\n");
+	if (all.length <= n) {
+		return all.map(line => `    ${line}`).join("\n");
+	}
+	const headN = Math.ceil(n / 2);
+	const tailN = Math.floor(n / 2);
+	const elided = all.length - headN - tailN;
+	return [
+		...all.slice(0, headN).map(line => `    ${line}`),
+		`    … (+${elided} lines) …`,
+		...all.slice(all.length - tailN).map(line => `    ${line}`),
+	].join("\n");
+}
+
+/** Cap `text` at `maxLines` and `maxChars` (whichever cuts first); append a marker when cut. */
+function cappedExcerpt(text: string, maxLines: number, maxChars: number): string {
+	const trimmed = text.trim();
+	if (!trimmed) return "";
+	let out = trimmed;
+	let cut = false;
+	const lines = out.split("\n");
+	if (lines.length > maxLines) {
+		out = lines.slice(0, maxLines).join("\n");
+		cut = true;
+	}
+	if (out.length > maxChars) {
+		out = out.slice(0, maxChars);
+		cut = true;
+	}
+	return cut ? `${out}… (+truncated)` : out;
+}
+
 /** One line per tool call: `→ read(src/foo.ts:50-80) ⇒ ok · 31 lines`. */
 function toolCallLine(
 	name: string,
 	args: Record<string, unknown> | undefined,
 	result: ToolResultMessage | undefined,
-	includeToolIntent?: boolean,
+	opts?: HistoryFormatOptions,
 ): string {
 	const head = `→ ${name}(${primaryArg(name, args)})`;
 	let base: string;
@@ -157,12 +218,16 @@ function toolCallLine(
 		if (result.isError) {
 			const firstLine = oneLine(text.split("\n", 1)[0] ?? "");
 			base = firstLine ? `${head} ⇒ error · ${count} — ${firstLine}` : `${head} ⇒ error · ${count}`;
+			const n = opts?.errorResultLines;
+			if (typeof n === "number" && n > 0 && text.trim()) {
+				base = `${base}\n${errorExcerpt(text, n)}`;
+			}
 		} else {
 			base = `${head} ⇒ ok · ${count}`;
 		}
 	}
 
-	const intent = includeToolIntent ? args?.[INTENT_FIELD] : undefined;
+	const intent = opts?.includeToolIntent ? args?.[INTENT_FIELD] : undefined;
 	if (typeof intent === "string" && intent.trim()) {
 		const formattedIntent = oneLine(intent, 80);
 		return `// ${formattedIntent}\n${base}`;
@@ -187,10 +252,10 @@ function executionLine(
 
 /**
  * Hidden custom messages that inject the primary agent's operative *constraints*
- * — plan mode's rules and the approved plan it implements. A reviewer (the
- * advisor) must read these verbatim; truncating them hides load-bearing
- * exceptions (e.g. plan mode permits exactly one plan file). Every other custom
- * type stays a one-liner.
+ * — mode rules and approved references it implements. A reviewer (the advisor)
+ * must read these verbatim; truncating them hides load-bearing exceptions (e.g.
+ * plan mode permits exactly one plan file). Every other custom type stays a
+ * one-liner.
  *
  * Deliberately excludes `goal-mode-context`: its body carries live budget
  * counters (tokens/seconds used) that change every turn, so it can neither be
@@ -198,10 +263,14 @@ function executionLine(
  * reviewer — and its constraints don't drive the file-write misreads this
  * targets.
  */
-export const PRIMARY_CONTEXT_CUSTOM_TYPES: ReadonlySet<string> = new Set(["plan-mode-context", "plan-mode-reference"]);
+export const PRIMARY_CONTEXT_CUSTOM_TYPES: ReadonlySet<string> = new Set([
+	"plan-mode-context",
+	"plan-mode-reference",
+	"orchestrator-mode-context",
+]);
 
 /** One-liner for custom/hook messages: `[irc] A → B: body…`. */
-function customOneLiner(msg: CustomMessage | HookMessage): string {
+function customOneLiner(msg: CustomMessage | HookMessage, opts?: HistoryFormatOptions): string {
 	const details = (msg.details ?? {}) as Record<string, unknown>;
 	const str = (key: string): string => (typeof details[key] === "string" ? (details[key] as string) : "");
 	switch (msg.customType) {
@@ -217,7 +286,12 @@ function customOneLiner(msg: CustomMessage | HookMessage): string {
 					return typeof j.label === "string" && j.label ? j.label : typeof j.jobId === "string" ? j.jobId : "job";
 				})
 				.join(", ");
-			return `[async-result] ${oneLine(labels)}`;
+			const line = `[async-result] ${oneLine(labels)}`;
+			if (opts?.expandAsyncResults) {
+				const excerpt = cappedExcerpt(contentToText(msg.content), 15, 1500);
+				if (excerpt) return `${line}\n${excerpt}`;
+			}
+			return line;
 		}
 		default:
 			return `[${msg.customType}] ${oneLine(contentToText(msg.content))}`;
@@ -280,9 +354,10 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 					} else if (block.type === "toolCall") {
 						const result = resultsByCallId.get(block.id);
 						if (result) consumed.add(block.id);
-						body.push(toolCallLine(block.name, block.arguments, result, opts?.includeToolIntent));
+						body.push(toolCallLine(block.name, block.arguments, result, opts));
 					} else if (opts?.includeThinking && block.type === "thinking" && block.thinking.trim()) {
-						body.push(`_thinking:_ ${block.thinking}`);
+						const thinking = opts.renderThinking ? opts.renderThinking(block.thinking) : block.thinking;
+						body.push(`_thinking:_ ${thinking}`);
 					}
 					// redactedThinking elided entirely (no readable text)
 				}
@@ -303,7 +378,7 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 			case "toolResult": {
 				// Normally consumed by its toolCall; orphans (e.g. truncated history) get their own line.
 				if (consumed.has(msg.toolCallId)) break;
-				lines.push(toolCallLine(msg.toolName, undefined, msg, opts?.includeToolIntent), "");
+				lines.push(toolCallLine(msg.toolName, undefined, msg, opts), "");
 				lastWatchedLabel = undefined;
 				break;
 			}
@@ -335,7 +410,7 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 						);
 					}
 				} else {
-					lines.push(customOneLiner(custom), "");
+					lines.push(customOneLiner(custom, opts), "");
 				}
 				lastWatchedLabel = undefined;
 				break;

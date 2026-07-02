@@ -228,6 +228,7 @@ export class StatusLineComponent implements Component {
 	#planModeStatus: { enabled: boolean; paused: boolean } | null = null;
 	#loopModeStatus: { enabled: boolean } | null = null;
 	#goalModeStatus: { enabled: boolean; paused: boolean } | null = null;
+	#orchestratorModeStatus: { enabled: boolean } | null = null;
 	#collabStatus: CollabStatus | null = null;
 	#focusedAgentId: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
@@ -349,6 +350,9 @@ export class StatusLineComponent implements Component {
 
 	setGoalModeStatus(status: { enabled: boolean; paused: boolean } | undefined): void {
 		this.#goalModeStatus = status ?? null;
+	}
+	setOrchestratorModeStatus(status: { enabled: boolean } | undefined): void {
+		this.#orchestratorModeStatus = status ?? null;
 	}
 
 	setCollabStatus(status: CollabStatus | null): void {
@@ -593,6 +597,21 @@ export class StatusLineComponent implements Component {
 		})();
 
 		return stalePr ?? null;
+	}
+
+	#inFlightUsage(): { input: number; output: number } | undefined {
+		if (!this.session.isStreaming) return undefined;
+
+		const streamMessage = this.session.state.streamMessage;
+		if (streamMessage?.role !== "assistant") return undefined;
+
+		for (const message of this.session.state.messages) {
+			if (message === streamMessage) return undefined;
+		}
+
+		const assistantMessage = streamMessage as AssistantMessage;
+		if (assistantMessage.duration !== undefined) return undefined;
+		return { input: assistantMessage.usage.input, output: assistantMessage.usage.output };
 	}
 
 	#getTokensPerSecond(): number | null {
@@ -855,8 +874,11 @@ export class StatusLineComponent implements Component {
 			premiumRequests: 0,
 			cost: 0,
 		};
+		const liveUsage = this.#inFlightUsage();
 		const usageStats = {
 			...aggregateUsageStats,
+			input: aggregateUsageStats.input + (liveUsage?.input ?? 0),
+			output: aggregateUsageStats.output + (liveUsage?.output ?? 0),
 			tokensPerSecond: this.#getTokensPerSecond(),
 		};
 
@@ -896,6 +918,7 @@ export class StatusLineComponent implements Component {
 			planMode: this.#planModeStatus,
 			loopMode: this.#loopModeStatus,
 			goalMode: this.#goalModeStatus,
+			orchestratorMode: this.#orchestratorModeStatus,
 			collab: this.#collabStatus,
 			usageStats,
 			contextPercent,

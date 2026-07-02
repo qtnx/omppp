@@ -473,6 +473,10 @@ export class InputController {
 		for (const key of planModeKeys) {
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handlePlanModeCommand());
 		}
+		const orchestratorKeys = this.ctx.keybindings.getKeys("app.orchestrator.toggle");
+		for (const key of orchestratorKeys) {
+			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handleOrchestratorModeCommand());
+		}
 
 		for (const key of this.ctx.keybindings.getKeys("app.session.new")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.handleClearCommand());

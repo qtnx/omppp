@@ -69,6 +69,8 @@ describe("task renderer: malformed yield slot (#1987)", () => {
 			toolCount: 1,
 			requests: 0,
 			tokens: 100,
+			inputTokens: 0,
+			outputTokens: 0,
 			cost: 0,
 			durationMs: 250,
 			extractedToolData: extractedToolData as Record<string, unknown[]>,

@@ -1,4 +1,4 @@
-import { THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
+import { THINKING_EFFORTS, type ThinkingDisplay } from "@oh-my-pi/pi-ai";
 import { DEFAULT_SHARE_URL } from "@oh-my-pi/pi-wire";
 import { SHAPE_VARIANT_NAMES } from "@oh-my-pi/snapcompact";
 import { DEFAULT_RELAY_URL } from "../collab/protocol";
@@ -117,7 +117,7 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
  */
 export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	appearance: ["Theme", "Status Line", "Display", "Images"],
-	model: ["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Vision"],
+	model: ["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Duo", "Vision"],
 	interaction: [
 		"Input",
 		"Approvals",
@@ -441,6 +441,160 @@ export const SETTINGS_SCHEMA = {
 				{ value: "5", label: "5 turns" },
 			],
 			condition: "advisorEnabled",
+		},
+	},
+	"advisor.thinkingGist": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Thinking Gist",
+			description:
+				"Summarize elided middles of large thinking blocks with the tiny/smol model in the advisor feed. Off: middles are elided with a pointer to the full artifact only.",
+			condition: "advisorEnabled",
+		},
+	},
+	"advisor.thinkingClampChars": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Thinking Clamp Chars",
+			description:
+				"Max characters of a primary thinking block fed to the advisor before it is clamped (head/tail + gist marker, full text spilled to an artifact). 0 = pass full thinking untruncated (default); set e.g. 2000 to re-enable clamping.",
+			condition: "advisorEnabled",
+		},
+	},
+	"advisor.consult": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Consult Tool",
+			description:
+				"Expose a consult tool so the main agent can ask the advisor for guidance mid-task (blocks until the advisor answers).",
+			condition: "advisorEnabled",
+		},
+	},
+	"advisor.doneGate": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Done Review",
+			description:
+				"Before the main agent concludes a response that claims completion of mutating work, ask the advisor to verify the claim against transcript evidence; a reject sends the agent back with the missing items (max 2 rounds).",
+			condition: "advisorEnabled",
+		},
+	},
+	"duo.mode": {
+		type: "enum",
+		values: ["auto", "on", "off"] as const,
+		default: "auto",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Mode",
+			description:
+				"Automatic Fable<->Opus planner/executor pairing; auto activates in orchestrator mode or when the main model is a Fable-family model.",
+		},
+	},
+	"duo.plannerModel": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Planner Model",
+			description:
+				"Planner model pattern; empty auto-detects the newest Fable/Opus-family model; supports :thinking suffix.",
+		},
+	},
+	"duo.executorModel": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Executor Model",
+			description:
+				"Executor model pattern; empty auto-detects the newest Fable/Opus-family model; supports :thinking suffix.",
+		},
+	},
+	"duo.plannerThinking": {
+		type: "string",
+		default: "auto",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Planner Thinking",
+			description: "Planner thinking selector used when the model pattern does not include a :thinking suffix.",
+		},
+	},
+	"duo.executorThinking": {
+		type: "string",
+		default: "max",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Executor Thinking",
+			description: "Executor thinking selector used when the model pattern does not include a :thinking suffix.",
+		},
+	},
+	"duo.advisorThinking": {
+		type: "string",
+		default: "xhigh",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Advisor Thinking",
+			description:
+				"Thinking level for the Fable advisor while it monitors the executor. Higher = more thorough gap-catching. Values: auto|off|minimal|low|medium|high|xhigh|max.",
+		},
+	},
+	"duo.doneGate": {
+		type: "enum",
+		values: ["strict", "inherit"] as const,
+		default: "strict",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Done Gate",
+			description: "Strict forces the advisor done-review while duo is executing.",
+		},
+	},
+	"duo.takeover.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Takeover",
+			description: "Allow the planner advisor to request takeover from the executor.",
+		},
+	},
+	"duo.takeover.cooldownTurns": {
+		type: "number",
+		default: 4,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Takeover Cooldown Turns",
+			description: "Executor turns to wait before another recover takeover can be accepted.",
+		},
+	},
+	"duo.takeover.maxConsecutive": {
+		type: "number",
+		default: 2,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Takeover Max Consecutive",
+			description: "Maximum consecutive planner takeovers before requiring manual handoff.",
 		},
 	},
 	shellPath: { type: "string", default: undefined },
@@ -981,7 +1135,34 @@ export const SETTINGS_SCHEMA = {
 			group: "Thinking",
 			label: "Omit Thinking summaries",
 			description:
-				"Instruct upstream providers to completely omit thinking summaries from responses (where supported)",
+				"Instruct upstream providers to completely omit thinking summaries from responses (where supported). Legacy force-omit override; when enabled it overrides Thinking Summary Display.",
+		},
+	},
+
+	thinkingDisplay: {
+		type: "enum",
+		values: ["auto", "summarized", "omitted"] as const,
+		default: "auto",
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Thinking Summary Display",
+			description: "Controls whether Anthropic thinking summaries are requested, omitted, or chosen automatically.",
+			options: [
+				{
+					value: "auto",
+					label: "Auto (recommended)",
+					description:
+						"Model default — Fable/Mythos omit thinking summaries to avoid Anthropic's reasoning_extraction block; other models summarize.",
+				},
+				{
+					value: "summarized",
+					label: "Summarized",
+					description:
+						"Always request a human-readable thinking summary (may trip reasoning_extraction on Fable/Mythos).",
+				},
+				{ value: "omitted", label: "Omitted", description: "Never request thinking summaries." },
+			],
 		},
 	},
 
@@ -3808,21 +3989,25 @@ export const SETTINGS_SCHEMA = {
 
 	"async.pollWaitDuration": {
 		type: "enum",
-		values: ["5s", "10s", "30s", "1m", "5m", "smart"] as const,
-		default: "smart",
+		values: ["5s", "10s", "30s", "1m", "5m", "block"] as const,
+		default: "block",
 		ui: {
 			tab: "tools",
 			group: "Execution",
-			label: "Max Poll Time",
+			label: "Poll Wait",
 			description:
-				"How long the poll tool waits for background job updates before returning the current state. A fixed value waits that exact duration every time. `smart` adapts: it starts at 5s and lengthens with each back-to-back poll (up to 5m), then resets to 5s after about a minute without polling.",
+				"How long the poll tool waits for background job updates before returning the current state. Fixed values cap the wait at that duration. `block` waits until a watched job settles, a peer or user message arrives, another job's result lands, or the call is aborted.",
 			options: [
 				{ value: "5s", label: "5 seconds" },
 				{ value: "10s", label: "10 seconds" },
 				{ value: "30s", label: "30 seconds" },
 				{ value: "1m", label: "1 minute" },
 				{ value: "5m", label: "5 minutes" },
-				{ value: "smart", label: "Smart", description: "Default — adaptive 5s→5m, resets when you stop polling" },
+				{
+					value: "block",
+					label: "Block",
+					description: "Default — wait until a watched job finishes or new agent context arrives",
+				},
 			],
 		},
 	},
@@ -5174,6 +5359,17 @@ export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boo
 /** Get the default value for a setting path */
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
 	return SETTINGS_SCHEMA[path].default as SettingValue<P>;
+}
+
+export interface ThinkingDisplaySettingsReader {
+	get<P extends SettingPath>(path: P): SettingValue<P>;
+}
+
+export function resolveThinkingDisplay(settings: ThinkingDisplaySettingsReader): ThinkingDisplay | undefined {
+	if (settings.get("omitThinking") === true) return "omitted";
+	const thinkingDisplay = settings.get("thinkingDisplay");
+	if (thinkingDisplay === "auto") return undefined;
+	return thinkingDisplay;
 }
 
 /** Check if a path has UI metadata (should appear in settings panel) */

@@ -352,6 +352,8 @@ export interface StreamOptions {
 	execHandlers?: CursorExecHandlers;
 }
 
+export type ThinkingDisplay = "summarized" | "omitted";
+
 // Unified options with reasoning passed to streamSimple() and completeSimple()
 export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	/**
@@ -380,6 +382,11 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	 * Useful when the UI hides thinking blocks anyway and the summary is wasted bandwidth.
 	 */
 	hideThinkingSummary?: boolean;
+	/**
+	 * Explicit thinking summary display override. When absent, the Anthropic provider
+	 * applies its model-aware default.
+	 */
+	thinkingDisplay?: ThinkingDisplay;
 	/** OpenAI Responses/Codex `text.verbosity` response detail level. */
 	textVerbosity?: "low" | "medium" | "high";
 	/** Custom token budgets for thinking levels (token-based providers only) */

@@ -67,6 +67,7 @@ const ALLOWED_OPTION_KEYS: ReadonlySet<keyof SimpleStreamOptions> = new Set([
 	"reasoning",
 	"disableReasoning",
 	"hideThinkingSummary",
+	"thinkingDisplay",
 	"thinkingBudgets",
 	"toolChoice",
 	"serviceTier",

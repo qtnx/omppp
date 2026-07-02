@@ -193,4 +193,60 @@ describe("YieldQueue", () => {
 
 		expect(thunks[0]!()).toBeNull();
 	});
+
+	test("scheduleIdleFlushIfPending recovers an entry stranded during the streaming tail", async () => {
+		const harness = createHarness(true);
+		harness.queue.register<Entry>("items", {
+			build: entries => userMessage(entries.map(entry => entry.id).join(",")),
+		});
+
+		harness.queue.enqueue("items", { id: "a" });
+		expect(harness.scheduledFlushes).toHaveLength(0);
+
+		harness.setStreaming(false);
+		harness.queue.scheduleIdleFlushIfPending();
+		expect(harness.scheduledFlushes).toHaveLength(1);
+
+		await harness.scheduledFlushes[0]!();
+
+		expect(harness.idleBatches).toHaveLength(1);
+		expect(harness.idleBatches[0]?.map(messageText)).toEqual(["a"]);
+	});
+
+	test("scheduleIdleFlushIfPending is a no-op while streaming", () => {
+		const harness = createHarness(true);
+		harness.queue.register<Entry>("items", {
+			build: entries => userMessage(entries.map(entry => entry.id).join(",")),
+		});
+		harness.queue.enqueue("items", { id: "a" });
+
+		harness.queue.scheduleIdleFlushIfPending();
+
+		expect(harness.scheduledFlushes).toHaveLength(0);
+	});
+
+	test("scheduleIdleFlushIfPending ignores skipIdleFlush kinds", () => {
+		const harness = createHarness(true);
+		harness.queue.register<Entry>("lazyOnly", {
+			skipIdleFlush: true,
+			build: entries => userMessage(entries.map(entry => entry.id).join(",")),
+		});
+		harness.queue.enqueue("lazyOnly", { id: "a" });
+
+		harness.setStreaming(false);
+		harness.queue.scheduleIdleFlushIfPending();
+
+		expect(harness.scheduledFlushes).toHaveLength(0);
+	});
+
+	test("scheduleIdleFlushIfPending is a no-op when nothing is pending", () => {
+		const harness = createHarness(false);
+		harness.queue.register<Entry>("items", {
+			build: entries => userMessage(entries.map(entry => entry.id).join(",")),
+		});
+
+		harness.queue.scheduleIdleFlushIfPending();
+
+		expect(harness.scheduledFlushes).toHaveLength(0);
+	});
 });

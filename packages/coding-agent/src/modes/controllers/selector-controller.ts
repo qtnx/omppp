@@ -1,4 +1,4 @@
-import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { type Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { PASTE_CODE_LOGIN_PROVIDERS } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
@@ -7,7 +7,7 @@ import { Input, Loader, Spacer, setTuiTight, Text } from "@oh-my-pi/pi-tui";
 import { getAgentDbPath, getProjectDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import { formatModelSelectorValue } from "../../config/model-resolver";
 import { getRoleInfo } from "../../config/model-roles";
-import { settings } from "../../config/settings";
+import { resolveThinkingDisplay, type Settings, settings } from "../../config/settings";
 import { disableProvider, enableProvider } from "../../discovery";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
@@ -71,6 +71,11 @@ import type { SessionObserverRegistry } from "../session-observer-registry";
 import { buildCopyTargets } from "../utils/copy-targets";
 
 const MANUAL_LOGIN_TIP = "Tip: You can complete pairing with /login <redirect URL>.";
+
+function applyThinkingDisplay(agent: Agent, settingsInstance: Settings): void {
+	agent.thinkingDisplay = resolveThinkingDisplay(settingsInstance);
+	agent.hideThinkingSummary = agent.thinkingDisplay === "omitted";
+}
 
 export class SelectorController {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -362,7 +367,8 @@ export class SelectorController {
 				this.ctx.ui.resetDisplay();
 				break;
 			case "omitThinking":
-				this.ctx.session.agent.hideThinkingSummary = value as boolean;
+			case "thinkingDisplay":
+				applyThinkingDisplay(this.ctx.session.agent, settings);
 				break;
 			case "display.cacheMissMarker":
 				// Rebuild re-runs the usage-based detection under the new setting so

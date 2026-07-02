@@ -1082,6 +1082,7 @@ export async function runRootCommand(
 	// explicit --hide-thinking block display option still wins for output display.
 	if (parsedArgs.printThoughts && !isProtocolMode && !isInteractive) {
 		settingsInstance.override("omitThinking", false);
+		settingsInstance.override("thinkingDisplay", "summarized");
 	}
 	// Apply --hide-thinking CLI flag (ephemeral, not persisted)
 	if (parsedArgs.hideThinking) {

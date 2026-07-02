@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { scheduler } from "node:timers/promises";
 import * as tls from "node:tls";
 import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
+import { isFableOrMythos, parseAnthropicModel } from "@oh-my-pi/pi-catalog/identity/classify";
 import { mapEffortToAnthropicAdaptiveEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { isAnthropicOAuthToken } from "@oh-my-pi/pi-catalog/utils";
@@ -38,6 +39,7 @@ import type {
 	StreamOptions,
 	TextContent,
 	ThinkingContent,
+	ThinkingDisplay,
 	Tool,
 	ToolCall,
 	ToolResultMessage,
@@ -1001,7 +1003,7 @@ function convertContentBlocks(
 
 export type AnthropicOutputEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type AnthropicEffort = AnthropicOutputEffort | "adaptive";
-export type AnthropicThinkingDisplay = "summarized" | "omitted";
+export type AnthropicThinkingDisplay = ThinkingDisplay;
 
 export interface AnthropicOptions extends StreamOptions {
 	/**
@@ -2460,7 +2462,11 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		isCloudflareAiGateway: model.provider === "cloudflare-ai-gateway",
 		claudeCodeSessionId,
 		claudeCodeBetas: oauthToken
-			? buildClaudeCodeBetas(hasTools || thinkingEnabled, thinkingEnabled, thinkingDisplay === "omitted")
+			? buildClaudeCodeBetas(
+					hasTools || thinkingEnabled,
+					thinkingEnabled,
+					effectiveThinkingDisplay(model, thinkingEnabled, thinkingDisplay) === "omitted",
+				)
 			: [],
 	});
 
@@ -2796,6 +2802,18 @@ function enforceCacheControlLimit(params: MessageCreateParamsStreaming, maxBreak
 	}
 }
 
+function effectiveThinkingDisplay(
+	model: Model<"anthropic-messages">,
+	thinkingEnabled: boolean,
+	thinkingDisplay: AnthropicThinkingDisplay | undefined,
+): AnthropicThinkingDisplay | undefined {
+	if (thinkingDisplay !== undefined) return thinkingDisplay;
+	if (!thinkingEnabled) return undefined;
+	if (!model.thinking?.supportsDisplay) return undefined;
+	const parsed = parseAnthropicModel(model.id);
+	return parsed && isFableOrMythos(parsed.kind) ? "omitted" : "summarized";
+}
+
 function usesAdaptiveThinkingTagOnly(model: Model<"anthropic-messages">): boolean {
 	const thinking = model.thinking;
 	if (thinking?.mode !== "anthropic-adaptive") return false;
@@ -2886,14 +2904,16 @@ function buildParams(
 			const compat = model.compat;
 			if (mode === "anthropic-adaptive" && !compat.disableAdaptiveThinking) {
 				const adaptive: { type: "adaptive"; display?: AnthropicThinkingDisplay } = { type: "adaptive" };
-				// Starting with Claude Opus 4.7 and Claude Fable/Mythos 5, adaptive thinking
-				// content is omitted from the response by default. Opt into summarized
-				// reasoning so thinking deltas keep streaming with human-readable content for
-				// callers that rely on it. The `display` field is gated strictly on model
-				// support: Opus 4.6 / Sonnet 4.6+ reject it with a 400, so an explicit
-				// `thinkingDisplay` MUST NOT force it onto a model that can't accept it.
+				// The effective display is resolved model-aware by `effectiveThinkingDisplay`:
+				// Opus 4.7+ default to summarized so thinking deltas keep streaming with
+				// human-readable content for callers that rely on it, while Fable/Mythos 5
+				// default to omitted (matching the official Claude CLI and the API default) to
+				// avoid tripping the `reasoning_extraction` refusal classifier. An explicit
+				// caller `thinkingDisplay` overrides the default in both directions. The field
+				// is gated on `supportsDisplay`: Opus 4.6 / Sonnet 4.6+ reject it with a 400,
+				// so it MUST NOT be forced onto a model that can't accept it.
 				if (model.thinking?.supportsDisplay) {
-					adaptive.display = options.thinkingDisplay ?? "summarized";
+					adaptive.display = effectiveThinkingDisplay(model, true, options.thinkingDisplay);
 				}
 				thinking = adaptive;
 				if (effort && effort !== "adaptive") outputConfigEffort = effort;

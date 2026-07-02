@@ -25,7 +25,7 @@ export interface SessionContext {
 	/**
 	 * Array parallel to messages, indicating which assistant turns should
 	 * have their prompt-cache misses suppressed/explained (because a model,
-	 * compaction, or plan-mode transition directly preceded them).
+	 * compaction, or cache-resetting mode transition directly preceded them).
 	 * Only populated in transcript mode.
 	 */
 	cacheMissExplainedAt?: boolean[];
@@ -71,6 +71,11 @@ export interface BuildSessionContextOptions {
 	/** In transcript mode, elide entries replaced by the latest compaction. */
 	collapseCompactedHistory?: boolean;
 }
+
+const CACHE_RESET_MODE_BY_NAME: Readonly<Record<string, true>> = {
+	plan: true,
+	orchestrator: true,
+};
 
 /**
  * Build the session context from entries using tree traversal.
@@ -226,8 +231,11 @@ export function buildSessionContext(
 		} else if (entry.type === "model_change") {
 			pendingReset = true;
 		} else if (entry.type === "mode_change") {
-			const isPlanTransition = (entry.mode === "plan") !== (currentMode === "plan");
-			if (isPlanTransition) {
+			const nextModeResetsCache = CACHE_RESET_MODE_BY_NAME[entry.mode] === true;
+			const currentModeResetsCache = CACHE_RESET_MODE_BY_NAME[currentMode] === true;
+			const isCacheResetModeTransition =
+				nextModeResetsCache !== currentModeResetsCache || entry.mode !== currentMode;
+			if (isCacheResetModeTransition) {
 				pendingReset = true;
 			}
 			currentMode = entry.mode;

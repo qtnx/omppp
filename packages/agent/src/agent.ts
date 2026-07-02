@@ -20,6 +20,7 @@ import {
 	streamSimple,
 	type TextContent,
 	type ThinkingBudgets,
+	type ThinkingDisplay,
 	type ToolChoice,
 	type ToolResultMessage,
 } from "@oh-my-pi/pi-ai";
@@ -223,6 +224,11 @@ export interface AgentOptions {
 	 * summary stream is suppressed. Useful when the UI hides thinking blocks anyway.
 	 */
 	hideThinkingSummary?: boolean;
+	/**
+	 * Explicit thinking summary display override. When undefined, providers keep
+	 * their model-aware defaults unless `hideThinkingSummary` forces omission.
+	 */
+	thinkingDisplay?: ThinkingDisplay;
 
 	/**
 	 * Maximum delay in milliseconds to wait for a retry when the server requests a long wait.
@@ -367,6 +373,7 @@ export class Agent {
 	#serviceTier?: ServiceTier;
 	#serviceTierResolver?: (model: Model) => ServiceTier | undefined;
 	#hideThinkingSummary?: boolean;
+	#thinkingDisplay?: ThinkingDisplay;
 	#maxRetryDelayMs?: number;
 	#getToolContext?: (toolCall?: ToolCallContext) => AgentToolContext | undefined;
 	#cursorExecHandlers?: CursorExecHandlers;
@@ -441,6 +448,7 @@ export class Agent {
 		this.#serviceTier = opts.serviceTier;
 		this.#serviceTierResolver = opts.serviceTierResolver;
 		this.#hideThinkingSummary = opts.hideThinkingSummary;
+		this.#thinkingDisplay = opts.thinkingDisplay;
 		this.#maxRetryDelayMs = opts.maxRetryDelayMs;
 		this.getApiKey = opts.getApiKey;
 		this.#onPayload = opts.onPayload;
@@ -663,6 +671,14 @@ export class Agent {
 
 	set hideThinkingSummary(value: boolean | undefined) {
 		this.#hideThinkingSummary = value;
+	}
+
+	get thinkingDisplay(): ThinkingDisplay | undefined {
+		return this.#thinkingDisplay;
+	}
+
+	set thinkingDisplay(value: ThinkingDisplay | undefined) {
+		this.#thinkingDisplay = value;
 	}
 
 	/**
@@ -1127,6 +1143,7 @@ export class Agent {
 			repetitionPenalty: this.#repetitionPenalty,
 			serviceTier: this.#serviceTier,
 			hideThinkingSummary: this.#hideThinkingSummary,
+			thinkingDisplay: this.#thinkingDisplay,
 			interruptMode: this.#interruptMode,
 			sessionId: this.#sessionId,
 			deadline: this.#deadline,

@@ -7,6 +7,7 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/orchestrator-mode/state";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -140,6 +141,28 @@ describe("InteractiveMode resume mode restoration", () => {
 		]);
 	}
 
+	async function writeOrchestratorSession(name: string, defaultModel: Model<Api>): Promise<string> {
+		const timestamp = "2026-06-01T00:00:00.000Z";
+		const defaultEntryId = `${name}-default-model`;
+		return await writeSessionFile(name, [
+			{
+				type: "model_change",
+				id: defaultEntryId,
+				parentId: null,
+				timestamp,
+				model: modelValue(defaultModel),
+				role: "default",
+			},
+			{
+				type: "mode_change",
+				id: `${name}-orchestrator-mode`,
+				parentId: defaultEntryId,
+				timestamp,
+				mode: "orchestrator",
+			},
+		]);
+	}
+
 	async function writeLoopSession(
 		name: string,
 		defaultModel: Model<Api>,
@@ -185,13 +208,15 @@ describe("InteractiveMode resume mode restoration", () => {
 			sessionFile?: string;
 			initialModel?: Model<Api>;
 			activeToolNames?: string[];
+			registryToolNames?: string[];
 			settings?: Settings;
 		} = {},
 	): Promise<{ mode: InteractiveMode; registry: ModelRegistry; session: AgentSession }> {
 		const registry = modelRegistry();
 		const initialModel = options.initialModel ?? modelOrThrow(registry, "claude-sonnet-4-5");
-		const tools = [makeTool("read"), makeTool("resolve")];
-		const toolRegistry = new Map(tools.map(tool => [tool.name, tool]));
+		const toolNames = options.registryToolNames ?? ["read", "resolve"];
+		const tools = toolNames.map(makeTool);
+		const toolRegistry = new Map(tools.map(tool => [tool.name, tool] as const));
 		const activeToolNames = options.activeToolNames ?? ["read"];
 		const activeTools = activeToolNames.map(name => {
 			const tool = toolRegistry.get(name);
@@ -292,6 +317,34 @@ describe("InteractiveMode resume mode restoration", () => {
 			enabled: true,
 			planFilePath: "local://SWITCHED.md",
 		});
+	});
+
+	it("does not carry a stale orchestrator restore snapshot across orchestrator sessions", async () => {
+		const registry = modelRegistry();
+		const defaultModel = modelOrThrow(registry, "claude-sonnet-4-5");
+		const firstSessionFile = await writeOrchestratorSession("first-orchestrator", defaultModel);
+		const targetSessionFile = await writeOrchestratorSession("target-orchestrator", defaultModel);
+		const created = await createHarness({
+			sessionFile: firstSessionFile,
+			initialModel: defaultModel,
+			registryToolNames: [
+				"unrelated",
+				"read",
+				"bash",
+				"write",
+				"orchestrator_mode",
+				...ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES,
+			],
+			activeToolNames: ["unrelated"],
+		});
+		await created.mode.init({ suppressWelcomeIntro: true });
+		expect(created.session.getActiveToolNames()).toEqual([...ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES]);
+
+		await expect(created.session.switchSession(targetSessionFile)).resolves.toBe(true);
+		await created.session.setOrchestratorModeState(undefined);
+
+		expect(created.session.getOrchestratorModeState()).toBeUndefined();
+		expect(created.session.getActiveToolNames()).not.toContain("unrelated");
 	});
 
 	it("restores active loop mode and prompt file from the active session during init", async () => {

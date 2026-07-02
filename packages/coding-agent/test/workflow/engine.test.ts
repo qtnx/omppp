@@ -98,6 +98,8 @@ describe("WorkflowRun.spawn", () => {
 			recentOutput: [],
 			toolCount: 1,
 			tokens: 17,
+			inputTokens: 0,
+			outputTokens: 0,
 			requests: 1,
 			cost: 0,
 			durationMs: 5,

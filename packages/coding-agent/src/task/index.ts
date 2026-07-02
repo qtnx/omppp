@@ -350,6 +350,11 @@ function spawnParamsFor(params: TaskParams, item: TaskItem): TaskParams {
 	} else if ("isolated" in params) {
 		spawn.isolated = params.isolated;
 	}
+	if (item.self_review !== undefined) {
+		spawn.self_review = item.self_review;
+	} else if (params.self_review !== undefined) {
+		spawn.self_review = params.self_review;
+	}
 	return spawn;
 }
 
@@ -703,6 +708,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					toolCount: 0,
 					requests: 0,
 					tokens: 0,
+					inputTokens: 0,
+					outputTokens: 0,
 					cost: 0,
 					durationMs: 0,
 				},
@@ -1153,8 +1160,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				}
 			: agent;
 		const agentReviewGate = effectiveAgent.reviewGate;
-		const reviewGateEnabled =
-			agentReviewGate?.enabled ?? this.session.settings.get("task.reviewGate.enabled") === true;
+		// self_review (per-spawn, default false) is the sole opt-in switch for the
+		// review-and-fix gate. Agent-type policy and task.reviewGate.* settings supply
+		// only the gate CONFIG (reviewer/fixer/iterations/priorities) when it runs.
+		const reviewGateEnabled = params.self_review === true;
 
 		// Apply per-agent model override from settings (highest priority)
 		const agentModelOverrides = this.session.settings.get("task.agentModelOverrides");
@@ -1365,6 +1374,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				toolCount: 0,
 				requests: 0,
 				tokens: 0,
+				inputTokens: 0,
+				outputTokens: 0,
 				cost: 0,
 				durationMs: 0,
 				modelOverride,
@@ -1407,6 +1418,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					toolCount: latestProgress.toolCount,
 					requests: result.requests,
 					tokens: result.tokens,
+					inputTokens: result.usage?.input ?? latestProgress.inputTokens,
+					outputTokens: result.usage?.output ?? latestProgress.outputTokens,
 					contextTokens: result.contextTokens,
 					contextWindow: result.contextWindow,
 					cost: result.usage?.cost.total ?? latestProgress.cost,

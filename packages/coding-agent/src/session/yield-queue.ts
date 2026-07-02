@@ -85,6 +85,21 @@ export class YieldQueue {
 		return false;
 	}
 
+	/**
+	 * Settle-path recovery. Entries enqueued while {@link YieldQueueOptions.isStreaming}
+	 * was still true rely on the agent loop's aside poll to drain them; if the turn ends
+	 * before another poll runs, they strand with no idle flush armed ({@link enqueue} only
+	 * arms one when it observed a non-streaming session). Call this once the session has
+	 * settled to arm a flush for any still-pending, idle-flushable kind. No-op while
+	 * streaming or when nothing idle-flushable is pending. Idempotent (shares the pending
+	 * guard in {@link #scheduleIdleFlush}).
+	 */
+	scheduleIdleFlushIfPending(): void {
+		if (this.#options.isStreaming()) return;
+		if (!this.hasIdleFlushableEntries()) return;
+		this.#scheduleIdleFlush();
+	}
+
 	async flush(mode: YieldFlushMode): Promise<void> {
 		if (mode === "idle") {
 			this.#idleFlushPending = false;
@@ -156,6 +171,18 @@ export class YieldQueue {
 			this.#idleFlushPending = false;
 			logger.warn("Yield queue idle flush scheduling failed", { error: formatError(error) });
 		}
+	}
+
+	/** Any pending entries whose dispatcher does NOT opt out of the idle flush.
+	 *  `skipIdleFlush` kinds are drained only via {@link drainLazy} and must never wake an
+	 *  idle turn on their own. */
+	hasIdleFlushableEntries(): boolean {
+		for (const [kind, entries] of this.#entries) {
+			if (entries.length === 0) continue;
+			if (this.#dispatchers.get(kind)?.skipIdleFlush) continue;
+			return true;
+		}
+		return false;
 	}
 
 	#drain(kind: string): unknown[] {

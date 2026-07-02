@@ -152,8 +152,10 @@ export interface InteractiveModeContext {
 	toolOutputExpanded: boolean;
 	todoExpanded: boolean;
 	planModeEnabled: boolean;
+	planModePaused?: boolean;
 	goalModeEnabled: boolean;
 	goalModePaused: boolean;
+	orchestratorModeEnabled: boolean;
 	loopModeEnabled: boolean;
 	loopPrompt?: string;
 	loopPromptFilePath?: string;
@@ -394,6 +396,7 @@ export interface InteractiveModeContext {
 	toggleThinkingBlockVisibility(): void;
 	openExternalEditor(): void;
 	registerExtensionShortcuts(): void;
+	handleOrchestratorModeCommand(initialPrompt?: string): Promise<void>;
 	handlePlanModeCommand(initialPrompt?: string): Promise<void>;
 	handleGoalModeCommand(rest?: string): Promise<void>;
 	handleGuidedGoalCommand(rest?: string): Promise<void>;

@@ -116,7 +116,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { GeminiHeaderRunDetector, isGeminiThinkingModel } from "@oh-my-pi/pi-ai/utils/thinking-loop";
 import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
-import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
+import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { MacOSPowerAssertion } from "@oh-my-pi/pi-natives";
 import {
@@ -142,10 +142,14 @@ import {
 	AdvisorRuntime,
 	type AdvisorSeverity,
 	AdvisorTranscriptRecorder,
+	createSmolGistFn,
+	type DoneVerdict,
+	DoneVerdictTool,
 	formatAdvisorBatchContent,
 	isAdvisorInterruptImmuneTurnActive,
 	isInterruptingSeverity,
 	resolveAdvisorDeliveryChannel,
+	ThinkingArtifactStore,
 } from "../advisor";
 import { type AsyncJob, type AsyncJobDeliveryState, AsyncJobManager } from "../async";
 import { classifyDifficulty } from "../auto-thinking/classifier";
@@ -163,6 +167,7 @@ import {
 	parseModelString,
 	type ResolvedModelRoleValue,
 	resolveAdvisorRoleSelection,
+	resolveDuoConfig,
 	resolveModelOverride,
 	resolveModelRoleValue,
 } from "../config/model-resolver";
@@ -173,6 +178,20 @@ import type { Settings, SkillsSettings } from "../config/settings";
 import { getDefault, onAppendOnlyModeChanged, validateProviderMaxInFlightRequests } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { loadCapability } from "../discovery";
+import {
+	computeAdvisorRetryDelay,
+	DuoController,
+	type DuoControllerHost,
+	type DuoHandoffResult,
+	type DuoStateSnapshot,
+	type DuoStatus,
+	parseRetryAfterMs,
+	RequestTakeoverTool,
+	renderDuoAdvisorInstructions,
+} from "../duo";
+import duoExecutorOverlayPrompt from "../duo/prompts/executor-overlay.md" with { type: "text" };
+import duoPlannerOverlayPrompt from "../duo/prompts/planner-notice.md" with { type: "text" };
+import duoTakeoverOverlayPrompt from "../duo/prompts/takeover-overlay.md" with { type: "text" };
 import { expandApplyPatchToEntries, normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
 import { getFileSnapshotStore } from "../edit/file-snapshot-store";
 import { disposeJuliaKernelSessionsByOwner } from "../eval/jl/executor";
@@ -229,8 +248,10 @@ import { parseTurnBudget } from "../modes/turn-budget";
 import { containsUltrathink, ULTRATHINK_NOTICE } from "../modes/ultrathink";
 import { computeNonMessageBreakdown, computeNonMessageTokens } from "../modes/utils/context-usage";
 import { containsWorkflow, WORKFLOW_NOTICE } from "../modes/workflow";
+import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES, type OrchestratorModeState } from "../orchestrator-mode/state";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import type { PlanModeState } from "../plan-mode/state";
+import doneReviewMd from "../prompts/advisor/done-review.md" with { type: "text" };
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
 import compactionPerformedNotice from "../prompts/system/compaction-performed-notice.md" with { type: "text" };
@@ -240,6 +261,7 @@ import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with 
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
 import ircAutoReplyTemplate from "../prompts/system/irc-autoreply.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
+import orchestratorModeActivePrompt from "../prompts/system/orchestrator-mode-active.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
 import planModeReferencePrompt from "../prompts/system/plan-mode-reference.md" with { type: "text" };
 import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool-decision-reminder.md" with {
@@ -283,7 +305,12 @@ import {
 	selectDiscoverableToolNamesByServer,
 	type ToolDiscoveryMode,
 } from "../tool-discovery/tool-index";
-import { computeEssentialBuiltinNames, filterInitialToolsForDiscoveryAll, type ToolCompactionRequest } from "../tools";
+import {
+	computeEssentialBuiltinNames,
+	filterInitialToolsForDiscoveryAll,
+	type ToolCompactionRequest,
+	type ToolShakeRequest,
+} from "../tools";
 import { assertEditableFile } from "../tools/auto-generated-guard";
 import { normalizeToolNames } from "../tools/builtin-names";
 import type { CheckpointState } from "../tools/checkpoint";
@@ -406,7 +433,8 @@ export type AgentSessionEvent =
 			/** The level `auto` resolved to this turn, once classified. */
 			resolved?: Effort;
 	  }
-	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState };
+	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState }
+	| { type: "mode_changed"; mode: "orchestrator" | "none" };
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
@@ -1273,6 +1301,134 @@ type MessageEndPersistenceSlot = {
 	release: () => void;
 };
 
+/**
+ * Completion-claim language patterns (case-insensitive, EN + VI). A match in the
+ * final assistant message is one of the two AND-ed triggers for the advisor
+ * done-review gate — combined with {@link hasMutationsSinceLastUserPrompt} so a
+ * plain Q&A answer ("done reading, here's the answer") never trips the gate.
+ * Word boundaries are used where they discriminate; short/accented VI tokens and
+ * check-mark glyphs match literally.
+ */
+const DONE_CLAIM_PATTERNS: readonly RegExp[] = [
+	/\bdone\b/i,
+	/complet(?:e|ed|ion)/i,
+	/\bfinished\b/i,
+	/\bimplemented\b/i,
+	/\bfixed\b/i,
+	/\bresolved\b/i,
+	/\bverified\b/i,
+	/\btests?\s+pass(?:es|ed)?\b/i,
+	/\bworks\b/i,
+	/\bsuccessfully\b/i,
+	/hoàn thành/i,
+	/\bxong\b/i,
+	/đã sửa/i,
+	/chạy ok/i,
+	/✅/,
+	/✓/,
+];
+
+/**
+ * Whether `text` contains completion-claim language (see {@link DONE_CLAIM_PATTERNS}).
+ * Exported for unit tests.
+ */
+export function detectCompletionClaim(text: string): boolean {
+	return DONE_CLAIM_PATTERNS.some(re => re.test(text));
+}
+
+export function shouldRunDuoDoneGate(
+	advisorDoneGate: boolean,
+	duoStatus: DuoStatus | undefined,
+	duoDoneGate: "strict" | "inherit",
+): boolean {
+	return advisorDoneGate || (duoStatus?.phase === "executing" && duoDoneGate === "strict");
+}
+
+export function handleDuoEscalateVerifyVerdict(
+	verdict: DoneVerdict,
+	requestTakeover: (
+		purpose: "verify",
+		reason: string,
+		directive: string,
+	) => "accepted" | "cooldown-advice" | "rejected" | undefined,
+	emitAccepted: () => void,
+): boolean {
+	if (verdict.verdict !== "escalate_verify") return false;
+	const decision = requestTakeover(
+		"verify",
+		verdict.note ?? "completion claim requires independent verification",
+		(verdict.missing ?? []).join("; ") || "verify the completion claim",
+	);
+	if (decision !== "accepted") return false;
+	emitAccepted();
+	return true;
+}
+
+export function shouldNotifyDuoPlanApproved(
+	previous: PlanModeState | undefined,
+	next: PlanModeState | undefined,
+	planReferencePath: string,
+	referenceSetDuringPlanMode: boolean,
+): boolean {
+	return Boolean(previous?.enabled && next === undefined && referenceSetDuringPlanMode && planReferencePath.trim());
+}
+
+export type DuoAdvisorStopAction = "stop" | "rebuild" | "none";
+
+/**
+ * What to do with the advisor runtime when duo deactivates. `stop` — duo
+ * started the advisor, tear it down and restore the settings-driven enabled
+ * flag. `rebuild` — the user's own advisor was rebuilt on the duo planner pin,
+ * so rebuild it on the configured advisor role model. `none` — the advisor
+ * never ran on the pin (or does not exist); leave it untouched.
+ */
+export function resolveDuoAdvisorStopAction(
+	duoOwnsAdvisor: boolean,
+	pinned: Model | undefined,
+	advisorModel: Model | undefined,
+): DuoAdvisorStopAction {
+	if (duoOwnsAdvisor) return "stop";
+	if (pinned && advisorModel && modelsAreEqual(advisorModel, pinned)) return "rebuild";
+	return "none";
+}
+
+/** Tool names whose successful result counts as a workspace mutation. */
+const DONE_GATE_MUTATION_TOOLS: ReadonlySet<string> = new Set([
+	"edit",
+	"write",
+	"ast_edit",
+	"task",
+	"workflow",
+	"bash",
+]);
+
+/**
+ * Whether any workspace mutation occurred since the last genuine user prompt.
+ *
+ * Scans backwards to the boundary — the last `role === "user"` message that is
+ * NOT agent-attributed (synthetic/developer prompts carry `attribution: "agent"`
+ * and must not reset the window) — then forward-scans that suffix for a
+ * successful `toolResult` from a mutating tool. Exported for unit tests.
+ */
+export function hasMutationsSinceLastUserPrompt(messages: readonly AgentMessage[]): boolean {
+	let start = 0;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		if (m.role === "user" && (m as { attribution?: string }).attribution !== "agent") {
+			start = i;
+			break;
+		}
+	}
+	for (let i = start; i < messages.length; i++) {
+		const m = messages[i];
+		if (m.role !== "toolResult") continue;
+		const tr = m as { isError?: boolean; toolName?: string };
+		if (tr.isError) continue;
+		if (tr.toolName && DONE_GATE_MUTATION_TOOLS.has(tr.toolName)) return true;
+	}
+	return false;
+}
+
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
@@ -1334,6 +1490,8 @@ export class AgentSession {
 	 *  Reset on advisor reset (compaction, session switch, `/new`). */
 	readonly #advisorEmissionGuard = new AdvisorEmissionGuard();
 	#planModeState: PlanModeState | undefined;
+	#orchestratorModeState: OrchestratorModeState | undefined;
+	#orchestratorModePreviousToolNames: string[] | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
 	#advisorRuntime?: AdvisorRuntime;
@@ -1352,6 +1510,8 @@ export class AgentSession {
 	#advisorAgentUnsubscribe?: () => void;
 	/** Latest advisor-recorder close, awaited by dispose() so the final turn lands on disk. */
 	#advisorRecorderClosed: Promise<void> = Promise.resolve();
+	#advisorRetryTimer?: NodeJS.Timeout;
+	#advisorRetryAttempt = 0;
 	#goalTurnCounter = 0;
 	#planReferenceSent = false;
 	#planReferencePath = "local://PLAN.md";
@@ -1365,6 +1525,7 @@ export class AgentSession {
 	// Compaction state
 	#compactionAbortController: AbortController | undefined = undefined;
 	#pendingAgentCompactionRequest?: { reason: string };
+	#pendingAgentShakeRequest?: { mode: ShakeMode };
 	/** Monotonic count of performed compactions (any reason/strategy — handoff and shake included). */
 	#compactionsPerformed = 0;
 	#autoCompactionAbortController: AbortController | undefined = undefined;
@@ -1391,6 +1552,42 @@ export class AgentSession {
 	 * instruction") does not drive 1/3 → 2/3 → 3/3 without user input.
 	 */
 	#todoReminderAwaitingProgress = false;
+	/**
+	 * One-shot guard for the orchestrator QA completion gate: set true after a QA-jobs-running
+	 * reminder is appended so a text-only acknowledgement does not re-fire it. Cleared on a new
+	 * user prompt or implicitly when no matching QA jobs remain running.
+	 */
+	#qaGateReminderSent = false;
+	/**
+	 * Number of times the advisor done-review gate has rejected a completion claim
+	 * within the current user prompt. Capped at 2: after the second rejection the
+	 * gate stops firing and the agent must surface any unresolved objection to the
+	 * user. Reset on every new user prompt (alongside {@link #qaGateReminderSent}).
+	 */
+	#advisorDoneGateRejections = 0;
+	/**
+	 * In-flight resolver for an active advisor done-review. `done_verdict` resolves
+	 * it; the gate races it against timeout/abort. Nulled after the first
+	 * resolution so a duplicate `done_verdict` call gets `false` (no review
+	 * pending). Settled with `null` on reset/dispose so the race always exits.
+	 */
+	#pendingDoneVerdict?: { resolve: (verdict: DoneVerdict | null) => void };
+	/**
+	 * Set while the primary is blocked awaiting an advisor consult OR a done-review
+	 * is in flight. Downgrades interrupting advice from the "steer" channel to an
+	 * aside so a steer cannot abort the very consult tool awaiting an answer, or
+	 * race the done-gate's own continuation.
+	 */
+	#advisorConsultInFlight = false;
+	#duoController?: DuoController;
+	#duoOwnsAdvisor = false;
+	#duoSwitchInProgress = false;
+	#duoPromptOverlayPhase: DuoStatus["phase"] | undefined;
+	#duoOwnsPlanMode = false;
+	#duoAdvisorPinnedModel?: Model;
+	#duoPlanReferenceSetDuringPlanMode = false;
+	#duoAwaitingApprovedPlanReference = false;
+	#duoPlanApprovedNotified = false;
 	#todoPhases: TodoPhase[] = [];
 	#toolChoiceQueue = new ToolChoiceQueue();
 
@@ -1647,6 +1844,11 @@ export class AgentSession {
 		}
 		this.#scheduleQueuedMessageDrain();
 		this.#resumeStrandedIrcAsides();
+		// YieldQueue kinds (async-result subagent completions, late diagnostics, MCP,
+		// browser annotations) enqueued during the streaming tail rely on the aside poll to
+		// drain; if the turn ended before another poll, they strand with no flush armed. Arm
+		// one now that we've settled — the queue's own guard no-ops if still streaming.
+		this.yieldQueue.scheduleIdleFlushIfPending();
 	}
 
 	/** IRC asides that arrive after the loop's final aside poll — or while an abort skipped that
@@ -1837,6 +2039,7 @@ export class AgentSession {
 					await this.#advisorRuntime.waitForCatchup(30000, threshold, signal);
 				}
 			}
+			void this.#duoController?.notifyTurnEnd();
 			await this.#maintainContextMidRun(messages, signal, context);
 		});
 		this.yieldQueue = new YieldQueue({
@@ -1956,12 +2159,236 @@ export class AgentSession {
 
 		this.#advisorEnabled = this.settings.get("advisor.enabled") as boolean;
 		if (this.#advisorEnabled) this.#buildAdvisorRuntime();
+		this.#initDuoController();
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, hooks, auto-compaction, retry logic)
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
 		// Re-evaluate append-only context mode when the setting changes at runtime.
 		this.#unsubscribeAppendOnly = onAppendOnlyModeChanged(_value => this.#syncAppendOnlyContext(this.model));
+	}
+
+	#ensureDuoController(restored?: DuoStateSnapshot): DuoController | undefined {
+		if (this.#duoController) return this.#duoController;
+		if (this.#agentKind !== "main") return undefined;
+		const config = resolveDuoConfig(this.settings, this.#modelRegistry.getAvailable(), this.#modelRegistry);
+		if (!config) return undefined;
+		this.#duoController = new DuoController(this.#buildDuoHost(), config, restored);
+		return this.#duoController;
+	}
+
+	#buildDuoHost(): DuoControllerHost {
+		return {
+			currentModel: () => this.model,
+			availableModels: () => this.getAvailableModels(),
+			isStreaming: () => this.isStreaming,
+			setModelTemporary: async (model, thinkingLevel) => {
+				this.#duoSwitchInProgress = true;
+				try {
+					await this.setModelTemporary(model, thinkingLevel);
+				} finally {
+					this.#duoSwitchInProgress = false;
+				}
+			},
+			setThinkingLevel: level => this.setThinkingLevel(level),
+			configuredThinkingLevel: () => this.configuredThinkingLevel(),
+			ensureAdvisorStarted: pinned => this.#ensureDuoAdvisorStarted(pinned),
+			stopDuoAdvisor: () => this.#stopDuoAdvisor(),
+			pauseAdvisor: () => this.#advisorRuntime?.pause(),
+			resumeAdvisor: () => {
+				// The handback brief is injected into the primary stream; the advisor sees it through the normal
+				// delta feed.
+				this.#advisorRuntime?.resume();
+			},
+			injectBrief: (text, deliverAs) => {
+				void this.sendCustomMessage(
+					{ customType: "duo", content: text, display: true, attribution: "agent" },
+					{ deliverAs },
+				);
+			},
+			emitNotice: (level, text) => this.emitNotice(level, text, "duo"),
+			persistSnapshot: snapshot => {
+				this.sessionManager.appendCustomMessageEntry("duo_state", "", false, snapshot, "agent");
+				this.#syncDuoPromptOverlay();
+			},
+			orchestratorEnabled: () => this.getOrchestratorModeState()?.enabled === true,
+			setOrchestratorEnabled: async enabled => {
+				if ((this.getOrchestratorModeState()?.enabled === true) === enabled) return;
+				await this.setOrchestratorModeState(enabled ? { enabled: true } : undefined);
+			},
+			setPlanModeEnabled: enabled => {
+				const current = this.getPlanModeState()?.enabled === true;
+				if (enabled === current) {
+					// Planning phase adopts an already-active (user-entered) plan mode
+					// so the eventual handoff can release it.
+					if (enabled) this.#duoOwnsPlanMode = true;
+					return;
+				}
+				if (enabled) {
+					this.#duoOwnsPlanMode = true;
+					this.setPlanModeState({ enabled: true, planFilePath: "local://PLAN.md", workflow: "parallel" });
+					return;
+				}
+				// Only release plan mode duo engaged or adopted — never an unrelated
+				// user plan session (e.g. duo deactivating while the user plans).
+				if (!this.#duoOwnsPlanMode) return;
+				this.#duoOwnsPlanMode = false;
+				this.setPlanModeState(undefined);
+			},
+			planModeActive: () => this.getPlanModeState()?.enabled === true,
+		};
+	}
+
+	/**
+	 * Keep the duo phase overlay in the system prompt in sync with the duo
+	 * phase. Runs on every persisted transition; cheap no-op when the phase did
+	 * not flip. Model-switching transitions also refresh the prompt via the
+	 * model-change path — this covers same-model transitions (e.g. activation
+	 * when the main model is already the planner).
+	 */
+	#syncDuoPromptOverlay(): void {
+		const phase = this.#duoController?.status.phase;
+		if (phase === this.#duoPromptOverlayPhase) return;
+		this.#duoPromptOverlayPhase = phase;
+		this.agent.setSystemPrompt(this.#baseSystemPromptWithModeOverlay());
+	}
+
+	#ensureDuoAdvisorStarted(pinned: Model): boolean {
+		this.#duoAdvisorPinnedModel = pinned;
+		if (!this.#advisorEnabled) {
+			this.#advisorEnabled = true;
+			this.#duoOwnsAdvisor = true;
+		}
+		const advisorModel = this.#advisorAgent?.state.model;
+		if (advisorModel && !modelsAreEqual(advisorModel, pinned)) {
+			this.#stopAdvisorRuntime();
+		}
+		return this.#buildAdvisorRuntime(true);
+	}
+
+	#scheduleAdvisorRevive(retryAfterMs?: number): void {
+		if (this.#advisorRetryTimer) {
+			clearTimeout(this.#advisorRetryTimer);
+			this.#advisorRetryTimer = undefined;
+		}
+		if (!this.#duoController) return;
+		const attempt = this.#advisorRetryAttempt;
+		const delayMs = computeAdvisorRetryDelay(attempt, retryAfterMs);
+		logger.debug("duo advisor revive scheduled", { attempt, delayMs });
+		this.#advisorRetryTimer = setTimeout(() => {
+			void this.#attemptAdvisorRevive();
+		}, delayMs);
+		this.#advisorRetryTimer.unref?.();
+	}
+
+	async #attemptAdvisorRevive(): Promise<void> {
+		this.#advisorRetryTimer = undefined;
+		if (this.#duoController?.status.phase !== "degraded") {
+			this.#advisorRetryAttempt = 0;
+			return;
+		}
+		try {
+			await this.#duoController.reevaluate();
+		} catch (err) {
+			logger.debug("duo advisor revive attempt failed", { err: String(err) });
+		}
+		if (this.#duoController?.status.phase !== "degraded") {
+			this.#advisorRetryAttempt = 0;
+			this.emitNotice("info", "Duo advisor restored.", "advisor");
+			return;
+		}
+		this.#advisorRetryAttempt++;
+		this.#scheduleAdvisorRevive();
+	}
+
+	#clearAdvisorRetry(): void {
+		if (this.#advisorRetryTimer) {
+			clearTimeout(this.#advisorRetryTimer);
+			this.#advisorRetryTimer = undefined;
+		}
+		this.#advisorRetryAttempt = 0;
+	}
+
+	#stopDuoAdvisor(): void {
+		this.#clearAdvisorRetry();
+		const pinned = this.#duoAdvisorPinnedModel;
+		this.#duoAdvisorPinnedModel = undefined;
+		const action = resolveDuoAdvisorStopAction(this.#duoOwnsAdvisor, pinned, this.#advisorAgent?.state.model);
+		if (action === "stop") {
+			this.#stopAdvisorRuntime();
+			this.#advisorEnabled = this.settings.get("advisor.enabled") as boolean;
+			this.#duoOwnsAdvisor = false;
+			return;
+		}
+		if (action === "rebuild") {
+			// Duo pinned a user-owned advisor to the planner: rebuild it on the
+			// configured advisor role model now that the pin is cleared.
+			this.#stopAdvisorRuntime();
+			this.#buildAdvisorRuntime(true);
+		}
+	}
+
+	#initDuoController(): void {
+		// Restore a persisted duo snapshot when the branch has one; otherwise
+		// evaluate activation fresh so `duo.mode: auto|on` engages at session
+		// start (e.g. main model is Fable) without waiting for a mode toggle.
+		const controller = this.#ensureDuoController(this.#latestDuoSnapshotFromBranch());
+		if (controller) void controller.reevaluate();
+	}
+
+	#latestDuoSnapshotFromBranch(): DuoStateSnapshot | undefined {
+		const branch = this.sessionManager.getBranch();
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (entry.type !== "custom_message" || entry.customType !== "duo_state") continue;
+			const snapshot = this.#parseDuoSnapshot(entry.details);
+			if (snapshot) return snapshot;
+		}
+		return undefined;
+	}
+
+	#parseDuoSnapshot(value: unknown): DuoStateSnapshot | undefined {
+		if (!value || typeof value !== "object") return undefined;
+		const record = value as Record<string, unknown>;
+		const phase = record.phase;
+		if (
+			phase !== "inactive" &&
+			phase !== "planning" &&
+			phase !== "executing" &&
+			phase !== "takeover" &&
+			phase !== "suspended" &&
+			phase !== "degraded"
+		) {
+			return undefined;
+		}
+		const takeoverCount = typeof record.takeoverCount === "number" ? record.takeoverCount : 0;
+		const consecutiveTakeovers = typeof record.consecutiveTakeovers === "number" ? record.consecutiveTakeovers : 0;
+		const cooldownRemaining = typeof record.cooldownRemaining === "number" ? record.cooldownRemaining : 0;
+		return {
+			phase,
+			plannerId: typeof record.plannerId === "string" ? record.plannerId : undefined,
+			executorId: typeof record.executorId === "string" ? record.executorId : undefined,
+			takeoverPurpose:
+				record.takeoverPurpose === "recover" || record.takeoverPurpose === "verify"
+					? record.takeoverPurpose
+					: undefined,
+			takeoverCount,
+			consecutiveTakeovers,
+			cooldownRemaining,
+			suspendReason:
+				record.suspendReason === "set-model-failed" || record.suspendReason === "unresolvable"
+					? record.suspendReason
+					: undefined,
+			preDuoThinking: typeof record.preDuoThinking === "string" ? record.preDuoThinking : undefined,
+		};
+	}
+
+	#notifyDuoPlanApprovedIfReady(): void {
+		if (this.#duoPlanApprovedNotified) return;
+		if (!this.#planReferencePath.trim()) return;
+		this.#duoPlanApprovedNotified = true;
+		this.#duoAwaitingApprovedPlanReference = false;
+		void this.#ensureDuoController()?.notifyPlanApproved();
 	}
 	// -------------------------------------------------------------------------
 	// Advisor runtime lifecycle
@@ -2003,12 +2430,17 @@ export class AgentSession {
 	 * so none of them inject into the new conversation.
 	 */
 	#resetAdvisorSessionState(): void {
+		this.#clearAdvisorRetry();
 		// Mute the recorder across the re-prime: AdvisorRuntime.reset() aborts the advisor
 		// loop, and that abort can emit an `aborted` message_end we must not attribute to
 		// either session's transcript. Detach, reset, then re-attach the live agent's feed.
 		this.#advisorAgentUnsubscribe?.();
 		this.#advisorAgentUnsubscribe = undefined;
 		this.#advisorRuntime?.reset();
+		// Settle any in-flight done-review so its race exits (the underlying consult
+		// is resolved null by AdvisorRuntime.reset()); clear the steer-downgrade flag.
+		this.#settlePendingDoneVerdict();
+		this.#advisorConsultInFlight = false;
 		this.#advisorAdviseTool?.resetDeliveredNotes();
 		this.#advisorEmissionGuard.reset();
 		this.#attachAdvisorRecorderFeed();
@@ -2028,11 +2460,14 @@ export class AgentSession {
 		if (!this.#advisorEnabled) return false;
 		if (this.#agentKind !== "main" && !this.settings.get("advisor.subagents")) return false;
 
-		const advisorSel = resolveAdvisorRoleSelection(
+		const resolvedAdvisorSel = resolveAdvisorRoleSelection(
 			this.settings,
 			this.#modelRegistry.getAvailable(),
 			this.#modelRegistry,
 		);
+		const advisorSel = this.#duoAdvisorPinnedModel
+			? { model: this.#duoAdvisorPinnedModel, thinkingLevel: resolvedAdvisorSel?.thinkingLevel }
+			: resolvedAdvisorSel;
 		if (!advisorSel) {
 			logger.debug("advisor enabled but no model assigned to the 'advisor' role; advisor inactive");
 			return false;
@@ -2061,7 +2496,7 @@ export class AgentSession {
 				return;
 			}
 			const interrupting = isInterruptingSeverity(severity);
-			const channel = resolveAdvisorDeliveryChannel({
+			let channel = resolveAdvisorDeliveryChannel({
 				severity,
 				autoResumeSuppressed: this.#advisorAutoResumeSuppressed,
 				// Key on the live agent-core loop, not session `isStreaming` (which also
@@ -2073,6 +2508,14 @@ export class AgentSession {
 				aborting: this.#abortInProgress,
 				interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
 			});
+			// While a consult or done-review is blocked awaiting the advisor, a "steer"
+			// would abort the very consult tool waiting for the answer (F6) and, during
+			// a done-review, race the gate's own continuation (F5). Downgrade it to an
+			// aside so the note still lands at the next step boundary; the "preserve"
+			// branch (deliberate-interrupt suppression) is left untouched.
+			if (channel === "steer" && this.#advisorConsultInFlight) {
+				channel = "aside";
+			}
 			if (channel === "aside") {
 				this.yieldQueue.enqueue("advisor", { note, severity });
 				return;
@@ -2101,16 +2544,74 @@ export class AgentSession {
 
 		const adviseTool = new AdviseTool(enqueueAdvice);
 		this.#advisorAdviseTool = adviseTool;
+		// Advisor-only tool: records the done-review verdict. `onVerdict` resolves
+		// the in-flight #pendingDoneVerdict resolver and reports whether a review was
+		// actually pending (false → the session already resolved it → duplicate call).
+		const doneVerdictTool = new DoneVerdictTool((verdict: DoneVerdict) => {
+			const pending = this.#pendingDoneVerdict;
+			if (!pending) return false;
+			this.#pendingDoneVerdict = undefined;
+			pending.resolve(verdict);
+			return true;
+		});
 		const advisorReadOnlyTools = this.#advisorReadOnlyTools ?? [];
+		const advisorTools = [
+			adviseTool,
+			doneVerdictTool,
+			...advisorReadOnlyTools,
+			...(this.#duoController
+				? [
+						new RequestTakeoverTool(
+							(purpose, reason, directive) =>
+								this.#duoController?.requestTakeover(purpose, reason, directive) ?? "rejected",
+						),
+					]
+				: []),
+		];
+
+		// Thinking-artifact store: clamps large primary thinking blocks for the
+		// advisor feed (head/tail + `{{GIST:<hash>}}` marker + spilled artifact) and
+		// resolves those placeholders with tiny/smol gists just before each prompt.
+		const thinkingStore = new ThinkingArtifactStore({
+			artifactsDir: () => {
+				const f = this.sessionManager.getSessionFile();
+				return f?.endsWith(".jsonl") ? f.slice(0, -".jsonl".length) : undefined;
+			},
+			obfuscate: text => (this.#obfuscator?.hasSecrets() ? this.#obfuscator.obfuscate(text) : text),
+			gistFn: createSmolGistFn({
+				registry: this.#modelRegistry,
+				settings: this.settings,
+				sessionId: this.sessionId,
+			}),
+			gistEnabled: () => this.settings.get("advisor.thinkingGist"),
+			clampThreshold: () => this.settings.get("advisor.thinkingClampChars") ?? 0,
+		});
 
 		const appendOnlyContext = new AppendOnlyContextManager();
-		const advisorThinkingLevel = advisorSel.thinkingLevel ?? ThinkingLevel.Medium;
+		const advisorThinkingLevel = this.#duoAdvisorPinnedModel
+			? (() => {
+					const configured = parseConfiguredThinkingLevel(this.settings.get("duo.advisorThinking"));
+					if (configured === AUTO_THINKING || configured === ThinkingLevel.Inherit) return undefined;
+					if (configured === ThinkingLevel.Off) return ThinkingLevel.Off;
+					return clampThinkingLevelForModel(advisorSel.model, configured ?? ThinkingLevel.XHigh);
+				})()
+			: (advisorSel.thinkingLevel ?? ThinkingLevel.Medium);
 		const systemPrompt = [advisorSystemPrompt];
 		if (this.#advisorContextPrompt) {
 			systemPrompt.push(this.#advisorContextPrompt);
 		}
 		if (this.#advisorWatchdogPrompt) {
 			systemPrompt.push(this.#advisorWatchdogPrompt);
+		}
+		const duoStatus = this.#duoController?.status;
+		if (duoStatus && duoStatus.phase !== "inactive" && duoStatus.phase !== "suspended") {
+			systemPrompt.push(
+				renderDuoAdvisorInstructions({
+					// DuoStatus intentionally omits cooldown/consecutive counts; keep the advisor prompt stable.
+					cooldownRemaining: 0,
+					consecutiveTakeovers: 0,
+				}),
+			);
 		}
 		const advisorSessionId = this.sessionId ? `${this.sessionId}-advisor` : undefined;
 
@@ -2165,7 +2666,7 @@ export class AgentSession {
 				systemPrompt,
 				model: advisorSel.model,
 				thinkingLevel: toReasoningEffort(advisorThinkingLevel),
-				tools: [adviseTool, ...advisorReadOnlyTools],
+				tools: advisorTools,
 			},
 			appendOnlyContext,
 			sessionId: advisorSessionId,
@@ -2226,6 +2727,8 @@ export class AgentSession {
 			maintainContext: incomingTokens => this.#maintainAdvisorContext(incomingTokens),
 			obfuscator: this.#obfuscator,
 			beginAdvisorUpdate: () => this.#advisorEmissionGuard.beginUpdate(),
+			resolveGists: batch => thinkingStore.resolveGists(batch),
+			renderThinking: text => thinkingStore.renderThinking(text),
 			notifyFailure: error => {
 				const message = error instanceof Error ? error.message : String(error);
 				this.emitNotice(
@@ -2233,6 +2736,8 @@ export class AgentSession {
 					`Advisor unavailable for ${formatModelString(advisorSel.model)}: ${message}`,
 					"advisor",
 				);
+				this.#duoController?.notifyAdvisorDropped();
+				this.#scheduleAdvisorRevive(parseRetryAfterMs(error));
 			},
 		});
 		if (seedToCurrent) {
@@ -2269,6 +2774,9 @@ export class AgentSession {
 			this.#advisorRuntime.dispose();
 			this.#advisorRuntime = undefined;
 		}
+		// Settle any in-flight done-review so its race exits, and clear the flag.
+		this.#settlePendingDoneVerdict();
+		this.#advisorConsultInFlight = false;
 		if (this.#advisorTranscriptRecorder) {
 			// Capture the close so dispose()/`/drop` can await the queued open+append+close —
 			// the last advisor turn would otherwise be lost on a fast process exit.
@@ -2281,6 +2789,168 @@ export class AgentSession {
 		this.#advisorAdviseTool = undefined;
 		this.#advisorYieldQueueUnsubscribe?.();
 		this.#advisorYieldQueueUnsubscribe = undefined;
+	}
+
+	/**
+	 * "Phone a friend": ask the always-watching advisor a question mid-turn and
+	 * block until it answers. Resolves with the advisor's plain-text reply, or
+	 * `null` when the advisor is inactive / did not answer within 120s / was
+	 * aborted. Sets {@link #advisorConsultInFlight} for the duration so an
+	 * interrupting advice note is downgraded to an aside instead of aborting the
+	 * consult tool that is awaiting this answer. Invoked by the `consult` tool.
+	 */
+	async consultAdvisor(question: string, signal?: AbortSignal): Promise<string | null> {
+		if (!this.#advisorRuntime || this.#advisorRuntime.disposed) return null;
+		this.#advisorConsultInFlight = true;
+		try {
+			return await this.#advisorRuntime.consult(question, { signal, timeoutMs: 120_000 });
+		} finally {
+			this.#advisorConsultInFlight = false;
+		}
+	}
+
+	/** Resolve and clear any in-flight done-review verdict resolver with `null`. */
+	#settlePendingDoneVerdict(): void {
+		const pending = this.#pendingDoneVerdict;
+		if (!pending) return;
+		this.#pendingDoneVerdict = undefined;
+		try {
+			pending.resolve(null);
+		} catch {}
+	}
+
+	/**
+	 * Advisor done-review gate (final-stop layer alongside QA / todo gates). When
+	 * the primary is about to deliver a final message that CLAIMS completion AND
+	 * the transcript shows a mutation since the last real user prompt, the advisor
+	 * reviews the completion against transcript evidence and returns a verdict.
+	 *
+	 * - `reject` → persisted developer reminder (mirroring {@link #checkQaCompletion})
+	 *   + scheduled continuation; returns true (stop is deferred).
+	 * - `approve` → returns false (stop proceeds).
+	 * - no verdict (timeout/abort/consult settled without a verdict) → fail-open:
+	 *   a warning notice, returns false.
+	 *
+	 * Capped at 2 rejections per user prompt; after that the agent must surface any
+	 * unresolved objection to the user itself.
+	 */
+	async #checkAdvisorDoneGate(finalMessage: AssistantMessage): Promise<boolean> {
+		if (!this.#advisorRuntime || this.#advisorRuntime.disposed) return false;
+		if (
+			!shouldRunDuoDoneGate(
+				this.settings.get("advisor.doneGate"),
+				this.#duoController?.status,
+				this.settings.get("duo.doneGate"),
+			)
+		) {
+			return false;
+		}
+		if (this.#agentKind !== "main") return false;
+		if (this.#advisorAutoResumeSuppressed) return false;
+		if (this.#advisorDoneGateRejections >= 2) return false;
+
+		const finalText = finalMessage.content
+			.filter((b): b is TextContent => b.type === "text")
+			.map(b => b.text)
+			.join("\n");
+		if (!detectCompletionClaim(finalText)) return false;
+		if (!hasMutationsSinceLastUserPrompt(this.agent.state.messages)) return false;
+
+		this.emitNotice("info", "Advisor reviewing completion…", "advisor");
+
+		// Capture the generation NOW: a late reject must schedule the continuation
+		// against this prompt turn, never leak into a subsequent user prompt.
+		const generation = this.#promptGeneration;
+		const postPromptSignal = this.#postPromptTasksAbortController.signal;
+
+		const { promise: verdictPromise, resolve: verdictResolve } = Promise.withResolvers<DoneVerdict | null>();
+		this.#pendingDoneVerdict = { resolve: verdictResolve };
+		this.#advisorConsultInFlight = true;
+
+		const timers: NodeJS.Timeout[] = [];
+		let onAbort: (() => void) | undefined;
+		const cleanup = () => {
+			this.#pendingDoneVerdict = undefined;
+			this.#advisorConsultInFlight = false;
+			for (const t of timers) clearTimeout(t);
+			if (onAbort) postPromptSignal.removeEventListener("abort", onAbort);
+		};
+
+		let verdict: DoneVerdict | null;
+		try {
+			const consultPromise = this.#advisorRuntime.consult(doneReviewMd, {
+				timeoutMs: 90_000,
+				signal: postPromptSignal,
+			});
+
+			// The verdict arrives via the done_verdict tool (verdictPromise). If the
+			// consult settles WITHOUT a verdict, grant a 5s grace for a late verdict
+			// then fail open. An abort or the 90s overall cap also fail open.
+			const consultRace = consultPromise.then(
+				() =>
+					new Promise<null>(resolve => {
+						timers.push(setTimeout(() => resolve(null), 5_000));
+					}),
+			);
+			const abortRace = new Promise<null>(resolve => {
+				if (postPromptSignal.aborted) {
+					resolve(null);
+					return;
+				}
+				onAbort = () => resolve(null);
+				postPromptSignal.addEventListener("abort", onAbort, { once: true });
+			});
+			const capRace = new Promise<null>(resolve => {
+				timers.push(setTimeout(() => resolve(null), 90_000));
+			});
+
+			verdict = await Promise.race([verdictPromise, consultRace, abortRace, capRace]);
+		} finally {
+			cleanup();
+		}
+
+		if (!verdict) {
+			this.emitNotice("warning", "Advisor done-review unavailable — proceeding without verdict", "advisor");
+			return false;
+		}
+		if (verdict.verdict === "approve") {
+			return false;
+		}
+		if (
+			handleDuoEscalateVerifyVerdict(
+				verdict,
+				(purpose, reason, directive) => this.#duoController?.requestTakeover(purpose, reason, directive),
+				() => this.emitNotice("info", "Duo planner takeover accepted for completion verification.", "duo"),
+			)
+		) {
+			return true;
+		}
+
+		// Reject.
+		this.#advisorDoneGateRejections++;
+		const reviewNum = this.#advisorDoneGateRejections;
+		const items: string[] = [];
+		for (const item of verdict.missing ?? []) {
+			const trimmed = item.trim();
+			if (trimmed) items.push(`- ${trimmed}`);
+		}
+		if (verdict.note?.trim()) items.push(verdict.note.trim());
+		const body = items.length > 0 ? `\n${items.join("\n")}` : "";
+		const reminder =
+			`<system-reminder>Advisor done-review REJECTED the completion claim. Missing:${body}\n` +
+			`Address each with evidence, then conclude. (Review ${reviewNum}/2 — after the final rejected review ` +
+			`you must surface any unresolved objection to the user.)</system-reminder>`;
+
+		const reminderMessage: Message = {
+			role: "developer",
+			content: [{ type: "text", text: reminder }],
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		this.agent.appendMessage(reminderMessage);
+		this.sessionManager.appendMessage(reminderMessage);
+		this.#scheduleAgentContinue({ generation });
+		return true;
 	}
 
 	/** Subscribe the advisor agent's finalized messages into the transcript recorder.
@@ -2303,12 +2973,22 @@ export class AgentSession {
 		const targetModel = await this.#resolveContextPromotionTarget(currentModel, contextWindow);
 		if (!targetModel) return false;
 
-		const advisorSel = resolveAdvisorRoleSelection(
+		const resolvedAdvisorSel = resolveAdvisorRoleSelection(
 			this.settings,
 			this.#modelRegistry.getAvailable(),
 			this.#modelRegistry,
 		);
-		const advisorThinkingLevel = advisorSel?.thinkingLevel ?? ThinkingLevel.Medium;
+		const advisorSel = this.#duoAdvisorPinnedModel
+			? { model: this.#duoAdvisorPinnedModel, thinkingLevel: resolvedAdvisorSel?.thinkingLevel }
+			: resolvedAdvisorSel;
+		const advisorThinkingLevel = this.#duoAdvisorPinnedModel
+			? (() => {
+					const configured = parseConfiguredThinkingLevel(this.settings.get("duo.advisorThinking"));
+					if (configured === AUTO_THINKING || configured === ThinkingLevel.Inherit) return undefined;
+					if (configured === ThinkingLevel.Off) return ThinkingLevel.Off;
+					return clampThinkingLevelForModel(advisorSel!.model, configured ?? ThinkingLevel.XHigh);
+				})()
+			: (advisorSel?.thinkingLevel ?? ThinkingLevel.Medium);
 
 		try {
 			this.#advisorAgent?.setModel(targetModel);
@@ -3230,6 +3910,7 @@ export class AgentSession {
 
 		// Check auto-retry and auto-compaction after agent completes
 		if (event.type === "agent_end") {
+			void this.#duoController?.flushPendingSwitch();
 			const settledMessages = this.agent.state.messages;
 			const emitAgentEndNotification = async () => {
 				await this.#emitAgentEndNotification(settledMessages);
@@ -3384,6 +4065,7 @@ export class AgentSession {
 				// #checkCompaction (which would consume it) is skipped below, so clear it here
 				// to keep it from firing on the next non-aborted turn.
 				this.#pendingAgentCompactionRequest = undefined;
+				this.#pendingAgentShakeRequest = undefined;
 				await emitAgentEndNotification();
 				return;
 			}
@@ -3443,8 +4125,18 @@ export class AgentSession {
 					await emitAgentEndNotification();
 					return;
 				}
+				const qaContinuationScheduled = await this.#checkQaCompletion();
+				if (qaContinuationScheduled) {
+					await emitAgentEndNotification();
+					return;
+				}
 				const todoContinuationScheduled = await this.#checkTodoCompletion();
 				if (todoContinuationScheduled) {
+					await emitAgentEndNotification();
+					return;
+				}
+				const doneGateContinuationScheduled = await this.#checkAdvisorDoneGate(msg);
+				if (doneGateContinuationScheduled) {
 					await emitAgentEndNotification();
 					return;
 				}
@@ -4925,10 +5617,12 @@ export class AgentSession {
 	 * gap slips past the disposal guards.
 	 */
 	beginDispose(): void {
+		this.#clearAdvisorRetry();
 		this.#isDisposed = true;
 		this.#flushPendingIrcAsides();
 		this.yieldQueue.clear();
 		this.agent.setAsideMessageProvider(undefined);
+		this.#duoController?.dispose();
 		this.#stopAdvisorRuntime();
 		this.#evalExecutionDisposing = true;
 	}
@@ -5178,6 +5872,16 @@ export class AgentSession {
 		if (normalized === TOOL_DISCOVERY_SEARCH_TOOL_NAME) {
 			return this.isToolDiscoveryEnabled();
 		}
+		// Orchestrator mode installs an exact curated safe toolset (`job`, `task`, `workflow`, ...);
+		// while the mode is active those tools stay allowed regardless of the session's base
+		// `--tools` allowlist, so a re-apply (MCP/SSH refresh, discovery reconcile) cannot strip
+		// them from the delegation surface.
+		if (
+			this.#orchestratorModeState?.enabled &&
+			(ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES as readonly string[]).includes(normalized)
+		) {
+			return true;
+		}
 		if (this.#requestedToolNames === undefined) return true;
 		return (
 			(normalized === "report_tool_issue" && isAutoQaEnabled(this.settings)) ||
@@ -5328,6 +6032,16 @@ export class AgentSession {
 		const forceActive = new Set<string>();
 		if (this.settings.get("todo.eager") && this.settings.get("todo.enabled") && this.#toolRegistry.has("todo")) {
 			forceActive.add("todo");
+		}
+		// Orchestrator mode's curated safe toolset must survive discovery hiding. On a <1M-context
+		// model discovery resolves to "all"; a discovery-mode transition (e.g. switching to a smaller-
+		// context model while in orchestrator mode) would otherwise strip these discoverable,
+		// non-essential tools — including `job`, the only blocking-wait for subagent completion —
+		// from the reconciled active set.
+		if (this.#orchestratorModeState?.enabled) {
+			for (const name of ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES) {
+				if (this.#toolRegistry.has(name)) forceActive.add(name);
+			}
 		}
 		return forceActive;
 	}
@@ -5496,6 +6210,7 @@ export class AgentSession {
 	}
 
 	getDiscoverableTools(filter?: { source?: DiscoverableTool["source"] }): DiscoverableTool[] {
+		if (this.#orchestratorModeState?.enabled) return [];
 		// For "all" mode we combine built-in registry entries + MCP tools.
 		// For "mcp-only" mode we only return MCP tools.
 		const mode = this.#resolveEffectiveDiscoveryMode();
@@ -5524,6 +6239,7 @@ export class AgentSession {
 	}
 
 	getDiscoverableToolSearchIndex(): DiscoverableToolSearchIndex {
+		if (this.#orchestratorModeState?.enabled) return buildDiscoverableToolSearchIndex([]);
 		if (!this.#discoverableToolSearchIndex) {
 			this.#discoverableToolSearchIndex = buildDiscoverableToolSearchIndex(this.getDiscoverableTools());
 		}
@@ -5548,6 +6264,7 @@ export class AgentSession {
 	}
 
 	async activateDiscoveredTools(toolNames: string[]): Promise<string[]> {
+		if (this.#orchestratorModeState?.enabled) return [];
 		const mcpNames = toolNames.filter(isMCPToolName);
 		const nonMcpNames = toolNames.filter(name => !isMCPToolName(name));
 		const activated: string[] = [];
@@ -5699,9 +6416,17 @@ export class AgentSession {
 
 	async #applyActiveToolsByName(
 		toolNames: string[],
-		options?: { persistMCPSelection?: boolean; previousSelectedMCPToolNames?: string[] },
+		options?: {
+			persistMCPSelection?: boolean;
+			previousSelectedMCPToolNames?: string[];
+			respectRequestedToolNames?: boolean;
+			includeAutoQa?: boolean;
+		},
 	): Promise<void> {
-		toolNames = normalizeToolNames(toolNames).filter(name => this.#isRequestedToolAllowed(name));
+		const respectRequestedToolNames = options?.respectRequestedToolNames ?? true;
+		toolNames = normalizeToolNames(toolNames).filter(
+			name => !respectRequestedToolNames || this.#isRequestedToolAllowed(name),
+		);
 		const previousSelectedMCPToolNames = options?.previousSelectedMCPToolNames ?? this.getSelectedMCPToolNames();
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
@@ -5712,8 +6437,12 @@ export class AgentSession {
 				validToolNames.push(name);
 			}
 		}
-		// Auto-QA tool must survive any runtime tool-set mutation.
-		if (isAutoQaEnabled(this.settings) && !validToolNames.includes("report_tool_issue")) {
+		// Auto-QA tool survives runtime mutations except modes with an exact tool contract.
+		if (
+			(options?.includeAutoQa ?? true) &&
+			isAutoQaEnabled(this.settings) &&
+			!validToolNames.includes("report_tool_issue")
+		) {
 			const qaTool = this.#toolRegistry.get("report_tool_issue");
 			if (qaTool) {
 				tools.push(this.#wrapToolForAcpPermission(qaTool));
@@ -5750,7 +6479,7 @@ export class AgentSession {
 				const built = await this.#rebuildSystemPrompt(validToolNames, this.#toolRegistry);
 				this.#baseSystemPrompt = built.systemPrompt;
 				this.#baseSystemPromptBeforeMemoryPromotion = undefined;
-				this.agent.setSystemPrompt(this.#baseSystemPrompt);
+				this.agent.setSystemPrompt(this.#baseSystemPromptWithModeOverlay());
 				this.#lastAppliedToolSignature = signature;
 				this.#promptModelKey = this.#currentPromptModelKey();
 			}
@@ -5835,7 +6564,7 @@ export class AgentSession {
 		const built = await this.#rebuildSystemPrompt(activeToolNames, this.#toolRegistry);
 		this.#baseSystemPrompt = built.systemPrompt;
 		this.#baseSystemPromptBeforeMemoryPromotion = undefined;
-		this.agent.setSystemPrompt(this.#baseSystemPrompt);
+		this.agent.setSystemPrompt(this.#baseSystemPromptWithModeOverlay());
 		this.#promptModelKey = this.#currentPromptModelKey();
 		// Refresh the cached signature so a subsequent `#applyActiveToolsByName` with
 		// the same tool set does not re-rebuild on top of the explicit refresh we
@@ -5846,13 +6575,38 @@ export class AgentSession {
 		this.#lastAppliedToolSignature = this.#computeAppliedToolSignature(activeToolNames, activeTools);
 	}
 
+	#baseSystemPromptWithModeOverlay(): string[] {
+		const base = this.#orchestratorModeState?.enabled
+			? [orchestratorModeActivePrompt, ...this.#baseSystemPrompt.slice(1)]
+			: this.#baseSystemPrompt;
+		const duoStatus = this.#duoController?.status;
+		const model = this.model;
+		const duoOverlayVars = {
+			current: model ? `${model.provider}/${model.id}` : "unknown",
+			planner: duoStatus?.planner ?? "unknown",
+			executor: duoStatus?.executor ?? "unknown",
+		};
+		// Duo phase overlays: keep the phase directive durable across restarts,
+		// resumes, and compaction (the one-shot activation notice does not survive).
+		switch (duoStatus?.phase) {
+			case "planning":
+				return [...base, prompt.render(duoPlannerOverlayPrompt, duoOverlayVars)];
+			case "executing":
+				return [...base, prompt.render(duoExecutorOverlayPrompt, duoOverlayVars)];
+			case "takeover":
+				return [...base, prompt.render(duoTakeoverOverlayPrompt, duoOverlayVars)];
+			default:
+				return base;
+		}
+	}
+
 	async #buildSystemPromptForAgentStart(promptText: string): Promise<string[]> {
 		const backend = await resolveMemoryBackend(this.settings);
-		if (!backend.beforeAgentStartPrompt) return this.#baseSystemPrompt;
+		if (!backend.beforeAgentStartPrompt) return this.#baseSystemPromptWithModeOverlay();
 
 		try {
 			const injected = await backend.beforeAgentStartPrompt(this, promptText);
-			if (!injected) return this.#baseSystemPrompt;
+			if (!injected) return this.#baseSystemPromptWithModeOverlay();
 
 			const previousBaseSystemPrompt = this.#baseSystemPrompt;
 			try {
@@ -5868,20 +6622,20 @@ export class AgentSession {
 				this.#baseSystemPrompt.length !== previousBaseSystemPrompt.length ||
 				this.#baseSystemPrompt.some((part, index) => part !== previousBaseSystemPrompt[index])
 			) {
-				return this.#baseSystemPrompt;
+				return this.#baseSystemPromptWithModeOverlay();
 			}
 
 			this.#baseSystemPromptBeforeMemoryPromotion ??= previousBaseSystemPrompt;
 			const stablePrompt = [...previousBaseSystemPrompt, injected];
 			this.#baseSystemPrompt = stablePrompt;
-			this.agent.setSystemPrompt(stablePrompt);
-			return stablePrompt;
+			this.agent.setSystemPrompt(this.#baseSystemPromptWithModeOverlay());
+			return this.#baseSystemPromptWithModeOverlay();
 		} catch (err) {
 			logger.debug("Memory backend beforeAgentStartPrompt failed", {
 				backend: backend.id,
 				error: String(err),
 			});
-			return this.#baseSystemPrompt;
+			return this.#baseSystemPromptWithModeOverlay();
 		}
 	}
 
@@ -6355,11 +7109,92 @@ export class AgentSession {
 	}
 
 	setPlanModeState(state: PlanModeState | undefined): void {
+		const previous = this.#planModeState;
+		if (state?.enabled) {
+			this.#duoPlanReferenceSetDuringPlanMode = false;
+			this.#duoAwaitingApprovedPlanReference = false;
+			this.#duoPlanApprovedNotified = false;
+		}
 		this.#planModeState = state;
 		if (state?.enabled) {
 			this.#planReferenceSent = false;
 			this.#planReferencePath = state.planFilePath;
+			if (!previous?.enabled) {
+				// Re-entering plan mode while duo is executing hands the main stream
+				// back to the planner (no-op in any other duo phase).
+				void this.#duoController?.notifyPlanModeEntered();
+			}
+		} else if (
+			shouldNotifyDuoPlanApproved(previous, state, this.#planReferencePath, this.#duoPlanReferenceSetDuringPlanMode)
+		) {
+			this.#notifyDuoPlanApprovedIfReady();
+		} else if (previous?.enabled) {
+			this.#duoAwaitingApprovedPlanReference = true;
 		}
+	}
+
+	getOrchestratorModeState(): OrchestratorModeState | undefined {
+		return this.#orchestratorModeState;
+	}
+
+	async setOrchestratorModeState(
+		state: OrchestratorModeState | undefined,
+		options?: { persistModeChange?: boolean; restorePreviousTools?: boolean; reuseRestoreSnapshot?: boolean },
+	): Promise<void> {
+		const wasEnabled = this.#orchestratorModeState?.enabled === true;
+		const persistModeChange = options?.persistModeChange ?? true;
+		const restorePreviousTools = options?.restorePreviousTools ?? persistModeChange;
+		const reuseRestoreSnapshot = options?.reuseRestoreSnapshot ?? true;
+		if (state?.enabled) {
+			if (this.#planModeState !== undefined) {
+				this.setPlanModeState(undefined);
+			}
+			if (this.#goalModeState !== undefined) {
+				this.setGoalModeState(undefined);
+			}
+			if (this.#standingResolveHandler !== undefined) {
+				this.setStandingResolveHandler(null);
+			}
+			if (!reuseRestoreSnapshot) {
+				this.#orchestratorModePreviousToolNames = computeEssentialBuiltinNames(this.settings);
+			} else if (!this.#orchestratorModeState?.enabled) {
+				this.#orchestratorModePreviousToolNames = this.getActiveToolNames();
+			}
+			this.#orchestratorModeState = state;
+			await this.#applyActiveToolsByName([...ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES], {
+				respectRequestedToolNames: false,
+				includeAutoQa: false,
+			});
+			this.agent.setSystemPrompt(this.#baseSystemPromptWithModeOverlay());
+			if (persistModeChange && !wasEnabled) {
+				this.sessionManager.appendModeChange("orchestrator");
+			}
+			if (!wasEnabled) {
+				await this.#emitSessionEvent({ type: "mode_changed", mode: "orchestrator" });
+			}
+			void this.#ensureDuoController()?.reevaluate();
+			return;
+		}
+
+		const previousToolNames = this.#orchestratorModePreviousToolNames;
+		this.#orchestratorModeState = undefined;
+		this.#orchestratorModePreviousToolNames = undefined;
+		if (previousToolNames !== undefined && restorePreviousTools) {
+			await this.#applyActiveToolsByName(previousToolNames, {
+				respectRequestedToolNames: false,
+				includeAutoQa: false,
+			});
+			this.agent.setSystemPrompt(this.#baseSystemPromptWithModeOverlay());
+		} else {
+			await this.refreshBaseSystemPrompt();
+		}
+		if (persistModeChange && wasEnabled) {
+			this.sessionManager.appendModeChange("none");
+		}
+		if (wasEnabled) {
+			await this.#emitSessionEvent({ type: "mode_changed", mode: "none" });
+		}
+		void this.#ensureDuoController()?.reevaluate();
 	}
 
 	getGoalModeState(): GoalModeState | undefined {
@@ -6379,7 +7214,13 @@ export class AgentSession {
 	}
 
 	setPlanReferencePath(path: string): void {
+		if (this.#planModeState?.enabled) {
+			this.#duoPlanReferenceSetDuringPlanMode = true;
+		}
 		this.#planReferencePath = path;
+		if (this.#duoAwaitingApprovedPlanReference) {
+			this.#notifyDuoPlanApprovedIfReady();
+		}
 	}
 
 	getPlanReferencePath(): string {
@@ -6670,6 +7511,27 @@ export class AgentSession {
 		return this.settings.get("magicKeywords.enabled") && this.settings.get(`magicKeywords.${keyword}`);
 	}
 
+	async #maybeAutoEnterOrchestratorMode(text: string): Promise<void> {
+		if (!this.#magicKeywordEnabled("orchestrate") || !containsOrchestrate(text)) return;
+		if (this.getOrchestratorModeState()?.enabled) return;
+		// Entering orchestrator mode clears BOTH plan and goal state (see
+		// setOrchestratorModeState), so never auto-switch while either is active OR
+		// resumable - that would silently destroy a paused/resumable plan or goal.
+		// A paused *goal* keeps #goalModeState populated (enabled:false + resumable
+		// status), so check the live state here.
+		if (this.getPlanModeState()?.enabled) return;
+		const goalState = this.getGoalModeState();
+		const goalStatus = goalState?.goal?.status;
+		if (goalState?.enabled || goalStatus === "paused" || goalStatus === "blocked" || goalStatus === "usage-limited") {
+			return;
+		}
+		// A paused *plan* clears #planModeState, so it is invisible above; the
+		// resolved session-context mode still records it (plan_paused/goal_paused/
+		// loop). Only auto-switch from a clean `none` context.
+		if (this.sessionManager.buildSessionContext().mode !== "none") return;
+		await this.setOrchestratorModeState({ enabled: true });
+	}
+
 	#createMagicKeywordNotices(text: string): CustomMessage[] {
 		const timestamp = Date.now();
 		const turnBudget = parseTurnBudget(text);
@@ -6685,7 +7547,11 @@ export class AgentSession {
 				timestamp,
 			});
 		}
-		if (this.#magicKeywordEnabled("orchestrate") && containsOrchestrate(text)) {
+		if (
+			this.#magicKeywordEnabled("orchestrate") &&
+			containsOrchestrate(text) &&
+			!this.getOrchestratorModeState()?.enabled
+		) {
 			keywordNotices.push({
 				role: "custom",
 				customType: "orchestrate-notice",
@@ -6756,6 +7622,9 @@ export class AgentSession {
 		// Magic keywords ("ultrathink", "orchestrate"): append hidden system notices after the
 		// user's message that steer this turn. User-authored prompts only — synthetic /
 		// agent-initiated turns never trigger them.
+		if (!options?.synthetic && !this.isStreaming) {
+			await this.#maybeAutoEnterOrchestratorMode(expandedText);
+		}
 		const keywordNotices = options?.synthetic ? [] : this.#createMagicKeywordNotices(expandedText);
 
 		// A user-initiated prompt (typed message or the `.`/`c` continue shortcut)
@@ -6927,6 +7796,8 @@ export class AgentSession {
 			// Reset todo reminder count on new user prompt
 			this.#todoReminderCount = 0;
 			this.#todoReminderAwaitingProgress = false;
+			this.#qaGateReminderSent = false;
+			this.#advisorDoneGateRejections = 0;
 			this.#emptyStopRetryCount = 0;
 			this.#unexpectedStopRetryCount = 0;
 			// A new prompt cycle starts: drop any sticky yield-termination from the
@@ -7837,6 +8708,7 @@ export class AgentSession {
 			}
 			// A pending agent-requested compaction dies with the turn it was scheduled in.
 			this.#pendingAgentCompactionRequest = undefined;
+			this.#pendingAgentShakeRequest = undefined;
 			this.abortHandoff();
 			this.abortBash();
 			this.abortEval();
@@ -7952,6 +8824,8 @@ export class AgentSession {
 
 		this.#todoReminderCount = 0;
 		this.#todoReminderAwaitingProgress = false;
+		this.#qaGateReminderSent = false;
+		this.#advisorDoneGateRejections = 0;
 		this.#planReferenceSent = false;
 		this.#planReferencePath = "local://PLAN.md";
 		this.#resetAdvisorSessionState();
@@ -8083,6 +8957,15 @@ export class AgentSession {
 		// configured defaultLevel; otherwise preserve the current level (or auto).
 		this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
 		await this.#syncAfterModelChange(previousEditMode);
+		if (!this.#duoSwitchInProgress) {
+			if (this.#duoController) {
+				this.#duoController.notifyManualModelChange();
+			} else {
+				// No controller yet: a manual switch may have just satisfied the
+				// activation condition (e.g. main model is now Fable) — evaluate.
+				void this.#ensureDuoController()?.reevaluate();
+			}
+		}
 	}
 
 	/**
@@ -8094,7 +8977,7 @@ export class AgentSession {
 	 */
 	async setModelTemporary(
 		model: Model,
-		thinkingLevel?: ThinkingLevel,
+		thinkingLevel?: ConfiguredThinkingLevel,
 		options?: { ephemeral?: boolean },
 	): Promise<void> {
 		const previousEditMode = this.#resolveActiveEditMode();
@@ -8120,6 +9003,10 @@ export class AgentSession {
 			this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
 		}
 		await this.#syncAfterModelChange(previousEditMode);
+		if (!this.#duoSwitchInProgress) {
+			// Plan-mode temporary switches suspend duo in v1; `/duo on` re-arms it.
+			this.#duoController?.notifyManualModelChange();
+		}
 	}
 
 	/**
@@ -8809,6 +9696,15 @@ export class AgentSession {
 		return { status: "scheduled" };
 	}
 
+	requestShakeFromAgent(mode: ShakeMode): ToolShakeRequest {
+		if (this.#pendingAgentShakeRequest) {
+			return { status: "already-scheduled" };
+		}
+		this.#pendingAgentShakeRequest = { mode };
+		logger.debug("Agent requested shake", { mode });
+		return { status: "scheduled" };
+	}
+
 	/**
 	 * Manually compact the session context.
 	 * Aborts current agent operation first.
@@ -9337,6 +10233,7 @@ export class AgentSession {
 					preferWebsockets: false,
 					serviceTier: this.#effectiveServiceTier(model),
 					hideThinkingSummary: this.agent.hideThinkingSummary,
+					thinkingDisplay: this.agent.thinkingDisplay,
 					initiatorOverride: "agent",
 					signal: handoffSignal,
 				},
@@ -9389,6 +10286,8 @@ export class AgentSession {
 			this.#scheduledHiddenNextTurnGeneration = undefined;
 			this.#todoReminderCount = 0;
 			this.#todoReminderAwaitingProgress = false;
+			this.#qaGateReminderSent = false;
+			this.#advisorDoneGateRejections = 0;
 
 			// Inject the handoff document as a custom message
 			const handoffContent = createHandoffContext(handoffText);
@@ -9659,10 +10558,21 @@ export class AgentSession {
 		allowDefer = true,
 		autoContinue = true,
 	): Promise<CompactionCheckResult> {
+		const agentRequestedShake = this.#pendingAgentShakeRequest;
 		const agentRequested = this.#pendingAgentCompactionRequest;
+		this.#pendingAgentShakeRequest = undefined;
 		this.#pendingAgentCompactionRequest = undefined;
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
 		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return COMPACTION_CHECK_NONE;
+		let agentShakeRewroteContext = false;
+		if (agentRequestedShake) {
+			try {
+				const shakeResult = await this.shake(agentRequestedShake.mode);
+				agentShakeRewroteContext = this.#shakeResultRewroteContext(shakeResult);
+			} catch (err) {
+				logger.warn("Agent-scheduled shake failed", { error: String(err) });
+			}
+		}
 		const contextWindow = this.model?.contextWindow ?? 0;
 		const generation = this.#promptGeneration;
 		// Skip overflow check if the message came from a different model.
@@ -9777,9 +10687,8 @@ export class AgentSession {
 		// count would re-trip the threshold on a freshly compacted history. Drop the
 		// stale provider number for those messages and let the live stored estimate
 		// (the floor applied below) drive the decision instead.
-		const assistantUsageContextTokens = assistantPredatesCompaction
-			? 0
-			: calculateContextTokens(assistantMessage.usage);
+		const assistantUsageContextTokens =
+			assistantPredatesCompaction || agentShakeRewroteContext ? 0 : calculateContextTokens(assistantMessage.usage);
 		const storedContextTokens = this.#estimateStoredContextTokens();
 		// Pruning frees bytes for the NEXT prompt; it does not change the size of
 		// the prompt the LLM just billed for. Earlier revisions subtracted the
@@ -9830,6 +10739,14 @@ export class AgentSession {
 			.reverse()
 			.find((content): content is ToolCall => content.type === "toolCall");
 		return lastToolCall?.name === "yield" && lastToolCall.id === toolCallId;
+	}
+	#shakeResultRewroteContext(result: ShakeResult): boolean {
+		return (
+			result.toolResultsDropped > 0 ||
+			result.blocksDropped > 0 ||
+			(result.imagesDropped ?? 0) > 0 ||
+			result.tokensFreed > 0
+		);
 	}
 
 	#assistantEndedWithSuccessfulYield(assistantMessage: AssistantMessage): boolean {
@@ -10376,6 +11293,47 @@ export class AgentSession {
 		};
 
 		this.#todoReminderAwaitingProgress = true;
+		// Inject reminder and persist it so the JSONL transcript matches model context.
+		this.agent.appendMessage(reminderMessage);
+		this.sessionManager.appendMessage(reminderMessage);
+		this.#scheduleAgentContinue({ generation: this.#promptGeneration });
+		return true;
+	}
+
+	/**
+	 * Orchestrator QA completion gate: if the agent stops while QA verification jobs are
+	 * still running, append a persisted developer reminder and schedule a continuation so
+	 * it does not prematurely claim completion. One-shot per running QA cohort via
+	 * {@link #qaGateReminderSent}; cleared on a new user prompt or implicitly once no
+	 * matching QA jobs remain running.
+	 */
+	async #checkQaCompletion(): Promise<boolean> {
+		if (this.#orchestratorModeState?.enabled !== true) return false;
+
+		const runningQaJobs =
+			this.#asyncJobManager?.getRunningJobs().filter(job => job.type === "task" && job.id.startsWith("QA")) ?? [];
+		if (runningQaJobs.length === 0) {
+			this.#qaGateReminderSent = false;
+			return false;
+		}
+		if (this.#qaGateReminderSent) {
+			return false;
+		}
+
+		this.#qaGateReminderSent = true;
+		const ids = runningQaJobs.map(job => job.id).join(", ");
+		const reminder =
+			`<system-reminder>You stopped while QA verification jobs are still running: ${ids}. ` +
+			`Do not claim completion; wait for their verdicts (results deliver automatically) or job-poll the ids.</system-reminder>`;
+
+		logger.debug("QA completion: sending reminder", { jobs: ids });
+
+		const reminderMessage: Message = {
+			role: "developer",
+			content: [{ type: "text", text: reminder }],
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
 		// Inject reminder and persist it so the JSONL transcript matches model context.
 		this.agent.appendMessage(reminderMessage);
 		this.sessionManager.appendMessage(reminderMessage);
@@ -13063,6 +14021,24 @@ export class AgentSession {
 	}
 
 	/**
+	 * True when context is queued for this agent that the next loop boundary
+	 * would inject: pending IRC asides, idle-flushable yield-queue entries
+	 * (async-result deliveries, browser annotations, ...), or queued steering
+	 * messages. Blocking tool waits (`job` poll) use this to return early so
+	 * the boundary can inject the context. Queued steering matters for
+	 * `interruptMode: "wait"` sessions, where the agent loop's steering
+	 * watcher never aborts an in-flight interruptible tool — without this
+	 * wake, a user message would sit unheard until a watched job settles.
+	 */
+	hasPendingDeliverableAsides(): boolean {
+		return (
+			this.#pendingIrcAsides.length > 0 ||
+			this.yieldQueue.hasIdleFlushableEntries() ||
+			this.agent.peekSteeringQueue().length > 0
+		);
+	}
+
+	/**
 	 * Generate and deliver an ephemeral auto-reply to `msg` on this agent's
 	 * behalf: a no-tools side-channel turn over the current history (same
 	 * pipeline as `/btw`), recorded into this session as an `irc:autoreply`
@@ -13155,6 +14131,7 @@ export class AgentSession {
 				reasoning: toReasoningEffort(this.thinkingLevel),
 				disableReasoning: shouldDisableReasoning(this.thinkingLevel),
 				hideThinkingSummary: this.agent.hideThinkingSummary,
+				thinkingDisplay: this.agent.thinkingDisplay,
 				serviceTier: this.#effectiveServiceTier(model),
 				signal: args.signal,
 			},
@@ -13789,6 +14766,8 @@ export class AgentSession {
 				customInstructions: this.#obfuscateTextForProvider(options.customInstructions),
 				reserveTokens: branchSummarySettings.reserveTokens,
 				metadata: this.agent.metadataForProvider(model.provider),
+				hideThinkingSummary: this.agent.hideThinkingSummary,
+				thinkingDisplay: this.agent.thinkingDisplay,
 				convertToLlm: messages => this.#convertToLlmForSideRequest(messages),
 				telemetry: resolveTelemetry(this.agent.telemetry, this.sessionId),
 			});
@@ -14608,6 +15587,7 @@ export class AgentSession {
 		if (enabled) {
 			return this.#buildAdvisorRuntime(true);
 		}
+		this.#clearAdvisorRetry();
 		this.#stopAdvisorRuntime();
 		return false;
 	}
@@ -14638,6 +15618,39 @@ export class AgentSession {
 		return this.#advisorAgent !== undefined;
 	}
 
+	getDuoStatus(): DuoStatus | undefined {
+		return this.#duoController?.status;
+	}
+
+	async setDuoEnabled(on: boolean): Promise<void> {
+		this.settings.set("duo.mode", on ? "on" : "off");
+		if (on) {
+			this.#clearAdvisorRetry();
+			this.#duoController?.dispose();
+			this.#duoController = undefined;
+			await this.#ensureDuoController()?.reevaluate();
+			return;
+		}
+		this.#clearAdvisorRetry();
+		await this.#duoController?.deactivate();
+	}
+
+	async duoForceExec(): Promise<boolean> {
+		return ((await this.#duoController?.forceExec()) ?? "no-controller") === "ok";
+	}
+
+	async duoHandoffToExecutor(resolution: string): Promise<DuoHandoffResult> {
+		return (await this.#duoController?.handoffToExecutor(resolution)) ?? "no-controller";
+	}
+
+	async duoEscalateToPlanner(reason: string): Promise<"ok" | "unavailable"> {
+		return ((await this.#duoController?.escalateToPlanner(reason)) ?? false) ? "ok" : "unavailable";
+	}
+
+	async duoReplan(): Promise<boolean> {
+		return (await this.#duoController?.notifyPlanModeEntered()) ?? false;
+	}
+
 	/**
 	 * The live advisor `Agent`, or `undefined` when no advisor runtime is
 	 * attached. Surfaced for diagnostics (`/dump advisor` already serializes
@@ -14647,6 +15660,16 @@ export class AgentSession {
 	 */
 	getAdvisorAgent(): Agent | undefined {
 		return this.#advisorAgent;
+	}
+
+	/**
+	 * The live {@link AdvisorRuntime}, or `undefined` when no advisor is attached.
+	 * Test-only seam: lets integration tests stub `consult` to drive the
+	 * done-review gate without a real advisor model round-trip.
+	 * @internal
+	 */
+	getAdvisorRuntimeForTest(): AdvisorRuntime | undefined {
+		return this.#advisorRuntime;
 	}
 
 	/**

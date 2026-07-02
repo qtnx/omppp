@@ -43,6 +43,8 @@ describe("task renderer: nested live rendering", () => {
 			toolCount: 1,
 			requests: 0,
 			tokens: 1000,
+			inputTokens: 0,
+			outputTokens: 0,
 			cost: 0,
 			durationMs: 1234,
 			...overrides,
@@ -83,6 +85,8 @@ describe("task renderer: nested live rendering", () => {
 			toolCount: 0,
 			requests: 0,
 			tokens: 0,
+			inputTokens: 0,
+			outputTokens: 0,
 			cost: 0,
 			durationMs: 0,
 		};

@@ -311,3 +311,120 @@ describe("formatSessionHistoryMarkdown", () => {
 		expect(output).not.toContain("Recorded.");
 	});
 });
+
+describe("formatSessionHistoryMarkdown advisor feed options", () => {
+	function thinkingMessages(): unknown[] {
+		return [
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "raw private reasoning" },
+					{ type: "text", text: "answer" },
+				],
+				timestamp: 1,
+			},
+		];
+	}
+
+	it("passes thinking text through renderThinking when includeThinking is set", () => {
+		const output = formatSessionHistoryMarkdown(thinkingMessages(), {
+			includeThinking: true,
+			renderThinking: text => `[[${text.toUpperCase()}]]`,
+		});
+		expect(output).toContain("_thinking:_ [[RAW PRIVATE REASONING]]");
+		expect(output).not.toContain("_thinking:_ raw private reasoning");
+	});
+
+	it("renders thinking verbatim when renderThinking is absent", () => {
+		const output = formatSessionHistoryMarkdown(thinkingMessages(), { includeThinking: true });
+		expect(output).toContain("_thinking:_ raw private reasoning");
+	});
+
+	it("does not render thinking at all by default (renderThinking is inert without includeThinking)", () => {
+		const output = formatSessionHistoryMarkdown(thinkingMessages(), {
+			renderThinking: () => "SHOULD-NOT-APPEAR",
+		});
+		expect(output).not.toContain("_thinking:_");
+		expect(output).not.toContain("SHOULD-NOT-APPEAR");
+	});
+
+	function errorMessages(): unknown[] {
+		return [
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: "tc-err", name: "bash", arguments: { command: "bun test" } }],
+				timestamp: 1,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "tc-err",
+				toolName: "bash",
+				content: [{ type: "text", text: "L1\nL2\nL3\nL4\nL5\nL6" }],
+				isError: true,
+				timestamp: 2,
+			},
+		];
+	}
+
+	it("appends no error excerpt by default", () => {
+		const output = formatSessionHistoryMarkdown(errorMessages());
+		expect(output).toContain("→ bash(bun test) ⇒ error · 6 lines — L1");
+		expect(output).not.toContain("    L2");
+	});
+
+	it("shows all error lines indented when the count is within errorResultLines", () => {
+		const output = formatSessionHistoryMarkdown(errorMessages(), { errorResultLines: 10 });
+		expect(output).toContain("→ bash(bun test) ⇒ error · 6 lines — L1");
+		for (const line of ["    L1", "    L2", "    L3", "    L4", "    L5", "    L6"]) {
+			expect(output).toContain(line);
+		}
+		expect(output).not.toContain("lines) …");
+	});
+
+	it("elides the middle of the error excerpt when it exceeds errorResultLines", () => {
+		const output = formatSessionHistoryMarkdown(errorMessages(), { errorResultLines: 4 });
+		// ceil(4/2)=2 head, floor(4/2)=2 tail, 2 elided.
+		expect(output).toContain("    L1");
+		expect(output).toContain("    L2");
+		expect(output).toContain("    … (+2 lines) …");
+		expect(output).toContain("    L5");
+		expect(output).toContain("    L6");
+		expect(output).not.toContain("    L3");
+	});
+
+	function asyncResultMessage(content: string): unknown[] {
+		return [
+			{
+				role: "custom",
+				customType: "async-result",
+				content,
+				details: { jobs: [{ label: "qa-review" }] },
+				timestamp: 1,
+			},
+		];
+	}
+
+	it("shows only the async-result label by default", () => {
+		const output = formatSessionHistoryMarkdown(asyncResultMessage("verdict: PASS\nno regressions"));
+		expect(output).toContain("[async-result] qa-review");
+		expect(output).not.toContain("verdict: PASS");
+	});
+
+	it("appends the async-result content excerpt when expandAsyncResults is set", () => {
+		const output = formatSessionHistoryMarkdown(asyncResultMessage("verdict: PASS\nno regressions"), {
+			expandAsyncResults: true,
+		});
+		expect(output).toContain("[async-result] qa-review");
+		expect(output).toContain("verdict: PASS");
+		expect(output).toContain("no regressions");
+		expect(output).not.toContain("… (+truncated)");
+	});
+
+	it("caps the async-result excerpt at 15 lines and marks the truncation", () => {
+		const many = Array.from({ length: 25 }, (_, i) => `line-${i + 1}`).join("\n");
+		const output = formatSessionHistoryMarkdown(asyncResultMessage(many), { expandAsyncResults: true });
+		expect(output).toContain("line-15");
+		expect(output).not.toContain("line-16");
+		expect(output).toContain("… (+truncated)");
+	});
+});

@@ -923,6 +923,17 @@ export class Settings {
 			raw["compaction.strategy"] = "shake";
 		}
 
+		// Removed adaptive mode; block is now the default. Preserve the old
+		// "wait until useful wake" intent.
+		const legacySmartPollWaitDuration = "smart";
+		const asyncObj = raw.async as Record<string, unknown> | undefined;
+		if (asyncObj?.pollWaitDuration === legacySmartPollWaitDuration) {
+			asyncObj.pollWaitDuration = "block";
+		}
+		if (raw["async.pollWaitDuration"] === legacySmartPollWaitDuration) {
+			raw["async.pollWaitDuration"] = "block";
+		}
+
 		// snapcompact.systemPrompt: boolean -> scoped enum.
 		const snapcompactObj = raw.snapcompact as Record<string, unknown> | undefined;
 		if (snapcompactObj && typeof snapcompactObj.systemPrompt === "boolean") {

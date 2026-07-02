@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { buildAnthropicClientOptions, streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import type { Context, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
@@ -59,7 +59,7 @@ function abortedSignal(): AbortSignal {
 }
 
 type CapturedPayload = {
-	thinking?: { type: string };
+	thinking?: { type: string; display?: string };
 	tool_choice?: { type: string };
 	output_config?: { effort?: string };
 };
@@ -116,6 +116,67 @@ describe("Anthropic adaptive-only thinking disable", () => {
 			thinkingEnabled: false,
 		});
 		expect(payload.thinking?.type).toBe("disabled");
+	});
+});
+
+describe("Anthropic Fable/Mythos adaptive thinking display", () => {
+	it("defaults Fable OAuth adaptive thinking display to omitted", async () => {
+		const payload = await capturePayload(adaptiveModel("claude-fable-5"), {
+			thinkingEnabled: true,
+		});
+
+		expect(payload.thinking).toEqual({ type: "adaptive", display: "omitted" });
+	});
+
+	it("adds the redact-thinking beta for default Fable OAuth headers", () => {
+		const options = buildAnthropicClientOptions({
+			model: adaptiveModel("claude-fable-5"),
+			apiKey: "sk-ant-oat-test",
+			isOAuth: true,
+			thinkingEnabled: true,
+		});
+
+		expect(options.defaultHeaders["anthropic-beta"]).toContain("redact-thinking-2026-02-12");
+	});
+
+	it("defaults Mythos OAuth adaptive thinking display to omitted", async () => {
+		const payload = await capturePayload(adaptiveModel("claude-mythos-5"), {
+			thinkingEnabled: true,
+		});
+
+		expect(payload.thinking).toEqual({ type: "adaptive", display: "omitted" });
+	});
+
+	it("honors explicit Fable summarized display without redact-thinking beta", async () => {
+		const payload = await capturePayload(adaptiveModel("claude-fable-5"), {
+			thinkingEnabled: true,
+			thinkingDisplay: "summarized",
+		});
+		const options = buildAnthropicClientOptions({
+			model: adaptiveModel("claude-fable-5"),
+			apiKey: "sk-ant-oat-test",
+			isOAuth: true,
+			thinkingEnabled: true,
+			thinkingDisplay: "summarized",
+		});
+
+		expect(payload.thinking?.display).toBe("summarized");
+		expect(options.defaultHeaders["anthropic-beta"]).not.toContain("redact-thinking-2026-02-12");
+	});
+
+	it("keeps non-Fable adaptive model display summarized by default", async () => {
+		const payload = await capturePayload(adaptiveModel("claude-opus-4-7"), {
+			thinkingEnabled: true,
+		});
+		const options = buildAnthropicClientOptions({
+			model: adaptiveModel("claude-opus-4-7"),
+			apiKey: "sk-ant-oat-test",
+			isOAuth: true,
+			thinkingEnabled: true,
+		});
+
+		expect(payload.thinking?.display).toBe("summarized");
+		expect(options.defaultHeaders["anthropic-beta"]).not.toContain("redact-thinking-2026-02-12");
 	});
 });
 

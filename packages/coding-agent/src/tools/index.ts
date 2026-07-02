@@ -6,6 +6,8 @@ import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
+import type { DuoHandoffResult, DuoStatus } from "../duo";
+import { DuoEscalateTool, DuoHandoffTool } from "../duo";
 import { EditTool } from "../edit";
 import { checkJuliaKernelAvailability } from "../eval/jl/kernel";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
@@ -19,12 +21,14 @@ import type { LocalProtocolOptions } from "../internal-urls";
 import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
 import type { MnemopiSessionState } from "../mnemopi/state";
+import type { OrchestratorModeState } from "../orchestrator-mode/state";
 import type { PlanModeState } from "../plan-mode/state";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
 import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
 import type { UsageStatistics } from "../session/session-entries";
+import type { ShakeMode } from "../session/shake-types";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import { TaskTool } from "../task";
 import type { MacOSSandboxRelaunchResult } from "../task/omp-command";
@@ -49,6 +53,7 @@ import { BrowserTool } from "./browser";
 import { type BuiltinToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, RewindTool } from "./checkpoint";
 import { CompactTool } from "./compact";
+import { ConsultTool } from "./consult";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
@@ -65,12 +70,14 @@ import { MemoryEditTool } from "./memory-edit";
 import { MemoryRecallTool } from "./memory-recall";
 import { MemoryReflectTool } from "./memory-reflect";
 import { MemoryRetainTool } from "./memory-retain";
+import { OrchestratorModeTool } from "./orchestrator-mode";
 import { wrapToolWithMetaNotice } from "./output-meta";
 import { ReadTool } from "./read";
 import { createReportToolIssueTool, isAutoQaEnabled } from "./report-tool-issue";
 import { ResolveTool } from "./resolve";
 import { reportFindingTool } from "./review";
 import { SearchToolBm25Tool } from "./search-tool-bm25";
+import { ShakeTool } from "./shake";
 import { loadSshTool } from "./ssh";
 import { type TodoPhase, TodoTool } from "./todo";
 import { WriteTool } from "./write";
@@ -107,11 +114,13 @@ export * from "./memory-edit";
 export * from "./memory-recall";
 export * from "./memory-reflect";
 export * from "./memory-retain";
+export * from "./orchestrator-mode";
 export * from "./read";
 export * from "./report-tool-issue";
 export * from "./resolve";
 export * from "./review";
 export * from "./search-tool-bm25";
+export * from "./shake";
 export * from "./ssh";
 export * from "./todo";
 export * from "./tts";
@@ -143,6 +152,12 @@ export type {
 
 /** Scheduling result of an agent-initiated compaction request (the `compact` tool). */
 export type ToolCompactionRequest =
+	| { status: "scheduled" }
+	| { status: "already-scheduled" }
+	| { status: "unavailable"; detail: string };
+
+/** Scheduling result of an agent-initiated shake request (the `shake` tool). */
+export type ToolShakeRequest =
 	| { status: "scheduled" }
 	| { status: "already-scheduled" }
 	| { status: "unavailable"; detail: string };
@@ -252,6 +267,14 @@ export interface ToolSession {
 	getMnemopiSessionState?: () => MnemopiSessionState | undefined;
 	/** Agent identity used for IRC routing. Returns the registry id (e.g. "Main", "AuthLoader"). */
 	getAgentId?: () => string | null;
+	/**
+	 * True when context is queued for this agent that the next loop boundary
+	 * would inject: pending IRC asides, idle-flushable yield-queue entries
+	 * (other jobs' async-results), or queued steering messages. Blocking waits
+	 * (`job` poll) return early so the boundary can inject it instead of
+	 * sitting blind.
+	 */
+	hasPendingAgentAsides?: () => boolean;
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
 	getToolByName?: (name: string) => AgentTool | undefined;
 	/** Agent registry for IRC routing across live sessions. */
@@ -303,6 +326,15 @@ export interface ToolSession {
 	settings: Settings;
 	/** Plan mode state (if active) */
 	getPlanModeState?: () => PlanModeState | undefined;
+	/** Orchestrator mode state (if active) */
+	getOrchestratorModeState?: () => OrchestratorModeState | undefined;
+	/** Duo auto model switch status (if a duo controller exists). */
+	getDuoStatus?: () => DuoStatus | undefined;
+	/** Switch Safe orchestrator mode for the active agent session. */
+	setOrchestratorModeState?: (
+		state: OrchestratorModeState | undefined,
+		options?: { persistModeChange?: boolean; restorePreviousTools?: boolean; reuseRestoreSnapshot?: boolean },
+	) => void | Promise<void>;
 	/** Path of the session's active plan reference (e.g. `local://<title>.md`); defaults to `local://PLAN.md`. */
 	getPlanReferencePath?: () => string;
 	/** Goal mode state (if active or paused) */
@@ -392,6 +424,8 @@ export interface ToolSession {
 	queueDeferredMessage?(message: CustomMessage): void;
 	/** Request a compaction at the next turn boundary. Returns scheduling status. */
 	requestCompaction?(reason: string): ToolCompactionRequest;
+	/** Request a context shake at the next turn boundary. Returns scheduling status. */
+	requestShake?(mode: ShakeMode): ToolShakeRequest;
 	/** Request the macOS sandbox supervisor to relaunch this session with extra sandbox allowlist roots. */
 	requestMacOSSandboxRelaunch?(paths: string[]): MacOSSandboxRelaunchResult;
 	/** Queue late LSP diagnostics (arrived after an edit/write returned) to be shown
@@ -410,6 +444,19 @@ export interface ToolSession {
 	getTelemetry?: () => AgentTelemetryConfig | undefined;
 	/** Return image attachments visible to tools for resolving labels such as `Image #1`. */
 	getImageAttachments?: () => ImageAttachmentEntry[];
+	/**
+	 * "Phone a friend": ask the always-watching advisor a question mid-turn and
+	 * block until it answers. Resolves with the advisor's plain-text reply, or
+	 * `null` when the advisor is inactive / did not answer in time / was aborted.
+	 * Used by the `consult` tool.
+	 */
+	consultAdvisor?: (question: string, signal?: AbortSignal) => Promise<string | null>;
+	/** Whether an advisor runtime is currently live for this session. */
+	isAdvisorActive?: () => boolean;
+	/** Handoff an approved duo planner/takeover turn back to the executor. */
+	duoHandoffToExecutor?: (resolution: string) => Promise<DuoHandoffResult>;
+	/** Escalate an executor turn back to the duo planner. */
+	duoEscalateToPlanner?: (reason: string) => Promise<"ok" | "unavailable">;
 }
 
 export type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool | null>;
@@ -418,6 +465,7 @@ export type BuiltinToolLoadMode = "essential" | "discoverable";
 
 /** Default essential tool names when tools.essentialOverride is empty. */
 export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = [
+	"orchestrator_mode",
 	"read",
 	"bash",
 	"edit",
@@ -480,6 +528,12 @@ export function filterInitialToolsForDiscoveryAll(
  * `BUILTIN_TOOLS[name](session)` to construct a tool directly.
  */
 export const BUILTIN_TOOLS: Record<BuiltinToolName | "sandbox", ToolFactory> = {
+	orchestrator_mode: s => new OrchestratorModeTool(s),
+	duo_handoff: s =>
+		new DuoHandoffTool(async resolution => {
+			return (await s.duoHandoffToExecutor?.(resolution)) ?? "no-controller";
+		}),
+	duo_escalate: s => new DuoEscalateTool(async reason => (await s.duoEscalateToPlanner?.(reason)) ?? "unavailable"),
 	read: s => new ReadTool(s),
 	bash: s => new BashTool(s),
 	edit: s => new EditTool(s),
@@ -499,6 +553,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "sandbox", ToolFactory> = {
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
 	compact: CompactTool.createIf,
+	shake: ShakeTool.createIf,
 	task: s => TaskTool.create(s),
 	workflow: s => WorkflowTool.create(s),
 	job: s => new JobTool(s),
@@ -513,6 +568,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "sandbox", ToolFactory> = {
 	reflect: MemoryReflectTool.createIf,
 	learn: LearnTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
+	consult: s => new ConsultTool(s),
 };
 
 export const HIDDEN_TOOLS: Record<string, ToolFactory> = {
@@ -691,6 +747,16 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		}
 		if (name === "workflow") {
 			return session.settings.get("workflow.enabled") === true && (session.taskDepth ?? 0) === 0;
+		}
+		// Deliberate compound gate: `advisor.consult` defaults true, so gating on
+		// it alone would drop a dead `consult` tool into every non-advisor session.
+		// Mid-session advisor enablement gets the tool at the next session build;
+		// the prompt block is `{{#has tools "consult"}}`-guarded so prompts follow.
+		if (name === "consult") {
+			return (
+				(session.settings.get("advisor.enabled") || session.isAdvisorActive?.()) &&
+				session.settings.get("advisor.consult") !== false
+			);
 		}
 		return true;
 	};

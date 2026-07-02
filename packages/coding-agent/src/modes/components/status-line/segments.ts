@@ -187,6 +187,14 @@ const modelSegment: StatusLineSegment = {
 		if (ctx.session.isAdvisorActive()) {
 			content += theme.fg("success", "++");
 		}
+		const duo = ctx.session.getDuoStatus?.();
+		if (duo?.phase === "planning") {
+			content += theme.fg("accent", " ◆ duo");
+		} else if (duo?.phase === "executing") {
+			content += theme.fg("success", " ◆ duo");
+		} else if (duo?.phase === "takeover") {
+			content += theme.fg("warning", " ◆ duo");
+		}
 		if (tail) {
 			content += theme.fg("statusLineModel", tail);
 		}
@@ -254,6 +262,12 @@ const modeSegment: StatusLineSegment = {
 		const goal = ctx.goalMode;
 		if (goal && (goal.enabled || goal.paused)) {
 			return renderGoalMode(ctx, goal);
+		}
+
+		const orchestrator = ctx.orchestratorMode;
+		if (orchestrator?.enabled) {
+			const content = withIcon("", "Orchestrator");
+			return { content: theme.fg("customMessageLabel", content), visible: true };
 		}
 
 		const loop = ctx.loopMode;

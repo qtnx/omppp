@@ -71,6 +71,9 @@ export interface SegmentContext {
 		enabled: boolean;
 		paused: boolean;
 	} | null;
+	orchestratorMode?: {
+		enabled: boolean;
+	} | null;
 	collab: CollabStatus | null;
 	// Cached values for performance (computed once per render)
 	usageStats: {

@@ -13,6 +13,7 @@
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import { type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
 import { type Settings, validateProviderMaxInFlightRequests } from "../config/settings";
+import { resolveThinkingDisplay } from "../config/settings-schema";
 
 /**
  * Build a {@link StreamFn} that reads provider routing/guard settings from
@@ -30,11 +31,22 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			model.api === "openai-codex-responses" || model.api === "openai-responses"
 				? settings.get("textVerbosity")
 				: undefined;
+		const resolvedThinkingDisplay = resolveThinkingDisplay(settings);
+		// A caller that set either thinking field owns the display decision as a unit: pi-ai lets
+		// `thinkingDisplay` win over `hideThinkingSummary`, so injecting a settings display here would
+		// silently override a caller's explicit `hideThinkingSummary`. Only fill from settings when the
+		// caller supplied neither.
+		const callerControlsThinkingDisplay =
+			streamOptions?.thinkingDisplay !== undefined || streamOptions?.hideThinkingSummary !== undefined;
 		const merged: SimpleStreamOptions = {
 			...streamOptions,
 			openrouterVariant: streamOptions?.openrouterVariant ?? openrouterVariant,
 			antigravityEndpointMode: streamOptions?.antigravityEndpointMode ?? antigravityEndpointMode,
 			textVerbosity: streamOptions?.textVerbosity ?? textVerbosity,
+			thinkingDisplay: callerControlsThinkingDisplay ? streamOptions?.thinkingDisplay : resolvedThinkingDisplay,
+			hideThinkingSummary: callerControlsThinkingDisplay
+				? streamOptions?.hideThinkingSummary
+				: resolvedThinkingDisplay === "omitted",
 			maxInFlightRequests: validateProviderMaxInFlightRequests(
 				streamOptions?.maxInFlightRequests ?? settings.get("providers.maxInFlightRequests"),
 			),
