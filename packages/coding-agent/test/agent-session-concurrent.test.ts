@@ -626,6 +626,50 @@ describe("AgentSession concurrent prompt guard", () => {
 		).toBe(true);
 	});
 
+	it("does not count hidden next-turn context as pending agent work", async () => {
+		const session = await createSession();
+		const promptTask = session.prompt("First message");
+		await waitFor(() => session.isStreaming);
+
+		await session.sendCustomMessage(
+			{
+				customType: "system-context-reminder",
+				content: "remember system context",
+				display: false,
+				attribution: "agent",
+			},
+			{ deliverAs: "nextTurn" },
+		);
+
+		expect(session.queuedMessageCount).toBe(1);
+		expect(session.hasPendingAgentWork()).toBe(false);
+
+		session.abort({ reason: USER_INTERRUPT_LABEL });
+		await promptTask.catch(() => {});
+	});
+
+	it("counts queued follow-up messages as pending agent work", async () => {
+		const session = await createSession();
+		const promptTask = session.prompt("First message");
+		await waitFor(() => session.isStreaming);
+
+		await session.sendCustomMessage(
+			{
+				customType: "user-follow-up",
+				content: "follow up",
+				display: true,
+				attribution: "user",
+			},
+			{ deliverAs: "followUp" },
+		);
+
+		expect(session.queuedMessageCount).toBe(1);
+		expect(session.hasPendingAgentWork()).toBe(true);
+
+		session.abort({ reason: USER_INTERRUPT_LABEL });
+		await promptTask.catch(() => {});
+	});
+
 	it("does not emit session_stop for subagent sessions", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({

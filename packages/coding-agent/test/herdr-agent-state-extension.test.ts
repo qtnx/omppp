@@ -10,6 +10,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	createHerdrAgentStateExtension,
 	HERDR_AGENT_STATE_LABEL,
+	HERDR_MANAGED_FALLBACK_SENTINEL,
 	HERDR_NATIVE_AGENT_STATE_ENV,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/herdr-agent-state";
 import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
@@ -72,6 +73,27 @@ async function flushTimers(): Promise<void> {
 	}
 }
 
+function assistantMessage(stopReason: AssistantMessage["stopReason"], errorMessage?: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: errorMessage ?? "done" }],
+		api: "openai-responses",
+		provider: "openai",
+		model: "gpt-4o-mini",
+		stopReason,
+		errorMessage,
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		timestamp: 0,
+	};
+}
+
 async function createHarness(
 	options: {
 		idleDebounceMs?: number;
@@ -84,7 +106,10 @@ async function createHarness(
 	const eventBus = new EventBus();
 	let idle = true;
 	let pending = false;
+	let pendingAgentWork = false;
 	let asyncRunning = 0;
+	let deliveryQueued = 0;
+	let deliveryDelivering = false;
 	const extension = await loadExtensionFromFactory(
 		createHerdrAgentStateExtension({
 			transport: async request => {
@@ -135,11 +160,12 @@ async function createHarness(
 					startTime: 0,
 				})),
 				recent: [],
-				delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+				delivery: { queued: deliveryQueued, delivering: deliveryDelivering, pendingJobIds: [] },
 			}),
 			getGoalModeState: () => undefined,
 			abort: () => {},
 			hasPendingMessages: () => pending,
+			hasPendingAgentWork: () => pendingAgentWork,
 			shutdown: () => {},
 			getSystemPrompt: () => [],
 		},
@@ -154,8 +180,15 @@ async function createHarness(
 		setPending(value: boolean) {
 			pending = value;
 		},
+		setPendingAgentWork(value: boolean) {
+			pendingAgentWork = value;
+		},
 		setAsyncRunning(value: number) {
 			asyncRunning = value;
+		},
+		setDelivery(value: { queued?: number; delivering?: boolean }) {
+			deliveryQueued = value.queued ?? deliveryQueued;
+			deliveryDelivering = value.delivering ?? deliveryDelivering;
 		},
 	};
 }
@@ -173,6 +206,23 @@ describe("native Herdr agent state extension", () => {
 		AsyncJobManager.resetForTests();
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+	});
+
+	it("publishes idle immediately on registration before any event", async () => {
+		const harness = await createHarness();
+		await flushTimers();
+
+		expect(harness.requests).toHaveLength(1);
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(process.env[HERDR_NATIVE_AGENT_STATE_ENV]).toBe("1");
+
+		await harness.runner.emit({ type: "session_start" });
+		await flushTimers();
+
+		expect(harness.requests).toHaveLength(1);
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
 	});
 
 	it("reports working with a running visual status until tools drain", async () => {
@@ -340,9 +390,283 @@ describe("native Herdr agent state extension", () => {
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
 	});
 
-	it("keeps Herdr working after agent_end when queued messages remain", async () => {
+	it("reports ask tool execution as need review until the tool drains", async () => {
+		const harness = await createHarness();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({
+			type: "tool_execution_start",
+			toolCallId: "ask-1",
+			toolName: "ask",
+			args: {},
+			intent: "confirm deployment",
+		});
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("blocked");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("need review");
+		expect(harness.requests.at(-1)?.params.message).toBe("confirm deployment");
+
+		await harness.runner.emit({
+			type: "tool_execution_end",
+			toolCallId: "ask-1",
+			toolName: "ask",
+			result: "approved",
+			isError: false,
+		});
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("working");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+	});
+
+	it("reports tool approval as need review until resolved", async () => {
+		const harness = await createHarness();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({
+			type: "tool_approval_requested",
+			sessionId: "session-1",
+			toolCallId: "approval-1",
+			toolName: "bash",
+			reason: "dangerous command",
+			approvalMode: "always-ask",
+		});
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("blocked");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("need review");
+		expect(harness.requests.at(-1)?.params.message).toBe("dangerous command");
+
+		await harness.runner.emit({
+			type: "tool_approval_resolved",
+			sessionId: "session-1",
+			toolCallId: "approval-1",
+			toolName: "bash",
+			approved: true,
+		});
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("working");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+	});
+
+	it("drops pending approval waits after run end and follows the run outcome", async () => {
+		const harness = await createHarness();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({
+			type: "tool_approval_requested",
+			sessionId: "session-1",
+			toolCallId: "approval-after-end",
+			toolName: "bash",
+			reason: "dangerous command",
+			approvalMode: "always-ask",
+		});
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("blocked");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("need review");
+		expect(harness.requests.at(-1)?.params.message).toBe("dangerous command");
+
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("stop")] });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+	});
+
+	it("drops live ask waits after aborted run end", async () => {
+		const harness = await createHarness();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({
+			type: "tool_execution_start",
+			toolCallId: "ask-aborted",
+			toolName: "ask",
+			args: {},
+			intent: "confirm deployment",
+		});
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("blocked");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("need review");
+
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("aborted")] });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+	});
+
+	it("reports successful run completion as done and clears done on input", async () => {
+		const harness = await createHarness();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("stop")] });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+
+		await harness.runner.emitInput("next", undefined, "interactive");
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("stop")] });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+	});
+
+	it("does not report done for aborted assistant runs", async () => {
+		const harness = await createHarness();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("aborted")] });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+	});
+
+	it.each([
+		["toolUse" as const, "done"],
+		["length" as const, "done"],
+		[undefined, undefined],
+	])("maps agent_end stop reason %s to the expected idle status", async (stopReason, expectedCustomStatus) => {
+		const harness = await createHarness();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "agent_end", messages: stopReason ? [assistantMessage(stopReason)] : [] });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe(expectedCustomStatus);
+	});
+
+	it("rechecks terminal delivery work so a completed run does not stay running", async () => {
+		const harness = await createHarness({ idleDebounceMs: 250 });
+		harness.setDelivery({ delivering: true });
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("stop")] });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("working");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+
+		harness.setDelivery({ delivering: false });
+		vi.advanceTimersByTime(250);
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+	});
+
+	it("reports non-retryable agent errors as need review", async () => {
+		const harness = await createHarness();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("error", "invalid api key")] });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("blocked");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("need review");
+		expect(harness.requests.at(-1)?.params.message).toContain("invalid api key");
+	});
+
+	it("clears a stranded need-review failure when the user submits input without starting a run", async () => {
+		const harness = await createHarness();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("error", "invalid api key")] });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("blocked");
+
+		// e.g. a slash command: input fires but no before_agent_start/agent_start follows.
+		await harness.runner.emitInput("/model", undefined, "interactive");
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+	});
+
+	it("clears done status on session switch without clearing external pane blockers", async () => {
+		const harness = await createHarness();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("stop")] });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+
+		await harness.runner.emit({ type: "session_switch", reason: "resume", previousSessionFile: "old-session.json" });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+	});
+
+	it("does not carry a stale running state into the next session on switch", async () => {
+		const harness = await createHarness();
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "turn_start", turnIndex: 0, timestamp: 0 });
+		await harness.runner.emit({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: {} });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("working");
+
+		// Switch mid-run: agent_end/turn_end/tool_execution_end may never arrive for the
+		// old session, so the switch itself must drop run-scoped work flags.
+		await harness.runner.emit({ type: "session_switch", reason: "resume", previousSessionFile: "old-session.json" });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+	});
+
+	it("debounces plain idle after prompt submit so a new run does not flash idle", async () => {
+		const harness = await createHarness({ idleDebounceMs: 250 });
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("stop")] });
+		vi.advanceTimersByTime(251);
+		await flushTimers();
+		const doneIndex = harness.requests.length - 1;
+
+		expect(harness.requests.at(doneIndex)?.params.state).toBe("idle");
+		expect(harness.requests.at(doneIndex)?.params.custom_status).toBe("done");
+
+		await harness.runner.emitInput("next", undefined, "interactive");
+		harness.setIdle(false);
+		await harness.runner.emitBeforeAgentStart("", undefined, []);
+		vi.advanceTimersByTime(251);
+		await flushTimers();
+
+		const nextWorkingIndex = harness.requests.findIndex(
+			(request, index) =>
+				index > doneIndex && request.params.state === "working" && request.params.custom_status === "running",
+		);
+		expect(nextWorkingIndex).toBeGreaterThan(doneIndex);
+		expect(
+			harness.requests
+				.slice(doneIndex + 1, nextWorkingIndex)
+				.some(request => request.params.state === "idle" && request.params.custom_status === undefined),
+		).toBe(false);
+	});
+
+	it("keeps Herdr working after agent_end when queued messages can continue", async () => {
 		const harness = await createHarness();
 		harness.setPending(true);
+		harness.setPendingAgentWork(true);
 
 		await harness.runner.emit({ type: "agent_start" });
 		await harness.runner.emit({ type: "agent_end", messages: [] });
@@ -351,10 +675,24 @@ describe("native Herdr agent state extension", () => {
 		expect(harness.requests.at(-1)?.params.state).toBe("working");
 
 		harness.setPending(false);
+		harness.setPendingAgentWork(false);
 		await harness.runner.emit({ type: "session_start" });
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+	});
+
+	it("reports done when only hidden next-turn context remains queued", async () => {
+		const harness = await createHarness();
+		harness.setPending(true);
+		harness.setPendingAgentWork(false);
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("stop")] });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
 	});
 
 	it("keeps retrying work active when auto retry starts before the grace timer fires", async () => {
@@ -402,6 +740,26 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+	});
+
+	it("keeps retry hold active when input clears a prior failure blocker", async () => {
+		const harness = await createHarness({ retryGraceMs: 100 });
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({
+			type: "agent_end",
+			messages: [assistantMessage("error", "upstream request failed")],
+		});
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("working");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+
+		await harness.runner.emitInput("next", undefined, "interactive");
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("working");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
 	});
 
 	it("holds working for usage-limit retryable errors before auto retry starts", async () => {
@@ -578,10 +936,10 @@ describe("native Herdr agent state extension", () => {
 			method: "pane.release_agent",
 			params: {
 				pane_id: "w1:p1",
-				source: "herdr:omp",
 				agent: "omp",
 			},
 		});
+		expect(harness.requests.at(-1)?.params.source).toMatch(/^herdr:omp:/);
 		expect(typeof harness.requests.at(-1)?.params.seq).toBe("number");
 	});
 
@@ -734,7 +1092,7 @@ describe("native Herdr agent state extension", () => {
 		}
 	});
 
-	it("sets the native Herdr marker before SDK-managed extension preload", async () => {
+	it("keeps SDK-managed fallback alive until native factory marks itself live", async () => {
 		vi.useRealTimers();
 		configureHerdrEnv();
 		const tempDir = makeTempDir();
@@ -760,11 +1118,11 @@ describe("native Herdr agent state extension", () => {
 			new EventBus(),
 		);
 
-		expect(process.env[HERDR_NATIVE_AGENT_STATE_ENV]).toBe("1");
-		expect(result.extensions.some(extension => extension.label === "managed fallback active")).toBe(false);
+		expect(process.env[HERDR_NATIVE_AGENT_STATE_ENV]).toBeUndefined();
+		expect(result.extensions.some(extension => extension.label === "managed fallback active")).toBe(true);
 	});
 
-	it("drops the discovered managed Herdr fallback from main sessions when native is active", async () => {
+	it("drops stale discovered managed Herdr fallback from main sessions when native is env-eligible", async () => {
 		vi.useRealTimers();
 		configureHerdrEnv(); // native marker unset -> native reporter is active by default under Herdr env
 		const tempDir = makeTempDir();
@@ -777,7 +1135,30 @@ describe("native Herdr agent state extension", () => {
 			Settings.isolated(),
 		);
 
-		expect(paths.some(extensionPath => path.basename(extensionPath) === "herdr-omp-agent-state.ts")).toBe(false);
+		expect(paths.some(extensionPath => path.resolve(extensionPath) === managedPath)).toBe(false);
+	});
+
+	it("keeps sentinel managed Herdr fallback discoverable until native marks live", async () => {
+		vi.useRealTimers();
+		configureHerdrEnv();
+		const tempDir = makeTempDir();
+		const managedPath = path.join(tempDir, "herdr-omp-agent-state.ts");
+		await Bun.write(
+			managedPath,
+			`export const sentinel = "${HERDR_MANAGED_FALLBACK_SENTINEL}";
+export default function(pi) {
+	pi.setLabel("managed fallback active");
+}
+`,
+		);
+
+		const paths = await discoverSessionExtensionPaths(
+			{ additionalExtensionPaths: [managedPath] },
+			tempDir,
+			Settings.isolated(),
+		);
+
+		expect(paths.some(extensionPath => path.resolve(extensionPath) === managedPath)).toBe(true);
 	});
 
 	it("keeps the managed Herdr fallback discoverable when native reporting is disabled", async () => {
@@ -794,7 +1175,7 @@ describe("native Herdr agent state extension", () => {
 			Settings.isolated(),
 		);
 
-		expect(paths.some(extensionPath => path.basename(extensionPath) === "herdr-omp-agent-state.ts")).toBe(true);
+		expect(paths.some(extensionPath => path.resolve(extensionPath) === managedPath)).toBe(true);
 	});
 
 	it("does not preload managed Herdr fallback paths into subagent sessions", async () => {

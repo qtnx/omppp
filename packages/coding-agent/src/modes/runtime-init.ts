@@ -104,6 +104,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			getGoalModeState: () => session.getGoalModeState(),
 			abort: () => session.abort({ reason: USER_INTERRUPT_LABEL }),
 			hasPendingMessages: () => session.queuedMessageCount > 0,
+			hasPendingAgentWork: () => session.hasPendingAgentWork(),
 			shutdown,
 			getContextUsage: () => session.getContextUsage(),
 			getSystemPrompt: () => session.systemPrompt,

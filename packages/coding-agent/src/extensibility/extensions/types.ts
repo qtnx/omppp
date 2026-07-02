@@ -363,6 +363,8 @@ export interface ExtensionContext {
 	abort(): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
+	/** Whether queued messages represent work that can continue without a future user prompt. */
+	hasPendingAgentWork?(): boolean;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
 	/** Get the current effective system prompt. */
@@ -1347,6 +1349,7 @@ export interface ExtensionContextActions {
 	getGoalModeState?: () => GoalModeState | undefined;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
+	hasPendingAgentWork?: () => boolean;
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
