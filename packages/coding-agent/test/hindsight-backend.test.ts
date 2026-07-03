@@ -800,25 +800,35 @@ describe("hindsightBackend live bank routing", () => {
 	// old `ensureBankMission` skipped creation entirely when `bankMission`
 	// was blank. The bank MUST be PUT (created) before any mental-model POST.
 	it("creates the bank before mental-model bootstrap even when bankMission is blank", async () => {
-		const callOrder: string[] = [];
-		const createBankSpy = vi.spyOn(HindsightApi.prototype, "createBank").mockImplementation(async () => {
-			callOrder.push("createBank");
-			return {} as never;
-		});
-		const listMentalSpy = vi.spyOn(HindsightApi.prototype, "listMentalModels").mockImplementation(async () => {
-			callOrder.push("listMentalModels");
-			return { items: [] } as never;
-		});
-		const createMentalModelSpy = vi
-			.spyOn(HindsightApi.prototype, "createMentalModel")
-			.mockImplementation(async () => {
-				callOrder.push("createMentalModel");
+		// Record the bank id each API call targets. The assertions below are
+		// scoped to THIS test's bank so a mental-model load still in flight
+		// from a prior test (fire-and-forget in `installPrimaryState`, sharing
+		// the spied `HindsightApi.prototype`) cannot inject a foreign
+		// `listMentalModels` ahead of our `createBank` and flake the order.
+		type Call = { method: "createBank" | "listMentalModels" | "createMentalModel"; bankId: string };
+		const callOrder: Call[] = [];
+		const createBankSpy = vi
+			.spyOn(HindsightApi.prototype, "createBank")
+			.mockImplementation(async (bankId: string) => {
+				callOrder.push({ method: "createBank", bankId });
 				return {} as never;
 			});
+		vi.spyOn(HindsightApi.prototype, "listMentalModels").mockImplementation(async (bankId: string) => {
+			callOrder.push({ method: "listMentalModels", bankId });
+			return { items: [] } as never;
+		});
+		vi.spyOn(HindsightApi.prototype, "createMentalModel").mockImplementation(async (bankId: string) => {
+			callOrder.push({ method: "createMentalModel", bankId });
+			return {} as never;
+		});
 
+		// Unique, global-scoped bank id: keeps this test's calls distinguishable
+		// from any leaked cross-test load so the ordering filter is airtight.
 		const settings = Settings.isolated({
 			"memory.backend": "hindsight",
 			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.scoping": "global",
+			"hindsight.bankId": "bank-first-mm",
 			"hindsight.mentalModelsEnabled": true,
 			"hindsight.mentalModelAutoSeed": true,
 			"hindsight.bankMission": "",
@@ -834,18 +844,21 @@ describe("hindsightBackend live bank routing", () => {
 		});
 		await session.getHindsightSessionState()?.mentalModelsLoadPromise;
 
+		const bankId = session.getHindsightSessionState()?.bankId;
+		expect(bankId).toBe("bank-first-mm");
+		const ownCalls = callOrder.filter(c => c.bankId === bankId).map(c => c.method);
+
 		expect(createBankSpy).toHaveBeenCalled();
-		// First call must be `createBank`. Otherwise the mental-model POST
-		// lands against a never-created bank and the server FK-fails it.
-		expect(callOrder[0]).toBe("createBank");
-		// Mental-model POSTs are allowed but they MUST come after the bank
-		// is on the server.
-		if (createMentalModelSpy.mock.calls.length > 0) {
-			const bankIdx = callOrder.indexOf("createBank");
-			const mmIdx = callOrder.indexOf("createMentalModel");
-			expect(bankIdx).toBeLessThan(mmIdx);
+		// First call for this bank must be `createBank`. Otherwise the
+		// mental-model POST lands against a never-created bank and the server
+		// FK-fails it.
+		expect(ownCalls[0]).toBe("createBank");
+		// Mental-model POSTs are allowed but they MUST come after the bank is
+		// on the server.
+		const mmIdx = ownCalls.indexOf("createMentalModel");
+		if (mmIdx !== -1) {
+			expect(ownCalls.indexOf("createBank")).toBeLessThan(mmIdx);
 		}
-		void listMentalSpy;
 	});
 });
 
