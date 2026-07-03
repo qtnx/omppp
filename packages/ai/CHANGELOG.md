@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `AuthStorage.getUsageHeadroom(model, opts?)`, a synchronous cache-first advisory probe for model-scoped usage headroom that evaluates the 5-hour and weekly usage windows explicitly (strict `<0.5` default utilization threshold, a `windowMode: "all" | "any"` option, and per-window headroom reporting), so callers can route subagents around exhausted Anthropic/Codex model buckets while preserving reserve on both windows — without minting tokens or fetching usage inline.
+
+### Fixed
+
+- Fixed Anthropic OAuth refresh handling so a transient bare 401 no longer logs out the credential pool; only explicit dead-grant responses such as `invalid_grant` disable a credential.
+- Fixed flaky SQLite auth-storage schema initialization crashes in the issue #2421 WAL path by applying WAL/synchronous PRAGMAs before the DDL batch, preventing intermittent `no such table: main.cache` failures under process/test load.
+- Fixed auth DB open/schema initialization to retry selected transient SQLite I/O failures (including `SQLITE_IOERR_FSTAT`) across fresh connections, closing the remaining issue #2421 class startup race without masking fatal SQLite errors.
+
 ## [1.5.0] - 2026-07-03
 
 ### Added

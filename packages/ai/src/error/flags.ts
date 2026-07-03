@@ -121,11 +121,7 @@ const FAST_MODE_NOT_SUPPORTED_PATTERN = /not support/i;
 const FAST_MODE_RATE_LIMIT_PATTERN = /rate_limit_error/i;
 const FAST_MODE_ENTITLEMENT_PATTERN = /fast mode/i;
 // Definitive OAuth refresh failure — the stored grant/client is dead.
-const OAUTH_DEFINITIVE_FAILURE_PATTERN =
-	/invalid_grant|invalid_token|unauthorized_client|\brevoked\b|refresh[\s_]?token.*expired/i;
-const OAUTH_TRANSIENT_FAILURE_PATTERN =
-	/timeout|network|fetch failed|ECONN(?:REFUSED|RESET)|ETIMEDOUT|EAI_AGAIN|socket hang up|\b(?:408|425|429|5\d{2})\b|rate.?limit|too many requests|temporar|unavailable|forbidden|permission_denied|cloudflare|captcha/i;
-const OAUTH_HTTP_AUTH_PATTERN = /\b401\b/;
+const OAUTH_DEFINITIVE_FAILURE_PATTERN = /invalid_grant|unauthorized_client|\brevoked\b|refresh[\s_]?token.*expired/i;
 
 function matchesGrammarTooLarge(message: string, errorStatus: number | undefined): boolean {
 	if (errorStatus !== 400) return false;
@@ -155,8 +151,13 @@ function matchesFastModeUnsupported(message: string, errorStatus: number | undef
 
 /** Whether an OAuth refresh error message means the grant is definitively dead. */
 export function isOAuthExpiry(errorMessage: string): boolean {
-	if (OAUTH_DEFINITIVE_FAILURE_PATTERN.test(errorMessage)) return true;
-	return OAUTH_HTTP_AUTH_PATTERN.test(errorMessage) && !OAUTH_TRANSIENT_FAILURE_PATTERN.test(errorMessage);
+	// Only an explicit dead-grant signal (invalid_grant / unauthorized_client /
+	// revoked / refresh-token-expired) proves the refresh grant is dead. A bare
+	// token-endpoint 401 is often a transient Cloudflare/WAF/auth-service blip;
+	// treating it as fatal let the ~60s refresher sweep mass-disable the entire
+	// Anthropic OAuth credential pool (mass-logout bug). invalid_token (RFC 6750)
+	// is a bad-ACCESS-token signal a refresh fixes, not a dead refresh grant.
+	return OAUTH_DEFINITIVE_FAILURE_PATTERN.test(errorMessage);
 }
 
 const ERROR_KIND_LABELS: readonly [Flag, string][] = [

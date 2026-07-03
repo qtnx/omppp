@@ -112,6 +112,21 @@ export interface UsageReport {
 	raw?: unknown;
 }
 
+export type UsageWindowKind = "5h" | "weekly" | "other";
+
+/** Advisory, cache-first answer for whether a model has usage headroom right now. */
+export interface UsageHeadroom {
+	hasRoom: boolean;
+	/** Present when `hasRoom` is false so callers can choose a fallback model or wait. */
+	reason?: "credential-blocked" | "window-exhausted" | "window-utilization";
+	/** Decisive blocking usage window, when known. */
+	window?: UsageWindowKind;
+	/** Per-window usage details for the evaluated credential, when known. */
+	windows?: Array<{ kind: UsageWindowKind; usedFraction?: number; resetsAt?: number; exhausted: boolean }>;
+	/** Earliest known reset for the blocking credential/window, in epoch milliseconds. */
+	resetAtMs?: number;
+}
+
 /**
  * Resolve a limit's used fraction (0..1; >1 means overage) from whichever
  * amount fields the provider populated. Precedence mirrors the usage UIs:
