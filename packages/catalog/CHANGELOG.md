@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.4.1] - 2026-06-28
-
-### Added
-
-- Added `max` as a model-scoped thinking effort for providers/models that expose it, including Anthropic adaptive models (Opus/Fable/Mythos) and GLM 5.2+, while keeping older GLM and fixed Z.ai reasoning formats on their narrower effort sets.
-
 ## [16.2.2] - 2026-06-27
 
 ### Removed
@@ -442,3 +436,9 @@
 ### Removed
 
 - Removed the runtime enrichment layer: `enrichModelThinking` (and its non-enumerable memo-slot cache), `refreshModelThinking`, `modelOmitsReasoningEffort`, and the `model-thinking` re-exports of generator-only policies. Thinking metadata is resolved exactly once inside `buildModel`; runtime helpers (`getSupportedEfforts`, `clampThinkingLevelForModel`, `requireSupportedEffort`, the effort mappers) are pure field reads.
+
+## [1.4.1] - 2026-06-28
+
+### Added
+
+- Added `max` as a model-scoped thinking effort for providers/models that expose it, including Anthropic adaptive models (Opus/Fable/Mythos) and GLM 5.2+, while keeping older GLM and fixed Z.ai reasoning formats on their narrower effort sets.
