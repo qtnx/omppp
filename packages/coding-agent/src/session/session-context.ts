@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { ProviderPayload, ServiceTier } from "@oh-my-pi/pi-ai";
+import { coerceServiceTierByFamily, type ProviderPayload, type ServiceTierByFamily } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { createBranchSummaryMessage, createCompactionSummaryMessage, createCustomMessage } from "./messages";
 import { type CompactionEntry, EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
@@ -9,7 +9,7 @@ export interface SessionContext {
 	thinkingLevel?: string;
 	/** Configured thinking selector (`"auto"` or a concrete level) from the latest change. */
 	configuredThinkingLevel?: string;
-	serviceTier?: ServiceTier;
+	serviceTier?: ServiceTierByFamily;
 	/** Model roles: { default: "provider/modelId", small: "provider/modelId", ... } */
 	models: Record<string, string>;
 	/** Names of TTSR rules that have been injected this session */
@@ -93,6 +93,16 @@ function tagNonToolEntrySurface(message: AgentMessage, entryId: string): AgentMe
 	}
 	return message;
 }
+function snapcompactHistoryBlocksForContext(
+	archive: snapcompact.Archive | undefined,
+	options: BuildSessionContextOptions | undefined,
+) {
+	if (!archive) return undefined;
+	return snapcompact.historyBlocks(
+		archive,
+		options?.transcript ? undefined : { maxFrameDataBytes: snapcompact.FRAME_DATA_BYTES_BUDGET },
+	);
+}
 
 export function buildSessionContext(
 	entries: SessionEntry[],
@@ -148,14 +158,15 @@ export function buildSessionContext(
 	const path: SessionEntry[] = [];
 	let current: SessionEntry | undefined = leaf;
 	while (current) {
-		path.unshift(current);
+		path.push(current);
 		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}
+	path.reverse();
 
 	// Extract settings and find compaction
 	let thinkingLevel: string | undefined = "off";
 	let configuredThinkingLevel: string | undefined;
-	let serviceTier: ServiceTier | undefined;
+	let serviceTier: ServiceTierByFamily | undefined;
 	const models: Record<string, string> = {};
 	let compaction: CompactionEntry | null = null;
 	const injectedTtsrRulesSet = new Set<string>();
@@ -186,7 +197,7 @@ export function buildSessionContext(
 				}
 			}
 		} else if (entry.type === "service_tier_change") {
-			serviceTier = entry.serviceTier ?? undefined;
+			serviceTier = coerceServiceTierByFamily(entry.serviceTier);
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			// Legacy fallback: infer default model from assistant messages only
 			// when no explicit `model_change` (role=default) entry has been
@@ -293,7 +304,7 @@ export function buildSessionContext(
 						entry.shortSummary,
 						undefined,
 						undefined,
-						snapcompactArchive ? snapcompact.historyBlocks(snapcompactArchive) : undefined,
+						snapcompactHistoryBlocksForContext(snapcompactArchive, options),
 					),
 				);
 			} else {
@@ -315,21 +326,23 @@ export function buildSessionContext(
 		})();
 		const remoteReplacementHistory = providerPayload?.items;
 
-		if (options?.transcript) handleEntryResetTracking(compaction);
-		// Emit summary first; re-attach any archived snapcompact frames so the
-		// model can keep reading the archived history after every context rebuild.
+		// Re-attach any archived snapcompact frames so the model can keep
+		// reading the archived history after every context rebuild.
 		const snapcompactArchive = snapcompact.getPreservedArchive(compaction.preserveData);
-		pushMessage(
-			createCompactionSummaryMessage(
-				compaction.summary,
-				compaction.tokensBefore,
-				compaction.timestamp,
-				compaction.shortSummary,
-				providerPayload,
-				undefined,
-				snapcompactArchive ? snapcompact.historyBlocks(snapcompactArchive) : undefined,
-			),
+		const compactionSummaryMsg = createCompactionSummaryMessage(
+			compaction.summary,
+			compaction.tokensBefore,
+			compaction.timestamp,
+			compaction.shortSummary,
+			providerPayload,
+			undefined,
+			snapcompactHistoryBlocksForContext(snapcompactArchive, options),
 		);
+		// Agent context (non-transcript): summary first so the LLM sees the
+		// compacted context before recent messages.
+		if (!options?.transcript) {
+			pushMessage(compactionSummaryMsg);
+		}
 
 		// Find compaction index in path
 		const compactionIdx = path.findIndex(e => e.type === "compaction" && e.id === compaction.id);
@@ -351,6 +364,16 @@ export function buildSessionContext(
 					appendMessage(entry);
 				}
 			}
+		}
+
+		// Display transcript: emit the summary at the chronological compaction
+		// point (after kept messages, before post-compaction) so it stays in
+		// the live region where Ctrl+O can expand it. Reset tracking fires
+		// here so the first post-compaction assistant turn — not a kept
+		// pre-compaction one — is marked as a cache miss.
+		if (options?.transcript) handleEntryResetTracking(compaction);
+		if (options?.transcript) {
+			pushMessage(compactionSummaryMsg);
 		}
 
 		// Emit messages after compaction

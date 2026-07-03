@@ -13,7 +13,7 @@ import type {
 	Context,
 	ImageContent,
 	Message,
-	ResolvedServiceTier,
+	ServiceTier,
 	StopReason,
 	TextContent,
 	Tool,
@@ -45,7 +45,7 @@ function isReasoningEffort(value: unknown): value is ReasoningEffort {
 	);
 }
 
-function isServiceTier(value: unknown): value is ResolvedServiceTier {
+function isServiceTier(value: unknown): value is ServiceTier {
 	return value === "auto" || value === "default" || value === "flex" || value === "scale" || value === "priority";
 }
 

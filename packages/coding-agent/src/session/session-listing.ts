@@ -245,20 +245,21 @@ function countMessageMarkers(content: string): number {
 	return count;
 }
 
-function extractFirstUserMessageFromPrefix(content: string): string | undefined {
-	const roleIndex = content.indexOf('"role"');
-	if (roleIndex === -1) return undefined;
+function extractFirstDisplayMessageFromPrefix(content: string): string | undefined {
+	let fallback: string | undefined;
+	let index = content.indexOf('"role"');
 
-	let index = roleIndex;
 	while (index !== -1) {
 		const role = extractStringProperty(content, "role", index);
-		if (role === "user") {
-			return extractStringProperty(content, "content", index) ?? extractStringProperty(content, "text", index);
+		const text = extractStringProperty(content, "content", index) ?? extractStringProperty(content, "text", index);
+		if (text) {
+			if (role === "user") return text;
+			if (!fallback && (role === "developer" || role === "assistant")) fallback = text;
 		}
 		index = content.indexOf('"role"', index + 6);
 	}
 
-	return undefined;
+	return fallback;
 }
 
 interface SessionListHeader {
@@ -270,37 +271,67 @@ interface SessionListHeader {
 	timestamp?: string;
 }
 
+function normalizeTitleOverride(title: string | undefined): string | null | undefined {
+	if (title === undefined) return undefined;
+	return title.trim() ? title : null;
+}
+
+function sessionListHeaderFromRecord(
+	record: Record<string, unknown> | undefined,
+	titleOverride?: string | null,
+): SessionListHeader | undefined {
+	if (record?.type !== "session" || typeof record.id !== "string") return undefined;
+	return {
+		type: "session",
+		id: record.id,
+		cwd: typeof record.cwd === "string" ? record.cwd : undefined,
+		title:
+			titleOverride === null
+				? undefined
+				: (titleOverride ?? (typeof record.title === "string" ? record.title : undefined)),
+		parentSession: typeof record.parentSession === "string" ? record.parentSession : undefined,
+		timestamp: typeof record.timestamp === "string" ? record.timestamp : undefined,
+	};
+}
+
+function parseSessionListHeaderLine(line: string, titleOverride?: string | null): SessionListHeader | undefined {
+	if (extractStringProperty(line, "type") !== "session") return undefined;
+	const id = extractStringProperty(line, "id");
+	if (!id) return undefined;
+	return {
+		type: "session",
+		id,
+		cwd: extractStringProperty(line, "cwd"),
+		title: titleOverride === null ? undefined : (titleOverride ?? extractStringProperty(line, "title")),
+		parentSession: extractStringProperty(line, "parentSession"),
+		timestamp: extractStringProperty(line, "timestamp"),
+	};
+}
+
 function parseSessionListHeader(
 	content: string,
 	entries: Array<Record<string, unknown>>,
 ): SessionListHeader | undefined {
-	const parsedHeader = entries[0];
-	if (parsedHeader?.type === "session" && typeof parsedHeader.id === "string") {
-		return {
-			type: "session",
-			id: parsedHeader.id,
-			cwd: typeof parsedHeader.cwd === "string" ? parsedHeader.cwd : undefined,
-			title: typeof parsedHeader.title === "string" ? parsedHeader.title : undefined,
-			parentSession: typeof parsedHeader.parentSession === "string" ? parsedHeader.parentSession : undefined,
-			timestamp: typeof parsedHeader.timestamp === "string" ? parsedHeader.timestamp : undefined,
-		};
+	const firstEntry = entries[0];
+	const parsedSlotTitle = normalizeTitleOverride(
+		firstEntry?.type === "title" && typeof firstEntry.title === "string" ? firstEntry.title : undefined,
+	);
+	const parsedHeader = sessionListHeaderFromRecord(entries[firstEntry?.type === "title" ? 1 : 0], parsedSlotTitle);
+	if (parsedHeader) return parsedHeader;
+
+	let slotTitle: string | null | undefined;
+	let firstNonEmpty = true;
+	for (const rawLine of content.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line) continue;
+		if (firstNonEmpty && extractStringProperty(line, "type") === "title") {
+			slotTitle = normalizeTitleOverride(extractStringProperty(line, "title"));
+			firstNonEmpty = false;
+			continue;
+		}
+		return parseSessionListHeaderLine(line, slotTitle);
 	}
-
-	const firstLineEnd = content.indexOf("\n");
-	const firstLine = firstLineEnd === -1 ? content : content.slice(0, firstLineEnd);
-	if (extractStringProperty(firstLine, "type") !== "session") return undefined;
-
-	const id = extractStringProperty(firstLine, "id");
-	if (!id) return undefined;
-
-	return {
-		type: "session",
-		id,
-		cwd: extractStringProperty(firstLine, "cwd"),
-		title: extractStringProperty(firstLine, "title"),
-		parentSession: extractStringProperty(firstLine, "parentSession"),
-		timestamp: extractStringProperty(firstLine, "timestamp"),
-	};
+	return undefined;
 }
 
 function getSessionListWorkerCount(fileCount: number): number {
@@ -364,7 +395,7 @@ async function scanSessionFile(
 			}
 		}
 
-		firstMessage ||= extractFirstUserMessageFromPrefix(content) ?? "";
+		firstMessage ||= extractFirstDisplayMessageFromPrefix(content) ?? "";
 		const messageCount = Math.max(parsedMessageCount, countMessageMarkers(content));
 		return {
 			path: file,

@@ -1,5 +1,7 @@
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { Container, Image, type ImageBudget, ImageProtocol, Markdown, Spacer, TERMINAL, Text } from "@oh-my-pi/pi-tui";
+import { formatNumber } from "@oh-my-pi/pi-utils";
+import chalk from "chalk";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { resolveAbortLabel, shouldRenderAbortReason } from "../../session/messages";
@@ -15,6 +17,20 @@ import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cach
  * the persisted session.
  */
 const MAX_TRANSCRIPT_ERROR_LINES = 8;
+
+function lerpHex(fromHex: string, toHex: string, ratio: number): string {
+	const clamp = Math.max(0, Math.min(1, ratio));
+	const from = Number.parseInt(fromHex.slice(1), 16);
+	const to = Number.parseInt(toHex.slice(1), 16);
+	const fr = (from >> 16) & 0xff;
+	const fg = (from >> 8) & 0xff;
+	const fb = from & 0xff;
+	const tr = (to >> 16) & 0xff;
+	const tg = (to >> 8) & 0xff;
+	const tb = to & 0xff;
+	const mix = (a: number, b: number) => Math.round(a + (b - a) * clamp);
+	return `#${[mix(fr, tr), mix(fg, tg), mix(fb, tb)].map(value => value.toString(16).padStart(2, "0")).join("")}`;
+}
 
 /**
  * A GFM table delimiter row (`| --- | :--: |`, with or without bounding pipes).
@@ -32,11 +48,16 @@ type ThinkingContentBlock = Extract<AssistantMessage["content"][number], { type:
 type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
 
 function resolveThinkingDisplay(block: ThinkingContentBlock, proseOnly: boolean): { text: string; visible: boolean } {
-	const rawThinking = (block as DisplayThinkingContentBlock).rawThinking ?? block.thinking;
-	const formatted = formatThinkingForDisplay(block.thinking, proseOnly);
+	const rawThinking = (block as DisplayThinkingContentBlock).rawThinking;
+	// When rawThinking is set, `block.thinking` is already the formatted display
+	// text that buildDisplayMessage produced (then revealed/sliced by the
+	// streaming controller) — re-running the formatter would double-process it,
+	// and the growing revealed slice would never hit the per-tick memo. Only
+	// format raw (non-display) thinking blocks.
+	const formatted = rawThinking !== undefined ? block.thinking : formatThinkingForDisplay(block.thinking, proseOnly);
 	return {
 		text: formatted.trim(),
-		visible: hasDisplayableThinking(rawThinking, formatted),
+		visible: hasDisplayableThinking(rawThinking ?? block.thinking, formatted),
 	};
 }
 
@@ -213,6 +234,7 @@ export class AssistantMessageComponent extends Container {
 	 *  Undefined until the first thinking update of this block. */
 	#lastTokenCount: number | undefined;
 	#lastTokenTime = 0;
+	#thinkingTokens = 0;
 	/** Whether this block has observed a positive provider-token delta — i.e. it is
 	 *  genuinely streaming tokens right now. Gates the numeric speed badge so the
 	 *  session-wide {@link sharedSpeedTracker} can't surface a previous turn's rate
@@ -331,8 +353,28 @@ export class AssistantMessageComponent extends Container {
 		const coloredGlyph = theme.fg("thinkingText", glyph);
 		const startedAt = this.#thinkingPhaseStartedAt;
 		const elapsed =
-			startedAt === undefined ? "" : theme.fg("dim", ` ${Math.floor((Date.now() - startedAt) / 1000)}s`);
-		return `${coloredGlyph}${theme.fg("dim", " thinking…")}${elapsed}`;
+			startedAt === undefined ? "" : theme.fg("dim", ` · ${Math.floor((Date.now() - startedAt) / 1000)}s`);
+		const thinkingLabel = theme.fg("muted", " Thinking");
+		const rate = Math.min(SPEED_MAX, sharedSpeedTracker.getSpeed());
+		// The numeric badge ("<total> · <rate> toks/s") only renders while this block
+		// is genuinely streaming provider tokens. A block that has observed no token
+		// delta (e.g. a provider that reports usage only at turn end) or whose rate
+		// has decayed to zero (a streaming lull) drops it entirely — the persistent
+		// text label keeps the pulse descriptive for terminals and screen readers.
+		// The liveness flag also stops the session-wide gauge from leaking a previous
+		// turn's rate onto a fresh token-less block.
+		if (!this.#thinkingRateLive || rate < 0.05) return coloredGlyph + thinkingLabel + elapsed;
+		// Total provider tokens, dimmed, sit next to the pulse.
+		const totalSpan = this.#thinkingTokens > 0 ? theme.fg("dim", ` · ${formatNumber(this.#thinkingTokens)}`) : "";
+		// Speed badge color: dim gray at rest, brightening toward the theme accent as
+		// streaming speed climbs (gray → bright accent). Ease (sqrt) so typical
+		// mid-stream rates already read as clearly accent-tinted instead of staying
+		// gray until the rarely-hit SPEED_MAX ceiling.
+		const ratio = Math.sqrt(rate / SPEED_MAX);
+		const hex = lerpHex(theme.getColorHex("dim"), theme.getAccentColorHex(), ratio);
+		const rateText = ` · ${rate.toFixed(1)} toks/s`;
+		const rateSpan = theme.getColorMode() === "truecolor" ? chalk.hex(hex)(rateText) : theme.fg("muted", rateText);
+		return coloredGlyph + thinkingLabel + elapsed + totalSpan + rateSpan;
 	}
 
 	#finalThinkingMarkerLabel(): string | undefined {
@@ -699,6 +741,7 @@ export class AssistantMessageComponent extends Container {
 		const isThinkingNow = this.#lastUpdateTransient && shouldAnimateThinking;
 		if (isThinkingNow) {
 			const currentTokens = message.usage.reasoningTokens ?? message.usage.output;
+			this.#thinkingTokens = currentTokens;
 			const now = performance.now();
 			if (this.#lastTokenCount !== undefined) {
 				const tokenDelta = currentTokens - this.#lastTokenCount;
@@ -715,6 +758,7 @@ export class AssistantMessageComponent extends Container {
 			this.#lastTokenTime = now;
 		} else {
 			this.#lastTokenCount = undefined;
+			this.#thinkingTokens = 0;
 			this.#thinkingRateLive = false;
 		}
 
@@ -728,7 +772,7 @@ export class AssistantMessageComponent extends Container {
 		);
 
 		// Fast path: reuse Markdown children when shape is stable during streaming
-		if (this.#tryFastPathUpdate(message)) return;
+		if (this.#tryFastPathUpdate(message, opts)) return;
 
 		// Clear content container
 		this.#contentContainer.clear();

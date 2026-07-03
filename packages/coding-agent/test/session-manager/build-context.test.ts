@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import type {
@@ -9,6 +9,7 @@ import type {
 	SessionMessageEntry,
 	ThinkingLevelChangeEntry,
 } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import * as snapcompact from "@oh-my-pi/snapcompact";
 
 function msg(id: string, parentId: string | null, role: "user" | "assistant", text: string): SessionMessageEntry {
 	const base = { type: "message" as const, id, parentId, timestamp: "2025-01-01T00:00:00Z" };
@@ -204,6 +205,29 @@ describe("buildSessionContext", () => {
 			expect(ctx.messages.map(m => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
 		});
 
+		it("builds deep linear paths without quadratic unshift work", () => {
+			const entries: SessionEntry[] = [];
+			let parentId: string | null = null;
+			for (let i = 0; i < 1000; i++) {
+				const id = `entry-${i}`;
+				entries.push(msg(id, parentId, "user", id));
+				parentId = id;
+			}
+
+			const unshift = spyOn(Array.prototype, "unshift");
+			try {
+				const ctx = buildSessionContext(entries, parentId);
+				expect(ctx.messages.map(message => (message.role === "user" ? message.content : ""))).toEqual(
+					entries.map(entry =>
+						entry.type === "message" && entry.message.role === "user" ? entry.message.content : "",
+					),
+				);
+				expect(unshift).not.toHaveBeenCalled();
+			} finally {
+				unshift.mockRestore();
+			}
+		});
+
 		it("tracks thinking level changes", () => {
 			const entries: SessionEntry[] = [
 				msg("1", null, "user", "hello"),
@@ -307,6 +331,55 @@ describe("buildSessionContext", () => {
 			expect((ctx.messages[1] as { content: string }).content).toBe("after compact");
 		});
 
+		it("caps snapcompact frame payload in LLM context but preserves transcript frames", () => {
+			const oldFrame = "o".repeat(Math.ceil(snapcompact.FRAME_DATA_BYTES_BUDGET / 2) + 1);
+			const newFrame = "n".repeat(oldFrame.length);
+			const compacted: CompactionEntry = {
+				...compaction("3", "2", "Snapcompact summary", "1"),
+				preserveData: {
+					[snapcompact.PRESERVE_KEY]: {
+						frames: [
+							{ data: oldFrame, mimeType: "image/png", cols: 10, rows: 10, chars: 10 },
+							{ data: newFrame, mimeType: "image/png", cols: 10, rows: 10, chars: 10 },
+						],
+						totalChars: 20,
+						truncatedChars: 0,
+						textHead: "old edge",
+						textTail: "new edge",
+					},
+				},
+			};
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "first"),
+				msg("2", "1", "assistant", "response"),
+				compacted,
+				msg("4", "3", "user", "after compact"),
+			];
+
+			const llmContext = buildSessionContext(entries);
+			const summary = llmContext.messages[0];
+			if (summary?.role !== "compactionSummary") throw new Error("Expected LLM compaction summary");
+			const imageBlocks = summary.blocks?.filter(block => block.type === "image");
+			expect(imageBlocks).toHaveLength(1);
+			const keptImage = imageBlocks?.[0];
+			if (keptImage?.type !== "image") throw new Error("Expected kept snapcompact image");
+			expect(keptImage.data).toBe(newFrame);
+			const blocks = summary.blocks ?? [];
+			const noticeIndex = blocks.findIndex(
+				block => block.type === "text" && block.text.includes("image middle omitted"),
+			);
+			const imageIndex = blocks.findIndex(block => block.type === "image");
+			expect(noticeIndex).toBeGreaterThanOrEqual(0);
+			// Omitted frames are the oldest archived images, so the gap notice must
+			// precede the kept (newer) image to keep blocks oldest-to-newest.
+			expect(noticeIndex).toBeLessThan(imageIndex);
+
+			const transcript = buildSessionContext(entries, undefined, undefined, { transcript: true });
+			const transcriptSummary = transcript.messages[2];
+			if (transcriptSummary?.role !== "compactionSummary") throw new Error("Expected transcript compaction summary");
+			expect(transcriptSummary.blocks?.filter(block => block.type === "image")).toHaveLength(2);
+		});
+
 		it("multiple compactions uses latest", () => {
 			const entries: SessionEntry[] = [
 				msg("1", null, "user", "a"),
@@ -322,6 +395,105 @@ describe("buildSessionContext", () => {
 			// Should use second summary, keep from 4
 			expect(ctx.messages).toHaveLength(4);
 			expect((ctx.messages[0] as any).summary).toContain("Second summary");
+		});
+	});
+
+	describe("collapsed transcript ordering", () => {
+		it("display transcript: summary after kept messages, not at top", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "old question"),
+				msg("2", "1", "assistant", "old response"),
+				msg("3", "2", "user", "kept question"),
+				msg("4", "3", "assistant", "kept response"),
+				compaction("5", "4", "Summary of compacted turns", "3"),
+				msg("6", "5", "user", "after compact"),
+			];
+
+			// Display transcript: kept messages → summary → post-compaction
+			const transcript = buildSessionContext(entries, undefined, undefined, {
+				transcript: true,
+				collapseCompactedHistory: true,
+			});
+
+			expect(transcript.messages).toHaveLength(4);
+			expect(transcript.messages[0]?.role).toBe("user");
+			expect(transcript.messages[1]?.role).toBe("assistant");
+			expect(transcript.messages[2]?.role).toBe("compactionSummary");
+			expect(transcript.messages[3]?.role).toBe("user");
+		});
+
+		it("agent context: summary stays at top", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "old question"),
+				msg("2", "1", "assistant", "old response"),
+				msg("3", "2", "user", "kept question"),
+				msg("4", "3", "assistant", "kept response"),
+				compaction("5", "4", "Summary of compacted turns", "3"),
+				msg("6", "5", "user", "after compact"),
+			];
+
+			// Agent context (no transcript): summary first
+			const agentCtx = buildSessionContext(entries);
+
+			expect(agentCtx.messages).toHaveLength(4);
+			expect(agentCtx.messages[0]?.role).toBe("compactionSummary");
+			expect(agentCtx.messages[1]?.role).toBe("user");
+			expect(agentCtx.messages[2]?.role).toBe("assistant");
+			expect(agentCtx.messages[3]?.role).toBe("user");
+		});
+
+		it("display transcript with no post-compaction messages: summary at bottom", () => {
+			// Simulates the moment right after /compact runs — compaction is the
+			// last entry, so the summary should be the last (bottom) message.
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "old question"),
+				msg("2", "1", "assistant", "old response"),
+				msg("3", "2", "user", "kept question"),
+				msg("4", "3", "assistant", "kept response"),
+				compaction("5", "4", "Freshly compacted", "3"),
+			];
+
+			const transcript = buildSessionContext(entries, undefined, undefined, {
+				transcript: true,
+				collapseCompactedHistory: true,
+			});
+
+			expect(transcript.messages).toHaveLength(3);
+			expect(transcript.messages[0]?.role).toBe("user");
+			expect(transcript.messages[1]?.role).toBe("assistant");
+			expect(transcript.messages[2]?.role).toBe("compactionSummary");
+		});
+
+		it("collapsed transcript marks first post-compaction assistant as cache miss", () => {
+			// With kept assistant BEFORE compaction and assistant AFTER compaction,
+			// the cache-miss flag must land on the post-compaction assistant (the
+			// turn that actually follows /compact), not on the kept pre-compaction one.
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "old question"),
+				msg("2", "1", "assistant", "old response"),
+				msg("3", "2", "user", "kept question"),
+				msg("4", "3", "assistant", "kept response"),
+				compaction("5", "4", "Compacted", "3"),
+				msg("6", "5", "user", "after compact"),
+				msg("7", "6", "assistant", "after response"),
+			];
+
+			const transcript = buildSessionContext(entries, undefined, undefined, {
+				transcript: true,
+				collapseCompactedHistory: true,
+			});
+
+			// Roles: user(3), assistant(4), compactionSummary, user(6), assistant(7)
+			expect(transcript.messages.map(m => m.role)).toEqual([
+				"user",
+				"assistant",
+				"compactionSummary",
+				"user",
+				"assistant",
+			]);
+			// cacheMissExplainedAt: the kept assistant (index 1) should NOT be a miss;
+			// the post-compaction assistant (index 4) SHOULD be a miss.
+			expect(transcript.cacheMissExplainedAt).toEqual([false, false, false, false, true]);
 		});
 	});
 

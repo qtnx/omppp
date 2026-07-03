@@ -9,7 +9,7 @@ import { isGlmVisionModelId, isGrokReasoningEffortCapable, isReasoningGlmModelId
 import type { ModelManagerOptions } from "../model-manager";
 import { getBundledModels } from "../models";
 import type { Api, FetchImpl, Model, ModelSpec, OpenAICompat, Provider, ThinkingConfig } from "../types";
-import { isAnthropicOAuthToken, isRecord, toBoolean, toNumber, toPositiveNumber } from "../utils";
+import { discoveryFetch, isAnthropicOAuthToken, isRecord, toBoolean, toNumber, toPositiveNumber } from "../utils";
 import { coreWeaveProjectHeaders } from "../wire/coreweave";
 import {
 	COPILOT_API_HEADERS,
@@ -20,6 +20,25 @@ import {
 import { createBundledReferenceMap, createReferenceResolver, toModelSpec } from "./bundled-references";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
+
+/**
+ * Uses a cancellable timer rather than the native abort-timeout helper so
+ * successful fast discovery requests do not leave armed timeout signals for
+ * concurrent GC to trip over later.
+ */
+async function withCatalogDiscoveryTimeout<T>(timeoutMs: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+		timeoutMs,
+	);
+	try {
+		return await run(controller.signal);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 const ANTHROPIC_OAUTH_BETA =
 	"claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11";
@@ -62,7 +81,7 @@ function toInputCapabilities(value: unknown): ("text" | "image")[] {
 	return supportsImage ? ["text", "image"] : ["text"];
 }
 
-async function fetchModelsDevPayload(fetchImpl: FetchImpl = fetch): Promise<unknown> {
+async function fetchModelsDevPayload(fetchImpl: FetchImpl = discoveryFetch()): Promise<unknown> {
 	const response = await fetchImpl(MODELS_DEV_URL, {
 		method: "GET",
 		headers: { Accept: "application/json" },
@@ -156,11 +175,23 @@ function buildAnthropicReferenceMap(
  * first-party `/v1/models` endpoint but that models.dev has not catalogued yet.
  * Seeded into model generation so the bundled catalog is never gated on
  * models.dev's update cadence; deduped behind upstream catalog / models.dev
- * entries once those appear. Token limits and pricing are pinned
- * authoritatively in `applyAnthropicCatalogPolicy`, and `thinking` is re-baked
+ * entries once those appear. Token limits and pricing are pinned either directly or
+ * in `applyAnthropicCatalogPolicy`, and `thinking` is re-baked
  * by the generator's policy pass (scripts/generated-policies.ts).
  */
 export const ANTHROPIC_CURATED_FALLBACK_MODELS: readonly ModelSpec<"anthropic-messages">[] = [
+	{
+		id: "claude-sonnet-5",
+		name: "Claude Sonnet 5",
+		api: "anthropic-messages",
+		provider: "anthropic",
+		baseUrl: "https://api.anthropic.com",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+		contextWindow: 1_000_000,
+		maxTokens: 128_000,
+	},
 	{
 		id: "claude-fable-5",
 		name: "Claude Fable 5",
@@ -239,7 +270,7 @@ function toOllamaNativeBaseUrl(baseUrl: string): string {
 async function fetchOllamaNativeModels(
 	baseUrl: string,
 	resolveMetadata: (modelId: string) => Promise<OllamaResolvedMetadata>,
-	fetchImpl: FetchImpl = fetch,
+	fetchImpl: FetchImpl = discoveryFetch(),
 ): Promise<ModelSpec<"openai-responses">[] | null> {
 	const nativeBaseUrl = toOllamaNativeBaseUrl(baseUrl);
 	let response: Response;
@@ -345,7 +376,7 @@ function getOllamaThinkingConfig(capabilities: string[] | undefined): ThinkingCo
 async function fetchOllamaShowMetadata(
 	nativeBaseUrl: string,
 	modelId: string,
-	fetchImpl: FetchImpl = fetch,
+	fetchImpl: FetchImpl = discoveryFetch(),
 ): Promise<OllamaShowMetadata | undefined> {
 	try {
 		const response = await fetchImpl(`${nativeBaseUrl}/api/show`, {
@@ -712,7 +743,7 @@ async function fetchUmansModelsInfo(options: {
 	if (options.apiKey) {
 		requestHeaders["x-api-key"] = options.apiKey;
 	}
-	const fetchImpl = options.fetch ?? fetch;
+	const fetchImpl = discoveryFetch(options.fetch);
 	let payload: unknown;
 	try {
 		const response = await fetchImpl(`${discoveryBaseUrl}${UMANS_MODELS_INFO_PATH}`, {
@@ -803,6 +834,18 @@ export function groqModelManagerOptions(config?: GroqModelManagerConfig): ModelM
 // 3. Cerebras
 // ---------------------------------------------------------------------------
 
+const CEREBRAS_IMAGE_INPUT_MODEL_IDS = new Set(["gemma-4-31b"]);
+
+function applyCerebrasDiscoveryOverrides(model: ModelSpec<"openai-completions">): ModelSpec<"openai-completions"> {
+	if (!CEREBRAS_IMAGE_INPUT_MODEL_IDS.has(model.id)) {
+		return model;
+	}
+	return {
+		...model,
+		input: ["text", "image"],
+	};
+}
+
 export interface CerebrasModelManagerConfig {
 	apiKey?: string;
 	baseUrl?: string;
@@ -812,7 +855,27 @@ export interface CerebrasModelManagerConfig {
 export function cerebrasModelManagerOptions(
 	config?: CerebrasModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
-	return createSimpleOpenAICompletionsOptions("cerebras", "https://api.cerebras.ai/v1", config);
+	const apiKey = config?.apiKey;
+	const baseUrl = config?.baseUrl ?? "https://api.cerebras.ai/v1";
+	const references = createBundledReferenceMap<"openai-completions">("cerebras");
+	return {
+		providerId: "cerebras",
+		...(apiKey && {
+			fetchDynamicModels: () =>
+				fetchOpenAICompatibleModels({
+					api: "openai-completions",
+					provider: "cerebras",
+					baseUrl,
+					apiKey,
+					mapModel: (entry, defaults) => {
+						const reference = references.get(defaults.id);
+						const model = mapWithBundledReference(entry, defaults, reference);
+						return applyCerebrasDiscoveryOverrides(model);
+					},
+					fetch: config?.fetch,
+				}),
+		}),
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1220,6 +1283,7 @@ export function zhipuCodingPlanModelManagerOptions(
 	const baseUrl = config?.baseUrl ?? "https://open.bigmodel.cn/api/coding/paas/v4";
 	return {
 		providerId: "zhipu-coding-plan",
+		dynamicModelsAuthoritative: true,
 		...(apiKey && {
 			fetchDynamicModels: () =>
 				fetchOpenAICompatibleModels({
@@ -1294,7 +1358,7 @@ export function clampFireworksKimiMaxTokens(modelId: string, candidate: number |
 export const KIMI_K27_CODE_RECOMMENDED_MAX_TOKENS = 32_768;
 
 export function isKimiK27CodeModelId(modelId: string): boolean {
-	return /(?:^|\/)kimi[-._]?k2(?:[._-]?|p)7[-._]?code$/i.test(modelId);
+	return /(?:^|\/)kimi[-._]?k2(?:[._-]?|p)7[-._]?code(?:[-._]?highspeed)?$/i.test(modelId);
 }
 
 export function clampKimiK27CodeMaxTokens(modelId: string, candidate: number): number;
@@ -1478,7 +1542,7 @@ async function fetchFireworksServerlessModels(options: {
 }): Promise<ModelSpec<"openai-completions">[] | null> {
 	const listUrl = toFireworksControlPlaneModelsUrl(options.baseUrl, FIREWORKS_CONTROL_PLANE_ACCOUNT);
 	if (!listUrl) return null;
-	const fetchImpl = options.fetch ?? fetch;
+	const fetchImpl = discoveryFetch(options.fetch);
 	const collected = new Map<string, ModelSpec<"openai-completions">>();
 	let pageToken = "";
 	for (let page = 0; page < FIREWORKS_CONTROL_PLANE_MAX_PAGES; page++) {
@@ -1972,7 +2036,11 @@ function normalizeZenMuxOpenAiBaseUrl(baseUrl?: string): string {
 	if (!value) {
 		return ZENMUX_OPENAI_BASE_URL;
 	}
-	return value.endsWith("/") ? value.slice(0, -1) : value;
+	const normalized = value.endsWith("/") ? value.slice(0, -1) : value;
+	if (normalized.endsWith("/api/anthropic")) {
+		return normalized.replace("/api/anthropic", "/api/v1");
+	}
+	return normalized;
 }
 
 function toZenMuxAnthropicBaseUrl(openAiBaseUrl: string): string {
@@ -2040,37 +2108,35 @@ export function zenmuxModelManagerOptions(config?: ZenMuxModelManagerConfig): Mo
 	const anthropicBaseUrl = toZenMuxAnthropicBaseUrl(openAiBaseUrl);
 	return {
 		providerId: "zenmux",
-		...(apiKey && {
-			fetchDynamicModels: () =>
-				fetchOpenAICompatibleModels<Api>({
-					api: "openai-completions",
-					provider: "zenmux",
-					baseUrl: openAiBaseUrl,
-					apiKey,
-					mapModel: (entry, defaults) => {
-						const pricings = isRecord(entry.pricings) ? entry.pricings : undefined;
-						const capabilities = isRecord(entry.capabilities) ? entry.capabilities : undefined;
-						const isAnthropicModel = isZenMuxAnthropicModel(entry, defaults.id);
-						return {
-							...defaults,
-							name: toModelName(entry.display_name, defaults.name),
-							api: isAnthropicModel ? "anthropic-messages" : "openai-completions",
-							baseUrl: isAnthropicModel ? anthropicBaseUrl : openAiBaseUrl,
-							reasoning: capabilities?.reasoning === true || defaults.reasoning,
-							input: toInputCapabilities(entry.input_modalities),
-							cost: {
-								input: getZenMuxPricingValue(pricings, "prompt"),
-								output: getZenMuxPricingValue(pricings, "completion"),
-								cacheRead: getZenMuxPricingValue(pricings, "input_cache_read"),
-								cacheWrite: getZenMuxCacheWritePrice(pricings),
-							},
-							contextWindow: toPositiveNumber(entry.context_length, defaults.contextWindow),
-							maxTokens: toPositiveNumber(entry.max_completion_tokens, defaults.maxTokens),
-						};
-					},
-					fetch: config?.fetch,
-				}),
-		}),
+		fetchDynamicModels: () =>
+			fetchOpenAICompatibleModels<Api>({
+				api: "openai-completions",
+				provider: "zenmux",
+				baseUrl: openAiBaseUrl,
+				apiKey,
+				mapModel: (entry, defaults) => {
+					const pricings = isRecord(entry.pricings) ? entry.pricings : undefined;
+					const capabilities = isRecord(entry.capabilities) ? entry.capabilities : undefined;
+					const isAnthropicModel = isZenMuxAnthropicModel(entry, defaults.id);
+					return {
+						...defaults,
+						name: toModelName(entry.display_name, defaults.name),
+						api: isAnthropicModel ? "anthropic-messages" : "openai-completions",
+						baseUrl: isAnthropicModel ? anthropicBaseUrl : openAiBaseUrl,
+						reasoning: capabilities?.reasoning === true || defaults.reasoning,
+						input: toInputCapabilities(entry.input_modalities),
+						cost: {
+							input: getZenMuxPricingValue(pricings, "prompt"),
+							output: getZenMuxPricingValue(pricings, "completion"),
+							cacheRead: getZenMuxPricingValue(pricings, "input_cache_read"),
+							cacheWrite: getZenMuxCacheWritePrice(pricings),
+						},
+						contextWindow: toPositiveNumber(entry.context_length, defaults.contextWindow),
+						maxTokens: toPositiveNumber(entry.max_completion_tokens, defaults.maxTokens),
+					};
+				},
+				fetch: config?.fetch,
+			}),
 	};
 }
 
@@ -2307,34 +2373,40 @@ export async function fetchLmStudioNativeModelMetadata(
 	options?: LmStudioNativeModelMetadataOptions,
 ): Promise<Map<string, LmStudioNativeModelMetadata> | null> {
 	const nativeBaseUrl = toLmStudioNativeBaseUrl(baseUrl);
-	try {
-		const response = await fetchImpl(`${nativeBaseUrl}/api/v0/models`, {
-			method: "GET",
-			headers: { Accept: "application/json", ...(options?.headers ?? {}) },
-			signal: options?.signal ?? AbortSignal.timeout(LM_STUDIO_NATIVE_METADATA_TIMEOUT_MS),
-		});
-		if (!response.ok) {
-			return null;
-		}
-		const payload = await response.json();
-		if (!isRecord(payload) || !Array.isArray(payload.data)) {
-			return null;
-		}
-		const metadata = new Map<string, LmStudioNativeModelMetadata>();
-		for (const entry of payload.data) {
-			if (!isRecord(entry) || typeof entry.id !== "string" || entry.id.length === 0) {
-				continue;
-			}
-			const contextWindow = getLmStudioNativeContextWindow(entry);
-			metadata.set(entry.id, {
-				input: getLmStudioNativeInput(entry),
-				...(contextWindow === undefined ? {} : { contextWindow }),
+	const fetchMetadata = async (signal?: AbortSignal): Promise<Map<string, LmStudioNativeModelMetadata> | null> => {
+		try {
+			const response = await fetchImpl(`${nativeBaseUrl}/api/v0/models`, {
+				method: "GET",
+				headers: { Accept: "application/json", ...(options?.headers ?? {}) },
+				signal,
 			});
+			if (!response.ok) {
+				return null;
+			}
+			const payload = await response.json();
+			if (!isRecord(payload) || !Array.isArray(payload.data)) {
+				return null;
+			}
+			const metadata = new Map<string, LmStudioNativeModelMetadata>();
+			for (const entry of payload.data) {
+				if (!isRecord(entry) || typeof entry.id !== "string" || entry.id.length === 0) {
+					continue;
+				}
+				const contextWindow = getLmStudioNativeContextWindow(entry);
+				metadata.set(entry.id, {
+					input: getLmStudioNativeInput(entry),
+					...(contextWindow === undefined ? {} : { contextWindow }),
+				});
+			}
+			return metadata;
+		} catch {
+			return null;
 		}
-		return metadata;
-	} catch {
-		return null;
+	};
+	if (options?.signal !== undefined) {
+		return fetchMetadata(options.signal);
 	}
+	return withCatalogDiscoveryTimeout(LM_STUDIO_NATIVE_METADATA_TIMEOUT_MS, fetchMetadata);
 }
 
 export interface LmStudioModelManagerConfig {
@@ -2825,6 +2897,7 @@ export interface FetchLiteLLMRichModelsOptions<TApi extends Api> {
 	headers?: Record<string, string>;
 	fetch?: FetchImpl;
 	signal?: AbortSignal;
+	timeoutMs?: number;
 	referenceResolver?: (modelId: string) => ModelSpec<TApi> | undefined;
 }
 
@@ -2854,6 +2927,33 @@ export function normalizeLiteLLMManagementBaseUrl(baseUrl: string): string {
 function normalizeLiteLLMRuntimeBaseUrl(baseUrl: string): string {
 	const trimmed = baseUrl.trim();
 	return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+}
+
+const LITELLM_RESELLER_USAGE_SUFFIX = /\s+\(\d+(?:\.\d+)?[x×] usage\)$/i;
+
+function stripLiteLLMResellerUsageSuffix(name: string): string {
+	const cleaned = name.replace(LITELLM_RESELLER_USAGE_SUFFIX, "").trim();
+	return cleaned.length > 0 ? cleaned : name;
+}
+
+function toLiteLLMDisplayName(modelName: string | undefined, referenceName: string | undefined, id: string): string {
+	const cleanedModelName = modelName ? stripLiteLLMResellerUsageSuffix(modelName) : undefined;
+	if (cleanedModelName && cleanedModelName !== id) {
+		return cleanedModelName;
+	}
+	return referenceName ? stripLiteLLMResellerUsageSuffix(referenceName) : id;
+}
+
+function mapLiteLLMOpenAICompatibleModel<TApi extends Api>(
+	entry: OpenAICompatibleModelRecord,
+	defaults: ModelSpec<TApi>,
+	reference: ModelSpec<TApi> | undefined,
+): ModelSpec<TApi> {
+	const model = mapWithBundledReference(entry, defaults, reference);
+	return {
+		...model,
+		name: stripLiteLLMResellerUsageSuffix(model.name),
+	};
 }
 
 function toNonEmptyString(value: unknown): string | undefined {
@@ -2955,7 +3055,7 @@ function mapLiteLLMRichEntry<TApi extends Api>(
 	};
 	return {
 		id,
-		name: modelName && modelName !== id ? modelName : (reference?.name ?? id),
+		name: toLiteLLMDisplayName(modelName, reference?.name, id),
 		api: options.api,
 		provider: options.provider,
 		baseUrl: runtimeBaseUrl,
@@ -2980,8 +3080,9 @@ async function fetchLiteLLMRichEndpoint<TApi extends Api>(
 	options: FetchLiteLLMRichModelsOptions<TApi>,
 	managementBaseUrl: string,
 	runtimeBaseUrl: string,
+	signal?: AbortSignal,
 ): Promise<ModelSpec<TApi>[] | null> {
-	const fetchImpl = options.fetch ?? globalThis.fetch;
+	const fetchImpl = discoveryFetch(options.fetch);
 	const requestHeaders: Record<string, string> = {
 		Accept: "application/json",
 		...options.headers,
@@ -2994,7 +3095,7 @@ async function fetchLiteLLMRichEndpoint<TApi extends Api>(
 		response = await fetchImpl(`${managementBaseUrl}${endpoint}`, {
 			method: "GET",
 			headers: requestHeaders,
-			signal: options.signal,
+			signal,
 		});
 	} catch {
 		return null;
@@ -3033,13 +3134,19 @@ export async function fetchLiteLLMRichModels<TApi extends Api>(
 	if (!managementBaseUrl || !runtimeBaseUrl) {
 		return null;
 	}
-	for (const endpoint of LITELLM_RICH_ENDPOINTS) {
-		const models = await fetchLiteLLMRichEndpoint(endpoint, options, managementBaseUrl, runtimeBaseUrl);
-		if (models) {
-			return models;
+	const fetchModels = async (signal?: AbortSignal): Promise<ModelSpec<TApi>[] | null> => {
+		for (const endpoint of LITELLM_RICH_ENDPOINTS) {
+			const models = await fetchLiteLLMRichEndpoint(endpoint, options, managementBaseUrl, runtimeBaseUrl, signal);
+			if (models) {
+				return models;
+			}
 		}
+		return null;
+	};
+	if (options.signal !== undefined) {
+		return fetchModels(options.signal);
 	}
-	return null;
+	return options.timeoutMs !== undefined ? withCatalogDiscoveryTimeout(options.timeoutMs, fetchModels) : fetchModels();
 }
 
 export function litellmModelManagerOptions(
@@ -3049,7 +3156,11 @@ export function litellmModelManagerOptions(
 	const baseUrl = config?.baseUrl ?? Bun.env.LITELLM_BASE_URL ?? "http://localhost:4000/v1";
 	return {
 		providerId: "litellm",
-		cacheProviderId: `litellm:rich-v1:${Bun.hash(baseUrl).toString(36)}`,
+		// rich-v2 invalidates rows cached before reseller usage-suffix stripping
+		// (stale display names like `MiniMax-M3 (3x usage)`); bump the version
+		// whenever the mappers below change, or warm authoritative caches keep
+		// serving pre-change rows for the full TTL.
+		cacheProviderId: `litellm:rich-v2:${Bun.hash(baseUrl).toString(36)}`,
 		// litellm is a local-only proxy and is never bundled in models.json (that
 		// would leak the machine's localhost catalog). Prefer the proxy's richer
 		// management metadata, then fall back to /v1/models and enrich bare ids
@@ -3064,7 +3175,7 @@ export function litellmModelManagerOptions(
 				apiKey,
 				fetch: config?.fetch,
 				referenceResolver: resolveReference,
-				signal: AbortSignal.timeout(10_000),
+				timeoutMs: 10_000,
 			});
 			if (richModels && richModels.length > 0) {
 				return richModels;
@@ -3074,7 +3185,8 @@ export function litellmModelManagerOptions(
 				provider: "litellm",
 				baseUrl,
 				apiKey,
-				mapModel: (entry, defaults) => mapWithBundledReference(entry, defaults, resolveReference(defaults.id)),
+				mapModel: (entry, defaults) =>
+					mapLiteLLMOpenAICompatibleModel(entry, defaults, resolveReference(defaults.id)),
 				fetch: config?.fetch,
 			});
 		},
@@ -3114,7 +3226,7 @@ export function vllmModelManagerOptions(config?: VllmModelManagerConfig): ModelM
 					};
 				},
 				fetch: config?.fetch,
-				signal: AbortSignal.timeout(VLLM_DISCOVERY_TIMEOUT_MS),
+				timeoutMs: VLLM_DISCOVERY_TIMEOUT_MS,
 			}),
 	};
 }

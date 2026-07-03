@@ -17,21 +17,26 @@ import {
 	getStatsByFolder,
 	getStatsByModel,
 	getTimeSeries,
+	getToolStats,
+	getToolStatsByModel,
+	getToolTimeSeries,
 	initDb,
 	insertDelegationReminderStats,
 	insertMessageStats,
 	insertReminderStats,
+	insertToolCalls,
 	insertUserMessageStats,
 	setFileOffset,
+	updateToolResults,
 	updateUserMessageLinks,
 } from "./db";
-import { getSessionEntry, listAllSessionFiles, type ParseSessionResult } from "./parser";
+import { getSessionEntry, listAllSessionFiles, type ParseSessionResult, parseSessionFile } from "./parser";
 import type { SyncWorkerRequest, SyncWorkerResponse } from "./sync-worker";
 // Coding-agent binary/bundle workers route through the CLI entrypoint with a
 // hidden argv mode, so the compiled binary and npm bundle only need one
 // JavaScript entry. Standalone source `omp-stats` keeps using this package's
 // own sync-worker source file.
-import type { BehaviorDashboardStats, DashboardStats, MessageStats, RequestDetails } from "./types";
+import type { BehaviorDashboardStats, DashboardStats, MessageStats, RequestDetails, ToolDashboardStats } from "./types";
 
 /**
  * Apply a freshly parsed result to the database. Runs entirely on the
@@ -43,6 +48,8 @@ function applyParseResult(sessionFile: string, lastModified: number, result: Par
 	if (result.reminderStats.length > 0) insertReminderStats(result.reminderStats);
 	if (result.delegationReminderStats.length > 0) insertDelegationReminderStats(result.delegationReminderStats);
 	if (result.userLinks.length > 0) updateUserMessageLinks(result.userLinks);
+	if (result.toolCalls.length > 0) insertToolCalls(result.toolCalls);
+	if (result.toolResults.length > 0) updateToolResults(result.toolResults);
 	setFileOffset(sessionFile, result.newOffset, lastModified);
 	return (
 		result.stats.length +
@@ -77,6 +84,9 @@ export interface SyncOptions {
 }
 
 function defaultWorkerCount(): number {
+	// Bun 1.3.x can abort the macOS process when stats sync workers re-enter
+	// the compiled `omp` binary. Keep macOS on the documented serial path.
+	if (process.platform === "darwin") return 1;
 	// `navigator.hardwareConcurrency` is the portable answer in Bun; fall
 	// back to a small fixed pool if it's somehow unavailable.
 	const hw = typeof navigator !== "undefined" ? (navigator.hardwareConcurrency ?? 0) : 0;
@@ -158,10 +168,16 @@ function dispatch(handle: WorkerHandle, request: SyncWorkerRequest): Promise<Par
  * spawn path on a fresh install (no session files = early return), so a
  * dedicated probe is the only reliable signal.
  *
- * Resolves with the worker's `import.meta.url` (caller-visible diagnostics);
- * rejects on transport error, error response, or timeout.
+ * No-op on darwin: `syncAllSessions` keeps macOS on the serial parser path
+ * (see {@link defaultWorkerCount}) so the worker spawn surface is unreachable
+ * from the CLI, and probing it under the hardened runtime in
+ * `scripts/ci-macos-sign.sh` would re-enter the Bun-worker abort surface that
+ * motivated the darwin serial default in the first place.
+ *
+ * Rejects on transport error, error response, or timeout.
  */
 export async function smokeTestSyncWorker({ timeoutMs = 5_000 }: { timeoutMs?: number } = {}): Promise<void> {
+	if (process.platform === "darwin") return;
 	const worker = createSyncWorker();
 	const { promise, resolve, reject } = Promise.withResolvers<void>();
 	const timer = setTimeout(() => reject(new Error(`sync worker did not pong within ${timeoutMs}ms`)), timeoutMs);
@@ -192,11 +208,11 @@ export async function smokeTestSyncWorker({ timeoutMs = 5_000 }: { timeoutMs?: n
 /**
  * Sync all session files to the database.
  *
- * Parsing fans out across a worker pool (one in-flight job per worker)
- * while DB writes and offset bookkeeping stay on the calling thread so the
- * single SQLite handle stays uncontended. `onProgress` fires once per
- * completed file (skipped files included so the bar walks at a steady
- * rate).
+ * `workers: 1` parses inline. Larger pools fan parsing out across workers
+ * (one in-flight job per worker) while DB writes and offset bookkeeping stay on
+ * the calling thread so the single SQLite handle stays uncontended.
+ * `onProgress` fires once per completed file (skipped files included so the
+ * bar walks at a steady rate).
  */
 export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: number; files: number }> {
 	await initDb();
@@ -209,10 +225,6 @@ export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: 
 	let completed = 0;
 	let cursor = 0;
 
-	const poolSize = Math.max(1, Math.min(files.length, opts?.workers ?? defaultWorkerCount()));
-	const handles: WorkerHandle[] = [];
-	for (let i = 0; i < poolSize; i++) handles.push(spawnWorker());
-
 	const report = (sessionFile: string) => {
 		completed++;
 		opts?.onProgress?.({
@@ -223,34 +235,53 @@ export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: 
 		});
 	};
 
+	const processFile = async (
+		sessionFile: string,
+		parse: (sessionFile: string, fromOffset: number) => Promise<ParseSessionResult>,
+	): Promise<void> => {
+		let fileStats: fs.Stats;
+		try {
+			fileStats = await fs.promises.stat(sessionFile);
+		} catch {
+			report(sessionFile);
+			return;
+		}
+		const lastModified = fileStats.mtimeMs;
+		const stored = getFileOffset(sessionFile);
+		if (stored && stored.lastModified >= lastModified) {
+			report(sessionFile);
+			return;
+		}
+
+		const fromOffset = stored?.offset ?? 0;
+		const result = await parse(sessionFile, fromOffset);
+		const inserted = applyParseResult(sessionFile, lastModified, result);
+		if (inserted > 0) {
+			totalProcessed += inserted;
+			filesProcessed++;
+		}
+		report(sessionFile);
+	};
+
+	const requestedWorkers = Math.max(1, Math.floor(opts?.workers ?? defaultWorkerCount()));
+	if (requestedWorkers === 1) {
+		for (const sessionFile of files) {
+			await processFile(sessionFile, parseSessionFile);
+		}
+		return { processed: totalProcessed, files: filesProcessed };
+	}
+
+	const poolSize = Math.min(files.length, requestedWorkers);
+
+	const handles: WorkerHandle[] = [];
+	for (let i = 0; i < poolSize; i++) handles.push(spawnWorker());
+
 	async function drain(handle: WorkerHandle): Promise<void> {
 		while (true) {
 			const idx = cursor++;
 			if (idx >= files.length) return;
 			const sessionFile = files[idx];
-
-			let fileStats: fs.Stats;
-			try {
-				fileStats = await fs.promises.stat(sessionFile);
-			} catch {
-				report(sessionFile);
-				continue;
-			}
-			const lastModified = fileStats.mtimeMs;
-			const stored = getFileOffset(sessionFile);
-			if (stored && stored.lastModified >= lastModified) {
-				report(sessionFile);
-				continue;
-			}
-
-			const fromOffset = stored?.offset ?? 0;
-			const result = await dispatch(handle, { sessionFile, fromOffset });
-			const inserted = applyParseResult(sessionFile, lastModified, result);
-			if (inserted > 0) {
-				totalProcessed += inserted;
-				filesProcessed++;
-			}
-			report(sessionFile);
+			await processFile(sessionFile, (file, fromOffset) => dispatch(handle, { sessionFile: file, fromOffset }));
 		}
 	}
 
@@ -461,5 +492,19 @@ export async function getBehaviorDashboardStats(range?: string | null): Promise<
 		overall: getBehaviorOverall(cutoff),
 		byModel: getBehaviorByModel(cutoff),
 		behaviorSeries: getBehaviorTimeSeries(cutoff),
+	};
+}
+
+/**
+ * Get the tools dashboard payload: per-tool totals, per-(tool, model)
+ * breakdown, and the call time series (bucketed like the model series).
+ */
+export async function getToolDashboardStats(range?: string | null): Promise<ToolDashboardStats> {
+	await initDb();
+	const { modelSeriesDays, modelSeriesBucketMs, cutoff } = getTimeRangeConfig(range);
+	return {
+		byTool: getToolStats(cutoff ?? undefined),
+		byToolModel: getToolStatsByModel(cutoff ?? undefined),
+		series: getToolTimeSeries(modelSeriesDays, cutoff, modelSeriesBucketMs),
 	};
 }

@@ -16,10 +16,11 @@ import { Ellipsis, fileHyperlink, framedBlock, renderStatusLine, truncateToWidth
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
+import { parseReadUrlTarget } from "./fetch";
 import { createFileRecorder, formatResultPath } from "./file-recorder";
 import { classifyGroupedLines, formatGroupedFiles, groupLineIndicesByBlank } from "./grouped-file-output";
 import type { OutputMeta } from "./output-meta";
-import { isInternalUrlPath, resolveToolSearchScope } from "./path-utils";
+import { isInternalUrlPath, resolveToolSearchScope, toPathList } from "./path-utils";
 import {
 	appendParseErrorsBulletList,
 	capParseErrors,
@@ -42,11 +43,7 @@ const astEditOpSchema = type({
 
 const astEditSchema = type({
 	ops: astEditOpSchema.array().atLeastLength(1).describe("rewrite ops"),
-	paths: type("string")
-		.describe("file, directory, glob, or internal URL to rewrite")
-		.array()
-		.atLeastLength(1)
-		.describe("files, directories, globs, or internal URLs to rewrite"),
+	path: type("string").describe("file, directory, glob, or internal URL to rewrite"),
 });
 
 interface AstEditCallOptions {
@@ -167,17 +164,21 @@ export interface AstEditToolDetails {
 }
 
 type AstEditSchemaInfer = typeof astEditSchema.infer;
+type AstEditCompatParams = Partial<AstEditSchemaInfer> & { paths?: string | string[] };
+
+function astEditPathList(params: AstEditCompatParams): string[] {
+	return toPathList(params.path ?? params.paths);
+}
 
 export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolDetails> {
 	readonly name = "ast_edit";
 	readonly approval = (args: unknown) => {
-		const paths = Array.isArray((args as Partial<AstEditSchemaInfer>).paths)
-			? ((args as Partial<AstEditSchemaInfer>).paths as string[])
-			: [];
+		const params = args && typeof args === "object" ? (args as AstEditCompatParams) : {};
+		const paths = astEditPathList(params);
 		return paths.length > 0 && paths.every(path => isInternalUrlPath(path)) ? "read" : "write";
 	};
 	readonly formatApprovalDetails = (args: unknown): string[] => {
-		const params = args as Partial<AstEditSchemaInfer>;
+		const params = args && typeof args === "object" ? (args as AstEditCompatParams) : {};
 		const lines: string[] = [];
 		const ops = Array.isArray(params.ops) ? params.ops : [];
 		const firstOp = ops[0];
@@ -188,8 +189,9 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 				lines.push(`+${ops.length - 1} more op${ops.length === 2 ? "" : "s"}`);
 			}
 		}
-		if (Array.isArray(params.paths) && params.paths.length > 0) {
-			lines.push(`Paths: ${truncateForPrompt(params.paths.join(", "))}`);
+		const paths = astEditPathList(params);
+		if (paths.length > 0) {
+			lines.push(`Path: ${truncateForPrompt(paths.join(", "))}`);
 		}
 		return lines;
 	};
@@ -204,42 +206,42 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 			caption: "Rename a call site across TypeScript files",
 			call: {
 				ops: [{ pat: "oldApi($$$ARGS)", out: "newApi($$$ARGS)" }],
-				paths: ["src/**/*.ts"],
+				path: "src/**/*.ts",
 			},
 		},
 		{
 			caption: "Delete matching calls",
 			call: {
 				ops: [{ pat: "console.log($$$ARGS)", out: "" }],
-				paths: ["src/**/*.ts"],
+				path: "src/**/*.ts",
 			},
 		},
 		{
 			caption: "Rewrite import source path",
 			call: {
 				ops: [{ pat: 'import { $$$IMPORTS } from "old-package"', out: 'import { $$$IMPORTS } from "new-package"' }],
-				paths: ["src/**/*.ts"],
+				path: "src/**/*.ts",
 			},
 		},
 		{
 			caption: "Modernize to optional chaining (same metavariable enforces identity)",
 			call: {
 				ops: [{ pat: "$A && $A()", out: "$A?.()" }],
-				paths: ["src/**/*.ts"],
+				path: "src/**/*.ts",
 			},
 		},
 		{
 			caption: "Swap two arguments using captures",
 			call: {
 				ops: [{ pat: "assertEqual($A, $B)", out: "assertEqual($B, $A)" }],
-				paths: ["tests/**/*.ts"],
+				path: "tests/**/*.ts",
 			},
 		},
 		{
 			caption: "Python — convert print calls to logging",
 			call: {
 				ops: [{ pat: "print($$$ARGS)", out: "logger.info($$$ARGS)" }],
-				paths: ["src/**/*.py"],
+				path: "src/**/*.py",
 			},
 		},
 	];
@@ -277,13 +279,19 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 			const maxFiles = $envpos("PI_MAX_AST_FILES", 1000);
 
 			const scope = await resolveToolSearchScope({
-				rawPaths: params.paths,
+				rawPaths: astEditPathList(params),
 				cwd: this.session.cwd,
 				internalUrlAction: "rewrite",
 				settings: this.session.settings,
 				signal,
 				localProtocolOptions: this.session.localProtocolOptions,
 				skills: this.session.skills,
+				resolveExternalUrl: async rawPath => {
+					if (!parseReadUrlTarget(rawPath)) return undefined;
+					throw new ToolError(
+						`Cannot rewrite external URL: ${rawPath}. Use \`read\` or \`search\` to inspect fetched web content; ast_edit only applies to local files.`,
+					);
+				},
 			});
 			const { searchPath: resolvedSearchPath, scopePath, isDirectory, multiTargets, globFilter } = scope;
 
@@ -531,6 +539,8 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 
 interface AstEditRenderArgs {
 	ops?: Array<{ pat?: string; out?: string }>;
+	path?: string | string[];
+	/** Legacy pre-`path` argument name; kept so historical transcripts still render a scope. */
 	paths?: string[];
 }
 
@@ -574,7 +584,8 @@ export const astEditToolRenderer = {
 	inline: true,
 	renderCall(args: AstEditRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
-		if (args.paths?.length) meta.push(`in ${args.paths.join(", ")}`);
+		const scopePaths = toPathList(args.path ?? args.paths);
+		if (scopePaths.length) meta.push(`in ${scopePaths.join(", ")}`);
 		const rewriteCount = args.ops?.length ?? 0;
 		if (rewriteCount > 1) meta.push(`${rewriteCount} rewrites`);
 

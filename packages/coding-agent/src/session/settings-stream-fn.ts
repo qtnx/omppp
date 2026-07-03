@@ -2,8 +2,8 @@
  * Settings-aware stream wrapper shared by the main agent (sdk.ts) and the
  * advisor agent (AgentSession.#buildAdvisorRuntime).
  *
- * Reads OpenRouter / Antigravity routing variants, Responses-family text
- * verbosity, per-provider in-flight caps, and the loop guard out of `Settings`
+ * verbosity, stream watchdog budgets, per-provider in-flight caps, and the loop
+ * guard out of `Settings`
  * per request, layering them onto whatever options the caller passed. Before
  * this helper existed, advisor turns called bare `streamSimple` while the main
  * turn went through an inline closure that read these settings — so an advisor on
@@ -12,8 +12,15 @@
  */
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import { type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
+import { isAnthropicFableOrMythosModel } from "@oh-my-pi/pi-catalog/identity";
 import { type Settings, validateProviderMaxInFlightRequests } from "../config/settings";
 import { resolveThinkingDisplay } from "../config/settings-schema";
+
+function timeoutSecondsToMs(value: number): number | undefined {
+	if (!Number.isFinite(value) || value < 0) return undefined;
+	if (value === 0) return 0;
+	return Math.max(1, Math.trunc(value * 1000));
+}
 
 /**
  * Build a {@link StreamFn} that reads provider routing/guard settings from
@@ -38,6 +45,20 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 		// caller supplied neither.
 		const callerControlsThinkingDisplay =
 			streamOptions?.thinkingDisplay !== undefined || streamOptions?.hideThinkingSummary !== undefined;
+		const streamFirstEventTimeoutMs = timeoutSecondsToMs(settings.get("providers.streamFirstEventTimeoutSeconds"));
+		const streamIdleTimeoutMs = timeoutSecondsToMs(settings.get("providers.streamIdleTimeoutSeconds"));
+		// Server-side fallback (opt-in): when the user enables it AND the
+		// resolved model is a Claude Fable/Mythos on Anthropic's messages
+		// API, inject the `fallbacks: [{ model: "claude-opus-4-8" }]` chain.
+		// The provider layer picks it up, sends the beta header, and honors
+		// the response signals. Every other model / API is untouched.
+		const serverSideFallbackEnabled =
+			settings.get("providers.anthropic.serverSideFallback") &&
+			model.api === "anthropic-messages" &&
+			model.provider === "anthropic" &&
+			isAnthropicFableOrMythosModel(model.id);
+		const fallbacks =
+			streamOptions?.fallbacks ?? (serverSideFallbackEnabled ? [{ model: "claude-opus-4-8" }] : undefined);
 		const merged: SimpleStreamOptions = {
 			...streamOptions,
 			openrouterVariant: streamOptions?.openrouterVariant ?? openrouterVariant,
@@ -47,6 +68,8 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			hideThinkingSummary: callerControlsThinkingDisplay
 				? streamOptions?.hideThinkingSummary
 				: resolvedThinkingDisplay === "omitted",
+			streamFirstEventTimeoutMs: streamOptions?.streamFirstEventTimeoutMs ?? streamFirstEventTimeoutMs,
+			streamIdleTimeoutMs: streamOptions?.streamIdleTimeoutMs ?? streamIdleTimeoutMs,
 			maxInFlightRequests: validateProviderMaxInFlightRequests(
 				streamOptions?.maxInFlightRequests ?? settings.get("providers.maxInFlightRequests"),
 			),
@@ -55,6 +78,7 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 				checkAssistantContent: settings.get("model.loopGuard.checkAssistantContent"),
 				...streamOptions?.loopGuard,
 			},
+			...(fallbacks !== undefined ? { fallbacks } : {}),
 		};
 		return base(model, context, merged);
 	};

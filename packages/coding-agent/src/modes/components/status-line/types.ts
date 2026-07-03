@@ -31,6 +31,9 @@ export interface StatusLineSettings {
 	/** Drop the theme's `statusLineBg` fill and powerline caps so the bar
 	 *  inherits the terminal's default background. */
 	transparent?: boolean;
+	/** Replace the model-segment icon with the thinking-level glyph and drop the
+	 *  " · <level>" suffix, so the thinking level reads as a single compact icon. */
+	compactThinkingLevel?: boolean;
 }
 
 export type EffectiveStatusLineSettings = Required<
@@ -60,6 +63,8 @@ export interface SegmentContext {
 	activeRepo: ActiveRepoContext | null;
 	width: number;
 	options: StatusLineSegmentOptions;
+	/** Render the model segment's thinking level as a compact leading glyph. */
+	compactThinkingLevel: boolean;
 	planMode: {
 		enabled: boolean;
 		paused: boolean;
@@ -91,12 +96,26 @@ export interface SegmentContext {
 	contextWindow: number;
 	autoCompactEnabled: boolean;
 	subagentCount: number;
-	sessionStartTime: number;
+	/**
+	 * Active processing time accumulated this session, in ms — the union of
+	 * every `agent_start`→`agent_end` window plus the currently-streaming
+	 * window if the agent is running. Idle wall-clock never contributes, so
+	 * this is what {@link StatusLineSegmentId.time_spent} renders instead of
+	 * `Date.now() - sessionStart`.
+	 */
+	activeMs: number;
 	git: {
 		branch: string | null;
 		status: { staged: number; unstaged: number; untracked: number } | null;
 		pr: PrStatusInfo | null;
 	};
+	/**
+	 * Set when the path cwd is a *linked* git worktree, naming the shared
+	 * primary checkout (the project). Lets the path segment collapse the
+	 * base-prefixed `<base>/<project>/<worktree>` path to the project name —
+	 * the worktree/branch is already shown by the git segment.
+	 */
+	worktree: { projectName: string; worktreeName: string } | null;
 	usage: {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };

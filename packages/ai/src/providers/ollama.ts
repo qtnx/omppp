@@ -323,6 +323,10 @@ function createChatBody(model: Model<"ollama-chat">, context: Context, options: 
 	};
 }
 
+function shouldRetryOllamaResponse(response: Response, bodyText: string): boolean {
+	return response.status < 500 || !AIError.LLAMA_CPP_TOOL_CALL_PARSE_PATTERN.test(bodyText);
+}
+
 async function captureHttpErrorResponse(response: Response): Promise<CapturedHttpErrorResponse> {
 	let bodyText: string | undefined;
 	let bodyJson: unknown;
@@ -465,6 +469,10 @@ export const streamOllama: StreamFunction<"ollama-chat"> = (
 			? new StreamMarkupHealing({ pattern: streamMarkupHealingPattern })
 			: undefined;
 		let healedToolCallEmitted = false;
+		// Once the provider streams native reasoning (`message.thinking`), drop any
+		// thinking the text-channel healer also recovers so a model that emits both
+		// does not double-count its reasoning.
+		let suppressHealedThinking = false;
 		const endActiveTextBlock = (): void => {
 			if (activeTextIndex === undefined) return;
 			endTextBlock(stream, output, activeTextIndex);
@@ -542,7 +550,7 @@ export const streamOllama: StreamFunction<"ollama-chat"> = (
 			if (event.type === "text") {
 				appendVisibleText(event.text);
 			} else if (event.type === "thinking") {
-				appendVisibleThinking(event.thinking);
+				if (!suppressHealedThinking) appendVisibleThinking(event.thinking);
 			} else {
 				emitHealedToolCall(event.call);
 			}
@@ -594,6 +602,7 @@ export const streamOllama: StreamFunction<"ollama-chat"> = (
 					body: JSON.stringify(body),
 					signal: watchdog.signal,
 					defaultDelayMs: OLLAMA_RETRY_DELAYS_MS,
+					shouldRetryResponse: shouldRetryOllamaResponse,
 					fetch: options.fetch,
 					timeout: false,
 				});
@@ -614,6 +623,7 @@ export const streamOllama: StreamFunction<"ollama-chat"> = (
 			stream.push({ type: "start", partial: output });
 			for await (const chunk of iterateNdjson(response.body)) {
 				if (chunk.message?.thinking) {
+					suppressHealedThinking = true;
 					endActiveTextBlock();
 					if (activeThinkingIndex === undefined) {
 						output.content.push({ type: "thinking", thinking: "" });
@@ -742,6 +752,7 @@ export const streamOllama: StreamFunction<"ollama-chat"> = (
 			}
 			const result = await AIError.finalize(error, {
 				api: model.api,
+				provider: model.provider,
 				signal: options.signal,
 				rawRequestDump,
 				capturedErrorResponse,

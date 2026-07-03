@@ -7,6 +7,7 @@ export interface DollarMentionSkill {
 	name: string;
 	description: string;
 	filePath: string;
+	baseDir: string;
 }
 
 export interface DollarMentionAgent {

@@ -116,6 +116,7 @@ Artifacts and side channels:
   - `plan` — architecture/planning agent; may spawn `explore`.
   - `designer` — UI/UX specialist.
   - `reviewer` — review agent with `report_finding` extraction.
+  - `tester` — upstream test/QA-focused agent, adopted additively.
   - `heavy_task` — high-accuracy worker for heavy feature implementation with a strict built-in review gate.
   - `task` — medium-complexity implementation worker with a lighter built-in review gate.
   - `quick_task` — fast worker for light mechanical implementation with no built-in review gate.

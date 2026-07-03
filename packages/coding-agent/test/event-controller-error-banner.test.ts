@@ -53,11 +53,13 @@ afterEach(() => {
 });
 
 function createFixture(streamingMessage?: AssistantMessage) {
+	const componentCalls: string[] = [];
 	const streamingComponent = {
-		updateContent: vi.fn(),
+		updateContent: vi.fn(() => componentCalls.push("update")),
 		setComplete: vi.fn(),
 		markTranscriptBlockFinalized: vi.fn(),
 		setErrorPinned: vi.fn(),
+		setHideThinkingBlock: vi.fn((hide: boolean) => componentCalls.push(`hide:${hide}`)),
 	};
 	const showPinnedError = vi.fn();
 	const clearPinnedError = vi.fn();
@@ -68,11 +70,31 @@ function createFixture(streamingMessage?: AssistantMessage) {
 
 	const session = { isStreaming: false };
 	const viewSession = { isStreaming: false, isTtsrAbortPending: false, retryAttempt: 0 };
+	let hasDisplayableThinkingContent = false;
+	const noteDisplayableThinkingContent = vi.fn((message: AssistantMessage) => {
+		const hasThinking = message.content.some(
+			content => content.type === "thinking" && content.thinking.trim() !== "",
+		);
+		if (!hasThinking || hasDisplayableThinkingContent) return false;
+		hasDisplayableThinkingContent = true;
+		return true;
+	});
+	const chatChildren: unknown[] = [];
+	const chatContainer = {
+		children: chatChildren,
+		addChild: vi.fn((child: unknown) => {
+			chatChildren.push(child);
+		}),
+		clear: vi.fn(() => {
+			chatChildren.length = 0;
+		}),
+	};
 	const ctx = {
 		isInitialized: true,
 		init: vi.fn(async () => {}),
 		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
-		statusLine: { invalidate: vi.fn() },
+		settings: { get: vi.fn(() => false) },
+		statusLine: { invalidate: vi.fn(), markActivityStart: vi.fn(), markActivityEnd: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
 		updatePendingMessagesDisplay: vi.fn(),
 		ensureLoadingAnimation: vi.fn(),
@@ -83,12 +105,21 @@ function createFixture(streamingMessage?: AssistantMessage) {
 		editor: {},
 		streamingComponent: streamingMessage ? streamingComponent : undefined,
 		streamingMessage,
+		chatContainer,
+		proseOnlyThinking: true,
 		pendingTools: new Map(),
 		flushCompactionQueue: vi.fn(async () => {}),
 		showPinnedError,
 		clearPinnedError,
 		showError: vi.fn(),
 		showStatus: vi.fn(),
+		noteDisplayableThinkingContent,
+		get hasDisplayableThinkingContent() {
+			return hasDisplayableThinkingContent;
+		},
+		get effectiveHideThinkingBlock() {
+			return !hasDisplayableThinkingContent;
+		},
 		showWarning: vi.fn(),
 		session,
 		get viewSession() {
@@ -98,7 +129,7 @@ function createFixture(streamingMessage?: AssistantMessage) {
 	} as unknown as InteractiveModeContext;
 
 	const controller = new EventController(ctx);
-	return { controller, ctx, showPinnedError, clearPinnedError, streamingComponent };
+	return { controller, ctx, showPinnedError, clearPinnedError, streamingComponent, componentCalls };
 }
 
 describe("EventController error banner", () => {
@@ -185,7 +216,6 @@ describe("EventController error banner", () => {
 	it("does not pin a banner for an aborted assistant turn", async () => {
 		const message = makeAssistantMessage({ stopReason: "aborted", errorMessage: "Operation aborted" });
 		const { controller, showPinnedError } = createFixture(message);
-
 		await controller.handleEvent({ type: "message_end", message } as Extract<
 			AgentSessionEvent,
 			{ type: "message_end" }
@@ -200,6 +230,37 @@ describe("EventController error banner", () => {
 		await controller.handleEvent({ type: "agent_start" } as Extract<AgentSessionEvent, { type: "agent_start" }>);
 
 		expect(clearPinnedError).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("EventController thinking visibility", () => {
+	it("shows the first observed thinking delta on the active streaming component", async () => {
+		const initial = makeAssistantMessage({ content: [] });
+		const message = makeAssistantMessage({
+			content: [{ type: "thinking", thinking: "server-side reasoning" }],
+		});
+		const { controller, ctx } = createFixture();
+
+		await controller.handleEvent({
+			type: "message_start",
+			message: initial,
+		} as Extract<AgentSessionEvent, { type: "message_start" }>);
+		const component = ctx.streamingComponent;
+		if (!(component instanceof AssistantMessageComponent)) {
+			throw new Error("Expected streaming assistant component");
+		}
+
+		await controller.handleEvent({
+			type: "message_update",
+			message,
+			assistantMessageEvent: {
+				type: "thinking_delta",
+				delta: "server-side reasoning",
+				contentIndex: 0,
+			},
+		} as Extract<AgentSessionEvent, { type: "message_update" }>);
+
+		expect(Bun.stripANSI(component.render(80).join("\n"))).toContain("server-side reasoning");
 	});
 });
 
@@ -236,6 +297,47 @@ describe("EventController working loader reconciliation", () => {
 		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
 
 		expect(ctx.ensureLoadingAnimation).toHaveBeenCalledTimes(1);
+	});
+
+	it("self-heals missing working loader when a task subagent finishes mid-turn (#3858)", async () => {
+		// `task` subagents run inside the parent's streaming turn. While the task is
+		// running a transient overlay (auto-compaction / auto-retry) can drop the
+		// working loader by clearing the status container, and the overlay's end
+		// handler is the only restorer keyed off the missing loader. If the task
+		// finishes between the overlay's start and end (or any other branch where
+		// the loader was nulled without a follow-up overlay-end), `tool_execution_end`
+		// is the next streaming event that lands and must heal the loader, mirroring
+		// the `tool_execution_update` reconciler. Without this the spinner stays
+		// gone for the remainder of the parent turn even though the agent keeps
+		// streaming (the user-visible regression in #3858).
+		const { controller, ctx } = createFixture();
+		(ctx.viewSession as unknown as { isStreaming: boolean }).isStreaming = true;
+
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "task-1",
+			toolName: "task",
+			isError: false,
+			result: { content: [{ type: "text", text: "ok" }], details: {} },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		expect(ctx.ensureLoadingAnimation).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not restore the working loader while an overlay loader (auto-retry) owns the status container at tool_execution_end", async () => {
+		const { controller, ctx } = createFixture();
+		ctx.retryLoader = { stop: vi.fn() } as unknown as InteractiveModeContext["retryLoader"];
+		(ctx.viewSession as unknown as { isStreaming: boolean }).isStreaming = true;
+
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "task-2",
+			toolName: "task",
+			isError: false,
+			result: { content: [{ type: "text", text: "ok" }], details: {} },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		expect(ctx.ensureLoadingAnimation).not.toHaveBeenCalled();
 	});
 
 	it("keeps transient retry status exclusive while a retry loader is visible", async () => {

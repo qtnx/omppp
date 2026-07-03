@@ -68,7 +68,7 @@ export async function assessTopicRelevance(
 	options?: AssessTopicRelevanceOptions,
 ): Promise<TopicRelevanceVerdict | null> {
 	const availableModels = registry.getAvailable();
-	const model = resolveRoleSelection(["smol"], settings, availableModels, registry)?.model ?? options?.currentModel;
+	const model = resolveRoleSelection(["smol"], settings, availableModels)?.model ?? options?.currentModel;
 	if (!model) {
 		logger.debug("topic-relevance: no model available");
 		return null;

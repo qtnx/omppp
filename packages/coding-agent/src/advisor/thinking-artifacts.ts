@@ -186,7 +186,7 @@ export function createSmolGistFn(opts: {
 		try {
 			const available = registry.getAvailable();
 			if (available.length === 0) return null;
-			const resolved = resolveRoleSelection(["tiny", "smol"], settings, available, registry);
+			const resolved = resolveRoleSelection(["tiny", "smol"], settings, available);
 			const model = resolved?.model;
 			if (!model) return null;
 			const apiKey = await registry.getApiKey(model, sessionId);

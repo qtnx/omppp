@@ -1,9 +1,12 @@
 /**
  * Remote compaction utilities.
  *
- * Provider-side conversation summarization endpoints. Two flavors:
+ * Provider-side conversation summarization endpoints. Three flavors:
  *
- * - **OpenAI remote compaction** (`/responses/compact`): preserves encrypted
+ * - **OpenAI remote compaction V2** (Responses streaming): appends a
+ *   `compaction_trigger` input item to the normal stream and stores the returned
+ *   `compaction` item with retained real user messages in `preserveData`.
+ * - **OpenAI remote compaction V1** (`/responses/compact`): preserves encrypted
  *   reasoning across compactions by submitting the full responses-API native
  *   history and storing the returned `compaction` / `compaction_summary`
  *   item in `preserveData` so future turns can replay the encrypted state.
@@ -30,6 +33,8 @@ import {
 	OPENAI_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
 import { $env, logger } from "@oh-my-pi/pi-utils";
+
+export * from "./compaction-v2-streaming";
 
 // ============================================================================
 // Public types
@@ -220,79 +225,6 @@ function shouldKeepOpenAiCompactOutputItem(item: Record<string, unknown>): boole
 	if (item.type === "compaction" || item.type === "compaction_summary") return true;
 	if (item.type !== "message") return false;
 	return item.role === "assistant" || item.role === "user";
-}
-
-function compactInputCallType(item: Record<string, unknown>): "function_call" | "custom_tool_call" | undefined {
-	if (item.type === "function_call" || item.type === "custom_tool_call") return item.type;
-	return undefined;
-}
-
-function compactInputOutputType(
-	item: Record<string, unknown>,
-): "function_call_output" | "custom_tool_call_output" | undefined {
-	if (item.type === "function_call_output" || item.type === "custom_tool_call_output") return item.type;
-	return undefined;
-}
-
-function trimOpenAiCompactInput(
-	input: Array<Record<string, unknown>>,
-	contextWindow: number,
-	instructions: string,
-): Array<Record<string, unknown>> {
-	const trimmed = [...input];
-	// Per-item serialized sizes are cached and decremented on removal.
-	// Re-stringifying the whole input per removed item was O(N²) in total chars
-	// on large codex histories. Remove oldest items so recent context survives
-	// compact input overflow.
-	const sizes = trimmed.map(item => JSON.stringify(item).length);
-	let chars = instructions.length;
-	for (const size of sizes) chars += size;
-	const removeAt = (index: number): Record<string, unknown> | undefined => {
-		const [removed] = trimmed.splice(index, 1);
-		chars -= sizes[index] ?? 0;
-		sizes.splice(index, 1);
-		return removed;
-	};
-	const removeMatchingOutput = (callId: string, callType: "function_call" | "custom_tool_call"): void => {
-		const outputType = callType === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output";
-		const outputIndex = trimmed.findIndex(item => item.type === outputType && item.call_id === callId);
-		if (outputIndex >= 0) removeAt(outputIndex);
-	};
-	const dropOrphanToolOutputs = (): void => {
-		const knownCallIds = new Set<string>();
-		const customCallIds = new Set<string>();
-		for (const item of trimmed) {
-			if (typeof item.call_id !== "string") continue;
-			const callType = compactInputCallType(item);
-			if (!callType) continue;
-			knownCallIds.add(item.call_id);
-			if (callType === "custom_tool_call") customCallIds.add(item.call_id);
-		}
-
-		for (let index = trimmed.length - 1; index >= 0; index -= 1) {
-			const item = trimmed[index];
-			if (!item || typeof item.call_id !== "string") continue;
-			const outputType = compactInputOutputType(item);
-			if (!outputType) continue;
-			const known = knownCallIds.has(item.call_id);
-			const typeMatches = outputType === "custom_tool_call_output" ? customCallIds.has(item.call_id) : known;
-			if (!known || !typeMatches) removeAt(index);
-		}
-	};
-	const removeOldest = (): boolean => {
-		const removed = removeAt(0);
-		if (!removed) return false;
-		if (typeof removed.call_id === "string") {
-			const callType = compactInputCallType(removed);
-			if (callType) removeMatchingOutput(removed.call_id, callType);
-		}
-		dropOrphanToolOutputs();
-		return true;
-	};
-	while (trimmed.length > 0 && Math.ceil(chars / 4) > contextWindow) {
-		if (!removeOldest()) break;
-	}
-	return trimmed;
 }
 
 // Register every tool-call id in `items` (and the subset using the custom-tool
@@ -542,7 +474,10 @@ export async function requestOpenAiRemoteCompaction(
 	const requestModel = resolveOpenAiCompactModel(model);
 	const request: OpenAiRemoteCompactionRequest = {
 		model: requestModel,
-		input: trimOpenAiCompactInput(compactInput, model.contextWindow ?? Number.POSITIVE_INFINITY, instructions),
+		// Send full history to the endpoint - don't trim locally.
+		// The provider handles compression via the compaction endpoint.
+		// Trimming before sending loses assistant messages and thinking blocks.
+		input: compactInput,
 		instructions,
 	};
 	const isAzureOpenAiResponses = (model.remoteCompaction?.api ?? model.api) === "azure-openai-responses";

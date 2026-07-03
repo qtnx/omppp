@@ -31,6 +31,22 @@ function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function configureBashUserShell(homeDir: string): boolean {
+	if (process.platform === "win32" || !fs.existsSync("/bin/bash")) return false;
+	Settings.instance.set("shellPath", "/bin/bash");
+	vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+		shell: "/bin/bash",
+		args: ["-c"],
+		env: {
+			PATH: Bun.env.PATH ?? "",
+			HOME: homeDir,
+			SHELL: "/bin/bash",
+		},
+		prefix: undefined,
+	});
+	return true;
+}
+
 /** Resolve once `predicate()` holds or `deadlineMs` passes, polling every 2ms. */
 async function pollUntil(predicate: () => boolean, deadlineMs: number): Promise<void> {
 	while (!predicate() && Date.now() < deadlineMs) {
@@ -118,21 +134,26 @@ describe("executeBash", () => {
 
 	it("honors cwd", async () => {
 		const result = await executeBash("pwd", { cwd: tempDir, timeout: 5000 });
-		expect(result.output.trim()).toBe(fs.realpathSync(tempDir));
+		expect(result.output.trim()).toBe(tempDir);
 	});
 
-	it("canonicalizes symlinked cwd before execution", async () => {
+	it("honors symlinked cwd requests in persistent shells", async () => {
 		if (process.platform === "win32") {
 			return;
 		}
+		if (!configureBashUserShell(tempDir)) return;
 
 		const realDir = path.join(tempDir, "real");
 		const linkDir = path.join(tempDir, "link");
 		fs.mkdirSync(realDir);
 		fs.symlinkSync(realDir, linkDir, "dir");
+		const sessionKey = `cwd-symlink-${Date.now()}`;
 
-		const result = await executeBash("pwd", { cwd: linkDir, timeout: 5000 });
-		expect(result.output.trim()).toBe(fs.realpathSync(linkDir));
+		await executeBash("pwd", { sessionKey, cwd: realDir, timeout: 5000, useUserShell: true });
+		const result = await executeBash("pwd", { sessionKey, cwd: linkDir, timeout: 5000, useUserShell: true });
+
+		expect(result.output.trim()).toBe(linkDir);
+		expect(result.workingDir).toBe(linkDir);
 	});
 
 	it("passes env vars", async () => {

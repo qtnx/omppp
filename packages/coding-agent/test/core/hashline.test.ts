@@ -111,6 +111,56 @@ describe("hashline executor", () => {
 		});
 	});
 
+	it("preserves UTF-8 BOM bytes when hashline edits decoded text", async () => {
+		await withTempDir(async tempDir => {
+			const filePath = path.join(tempDir, "Program.cs");
+			const source = "using A;\n";
+			await Bun.write(filePath, new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(source)]));
+			const session = makeHashlineSession(tempDir);
+			const sourceTag = recordFullSnapshot(getFileReadCache(session), filePath, source);
+			const input = `${header("Program.cs", sourceTag)}\n${sameLineRange(tag(1, source))}\n${repl("using B;")}\n`;
+
+			await executeHashlineSingle(hashlineExecuteOptions(tempDir, input, undefined, session));
+
+			const bytes = await fs.readFile(filePath);
+			expect(Array.from(bytes.subarray(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+			expect(new TextDecoder().decode(bytes.subarray(3))).toBe("using B;\n");
+		});
+	});
+
+	it("edits BOM-prefixed notebooks through the virtual cell text", async () => {
+		await withTempDir(async tempDir => {
+			const filePath = path.join(tempDir, "notebook.ipynb");
+			const notebook = {
+				cells: [
+					{
+						cell_type: "markdown",
+						metadata: { keep: true },
+						source: ["# Title\n"],
+					},
+				],
+				metadata: {},
+				nbformat: 4,
+				nbformat_minor: 5,
+			};
+			await Bun.write(
+				filePath,
+				new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(JSON.stringify(notebook))]),
+			);
+			const session = makeHashlineSession(tempDir);
+			const editableText = "# %% [markdown] cell:0\n# Title\n";
+			const sourceTag = recordFullSnapshot(getFileReadCache(session), filePath, editableText);
+			const input = `${header("notebook.ipynb", sourceTag)}\n${sameLineRange(tag(2, "# Title"))}\n${repl("# Updated")}\n`;
+
+			await executeHashlineSingle(hashlineExecuteOptions(tempDir, input, undefined, session));
+
+			const updated = await Bun.file(filePath).json();
+			expect(updated.cells).toHaveLength(1);
+			expect(updated.cells[0].source).toEqual(["# Updated\n"]);
+			expect(updated.cells[0].metadata).toEqual({ keep: true });
+		});
+	});
+
 	it("emits an actionable no-op diagnostic when the payload matches the file byte-for-byte", async () => {
 		await withTempDir(async tempDir => {
 			const filePath = path.join(tempDir, "a.ts");
@@ -256,11 +306,7 @@ describe("hashlineEditParamsSchema — payload shape", () => {
 	}
 
 	it("declares only `input` as the model-facing field", () => {
-		// Create an arktype schema that mirrors hashlineEditParamsSchema structure
-		const testSchema = type({
-			input: "string",
-		});
-		const jsonSchema = getJsonSchema(testSchema) as {
+		const jsonSchema = getJsonSchema(hashlineEditParamsSchema) as {
 			properties?: Record<string, unknown>;
 			required?: string[];
 		};
@@ -277,12 +323,11 @@ describe("hashlineEditParamsSchema — payload shape", () => {
 		expect(result.success).toBe(true);
 	});
 
-	it("accepts `_input` as a provider-emitted alias for `input`", () => {
+	it("rejects `_input` as an alias for `input`", () => {
 		const result = arkSafeParse(hashlineEditParamsSchema, {
 			_input: `[x.ts]\nINS.HEAD:\n${repl("x")}`,
 		});
-		expect(result.success).toBe(true);
-		if (result.success) expect(result.data.input).toBe(`[x.ts]\nINS.HEAD:\n${repl("x")}`);
+		expect(result.success).toBe(false);
 	});
 
 	it("still requires `input`", () => {

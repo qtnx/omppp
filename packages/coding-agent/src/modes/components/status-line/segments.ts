@@ -23,6 +23,23 @@ function withIcon(icon: string, text: string): string {
 	return icon ? `${icon} ${text}` : text;
 }
 
+/** Left-truncate a path/label to `maxLen`, prefixing an ellipsis when clipped. */
+function clampPathLength(pwd: string, maxLen: number): string {
+	if (pwd.length <= maxLen) return pwd;
+	const ellipsis = "…";
+	return `${ellipsis}${pwd.slice(-Math.max(0, maxLen - ellipsis.length))}`;
+}
+
+/**
+ * Leading glyph of a thinking-level display string (e.g. "◉ xhigh" → "◉").
+ * Compact mode promotes this glyph to the model-segment icon so the level
+ * stays visible without the verbose " · <level>" tail.
+ */
+function thinkingGlyph(display: string): string {
+	const space = display.indexOf(" ");
+	return space === -1 ? display : display.slice(0, space);
+}
+
 function stripDisplayRoot(pwd: string): string {
 	for (const root of [path.join(os.homedir(), "Projects"), "/work"]) {
 		const relative = relativePathWithinRoot(root, pwd);
@@ -153,6 +170,30 @@ const modelSegment: StatusLineSegment = {
 			modelName = modelName.slice(7);
 		}
 
+		// Resolve the current thinking-level display ("◉ xhigh", "⟳ auto", …)
+		// when the model supports thinking and the segment isn't hiding it.
+		let thinkingDisplay = "";
+		if (opts.showThinkingLevel !== false && state.model?.thinking) {
+			if (ctx.session.isAutoThinking) {
+				// Pending (no turn classified yet / classifying) shows a symbol-theme
+				// question-box marker; once resolved it shows `<level>`.
+				const resolved = ctx.session.autoResolvedThinkingLevel();
+				thinkingDisplay = resolved
+					? (theme.thinking[resolved as keyof typeof theme.thinking] ?? resolved)
+					: `${theme.thinking.autoPending} auto`;
+			} else {
+				const level = state.thinkingLevel ?? ThinkingLevel.Off;
+				if (level !== ThinkingLevel.Off) {
+					thinkingDisplay = theme.thinking[level as keyof typeof theme.thinking] ?? "";
+				}
+			}
+		}
+
+		// Compact mode swaps the model icon for the thinking-level glyph and drops
+		// the " · <level>" tail, keeping the level visible as a single icon.
+		const compact = ctx.compactThinkingLevel && thinkingDisplay !== "";
+		const modelIcon = compact ? thinkingGlyph(thinkingDisplay) : theme.icon.model;
+
 		// Fast-mode icon and thinking-level suffix trail the model name and are
 		// colored together with it as `statusLineModel`. The advisor "++" badge
 		// sits between the name and that tail in `accent`, so it reads as a
@@ -162,28 +203,13 @@ const modelSegment: StatusLineSegment = {
 		if (ctx.session.isFastModeActive() && theme.icon.fast) {
 			tail += ` ${theme.icon.fast}`;
 		}
-
-		if (opts.showThinkingLevel !== false && state.model?.thinking) {
-			if (ctx.session.isAutoThinking) {
-				// Pending (no turn classified yet / classifying) shows a symbol-theme
-				// question-box marker; once resolved it shows `<level>`.
-				const resolved = ctx.session.autoResolvedThinkingLevel();
-				const resolvedText = resolved ? (theme.thinking[resolved as keyof typeof theme.thinking] ?? resolved) : "";
-				tail += `${theme.sep.dot}${resolved ? resolvedText : `${theme.thinking.autoPending} auto`}`;
-			} else {
-				const level = state.thinkingLevel ?? ThinkingLevel.Off;
-				if (level !== ThinkingLevel.Off) {
-					const thinkingText = theme.thinking[level as keyof typeof theme.thinking];
-					if (thinkingText) {
-						tail += `${theme.sep.dot}${thinkingText}`;
-					}
-				}
-			}
+		if (!compact && thinkingDisplay) {
+			tail += `${theme.sep.dot}${thinkingDisplay}`;
 		}
 
 		// `statusLineModel` is aliased to `accent` in many themes, so the badge
 		// uses `success` to stay visibly distinct from the model name color.
-		let content = theme.fg("statusLineModel", withIcon(theme.icon.model, modelName));
+		let content = theme.fg("statusLineModel", withIcon(modelIcon, modelName));
 		if (ctx.session.isAdvisorActive()) {
 			content += theme.fg("success", "++");
 		}
@@ -284,6 +310,18 @@ const pathSegment: StatusLineSegment = {
 	id: "path",
 	render(ctx) {
 		const opts = ctx.options.path ?? {};
+		const stripPrefix = opts.stripWorkPrefix !== false;
+
+		// Linked git worktree: the on-disk path nests the worktree base, the
+		// project, and a worktree dir that usually duplicates the branch (already
+		// shown by the git segment). Collapse to the project name, appending the
+		// worktree dir only when it diverges from the branch.
+		if (stripPrefix && ctx.worktree) {
+			const { projectName, worktreeName } = ctx.worktree;
+			const label = ctx.git.branch === worktreeName ? projectName : `${projectName}/${worktreeName}`;
+			const content = withIcon(theme.icon.worktree, clampPathLength(label, opts.maxLength ?? 40));
+			return { content: theme.fg("statusLinePath", content), visible: true };
+		}
 		const projectDir = ctx.activeRepo?.cwd ?? getProjectDir();
 		const workspaceRoot = findWorkspaceRootForPath(projectDir, ctx.session.workspaceRoots);
 		let pwd: string;
@@ -295,9 +333,8 @@ const pathSegment: StatusLineSegment = {
 			pwd = relativeWithinRoot ? `[${workspaceRoot.tag}]/${relativeWithinRoot}` : `[${workspaceRoot.tag}]`;
 		} else {
 			const { scratch, relative } = classifyProjectDir(projectDir);
-			showScratchIcon = scratch && opts.stripWorkPrefix !== false;
 			pwd = projectDir;
-			if (opts.stripWorkPrefix !== false) {
+			if (stripPrefix) {
 				if (scratch) {
 					if (relative) pwd = relative;
 				} else {
@@ -311,16 +348,12 @@ const pathSegment: StatusLineSegment = {
 			pwd = shortenPath(pwd);
 		}
 
-		const maxLen = opts.maxLength ?? 40;
-		if (pwd.length > maxLen) {
-			const ellipsis = "…";
-			const sliceLen = Math.max(0, maxLen - ellipsis.length);
-			pwd = `${ellipsis}${pwd.slice(-sliceLen)}`;
-		}
+		pwd = clampPathLength(pwd, opts.maxLength ?? 40);
 		if (repoSuffix) {
 			pwd = `${pwd}${repoSuffix}`;
 		}
 
+		showScratchIcon = !workspaceRoot && classifyProjectDir(projectDir).scratch && stripPrefix;
 		const icon = showScratchIcon ? theme.icon.scratchFolder : theme.icon.folder;
 		const content = withIcon(icon, pwd);
 		return { content: theme.fg("statusLinePath", content), visible: true };
@@ -439,7 +472,7 @@ const tokenRateSegment: StatusLineSegment = {
 		const { tokensPerSecond } = ctx.usageStats;
 		if (!tokensPerSecond) return { content: "", visible: false };
 
-		const content = withIcon(theme.icon.output, `${tokensPerSecond.toFixed(1)}/s`);
+		const content = withIcon(theme.icon.throughput, `${tokensPerSecond.toFixed(1)}/s`);
 		return { content: theme.fg("statusLineOutput", content), visible: true };
 	},
 };
@@ -493,13 +526,19 @@ const contextTotalSegment: StatusLineSegment = {
 	},
 };
 
+/**
+ * Total time the agent was actively processing this session — the union of
+ * every `agent_start`→`agent_end` window plus the currently-running window,
+ * sourced from {@link SegmentContext.activeMs}. Idle wall-clock between turns
+ * never accumulates, so the displayed total reflects how long the agent has
+ * been working for the user, not how long the session has been open. Hidden
+ * before the first second of activity to avoid flashing `0s` at session start.
+ */
 const timeSpentSegment: StatusLineSegment = {
 	id: "time_spent",
 	render(ctx) {
-		const elapsed = Date.now() - ctx.sessionStartTime;
-		if (elapsed < 1000) return { content: "", visible: false };
-
-		return { content: withIcon(theme.icon.time, formatDuration(elapsed)), visible: true };
+		if (ctx.activeMs < 1000) return { content: "", visible: false };
+		return { content: withIcon(theme.icon.time, formatDuration(ctx.activeMs)), visible: true };
 	},
 };
 
@@ -552,7 +591,7 @@ const cacheReadSegment: StatusLineSegment = {
 		const { cacheRead } = ctx.usageStats;
 		if (!cacheRead) return { content: "", visible: false };
 
-		const parts = [theme.icon.cache, theme.icon.output, formatNumber(cacheRead)].filter(Boolean);
+		const parts = [theme.icon.cache, formatNumber(cacheRead)].filter(Boolean);
 		const content = parts.join(" ");
 		return { content: theme.fg("statusLineSpend", content), visible: true };
 	},
@@ -564,7 +603,7 @@ const cacheWriteSegment: StatusLineSegment = {
 		const { cacheWrite } = ctx.usageStats;
 		if (!cacheWrite) return { content: "", visible: false };
 
-		const parts = [theme.icon.cache, theme.icon.input, formatNumber(cacheWrite)].filter(Boolean);
+		const parts = [theme.icon.cache, formatNumber(cacheWrite)].filter(Boolean);
 		const content = parts.join(" ");
 		return { content: theme.fg("statusLineOutput", content), visible: true };
 	},

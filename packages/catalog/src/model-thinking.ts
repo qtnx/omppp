@@ -13,6 +13,7 @@ import {
 	bareModelId,
 	type GeminiModel,
 	type GlmModel,
+	isAnthropicAdaptiveGenAtLeast,
 	isFableOrMythos,
 	type OpenAIModel,
 	type ParsedModel,
@@ -452,12 +453,11 @@ function isDeepseekReasoningModel<TApi extends Api>(spec: ModelSpec<TApi>): bool
 function getOpenRouterAnthropicReasoningEffortMap(modelId: string): EffortMap | undefined {
 	const parsed = parseAnthropicModel(bareModelId(modelId));
 	if (!parsed) return undefined;
-	// Adaptive efforts on OpenRouter's completions front: Fable/Mythos and
-	// Opus 4.6+ only — Sonnet stays on the plain effort vocabulary there.
-	const isOpusAdaptive = parsed.kind === "opus" && semverGte(parsed.version, "4.6");
-	if (!isFableOrMythos(parsed.kind) && !isOpusAdaptive) return undefined;
+	// Adaptive efforts on OpenRouter's completions front: Fable/Mythos, Sonnet 5+,
+	// and Opus 4.6+ only — older Sonnet versions stay on the plain effort vocabulary there.
+	if (!isAnthropicAdaptiveGenAtLeast(parsed, "4.6")) return undefined;
 
-	const hasRealXHigh = isFableOrMythos(parsed.kind) || semverGte(parsed.version, "4.7");
+	const hasRealXHigh = isAnthropicAdaptiveGenAtLeast(parsed, "4.7");
 	return hasRealXHigh ? ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER : ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER;
 }
 
@@ -531,12 +531,15 @@ function inferAnthropicSupportedEfforts<TApi extends Api>(
 	compat: CompatOf<TApi>,
 ): readonly Effort[] {
 	if (spec.api === "anthropic-messages" && semverGte(parsedModel.version, "4.6")) {
-		return parsedModel.kind === "opus" || isFableOrMythos(parsedModel.kind)
-			? DEFAULT_REASONING_EFFORTS_WITH_MAX
+		if (parsedModel.kind === "opus" || isFableOrMythos(parsedModel.kind)) {
+			return DEFAULT_REASONING_EFFORTS_WITH_MAX;
+		}
+		return isAnthropicAdaptiveGenAtLeast(parsedModel, "4.6")
+			? DEFAULT_REASONING_EFFORTS_WITH_XHIGH
 			: DEFAULT_REASONING_EFFORTS;
 	}
 	if (spec.api === "bedrock-converse-stream" && semverGte(parsedModel.version, "4.6")) {
-		return parsedModel.kind === "opus" || isFableOrMythos(parsedModel.kind)
+		return isAnthropicAdaptiveGenAtLeast(parsedModel, "4.6")
 			? DEFAULT_REASONING_EFFORTS_WITH_XHIGH
 			: DEFAULT_REASONING_EFFORTS;
 	}
@@ -637,10 +640,7 @@ function inferThinkingControlMode<TApi extends Api>(
 
 		case "bedrock-converse-stream":
 			if (parsedModel.family === "anthropic") {
-				if (
-					semverGte(parsedModel.version, "4.6") &&
-					(parsedModel.kind === "opus" || isFableOrMythos(parsedModel.kind))
-				) {
+				if (isAnthropicAdaptiveGenAtLeast(parsedModel, "4.6")) {
 					return "anthropic-adaptive";
 				}
 				// Opus 4.5 on Bedrock metadata mirrors the direct-Anthropic
@@ -663,19 +663,18 @@ function isOpenRouterAnthropicAdaptiveReasoningModel<TApi extends Api>(
 ): boolean {
 	if (!isOpenAICompatReasoningApi(spec.api)) return false;
 	if (!modelMatchesHost(spec, "openrouter")) return false;
-	return isFableOrMythos(parsedModel.kind) || (parsedModel.kind === "opus" && semverGte(parsedModel.version, "4.6"));
+	return isAnthropicAdaptiveGenAtLeast(parsedModel, "4.6");
 }
 
 /**
- * Opus 4.7+ and Fable/Mythos on the Messages API expose the full five-tier
+ * Opus 4.7+, Sonnet 5+, and Fable/Mythos 5+ on the Messages API expose the full five-tier
  * adaptive scale (low/medium/high/xhigh/max). Bedrock Converse stays on the
  * four-tier scale regardless of model version.
  */
 function anthropicModelHasRealXHighEffort<TApi extends Api>(spec: ModelSpec<TApi>, parsedModel: ParsedModel): boolean {
 	if (spec.api !== "anthropic-messages") return false;
 	if (parsedModel.family !== "anthropic") return false;
-	if (isFableOrMythos(parsedModel.kind)) return true;
-	return parsedModel.kind === "opus" && semverGte(parsedModel.version, "4.7");
+	return isAnthropicAdaptiveGenAtLeast(parsedModel, "4.7");
 }
 
 // ---------------------------------------------------------------------------
