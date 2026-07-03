@@ -169,6 +169,7 @@ import {
 	type ResolvedModelRoleValue,
 	resolveAdvisorRoleSelection,
 	resolveDuoConfig,
+	resolveModelFromString,
 	resolveModelOverride,
 	resolveModelRoleValue,
 } from "../config/model-resolver";
@@ -1586,6 +1587,7 @@ export class AgentSession {
 	#duoPromptOverlayPhase: DuoStatus["phase"] | undefined;
 	#duoOwnsPlanMode = false;
 	#duoAdvisorPinnedModel?: Model;
+	#duoAdvisorPinnedModelId?: string;
 	#duoPlanReferenceSetDuringPlanMode = false;
 	#duoAwaitingApprovedPlanReference = false;
 	#duoPlanApprovedNotified = false;
@@ -2159,8 +2161,10 @@ export class AgentSession {
 		});
 
 		this.#advisorEnabled = this.settings.get("advisor.enabled") as boolean;
+		const restoredDuoSnapshot = this.#latestDuoSnapshotFromBranch();
+		this.#restoreDuoAdvisorPin(restoredDuoSnapshot);
+		this.#initDuoController(restoredDuoSnapshot);
 		if (this.#advisorEnabled) this.#buildAdvisorRuntime();
-		this.#initDuoController();
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, hooks, auto-compaction, retry logic)
@@ -2218,7 +2222,13 @@ export class AgentSession {
 			},
 			emitNotice: (level, text) => this.emitNotice(level, text, "duo"),
 			persistSnapshot: snapshot => {
-				this.sessionManager.appendCustomMessageEntry("duo_state", "", false, snapshot, "agent");
+				this.sessionManager.appendCustomMessageEntry(
+					"duo_state",
+					"",
+					false,
+					this.#snapshotWithDuoAdvisorPin(snapshot),
+					"agent",
+				);
 				this.#syncDuoPromptOverlay();
 			},
 			orchestratorEnabled: () => this.getOrchestratorModeState()?.enabled === true,
@@ -2263,8 +2273,53 @@ export class AgentSession {
 		this.agent.setSystemPrompt(this.#baseSystemPromptWithModeOverlay());
 	}
 
+	#restoreDuoAdvisorPin(snapshot: DuoStateSnapshot | undefined): void {
+		if (!snapshot || snapshot.phase === "inactive" || !snapshot.advisorModelId) return;
+		this.#duoAdvisorPinnedModelId = snapshot.advisorModelId;
+		this.#duoOwnsAdvisor = snapshot.duoOwnsAdvisor === true;
+		if (this.#duoOwnsAdvisor) {
+			this.#advisorEnabled = true;
+		}
+		const pinned = resolveModelFromString(
+			snapshot.advisorModelId,
+			this.#modelRegistry.getAvailable(),
+			getModelMatchPreferences(this.settings),
+			this.#modelRegistry,
+		);
+		if (!pinned) {
+			this.emitNotice(
+				"warning",
+				`Advisor unavailable for ${snapshot.advisorModelId}: model could not be resolved.`,
+				"advisor",
+			);
+			return;
+		}
+		if (!this.#modelRegistry.hasConfiguredAuth(pinned)) {
+			this.emitNotice(
+				"warning",
+				`Advisor unavailable for ${snapshot.advisorModelId}: No API key for ${pinned.provider}/${pinned.id}`,
+				"advisor",
+			);
+			return;
+		}
+		this.#duoAdvisorPinnedModel = pinned;
+	}
+
+	#snapshotWithDuoAdvisorPin(snapshot: DuoStateSnapshot): DuoStateSnapshot {
+		if (snapshot.phase === "inactive") {
+			return { ...snapshot, advisorModelId: undefined, duoOwnsAdvisor: false };
+		}
+		const advisorModelId =
+			this.#duoAdvisorPinnedModelId ??
+			(this.#duoAdvisorPinnedModel
+				? `${this.#duoAdvisorPinnedModel.provider}/${this.#duoAdvisorPinnedModel.id}`
+				: snapshot.advisorModelId);
+		return { ...snapshot, advisorModelId, duoOwnsAdvisor: Boolean(advisorModelId && this.#duoOwnsAdvisor) };
+	}
+
 	#ensureDuoAdvisorStarted(pinned: Model): boolean {
 		this.#duoAdvisorPinnedModel = pinned;
+		this.#duoAdvisorPinnedModelId = `${pinned.provider}/${pinned.id}`;
 		if (!this.#advisorEnabled) {
 			this.#advisorEnabled = true;
 			this.#duoOwnsAdvisor = true;
@@ -2323,6 +2378,7 @@ export class AgentSession {
 		this.#clearAdvisorRetry();
 		const pinned = this.#duoAdvisorPinnedModel;
 		this.#duoAdvisorPinnedModel = undefined;
+		this.#duoAdvisorPinnedModelId = undefined;
 		const action = resolveDuoAdvisorStopAction(this.#duoOwnsAdvisor, pinned, this.#advisorAgent?.state.model);
 		if (action === "stop") {
 			this.#stopAdvisorRuntime();
@@ -2338,11 +2394,11 @@ export class AgentSession {
 		}
 	}
 
-	#initDuoController(): void {
+	#initDuoController(restored?: DuoStateSnapshot): void {
 		// Restore a persisted duo snapshot when the branch has one; otherwise
 		// evaluate activation fresh so `duo.mode: auto|on` engages at session
 		// start (e.g. main model is Fable) without waiting for a mode toggle.
-		const controller = this.#ensureDuoController(this.#latestDuoSnapshotFromBranch());
+		const controller = this.#ensureDuoController(restored);
 		if (controller) void controller.reevaluate();
 	}
 
@@ -2374,10 +2430,21 @@ export class AgentSession {
 		const takeoverCount = typeof record.takeoverCount === "number" ? record.takeoverCount : 0;
 		const consecutiveTakeovers = typeof record.consecutiveTakeovers === "number" ? record.consecutiveTakeovers : 0;
 		const cooldownRemaining = typeof record.cooldownRemaining === "number" ? record.cooldownRemaining : 0;
+		const plannerId = typeof record.plannerId === "string" ? record.plannerId : undefined;
+		const advisorModelId =
+			typeof record.advisorModelId === "string"
+				? record.advisorModelId
+				: phase === "inactive"
+					? undefined
+					: plannerId;
+		const duoOwnsAdvisor =
+			typeof record.duoOwnsAdvisor === "boolean" ? record.duoOwnsAdvisor : advisorModelId !== undefined;
 		return {
 			phase,
-			plannerId: typeof record.plannerId === "string" ? record.plannerId : undefined,
+			plannerId,
 			executorId: typeof record.executorId === "string" ? record.executorId : undefined,
+			advisorModelId,
+			duoOwnsAdvisor,
 			takeoverPurpose:
 				record.takeoverPurpose === "recover" || record.takeoverPurpose === "verify"
 					? record.takeoverPurpose
@@ -2470,6 +2537,10 @@ export class AgentSession {
 		if (!this.#advisorEnabled) return false;
 		if (this.#agentKind !== "main" && !this.settings.get("advisor.subagents")) return false;
 
+		if (this.#duoAdvisorPinnedModelId && !this.#duoAdvisorPinnedModel) {
+			logger.debug("duo advisor pin could not resolve; advisor inactive", { model: this.#duoAdvisorPinnedModelId });
+			return false;
+		}
 		const resolvedAdvisorSel = resolveAdvisorRoleSelection(
 			this.settings,
 			this.#modelRegistry.getAvailable(),
