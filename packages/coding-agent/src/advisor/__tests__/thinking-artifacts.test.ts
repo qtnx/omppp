@@ -74,7 +74,7 @@ describe("ThinkingArtifactStore.renderThinking", () => {
 		expect(out).toContain("REDACTED-tail");
 
 		const id = extractGistId(out);
-		const artifactPath = join(dir, "__advisor-artifacts", `thinking-${id}.md`);
+		const artifactPath = join(dir, "__advisor-artifacts", `notes-${id}.md`);
 		expect(out).toContain(`{{GIST:${id}}}`);
 		expect(out).toContain("chars elided — full:");
 		expect(out).toContain(artifactPath);
@@ -145,10 +145,10 @@ describe("ThinkingArtifactStore.renderThinking", () => {
 		const second = extractGistId(store.renderThinking(text));
 		expect(second).toBe(first);
 
-		const artifactPath = join(dir, "__advisor-artifacts", `thinking-${first}.md`);
+		const artifactPath = join(dir, "__advisor-artifacts", `notes-${first}.md`);
 		expect(await waitForFile(artifactPath)).toBe(true);
 		const files = await readdir(join(dir, "__advisor-artifacts"));
-		expect(files).toEqual([`thinking-${first}.md`]);
+		expect(files).toEqual([`notes-${first}.md`]);
 	});
 });
 

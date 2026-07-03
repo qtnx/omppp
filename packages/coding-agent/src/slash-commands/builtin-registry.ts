@@ -15,6 +15,7 @@ import {
 	resolveActiveProjectRegistryPath,
 	resolveOrDefaultProjectRegistryPath,
 } from "../discovery/helpers.js";
+import type { DuoStatus } from "../duo";
 import { shareSession } from "../export/share";
 import { PluginManager } from "../extensibility/plugins";
 import {
@@ -139,6 +140,23 @@ function refreshPluginStateAfterSelectorMutation(
 /** `/fast status` label: "off", "on", or scope-qualified "on (… only)". */
 function formatFastModeStatus(session: AgentSession): string {
 	return session.isFastModeEnabled() ? "on" : "off";
+}
+
+/**
+ * `/duo status` line. The scope parenthetical derives from the LIVE orchestrator
+ * state (not the declared scope) so a refused single-scope disable stays visible:
+ * when the user already owned orchestrator, a `single` scope cannot flip it off.
+ */
+function formatDuoStatusText(status: DuoStatus, orchestratorOn: boolean): string {
+	const base = `Duo: ${status.phase} — planner ${status.planner ?? "?"}, executor ${
+		status.executor ?? "?"
+	}, takeovers ${status.takeoverCount}${status.advisorPaused ? ", advisor paused" : ""}`;
+	if (status.phase === "inactive") return base;
+	let paren = "orchestrator";
+	if (status.executionScope === "single") {
+		paren = orchestratorOn ? "orchestrator — direct disable refused: user-owned" : "direct";
+	}
+	return sanitizeText(`${base}\nscope: ${status.executionScope} (${paren})`);
 }
 
 const AUTOCOMPLETE_DETAIL_LIMIT = 48;
@@ -850,13 +868,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "duo",
 		description: "Duo auto model switch (planner⇄executor with advisor monitoring)",
-		acpInputHint: "[on|off|status|exec|plan]",
+		acpInputHint: "[on|off|status|exec|plan|summon]",
 		subcommands: [
 			{ name: "on", description: "Enable duo" },
 			{ name: "off", description: "Disable duo" },
 			{ name: "status", description: "Show duo status" },
 			{ name: "exec", description: "Hand the main stream to the executor" },
 			{ name: "plan", description: "Return the stream to the planner (re-plan)" },
+			{ name: "summon", description: "Summon the planner to the main stream for a transient consult" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -884,9 +903,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 					return;
 				}
 				await runtime.output(
-					`Duo: ${status.phase} — planner ${status.planner ?? "?"}, executor ${
-						status.executor ?? "?"
-					}, takeovers ${status.takeoverCount}${status.advisorPaused ? ", advisor paused" : ""}`,
+					formatDuoStatusText(status, runtime.session.getOrchestratorModeState()?.enabled === true),
 				);
 			};
 			if (!verb || verb === "toggle") {
@@ -925,7 +942,16 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				);
 				return commandConsumed();
 			}
-			return usage("Usage: /duo [on|off|status|exec|plan]", runtime);
+			if (verb === "summon") {
+				const summoned = await runtime.session.duoSummon();
+				await runtime.output(
+					summoned
+						? "Planner summoned to the main stream; duo_handoff restores the executor."
+						: "Duo is not executing — nothing to summon.",
+				);
+				return commandConsumed();
+			}
+			return usage("Usage: /duo [on|off|status|exec|plan|summon]", runtime);
 		},
 		handleTui: async (command, runtime) => {
 			const { verb } = parseSubcommand(command.args);
@@ -950,9 +976,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 					return;
 				}
 				runtime.ctx.showStatus(
-					`Duo: ${status.phase} — planner ${status.planner ?? "?"}, executor ${
-						status.executor ?? "?"
-					}, takeovers ${status.takeoverCount}${status.advisorPaused ? ", advisor paused" : ""}`,
+					formatDuoStatusText(status, runtime.ctx.session.getOrchestratorModeState()?.enabled === true),
 				);
 				runtime.ctx.editor.setText("");
 			};
@@ -998,7 +1022,18 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				runtime.ctx.editor.setText("");
 				return;
 			}
-			runtime.ctx.showStatus("Usage: /duo [on|off|status|exec|plan]");
+			if (verb === "summon") {
+				const summoned = await runtime.ctx.session.duoSummon();
+				runtime.ctx.showStatus(
+					summoned
+						? "Planner summoned to the main stream; duo_handoff restores the executor."
+						: "Duo is not executing — nothing to summon.",
+				);
+				refreshStatusLine(runtime.ctx);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			runtime.ctx.showStatus("Usage: /duo [on|off|status|exec|plan|summon]");
 			runtime.ctx.editor.setText("");
 		},
 	},

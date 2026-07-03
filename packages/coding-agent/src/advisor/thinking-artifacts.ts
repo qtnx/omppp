@@ -35,7 +35,7 @@ const GIST_MAX_TOKENS = 700;
 const GIST_TIMEOUT_MS = 5_000;
 
 const GIST_SYSTEM_PROMPT =
-	"You summarize elided middles of an AI agent's thinking. For each excerpt, output `<id>:` followed by ≤3 terse bullets — decisions made, discoveries, risks/uncertainties. No preamble, no commentary.";
+	"You summarize elided middles of an AI agent's working notes. For each excerpt, output `<id>:` followed by ≤3 terse bullets — decisions made, discoveries, risks/uncertainties. No preamble, no commentary.";
 
 export interface ThinkingArtifactDeps {
 	/** Session artifacts dir (absolute), e.g. `<sessionFile minus .jsonl>`; undefined → artifacts skipped (marker only). */
@@ -84,11 +84,11 @@ export class ThinkingArtifactStore {
 		const dir = this.#deps.artifactsDir();
 		let artifactPath: string | undefined;
 		if (dir) {
-			artifactPath = `${dir}/${ARTIFACT_SUBDIR}/thinking-${id}.md`;
+			artifactPath = `${dir}/${ARTIFACT_SUBDIR}/notes-${id}.md`;
 			// Fire-and-forget: a spill failure must never break rendering the feed.
 			// Bun.write creates parent dirs.
 			Bun.write(artifactPath, obfuscated).catch(err => {
-				logger.debug("thinking-artifacts: failed to persist artifact", {
+				logger.debug("advisor-notes-artifacts: failed to persist artifact", {
 					id,
 					error: err instanceof Error ? err.message : String(err),
 				});
@@ -201,7 +201,7 @@ export function createSmolGistFn(opts: {
 			if (response.stopReason === "error") return null;
 			return parseGistResponse(response.content, excerpts);
 		} catch (err) {
-			logger.debug("thinking-artifacts: smol gist failed", {
+			logger.debug("advisor-notes-artifacts: smol gist failed", {
 				error: err instanceof Error ? err.message : String(err),
 			});
 			return null;

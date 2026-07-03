@@ -110,7 +110,7 @@ describe("advisor", () => {
 			} as AgentMessage;
 			const md = formatSessionHistoryMarkdown([assistantMsg], { includeThinking: true });
 			expect(md).toContain(thinking);
-			expect(md).toContain("_thinking:_");
+			expect(md).toContain("_notes:_");
 		});
 
 		it("elides thinking text by default", () => {
@@ -122,7 +122,7 @@ describe("advisor", () => {
 			} as AgentMessage;
 			const md = formatSessionHistoryMarkdown([assistantMsg]);
 			expect(md).not.toContain(thinking);
-			expect(md).not.toContain("_thinking:_");
+			expect(md).not.toContain("_notes:_");
 		});
 	});
 

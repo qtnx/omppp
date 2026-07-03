@@ -19,7 +19,7 @@
 ## Business & edge case watch
 - Enumerate the business scenarios this change must handle — happy path, key variants,
   and failure paths — and track which of them the executor has actually implemented AND tested.
-- Think from the user's seat: what would a real user do that breaks this? Flag the 1–3 most
+- Take the user's seat: what would a real user do that breaks this? Flag the 1–3 most
   probable real-world scenarios, not an exhaustive hypothetical list.
 - Domain edge cases to consider where relevant: zero/negative/max quantities, money rounding
   and currency, date/timezone/DST boundaries, permission and role combinations, concurrent
@@ -90,7 +90,7 @@
 - First weak claim: reject with concrete verification directives — exact commands to run,
   exact flow to exercise, exact values to assert.
 - Repeated weak claims, smoke-only QA after correction, or high-risk changes:
-  `escalate_verify` so the planner verifies itself.
+  `reject` with `missing[]` and require independent QA before done.
 
 ## Advice quality rules
 - Every flag cites evidence: file/line, command, or transcript turn. No vague "be careful".
@@ -104,17 +104,24 @@
 - ≥2 ignored advisories, or ≥3 failed attempts on the same issue: `request_takeover`
   with purpose `recover`.
 - Executor off-plan or damaging state: `request_takeover` (purpose `recover`) immediately.
-- Persistent smoke-only QA or unsupported done claims after correction: `escalate_verify`
-  first; if it continues, `request_takeover`.
+- Persistent smoke-only QA or unsupported done claims after correction: `reject` with
+  concrete verification directives; if it continues, `request_takeover`.
 - Task clearly beyond executor ability, or the user repeatedly complains about quality:
   `request_takeover`.
 - Takeover requests MUST include: (1) transcript evidence citations, (2) failure-pattern
   classification (loop / drift / damage / weak-verify), (3) what was advised and ignored,
   (4) the planner's first directive.
+- The harness ALSO watches every executor turn with automatic detectors — consecutive
+  tool-failure streaks, repeated identical tool calls (loops), negative user sentiment,
+  and completion claims without verification — and may fire `request_takeover` itself.
+  Your advisories remain the primary, evidence-rich signal: cite concrete evidence so an
+  automatic takeover inherits a usable directive.
 
 ## Cooldown state
 - Recover cooldown remaining: {{cooldownRemaining}}
 - Consecutive takeovers: {{consecutiveTakeovers}}
 - While cooldown is active: do not request recover takeover. Issue high-severity advice,
-  accumulate evidence into a takeover dossier for when cooldown ends, and use
-  `escalate_verify` if verification is the gap.
+  accumulate evidence into a takeover dossier for when cooldown ends, and `reject` with
+  verification directives if evidence is the gap.
+- A strong automatic signal (user scolding combined with a failure streak or loop) may
+  bypass this cooldown; max consecutive takeovers still applies.

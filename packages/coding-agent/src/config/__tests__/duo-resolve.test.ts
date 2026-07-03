@@ -46,6 +46,7 @@ const registry = {
 function settings(overrides: Partial<Record<SettingPath, unknown>> = {}): Settings {
 	const values: Partial<Record<SettingPath, unknown>> = {
 		"duo.mode": "auto",
+		"duo.orchestrator": "auto",
 		"duo.plannerModel": "",
 		"duo.executorModel": "",
 		"duo.plannerThinking": "auto",
@@ -54,6 +55,12 @@ function settings(overrides: Partial<Record<SettingPath, unknown>> = {}): Settin
 		"duo.takeover.enabled": true,
 		"duo.takeover.cooldownTurns": 4,
 		"duo.takeover.maxConsecutive": 2,
+		"duo.manualSwitchIntent": "plan",
+		"duo.takeover.signals.enabled": true,
+		"duo.takeover.signals.sentiment": true,
+		"duo.takeover.signals.failureThreshold": 3,
+		"duo.takeover.signals.loopThreshold": 3,
+		"duo.takeover.signals.planningNeeded": true,
 		...overrides,
 	};
 	return Settings.isolated(values);
@@ -109,12 +116,39 @@ describe("resolveDuoConfig", () => {
 		expect(resolved).toBeUndefined();
 	});
 
-	test("settings numbers and done gate flow through", () => {
+	test("orchestrator defaults to auto", () => {
+		const resolved = resolveDuoConfig(settings(), [fable5, opus48], registry);
+		const resolvedOrchestrator: "auto" | "always" | undefined = resolved?.orchestrator;
+
+		expect(resolvedOrchestrator).toBe("auto");
+	});
+
+	test("orchestrator resolves explicit always", () => {
+		const resolved = resolveDuoConfig(settings({ "duo.orchestrator": "always" }), [fable5, opus48], registry);
+
+		expect(resolved?.orchestrator).toBe("always");
+	});
+
+	test("orchestrator falls back to auto for absent or invalid values", () => {
+		const absent = resolveDuoConfig(Settings.isolated(), [fable5, opus48], registry);
+		const invalid = resolveDuoConfig(settings({ "duo.orchestrator": "sometimes" }), [fable5, opus48], registry);
+
+		expect(absent?.orchestrator).toBe("auto");
+		expect(invalid?.orchestrator).toBe("auto");
+	});
+
+	test("settings numbers, done gate, manual intent, and takeover signals flow through", () => {
 		const resolved = resolveDuoConfig(
 			settings({
 				"duo.takeover.cooldownTurns": 9,
 				"duo.takeover.maxConsecutive": 3,
 				"duo.doneGate": "inherit",
+				"duo.manualSwitchIntent": "summon",
+				"duo.takeover.signals.enabled": false,
+				"duo.takeover.signals.sentiment": false,
+				"duo.takeover.signals.failureThreshold": 5,
+				"duo.takeover.signals.loopThreshold": 6,
+				"duo.takeover.signals.planningNeeded": false,
 			}),
 			[fable5, opus48],
 			registry,
@@ -123,5 +157,26 @@ describe("resolveDuoConfig", () => {
 		expect(resolved?.cooldownTurns).toBe(9);
 		expect(resolved?.maxConsecutive).toBe(3);
 		expect(resolved?.doneGate).toBe("inherit");
+		expect(resolved?.manualSwitchIntent).toBe("summon");
+		expect(resolved?.signals).toEqual({
+			enabled: false,
+			sentiment: false,
+			failureThreshold: 5,
+			loopThreshold: 6,
+			planningNeeded: false,
+		});
+	});
+
+	test("manual intent and takeover signals resolve from schema defaults", () => {
+		const resolved = resolveDuoConfig(Settings.isolated(), [fable5, opus48], registry);
+
+		expect(resolved?.manualSwitchIntent).toBe("plan");
+		expect(resolved?.signals).toEqual({
+			enabled: true,
+			sentiment: true,
+			failureThreshold: 3,
+			loopThreshold: 3,
+			planningNeeded: true,
+		});
 	});
 });

@@ -2,7 +2,7 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import { type } from "arktype";
 
 const doneVerdictSchema = type({
-	verdict: type("'approve' | 'reject' | 'escalate_verify'").describe(
+	verdict: type("'approve' | 'reject'").describe(
 		"Whether the agent's completion claim is proven by transcript evidence.",
 	),
 	"missing?": type("string[]").describe(
@@ -14,7 +14,7 @@ const doneVerdictSchema = type({
 export type DoneVerdictParams = typeof doneVerdictSchema.infer;
 
 export interface DoneVerdict {
-	verdict: "approve" | "reject" | "escalate_verify";
+	verdict: "approve" | "reject";
 	missing?: string[];
 	note?: string;
 }
@@ -29,7 +29,7 @@ export class DoneVerdictTool implements AgentTool<typeof doneVerdictSchema, unde
 	readonly name = "done_verdict";
 	readonly label = "Done verdict";
 	readonly description =
-		"Record your done-review verdict. Call this EXACTLY ONCE, and only when the session update contains a done-review request. Approve only when every completion claim is proven by transcript evidence; otherwise reject with one concrete, actionable `missing` item per unproven claim. Use escalate_verify when the completion claim cannot be trusted without independent verification and the planner model will take over the main stream to verify it; use it when rejections keep failing or the change is high-risk.";
+		"Record your done-review verdict. Call this EXACTLY ONCE, and only when the session update contains a done-review request. Approve only when every completion claim is proven by transcript evidence; otherwise reject with one concrete, actionable `missing` item per unproven claim.";
 	readonly parameters = doneVerdictSchema;
 	readonly intent = "omit" as const;
 

@@ -59,7 +59,7 @@ describe("DuoStateMachine activation", () => {
 		expect(missingExecutor.evaluateActivation(input({ mode: "on", executorResolvable: false }))).toBe("inactive");
 	});
 
-	it("auto-deactivates inactive, planning, and executing phases when activation condition is lost", () => {
+	it("auto-deactivates inactive, planning, and multi-scope executing phases when activation condition is lost", () => {
 		const planning = new DuoStateMachine(config);
 		planning.evaluateActivation(input({ mainModelKind: "fable", planModeActive: true }));
 		expect(planning.evaluateActivation(input({ mode: "off" }))).toBe("inactive");
@@ -69,6 +69,17 @@ describe("DuoStateMachine activation", () => {
 		expect(
 			executing.evaluateActivation(input({ mode: "auto", orchestratorEnabled: false, mainModelKind: "other" })),
 		).toBe("inactive");
+	});
+
+	it("keeps active single-scope auto mode executing after orchestrator mode is disabled", () => {
+		const machine = new DuoStateMachine(config);
+		machine.evaluateActivation(input({ mainModelKind: "fable", planModeActive: true }));
+		expect(machine.onHandoffToExecutor("single")).toBe(true);
+
+		expect(
+			machine.evaluateActivation(input({ mode: "auto", orchestratorEnabled: false, mainModelKind: "other" })),
+		).toBe("executing");
+		expect(machine.phase).toBe("executing");
 	});
 
 	it("does not auto-deactivate suspended or takeover phases", () => {
@@ -94,13 +105,53 @@ describe("DuoStateMachine transitions", () => {
 		expect(machine.onPlanApproved()).toBe(false);
 	});
 
+	it("defaults execution scope to multi", () => {
+		const machine = new DuoStateMachine(config);
+
+		expect(machine.executionScope).toBe("multi");
+		expect(machine.snapshot.executionScope).toBe("multi");
+	});
+
+	it("records single scope on handoff to executor", () => {
+		const machine = new DuoStateMachine(config);
+		machine.evaluateActivation(input({ mainModelKind: "fable", planModeActive: true }));
+
+		expect(machine.onHandoffToExecutor("single")).toBe(true);
+
+		expect(machine.executionScope).toBe("single");
+		expect(machine.snapshot).toMatchObject({ phase: "executing", executionScope: "single" });
+	});
+
+	it("keeps single scope when handoff omits scope after a takeover return", () => {
+		const machine = new DuoStateMachine(config);
+		machine.evaluateActivation(input({ mainModelKind: "fable", planModeActive: true }));
+
+		expect(machine.onHandoffToExecutor("single")).toBe(true);
+		expect(machine.executionScope).toBe("single");
+
+		expect(machine.onTakeoverRequested("recover")).toBe("accepted");
+		expect(machine.phase).toBe("takeover");
+
+		expect(machine.onHandoffToExecutor()).toBe(true);
+
+		expect(machine.executionScope).toBe("single");
+		expect(machine.snapshot).toMatchObject({ phase: "executing", executionScope: "single" });
+	});
+
 	it("returns executing to planning on replan without touching takeover counters", () => {
 		const machine = new DuoStateMachine(config);
-		machine.evaluateActivation(input({ mode: "on" }));
+		machine.evaluateActivation(input({ mainModelKind: "fable", planModeActive: true }));
+		expect(machine.onHandoffToExecutor("single")).toBe(true);
 		expect(machine.phase).toBe("executing");
+		expect(machine.executionScope).toBe("single");
 
 		expect(machine.onReplanRequested()).toBe(true);
-		expect(machine.snapshot).toMatchObject({ phase: "planning", takeoverCount: 0, consecutiveTakeovers: 0 });
+		expect(machine.snapshot).toMatchObject({
+			phase: "planning",
+			executionScope: "multi",
+			takeoverCount: 0,
+			consecutiveTakeovers: 0,
+		});
 		// Only the executor's stream can be handed back for re-planning.
 		expect(machine.onReplanRequested()).toBe(false);
 		// The replanning cycle completes through the normal handoff.
@@ -149,14 +200,14 @@ describe("DuoStateMachine transitions", () => {
 		expect(machine.onExecutorEscalate()).toBe("rejected");
 	});
 
-	it("allows verify takeovers to bypass cooldown", () => {
+	it("recover takeovers do not bypass cooldown", () => {
 		const machine = new DuoStateMachine(config);
 		machine.evaluateActivation(input({ mode: "on" }));
 		machine.onTakeoverRequested("recover");
 		machine.onHandoffToExecutor();
 
-		expect(machine.onTakeoverRequested("verify")).toBe("accepted");
-		expect(machine.snapshot).toMatchObject({ phase: "takeover", takeoverPurpose: "verify", takeoverCount: 2 });
+		expect(machine.onTakeoverRequested("recover")).toBe("cooldown-advice");
+		expect(machine.snapshot).toMatchObject({ phase: "executing", takeoverPurpose: undefined, takeoverCount: 1 });
 	});
 
 	it("does not reset consecutive takeovers on handoff to executor", () => {
@@ -169,16 +220,29 @@ describe("DuoStateMachine transitions", () => {
 		expect(machine.snapshot).toMatchObject({ phase: "executing", consecutiveTakeovers: 1, cooldownRemaining: 3 });
 	});
 
-	it("rejects takeover requests after maxConsecutive is reached", () => {
+	it("rejects recover takeovers after maxConsecutive is reached", () => {
 		const machine = new DuoStateMachine({ cooldownTurns: 3, maxConsecutive: 2 });
 		machine.evaluateActivation(input({ mode: "on" }));
 		expect(machine.onTakeoverRequested("recover")).toBe("accepted");
 		expect(machine.onHandoffToExecutor()).toBe(true);
-		expect(machine.onTakeoverRequested("verify")).toBe("accepted");
+		expect(machine.onTakeoverRequested("recover", { bypassCooldown: true })).toBe("accepted");
 		expect(machine.onHandoffToExecutor()).toBe(true);
-
-		expect(machine.onTakeoverRequested("verify")).toBe("rejected");
+		expect(machine.onTakeoverRequested("recover", { bypassCooldown: true })).toBe("rejected");
 		expect(machine.snapshot).toMatchObject({ phase: "executing", takeoverCount: 2, consecutiveTakeovers: 2 });
+	});
+
+	it("recover takeovers count toward and are blocked by the consecutive cap", () => {
+		const machine = new DuoStateMachine({ cooldownTurns: 3, maxConsecutive: 2 });
+		machine.evaluateActivation(input({ mode: "on" }));
+
+		expect(machine.onTakeoverRequested("recover")).toBe("accepted");
+		expect(machine.onHandoffToExecutor()).toBe(true);
+		expect(machine.onTakeoverRequested("recover", { bypassCooldown: true })).toBe("accepted");
+		expect(machine.onHandoffToExecutor()).toBe(true);
+		expect(machine.snapshot.consecutiveTakeovers).toBe(2);
+
+		expect(machine.onTakeoverRequested("recover", { bypassCooldown: true })).toBe("rejected");
+		expect(machine.snapshot).toMatchObject({ phase: "executing", consecutiveTakeovers: 2, takeoverCount: 2 });
 	});
 
 	it("decrements cooldown to a floor of zero only while executing", () => {
@@ -296,9 +360,10 @@ describe("DuoStateMachine transitions", () => {
 	it("round-trips restored snapshots and exposes defensive snapshot copies", () => {
 		const restored: DuoStateSnapshot = {
 			phase: "takeover",
+			executionScope: "single",
 			plannerId: "anthropic/claude-fable-4",
 			executorId: "anthropic/claude-opus-4",
-			takeoverPurpose: "verify",
+			takeoverPurpose: "recover",
 			takeoverCount: 3,
 			consecutiveTakeovers: 2,
 			cooldownRemaining: 1,
@@ -309,8 +374,45 @@ describe("DuoStateMachine transitions", () => {
 		const snapshot = machine.snapshot;
 		snapshot.phase = "inactive";
 		snapshot.takeoverCount = 0;
+		snapshot.executionScope = "multi";
 
 		expect(machine.snapshot).toEqual(restored);
 		expect(machine.phase).toBe("takeover");
+	});
+
+	it("defaults missing restored execution scope to multi", () => {
+		const restored: DuoStateSnapshot = {
+			phase: "executing",
+			takeoverCount: 0,
+			consecutiveTakeovers: 0,
+			cooldownRemaining: 0,
+		};
+		const machine = new DuoStateMachine(config, restored);
+
+		expect(machine.executionScope).toBe("multi");
+		expect(machine.snapshot.executionScope).toBe("multi");
+	});
+});
+
+describe("DuoStateMachine takeover signals", () => {
+	it("bypassCooldown accepts recover during cooldown but still respects maxConsecutive", () => {
+		const machine = new DuoStateMachine(config);
+		machine.evaluateActivation(input({ mode: "on" }));
+		expect(machine.onTakeoverRequested("recover")).toBe("accepted");
+		expect(machine.onHandoffToExecutor()).toBe(true);
+		expect(machine.onTakeoverRequested("recover")).toBe("cooldown-advice");
+		expect(machine.onTakeoverRequested("recover", { bypassCooldown: true })).toBe("accepted");
+		expect(machine.onHandoffToExecutor()).toBe(true);
+		expect(machine.onTakeoverRequested("recover", { bypassCooldown: true })).toBe("rejected");
+	});
+
+	it("degraded recovers to executing on reevaluation and unblocks takeover", () => {
+		const machine = new DuoStateMachine(config);
+		machine.evaluateActivation(input({ mode: "on" }));
+		machine.onAdvisorDropped();
+		expect(machine.phase).toBe("degraded");
+		expect(machine.onTakeoverRequested("recover")).toBe("rejected");
+		expect(machine.evaluateActivation(input({ mode: "on" }))).toBe("executing");
+		expect(machine.onTakeoverRequested("recover")).toBe("accepted");
 	});
 });

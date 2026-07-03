@@ -4,7 +4,12 @@
 
 ### Added
 
+- Duo now auto-toggles Safe orchestrator mode by handoff scope (`duo_handoff` `scope: single|multi`): single-phase tasks run the executor with direct tools; multi-phase tasks stay delegate-only. New `duo.orchestrator` setting (`auto`|`always`).
 - `heavy_task`, `plan`, and `qa` now default to `anthropic/claude-fable-5:low` then `openai-codex/gpt-5.5:high`, and subagent model selection is rate-limit-aware: when a model's 5h or weekly window is exhausted it falls through to the next configured model. Gate with `task.limitAwareModelRouting` (default on).
+
+### Fixed
+
+- Duo handoff/escalate/takeover/summon now auto-continue the stream after the model switch applies — the incoming model starts its turn immediately instead of waiting for user input.
 
 ## [1.5.0] - 2026-07-03
 

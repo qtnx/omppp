@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, Model, TextContent } from "@oh-my-pi/pi-ai";
+import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
 import { obfuscateToolArguments, type SecretObfuscator } from "../secrets/obfuscator";
 import { formatSessionHistoryMarkdown, PRIMARY_CONTEXT_CUSTOM_TYPES } from "../session/session-history-format";
@@ -15,6 +16,8 @@ export interface AdvisorAgent {
 	prompt(input: string): Promise<void>;
 	abort(reason?: unknown): void;
 	reset(): void;
+	readonly model?: Model;
+	setModel?(model: Model): void;
 	/**
 	 * Drop messages appended past `count`. Called after a failed `prompt()` so a
 	 * retry doesn't replay the failed user batch + synthetic assistant-error
@@ -75,6 +78,7 @@ interface PendingDelta {
 	kind: "delta";
 	text: string;
 	turns: number;
+	fallbackAttempted?: boolean;
 }
 
 /**
@@ -88,6 +92,7 @@ interface PendingConsult {
 	turns: 0;
 	epoch: number;
 	resolve: (answer: string | null) => void;
+	fallbackAttempted?: boolean;
 }
 
 type PendingItem = PendingDelta | PendingConsult;
@@ -97,6 +102,25 @@ interface CatchupWaiter {
 	resolve: () => void;
 	finish: () => void;
 	timer?: NodeJS.Timeout;
+}
+
+export interface AdvisorRuntimeOptions {
+	fallbackModel?: Model;
+}
+
+function getSafeguardRefusalMessage(err: unknown, seen = new Set<unknown>()): string | undefined {
+	if (err === null || err === undefined || seen.has(err)) return undefined;
+	seen.add(err);
+	if (typeof err === "string") return err;
+	if (typeof err !== "object") return undefined;
+	const message = "message" in err && typeof err.message === "string" ? err.message : undefined;
+	if (message && (message === "Content flagged by safety filters" || /^Refusal\b/.test(message))) return message;
+	return "cause" in err ? (getSafeguardRefusalMessage(err.cause, seen) ?? message) : message;
+}
+
+export function isSafeguardRefusal(err: unknown): boolean {
+	const message = getSafeguardRefusalMessage(err);
+	return message === "Content flagged by safety filters" || /^Refusal\b/.test(message ?? "");
 }
 
 export class AdvisorRuntime {
@@ -115,6 +139,10 @@ export class AdvisorRuntime {
 	#failureNotified = false;
 	#latestMessages?: AgentMessage[];
 	#waiters: CatchupWaiter[] = [];
+	#primaryModel?: Model;
+	#fallbackModel?: Model;
+	#onFallbackModel = false;
+	#fallbackRetryItemCount = 0;
 	/** Bumped by every external {@link reset}/{@link dispose}. A drain iteration
 	 *  captures it before its awaits; a mismatch on resume means a reset aborted
 	 *  the in-flight advisor prompt, so the stale batch is dropped instead of
@@ -126,7 +154,11 @@ export class AdvisorRuntime {
 		private readonly agent: AdvisorAgent,
 		private readonly host: AdvisorRuntimeHost,
 		private readonly retryDelayMs = 1000,
-	) {}
+		options: AdvisorRuntimeOptions = {},
+	) {
+		this.#primaryModel = agent.model;
+		this.#fallbackModel = options.fallbackModel;
+	}
 
 	get backlog(): number {
 		return this.#backlog;
@@ -269,6 +301,10 @@ export class AdvisorRuntime {
 		this.#clearPending("reset");
 		this.#consecutiveFailures = 0;
 		this.#failureNotified = false;
+		if (this.#onFallbackModel) {
+			this.#restorePrimaryModel();
+		}
+		this.#fallbackRetryItemCount = 0;
 		this.#seenContext.clear();
 		if (clearBacklog) {
 			this.#backlog = 0;
@@ -432,12 +468,18 @@ export class AdvisorRuntime {
 		this.#busy = true;
 		try {
 			while (!this.#paused && !this.disposed && this.#pending.length) {
+				if (this.#onFallbackModel && this.#fallbackRetryItemCount === 0) {
+					this.#restorePrimaryModel();
+				}
+				const fallbackRetryItemCount = this.#fallbackRetryItemCount;
+				this.#fallbackRetryItemCount = 0;
 				const epoch = this.#epoch;
 				// Chunk at the first consult boundary: coalesce the leading deltas,
 				// attach at most ONE consult so its answer maps to a single prompt;
 				// anything queued after that consult goes back to the FRONT (order
 				// preserved) for the next loop iteration.
-				const popped = this.#pending.splice(0);
+				const popped =
+					fallbackRetryItemCount > 0 ? this.#pending.splice(0, fallbackRetryItemCount) : this.#pending.splice(0);
 				const deltaItems: PendingDelta[] = [];
 				let consult: PendingConsult | undefined;
 				let cut = popped.length;
@@ -453,6 +495,7 @@ export class AdvisorRuntime {
 				if (cut < popped.length) {
 					this.#pending.unshift(...popped.slice(cut));
 				}
+				const batchAlreadyUsedFallback = popped.some(item => item.fallbackAttempted);
 
 				// Each delta already opens with a `### Session update` heading, so
 				// join with a blank line rather than a `---` rule. The consultation
@@ -574,6 +617,31 @@ export class AdvisorRuntime {
 						continue;
 					}
 					this.#rollbackFailedTurn(messageSnapshot);
+					const fallbackModel = this.#shouldRetryOnFallback(err, batchAlreadyUsedFallback)
+						? this.#fallbackModel
+						: undefined;
+					if (fallbackModel) {
+						this.agent.setModel?.(fallbackModel);
+						this.#onFallbackModel = true;
+						logger.warn("advisor refused, falling back", {
+							primary: this.#primaryModel
+								? `${this.#primaryModel.provider}/${this.#primaryModel.id}`
+								: undefined,
+							fallback: this.#fallbackModel
+								? `${this.#fallbackModel.provider}/${this.#fallbackModel.id}`
+								: undefined,
+							err: String(err),
+						});
+						const requeue: PendingItem[] = [];
+						if (deltaPart)
+							requeue.push({ kind: "delta", text: deltaPart, turns: finalTurns, fallbackAttempted: true });
+						if (consult) requeue.push({ ...consult, fallbackAttempted: true });
+						if (requeue.length) {
+							this.#fallbackRetryItemCount = requeue.length;
+							this.#pending.unshift(...requeue);
+						}
+						continue;
+					}
 					logger.debug("advisor turn failed", { err: String(err) });
 					this.#consecutiveFailures++;
 					if (this.#consecutiveFailures >= 3) {
@@ -599,8 +667,16 @@ export class AdvisorRuntime {
 						// the next attempt re-appends the suffix identically. The delta item
 						// carries all the covered turns; the consult carries 0.
 						const requeue: PendingItem[] = [];
-						if (deltaPart) requeue.push({ kind: "delta", text: deltaPart, turns: finalTurns });
-						if (consult) requeue.push(consult);
+						if (deltaPart) {
+							requeue.push({
+								kind: "delta",
+								text: deltaPart,
+								turns: finalTurns,
+								fallbackAttempted: batchAlreadyUsedFallback || undefined,
+							});
+						}
+						if (consult)
+							requeue.push(batchAlreadyUsedFallback ? { ...consult, fallbackAttempted: true } : consult);
 						if (requeue.length) this.#pending.unshift(...requeue);
 						await Bun.sleep(this.retryDelayMs);
 					}
@@ -614,6 +690,20 @@ export class AdvisorRuntime {
 		} finally {
 			this.#busy = false;
 		}
+	}
+
+	#restorePrimaryModel(): void {
+		if (!this.#primaryModel) return;
+		this.agent.setModel?.(this.#primaryModel);
+		this.#onFallbackModel = false;
+	}
+
+	#shouldRetryOnFallback(err: unknown, batchAlreadyUsedFallback: boolean): boolean {
+		if (!isSafeguardRefusal(err)) return false;
+		if (batchAlreadyUsedFallback) return false;
+		if (!this.#fallbackModel || !this.#primaryModel || !this.agent.model || !this.agent.setModel) return false;
+		if (this.#onFallbackModel) return false;
+		return modelsAreEqual(this.agent.model, this.#primaryModel);
 	}
 }
 

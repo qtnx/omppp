@@ -5,9 +5,6 @@ import requestTakeoverDescription from "../prompts/tools/duo-request-takeover.md
 import type { TakeoverDecision, TakeoverPurpose } from "./state";
 
 const takeoverSchema = type({
-	purpose: type("'recover' | 'verify'").describe(
-		"recover = executor is off-track or looping; verify = completion claim needs independent verification.",
-	),
 	reason: type("string").describe("Evidence-backed justification for the takeover request."),
 	directive: type("string").describe("What the planner should do first after taking over."),
 });
@@ -34,7 +31,7 @@ export class RequestTakeoverTool implements AgentTool<typeof takeoverSchema, und
 		_onUpdate?: AgentToolUpdateCallback<undefined>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<undefined>> {
-		const decision = this.onTakeover(args.purpose, args.reason, args.directive);
+		const decision = this.onTakeover("recover", args.reason, args.directive);
 		if (decision === "accepted") {
 			return {
 				content: [
