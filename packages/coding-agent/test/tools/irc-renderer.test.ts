@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import type { IrcDeliveryReceipt, IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { type IrcDetails, ircToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/irc";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
@@ -33,7 +33,8 @@ describe("ircToolRenderer send", () => {
 						op: "send",
 						from: "Main",
 						to: "AuthLoader",
-						receipts: [{ to: "AuthLoader", outcome: "revived" }],
+						// Current receipts show the real delivery outcome plus a separate revive marker.
+						receipts: [{ to: "AuthLoader", outcome: "woken", revived: true }],
 						waited: msg({ body: "go ahead, auth.ts is yours." }),
 					} satisfies IrcDetails,
 				},
@@ -46,6 +47,30 @@ describe("ircToolRenderer send", () => {
 		expect(rendered[0]).toContain("revived");
 		expect(rendered.some(line => line.includes("Are you done with auth.ts?"))).toBe(true);
 		expect(rendered.some(line => line.includes("go ahead, auth.ts is yours."))).toBe(true);
+	});
+
+	// Old persisted transcripts used outcome:"revived"; the renderer must not crash on them.
+	it("renders legacy revived receipts without throwing", async () => {
+		const uiTheme = await theme();
+		const rendered = lines(
+			ircToolRenderer.renderResult(
+				{
+					content: [{ type: "text", text: "" }],
+					details: {
+						op: "send",
+						from: "Main",
+						to: "LegacyAgent",
+						receipts: [{ to: "LegacyAgent", outcome: "revived" } as unknown as IrcDeliveryReceipt],
+					} satisfies IrcDetails,
+				},
+				{ expanded: false, isPartial: false },
+				uiTheme,
+				{ op: "send", to: "LegacyAgent", message: "ping" },
+			),
+		);
+		expect(rendered[0]).toContain("LegacyAgent");
+		expect(rendered[0]).toContain("revived");
+		expect(rendered.some(line => line.includes("ping"))).toBe(true);
 	});
 
 	it("lists per-recipient outcomes with error text when a broadcast partially fails", async () => {

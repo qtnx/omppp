@@ -19,7 +19,8 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../irc/bus";
 import type { Theme } from "../modes/theme/theme";
 import ircDescription from "../prompts/tools/irc.md" with { type: "text" };
-import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { type AgentRef, type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { SessionManager } from "../session/session-manager";
 import { canSpawnAtDepth } from "../task/types";
 import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import type { ToolSession } from ".";
@@ -188,7 +189,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		const bus = IrcBus.global();
 		const peers = registry
 			.list()
-			.filter(ref => ref.id !== senderId && ref.status !== "aborted" && ref.kind !== "advisor")
+			.filter(ref => ref.id !== senderId && ref.ircEnabled && ref.status !== "aborted" && ref.kind !== "advisor")
 			.map(ref => ({
 				id: ref.id,
 				displayName: ref.displayName,
@@ -249,6 +250,35 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 				from: senderId,
 				to,
 			});
+		}
+
+		// Fail before bus delivery/wake: a direct target without the irc tool is mute,
+		// including parked refs and custom agents cold-revived from disk.
+		const disabledDirectTarget = !isBroadcast ? registry.get(to) : undefined;
+		await refreshDirectTargetIrcCapability(disabledDirectTarget);
+		if (disabledDirectTarget && !disabledDirectTarget.ircEnabled) {
+			const receipt: IrcDeliveryReceipt = {
+				to,
+				outcome: "failed",
+				error: "agent has no irc tool and cannot reply",
+			};
+			return {
+				content: [
+					{
+						type: "text",
+						text: `No recipients received the message.\n- ${to}: failed — ${receipt.error}`,
+					},
+				],
+				details: {
+					op: "send",
+					from: senderId,
+					to,
+					receipts: [receipt],
+					delivered: [],
+					notFound: [to],
+				},
+				isError: true,
+			};
 		}
 
 		const bus = IrcBus.global();
@@ -317,7 +347,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 				lines.push(
 					receipt.outcome === "failed"
 						? `- ${receipt.to}: failed — ${receipt.error ?? "unknown error"}`
-						: `- ${receipt.to}: ${receipt.outcome}`,
+						: `- ${receipt.to}: ${receiptLabel(receipt)}`,
 				);
 			}
 
@@ -443,6 +473,32 @@ function normalizeIrcTimeoutMs(value: number): number {
 	return Math.max(1, Math.trunc(value));
 }
 
+function refreshLiveDirectTargetIrcCapability(ref: AgentRef | undefined): void {
+	if (!ref || ref.ircEnabled || !ref.session) return;
+	const session = ref.session as { getActiveToolNames?: () => string[] };
+	const activeToolNames = typeof session.getActiveToolNames === "function" ? session.getActiveToolNames() : [];
+	if (activeToolNames.includes("irc")) {
+		ref.ircEnabled = true;
+	}
+}
+
+async function refreshDirectTargetIrcCapability(ref: AgentRef | undefined): Promise<void> {
+	if (!ref) return;
+	if (ref.session) {
+		refreshLiveDirectTargetIrcCapability(ref);
+		return;
+	}
+	await refreshPersistedDirectTargetIrcCapability(ref);
+}
+
+// Parked custom agents may have no live session to advertise tools; peek the
+// persisted session_init so non-irc agents fail fast instead of waking mute.
+async function refreshPersistedDirectTargetIrcCapability(ref: AgentRef | undefined): Promise<void> {
+	if (ref?.status !== "parked" || ref.session || !ref.sessionFile) return;
+	const peek = await SessionManager.peekSessionInit(ref.sessionFile);
+	ref.ircEnabled = Array.isArray(peek?.init?.tools) ? peek.init.tools.includes("irc") : false;
+}
+
 // =============================================================================
 // TUI Renderer
 // =============================================================================
@@ -459,17 +515,27 @@ function ircGlyph(theme: Theme): string {
 	return theme.styledSymbol("tool.irc", "accent");
 }
 
-function outcomeColor(outcome: IrcDeliveryReceipt["outcome"]): ToolUIColor {
+// Legacy persisted receipts can still say "revived"; current receipts keep
+// outcome "woken" with a revived flag, and this safe color/label path prevents
+// old transcripts from tripping Unknown theme color.
+function outcomeColor(outcome: IrcDeliveryReceipt["outcome"] | string): ToolUIColor {
 	switch (outcome) {
 		case "woken":
 			return "success";
-		case "revived":
-			return "warning";
 		case "injected":
 			return "accent";
 		case "failed":
 			return "error";
+		case "revived":
+			return "warning";
+		default:
+			return "warning";
 	}
+}
+
+function receiptLabel(receipt: IrcDeliveryReceipt): string {
+	const outcome = String(receipt.outcome);
+	return receipt.revived && outcome !== "revived" ? `${outcome} (revived)` : outcome;
 }
 
 /** Glyph + status word, matching the agent-hub status conventions. */
@@ -634,7 +700,7 @@ function renderSendResult(
 	if (to === "all") meta.push("broadcast");
 	if (receipts.length === 1) {
 		const receipt = receipts[0]!;
-		meta.push(theme.fg(outcomeColor(receipt.outcome), receipt.outcome));
+		meta.push(theme.fg(outcomeColor(receipt.outcome), receiptLabel(receipt)));
 	} else {
 		if (delivered.length > 0) meta.push(theme.fg("success", `${delivered.length} delivered`));
 		if (failedCount > 0) meta.push(theme.fg("error", `${failedCount} failed`));
@@ -660,7 +726,7 @@ function renderSendResult(
 					maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
 					itemType: "recipient",
 					renderItem: receipt => {
-						const badge = formatBadge(receipt.outcome, outcomeColor(receipt.outcome), theme);
+						const badge = formatBadge(receiptLabel(receipt), outcomeColor(receipt.outcome), theme);
 						const error =
 							receipt.outcome === "failed" && receipt.error
 								? ` ${theme.fg("error", `${theme.format.dash} ${receipt.error}`)}`

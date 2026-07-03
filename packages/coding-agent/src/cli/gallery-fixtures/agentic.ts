@@ -160,7 +160,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					type: "text",
 					text: [
 						"Delivered to 1 peer(s):",
-						"- AuthLoader: revived",
+						"- AuthLoader: woken (revived)",
 						"",
 						"Reply from AuthLoader:",
 						"Done with auth.ts — go ahead, just rebase past my session-store rename.",
@@ -171,7 +171,8 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 				op: "send",
 				from: "Main",
 				to: "AuthLoader",
-				receipts: [{ to: "AuthLoader", outcome: "revived" }],
+				// Fixture mirrors receipts that keep delivery outcome separate from the revive flag.
+				receipts: [{ to: "AuthLoader", outcome: "woken", revived: true }],
 				waited: {
 					id: "7181122334455667789",
 					from: "AuthLoader",

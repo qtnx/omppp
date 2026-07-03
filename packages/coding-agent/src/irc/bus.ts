@@ -34,7 +34,9 @@ export interface IrcMessage {
 
 export interface IrcDeliveryReceipt {
 	to: string;
-	outcome: "injected" | "woken" | "revived" | "failed";
+	outcome: "injected" | "woken" | "failed";
+	/** True when a parked recipient was revived before the real delivery outcome was reported. */
+	revived?: boolean;
 	error?: string;
 }
 
@@ -77,8 +79,8 @@ export class IrcBus {
 	/**
 	 * Fire-and-forget delivery. Never blocks on the recipient generating
 	 * anything: the receipt reports how the message reached the recipient
-	 * (waiter/aside = "injected", idle wake = "woken", park revival =
-	 * "revived"), not what they did with it.
+	 * (waiter/aside = "injected", idle wake = "woken") while `revived`
+	 * separately records whether a parked recipient had to be revived first.
 	 *
 	 * Mailbox semantics: a successfully delivered message never lingers in
 	 * the recipient's mailbox — injection/wake puts the full body into their
@@ -137,7 +139,7 @@ export class IrcBus {
 		if (waiter) {
 			waiter.resolve(message);
 			if (!opts?.suppressRelay) this.#relayToMainUi(message);
-			return { to: message.to, outcome: revived ? "revived" : "injected" };
+			return { to: message.to, outcome: "injected", ...(revived ? { revived: true } : {}) };
 		}
 
 		const session = this.#registry.get(message.to)?.session;
@@ -146,9 +148,16 @@ export class IrcBus {
 		}
 
 		try {
-			const delivery = await session.deliverIrcMessage(message, opts);
+			// If the wake turn accepts the IRC record but fails internally, the
+			// session calls back with the original message so the bus can restore
+			// normal mailbox/wait delivery instead of letting the acknowledged wake
+			// become a silent drop.
+			const delivery = await session.deliverIrcMessage(message, {
+				...opts,
+				onWakeFailure: failedMessage => this.redeliverUndeliveredWake(failedMessage),
+			});
 			if (!opts?.suppressRelay) this.#relayToMainUi(message);
-			return { to: message.to, outcome: revived ? "revived" : delivery };
+			return { to: message.to, outcome: delivery, ...(revived ? { revived: true } : {}) };
 		} catch (error) {
 			// Live hand-off failed (e.g. recipient disposed mid-shutdown): buffer
 			// the message so a later `wait`/`inbox` from the recipient can still
@@ -242,6 +251,23 @@ export class IrcBus {
 
 	unreadCount(agentId: string): number {
 		return this.#mailboxes.get(agentId)?.length ?? 0;
+	}
+
+	/**
+	 * Re-buffer an IRC message whose idle wake turn accepted the context but
+	 * failed before producing a completed assistant response. Agent.#runLoop can
+	 * resolve a wake prompt cleanly after recording provider/request failure in
+	 * state, so the send receipt has already said "woken" by the time this path
+	 * repairs the undelivered message. Prefer an active waiter, matching normal
+	 * send semantics; otherwise store it in the mailbox for a later `inbox`/`wait`.
+	 */
+	redeliverUndeliveredWake(message: IrcMessage): void {
+		const waiter = this.#takeMatchingWaiter(message.to, message.from);
+		if (waiter) {
+			waiter.resolve(message);
+			return;
+		}
+		this.#enqueue(message);
 	}
 
 	#enqueue(message: IrcMessage): void {
