@@ -18,6 +18,7 @@ type DuoHandoffParams = typeof handoffSchema.infer & Record<never, TakeoverPurpo
 export class DuoHandoffTool implements AgentTool<typeof handoffSchema, undefined> {
 	readonly name = "duo_handoff";
 	readonly label = "Duo handoff";
+	readonly loadMode = "essential";
 	readonly description: string;
 	readonly parameters = handoffSchema;
 

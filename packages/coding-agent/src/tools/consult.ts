@@ -19,6 +19,7 @@ type ConsultParams = typeof consultSchema.infer;
 export class ConsultTool implements AgentTool<typeof consultSchema, undefined> {
 	readonly name = "consult";
 	readonly label = "Consult advisor";
+	readonly loadMode = "essential";
 	readonly description =
 		"Ask the always-watching advisor for a second opinion when you are genuinely torn — stuck between two or more approaches, weighing a high-risk or hard-to-reverse decision, or doubting your own conclusion. The advisor has watched the whole session, so state what you are weighing and why, referencing context rather than re-explaining it. Blocks until it answers. Advice to weigh, not an order.";
 	readonly parameters = consultSchema;

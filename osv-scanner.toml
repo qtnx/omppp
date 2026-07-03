@@ -17,3 +17,13 @@ reason = "proc-macro-error2 2.0.1 has no fixed version available. Revisit during
 id = "RUSTSEC-2024-0320"
 ignoreUntil = 2026-12-31
 reason = "yaml-rust 0.4.5 has no fixed version available. Revisit during dependency updates."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0194"
+ignoreUntil = 2026-12-31
+reason = "quick-xml 0.39.4 is transitive via inferno + wayland-scanner (both pinned ^0.39); no upstream-reachable fix yet (fix is 0.41.0). Revisit when inferno/wayland-scanner bump quick-xml."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0195"
+ignoreUntil = 2026-12-31
+reason = "quick-xml 0.39.4 is transitive via inferno + wayland-scanner (both pinned ^0.39); no upstream-reachable fix yet (fix is 0.41.0). Revisit when inferno/wayland-scanner bump quick-xml."

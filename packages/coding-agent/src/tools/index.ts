@@ -38,6 +38,7 @@ import { countToolsForAutoDiscovery } from "../tool-discovery/mode";
 import {
 	type DiscoverableTool,
 	type DiscoverableToolSearchIndex,
+	isMCPToolName,
 	resolveEffectiveToolDiscoveryMode,
 } from "../tool-discovery/tool-index";
 import type { EventBus } from "../utils/event-bus";
@@ -706,7 +707,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const effectiveDiscoveryMode = resolveEffectiveToolDiscoveryMode(
 		session.settings,
 		{ contextWindow: session.getActiveModelContextWindow?.() },
-		countToolsForAutoDiscovery(requestedTools ?? Object.keys(BUILTIN_TOOLS)),
+		countToolsForAutoDiscovery((requestedTools ?? Object.keys(BUILTIN_TOOLS)).filter(isMCPToolName)),
 	);
 	const discoveryActive = effectiveDiscoveryMode !== "off";
 
