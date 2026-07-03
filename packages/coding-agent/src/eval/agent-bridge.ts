@@ -6,7 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
-import { resolveAgentModelPatterns } from "../config/model-resolver";
+import { resolveAgentModelPatterns, selectHeadroomAwareModelPatterns } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
@@ -316,13 +316,20 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 	const effectiveAgent = agent;
 	const parentActiveModelPattern = options.session.getActiveModelString?.();
 	const agentModelOverrides = options.session.settings.get("task.agentModelOverrides");
-	const modelOverride = resolveAgentModelPatterns({
-		settingsOverride: parsed.model ?? agentModelOverrides[agentName],
-		agentModel: effectiveAgent.model,
-		settings: options.session.settings,
-		activeModelPattern: parentActiveModelPattern,
-		fallbackModelPattern: options.session.getModelString?.(),
-	});
+	const modelOverride = selectHeadroomAwareModelPatterns(
+		resolveAgentModelPatterns({
+			settingsOverride: parsed.model ?? agentModelOverrides[agentName],
+			agentModel: effectiveAgent.model,
+			settings: options.session.settings,
+			activeModelPattern: parentActiveModelPattern,
+			fallbackModelPattern: options.session.getModelString?.(),
+		}),
+		{
+			authStorage: options.session.authStorage,
+			registry: options.session.modelRegistry,
+			settings: options.session.settings,
+		},
+	);
 	const availableSkills = [...(options.session.skills ?? [])];
 	const resolvedAutoloadSkills =
 		effectiveAgent.autoloadSkills?.length && availableSkills.length > 0

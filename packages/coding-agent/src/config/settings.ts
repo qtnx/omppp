@@ -85,7 +85,10 @@ export interface SettingsOptions {
 /**
  * Get a nested value from an object by path segments.
  */
-function getByPath(obj: RawSettings, segments: readonly string[]): unknown {
+function getByPath(obj: RawSettings, segments: readonly string[] | null | undefined): unknown {
+	if (segments === null || segments === undefined) {
+		return undefined;
+	}
 	let current: unknown = obj;
 	for (const segment of segments) {
 		if (current === null || current === undefined || typeof current !== "object") {
@@ -382,7 +385,11 @@ export class Settings {
 			return this.#resolvedCache.get(path) as SettingValue<P>;
 		}
 
-		const value = getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]);
+		const segments = SETTING_PATH_SEGMENTS[path];
+		if (segments === undefined) {
+			return undefined as SettingValue<P>;
+		}
+		const value = getByPath(this.#merged, segments);
 		const resolved =
 			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
 		this.#resolvedCache.set(path, resolved);

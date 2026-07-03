@@ -35,6 +35,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import type { DuoMode } from "../duo/state";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
+import type { AuthStorage } from "../session/auth-storage";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -1077,6 +1078,49 @@ export function resolveAgentModelPatterns(options: AgentModelPatternResolutionOp
 	const fallback =
 		activeModelPattern?.trim() || fallbackModelPattern?.trim() || settings?.getModelRole("default")?.trim() || "";
 	return resolveConfiguredModelPatterns(fallback, settings);
+}
+
+export function selectHeadroomAwareModelPatterns(
+	patterns: string[],
+	deps: { authStorage?: AuthStorage; registry?: ModelRegistry; settings: Settings },
+): string[] {
+	if (
+		patterns.length <= 1 ||
+		!deps.authStorage ||
+		!deps.registry ||
+		deps.settings.get("task.limitAwareModelRouting") === false
+	) {
+		return patterns;
+	}
+
+	let available: Model<Api>[];
+	try {
+		available = deps.registry.getAvailable();
+	} catch {
+		return patterns;
+	}
+	const utilizationMax = deps.settings.get("task.modelRoutingUtilizationMax");
+	const windowMode = deps.settings.get("task.modelRoutingWindowMode");
+
+	const patternsWithHeadroom: string[] = [];
+	const patternsWithoutHeadroom: string[] = [];
+
+	for (const pattern of patterns) {
+		try {
+			const model = resolveModelFromString(pattern, available, undefined);
+			// Unknown model patterns stay optimistic so new/catalog-missing models can still be tried downstream.
+			if (!model || deps.authStorage.getUsageHeadroom(model, { utilizationMax, windowMode }).hasRoom) {
+				patternsWithHeadroom.push(pattern);
+			} else {
+				patternsWithoutHeadroom.push(pattern);
+			}
+		} catch {
+			// Headroom routing is advisory; fail open so resolver or telemetry errors never block a spawn.
+			patternsWithHeadroom.push(pattern);
+		}
+	}
+
+	return [...patternsWithHeadroom, ...patternsWithoutHeadroom];
 }
 
 /**
