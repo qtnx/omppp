@@ -7,14 +7,24 @@
 ### Added
 
 - Duo now actively nags when the planner's model lingers on the executing main stream: every third such turn the controller emits a warning notice and injects a next-turn reminder into the model's context telling it to call `duo_handoff` to restore the executor unless planner-grade reasoning is genuinely needed. The dwell counter resets on executor restore, manual switch away from the planner model, or any phase exit.
+- Advisor safeguard-refusal fallback: when the primary advisor model is blocked by a provider refusal, the advisor falls back to `advisor.fallbackModel` (default `gpt-5.5`) for that request and retries the primary first on every subsequent request.
+- The main session now checks whether context compaction is warranted while blocked waiting on subagents (during a `job` poll) and schedules it to run at the turn boundary.
+- Added live token input/output and output-rate stats to running task rows in the `job` wait widget.
+- Hardware GPU (Vulkan/ANGLE) WebGL rendering for the headless browser via new `browser.gpu` setting (default on); always enables `--enable-unsafe-swiftshader` so WebGL never fails on Chrome ≥137.
+
 - Manually switching the executing main stream to the planner's model now injects a "planner summon" protocol brief: the planner reasons about the current request, settles the direction, then hands the stream back via `duo_handoff` whose `resolution` is the executor's working brief — the executor continues the work from it immediately while the planner returns to advising.
 - Added `advisor.thinkingClampChars` setting to control how much of a primary thinking block is fed to the duo advisor (0 = full/untruncated; set e.g. 2000 to clamp with head/tail + gist).
 
 ### Changed
 
 - The duo advisor now receives full (untruncated) primary thinking by default; previously thinking blocks over 2000 chars were clamped to head/tail + a gist marker. Set `advisor.thinkingClampChars` above 0 to re-enable clamping.
+- Advisor feed and prompts no longer emit the word "thinking" (rendered as "notes") to avoid tripping Anthropic's reasoning_extraction safeguard on Fable/Mythos advisor models.
 
 ### Fixed
+
+- Fixed idle IRC wake turns silently losing messages when the provider request resolved into agent error state instead of rejecting: failed wake turns now log an error and re-buffer the message for `wait`/`inbox`, and delivery receipts truthfully report `revived` separately from the actual `woken`/`injected` outcome while legacy persisted `revived` receipts still render safely.
+
+- Fixed IRC coordination for restricted/read-only bundled agents by granting them the `irc` tool, failing direct sends to custom non-IRC agents before they wake a mute turn, and re-deriving cold-parked agents' IRC capability from their persisted tool list before revival.
 
 - Fixed subagent spawns to reuse the parent session's auth storage/model registry, avoiding Anthropic OAuth refresh-token rotation races from duplicate in-process AuthStorage instances.
 - Fixed `Esc` interrupting an active chat stream immediately while the `Working...` loader was visible; it now uses the same second-press confirmation as other streaming states.

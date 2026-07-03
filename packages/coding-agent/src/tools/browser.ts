@@ -237,6 +237,7 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<BrowserToolDetails>> {
 		const kind = resolveBrowserKind(params, this.session);
+		const gpu = this.session.settings.get("browser.gpu") as boolean;
 		details.browser = kind.kind;
 
 		// If a tab with this name already exists on a different browser kind, fail fast — caller must close first.
@@ -258,6 +259,7 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 						}
 					: undefined,
 				appArgs: params.app?.args,
+				gpu,
 				signal,
 			}),
 		);
@@ -406,8 +408,9 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 						deviceScaleFactor: params.viewport.scale,
 					}
 				: undefined;
+			const gpu = this.session.settings.get("browser.gpu") as boolean;
 			const browser = await untilAborted(signal, () =>
-				acquireBrowser({ kind: "headless", headless: false }, { cwd: this.session.cwd, viewport, signal }),
+				acquireBrowser({ kind: "headless", headless: false }, { cwd: this.session.cwd, viewport, gpu, signal }),
 			);
 			const result = await untilAborted(signal, () =>
 				acquireTab(name, browser, {

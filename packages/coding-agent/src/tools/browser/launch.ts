@@ -252,6 +252,21 @@ function resolveSystemChromium(): string | undefined {
 export interface LaunchHeadlessOptions {
 	headless: boolean;
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
+	gpu?: boolean;
+}
+
+export function buildLaunchArgs(viewport: { width: number; height: number }, gpu: boolean): string[] {
+	const args = [
+		"--no-sandbox",
+		"--disable-setuid-sandbox",
+		"--disable-blink-features=AutomationControlled",
+		`--window-size=${viewport.width},${viewport.height}`,
+		"--enable-unsafe-swiftshader",
+	];
+	if (gpu) {
+		args.push("--use-angle=vulkan", "--enable-features=Vulkan", "--disable-vulkan-surface");
+	}
+	return args;
 }
 
 export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promise<Browser> {
@@ -262,12 +277,7 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 		deviceScaleFactor: vp.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor,
 	};
 	const puppeteer = await loadPuppeteer();
-	const launchArgs = [
-		"--no-sandbox",
-		"--disable-setuid-sandbox",
-		"--disable-blink-features=AutomationControlled",
-		`--window-size=${initialViewport.width},${initialViewport.height}`,
-	];
+	const launchArgs = buildLaunchArgs(initialViewport, opts.gpu ?? true);
 	const proxy = process.env.PUPPETEER_PROXY;
 	if (proxy) {
 		launchArgs.push(`--proxy-server=${proxy}`);

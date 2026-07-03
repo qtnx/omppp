@@ -408,6 +408,17 @@ export const SETTINGS_SCHEMA = {
 				"Pair a second model (assigned to the 'advisor' role) that passively reviews each turn and injects notes.",
 		},
 	},
+	"advisor.fallbackModel": {
+		type: "string",
+		default: "gpt-5.5",
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Fallback Model",
+			description:
+				"Model the advisor falls back to when the primary is blocked by a provider safeguard refusal; the primary is retried first on every subsequent request.",
+		},
+	},
 	"advisor.subagents": {
 		type: "boolean",
 		default: false,
@@ -604,6 +615,60 @@ export const SETTINGS_SCHEMA = {
 			group: "Duo",
 			label: "Duo Takeover Max Consecutive",
 			description: "Maximum consecutive planner takeovers before requiring manual handoff.",
+		},
+	},
+	"duo.manualSwitchIntent": {
+		type: "enum",
+		values: ["plan", "summon"] as const,
+		default: "plan",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Manual Switch Intent",
+			description:
+				"What a manual switch to the planner model during duo executing means. plan = enter the duo planning phase to write a complete locked plan (duo_handoff hands it to the executor); summon = transient advisory summon that returns to the executor quickly.",
+		},
+	},
+	"duo.takeover.signals.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Takeover Signals",
+			description:
+				"Automatically request planner takeover from per-turn executor signals: tool-failure streaks, loops, and unverified done claims.",
+		},
+	},
+	"duo.takeover.signals.sentiment": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Sentiment Signal",
+			description:
+				"Include negative user sentiment (scolding) in automatic takeover signals; combined with a failure streak or loop it bypasses the recover cooldown.",
+		},
+	},
+	"duo.takeover.signals.failureThreshold": {
+		type: "number",
+		default: 3,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Failure Signal Threshold",
+			description: "Consecutive failed tool results that trigger an automatic recover takeover request.",
+		},
+	},
+	"duo.takeover.signals.loopThreshold": {
+		type: "number",
+		default: 3,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Loop Signal Threshold",
+			description: "Identical tool calls (same name and arguments) since the last user prompt that count as a loop.",
 		},
 	},
 	shellPath: { type: "string", default: undefined },
@@ -4031,6 +4096,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"browser.gpu": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Grep & Browser",
+			label: "Browser GPU",
+			description:
+				"Use hardware GPU (Vulkan/ANGLE) for WebGL in the headless browser; disable to force software rendering.",
+		},
+	},
+
 	"browser.cmux": {
 		type: "boolean",
 		default: true,
@@ -4134,6 +4211,25 @@ export const SETTINGS_SCHEMA = {
 					label: "Block",
 					description: "Default — wait until a watched job finishes or new agent context arrives",
 				},
+			],
+		},
+	},
+
+	"async.pollWatchdogMs": {
+		type: "number",
+		default: 600_000,
+		ui: {
+			tab: "tools",
+			group: "Execution",
+			label: "Blocking-Wait Re-check Interval (ms)",
+			description:
+				"While a job poll blocks on subagents in block mode, re-check every N milliseconds whether watched jobs are still running and keep waiting if they are. 0 disables the re-check and blocks forever.",
+			options: [
+				{ value: "0", label: "Disabled" },
+				{ value: "20000", label: "20 seconds" },
+				{ value: "60000", label: "1 minute" },
+				{ value: "300000", label: "5 minutes" },
+				{ value: "600000", label: "10 minutes" },
 			],
 		},
 	},
