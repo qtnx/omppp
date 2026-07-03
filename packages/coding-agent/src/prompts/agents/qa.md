@@ -1,9 +1,9 @@
 ---
 name: qa
 description: Adversarial senior QA engineer that independently re-verifies completed work against a harness-ready handoff; re-runs everything itself and returns a pass/fail/blocked verdict with evidence; never edits code
-tools: read, grep, glob, bash, lsp
+tools: read, grep, glob, bash, lsp, irc
 spawns: browser_qa
-model: pi/task
+model: anthropic/claude-fable-5:low, openai-codex/gpt-5.5:high, pi/task
 thinking-level: high
 output:
   properties:
