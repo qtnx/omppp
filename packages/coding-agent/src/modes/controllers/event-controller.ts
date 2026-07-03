@@ -349,6 +349,13 @@ export class EventController {
 			await this.ctx.init();
 		}
 
+		// The top border (token counts, model name) is cheap to recompute and
+		// stays fresh every event. Unlike `statusLine.invalidate()` (a sync git
+		// resolve + `gh pr view` subprocess), this does not touch disk/network, so
+		// unlike the render/invalidate calls below it is safe to run per event
+		// rather than once at turn end.
+		this.ctx.updateEditorTopBorder();
+
 		// Each handler explicitly requests a render (or leaves it out, when it
 		// changed nothing visible). A blanket pre-render fired on every event —
 		// including the ~hundreds of `message_update` deltas per streaming turn —
@@ -1460,7 +1467,10 @@ export class EventController {
 
 	#scheduleIdleRecap(): void {
 		this.#cancelIdleRecap();
-		if (this.ctx.viewSession.isCompacting) return;
+		// Some focused controller tests provide only the historical `session`
+		// handle (see #scheduleIdleCompaction above).
+		const viewSession = this.ctx.viewSession ?? this.ctx.session;
+		if (viewSession.isCompacting) return;
 
 		const recapSettings = settings.getGroup("recap");
 		if (!recapSettings.enabled) return;

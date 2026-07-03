@@ -2808,6 +2808,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (_command, runtime) => {
 			await runtime.ctx.session.refreshBaseSystemPrompt();
 			refreshStatusLine(runtime.ctx);
+			runtime.ctx.updateEditorTopBorder();
 			runtime.ctx.showStatus("System prompt reloaded.");
 			runtime.ctx.editor.setText("");
 		},

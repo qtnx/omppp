@@ -119,7 +119,13 @@ describe("StatusLineComponent PR lookup timeout guard", () => {
 			component.getTopBorder(80);
 
 			const call = await ghCalled;
-			expect(call.args).toEqual(["pr", "view", "--json", "number,url"]);
+			// Fork intentionally extends PR status fields beyond upstream's "number,url".
+			expect(call.args).toEqual([
+				"pr",
+				"view",
+				"--json",
+				"number,url,state,isDraft,mergeStateStatus,reviewDecision",
+			]);
 
 			// The regression fires when no signal is threaded through: the child
 			// runs forever and cannot be aborted. A signal that hasn't fired at

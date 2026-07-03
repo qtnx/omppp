@@ -8234,7 +8234,9 @@ export class AgentSession {
 		const activeToolNames = this.getActiveToolNames();
 		const canCallTodoTool = activeToolNames.includes("todo");
 		const canDiscoverTodoTool =
-			!canCallTodoTool && this.getDiscoverableTools({ source: "builtin" }).some(tool => tool.name === "todo");
+			!canCallTodoTool &&
+			this.settings.get("tools.discoveryMode") === "all" &&
+			this.getDiscoverableTools({ source: "builtin" }).some(tool => tool.name === "todo");
 		const canActivateTodoTool = canDiscoverTodoTool && activeToolNames.includes("search_tool_bm25");
 		if (!canCallTodoTool && !canDiscoverTodoTool) return undefined;
 		const phases = this.getTodoPhases().filter(phase => phase.tasks.length > 0);
@@ -11729,7 +11731,7 @@ export class AgentSession {
 					model: `${assistantMessage.provider}/${assistantMessage.model}`,
 					strategy: compactionSettings.strategy,
 				});
-				const outcome = await this.#runAutoCompaction("incomplete", true, false, allowDefer, {
+				const outcome = await this.#runRecoveryCompactionWithRollback("incomplete", assistantMessage, allowDefer, {
 					autoContinue,
 					triggerContextTokens: calculateContextTokens(assistantMessage.usage),
 				});
@@ -13606,14 +13608,12 @@ export class AgentSession {
 						willRetry,
 					});
 					const continuationScheduled = !autoCompactionSignal.aborted && reason !== "idle" && shouldAutoContinue;
-					if (willRetry) {
-						this.#scheduleAgentContinue({ delayMs: 100, generation });
-					} else if (continuationScheduled) {
+					if (continuationScheduled) {
 						this.#scheduleAutoContinuePrompt(generation);
 					}
 					this.#compactionsPerformed++;
 					return {
-						...(willRetry || continuationScheduled ? COMPACTION_CHECK_CONTINUATION : COMPACTION_CHECK_NONE),
+						...(continuationScheduled ? COMPACTION_CHECK_CONTINUATION : COMPACTION_CHECK_NONE),
 						historyRewritten: true,
 					};
 				}

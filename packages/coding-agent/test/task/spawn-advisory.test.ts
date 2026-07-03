@@ -30,8 +30,9 @@ describe("buildSpecializationAdvisory", () => {
 		expect(buildSpecializationAdvisory("task", [item("Rust async-runtime specialist")], true)).toBeUndefined();
 	});
 
+	// Fork rejects the upstream quick_task->sonic rename; keep the fork name here (guardrail).
 	it("treats a whitespace-only role as absent and nudges", () => {
-		expect(buildSpecializationAdvisory("sonic", [item("   ")], true)).toBeDefined();
+		expect(buildSpecializationAdvisory("quick_task", [item("   ")], true)).toBeDefined();
 	});
 
 	it("nudges when one call clones the same agent twice without roles", () => {

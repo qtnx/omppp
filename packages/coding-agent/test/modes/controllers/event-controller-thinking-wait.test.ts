@@ -19,7 +19,7 @@ function createContext(overrides?: { thinkingLevel?: ThinkingLevel; isStreaming?
 	const ctx = {
 		isInitialized: true,
 		settings: { get: () => false },
-		statusLine: { invalidate: vi.fn() },
+		statusLine: { invalidate: vi.fn(), markActivityStart: vi.fn(), markActivityEnd: vi.fn() },
 		statusContainer: { clear: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
 		pendingTools: new Map<string, unknown>(),

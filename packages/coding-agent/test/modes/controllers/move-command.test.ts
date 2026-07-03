@@ -13,7 +13,7 @@ function createMoveContext(sourceDir: string) {
 		expect(state.cwd).toBe(cwd);
 	});
 	const ctx = {
-		session: { isStreaming: false },
+		session: { isStreaming: false, refreshBaseSystemPrompt: vi.fn(async () => {}) },
 		sessionManager: {
 			getCwd: () => state.cwd,
 			moveTo: vi.fn(async (cwd: string) => {

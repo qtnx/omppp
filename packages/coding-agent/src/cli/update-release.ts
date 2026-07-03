@@ -1,11 +1,13 @@
 import * as fs from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { APP_NAME } from "@oh-my-pi/pi-utils";
+import { withTimeoutSignal } from "../utils/fetch-timeout";
 
 const REPO = "qtnx/omppp";
 const GITHUB_API = `https://api.github.com/repos/${REPO}`;
 const GITHUB_RELEASE_DOWNLOAD = `https://github.com/${REPO}/releases/download`;
 const STABLE_VERSION_TAG = /^v(\d+\.\d+\.\d+)$/;
+const RELEASE_METADATA_TIMEOUT_MS = 30_000;
 const SHA256_SUM_LINE = /^([0-9a-fA-F]{64})[\t ]+\*?([^\s]+)$/;
 
 export interface ReleaseInfo {
@@ -76,7 +78,10 @@ export async function fetchLatestReleaseInfo(fetchImpl: FetchImpl = fetch): Prom
 	let latest: ReleaseInfo | undefined;
 
 	while (url) {
-		const response = await fetchImpl(url, { headers: githubHeaders() });
+		const response = await fetchImpl(url, {
+			headers: githubHeaders(),
+			signal: withTimeoutSignal(RELEASE_METADATA_TIMEOUT_MS),
+		});
 		if (!response.ok) throw new Error(formatGitHubFetchError(response));
 
 		const data = (await response.json()) as unknown;

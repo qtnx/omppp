@@ -114,6 +114,8 @@ describe("browser tool schema", () => {
 				timeout: null,
 				all: null,
 				kill: null,
+				enabled: null,
+				wait: null,
 			}).success,
 		).toBe(true);
 	});
