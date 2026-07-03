@@ -714,6 +714,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff",
 	"@oh-my-pi/pi-coding-agent/plan-mode/plan-protection",
 	"@oh-my-pi/pi-coding-agent/plan-mode/state",
+	"@oh-my-pi/pi-coding-agent/orchestrator-mode/markdown-write-guard",
 	"@oh-my-pi/pi-coding-agent/orchestrator-mode/state",
 	"@oh-my-pi/pi-coding-agent/secrets/obfuscator",
 	"@oh-my-pi/pi-coding-agent/secrets/regex",

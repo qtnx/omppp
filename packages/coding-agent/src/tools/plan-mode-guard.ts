@@ -7,6 +7,7 @@ import {
 	resolveLocalUrlToPath,
 	resolveVaultUrlToPath,
 } from "../internal-urls";
+import { enforceOrchestratorModeMarkdownWrite } from "../orchestrator-mode/markdown-write-guard";
 import type { ToolSession } from ".";
 import { normalizeLocalScheme, resolveToCwd } from "./path-utils";
 import { ToolError } from "./tool-errors";
@@ -136,6 +137,9 @@ export function enforcePlanModeWrite(
 	targetPath: string,
 	options?: { move?: string; op?: "create" | "update" | "delete" },
 ): void {
+	// Safe orchestrator mode shares this single mutation seam with plan mode so
+	// every write/edit/delete/move path is runtime-gated before tool-specific logic.
+	enforceOrchestratorModeMarkdownWrite(session, targetPath, options);
 	const state = session.getPlanModeState?.();
 	if (!state?.enabled) return;
 

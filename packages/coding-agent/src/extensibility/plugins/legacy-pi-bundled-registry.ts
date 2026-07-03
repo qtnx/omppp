@@ -708,6 +708,7 @@ import * as bundledPiCodingAgentModesUtilsToolsMarkdown from "@oh-my-pi/pi-codin
 import * as bundledPiCodingAgentModesUtilsTranscriptRenderHelpers from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
 import * as bundledPiCodingAgentModesUtilsUiHelpers from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import * as bundledPiCodingAgentModesWorkflow from "@oh-my-pi/pi-coding-agent/modes/workflow";
+import * as bundledPiCodingAgentOrchestratorModeMarkdownWriteGuard from "@oh-my-pi/pi-coding-agent/orchestrator-mode/markdown-write-guard";
 import * as bundledPiCodingAgentOrchestratorModeState from "@oh-my-pi/pi-coding-agent/orchestrator-mode/state";
 import * as bundledPiCodingAgentPlanModeApprovedPlan from "@oh-my-pi/pi-coding-agent/plan-mode/approved-plan";
 import * as bundledPiCodingAgentPlanModePlanHandoff from "@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff";
@@ -2710,6 +2711,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/plan-mode/state": bundledPiCodingAgentPlanModeState as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/orchestrator-mode/markdown-write-guard":
+		bundledPiCodingAgentOrchestratorModeMarkdownWriteGuard as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/orchestrator-mode/state":
 		bundledPiCodingAgentOrchestratorModeState as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/secrets/obfuscator": bundledPiCodingAgentSecretsObfuscator as unknown as Readonly<
