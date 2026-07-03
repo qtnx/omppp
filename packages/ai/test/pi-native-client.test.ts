@@ -50,10 +50,32 @@ function stalledBody(bytes: Uint8Array[] = []): ReadableStream<Uint8Array> {
 function delayedBody(chunks: Array<{ atMs: number; bytes: Uint8Array }>): ReadableStream<Uint8Array> {
 	return new ReadableStream<Uint8Array>({
 		start(controller) {
+			// Guard every scheduled enqueue/close: if the stream aborts early (e.g. a
+			// first-event/idle timeout cancels the reader), `closeIterator` closes this
+			// controller while later timers are still pending. An unguarded
+			// `controller.enqueue` then throws `ERR_INVALID_STATE` from inside a bare
+			// setTimeout — an UNCAUGHT exception Bun charges to whatever test is running
+			// when the timer fires, poisoning the *next* test. Swallowing the
+			// post-close throw keeps a timeout contained to its own test.
 			for (const chunk of chunks) {
-				setTimeout(() => controller.enqueue(chunk.bytes), chunk.atMs);
+				setTimeout(() => {
+					try {
+						controller.enqueue(chunk.bytes);
+					} catch {
+						// stream already cancelled/closed — nothing to deliver
+					}
+				}, chunk.atMs);
 			}
-			setTimeout(() => controller.close(), Math.max(...chunks.map(chunk => chunk.atMs)) + 1);
+			setTimeout(
+				() => {
+					try {
+						controller.close();
+					} catch {
+						// already closed
+					}
+				},
+				Math.max(...chunks.map(chunk => chunk.atMs)) + 1,
+			);
 		},
 	});
 }
@@ -348,8 +370,15 @@ describe("streamPiNative event flow", () => {
 		const stream = streamPiNative(fakeModel(), baseContext, {
 			apiKey: "k",
 			fetch: fetchImpl,
-			streamFirstEventTimeoutMs: 40,
-			streamIdleTimeoutMs: 30,
+			// Timers widened well above the SSE chunk gaps (atMs 0/15/35/55, i.e. 15–20ms
+			// apart) so real semantic progress is never starved by CI-runner scheduling
+			// jitter — the fork runs the full workspace suite under load, where a 40ms
+			// absolute first-event / 30ms idle deadline can be eaten by GC/macrotask
+			// slippage and flake this test (and cascade into the next one). The atMs
+			// schedule is unchanged, so relative ordering and assertions are identical.
+			// Do NOT re-tighten these on an upstream merge.
+			streamFirstEventTimeoutMs: 400,
+			streamIdleTimeoutMs: 300,
 		});
 
 		const result = await stream.result();
