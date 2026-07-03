@@ -17,6 +17,7 @@ import {
 	COREWEAVE_PROJECT_HEADER,
 	coreWeaveProjectHeaders,
 	hasCoreWeaveProjectHeader,
+	removeBlankCoreWeaveProjectHeaders,
 } from "@oh-my-pi/pi-catalog/wire/coreweave";
 import { parseGitHubCopilotApiKey } from "@oh-my-pi/pi-catalog/wire/github-copilot";
 import {
@@ -39,8 +40,6 @@ import {
 	type Model,
 	OPENAI_MAX_OUTPUT_TOKENS,
 	type Provider,
-	type ResolvedServiceTier,
-	resolveServiceTier,
 	type ServiceTier,
 	type StopReason,
 	type StreamOptions,
@@ -168,6 +167,7 @@ function resolveSakanaRequestBaseUrl(): string | undefined {
 }
 
 function applyCoreWeaveProjectHeader(headers: Record<string, string>): void {
+	removeBlankCoreWeaveProjectHeaders(headers);
 	if (hasCoreWeaveProjectHeader(headers)) {
 		return;
 	}
@@ -275,14 +275,13 @@ export function resolveOpenAIRequestSetup(
 }
 
 export function applyOpenAIServiceTier(
-	params: { service_tier?: ResolvedServiceTier | "auto" | "default" | null | undefined },
+	params: { service_tier?: ServiceTier | null | undefined },
 	serviceTier: ServiceTier | null | undefined,
 	provider: Provider | undefined,
 ): void {
 	if (!shouldSendServiceTier(serviceTier, provider)) return;
-	const resolved = resolveServiceTier(serviceTier, provider);
-	if (resolved === "flex" || resolved === "scale" || resolved === "priority") {
-		params.service_tier = resolved;
+	if (serviceTier === "flex" || serviceTier === "scale" || serviceTier === "priority") {
+		params.service_tier = serviceTier;
 	}
 }
 
@@ -321,10 +320,7 @@ export function applyOpenAIResponsesServiceTierCost(
 	// The response echo is authoritative when present (OpenAI may downgrade a
 	// requested priority/flex turn to default under load); only fall back to the
 	// requested tier when the response omits the echo entirely.
-	const served =
-		typeof responseServiceTier === "string"
-			? responseServiceTier
-			: resolveServiceTier(requestServiceTier, model.provider);
+	const served = typeof responseServiceTier === "string" ? responseServiceTier : (requestServiceTier ?? undefined);
 	const multiplier = getOpenAIResponsesServiceTierCostMultiplier(served);
 	if (multiplier === 1) return;
 	usage.cost.input *= multiplier;
@@ -629,7 +625,7 @@ export type OpenAICompletionsParams = Omit<ChatCompletionCreateParamsStreaming, 
 	chat_template_kwargs?: { enable_thinking?: boolean; preserve_thinking?: boolean };
 	reasoning?: { effort?: string } | { enabled: false };
 	reasoning_effort?: string | null;
-	service_tier?: ResolvedServiceTier;
+	service_tier?: ServiceTier;
 	tool_stream?: boolean;
 	provider?: OpenAICompat["openRouterRouting"];
 	providerOptions?: { gateway?: { only?: string[]; order?: string[] } };
@@ -1365,6 +1361,8 @@ export interface BuildResponsesInputOptions<TApi extends Api> {
 	includeThinkingSignatures?: boolean;
 	developerStringContent?: boolean;
 	repairOrphanOutputs?: boolean;
+	/** Preserve assistant message item IDs from text signatures during fallback replay. */
+	preserveAssistantMessageIds?: boolean;
 }
 
 export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInputOptions<TApi>): ResponseInput {
@@ -1453,6 +1451,7 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 				knownCallIds,
 				includeThinkingSignatures,
 				customCallIds,
+				options.preserveAssistantMessageIds,
 			);
 			if (outputItems.length === 0) continue;
 			messages.push(...outputItems);
@@ -1474,6 +1473,21 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 	return repairOrphanResponsesToolCalls(withRepairedOutputs);
 }
 
+type ResponsesReplayAssistantMessage = Omit<ResponseOutputMessage, "id"> & { id?: string };
+
+function parseResponseReasoningReplayItem(signature: string | undefined): ResponseReasoningItem | undefined {
+	if (!signature) return undefined;
+	try {
+		const parsed = JSON.parse(signature) as unknown;
+		if (!parsed || typeof parsed !== "object") return undefined;
+		if (!("type" in parsed) || parsed.type !== "reasoning") return undefined;
+		if (!("id" in parsed) || typeof parsed.id !== "string") return undefined;
+		return parsed as ResponseReasoningItem;
+	} catch {
+		return undefined;
+	}
+}
+
 export function convertResponsesAssistantMessage<TApi extends Api>(
 	assistantMsg: AssistantMessage,
 	model: Model<TApi>,
@@ -1481,9 +1495,16 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 	knownCallIds: Set<string>,
 	includeThinkingSignatures = true,
 	customCallIds?: Set<string>,
+	preserveMessageIds = false,
 ): ResponseInput {
 	const outputItems: ResponseInput = [];
 	let unsignedTextBlocks = 0;
+	const hasReplayableReasoningItem =
+		includeThinkingSignatures &&
+		assistantMsg.stopReason !== "error" &&
+		assistantMsg.content.some(
+			block => block.type === "thinking" && parseResponseReasoningReplayItem(block.thinkingSignature) !== undefined,
+		);
 	const isDifferentModel =
 		assistantMsg.model !== model.id && assistantMsg.provider === model.provider && assistantMsg.api === model.api;
 
@@ -1492,14 +1513,8 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 			if (!includeThinkingSignatures) {
 				continue;
 			}
-			if (block.thinkingSignature) {
-				try {
-					outputItems.push(JSON.parse(block.thinkingSignature) as ResponseReasoningItem);
-				} catch {
-					// Legacy/corrupt persisted signature — skip the reasoning item
-					// rather than failing the whole request build.
-				}
-			}
+			const reasoningItem = parseResponseReasoningReplayItem(block.thinkingSignature);
+			if (reasoningItem) outputItems.push(reasoningItem);
 			continue;
 		}
 
@@ -1507,21 +1522,30 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 			const parsedSignature = parseTextSignature(block.textSignature);
 			let msgId = parsedSignature?.id;
 			if (!msgId) {
-				// Distinct ids per unsigned block: several text blocks in one message
-				// (cross-provider replay downgrades thinking → text) must not share an id.
-				msgId = unsignedTextBlocks === 0 ? `msg_${msgIndex}` : `msg_${msgIndex}_${unsignedTextBlocks}`;
-				unsignedTextBlocks += 1;
+				if (hasReplayableReasoningItem) {
+					// Distinct ids per unsigned block: several text blocks in one message
+					// (cross-provider replay downgrades thinking → text) must not share an id.
+					msgId = unsignedTextBlocks === 0 ? `msg_${msgIndex}` : `msg_${msgIndex}_${unsignedTextBlocks}`;
+					unsignedTextBlocks += 1;
+				}
+			} else if (!preserveMessageIds && !hasReplayableReasoningItem) {
+				// Without the matching reasoning item the server rejects replayed
+				// item ids (#4173) — drop them regardless of shape, including
+				// legacy plain-string signatures that would otherwise fall into
+				// the >64-char hash branch and fabricate a bogus msg_ id.
+				msgId = undefined;
 			} else if (msgId.length > 64) {
 				msgId = `msg_${Bun.hash(msgId).toString(36)}`;
 			}
-			outputItems.push({
+			const messageItem: ResponsesReplayAssistantMessage = {
 				type: "message",
 				role: "assistant",
 				content: [{ type: "output_text", text: block.text.toWellFormed(), annotations: [] }],
 				status: "completed",
-				id: msgId,
-				phase: parsedSignature?.phase,
-			} satisfies ResponseOutputMessage);
+				...(msgId ? { id: msgId } : {}),
+				...(parsedSignature?.phase ? { phase: parsedSignature.phase } : {}),
+			};
+			outputItems.push(messageItem as ResponseInput[number]);
 			continue;
 		}
 
@@ -1531,7 +1555,15 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 
 		const normalized = normalizeResponsesToolCallId(block.id, block.customWireName ? "ctc" : "fc");
 		let itemId: string | undefined = normalized.itemId;
-		if (isDifferentModel && (itemId?.startsWith("fc_") || itemId?.startsWith("fcr_") || itemId?.startsWith("ctc_"))) {
+		if (
+			!hasReplayableReasoningItem &&
+			(itemId?.startsWith("fc_") || itemId?.startsWith("fcr_") || itemId?.startsWith("ctc_"))
+		) {
+			itemId = undefined;
+		} else if (
+			isDifferentModel &&
+			(itemId?.startsWith("fc_") || itemId?.startsWith("fcr_") || itemId?.startsWith("ctc_"))
+		) {
 			itemId = undefined;
 		}
 		knownCallIds.add(normalized.callId);
@@ -1540,7 +1572,7 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 			customCallIds?.add(normalized.callId);
 			outputItems.push({
 				type: "custom_tool_call",
-				id: itemId,
+				...(itemId ? { id: itemId } : {}),
 				call_id: normalized.callId,
 				name: block.customWireName,
 				input: rawInput,
@@ -1549,7 +1581,7 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 		}
 		outputItems.push({
 			type: "function_call",
-			id: itemId,
+			...(itemId ? { id: itemId } : {}),
 			call_id: normalized.callId,
 			name: block.name,
 			arguments: JSON.stringify(block.arguments),
@@ -2405,12 +2437,11 @@ export interface ApplyResponsesCompatPolicyOptions {
 
 export function applyResponsesCompatPolicy<P extends ResponseCreateParamsStreaming>(
 	params: P,
-	messages: ResponseInput,
 	policy: OpenAICompatPolicy,
 	options: ApplyResponsesCompatPolicyOptions | undefined,
-): number {
+): void {
 	const reasoning = policy.reasoning;
-	if (!reasoning.modelSupported) return 0;
+	if (!reasoning.modelSupported) return;
 	if (reasoning.includeEncryptedReasoning) {
 		const include = params.include ?? [];
 		if (!include.includes("reasoning.encrypted_content")) include.push("reasoning.encrypted_content");
@@ -2420,7 +2451,7 @@ export function applyResponsesCompatPolicy<P extends ResponseCreateParamsStreami
 	if (reasoning.disabled) {
 		if (reasoning.disableMode === "openrouter-enabled-false") {
 			params.reasoning = { enabled: false } as P["reasoning"];
-			return 0;
+			return;
 		}
 		if (
 			reasoning.disableMode === "lowest-effort" &&
@@ -2430,16 +2461,9 @@ export function applyResponsesCompatPolicy<P extends ResponseCreateParamsStreami
 			type ReasoningParam = NonNullable<ResponseCreateParamsStreaming["reasoning"]>;
 			params.reasoning = { effort: reasoning.wireEffort as ReasoningParam["effort"] } as P["reasoning"] &
 				ReasoningParam;
-			return 0;
+			return;
 		}
-		if (policy.compat.requiresJuiceZeroHack && reasoning.requestedEffort === undefined) {
-			messages.push({
-				role: "developer",
-				content: [{ type: "input_text", text: "# Juice: 0 !important" }],
-			});
-			return 1;
-		}
-		return 0;
+		return;
 	}
 
 	if (reasoning.requestedEffort !== undefined || options?.reasoningSummary !== undefined) {
@@ -2448,7 +2472,7 @@ export function applyResponsesCompatPolicy<P extends ResponseCreateParamsStreami
 				type ReasoningParam = NonNullable<ResponseCreateParamsStreaming["reasoning"]>;
 				params.reasoning = { summary: options.reasoningSummary || "auto" } as P["reasoning"] & ReasoningParam;
 			}
-			return 0;
+			return;
 		}
 
 		const requested = reasoning.requestedEffort ?? "medium";
@@ -2461,17 +2485,8 @@ export function applyResponsesCompatPolicy<P extends ResponseCreateParamsStreami
 			reasoningParams.summary = options?.reasoningSummary || "auto";
 		}
 		params.reasoning = reasoningParams as P["reasoning"];
-		return 0;
+		return;
 	}
-
-	if (policy.compat.requiresJuiceZeroHack) {
-		messages.push({
-			role: "developer",
-			content: [{ type: "input_text", text: "# Juice: 0 !important" }],
-		});
-		return 1;
-	}
-	return 0;
 }
 
 /**
@@ -2482,14 +2497,12 @@ export function applyResponsesReasoningParams<P extends ResponseCreateParamsStre
 	params: P,
 	model: Model<"openai-responses" | "azure-openai-responses" | "openai-codex-responses">,
 	options: ReasoningOptions | undefined,
-	messages: ResponseInput,
 	mapEffort?: (effort: string) => string,
 	includeEncryptedReasoning?: boolean,
 	omitReasoningEffort?: boolean,
-): number {
+): void {
 	return applyResponsesCompatPolicy(
 		params,
-		messages,
 		resolveOpenAICompatPolicy(model, {
 			endpoint: "responses",
 			reasoning: options?.reasoning,

@@ -10,7 +10,12 @@
  */
 import * as Diff from "diff";
 import { applyEdits } from "./apply";
-import { RECOVERY_EXTERNAL_WARNING, RECOVERY_SESSION_CHAIN_WARNING, RECOVERY_SESSION_REPLAY_WARNING } from "./messages";
+import {
+	RECOVERY_EXTERNAL_WARNING,
+	RECOVERY_LINE_REMAP_WARNING,
+	RECOVERY_SESSION_CHAIN_WARNING,
+	RECOVERY_SESSION_REPLAY_WARNING,
+} from "./messages";
 import type { Snapshot, SnapshotStore } from "./snapshots";
 import type { Anchor, ApplyResult, Edit } from "./types";
 
@@ -97,6 +102,219 @@ function verifyAnchorContent(previousText: string, currentText: string, edits: r
 	return true;
 }
 
+function buildLineMap(previousText: string, currentText: string): Map<number, number> {
+	const previousLines = previousText.split("\n");
+	const currentLines = currentText.split("\n");
+	const changes = Diff.diffArrays(previousLines, currentLines);
+	const map = new Map<number, number>();
+	let previousLine = 1;
+	let currentLine = 1;
+
+	for (const change of changes) {
+		const count = change.value.length;
+		if (change.added) {
+			currentLine += count;
+			continue;
+		}
+		if (change.removed) {
+			previousLine += count;
+			continue;
+		}
+		for (let offset = 0; offset < count; offset++) {
+			map.set(previousLine + offset, currentLine + offset);
+		}
+		previousLine += count;
+		currentLine += count;
+	}
+
+	return map;
+}
+
+/** Values appearing two or more times in `lines`, for O(1) duplicate checks. */
+function collectDuplicatedValues(lines: readonly string[]): Set<string> {
+	const seen = new Set<string>();
+	const duplicated = new Set<string>();
+	for (const value of lines) {
+		if (seen.has(value)) duplicated.add(value);
+		else seen.add(value);
+	}
+	return duplicated;
+}
+
+interface AnchorNeighbors {
+	/** Nearest non-anchor line below the anchor's run, or `undefined` at the file edge. */
+	before: number | undefined;
+	/** Nearest non-anchor line above the anchor's run, or `undefined` at the file edge. */
+	after: number | undefined;
+}
+
+/**
+ * Nearest non-anchor context line on each side of every anchor, computed in
+ * one sweep over the sorted anchor set. Anchors in one contiguous run share
+ * both neighbors (the lines just outside the run), so this replaces the
+ * per-anchor directional walk across anchored ranges — O(anchors²) on a
+ * large block replacement — with one O(anchors log anchors) pass.
+ */
+function computeAnchorNeighbors(anchorLines: ReadonlySet<number>, lineCount: number): Map<number, AnchorNeighbors> {
+	const sorted = [...anchorLines].sort((a, b) => a - b);
+	const neighbors = new Map<number, AnchorNeighbors>();
+	for (let i = 0; i < sorted.length; ) {
+		let j = i;
+		while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+		const start = sorted[i];
+		const end = sorted[j];
+		const before = start - 1 >= 1 && start - 1 <= lineCount ? start - 1 : undefined;
+		const after = end + 1 <= lineCount ? end + 1 : undefined;
+		for (let k = i; k <= j; k++) neighbors.set(sorted[k], { before, after });
+		i = j + 1;
+	}
+	return neighbors;
+}
+
+function validateDuplicateAnchorContext(
+	line: number,
+	mapped: number,
+	neighbors: AnchorNeighbors,
+	lineMap: ReadonlyMap<number, number>,
+): boolean {
+	let checked = false;
+	const { before, after } = neighbors;
+	if (before !== undefined) {
+		checked = true;
+		if (lineMap.get(before) !== mapped - (line - before)) return false;
+	}
+	if (after !== undefined) {
+		checked = true;
+		if (lineMap.get(after) !== mapped + (after - line)) return false;
+	}
+	return checked;
+}
+
+function validateUniqueAnchorContext(
+	line: number,
+	mapped: number,
+	neighbors: AnchorNeighbors,
+	lineMap: ReadonlyMap<number, number>,
+): boolean {
+	const offset = mapped - line;
+	const { before, after } = neighbors;
+	if (after !== undefined) return lineMap.get(after) === after + offset;
+	return before !== undefined && lineMap.get(before) === before + offset;
+}
+
+function validateRemappedAnchorContext(
+	previousText: string,
+	currentText: string,
+	lineMap: ReadonlyMap<number, number>,
+	edits: readonly Edit[],
+): boolean {
+	const previousLines = previousText.split("\n");
+	const currentLines = currentText.split("\n");
+	const anchorLines = new Set(collectAnchorLines(edits));
+	// Precompute once per validation pass: which line values are duplicated,
+	// and each anchor's nearest non-anchor context. The per-anchor forms —
+	// indexOf/lastIndexOf full-file scans plus directional walks across
+	// anchored ranges — are O(anchors×lines) + O(anchors²) and blow up on
+	// large block replacements.
+	const duplicatedPrevious = collectDuplicatedValues(previousLines);
+	const duplicatedCurrent = collectDuplicatedValues(currentLines);
+	const anchorNeighbors = computeAnchorNeighbors(anchorLines, previousLines.length);
+
+	for (const [line, neighbors] of anchorNeighbors) {
+		const mapped = lineMap.get(line);
+		if (mapped === undefined) return false;
+		if (!duplicatedPrevious.has(previousLines[line - 1]) && !duplicatedCurrent.has(currentLines[mapped - 1])) {
+			if (!validateUniqueAnchorContext(line, mapped, neighbors, lineMap)) {
+				return false;
+			}
+			continue;
+		}
+		if (!validateDuplicateAnchorContext(line, mapped, neighbors, lineMap)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+function remapEditsToCurrent(previousText: string, currentText: string, edits: readonly Edit[]): Edit[] | null {
+	const lineMap = buildLineMap(previousText, currentText);
+	if (!validateRemappedAnchorContext(previousText, currentText, lineMap, edits)) return null;
+	const offsets: number[] = [];
+
+	const mapLine = (line: number): number | null => {
+		const mapped = lineMap.get(line);
+		if (mapped === undefined) return null;
+		offsets.push(mapped - line);
+		return mapped;
+	};
+
+	const mapAnchor = (anchor: Anchor): Anchor | null => {
+		const line = mapLine(anchor.line);
+		return line === null ? null : { line };
+	};
+
+	const remapped: Edit[] = [];
+	for (const edit of edits) {
+		if (edit.kind === "delete") {
+			const anchor = mapAnchor(edit.anchor);
+			if (anchor === null) return null;
+			remapped.push({ ...edit, anchor });
+			continue;
+		}
+		if (edit.kind === "block") {
+			const anchor = mapAnchor(edit.anchor);
+			if (anchor === null) return null;
+			remapped.push({ ...edit, anchor });
+			continue;
+		}
+
+		let blockStart = edit.blockStart;
+		if (blockStart !== undefined) {
+			const mappedBlockStart = mapLine(blockStart);
+			if (mappedBlockStart === null) return null;
+			blockStart = mappedBlockStart;
+		}
+
+		const cursor = edit.cursor;
+		if (cursor.kind !== "before_anchor" && cursor.kind !== "after_anchor") {
+			remapped.push(blockStart === edit.blockStart ? edit : { ...edit, blockStart });
+			continue;
+		}
+
+		const anchor = mapAnchor(cursor.anchor);
+		if (anchor === null) return null;
+		remapped.push({ ...edit, cursor: { kind: cursor.kind, anchor }, blockStart });
+	}
+
+	if (offsets.length === 0) return null;
+	const firstOffset = offsets[0];
+	if (firstOffset === 0) return null;
+	if (!offsets.every(offset => offset === firstOffset)) return null;
+	return remapped;
+}
+
+function replayRemappedAnchorsOnCurrent(
+	previousText: string,
+	currentText: string,
+	edits: readonly Edit[],
+): RecoveryResult | null {
+	const remapped = remapEditsToCurrent(previousText, currentText, edits);
+	if (remapped === null) return null;
+	let applied: ApplyResult;
+	try {
+		applied = applyEdits(currentText, remapped);
+	} catch {
+		return null;
+	}
+	if (applied.text === currentText) return null;
+	return {
+		text: applied.text,
+		firstChangedLine: applied.firstChangedLine,
+		warnings: [RECOVERY_LINE_REMAP_WARNING, ...(applied.warnings ?? [])],
+	};
+}
+
 function replaySessionChainOnCurrent(
 	previousText: string,
 	currentText: string,
@@ -150,11 +368,15 @@ function isHeadSnapshot(head: Snapshot | null, snapshot: Snapshot): boolean {
 /**
  * Stateless recovery driver over a {@link SnapshotStore}. Construct once and
  * call {@link Recovery.tryRecover} per stale-tag incident. The default
- * implementation tries two strategies in order:
+ * implementation tries three strategies in order:
  *
  * 1. Apply the edits on the full-file version the tag names, then 3-way-merge
  *    the resulting patch onto the live content (handles external writes).
- * 2. (Session chain) If that version wasn't the head, replay the edits onto
+ * 2. Remap every stale anchor through the unchanged-line diff from the tagged
+ *    snapshot to the live text, then replay on live content. This handles a
+ *    prior insertion/deletion before the target while refusing changed anchors
+ *    and mixed offsets across the same edit range.
+ * 3. (Session chain) If that version wasn't the head, replay the edits onto
  *    the live content directly when line counts match AND every edit's anchor
  *    line content is unchanged between version and current — a prior in-session
  *    edit advanced the tag and the model's anchors still name the same logical
@@ -170,16 +392,25 @@ export class Recovery {
 	 */
 	tryRecover(args: RecoveryArgs): RecoveryResult | null {
 		const { path, currentText, fileHash, edits } = args;
+		// When two retained texts collide on the 16-bit tag, resolve to the
+		// most-recently recorded one; a wrong pick can only land if one of the
+		// merge/remap/session-chain strategies below applies it cleanly.
 		const snapshot = this.store.byHash(path, fileHash);
 		if (!snapshot) return null;
 		const isHead = isHeadSnapshot(this.store.head(path), snapshot);
 		const recoveryWarning = isHead ? RECOVERY_EXTERNAL_WARNING : RECOVERY_SESSION_CHAIN_WARNING;
 		const merged = applyEditsToSnapshot(snapshot.text, currentText, edits, recoveryWarning);
 		if (merged !== null) return merged;
-		// Session-chain fallback: the 3-way merge on the version refused.
-		// Replay onto current is gated by line-count equality AND
-		// anchor-content alignment — see `replaySessionChainOnCurrent`
-		// for why both guards together still don't fully prove correctness.
+		// Line-shift fallback: the 3-way merge refused, but unchanged anchor
+		// lines may have moved because a prior edit inserted or deleted rows
+		// before them. Remap only when every anchor resolves through the diff
+		// with one consistent offset; otherwise the edit range was touched.
+		const remapped = replayRemappedAnchorsOnCurrent(snapshot.text, currentText, edits);
+		if (remapped !== null) return remapped;
+		// Session-chain fallback: replay onto current is gated by line-count
+		// equality AND anchor-content alignment — see
+		// `replaySessionChainOnCurrent` for why both guards together still
+		// don't fully prove correctness.
 		if (!isHead) return replaySessionChainOnCurrent(snapshot.text, currentText, edits);
 		return null;
 	}

@@ -70,6 +70,8 @@ export interface EditToolPerFileResult {
 	oldText?: string;
 	/** Source-of-truth content after the edit; `undefined` for delete operations. */
 	newText?: string;
+	/** True when {@link pruneOversizedEditSnapshots} dropped `oldText`/`newText` from this entry. Aggregators check this to suppress misleading combined snapshots when at least one entry of a multi-entry single-path edit was pruned. */
+	snapshotsPruned?: boolean;
 	/** Pre-move source path; set only when the edit moved/renamed the file. The header renders `sourcePath → path`. */
 	sourcePath?: string;
 }
@@ -95,6 +97,8 @@ export interface EditToolDetails {
 	oldText?: string;
 	/** Source-of-truth content after the edit; `undefined` for delete operations. */
 	newText?: string;
+	/** True when {@link pruneOversizedEditSnapshots} dropped `oldText`/`newText` from this entry. Aggregators check this to suppress misleading combined snapshots when at least one entry of a multi-entry single-path edit was pruned. */
+	snapshotsPruned?: boolean;
 	/** Pre-move source path; set only when the edit moved/renamed the file. The header renders `sourcePath → path`. */
 	sourcePath?: string;
 }
@@ -110,6 +114,7 @@ interface EditRenderArgs {
 	newText?: string;
 	patch?: string;
 	input?: string;
+	_input?: string;
 	all?: boolean;
 	// Patch mode fields
 	op?: Operation;
@@ -596,10 +601,11 @@ function getHashlineInputRenderSummary(
 	args: EditRenderArgs,
 	editMode: EditMode | undefined,
 ): HashlineInputRenderSummary | undefined {
-	if (editMode !== "hashline" || typeof args.input !== "string") {
+	const input = args.input ?? args._input;
+	if (editMode !== "hashline" || typeof input !== "string") {
 		return undefined;
 	}
-	return { entries: getHashlineInputSections(args.input) };
+	return { entries: getHashlineInputSections(input) };
 }
 
 function getApplyPatchRenderSummary(

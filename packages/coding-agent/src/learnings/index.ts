@@ -689,7 +689,7 @@ function resolveLearningClassifierModels(
 	} else {
 		const available = modelRegistry.getAvailable();
 		for (const role of DEFAULT_CLASSIFIER_ROLES) {
-			pushModelIfUnique(models, resolveRoleSelection([role], settings, available, modelRegistry)?.model);
+			pushModelIfUnique(models, resolveRoleSelection([role], settings, available)?.model);
 		}
 	}
 	pushModelIfUnique(models, currentModel);
@@ -704,7 +704,7 @@ function resolveConfiguredClassifierModel(
 ): Model | undefined {
 	const available = modelRegistry.getAvailable();
 	return (
-		resolveRoleSelection([pattern], settings, available, modelRegistry)?.model ??
+		resolveRoleSelection([pattern], settings, available)?.model ??
 		resolveModelOverride([pattern], modelRegistry, settings).model
 	);
 }

@@ -112,6 +112,29 @@ describe("StdinBuffer", () => {
 			expect(buffer.getBuffer()).toBe("");
 		});
 
+		it("reassembles an OSC whose ST is split exactly at the chunk boundary", () => {
+			// Chunk 1 ends on the ESC of `ESC \`; chunk 2 opens with the `\`.
+			// The resume overlap (`resumeSearchFrom - 1`) must re-inspect the
+			// trailing ESC, or the terminator is never seen and the payload
+			// leaks via timeout flush as raw bytes.
+			processInput("\x1b]52;c;aGVsbG8=\x1b");
+			expect(emittedSequences).toEqual([]);
+			expect(buffer.getBuffer()).toBe("\x1b]52;c;aGVsbG8=\x1b");
+
+			processInput("\\");
+			expect(emittedSequences).toEqual(["\x1b]52;c;aGVsbG8=\x1b\\"]);
+			expect(buffer.getBuffer()).toBe("");
+		});
+
+		it("reassembles a DCS whose ST is split exactly at the chunk boundary", () => {
+			processInput("\x1bPq#0;2;0;0;0\x1b");
+			expect(emittedSequences).toEqual([]);
+
+			processInput("\\");
+			expect(emittedSequences).toEqual(["\x1bPq#0;2;0;0;0\x1b\\"]);
+			expect(buffer.getBuffer()).toBe("");
+		});
+
 		it("should flush incomplete sequence after timeout", async () => {
 			// Non-mouse CSI partial: ambiguous, so it flushes after the timeout.
 			processInput("\x1b[1;5");
@@ -190,16 +213,28 @@ describe("StdinBuffer", () => {
 			expect(emittedSequences).toEqual(["\x1b", "\x1b[<35;22;17M"]);
 		});
 
-		it("flushes a trailing double-ESC as one sequence after the timeout", async () => {
+		it("splits a trailing double-ESC into two ESC events after the timeout", async () => {
+			// A bare `\x1b\x1b` is two real Esc keypresses (or legacy alt+esc).
+			// `parseKey` returns undefined for the combined chunk, so emitting it
+			// as one swallows double-escape gestures (#3857). Split on flush so
+			// downstream handlers fire twice.
 			processInput("\x1b\x1b");
 			expect(emittedSequences).toEqual([]);
-			await waitUntil(() => emittedSequences.length > 0);
-			expect(emittedSequences).toEqual(["\x1b\x1b"]);
+			await waitUntil(() => emittedSequences.length >= 2);
+			expect(emittedSequences).toEqual(["\x1b", "\x1b"]);
 		});
 
-		it("keeps double-ESC followed by a non-CSI byte split as before", () => {
+		it("preserves legacy Alt chords batched after a bare ESC", () => {
 			processInput("\x1b\x1bX");
-			expect(emittedSequences).toEqual(["\x1b\x1b", "X"]);
+			expect(emittedSequences).toEqual(["\x1b", "\x1bX"]);
+
+			emittedSequences = [];
+			processInput("\x1b\x1bd");
+			expect(emittedSequences).toEqual(["\x1b", "\x1bd"]);
+
+			emittedSequences = [];
+			processInput("\x1b\x1b\x7f");
+			expect(emittedSequences).toEqual(["\x1b", "\x1b\x7f"]);
 		});
 
 		it("consumes a whole meta-CSI arrow in one chunk", () => {
@@ -564,6 +599,87 @@ describe("StdinBuffer", () => {
 
 			buffer.process("x");
 			expect(data).toEqual(["x"]);
+		});
+	});
+
+	describe("Malformed Escape Bounds (issue #4073 case A)", () => {
+		it("caps a malformed CSI without terminator so a single process() stays bounded", () => {
+			// The prior grow-and-recheck inner loop rescanned every prefix on
+			// each call; a streamed run with no final byte in 0x40-0x7E left
+			// the whole prefix in the buffer and re-inspected it forever.
+			const input = `\x1b[${";".repeat(200_000)}`;
+			processInput(input);
+			// Cap-flush emitted the leading capped prefix as one raw sequence
+			// so progress is guaranteed; the rest is per-scalar plain text.
+			expect(emittedSequences.length).toBeGreaterThan(0);
+			expect(emittedSequences[0]!.length).toBeLessThan(input.length);
+			expect(buffer.getBuffer().length).toBe(0);
+		});
+
+		it("resumes OSC terminator search across chunks — chunked payload stays O(total)", () => {
+			// A legit chunked OSC 5522 payload must not force a full re-scan
+			// of the accumulated buffer per chunk. Delivery completes on the
+			// terminator; only the assembled sequence is emitted.
+			const chunkSize = 4096;
+			const chunkCount = 128;
+			const chunk = "a".repeat(chunkSize);
+			processInput("\x1b]5522;type=read;");
+			for (let i = 0; i < chunkCount - 1; i++) processInput(chunk);
+			processInput(`${chunk.slice(0, chunkSize - 1)}\x07`);
+			expect(emittedSequences.length).toBe(1);
+			expect(emittedSequences[0]!.startsWith("\x1b]5522;")).toBe(true);
+			expect(emittedSequences[0]!.endsWith("\x07")).toBe(true);
+			expect(buffer.getBuffer().length).toBe(0);
+		});
+
+		it("caps a streamed CSI garbage run so the buffer never grows without bound", () => {
+			// Streaming a malformed CSI (no terminator) in many small chunks
+			// used to accumulate the whole run in #buffer, giving O(n^2)
+			// cumulative work. After the cap fires, the buffer resets so
+			// subsequent chunks are re-scanned fresh.
+			processInput("\x1b[");
+			// Ten 8 KiB chunks — first two exceed MAX_CSI_BYTES (4 KiB) and
+			// force a cap-flush; the buffer must not retain the full run.
+			for (let i = 0; i < 10; i++) processInput(";".repeat(8192));
+			expect(buffer.getBuffer().length).toBeLessThan(8192);
+		});
+
+		it("resets the string-search hint before processing paste remainder", () => {
+			// A stale OSC/DCS/APC resume offset must not be reused after paste
+			// mode clears the buffer. Otherwise a complete post-paste string
+			// sequence whose terminator is before the old offset is retained
+			// and later flushed together with trailing text.
+			processInput(`\x1b]${"x".repeat(100)}`);
+			processInput("\x1b[200~paste\x1b[201~\x1b]z\x07abc");
+
+			expect(emittedSequences).toEqual(["\x1b]z\x07", "a", "b", "c"]);
+			expect(buffer.getBuffer()).toBe("");
+		});
+
+		it("caps an unterminated OSC delivered as one oversized chunk and keeps parsing", () => {
+			// MAX_STRING_SEQ_BYTES = 16 MiB. A single chunk whose OSC payload
+			// exceeds the cap with no BEL/ST must cap-flush the capped prefix
+			// as ONE raw sequence (progress guaranteed, scan bounded to the
+			// cap — not the whole chunk), deliver the tail per scalar, and
+			// leave the buffer clean so later input still parses.
+			const cap = 16 * 1024 * 1024;
+			const head = "\x1b]5522;";
+			const tail = "xy";
+			// Total pre-tail length is exactly `cap`, so the cap-flush consumes
+			// the whole unterminated sequence and only `tail` remains.
+			processInput(`${head}${"a".repeat(cap - head.length)}${tail}`);
+
+			expect(emittedSequences.length).toBe(1 + tail.length);
+			expect(emittedSequences[0]!.length).toBe(cap);
+			expect(emittedSequences[0]!.startsWith("\x1b]5522;")).toBe(true);
+			expect(emittedSequences.slice(1)).toEqual(["x", "y"]);
+			expect(buffer.getBuffer()).toBe("");
+
+			// Parser state is clean: a normal OSC afterwards completes.
+			emittedSequences.length = 0;
+			processInput("\x1b]z\x07");
+			expect(emittedSequences).toEqual(["\x1b]z\x07"]);
+			expect(buffer.getBuffer()).toBe("");
 		});
 	});
 

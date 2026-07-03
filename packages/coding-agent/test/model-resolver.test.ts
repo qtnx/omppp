@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { type Api, Effort, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
-import type { CanonicalModelVariant } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import {
 	type CanonicalModelRegistry,
 	expandRoleAlias,
@@ -144,6 +143,21 @@ const mockMaxSuffixModels: Model<Api>[] = [
 	}),
 ];
 
+const mockAutoSuffixModels: Model<Api>[] = [
+	buildModel({
+		id: "runtime:auto",
+		name: "Runtime Auto",
+		api: "openai-completions",
+		provider: "example",
+		baseUrl: "https://example.com/api",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128000,
+		maxTokens: 8192,
+	}),
+];
+
 const mockProviderOverlapModels: Model<"anthropic-messages">[] = [
 	buildModel({
 		id: "kimi-k2.5",
@@ -242,46 +256,12 @@ const openaiGpt55Models: Model<Api>[] = [
 ];
 
 const codexCanonicalRegistry: CanonicalModelRegistry = {
-	resolveCanonicalModel: (canonicalId: string, options?: { candidates?: Model<Api>[] }) => {
+	resolveCanonicalModel: (canonicalId: string, options?: { candidates?: readonly Model<Api>[] }) => {
 		if (canonicalId !== "gpt-5.5") return undefined;
 		return options?.candidates?.find(model => model.provider === "openai-codex" && model.id === canonicalId);
 	},
 	getCanonicalId: (model: Model<Api>) => (model.id === "gpt-5.5" ? "gpt-5.5" : undefined),
 };
-
-function createBedrockDefaultModel(): Model<"bedrock-converse-stream"> {
-	return buildModel({
-		id: "us.anthropic.claude-opus-4-8",
-		name: "Claude Opus 4.8 (US)",
-		api: "bedrock-converse-stream",
-		provider: "amazon-bedrock",
-		baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
-		reasoning: true,
-		input: ["text", "image"],
-		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-		contextWindow: 1000000,
-		maxTokens: 128000,
-	});
-}
-
-function createOpusModel(provider: string, id: string, name: string): Model<"anthropic-messages"> {
-	return buildModel({
-		id,
-		name,
-		api: "anthropic-messages",
-		provider,
-		baseUrl: provider === "anthropic" ? "https://api.anthropic.com" : "https://api.githubcopilot.com",
-		reasoning: true,
-		thinking: {
-			mode: "budget",
-			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
-		},
-		input: ["text", "image"],
-		cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
-		contextWindow: 200000,
-		maxTokens: 32000,
-	});
-}
 
 const canonicalVariantModels: Model<"anthropic-messages">[] = [
 	buildModel({
@@ -319,7 +299,7 @@ const canonicalVariantModels: Model<"anthropic-messages">[] = [
 ];
 
 const canonicalRegistry = {
-	resolveCanonicalModel: (canonicalId: string, options?: { candidates?: Model<"anthropic-messages">[] }) => {
+	resolveCanonicalModel: (canonicalId: string, options?: { candidates?: readonly Model<Api>[] }) => {
 		if (canonicalId !== "claude-sonnet-4-5") return undefined;
 		const candidates = options?.candidates ?? canonicalVariantModels;
 		return (
@@ -327,19 +307,49 @@ const canonicalRegistry = {
 			candidates.find(model => model.provider === "anthropic")
 		);
 	},
-	getCanonicalVariants: (canonicalId: string, options?: { candidates?: Model<"anthropic-messages">[] }) => {
+	getCanonicalVariants: (canonicalId: string, options?: { candidates?: readonly Model<Api>[] }) => {
 		if (canonicalId !== "claude-sonnet-4-5") return [];
 		const candidates = options?.candidates ?? canonicalVariantModels;
-		return candidates.map(model => ({
-			canonicalId,
-			selector: `${model.provider}/${model.id}`,
-			model,
-			source: model.id === canonicalId ? "bundled" : "heuristic",
-		}));
+		return candidates.map(model => ({ canonicalId, selector: `${model.provider}/${model.id}`, model }));
 	},
 	getCanonicalId: () => "claude-sonnet-4-5",
 	getAvailable: () => canonicalVariantModels,
-} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+	getAll: () => canonicalVariantModels,
+} satisfies CanonicalModelRegistry & { getAvailable: () => Model<Api>[]; getAll: () => Model<Api>[] };
+
+function createBedrockDefaultModel(): Model<"bedrock-converse-stream"> {
+	return buildModel({
+		id: "us.anthropic.claude-opus-4-8",
+		name: "Claude Opus 4.8 (US)",
+		api: "bedrock-converse-stream",
+		provider: "amazon-bedrock",
+		baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		contextWindow: 1000000,
+		maxTokens: 128000,
+	});
+}
+
+function createOpusModel(provider: string, id: string, name: string): Model<"anthropic-messages"> {
+	return buildModel({
+		id,
+		name,
+		api: "anthropic-messages",
+		provider,
+		baseUrl: provider === "anthropic" ? "https://api.anthropic.com" : "https://api.githubcopilot.com",
+		reasoning: true,
+		thinking: {
+			mode: "budget",
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+		},
+		input: ["text", "image"],
+		cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+		contextWindow: 200000,
+		maxTokens: 32000,
+	});
+}
 
 const allModels = [...mockModels, ...mockOpenRouterModels, ...mockProviderOverlapModels, ...mockCodexOverlapModels];
 
@@ -376,7 +386,7 @@ describe("pickDefaultAvailableModel", () => {
 	});
 });
 
-describe("resolveModelRoleValue", () => {
+describe("resolveModelRoleValue canonical ids", () => {
 	test("does not reroute explicit OpenAI GPT defaults through Codex canonical selection", () => {
 		const result = resolveModelRoleValue("openai/gpt-5.5:xhigh", openaiGpt55Models, {
 			modelRegistry: codexCanonicalRegistry,
@@ -397,6 +407,50 @@ describe("resolveModelRoleValue", () => {
 		expect(result.model?.id).toBe("gpt-5.5");
 		expect(result.thinkingLevel).toBe(Effort.XHigh);
 		expect(result.explicitThinkingLevel).toBe(true);
+	});
+
+	test("uses the Zhipu Coding Plan login-validated model before newer z.ai defaults", () => {
+		const zhipuGlm51 = buildModel({
+			id: "glm-5.1",
+			name: "GLM-5.1",
+			api: "openai-completions",
+			provider: "zhipu-coding-plan",
+			baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200000,
+			maxTokens: 131072,
+		});
+		const zhipuGlm52 = buildModel({
+			id: "glm-5.2",
+			name: "GLM-5.2",
+			api: "openai-completions",
+			provider: "zhipu-coding-plan",
+			baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000000,
+			maxTokens: 131072,
+		});
+		const zaiGlm52 = buildModel({
+			id: "glm-5.2",
+			name: "GLM-5.2",
+			api: "anthropic-messages",
+			provider: "zai",
+			baseUrl: "https://api.z.ai/api/anthropic",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000000,
+			maxTokens: 131072,
+		});
+
+		const result = pickDefaultAvailableModel([zhipuGlm51, zhipuGlm52, zaiGlm52]);
+
+		expect(result?.provider).toBe("zhipu-coding-plan");
+		expect(result?.id).toBe("glm-5.1");
 	});
 });
 
@@ -494,6 +548,14 @@ describe("parseModelPattern", () => {
 		test("literal model ids ending in max win over the thinking alias", () => {
 			const result = parseModelPattern("nanogpt/coding-router:max", mockMaxSuffixModels);
 			expect(result.model?.id).toBe("coding-router:max");
+			expect(result.thinkingLevel).toBeUndefined();
+			expect(result.explicitThinkingLevel).toBe(false);
+			expect(result.warning).toBeUndefined();
+		});
+
+		test("literal model ids ending in auto win over the auto sentinel alias", () => {
+			const result = parseModelPattern("example/runtime:auto", mockAutoSuffixModels);
+			expect(result.model?.id).toBe("runtime:auto");
 			expect(result.thinkingLevel).toBeUndefined();
 			expect(result.explicitThinkingLevel).toBe(false);
 			expect(result.warning).toBeUndefined();
@@ -650,16 +712,6 @@ describe("parseModelPattern", () => {
 			expect(result.model?.id).toBe("moonshotai/kimi-k2.5");
 		});
 	});
-
-	describe("canonical ids", () => {
-		test("resolves an exact canonical id through the registry before bare-id matching", () => {
-			const result = parseModelPattern("claude-sonnet-4-5", canonicalVariantModels, undefined, {
-				modelRegistry: canonicalRegistry,
-			});
-			expect(result.model?.provider).toBe("github-copilot");
-			expect(result.model?.id).toBe("anthropic/claude-sonnet-4.5");
-		});
-	});
 });
 
 describe("resolveModelRoleValue", () => {
@@ -752,6 +804,25 @@ describe("resolveModelRoleValue", () => {
 		expect(result.model?.provider).toBe("anthropic");
 		expect(result.model?.id).toBe("claude-sonnet-4-5");
 		expect(result.thinkingLevel).toBe(Effort.High);
+		expect(result.explicitThinkingLevel).toBe(true);
+	});
+
+	test("preserves an explicit :auto suffix as an explicit thinking selector", () => {
+		const result = resolveModelRoleValue("anthropic/claude-sonnet-4-5:auto", allModels);
+
+		expect(result.model?.provider).toBe("anthropic");
+		expect(result.model?.id).toBe("claude-sonnet-4-5");
+		expect(result.thinkingLevel).toBe("auto");
+		expect(result.explicitThinkingLevel).toBe(true);
+		expect(result.warning).toBeUndefined();
+	});
+
+	test("does not clamp :auto against the model's supported efforts", () => {
+		// claude-sonnet-4-5 caps at "high"; ensure auto isn't collapsed onto it
+		// by resolveThinkingLevelForModel.
+		const result = resolveModelRoleValue("anthropic/claude-sonnet-4-5:auto", allModels);
+
+		expect(result.thinkingLevel).toBe("auto");
 		expect(result.explicitThinkingLevel).toBe(true);
 	});
 });
@@ -889,21 +960,6 @@ describe("resolveModelOverride", () => {
 	});
 });
 describe("resolveCliModel", () => {
-	test("resolves exact canonical ids to the preferred concrete provider", () => {
-		const result = resolveCliModel({
-			cliModel: "claude-sonnet-4-5",
-			modelRegistry: {
-				...canonicalRegistry,
-				getAll: () => canonicalVariantModels,
-			} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"],
-		});
-
-		expect(result.error).toBeUndefined();
-		expect(result.selector).toBe("claude-sonnet-4-5");
-		expect(result.model?.provider).toBe("github-copilot");
-		expect(result.model?.id).toBe("anthropic/claude-sonnet-4.5");
-	});
-
 	test("resolves --model provider/id without --provider", () => {
 		const registry = {
 			getAll: () => allModels,
@@ -1120,24 +1176,9 @@ describe("resolveCliModel", () => {
 });
 
 describe("resolveModelScope", () => {
-	test("expands exact canonical ids into all concrete variants", async () => {
-		const scoped = await resolveModelScope(["claude-sonnet-4-5"], {
-			getAvailable: () => canonicalVariantModels,
-			getCanonicalVariants: (canonicalId: string, options?: { candidates?: Model<"anthropic-messages">[] }) =>
-				canonicalRegistry.getCanonicalVariants!(canonicalId, options),
-		} as unknown as Parameters<typeof resolveModelScope>[1]);
-
-		expect(scoped).toHaveLength(2);
-		expect(scoped.map(entry => `${entry.model.provider}/${entry.model.id}`).sort()).toEqual([
-			"anthropic/claude-sonnet-4-5",
-			"github-copilot/anthropic/claude-sonnet-4.5",
-		]);
-	});
-
 	test("does not coalesce explicit provider/id patterns to Codex (regression for enabledModels)", async () => {
 		const scoped = await resolveModelScope(["openai/gpt-5.5"], {
 			getAvailable: () => openaiGpt55Models,
-			getCanonicalVariants: () => [],
 		});
 		expect(scoped).toHaveLength(1);
 		expect(scoped[0].model.provider).toBe("openai");
@@ -1160,10 +1201,9 @@ describe("resolveModelScope", () => {
 		expect(scoped.every(entry => entry.explicitThinkingLevel)).toBe(true);
 	});
 
-	test("applies max thinking level to glob scopes", async () => {
+	test("applies max thinking aliases to glob scopes when no literal max ids match", async () => {
 		const registry = {
 			getAvailable: () => mockCodexOverlapModels,
-			getCanonicalVariants: (_id: string, _opts?: unknown): CanonicalModelVariant[] => [],
 		};
 
 		const scoped = await resolveModelScope(["openai-codex/*:max"], registry);
@@ -1176,7 +1216,6 @@ describe("resolveModelScope", () => {
 	test("extracts :max as a scoped-model glob thinking selector", async () => {
 		const registry = {
 			getAvailable: () => mockMaxSuffixModels,
-			getCanonicalVariants: (_id: string, _opts?: unknown): CanonicalModelVariant[] => [],
 		};
 
 		const scoped = await resolveModelScope(["nanogpt/*:max"], registry);
@@ -1255,6 +1294,26 @@ describe("parseModelString", () => {
 			expect(result).toEqual({ provider: "nanogpt", id: "coding-router:max" });
 		});
 
+		test("leaves :auto attached to the model id unless the caller opts in via allowAutoAlias", () => {
+			// Without allowAutoAlias, the strict suffix parser must not silently
+			// reinterpret a literal `:auto` id as an auto-thinking selector.
+			const result = parseModelString("example/runtime:auto");
+			expect(result).toEqual({ provider: "example", id: "runtime:auto" });
+		});
+
+		test("extracts auto sentinel when explicitly enabled for provider id selectors", () => {
+			const result = parseModelString("openai/gpt-5:auto", { allowAutoAlias: true });
+			expect(result).toEqual({ provider: "openai", id: "gpt-5", thinkingLevel: "auto" });
+		});
+
+		test("preserves literal :auto model ids when the caller can prove they exist", () => {
+			const result = parseModelString("example/runtime:auto", {
+				allowAutoAlias: true,
+				isLiteralModelId: (provider, id) => provider === "example" && id === "runtime:auto",
+			});
+			expect(result).toEqual({ provider: "example", id: "runtime:auto" });
+		});
+
 		test("does not strip inherited object keys as thinking suffixes", () => {
 			const result = parseModelString("anthropic/claude-sonnet-4-5:constructor");
 			expect(result).toEqual({ provider: "anthropic", id: "claude-sonnet-4-5:constructor" });
@@ -1284,6 +1343,12 @@ describe("resolveModelFromString", () => {
 		const result = resolveModelFromString("nanogpt/coding-router:max", mockMaxSuffixModels);
 		expect(result?.provider).toBe("nanogpt");
 		expect(result?.id).toBe("coding-router:max");
+	});
+
+	test("preserves literal :auto provider model ids before alias parsing", () => {
+		const result = resolveModelFromString("example/runtime:auto", mockAutoSuffixModels);
+		expect(result?.provider).toBe("example");
+		expect(result?.id).toBe("runtime:auto");
 	});
 });
 
@@ -1325,6 +1390,20 @@ describe("extractExplicitThinkingSelector", () => {
 			isLiteralModelId: (provider, id) => provider === "nanogpt" && id === "coding-router:max",
 		});
 		expect(result).toBe(Effort.Max);
+	});
+
+	test("does not carry auto from literal role model ids", () => {
+		const result = extractExplicitThinkingSelector("nanogpt/coding-router:auto", undefined, {
+			isLiteralModelId: (provider, id) => provider === "nanogpt" && id === "coding-router:auto",
+		});
+		expect(result).toBeUndefined();
+	});
+
+	test("treats auto as an explicit selector when the model id is not literal", () => {
+		const result = extractExplicitThinkingSelector("openai/gpt-5:auto", undefined, {
+			isLiteralModelId: () => false,
+		});
+		expect(result).toBe("auto");
 	});
 });
 
@@ -1441,117 +1520,79 @@ describe("provider routing selector (@upstream)", () => {
 describe("filterAvailableModelsByEnabledPatterns", () => {
 	const models = mockModels as Model[];
 	const registry = {
-		getCanonicalVariants: (_id: string, _opts?: unknown): CanonicalModelVariant[] => [],
-	};
-
+		getCanonicalVariants: (_id: string, _opts?: { candidates?: readonly Model<Api>[] }) => [],
+	} satisfies CanonicalModelRegistry;
 	test("returns all models when patterns is empty", () => {
-		expect(filterAvailableModelsByEnabledPatterns(models, [], registry)).toEqual(models);
+		expect(filterAvailableModelsByEnabledPatterns(models, [])).toEqual(models);
 	});
 
 	test("filters by exact provider/modelId", () => {
-		const result = filterAvailableModelsByEnabledPatterns(models, ["anthropic/claude-sonnet-4-5"], registry);
+		const result = filterAvailableModelsByEnabledPatterns(models, ["anthropic/claude-sonnet-4-5"]);
 		expect(result).toHaveLength(1);
 		expect(result[0].id).toBe("claude-sonnet-4-5");
 	});
 
 	test("filters by bare model id matching across providers", () => {
-		const result = filterAvailableModelsByEnabledPatterns(models, ["claude-sonnet-4-5"], registry);
+		const result = filterAvailableModelsByEnabledPatterns(models, ["claude-sonnet-4-5"]);
 		expect(result).toHaveLength(1);
 		expect(result[0].provider).toBe("anthropic");
 	});
 
-	test("expands canonical id via registry", () => {
-		const canonicalRegistry = {
-			getCanonicalVariants: (id: string, _opts?: unknown): CanonicalModelVariant[] =>
-				id === "claude-sonnet-4-5"
-					? [
-							{
-								canonicalId: "claude-sonnet-4-5",
-								selector: "anthropic/claude-sonnet-4-5",
-								model: models[0],
-								source: "bundled",
-							},
-						]
-					: [],
-		};
-		const result = filterAvailableModelsByEnabledPatterns(models, ["claude-sonnet-4-5"], canonicalRegistry);
-		expect(result).toHaveLength(1);
-		expect(result[0].id).toBe("claude-sonnet-4-5");
-	});
-
-	test("expands canonical enabledModels entries with max thinking aliases", () => {
-		const registry = {
-			getCanonicalVariants: (canonicalId: string, options?: { candidates?: Model<"anthropic-messages">[] }) =>
-				canonicalRegistry.getCanonicalVariants!(canonicalId, options),
-		};
-		const result = filterAvailableModelsByEnabledPatterns(
-			canonicalVariantModels,
-			["claude-sonnet-4-5:max"],
-			registry,
-		);
-		expect(result.map(model => `${model.provider}/${model.id}`).sort()).toEqual([
-			"anthropic/claude-sonnet-4-5",
-			"github-copilot/anthropic/claude-sonnet-4.5",
-		]);
-	});
-
 	test("strips :thinkingLevel suffix before matching", () => {
-		const result = filterAvailableModelsByEnabledPatterns(models, ["anthropic/claude-sonnet-4-5:high"], registry);
+		const result = filterAvailableModelsByEnabledPatterns(models, ["anthropic/claude-sonnet-4-5:high"]);
 		expect(result).toHaveLength(1);
 		expect(result[0].id).toBe("claude-sonnet-4-5");
 	});
 
 	test("preserves colon-bearing OpenRouter ids (suffix is not a thinking level)", () => {
 		const openRouterModels = mockOpenRouterModels as Model[];
-		const result = filterAvailableModelsByEnabledPatterns(
-			openRouterModels,
-			["openrouter/qwen/qwen3-coder:exacto"],
-			registry,
-		);
+		const result = filterAvailableModelsByEnabledPatterns(openRouterModels, ["openrouter/qwen/qwen3-coder:exacto"]);
 		expect(result).toHaveLength(1);
 		expect(result[0].id).toBe("qwen/qwen3-coder:exacto");
 	});
 
 	test("matches bare OpenRouter-style model id with slash but no provider prefix", () => {
 		const openRouterModels = mockOpenRouterModels as Model[];
-		const result = filterAvailableModelsByEnabledPatterns(openRouterModels, ["qwen/qwen3-coder:exacto"], registry);
+		const result = filterAvailableModelsByEnabledPatterns(openRouterModels, ["qwen/qwen3-coder:exacto"]);
 		expect(result).toHaveLength(1);
 		expect(result[0].id).toBe("qwen/qwen3-coder:exacto");
 		expect(result[0].provider).toBe("openrouter");
 	});
 
 	test("evaluates glob patterns against provider/modelId", () => {
-		const result = filterAvailableModelsByEnabledPatterns(models, ["anthropic/*"], registry);
+		const result = filterAvailableModelsByEnabledPatterns(models, ["anthropic/*"]);
 		expect(result).toHaveLength(1);
 		expect(result[0].provider).toBe("anthropic");
 	});
-	test("extracts :max as an enabledModels glob thinking selector", () => {
+	test("extracts :max as an enabledModels glob thinking selector when a registry can expand the bare model", () => {
 		const result = filterAvailableModelsByEnabledPatterns(mockMaxSuffixModels, ["nanogpt/*:max"], registry);
 		expect(result.map(model => model.id)).toEqual(["coding-router", "coding-router:max"]);
 	});
 
+	test("preserves literal :max in enabledModels globs without registry expansion", () => {
+		const result = filterAvailableModelsByEnabledPatterns(mockMaxSuffixModels, ["nanogpt/*:max"]);
+		expect(result).toHaveLength(1);
+		expect(result[0].id).toBe("coding-router:max");
+	});
+
 	test("evaluates glob patterns against bare model id", () => {
-		const result = filterAvailableModelsByEnabledPatterns(models, ["claude-*"], registry);
+		const result = filterAvailableModelsByEnabledPatterns(models, ["claude-*"]);
 		expect(result).toHaveLength(1);
 		expect(result[0].id).toBe("claude-sonnet-4-5");
 	});
 
 	test("applies glob and exact patterns together", () => {
-		const result = filterAvailableModelsByEnabledPatterns(models, ["anthropic/*", "openai/gpt-4o"], registry);
+		const result = filterAvailableModelsByEnabledPatterns(models, ["anthropic/*", "openai/gpt-4o"]);
 		expect(result).toHaveLength(2);
 	});
 
 	test("returns empty list when no pattern matches (misconfiguration)", () => {
-		const result = filterAvailableModelsByEnabledPatterns(models, ["nonexistent-model"], registry);
+		const result = filterAvailableModelsByEnabledPatterns(models, ["nonexistent-model"]);
 		expect(result).toHaveLength(0);
 	});
 
 	test("includes multiple patterns from different providers", () => {
-		const result = filterAvailableModelsByEnabledPatterns(
-			models,
-			["anthropic/claude-sonnet-4-5", "openai/gpt-4o"],
-			registry,
-		);
+		const result = filterAvailableModelsByEnabledPatterns(models, ["anthropic/claude-sonnet-4-5", "openai/gpt-4o"]);
 		expect(result).toHaveLength(2);
 	});
 
@@ -1559,7 +1600,7 @@ describe("filterAvailableModelsByEnabledPatterns", () => {
 		const bedrockModels = [createBedrockDefaultModel()];
 		const profileArn = "arn:aws:bedrock:us-east-2:1234567890:application-inference-profile/company-opus-48";
 
-		const result = filterAvailableModelsByEnabledPatterns(bedrockModels, [`amazon-bedrock/${profileArn}`], registry);
+		const result = filterAvailableModelsByEnabledPatterns(bedrockModels, [`amazon-bedrock/${profileArn}`]);
 
 		expect(result).toHaveLength(1);
 		expect(result[0].provider).toBe("amazon-bedrock");
@@ -1575,7 +1616,6 @@ describe("filterAvailableModelsByEnabledPatterns", () => {
 		const result = await resolveAllowedModels(
 			{
 				getAvailable: () => bedrockModels,
-				getCanonicalVariants: registry.getCanonicalVariants,
 			},
 			settings,
 		);
@@ -1586,7 +1626,7 @@ describe("filterAvailableModelsByEnabledPatterns", () => {
 		expect(result[0].reasoning).toBe(false);
 	});
 	test("does not coalesce explicit provider/id patterns to Codex (regression for enabledModels)", () => {
-		const result = filterAvailableModelsByEnabledPatterns(openaiGpt55Models, ["openai/gpt-5.5"], registry);
+		const result = filterAvailableModelsByEnabledPatterns(openaiGpt55Models, ["openai/gpt-5.5"]);
 		expect(result).toHaveLength(1);
 		expect(result[0].provider).toBe("openai");
 		expect(result[0].id).toBe("gpt-5.5");

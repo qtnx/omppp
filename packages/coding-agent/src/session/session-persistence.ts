@@ -59,9 +59,15 @@ function shouldExternalizeImagePayload(
 	return (key === TEXT_CONTENT_KEY && isImageBlock(value)) || key === "images";
 }
 
+/** True for a non-empty string — marks signature/encrypted fields whose block must persist verbatim. */
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0;
+}
+
 /**
  * Recursively truncate large strings in an object for session persistence.
- * - Truncates any oversized string fields (key-agnostic)
+ * - Truncates oversized string fields (key-agnostic), except signed/encrypted
+ *   blocks and signature keys, which persist verbatim
  * - Externalizes oversized image payloads to blob refs
  * - Updates lineCount when content is truncated
  * - Returns original object if no changes needed (structural sharing)
@@ -71,6 +77,7 @@ function shouldExternalizeImagePayload(
  * synchronous blob-store path (`fs.writeFileSync`), so blob bytes are in the
  * kernel page cache before the JSONL line referencing them is written.
  */
+
 function isPersistedSnapcompactFrame(value: unknown): value is { data: string; mimeType?: string } {
 	if (typeof value !== "object" || value === null) return false;
 	const frame = value as Record<string, unknown>;
@@ -102,7 +109,25 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 		return { ...obj, data: externalizeImageDataSync(blobStore, obj.data, obj.mimeType) };
 	}
 	if (key === "frames" && isPersistedSnapcompactFrame(obj)) {
-		return externalizeSnapcompactFrameForPersistenceSync(obj as { data: string; mimeType?: string }, blobStore);
+		return externalizeSnapcompactFrameForPersistenceSync(obj, blobStore);
+	}
+	// Signed content is bound to its exact bytes: a truncated `thinking`/`text`/
+	// `arguments` no longer matches its signature and a truncated
+	// `redacted_thinking` blob is undecryptable, so the provider 400s the replay.
+	// Persist signed blocks verbatim — never truncate, externalize, or descend.
+	// Unsigned blocks (e.g. an interrupted stream) have no such binding and stay
+	// truncatable for size control.
+	if (typeof obj === "object" && "type" in obj) {
+		const signed =
+			(obj.type === "thinking" && "thinkingSignature" in obj && isNonEmptyString(obj.thinkingSignature)) ||
+			(obj.type === "text" && "textSignature" in obj && isNonEmptyString(obj.textSignature)) ||
+			(obj.type === "toolCall" && "thoughtSignature" in obj && isNonEmptyString(obj.thoughtSignature));
+		const redacted = obj.type === "redactedThinking" && "data" in obj && isNonEmptyString(obj.data);
+		// OpenAI Responses reasoning items (providerPayload.items) carry
+		// `encrypted_content`, server-validated on replay — atomic like signed blocks.
+		const encryptedReasoning =
+			obj.type === "reasoning" && "encrypted_content" in obj && isNonEmptyString(obj.encrypted_content);
+		if (signed || redacted || encryptedReasoning) return obj;
 	}
 
 	if (typeof obj === "string") {
@@ -110,10 +135,12 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 			return externalizeImageDataUrlSync(blobStore, obj);
 		}
 		if (obj.length > MAX_PERSIST_CHARS) {
-			// Cryptographic signatures must be preserved exactly or cleared entirely — never truncated.
-			// Truncation would produce an invalid signature that the API rejects.
+			// Defensive: signature keys normally sit on blocks the guard above returns
+			// verbatim, but if one is reached here (unknown carrier shape), preserve it —
+			// truncation produces an invalid signature the API rejects, and clearing
+			// drops reasoning context the provider needs on replay.
 			if (key === "thinkingSignature" || key === "thoughtSignature" || key === "textSignature") {
-				return "";
+				return obj;
 			}
 			const limit = Math.max(0, MAX_PERSIST_CHARS - TRUNCATION_NOTICE.length);
 			return `${truncateString(obj, limit)}${TRUNCATION_NOTICE}`;
@@ -169,6 +196,100 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 	return obj;
 }
 
+/**
+ * Read the duplication-relevant fields of an OpenAI Responses reasoning item.
+ * Returns `undefined` for anything that is not a `type: "reasoning"` object, so
+ * non-reasoning payload entries and corrupt signatures are never matched.
+ */
+function readReasoningItem(item: unknown): { encrypted_content?: string; id?: string } | undefined {
+	if (item === null || typeof item !== "object") return undefined;
+	if (!("type" in item) || item.type !== "reasoning") return undefined;
+	const reasoning: { encrypted_content?: string; id?: string } = {};
+	if ("encrypted_content" in item && typeof item.encrypted_content === "string" && item.encrypted_content.length > 0) {
+		reasoning.encrypted_content = item.encrypted_content;
+	}
+	if ("id" in item && typeof item.id === "string" && item.id.length > 0) reasoning.id = item.id;
+	return reasoning;
+}
+
+/**
+ * True when a `thinkingSignature` (a JSON-encoded reasoning item) is already
+ * carried by a reasoning item in the message's provider payload — matched on
+ * `encrypted_content` (the load-bearing blob) when present, else on item `id`.
+ * A signature the payload does not cover is never reported as recoverable, so it
+ * is always kept.
+ */
+function signatureCoveredByPayload(
+	signature: string,
+	encrypted: ReadonlySet<string>,
+	ids: ReadonlySet<string>,
+): boolean {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(signature);
+	} catch {
+		return false;
+	}
+	const reasoning = readReasoningItem(parsed);
+	if (!reasoning) return false;
+	if (reasoning.encrypted_content) return encrypted.has(reasoning.encrypted_content);
+	if (reasoning.id) return ids.has(reasoning.id);
+	return false;
+}
+
+/**
+ * Drop `thinkingSignature` from assistant thinking blocks whose reasoning item is
+ * already carried, verbatim, in the message's OpenAI Responses `providerPayload`.
+ *
+ * Responses/Codex turns mint each reasoning item once and store it twice:
+ * `providerPayload.items` (the authoritative native-history copy that replay and
+ * remote compaction read) and `content[].thinkingSignature`, which is literally
+ * `JSON.stringify(reasoningItem)` — including the large `encrypted_content` blob.
+ * Replay only ever reads the payload; the signature is a no-payload fallback that
+ * same-provider turns never reach and cross-model turns strip as untrustworthy.
+ * Persisting both stores the encrypted reasoning twice for zero token or replay
+ * benefit, so the on-disk copy drops the duplicate signature whenever its
+ * reasoning item is recoverable from the payload. The in-memory entry is left
+ * untouched; only the serialized line is slimmed.
+ */
+function stripReplayedReasoningSignatures(entry: FileEntry): FileEntry {
+	if (entry.type !== "message" || entry.message.role !== "assistant") return entry;
+	const message = entry.message;
+	const payload = message.providerPayload;
+	if (payload?.type !== "openaiResponsesHistory" || !Array.isArray(payload.items)) return entry;
+	const hasSignedThinking = message.content.some(
+		block =>
+			block.type === "thinking" && typeof block.thinkingSignature === "string" && block.thinkingSignature.length > 0,
+	);
+	if (!hasSignedThinking) return entry;
+
+	const encrypted = new Set<string>();
+	const ids = new Set<string>();
+	for (const rawItem of payload.items) {
+		const reasoning = readReasoningItem(rawItem);
+		if (!reasoning) continue;
+		if (reasoning.encrypted_content) encrypted.add(reasoning.encrypted_content);
+		if (reasoning.id) ids.add(reasoning.id);
+	}
+	if (encrypted.size === 0 && ids.size === 0) return entry;
+
+	let changed = false;
+	const content = message.content.map(block => {
+		if (
+			block.type !== "thinking" ||
+			typeof block.thinkingSignature !== "string" ||
+			block.thinkingSignature.length === 0
+		) {
+			return block;
+		}
+		if (!signatureCoveredByPayload(block.thinkingSignature, encrypted, ids)) return block;
+		changed = true;
+		return { ...block, thinkingSignature: undefined };
+	});
+	if (!changed) return entry;
+	return { ...entry, message: { ...message, content } };
+}
+
 export function prepareEntryForPersistence(entry: FileEntry, blobStore: BlobStore): FileEntry {
-	return truncateForPersistence(entry, blobStore) as FileEntry;
+	return truncateForPersistence(stripReplayedReasoningSignatures(entry), blobStore) as FileEntry;
 }

@@ -13,6 +13,7 @@ import {
 	getRecentErrors,
 	getRecentRequests,
 	getRequestDetails,
+	getToolDashboardStats,
 	getTotalMessageCount,
 	syncAllSessions,
 } from "./aggregator";
@@ -375,6 +376,11 @@ export async function handleStatsApiRequest(req: Request, options: StatsApiOptio
 
 	if (path === "/api/stats/behavior") {
 		const stats = await getBehaviorDashboardStats(range);
+		return Response.json(stats);
+	}
+
+	if (path === "/api/stats/tools") {
+		const stats = await getToolDashboardStats(range);
 		return Response.json(stats);
 	}
 

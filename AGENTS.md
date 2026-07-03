@@ -26,6 +26,16 @@ This working copy is the **OMPx** fork. Keep `origin` pointed at `git@github.com
 
 **Catalog import convention**: code in this repo imports catalog *values* (bundled models, model-thinking helpers, identity, descriptors, model manager/cache) from `@oh-my-pi/pi-catalog/<module>` — never via `@oh-my-pi/pi-ai`. The pi-ai barrel re-exports only the model/effort *types* its own signatures use (`Model`, `Api`, `ThinkingConfig`, `Effort`, …); type-only imports of those from `@oh-my-pi/pi-ai` are fine.
 
+## Fork Divergence Guardrails (keep on upstream sync)
+
+This is the **OMPx fork** of `can1357/oh-my-pi`. The decisions below intentionally diverge from `upstream/main`. When merging or rebasing from upstream, **preserve these** — do NOT let an upstream change (or a later agent) revert them. On collision, resolve in favor of the fork decision and note it in the PR resolution ledger.
+
+- **Implementer/subagent tier names stay `quick_task` / `task` / `heavy_task`.** Upstream renamed `quick_task` → `sonic` (`6c1152647`) and replaced the `oracle` subagent with `tester` (`720fb3f12`). On sync, KEEP the fork tier names — the delegation-reminder plugin, duo/advisor runtime, and orchestrator prompts depend on them. Adopt upstream `tester` only **additively**; never rename `quick_task` to `sonic`.
+- **Versioning stays on the fork 1.x line.** Keep the OMPx version in `package.json` and every package manifest; do NOT adopt upstream's 16.x version.
+- **Branding/self-update stays OMPx.** Keep the `ompx` CLI rebrand and self-update from `qtnx/omppp`; do NOT revert to upstream `omp` branding or update source.
+- **Fork-only packages & features must survive merges:** `context-gc-plugin`, `delegation-reminder-plugin`, `system-context-reminder-plugin`, safe orchestrator mode, duo/advisor runtime, the `workflow` tool, Herdr agent-state, the macOS sandbox suite, the browser annotate suite, and the agent `compact` tool.
+- **CI structure stays fork-shaped:** GitHub-hosted runners, the release security gate, and the OSV scanner. Port upstream's new/renamed test paths without discarding these.
+
 ## GitHub
 
 Unless user tells you exactly what to write:
@@ -202,7 +212,7 @@ All text displayed in tool renderers must be sanitized. Raw content (file conten
 
 ### Streaming tool previews
 
-Tool-call previews can have **multiple render paths**. If you add preview-only fields or depend on partially streamed args, update every path — not only the final renderer.
+Tool-call previews can have **multiple render paths**. If you add preview-only fields or depend on partially streamed args, update every path — not only the final renderer. Streamed argument buffers decode into display args via `decodeStreamedToolArgs` / `ToolArgsRevealController` (`modes/controllers/tool-args-reveal.ts`); both the live event path and transcript rebuilds must go through them — never spread provider-parsed `arguments` next to a raw `__partialJson` (parsed args lag the stream by a throttled parse window).
 
 For the bash tool specifically:
 - The pending preview may need raw `partialJson`, not just parsed `arguments`. Parsed args lag until a JSON object closes, which makes inline env assignments appear only at the end.

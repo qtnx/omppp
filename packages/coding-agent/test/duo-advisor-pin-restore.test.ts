@@ -112,7 +112,7 @@ describe("AgentSession duo advisor pin restore", () => {
 			sessionManager: options?.sessionManager ?? SessionManager.inMemory(tempDir?.path()),
 			settings: options?.settings ?? settings(),
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 		});
 		sessions.push(session);
 		return session;

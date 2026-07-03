@@ -2,7 +2,7 @@
  * `omp models` — list, search, and refresh available models.
  *
  * Subcommands:
- * - `ls` (default): list every available model with a canonical + provider view.
+ * - `ls` (default): list every available model grouped by provider.
  * - `find <substring>`: list models whose provider, id, or name contains the substring.
  * - `refresh`: force an online catalog re-fetch (ignoring the model cache TTL),
  *   then list. This is the supported replacement for `rm -rf ~/.omp/models.db`
@@ -21,7 +21,7 @@ import { discoverAndLoadExtensions, loadExtensions } from "../extensibility/exte
 import { discoverAuthStorage } from "../sdk";
 import { EventBus } from "../utils/event-bus";
 
-export type ModelsAction = "ls" | "find" | "refresh" | "canonical";
+export type ModelsAction = "ls" | "find" | "refresh";
 
 export interface ModelsCommandArgs {
 	action: ModelsAction;
@@ -48,7 +48,6 @@ const KNOWN_ACTIONS: Record<string, ModelsAction> = {
 	list: "ls",
 	find: "find",
 	refresh: "refresh",
-	canonical: "canonical",
 };
 
 /** Resolve the two positional args into an action + filter (provider names fall through to `ls`). */
@@ -77,24 +76,20 @@ interface ModelJson {
 	cost: Model<Api>["cost"];
 }
 
-interface CanonicalJson {
-	id: string;
-	selected: string;
-	variants: number;
-	contextWindow: number | null;
-	maxTokens: number | null;
-}
-
 interface ModelsJson {
 	models: ModelJson[];
 }
 
-interface CanonicalModelsJson {
-	canonical: CanonicalJson[];
-}
-
 function writeLine(line = ""): void {
 	process.stdout.write(`${line}\n`);
+}
+
+function writeModelsConfigError(error: Error): void {
+	writeLine(chalk.yellow("Warning: models.yml validation failed — custom providers disabled"));
+	for (const line of error.message.split("\n")) {
+		writeLine(`  ${line}`);
+	}
+	writeLine();
 }
 
 function formatLimit(n: number | null): string {
@@ -200,10 +195,21 @@ function renderProviderModels(
 		}
 	}
 
+	const configError = modelRegistry.getError();
+
 	if (json) {
+		if (configError) {
+			process.stderr.write(
+				`Warning: models.yml validation failed — custom providers disabled\n${configError.message}\n`,
+			);
+		}
 		const output: ModelsJson = { models: filtered.slice().sort(byProviderThenId).map(toModelJson) };
 		writeLine(JSON.stringify(output));
 		return;
+	}
+
+	if (configError) {
+		writeModelsConfigError(configError);
 	}
 
 	if (available.length === 0) {
@@ -250,67 +256,6 @@ function renderProviderModels(
 		)) {
 			writeLine(line);
 		}
-	}
-}
-
-/** `omp models canonical`: the coalesced canonical view (one row per canonical id). */
-function renderCanonicalModels(modelRegistry: ModelRegistry, pattern: string | undefined, json: boolean): void {
-	const selections = modelRegistry.getCanonicalModelSelections({ availableOnly: true });
-	const needle = pattern?.toLowerCase();
-	const filtered = needle
-		? selections.filter(
-				({ record, model }) =>
-					record.id.toLowerCase().includes(needle) ||
-					`${model.provider}/${model.id}`.toLowerCase().includes(needle),
-			)
-		: selections;
-
-	if (json) {
-		const output: CanonicalModelsJson = {
-			canonical: filtered
-				.map(({ record, model }) => ({
-					id: record.id,
-					selected: `${model.provider}/${model.id}`,
-					variants: record.variants.length,
-					contextWindow: model.contextWindow,
-					maxTokens: model.maxTokens,
-				}))
-				.sort((left, right) => left.id.localeCompare(right.id)),
-		};
-		writeLine(JSON.stringify(output));
-		return;
-	}
-
-	if (selections.length === 0) {
-		writeLine("No models available. Set API keys in environment variables.");
-		return;
-	}
-	if (filtered.length === 0) {
-		writeLine(`No canonical models matching "${pattern}"`);
-		return;
-	}
-
-	const rows = filtered
-		.slice()
-		.sort((left, right) => left.record.id.localeCompare(right.record.id))
-		.map(({ record, model }) => [
-			record.id,
-			`${model.provider}/${model.id}`,
-			String(record.variants.length),
-			formatLimit(model.contextWindow),
-			formatLimit(model.maxTokens),
-		]);
-	for (const line of boxTable(
-		[
-			{ header: "canonical" },
-			{ header: "selected" },
-			{ header: "variants", align: "right" },
-			{ header: "context", align: "right" },
-			{ header: "max-out", align: "right" },
-		],
-		rows,
-	)) {
-		writeLine(line);
 	}
 }
 
@@ -376,11 +321,7 @@ export async function runModelsListing(options: RunModelsListingOptions): Promis
 	// Discover runtime (extension) provider catalogs now that they are registered.
 	await modelRegistry.refreshRuntimeProviders(action === "refresh" ? "online" : "online-if-uncached");
 
-	if (action === "canonical") {
-		renderCanonicalModels(modelRegistry, pattern, json);
-	} else {
-		renderProviderModels(modelRegistry, action, pattern, json);
-	}
+	renderProviderModels(modelRegistry, action, pattern, json);
 }
 
 /**

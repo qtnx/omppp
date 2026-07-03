@@ -1,17 +1,26 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as pluginCli from "@oh-my-pi/pi-coding-agent/cli/plugin-cli";
+import * as updateCli from "@oh-my-pi/pi-coding-agent/cli/update-cli";
 import {
+	buildBunInstallArgs,
 	getBinaryNameForTest,
 	installScriptUrl,
 	parseReportedVersion,
+	parseUpdateArgs,
+	pruneBunInstallCache,
 	replaceBinaryForUpdate,
+	resolveBunGlobalNodeModulesDirFromLocations,
+	resolveUpdateMethodForTest,
 	sweepStaleBackups,
 	updateViaInstallScript,
 } from "@oh-my-pi/pi-coding-agent/cli/update-cli";
+import Update from "@oh-my-pi/pi-coding-agent/commands/update";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
 
 const tempDirs: string[] = [];
 
@@ -22,7 +31,60 @@ async function makeTempDir(): Promise<string> {
 }
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
+});
+const TEST_CONFIG: CliConfig = {
+	bin: "omp",
+	version: "0.0.0-test",
+	commands: new Map(),
+};
+
+describe("update command plugin dispatch", () => {
+	it("routes -l to plugin upgrade instead of the app updater", async () => {
+		const pluginSpy = spyOn(pluginCli, "runPluginCommand").mockResolvedValue(undefined);
+		const updateSpy = spyOn(updateCli, "runUpdateCommand").mockResolvedValue(undefined);
+
+		const command = new Update(["-l"], TEST_CONFIG);
+		await command.run();
+
+		expect(pluginSpy).toHaveBeenCalledWith({ action: "upgrade", args: [], flags: {} });
+		expect(updateSpy).not.toHaveBeenCalled();
+	});
+
+	it("keeps normal update flags on the app updater path", async () => {
+		const pluginSpy = spyOn(pluginCli, "runPluginCommand").mockResolvedValue(undefined);
+		const updateSpy = spyOn(updateCli, "runUpdateCommand").mockResolvedValue(undefined);
+
+		const command = new Update(["--check", "--force"], TEST_CONFIG);
+		await command.run();
+
+		expect(updateSpy).toHaveBeenCalledWith({ force: true, check: true });
+		expect(pluginSpy).not.toHaveBeenCalled();
+	});
+});
+
+describe("parseUpdateArgs", () => {
+	it("preserves the legacy plugin update shorthand", () => {
+		expect(parseUpdateArgs(["update", "-l"])).toEqual({ force: false, check: false, plugins: true });
+	});
+});
+
+describe("update-cli install target detection", () => {
+	it("uses bun update when prioritized omp is inside bun global bin", () => {
+		const method = resolveUpdateMethodForTest("/Users/test/.bun/bin/omp", "/Users/test/.bun/bin");
+
+		expect(method).toBe("bun");
+	});
+});
+describe("update-cli bun install command", () => {
+	it("pins the official registry and natives packages in compatibility helper args", () => {
+		const args = buildBunInstallArgs("15.9.0", "linux-x64");
+		expect(args).toContain("--registry=https://registry.npmjs.org/");
+		expect(args).toContain("@oh-my-pi/pi-coding-agent@15.9.0");
+		expect(args).toContain("@oh-my-pi/pi-natives@15.9.0");
+		expect(args).toContain("@oh-my-pi/pi-natives-linux-x64@15.9.0");
+	});
 });
 
 describe("update-cli release binary names", () => {
@@ -52,6 +114,102 @@ describe("parseReportedVersion", () => {
 	it("returns undefined when the binary printed no version", () => {
 		expect(parseReportedVersion("command not found")).toBeUndefined();
 		expect(parseReportedVersion("")).toBeUndefined();
+	});
+
+	it("derives global node_modules from supported bun global locations", () => {
+		expect(resolveBunGlobalNodeModulesDirFromLocations(path.join("home", ".bun", "bin"), undefined)).toBe(
+			path.join("home", ".bun", "install", "global", "node_modules"),
+		);
+		expect(
+			resolveBunGlobalNodeModulesDirFromLocations(undefined, path.join("home", ".bun", "install", "cache")),
+		).toBe(path.join("home", ".bun", "install", "global", "node_modules"));
+	});
+});
+
+describe("update-cli bun cache pruning", () => {
+	it("keeps only the newest cached version for filtered global install packages", async () => {
+		const dir = await makeTempDir();
+		await Bun.write(path.join(dir, "react", "18.3.1@@@1"), "");
+		await Bun.write(path.join(dir, "react", "19.2.6@@@1"), "");
+		await Bun.write(
+			path.join(dir, "react@18.3.1@@@1", "package.json"),
+			JSON.stringify({ name: "react", version: "18.3.1" }),
+		);
+		await Bun.write(
+			path.join(dir, "react@19.2.6@@@1", "package.json"),
+			JSON.stringify({ name: "react", version: "19.2.6" }),
+		);
+		await Bun.write(path.join(dir, "@oh-my-pi", "pi-utils", "15.7.6@@@1"), "");
+		await Bun.write(path.join(dir, "@oh-my-pi", "pi-utils", "15.8.0@@@1"), "");
+		await Bun.write(
+			path.join(dir, "@oh-my-pi", "pi-utils@15.7.6@@@1", "package.json"),
+			JSON.stringify({ name: "@oh-my-pi/pi-utils", version: "15.7.6" }),
+		);
+		await Bun.write(
+			path.join(dir, "@oh-my-pi", "pi-utils@15.8.0@@@1", "package.json"),
+			JSON.stringify({ name: "@oh-my-pi/pi-utils", version: "15.8.0" }),
+		);
+		await Bun.write(path.join(dir, "chalk", "4.1.2@@@1"), "");
+		await Bun.write(path.join(dir, "chalk", "5.6.2@@@1"), "");
+		await Bun.write(
+			path.join(dir, "chalk@4.1.2@@@1", "package.json"),
+			JSON.stringify({ name: "chalk", version: "4.1.2" }),
+		);
+		await Bun.write(
+			path.join(dir, "chalk@5.6.2@@@1", "package.json"),
+			JSON.stringify({ name: "chalk", version: "5.6.2" }),
+		);
+
+		const result = await pruneBunInstallCache(dir, new Set(["react", "@oh-my-pi/pi-utils"]));
+
+		expect(result).toEqual({ scannedPackages: 2, removedEntries: 4 });
+		expect(await Bun.file(path.join(dir, "react", "18.3.1@@@1")).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, "react@18.3.1@@@1", "package.json")).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, "react", "19.2.6@@@1")).exists()).toBe(true);
+		expect(await Bun.file(path.join(dir, "react@19.2.6@@@1", "package.json")).exists()).toBe(true);
+		expect(await Bun.file(path.join(dir, "@oh-my-pi", "pi-utils", "15.7.6@@@1")).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, "@oh-my-pi", "pi-utils@15.7.6@@@1", "package.json")).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, "@oh-my-pi", "pi-utils", "15.8.0@@@1")).exists()).toBe(true);
+		expect(await Bun.file(path.join(dir, "@oh-my-pi", "pi-utils@15.8.0@@@1", "package.json")).exists()).toBe(true);
+		expect(await Bun.file(path.join(dir, "chalk", "4.1.2@@@1")).exists()).toBe(true);
+		expect(await Bun.file(path.join(dir, "chalk@4.1.2@@@1", "package.json")).exists()).toBe(true);
+	});
+
+	it("keeps current registry-qualified marker entries with their materialized package", async () => {
+		const dir = await makeTempDir();
+		await Bun.write(path.join(dir, "pkg", "1.0.0@@registry.npmjs.org@@@1"), "");
+		await Bun.write(
+			path.join(dir, "pkg@1.0.0@@registry.npmjs.org@@@1", "package.json"),
+			JSON.stringify({ name: "pkg", version: "1.0.0" }),
+		);
+
+		const result = await pruneBunInstallCache(dir, new Set(["pkg"]));
+
+		expect(result).toEqual({ scannedPackages: 1, removedEntries: 0 });
+		expect(await Bun.file(path.join(dir, "pkg", "1.0.0@@registry.npmjs.org@@@1")).exists()).toBe(true);
+		expect(await Bun.file(path.join(dir, "pkg@1.0.0@@registry.npmjs.org@@@1", "package.json")).exists()).toBe(true);
+	});
+
+	it("treats a stable release as newer than a matching prerelease", async () => {
+		const dir = await makeTempDir();
+		await Bun.write(path.join(dir, "pkg", "1.0.0-beta.1@@@1"), "");
+		await Bun.write(path.join(dir, "pkg", "1.0.0@@@1"), "");
+		await Bun.write(
+			path.join(dir, "pkg@1.0.0-beta.1@@@1", "package.json"),
+			JSON.stringify({ name: "pkg", version: "1.0.0-beta.1" }),
+		);
+		await Bun.write(
+			path.join(dir, "pkg@1.0.0@@@1", "package.json"),
+			JSON.stringify({ name: "pkg", version: "1.0.0" }),
+		);
+
+		const result = await pruneBunInstallCache(dir);
+
+		expect(result).toEqual({ scannedPackages: 1, removedEntries: 2 });
+		expect(await Bun.file(path.join(dir, "pkg", "1.0.0-beta.1@@@1")).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, "pkg@1.0.0-beta.1@@@1", "package.json")).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, "pkg", "1.0.0@@@1")).exists()).toBe(true);
+		expect(await Bun.file(path.join(dir, "pkg@1.0.0@@@1", "package.json")).exists()).toBe(true);
 	});
 });
 

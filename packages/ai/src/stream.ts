@@ -3,6 +3,7 @@ import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
+import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl } from "@oh-my-pi/pi-catalog/hosts";
 import {
@@ -13,7 +14,8 @@ import {
 	resolveWireModelId,
 } from "@oh-my-pi/pi-catalog/model-thinking";
 import { CATALOG_PROVIDERS, type ProviderCatalogEntry } from "@oh-my-pi/pi-catalog/provider-models";
-import { $env, $pickenv, getConfigRootDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { CODEX_BASE_URL } from "@oh-my-pi/pi-catalog/wire/codex";
+import { $env, $pickenv, getConfigRootDir, isEnoent, logger, withExtraCaFetch } from "@oh-my-pi/pi-utils";
 import { getCustomApi } from "./api-registry";
 import { AUTH_RETRY_STEPS, isApiKeyResolver, resolveRetryKey } from "./auth-retry";
 import * as AIError from "./error";
@@ -72,6 +74,8 @@ import type {
 	ToolChoice,
 } from "./types";
 import { AssistantMessageEventStream } from "./utils/event-stream";
+import { isFoundryEnabled } from "./utils/foundry";
+import { wrapLeakedThinkingStream } from "./utils/leaked-thinking-stream";
 import { wrapFetchForProxy } from "./utils/proxy";
 import { withRequestDebugFetch } from "./utils/request-debug";
 import { withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
@@ -82,6 +86,62 @@ function isGoogleVertexAuthenticatedModel(model: Model<Api>): boolean {
 		((model.api === "openai-completions" && isVertexExpressOpenAIUrl(model.baseUrl)) ||
 			(model.api === "anthropic-messages" && isVertexRawPredictUrl(model.baseUrl)))
 	);
+}
+
+/**
+ * Whether {@link model} is an official first-party endpoint whose stream needs
+ * no leaked-thinking healing — the official Anthropic API and the official
+ * OpenAI / OpenAI-Codex endpoints return structured thinking blocks and never
+ * leak reasoning idioms into the visible text channel.
+ *
+ * The gate is provider id **and** official endpoint URL: pointing
+ * `provider: "anthropic"` (or `openai`) at a custom proxy via `models.yml`
+ * still routes through {@link wrapLeakedThinkingStream}, since a third-party
+ * gateway may well leak. URL checks are strict (exact origin / path boundary
+ * or parsed hostname) — a substring match would accept lookalikes like
+ * `https://api.openai.com.evil/`. Anthropic Foundry (`CLAUDE_CODE_USE_FOUNDRY`)
+ * redirects an empty `baseUrl` to `FOUNDRY_BASE_URL`, so the check runs against
+ * that effective endpoint — exempt only when it resolves to the official host.
+ */
+function isLeakedThinkingHealExempt(model: Model<Api>): boolean {
+	switch (model.provider) {
+		case "anthropic":
+			// Mirror resolveAnthropicBaseUrl: Foundry redirects an empty baseUrl to
+			// FOUNDRY_BASE_URL, so exempt only when the effective endpoint is official.
+			return isOfficialAnthropicApiUrl((isFoundryEnabled() && $env.FOUNDRY_BASE_URL?.trim()) || model.baseUrl);
+		case "openai":
+			return isOfficialOpenAIApiUrl(model.baseUrl);
+		case "openai-codex":
+			return isOfficialCodexApiUrl(model.baseUrl);
+		default:
+			return false;
+	}
+}
+
+/** Strict official-OpenAI endpoint check; missing baseUrl defaults to `api.openai.com`. */
+function isOfficialOpenAIApiUrl(baseUrl: string | undefined): boolean {
+	if (!baseUrl) return true;
+	try {
+		return new URL(baseUrl).hostname === "api.openai.com";
+	} catch {
+		return false;
+	}
+}
+
+/** Strict official-Codex endpoint check; exact origin or a path boundary after {@link CODEX_BASE_URL}. */
+function isOfficialCodexApiUrl(baseUrl: string | undefined): boolean {
+	if (!baseUrl) return true;
+	const lower = baseUrl.toLowerCase().replace(/\/+$/, "");
+	return lower === CODEX_BASE_URL || lower.startsWith(`${CODEX_BASE_URL}/`);
+}
+
+/**
+ * Apply live leaked-thinking healing unless {@link model} is an official
+ * first-party endpoint ({@link isLeakedThinkingHealExempt}), which emits
+ * structured thinking and needs no healing.
+ */
+function healLeakedThinking(model: Model<Api>, inner: AssistantMessageEventStream): AssistantMessageEventStream {
+	return isLeakedThinkingHealExempt(model) ? inner : wrapLeakedThinkingStream(inner);
 }
 
 type ProviderInFlightLease = {
@@ -438,14 +498,14 @@ async function removeProviderInFlightLeaseDir(leasePath: string): Promise<void> 
 	}
 }
 
+// Signal into the lease's OWN provider directory (derived from `lease.path`)
+// rather than recomputing it from the current root. A release that lands after
+// the in-flight root has been repointed (only the test seam does that) must not
+// write `.wakeup` into an unrelated provider directory.
 async function releaseProviderInFlightLease(lease: ProviderInFlightLease): Promise<void> {
 	clearInterval(lease.heartbeat);
 	await lease.flushHeartbeat();
 	await removeProviderInFlightLeaseDir(lease.path);
-	// Signal the directory the lease physically lived in, derived from its own
-	// path, instead of recomputing it from the (mutable) provider-inflight root.
-	// The release can run after a consumer's stream.result() has resolved, and a
-	// relocated root must not redirect this wakeup at an unrelated provider dir.
 	await signalProviderInFlightWaitersInDir(path.dirname(lease.path));
 }
 
@@ -500,8 +560,12 @@ function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal"
 	options: TOptions | undefined,
 	dispatch: () => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
+	// Leaked-thinking healing folds in here — the one shared provider-dispatch
+	// chokepoint — so the loop guard (which wraps this) sees healed events and all
+	// provider exits are covered by one wrap. Official first-party providers are
+	// exempt (see `healLeakedThinking`); healing is otherwise idempotent.
 	const limit = resolveProviderInFlightLimit(model.provider, options);
-	if (limit === undefined) return dispatch();
+	if (limit === undefined) return healLeakedThinking(model, dispatch());
 
 	const outer = new AssistantMessageEventStream();
 	void (async () => {
@@ -521,7 +585,7 @@ function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal"
 			if (options?.signal?.aborted) {
 				throw options.signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
 			}
-			const inner = dispatch();
+			const inner = healLeakedThinking(model, dispatch());
 			try {
 				for await (const event of inner) {
 					outer.push(event);
@@ -706,7 +770,7 @@ function streamDispatch<TApi extends Api>(
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
 	const baseOptions = (options || {}) as StreamOptions;
-	const debugOptions = withRequestDebugFetch(baseOptions);
+	const debugOptions = withExtraCaFetch(withRequestDebugFetch(baseOptions));
 	const requestOptions = {
 		...debugOptions,
 		fetch: wrapFetchForProxy(debugOptions.fetch ?? (globalThis.fetch as FetchImpl), model.provider),
@@ -939,7 +1003,7 @@ export function streamSimple<TApi extends Api>(
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
 	const baseOptions = (options || {}) as SimpleStreamOptions;
-	const debugOptions = withRequestDebugFetch(baseOptions);
+	const debugOptions = withExtraCaFetch(withRequestDebugFetch(baseOptions));
 	const requestOptions = {
 		...debugOptions,
 		fetch: wrapFetchForProxy(debugOptions.fetch ?? (globalThis.fetch as FetchImpl), model.provider),
@@ -1105,10 +1169,14 @@ export function streamSimple<TApi extends Api>(
 
 	// GitLab Duo Workflow - IDE workflow protocol + WebSocket action bridge
 	if (model.api === "gitlab-duo-agent") {
-		return streamGitLabDuoWorkflow(model as Model<"gitlab-duo-agent">, context, {
-			...requestOptions,
-			apiKey,
-		});
+		// Does not route through withProviderInFlightLimit, so heal explicitly.
+		return healLeakedThinking(
+			model,
+			streamGitLabDuoWorkflow(model as Model<"gitlab-duo-agent">, context, {
+				...requestOptions,
+				apiKey,
+			}),
+		);
 	}
 
 	// Kimi Code - route to dedicated handler that wraps OpenAI or Anthropic API
@@ -1364,12 +1432,16 @@ function mapOptionsForApi<TApi extends Api>(
 		streamFirstEventTimeoutMs: options?.streamFirstEventTimeoutMs,
 		streamIdleTimeoutMs: options?.streamIdleTimeoutMs,
 		providerSessionState: options?.providerSessionState,
+		useInteractionsApi: options?.useInteractionsApi,
+		storeInteraction: options?.storeInteraction,
+		previousInteractionId: options?.previousInteractionId,
 		maxInFlightRequests: options?.maxInFlightRequests,
 		onPayload: options?.onPayload,
 		onResponse: options?.onResponse,
 		onSseEvent: options?.onSseEvent,
 		execHandlers: options?.execHandlers,
 		fetch: options?.fetch,
+		fallbacks: options?.fallbacks,
 	};
 
 	switch (model.api) {
@@ -1575,6 +1647,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (!reasoning || !model.reasoning) {
 				return castApi<"google-generative-ai">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: { enabled: false },
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
 				});
@@ -1588,6 +1661,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (googleModel.thinking?.mode === "google-level") {
 				return castApi<"google-generative-ai">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: {
 						enabled: true,
 						level: mapEffortToGoogleThinkingLevel(effort),
@@ -1671,6 +1745,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (!reasoning || !model.reasoning) {
 				return castApi<"google-vertex">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: { enabled: false },
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
 				});
@@ -1683,6 +1758,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (geminiModel.thinking?.mode === "google-level") {
 				return castApi<"google-vertex">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: {
 						enabled: true,
 						level: mapEffortToGoogleThinkingLevel(effort),
@@ -1693,6 +1769,7 @@ function mapOptionsForApi<TApi extends Api>(
 
 			return castApi<"google-vertex">({
 				...base,
+				serviceTier: options?.serviceTier,
 				thinking: {
 					enabled: true,
 					budgetTokens: getGoogleBudget(geminiModel, effort, options?.thinkingBudgets),

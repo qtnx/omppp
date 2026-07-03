@@ -13,7 +13,7 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
 function createContext() {
-	const statusLine = { invalidate: vi.fn() };
+	const statusLine = { invalidate: vi.fn(), markActivityStart: vi.fn(), markActivityEnd: vi.fn() };
 	const updateEditorTopBorder = vi.fn();
 	const ctx = {
 		isInitialized: true,

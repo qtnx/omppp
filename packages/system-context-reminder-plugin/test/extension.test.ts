@@ -1,10 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import type { BeforeAgentStartEvent, ExtensionAPI, TurnEndEvent } from "@oh-my-pi/pi-coding-agent";
+import type {
+	BeforeAgentStartEvent,
+	BeforeProviderRequestEvent,
+	ExtensionAPI,
+	TurnEndEvent,
+} from "@oh-my-pi/pi-coding-agent";
 import systemContextReminderExtension, {
 	appendSystemContextReminderPrompt,
 	createSystemContextReminderExtension,
 	SYSTEM_CONTEXT_REMINDER_CUSTOM_TYPE,
 	SYSTEM_CONTEXT_REMINDER_LABEL,
+	SYSTEM_CONTEXT_REMINDER_PROMPT,
 } from "../src/extension";
 
 type AssistantMessage = Extract<TurnEndEvent["message"], { role: "assistant" }>;
@@ -30,8 +36,21 @@ interface FakePi {
 }
 
 type BeforeAgentStartHandler = (event: BeforeAgentStartEvent) => { systemPrompt?: string[] } | undefined;
+type BeforeProviderRequestHandler = (event: BeforeProviderRequestEvent) => unknown;
 type TurnEndHandler = (event: TurnEndEvent) => void;
 
+interface AnthropicTextBlock {
+	type: "text";
+	text: string;
+}
+
+interface AnthropicPayload {
+	system: AnthropicTextBlock[];
+}
+
+interface AnthropicRequestDump {
+	body: AnthropicPayload;
+}
 function createFakePi(): FakePi {
 	return {
 		labels: [],
@@ -93,6 +112,7 @@ describe("systemContextReminderExtension", () => {
 
 		expect(fakePi.labels).toEqual([SYSTEM_CONTEXT_REMINDER_LABEL]);
 		expect(fakePi.handlers.has("before_agent_start")).toBe(true);
+		expect(fakePi.handlers.has("before_provider_request")).toBe(true);
 		expect(fakePi.handlers.has("turn_end")).toBe(true);
 	});
 
@@ -105,6 +125,7 @@ describe("systemContextReminderExtension", () => {
 
 		expect(fakePi.labels).toEqual([SYSTEM_CONTEXT_REMINDER_LABEL]);
 		expect(fakePi.handlers.has("before_agent_start")).toBe(false);
+		expect(fakePi.handlers.has("before_provider_request")).toBe(false);
 		expect(fakePi.handlers.has("turn_end")).toBe(true);
 	});
 
@@ -115,9 +136,11 @@ describe("systemContextReminderExtension", () => {
 
 		const first = beforeHandler({ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] });
 		expect(first?.systemPrompt).toEqual(["base", expect.stringContaining("## System Context Reminder")]);
-		expect(first?.systemPrompt?.join("\n\n")).toContain("forgot the system prompt");
-		expect(first?.systemPrompt?.join("\n\n")).toContain("follow the full system prompt");
-
+		const promptText = first?.systemPrompt?.join("\n\n") ?? "";
+		expect(promptText).toContain("forgot the system prompt");
+		expect(promptText).toContain("follow the full system prompt");
+		expect(promptText).toContain("Ngài");
+		expect(promptText).toContain("lord");
 		const second = beforeHandler({
 			type: "before_agent_start",
 			prompt: "continue",
@@ -126,7 +149,65 @@ describe("systemContextReminderExtension", () => {
 		expect(second).toBeUndefined();
 	});
 
-	it("queues a hidden next-turn reminder when final prose omits required persona terms", () => {
+	it("keeps the system-context guidance last in Anthropic provider system blocks", () => {
+		const fakePi = createFakePi();
+		systemContextReminderExtension(fakePi as unknown as ExtensionAPI);
+		const beforeAgentStartHandler = getHandler<BeforeAgentStartHandler>(fakePi, "before_agent_start");
+		const beforeProviderRequestHandler = getHandler<BeforeProviderRequestHandler>(fakePi, "before_provider_request");
+
+		const beforeAgentStart = beforeAgentStartHandler({
+			type: "before_agent_start",
+			prompt: "continue",
+			systemPrompt: ["base"],
+		});
+		expect(beforeAgentStart?.systemPrompt).toEqual(["base", SYSTEM_CONTEXT_REMINDER_PROMPT]);
+
+		const result = beforeProviderRequestHandler({
+			type: "before_provider_request",
+			payload: {
+				system: [
+					{ type: "text", text: "base" },
+					{ type: "text", text: SYSTEM_CONTEXT_REMINDER_PROMPT },
+					{ type: "text", text: "late tool instruction" },
+				],
+			},
+		}) as AnthropicPayload;
+
+		expect(result.system.map(block => block.text)).toEqual([
+			"base",
+			"late tool instruction",
+			SYSTEM_CONTEXT_REMINDER_PROMPT,
+		]);
+		expect(result.system.filter(block => block.text === SYSTEM_CONTEXT_REMINDER_PROMPT)).toHaveLength(1);
+	});
+
+	it("keeps the system-context guidance last in wrapped Anthropic provider request bodies", () => {
+		const fakePi = createFakePi();
+		systemContextReminderExtension(fakePi as unknown as ExtensionAPI);
+		const beforeProviderRequestHandler = getHandler<BeforeProviderRequestHandler>(fakePi, "before_provider_request");
+
+		const result = beforeProviderRequestHandler({
+			type: "before_provider_request",
+			payload: {
+				body: {
+					system: [
+						{ type: "text", text: "base" },
+						{ type: "text", text: SYSTEM_CONTEXT_REMINDER_PROMPT },
+						{ type: "text", text: "late tool instruction" },
+					],
+				},
+			},
+		}) as AnthropicRequestDump;
+
+		expect(result.body.system.map(block => block.text)).toEqual([
+			"base",
+			"late tool instruction",
+			SYSTEM_CONTEXT_REMINDER_PROMPT,
+		]);
+		expect(result.body.system.filter(block => block.text === SYSTEM_CONTEXT_REMINDER_PROMPT)).toHaveLength(1);
+	});
+
+	it("queues a hidden next-turn reminder when final prose omits the required user address", () => {
 		const fakePi = createFakePi();
 		systemContextReminderExtension(fakePi as unknown as ExtensionAPI);
 
@@ -147,26 +228,29 @@ describe("systemContextReminderExtension", () => {
 			},
 			options: { deliverAs: "nextTurn" },
 		});
-		expect(String(fakePi.sentMessages[0]?.message.content)).toContain("forgot the system prompt");
-		expect(String(fakePi.sentMessages[0]?.message.content)).toContain("full system prompt");
+		const content = String(fakePi.sentMessages[0]?.message.content);
+		expect(content).toContain("forgot the system prompt");
+		expect(content).toContain("full system prompt");
+		expect(content).toContain("Ngài");
+		expect(content).toContain("lord");
 	});
 
-	it("queues when final prose uses forbidden persona terms even with required terms present", () => {
+	it("queues when final prose uses forbidden user-address terms even with required terms present", () => {
 		const fakePi = createFakePi();
 		systemContextReminderExtension(fakePi as unknown as ExtensionAPI);
 
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ bố, con đã kiểm tra cho bạn." }]));
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ bố, tôi đã kiểm tra xong cho con." }]));
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ bố, mình đã xong rồi con nhé." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ Ngài, bạn xem lại giúp em." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Done for you, lord. Bố can review it now." }]));
 
-		expect(fakePi.sentMessages).toHaveLength(3);
+		expect(fakePi.sentMessages).toHaveLength(2);
 	});
 
-	it("does not queue when final prose contains both required persona terms", () => {
+	it("does not queue when final prose addresses the user as Ngài or lord", () => {
 		const fakePi = createFakePi();
 		systemContextReminderExtension(fakePi as unknown as ExtensionAPI);
 
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ bố, con đã làm xong." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ Ngài, em đã làm xong." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Done, lord." }]));
 
 		expect(fakePi.sentMessages).toEqual([]);
 	});
@@ -201,12 +285,12 @@ describe("systemContextReminderExtension", () => {
 		expect(fakePi.sentMessages).toEqual([]);
 	});
 
-	it("requires standalone persona terms rather than substrings", () => {
+	it("requires standalone user-address terms rather than substrings", () => {
 		const fakePi = createFakePi();
 		systemContextReminderExtension(fakePi as unknown as ExtensionAPI);
 
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ bố, context is ready." }]));
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ bố, con is ready." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ Ngài, context is ready." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ hằngài, context is ready." }]));
 
 		expect(fakePi.sentMessages).toHaveLength(1);
 	});

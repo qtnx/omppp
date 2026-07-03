@@ -33,16 +33,32 @@ import type {
 import { applyCompatOverrides } from "./apply";
 
 /** GLM coding-plan SKUs idle for minutes mid-reasoning; see `streamIdleTimeoutMs`. */
-const GLM_CODING_PLAN_MODEL_PATTERN = /^glm-5(?:[.-]|$)/i;
+const GLM_CODING_PLAN_MODEL_PATTERN = /(^|\/)glm-5(?:[.-]|$)/i;
 const GLM_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS = 600_000;
 /** Direct DeepSeek reasoning models stall between thinking and answer phases. */
 const DEEPSEEK_REASONING_STREAM_IDLE_TIMEOUT_MS = 300_000;
 /** Kimi K2.6 can spend several minutes reasoning before the first visible token. */
 const KIMI_K26_REASONING_STREAM_IDLE_TIMEOUT_MS = 300_000;
+/**
+ * Native Kimi K2.7 Code requires `thinking.type: "enabled"` and rejects
+ * disabled thinking. Match the public id, its Fast variant, and the
+ * `kimi-code/kimi-for-coding` alias (which keeps the family name).
+ * Caller-disabled requests on non-native dialects (Fireworks `openai`,
+ * OpenRouter `openrouter`, …) MUST keep their per-dialect disable shape —
+ * gating on `isMoonshotKimi` is the caller's responsibility.
+ */
+const KIMI_K27_CODE_MODEL_PATTERN = /(?:^|\/)kimi[-._]?k2(?:[._-]?|p)7[-._]?code(?:[-._]?highspeed)?$/i;
+
+function matchesKimiK27CodeFamily(spec: ModelSpec<"openai-completions">): boolean {
+	if (KIMI_K27_CODE_MODEL_PATTERN.test(spec.id)) return true;
+	return spec.id === "kimi-for-coding" && /k2\.?7 code/i.test(spec.name ?? "");
+}
 /** Xiaomi MiMo Pro on api.xiaomimimo.com can stall ~2min before the first event (issue #1770). */
 const XIAOMI_MIMO_STREAM_IDLE_TIMEOUT_MS = 300_000;
 /** Alibaba Coding Plan (coding-intl.dashscope) qwen models idle before the first event (issue #1770). */
 const ALIBABA_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS = 600_000;
+/** Local OpenAI-compatible backends can spend minutes cold-loading a model before the first SSE event. */
+const LOCAL_OPENAI_COMPAT_STREAM_IDLE_TIMEOUT_MS = 300_000;
 const MINIMAX_PROVIDER_OR_ID_PATTERN = /minimax/i;
 const DSML_HEALING_PROVIDERS = new Set([
 	"ollama",
@@ -98,20 +114,40 @@ function resolveReasoningDisableMode(
 	}
 }
 
+/**
+ * Pick the leaked-markup healer for an OpenAI-compatible visible-text stream.
+ * Kimi chat-template tokens and DeepSeek DSML envelopes need their dedicated
+ * tool-call grammars. Every other OpenAI-compatible model defaults to
+ * `"thinking"` so leaked reasoning idioms (e.g. a Gemini ` ```thinking ` fence
+ * on OpenRouter) are recovered from `delta.content` — **except** the official
+ * OpenAI endpoint (`provider: "openai"` + `api.openai.com`), which returns
+ * structured reasoning and never leaks, so it heals nothing (returns
+ * `undefined`) to avoid misfiring on legitimate fenced content.
+ */
 function detectStreamMarkupHealingPattern(
 	provider: string,
 	modelId: string,
+	baseUrl: string,
 ): OpenAIStreamMarkupHealingPattern | undefined {
-	if (MINIMAX_PROVIDER_OR_ID_PATTERN.test(provider) || MINIMAX_PROVIDER_OR_ID_PATTERN.test(modelId)) {
-		return "thinking";
-	}
 	if (provider === "kimi-code" || provider === "moonshot" || /kimi[-/_.]?k2/i.test(modelId)) {
 		return "kimi";
 	}
 	if (isDeepseekModelIdOrName(modelId) && DSML_HEALING_PROVIDERS.has(provider)) {
 		return "dsml";
 	}
-	return undefined;
+	if (isOfficialOpenAIEndpoint(provider, baseUrl)) return undefined;
+	return "thinking";
+}
+
+/** Strict official-OpenAI check: provider id `openai` and an `api.openai.com` host (missing baseUrl defaults there). */
+function isOfficialOpenAIEndpoint(provider: string, baseUrl: string): boolean {
+	if (provider !== "openai") return false;
+	if (!baseUrl) return true;
+	try {
+		return new URL(baseUrl).hostname === "api.openai.com";
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -230,6 +266,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 	const isKimiModel = isKimiModelId(spec.id);
 	const isMoonshotNative = modelMatchesHost(hostModel, "moonshotNative");
 	const isMoonshotKimi = isKimiModel && isMoonshotNative;
+	const requiresEnabledThinking = isMoonshotKimi && matchesKimiK27CodeFamily(spec);
 	const usesMoonshotKimiPreservedThinking = isMoonshotKimi && isKimiK26ModelId(spec.id);
 	const isAnthropicModel =
 		modelMatchesHost(hostModel, "anthropic") || isClaudeModelId(spec.id) || isAnthropicNamespacedModelId(spec.id);
@@ -278,6 +315,9 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		isMoonshotNative ||
 		isOpenCodeHost;
 	const isOpenCodeProvider = provider === "opencode-go" || provider === "opencode-zen";
+	const isLocalOpenAICompatBackend =
+		!PROXY_OPENAI_COMPAT_PROVIDERS.has(provider) &&
+		(LOCAL_OPENAI_COMPAT_PROVIDERS.has(provider) || hasLocalLoopbackBaseUrl(baseUrl));
 
 	const useMaxTokens =
 		isMistral ||
@@ -332,9 +372,10 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 			isCopilotHost ||
 			isZenmuxHost);
 
-	// Stream-watchdog floor: GLM coding-plan SKUs, Kimi K2.6, and direct
-	// DeepSeek reasoning models can idle for minutes while reasoning; widen the
-	// idle timeout so warm-ups stop aborting and retrying.
+	// Stream-watchdog floor: GLM coding-plan SKUs, Kimi K2.6, direct
+	// DeepSeek reasoning models, and local OpenAI-compatible backends can idle
+	// for minutes while reasoning or cold-loading weights; widen the idle
+	// timeout so warm-ups stop aborting and retrying.
 	const streamIdleTimeoutMs =
 		GLM_CODING_PLAN_MODEL_PATTERN.test(spec.id) && (isZai || isZhipu)
 			? GLM_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS
@@ -346,7 +387,9 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 						? KIMI_K26_REASONING_STREAM_IDLE_TIMEOUT_MS
 						: spec.reasoning && isDirectDeepseekApi
 							? DEEPSEEK_REASONING_STREAM_IDLE_TIMEOUT_MS
-							: undefined;
+							: isLocalOpenAICompatBackend
+								? LOCAL_OPENAI_COMPAT_STREAM_IDLE_TIMEOUT_MS
+								: undefined;
 
 	// Fireworks "Fast" variants (`<id>-fast`) are served from the router
 	// namespace (`accounts/fireworks/routers/<id>-fast`), like Fire Pass, rather
@@ -402,7 +445,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		disableReasoningOnForcedToolChoice: isKimiModel || isAnthropicModel,
 		disableReasoningOnToolChoice: isDeepseekFamily && Boolean(spec.reasoning) && !isOpenRouter,
 		supportsToolChoice: !isDirectDeepseekReasoning,
-		supportsForcedToolChoice: true,
+		supportsForcedToolChoice: !requiresEnabledThinking,
 		supportsNamedToolChoice: provider !== "llama.cpp",
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
 		requiresToolResultName: isMistral,
@@ -466,9 +509,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		// when a thinking block actually exists on the turn
 		// (`nonEmptyThinkingBlocks.length > 0`), so the flag is a no-op on
 		// pure-text histories.
-		replayReasoningContent:
-			!PROXY_OPENAI_COMPAT_PROVIDERS.has(provider) &&
-			(LOCAL_OPENAI_COMPAT_PROVIDERS.has(provider) || hasLocalLoopbackBaseUrl(baseUrl)),
+		replayReasoningContent: isLocalOpenAICompatBackend,
 		// `preserve_thinking: true` makes the Qwen3.6+ chat template render
 		// `<think>...</think>` for older assistant turns too, instead of
 		// stripping it the moment a new user message moves them past
@@ -480,9 +521,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		// with `replayReasoningContent` above). Non-Qwen templates ignore the
 		// parameter, so the flag stays a no-op outside the Qwen path.
 		qwenPreserveThinking:
-			(thinkingFormat === "qwen" || thinkingFormat === "qwen-chat-template") &&
-			!PROXY_OPENAI_COMPAT_PROVIDERS.has(provider) &&
-			(LOCAL_OPENAI_COMPAT_PROVIDERS.has(provider) || hasLocalLoopbackBaseUrl(baseUrl)),
+			(thinkingFormat === "qwen" || thinkingFormat === "qwen-chat-template") && isLocalOpenAICompatBackend,
 		requiresAssistantContentForToolCalls: isKimiModel || isDirectDeepseekReasoning,
 		cacheControlFormat: isOpenRouter && spec.id.startsWith("anthropic/") ? "anthropic" : undefined,
 		openRouterRouting: undefined,
@@ -497,7 +536,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		streamIdleTimeoutMs,
 		stripDeepseekSpecialTokens:
 			isDeepseekModelIdOrName(spec.id) && (provider === "nvidia" || provider === "deepseek"),
-		streamMarkupHealingPattern: detectStreamMarkupHealingPattern(provider, spec.id),
+		streamMarkupHealingPattern: detectStreamMarkupHealingPattern(provider, spec.id, baseUrl),
 		reasoningDeltasMayBeCumulative:
 			MINIMAX_PROVIDER_OR_ID_PATTERN.test(provider) || MINIMAX_PROVIDER_OR_ID_PATTERN.test(spec.id),
 		emptyLengthFinishIsContextError: provider === "ollama",
@@ -508,7 +547,9 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 
 	applyCompatOverrides(compat, spec.compat);
 	if (spec.compat?.reasoningDisableMode === undefined) {
-		compat.reasoningDisableMode = resolveReasoningDisableMode(compat.thinkingFormat);
+		compat.reasoningDisableMode = requiresEnabledThinking
+			? "omit"
+			: resolveReasoningDisableMode(compat.thinkingFormat);
 	}
 	if (spec.compat?.omitReasoningEffort === undefined && !compat.supportsReasoningEffort) {
 		compat.omitReasoningEffort = true;
@@ -552,8 +593,6 @@ interface OpenAIResponsesSpecLike {
  * as well as URL — bundled `azure` models carry no baseUrl (the deployment host
  * is per-resource, resolved at runtime) — while OpenAI/Copilot developer-role
  * and prompt-cache detection stay URL-keyed, as the historical call sites were.
- * The GPT-5 juice-zero hack keys on the model name, matching the historical
- * request-time check.
  */
 export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): ResolvedOpenAIResponsesCompat {
 	const baseUrl = spec.baseUrl ?? "";
@@ -566,6 +605,9 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 	const isAnthropicModel = id ? isClaudeModelId(id) || isAnthropicNamespacedModelId(id) : false;
 	const isDeepseekFamily = id ? isDeepseekModelIdOrName(id) || isDeepseekModelIdOrName(spec.name) : false;
 	const reasoningCapable = Boolean(spec.reasoning);
+	const isLocalOpenAICompatBackend =
+		!PROXY_OPENAI_COMPAT_PROVIDERS.has(spec.provider) &&
+		(LOCAL_OPENAI_COMPAT_PROVIDERS.has(spec.provider) || hasLocalLoopbackBaseUrl(baseUrl));
 
 	const compat: ResolvedOpenAIResponsesCompat = {
 		supportsDeveloperRole: isAzure || isOpenAIUrl || hostMatchesUrl(baseUrl, "githubCopilot"),
@@ -582,7 +624,6 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		// or base-URL host (mirroring the Anthropic compat builder) so a model
 		// pointed at the Copilot host under a different provider id still clamps.
 		supportsImageDetailOriginal: !modelMatchesHost({ provider: spec.provider, baseUrl }, "githubCopilot"),
-		requiresJuiceZeroHack: spec.name.toLowerCase().startsWith("gpt-5"),
 		reasoningEffortMap: {},
 		supportsReasoningParams: true,
 		thinkingFormat,
@@ -621,13 +662,15 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		supportsObfuscationOptOut: isOpenAIUrl || spec.provider === "openai",
 		stripDeepseekSpecialTokens:
 			Boolean(id) && isDeepseekModelIdOrName(id) && (spec.provider === "nvidia" || spec.provider === "deepseek"),
-		streamMarkupHealingPattern: id ? detectStreamMarkupHealingPattern(spec.provider, id) : undefined,
+		streamMarkupHealingPattern: id ? detectStreamMarkupHealingPattern(spec.provider, id, baseUrl) : undefined,
 		reasoningDeltasMayBeCumulative:
 			MINIMAX_PROVIDER_OR_ID_PATTERN.test(spec.provider) || (id ? MINIMAX_PROVIDER_OR_ID_PATTERN.test(id) : false),
 		emptyLengthFinishIsContextError: spec.provider === "ollama",
 		usesOpenAIToolCallIdLimit: spec.provider === "openai",
 		promptCacheSessionHeader: spec.provider === "xai-oauth" ? "x-grok-conv-id" : undefined,
-		streamIdleTimeoutMs: spec.compat?.streamIdleTimeoutMs,
+		streamIdleTimeoutMs: isLocalOpenAICompatBackend
+			? LOCAL_OPENAI_COMPAT_STREAM_IDLE_TIMEOUT_MS
+			: spec.compat?.streamIdleTimeoutMs,
 	};
 	applyCompatOverrides(compat, spec.compat);
 	if (spec.compat?.reasoningDisableMode === undefined) {
@@ -647,7 +690,6 @@ function pickResponsesOnly(compat: ResolvedOpenAIResponsesCompat): ResponsesOnly
 		supportsLongPromptCacheRetention: compat.supportsLongPromptCacheRetention,
 		strictResponsesPairing: compat.strictResponsesPairing,
 		supportsImageDetailOriginal: compat.supportsImageDetailOriginal,
-		requiresJuiceZeroHack: compat.requiresJuiceZeroHack,
 		supportsObfuscationOptOut: compat.supportsObfuscationOptOut,
 	} satisfies ResponsesOnlyCompat;
 }

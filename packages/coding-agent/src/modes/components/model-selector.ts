@@ -9,6 +9,7 @@ import {
 	Input,
 	matchesKey,
 	ScrollView,
+	type SgrMouseEvent,
 	Spacer,
 	type Tab,
 	TabBar,
@@ -23,7 +24,12 @@ import { getKnownRoleIds, getRoleInfo, MODEL_ROLE_IDS, MODEL_ROLES } from "../..
 import type { Settings } from "../../config/settings";
 import { type ThemeColor, theme } from "../../modes/theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
-import { AUTO_THINKING, type ConfiguredThinkingLevel, getConfiguredThinkingLevelMetadata } from "../../thinking";
+import {
+	AUTO_THINKING,
+	type ConfiguredThinkingLevel,
+	getConfiguredThinkingLevelMetadata,
+	parseConfiguredThinkingLevel,
+} from "../../thinking";
 import { getTabBarTheme } from "../shared";
 import { DynamicBorder } from "./dynamic-border";
 
@@ -52,21 +58,6 @@ function makeRoleBadgeToken(label: string, color: ThemeColor, assigned: RoleAssi
 	return `${badge} ${theme.fg("dim", `(${thinkingLabel})`)}`;
 }
 
-function normalizeSearchText(value: string): string {
-	return value
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, " ")
-		.trim();
-}
-
-function compactSearchText(value: string): string {
-	return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
-
-function getAlphaSearchTokens(query: string): string[] {
-	return [...normalizeSearchText(query).matchAll(/[a-z]+/g)].map(match => match[0]).filter(token => token.length > 0);
-}
-
 function computeModelRank(model: Model, roles: Record<string, RoleAssignment | undefined>): number {
 	let i = 0;
 	while (i < MODEL_ROLE_IDS.length) {
@@ -86,17 +77,6 @@ interface ModelItem {
 	id: string;
 	model: Model;
 	selector: string;
-}
-
-interface CanonicalModelItem {
-	kind: "canonical";
-	id: string;
-	model: Model;
-	selector: string;
-	variantCount: number;
-	searchText: string;
-	normalizedSearchText: string;
-	compactSearchText: string;
 }
 
 interface ScopedModelItem {
@@ -128,12 +108,8 @@ interface ProviderTabState {
 	providerId?: string;
 }
 const ALL_TAB = "ALL";
-const CANONICAL_TAB = "CANONICAL";
 
-const STATIC_PROVIDER_TABS: ProviderTabState[] = [
-	{ id: ALL_TAB, label: ALL_TAB },
-	{ id: CANONICAL_TAB, label: CANONICAL_TAB },
-];
+const STATIC_PROVIDER_TABS: ProviderTabState[] = [{ id: ALL_TAB, label: ALL_TAB }];
 
 const MODEL_TAB_REFRESH_DEBOUNCE_MS = 120;
 
@@ -162,8 +138,6 @@ export class ModelSelectorComponent extends Container {
 	#menuContainer: Container;
 	#allModels: ModelItem[] = [];
 	#filteredModels: ModelItem[] = [];
-	#canonicalModels: CanonicalModelItem[] = [];
-	#filteredCanonicalModels: CanonicalModelItem[] = [];
 	#selectedIndex: number = 0;
 	#roles = {} as Record<string, RoleAssignment | undefined>;
 	#settings = null as unknown as Settings;
@@ -174,7 +148,12 @@ export class ModelSelectorComponent extends Container {
 	#tui: TUI;
 	#scopedModels: ReadonlyArray<ScopedModelItem>;
 	#temporaryOnly: boolean;
+	#directSelect: boolean;
+	#pickerHint: string | undefined;
 	#currentContextTokens: number;
+	#listLineOffset = 0;
+	#listStartIndex = 0;
+	#listVisibleCount = 0;
 
 	#menuRoleActions: MenuRoleAction[] = [];
 
@@ -200,7 +179,13 @@ export class ModelSelectorComponent extends Container {
 		scopedModels: ReadonlyArray<ScopedModelItem>,
 		onSelect: RoleSelectCallback,
 		onCancel: () => void,
-		options?: { temporaryOnly?: boolean; initialSearchInput?: string; currentContextTokens?: number },
+		options?: {
+			temporaryOnly?: boolean;
+			directSelect?: boolean;
+			pickerHint?: string;
+			initialSearchInput?: string;
+			currentContextTokens?: number;
+		},
 	) {
 		super();
 
@@ -211,6 +196,8 @@ export class ModelSelectorComponent extends Container {
 		this.#onSelectCallback = onSelect;
 		this.#onCancelCallback = onCancel;
 		this.#temporaryOnly = options?.temporaryOnly ?? false;
+		this.#directSelect = options?.directSelect ?? false;
+		this.#pickerHint = options?.pickerHint;
 		const currentContextTokens = options?.currentContextTokens ?? 0;
 		this.#currentContextTokens =
 			Number.isFinite(currentContextTokens) && currentContextTokens > 0 ? Math.floor(currentContextTokens) : 0;
@@ -235,6 +222,9 @@ export class ModelSelectorComponent extends Container {
 		this.addChild(new Spacer(1));
 		if (this.#temporaryOnly) {
 			this.addChild(new Text(theme.fg("muted", TEMPORARY_MODEL_PICKER_HINT), 0, 0));
+			this.addChild(new Spacer(1));
+		} else if (this.#directSelect && this.#pickerHint) {
+			this.addChild(new Text(theme.fg("muted", this.#pickerHint), 0, 0));
 			this.addChild(new Spacer(1));
 		}
 
@@ -275,8 +265,7 @@ export class ModelSelectorComponent extends Container {
 		// Hydrate synchronously from the current registry snapshot so the first
 		// Enter after opening the selector acts on cached models instead of being
 		// dropped while the offline refresh promise is still pending. This stays
-		// on the open path, so it must remain cheap — heavy lifting lives in the
-		// registry's one-pass getCanonicalModelSelections.
+		// on the open path, so it must remain cheap.
 		this.#syncFromRegistryState();
 
 		// Reconcile with cached discovery state in the background. A --models
@@ -320,15 +309,11 @@ export class ModelSelectorComponent extends Container {
 			const resolved = resolveModelRoleValue(roleValue, allModels, {
 				settings: this.#settings,
 				matchPreferences,
-				modelRegistry: this.#modelRegistry,
 			});
 			if (resolved.model) {
 				nextRoles[role] = {
 					model: resolved.model,
-					thinkingLevel:
-						resolved.explicitThinkingLevel && resolved.thinkingLevel !== undefined
-							? resolved.thinkingLevel
-							: ThinkingLevel.Inherit,
+					thinkingLevel: this.#getResolvedRoleThinkingLevel(role, resolved),
 					autoSelected: false,
 				};
 			}
@@ -341,15 +326,11 @@ export class ModelSelectorComponent extends Container {
 				const resolved = resolveModelRoleValue(`pi/${role}`, candidates, {
 					settings: this.#settings,
 					matchPreferences,
-					modelRegistry: this.#modelRegistry,
 				});
 				if (!resolved.model) continue;
 				nextRoles[role] = {
 					model: resolved.model,
-					thinkingLevel:
-						resolved.explicitThinkingLevel && resolved.thinkingLevel !== undefined
-							? resolved.thinkingLevel
-							: ThinkingLevel.Inherit,
+					thinkingLevel: this.#getResolvedRoleThinkingLevel(role, resolved),
 					autoSelected: true,
 				};
 			}
@@ -428,30 +409,6 @@ export class ModelSelectorComponent extends Container {
 		});
 	}
 
-	#sortCanonicalModels(models: CanonicalModelItem[], { skipRoleRank = false }: { skipRoleRank?: boolean } = {}): void {
-		const mruOrder = this.#settings.getStorage()?.getModelUsageOrder() ?? [];
-		const mruIndex = new Map(mruOrder.map((key, i) => [key, i]));
-
-		const modelRank = (item: CanonicalModelItem) => computeModelRank(item.model, this.#roles);
-
-		models.sort((a, b) => {
-			if (!skipRoleRank) {
-				const aRank = modelRank(a);
-				const bRank = modelRank(b);
-				if (aRank !== bRank) return aRank - bRank;
-			}
-
-			const aMru = mruIndex.get(`${a.model.provider}/${a.model.id}`) ?? Number.MAX_SAFE_INTEGER;
-			const bMru = mruIndex.get(`${b.model.provider}/${b.model.id}`) ?? Number.MAX_SAFE_INTEGER;
-			if (aMru !== bMru) return aMru - bMru;
-
-			const providerCmp = a.model.provider.localeCompare(b.model.provider);
-			if (providerCmp !== 0) return providerCmp;
-
-			return a.id.localeCompare(b.id);
-		});
-	}
-
 	#loadModelsFromCurrentRegistryState(): void {
 		let models: ModelItem[];
 		if (this.#scopedModels.length > 0) {
@@ -482,8 +439,6 @@ export class ModelSelectorComponent extends Container {
 			} catch (error) {
 				this.#allModels = [];
 				this.#filteredModels = [];
-				this.#canonicalModels = [];
-				this.#filteredCanonicalModels = [];
 				this.#errorMessage = error instanceof Error ? error.message : String(error);
 				return;
 			}
@@ -491,42 +446,14 @@ export class ModelSelectorComponent extends Container {
 
 		const candidates = models.map(item => item.model);
 		this.#loadRoleModels(candidates);
-		const canonicalSelections = this.#modelRegistry.getCanonicalModelSelections({
-			availableOnly: this.#scopedModels.length === 0,
-			candidates,
-		});
-		const canonicalModels = canonicalSelections.map(({ record, model: selectedModel }): CanonicalModelItem => {
-			const searchText = [
-				record.id,
-				record.name,
-				selectedModel.provider,
-				selectedModel.id,
-				selectedModel.name,
-				...record.variants.flatMap(variant => [variant.selector, variant.model.name]),
-			].join(" ");
-			return {
-				kind: "canonical",
-				id: record.id,
-				model: selectedModel,
-				selector: record.id,
-				variantCount: record.variants.length,
-				searchText,
-				normalizedSearchText: normalizeSearchText(searchText),
-				compactSearchText: compactSearchText(searchText),
-			};
-		});
 
 		this.#sortModels(models);
-		this.#sortCanonicalModels(canonicalModels);
 
 		this.#allModels = models;
 		this.#filteredModels = models;
-		this.#canonicalModels = canonicalModels;
-		this.#filteredCanonicalModels = canonicalModels;
-		const visibleModels = this.#isCanonicalTab() ? canonicalModels : models;
 		this.#selectedIndex = this.#coerceSelectedIndex(
-			Math.min(this.#selectedIndex, Math.max(0, visibleModels.length - 1)),
-			visibleModels,
+			Math.min(this.#selectedIndex, Math.max(0, models.length - 1)),
+			models,
 		);
 	}
 
@@ -701,10 +628,6 @@ export class ModelSelectorComponent extends Container {
 		return this.#getActiveTab().providerId;
 	}
 
-	#isCanonicalTab(): boolean {
-		return this.#getActiveTabId() === CANONICAL_TAB;
-	}
-
 	#isModelOverCurrentContext(model: Model): boolean {
 		const contextWindow = model.contextWindow ?? 0;
 		return this.#currentContextTokens > 0 && contextWindow > 0 && this.#currentContextTokens > contextWindow;
@@ -714,15 +637,11 @@ export class ModelSelectorComponent extends Container {
 		return this.#temporaryOnly && this.#isModelOverCurrentContext(model);
 	}
 
-	#isDefaultRoleActionOverContextLimit(action: MenuRoleAction, model: Model): boolean {
-		return action.role === "default" && this.#isModelOverCurrentContext(model);
-	}
-
 	#formatCurrentContextLimitSuffix(model: Model): string {
 		return ` ${theme.status.disabled} context>${formatNumber(model.contextWindow ?? 0).toLowerCase()}`;
 	}
 
-	#isItemDisabled(item: ModelItem | CanonicalModelItem): boolean {
+	#isItemDisabled(item: ModelItem): boolean {
 		return this.#isModelOverContextLimit(item.model);
 	}
 
@@ -733,14 +652,11 @@ export class ModelSelectorComponent extends Container {
 		return this.#formatCurrentContextLimitSuffix(model);
 	}
 
-	#getVisibleItems(): ReadonlyArray<ModelItem | CanonicalModelItem> {
-		return this.#isCanonicalTab() ? this.#filteredCanonicalModels : this.#filteredModels;
+	#getVisibleItems(): ReadonlyArray<ModelItem> {
+		return this.#filteredModels;
 	}
 
-	#coerceSelectedIndex(
-		index: number,
-		visibleItems: ReadonlyArray<ModelItem | CanonicalModelItem> = this.#getVisibleItems(),
-	): number {
+	#coerceSelectedIndex(index: number, visibleItems: ReadonlyArray<ModelItem> = this.#getVisibleItems()): number {
 		const maxIndex = visibleItems.length - 1;
 		if (maxIndex < 0) {
 			return 0;
@@ -786,21 +702,16 @@ export class ModelSelectorComponent extends Container {
 	}
 
 	#filterModels(query: string): void {
-		const activeTabId = this.#getActiveTabId();
 		const activeProviderId = this.#getActiveProviderId();
-		const isCanonicalTab = activeTabId === CANONICAL_TAB;
 
-		// Start with all models or filter by provider/canonical view
 		let baseModels = this.#allModels;
-		const baseCanonicalModels = this.#canonicalModels;
 		if (activeProviderId) {
 			baseModels = this.#allModels.filter(m => m.provider === activeProviderId);
 		}
 
-		// Apply fuzzy filter if query is present
 		if (query.trim()) {
 			// If user is searching from a provider tab, auto-switch to ALL to show global provider results.
-			if (activeProviderId && !isCanonicalTab) {
+			if (activeProviderId) {
 				this.#activeTabIndex = 0;
 				if (this.#tabBar && this.#tabBar.getActiveIndex() !== 0) {
 					this.#tabBar.setActiveIndex(0);
@@ -810,55 +721,22 @@ export class ModelSelectorComponent extends Container {
 				baseModels = this.#allModels;
 			}
 
-			if (isCanonicalTab) {
-				const alphaTokens = getAlphaSearchTokens(query);
-				const alphaFiltered =
-					alphaTokens.length === 0
-						? baseCanonicalModels
-						: baseCanonicalModels.filter(item =>
-								alphaTokens.every(token => item.normalizedSearchText.includes(token)),
-							);
-				const compactQuery = compactSearchText(query);
-				const substringFiltered =
-					compactQuery.length === 0
-						? alphaFiltered
-						: alphaFiltered.filter(item => item.compactSearchText.includes(compactQuery));
-				const fuzzySource =
-					substringFiltered.length > 0
-						? substringFiltered
-						: alphaFiltered.length > 0
-							? alphaFiltered
-							: baseCanonicalModels;
-				// Fuzzy provides the candidate set, but `${provider}/${id}` scoring
-				// is biased by provider-prefix length (e.g. `openai/X` beats
-				// `openai-codex/X` purely because the prefix is shorter). Re-sort by
-				// affinity — MRU then version — so the user's actually-used model
-				// wins. Role rank is skipped: when narrowing by query, a weakly
-				// matching default model should not be promoted above a stronger
-				// non-default match.
-				const fuzzyMatches = fuzzyFilter(fuzzySource, query, ({ searchText }) => searchText);
-				this.#sortCanonicalModels(fuzzyMatches, { skipRoleRank: true });
-				this.#filteredCanonicalModels = fuzzyMatches;
-			} else {
-				// Match against the displayed "provider/id" string so the user can
-				// type what they see: bare names (`mimo`, `kimi`), provider prefixes
-				// (`openrouter`), or scoped queries (`openrouter/mimo`) all flow
-				// through the same fuzzy matcher. The score is biased by provider-
-				// prefix length, so re-sort by MRU/version afterwards; skip role
-				// rank so a weakly matching default doesn't trump a stronger match.
-				const fuzzyMatches = fuzzyFilter(baseModels, query, ({ id, provider }) => `${provider}/${id}`);
-				this.#sortModels(fuzzyMatches, { skipRoleRank: true });
-				this.#filteredModels = fuzzyMatches;
-			}
+			// Match against the displayed "provider/id" string so the user can
+			// type what they see: bare names (`mimo`, `kimi`), provider prefixes
+			// (`openrouter`), or scoped queries (`openrouter/mimo`) all flow
+			// through the same fuzzy matcher. The score is biased by provider-
+			// prefix length, so re-sort by MRU/version afterwards; skip role
+			// rank so a weakly matching default doesn't trump a stronger match.
+			const fuzzyMatches = fuzzyFilter(baseModels, query, ({ id, provider }) => `${provider}/${id}`);
+			this.#sortModels(fuzzyMatches, { skipRoleRank: true });
+			this.#filteredModels = fuzzyMatches;
 		} else {
 			this.#filteredModels = baseModels;
-			this.#filteredCanonicalModels = baseCanonicalModels;
 		}
 
-		const visibleItems = isCanonicalTab ? this.#filteredCanonicalModels : this.#filteredModels;
 		this.#selectedIndex = this.#coerceSelectedIndex(
-			Math.min(this.#selectedIndex, Math.max(0, visibleItems.length - 1)),
-			visibleItems,
+			Math.min(this.#selectedIndex, Math.max(0, this.#filteredModels.length - 1)),
+			this.#filteredModels,
 		);
 		this.#updateList();
 	}
@@ -928,8 +806,7 @@ export class ModelSelectorComponent extends Container {
 
 	#updateList(): void {
 		this.#listContainer.clear();
-		const isCanonicalTab = this.#isCanonicalTab();
-		const visibleItems = isCanonicalTab ? this.#filteredCanonicalModels : this.#filteredModels;
+		const visibleItems = this.#filteredModels;
 
 		const maxVisible = 10;
 		const startIndex = Math.max(
@@ -937,6 +814,8 @@ export class ModelSelectorComponent extends Container {
 			Math.min(this.#selectedIndex - Math.floor(maxVisible / 2), visibleItems.length - maxVisible),
 		);
 		const endIndex = Math.min(startIndex + maxVisible, visibleItems.length);
+		this.#listStartIndex = startIndex;
+		this.#listVisibleCount = Math.max(0, endIndex - startIndex);
 
 		const showProvider = this.#getActiveTabId() === ALL_TAB;
 
@@ -945,8 +824,6 @@ export class ModelSelectorComponent extends Container {
 		for (let i = startIndex; i < endIndex; i++) {
 			const item = visibleItems[i];
 			if (!item) continue;
-			const canonicalItem = isCanonicalTab ? (item as CanonicalModelItem) : undefined;
-			const providerItem = isCanonicalTab ? undefined : (item as ModelItem);
 
 			const isSelected = i === this.#selectedIndex;
 			const isDisabled = this.#isItemDisabled(item);
@@ -974,25 +851,17 @@ export class ModelSelectorComponent extends Container {
 			let line = "";
 			if (isSelected) {
 				const prefix = theme.fg("accent", `${theme.nav.cursor} `);
-				if (isCanonicalTab) {
-					const variants = theme.fg("dim", ` [${canonicalItem?.variantCount ?? 0}]`);
-					const backing = theme.fg("dim", ` -> ${item.model.provider}/${item.model.id}`);
-					line = `${prefix}${theme.fg("accent", item.id)}${variants}${backing}${badgeText}${disabledSuffix}`;
-				} else if (showProvider) {
-					const providerPrefix = theme.fg("dim", `${providerItem?.provider ?? ""}/`);
-					line = `${prefix}${providerPrefix}${theme.fg("accent", providerItem?.id ?? item.id)}${badgeText}${disabledSuffix}`;
+				if (showProvider) {
+					const providerPrefix = theme.fg("dim", `${item.provider}/`);
+					line = `${prefix}${providerPrefix}${theme.fg("accent", item.id)}${badgeText}${disabledSuffix}`;
 				} else {
 					line = `${prefix}${theme.fg("accent", item.id)}${badgeText}${disabledSuffix}`;
 				}
 			} else {
 				const prefix = "  ";
-				if (isCanonicalTab) {
-					const variants = theme.fg("dim", ` [${canonicalItem?.variantCount ?? 0}]`);
-					const backing = theme.fg("dim", ` -> ${item.model.provider}/${item.model.id}`);
-					line = `${prefix}${item.id}${variants}${backing}${badgeText}${disabledSuffix}`;
-				} else if (showProvider) {
-					const providerPrefix = theme.fg("dim", `${providerItem?.provider ?? ""}/`);
-					line = `${prefix}${providerPrefix}${providerItem?.id ?? item.id}${badgeText}${disabledSuffix}`;
+				if (showProvider) {
+					const providerPrefix = theme.fg("dim", `${item.provider}/`);
+					line = `${prefix}${providerPrefix}${item.id}${badgeText}${disabledSuffix}`;
 				} else {
 					line = `${prefix}${item.id}${badgeText}${disabledSuffix}`;
 				}
@@ -1030,9 +899,6 @@ export class ModelSelectorComponent extends Container {
 				return;
 			}
 			this.#listContainer.addChild(new Spacer(1));
-			const suffix = isCanonicalTab
-				? ` (${selected.model.provider}/${selected.model.id}, ${(selected as CanonicalModelItem).variantCount} variants)`
-				: "";
 			const limitWarning = this.#isItemDisabled(selected)
 				? theme.fg(
 						"dim",
@@ -1040,10 +906,23 @@ export class ModelSelectorComponent extends Container {
 					)
 				: "";
 			this.#listContainer.addChild(
-				new Text(theme.fg("muted", `  Model Name: ${selected.model.name}${suffix}`) + limitWarning, 0, 0),
+				new Text(theme.fg("muted", `  Model Name: ${selected.model.name}`) + limitWarning, 0, 0),
 			);
 		}
 	}
+	#getResolvedRoleThinkingLevel(
+		role: string,
+		resolved: { explicitThinkingLevel: boolean; thinkingLevel?: ConfiguredThinkingLevel },
+	): ConfiguredThinkingLevel {
+		if (resolved.explicitThinkingLevel && resolved.thinkingLevel !== undefined) {
+			return resolved.thinkingLevel;
+		}
+		if (role === "default") {
+			return parseConfiguredThinkingLevel(this.#settings.get("defaultThinkingLevel")) ?? ThinkingLevel.Inherit;
+		}
+		return ThinkingLevel.Inherit;
+	}
+
 	#getThinkingLevelsForModel(model: Model): ReadonlyArray<ConfiguredThinkingLevel> {
 		return [ThinkingLevel.Inherit, ThinkingLevel.Off, AUTO_THINKING, ...getSupportedEfforts(model)];
 	}
@@ -1059,53 +938,20 @@ export class ModelSelectorComponent extends Container {
 		return foundIndex >= 0 ? foundIndex : 0;
 	}
 
-	#getSelectedItem(): ModelItem | CanonicalModelItem | undefined {
-		return this.#isCanonicalTab()
-			? this.#filteredCanonicalModels[this.#selectedIndex]
-			: this.#filteredModels[this.#selectedIndex];
+	#getSelectedItem(): ModelItem | undefined {
+		return this.#filteredModels[this.#selectedIndex];
 	}
 
-	#isMenuRoleIndexDisabled(index: number, selectedItem: ModelItem | CanonicalModelItem): boolean {
-		const action = this.#menuRoleActions[index];
-		return action ? this.#isDefaultRoleActionOverContextLimit(action, selectedItem.model) : false;
-	}
-
-	#coerceMenuSelectedIndex(index: number, selectedItem: ModelItem | CanonicalModelItem): number {
+	#coerceMenuSelectedIndex(index: number): number {
 		const maxIndex = this.#menuRoleActions.length - 1;
 		if (maxIndex < 0) {
 			return 0;
 		}
-		const clamped = Math.max(0, Math.min(index, maxIndex));
-		if (!this.#isMenuRoleIndexDisabled(clamped, selectedItem)) {
-			return clamped;
-		}
-		for (let i = clamped + 1; i <= maxIndex; i++) {
-			if (!this.#isMenuRoleIndexDisabled(i, selectedItem)) {
-				return i;
-			}
-		}
-		for (let i = clamped - 1; i >= 0; i--) {
-			if (!this.#isMenuRoleIndexDisabled(i, selectedItem)) {
-				return i;
-			}
-		}
-		return clamped;
+		return Math.max(0, Math.min(index, maxIndex));
 	}
 
-	#moveMenuSelection(delta: number, selectedItem: ModelItem | CanonicalModelItem, optionCount: number): void {
-		let index = this.#menuSelectedIndex;
-		for (let step = 0; step < optionCount; step++) {
-			index = (index + delta + optionCount) % optionCount;
-			if (this.#menuStep !== "role" || !this.#isMenuRoleIndexDisabled(index, selectedItem)) {
-				this.#menuSelectedIndex = index;
-				this.#updateMenu();
-				return;
-			}
-		}
-		this.#menuSelectedIndex =
-			this.#menuStep === "role"
-				? this.#coerceMenuSelectedIndex(this.#menuSelectedIndex, selectedItem)
-				: this.#menuSelectedIndex;
+	#moveMenuSelection(delta: number, _selectedItem: ModelItem, optionCount: number): void {
+		this.#menuSelectedIndex = (this.#menuSelectedIndex + delta + optionCount) % optionCount;
 		this.#updateMenu();
 	}
 
@@ -1116,7 +962,7 @@ export class ModelSelectorComponent extends Container {
 		this.#isMenuOpen = true;
 		this.#menuStep = "role";
 		this.#menuSelectedRole = null;
-		this.#menuSelectedIndex = this.#coerceMenuSelectedIndex(0, selectedItem);
+		this.#menuSelectedIndex = this.#coerceMenuSelectedIndex(0);
 		// Collapse the model list while the action/thinking menu is open so the
 		// menu owns the full viewport instead of stacking below a now-irrelevant
 		// (and often off-screen) list.
@@ -1149,9 +995,7 @@ export class ModelSelectorComponent extends Container {
 				})
 			: this.#menuRoleActions.map((action, index) => {
 					const prefix = index === this.#menuSelectedIndex ? `  ${theme.nav.cursor} ` : "    ";
-					const disabled = this.#isDefaultRoleActionOverContextLimit(action, selectedItem.model);
-					const suffix = disabled ? this.#formatCurrentContextLimitSuffix(selectedItem.model) : "";
-					return `${prefix}${action.label}${suffix}`;
+					return `${prefix}${action.label}`;
 				});
 
 		const selectedRoleName = this.#menuSelectedRole ? getRoleInfo(this.#menuSelectedRole, this.#settings).name : "";
@@ -1231,6 +1075,55 @@ export class ModelSelectorComponent extends Container {
 		return Math.max(MIN_VISIBLE_OPTIONS, Math.min(optionCount, terminalRows - MENU_CHROME_ROWS));
 	}
 
+	/**
+	 * Concatenate children like Container.render, recording where the model list
+	 * lands so routed mouse events can be hit-tested against it.
+	 */
+	override render(width: number): readonly string[] {
+		const lines: string[] = [];
+		for (const child of this.children) {
+			const childLines = child.render(Math.max(1, width));
+			if (child === this.#listContainer) {
+				this.#listLineOffset = lines.length;
+			}
+			lines.push(...childLines);
+		}
+		return lines;
+	}
+
+	routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
+		if (this.#isMenuOpen) return;
+
+		if (event.wheel !== null) {
+			this.#moveSelection(event.wheel);
+			return;
+		}
+
+		const listLine = line - this.#listLineOffset;
+		if (listLine < 0 || listLine >= this.#listVisibleCount) return;
+
+		const index = this.#listStartIndex + listLine;
+		const item = this.#getVisibleItems()[index];
+		if (!item || this.#isItemDisabled(item)) return;
+
+		if (event.motion) {
+			if (index !== this.#selectedIndex) {
+				this.#selectedIndex = index;
+				this.#updateList();
+			}
+			return;
+		}
+
+		if (event.leftClick) {
+			this.#selectedIndex = index;
+			if (this.#temporaryOnly || this.#directSelect) {
+				this.#handleSelect(item, null);
+			} else {
+				this.#openMenu();
+			}
+		}
+	}
+
 	handleInput(keyData: string): void {
 		if (this.#isMenuOpen) {
 			this.#handleMenuInput(keyData);
@@ -1254,12 +1147,12 @@ export class ModelSelectorComponent extends Container {
 			return;
 		}
 
-		// Enter - open context menu or select directly in temporary mode
+		// Enter - open context menu or select directly in temporary/direct-select mode
 		if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
 			const selectedItem = this.#getSelectedItem();
 			if (selectedItem && !this.#isItemDisabled(selectedItem)) {
-				if (this.#temporaryOnly) {
-					// In temporary mode, skip menu and select directly
+				if (this.#temporaryOnly || this.#directSelect) {
+					// In temporary/direct-select mode, skip menu and select directly
 					this.#handleSelect(selectedItem, null);
 				} else {
 					this.#openMenu();
@@ -1301,7 +1194,7 @@ export class ModelSelectorComponent extends Container {
 		if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
 			if (this.#menuStep === "role") {
 				const action = this.#menuRoleActions[this.#menuSelectedIndex];
-				if (!action || this.#isDefaultRoleActionOverContextLimit(action, selectedItem.model)) return;
+				if (!action) return;
 				this.#menuSelectedRole = action.role;
 				this.#menuStep = "thinking";
 				this.#menuSelectedIndex = this.#getThinkingPreselectIndex(action.role, selectedItem.model);
@@ -1332,11 +1225,7 @@ export class ModelSelectorComponent extends Container {
 		}
 	}
 
-	#handleSelect(
-		item: ModelItem | CanonicalModelItem,
-		role: string | null,
-		thinkingLevel?: ConfiguredThinkingLevel,
-	): void {
+	#handleSelect(item: ModelItem, role: string | null, thinkingLevel?: ConfiguredThinkingLevel): void {
 		if (this.#isItemDisabled(item)) {
 			return;
 		}

@@ -45,6 +45,7 @@ Bundled agents are embedded at build time (`src/task/agents.ts`) using text impo
 
 - `explore`, `plan`, `designer`, `reviewer`, `librarian`, `oracle` from prompt files
 - `heavy_task`, `task`, and `quick_task` from injected frontmatter plus dedicated worker prompt bodies
+- `tester` from the bundled tester prompt, adopted additively from upstream
 
 Loading path:
 

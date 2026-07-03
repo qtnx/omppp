@@ -33,6 +33,9 @@ describe("tryRunRpcSkillCommand", () => {
 		expect(handled).toEqual({ agentInvoked: true });
 		expect(message?.customType).toBe(SKILL_PROMPT_MESSAGE_TYPE);
 		expect(message?.content).toContain("Review the supplied code carefully.");
+		expect(message?.content).toContain('The user has invoked the "reviewer" skill');
+		expect(message?.content).toContain(`[Skill directory: ${dir}]`);
+		expect(message?.content).toMatch(/[Rr]esolve any relative paths/);
 		expect(message?.content).toContain("User: focus on risks");
 		expect(message?.display).toBe(true);
 		expect(message?.attribution).toBe("user");
@@ -53,5 +56,41 @@ describe("tryRunRpcSkillCommand", () => {
 		);
 
 		expect(handled).toBe(false);
+	});
+
+	test("does not steal builtin slash-command arguments that mention registered skills", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), `omp-rpc-skill-${Snowflake.next()}-`));
+		const skillPath = path.join(dir, "SKILL.md");
+		await Bun.write(
+			skillPath,
+			"---\nname: reviewer\ndescription: Review code\n---\n\nReview the supplied code carefully.\n",
+		);
+
+		let dispatched = false;
+		try {
+			const handled = await tryRunRpcSkillCommand(
+				{
+					skillsSettings: { enableSkillCommands: true },
+					skills: [
+						{
+							name: "reviewer",
+							description: "Review code",
+							filePath: skillPath,
+							baseDir: dir,
+							source: "project",
+						},
+					],
+					async promptCustomMessage() {
+						dispatched = true;
+					},
+				},
+				"/compact /skill:reviewer",
+			);
+
+			expect(handled).toBe(false);
+			expect(dispatched).toBe(false);
+		} finally {
+			await removeWithRetries(dir);
+		}
 	});
 });

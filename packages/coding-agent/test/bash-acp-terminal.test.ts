@@ -35,6 +35,13 @@ function makeSession(bridge: ClientBridge): ToolSession {
 			getBashInterceptorRules() {
 				return [];
 			},
+			getShellConfig() {
+				// Fixed bash shell keeps the wrap assertions cross-platform: the fix
+				// must reuse the resolved shell (Git Bash on Windows, `$SHELL` on
+				// POSIX) instead of collapsing to `cmd.exe` — that's the contract
+				// this test defends.
+				return { shell: "/bin/bash", args: ["-l", "-c"], env: {}, prefix: undefined };
+			},
 		},
 		getClientBridge: () => bridge,
 	} as unknown as ToolSession;
@@ -77,10 +84,14 @@ describe("BashTool ACP terminal routing", () => {
 			updates.push(update as { details?: { terminalId?: string } });
 		});
 
-		// createTerminal must be called with the expanded command
+		// createTerminal must send the resolved bash shell + `-l -c <line>` so
+		// spec-conformant ACP clients that spawn `command` directly (no implicit
+		// shell) still get bash semantics — never `cmd.exe`, which would break
+		// `$VAR`, `$(...)`, `source`, and POSIX quoting on Windows.
 		expect(createSpy).toHaveBeenCalledTimes(1);
 		const params = createSpy.mock.calls[0]![0];
-		expect(params.command).toBe("echo hi");
+		expect(params.command).toBe("/bin/bash");
+		expect(params.args).toEqual(["-l", "-c", "echo hi"]);
 
 		// The first onUpdate must carry the terminalId so the editor can embed it
 		expect(updates.length).toBeGreaterThanOrEqual(1);
@@ -114,6 +125,36 @@ describe("BashTool ACP terminal routing", () => {
 		expect(createSpy).not.toHaveBeenCalled();
 		const text = result.content.find(c => c.type === "text");
 		expect(text?.text).toContain("sandboxed");
+	});
+
+	it("wraps shell metacharacters into args instead of packing them into command", async () => {
+		// Regression for #4333: a bash line with `&&`, pipes, or spaces must not
+		// be sent as raw `command` (spec-conformant ACP clients spawn command+args
+		// directly and would ENOENT the whole line as argv[0]).
+		const handle: ClientBridgeTerminalHandle = {
+			terminalId: "term-shell-wrap",
+			waitForExit: async () => ({ exitCode: 0, signal: null }),
+			currentOutput: async () => ({ output: "", truncated: false }),
+			kill: async () => {},
+			release: async () => {},
+		};
+		const bridge: ClientBridge = {
+			capabilities: { terminal: true },
+			createTerminal: async () => handle,
+		};
+		const createSpy = spyOn(bridge, "createTerminal");
+
+		const line = "git status && echo x | head";
+		const tool = new BashTool(makeSession(bridge));
+		await tool.execute("call-shell-wrap", { command: line });
+
+		expect(createSpy).toHaveBeenCalledTimes(1);
+		const params = createSpy.mock.calls[0]![0];
+		expect(params.command).toBe("/bin/bash");
+		expect(params.args).toEqual(["-l", "-c", line]);
+		// `args` must actually be present — the bug was omitting it entirely.
+		expect(params.args).toBeDefined();
+		expect(params.args?.length).toBeGreaterThan(0);
 	});
 
 	it("releases the client terminal when final output retrieval fails", async () => {

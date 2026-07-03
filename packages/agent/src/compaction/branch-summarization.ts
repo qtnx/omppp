@@ -5,7 +5,15 @@
  * a summary of the branch being left so context isn't lost.
  */
 
-import type { ApiKey, Model, ThinkingDisplay } from "@oh-my-pi/pi-ai";
+import type {
+	Api,
+	ApiKey,
+	AssistantMessage,
+	Context,
+	Model,
+	SimpleStreamOptions,
+	ThinkingDisplay,
+} from "@oh-my-pi/pi-ai";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { type AgentTelemetry, instrumentedCompleteSimple } from "../telemetry";
@@ -29,6 +37,7 @@ import {
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
 	stripReadSelector,
+	truncateToolResultForSummary,
 	upsertFileOperations,
 } from "./utils";
 
@@ -92,6 +101,17 @@ export interface GenerateBranchSummaryOptions {
 	 * wrapped in an OTEL chat span tagged with `pi.gen_ai.oneshot.kind = "branch_summary"`.
 	 */
 	telemetry?: AgentTelemetry;
+	/**
+	 * Optional completion transport override (same contract as
+	 * {@link SummaryOptions.completeImpl}). Lets the host route the branch
+	 * summary HTTP request through its provider-concurrency limiter instead
+	 * of the default `completeSimple` transport.
+	 */
+	completeImpl?: <TApi extends Api>(
+		model: Model<TApi>,
+		ctx: Context,
+		options: SimpleStreamOptions,
+	) => Promise<AssistantMessage>;
 }
 
 // ============================================================================
@@ -161,8 +181,12 @@ export function collectEntriesForBranchSummary(
 function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 	switch (entry.type) {
 		case "message":
-			// Skip tool results - context is in assistant's tool call
-			if (entry.message.role === "toolResult") return undefined;
+			// Useless non-error tool results are dropped by serializeConversation()
+			// downstream. Skip them here so a large useless payload can't eat the
+			// branch-summary token budget and starve older useful entries.
+			if (entry.message.role === "toolResult" && entry.message.useless === true && entry.message.isError !== true) {
+				return undefined;
+			}
 			return entry.message;
 
 		case "custom_message":
@@ -193,6 +217,19 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 		case "mode_change":
 			return undefined;
 	}
+}
+
+function estimateBranchSummaryTokens(message: AgentMessage): number {
+	if (message.role !== "toolResult") return estimateTokens(message);
+	const text = message.content
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map(c => c.text)
+		.join("");
+	if (!text) return 0;
+	return estimateTokens({
+		...message,
+		content: [{ type: "text", text: truncateToolResultForSummary(text) }],
+	});
 }
 
 /**
@@ -240,7 +277,7 @@ export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: numbe
 		// Extract file ops from assistant messages (tool calls)
 		extractFileOpsFromMessage(message, fileOps);
 
-		const tokens = estimateTokens(message);
+		const tokens = estimateBranchSummaryTokens(message);
 
 		// Check budget before adding
 		if (tokenBudget > 0 && totalTokens + tokens > tokenBudget) {
@@ -323,7 +360,7 @@ export async function generateBranchSummary(
 		model,
 		{ systemPrompt: [SUMMARIZATION_SYSTEM_PROMPT], messages: summarizationMessages },
 		{ apiKey, signal, maxTokens: 2048, metadata, hideThinkingSummary, thinkingDisplay },
-		{ telemetry: options.telemetry, oneshotKind: "branch_summary" },
+		{ telemetry: options.telemetry, oneshotKind: "branch_summary", completeImpl: options.completeImpl },
 	);
 
 	// Check if aborted or errored

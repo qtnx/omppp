@@ -12,13 +12,16 @@ import { settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
+import { stripGeneratedOutputNotice, stripRawOutputArtifactNotice } from "../tools/output-meta";
 import {
+	capPreviewLines,
 	formatBadge,
 	formatDuration,
 	formatExpandHint,
 	formatMoreItems,
 	formatStatusIcon,
 	previewLine,
+	previewWindowRows,
 	replaceTabs,
 	type ToolUIStatus,
 	truncateToWidth,
@@ -34,7 +37,16 @@ import {
 import { framedBlock, renderStatusLine } from "../tui";
 import { repairDoubleEncodedJsonString } from "./repair-args";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
-import type { AgentProgress, ReviewGateResult, SingleResult, TaskItem, TaskParams, TaskToolDetails } from "./types";
+import type {
+	AgentProgress,
+	ReviewGateResult,
+	SingleResult,
+	TaskItem,
+	TaskParams,
+	TaskToolDetails,
+	YieldItem,
+} from "./types";
+import { assembleYieldResult } from "./yield-assembly";
 
 /** Render context threaded in from `ToolExecutionComponent.#buildRenderContext`. */
 interface TaskRenderContext {
@@ -148,6 +160,49 @@ function normalizeReportFindings(value: unknown): ReportFindingDetails[] {
 	return findings;
 }
 
+/** Reviewer output declares `findings` as an array, so a lone finding section still assembles as a list. */
+const REVIEWER_ARRAY_LABELS: ReadonlySet<string> = new Set(["findings"]);
+
+function extractIncrementalReviewResult(
+	items: RenderYieldItem[],
+): { summary: SubmitReviewDetails; findings: ReportFindingDetails[] } | undefined {
+	const yieldItems: YieldItem[] = items.map(item => ({
+		data: item.data,
+		type: item.type,
+		status: item.status === "aborted" ? "aborted" : item.status === "success" ? "success" : undefined,
+		useLastTurn: item.useLastTurn,
+	}));
+	const assembled = assembleYieldResult(yieldItems, undefined, REVIEWER_ARRAY_LABELS);
+	const data = assembled?.data;
+	if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+	const record = data as Record<string, unknown>;
+	const overallCorrectness = record.overall_correctness;
+	const explanation = record.explanation;
+	const confidence = record.confidence;
+	if (
+		(overallCorrectness !== "correct" && overallCorrectness !== "incorrect") ||
+		typeof explanation !== "string" ||
+		typeof confidence !== "number"
+	) {
+		return undefined;
+	}
+	return {
+		summary: {
+			overall_correctness: overallCorrectness,
+			explanation,
+			confidence,
+		},
+		findings: normalizeReportFindings(record.findings),
+	};
+}
+
+interface RenderYieldItem {
+	data?: unknown;
+	type?: string | string[];
+	status?: string;
+	useLastTurn?: boolean;
+}
+
 /**
  * Normalize the `yield` slot of `extractedToolData` into an array of
  * yield-detail records. The subprocess executor always populates this slot as
@@ -158,14 +213,82 @@ function normalizeReportFindings(value: unknown): ReportFindingDetails[] {
  * A single object is wrapped as a 1-element array so the review verdict still
  * renders; non-object primitives drop out.
  */
-function normalizeYieldData(value: unknown): Array<{ data: unknown }> {
-	if (Array.isArray(value)) {
-		return value.filter((item): item is { data: unknown } => item !== null && typeof item === "object");
+function normalizeYieldData(value: unknown): RenderYieldItem[] {
+	const items = Array.isArray(value) ? value : value !== null && typeof value === "object" ? [value] : [];
+	const normalized: RenderYieldItem[] = [];
+	for (const item of items) {
+		if (item === null || typeof item !== "object") continue;
+		const record = item as Record<string, unknown>;
+		const typeValue = record.type;
+		let type: RenderYieldItem["type"];
+		if (typeof typeValue === "string") {
+			type = typeValue;
+		} else if (Array.isArray(typeValue)) {
+			const labels: string[] = [];
+			let allLabels = true;
+			for (const label of typeValue) {
+				if (typeof label !== "string") {
+					allLabels = false;
+					break;
+				}
+				labels.push(label);
+			}
+			if (allLabels) type = labels;
+		}
+		normalized.push({
+			data: record.data,
+			type,
+			status: typeof record.status === "string" ? record.status : undefined,
+			useLastTurn: record.useLastTurn === true ? true : undefined,
+		});
 	}
-	if (value !== null && typeof value === "object") {
-		return [value as { data: unknown }];
+	return normalized;
+}
+
+function getRenderYieldLabels(type: RenderYieldItem["type"]): string[] {
+	if (typeof type === "string") {
+		const label = type.trim();
+		return label ? [label] : [];
 	}
-	return [];
+	if (!Array.isArray(type)) return [];
+	const labels: string[] = [];
+	for (const value of type) {
+		const label = value.trim();
+		if (label) labels.push(label);
+	}
+	return labels;
+}
+
+function formatYieldPreview(item: RenderYieldItem): string {
+	if (item.useLastTurn === true && item.data === undefined) return "last assistant turn";
+	if (item.data === undefined) return "last assistant turn";
+	if (typeof item.data === "string") return previewLine(replaceTabs(item.data), 70);
+	try {
+		return previewLine(replaceTabs(JSON.stringify(item.data) ?? "null"), 70);
+	} catch {
+		return previewLine(replaceTabs(String(item.data)), 70);
+	}
+}
+
+function renderTypedYieldSections(value: unknown, continuePrefix: string, expanded: boolean, theme: Theme): string[] {
+	const typedItems: Array<{ item: RenderYieldItem; labels: string[] }> = [];
+	for (const item of normalizeYieldData(value)) {
+		const labels = getRenderYieldLabels(item.type);
+		if (labels.length === 0) continue;
+		typedItems.push({ item, labels });
+	}
+	const displayCount = expanded ? typedItems.length : 3;
+	const lines: string[] = [];
+	for (const { item, labels } of typedItems.slice(-displayCount)) {
+		const terminal = !Array.isArray(item.type);
+		const prefix = terminal ? "yield" : "yield+";
+		const label = `${prefix}[${labels.join(", ")}]`;
+		lines.push(`${continuePrefix}${theme.fg("dim", label)}: ${theme.fg("dim", formatYieldPreview(item))}`);
+	}
+	if (typedItems.length > displayCount) {
+		lines.push(`${continuePrefix}${theme.fg("dim", formatMoreItems(typedItems.length - displayCount, "yield"))}`);
+	}
+	return lines;
 }
 
 function formatJsonScalar(value: unknown, _theme: Theme): string {
@@ -341,6 +464,41 @@ function renderJsonTreeLines(
 	renderRoot(value);
 
 	return { lines, truncated };
+}
+
+const BASH_WALL_TIME_NOTICE_RE = /^Wall time: \d+(?:\.\d+)? seconds$/u;
+const BASH_EXIT_CODE_NOTICE_RE = /^Command exited with code -?\d+$/u;
+
+function stripRecentOutputNoticeLine(text: string): string {
+	const trimmed = text.trimEnd();
+	const lineStart = trimmed.lastIndexOf("\n");
+	const candidateStart = lineStart === -1 ? 0 : lineStart + 1;
+	const line = trimmed.slice(candidateStart);
+	if (!BASH_WALL_TIME_NOTICE_RE.test(line) && !BASH_EXIT_CODE_NOTICE_RE.test(line)) return text;
+	return trimmed.slice(0, lineStart === -1 ? 0 : lineStart).trimEnd();
+}
+
+function sanitizeRecentOutput(output: string): string {
+	let text = output.trimEnd();
+	while (text) {
+		const withoutArtifactNotice = stripRawOutputArtifactNotice(text).text;
+		if (withoutArtifactNotice !== text) {
+			text = withoutArtifactNotice;
+			continue;
+		}
+		const withoutOutputNotice = stripGeneratedOutputNotice(text);
+		if (withoutOutputNotice !== text) {
+			text = withoutOutputNotice;
+			continue;
+		}
+		const withoutRuntimeNotice = stripRecentOutputNoticeLine(text);
+		if (withoutRuntimeNotice !== text) {
+			text = withoutRuntimeNotice;
+			continue;
+		}
+		break;
+	}
+	return text;
 }
 
 function renderOutputSection(
@@ -855,10 +1013,24 @@ export function renderAgentProgress(
 
 	// Render extracted tool data inline (e.g., review findings)
 	if (progress.extractedToolData) {
-		// For completed tasks, check for review verdict from yield tool
+		// For completed tasks, prefer review verdicts assembled from incremental
+		// yield sections. Fall back to the legacy `report_finding` side-channel.
 		if (progress.status === "completed") {
 			const completeData = normalizeYieldData(progress.extractedToolData.yield);
+			const incrementalReview = extractIncrementalReviewResult(completeData);
 			const reportFindingData = normalizeReportFindings(progress.extractedToolData.report_finding);
+			if (incrementalReview) {
+				lines.push(
+					...renderReviewResult(
+						incrementalReview.summary,
+						incrementalReview.findings,
+						continuePrefix,
+						expanded,
+						theme,
+					),
+				);
+				return lines; // Review result handles its own rendering
+			}
 			const reviewData = completeData
 				.map(c => c.data as SubmitReviewDetails)
 				.filter(d => d && typeof d === "object" && "overall_correctness" in d);
@@ -872,6 +1044,11 @@ export function renderAgentProgress(
 
 		for (const toolName in progress.extractedToolData) {
 			const dataArray = progress.extractedToolData[toolName];
+			if (toolName === "yield") {
+				lines.push(...renderTypedYieldSections(dataArray, continuePrefix, expanded, theme));
+				continue;
+			}
+
 			// Handle report_finding with tree formatting
 			if (toolName === "report_finding") {
 				const findings = normalizeReportFindings(dataArray);
@@ -932,8 +1109,16 @@ export function renderAgentProgress(
 
 	// Expanded view: recent output and tools
 	if (expanded && progress.status === "running") {
-		const output = progress.recentOutput.join("\n");
-		lines.push(...renderOutputSection(output, continuePrefix, true, theme, 2, 6));
+		const previewRows = previewWindowRows();
+		const output = capPreviewLines(
+			sanitizeRecentOutput([...progress.recentOutput].reverse().join("\n")).split("\n"),
+			theme,
+			{
+				max: previewRows,
+				expandHint: false,
+			},
+		).join("\n");
+		lines.push(...renderOutputSection(output, continuePrefix, expanded, theme, 2, previewRows));
 	}
 
 	return lines;
@@ -1170,23 +1355,30 @@ function renderAgentResult(
 		lines.push(`${continuePrefix}${theme.fg(color, icon)} ${formatReviewGateLine(result.reviewGate, theme)}`);
 	}
 
-	// Check for review result (yield with review schema + report_finding)
-	// Check for review result (yield with review schema + report_finding).
+	// Check for review result, preferring incremental yield sections and falling
+	// back to the legacy `report_finding` side-channel.
 	// `normalizeYieldData` guards against a stray non-array `yield` slot —
 	// optional chaining on `.map` only short-circuits on null/undefined and
 	// would otherwise crash the renderer with `TypeError: completeData?.map
 	// is not a function` when the slot is a plain object (see issue #1987).
 	const completeData = normalizeYieldData(result.extractedToolData?.yield);
 	const reportFindingData = normalizeReportFindings(result.extractedToolData?.report_finding);
+	const incrementalReview = extractIncrementalReviewResult(completeData);
 
-	// Extract review verdict from yield tool's data field if it matches SubmitReviewDetails
+	if (incrementalReview) {
+		lines.push(
+			...renderReviewResult(incrementalReview.summary, incrementalReview.findings, continuePrefix, expanded, theme),
+		);
+		return lines;
+	}
+
+	// Extract review verdict from legacy yield summary objects if present.
 	const reviewData = completeData
 		.map(c => c.data as SubmitReviewDetails)
 		.filter(d => d && typeof d === "object" && "overall_correctness" in d);
 	const submitReviewData = reviewData.length > 0 ? reviewData : undefined;
 
 	if (submitReviewData) {
-		// Use combined review renderer
 		const summary = submitReviewData[submitReviewData.length - 1];
 		const findings = reportFindingData;
 		lines.push(...renderReviewResult(summary, findings, continuePrefix, expanded, theme));
@@ -1207,9 +1399,18 @@ function renderAgentResult(
 	let hasCustomRendering = false;
 	const deferredToolLines: string[] = [];
 	if (result.extractedToolData) {
-		for (const [toolName, dataArray] of Object.entries(result.extractedToolData)) {
+		for (const toolName in result.extractedToolData) {
+			const dataArray = result.extractedToolData[toolName];
+			if (toolName === "yield") {
+				const yieldLines = renderTypedYieldSections(dataArray, continuePrefix, expanded, theme);
+				if (yieldLines.length > 0) {
+					hasCustomRendering = true;
+					lines.push(...yieldLines);
+				}
+				continue;
+			}
 			// Skip review tools - handled above
-			if (toolName === "yield" || toolName === "report_finding") continue;
+			if (toolName === "report_finding") continue;
 
 			const isTaskTool = toolName === "task";
 			if (isTaskTool && (dataArray as unknown[]).length > 0) {
@@ -1400,9 +1601,27 @@ export function renderResult(
 	}
 
 	const hasResults = Boolean(details.results && details.results.length > 0);
-	const aborted = hasResults && details.results.some(r => r.aborted);
-	const failed = hasResults && details.results.some(r => !r.aborted && r.exitCode !== 0);
-	const mergeFailed = hasResults && details.results.some(r => !r.aborted && r.exitCode === 0 && Boolean(r.error));
+	// Single pass over details.results derives the header booleans AND the footer
+	// counts/totals. This block re-runs ~30×/sec via the 33ms spinner render; the
+	// previous form did 3× `.some()` here plus 3× `.filter()` + `.reduce()` again
+	// inside the frame below (7+ full passes per tick).
+	let abortedCount = 0;
+	let failCount = 0;
+	let mergeFailedCount = 0;
+	let successCount = 0;
+	let requestTotal = 0;
+	if (hasResults) {
+		for (const r of details.results) {
+			requestTotal += r.requests ?? 0;
+			if (r.aborted) abortedCount++;
+			else if (r.exitCode !== 0) failCount++;
+			else if (r.error) mergeFailedCount++;
+			else successCount++;
+		}
+	}
+	const aborted = abortedCount > 0;
+	const failed = failCount > 0;
+	const mergeFailed = mergeFailedCount > 0;
 	const isError = aborted || failed;
 	const agentCount = hasResults ? details.results.length : (details.progress?.length ?? 0);
 	const icon: ToolUIStatus = options.isPartial ? "running" : isError ? "error" : mergeFailed ? "warning" : "success";
@@ -1461,16 +1680,12 @@ export function renderResult(
 				);
 			}
 
-			const abortedCount = details.results.filter(r => r.aborted).length;
-			const mergeFailedCount = details.results.filter(r => !r.aborted && r.exitCode === 0 && r.error).length;
-			const successCount = details.results.filter(r => !r.aborted && r.exitCode === 0 && !r.error).length;
-			const failCount = details.results.length - successCount - mergeFailedCount - abortedCount;
 			const summaryParts: string[] = [];
 			if (abortedCount > 0) summaryParts.push(theme.fg("error", `${abortedCount} aborted`));
 			if (successCount > 0) summaryParts.push(theme.fg("success", `${successCount} succeeded`));
 			if (mergeFailedCount > 0) summaryParts.push(theme.fg("warning", `${mergeFailedCount} merge failed`));
 			if (failCount > 0) summaryParts.push(theme.fg("error", `${failCount} failed`));
-			const totalRequests = details.results.reduce((sum, r) => sum + (r.requests ?? 0), 0);
+			const totalRequests = requestTotal;
 			if (totalRequests > 0) summaryParts.push(theme.fg("dim", `${formatNumber(totalRequests)} req`));
 			summaryParts.push(theme.fg("dim", formatDuration(details.totalDurationMs)));
 			// Wrap the run summary in the theme's bracket glyphs (dim chrome, colored
@@ -1643,6 +1858,7 @@ function renderNestedTaskTree(
 	return lines;
 }
 
+// Register task tool subprocess handler
 subprocessToolRegistry.register<TaskToolDetails>("task", {
 	extractData: event => {
 		const details = event.result?.details;
@@ -1653,9 +1869,3 @@ subprocessToolRegistry.register<TaskToolDetails>("task", {
 		return new Text(lines.join("\n"), 0, 0);
 	},
 });
-
-export const taskToolRenderer = {
-	renderCall,
-	renderResult,
-	mergeCallAndResult: true,
-};

@@ -18,7 +18,7 @@ import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { Container, Ellipsis, matchesKey, type OverlayHandle, type TUI } from "@oh-my-pi/pi-tui";
 import { formatAge, getProjectDir, logger } from "@oh-my-pi/pi-utils";
-import { ADVISOR_TRANSCRIPT_FILENAME } from "../../advisor";
+import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../../advisor";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { IrcBus } from "../../irc/bus";
@@ -87,9 +87,14 @@ function registerPersistedSubagentsFromDir(registry: AgentRegistry, dir: string,
 		// The advisor transcript is observability-only: register it as a non-peer
 		// `advisor` kind under its owning session so the Hub can show its read-only
 		// transcript, but it never joins agent-facing rosters and is not revivable.
-		if (entry.name === ADVISOR_TRANSCRIPT_FILENAME) {
+		if (isAdvisorTranscriptName(entry.name)) {
 			const owner = parentId ?? MAIN_AGENT_ID;
-			const advisorId = `${owner}/advisor`;
+			// `__advisor.jsonl` → the default advisor (no slug); `__advisor.<slug>.jsonl`
+			// → a named advisor, keyed and labeled by its slug.
+			const slug =
+				entry.name === ADVISOR_TRANSCRIPT_FILENAME ? "" : entry.name.slice("__advisor.".length, -".jsonl".length);
+			const advisorId = slug ? `${owner}/advisor:${slug}` : `${owner}/advisor`;
+			const displayName = slug ? `advisor:${slug}` : "advisor";
 			const existing = registry.get(advisorId);
 			// Never clobber a non-advisor ref that happens to share this id (a freak
 			// user task literally named `<owner>/advisor`): leave it, skip the advisor.
@@ -99,7 +104,7 @@ function registerPersistedSubagentsFromDir(registry: AgentRegistry, dir: string,
 				if (existing) registry.unregister(advisorId);
 				registry.register({
 					id: advisorId,
-					displayName: "advisor",
+					displayName,
 					kind: "advisor",
 					parentId: owner,
 					session: null,
@@ -125,13 +130,21 @@ function registerPersistedSubagentsFromDir(registry: AgentRegistry, dir: string,
 	}
 }
 
+/** Result of one host-backed transcript read for the Agent Hub viewer. */
+export interface AgentHubRemoteTranscript {
+	text: string;
+	newSize: number;
+	/** Terminal read failure reported by the host; guests should surface it instead of retrying hot. */
+	error?: string;
+}
+
 /** Guest-side proxy for hub actions executed on the collab host. */
 export interface AgentHubRemote {
 	chat(id: string, text: string): void;
 	kill(id: string): void;
 	revive(id: string): void;
-	/** Mirrors readFileIncremental: text from fromByte (complete JSONL lines), newSize = next fromByte base; null = unavailable. */
-	readTranscript(id: string, fromByte: number): Promise<{ text: string; newSize: number } | null>;
+	/** Mirrors readFileIncremental: text from fromByte (complete JSONL lines), newSize = next fromByte base; null = temporarily unavailable. */
+	readTranscript(id: string, fromByte: number): Promise<AgentHubRemoteTranscript | null>;
 }
 
 export interface AgentHubDeps {

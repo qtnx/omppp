@@ -277,6 +277,7 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 				timeoutMs,
 				dialogs: params.dialogs,
 				signal,
+				ownerSessionId: this.session.getSessionId?.() ?? undefined,
 			}),
 		);
 		const tab = result.tab;

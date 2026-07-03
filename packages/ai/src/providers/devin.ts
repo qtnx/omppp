@@ -28,7 +28,7 @@ import {
 	StopReason,
 } from "@oh-my-pi/pi-catalog/discovery/devin-gen/exa/codeium_common_pb/codeium_common_pb";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
-import { logger, parseStreamingJson } from "@oh-my-pi/pi-utils";
+import { logger, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import type {
 	Api,
@@ -69,6 +69,15 @@ const DEVIN_DEFAULT_STOP_PATTERNS = ["<|user|>", "<|bot|>", "<|context_request|>
 /** Connect streaming framing: flag byte bit 0x01 = gzip payload, 0x02 = end-of-stream JSON trailers. */
 const CONNECT_COMPRESSED_FLAG = 0x01;
 const CONNECT_END_STREAM_FLAG = 0x02;
+/**
+ * Hard upper bound on a single Connect frame payload. The 4-byte length prefix
+ * is otherwise attacker-controlled (up to `2**32 - 1`), so a malicious or buggy
+ * peer could force {@link streamDevin}'s reader to buffer gigabytes via
+ * `Buffer.concat` before the idle-timeout wrapper aborts. Well above any
+ * legitimate Cascade response but tight enough that a corrupt length prefix
+ * fails fast instead of consuming memory.
+ */
+const MAX_CONNECT_FRAME_PAYLOAD = 16 * 1024 * 1024;
 
 export const streamDevin: StreamFunction<"devin-agent"> = (
 	model: Model<"devin-agent">,
@@ -105,6 +114,11 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 		// accumulated per id (kept out of the content object so finalized tool calls stay clean).
 		const toolBlocks = new Map<string, ToolCall>();
 		const toolPartialJson = new Map<string, string>();
+		// Last-parsed argument-buffer length per tool-call id — bounds the
+		// mid-stream parse work to O(N) via `parseStreamingJsonThrottled`; the
+		// authoritative final parse still runs unconditionally in the toolcall_end
+		// loop below.
+		const toolLastParseLen = new Map<string, number>();
 		let activeToolCallId: string | undefined;
 		let latestStopReason = StopReason.UNSPECIFIED;
 
@@ -196,6 +210,12 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 				while (pending.length >= 5) {
 					const flag = pending[0];
 					const len = pending.readUInt32BE(1);
+					if (len > MAX_CONNECT_FRAME_PAYLOAD) {
+						throw new AIError.ProviderResponseError(
+							`Devin Connect frame length ${len} exceeds ${MAX_CONNECT_FRAME_PAYLOAD}-byte cap`,
+							{ provider: model.provider, kind: "envelope" },
+						);
+					}
 					if (pending.length < 5 + len) break;
 					const payload = pending.subarray(5, 5 + len);
 					pending = pending.subarray(5 + len);
@@ -279,7 +299,11 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 								: previousJson + tc.argumentsJson;
 							const delta = accumulated.slice(previousJson.length);
 							toolPartialJson.set(toolCallId, accumulated);
-							block.arguments = parseStreamingJson(accumulated);
+							const throttled = parseStreamingJsonThrottled(accumulated, toolLastParseLen.get(toolCallId) ?? 0);
+							if (throttled) {
+								block.arguments = throttled.value;
+								toolLastParseLen.set(toolCallId, throttled.parsedLen);
+							}
 							stream.push({
 								type: "toolcall_delta",
 								contentIndex: output.content.indexOf(block),

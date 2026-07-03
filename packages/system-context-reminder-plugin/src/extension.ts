@@ -1,5 +1,11 @@
 /// <reference path="./bun-imports.d.ts" />
-import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionFactory, TurnEndEvent } from "@oh-my-pi/pi-coding-agent";
+import type {
+	BeforeAgentStartEvent,
+	BeforeProviderRequestEvent,
+	ExtensionAPI,
+	ExtensionFactory,
+	TurnEndEvent,
+} from "@oh-my-pi/pi-coding-agent";
 import systemContextReminderPrompt from "./system-context-reminder.md" with { type: "text" };
 import reminderMessage from "./system-context-reminder-message.md" with { type: "text" };
 
@@ -10,10 +16,9 @@ export const SYSTEM_CONTEXT_REMINDER_CUSTOM_TYPE = "system-context-reminder";
 export const SYSTEM_CONTEXT_REMINDER_PROMPT = systemContextReminderPrompt.trim();
 export const SYSTEM_CONTEXT_REMINDER_MESSAGE = reminderMessage.trim();
 
-const FATHER_TERM_PATTERN = /(?:^|[^\p{L}\p{N}_])bố(?:$|[^\p{L}\p{N}_])/iu;
-const SELF_TERM_PATTERN = /(?:^|[^\p{L}\p{N}_])con(?:$|[^\p{L}\p{N}_])/iu;
-const FORBIDDEN_PERSONA_TERM_PATTERN =
-	/(?:^|[^\p{L}\p{N}_])(?:anh|bạn|chị|cậu|em|mình|quý khách|ta|tôi|tớ|tao|mày)(?:$|[^\p{L}\p{N}_])/iu;
+const REQUIRED_USER_ADDRESS_PATTERN = /(?:^|[^\p{L}\p{N}_])(?:ngài|lord)(?:$|[^\p{L}\p{N}_])/iu;
+const FORBIDDEN_USER_ADDRESS_PATTERN =
+	/(?:^|[^\p{L}\p{N}_])(?:anh|bạn|bố|chị|cậu|mày|tao|quý khách)(?:$|[^\p{L}\p{N}_])/iu;
 
 type AssistantContentBlock = AssistantMessage["content"][number];
 type AssistantTextBlock = Extract<AssistantContentBlock, { type: "text" }>;
@@ -35,6 +40,27 @@ export function appendSystemContextReminderPrompt(systemPrompt: readonly string[
 	return [...systemPrompt, SYSTEM_CONTEXT_REMINDER_PROMPT];
 }
 
+type TextSystemBlock = Record<string, unknown> & { text: string };
+
+export function appendSystemContextReminderToProviderPayload(payload: unknown): unknown {
+	if (!isRecord(payload)) return payload;
+
+	const system = payload.system;
+	if (Array.isArray(system)) {
+		const normalizedSystem = normalizeSystemBlocks(system);
+		if (normalizedSystem === system) return payload;
+		return { ...payload, system: normalizedSystem };
+	}
+
+	const body = payload.body;
+	if (!isRecord(body)) return payload;
+	const bodySystem = body.system;
+	if (!Array.isArray(bodySystem)) return payload;
+
+	const normalizedBodySystem = normalizeSystemBlocks(bodySystem);
+	if (normalizedBodySystem === bodySystem) return payload;
+	return { ...payload, body: { ...body, system: normalizedBodySystem } };
+}
 export default function systemContextReminderExtension(pi: ExtensionAPI): void {
 	registerSystemContextReminderExtension(pi);
 }
@@ -50,6 +76,9 @@ function registerSystemContextReminderExtension(
 			const systemPrompt = appendSystemContextReminderPrompt(event.systemPrompt);
 			return systemPrompt ? { systemPrompt } : undefined;
 		});
+		pi.on("before_provider_request", (event: BeforeProviderRequestEvent) =>
+			appendSystemContextReminderToProviderPayload(event.payload),
+		);
 	}
 
 	pi.on("turn_end", (event: TurnEndEvent) => {
@@ -72,12 +101,42 @@ function registerSystemContextReminderExtension(
 	});
 }
 
+function normalizeSystemBlocks(system: readonly unknown[]): unknown[] {
+	const withoutReminder = system.filter(block => !isReminderTextBlock(block));
+	const insertionIndex = findTrailingNonTextSystemBlockStart(withoutReminder);
+	return [
+		...withoutReminder.slice(0, insertionIndex),
+		{ type: "text", text: SYSTEM_CONTEXT_REMINDER_PROMPT },
+		...withoutReminder.slice(insertionIndex),
+	];
+}
+
+function findTrailingNonTextSystemBlockStart(system: readonly unknown[]): number {
+	let index = system.length;
+	while (index > 0 && isRecord(system[index - 1]) && !isTextSystemBlock(system[index - 1])) {
+		index -= 1;
+	}
+	return index;
+}
+
+function isReminderTextBlock(block: unknown): block is TextSystemBlock {
+	return isTextSystemBlock(block) && block.text.trim() === SYSTEM_CONTEXT_REMINDER_PROMPT;
+}
+
+function isTextSystemBlock(block: unknown): block is TextSystemBlock {
+	return isRecord(block) && typeof block.text === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function shouldQueueReminder(message: TurnEndEvent["message"]): boolean {
 	if (!isAssistantMessage(message)) return false;
 	if (message.stopReason === "aborted" || message.stopReason === "error") return false;
 	if (hasToolCall(message)) return false;
-	const { hasText, hasFatherTerm, hasSelfTerm, hasForbiddenPersonaTerm } = scanVisiblePersona(message);
-	return hasText && (hasForbiddenPersonaTerm || !hasFatherTerm || !hasSelfTerm);
+	const { hasText, hasRequiredUserAddress, hasForbiddenUserAddress } = scanVisiblePersona(message);
+	return hasText && (hasForbiddenUserAddress || !hasRequiredUserAddress);
 }
 
 function isAssistantMessage(message: TurnEndEvent["message"]): message is AssistantMessage {
@@ -90,23 +149,20 @@ function hasToolCall(message: AssistantMessage): boolean {
 
 function scanVisiblePersona(message: AssistantMessage): {
 	hasText: boolean;
-	hasFatherTerm: boolean;
-	hasSelfTerm: boolean;
-	hasForbiddenPersonaTerm: boolean;
+	hasRequiredUserAddress: boolean;
+	hasForbiddenUserAddress: boolean;
 } {
 	let hasText = false;
-	let hasFatherTerm = false;
-	let hasSelfTerm = false;
-	let hasForbiddenPersonaTerm = false;
+	let hasRequiredUserAddress = false;
+	let hasForbiddenUserAddress = false;
 	for (const block of message.content) {
 		if (!isTextBlock(block)) continue;
 		if (block.text.trim().length === 0) continue;
 		hasText = true;
-		hasFatherTerm ||= FATHER_TERM_PATTERN.test(block.text);
-		hasSelfTerm ||= SELF_TERM_PATTERN.test(block.text);
-		hasForbiddenPersonaTerm ||= FORBIDDEN_PERSONA_TERM_PATTERN.test(block.text);
+		hasRequiredUserAddress ||= REQUIRED_USER_ADDRESS_PATTERN.test(block.text);
+		hasForbiddenUserAddress ||= FORBIDDEN_USER_ADDRESS_PATTERN.test(block.text);
 	}
-	return { hasText, hasFatherTerm, hasSelfTerm, hasForbiddenPersonaTerm };
+	return { hasText, hasRequiredUserAddress, hasForbiddenUserAddress };
 }
 
 function isTextBlock(block: AssistantContentBlock): block is AssistantTextBlock {

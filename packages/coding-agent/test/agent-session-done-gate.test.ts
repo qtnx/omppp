@@ -205,7 +205,7 @@ describe("AgentSession advisor done-review gate", () => {
 				"todo.reminders": false,
 			}),
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 			advisorStreamFn: () => {
 				throw new Error("advisor stream should not run in these tests");
 			},

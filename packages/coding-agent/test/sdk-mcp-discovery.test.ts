@@ -552,7 +552,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 				"tools.discoveryMode": "mcp-only",
 				"mcp.discoveryMode": true,
 				defaultThinkingLevel: "high",
-				serviceTier: "priority",
+				"tier.openai": "priority",
 			}),
 			model: createReasoningModel(),
 			disableExtensionDiscovery: true,
@@ -570,7 +570,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		});
 		await firstSession.activateDiscoveredMCPTools(["mcp__slack_post_message"]);
 		firstSession.sessionManager.appendThinkingLevelChange(ThinkingLevel.Off);
-		firstSession.sessionManager.appendServiceTierChange("priority");
+		firstSession.sessionManager.appendServiceTierChange({ openai: "priority" });
 		expect(firstSession.sessionManager.buildSessionContext().thinkingLevel).toBe(ThinkingLevel.Off);
 		expect(firstSession.getSelectedMCPToolNames()).toEqual(["mcp__slack_post_message"]);
 		const sessionFile = firstSession.sessionFile;
@@ -590,7 +590,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 				"tools.discoveryMode": "mcp-only",
 				"mcp.discoveryMode": true,
 				defaultThinkingLevel: "high",
-				serviceTier: "none",
+				"tier.openai": "none",
 			}),
 			model: createReasoningModel(),
 			disableExtensionDiscovery: true,
@@ -608,7 +608,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		});
 		try {
 			expect(resumedSession.thinkingLevel).toBe(ThinkingLevel.Off);
-			expect(resumedSession.serviceTier).toBe("priority");
+			expect(resumedSession.serviceTierByFamily).toEqual({ openai: "priority" });
 			expect(resumedSession.getSelectedMCPToolNames()).toEqual(["mcp__slack_post_message"]);
 			expect(resumedSession.getActiveToolNames()).toEqual(
 				expect.arrayContaining(["read", "search_tool_bm25", "mcp__slack_post_message"]),
@@ -645,7 +645,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 				"mcp.discoveryMode": true,
 				"mcp.discoveryDefaultServers": ["github"],
 				defaultThinkingLevel: "high",
-				serviceTier: "priority",
+				"tier.openai": "priority",
 			}),
 			model: createReasoningModel(),
 			disableExtensionDiscovery: true,
@@ -663,7 +663,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		});
 		try {
 			expect(session.thinkingLevel).toBe(ThinkingLevel.High);
-			expect(session.serviceTier).toBe("priority");
+			expect(session.serviceTierByFamily).toEqual({ openai: "priority" });
 			expect(session.getSelectedMCPToolNames()).toEqual(["mcp__github_create_issue"]);
 			expect(session.getActiveToolNames()).toEqual(
 				expect.arrayContaining(["read", "search_tool_bm25", "mcp__github_create_issue"]),
