@@ -21,7 +21,7 @@ import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { ContextFileEntry, ToolSession } from "..";
-import { resolveAgentModelPatterns } from "../config/model-resolver";
+import { resolveAgentModelPatterns, selectHeadroomAwareModelPatterns } from "../config/model-resolver";
 import type { Theme } from "../modes/theme/theme";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
@@ -186,7 +186,7 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"search_tool_bm25",
 ]);
 
-const PLAN_MODE_AGENT_TOOL_ALLOWLIST: ReadonlySet<string> = new Set(["ast_grep", "report_finding"]);
+const PLAN_MODE_AGENT_TOOL_ALLOWLIST: ReadonlySet<string> = new Set(["ast_grep", "irc", "report_finding"]);
 
 export function isReadOnlyAgent(agent: AgentDefinition): boolean {
 	return !!agent.tools?.length && agent.tools.every(tool => READ_ONLY_TOOL_NAMES.has(tool));
@@ -1212,13 +1212,20 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const agentModelOverrides = this.session.settings.get("task.agentModelOverrides");
 		const settingsModelOverride = agentModelOverrides[agentName];
 		const parentActiveModelPattern = this.session.getActiveModelString?.();
-		const modelOverride = resolveAgentModelPatterns({
-			settingsOverride: settingsModelOverride,
-			agentModel: effectiveAgent.model,
-			settings: this.session.settings,
-			activeModelPattern: parentActiveModelPattern,
-			fallbackModelPattern: this.session.getModelString?.(),
-		});
+		const modelOverride = selectHeadroomAwareModelPatterns(
+			resolveAgentModelPatterns({
+				settingsOverride: settingsModelOverride,
+				agentModel: effectiveAgent.model,
+				settings: this.session.settings,
+				activeModelPattern: parentActiveModelPattern,
+				fallbackModelPattern: this.session.getModelString?.(),
+			}),
+			{
+				authStorage: this.session.authStorage,
+				registry: this.session.modelRegistry,
+				settings: this.session.settings,
+			},
+		);
 		const thinkingLevelOverride = effectiveAgent.thinkingLevel;
 
 		// Resolve reviewer/fixer agents up front when the review gate is active so

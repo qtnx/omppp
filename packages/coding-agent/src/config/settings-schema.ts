@@ -671,6 +671,17 @@ export const SETTINGS_SCHEMA = {
 			description: "Identical tool calls (same name and arguments) since the last user prompt that count as a loop.",
 		},
 	},
+	"duo.takeover.signals.planningNeeded": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Planning-Needed Signal",
+			description:
+				"Automatically enter the duo planning phase (planner takeover) when an incoming user message is plan-shaped: imperative build language plus scope markers such as lists, multiple clauses, or multiple file mentions.",
+		},
+	},
 	shellPath: { type: "string", default: undefined },
 	"git.enabled": {
 		type: "boolean",
@@ -4543,6 +4554,43 @@ export const SETTINGS_SCHEMA = {
 			label: "Delegation Reminder Threshold",
 			description:
 				"Hands-on tool calls (edit/write/ast_edit/bash) in a single turn without delegating before the delegation reminder fires (minimum 1)",
+		},
+	},
+
+	"task.limitAwareModelRouting": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Limit-aware model routing",
+			description:
+				"Default OFF. When enabled, prefer a subagent model that has rate-limit headroom (5h AND weekly windows under the threshold) and fall through its model chain when Fable/GPT-5.5 windows are busy.",
+		},
+	},
+
+	"task.modelRoutingUtilizationMax": {
+		type: "number",
+		default: 0.5,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Model routing utilization max",
+			description:
+				"Strict upper bound (0..1) on a window's utilization for a model to still be preferred; default 0.5 leaves reserve for your own usage.",
+		},
+	},
+
+	"task.modelRoutingWindowMode": {
+		type: "enum",
+		values: ["all", "any"] as const,
+		default: "all",
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Model routing window mode",
+			description:
+				"'all' = both the 5-hour and weekly windows must have room; 'any' = one window under the threshold is enough.",
 		},
 	},
 
