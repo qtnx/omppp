@@ -134,26 +134,67 @@ class SyncSlashProvider implements AutocompleteProvider {
 }
 
 describe("Editor Enter handler sync slash completion", () => {
-	it("does not trigger slash autocomplete after prior prompt text", async () => {
-		let suggestionCalls = 0;
+	it("opens mid-prompt skill autocomplete and inserts the skill token without wiping the draft on Tab", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider(
+				[
+					{ name: "skill:security-scan", description: "Security scan" },
+					{ name: "model", description: "Switch model" },
+				],
+				"/tmp",
+			),
+		);
+
+		editor.setText("explain this\n");
+		editor.handleInput("/");
+		await Promise.resolve();
+
+		expect(editor.isShowingAutocomplete()).toBe(true);
+
+		editor.handleInput("security");
+		editor.handleInput("\t");
+
+		// Regression for issue #3913: the prior prose ("explain this\n") MUST
+		// survive a mid-prompt skill acceptance — only the partial `/sec` slash
+		// token at the cursor is replaced with `/skill:security-scan `.
+		expect(editor.getText()).toBe("explain this\n/skill:security-scan ");
+	});
+
+	it("preserves Tab file completion for an absolute path token after prose", async () => {
+		let forceFileCalls = 0;
 		const editor = new Editor(defaultEditorTheme);
 		editor.setAutocompleteProvider({
-			async getSuggestions(lines, cursorLine, cursorCol) {
-				suggestionCalls += 1;
-				const currentLine = lines[cursorLine] ?? "";
-				return { prefix: currentLine.slice(0, cursorCol), items: [{ value: "model", label: "/model" }] };
+			async getSuggestions() {
+				return null;
 			},
 			applyCompletion(lines, cursorLine, cursorCol) {
 				return { lines, cursorLine, cursorCol };
 			},
+			async getForceFileSuggestions() {
+				forceFileCalls += 1;
+				return {
+					prefix: "/tmp",
+					items: [
+						{ value: "/tmp/", label: "tmp/" },
+						{ value: "/tmpfile", label: "tmpfile" },
+					],
+				};
+			},
+			shouldTriggerFileCompletion() {
+				return true;
+			},
 		});
 
-		editor.setText("explain this\n");
-		editor.handleInput("/");
-		await Bun.sleep(0);
+		editor.setText("see /tmp");
+		editor.handleInput("\t");
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
 
-		expect(suggestionCalls).toBe(0);
-		expect(editor.isShowingAutocomplete()).toBe(false);
+		expect(forceFileCalls).toBe(1);
+		expect(editor.isShowingAutocomplete()).toBe(true);
 	});
 
 	it("completes slash command synchronously before async resolves and submits", () => {
@@ -301,5 +342,188 @@ describe("Editor Enter handler sync slash completion", () => {
 		editor.handleInput("\r");
 
 		expect(submitted).toBe("/model");
+	});
+});
+
+/**
+ * Stub provider that recognises `/todo <sub>` slash commands and supports fuzzy prefixes
+ * used to exercise stale autocomplete acceptance (issue #4295).
+ */
+class TodoSubcommandProvider implements AutocompleteProvider {
+	async getSuggestions(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
+		const line = lines[cursorLine] || "";
+		const before = line.slice(0, cursorCol);
+		if (before.startsWith("/todo ") && !before.includes("\n")) {
+			const query = before.slice("/todo ".length);
+			const all: AutocompleteItem[] = [
+				{ value: "start", label: "start" },
+				{ value: "done", label: "done" },
+			];
+			const items = query ? all.filter(i => i.value.startsWith(query)) : all;
+			if (items.length === 0) return null;
+			return { prefix: before, items };
+		}
+		return null;
+	}
+
+	applyCompletion(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		item: AutocompleteItem,
+		prefix: string,
+	): { lines: string[]; cursorLine: number; cursorCol: number } {
+		const line = lines[cursorLine] || "";
+		// Anchor replacement at the end of the "/todo " literal, so only the query tail
+		// gets rewritten with the selected subcommand value.
+		const replaceStart = cursorCol - prefix.length + "/todo ".length;
+		const before = line.slice(0, replaceStart);
+		const after = line.slice(cursorCol);
+		const nextLines = [...lines];
+		nextLines[cursorLine] = before + item.value + after;
+		return {
+			lines: nextLines,
+			cursorLine,
+			cursorCol: before.length + item.value.length,
+		};
+	}
+}
+
+describe("Editor autocomplete invalidation on destructive edits (issue #4295)", () => {
+	async function primeAutocomplete(editor: Editor) {
+		editor.handleInput("/todo s");
+		await Bun.sleep(0);
+		expect(editor.isShowingAutocomplete()).toBe(true);
+	}
+
+	it("does not insert a stale suggestion when Tab follows Ctrl+W", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(new TodoSubcommandProvider());
+		await primeAutocomplete(editor);
+
+		editor.handleInput("\x17"); // Ctrl+W: delete word backward
+		expect(editor.getText()).toBe("/todo ");
+
+		editor.handleInput("\t");
+		// Tab must NOT insert the stale "start" suggestion; buffer stays as-is.
+		expect(editor.getText()).toBe("/todo ");
+	});
+
+	it("does not insert a stale suggestion when Tab follows Ctrl+U", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(new TodoSubcommandProvider());
+		await primeAutocomplete(editor);
+
+		editor.handleInput("\x15"); // Ctrl+U: delete to start of line
+		expect(editor.getText()).toBe("");
+
+		editor.handleInput("\t");
+		expect(editor.getText()).toBe("");
+	});
+
+	it("does not insert a stale suggestion when Tab follows Alt+Backspace", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(new TodoSubcommandProvider());
+		await primeAutocomplete(editor);
+
+		editor.handleInput("\x1b\x7f"); // Alt+Backspace: delete word backward
+		expect(editor.getText()).toBe("/todo ");
+
+		editor.handleInput("\t");
+		expect(editor.getText()).toBe("/todo ");
+	});
+
+	it("does not insert a stale suggestion when Tab follows Alt+D", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(new TodoSubcommandProvider());
+
+		// Prime with `/todo start` and move cursor between "/todo " and "start"
+		editor.setText("/todo start");
+		editor.handleInput("\x01"); // Ctrl+A: cursor to line start
+		for (const _ of "/todo ") editor.handleInput("\x06"); // Ctrl+F: forward one char
+		editor.handleInput("s"); // trigger autocomplete for "/todo s"
+		await Bun.sleep(0);
+		expect(editor.isShowingAutocomplete()).toBe(true);
+
+		editor.handleInput("\x1bd"); // Alt+D: delete word forward (consumes remaining "tart")
+		// Only the forward "tart" is consumed; cursor sits after "/todo s" and the popup is now stale
+		// because further reduction of the buffer (e.g. following Ctrl+W) should still invalidate.
+		editor.handleInput("\x17"); // Ctrl+W: back through the "s" and "/todo "
+		editor.handleInput("\t");
+		expect(editor.getText()).not.toContain("start");
+	});
+
+	it("does not insert a stale suggestion after Ctrl+Y yank replaces the prefix", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(new TodoSubcommandProvider());
+
+		// Seed the kill ring with "hello " via type-then-Ctrl+U
+		editor.setText("hello ");
+		editor.handleInput("\x15"); // Ctrl+U kills into ring
+		expect(editor.getText()).toBe("");
+
+		await primeAutocomplete(editor);
+
+		// Yank inserts "hello " and should invalidate the prefix (`/todo s` no longer at cursor).
+		editor.handleInput("\x19"); // Ctrl+Y
+		expect(editor.getText()).toBe("/todo shello ");
+
+		editor.handleInput("\t");
+		// Tab must not paste the stale "start" over the yanked text.
+		expect(editor.getText()).toBe("/todo shello ");
+	});
+
+	it("falls through to submission when Enter presses on a stale file-path popup", async () => {
+		let forceFileCalls = 0;
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider({
+			async getSuggestions() {
+				return null;
+			},
+			applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+				const line = lines[cursorLine] || "";
+				const nextLines = [...lines];
+				nextLines[cursorLine] = line.slice(0, cursorCol - prefix.length) + item.value + line.slice(cursorCol);
+				return { lines: nextLines, cursorLine, cursorCol: cursorCol - prefix.length + item.value.length };
+			},
+			async getForceFileSuggestions() {
+				forceFileCalls += 1;
+				return {
+					prefix: "tmp",
+					items: [
+						{ value: "tmpA", label: "tmpA" },
+						{ value: "tmpB", label: "tmpB" },
+					],
+				};
+			},
+			shouldTriggerFileCompletion() {
+				return true;
+			},
+		});
+
+		let submitted = "";
+		editor.onSubmit = text => {
+			submitted = text;
+		};
+
+		editor.setText("hello tmp");
+		editor.handleInput("\t"); // Force file completion (opens popup with "tmp" prefix)
+		for (let i = 0; i < 10; i += 1) {
+			await Promise.resolve();
+		}
+		expect(editor.isShowingAutocomplete()).toBe(true);
+		expect(forceFileCalls).toBe(1);
+
+		// Destructive edit removes the "tmp" prefix; popup is now stale.
+		editor.handleInput("\x17"); // Ctrl+W: removes "tmp"
+		expect(editor.getText()).toBe("hello ");
+
+		// Enter must fall through to submit, not paste the stale file suggestion.
+		editor.handleInput("\r");
+		expect(submitted).toBe("hello");
 	});
 });

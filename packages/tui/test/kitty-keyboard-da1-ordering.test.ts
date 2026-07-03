@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import type { Component } from "@oh-my-pi/pi-tui";
+import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
 	createProcessTerminalRenderHarness,
 	type ProcessTerminalRenderHarness,
@@ -10,12 +12,42 @@ import {
 // is only a sentinel that guarantees a reply even from terminals that ignore
 // `CSI ? u`. Some terminals (Superset / xterm-on-Electron) answer DA1 first;
 // the kitty reply must still be honored regardless of ordering.
+
+class ModalProbe implements Component {
+	invalidate(): void {}
+	render(): string[] {
+		return ["modal"];
+	}
+}
+const originalSshConnection = Bun.env.SSH_CONNECTION;
+const originalSshTty = Bun.env.SSH_TTY;
+const originalSshClient = Bun.env.SSH_CLIENT;
+const originalTerminalId = TERMINAL.id;
+
+function restoreEnv(name: "SSH_CONNECTION" | "SSH_TTY" | "SSH_CLIENT", value: string | undefined): void {
+	if (value === undefined) {
+		delete Bun.env[name];
+		return;
+	}
+	Bun.env[name] = value;
+}
+
+function clearSshEnv(): void {
+	delete Bun.env.SSH_CONNECTION;
+	delete Bun.env.SSH_TTY;
+	delete Bun.env.SSH_CLIENT;
+}
+
 describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () => {
 	let harness: ProcessTerminalRenderHarness | undefined;
 
 	afterEach(() => {
 		harness?.dispose();
 		harness = undefined;
+		restoreEnv("SSH_CONNECTION", originalSshConnection);
+		restoreEnv("SSH_TTY", originalSshTty);
+		restoreEnv("SSH_CLIENT", originalSshClient);
+		Object.defineProperty(TERMINAL, "id", { value: originalTerminalId, configurable: true });
 	});
 
 	it("enables kitty when the kitty reply arrives before the DA1 sentinel", async () => {
@@ -33,6 +65,7 @@ describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () =
 	});
 
 	it("enables kitty when the DA1 sentinel arrives before the kitty reply (#2042)", async () => {
+		clearSshEnv();
 		harness = createProcessTerminalRenderHarness(100, 30);
 		await harness.settle();
 		harness.writes.length = 0;
@@ -53,6 +86,7 @@ describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () =
 	});
 
 	it("keeps the modifyOtherKeys fallback when only DA1 ever replies", async () => {
+		clearSshEnv();
 		harness = createProcessTerminalRenderHarness(100, 30);
 		await harness.settle();
 		harness.writes.length = 0;
@@ -65,5 +99,82 @@ describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () =
 		expect(harness.terminal.kittyProtocolActive).toBe(false);
 		expect(out).toContain("\x1b[>4;2m");
 		expect(out).not.toContain("\x1b[>1u");
+	});
+
+	it("skips modifyOtherKeys fallback for SSH_CONNECTION-only unknown terminals", async () => {
+		Bun.env.SSH_CONNECTION = "192.0.2.10 54321 192.0.2.20 22";
+		delete Bun.env.SSH_TTY;
+		delete Bun.env.SSH_CLIENT;
+		Object.defineProperty(TERMINAL, "id", { value: "base", configurable: true });
+		harness = createProcessTerminalRenderHarness(100, 30);
+		await harness.settle();
+		harness.writes.length = 0;
+
+		await harness.feed("\x1b[?1;2c");
+
+		const out = harness.writes.join("");
+		expect(harness.terminal.kittyProtocolActive).toBe(false);
+		expect(out).not.toContain("\x1b[>4;2m");
+		expect(harness.terminal.keyboardEnhancementEnterSequence).toBeNull();
+	});
+
+	it("reasserts modifyOtherKeys fallback when fullscreen overlays enter the alternate screen", async () => {
+		clearSshEnv();
+		harness = createProcessTerminalRenderHarness(100, 30);
+		await harness.settle();
+		harness.writes.length = 0;
+
+		await harness.feed("\x1b[?1;2c");
+		expect(harness.writes.join("")).toContain("\x1b[>4;2m");
+		harness.writes.length = 0;
+
+		const overlay = harness.tui.showOverlay(new ModalProbe(), {
+			fullscreen: true,
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+		});
+		await harness.settle();
+
+		const enterOut = harness.writes.join("");
+		expect(enterOut).toContain("\x1b[?1049h\x1b[>4;2m");
+		harness.writes.length = 0;
+
+		overlay.hide();
+		await harness.settle();
+
+		const exitOut = harness.writes.join("");
+		// xterm modifyOtherKeys is a single global flag (no per-screen stack),
+		// so the overlay exit must NOT emit `>4;0m` — that would clear it on the
+		// normal screen and break the composer between overlays. Only the kitty
+		// pop is per-screen and safe to emit on exit.
+		expect(exitOut).toContain("\x1b[?1049l");
+		expect(exitOut).not.toContain("\x1b[>4;0m");
+	});
+
+	it("pops the kitty keyboard frame on fullscreen overlay exit", async () => {
+		harness = createProcessTerminalRenderHarness(100, 30);
+		await harness.settle();
+		await harness.feed("\x1b[?0u", "\x1b[?1;2c");
+		expect(harness.terminal.kittyProtocolActive).toBe(true);
+		harness.writes.length = 0;
+
+		const overlay = harness.tui.showOverlay(new ModalProbe(), {
+			fullscreen: true,
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+		});
+		await harness.settle();
+		expect(harness.writes.join("")).toContain("\x1b[?1049h\x1b[>1u");
+		harness.writes.length = 0;
+
+		overlay.hide();
+		await harness.settle();
+
+		const exitOut = harness.writes.join("");
+		// Kitty keyboard flags are per-screen, so the matching pop must precede
+		// the alt-screen exit to balance the push from overlay entry.
+		expect(exitOut).toContain("\x1b[<u\x1b[?1049l");
 	});
 });

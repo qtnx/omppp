@@ -21,6 +21,7 @@ function createCtx(pr: TestPr): SegmentContext {
 		activeRepo: null,
 		width: 120,
 		options: {},
+		compactThinkingLevel: false,
 		planMode: null,
 		loopMode: null,
 		goalMode: null,
@@ -39,12 +40,13 @@ function createCtx(pr: TestPr): SegmentContext {
 		contextWindow: 0,
 		autoCompactEnabled: false,
 		subagentCount: 0,
-		sessionStartTime: 0,
+		activeMs: 0,
 		git: {
 			branch: "feature/pr-status",
 			status: null,
 			pr,
 		},
+		worktree: null,
 		usage: null,
 	};
 }

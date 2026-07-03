@@ -15,6 +15,7 @@ const skill: DollarMentionSkill = {
 	name: "analyze",
 	description: "Run read-only repository analysis",
 	filePath: "/tmp/analyze/SKILL.md",
+	baseDir: "/tmp/analyze",
 };
 
 const agent: DollarMentionAgent = {

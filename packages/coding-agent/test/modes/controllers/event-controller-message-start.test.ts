@@ -222,6 +222,10 @@ describe("EventController IRC expiry", () => {
 		await controller.handleEvent({ type: "irc_message", message });
 
 		expect(chatContainer.children).toHaveLength(2);
+		// One requestRender from the IRC handler mounting the card. The blanket
+		// pre-render that `handleEvent` used to fire before every dispatch was
+		// removed in #4353 (it doubled the paint rate during streaming and did no
+		// visible work beyond what the handlers already trigger).
 		expect(requestRender).toHaveBeenCalledTimes(1);
 
 		vi.advanceTimersByTime(9_999);

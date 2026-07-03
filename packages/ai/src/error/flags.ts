@@ -85,6 +85,7 @@ const OVERFLOW_NO_BODY_PATTERN = /\b4(00|13)\s*(status code)?\s*\(no body\)/i;
 const TIMEOUT_PATTERN = /\b(?:operation\s+)?timed?\s*out\b|\btimeout\b|\bstream stall\b/i;
 const TRANSIENT_ENVELOPE_PATTERN = /anthropic stream envelope error:/i;
 const TRANSIENT_ENVELOPE_BEFORE_START_PATTERN = /before message_start/i;
+export const STREAM_READ_ERROR_PATTERN = /stream[_ -]?read[_ -]?error/i;
 export const TRANSIENT_TRANSPORT_PATTERN =
 	/overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|retry your request|network.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|upstream.?request.?failed|reset before headers|socket hang up|timed? out|timeout|terminated|retry delay|stream stall|no error details in response|HTTP2(?:StreamReset|RefusedStream|EnhanceYourCalm)|malformed.?function.?call/i;
 const AUTH_FAILURE_PATTERN =
@@ -93,6 +94,14 @@ const MALFORMED_FUNCTION_CALL_PATTERN = /\bmalformed.?function.?call\b/i;
 const PROVIDER_FINISH_ERROR_PATTERN = /\bProvider (?:returned error finish_reason|finish_reason:\s*error)\b/i;
 const STALE_RESPONSE_ITEM_PATTERNS = [/\bItem with id ['"][^'"]+['"] not found\.?/i, /previous[ _]?response/i] as const;
 const STALE_RESPONSE_ITEM_DETAIL_PATTERN = /not[ _]?found|invalid|expired|stale|zero[ _-]?data[ _-]?retention/i;
+/**
+ * Local llama.cpp / Ollama deterministic tool-call argument JSON parse failure.
+ * The model emitted invalid JSON in a tool call and the server returned HTTP 500
+ * with this exact text — replaying the same prompt yields the same malformed
+ * output, so callers strip {@link Flag.Transient} when this matches.
+ */
+export const LLAMA_CPP_TOOL_CALL_PARSE_PATTERN =
+	/failed to parse tool call arguments as json|\[json\.exception\.parse_error\.101\]/i;
 
 // Copilot routing flap: HTTP 400 `model_not_supported` (structural code on the
 // error, also surfaced in text). Treated as transient — a retry usually lands
@@ -240,9 +249,14 @@ function statusInternal(error: unknown, depth: number): number | undefined {
 	return undefined;
 }
 
+export function isStreamReadErrorText(text: string): boolean {
+	return STREAM_READ_ERROR_PATTERN.test(text);
+}
+
 function isTransientErrorText(text: string): boolean {
 	return (
 		isUnexpectedSocketCloseMessage(text) ||
+		isStreamReadErrorText(text) ||
 		(TRANSIENT_ENVELOPE_PATTERN.test(text) && TRANSIENT_ENVELOPE_BEFORE_START_PATTERN.test(text)) ||
 		TRANSIENT_TRANSPORT_PATTERN.test(text)
 	);
@@ -435,7 +449,13 @@ export function classifyMessage(message: {
 	const currentStatus = message.errorStatus ?? statusFromId(existingId);
 	const textId = classifyText(message.errorMessage, currentStatus, message.api);
 
-	const kinds = ((existingId ?? 0) | textId) & KIND_MASK;
+	let kinds = ((existingId ?? 0) | textId) & KIND_MASK;
+	if (message.errorMessage && LLAMA_CPP_TOOL_CALL_PARSE_PATTERN.test(message.errorMessage)) {
+		// Deterministic local-model tool-call JSON parse failure: HTTP 500 is misleading
+		// because the same prompt reproduces the same malformed output, so the agent-level
+		// auto-retry would loop. Strip Transient so the recovery message surfaces immediately.
+		kinds &= ~Flag.Transient;
+	}
 	const id = kinds !== 0 ? create(kinds) : (statusFromId(textId) ?? statusFromId(existingId) ?? currentStatus ?? 0);
 
 	message.errorId = id;

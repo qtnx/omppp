@@ -1,8 +1,8 @@
 /**
  * Contract: `createSettingsAwareStreamFn` layers session provider settings
  * (`providers.openrouterVariant`, `providers.antigravityEndpoint`,
- * `providers.maxInFlightRequests`, `model.loopGuard.*`, `textVerbosity` for
- * Responses-family requests) onto every call while letting caller-supplied
+ * `providers.stream*TimeoutSeconds`, `providers.maxInFlightRequests`,
+ * `model.loopGuard.*`, `textVerbosity` for Responses-family requests)
  * options win — the same wiring the main agent and the advisor agent share so
  * OpenRouter sticky-routing / response caching behaves the same on advisor turns
  * (can1357/oh-my-pi#3639).
@@ -65,6 +65,26 @@ describe("createSettingsAwareStreamFn", () => {
 		expect(calls[2]?.options?.textVerbosity).toBe("medium");
 	});
 
+	it("forwards configured stream watchdog budgets while preserving caller overrides", () => {
+		const settings = Settings.isolated({
+			"providers.streamFirstEventTimeoutSeconds": 600,
+			"providers.streamIdleTimeoutSeconds": 300,
+		});
+		const { fn: base, calls } = captureBase();
+		const wrapped = createSettingsAwareStreamFn(settings, base);
+
+		wrapped(stubModel, stubContext, undefined);
+		wrapped(stubModel, stubContext, {
+			streamFirstEventTimeoutMs: 15_000,
+			streamIdleTimeoutMs: 10_000,
+		});
+
+		expect(calls[0]?.options?.streamFirstEventTimeoutMs).toBe(600_000);
+		expect(calls[0]?.options?.streamIdleTimeoutMs).toBe(300_000);
+		expect(calls[1]?.options?.streamFirstEventTimeoutMs).toBe(15_000);
+		expect(calls[1]?.options?.streamIdleTimeoutMs).toBe(10_000);
+	});
+
 	it("treats the default openrouterVariant as absent so the base call carries no variant", () => {
 		const settings = Settings.isolated({ "providers.openrouterVariant": "default" });
 		const { fn: base, calls } = captureBase();
@@ -100,5 +120,60 @@ describe("createSettingsAwareStreamFn", () => {
 		// the rest (the inline closure the main agent used has the same shape).
 		expect(options?.loopGuard?.enabled).toBe(false);
 		expect(options?.loopGuard?.checkAssistantContent).toBe(true);
+	});
+	describe("providers.anthropic.serverSideFallback (opt-in)", () => {
+		const stubFableModel = {
+			api: "anthropic-messages",
+			provider: "anthropic",
+			id: "claude-fable-5",
+		} as unknown as Model;
+		const stubOpusModel = {
+			api: "anthropic-messages",
+			provider: "anthropic",
+			id: "claude-opus-4-8",
+		} as unknown as Model;
+
+		it("stays off by default: no fallbacks injected on any model", () => {
+			const settings = Settings.isolated({});
+			const { fn: base, calls } = captureBase();
+			const wrapped = createSettingsAwareStreamFn(settings, base);
+
+			wrapped(stubFableModel, stubContext, { apiKey: "k" });
+
+			expect(calls[0]?.options?.fallbacks).toBeUndefined();
+		});
+
+		it("injects Opus 4.8 fallback for Fable when the setting is on", () => {
+			const settings = Settings.isolated({ "providers.anthropic.serverSideFallback": true });
+			const { fn: base, calls } = captureBase();
+			const wrapped = createSettingsAwareStreamFn(settings, base);
+
+			wrapped(stubFableModel, stubContext, { apiKey: "k" });
+
+			expect(calls[0]?.options?.fallbacks).toEqual([{ model: "claude-opus-4-8" }]);
+		});
+
+		it("does NOT inject fallbacks on non-Fable/Mythos Anthropic models even when the setting is on", () => {
+			const settings = Settings.isolated({ "providers.anthropic.serverSideFallback": true });
+			const { fn: base, calls } = captureBase();
+			const wrapped = createSettingsAwareStreamFn(settings, base);
+
+			wrapped(stubOpusModel, stubContext, { apiKey: "k" });
+
+			expect(calls[0]?.options?.fallbacks).toBeUndefined();
+		});
+
+		it("caller-supplied fallbacks always win over the settings default", () => {
+			const settings = Settings.isolated({ "providers.anthropic.serverSideFallback": true });
+			const { fn: base, calls } = captureBase();
+			const wrapped = createSettingsAwareStreamFn(settings, base);
+
+			wrapped(stubFableModel, stubContext, {
+				apiKey: "k",
+				fallbacks: [{ model: "claude-sonnet-5" }],
+			});
+
+			expect(calls[0]?.options?.fallbacks).toEqual([{ model: "claude-sonnet-5" }]);
+		});
 	});
 });

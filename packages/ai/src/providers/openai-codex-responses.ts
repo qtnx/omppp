@@ -105,7 +105,7 @@ import { transformMessages } from "./transform-messages";
 export interface OpenAICodexResponsesOptions extends StreamOptions {
 	reasoning?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	reasoningSummary?: "auto" | "concise" | "detailed" | null;
-	/** `reasoning.context` replay scope; defaults to `all_turns` for every Codex request when unset. */
+	/** `reasoning.context` replay scope; defaults to `all_turns` when unset. The `all_turns` value is gated to gpt-5.4+ Codex models — older ids reject it, so it is suppressed and `context` omitted. */
 	reasoningContext?: CodexReasoningContext;
 	textVerbosity?: "low" | "medium" | "high";
 	include?: string[];
@@ -2737,17 +2737,33 @@ function isCodexWebSocketPreferred(model: Model<"openai-codex-responses">, prefe
 	return isCodexWebSocketEnvEnabled() || preferWebsockets === true || model.preferWebsockets === true;
 }
 
+function getCodexWebSocketEnvValue(): boolean | undefined {
+	const envVal = $env.PI_CODEX_WEBSOCKET;
+	if (envVal !== undefined) {
+		return $flag("PI_CODEX_WEBSOCKET");
+	}
+	return undefined;
+}
+
 function shouldUseCodexWebSocket(
 	model: Model<"openai-codex-responses">,
 	state: CodexWebSocketSessionState | undefined,
 	preferWebsockets?: boolean,
 ): boolean {
+	// Explicitly disabled by the model or session state.
+	if (model.preferWebsockets === false) return false;
 	if (state?.websocketOversizedUntil !== undefined && state.websocketOversizedUntil <= Date.now()) {
 		state.websocketOversizedUntil = undefined;
 	}
 	if (state?.websocketOversizedUntil !== undefined) return false;
+	// Explicitly disabled by the session state.
 	if (!state || state.disableWebsocket) return false;
-	return isCodexWebSocketPreferred(model, preferWebsockets);
+	// Env val > Preference
+	const envVal = getCodexWebSocketEnvValue();
+	if (envVal !== undefined) return envVal;
+	// Negative preference overrides model preference; otherwise use the model's preference.
+	if (preferWebsockets === false) return false;
+	return true;
 }
 
 export interface OpenAICodexTransportDetails {
@@ -2805,10 +2821,13 @@ export function getOpenAICodexTransportDetails(
 		providerSessionState?: Map<string, ProviderSessionState>;
 	},
 ): OpenAICodexTransportDetails {
+	const envVal = getCodexWebSocketEnvValue();
 	const websocketPreferred =
-		options?.preferWebsockets === false
-			? false
-			: $flag("PI_CODEX_WEBSOCKET") || options?.preferWebsockets === true || model.preferWebsockets === true;
+		envVal !== undefined
+			? envVal
+			: options?.preferWebsockets === false
+				? false
+				: options?.preferWebsockets === true || model.preferWebsockets === true;
 	const state = getCodexWebSocketStateForPublicSession(model, options);
 
 	return {

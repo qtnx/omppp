@@ -26,6 +26,9 @@ target/
 
 # OS
 *.tmp
+bun/
+*.pile
+.tmp-*/
 .DS_Store
 
 # Logs & profiling

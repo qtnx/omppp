@@ -1,3 +1,15 @@
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+
+// Single-entry memo for the proseOnly formatting path. During a streaming tick
+// the same growing thinking text is formatted up to three times (reveal count,
+// reveal slice, component render); this collapses them to one computation. The
+// `proseOnly === false` branch is a passthrough and never consults the cache, so
+// the key can be the text alone. A single entry is enough for the common case of
+// one active thinking block and never regresses (a miss recomputes exactly as
+// before).
+let formatCacheKey = "";
+let formatCacheValue = "";
+
 export function canonicalizeMessage(text: string | null | undefined): string {
 	if (!text) return "";
 	const trimmed = text.trim();
@@ -12,6 +24,7 @@ export function canonicalizeMessage(text: string | null | undefined): string {
 
 export function formatThinkingForDisplay(text: string, proseOnly: boolean): string {
 	if (!proseOnly || !text) return text;
+	if (text === formatCacheKey) return formatCacheValue;
 
 	const lines = text.split("\n");
 	const resultLines: string[] = [];
@@ -76,9 +89,12 @@ export function formatThinkingForDisplay(text: string, proseOnly: boolean): stri
 	}
 
 	const formatted = resultLines.join("\n");
+	formatCacheKey = text;
+	formatCacheValue = formatted;
 	return formatted;
 }
 
+/** Whether a formatted thinking block has non-placeholder content worth rendering. */
 export function hasDisplayableThinking(
 	text: string | null | undefined,
 	formattedText: string | null | undefined,
@@ -86,4 +102,16 @@ export function hasDisplayableThinking(
 	if (!text) return false;
 	if (!formattedText) return false;
 	return formattedText.length > 0 && canonicalizeMessage(text).length > 0;
+}
+
+/** Whether an assistant message contains thinking content the TUI can reveal. */
+export function messageHasDisplayableThinking(message: AgentMessage, proseOnly: boolean): boolean {
+	if (message.role !== "assistant") return false;
+	for (const content of message.content) {
+		if (content.type !== "thinking") continue;
+		if (hasDisplayableThinking(content.thinking, formatThinkingForDisplay(content.thinking, proseOnly))) {
+			return true;
+		}
+	}
+	return false;
 }

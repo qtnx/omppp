@@ -298,6 +298,35 @@ describe("computeHashlineDiff", () => {
 			expect(result.error).toContain('internal scheme "local://"');
 		}
 	});
+
+	// A 16-bit snapshot tag can collide across two different file states. The
+	// preview mirrors Patcher's apply-time behavior: tag equality with the
+	// live content is trusted as-is — a colliding retained snapshot must not
+	// reject the preview, since a forced re-read would mint the very same tag.
+	test("previews onto live content when the tag matches a colliding retained snapshot", async () => {
+		// Both texts hash to `1D84` (pinned in hashline's collision tests).
+		const SNAPSHOT_TEXT = "line one 263\nline two 4471\n";
+		const LIVE_TEXT = "line one 410\nline two 6970\n";
+		const sourcePath = path.join(tempDir, "source.txt");
+		await Bun.write(sourcePath, LIVE_TEXT);
+
+		const snapshotStore = new InMemorySnapshotStore();
+		// Anchors were minted against SNAPSHOT_TEXT; the live file is the
+		// colliding LIVE_TEXT. The tag still matches live, so the SWAP lands
+		// on live line 2.
+		const tag = snapshotStore.record(sourcePath, SNAPSHOT_TEXT);
+
+		const result = await computeHashlineDiff(
+			{ input: `${formatHashlineHeader(sourcePath, tag)}\nSWAP 2.=2:\n+edited live` },
+			tempDir,
+			snapshotStore,
+		);
+
+		expect("diff" in result).toBe(true);
+		if ("diff" in result) {
+			expect(result.diff).toContain("edited live");
+		}
+	});
 });
 
 describe("computeEditDiff", () => {

@@ -23,6 +23,7 @@ import type { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import type { AgentRegistry, AgentStatus } from "../../registry/agent-registry";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries } from "../../session/session-loader";
+import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { getEditorTheme, theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
@@ -60,6 +61,18 @@ export interface AgentTranscriptViewerDeps {
 const POLL_MS = 250;
 
 const SENTINEL_BYTES = 4096;
+
+/** Sanitize wire-delivered error text for a single TUI row: tabs → spaces,
+ *  newlines collapsed, absolute paths shortened, truncated to `maxWidth`.
+ *  `#remoteError` arrives as `String(err)` from the host — it can carry
+ *  multi-line stacks and absolute host paths that would break the frame's
+ *  1-row accounting and leak host filesystem layout to guests. */
+function sanitizeErrorLine(text: string, maxWidth: number): string {
+	const singleLine = replaceTabs(text)
+		.replace(/[\r\n]+/g, " ")
+		.replace(/\/[^\s'")\]]+/g, p => shortenPath(p));
+	return truncateToWidth(singleLine, Math.max(10, maxWidth));
+}
 
 interface LocalTranscriptSentinel {
 	offset: number;
@@ -137,6 +150,7 @@ export class AgentTranscriptViewer implements Component {
 	#remoteFetchInFlight = false;
 	#remoteToken = 0;
 	#remoteUnavailable = false;
+	#remoteError = "";
 	#hasRemoteData = false;
 
 	#model: string | undefined;
@@ -177,12 +191,15 @@ export class AgentTranscriptViewer implements Component {
 
 	dispose(): void {
 		this.#disposed = true;
-		if (this.#pollTimer) {
-			clearInterval(this.#pollTimer);
-			this.#pollTimer = undefined;
-		}
+		this.#stopPolling();
 		this.#remoteToken++;
 		this.#builder.dispose();
+	}
+
+	#stopPolling(): void {
+		if (!this.#pollTimer) return;
+		clearInterval(this.#pollTimer);
+		this.#pollTimer = undefined;
 	}
 
 	// ========================================================================
@@ -345,11 +362,20 @@ export class AgentTranscriptViewer implements Component {
 					}
 					return;
 				}
+				if (result.error) {
+					this.#remoteError = result.error;
+					this.#hasRemoteData = true;
+					this.#remoteUnavailable = false;
+					this.#stopPolling();
+					this.deps.requestRender();
+					return;
+				}
 				if (result.newSize < fromByte) {
 					// Host transcript rotated/truncated — drop the stale rendered rows
 					// before restarting; otherwise the post-rotation fetch would stack
 					// new content under the pre-rotation history.
 					this.#remoteBytes = 0;
+					this.#remoteError = "";
 					this.#hasRemoteData = false;
 					this.#model = undefined;
 					this.#rebuild([]);
@@ -357,6 +383,7 @@ export class AgentTranscriptViewer implements Component {
 					return;
 				}
 				this.#remoteUnavailable = false;
+				this.#remoteError = "";
 				const firstData = !this.#hasRemoteData;
 				this.#hasRemoteData = true;
 				const lastNewline = result.text.lastIndexOf("\n");
@@ -534,7 +561,11 @@ export class AgentTranscriptViewer implements Component {
 
 		const headerLines = this.#headerLines(ref?.status, ref?.kind, ref?.parentId);
 		const footerLines = this.#footerLines();
-		const noticeLine = this.#notice ? ` ${theme.fg("error", this.#notice)}` : undefined;
+		const noticeLine = this.#notice
+			? ` ${theme.fg("error", sanitizeErrorLine(this.#notice, innerWidth))}`
+			: this.#remoteError && !this.#builder.isEmpty
+				? ` ${theme.fg("error", sanitizeErrorLine(this.#remoteError, innerWidth))}`
+				: undefined;
 		const editorLines = this.#editor ? this.#editor.render(innerWidth) : [];
 
 		// Chrome: top border + header rows + divider border + (notice) + editor + footer + bottom border.
@@ -542,7 +573,7 @@ export class AgentTranscriptViewer implements Component {
 		const viewportHeight = Math.max(3, termHeight - chrome);
 
 		const contentLines = this.#builder.isEmpty
-			? [` ${theme.fg("dim", this.#placeholder())}`]
+			? [` ${theme.fg("dim", this.#placeholder(Math.max(10, contentWidth - 1)))}`]
 			: this.#builder.container.render(contentWidth);
 		this.#scrollView.setLines(contentLines);
 		this.#scrollView.setHeight(viewportHeight);
@@ -606,8 +637,9 @@ export class AgentTranscriptViewer implements Component {
 		return parts.join(theme.sep.dot);
 	}
 
-	#placeholder(): string {
+	#placeholder(maxWidth: number): string {
 		if (this.deps.remote) {
+			if (this.#remoteError) return sanitizeErrorLine(this.#remoteError, maxWidth);
 			if (this.#remoteUnavailable) return "Transcript lives on the host — not available.";
 			return this.#hasRemoteData ? "No messages yet." : "Loading transcript from host…";
 		}

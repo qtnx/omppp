@@ -22,6 +22,11 @@ import type {
 	ReminderStats,
 	SessionStatsAggregate,
 	TimeSeriesPoint,
+	ToolCallStats,
+	ToolModelStats,
+	ToolResultLink,
+	ToolTimeSeriesPoint,
+	ToolUsageStats,
 	UserMessageLink,
 	UserMessageStats,
 } from "./types";
@@ -51,6 +56,7 @@ const SYSTEM_CONTEXT_REMINDERS_BACKFILL_KEY = "system_context_reminders_v1";
 const DELEGATION_REMINDERS_BACKFILL_KEY = "delegation_reminders_v1";
 const AGENT_TYPE_BACKFILL_KEY = "agent_type_v1";
 const FORK_DEDUPE_KEY = "fork_dedupe_v2";
+const TOOL_CALLS_BACKFILL_KEY = "tool_calls_v1";
 function shouldResetBackfill(value: string | undefined): boolean {
 	return value !== BACKFILL_COMPLETE && value !== BACKFILL_PENDING;
 }
@@ -175,6 +181,27 @@ export async function initDb(): Promise<Database> {
 		CREATE INDEX IF NOT EXISTS idx_user_messages_timestamp ON user_messages(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_user_messages_timestamp_model ON user_messages(timestamp, model, provider);
 
+		CREATE TABLE IF NOT EXISTS tool_calls (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_file TEXT NOT NULL,
+			entry_id TEXT NOT NULL,
+			tool_call_id TEXT NOT NULL,
+			folder TEXT NOT NULL,
+			tool_name TEXT NOT NULL,
+			model TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			timestamp INTEGER NOT NULL,
+			agent_type TEXT NOT NULL DEFAULT 'main',
+			calls_in_turn INTEGER NOT NULL DEFAULT 1,
+			args_chars INTEGER NOT NULL DEFAULT 0,
+			result_chars INTEGER,
+			is_error INTEGER,
+			UNIQUE(session_file, tool_call_id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_tool_calls_timestamp ON tool_calls(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_timestamp ON tool_calls(tool_name, timestamp);
+
 		CREATE TABLE IF NOT EXISTS meta (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
@@ -255,6 +282,7 @@ export async function initDb(): Promise<Database> {
 		`);
 	}
 	backfillUserMessages(db);
+	backfillToolCalls(db);
 	repairUserMessageLinks(db);
 	backfillPriorityPremiumRequests(db);
 	backfillSystemContextReminders(db);
@@ -438,7 +466,7 @@ export function insertMessageStats(stats: MessageStats[]): number {
 				cost.cacheRead,
 				cost.cacheWrite,
 				cost.total,
-				s.agentType,
+				s.agentType || classifyAgentType(s.sessionFile),
 				// `WHERE NOT EXISTS` binds: skip when a different session_file
 				// already holds this (entry_id, timestamp).
 				s.entryId,
@@ -1116,6 +1144,27 @@ function backfillUserMessages(database: Database): void {
 }
 
 /**
+ * One-shot wipe of `tool_calls` + `file_offsets` when the `tool_calls` table
+ * is introduced (or its schema version bumps), so the next sync re-parses
+ * every session and ingests historical tool calls. `messages` and
+ * `user_messages` re-inserts are idempotent, so the offset reset is safe.
+ * Same sentinel protocol as {@link backfillUserMessages}: the PENDING value
+ * written here prevents re-wiping on subsequent inits.
+ */
+function backfillToolCalls(database: Database): void {
+	const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(TOOL_CALLS_BACKFILL_KEY) as
+		| { value: string }
+		| undefined;
+	if (!shouldResetBackfill(row?.value)) return;
+
+	database.run("DELETE FROM tool_calls");
+	database.run("DELETE FROM file_offsets");
+	database
+		.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+		.run(TOOL_CALLS_BACKFILL_KEY, BACKFILL_PENDING);
+}
+
+/**
  * Reclassify pre-existing `messages` rows by agent type once, after the
  * `agent_type` column is added to an older database (every prior row defaulted
  * to 'main' on the ALTER). Classification is purely path-based — derived from
@@ -1192,6 +1241,12 @@ function backfillForkDuplicates(database: Database): void {
 			DELETE FROM delegation_reminders
 			WHERE id NOT IN (
 				SELECT MIN(id) FROM delegation_reminders GROUP BY entry_id, timestamp
+			)
+		`);
+		database.run(`
+			DELETE FROM tool_calls
+			WHERE id NOT IN (
+				SELECT MIN(id) FROM tool_calls GROUP BY entry_id, timestamp, tool_call_id
 			)
 		`);
 		markComplete.run(FORK_DEDUPE_KEY, BACKFILL_COMPLETE);
@@ -1555,5 +1610,208 @@ export function getBehaviorByModel(cutoff?: number | null): BehaviorModelStats[]
 		totalBlame: row.total_blame ?? 0,
 		totalChars: row.total_chars ?? 0,
 		lastTimestamp: row.last_timestamp ?? 0,
+	}));
+}
+
+/**
+ * Insert tool-call rows. Idempotent via UNIQUE(session_file, tool_call_id);
+ * the `WHERE NOT EXISTS` guard mirrors {@link insertMessageStats}: forked
+ * sessions deep-copy assistant entries (same `entry_id`, `timestamp`, and
+ * tool-call ids under a new file), so first-write-wins across the lineage
+ * keeps aggregates from double counting. Keyed on the assistant entry
+ * identity, not the call id alone — provider call ids are not a global
+ * namespace across unrelated sessions.
+ */
+export function insertToolCalls(calls: ToolCallStats[]): number {
+	if (!db || calls.length === 0) return 0;
+
+	const stmt = db.prepare(`
+		INSERT OR IGNORE INTO tool_calls (
+			session_file, entry_id, tool_call_id, folder, tool_name,
+			model, provider, timestamp, agent_type, calls_in_turn, args_chars
+		)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM tool_calls
+			WHERE entry_id = ? AND timestamp = ? AND tool_call_id = ? AND session_file <> ?
+		)
+	`);
+
+	let inserted = 0;
+	const insert = db.transaction(() => {
+		for (const c of calls) {
+			const result = stmt.run(
+				c.sessionFile,
+				c.entryId,
+				c.toolCallId,
+				c.folder,
+				c.toolName,
+				c.model,
+				c.provider,
+				c.timestamp,
+				c.agentType,
+				c.callsInTurn,
+				c.argsChars,
+				// `WHERE NOT EXISTS` binds: skip when a different session_file
+				// already holds this (entry_id, timestamp, tool_call_id).
+				c.entryId,
+				c.timestamp,
+				c.toolCallId,
+				c.sessionFile,
+			);
+			if (result.changes > 0) inserted++;
+		}
+	});
+	insert();
+	return inserted;
+}
+
+/**
+ * Attach result size / error flag to persisted tool-call rows. Results can
+ * land in a later incremental sync pass than the call that produced them, so
+ * this is an UPDATE keyed by (session_file, tool_call_id). The `IS NULL`
+ * guard makes re-syncs idempotent; rows skipped by the fork guard simply
+ * never match.
+ */
+export function updateToolResults(links: ToolResultLink[]): number {
+	if (!db || links.length === 0) return 0;
+
+	const stmt = db.prepare(`
+		UPDATE tool_calls
+		SET result_chars = ?, is_error = ?
+		WHERE session_file = ? AND tool_call_id = ? AND result_chars IS NULL
+	`);
+
+	let updated = 0;
+	const apply = db.transaction(() => {
+		for (const link of links) {
+			const result = stmt.run(link.resultChars, link.isError ? 1 : 0, link.sessionFile, link.toolCallId);
+			updated += result.changes;
+		}
+	});
+	apply();
+	return updated;
+}
+
+/**
+ * Shared SELECT list for tool aggregates. Real provider usage comes from the
+ * invoking assistant turn (`messages` join) divided by `calls_in_turn`, so
+ * per-tool token/cost shares stay additive across tools.
+ */
+const TOOL_AGGREGATE_COLUMNS = `
+	COUNT(*) as calls,
+	SUM(CASE WHEN t.is_error = 1 THEN 1 ELSE 0 END) as errors,
+	SUM(t.args_chars) as args_chars,
+	SUM(COALESCE(t.result_chars, 0)) as result_chars,
+	SUM(COALESCE(m.total_tokens, 0) * 1.0 / t.calls_in_turn) as total_tokens_share,
+	SUM(COALESCE(m.output_tokens, 0) * 1.0 / t.calls_in_turn) as output_tokens_share,
+	SUM(COALESCE(m.cost_total, 0) / t.calls_in_turn) as cost_share,
+	MAX(t.timestamp) as last_used
+`;
+
+interface ToolAggregateRow {
+	tool_name: string;
+	model?: string;
+	provider?: string;
+	calls: number;
+	errors: number;
+	args_chars: number | null;
+	result_chars: number | null;
+	total_tokens_share: number | null;
+	output_tokens_share: number | null;
+	cost_share: number | null;
+	last_used: number;
+}
+
+function rowToToolUsage(row: ToolAggregateRow): ToolUsageStats {
+	return {
+		tool: row.tool_name,
+		calls: row.calls,
+		errors: row.errors,
+		argsChars: row.args_chars ?? 0,
+		resultChars: row.result_chars ?? 0,
+		totalTokensShare: row.total_tokens_share ?? 0,
+		outputTokensShare: row.output_tokens_share ?? 0,
+		costShare: row.cost_share ?? 0,
+		lastUsed: row.last_used,
+	};
+}
+
+/**
+ * Get tool usage aggregated by tool name.
+ */
+export function getToolStats(cutoff?: number): ToolUsageStats[] {
+	if (!db) return [];
+
+	const hasCutoff = cutoff !== undefined && cutoff > 0;
+	const stmt = db.prepare(`
+		SELECT t.tool_name, ${TOOL_AGGREGATE_COLUMNS}
+		FROM tool_calls t
+		LEFT JOIN messages m ON m.session_file = t.session_file AND m.entry_id = t.entry_id
+		${hasCutoff ? "WHERE t.timestamp >= ?" : ""}
+		GROUP BY t.tool_name
+		ORDER BY calls DESC
+	`);
+
+	const rows = (hasCutoff ? stmt.all(cutoff) : stmt.all()) as ToolAggregateRow[];
+	return rows.map(rowToToolUsage);
+}
+
+/**
+ * Get tool usage aggregated by (tool, model, provider).
+ */
+export function getToolStatsByModel(cutoff?: number): ToolModelStats[] {
+	if (!db) return [];
+
+	const hasCutoff = cutoff !== undefined && cutoff > 0;
+	const stmt = db.prepare(`
+		SELECT t.tool_name, t.model, t.provider, ${TOOL_AGGREGATE_COLUMNS}
+		FROM tool_calls t
+		LEFT JOIN messages m ON m.session_file = t.session_file AND m.entry_id = t.entry_id
+		${hasCutoff ? "WHERE t.timestamp >= ?" : ""}
+		GROUP BY t.tool_name, t.model, t.provider
+		ORDER BY calls DESC
+	`);
+
+	const rows = (hasCutoff ? stmt.all(cutoff) : stmt.all()) as ToolAggregateRow[];
+	return rows.map(row => ({
+		...rowToToolUsage(row),
+		model: row.model ?? "",
+		provider: row.provider ?? "",
+	}));
+}
+
+/**
+ * Get tool-call time series (one point per bucket per tool).
+ */
+export function getToolTimeSeries(
+	days = 14,
+	cutoff?: number | null,
+	bucketMs = 24 * 60 * 60 * 1000,
+): ToolTimeSeriesPoint[] {
+	if (!db) return [];
+
+	const hasCutoff = cutoff !== null;
+	const seriesCutoff = hasCutoff ? (cutoff ?? Date.now() - days * 24 * 60 * 60 * 1000) : 0;
+
+	const stmt = db.prepare(`
+		SELECT
+			(timestamp / ?) * ? as bucket,
+			tool_name,
+			COUNT(*) as calls,
+			SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END) as errors
+		FROM tool_calls
+		${hasCutoff ? "WHERE timestamp >= ?" : ""}
+		GROUP BY bucket, tool_name
+		ORDER BY bucket ASC
+	`);
+
+	const rowsRaw = hasCutoff ? stmt.all(bucketMs, bucketMs, seriesCutoff) : stmt.all(bucketMs, bucketMs);
+	const rows = rowsRaw as Array<{ bucket: number; tool_name: string; calls: number; errors: number }>;
+	return rows.map(row => ({
+		timestamp: row.bucket,
+		tool: row.tool_name,
+		calls: row.calls,
+		errors: row.errors,
 	}));
 }

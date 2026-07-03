@@ -226,6 +226,71 @@ describe("openai-codex usage parser", () => {
 		);
 		expect(extraFetchCalls).toBe(0);
 	});
+
+	it("ignores non-canonical provider baseUrl overrides for wham/usage (#3679)", async () => {
+		// Headroom + similar /responses proxies don't serve ChatGPT account
+		// endpoints; without this fall-back `/usage show` 404s on the proxy.
+		const requested: string[] = [];
+		const fetchImpl: FetchImpl = (async (url: string | URL | Request) => {
+			requested.push(typeof url === "string" ? url : url.toString());
+			return new Response(JSON.stringify(makePayload()), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}) as unknown as FetchImpl;
+		await openaiCodexUsageProvider.fetchUsage(
+			{
+				provider: "openai-codex",
+				credential: { type: "oauth", accessToken: accessTokenFixture, accountId: "acct-1", email: "u@example.com" },
+				baseUrl: "http://127.0.0.1:8787/v1",
+			},
+			{ fetch: fetchImpl },
+		);
+		expect(requested).toEqual(["https://chatgpt.com/backend-api/wham/usage"]);
+	});
+
+	it("keeps a canonical chatgpt.com baseUrl override (and adds /backend-api when missing)", async () => {
+		const requested: string[] = [];
+		const fetchImpl: FetchImpl = (async (url: string | URL | Request) => {
+			requested.push(typeof url === "string" ? url : url.toString());
+			return new Response(JSON.stringify(makePayload()), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}) as unknown as FetchImpl;
+		await openaiCodexUsageProvider.fetchUsage(
+			{
+				provider: "openai-codex",
+				credential: { type: "oauth", accessToken: accessTokenFixture, accountId: "acct-1", email: "u@example.com" },
+				baseUrl: "https://chatgpt.com",
+			},
+			{ fetch: fetchImpl },
+		);
+		expect(requested).toEqual(["https://chatgpt.com/backend-api/wham/usage"]);
+	});
+
+	it("strips a streaming path from a canonical chatgpt.com baseUrl for wham/usage", async () => {
+		// A Codex streaming baseUrl points at `/backend-api/codex/responses`; the
+		// account endpoint still lives at `${origin}/backend-api/wham/usage`, so the
+		// extra path must be dropped rather than yielding `.../codex/responses/wham/usage`.
+		const requested: string[] = [];
+		const fetchImpl: FetchImpl = (async (url: string | URL | Request) => {
+			requested.push(typeof url === "string" ? url : url.toString());
+			return new Response(JSON.stringify(makePayload()), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}) as unknown as FetchImpl;
+		await openaiCodexUsageProvider.fetchUsage(
+			{
+				provider: "openai-codex",
+				credential: { type: "oauth", accessToken: accessTokenFixture, accountId: "acct-1", email: "u@example.com" },
+				baseUrl: "https://chatgpt.com/backend-api/codex/responses",
+			},
+			{ fetch: fetchImpl },
+		);
+		expect(requested).toEqual(["https://chatgpt.com/backend-api/wham/usage"]);
+	});
 });
 
 describe("codexRankingStrategy.selectGatingLimits", () => {

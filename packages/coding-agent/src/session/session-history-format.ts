@@ -63,6 +63,12 @@ export interface HistoryFormatOptions {
 	 * collapse to a bare label. Absent → the one-liner only (existing behavior).
 	 */
 	expandAsyncResults?: boolean;
+	/**
+	 * Append the full unified diff (from a tool result's `details.diff`) below
+	 * edit/apply_patch tool lines, instead of just the path. The advisor sets
+	 * this so it sees what changed without re-reading the file.
+	 */
+	expandEditDiffs?: boolean;
 }
 
 /** Max length of the primary-arg summary inside `→ tool(...)` lines. */
@@ -130,14 +136,18 @@ function primaryArg(name: string, args: Record<string, unknown> | undefined): st
 	}
 	if (name === "grep") {
 		const pattern = primaryArgValue(args.pattern);
-		const paths = primaryArgValue(args.paths);
+		const paths = primaryArgValue(args.path) || primaryArgValue(args.paths);
 		if (pattern && paths) return oneLine(`${pattern} @ ${paths}`);
 		if (pattern) return oneLine(pattern);
 		if (paths) return oneLine(paths);
 	}
 	if (name === "glob") {
-		const paths = primaryArgValue(args.paths);
+		const paths = primaryArgValue(args.path) || primaryArgValue(args.paths);
 		if (paths) return oneLine(paths);
+	}
+	if (name === "ast_grep") {
+		const pattern = primaryArgValue(args.pat);
+		if (pattern) return oneLine(pattern);
 	}
 	for (const key of PRIMARY_ARG_KEYS) {
 		const value = args[key];
@@ -199,6 +209,16 @@ function cappedExcerpt(text: string, maxLines: number, maxChars: number): string
 	}
 	return cut ? `${out}… (+truncated)` : out;
 }
+/**
+ * Wrap a diff body in a backtick fence sized to outlast the longest backtick
+ * run inside it, so a diff that touches markdown (triple backticks) can't break
+ * out of the fence. Info string `diff` for syntax highlighting.
+ */
+function fenceDiff(diff: string): string {
+	const longest = diff.match(/`+/g)?.reduce((m, run) => Math.max(m, run.length), 0) ?? 0;
+	const fence = "`".repeat(Math.max(3, longest + 1));
+	return `${fence}diff\n${diff}\n${fence}`;
+}
 
 /** One line per tool call: `→ read(src/foo.ts:50-80) ⇒ ok · 31 lines`. */
 function toolCallLine(
@@ -224,6 +244,13 @@ function toolCallLine(
 			}
 		} else {
 			base = `${head} ⇒ ok · ${count}`;
+		}
+	}
+
+	if (opts?.expandEditDiffs) {
+		const diff = (result?.details as { diff?: unknown } | undefined)?.diff;
+		if (typeof diff === "string" && diff.trim()) {
+			base = `${base}\n${fenceDiff(diff)}`;
 		}
 	}
 

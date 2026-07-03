@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { ResponseCreateParamsStreaming, ResponseInput } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
+import type { ResponseCreateParamsStreaming } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
 import {
 	applyChatCompletionsCompatPolicy,
 	applyResponsesCompatPolicy,
@@ -82,7 +82,6 @@ describe("OpenAI compat policy", () => {
 		};
 		const chatBody = chatParams();
 		const responseBody = responsesParams();
-		const responseInput: ResponseInput = [];
 
 		applyChatCompletionsCompatPolicy(
 			chatBody,
@@ -93,7 +92,6 @@ describe("OpenAI compat policy", () => {
 		);
 		applyResponsesCompatPolicy(
 			responseBody,
-			responseInput,
 			resolveOpenAICompatPolicy(responsesModel(compat), { endpoint: "responses", disableReasoning: true }),
 			undefined,
 		);
@@ -106,7 +104,6 @@ describe("OpenAI compat policy", () => {
 		const compat: OpenAICompat = { omitReasoningEffort: true };
 		const chatBody = chatParams();
 		const responseBody = responsesParams();
-		const responseInput: ResponseInput = [];
 
 		applyChatCompletionsCompatPolicy(
 			chatBody,
@@ -114,13 +111,25 @@ describe("OpenAI compat policy", () => {
 		);
 		applyResponsesCompatPolicy(
 			responseBody,
-			responseInput,
 			resolveOpenAICompatPolicy(responsesModel(compat), { endpoint: "responses", reasoning: Effort.High }),
 			undefined,
 		);
 
 		expect(chatBody.reasoning_effort).toBeUndefined();
 		expect(responseBody.reasoning).toBeUndefined();
+	});
+
+	it("leaves Responses input unchanged when reasoning is not requested", () => {
+		const responseBody = responsesParams();
+
+		applyResponsesCompatPolicy(
+			responseBody,
+			resolveOpenAICompatPolicy(responsesModel({}), { endpoint: "responses" }),
+			undefined,
+		);
+
+		expect(responseBody.reasoning).toBeUndefined();
+		expect(responseBody.input).toEqual([]);
 	});
 
 	it("exposes reasoning replay constraints independent of endpoint", () => {

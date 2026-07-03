@@ -89,8 +89,6 @@ describe("ModelRegistry", () => {
 		sharedBuiltin = readonlyRegistry({ providers: {} });
 		sharedBuiltin.getAll();
 		sharedBuiltin.getAvailable();
-		sharedBuiltin.getCanonicalVariants("claude-sonnet-4-5");
-		sharedBuiltin.getCanonicalModels({ availableOnly: false, candidates: sharedBuiltin.getAll() });
 	});
 
 	afterAll(() => {
@@ -219,264 +217,6 @@ describe("ModelRegistry", () => {
 			opts?.fetch ? { fetch: opts.fetch } : undefined,
 		);
 	}
-
-	describe("canonical equivalence", () => {
-		// One registry serves every pure (read-only, config-free) canonicalization
-		// case: each asserts on a distinct canonical id built from distinct custom
-		// selectors, so merging their fixtures changes no observable grouping while
-		// paying the bundled-catalog construction once.
-		let canonical: ModelRegistry;
-		let equivOverrides: ModelRegistry;
-		let equivExclude: ModelRegistry;
-		let parityAuth: AuthStorage;
-		let parityCandidatesLength: number;
-		let paritySelectionsLength: number;
-		let parityRecordsLength: number;
-		let parityMismatches: string[];
-		beforeAll(async () => {
-			canonical = readonlyRegistry({
-				providers: {
-					demo: providerConfig("https://demo.example.com/v1", [
-						{ id: "anthropic/claude-sonnet-4.5" },
-						{ id: "anthropic/claude-opus-4.5" },
-						{ id: "claude-opus-4-5-20251101" },
-						{ id: "claude-4.5-opus-high-thinking" },
-						{ id: "hf:zai-org/GLM-4.7" },
-						{ id: "zai-glm-4.7" },
-						{ id: "claude-opus-45" },
-						{ id: "claude-4.5-sonnet" },
-						{ id: "perplexity/sonar-pro-search" },
-						{ id: "perplexity/sonar-pro" },
-						{ id: "sonar-pro" },
-						{ id: "anthropic/claude-opus-latest" },
-						{ id: "anthropic/claude-haiku-latest" },
-						{ id: "google/gemini-3.1-pro-preview" },
-						{ id: "google/gemini-3.1-pro-preview-customtools" },
-						{ id: "google/gemini-3.1-pro-preview-high" },
-						{ id: "hf:nvidia/Kimi-K2.5-NVFP4" },
-						{ id: "kimi-k2-5" },
-						{ id: "z-ai/glm4.7" },
-						{ id: "z-ai/glm5" },
-						{ id: "zai/glm-4.6v-flash" },
-						{ id: "hf:deepseek-ai/DeepSeek-V3" },
-						{ id: "google/gemini-pro-latest" },
-					]),
-					"gitlab-duo": providerConfig("https://demo.example.com/v1", [{ id: "duo-chat-opus-4-6" }]),
-					openrouter: providerConfig("https://openrouter.ai/api/v1", [{ id: "z-ai/glm-4.7-20251222:nitro" }]),
-					ollama: {
-						baseUrl: "http://127.0.0.1:11434/v1",
-						api: "openai-completions",
-						auth: "none",
-						models: [
-							{
-								id: "deepseek-v4-pro:cloud",
-								name: "DeepSeek V4 Pro (Ollama Cloud)",
-								reasoning: true,
-								input: ["text"],
-								contextWindow: 1_048_576,
-								maxTokens: 65_536,
-							},
-						],
-					},
-				},
-			});
-			equivOverrides = readonlyRegistry({
-				providers: {
-					"proxy-anthropic": providerConfig("https://demo.example.com/v1", [{ id: "corp-sonnet" }]),
-				},
-				equivalence: { overrides: { "proxy-anthropic/corp-sonnet": "claude-sonnet-4-5" } },
-			});
-			equivExclude = readonlyRegistry({
-				providers: {
-					demo: providerConfig("https://demo.example.com/v1", [{ id: "anthropic/claude-sonnet-4.5" }]),
-				},
-				equivalence: { exclude: ["demo/anthropic/claude-sonnet-4.5"] },
-			});
-			// Parity check (batch getCanonicalModelSelections vs per-record
-			// resolveCanonicalModel over the bundled catalog) computed off the body
-			// clock; the test below asserts the precomputed result. Provider keys
-			// make getAvailable yield a non-empty candidate set.
-			parityAuth = await AuthStorage.create(":memory:");
-			parityAuth.setRuntimeApiKey("anthropic", "test-key");
-			parityAuth.setRuntimeApiKey("openrouter", "test-key");
-			parityAuth.setRuntimeApiKey("groq", "test-key");
-			const parityRegistry = new ModelRegistry(parityAuth, sharedConfigPath({ providers: {} }));
-			const parityCandidates = parityRegistry.getAvailable();
-			const parityOptions = { availableOnly: true, candidates: parityCandidates } as const;
-			const paritySelections = parityRegistry.getCanonicalModelSelections(parityOptions);
-			const parityRecords = parityRegistry.getCanonicalModels(parityOptions);
-			parityCandidatesLength = parityCandidates.length;
-			paritySelectionsLength = paritySelections.length;
-			parityRecordsLength = parityRecords.length;
-			parityMismatches = paritySelections
-				.map(({ record, model }) => {
-					const resolved = parityRegistry.resolveCanonicalModel(record.id, parityOptions);
-					return resolved && resolved.provider === model.provider && resolved.id === model.id
-						? undefined
-						: `${record.id}: batch=${model.provider}/${model.id} loop=${resolved?.provider}/${resolved?.id}`;
-				})
-				.filter((entry): entry is string => entry !== undefined);
-		});
-
-		afterAll(() => parityAuth.close());
-
-		test("groups dotted provider variants under the bundled canonical id", () => {
-			const variants = canonical.getCanonicalVariants("claude-sonnet-4-5");
-			expect(variants.some(variant => variant.selector === "anthropic/claude-sonnet-4-5")).toBe(true);
-			expect(variants.some(variant => variant.selector === "demo/anthropic/claude-sonnet-4.5")).toBe(true);
-		});
-
-		test("collapses wrapped, dated, and tuned anthropic variants under the base canonical id", () => {
-			const variants = canonical.getCanonicalVariants("claude-opus-4-5");
-			expect(variants.some(variant => variant.selector === "demo/anthropic/claude-opus-4.5")).toBe(true);
-			expect(variants.some(variant => variant.selector === "demo/claude-opus-4-5-20251101")).toBe(true);
-			expect(variants.some(variant => variant.selector === "demo/claude-4.5-opus-high-thinking")).toBe(true);
-		});
-
-		test("collapses gitlab duo chat wrapper ids into the upstream canonical id", () => {
-			const variants = canonical.getCanonicalVariants("claude-opus-4-6");
-			expect(variants.some(variant => variant.selector === "gitlab-duo/duo-chat-opus-4-6")).toBe(true);
-		});
-
-		test("collapses synthetic and vendor-prefixed glm wrappers into the upstream canonical id", () => {
-			const variants = canonical.getCanonicalVariants("glm-4.7");
-			expect(variants.some(variant => variant.selector === "demo/hf:zai-org/GLM-4.7")).toBe(true);
-			expect(variants.some(variant => variant.selector === "demo/zai-glm-4.7")).toBe(true);
-		});
-
-		test("collapses compact and reordered claude aliases into the upstream canonical id", () => {
-			const opusVariants = canonical.getCanonicalVariants("claude-opus-4-5");
-			const sonnetVariants = canonical.getCanonicalVariants("claude-sonnet-4-5");
-			expect(opusVariants.some(variant => variant.selector === "demo/claude-opus-45")).toBe(true);
-			expect(sonnetVariants.some(variant => variant.selector === "demo/claude-4.5-sonnet")).toBe(true);
-		});
-
-		test("collapses nitro-suffixed OpenRouter variants under the upstream canonical id", () => {
-			const variants = canonical.getCanonicalVariants("glm-4.7");
-			expect(variants.some(variant => variant.selector === "openrouter/z-ai/glm-4.7-20251222:nitro")).toBe(true);
-		});
-
-		test("keeps Perplexity search canonical distinct from non-search Sonar Pro ids", () => {
-			const searchModel = canonical.find("demo", "perplexity/sonar-pro-search");
-			const proModel = canonical.find("demo", "perplexity/sonar-pro");
-			const bareModel = canonical.find("demo", "sonar-pro");
-			if (!searchModel || !proModel || !bareModel) {
-				throw new Error("Perplexity canonical equivalence fixture models were not registered");
-			}
-
-			const searchCanonicalId = canonical.getCanonicalId(searchModel);
-			expect(searchCanonicalId).toBe("perplexity/sonar-pro-search");
-			expect(searchCanonicalId).not.toBe(canonical.getCanonicalId(proModel));
-			expect(searchCanonicalId).not.toBe(canonical.getCanonicalId(bareModel));
-			expect(
-				canonical
-					.getCanonicalVariants("perplexity/sonar-pro-search")
-					.some(variant => variant.selector === "demo/perplexity/sonar-pro"),
-			).toBe(false);
-			expect(
-				canonical
-					.getCanonicalVariants("perplexity/sonar-pro-search")
-					.some(variant => variant.selector === "demo/sonar-pro"),
-			).toBe(false);
-		});
-
-		test("uses bundled metadata for Ollama cloud aliases in custom local-proxy configs", () => {
-			const model = canonical.find("ollama", "deepseek-v4-pro:cloud");
-			const variants = canonical.getCanonicalVariants("deepseek-v4-pro");
-			expect(model?.cost.cacheRead).toBeGreaterThan(0);
-			expect(model?.thinking?.efforts.at(-1)).toBe(Effort.XHigh);
-			expect(variants.some(variant => variant.selector === "ollama/deepseek-v4-pro:cloud")).toBe(true);
-		});
-
-		test("collapses anthropic latest aliases into the best upstream claude family id", () => {
-			const opusVariants = canonical.getCanonicalVariants("claude-opus-4-8");
-			const haikuVariants = canonical.getCanonicalVariants("claude-haiku-4-5");
-			expect(opusVariants.some(variant => variant.selector === "demo/anthropic/claude-opus-latest")).toBe(true);
-			expect(haikuVariants.some(variant => variant.selector === "demo/anthropic/claude-haiku-latest")).toBe(true);
-			expect(
-				canonical
-					.getCanonicalVariants("claude-haiku-4-5-20251001-thinking")
-					.some(variant => variant.selector === "demo/anthropic/claude-haiku-latest"),
-			).toBe(false);
-		});
-
-		test("collapses wrapped gemini tool and tuning variants under the base preview id", () => {
-			const variants = canonical.getCanonicalVariants("gemini-3.1-pro-preview");
-			expect(variants.some(variant => variant.selector === "demo/google/gemini-3.1-pro-preview")).toBe(true);
-			expect(variants.some(variant => variant.selector === "demo/google/gemini-3.1-pro-preview-customtools")).toBe(
-				true,
-			);
-			expect(variants.some(variant => variant.selector === "demo/google/gemini-3.1-pro-preview-high")).toBe(true);
-		});
-
-		test("collapses compact version aliases and hardware suffixes into clean canonical ids", () => {
-			const kimiVariants = canonical.getCanonicalVariants("kimi-k2.5");
-			const glm47Variants = canonical.getCanonicalVariants("glm-4.7");
-			const glm5Variants = canonical.getCanonicalVariants("glm-5");
-			expect(kimiVariants.some(variant => variant.selector === "demo/hf:nvidia/Kimi-K2.5-NVFP4")).toBe(true);
-			expect(kimiVariants.some(variant => variant.selector === "demo/kimi-k2-5")).toBe(true);
-			expect(glm47Variants.some(variant => variant.selector === "demo/z-ai/glm4.7")).toBe(true);
-			expect(glm5Variants.some(variant => variant.selector === "demo/z-ai/glm5")).toBe(true);
-		});
-
-		test("prefers clean canonical ids over bundled wrapper ids when available", () => {
-			expect(
-				canonical
-					.getCanonicalVariants("glm-4.6v-flash")
-					.some(variant => variant.selector === "demo/zai/glm-4.6v-flash"),
-			).toBe(true);
-			expect(
-				canonical
-					.getCanonicalVariants("deepseek-v3")
-					.some(variant => variant.selector === "demo/hf:deepseek-ai/DeepSeek-V3"),
-			).toBe(true);
-			expect(
-				canonical
-					.getCanonicalVariants("gemini-pro")
-					.some(variant => variant.selector === "demo/google/gemini-pro-latest"),
-			).toBe(true);
-		});
-
-		test("applies explicit equivalence overrides from config", () => {
-			const variants = equivOverrides.getCanonicalVariants("claude-sonnet-4-5");
-			expect(variants.some(variant => variant.selector === "proxy-anthropic/corp-sonnet")).toBe(true);
-		});
-
-		test("exclusions keep variants out of canonical grouping", () => {
-			const grouped = equivExclude.getCanonicalVariants("claude-sonnet-4-5");
-			const fallback = equivExclude.getCanonicalVariants("anthropic/claude-sonnet-4.5");
-			expect(grouped.some(variant => variant.selector === "demo/anthropic/claude-sonnet-4.5")).toBe(false);
-			expect(fallback.some(variant => variant.selector === "demo/anthropic/claude-sonnet-4.5")).toBe(true);
-		});
-
-		test("resolves canonical models using configured provider order", async () => {
-			await Settings.init({
-				inMemory: true,
-				overrides: {
-					modelProviderOrder: ["demo", "anthropic"],
-				},
-			});
-			writeRawModelsJson({
-				demo: providerConfig("https://demo.example.com/v1", [{ id: "anthropic/claude-sonnet-4.5" }]),
-			});
-
-			const registry = new ModelRegistry(authStorage, modelsJsonPath);
-			const resolved = registry.resolveCanonicalModel("claude-sonnet-4-5", {
-				availableOnly: false,
-				candidates: registry.getAll(),
-			});
-
-			expect(resolved?.provider).toBe("demo");
-			expect(resolved?.id).toBe("anthropic/claude-sonnet-4.5");
-		});
-
-		test("getCanonicalModelSelections matches per-record resolveCanonicalModel over the bundled catalog", () => {
-			expect(parityCandidatesLength).toBeGreaterThan(0);
-			expect(paritySelectionsLength).toBe(parityRecordsLength);
-			expect(paritySelectionsLength).toBeGreaterThan(0);
-			expect(parityMismatches).toEqual([]);
-		});
-	});
 
 	describe("OpenRouter routed suffix fallback", () => {
 		let registry: ModelRegistry;
@@ -619,6 +359,60 @@ describe("ModelRegistry", () => {
 				else Bun.env.OPENAI_API_KEY = originalOpenAiKey;
 			}
 		});
+		test("zhipu-coding-plan glm-5.2 chat resolves the zhipu credential with model-scoped hints", async () => {
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			const model = registry.find("zhipu-coding-plan", "glm-5.2");
+			if (!model) throw new Error("expected bundled zhipu-coding-plan/glm-5.2 model");
+			await authStorage.set("zhipu-coding-plan", { type: "api_key", key: "zhipu-domestic-key" });
+			await authStorage.set("zai", { type: "api_key", key: "zai-international-key" });
+
+			const calls: Array<{
+				provider: string;
+				sessionId: string | undefined;
+				options: { baseUrl?: string; modelId?: string; forceRefresh?: boolean; signal?: AbortSignal } | undefined;
+			}> = [];
+			const originalGetApiKey = authStorage.getApiKey.bind(authStorage);
+			authStorage.getApiKey = async (
+				provider: string,
+				sessionId?: string,
+				options?: { baseUrl?: string; modelId?: string; forceRefresh?: boolean; signal?: AbortSignal },
+			): Promise<string | undefined> => {
+				calls.push({ provider, sessionId, options });
+				return originalGetApiKey(provider, sessionId, options);
+			};
+
+			const sessionId = "session-zhipu-auth-path";
+			await expect(registry.getApiKey(model, sessionId)).resolves.toBe("zhipu-domestic-key");
+			expect(calls.at(-1)).toEqual({
+				provider: "zhipu-coding-plan",
+				sessionId,
+				options: {
+					baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+					modelId: "glm-5.2",
+				},
+			});
+
+			const resolved = await registry.resolver(
+				model,
+				sessionId,
+			)({
+				lastChance: false,
+				error: undefined,
+				signal: undefined,
+			});
+			expect(resolved).toBe("zhipu-domestic-key");
+			expect(calls.at(-1)).toEqual({
+				provider: "zhipu-coding-plan",
+				sessionId,
+				options: {
+					baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+					modelId: "glm-5.2",
+					forceRefresh: undefined,
+					signal: undefined,
+				},
+			});
+		});
+
 		test("baseUrl-only override does not affect other providers", () => {
 			const googleModels = getModelsForProvider(anthropicProxy, "google");
 			// Google models should still have their original baseUrl
@@ -768,6 +562,8 @@ describe("ModelRegistry", () => {
 							enabled: true,
 							api: "openai-responses",
 							endpoint: "http://127.0.0.1:8080/v1/responses/provider-compact",
+							v2StreamingEnabled: true,
+							streamingEndpoint: "http://127.0.0.1:8080/v1/responses",
 							model: "provider-compact",
 						},
 						models: [
@@ -781,6 +577,7 @@ describe("ModelRegistry", () => {
 								compactionModel: "cc-switch/gpt-5.4",
 								remoteCompaction: {
 									endpoint: "http://127.0.0.1:8080/v1/responses/model-compact",
+									v2Endpoint: "http://127.0.0.1:8080/v1/responses/model-stream",
 									model: "gpt-5.5-compact",
 								},
 							},
@@ -850,6 +647,9 @@ describe("ModelRegistry", () => {
 				enabled: true,
 				api: "openai-responses",
 				endpoint: "http://127.0.0.1:8080/v1/responses/model-compact",
+				v2StreamingEnabled: true,
+				streamingEndpoint: "http://127.0.0.1:8080/v1/responses",
+				v2Endpoint: "http://127.0.0.1:8080/v1/responses/model-stream",
 				model: "gpt-5.5-compact",
 			});
 		});
@@ -1484,6 +1284,36 @@ describe("ModelRegistry", () => {
 			expect(nonexistent.getError()).toBeUndefined();
 		});
 
+		test("invalid models config exposes schema errors instead of silently dropping providers", () => {
+			writeRawModelsJson({
+				myprovider: {
+					baseUrl: "http://localhost:8000/v1",
+					api: "openai-completions",
+					auth: "none",
+					compat: { thinkingFormat: "deepseek" },
+					models: [
+						{
+							id: "my-model",
+							name: "My Model",
+							reasoning: false,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 8192,
+							maxTokens: 4096,
+						},
+					],
+				},
+			});
+
+			const invalid = new ModelRegistry(authStorage, modelsJsonPath);
+			const error = invalid.getError();
+
+			expect(error?.message).toContain("Failed to load config file models, Schema error");
+			expect(error?.message).toContain("providers.myprovider.compat.thinkingFormat");
+			expect(error?.message).toContain("deepseek");
+			expect(invalid.find("myprovider", "my-model")).toBeUndefined();
+		});
+
 		test("model override can change cost fields partially", () => {
 			const sonnet = getModelsForProvider(costPartial, "openrouter").find(m => m.id === "anthropic/claude-sonnet-4");
 			// Input cost should be overridden
@@ -1920,6 +1750,8 @@ describe("ModelRegistry", () => {
 		let cachedDiscoverableRemoteCompaction: ModelRegistry;
 		let vertexNonAuthoritative: ModelRegistry;
 		let vertexStale: ModelRegistry;
+		let litellmStaleNamespaceCache: ModelRegistry;
+		let litellmCurrentNamespaceCache: ModelRegistry;
 		const vertexProjectModel = () =>
 			buildModel({
 				id: "zai-org/glm-4.7-maas",
@@ -2167,6 +1999,54 @@ describe("ModelRegistry", () => {
 						),
 				},
 			);
+			const litellmProxyConfig = () => ({
+				providers: {
+					"litellm-proxy": {
+						baseUrl: "http://litellm-proxy.example:4000/v1",
+						apiKey: "TEST_KEY",
+						api: "openai-completions",
+						discovery: { type: "litellm" },
+						models: [],
+					},
+				},
+			});
+			const litellmCachedModel = (name: string) =>
+				buildModel({
+					id: "minimax/minimax-m3",
+					name,
+					api: "openai-completions",
+					provider: "litellm-proxy",
+					baseUrl: "http://litellm-proxy.example:4000/v1",
+					reasoning: true,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128_000,
+					maxTokens: 16_384,
+				});
+			litellmStaleNamespaceCache = readonlyRegistry(litellmProxyConfig(), {
+				// Row under the retired pre-reseller-suffix-stripping namespace; the
+				// rich-v2 bump must orphan it instead of serving the stale name.
+				seedCache: dbPath =>
+					writeModelCache(
+						"litellm-proxy:litellm-rich-v1",
+						Date.now(),
+						[litellmCachedModel("MiniMax-M3 (3x usage)")],
+						true,
+						"",
+						dbPath,
+					),
+			});
+			litellmCurrentNamespaceCache = readonlyRegistry(litellmProxyConfig(), {
+				seedCache: dbPath =>
+					writeModelCache(
+						"litellm-proxy:litellm-rich-v2",
+						Date.now(),
+						[litellmCachedModel("MiniMax-M3")],
+						true,
+						"",
+						dbPath,
+					),
+			});
 		});
 
 		test("legacy cached discovery sentinels are ignored after nullable limit cutover", () => {
@@ -2206,6 +2086,19 @@ describe("ModelRegistry", () => {
 			});
 		});
 
+		test("ignores litellm discovery rows cached under the retired rich-v1 namespace", () => {
+			// PR #3717 changed the LiteLLM mappers (reseller usage-suffix stripping);
+			// warm rich-v1 rows carry pre-change display names and must not load.
+			expect(litellmStaleNamespaceCache.find("litellm-proxy", "minimax/minimax-m3")).toBeUndefined();
+			expect(getModelsForProvider(litellmStaleNamespaceCache, "litellm-proxy")).toHaveLength(0);
+		});
+
+		test("loads litellm discovery rows cached under the rich-v2 namespace", () => {
+			const model = litellmCurrentNamespaceCache.find("litellm-proxy", "minimax/minimax-m3");
+			expect(model?.name).toBe("MiniMax-M3");
+			expect(model?.provider).toBe("litellm-proxy");
+		});
+
 		test("replaces bundled google-vertex models with authoritative Vertex project discovery", () => {
 			const vertexModels = getModelsForProvider(vertexAuthoritative, "google-vertex");
 			expect(vertexModels.map(model => model.id)).toEqual(["zai-org/glm-4.7-maas"]);
@@ -2230,6 +2123,20 @@ describe("ModelRegistry", () => {
 
 			expect(syntheticModels.map(model => model.id)).toEqual(["hf:zai-org/GLM-5.1"]);
 			expect(registry.find("synthetic", "hf:moonshotai/Kimi-K2.5")).toBeUndefined();
+		});
+
+		test("does not re-add bundled Zhipu Coding Plan models after account discovery", async () => {
+			authStorage.setRuntimeApiKey("zhipu-coding-plan", "zhipu-test-key");
+			const fetchMock = mockOpenAiCompatibleModels("https://open.bigmodel.cn/api/coding/paas/v4/models", [
+				"glm-5.1",
+			]);
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+
+			await registry.refreshProvider("zhipu-coding-plan", "online");
+			const zhipuModels = getModelsForProvider(registry, "zhipu-coding-plan");
+
+			expect(zhipuModels.map(model => model.id)).toEqual(["glm-5.1"]);
+			expect(registry.find("zhipu-coding-plan", "glm-5.2")).toBeUndefined();
 		});
 
 		test("keeps bundled google-vertex fallback when cached project catalog is non-authoritative", () => {

@@ -24,7 +24,8 @@ import {
 	runIsolatedSubprocess,
 } from "../task/isolation-runner";
 import { AgentOutputManager } from "../task/output-manager";
-import type { AgentDefinition, AgentProgress, SingleResult } from "../task/types";
+import { resolveSpawnPolicy } from "../task/spawn-policy";
+import { type AgentDefinition, type AgentProgress, canSpawnAtDepth, type SingleResult } from "../task/types";
 import { type NestedRepoPatch, parseIsolationMode } from "../task/worktree";
 import type { ToolSession } from "../tools";
 import { ToolError } from "../tools/tool-errors";
@@ -36,10 +37,13 @@ import "../tools/review";
 /** Synthetic bridge name reserved for the `agent()` helper across both runtimes. */
 export const EVAL_AGENT_BRIDGE_NAME = "__agent__";
 
-/** Hard recursion limit for eval-driven subagents. */
+/**
+ * Hard recursion ceiling for eval-driven subagents. The user setting
+ * `task.maxRecursionDepth` is honored on top of this — whichever is tighter
+ * wins, so a maintainer-friendly cap can't get raised by a user setting.
+ */
 export const EVAL_AGENT_MAX_DEPTH = 3;
 
-const DEFAULT_AGENT_TYPE = "task";
 const DEFAULT_AGENT_LABEL = "EvalAgent";
 
 const agentArgsSchema = type({
@@ -131,22 +135,26 @@ function parseAgentArgs(args: unknown): EvalAgentArgs {
 
 function assertDepthAllowed(session: ToolSession): void {
 	const taskDepth = session.taskDepth ?? 0;
-	if (taskDepth >= EVAL_AGENT_MAX_DEPTH) {
+	// Honor the user's `task.maxRecursionDepth` (mirroring the task tool's gate
+	// in tools/index.ts) but never above the hard ceiling. `< 0` means
+	// "Unlimited" in the same schema `canSpawnAtDepth` reads, so it falls back
+	// to the hard ceiling instead of going past it.
+	const settingMax = session.settings.get("task.maxRecursionDepth") ?? 2;
+	const effectiveMax = settingMax < 0 ? EVAL_AGENT_MAX_DEPTH : Math.min(settingMax, EVAL_AGENT_MAX_DEPTH);
+	if (!canSpawnAtDepth(effectiveMax, taskDepth)) {
 		throw new ToolError(
-			`agent() cannot spawn another agent at task depth ${taskDepth}; maximum depth is ${EVAL_AGENT_MAX_DEPTH}.`,
+			`agent() cannot spawn another agent at task depth ${taskDepth}; maximum depth is ${effectiveMax} (task.maxRecursionDepth=${settingMax}, hard ceiling=${EVAL_AGENT_MAX_DEPTH}).`,
 		);
 	}
 }
 
 function assertSpawnAllowed(session: ToolSession, agentName: string): void {
-	const parentSpawns = session.getSessionSpawns() ?? "*";
-	if (parentSpawns === "*") return;
-	if (parentSpawns === "") {
-		throw new ToolError(`Cannot spawn '${agentName}'. Allowed: none (spawns disabled for this agent)`);
+	const spawnPolicy = resolveSpawnPolicy(session.getSessionSpawns());
+	if (!spawnPolicy.enabled) {
+		throw new ToolError(`Cannot spawn '${agentName}'. Allowed: ${spawnPolicy.allowedErrorText}`);
 	}
-	const allowedSpawns = parentSpawns.split(",").map(spawn => spawn.trim());
-	if (!allowedSpawns.includes(agentName)) {
-		throw new ToolError(`Cannot spawn '${agentName}'. Allowed: ${parentSpawns}`);
+	if (spawnPolicy.allowedAgents !== null && !spawnPolicy.allowedAgents.includes(agentName)) {
+		throw new ToolError(`Cannot spawn '${agentName}'. Allowed: ${spawnPolicy.allowedErrorText}`);
 	}
 }
 
@@ -283,7 +291,7 @@ function buildSubagentFailureMessage(agentName: string, result: SingleResult): s
  */
 export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOptions): Promise<EvalAgentResult> {
 	const parsed = parseAgentArgs(args);
-	const agentName = parsed.agent ?? DEFAULT_AGENT_TYPE;
+	const agentName = parsed.agent ?? resolveSpawnPolicy(options.session.getSessionSpawns()).defaultAgent;
 	const structured = Object.hasOwn(parsed, "schema");
 
 	assertNotPlanMode(options.session);
@@ -370,7 +378,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		modelOverride,
 		parentActiveModelPattern,
 		thinkingLevel: effectiveAgent.thinkingLevel,
-		outputSchema: structured ? parsed.schema : undefined,
+		...(structured ? { outputSchema: parsed.schema, outputSchemaOverridesAgent: true } : {}),
 		sessionFile,
 		persistArtifacts: Boolean(sessionFile),
 		artifactsDir,
@@ -405,8 +413,10 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		parentMnemopiSessionState: options.session.getMnemopiSessionState?.(),
 		parentTelemetry: options.session.getTelemetry?.(),
 		parentAgentId: options.session.getAgentId?.() ?? MAIN_AGENT_ID,
-		// Live source of truth for `serviceTierSubagent: inherit` (null = explicit none).
-		parentServiceTier: options.session.getServiceTier ? (options.session.getServiceTier() ?? null) : undefined,
+		// Live source of truth for `tier.subagent: inherit` (null = explicit none).
+		parentServiceTier: options.session.getServiceTierByFamily
+			? (options.session.getServiceTierByFamily() ?? null)
+			: undefined,
 		// Deliberately omit parentEvalSessionId: the parent's Python kernel is
 		// blocked on this bridge call, so sharing the eval session would deadlock
 		// (subagent queues behind the parent's in-flight execution, parent waits

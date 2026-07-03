@@ -14,7 +14,7 @@
   - `packages/coding-agent/src/web/search/providers/anthropic.ts` — Claude web-search provider.
   - `packages/coding-agent/src/web/search/providers/brave.ts` — Brave Search API adapter.
   - `packages/coding-agent/src/web/search/providers/codex.ts` — OpenAI Codex SSE adapter.
-  - `packages/coding-agent/src/web/search/providers/duckduckgo.ts` — DuckDuckGo Instant Answer API adapter.
+  - `packages/coding-agent/src/web/search/providers/duckduckgo.ts` — DuckDuckGo HTML frontend scraper.
   - `packages/coding-agent/src/web/search/providers/exa.ts` — Exa API or MCP adapter.
   - `packages/coding-agent/src/web/search/providers/firecrawl.ts` — Firecrawl search adapter.
   - `packages/coding-agent/src/web/search/providers/gemini.ts` — Gemini grounding SSE adapter.
@@ -104,8 +104,9 @@ Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `exec
     - `num_search_results` controls upstream API breadth only in API-key mode. `limit` is preserved separately as `num_results` and slices returned `sources` after parsing in both auth modes.
     - Output may include `answer`, `sources`, `citations`, `usage`, `model`, `requestId`, `authMode`.
   - **Gemini** — `packages/coding-agent/src/web/search/providers/gemini.ts`
-    - Availability: OAuth credentials in `agent.db` for `google-gemini-cli` or `google-antigravity`.
+    - Availability: OAuth credentials in `agent.db` for `google-gemini-cli` / `google-antigravity`, or a Google Developer API key.
     - Querying: SSE `streamGenerateContent` call with Google Search grounding enabled. Antigravity auth tries two fallback endpoints and retries `401/403/400 invalid auth` once after token refresh; `429/5xx` retry with exponential backoff and server-provided retry delay, capped by a `5 * 60 * 1000` ms rate-limit budget.
+    - Model: `providers.webSearchGeminiModel` selects the Gemini grounding model; `GEMINI_SEARCH_MODEL` overrides it. Defaults to `gemini-2.5-flash`.
     - `max_tokens` and `temperature` pass through as `generationConfig.maxOutputTokens` / `generationConfig.temperature`.
     - `limit` and `num_search_results` are collapsed together before dispatch.
     - Output may include `answer`, `sources`, `citations`, `searchQueries`, `usage`, `model`.
@@ -197,8 +198,10 @@ Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `exec
     - Output: `sources`, `relatedQuestions` from `suggestions`.
   - **DuckDuckGo** — `packages/coding-agent/src/web/search/providers/duckduckgo.ts`
     - Availability: always available; no API key.
-    - Querying: GET official Instant Answer API `https://api.duckduckgo.com/` with JSON/no-HTML flags; no scraped HTML.
-    - `limit` / `num_search_results`: collapsed and clamped to `1..20`, default `10`; output may include `answer` and `sources` from abstracts/results/topics.
+    - Querying: POST the no-JS HTML frontend `https://html.duckduckgo.com/html/` with `q`, `kl=us-en`, and an optional `df` recency filter (`d`/`w`/`m`/`y`); parses the result list and unwraps `//duckduckgo.com/l/?uddg=…` redirect URLs.
+    - `recency` maps to `df`; values outside `day|week|month|year` are ignored.
+    - `limit` / `num_search_results`: collapsed and clamped to `1..20`, default `10`; output exposes `sources` only (DuckDuckGo's HTML page does not return a standalone abstract).
+    - DuckDuckGo serves a bot-detection challenge (HTTP 200/202 with an `anomaly-modal` body) when it throttles datacenter or shared-egress IPs. The adapter detects this and raises a `SearchProviderError` so the orchestrator can fall through to the next configured provider with a clear cause.
 
 ## Side Effects
 - Network

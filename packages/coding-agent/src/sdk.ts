@@ -19,15 +19,16 @@ import {
 	filterProviderReplayMessages,
 	type ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
-import type {
-	ApiKeyResolver,
-	Context,
-	CredentialDisabledEvent,
-	ImageContent,
-	Message,
-	Model,
-	SimpleStreamOptions,
-	TextContent,
+import {
+	type ApiKeyResolver,
+	type Context,
+	type CredentialDisabledEvent,
+	type ImageContent,
+	type Message,
+	type Model,
+	resolveModelServiceTier,
+	type SimpleStreamOptions,
+	type TextContent,
 } from "@oh-my-pi/pi-ai";
 import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
 import {
@@ -44,7 +45,7 @@ import {
 	SYSTEM_CONTEXT_REMINDER_LABEL,
 } from "@oh-my-pi/system-context-reminder-plugin";
 import {
-	ADVISOR_READONLY_TOOL_NAMES,
+	discoverAdvisorConfigs,
 	discoverWatchdogFiles,
 	formatActiveRepoWatchdogPrompt,
 	formatAdvisorContextPrompt,
@@ -67,6 +68,7 @@ import {
 	resolveModelRoleValue,
 } from "./config/model-resolver";
 import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate } from "./config/prompt-templates";
+import { buildServiceTierByFamily } from "./config/service-tier";
 import { resolveThinkingDisplay, Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
@@ -169,9 +171,11 @@ import {
 } from "./system-prompt";
 import { requestMacOSSandboxRelaunch } from "./task/omp-command";
 import { AgentOutputManager } from "./task/output-manager";
+import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
+	concreteThinkingLevel,
 	parseConfiguredThinkingLevel,
 	parseThinkingLevel,
 	resolveProvisionalAutoLevel,
@@ -589,6 +593,15 @@ export interface CreateAgentSessionOptions {
 	customSystemPrompt?: string;
 	/** Already-loaded text appended through the bundled system prompt templates. */
 	appendSystemPrompt?: string;
+	/**
+	 * Already-loaded title-generation system prompt override (typically
+	 * {@link discoverTitleSystemPromptFile} → {@link resolvePromptInput}). When
+	 * set, every automatic session-title generation path on this session — the
+	 * first-input title and the replan-driven refresh — uses this prompt
+	 * instead of the bundled default. Refresh on cwd change via
+	 * {@link AgentSession.setTitleSystemPrompt}.
+	 */
+	titleSystemPrompt?: string;
 	/** Optional provider-facing session identifier for prompt caches and sticky auth selection.
 	 * Keeps persisted session files isolated while reusing provider-side caches. */
 	providerSessionId?: string;
@@ -1474,6 +1487,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		activeRepoContextPromise.catch(() => {});
 		const watchdogFilesPromise = logger.time("discoverWatchdogFiles", () => discoverWatchdogFiles(cwd, agentDir));
 		watchdogFilesPromise.catch(() => {});
+		const discoveredAdvisorsPromise = logger.time("discoverAdvisorConfigs", () =>
+			discoverAdvisorConfigs(cwd, agentDir),
+		);
+		discoveredAdvisorsPromise.catch(() => {});
 		const promptTemplatesPromise = options.promptTemplates
 			? Promise.resolve(options.promptTemplates)
 			: logger.time("discoverPromptTemplates", discoverPromptTemplates, cwd, agentDir);
@@ -1568,7 +1585,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				? getRestorableSessionModels(existingSession.models, sessionManager.getLastModelChangeRole())
 				: [];
 		let restoredSessionModelIndex = -1;
-		let restoredSessionThinkingLevel: ThinkingLevel | undefined;
+		let restoredSessionThinkingLevel: ConfiguredThinkingLevel | undefined;
 		if (!hasExplicitModel && !model && sessionModelStrings.length > 0) {
 			logger.time("restoreSessionModel", () => {
 				let failedSessionModel: string | undefined;
@@ -1717,12 +1734,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			return result;
 		};
-		const [contextFiles, resolvedWorkspaceTree, watchdogFiles, activeRepoContext] = await Promise.all([
-			contextFilesPromise,
-			raceWithDeadline("buildWorkspaceTree", workspaceTreePromise),
-			watchdogFilesPromise,
-			activeRepoContextPromise,
-		]);
+		const [contextFiles, resolvedWorkspaceTree, watchdogFiles, discoveredAdvisors, activeRepoContext] =
+			await Promise.all([
+				contextFilesPromise,
+				raceWithDeadline("buildWorkspaceTree", workspaceTreePromise),
+				watchdogFilesPromise,
+				discoveredAdvisorsPromise,
+				activeRepoContextPromise,
+			]);
 
 		let agent: Agent;
 		const enableLsp = options.enableLsp ?? true;
@@ -1853,7 +1872,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getActiveModelString,
 			getActiveModelContextWindow: () => agent?.state.model?.contextWindow ?? model?.contextWindow ?? undefined,
 			getActiveModel: () => agent?.state.model ?? model,
-			getServiceTier: () => session?.serviceTier,
+			getServiceTierByFamily: () => session?.serviceTierByFamily,
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
 			consultAdvisor: (question, signal) => session?.consultAdvisor(question, signal) ?? Promise.resolve(null),
 			isAdvisorActive: () => session?.isAdvisorActive() ?? false,
@@ -1904,6 +1923,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			activateDiscoveredTools: toolNames => session.activateDiscoveredTools(toolNames),
 			getCheckpointState: () => session.getCheckpointState(),
 			setCheckpointState: state => session.setCheckpointState(state ?? undefined),
+			getLastCompletedRewind: () => session.getLastCompletedRewind(),
 			getToolChoiceQueue: () => session.toolChoiceQueue,
 			buildToolChoice: name => {
 				const m = session.model;
@@ -2324,11 +2344,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			extensionsResult.runtime.pendingProviderRegistrations = [];
 		}
-		// Discover runtime (extension) provider catalogs now that they are
-		// registered. The startup refreshInBackground() ran before extensions
-		// loaded, so dynamic extension providers are only discovered here. Runs in
-		// the background (cache-aware) so startup is never blocked on the fetch; the
-		// model list re-renders when the catalog arrives, like other dynamic providers.
+		// Hydrate cached runtime (extension) provider catalogs before model
+		// resolution. Dynamic-only providers have no synchronous registration side
+		// effect, so a cold --model/provider resume must see the same fresh SQLite
+		// cache that `omp models find` uses before the online refresh continues in
+		// the background.
+		await modelRegistry.refreshRuntimeProviders("offline");
+		// Continue runtime discovery in the background (cache-aware) so startup is
+		// only blocked on local cache reads, not provider network fetches.
 		void modelRegistry.refreshRuntimeProviders().catch(error => {
 			logger.warn("runtime provider discovery failed", {
 				error: error instanceof Error ? error.message : String(error),
@@ -2348,6 +2371,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				const sessionModelStr = sessionModelStrings[i];
 				const parsedModel = parseModelString(sessionModelStr, {
 					allowMaxAlias: true,
+					allowAutoAlias: true,
 					isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
 				});
 				if (!parsedModel) continue;
@@ -2362,7 +2386,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					// `thinking.defaultLevel` must not become sticky.
 					thinkingLevel = pickInitialThinkingLevel(restoredModel);
 					autoThinking = thinkingLevel === AUTO_THINKING;
-					effectiveThinkingLevel = thinkingLevel === AUTO_THINKING ? undefined : thinkingLevel;
+					effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
 					effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
 						autoThinking
 							? resolveProvisionalAutoLevel(restoredModel)
@@ -2377,9 +2401,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (!model && options.modelPattern) {
 			const availableModels = modelRegistry.getAll();
 			const matchPreferences = getModelMatchPreferences(settings);
-			const { model: resolved } = parseModelPattern(options.modelPattern, availableModels, matchPreferences, {
-				modelRegistry,
-			});
+			const { model: resolved } = parseModelPattern(options.modelPattern, availableModels, matchPreferences);
 			if (resolved) {
 				model = resolved;
 				modelFallbackMessage = undefined;
@@ -2409,7 +2431,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				const reResolvedRoleSpec = resolveModelRoleValue(settings.getModelRole("default"), fallbackCandidates, {
 					settings,
 					matchPreferences: modelMatchPreferences,
-					modelRegistry,
 				});
 				if (reResolvedRoleSpec.model) {
 					defaultRoleSpec = reResolvedRoleSpec;
@@ -2421,7 +2442,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					// so the role's explicit selector (e.g. `:max`) now applies.
 					thinkingLevel = pickInitialThinkingLevel(resolvedDefaultModel);
 					autoThinking = thinkingLevel === AUTO_THINKING;
-					effectiveThinkingLevel = thinkingLevel === AUTO_THINKING ? undefined : thinkingLevel;
+					effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
 					effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
 						autoThinking
 							? resolveProvisionalAutoLevel(resolvedDefaultModel)
@@ -2620,10 +2641,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// `auto` enforces the per-model policy (inline for Gemini, off otherwise);
 		// like the rest of the prune machinery this is fixed for the session, so a
 		// mid-session model switch keeps the start-time decision.
-		const inlineToolDescriptors = shouldInlineToolDescriptors(
-			settings.get("inlineToolDescriptors"),
-			model ? (modelRegistry.getCanonicalId(model) ?? model.id) : undefined,
-		);
+		const inlineToolDescriptors = shouldInlineToolDescriptors(settings.get("inlineToolDescriptors"), model?.id);
 		const eagerTasks = settings.get("task.eager") !== "default";
 		const eagerTasksAlways = settings.get("task.eager") === "always";
 		const intentField = $flag("PI_INTENT_TRACING", settings.get("tools.intentTracing")) ? INTENT_FIELD : undefined;
@@ -3043,22 +3061,28 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const openaiWebsocketSetting = settings.get("providers.openaiWebsockets") ?? "off";
 		const preferOpenAICodexWebsockets =
 			openaiWebsocketSetting === "on" ? true : openaiWebsocketSetting === "off" ? false : undefined;
-		const serviceTierSetting = settings.get("serviceTier");
-
-		const initialServiceTier = hasServiceTierEntry
-			? existingSession.serviceTier
-			: serviceTierSetting === "none"
-				? undefined
-				: serviceTierSetting;
+		const initialServiceTierByFamily = hasServiceTierEntry
+			? (existingSession.serviceTier ?? {})
+			: buildServiceTierByFamily(
+					settings.get("tier.openai"),
+					settings.get("tier.anthropic"),
+					settings.get("tier.google"),
+				);
 
 		// One-shot launch-latency marker: fired the first time the loop dispatches
 		// a chat request to the provider transport. See onFirstChatDispatch.
 		let notifyFirstChatDispatch = options.onFirstChatDispatch;
-		// Shared, settings-aware stream wrapper used by both the main agent and
-		// the advisor (via AgentSessionConfig.streamFn). Keeps OpenRouter
-		// sticky-routing variants, antigravity endpoint routing, in-flight caps,
-		// and the loop guard consistent across every agent the session drives.
-		const settingsAwareStreamFn = createSettingsAwareStreamFn(settings);
+		// Shared, settings-aware stream wrapper used by the main agent, advisor,
+		// and side-channel requests (`/btw`, `/omfg`, IRC auto-replies, handoff).
+		// Keeps OpenRouter sticky-routing variants, antigravity endpoint routing,
+		// in-flight caps, and the loop guard consistent across every provider call
+		// the session drives. Wrapped in a per-provider concurrency limiter so
+		// each LLM HTTP request — not the whole subagent lifecycle — holds the
+		// slot, preventing nested-spawn deadlocks.
+		const settingsAwareStreamFn = wrapStreamFnWithProviderConcurrency(
+			settings,
+			createSettingsAwareStreamFn(settings),
+		);
 		type CredentialUseLease = {
 			released: boolean;
 			release: () => void;
@@ -3124,7 +3148,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			minP: settings.get("minP") >= 0 ? settings.get("minP") : undefined,
 			presencePenalty: settings.get("presencePenalty") >= 0 ? settings.get("presencePenalty") : undefined,
 			repetitionPenalty: settings.get("repetitionPenalty") >= 0 ? settings.get("repetitionPenalty") : undefined,
-			serviceTier: initialServiceTier,
+			serviceTier: model ? resolveModelServiceTier(initialServiceTierByFamily, model) : undefined,
 			hideThinkingSummary: thinkingDisplay === "omitted",
 			thinkingDisplay,
 			kimiApiFormat: settings.get("providers.kimiApiFormat") ?? "anthropic",
@@ -3212,8 +3236,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				// classification persists its concrete effort once a real user turn runs.
 				sessionManager.appendThinkingLevelChange(effectiveThinkingLevel);
 			}
-			if (initialServiceTier) {
-				sessionManager.appendServiceTierChange(initialServiceTier);
+			if (Object.keys(initialServiceTierByFamily).length > 0) {
+				sessionManager.appendServiceTierChange(initialServiceTierByFamily);
 			}
 			const isSubagent = (options.taskDepth ?? 0) > 0 || options.parentTaskPrefix !== undefined;
 			if (!isSubagent && systemPrompt.length > 0) {
@@ -3225,32 +3249,32 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 		}
 
-		// Hard-isolated read-only toolset for the advisor (built unconditionally so
-		// it can be toggled at runtime). Fresh ReadTool/GrepTool/GlobTool bound to a
-		// DISTINCT ToolSession so the advisor's investigative reads never touch the
-		// primary's snapshot, seen-lines, conflict, or summary caches (all keyed on
-		// session identity). `cwd` stays dynamic; edit/yield capabilities are off.
+		// Full toolset for the advisor, built unconditionally so it can be toggled at
+		// runtime. Bound to a DISTINCT ToolSession (its own `-advisor` session id +
+		// agent id) so the advisor's tool state — snapshot, seen-lines, conflict, and
+		// summary caches, all keyed on session identity — stays isolated from the
+		// primary, while edit/bash/write stay fully functional: the advisor is a full
+		// agent and its config's `tools` selects which of these it actually gets
+		// (defaulting to read/grep/glob).
 		const advisorToolSession: ToolSession = {
 			...toolSession,
 			get cwd() {
 				return sessionManager.getCwd();
 			},
-			hasEditTool: false,
+			hasEditTool: true,
 			requireYieldTool: false,
-			conflictHistory: undefined,
-			fileSnapshotStore: undefined,
 			getSessionId: () => {
 				const id = sessionManager.getSessionId?.();
 				return id ? `${id}-advisor` : null;
 			},
 			getAgentId: () => "advisor",
 		};
-		const built = await Promise.all(
-			[...ADVISOR_READONLY_TOOL_NAMES].map(name =>
-				BUILTIN_TOOLS[name as keyof typeof BUILTIN_TOOLS](advisorToolSession),
-			),
-		);
-		const advisorReadOnlyTools: Tool[] = built
+		const advisorToolBuilds: Array<Tool | null | Promise<Tool | null>> = [];
+		for (const name in BUILTIN_TOOLS) {
+			advisorToolBuilds.push(BUILTIN_TOOLS[name as keyof typeof BUILTIN_TOOLS](advisorToolSession));
+		}
+		const built = await Promise.all(advisorToolBuilds);
+		const advisorTools: Tool[] = built
 			.filter((tool): tool is Tool => tool != null)
 			.map(wrapToolWithMetaNotice)
 			.map(clampAdvisorToolOutput);
@@ -3270,9 +3294,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		session = new AgentSession({
 			advisorWatchdogPrompt,
 			advisorContextPrompt,
+			advisorSharedInstructions: discoveredAdvisors.sharedInstructions,
+			advisorConfigs: discoveredAdvisors.advisors,
 			agent,
 			pruneToolDescriptions: inlineToolDescriptors,
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
+			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
 			settings,
 			autoApprove: options.autoApprove,
@@ -3300,7 +3327,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			transformProviderContext,
 			onPayload,
 			onResponse,
+			sideStreamFn: settingsAwareStreamFn,
 			advisorStreamFn: settingsAwareStreamFn,
+			preferWebsockets: preferOpenAICodexWebsockets,
 			convertToLlm: convertToLlmFinal,
 			rebuildSystemPrompt,
 			reloadSshTool,
@@ -3333,7 +3362,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			agentKind,
 			providerSessionId: options.providerSessionId,
 			parentEvalSessionId: options.parentEvalSessionId,
-			advisorReadOnlyTools,
+			advisorTools,
+			titleSystemPrompt: options.titleSystemPrompt,
 		});
 		hasSession = true;
 		const sessionAsyncJobManager = asyncJobManager;
@@ -3406,7 +3436,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 								tools: initialTools,
 							},
 							reasoning: toReasoningEffort(effectiveThinkingLevel),
-							serviceTier: initialServiceTier,
+							serviceTier: resolveModelServiceTier(initialServiceTierByFamily, codexModel),
 							temperature: settings.get("temperature") >= 0 ? settings.get("temperature") : undefined,
 							topP: settings.get("topP") >= 0 ? settings.get("topP") : undefined,
 							topK: settings.get("topK") >= 0 ? settings.get("topK") : undefined,

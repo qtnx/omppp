@@ -12,7 +12,7 @@ import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model
 import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import commitSystemPrompt from "../prompts/system/commit-message-system.md" with { type: "text" };
-import { toReasoningEffort } from "../thinking";
+import { concreteThinkingLevel, toReasoningEffort } from "../thinking";
 
 const COMMIT_SYSTEM_PROMPT = prompt.render(commitSystemPrompt);
 const MAX_DIFF_CHARS = 4000;
@@ -55,9 +55,8 @@ function getSmolModelCandidates(
 	const configuredSmol = resolveModelRoleValue(settings.getModelRole("smol"), availableModels, {
 		settings,
 		matchPreferences,
-		modelRegistry: registry,
 	});
-	addCandidate(configuredSmol.model, configuredSmol.thinkingLevel);
+	addCandidate(configuredSmol.model, concreteThinkingLevel(configuredSmol.thinkingLevel));
 
 	for (const pattern of MODEL_PRIO.smol) {
 		const needle = pattern.toLowerCase();

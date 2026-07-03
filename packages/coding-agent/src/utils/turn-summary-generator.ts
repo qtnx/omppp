@@ -129,7 +129,7 @@ function getSummaryModel(
 	const availableModels = registry.getAvailable();
 	if (availableModels.length === 0) return undefined;
 
-	const summaryModel = resolveRoleSelection(["commit", "smol"], settings, availableModels, registry)?.model;
+	const summaryModel = resolveRoleSelection(["commit", "smol"], settings, availableModels)?.model;
 	if (summaryModel) return summaryModel;
 
 	return currentModel;

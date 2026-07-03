@@ -207,19 +207,18 @@ function groupApplyPatchEntriesByPath(entries: readonly ApplyPatchEntry[]): Map<
  * `create` op), otherwise an empty string (grammar-only payloads).
  */
 function extractAddedLines(text: string, fallbackToWhole: boolean): string {
-	let added: string | undefined;
+	const added: string[] = [];
 	let lineStart = 0;
 	while (lineStart <= text.length) {
 		let lineEnd = text.indexOf("\n", lineStart);
 		if (lineEnd === -1) lineEnd = text.length;
 		if (text.charCodeAt(lineStart) === 43 /* + */ && !text.startsWith("+++ ", lineStart)) {
-			const line = text.slice(lineStart + 1, lineEnd);
-			added = added === undefined ? line : `${added}\n${line}`;
+			added.push(text.slice(lineStart + 1, lineEnd));
 		}
 		lineStart = lineEnd + 1;
 	}
-	if (added === undefined) return fallbackToWhole ? text : "";
-	return added;
+	if (added.length === 0) return fallbackToWhole ? text : "";
+	return added.join("\n");
 }
 
 /**
@@ -394,7 +393,9 @@ const patchStrategy: EditStreamingStrategy<PatchArgs> = {
 		const result = await computePatchDiff(
 			{ path: args.path, op: first.op ?? "update", rename: first.rename, diff: first.diff },
 			ctx.cwd,
-			{ fuzzyThreshold: ctx.fuzzyThreshold, allowFuzzy: ctx.allowFuzzy },
+			// Match the apply path: JSON-mode `op: "create"` is a sanctioned
+			// full-file overwrite, so the preview must not reject it either.
+			{ fuzzyThreshold: ctx.fuzzyThreshold, allowFuzzy: ctx.allowFuzzy, allowCreateOverwrite: true },
 		);
 		ctx.signal.throwIfAborted();
 		return [toPerFilePreview(args.path, result)];
@@ -428,7 +429,17 @@ const patchStrategy: EditStreamingStrategy<PatchArgs> = {
 
 interface HashlineArgs {
 	input?: string;
+	_input?: string;
 	__partialJson?: string;
+}
+
+/**
+ * Text payload of a hashline edit call. The public schema declares `input`, but
+ * streaming sees the raw model output before validation coerces aliases, so a
+ * provider that emits the legacy `_input` key still previews correctly.
+ */
+function hashlineEditText(args: HashlineArgs | undefined): string | undefined {
+	return args?.input ?? args?._input;
 }
 
 /**
@@ -512,7 +523,8 @@ const hashlineStrategy: EditStreamingStrategy<HashlineArgs> = {
 		return args;
 	},
 	async computeDiffPreview(args, ctx) {
-		if (typeof args.input !== "string" || args.input.length === 0) return null;
+		const input = hashlineEditText(args);
+		if (typeof input !== "string" || input.length === 0) return null;
 		// Unlike apply_patch, hashline previews flow through `applyPartialTo`,
 		// whose streaming-tolerant parser (`parsePatchStreaming` → `endStreaming`)
 		// drops a payload-less trailing op and projects a partially-typed payload
@@ -520,7 +532,6 @@ const hashlineStrategy: EditStreamingStrategy<HashlineArgs> = {
 		// would instead strip the sole payload of a single-op `replace`/`insert`
 		// for almost the entire stream, collapsing the preview to "No changes" and
 		// rendering a blank box. Feed the raw in-flight text straight through.
-		const input = args.input;
 		ctx.signal.throwIfAborted();
 
 		let sections: readonly HashlineInputSection[];
@@ -578,19 +589,19 @@ const hashlineStrategy: EditStreamingStrategy<HashlineArgs> = {
 		return "";
 	},
 	matcherDigest(args) {
-		const input = args?.input;
+		const input = hashlineEditText(args);
 		if (typeof input !== "string") return undefined;
 		// Body rows are `+TEXT`; headers and op lines are grammar, never content.
 		return extractAddedLines(input, false);
 	},
 	matcherPaths(args) {
-		const input = args?.input;
+		const input = hashlineEditText(args);
 		if (typeof input !== "string" || input.length === 0) return undefined;
 		const paths = extractHashlineHeaderPaths(input);
 		return paths.length > 0 ? paths : undefined;
 	},
 	matcherEntries(args) {
-		const input = args?.input;
+		const input = hashlineEditText(args);
 		if (typeof input !== "string" || input.length === 0) return undefined;
 		const entries = splitHashlinePerFile(input);
 		return entries.length > 0 ? entries : undefined;

@@ -126,18 +126,20 @@ function deduplicateToolCallIds(
 }
 
 /**
- * Drop assistant `toolCall` blocks whose `name` is empty or whitespace-only,
+ * Drop assistant `toolCall` blocks whose `id` or `name` is empty / whitespace-only,
  * the `toolResult` messages they point at, and any assistant turn that has no
  * replayable content left.
  *
- * Models occasionally emit `{ "name": "", "arguments": "{}" }` (observed:
- * GLM-5.2 + thinking on long turns, #3458). The agent loop rejects the call
- * at execution time with `Tool  not found`, but the malformed block and its
- * error tool-result stay in `currentContext.messages`, so every subsequent
- * request replays them. Every provider validates the function name —
- * Anthropic 400s on `tool_use.name` (alongside an orphan `tool_result`),
- * OpenAI Chat Completions 400s on `tool_calls[i].function.name` — wedging the
- * session in a 400 loop until manual `/clear`.
+ * Models occasionally emit malformed calls such as `{ "name": "", "arguments": "{}" }`
+ * (observed: GLM-5.2 + thinking on long turns, #3458) or a structurally valid
+ * `toolCall` whose provider/native passthrough id never materialized (`id: ""`).
+ * The agent loop rejects or skips these at execution time, but the malformed block
+ * and its error tool-result can stay in `currentContext.messages`, so every
+ * subsequent request replays them. Every provider validates the call shape —
+ * Anthropic 400s on `tool_use.name` / `tool_use.id` (alongside an orphan
+ * `tool_result`), OpenAI Chat Completions 400s on malformed
+ * `tool_calls[i].function.*` — wedging the session in a 400 loop until manual
+ * `/clear`.
  *
  * Run before any other transform so the rest of the pipeline never sees a
  * malformed call. Idempotent: a re-run on an already-sanitized list returns
@@ -147,13 +149,21 @@ function isMalformedToolCallName(name: string | undefined): boolean {
 	return !name || name.trim().length === 0;
 }
 
+function isMalformedToolCallId(id: string | undefined): boolean {
+	return !id || id.trim().length === 0;
+}
+
+function isMalformedToolCall(block: { id: string; name: string }): boolean {
+	return isMalformedToolCallId(block.id) || isMalformedToolCallName(block.name);
+}
+
 function sanitizeMalformedToolCalls(messages: Message[]): Message[] {
 	// Fast path: skip the rewrite entirely when nothing is malformed.
 	let hasMalformed = false;
 	outer: for (const msg of messages) {
 		if (msg.role !== "assistant") continue;
 		for (const block of msg.content) {
-			if (block.type === "toolCall" && isMalformedToolCallName(block.name)) {
+			if (block.type === "toolCall" && isMalformedToolCall(block)) {
 				hasMalformed = true;
 				break outer;
 			}
@@ -179,7 +189,7 @@ function sanitizeMalformedToolCalls(messages: Message[]): Message[] {
 			const filtered: AssistantMessage["content"] = [];
 			for (const block of msg.content) {
 				if (block.type === "toolCall") {
-					const malformed = isMalformedToolCallName(block.name);
+					const malformed = isMalformedToolCall(block);
 					const queue = dropQueues.get(block.id);
 					if (queue) queue.push(malformed);
 					else dropQueues.set(block.id, [malformed]);
@@ -283,9 +293,10 @@ export function transformMessages<TApi extends Api>(
 	duplicateToolCallIdSuffixPrefix = "_dup",
 	targetCompat: Model<TApi>["compat"] = model.compat,
 ): Message[] {
-	// Drop assistant `toolCall` blocks with empty/whitespace `name` (and their
-	// matched `toolResult` messages) before anything else looks at the history.
-	// Replays of these would 400 every provider — see `sanitizeMalformedToolCalls`.
+	// Drop assistant `toolCall` blocks with empty/whitespace `id` or `name`
+	// (and their matched `toolResult` messages) before anything else looks at
+	// the history. Replays of these would 400 every provider — see
+	// `sanitizeMalformedToolCalls`.
 	messages = sanitizeMalformedToolCalls(messages);
 
 	// Build a map of original tool call IDs to normalized IDs
@@ -330,13 +341,18 @@ export function transformMessages<TApi extends Api>(
 			const isLatestSurvivingAssistant = index === latestSurvivingAssistantIndex;
 			// Signature policy is a second axis. Anthropic cryptographically
 			// binds reasoning signatures to its key+session+model, so cross-model
-			// signatures must be stripped whenever official Anthropic is on
-			// either end of the replay:
-			//   * official → 3p: the 3p target can't reverify the signature;
-			//     keeping it leaks private continuation metadata for no benefit.
-			//   * 3p → official: official rejects a foreign signature outright.
-			//   * official → official cross-model: the new model rejects the
-			//     previous model's signature.
+			// signatures must be stripped whenever a signing Anthropic endpoint
+			// is on either end of the replay:
+			//   * official Anthropic (source): the 3p target can't reverify a
+			//     foreign signature and keeping it leaks continuation metadata
+			//     for no benefit.
+			//   * signing Anthropic (target): official Anthropic, GitHub Copilot,
+			//     ZenMux, Cloudflare AI Gateway `/anthropic`, and Google Vertex
+			//     `publishers/anthropic/…` all forward to signature-enforcing
+			//     Anthropic. Any stale/cross-model signature on the wire triggers
+			//     `400 Invalid signature in thinking block` — same failure class
+			//     whether `officialEndpoint` is true or the endpoint is one of
+			//     the known signing proxies (#4297).
 			// 3p ↔ 3p replays preserve signatures because compatible providers
 			// (Z.AI, DeepSeek, custom `models.yaml` providers) treat them as
 			// opaque continuation hints rather than verified material; stripping
@@ -347,8 +363,8 @@ export function transformMessages<TApi extends Api>(
 			// a custom proxy via `models.yaml` will see signatures stripped, the
 			// conservative direction (degraded reasoning, not broken requests).
 			const isOfficialAnthropicSource = isAnthropicReplay && assistantMsg.provider === "anthropic";
-			const isOfficialAnthropicTarget = isAnthropicTarget && model.compat.officialEndpoint;
-			const officialAnthropicInvolved = isOfficialAnthropicSource || isOfficialAnthropicTarget;
+			const isSigningAnthropicTarget = isAnthropicTarget && model.compat.signingEndpoint;
+			const signingAnthropicInvolved = isOfficialAnthropicSource || isSigningAnthropicTarget;
 			// Compatible Anthropic-messages reasoning targets that accept
 			// unsigned thinking natively (Z.AI, DeepSeek, the generic
 			// `reasoning && !official` case in the compat builder). Used to keep
@@ -410,7 +426,7 @@ export function transformMessages<TApi extends Api>(
 						if (
 							!isLatestSurvivingAssistant &&
 							!isSameModel &&
-							officialAnthropicInvolved &&
+							signingAnthropicInvolved &&
 							sanitized.thinkingSignature
 						) {
 							sanitized = { ...sanitized, thinkingSignature: undefined };
@@ -418,6 +434,16 @@ export function transformMessages<TApi extends Api>(
 						// Drop blocks with neither a signature anchor nor any text —
 						// nothing for the next turn to replay.
 						if (!sanitized.thinkingSignature && (!sanitized.thinking || sanitized.thinking.trim() === "")) {
+							return [];
+						}
+						// Same-model Anthropic replay to a signature-enforcing endpoint
+						// cannot natively replay thinking blocks whose source explicitly
+						// recorded an empty signature, but this is not a dialect
+						// transition. Do not demote that sentinel into the target model's
+						// textual thinking dialect; keep demotion for signatures stripped
+						// by the untrustworthy-turn recovery above and for literal thinking
+						// envelopes that never carried a signature field.
+						if (isSameModel && isSigningAnthropicTarget && sanitized.thinkingSignature?.trim() === "") {
 							return [];
 						}
 						return sanitized;
@@ -467,6 +493,22 @@ export function transformMessages<TApi extends Api>(
 						return [];
 					}
 					if (isSameModel) return block;
+					return [];
+				}
+
+				if (block.type === "fallback") {
+					// Server-side-fallback boundary marker (Anthropic beta
+					// `server-side-fallback-2026-06-01`). Only the official
+					// Anthropic endpoint accepts this block on replay: every
+					// other target either rejects unknown content blocks with a
+					// 400 (anthropic-compatible endpoints like Umans/Z.AI/MiniMax,
+					// and older omp gateways whose schema pre-dates this feature)
+					// or throws in its converter (Bedrock). Even the official
+					// replay path only accepts the block when the current request
+					// itself opts into the beta — but we don't know that here, so
+					// keep it and let `convertAnthropicMessages` re-check the
+					// per-request opt-in before serializing.
+					if (isAnthropicTarget && model.compat.officialEndpoint) return block;
 					return [];
 				}
 

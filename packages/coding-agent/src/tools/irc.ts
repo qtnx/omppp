@@ -102,6 +102,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 	readonly description: string;
 	readonly parameters = ircSchema;
 	readonly strict = true;
+	readonly interruptible = true;
 
 	readonly examples: readonly ToolExample<typeof ircSchema.infer>[] = [
 		{
@@ -177,7 +178,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			case "wait":
 				return this.#executeWait(senderId, params, signal);
 			case "inbox":
-				return this.#executeInbox(senderId, params);
+				return this.#executeInbox(registry, senderId, params);
 			default:
 				return errorResult("Unknown irc op.", { op: params.op });
 		}
@@ -324,16 +325,30 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 				lines.push("");
 				if (delivered.length > 0) {
 					const reply = await waiting;
-					if (reply.error) throw reply.error;
-					waited = reply.message;
-					if (waited) {
-						lines.push(`Reply from ${waited.from}:`);
-						lines.push(waited.body);
+					if (reply.error) {
+						// The send already succeeded; if the wait was interrupted by our
+						// caller signal (steering / IRC), preserve the delivery receipt so
+						// the agent loop keeps this tool as "sent" instead of marking it
+						// skipped, which would prompt a duplicate resend on the next turn.
+						if (signal?.aborted) {
+							lines.push(
+								`Send delivered but the reply wait was interrupted before ${to} answered. ` +
+									"Check `inbox` or `wait` again after handling the interrupt.",
+							);
+						} else {
+							throw reply.error;
+						}
 					} else {
-						lines.push(
-							`No reply from ${to} within ${formatDuration(timeoutMs)}. ` +
-								"They may answer later — check `inbox` or `wait` again.",
-						);
+						waited = reply.message;
+						if (waited) {
+							lines.push(`Reply from ${waited.from}:`);
+							lines.push(waited.body);
+						} else {
+							lines.push(
+								`No reply from ${to} within ${formatDuration(timeoutMs)}. ` +
+									"They may answer later — check `inbox` or `wait` again.",
+							);
+						}
 					}
 				} else {
 					awaitAbort?.abort(awaitCancelled);
@@ -380,8 +395,14 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		};
 	}
 
-	#executeInbox(senderId: string, params: IrcParams): AgentToolResult<IrcDetails> {
-		const messages = IrcBus.global().inbox(senderId, { peek: params.peek });
+	#executeInbox(registry: AgentRegistry, senderId: string, params: IrcParams): AgentToolResult<IrcDetails> {
+		const busMessages = IrcBus.global().inbox(senderId, { peek: params.peek });
+		const session = registry.get(senderId)?.session;
+		const pendingMessages =
+			typeof session?.drainPendingIrcInboxMessages === "function"
+				? session.drainPendingIrcInboxMessages(senderId)
+				: [];
+		const messages = [...busMessages, ...pendingMessages].sort((a, b) => a.ts - b.ts);
 		if (messages.length === 0) {
 			return {
 				content: [{ type: "text", text: "Inbox empty." }],

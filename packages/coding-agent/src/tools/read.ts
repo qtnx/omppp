@@ -14,7 +14,15 @@ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { glob, type SummaryResult, summarizeCode } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { getRemoteDir, type ImageMetadata, logger, prompt, readImageMetadata, untilAborted } from "@oh-my-pi/pi-utils";
+import {
+	getRemoteDir,
+	type ImageMetadata,
+	isProbablyBinary,
+	logger,
+	prompt,
+	readImageMetadata,
+	untilAborted,
+} from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { LRUCache } from "lru-cache/raw";
 import {
@@ -69,7 +77,6 @@ import {
 } from "./conflict-detect";
 import {
 	executeReadUrl,
-	isReadableUrlPath,
 	loadReadUrlCacheEntry,
 	parseReadUrlTarget,
 	type ReadUrlToolDetails,
@@ -87,6 +94,7 @@ import {
 import {
 	expandPath,
 	formatPathRelativeToCwd,
+	isReadableUrlPath,
 	type LineRange,
 	parseLineRanges,
 	pathTargetsSsh,
@@ -178,7 +186,17 @@ interface HashlineHeaderContext {
 }
 
 function formatReadHashlineHeader(displayPath: string, tag: string): string {
-	return formatHashlineHeader(path.basename(displayPath), tag);
+	// In-workspace reads collapse to the bare filename for brevity: the edit
+	// tool's snapshot-tag recovery rebinds a bare `[name#tag]` onto the in-tree
+	// file it uniquely names. Out-of-workspace reads can't lean on that —
+	// recovery refuses to redirect a write outside the cwd/sandbox
+	// (HashlineFilesystem.allowTagPathRecovery) — so an absolute displayPath
+	// must stay directly resolvable, otherwise the basename resolves against
+	// cwd, misses, and the edit fails with "File not found" (e.g. ~/.claude/*).
+	// `shortenPath` keeps `~/.claude/...` (round-trips through resolveToCwd's ~
+	// expansion) instead of leaking the full home path into the read output.
+	const anchor = path.isAbsolute(displayPath) ? shortenPath(displayPath) : path.basename(displayPath);
+	return formatHashlineHeader(anchor, tag);
 }
 
 function recordFullHashlineContext(
@@ -298,7 +316,14 @@ function formatMergedBraceLine(
 
 function countTextLines(text: string): number {
 	if (text.length === 0) return 0;
-	return text.split("\n").length;
+	// Count newlines directly instead of allocating an array via split("\n").
+	// Called on every read of file content; the result is identical (N newlines
+	// ⇒ N+1 lines for non-empty text).
+	let lines = 1;
+	for (let i = 0; i < text.length; i++) {
+		if (text.charCodeAt(i) === 10) lines++;
+	}
+	return lines;
 }
 
 function contiguousLineNumbers(startLine: number, count: number): number[] {
@@ -1299,7 +1324,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				startLine: startNum,
 				lineNumbers: Array.from({ length: lineCount }, (_, i) => startNum + i),
 			};
-			if (shouldAddHashLines) seenLines = contiguousLineNumbers(startNum, countTextLines(content));
+			if (shouldAddHashLines) seenLines = contiguousLineNumbers(startNum, lineCount);
 			const formatted = formatTextWithMode(content, startNum, shouldAddHashLines, shouldAddLineNumbers);
 			if (!hashContext || emittedHashlineHeader) return formatted;
 			emittedHashlineHeader = true;
@@ -1534,6 +1559,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const displayLineByNumber = new Map<number, string>();
 		const fullLines = rawSelector ? undefined : await readBracketContextFullLines(absolutePath, fileSize);
 		let columnTruncated = 0;
+		const clippedLines = new Set<number>();
 		let displayContent: { text: string; startLine: number; lineNumbers?: Array<number | null> } | undefined;
 
 		for (const range of ranges) {
@@ -1581,6 +1607,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						if (!cloned) cloned = collectedLines.slice();
 						cloned[i] = text;
 						columnTruncated = maxColumns;
+						clippedLines.add(range.startLine + i);
 					}
 				}
 				if (cloned) displayLines = cloned;
@@ -1608,7 +1635,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						if (visibleText !== undefined) return visibleText;
 						if (maxColumns <= 0) return sourceText;
 						const truncated = truncateLine(sourceText, maxColumns);
-						if (truncated.wasTruncated) columnTruncated = maxColumns;
+						if (truncated.wasTruncated) {
+							columnTruncated = maxColumns;
+							clippedLines.add(lineNumber);
+						}
 						return truncated.text;
 					},
 				},
@@ -1626,7 +1656,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (shouldAddHashLines && outputText) {
 			const tag = await recordFileSnapshot(this.session, absolutePath);
 			if (tag) {
-				recordSeenLinesFromBody(this.session, absolutePath, tag, outputText);
+				recordSeenLinesFromBody(this.session, absolutePath, tag, outputText, clippedLines);
 				outputText = `${formatReadHashlineHeader(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag)}\n${outputText}`;
 			}
 		}
@@ -2304,6 +2334,25 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				content = [{ type: "text", text: `[Cannot read ${ext} file: conversion failed]` }];
 			}
 		} else {
+			// Binary sniff before any UTF-8 text materialization. A binary file
+			// (font, object, archive, packed blob) decodes to NUL/control bytes and
+			// U+FFFD mojibake that corrupts the terminal and burns context. Images,
+			// notebooks, and markit-convertible documents were already routed above;
+			// everything reaching here is meant to be plain text. `:raw` stays the
+			// explicit escape hatch for reading bytes verbatim. This single guard
+			// covers both the multi-range and single-range disk paths below.
+			if (!isRawSelector(parsed) && (await isProbablyBinary(absolutePath))) {
+				return toolResult<ReadToolDetails>({ resolvedPath: absolutePath, suffixResolution })
+					.text(
+						prependSuffixResolutionNotice(
+							`[Cannot read binary file '${formatPathRelativeToCwd(absolutePath, this.session.cwd)}' (${formatBytes(fileSize)}); not valid UTF-8 text. Use ':raw' to read bytes verbatim.]`,
+							suffixResolution,
+						),
+					)
+					.sourcePath(absolutePath)
+					.done();
+			}
+
 			if (
 				parsed.kind === "none" &&
 				this.session.settings.get("read.summarize.enabled") &&
@@ -2439,33 +2488,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					// counts in `truncation` keep reflecting the source, not the trimmed
 					// view — column truncation surfaces separately via `.limits()`.
 					const rawSelector = isRawSelector(parsed);
-					// Binary sniff: NUL bytes mean the file is not displayable text
-					// (binary, or UTF-16 which has NULs in the ASCII range) — emit a
-					// notice instead of mojibake filling the line budget. `:raw`
-					// stays an explicit escape hatch.
-					//
-					// `collectedLines` covers the common case where at least one
-					// physical line terminates within the byte budget. Binary blobs
-					// without newlines (videos, archives, packed JSON) leave it
-					// empty; their bytes only land in `firstLinePreview`, which the
-					// `firstLineExceedsLimit` branch below would otherwise emit
-					// verbatim. Sniffing the preview here keeps the refusal uniform.
-					if (!rawSelector) {
-						const hasNul = (text: string): boolean => text.includes("\u0000");
-						const binaryDetected =
-							collectedLines.some(hasNul) || (firstLinePreview !== undefined && hasNul(firstLinePreview.text));
-						if (binaryDetected) {
-							return toolResult<ReadToolDetails>({ resolvedPath: absolutePath, suffixResolution })
-								.text(
-									prependSuffixResolutionNotice(
-										`[Cannot read binary file '${formatPathRelativeToCwd(absolutePath, this.session.cwd)}' (${formatBytes(fileSize)}); content contains NUL bytes (binary or UTF-16 encoded)]`,
-										suffixResolution,
-									),
-								)
-								.sourcePath(absolutePath)
-								.done();
-						}
-					}
 					const maxColumns = resolveOutputMaxColumns(this.session.settings);
 					// Column truncation is display-only. `collectedLines` MUST stay
 					// byte-for-byte with the on-disk content so the snapshot recorded
@@ -2473,6 +2495,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					// ellipsis-truncated text made every long-line file uneditable on
 					// the next edit attempt.
 					let displayLines: string[] = collectedLines;
+					const clippedLines = new Set<number>();
 					if (!rawSelector && maxColumns > 0) {
 						let cloned: string[] | undefined;
 						for (let i = 0; i < collectedLines.length; i++) {
@@ -2481,6 +2504,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 								if (!cloned) cloned = collectedLines.slice();
 								cloned[i] = text;
 								columnTruncated = maxColumns;
+								clippedLines.add(startLineDisplay + i);
 							}
 						}
 						if (cloned) displayLines = cloned;
@@ -2563,7 +2587,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 									if (visibleText !== undefined) return visibleText;
 									if (maxColumns <= 0) return sourceText;
 									const truncated = truncateLine(sourceText, maxColumns);
-									if (truncated.wasTruncated) columnTruncated = maxColumns;
+									if (truncated.wasTruncated) {
+										columnTruncated = maxColumns;
+										clippedLines.add(lineNumber);
+									}
 									return truncated.text;
 								},
 							},
@@ -2637,7 +2664,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					}
 
 					if (hashContext?.tag) {
-						recordSeenLinesFromBody(this.session, absolutePath, hashContext.tag, outputText);
+						recordSeenLinesFromBody(this.session, absolutePath, hashContext.tag, outputText, clippedLines);
 					}
 
 					if (capturedDisplayContent) {

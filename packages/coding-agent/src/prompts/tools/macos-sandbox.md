@@ -5,6 +5,6 @@ Use when a command, read/search/find, hook, package manager, or Kubernetes tooli
 Important:
 - macOS Seatbelt sandboxes cannot be relaxed inside the running process.
 - This tool asks the unsandboxed OMPx supervisor to relaunch the current session with extra sandbox allowlist entries; if no supervisor is available, it returns manual restart args.
-- Use `remember: true` only when the user approved persisting the paths to `sandbox.allowedPaths` for future sessions.
+- Use `remember: true` only when the user approved persisting the `path` entries to `sandbox.allowedPaths` for future sessions.
 - Only add paths the user trusts.
 - NEVER add broad home directories, credential directories, keychains, or private-key paths.

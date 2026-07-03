@@ -1,7 +1,10 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, setSystemTime, spyOn, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
+import {
+	AssistantMessageComponent,
+	resetThinkingSpeedTracker,
+} from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 
@@ -186,6 +189,8 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 
 	// First frame of the expanding/shrinking ✻ pulse; deterministic right after updateContent.
 	const PULSE = "✻";
+	const THINKING_LABEL = "Thinking";
+	const THINKING_GLYPH_ONLY_LINE = /^[✻✼❉❊✺✹✸✶]\s*$/;
 
 	it("shows a timed pulse for an in-flight omitted-display thinking block", () => {
 		vi.useFakeTimers();
@@ -193,7 +198,8 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 		const component = liveComponent(streaming([{ type: "thinking", thinking: "" }]), false);
 
 		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
-		expect(plain).toMatch(/thinking… \d+s/);
+		expect(plain).toContain(THINKING_LABEL);
+		expect(plain).toMatch(/\d+s/);
 		expect(timerCount()).toBe(1);
 		component.dispose();
 	});
@@ -203,19 +209,20 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 		const component = liveComponent(streaming([{ type: "thinking", thinking: "private reasoning" }]), false);
 
 		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
-		expect(plain).not.toMatch(/thinking… \d+s/);
+		expect(plain).not.toContain(THINKING_LABEL);
 		expect(plain).toContain("private reasoning");
 		expect(timerCount()).toBe(0);
 		component.dispose();
 	});
 
-	it("shows a timed pulse in place of hidden reasoning while thinking streams", () => {
+	it("shows a described pulse in place of hidden reasoning while thinking streams", () => {
 		vi.useFakeTimers();
 		const component = liveComponent(streaming([{ type: "thinking", thinking: "private reasoning" }]));
-
 		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
-		expect(plain).toContain(PULSE);
-		expect(plain).toMatch(/thinking… \d+s/);
+		const lines = plain.split("\n").map(line => line.trimEnd());
+		expect(lines.some(line => line.includes(PULSE) && line.includes(THINKING_LABEL))).toBe(true);
+		expect(lines.map(line => line.trim()).some(line => THINKING_GLYPH_ONLY_LINE.test(line))).toBe(false);
+		expect(plain).toMatch(/\d+s/);
 		expect(plain).not.toContain("private reasoning");
 		expect(timerCount()).toBe(1);
 		component.dispose();
@@ -226,7 +233,7 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 		const component = new AssistantMessageComponent(streaming([{ type: "thinking", thinking: "" }]), false);
 
 		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
-		expect(plain).not.toMatch(/thinking… \d+s/);
+		expect(plain).not.toContain(THINKING_LABEL);
 		expect(plain).not.toMatch(/thought for \d+s/);
 		expect(timerCount()).toBe(0);
 		component.dispose();
@@ -242,7 +249,7 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 		component.markTranscriptBlockFinalized();
 		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
 		expect(plain).toMatch(/thought for 12s/);
-		expect(plain).not.toMatch(/thinking… \d+s/);
+		expect(plain).not.toContain(THINKING_LABEL);
 		expect(timerCount()).toBe(0);
 		component.dispose();
 	});
@@ -260,13 +267,13 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 			]),
 		);
 		expect(timerCount()).toBe(0);
-		expect(Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"))).not.toMatch(/thinking… \d+s/);
+		expect(Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"))).not.toContain(THINKING_LABEL);
 
 		setSystemTime(new Date(13_400));
 		component.markTranscriptBlockFinalized();
 		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
 		expect(plain).toMatch(/thought for 12s/);
-		expect(plain).not.toMatch(/thinking… \d+s/);
+		expect(plain).not.toContain(THINKING_LABEL);
 		expect(timerCount()).toBe(0);
 		component.dispose();
 	});
@@ -320,9 +327,9 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 		const component = new AssistantMessageComponent(undefined, true);
 		const rendered = () => Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
 		component.updateContent(streaming([{ type: "thinking", thinking: "a" }]));
-		expect(rendered()).toMatch(/thinking… \d+s/);
+		expect(rendered()).toContain(THINKING_LABEL);
 		component.updateContent(streaming([{ type: "thinking", thinking: "ab" }]));
-		expect(rendered()).toMatch(/thinking… \d+s/);
+		expect(rendered()).toContain(THINKING_LABEL);
 		component.updateContent(
 			streaming([
 				{ type: "thinking", thinking: "abc" },
@@ -332,5 +339,103 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 		expect(rendered().includes(PULSE)).toBe(false);
 		expect(rendered().includes("Answer")).toBe(true);
 		component.dispose();
+	});
+
+	it("derives the windowed token speed from provider usage while thinking streams", () => {
+		resetThinkingSpeedTracker();
+		const component = new AssistantMessageComponent(undefined, true);
+		const nowSpy = spyOn(performance, "now");
+
+		let mockTime = 1000;
+		nowSpy.mockImplementation(() => mockTime);
+
+		// First update seeds the baseline from provider output tokens; no rate yet.
+		component.updateContent(streaming([{ type: "thinking", thinking: "a" }], 10), { transient: true });
+
+		// +47 provider output tokens 1s later → 47 tok/s.
+		mockTime = 2000;
+		component.updateContent(streaming([{ type: "thinking", thinking: "ab" }], 57), { transient: true });
+
+		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
+		// Layout: "<glyph> Thinking · <total> · <rate> toks/s" — 57 provider tokens, 47.0 tok/s.
+		expect(plain).toContain("57 · 47.0 toks/s");
+
+		nowSpy.mockRestore();
+		component.dispose();
+	});
+
+	it("clamps the displayed speed to the 200 tok/s ceiling", () => {
+		resetThinkingSpeedTracker();
+		const component = new AssistantMessageComponent(undefined, true);
+		const nowSpy = spyOn(performance, "now");
+
+		let mockTime = 1000;
+		nowSpy.mockImplementation(() => mockTime);
+		component.updateContent(streaming([{ type: "thinking", thinking: "a" }], 10), { transient: true });
+
+		// +977 provider output tokens in 100 ms is far past the ceiling.
+		mockTime = 1100;
+		component.updateContent(streaming([{ type: "thinking", thinking: "a" }], 987), { transient: true });
+
+		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
+		expect(plain).toContain("200.0 toks/s");
+
+		nowSpy.mockRestore();
+		component.dispose();
+	});
+
+	it("drops the badge entirely once the rate reads zero (streaming lull)", () => {
+		resetThinkingSpeedTracker();
+		const component = new AssistantMessageComponent(undefined, true);
+		const nowSpy = spyOn(performance, "now");
+
+		let mockTime = 1000;
+		nowSpy.mockImplementation(() => mockTime);
+		component.updateContent(streaming([{ type: "thinking", thinking: "a" }], 10), { transient: true });
+		mockTime = 2000;
+		component.updateContent(streaming([{ type: "thinking", thinking: "ab" }], 57), { transient: true });
+
+		// Long pause: rate observations age out of the window. A same-token update
+		// refreshes the live label, which now drops the numeric badge entirely
+		// rather than lingering on "0.0 toks/s" while retaining descriptive text.
+		mockTime = 30_000;
+		component.updateContent(streaming([{ type: "thinking", thinking: "ab" }], 57), { transient: true });
+		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
+		expect(plain).not.toContain("toks/s");
+		expect(plain).not.toContain("57");
+		expect(plain.includes(PULSE)).toBe(true);
+		expect(plain).toContain(THINKING_LABEL);
+
+		nowSpy.mockRestore();
+		component.dispose();
+	});
+
+	it("ignores the session gauge's prior-turn rate on a fresh token-less block", () => {
+		resetThinkingSpeedTracker();
+		const nowSpy = spyOn(performance, "now");
+		let mockTime = 1000;
+		nowSpy.mockImplementation(() => mockTime);
+
+		// Block A records a live rate into the session-wide gauge.
+		const a = new AssistantMessageComponent(undefined, true);
+		a.updateContent(streaming([{ type: "thinking", thinking: "a" }], 10), { transient: true });
+		mockTime = 2000;
+		a.updateContent(streaming([{ type: "thinking", thinking: "ab" }], 57), { transient: true });
+		expect(Bun.stripANSI(a.render(RENDER_WIDTH).join("\n"))).toContain("toks/s");
+		a.dispose();
+
+		// Block B starts moments later with provider tokens but no positive delta of
+		// its own; the gauge still holds A's observation, but B must not borrow it.
+		mockTime = 2500;
+		const b = new AssistantMessageComponent(undefined, true);
+		b.updateContent(streaming([{ type: "thinking", thinking: "xyz" }], 99), { transient: true });
+		const plain = Bun.stripANSI(b.render(RENDER_WIDTH).join("\n"));
+		expect(plain).not.toContain("toks/s");
+		expect(plain).not.toContain("99");
+		expect(plain.includes(PULSE)).toBe(true);
+		expect(plain).toContain(THINKING_LABEL);
+
+		nowSpy.mockRestore();
+		b.dispose();
 	});
 });

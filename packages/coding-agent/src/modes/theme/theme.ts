@@ -96,6 +96,7 @@ export type SymbolKey =
 	| "icon.pause"
 	| "icon.loop"
 	| "icon.folder"
+	| "icon.worktree"
 	| "icon.search"
 	| "icon.scratchFolder"
 	| "icon.file"
@@ -114,6 +115,7 @@ export type SymbolKey =
 	| "icon.cacheMiss"
 	| "icon.input"
 	| "icon.output"
+	| "icon.throughput"
 	| "icon.host"
 	| "icon.session"
 	| "icon.package"
@@ -158,6 +160,8 @@ export type SymbolKey =
 	| "md.hrChar"
 	| "md.bullet"
 	| "md.colorSwatch"
+	// Advisor note rail
+	| "advisor.rail"
 	// Language/file type icons
 	| "lang.default"
 	| "lang.typescript"
@@ -300,6 +304,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.pause": "⏸",
 	"icon.loop": "↻",
 	"icon.folder": "📁",
+	"icon.worktree": "🌳",
 	"icon.search": "🔍",
 	"icon.scratchFolder": "🗑",
 	"icon.file": "📄",
@@ -318,6 +323,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.cacheMiss": "⊘",
 	"icon.input": "⤵",
 	"icon.output": "⤴",
+	"icon.throughput": "⚡",
 	"icon.host": "🖥",
 	"icon.session": "🆔",
 	"icon.package": "📦",
@@ -362,6 +368,8 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"md.hrChar": "─",
 	"md.bullet": "•",
 	"md.colorSwatch": "■",
+	// Advisor note rail (heavier than md.quoteBorder so notes read as a distinct voice)
+	"advisor.rail": "▎",
 	// Language/file icons (emoji-centric, no Nerd Font required)
 	"lang.default": "⌘",
 	"lang.typescript": "🟦",
@@ -563,6 +571,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.search": "\uf002",
 	// pick:  | alt:
 	"icon.scratchFolder": "\uf014",
+	// pick: nf-fa-sitemap | alt: nf-cod-list_tree
+	"icon.worktree": "\uf0e8",
 	// pick:  | alt:  
 	"icon.file": "\uf15b",
 	// pick:  | alt:  ⎇
@@ -595,6 +605,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.input": "\uf090",
 	// pick:  | alt:  →
 	"icon.output": "\uf08b",
+	// pick:  (nf-fa-tachometer) | alt:  ⚡ ↬
+	"icon.throughput": "\uf0e4",
 	// pick:  | alt:  
 	"icon.host": "\uf109",
 	// pick:  | alt:  
@@ -670,6 +682,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"md.bullet": "\uf111",
 	// pick: ■ | alt:  (U+F096)
 	"md.colorSwatch": "■",
+	// pick: ▎ | alt: ┃ │
+	"advisor.rail": "▎",
 	// Language icons (nerd font devicons)
 	"lang.default": "",
 	"lang.typescript": "\u{E628}",
@@ -811,6 +825,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.pause": "||",
 	"icon.loop": "loop",
 	"icon.folder": "[D]",
+	"icon.worktree": "[wt]",
 	"icon.search": "[/]",
 	"icon.scratchFolder": "[T]",
 	"icon.file": "[F]",
@@ -825,10 +840,11 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.ghost": "@",
 	"icon.agents": "AG",
 	"icon.job": "bg",
+	"icon.output": "out:",
+	"icon.throughput": "tok/s:",
 	"icon.cache": "cache",
 	"icon.cacheMiss": "!",
 	"icon.input": "in:",
-	"icon.output": "out:",
 	"icon.host": "host",
 	"icon.session": "id",
 	"icon.package": "[P]",
@@ -871,6 +887,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"md.hrChar": "-",
 	"md.bullet": "*",
 	"md.colorSwatch": "[]",
+	"advisor.rail": "|",
 	// Language icons (ASCII uses abbreviations)
 	"lang.default": "code",
 	"lang.typescript": "ts",
@@ -1802,6 +1819,7 @@ export class Theme {
 			pause: this.#symbols["icon.pause"],
 			loop: this.#symbols["icon.loop"],
 			folder: this.#symbols["icon.folder"],
+			worktree: this.#symbols["icon.worktree"],
 			scratchFolder: this.#symbols["icon.scratchFolder"],
 			file: this.#symbols["icon.file"],
 			git: this.#symbols["icon.git"],
@@ -1819,6 +1837,7 @@ export class Theme {
 			cacheMiss: this.#symbols["icon.cacheMiss"],
 			input: this.#symbols["icon.input"],
 			output: this.#symbols["icon.output"],
+			throughput: this.#symbols["icon.throughput"],
 			host: this.#symbols["icon.host"],
 			session: this.#symbols["icon.session"],
 			package: this.#symbols["icon.package"],
@@ -2151,6 +2170,11 @@ export function getCurrentThemeName(): string | undefined {
 export function fgOrPlain(color: ThemeColor, text: string, styledText: string = text): string {
 	return typeof theme === "undefined" ? text : theme.fg(color, styledText);
 }
+export interface ThemeChangeEvent {
+	/** Preview/presentation-only changes should repaint live UI without replacing native scrollback. */
+	ephemeral?: boolean;
+}
+
 var currentSymbolPresetOverride: SymbolPreset | undefined;
 var currentColorBlindMode: boolean = false;
 var themeWatcher: fs.FSWatcher | undefined;
@@ -2159,7 +2183,7 @@ var sigwinchHandler: (() => void) | undefined;
 var autoDetectedTheme: boolean = false;
 var autoDarkTheme: string = "dark";
 var autoLightTheme: string = "light";
-var onThemeChangeCallback: (() => void) | undefined;
+var onThemeChangeCallback: ((event: ThemeChangeEvent) => void) | undefined;
 var themeLoadRequestId: number = 0;
 let themeEpoch = 0;
 
@@ -2235,7 +2259,10 @@ export async function setTheme(
 	}
 }
 
-export async function previewTheme(name: string): Promise<{ success: boolean; error?: string }> {
+export async function previewTheme(
+	name: string,
+	event: ThemeChangeEvent = { ephemeral: true },
+): Promise<{ success: boolean; error?: string }> {
 	const requestId = ++themeLoadRequestId;
 	try {
 		const loadedTheme = await loadTheme(name, getCurrentThemeOptions());
@@ -2243,7 +2270,7 @@ export async function previewTheme(name: string): Promise<{ success: boolean; er
 			return { success: false, error: "Theme preview superseded by a newer request" };
 		}
 		theme = loadedTheme;
-		notifyThemeChange();
+		notifyThemeChange(event);
 		return { success: true };
 	} catch (error) {
 		if (requestId !== themeLoadRequestId) {
@@ -2259,9 +2286,9 @@ export async function previewTheme(name: string): Promise<{ success: boolean; er
 /**
  * Enable auto-detection mode, switching to the appropriate dark/light theme.
  */
-export function enableAutoTheme(): void {
+export function enableAutoTheme(event: ThemeChangeEvent = {}): void {
 	autoDetectedTheme = true;
-	reevaluateAutoTheme("enableAutoTheme");
+	reevaluateAutoTheme("enableAutoTheme", event);
 }
 
 /**
@@ -2290,7 +2317,7 @@ export function setThemeInstance(themeInstance: Theme): void {
 	theme = themeInstance;
 	currentThemeName = "<in-memory>";
 	stopThemeWatcher();
-	notifyThemeChange();
+	notifyThemeChange({ ephemeral: true });
 }
 
 /**
@@ -2311,7 +2338,7 @@ export async function setSymbolPreset(preset: SymbolPreset): Promise<void> {
 		theme = await loadTheme("dark", getCurrentThemeOptions());
 		if (requestId !== themeLoadRequestId) return;
 	}
-	notifyThemeChange();
+	notifyThemeChange({ ephemeral: true });
 }
 
 /**
@@ -2340,7 +2367,7 @@ export async function setColorBlindMode(enabled: boolean): Promise<void> {
 		theme = await loadTheme("dark", getCurrentThemeOptions());
 		if (requestId !== themeLoadRequestId) return;
 	}
-	notifyThemeChange();
+	notifyThemeChange({ ephemeral: true });
 }
 
 /**
@@ -2350,7 +2377,7 @@ export function getColorBlindMode(): boolean {
 	return currentColorBlindMode;
 }
 
-export function onThemeChange(callback: () => void): () => void {
+export function onThemeChange(callback: (event: ThemeChangeEvent) => void): () => void {
 	onThemeChangeCallback = callback;
 	return () => {
 		if (onThemeChangeCallback === callback) {
@@ -2371,9 +2398,9 @@ export function getThemeEpoch(): number {
 }
 
 /** Bump the theme epoch and notify the registered theme-change listener. */
-function notifyThemeChange(): void {
+function notifyThemeChange(event: ThemeChangeEvent = {}): void {
 	themeEpoch++;
-	onThemeChangeCallback?.();
+	onThemeChangeCallback?.(event);
 }
 
 /**
@@ -2428,7 +2455,7 @@ async function startThemeWatcher(): Promise<void> {
 			loadTheme(watchedThemeName, getCurrentThemeOptions())
 				.then(loadedTheme => {
 					theme = loadedTheme;
-					notifyThemeChange();
+					notifyThemeChange({ ephemeral: true });
 				})
 				.catch(() => {
 					// Ignore errors (file might be in invalid state while being edited)
@@ -2460,7 +2487,7 @@ async function startThemeWatcher(): Promise<void> {
  * Shared logic for re-evaluating the auto-detected theme.
  * Called from SIGWINCH, terminal appearance change handler, and macOS fallback observer.
  */
-function reevaluateAutoTheme(debugLabel: string): void {
+function reevaluateAutoTheme(debugLabel: string, event: ThemeChangeEvent = {}): void {
 	if (!autoDetectedTheme) return;
 	const resolved = getDefaultTheme();
 	if (resolved === currentThemeName) return;
@@ -2468,7 +2495,7 @@ function reevaluateAutoTheme(debugLabel: string): void {
 	loadTheme(resolved, getCurrentThemeOptions())
 		.then(loadedTheme => {
 			theme = loadedTheme;
-			notifyThemeChange();
+			notifyThemeChange(event);
 		})
 		.catch(err => {
 			logger.debug(`Theme switch on ${debugLabel} failed`, { error: String(err) });

@@ -10,13 +10,14 @@ import {
 	resolveMacOSSandboxAllowedPaths,
 } from "../task/omp-command";
 import type { ToolSession } from "./index";
+import { toPathList } from "./path-utils";
 
 const macosSandboxSchema = z
 	.object({
-		paths: z
-			.array(z.string().min(1).describe("trusted file or directory path"))
+		path: z
+			.string()
 			.min(1)
-			.describe("directories or files to allow"),
+			.describe("trusted file or directory paths to allow; use a semicolon-delimited string for multiple paths"),
 		remember: z
 			.boolean()
 			.default(false)
@@ -34,6 +35,11 @@ export interface MacOSSandboxToolDetails {
 }
 
 type MacOSSandboxParams = z.infer<typeof macosSandboxSchema>;
+type MacOSSandboxCompatParams = Partial<MacOSSandboxParams> & { paths?: string[] };
+
+function macosSandboxPathList(params: MacOSSandboxCompatParams): string[] {
+	return toPathList(params.path ?? params.paths);
+}
 
 function appendSandboxAllowedPaths(current: readonly string[], paths: readonly string[]): string[] {
 	const next = [...current];
@@ -56,8 +62,11 @@ export class MacOSSandboxTool implements AgentTool<typeof macosSandboxSchema, Ma
 
 	constructor(private readonly session: ToolSession) {}
 
-	async execute(_toolCallId: string, params: MacOSSandboxParams): Promise<AgentToolResult<MacOSSandboxToolDetails>> {
-		const resolved = resolveMacOSSandboxAllowedPaths(params.paths, this.session.cwd);
+	async execute(
+		_toolCallId: string,
+		params: MacOSSandboxCompatParams,
+	): Promise<AgentToolResult<MacOSSandboxToolDetails>> {
+		const resolved = resolveMacOSSandboxAllowedPaths(macosSandboxPathList(params), this.session.cwd);
 		const paths = resolved.paths;
 		if (resolved.error) {
 			return {

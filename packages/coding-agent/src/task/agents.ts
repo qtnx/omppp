@@ -14,11 +14,13 @@ import agentFrontmatterTemplate from "../prompts/agents/frontmatter.md" with { t
 import heavyTaskMd from "../prompts/agents/heavy_task.md" with { type: "text" };
 import librarianMd from "../prompts/agents/librarian.md" with { type: "text" };
 import oracleMd from "../prompts/agents/oracle.md" with { type: "text" };
+
 import planMd from "../prompts/agents/plan.md" with { type: "text" };
 import qaMd from "../prompts/agents/qa.md" with { type: "text" };
 import quickTaskMd from "../prompts/agents/quick_task.md" with { type: "text" };
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
+import testerMd from "../prompts/agents/tester.md" with { type: "text" };
 import workflowSubagentMd from "../prompts/agents/workflow-subagent.md" with { type: "text" };
 
 import type { AgentDefinition, AgentReviewGatePolicy, AgentSource } from "./types";
@@ -56,6 +58,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "qa.md", template: qaMd },
 	{ fileName: "librarian.md", template: librarianMd },
 	{ fileName: "oracle.md", template: oracleMd },
+	{ fileName: "tester.md", template: testerMd },
 	{
 		fileName: "heavy_task.md",
 		frontmatter: {

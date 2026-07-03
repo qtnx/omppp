@@ -489,6 +489,8 @@ function formatCellOutputLines(
 }
 
 export const evalToolRenderer = {
+	animatedPendingPreview: true,
+	animatedPartialResult: true,
 	renderCall(args: EvalRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		const cells = getRenderCells(args);
 
@@ -502,7 +504,7 @@ export const evalToolRenderer = {
 
 		return markFramedBlockComponent({
 			render: (width: number): readonly string[] => {
-				const key = `${options.expanded ? 1 : 0}|${previewWindowRows()}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
+				const key = `${options.expanded ? 1 : 0}|${options.spinnerFrame ?? "-"}|${previewWindowRows()}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
 				if (cached && cached.key === key && cached.width === width) {
 					return cached.result;
 				}
@@ -518,7 +520,8 @@ export const evalToolRenderer = {
 							index: i,
 							total: cells.length,
 							title: cell.title,
-							status: "pending",
+							status: options.spinnerFrame !== undefined ? "running" : "pending",
+							spinnerFrame: options.spinnerFrame,
 							width,
 							// Viewport-sized tail window following the newest streamed code
 							// line; renderResult keeps the same cap so the cell never snaps
@@ -775,4 +778,19 @@ export const evalToolRenderer = {
 	// below the first cell. Expanded output is top-anchored enough for the
 	// transcript to commit its settled prefix.
 	provisionalPendingPreview: "collapsed",
+	// Partial-result chrome is NOT byte-stable: `renderAgentProgressEvents`
+	// inserts/removes each subagent's current-tool line as it starts/stops a
+	// tool, and ticks status icon/stats/duration on already-rendered rows,
+	// while `options.isPartial` holds for the whole eval() cell (agent
+	// progress ticks never carry an `async` completed/failed state, so
+	// `event-controller.ts` keeps `isPartial: true` throughout). If this
+	// block were commit-stable during that churn, `deriveLiveCommitState`'s
+	// stable-prefix ratchet would promote agent rows that keep mutating (a
+	// "slow ticker", see transcript-container.ts) into native scrollback,
+	// and the tui resync's "duplication, never loss" contract would
+	// repeatedly re-show the frame tail under a heavy concurrent
+	// `agent()`/`parallel()` fan-out — the overlapping/duplicated tree rows
+	// seen when many subagents run at once. Once the cell settles
+	// (`isPartial === false`) the block is commit-stable again.
+	provisionalPartialResult: true,
 };

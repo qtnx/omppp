@@ -154,6 +154,7 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 				return {
 					...result,
 					branchName: commitResult?.branchName,
+					branchBaseSha: commitResult?.baseSha,
 					nestedPatches: commitResult?.nestedPatches,
 				};
 			} catch (mergeErr) {
@@ -222,6 +223,14 @@ export async function mergeIsolatedChanges(opts: IsolationMergeOptions): Promise
 	const { result, repoRoot, mergeMode } = opts;
 	try {
 		if (mergeMode === "branch") {
+			if (!result.branchName && result.exitCode === 0 && !result.aborted && result.error) {
+				return {
+					summary: `\n\n<system-notification>Branch merge failed before a task branch could be created: ${result.error}\nTask outputs are preserved but changes were not applied.</system-notification>`,
+					changesApplied: false,
+					hadAnyChanges: false,
+					mergedBranchForNestedPatches: false,
+				};
+			}
 			const canApplyNestedOnly =
 				!result.branchName && result.exitCode === 0 && !result.aborted && (result.nestedPatches?.length ?? 0) > 0;
 			if (!result.branchName || result.exitCode !== 0 || result.aborted) {
@@ -235,7 +244,12 @@ export async function mergeIsolatedChanges(opts: IsolationMergeOptions): Promise
 				};
 			}
 			const mergeResult = await mergeTaskBranches(repoRoot, [
-				{ branchName: result.branchName, taskId: result.id, description: result.description },
+				{
+					branchName: result.branchName,
+					taskId: result.id,
+					description: result.description,
+					baseSha: result.branchBaseSha,
+				},
 			]);
 			const mergedBranchForNestedPatches = mergeResult.merged.includes(result.branchName);
 			const changesApplied = mergeResult.failed.length === 0;
@@ -277,15 +291,31 @@ export async function mergeIsolatedChanges(opts: IsolationMergeOptions): Promise
 				hadAnyChanges = false;
 			} else {
 				const normalized = patchText.endsWith("\n") ? patchText : `${patchText}\n`;
-				changesApplied = await git.patch.canApplyText(repoRoot, normalized);
+				// Idempotence: declare a no-op only when the reverse patch applies AND
+				// the forward patch does not. `--reverse --check` alone can theoretically
+				// succeed if the file happens to carry the postimage at another location
+				// via git-apply's fuzz factor; requiring the forward check to fail
+				// removes that ambiguity while still catching true already-applied
+				// runs. Reads only — neither call touches the worktree, unlike
+				// `--3way --check`, which exits 0 even when the real apply would
+				// leave conflict markers and unmerged index entries.
+				const [alreadyApplied, forwardApplies] = await Promise.all([
+					git.patch.canApplyText(repoRoot, normalized, { reverse: true }),
+					git.patch.canApplyText(repoRoot, normalized),
+				]);
 				hadAnyChanges = false;
-				if (changesApplied) {
+				if (alreadyApplied && !forwardApplies) {
+					changesApplied = true;
+				} else if (forwardApplies) {
+					changesApplied = true;
 					try {
 						await git.patch.applyText(repoRoot, normalized);
 						hadAnyChanges = true;
 					} catch {
 						changesApplied = false;
 					}
+				} else {
+					changesApplied = false;
 				}
 			}
 		}

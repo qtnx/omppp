@@ -1,6 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ImageContent, Message, MessageAttribution, ServiceTier, TextContent, Usage } from "@oh-my-pi/pi-ai";
+import type {
+	ImageContent,
+	Message,
+	MessageAttribution,
+	ServiceTierByFamily,
+	TextContent,
+	Usage,
+} from "@oh-my-pi/pi-ai";
 import {
 	directoryExists,
 	getBlobsDir,
@@ -46,13 +53,16 @@ import {
 	type SessionHeader,
 	type SessionInitEntry,
 	type SessionMessageEntry,
+	type SessionTitleSource,
 	type SessionTreeNode,
 	type ThinkingLevelChangeEntry,
+	TITLE_CHANGE_ENTRY_TYPE,
+	type TitleChangeEntry,
 	type TtsrInjectionEntry,
 	type UsageStatistics,
 } from "./session-entries";
 import { findMostRecentSession, listAllSessions, listSessions, type SessionInfo } from "./session-listing";
-import { loadEntriesFromFile, resolveBlobRefsInEntries } from "./session-loader";
+import { loadEntriesFromFile, readTitleSlotFromFile, resolveBlobRefsInEntries } from "./session-loader";
 import { generateId, migrateToCurrentVersion } from "./session-migrations";
 import {
 	computeDefaultSessionDir,
@@ -67,8 +77,11 @@ import {
 	type SessionStorage,
 	type SessionStorageWriter,
 } from "./session-storage";
+import { type SessionTitleUpdate, serializeTitleSlot } from "./session-title-slot";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
+const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided after a newer compaction]";
+const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
 
 function mintSessionId(): string {
 	return Bun.randomUUIDv7();
@@ -236,10 +249,10 @@ class SessionEntryIndex {
 
 		while (cursor && !seen.has(cursor.id)) {
 			seen.add(cursor.id);
-			branch.unshift(cursor);
+			branch.push(cursor);
 			cursor = cursor.parentId ? this.#entriesById.get(cursor.parentId) : undefined;
 		}
-
+		branch.reverse();
 		return branch;
 	}
 
@@ -305,8 +318,10 @@ interface SessionManagerStateSnapshot {
 	sessionDir: string;
 	sessionId: string;
 	sessionName: string | undefined;
-	titleSource: "auto" | "user" | undefined;
+	titleSource: SessionTitleSource | undefined;
 	sessionFile: string | undefined;
+	titleUpdatedAt: string;
+	hasTitleSlot: boolean;
 	onDisk: boolean;
 	needsRewrite: boolean;
 	header: SessionHeader;
@@ -341,9 +356,11 @@ export class SessionManager {
 
 	#sessionId = "";
 	#sessionName: string | undefined;
-	#titleSource: "auto" | "user" | undefined;
+	#titleSource: SessionTitleSource | undefined;
 	#sessionFile: string | undefined;
 	#header!: SessionHeader;
+	#titleUpdatedAt = "";
+	#hasTitleSlot = true;
 	#entries: SessionEntry[] = [];
 	#index = new SessionEntryIndex();
 
@@ -373,6 +390,17 @@ export class SessionManager {
 	#diskFailureLogged = false;
 	/** Bumped on every sync rewrite / chain reset so stale queued tasks become no-ops. */
 	#diskEpoch = 0;
+	/**
+	 * Epoch of the in-flight atomic rewrite, or `null` when no rewrite is running.
+	 * The fence in {@link #appendToSessionFile} only applies while this matches
+	 * `#diskEpoch`: once a synchronous rewrite (`flushSync` → `#rewriteSynchronously`)
+	 * bumps the epoch, the pending atomic publish is guaranteed to abandon via
+	 * its `commitGuard`, and appends can safely take the hot path against the
+	 * freshly-published file.
+	 */
+	#atomicRewriteFenceEpoch: number | null = null;
+	/** Set by synchronous appends that land while an atomic replacement is active. */
+	#atomicRewriteDirty = false;
 
 	#artifactManager: ArtifactManager | null = null;
 	#artifactManagerSessionFile: string | null = null;
@@ -478,8 +506,17 @@ export class SessionManager {
 		return `${JSON.stringify(prepareEntryForPersistence(entry, this.#blobs))}\n`;
 	}
 
+	#titleSlotLine(): string {
+		return serializeTitleSlot({
+			title: this.#sessionName,
+			source: this.#titleSource,
+			updatedAt: this.#titleUpdatedAt || this.#header.timestamp,
+		});
+	}
+
 	#fileBody(): string {
-		let body = this.#lineFor(this.#header);
+		let body = this.#titleSlotLine();
+		body += this.#lineFor(this.#header);
 		for (const entry of this.#entries) body += this.#lineFor(entry);
 		return body;
 	}
@@ -490,6 +527,26 @@ export class SessionManager {
 
 	#shouldHaveSessionFile(): boolean {
 		return this.#forceFileCreation || this.#fileIsCurrent || this.#historyContainsAssistantMessage();
+	}
+
+	#elideSupersededCompactionsOnBranch(leafId: string | null): boolean {
+		if (!leafId) return false;
+		let changed = false;
+		for (const entry of this.#index.pathTo(leafId)) {
+			if (entry.type !== "compaction") continue;
+			if (
+				entry.summary === SUPERSEDED_COMPACTION_SUMMARY &&
+				entry.shortSummary === SUPERSEDED_COMPACTION_SHORT_SUMMARY &&
+				entry.preserveData === undefined
+			) {
+				continue;
+			}
+			entry.summary = SUPERSEDED_COMPACTION_SUMMARY;
+			entry.shortSummary = SUPERSEDED_COMPACTION_SHORT_SUMMARY;
+			entry.preserveData = undefined;
+			changed = true;
+		}
+		return changed;
 	}
 
 	/**
@@ -508,6 +565,7 @@ export class SessionManager {
 			this.#storage.writeTextSync(this.#sessionFile, body);
 			this.#fileIsCurrent = true;
 			this.#rewriteRequired = false;
+			this.#hasTitleSlot = true;
 		} catch (err) {
 			this.#noteDiskFailure(err);
 		}
@@ -515,24 +573,63 @@ export class SessionManager {
 
 	/**
 	 * Rewrite the whole file atomically (temp-write + rename, EPERM-safe) on the
-	 * disk chain. The body is serialized inside the task — after the writer is
-	 * closed — so entries appended before the task runs are included.
+	 * disk chain. The body is serialized after the writer is closed. The fence
+	 * is enabled BEFORE `#closeWriterHandle()` and stays active until the last
+	 * atomic publish returns, so a sync append landing in the close-yield window
+	 * cannot open a fresh writer that the pending replacement would then detach
+	 * from the current JSONL path. A `commitGuard` also prevents a superseding
+	 * synchronous rewrite from being overwritten by the stale body serialized
+	 * before it ran.
 	 */
 	async #rewriteAtomically(): Promise<void> {
 		if (!this.#persist || !this.#sessionFile) return;
 
-		const epoch = this.#diskEpoch;
+		const startEpoch = this.#diskEpoch;
 		await this.#scheduleDiskWork(
 			async () => {
+				if (await this.#runFencedAtomicRewrite(startEpoch)) {
+					this.#fileIsCurrent = true;
+					this.#rewriteRequired = false;
+					this.#hasTitleSlot = true;
+				}
+			},
+			{ epoch: startEpoch },
+		);
+	}
+
+	/**
+	 * Shared fenced atomic-rewrite loop used by `#rewriteAtomically` and the
+	 * `#persistTitleChangeEntry` fallback. Holds `#atomicRewriteActive` across
+	 * the writer close and the full-file replace, and loops on
+	 * `#atomicRewriteDirty` so any fenced append that lands during the rewrite
+	 * is captured before the task resolves. Returns `false` when the disk epoch
+	 * moved (a superseding synchronous rewrite has taken over) so callers skip
+	 * their post-publish state updates.
+	 */
+	async #runFencedAtomicRewrite(epoch: number): Promise<boolean> {
+		this.#atomicRewriteFenceEpoch = epoch;
+		try {
+			do {
+				this.#atomicRewriteDirty = false;
 				await this.#closeWriterHandle();
 				const sessionFile = this.#sessionFile;
-				if (!sessionFile) return;
-				await this.#storage.writeTextAtomic(sessionFile, this.#fileBody());
-				this.#fileIsCurrent = true;
-				this.#rewriteRequired = false;
-			},
-			{ epoch },
-		);
+				if (!sessionFile) return false;
+				if (this.#diskEpoch !== epoch) return false;
+				await this.#storage.writeTextAtomic(sessionFile, this.#fileBody(), {
+					commitGuard: () => this.#diskEpoch === epoch,
+				});
+				if (this.#diskEpoch !== epoch) return false;
+			} while (this.#atomicRewriteDirty);
+			return true;
+		} finally {
+			// Only relinquish the fence if we still own it. A superseding
+			// synchronous rewrite (`flushSync` → `#rewriteSynchronously`) may
+			// have reset `#diskTail`, scheduled a fresh atomic task at the new
+			// epoch, and that task may have taken ownership of the fence while
+			// this stale rewrite was still awaiting storage. Clearing it here
+			// unconditionally would strand appends during the newer publish.
+			if (this.#atomicRewriteFenceEpoch === epoch) this.#atomicRewriteFenceEpoch = null;
+		}
 	}
 
 	#recoverHotAppendFailure(errorLike: unknown): boolean {
@@ -565,6 +662,19 @@ export class SessionManager {
 			return;
 		}
 
+		// Atomic replacement window: the old path may be moved aside underneath
+		// any newly-opened append handle (Windows EPERM fallback). Do not open a
+		// writer here; the active rewrite loops and serializes a fresh full body.
+		// A superseding synchronous rewrite bumps `#diskEpoch`, at which point
+		// the pending atomic publish is guaranteed to abandon via its
+		// `commitGuard`, so appends can (and must) take the hot path so they
+		// don't strand in memory while `close()` returns without a rewrite.
+		if (this.#atomicRewriteFenceEpoch !== null && this.#atomicRewriteFenceEpoch === this.#diskEpoch) {
+			this.#fileIsCurrent = false;
+			this.#rewriteRequired = true;
+			this.#atomicRewriteDirty = true;
+			return;
+		}
 		// Cold/divergent: not on disk yet, or in-memory entries diverged from the
 		// file → rewrite the whole file synchronously and keep going.
 		if (!this.#fileIsCurrent || this.#rewriteRequired) {
@@ -588,12 +698,66 @@ export class SessionManager {
 		}
 	}
 
+	async #persistTitleChangeEntry(entry: TitleChangeEntry, update: SessionTitleUpdate): Promise<void> {
+		if (!this.#persist || !this.#sessionFile) return;
+		if (this.#diskFailure) throw this.#diskFailure;
+
+		if (!this.#shouldHaveSessionFile()) {
+			this.#fileIsCurrent = false;
+			return;
+		}
+
+		if (
+			!this.#fileIsCurrent ||
+			this.#rewriteRequired ||
+			!this.#hasTitleSlot ||
+			!this.#storage.existsSync(this.#sessionFile)
+		) {
+			await this.#rewriteAtomically();
+			return;
+		}
+
+		const epoch = this.#diskEpoch;
+		const line = this.#lineFor(entry);
+		await this.#scheduleDiskWork(
+			async () => {
+				const sessionFile = this.#sessionFile;
+				if (!sessionFile) return;
+				try {
+					await this.#appendWriter().append(line);
+					await this.#storage.updateSessionTitle(sessionFile, update);
+					if (this.#diskEpoch === epoch) this.#fileIsCurrent = true;
+				} catch {
+					if (!(await this.#runFencedAtomicRewrite(epoch))) return;
+					this.#clearDiskError();
+					this.#fileIsCurrent = true;
+					this.#rewriteRequired = false;
+					this.#hasTitleSlot = true;
+				}
+			},
+			{ epoch },
+		);
+	}
+
+	#notifyEntryAppended(entry: SessionEntry): void {
+		const callback = this.onEntryAppended;
+		if (callback) {
+			try {
+				callback(entry);
+			} catch (err) {
+				logger.warn("collab entry hook failed", { error: String(err) });
+			}
+		}
+	}
+
 	#resetToNewSession(options?: NewSessionOptions, forcedSessionFile?: string): string | undefined {
 		this.#diskTail = Promise.resolve();
 		this.#clearDiskError();
 		this.#sessionId = mintSessionId();
 		this.#sessionName = undefined;
 		this.#titleSource = undefined;
+		this.#titleUpdatedAt = "";
+		this.#hasTitleSlot = true;
 
 		const timestamp = nowIso();
 		this.#header = {
@@ -604,6 +768,7 @@ export class SessionManager {
 			cwd: this.#cwd,
 			parentSession: options?.parentSession,
 		};
+		this.#titleUpdatedAt = timestamp;
 
 		this.#entries = [];
 		this.#index.clear();
@@ -638,6 +803,7 @@ export class SessionManager {
 		this.#sessionId = header.id;
 		this.#sessionName = header.title;
 		this.#titleSource = header.titleSource;
+		this.#titleUpdatedAt = header.timestamp;
 		this.#index.rebuild(entries);
 	}
 
@@ -653,15 +819,7 @@ export class SessionManager {
 		this.#entries.push(entry);
 		this.#index.insert(entry);
 		this.#appendToSessionFile(entry);
-
-		const callback = this.onEntryAppended;
-		if (callback) {
-			try {
-				callback(entry);
-			} catch (err) {
-				logger.warn("collab entry hook failed", { error: String(err) });
-			}
-		}
+		this.#notifyEntryAppended(entry);
 	}
 
 	#draftPath(): string | null {
@@ -720,6 +878,8 @@ export class SessionManager {
 			sessionId: this.#sessionId,
 			sessionName: this.#sessionName,
 			titleSource: this.#titleSource,
+			titleUpdatedAt: this.#titleUpdatedAt,
+			hasTitleSlot: this.#hasTitleSlot,
 			sessionFile: this.#sessionFile,
 			onDisk: this.#fileIsCurrent,
 			needsRewrite: this.#rewriteRequired,
@@ -744,6 +904,8 @@ export class SessionManager {
 		this.#applyEntries(snapshot.header, [...snapshot.entries]);
 		this.#sessionName = snapshot.sessionName;
 		this.#titleSource = snapshot.titleSource;
+		this.#titleUpdatedAt = snapshot.titleUpdatedAt;
+		this.#hasTitleSlot = snapshot.hasTitleSlot;
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
 		this.#adoptedArtifactManager = null;
@@ -760,6 +922,7 @@ export class SessionManager {
 		this.#sessionFile = resolvedSessionFile;
 		this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
 
+		const titleSlot = await readTitleSlotFromFile(resolvedSessionFile, this.#storage);
 		const fileEntries = await loadEntriesFromFile(resolvedSessionFile, this.#storage);
 		if (fileEntries.length === 0) {
 			// Explicit but empty/missing path (e.g. --session flag): start fresh but
@@ -790,6 +953,8 @@ export class SessionManager {
 		}
 
 		this.#applyEntries(header, fileEntries.slice(1) as SessionEntry[]);
+		this.#titleUpdatedAt = titleSlot?.updatedAt ?? header.timestamp;
+		this.#hasTitleSlot = titleSlot !== undefined;
 		this.#fileIsCurrent = true;
 		this.#rewriteRequired = migrated;
 		this.#forceFileCreation = true;
@@ -842,6 +1007,8 @@ export class SessionManager {
 		};
 		this.#sessionName = this.#header.title;
 		this.#titleSource = this.#header.titleSource;
+		this.#titleUpdatedAt = timestamp;
+		this.#hasTitleSlot = true;
 		this.#fileIsCurrent = false;
 		this.#rewriteRequired = false;
 		this.#forceFileCreation = true;
@@ -970,18 +1137,26 @@ export class SessionManager {
 		await this.#scheduleDiskWork(async () => {
 			if (this.#writer?.isOpen()) await this.#writer.flush();
 		});
+		// Drain any fire-and-forget backing writes (e.g. `writeTextSync` queued
+		// on IndexedSessionStorage during `flushSync`) so callers relying on
+		// flush() see the write durably visible to readers.
+		await this.#storage.drain();
 		if (this.#diskFailure) throw this.#diskFailure;
 	}
 
 	/**
-	 * Synchronously flush all in-memory entries to disk. Use when the process may
-	 * exit before an async flush settles (Ctrl+C in the TUI). Software-crash
-	 * durable; not atomic and not power-loss safe — a same-process crash never
-	 * lands mid-`writeFileSync`.
+	 * Synchronously makes the current append-only session durable. Avoid rewriting
+	 * an already-current file: large restored sessions can contain GiB of compacted
+	 * history, and Ctrl+C must not rebuild the whole JSONL string just to flush.
 	 */
 	flushSync(): void {
 		if (!this.#persist || !this.#sessionFile) return;
 		if (this.#diskFailure) throw this.#diskFailure;
+		if (this.#fileIsCurrent && !this.#rewriteRequired) {
+			const writerError = this.#writer?.getError();
+			if (writerError) throw writerError;
+			return;
+		}
 		this.#rewriteSynchronously();
 		if (this.#diskFailure) throw this.#diskFailure;
 	}
@@ -995,6 +1170,10 @@ export class SessionManager {
 			if (hadWriter || (this.#sessionFile && this.#storage.existsSync(this.#sessionFile)))
 				this.#fileIsCurrent = true;
 		});
+		// Wait for any queued backing writes (IndexedSessionStorage per-path
+		// tail) to become durable so a graceful shutdown does not exit while
+		// a fire-and-forget publish is still on the wire.
+		await this.#storage.drain();
 		if (this.#diskFailure) throw this.#diskFailure;
 	}
 
@@ -1110,7 +1289,7 @@ export class SessionManager {
 	}
 
 	/** The source that set the session name: "user" (manual/RPC) or "auto" (generated title). */
-	get titleSource(): "auto" | "user" | undefined {
+	get titleSource(): SessionTitleSource | undefined {
 		return this.#titleSource;
 	}
 
@@ -1130,20 +1309,33 @@ export class SessionManager {
 	 * @param source "user" for explicit renames; "auto" for generated titles.
 	 *   Auto titles are ignored once the user has set a name.
 	 */
-	async setSessionName(name: string, source: "auto" | "user" = "auto"): Promise<boolean> {
+	async setSessionName(name: string, source: SessionTitleSource = "auto", trigger?: string): Promise<boolean> {
 		if (this.#titleSource === "user" && source === "auto") return false;
 
 		const title = SessionManager.#cleanTitle(name);
 		if (!title) return false;
 
+		const previousTitle = this.#sessionName;
+		const timestamp = nowIso();
 		this.#sessionName = title;
 		this.#titleSource = source;
+		this.#titleUpdatedAt = timestamp;
 		this.#header.title = title;
 		this.#header.titleSource = source;
 
-		if (this.#persist && this.#sessionFile && this.#storage.existsSync(this.#sessionFile)) {
-			await this.#rewriteAtomically();
-		}
+		const entry: TitleChangeEntry = {
+			type: TITLE_CHANGE_ENTRY_TYPE,
+			...this.#freshEntryFields(),
+			timestamp,
+			title,
+			source,
+		};
+		if (previousTitle) entry.previousTitle = previousTitle;
+		if (trigger) entry.trigger = trigger;
+		this.#entries.push(entry);
+		this.#index.insert(entry);
+		this.#notifyEntryAppended(entry);
+		await this.#persistTitleChangeEntry(entry, { title, source, updatedAt: timestamp });
 
 		this.#notifySessionNameListeners();
 		return true;
@@ -1197,7 +1389,7 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	appendServiceTierChange(serviceTier: ServiceTier | null): string {
+	appendServiceTierChange(serviceTier: ServiceTierByFamily | null): string {
 		const entry: ServiceTierChangeEntry = { type: "service_tier_change", ...this.#freshEntryFields(), serviceTier };
 		this.#recordEntry(entry);
 		return entry.id;
@@ -1242,6 +1434,7 @@ export class SessionManager {
 		fromExtension?: boolean,
 		preserveData?: Record<string, unknown>,
 	): string {
+		const elidedSupersededCompactions = this.#elideSupersededCompactionsOnBranch(this.#index.leafId());
 		const entry: CompactionEntry<T> = {
 			type: "compaction",
 			...this.#freshEntryFields(),
@@ -1254,6 +1447,9 @@ export class SessionManager {
 			preserveData,
 		};
 		this.#recordEntry(entry);
+		if (elidedSupersededCompactions) {
+			void this.#rewriteAtomically().catch(err => this.#noteDiskFailure(err));
+		}
 		return entry.id;
 	}
 
@@ -1544,6 +1740,8 @@ export class SessionManager {
 		this.#sessionId = newSessionId;
 		this.#sessionName = header.title;
 		this.#titleSource = header.titleSource;
+		this.#titleUpdatedAt = timestamp;
+		this.#hasTitleSlot = true;
 		this.#index.rebuild(this.#entries);
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
@@ -1586,9 +1784,8 @@ export class SessionManager {
 	/**
 	 * Create a fresh empty session file in the default session directory for
 	 * `cwd`, writing only the session header. The returned path can be passed to
-	 * `setSessionFile` / `AgentSession.switchSession` to start a new empty
-	 * session in that directory. Used by `/move` to switch projects without
-	 * dragging the current conversation along.
+	 * `setSessionFile` / `AgentSession.switchSession` when a caller explicitly
+	 * needs a brand-new persisted session at a cwd-derived path.
 	 */
 	static createEmptySessionFile(cwd: string, storage: SessionStorage = new FileSessionStorage()): string {
 		const sessionDir = SessionManager.getDefaultSessionDir(cwd, undefined, storage);
@@ -1602,7 +1799,7 @@ export class SessionManager {
 			cwd: path.resolve(cwd),
 		};
 		const file = path.join(sessionDir, `${fileSafeTimestamp(timestamp)}_${id}.jsonl`);
-		storage.writeTextSync(file, `${JSON.stringify(header)}\n`);
+		storage.writeTextSync(file, `${serializeTitleSlot({ updatedAt: timestamp })}${JSON.stringify(header)}\n`);
 		return file;
 	}
 
@@ -1637,6 +1834,8 @@ export class SessionManager {
 		manager.#header.titleSource = sourceHeader?.titleSource;
 		manager.#sessionName = manager.#header.title;
 		manager.#titleSource = manager.#header.titleSource;
+		manager.#titleUpdatedAt = nowIso();
+		manager.#hasTitleSlot = true;
 		manager.#entries = history;
 		manager.#index.rebuild(history);
 		manager.sanitizeLoadedOpenAIResponsesReplayMetadata();

@@ -1,6 +1,6 @@
 //! `grep` implemented as an in-process shell builtin on top of the ripgrep
 //! libraries (`grep-regex` for the matcher, `grep-searcher` for line scanning),
-//! with directory recursion via `ignore` and `--include` filtering via
+//! with directory recursion via `pi-walker` and `--include` filtering via
 //! `globset`. All I/O and path resolution is routed through `pi-uutils-ctx` so
 //! the builtin writes to the command's redirected file descriptors and resolves
 //! relative paths against the shell's working directory.
@@ -24,12 +24,12 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish, SinkMatch};
-use ignore::WalkBuilder;
 pub use rg::run as run_rg;
 
 #[derive(Parser, Debug)]
 #[command(
 	name = "grep",
+	version = concat!("grep (pi-uu-grep) ", env!("CARGO_PKG_VERSION")),
 	about = "Search for PATTERN in each FILE or standard input.",
 	disable_help_flag = true,
 	disable_version_flag = true
@@ -39,8 +39,8 @@ struct Cli {
 	#[arg(short = 'e', long = "regexp", value_name = "PATTERN")]
 	patterns: Vec<String>,
 
-	/// PATTERN is an extended regular expression (the default behaviour).
-	#[allow(dead_code)]
+	/// Treat PATTERN as a strict extended regular expression: a pattern that
+	/// fails to parse is reported as an error rather than matched literally.
 	#[arg(short = 'E', long = "extended-regexp")]
 	extended: bool,
 
@@ -126,6 +126,31 @@ struct Cli {
 	#[arg(long = "help", action = clap::ArgAction::Help)]
 	help: Option<bool>,
 
+	/// Print version information.
+	///
+	/// GNU grep ships a `--version`, and shell startup scripts probe it.
+	/// Routed through clap so output lands on the in-process stdout via the
+	/// same path as `--help`.
+	#[allow(dead_code)]
+	#[arg(short = 'V', long = "version", action = clap::ArgAction::Version)]
+	version: Option<bool>,
+
+	/// Surface color in matches: accepted for GNU-grep compatibility and
+	/// silently ignored. The builtin writes to in-process file descriptors
+	/// (often a pipe consumed by another tool), so injecting ANSI escapes
+	/// would corrupt downstream output. The common `alias grep='grep
+	/// --color=auto'` from distro bashrc files passes through unchanged.
+	#[allow(dead_code)]
+	#[arg(
+		long = "color",
+		alias = "colour",
+		value_name = "WHEN",
+		num_args = 0..=1,
+		require_equals = true,
+		default_missing_value = "auto",
+	)]
+	color: Option<String>,
+
 	/// PATTERN followed by FILEs (PATTERN is omitted when -e is given).
 	#[arg(value_name = "ARGS")]
 	args: Vec<OsString>,
@@ -158,7 +183,15 @@ fn escape_literal(pat: &str) -> String {
 	out
 }
 
-/// Build the ripgrep regex matcher from the collected patterns and flags.
+/// Build the regex matcher from the collected patterns and flags.
+///
+/// In the default mode, any pattern that is not valid extended-regex syntax is
+/// matched literally instead of rejected — so `grep "fail)"` finds the text
+/// `fail)` the way GNU basic grep does, rather than erroring on the unbalanced
+/// `)`. The fallback is per-pattern: in a multi-`-e` search, valid alternatives
+/// keep their regex meaning and only the offending pattern is escaped. `-E`
+/// opts into strict extended-regex syntax (no fallback); `-F` escapes every
+/// pattern up front.
 fn build_matcher(patterns: &[String], cli: &Cli) -> Result<RegexMatcher, grep_regex::Error> {
 	let mut builder = RegexMatcherBuilder::new();
 	builder.case_insensitive(cli.ignore_case);
@@ -170,9 +203,26 @@ fn build_matcher(patterns: &[String], cli: &Cli) -> Result<RegexMatcher, grep_re
 	}
 	if cli.fixed {
 		let escaped: Vec<String> = patterns.iter().map(|p| escape_literal(p)).collect();
-		builder.build_many(&escaped)
-	} else {
-		builder.build_many(patterns)
+		return builder.build_many(&escaped);
+	}
+	match builder.build_many(patterns) {
+		Ok(matcher) => Ok(matcher),
+		Err(err) if !cli.extended => {
+			// Escape only the patterns that fail to compile so valid regex
+			// alternatives keep their meaning.
+			let sanitized: Vec<String> = patterns
+				.iter()
+				.map(|p| {
+					if builder.build(p).is_ok() {
+						p.clone()
+					} else {
+						escape_literal(p)
+					}
+				})
+				.collect();
+			builder.build_many(&sanitized).map_err(|_| err)
+		},
+		Err(err) => Err(err),
 	}
 }
 
@@ -307,6 +357,83 @@ fn process_reader<R: Read, W: Write>(
 	Ok(sink.any_match)
 }
 
+fn display_path_for_operand(operand: &OsStr, resolved: &Path, path: &Path) -> PathBuf {
+	let rel = path.strip_prefix(resolved).unwrap_or(path);
+	if rel.as_os_str().is_empty() {
+		PathBuf::from(operand)
+	} else {
+		Path::new(operand).join(rel)
+	}
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_file_path<W: Write>(
+	operand: &OsStr,
+	resolved: &Path,
+	path: &Path,
+	matcher: &RegexMatcher,
+	searcher: &mut Searcher,
+	opts: &Options,
+	include_set: Option<&GlobSet>,
+	show_names: bool,
+	out: &mut W,
+	had_error: &mut bool,
+) -> bool {
+	if let Some(set) = include_set {
+		let name = path.file_name().unwrap_or_default();
+		if !set.is_match(name) {
+			return false;
+		}
+	}
+	let display_path = display_path_for_operand(operand, resolved, path);
+	match File::open(path) {
+		Ok(file) => {
+			let bytes = display_path.as_os_str().as_encoded_bytes().to_vec();
+			let name: Option<&[u8]> = if show_names { Some(&bytes) } else { None };
+			match process_reader(matcher, searcher, file, name, opts, out) {
+				Ok(matched) => matched,
+				Err(err) => {
+					*had_error = true;
+					if !opts.no_messages {
+						let _ = writeln!(
+							pi_uutils_ctx::stderr(),
+							"grep: {}: {err}",
+							display_path.to_string_lossy()
+						);
+					}
+					false
+				},
+			}
+		},
+		Err(err) => {
+			*had_error = true;
+			if !opts.no_messages {
+				let _ =
+					writeln!(pi_uutils_ctx::stderr(), "grep: {}: {err}", display_path.to_string_lossy());
+			}
+			false
+		},
+	}
+}
+
+fn grep_walk_request(root: &Path, follow_links: bool) -> pi_walker::WalkRequest {
+	pi_walker::WalkRequest::new(root)
+		.hidden(true)
+		.gitignore(false)
+		.skip_git(false)
+		.skip_node_modules(false)
+		.follow_links(pi_walker::FollowLinks::from(follow_links))
+		.detail(pi_walker::WalkDetail::Minimal)
+		.order(pi_walker::WalkOrder::Unordered)
+		.emit_root(true)
+		.depth(0, usize::MAX)
+		.visit_order(pi_walker::VisitOrder::PreOrder)
+		.directory_errors(pi_walker::DirectoryErrorMode::Visit)
+		.same_file_system(false)
+		.cache(false)
+		.filter(pi_walker::WalkFilter::files_only())
+}
+
 /// Recursively search a directory operand. `operand` is the path as typed (used
 /// for display), `resolved` is the cwd-resolved root walked on the filesystem.
 #[allow(clippy::too_many_arguments)]
@@ -322,78 +449,89 @@ fn search_dir<W: Write>(
 	out: &mut W,
 	had_error: &mut bool,
 ) -> bool {
+	let request = grep_walk_request(resolved, follow_links);
 	let mut any = false;
-	let mut builder = WalkBuilder::new(resolved);
-	// GNU grep -r searches everything (hidden files, VCS-ignored files); disable
-	// ignore's standard filters so behaviour matches grep, not ripgrep.
-	builder.standard_filters(false);
-	builder.follow_links(follow_links);
-
-	for result in builder.build() {
-		// -q: a single match anywhere in the tree is enough.
-		if opts.quiet && any {
-			break;
-		}
-		let entry = match result {
-			Ok(e) => e,
-			Err(err) => {
-				*had_error = true;
-				if !opts.no_messages {
-					let _ = writeln!(pi_uutils_ctx::stderr(), "grep: {err}");
-				}
-				continue;
-			},
-		};
-		// Only search regular files (skip directories and other non-files).
-		if entry.file_type().is_none_or(|t| t.is_dir()) {
-			continue;
-		}
-		let path = entry.path();
-		if let Some(set) = include_set {
-			let name = path.file_name().unwrap_or_default();
-			if !set.is_match(name) {
-				continue;
+	let had_error_state = std::cell::Cell::new(*had_error);
+	let walk = request.for_each_entry_with_heartbeat(
+		|| {
+			if pi_uutils_ctx::is_cancelled() {
+				Err(io::Error::from(io::ErrorKind::Interrupted))
+			} else {
+				Ok::<(), io::Error>(())
 			}
-		}
-		// Rebuild the display path as `<operand>/<relative>` so output uses the
-		// operand exactly as typed (GNU behaviour), not the resolved abs path.
-		let rel = path.strip_prefix(resolved).unwrap_or(path);
-		let display_path: PathBuf = if rel.as_os_str().is_empty() {
-			PathBuf::from(operand)
-		} else {
-			Path::new(operand).join(rel)
-		};
-		match File::open(path) {
-			Ok(file) => {
-				let bytes = display_path.as_os_str().as_encoded_bytes().to_vec();
-				let name: Option<&[u8]> = if show_names { Some(&bytes) } else { None };
-				match process_reader(matcher, searcher, file, name, opts, out) {
-					Ok(m) => any |= m,
-					Err(e) => {
-						*had_error = true;
-						if !opts.no_messages {
-							let _ = writeln!(
-								pi_uutils_ctx::stderr(),
-								"grep: {}: {e}",
-								display_path.to_string_lossy()
-							);
-						}
-					},
-				}
-			},
-			Err(e) => {
-				*had_error = true;
-				if !opts.no_messages {
-					let _ = writeln!(
-						pi_uutils_ctx::stderr(),
-						"grep: {}: {e}",
-						display_path.to_string_lossy()
-					);
-				}
-			},
-		}
+		},
+		|entry: pi_walker::EntryMeta<'_>| {
+			if opts.quiet && any {
+				return Ok(pi_walker::WalkDecision::Stop);
+			}
+			if entry.file_type == pi_walker::FileType::Dir {
+				return Ok(pi_walker::WalkDecision::Skip);
+			}
+			let mut entry_had_error = had_error_state.get();
+			let matched = search_file_path(
+				operand,
+				resolved,
+				entry.absolute_path.as_ref(),
+				matcher,
+				searcher,
+				opts,
+				include_set,
+				show_names,
+				out,
+				&mut entry_had_error,
+			);
+			had_error_state.set(entry_had_error);
+			any |= matched;
+			if opts.quiet && any {
+				Ok(pi_walker::WalkDecision::Stop)
+			} else {
+				Ok(pi_walker::WalkDecision::Include)
+			}
+		},
+		|error: pi_walker::DirectoryError<'_>| {
+			had_error_state.set(true);
+			if !opts.no_messages {
+				let display_path = display_path_for_operand(operand, resolved, error.path);
+				let _ = writeln!(
+					pi_uutils_ctx::stderr(),
+					"grep: {}: {}",
+					display_path.to_string_lossy(),
+					error.error
+				);
+			}
+			Ok(pi_walker::WalkDecision::Include)
+		},
+	);
+	*had_error |= had_error_state.get();
+	match walk {
+		Ok(pi_walker::WalkStatus::Complete | pi_walker::WalkStatus::Stopped) => any,
+		Err(pi_walker::WalkError::Interrupted(_)) if pi_uutils_ctx::is_cancelled() => {
+			// Harness cancellation (shell abort/timeout). The shell wrapper
+			// overrides the exit code, so stay silent and let the walk unwind
+			// without injecting a spurious diagnostic on the command's stderr.
+			*had_error = true;
+			any
+		},
+		Err(pi_walker::WalkError::Interrupted(err)) => {
+			*had_error = true;
+			if !opts.no_messages {
+				let _ = writeln!(pi_uutils_ctx::stderr(), "grep: {err}");
+			}
+			any
+		},
+		Err(pi_walker::WalkError::InvalidData { path, message }) => {
+			*had_error = true;
+			if !opts.no_messages {
+				let display_path = display_path_for_operand(operand, resolved, &path);
+				let _ = writeln!(
+					pi_uutils_ctx::stderr(),
+					"grep: {}: {message}",
+					display_path.to_string_lossy()
+				);
+			}
+			any
+		},
 	}
-	any
 }
 
 /// In-process builtin entry point. The host installs a [`pi_uutils_ctx`] scope
@@ -516,12 +654,18 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 	let mut any_match = false;
 	let mut had_error = false;
 
+	let mut processed_operand = false;
 	for f in &files {
 		// -q: once something matched, exit immediately; the status is settled
 		// below. Checked at the top so the stdin `continue` path stops too.
 		if opts.quiet && any_match {
 			break;
 		}
+		if processed_operand && pi_uutils_ctx::is_cancelled() {
+			had_error = true;
+			break;
+		}
+		processed_operand = true;
 		// stdin
 		if f.as_os_str() == OsStr::new("-") {
 			let name: Option<&[u8]> = if show_names {
@@ -544,6 +688,10 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 						let _ = writeln!(pi_uutils_ctx::stderr(), "grep: (standard input): {e}");
 					}
 				},
+			}
+			if pi_uutils_ctx::is_cancelled() {
+				had_error = true;
+				break;
 			}
 			continue;
 		}
@@ -605,6 +753,10 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 				}
 			},
 		}
+		if pi_uutils_ctx::is_cancelled() {
+			had_error = true;
+			break;
+		}
 	}
 
 	let _ = out.flush();
@@ -624,5 +776,194 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 		0
 	} else {
 		1
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{
+		collections::HashMap,
+		io::Cursor,
+		sync::{Arc, atomic::AtomicBool},
+	};
+
+	use parking_lot::Mutex;
+	use pi_uutils_ctx::{ScopeIo, scope};
+
+	use super::*;
+
+	/// Sink that collects writes into a shared buffer for assertions.
+	struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+	impl Write for SharedBuf {
+		fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+			self.0.lock().extend_from_slice(buf);
+			Ok(buf.len())
+		}
+
+		fn flush(&mut self) -> io::Result<()> {
+			Ok(())
+		}
+	}
+
+	/// Run the `grep` builtin with `args` (no argv[0]) over `stdin`, returning
+	/// `(exit_code, stdout, stderr)`.
+	fn run_grep(args: &[&str], stdin: &str) -> (i32, String, String) {
+		let out = Arc::new(Mutex::new(Vec::new()));
+		let err = Arc::new(Mutex::new(Vec::new()));
+		let io = ScopeIo {
+			stdin:                 Box::new(Cursor::new(stdin.as_bytes().to_vec())),
+			stdin_fd:              None,
+			stdin_is_search_input: true,
+			stdout:                Box::new(SharedBuf(Arc::clone(&out))),
+			stderr:                Box::new(SharedBuf(Arc::clone(&err))),
+			cwd:                   std::env::temp_dir(),
+			env:                   HashMap::new(),
+			cancel:                Arc::new(AtomicBool::new(false)),
+		};
+		let argv: Vec<OsString> = std::iter::once("grep")
+			.chain(args.iter().copied())
+			.map(OsString::from)
+			.collect();
+		let code = scope(io, || run(argv));
+		let stdout = String::from_utf8(out.lock().clone()).expect("utf8 stdout");
+		let stderr = String::from_utf8(err.lock().clone()).expect("utf8 stderr");
+		(code, stdout, stderr)
+	}
+
+	#[test]
+	fn unbalanced_paren_pattern_matches_literally() {
+		// Regression: `grep "fail)"` used to abort with `regex parse error:
+		// unopened group`. It must now match the literal text and exit 0.
+		let (code, stdout, stderr) = run_grep(&["-A", "1", "fail)"], "ok\n(1 fail)\nnext\n");
+		assert_eq!(code, 0, "stderr: {stderr}");
+		assert!(stderr.is_empty(), "no error expected, got: {stderr}");
+		assert!(stdout.contains("(1 fail)"), "matched line missing: {stdout}");
+		assert!(stdout.contains("next"), "after-context line missing: {stdout}");
+	}
+
+	#[test]
+	fn extended_flag_reports_parse_error() {
+		// -E opts into strict extended-regex syntax: the bad pattern is an error.
+		let (code, _stdout, stderr) = run_grep(&["-E", "fail)"], "fail)\n");
+		assert_eq!(code, 2);
+		assert!(stderr.contains("grep:"), "expected a grep error, got: {stderr}");
+	}
+
+	#[test]
+	fn valid_regex_still_applies() {
+		// A parseable pattern is used as a regex, not matched literally.
+		let (code, stdout, _err) = run_grep(&["fo+"], "foooo\nbar\n");
+		assert_eq!(code, 0);
+		assert!(stdout.contains("foooo"));
+		assert!(!stdout.contains("bar"));
+	}
+
+	#[test]
+	fn multi_pattern_keeps_valid_alternative_as_regex() {
+		// Per-pattern fallback: valid `fo+` stays a regex while `bar)` is escaped.
+		let (code, stdout, err) = run_grep(&["-e", "fo+", "-e", "bar)", "-h"], "foooo\nbar)\nbaz\n");
+		assert_eq!(code, 0, "stderr: {err}");
+		assert!(stdout.contains("foooo"), "regex alternative should match: {stdout}");
+		assert!(stdout.contains("bar)"), "literal alternative should match: {stdout}");
+		assert!(!stdout.contains("baz"), "non-matching line leaked: {stdout}");
+	}
+
+	#[test]
+	fn color_flag_is_accepted_and_ignored() {
+		// Regression for #3755: the universal `alias grep='grep --color=auto'`
+		// must not break bare `grep` in shell pipelines.
+		for color in ["--color=auto", "--color=always", "--color=never", "--color", "--colour=auto"] {
+			let (code, stdout, stderr) = run_grep(&[color, "foo"], "foo\nbar\n");
+			assert_eq!(code, 0, "{color}: stderr: {stderr}");
+			assert!(stderr.is_empty(), "{color}: unexpected stderr: {stderr}");
+			assert_eq!(stdout, "foo\n", "{color}: matched lines: {stdout:?}");
+		}
+	}
+
+	#[test]
+	fn version_flag_prints_and_exits_zero() {
+		// `grep --version` is the universal probe shells run; the builtin must
+		// not reject it with exit 2.
+		let (code, stdout, stderr) = run_grep(&["--version"], "");
+		assert_eq!(code, 0, "stderr: {stderr}");
+		assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+		assert!(
+			stdout.contains("grep") && stdout.contains("pi-uu-grep"),
+			"version output should identify the builtin, got: {stdout:?}"
+		);
+	}
+
+	/// Run `grep` with a pre-set cancel flag, mirroring how the shell wrapper
+	/// flips the flag when an abort/timeout fires while the blocking task is
+	/// still walking. Returns `(exit, stdout, stderr)`.
+	fn run_grep_cancelled(args: &[&str], cwd: &Path) -> (i32, String, String) {
+		let out = Arc::new(Mutex::new(Vec::new()));
+		let err = Arc::new(Mutex::new(Vec::new()));
+		let io = ScopeIo {
+			stdin:                 Box::new(io::empty()),
+			stdin_fd:              None,
+			stdin_is_search_input: false,
+			stdout:                Box::new(SharedBuf(Arc::clone(&out))),
+			stderr:                Box::new(SharedBuf(Arc::clone(&err))),
+			cwd:                   cwd.to_path_buf(),
+			env:                   HashMap::new(),
+			cancel:                Arc::new(AtomicBool::new(true)),
+		};
+		let argv: Vec<OsString> = std::iter::once("grep")
+			.chain(args.iter().copied())
+			.map(OsString::from)
+			.collect();
+		let code = scope(io, || run(argv));
+		let stdout = String::from_utf8(out.lock().clone()).expect("utf8 stdout");
+		let stderr = String::from_utf8(err.lock().clone()).expect("utf8 stderr");
+		(code, stdout, stderr)
+	}
+
+	#[test]
+	fn recursive_search_observes_scope_cancellation() {
+		// Regression for #3933: recursive grep used to pass a no-op heartbeat to
+		// pi_walker, so directory walks ignored the uutils cancel flag and the
+		// shell-side abort/timeout waited for the whole tree to be scanned.
+		// The walk must now bail out before scanning any file when the flag is
+		// already set, and it must do so without printing an "interrupted"
+		// diagnostic — the shell wrapper owns the user-visible status.
+		let tree = std::env::temp_dir().join(format!(
+			"pi-uu-grep-cancel-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.map(|d| d.as_nanos())
+				.unwrap_or(0)
+		));
+		std::fs::create_dir_all(&tree).expect("temp tree should be created");
+		let walk_root = tree.join("walk-root");
+		std::fs::create_dir_all(&walk_root).expect("walk root should be created");
+		std::fs::write(walk_root.join("haystack.txt"), "match-me\n")
+			.expect("walked file should be written");
+		let later_file = tree.join("later.txt");
+		std::fs::write(&later_file, "match-me\n").expect("later file should be written");
+
+		let (code, stdout, stderr) = run_grep_cancelled(
+			&[
+				"-r",
+				"match-me",
+				walk_root.to_str().expect("utf8 path"),
+				later_file.to_str().expect("utf8 path"),
+			],
+			&tree,
+		);
+
+		// Walker must have observed the heartbeat before visiting the file,
+		// and the operand loop must not continue into the later regular file
+		// after cancellation is observed.
+		assert!(stdout.is_empty(), "cancelled walk should not output matches: {stdout:?}");
+		assert!(
+			stderr.is_empty(),
+			"cancelled walk should stay silent — diagnostic is the shell's job: {stderr:?}"
+		);
+		assert_eq!(code, 2, "interrupted directory walk should report had_error (exit 2)");
+
+		let _ = std::fs::remove_dir_all(&tree);
 	}
 }

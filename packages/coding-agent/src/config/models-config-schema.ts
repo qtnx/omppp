@@ -128,12 +128,25 @@ const RemoteCompactionSchema = type({
 	"api?": ApiSchema,
 	"endpoint?": "string",
 	"model?": "string",
+	"v2StreamingEnabled?": "boolean",
+	"v2Endpoint?": "string",
+	"streamingEndpoint?": "string",
 }).narrow((value, ctx) => {
 	if (value.endpoint !== undefined && typeof value.endpoint === "string" && value.endpoint.length === 0) {
 		return ctx.mustBe("remoteCompaction.endpoint a non-empty string");
 	}
 	if (value.model !== undefined && typeof value.model === "string" && value.model.length === 0) {
 		return ctx.mustBe("remoteCompaction.model a non-empty string");
+	}
+	if (value.v2Endpoint !== undefined && typeof value.v2Endpoint === "string" && value.v2Endpoint.length === 0) {
+		return ctx.mustBe("remoteCompaction.v2Endpoint a non-empty string");
+	}
+	if (
+		value.streamingEndpoint !== undefined &&
+		typeof value.streamingEndpoint === "string" &&
+		value.streamingEndpoint.length === 0
+	) {
+		return ctx.mustBe("remoteCompaction.streamingEndpoint a non-empty string");
 	}
 	return true;
 });
@@ -274,30 +287,8 @@ const ProviderConfigSchema = type({
 	return true;
 });
 
-const EquivalenceConfigSchema = type({
-	"overrides?": { "[string]": "string" },
-	"exclude?": "string[]",
-}).narrow((value, ctx) => {
-	if (value.overrides !== undefined) {
-		for (const [, v] of Object.entries(value.overrides)) {
-			if (typeof v === "string" && v.length === 0) {
-				return ctx.mustBe("overrides values non-empty strings");
-			}
-		}
-	}
-	if (value.exclude !== undefined && Array.isArray(value.exclude)) {
-		for (const item of value.exclude) {
-			if (typeof item === "string" && item.length === 0) {
-				return ctx.mustBe("exclude items non-empty strings");
-			}
-		}
-	}
-	return true;
-});
-
 export const ModelsConfigSchema = type({
 	"providers?": { "[string]": ProviderConfigSchema },
-	"equivalence?": EquivalenceConfigSchema,
 });
 
 export type ModelsConfig = typeof ModelsConfigSchema.infer;
