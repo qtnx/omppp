@@ -115,6 +115,7 @@ import { resolveOmpCommand, sandboxOmpxCommand } from "../task/omp-command";
 import { formatTaskId } from "../task/render";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { LspStartupServerInfo } from "../tools";
+import { setJobLiveStatsProvider } from "../tools/job";
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
@@ -781,6 +782,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
 		this.#observerRegistry = new SessionObserverRegistry();
+		// Register once: task job ids are subagent ids, so the job renderer can
+		// resolve live progress by looking up the observer session with that id.
+		setJobLiveStatsProvider(
+			jobId => this.#observerRegistry.getSessions().find(session => session.id === jobId)?.progress,
+		);
 	}
 
 	#handleMcpConnectionStatusEvent(event: McpConnectionStatusEvent): void {

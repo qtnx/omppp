@@ -1,13 +1,14 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { formatNumber, prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import type { AsyncJob, AsyncJobManager } from "../async";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../modes/theme/shimmer";
 import type { Theme } from "../modes/theme/theme";
 import jobDescription from "../prompts/tools/job.md" with { type: "text" };
+import type { AgentProgress } from "../task/types";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import type { ToolSession } from "./index";
 import {
@@ -39,6 +40,8 @@ const WAIT_DURATION_MS: Record<string, number> = {
 	"5m": 5 * 60_000,
 };
 
+const POLL_WATCHDOG_DEFAULT_MS = 10 * 60_000;
+
 interface JobSnapshot {
 	id: string;
 	type: "bash" | "task" | "workflow";
@@ -50,6 +53,15 @@ interface JobSnapshot {
 }
 
 type CancelStatus = "cancelled" | "not_found" | "already_completed";
+// InteractiveMode installs this hook so the generic job renderer can sample
+// subagent progress without depending on the session observer registry.
+type JobLiveStatsProvider = (jobId: string) => AgentProgress | undefined;
+
+let jobLiveStatsProvider: JobLiveStatsProvider | undefined;
+
+export function setJobLiveStatsProvider(provider: JobLiveStatsProvider | undefined): void {
+	jobLiveStatsProvider = provider;
+}
 
 interface CancelOutcome {
 	id: string;
@@ -87,6 +99,13 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(jobDescription);
+	}
+
+	#resolvePollWatchdogMs(): number {
+		const value = this.session.settings.get("async.pollWatchdogMs");
+		if (value === 0) return 0;
+		if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return POLL_WATCHDOG_DEFAULT_MS;
+		return value;
 	}
 
 	async execute(
@@ -184,24 +203,44 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		// Wait until at least one running job finishes, pending agent context
 		// arrives, the call is aborted, or a fixed configured window elapses.
 		// `async.pollWaitDuration=block` and unknown/legacy values (including
-		// `smart`) have no timeout and block until another wake condition fires.
-		const racePromises: Promise<unknown>[] = runningJobs.map(j => j.promise);
+		// `smart`) use a watchdog re-check instead of a fixed return timeout.
 		const pollSetting = this.session.settings.get("async.pollWaitDuration");
 		const waitMs: number | undefined = WAIT_DURATION_MS[pollSetting];
+		const isBlockMode = waitMs === undefined;
+		const watchdogMs = isBlockMode ? this.#resolvePollWatchdogMs() : undefined;
 		const { promise: asideWake, resolve: asideWakeResolve } = Promise.withResolvers<void>();
-		racePromises.push(asideWake);
-		let timeoutHandle: NodeJS.Timeout | undefined;
-		if (waitMs !== undefined) {
-			const { promise: timeoutPromise, resolve: timeoutResolve } = Promise.withResolvers<void>();
-			timeoutHandle = setTimeout(() => timeoutResolve(), waitMs);
-			racePromises.push(timeoutPromise);
-		}
+		let asideWoke = false;
+		void asideWake.then(() => {
+			asideWoke = true;
+		});
 
 		const watchedJobIds = runningJobs.map(job => job.id);
 		manager.watchJobs(watchedJobIds);
 
 		const cancelledJobs = this.#visibleJobs(manager, cancelIds, ownerId);
 		const allTrackedJobs = [...cancelledJobs, ...jobsToWatch];
+
+		let waitingCompactionChecked = false;
+		let compactionScheduledDuringWait = false;
+		// A fresh waiting-triggered request should escape this tool call quickly so
+		// the safe turn-end compaction boundary runs before large job results arrive.
+		let breakForCompaction = false;
+		const considerWaitingCompaction = (): void => {
+			if (waitingCompactionChecked) return;
+			const result = this.session.considerCompactionWhileWaiting?.("context heavy while waiting on subagents");
+			if (result?.status === "scheduled" || result?.status === "already-scheduled") {
+				waitingCompactionChecked = true;
+				compactionScheduledDuringWait = result.status === "scheduled";
+				breakForCompaction = result.status === "scheduled";
+			}
+		};
+		considerWaitingCompaction();
+		if (breakForCompaction && watchedJobIds.some(id => manager.getJob(id)?.status === "running")) {
+			// Return the still-running snapshot now; onTurnEnd will consume the fresh
+			// request and compact before the model's next poll.
+			manager.unwatchJobs(watchedJobIds);
+			return this.#buildResult(manager, allTrackedJobs, cancelOutcomes, compactionScheduledDuringWait);
+		}
 
 		const PROGRESS_INTERVAL_MS = 500;
 		const emitProgress = () => {
@@ -228,27 +267,60 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 			asideWakeResolve();
 		}
 
+		const { promise: abortPromise, resolve: abortResolve } = Promise.withResolvers<void>();
+		const onAbort = () => abortResolve();
+		if (signal) {
+			signal.addEventListener("abort", onAbort, { once: true });
+		}
+
+		let timeoutHandle: NodeJS.Timeout | undefined;
 		try {
-			if (signal) {
-				const { promise: abortPromise, resolve: abortResolve } = Promise.withResolvers<void>();
-				const onAbort = () => abortResolve();
-				signal.addEventListener("abort", onAbort, { once: true });
-				racePromises.push(abortPromise);
+			while (true) {
+				const stillRunningJobIds = watchedJobIds.filter(id => manager.getJob(id)?.status === "running");
+				if (stillRunningJobIds.length === 0) break;
+
+				const racePromises: Promise<unknown>[] = stillRunningJobIds
+					.map(id => manager.getJob(id)?.promise)
+					.filter(promise => promise !== undefined);
+				racePromises.push(asideWake);
+				if (signal) racePromises.push(abortPromise);
+
+				const timeoutMs = isBlockMode ? watchdogMs : waitMs;
+				if (timeoutMs !== undefined && timeoutMs > 0) {
+					const { promise: timeoutPromise, resolve: timeoutResolve } = Promise.withResolvers<void>();
+					timeoutHandle = setTimeout(() => timeoutResolve(), timeoutMs);
+					racePromises.push(timeoutPromise);
+				}
+
 				try {
 					await Promise.race(racePromises);
 				} finally {
-					signal.removeEventListener("abort", onAbort);
+					if (timeoutHandle) {
+						clearTimeout(timeoutHandle);
+						timeoutHandle = undefined;
+					}
 				}
-			} else {
-				await Promise.race(racePromises);
+
+				if (signal?.aborted) break;
+				if (asideWoke || this.session.hasPendingAgentAsides?.()) break;
+				if (watchedJobIds.some(id => manager.getJob(id)?.status !== "running")) break;
+				if (!isBlockMode) break;
+				considerWaitingCompaction();
+				if (breakForCompaction && watchedJobIds.some(id => manager.getJob(id)?.status === "running")) {
+					// Break only while a running job remains, preserving normal completed-result
+					// delivery when the race resolved because the watched jobs finished.
+					break;
+				}
 			}
 		} finally {
 			manager.unwatchJobs(watchedJobIds);
 			clearTimeout(timeoutHandle);
 			clearInterval(progressTimer);
+			if (signal) signal.removeEventListener("abort", onAbort);
 		}
 
-		return this.#buildResult(manager, allTrackedJobs, cancelOutcomes);
+		considerWaitingCompaction();
+		return this.#buildResult(manager, allTrackedJobs, cancelOutcomes, compactionScheduledDuringWait);
 	}
 
 	/**
@@ -306,6 +378,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 			errorText?: string;
 		}[],
 		cancelOutcomes: CancelOutcome[],
+		compactionScheduled = false,
 	): AgentToolResult<JobToolDetails> {
 		// Deduplicate by id (cancelled jobs may also appear in the watched set).
 		const seen = new Set<string>();
@@ -322,6 +395,10 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		const running = jobResults.filter(j => j.status === "running");
 
 		const lines: string[] = [];
+		if (compactionScheduled) {
+			// Tell the model this wait snapshot intentionally yielded to the compaction boundary.
+			lines.push("[compaction scheduled while waiting — running at next boundary]", "");
+		}
 
 		if (cancelOutcomes.length > 0) {
 			lines.push(`## Cancelled (${cancelOutcomes.length})\n`);
@@ -537,8 +614,13 @@ export const jobToolRenderer = {
 				// the animation state so a sealed block never hits stale shimmered
 				// bytes (spinnerFrame falls back to 0 on both sides of the seal).
 				const shimmerActive = counts.running > 0 && options.spinnerFrame !== undefined && shimmerEnabled();
+				// Spinner redraws re-enter render(), so live task stats are sampled
+				// there instead of cached, proving a subagent is still doing work.
+				const liveStatsActive =
+					jobLiveStatsProvider !== undefined &&
+					sortedJobs.some(job => job.status === "running" && job.type === "task");
 				const key = new Hasher().bool(expanded).u32(width).u32(spinnerFrame).bool(shimmerActive).digest();
-				if (!shimmerActive && cached?.key === key) return cached.lines;
+				if (!shimmerActive && !liveStatsActive && cached?.key === key) return cached.lines;
 
 				const itemLines = renderTreeList<JobSnapshot>(
 					{
@@ -566,7 +648,15 @@ export const jobToolRenderer = {
 								const last = visibleLabelLines[visibleLabelLines.length - 1]!;
 								visibleLabelLines[visibleLabelLines.length - 1] = `${last} …`;
 							}
-							const durationText = uiTheme.fg("dim", formatDuration(job.durationMs));
+							// Only running task jobs have job ids that map to subagent progress;
+							// bash/workflow/no-progress rows keep their previous byte output.
+							const progress =
+								job.status === "running" && job.type === "task" ? jobLiveStatsProvider?.(job.id) : undefined;
+							const durationMs = progress ? Math.max(job.durationMs, progress.durationMs) : job.durationMs;
+							const durationText = uiTheme.fg("dim", formatDuration(durationMs));
+							// Surface live token IO and rate beside duration so "waiting" rows
+							// show real model activity instead of just an animated spinner.
+							const liveStatsText = progress ? uiTheme.fg("dim", ` ${formatLiveStats(progress)}`) : "";
 							// Running rows in a live block shimmer their label; once the block
 							// stops animating (sealed, or a settled snapshot — spinnerFrame
 							// cleared) they render static so scrollback never keeps a mid-sweep
@@ -578,7 +668,7 @@ export const jobToolRenderer = {
 									? shimmerText(headRaw, uiTheme)
 									: uiTheme.fg("accent", headRaw)
 								: uiTheme.fg("toolOutput", headRaw);
-							lines.push(`${icon}${idPart} ${typeBadge} ${headLabel} ${durationText}`);
+							lines.push(`${icon}${idPart} ${typeBadge} ${headLabel} ${durationText}${liveStatsText}`);
 							for (let i = 1; i < visibleLabelLines.length; i++) {
 								lines.push(`  ${uiTheme.fg("toolOutput", visibleLabelLines[i]!)}`);
 							}
@@ -612,3 +702,20 @@ export const jobToolRenderer = {
 
 	mergeCallAndResult: true,
 };
+
+function formatLiveStats(progress: AgentProgress): string {
+	const durationSeconds = progress.durationMs / 1000;
+	const rate = durationSeconds > 0 ? progress.outputTokens / durationSeconds : 0;
+	const rateText = rate < 10 ? rate.toFixed(1) : Math.round(rate).toString();
+	const inputText = formatLiveTokenCount(progress.inputTokens);
+	const outputText = formatLiveTokenCount(progress.outputTokens);
+	return `↑${inputText} ↓${outputText} ${rateText} tok/s`;
+}
+
+function formatLiveTokenCount(value: number): string {
+	const rounded = Math.max(0, Math.round(value));
+	if (rounded < 1_000) return formatNumber(rounded).toLowerCase();
+	const compact = rounded / 1_000;
+	const digits = compact < 10 ? compact.toFixed(1) : compact.toFixed(1).replace(/\\.0$/, "");
+	return `${digits}k`;
+}
