@@ -1,10 +1,14 @@
+import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+
 export type DuoPhase = "inactive" | "planning" | "executing" | "takeover" | "suspended" | "degraded";
+export type DuoExecutionScope = "single" | "multi";
 export type DuoMode = "auto" | "on" | "off";
-export type TakeoverPurpose = "recover" | "verify";
+export type TakeoverPurpose = "recover" | "plan";
 export type DuoSuspendReason = "set-model-failed" | "unresolvable";
 
 export interface DuoStateSnapshot {
 	phase: DuoPhase;
+	executionScope?: DuoExecutionScope;
 	plannerId?: string;
 	executorId?: string;
 	advisorModelId?: string;
@@ -15,6 +19,8 @@ export interface DuoStateSnapshot {
 	cooldownRemaining: number;
 	suspendReason?: DuoSuspendReason;
 	preDuoThinking?: string;
+	/** Advisor-selected executor effort override that survives duo snapshot resume. */
+	executorThinkingOverride?: ThinkingLevel;
 }
 
 export interface DuoActivationInput {
@@ -28,6 +34,11 @@ export interface DuoActivationInput {
 
 export type TakeoverDecision = "accepted" | "cooldown-advice" | "rejected";
 
+export interface TakeoverRequestOptions {
+	/** Strong automatic signal: skip the recover cooldown gate. Max consecutive still applies. */
+	bypassCooldown?: boolean;
+}
+
 interface DuoConfig {
 	cooldownTurns: number;
 	maxConsecutive: number;
@@ -39,14 +50,17 @@ export class DuoStateMachine {
 
 	constructor(config: DuoConfig, restored?: DuoStateSnapshot) {
 		this.#config = config;
-		this.#state = restored
-			? structuredClone(restored)
-			: {
-					phase: "inactive",
-					takeoverCount: 0,
-					consecutiveTakeovers: 0,
-					cooldownRemaining: 0,
-				};
+		this.#state = {
+			...(restored
+				? structuredClone(restored)
+				: {
+						phase: "inactive",
+						takeoverCount: 0,
+						consecutiveTakeovers: 0,
+						cooldownRemaining: 0,
+					}),
+			executionScope: restored?.executionScope ?? "multi",
+		};
 	}
 
 	get snapshot(): DuoStateSnapshot {
@@ -57,22 +71,38 @@ export class DuoStateMachine {
 		return this.#state.phase;
 	}
 
+	get executionScope(): DuoExecutionScope {
+		return this.#state.executionScope ?? "multi";
+	}
+
 	evaluateActivation(input: DuoActivationInput): DuoPhase {
 		const nextPhase = activationPhase(input);
+		const keepsSingleScopeAutoActive =
+			input.mode === "auto" &&
+			this.#state.executionScope === "single" &&
+			input.plannerResolvable &&
+			input.executorResolvable;
 		if (this.#state.phase === "degraded") {
-			this.#state.phase = canActivate(input) ? "executing" : "inactive";
+			this.#state.phase = canActivate(input) || keepsSingleScopeAutoActive ? "executing" : "inactive";
 			return this.#state.phase;
 		}
 		if (this.#state.phase === "inactive") {
 			this.#state.phase = nextPhase;
+			if (this.#state.phase === "planning") {
+				this.#state.executionScope = "multi";
+			}
 			return this.#state.phase;
 		}
 
 		if (this.#state.phase === "planning" || this.#state.phase === "executing") {
-			if (nextPhase === "inactive") {
+			if (nextPhase === "inactive" && !keepsSingleScopeAutoActive) {
 				this.#state.phase = "inactive";
 				this.#state.takeoverPurpose = undefined;
 				this.#state.suspendReason = undefined;
+				this.#state.executionScope = "multi";
+			}
+			if (this.#state.phase === "planning") {
+				this.#state.executionScope = "multi";
 			}
 			return this.#state.phase;
 		}
@@ -85,16 +115,20 @@ export class DuoStateMachine {
 			return false;
 		}
 		this.#state.phase = "executing";
+		this.#state.executionScope = "multi";
 		return true;
 	}
 
-	onHandoffToExecutor(): boolean {
+	onHandoffToExecutor(scope?: DuoExecutionScope): boolean {
 		if (this.#state.phase !== "planning" && this.#state.phase !== "takeover") {
 			return false;
 		}
 
 		const fromTakeover = this.#state.phase === "takeover";
 		this.#state.phase = "executing";
+		if (scope !== undefined) {
+			this.#state.executionScope = scope;
+		}
 		this.#state.takeoverPurpose = undefined;
 		if (fromTakeover) {
 			this.#state.cooldownRemaining = Math.max(0, Math.trunc(this.#config.cooldownTurns));
@@ -102,9 +136,24 @@ export class DuoStateMachine {
 		return true;
 	}
 
+	applyExecutionScope(scope: DuoExecutionScope): void {
+		this.#state.executionScope = scope;
+	}
+
 	/** Plan mode re-entered while executing: hand the main stream back to the
 	 *  planner. Not a takeover — counters and cooldown are untouched. */
 	onReplanRequested(): boolean {
+		if (this.#state.phase !== "executing") {
+			return false;
+		}
+		this.#state.phase = "planning";
+		this.#state.executionScope = "multi";
+		this.#state.takeoverPurpose = undefined;
+		return true;
+	}
+
+	/** Advisor/user prompt takeover for fresh planning; unlike recover takeover, counters and cooldown stay untouched. */
+	onPlanTakeoverRequested(): boolean {
 		if (this.#state.phase !== "executing") {
 			return false;
 		}
@@ -130,11 +179,11 @@ export class DuoStateMachine {
 		return "accepted";
 	}
 
-	onTakeoverRequested(purpose: TakeoverPurpose): TakeoverDecision {
+	onTakeoverRequested(purpose: TakeoverPurpose, options?: TakeoverRequestOptions): TakeoverDecision {
 		if (this.#state.consecutiveTakeovers >= this.#config.maxConsecutive) {
 			return "rejected";
 		}
-		if (purpose === "recover" && this.#state.cooldownRemaining > 0) {
+		if (purpose === "recover" && this.#state.cooldownRemaining > 0 && !options?.bypassCooldown) {
 			return "cooldown-advice";
 		}
 		if (this.#state.phase !== "executing") {
@@ -177,6 +226,9 @@ export class DuoStateMachine {
 		this.#state.suspendReason = undefined;
 		this.#state.takeoverPurpose = undefined;
 		this.#state.phase = activationPhase(input);
+		if (this.#state.phase === "planning") {
+			this.#state.executionScope = "multi";
+		}
 		return this.#state.phase;
 	}
 
@@ -184,6 +236,8 @@ export class DuoStateMachine {
 		this.#state.phase = "inactive";
 		this.#state.suspendReason = undefined;
 		this.#state.takeoverPurpose = undefined;
+		this.#state.executionScope = "multi";
+		this.#state.executorThinkingOverride = undefined;
 	}
 
 	#suspend(reason: DuoSuspendReason): void {
@@ -216,5 +270,5 @@ function canActivate(input: DuoActivationInput): boolean {
 	if (input.mode === "on") {
 		return true;
 	}
-	return input.orchestratorEnabled || input.mainModelKind === "fable";
+	return input.orchestratorEnabled || input.mainModelKind === "fable" || input.mainModelKind === "opus";
 }

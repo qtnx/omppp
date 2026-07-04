@@ -38,6 +38,7 @@ import { setTransports as setLoggerTransports } from "@oh-my-pi/pi-utils/logger"
 import { $ } from "bun";
 import chalk from "chalk";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
+import { startCredentialWatcher } from "../session/credential-watcher";
 
 export type AuthBrokerAction = "serve" | "token" | "login" | "logout" | "status" | "import" | "migrate" | "list";
 
@@ -131,12 +132,27 @@ async function runServe(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	const store = await SqliteAuthCredentialStore.open(dbPath);
 	const storage = new AuthStorage(store);
 	await storage.reload();
-	const handle = startAuthBroker({
-		storage,
-		bind,
-		bearerTokens: [token],
-		version: VERSION,
+	const credentialWatcher = startCredentialWatcher({
+		authStorage: storage,
+		dbPath,
+		onError: error => {
+			logger.warn("auth-broker credential watcher error", { dbPath, error: String(error) });
+		},
 	});
+	const handle = (() => {
+		try {
+			return startAuthBroker({
+				storage,
+				bind,
+				bearerTokens: [token],
+				version: VERSION,
+			});
+		} catch (error) {
+			credentialWatcher.stop();
+			storage.close();
+			throw error;
+		}
+	})();
 	logger.info("auth-broker listening", { url: handle.url });
 	logger.info("auth-broker bearer token loaded", { path: getTokenFilePath(), mode: "0600" });
 
@@ -146,6 +162,7 @@ async function runServe(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 
 	const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
 		logger.info("auth-broker shutting down", { signal });
+		credentialWatcher.stop();
 		credentialDisabledUnsub();
 		await handle.close();
 		storage.close();

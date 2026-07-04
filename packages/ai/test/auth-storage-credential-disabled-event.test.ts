@@ -41,6 +41,12 @@ class MemoryAuthCredentialStore implements AuthCredentialStore {
 		return this.#rows.filter(row => row.disabledCause === null && (!provider || row.provider === provider));
 	}
 
+	allAuthCredentials(provider?: string): StoredAuthCredential[] {
+		// Test-only visibility into disabled rows proves pool-wide teardown does
+		// not hide behind listAuthCredentials' active-row filter.
+		return this.#rows.filter(row => !provider || row.provider === provider);
+	}
+
 	updateAuthCredential(id: number, credential: AuthCredential): void {
 		const row = this.#rows.find(entry => entry.id === id);
 		if (row) row.credential = credential;
@@ -157,6 +163,79 @@ describe("AuthStorage credential_disabled subscriptions", () => {
 			expect(events).toHaveLength(1);
 			expect(events[0]?.provider).toBe("anthropic");
 			expect(events[0]?.disabledCause).toContain("invalid_grant");
+		});
+
+		test("keeps credential active when OAuth refresh fails with a bare token-endpoint 401", async () => {
+			const events: CredentialDisabledEvent[] = [];
+			const authStorage = openStorage({
+				onCredentialDisabled: event => {
+					events.push(event);
+				},
+			});
+			await authStorage.set("anthropic", [expiredOAuth()]);
+			// Regression: a bare 401 body mirrors the Anthropic refresh-path string,
+			// but lacks invalid_grant, so it must not soft-delete the row.
+			failOAuthRefresh(
+				'OAuthError: Anthropic token refresh request failed. url=https://api.anthropic.com/v1/oauth/token; details=ProviderHttpError: HTTP request failed. status=401; url=https://api.anthropic.com/v1/oauth/token; body={"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}}',
+			);
+
+			await authStorage.getApiKey("anthropic", "session-bare-401-failure");
+
+			expect(events).toHaveLength(0);
+			expect(authStorage.list()).toContain("anthropic");
+		});
+
+		test("does not sweep-disable a credential pool on transient 401s but disables one invalid_grant", async () => {
+			const store = new MemoryAuthCredentialStore();
+			stores.push(store);
+			const authStorage = new AuthStorage(store);
+			const credentials = [1, 2, 3].map(
+				(index): AuthCredential => ({
+					...expiredOAuth(),
+					access: `expired-access-${index}`,
+					refresh: `stale-refresh-${index}`,
+					accountId: `account-${index}`,
+				}),
+			);
+			await authStorage.set("anthropic", credentials);
+			const transient401 =
+				'OAuthError: Anthropic token refresh request failed. details=ProviderHttpError: HTTP request failed. status=401; url=https://api.anthropic.com/v1/oauth/token; body={"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}}';
+			// A provider-wide transient 401 wave must not soft-delete any member of
+			// the OAuth credential pool.
+			const refreshSpy = vi.spyOn(oauthUtils, "refreshOAuthToken").mockImplementation(async () => {
+				throw new Error(transient401);
+			});
+
+			for (const row of [...store.listAuthCredentials("anthropic")]) {
+				await expect(authStorage.forceRefreshCredentialById(row.id)).rejects.toThrow(transient401);
+			}
+
+			expect(store.listAuthCredentials("anthropic")).toHaveLength(3);
+			expect(store.listAuthCredentials("anthropic").filter(row => row.disabledCause !== null)).toHaveLength(0);
+
+			const target = store.listAuthCredentials("anthropic")[1];
+			expect(target).toBeDefined();
+			const targetCredential = target?.credential;
+			expect(targetCredential?.type).toBe("oauth");
+			refreshSpy.mockImplementation(async (_provider, credential) => {
+				// Only the selected row receives a dead-grant response; peers stay active.
+				if (targetCredential?.type === "oauth" && credential.refresh === targetCredential.refresh) {
+					throw new Error('HTTP 400 invalid_grant {"error":"invalid_grant"}');
+				}
+				throw new Error(transient401);
+			});
+
+			await expect(authStorage.forceRefreshCredentialById(target!.id)).rejects.toThrow("invalid_grant");
+
+			const allRows = store.allAuthCredentials("anthropic");
+			const disabledRows = allRows.filter(row => row.disabledCause !== null);
+			const activeRows = store.listAuthCredentials("anthropic");
+			expect(allRows).toHaveLength(3);
+			expect(disabledRows).toHaveLength(1);
+			expect(disabledRows[0]?.id).toBe(target!.id);
+			expect(disabledRows[0]?.disabledCause).toContain("invalid_grant");
+			expect(activeRows).toHaveLength(2);
+			expect(activeRows.map(row => row.id)).not.toContain(target!.id);
 		});
 
 		test("does not fire for transient (non-definitive) refresh failures", async () => {

@@ -376,6 +376,11 @@ describe("session resume — workspace roots", () => {
 				"async.enabled": false,
 				"bash.autoBackground.enabled": false,
 				"bashInterceptor.enabled": false,
+				// This resume test asserts workspace-root tool routing only. The
+				// advisor done gate intentionally adds a QA-reminder continuation after
+				// completion claims with tool mutations, which would consume an
+				// unrelated fourth mock response here.
+				"advisor.doneGate": false,
 			});
 			registerMockApi();
 			const scriptedModel = createMockModel({

@@ -33,6 +33,7 @@ import { countTokens } from "../tokenizer";
 import type { AgentMessage } from "../types";
 import {
 	buildCompactionV2Request,
+	type CompactionProgressUpdate,
 	getCompactionV2PreserveData,
 	requestCompactionV2Streaming,
 	shouldUseCompactionV2Streaming,
@@ -729,6 +730,13 @@ export interface SummaryOptions {
 	/** Optional fetch implementation threaded into remote compaction calls. */
 	fetch?: FetchImpl;
 	/**
+	 * Live progress sink for streamed V2 remote compaction. Invoked (cumulative)
+	 * from the SSE read-loop so hosts can render an indeterminate progress
+	 * indicator. Only the V2 streaming path emits it — V1 `/responses/compact`
+	 * and local summarization intentionally leave it unset.
+	 */
+	onProgress?: (u: CompactionProgressUpdate) => void;
+	/**
 	 * Optional completion transport override for host-level request wrappers
 	 * (e.g. the coding-agent provider-concurrency limiter). When provided,
 	 * every local summarization oneshot (`generateSummary`,
@@ -1292,6 +1300,8 @@ export async function compact(
 		promptCacheKey: options?.promptCacheKey,
 		tools: options?.tools,
 		fetch: options?.fetch,
+		// Preserve the caller's streaming progress callback through the summaryOptions rebuild.
+		onProgress: options?.onProgress,
 		completeImpl: options?.completeImpl,
 	};
 
@@ -1349,7 +1359,11 @@ export async function compact(
 				);
 				const remote = await withAuth(
 					apiKey,
-					key => requestCompactionV2Streaming(model, key, request, signal, { fetch: summaryOptions.fetch }),
+					key =>
+						requestCompactionV2Streaming(model, key, request, signal, {
+							fetch: summaryOptions.fetch,
+							onProgress: summaryOptions.onProgress,
+						}),
 					{ signal },
 				);
 				preserveData = { ...(preserveData ?? {}), ...storeCompactionV2PreserveData(remote, model) };

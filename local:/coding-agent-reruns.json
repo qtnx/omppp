@@ -1,0 +1,14 @@
+[
+  {
+    "file": "test/bash-executor.test.ts",
+    "status": 0,
+    "signal": null,
+    "log": "/var/tmp/coding-agent-sweep-WqzHNM/rerun-test_bash-executor.test.ts.log"
+  },
+  {
+    "file": "test/sdk-mcp-discovery.test.ts",
+    "status": 1,
+    "signal": null,
+    "log": "/var/tmp/coding-agent-sweep-WqzHNM/rerun-test_sdk-mcp-discovery.test.ts.log"
+  }
+]

@@ -19,7 +19,8 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../irc/bus";
 import type { Theme } from "../modes/theme/theme";
 import ircDescription from "../prompts/tools/irc.md" with { type: "text" };
-import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { type AgentRef, type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { SessionManager } from "../session/session-manager";
 import { canSpawnAtDepth } from "../task/types";
 import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import type { ToolSession } from ".";
@@ -34,6 +35,8 @@ import {
 } from "./render-utils";
 
 const DEFAULT_IRC_TIMEOUT_MS = 120_000;
+// Bound each blocking wait so agents can reassess instead of sleeping forever.
+const IRC_MAX_WAIT_MS = 600_000;
 
 /**
  * IRC availability: there must be someone to chat with. True for every
@@ -58,7 +61,9 @@ const ircSchema = type({
 	"awaitReply?": type("boolean").describe("send: legacy alias for await"),
 	"await?": type("boolean").describe('send: wait for the recipient\'s reply (invalid with to:"all")'),
 	"from?": type("string").describe("wait: only accept a message from this agent id"),
-	"timeoutMs?": type("number").describe("wait: timeout in milliseconds (0 waits indefinitely)"),
+	"timeoutMs?": type("number").describe(
+		"wait: timeout in milliseconds (0 = one max window (10m); re-issue wait to keep waiting)",
+	),
 	"peek?": type("boolean").describe("inbox: list messages without consuming them"),
 });
 
@@ -188,7 +193,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		const bus = IrcBus.global();
 		const peers = registry
 			.list()
-			.filter(ref => ref.id !== senderId && ref.status !== "aborted" && ref.kind !== "advisor")
+			.filter(ref => ref.id !== senderId && ref.ircEnabled && ref.status !== "aborted" && ref.kind !== "advisor")
 			.map(ref => ({
 				id: ref.id,
 				displayName: ref.displayName,
@@ -251,6 +256,35 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			});
 		}
 
+		// Fail before bus delivery/wake: a direct target without the irc tool is mute,
+		// including parked refs and custom agents cold-revived from disk.
+		const disabledDirectTarget = !isBroadcast ? registry.get(to) : undefined;
+		await refreshDirectTargetIrcCapability(disabledDirectTarget);
+		if (disabledDirectTarget && !disabledDirectTarget.ircEnabled) {
+			const receipt: IrcDeliveryReceipt = {
+				to,
+				outcome: "failed",
+				error: "agent has no irc tool and cannot reply",
+			};
+			return {
+				content: [
+					{
+						type: "text",
+						text: `No recipients received the message.\n- ${to}: failed — ${receipt.error}`,
+					},
+				],
+				details: {
+					op: "send",
+					from: senderId,
+					to,
+					receipts: [receipt],
+					delivered: [],
+					notFound: [to],
+				},
+				isError: true,
+			};
+		}
+
 		const bus = IrcBus.global();
 		let waited: IrcMessage | null | undefined;
 		const timeoutMs = shouldAwaitReply ? this.#resolveTimeoutMs(params) : undefined;
@@ -282,6 +316,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			}
 		}
 
+		if (shouldAwaitReply) this.session.enterSubagentWait?.();
 		try {
 			// Broadcasts fan out to live peers only (running | idle); reviving every
 			// parked agent on a broadcast would be a stampede. Direct sends go
@@ -317,7 +352,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 				lines.push(
 					receipt.outcome === "failed"
 						? `- ${receipt.to}: failed — ${receipt.error ?? "unknown error"}`
-						: `- ${receipt.to}: ${receipt.outcome}`,
+						: `- ${receipt.to}: ${receiptLabel(receipt)}`,
 				);
 			}
 
@@ -371,6 +406,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 				isError: delivered.length === 0 && targets.length > 0,
 			};
 		} finally {
+			if (shouldAwaitReply) this.session.exitSubagentWait?.();
 			awaitAbort?.abort(awaitCancelled);
 			removeAwaitAbortListener?.();
 		}
@@ -379,11 +415,22 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 	async #executeWait(senderId: string, params: IrcParams, signal?: AbortSignal): Promise<AgentToolResult<IrcDetails>> {
 		const from = params.from?.trim() || undefined;
 		const timeoutMs = this.#resolveTimeoutMs(params);
-		const waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal);
+		this.session.enterSubagentWait?.();
+		let waited: IrcMessage | null;
+		try {
+			waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal);
+		} finally {
+			this.session.exitSubagentWait?.();
+		}
 		if (!waited) {
 			const filterNote = from ? ` from ${from}` : "";
 			return {
-				content: [{ type: "text", text: `No message${filterNote} within ${formatDuration(timeoutMs)}.` }],
+				content: [
+					{
+						type: "text",
+						text: `No message${filterNote} within ${formatDuration(timeoutMs)}; re-issue \`irc wait\` to keep waiting.`,
+					},
+				],
 				details: { op: "wait", from: senderId, waited: null },
 				// A clean wait timeout carries no information once consumed.
 				useless: true,
@@ -435,12 +482,39 @@ function errorResult(text: string, details: IrcDetails): AgentToolResult<IrcDeta
 	};
 }
 
-function normalizeIrcTimeoutMs(value: number): number {
-	if (value === 0) return 0; // 0 = timeout disabled
+export function normalizeIrcTimeoutMs(value: number): number {
+	if (value === 0) return IRC_MAX_WAIT_MS;
 	// Negative or non-finite settings are misconfigurations — fall back to the
 	// default instead of producing an instant 1 ms timeout.
 	if (!Number.isFinite(value) || value < 0) return DEFAULT_IRC_TIMEOUT_MS;
+	if (value > IRC_MAX_WAIT_MS) return IRC_MAX_WAIT_MS;
 	return Math.max(1, Math.trunc(value));
+}
+
+function refreshLiveDirectTargetIrcCapability(ref: AgentRef | undefined): void {
+	if (!ref || ref.ircEnabled || !ref.session) return;
+	const session = ref.session as { getActiveToolNames?: () => string[] };
+	const activeToolNames = typeof session.getActiveToolNames === "function" ? session.getActiveToolNames() : [];
+	if (activeToolNames.includes("irc")) {
+		ref.ircEnabled = true;
+	}
+}
+
+async function refreshDirectTargetIrcCapability(ref: AgentRef | undefined): Promise<void> {
+	if (!ref) return;
+	if (ref.session) {
+		refreshLiveDirectTargetIrcCapability(ref);
+		return;
+	}
+	await refreshPersistedDirectTargetIrcCapability(ref);
+}
+
+// Parked custom agents may have no live session to advertise tools; peek the
+// persisted session_init so non-irc agents fail fast instead of waking mute.
+async function refreshPersistedDirectTargetIrcCapability(ref: AgentRef | undefined): Promise<void> {
+	if (ref?.status !== "parked" || ref.session || !ref.sessionFile) return;
+	const peek = await SessionManager.peekSessionInit(ref.sessionFile);
+	ref.ircEnabled = Array.isArray(peek?.init?.tools) ? peek.init.tools.includes("irc") : false;
 }
 
 // =============================================================================
@@ -459,17 +533,27 @@ function ircGlyph(theme: Theme): string {
 	return theme.styledSymbol("tool.irc", "accent");
 }
 
-function outcomeColor(outcome: IrcDeliveryReceipt["outcome"]): ToolUIColor {
+// Legacy persisted receipts can still say "revived"; current receipts keep
+// outcome "woken" with a revived flag, and this safe color/label path prevents
+// old transcripts from tripping Unknown theme color.
+function outcomeColor(outcome: IrcDeliveryReceipt["outcome"] | string): ToolUIColor {
 	switch (outcome) {
 		case "woken":
 			return "success";
-		case "revived":
-			return "warning";
 		case "injected":
 			return "accent";
 		case "failed":
 			return "error";
+		case "revived":
+			return "warning";
+		default:
+			return "warning";
 	}
+}
+
+function receiptLabel(receipt: IrcDeliveryReceipt): string {
+	const outcome = String(receipt.outcome);
+	return receipt.revived && outcome !== "revived" ? `${outcome} (revived)` : outcome;
 }
 
 /** Glyph + status word, matching the agent-hub status conventions. */
@@ -634,7 +718,7 @@ function renderSendResult(
 	if (to === "all") meta.push("broadcast");
 	if (receipts.length === 1) {
 		const receipt = receipts[0]!;
-		meta.push(theme.fg(outcomeColor(receipt.outcome), receipt.outcome));
+		meta.push(theme.fg(outcomeColor(receipt.outcome), receiptLabel(receipt)));
 	} else {
 		if (delivered.length > 0) meta.push(theme.fg("success", `${delivered.length} delivered`));
 		if (failedCount > 0) meta.push(theme.fg("error", `${failedCount} failed`));
@@ -660,7 +744,7 @@ function renderSendResult(
 					maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
 					itemType: "recipient",
 					renderItem: receipt => {
-						const badge = formatBadge(receipt.outcome, outcomeColor(receipt.outcome), theme);
+						const badge = formatBadge(receiptLabel(receipt), outcomeColor(receipt.outcome), theme);
 						const error =
 							receipt.outcome === "failed" && receipt.error
 								? ` ${theme.fg("error", `${theme.format.dash} ${receipt.error}`)}`

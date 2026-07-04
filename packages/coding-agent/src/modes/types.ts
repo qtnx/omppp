@@ -27,6 +27,7 @@ import type { LspStartupServerInfo } from "../tools";
 import type { EventBus } from "../utils/event-bus";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
+import type { CompactionProgressComponent } from "./components/compaction-progress";
 import type { CustomEditor } from "./components/custom-editor";
 import type { EvalExecutionComponent } from "./components/eval-execution";
 import type { HookEditorComponent } from "./components/hook-editor";
@@ -191,6 +192,10 @@ export interface InteractiveModeContext {
 	lastAssistantUsage: Usage | undefined;
 	loadingAnimation: Loader | undefined;
 	autoCompactionLoader: Loader | undefined;
+	// Live compaction progress overlay (indeterminate bar + timer + token counter);
+	// replaces the plain Loader for the compaction status. Nulled on end/abort to
+	// avoid leaking the handle (mirrors autoCompactionLoader lifecycle).
+	autoCompactionProgress: CompactionProgressComponent | undefined;
 	retryLoader: Loader | undefined;
 	autoCompactionEscapeHandler?: () => void;
 	retryEscapeHandler?: () => void;

@@ -35,6 +35,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import type { DuoMode } from "../duo/state";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
+import type { AuthStorage } from "../session/auth-storage";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -1079,6 +1080,49 @@ export function resolveAgentModelPatterns(options: AgentModelPatternResolutionOp
 	return resolveConfiguredModelPatterns(fallback, settings);
 }
 
+export function selectHeadroomAwareModelPatterns(
+	patterns: string[],
+	deps: { authStorage?: AuthStorage; registry?: ModelRegistry; settings: Settings },
+): string[] {
+	if (
+		patterns.length <= 1 ||
+		!deps.authStorage ||
+		!deps.registry ||
+		deps.settings.get("task.limitAwareModelRouting") === false
+	) {
+		return patterns;
+	}
+
+	let available: Model<Api>[];
+	try {
+		available = deps.registry.getAvailable();
+	} catch {
+		return patterns;
+	}
+	const utilizationMax = deps.settings.get("task.modelRoutingUtilizationMax");
+	const windowMode = deps.settings.get("task.modelRoutingWindowMode");
+
+	const patternsWithHeadroom: string[] = [];
+	const patternsWithoutHeadroom: string[] = [];
+
+	for (const pattern of patterns) {
+		try {
+			const model = resolveModelFromString(pattern, available, undefined);
+			// Unknown model patterns stay optimistic so new/catalog-missing models can still be tried downstream.
+			if (!model || deps.authStorage.getUsageHeadroom(model, { utilizationMax, windowMode }).hasRoom) {
+				patternsWithHeadroom.push(pattern);
+			} else {
+				patternsWithoutHeadroom.push(pattern);
+			}
+		} catch {
+			// Headroom routing is advisory; fail open so resolver or telemetry errors never block a spawn.
+			patternsWithHeadroom.push(pattern);
+		}
+	}
+
+	return [...patternsWithHeadroom, ...patternsWithoutHeadroom];
+}
+
 /**
  * Resolve a model role value into a concrete model and thinking metadata.
  */
@@ -1348,13 +1392,23 @@ export function resolveAdvisorRoleSelection(
 
 export interface DuoResolvedConfig {
 	mode: DuoMode;
+	orchestrator: "auto" | "always";
 	planner: Model;
 	plannerThinking: ConfiguredThinkingLevel;
 	executor: Model;
 	executorThinking: ConfiguredThinkingLevel;
+	advisorPromptReview: boolean;
 	cooldownTurns: number;
 	maxConsecutive: number;
 	doneGate: "strict" | "inherit";
+	manualSwitchIntent: "plan" | "summon";
+	signals: {
+		enabled: boolean;
+		sentiment: boolean;
+		failureThreshold: number;
+		loopThreshold: number;
+		planningNeeded: boolean;
+	};
 }
 
 function compareAnthropicVersion(
@@ -1428,6 +1482,8 @@ export function resolveDuoConfig(
 	);
 	if (!planner || !executor) return undefined;
 
+	const orchestrator = settings.get("duo.orchestrator");
+
 	return {
 		mode: settings.get("duo.mode"),
 		planner: planner.model,
@@ -1437,10 +1493,20 @@ export function resolveDuoConfig(
 		executorThinking:
 			executor.thinkingLevel ??
 			parseConfiguredThinkingLevel(settings.get("duo.executorThinking")) ??
-			ThinkingLevel.Max,
+			ThinkingLevel.High,
+		advisorPromptReview: settings.get("duo.advisorPromptReview"),
 		cooldownTurns: settings.get("duo.takeover.cooldownTurns"),
 		maxConsecutive: settings.get("duo.takeover.maxConsecutive"),
 		doneGate: settings.get("duo.doneGate"),
+		orchestrator: orchestrator === "always" ? "always" : "auto",
+		manualSwitchIntent: settings.get("duo.manualSwitchIntent"),
+		signals: {
+			enabled: settings.get("duo.takeover.signals.enabled"),
+			sentiment: settings.get("duo.takeover.signals.sentiment"),
+			failureThreshold: settings.get("duo.takeover.signals.failureThreshold"),
+			loopThreshold: settings.get("duo.takeover.signals.loopThreshold"),
+			planningNeeded: settings.get("duo.takeover.signals.planningNeeded"),
+		},
 	};
 }
 

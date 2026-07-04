@@ -6,7 +6,7 @@ import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
-import type { DuoHandoffResult, DuoStatus } from "../duo";
+import type { DuoExecutionScope, DuoHandoffResult, DuoStatus } from "../duo";
 import { DuoEscalateTool, DuoHandoffTool } from "../duo";
 import { EditTool } from "../edit";
 import { checkJuliaKernelAvailability } from "../eval/jl/kernel";
@@ -155,6 +155,13 @@ export type {
 export type ToolCompactionRequest =
 	| { status: "scheduled" }
 	| { status: "already-scheduled" }
+	| { status: "unavailable"; detail: string };
+
+/** Threshold check result for compaction considered while a tool is blocking. */
+export type ToolWaitingCompactionCheck =
+	| { status: "scheduled" }
+	| { status: "already-scheduled" }
+	| { status: "not-needed" }
 	| { status: "unavailable"; detail: string };
 
 /** Scheduling result of an agent-initiated shake request (the `shake` tool). */
@@ -354,6 +361,12 @@ export interface ToolSession {
 	getTodoPhases?: () => TodoPhase[];
 	/** Replace cached todo phases for this session. */
 	setTodoPhases?: (phases: TodoPhase[]) => void;
+	/** Append a durable custom branch entry for tool-owned session state. */
+	appendCustomEntry?: (customType: string, data?: unknown) => string;
+	/** Mark the session as blocked inside a subagent wait tool. */
+	enterSubagentWait?: () => void;
+	/** Release a prior subagent wait marker, flushing held steering at depth zero. */
+	exitSubagentWait?: () => void;
 	/** Whether MCP tool discovery is active for this session. */
 	isMCPDiscoveryEnabled?: () => boolean;
 	/** Get MCP tools activated by prior search_tool_bm25 calls. */
@@ -427,6 +440,8 @@ export interface ToolSession {
 	queueDeferredMessage?(message: CustomMessage): void;
 	/** Request a compaction at the next turn boundary. Returns scheduling status. */
 	requestCompaction?(reason: string): ToolCompactionRequest;
+	/** Check whether blocking waits should schedule compaction at the next turn boundary. */
+	considerCompactionWhileWaiting?(reason: string): ToolWaitingCompactionCheck;
 	/** Request a context shake at the next turn boundary. Returns scheduling status. */
 	requestShake?(mode: ShakeMode): ToolShakeRequest;
 	/** Request the macOS sandbox supervisor to relaunch this session with extra sandbox allowlist roots. */
@@ -454,10 +469,12 @@ export interface ToolSession {
 	 * Used by the `consult` tool.
 	 */
 	consultAdvisor?: (question: string, signal?: AbortSignal) => Promise<string | null>;
+	/** Fire-and-forget consult; advisor answers later through its advice channel. */
+	consultAdvisorAsync?: (question: string) => boolean;
 	/** Whether an advisor runtime is currently live for this session. */
 	isAdvisorActive?: () => boolean;
 	/** Handoff an approved duo planner/takeover turn back to the executor. */
-	duoHandoffToExecutor?: (resolution: string) => Promise<DuoHandoffResult>;
+	duoHandoffToExecutor?: (resolution: string, scope?: DuoExecutionScope) => Promise<DuoHandoffResult>;
 	/** Escalate an executor turn back to the duo planner. */
 	duoEscalateToPlanner?: (reason: string) => Promise<"ok" | "unavailable">;
 }
@@ -533,8 +550,8 @@ export function filterInitialToolsForDiscoveryAll(
 export const BUILTIN_TOOLS: Record<BuiltinToolName | "sandbox", ToolFactory> = {
 	orchestrator_mode: s => new OrchestratorModeTool(s),
 	duo_handoff: s =>
-		new DuoHandoffTool(async resolution => {
-			return (await s.duoHandoffToExecutor?.(resolution)) ?? "no-controller";
+		new DuoHandoffTool(async (resolution, scope) => {
+			return (await s.duoHandoffToExecutor?.(resolution, scope)) ?? "no-controller";
 		}),
 	duo_escalate: s => new DuoEscalateTool(async reason => (await s.duoEscalateToPlanner?.(reason)) ?? "unavailable"),
 	read: s => new ReadTool(s),

@@ -82,6 +82,17 @@ export interface CompactionV2Response {
 	retainedImageCount: number;
 }
 
+/**
+ * Live progress emitted while the V2 SSE compaction stream is read. The
+ * provider gives no completion percentage or total, so callers must render an
+ * INDETERMINATE indicator — only cumulative event/byte counters are available.
+ */
+export interface CompactionProgressUpdate {
+	events: number; // cumulative count of dispatched SSE data events
+	bytes: number; // cumulative decoded SSE payload bytes
+	estTokens?: number; // rough estimate ~ Math.ceil(bytes / 4)
+}
+
 // ============================================================================
 // Endpoint Resolution
 // ============================================================================
@@ -219,6 +230,8 @@ export async function requestCompactionV2Streaming(
 		fetch?: FetchImpl;
 		timeoutMs?: number;
 		retryWait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+		// Live SSE progress sink for an indeterminate compaction indicator.
+		onProgress?: (u: CompactionProgressUpdate) => void;
 	},
 ): Promise<CompactionV2Response> {
 	const endpoint = getCompactionV2Endpoint(model);
@@ -233,7 +246,15 @@ export async function requestCompactionV2Streaming(
 	for (let attempt = 0; attempt <= V2_COMPACTION_MAX_RETRIES; attempt++) {
 		const timeoutSignal = withRequestTimeout(signal, options?.timeoutMs ?? V2_COMPACTION_TIMEOUT_MS);
 		try {
-			return await attemptCompactionV2Streaming(endpoint, apiKey, model, request, fetchImpl, timeoutSignal);
+			return await attemptCompactionV2Streaming(
+				endpoint,
+				apiKey,
+				model,
+				request,
+				fetchImpl,
+				timeoutSignal,
+				options?.onProgress,
+			);
 		} catch (err) {
 			const error = err instanceof Error ? err : new Error(String(err));
 			if (signal?.aborted) throw error;
@@ -264,6 +285,8 @@ async function attemptCompactionV2Streaming(
 	request: CompactionV2Request,
 	fetchImpl: FetchImpl,
 	signal?: AbortSignal,
+	// Forwarded to the SSE read-loop so each dispatched event reports progress.
+	onProgress?: (u: CompactionProgressUpdate) => void,
 ): Promise<CompactionV2Response> {
 	// Faithful to Codex: append the compaction trigger as the final input item
 	// of an otherwise-normal Responses request, then stream the result. `store`
@@ -304,7 +327,7 @@ async function attemptCompactionV2Streaming(
 		);
 	}
 
-	return collectCompactionV2Output(response, request);
+	return collectCompactionV2Output(response, request, onProgress);
 }
 
 function buildCompactionV2Headers(model: Model, apiKey: string, request: CompactionV2Request): Record<string, string> {
@@ -346,6 +369,8 @@ function buildCompactionV2Headers(model: Model, apiKey: string, request: Compact
 async function collectCompactionV2Output(
 	response: Response,
 	request: CompactionV2Request,
+	// Invoked once per dispatched SSE data event with cumulative counters.
+	onProgress?: (u: CompactionProgressUpdate) => void,
 ): Promise<CompactionV2Response> {
 	const reader = response.body?.getReader();
 	if (!reader) {
@@ -365,12 +390,23 @@ async function collectCompactionV2Output(
 		let eventName: string | undefined;
 		let dataLines: string[] = [];
 
+		// Progress counters for an indeterminate live indicator: bump once per
+		// dispatched SSE data event and accumulate decoded payload bytes.
+		let progressEvents = 0;
+		let progressBytes = 0;
+
 		const dispatch = (): void => {
 			if (dataLines.length === 0) {
 				eventName = undefined;
 				return;
 			}
-			handleCompactionV2SseEvent(dataLines.join("\n"), eventName, state);
+			const payload = dataLines.join("\n");
+			handleCompactionV2SseEvent(payload, eventName, state);
+			// Count the dispatched event and add its decoded payload byte length,
+			// then report cumulative progress (no total/percentage available).
+			progressEvents++;
+			progressBytes += Buffer.byteLength(payload, "utf8");
+			onProgress?.({ events: progressEvents, bytes: progressBytes, estTokens: Math.ceil(progressBytes / 4) });
 			eventName = undefined;
 			dataLines = [];
 		};

@@ -331,20 +331,20 @@ describe("formatSessionHistoryMarkdown advisor feed options", () => {
 			includeThinking: true,
 			renderThinking: text => `[[${text.toUpperCase()}]]`,
 		});
-		expect(output).toContain("_thinking:_ [[RAW PRIVATE REASONING]]");
-		expect(output).not.toContain("_thinking:_ raw private reasoning");
+		expect(output).toContain("_notes:_ [[RAW PRIVATE REASONING]]");
+		expect(output).not.toContain("_notes:_ raw private reasoning");
 	});
 
 	it("renders thinking verbatim when renderThinking is absent", () => {
 		const output = formatSessionHistoryMarkdown(thinkingMessages(), { includeThinking: true });
-		expect(output).toContain("_thinking:_ raw private reasoning");
+		expect(output).toContain("_notes:_ raw private reasoning");
 	});
 
 	it("does not render thinking at all by default (renderThinking is inert without includeThinking)", () => {
 		const output = formatSessionHistoryMarkdown(thinkingMessages(), {
 			renderThinking: () => "SHOULD-NOT-APPEAR",
 		});
-		expect(output).not.toContain("_thinking:_");
+		expect(output).not.toContain("_notes:_");
 		expect(output).not.toContain("SHOULD-NOT-APPEAR");
 	});
 

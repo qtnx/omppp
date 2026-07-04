@@ -23,6 +23,34 @@ function withIcon(icon: string, text: string): string {
 	return icon ? `${icon} ${text}` : text;
 }
 
+export interface StatusLinePathRootOverrides {
+	displayRoots?: readonly string[];
+	scratchRoots?: readonly string[];
+}
+
+let statusLinePathRootOverrides: StatusLinePathRootOverrides | null = null;
+
+export function __setStatusLinePathRootOverridesForTests(overrides: StatusLinePathRootOverrides | null): void {
+	statusLinePathRootOverrides = overrides;
+}
+
+function getScratchRoots(): readonly string[] {
+	if (statusLinePathRootOverrides?.scratchRoots) return statusLinePathRootOverrides.scratchRoots;
+	const roots = [os.tmpdir(), path.join(os.homedir(), "tmp")];
+	if (process.platform === "win32") {
+		const { TEMP, TMP, SystemRoot } = process.env;
+		if (TEMP) roots.push(TEMP);
+		if (TMP) roots.push(TMP);
+		if (SystemRoot) roots.push(path.join(SystemRoot, "Temp"));
+	} else {
+		roots.push("/tmp", "/var/tmp");
+		if (process.platform === "darwin") {
+			roots.push("/private/tmp", "/private/var/tmp");
+		}
+	}
+	return roots;
+}
+
 /** Left-truncate a path/label to `maxLen`, prefixing an ellipsis when clipped. */
 function clampPathLength(pwd: string, maxLen: number): string {
 	if (pwd.length <= maxLen) return pwd;
@@ -41,7 +69,7 @@ function thinkingGlyph(display: string): string {
 }
 
 function stripDisplayRoot(pwd: string): string {
-	for (const root of [path.join(os.homedir(), "Projects"), "/work"]) {
+	for (const root of statusLinePathRootOverrides?.displayRoots ?? [path.join(os.homedir(), "Projects"), "/work"]) {
 		const relative = relativePathWithinRoot(root, pwd);
 		if (relative) return relative;
 	}
@@ -116,26 +144,8 @@ function formatPrStatus(pr: NonNullable<SegmentContext["git"]["pr"]>): string | 
 	return state === "OPEN" ? "open" : null;
 }
 
-const SCRATCH_ROOTS: readonly string[] = (() => {
-	const roots = new Set<string>([os.tmpdir(), path.join(os.homedir(), "tmp")]);
-	if (process.platform === "win32") {
-		const { TEMP, TMP, SystemRoot } = process.env;
-		if (TEMP) roots.add(TEMP);
-		if (TMP) roots.add(TMP);
-		if (SystemRoot) roots.add(path.join(SystemRoot, "Temp"));
-	} else {
-		roots.add("/tmp");
-		roots.add("/var/tmp");
-		if (process.platform === "darwin") {
-			roots.add("/private/tmp");
-			roots.add("/private/var/tmp");
-		}
-	}
-	return [...roots];
-})();
-
 function classifyProjectDir(pwd: string): { scratch: boolean; relative: string | null } {
-	for (const root of SCRATCH_ROOTS) {
+	for (const root of getScratchRoots()) {
 		if (pathIsWithin(root, pwd)) {
 			return { scratch: true, relative: relativePathWithinRoot(root, pwd) };
 		}

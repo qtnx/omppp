@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a streamed V2 remote-compaction progress callback (`SummaryOptions.onProgress` / `CompactionProgressUpdate`) that reports cumulative SSE event and decoded-byte counts as compaction runs, enabling hosts to render an indeterminate live progress indicator. Only the V2 streaming path emits it; V1 and local summarization are unchanged.
+
 ## [16.3.3] - 2026-07-02
 
 ### Changed

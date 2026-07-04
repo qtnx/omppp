@@ -1,7 +1,7 @@
 ---
 name: browser_qa
 description: Browser QA specialist that executes UI/E2E test cases against a running app and reports per-case PASS/FAIL with evidence
-tools: browser, read, grep, glob, bash
+tools: browser, read, grep, glob, bash, irc
 model: pi/task
 thinking-level: medium
 output:

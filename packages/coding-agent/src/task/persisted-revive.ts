@@ -60,6 +60,9 @@ export function createPersistedSubagentReviverFactory(
 			return undefined;
 		}
 		const init = peek.init;
+		// Persisted session_init is the revive-time source of truth: only agents
+		// recorded with the irc tool may be woken by IRC.
+		ref.ircEnabled = Array.isArray(init.tools) && init.tools.includes("irc");
 		// taskDepth drives real capability gating (task-spawn allowance, memory
 		// startup, …); derive it from the persisted parent chain rather than
 		// assuming a fixed level.

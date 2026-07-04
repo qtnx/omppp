@@ -18,7 +18,7 @@ import { getProviderDefinition, PASTE_CODE_LOGIN_PROVIDERS } from "./registry";
 import { getOAuthApiKey, getOAuthProvider, refreshOAuthToken } from "./registry/oauth";
 import type { OAuthController, OAuthCredentials, OAuthProvider, OAuthProviderId } from "./registry/oauth/types";
 import { getEnvApiKey, getEnvApiKeyName } from "./stream";
-import type { Provider } from "./types";
+import type { Api, Model, Provider } from "./types";
 import type {
 	CredentialRankingContext,
 	CredentialRankingStrategy,
@@ -27,12 +27,14 @@ import type {
 	UsageCredential,
 	UsageFetchContext,
 	UsageFetchParams,
+	UsageHeadroom,
 	UsageHistoryEntry,
 	UsageHistoryQuery,
 	UsageLimit,
 	UsageLogger,
 	UsageProvider,
 	UsageReport,
+	UsageWindowKind,
 } from "./usage";
 import { resolveUsedFraction } from "./usage";
 import { claudeRankingStrategy, claudeUsageProvider } from "./usage/claude";
@@ -52,6 +54,18 @@ import { opencodeGoUsageProvider } from "./usage/opencode-go";
 import { zaiUsageProvider } from "./usage/zai";
 
 const USAGE_RANKING_METRIC_EPSILON = 1e-9;
+
+/**
+ * Advisory model-headroom probes stay cache-first and side-effect-light:
+ * 1. all stored credentials blocked for the model's block scope => no room;
+ * 2. any non-stale scoped cached usage window exhausted => that credential has no room;
+ * 3. scoped cached usage windows must be strictly below this utilization (PLAN.md D2).
+ *
+ * Missing reports, missing scoped limits, providers without a ranking strategy,
+ * and broker `null` reports are optimistic; only credential blocks fire before
+ * live requests, and live 429 handling remains on the request/retry path.
+ */
+const HEADROOM_UTILIZATION_MAX = 0.5;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Credential Types
@@ -614,6 +628,34 @@ interface UsageCache {
 	cleanup?(): void;
 }
 
+type UsageHeadroomWindow = {
+	kind: UsageWindowKind;
+	usedFraction?: number;
+	resetsAt?: number;
+	exhausted: boolean;
+};
+
+type UsageHeadroomBlock = {
+	kind: UsageWindowKind;
+	usedFraction?: number;
+	resetAtMs?: number;
+	windows: UsageHeadroomWindow[];
+};
+
+function chooseEarlierUsageHeadroomBlock(
+	current: UsageHeadroomBlock | undefined,
+	candidate: UsageHeadroomBlock,
+): UsageHeadroomBlock {
+	if (!current) return candidate;
+	if (
+		candidate.resetAtMs !== undefined &&
+		(current.resetAtMs === undefined || candidate.resetAtMs < current.resetAtMs)
+	) {
+		return candidate;
+	}
+	return current;
+}
+
 type UsageRequestDescriptor = {
 	provider: Provider;
 	credential: UsageCredential;
@@ -623,6 +665,7 @@ type UsageRequestDescriptor = {
 type AuthApiKeyOptions = {
 	baseUrl?: string;
 	modelId?: string;
+	timeoutMs?: number;
 	/**
 	 * Caller's cancel signal. Threaded into any broker-bound OAuth refresh so
 	 * `ESC` / request abort actually kills a hung broker fetch instead of
@@ -2733,6 +2776,22 @@ export class AuthStorage {
 		return false;
 	}
 
+	/** PLAN.md D4: classify quota windows by duration first, then provider id conventions. */
+	#classifyUsageWindow(limit: UsageLimit): UsageWindowKind {
+		const durationMs = limit.window?.durationMs;
+		if (typeof durationMs === "number" && Number.isFinite(durationMs)) {
+			const fiveHoursMs = 18_000_000;
+			const weeklyMs = 604_800_000;
+			if (Math.abs(durationMs - fiveHoursMs) <= fiveHoursMs * 0.2) return "5h";
+			if (Math.abs(durationMs - weeklyMs) <= weeklyMs * 0.2) return "weekly";
+		}
+
+		const id = limit.id.toLowerCase();
+		if (id.includes("5h") || id.includes(":primary")) return "5h";
+		if (id.includes("7d") || id.includes("week") || id.includes(":secondary")) return "weekly";
+		return "other";
+	}
+
 	/** Return the usage limits that apply to the requested model for this strategy. */
 	#getScopedUsageLimits(
 		strategy: CredentialRankingStrategy,
@@ -3112,6 +3171,174 @@ export class AuthStorage {
 	}
 
 	/**
+	 * Synchronous, advisory headroom probe for model routing. It reuses the same
+	 * model-scoped ranking strategy and credential backoff buckets as OAuth
+	 * selection, but never resolves/mints tokens or waits on usage fetches.
+	 */
+	getUsageHeadroom(model: Model<Api>, opts?: { utilizationMax?: number; windowMode?: "all" | "any" }): UsageHeadroom {
+		const provider = model.provider;
+		const rankingContext: CredentialRankingContext = { modelId: model.id };
+		const strategy = this.#rankingStrategyResolver?.(provider);
+		const utilizationMax =
+			typeof opts?.utilizationMax === "number" && Number.isFinite(opts.utilizationMax)
+				? opts.utilizationMax
+				: HEADROOM_UTILIZATION_MAX;
+		const windowMode = opts?.windowMode === "any" ? "any" : "all";
+		// PLAN.md D8: explicit API-key overrides shadow stored OAuth rows, so their headroom is optimistic.
+		if (this.#runtimeOverrides.get(provider) || this.#configOverrides.get(provider)) {
+			return { hasRoom: true };
+		}
+		const credentials = this.#getCredentialsForProvider(provider).map((credential, index) => ({ credential, index }));
+
+		if (credentials.length === 0) return { hasRoom: true };
+
+		const nowMs = Date.now();
+		let blockedCount = 0;
+		let credentialResetAtMs: number | undefined;
+		let exhaustedBlock: UsageHeadroomBlock | undefined;
+		let utilizationBlock: UsageHeadroomBlock | undefined;
+		let lastWindows: UsageHeadroomWindow[] | undefined;
+
+		for (const { credential, index } of credentials) {
+			const providerKey = this.#getProviderTypeKey(provider, credential.type);
+			const blockScope = credential.type === "oauth" ? this.#getBlockScope(strategy, rankingContext) : undefined;
+			const blockedUntil = this.#getCredentialBlockedUntil(providerKey, index, blockScope);
+			if (blockedUntil !== undefined) {
+				blockedCount += 1;
+				if (credentialResetAtMs === undefined || blockedUntil < credentialResetAtMs) {
+					credentialResetAtMs = blockedUntil;
+				}
+				continue;
+			}
+
+			// PLAN.md D8: non-OAuth credentials and providers without ranking strategies stay fail-open.
+			if (credential.type !== "oauth" || !strategy) return { hasRoom: true };
+
+			const report = this.#getUsageReportCacheFirst(provider, credential, {
+				timeoutMs: this.#usageRequestTimeoutMs,
+			});
+			// PLAN.md D8: cache miss, broker null report, or no scoped rows cannot block routing.
+			if (!report) return { hasRoom: true };
+
+			const scopedLimits = this.#getScopedUsageLimits(strategy, report, rankingContext);
+			if (scopedLimits.length === 0) return { hasRoom: true };
+
+			const windows: UsageHeadroomWindow[] = [];
+			const primaryWindowStates: Array<{ blocked: boolean; block?: UsageHeadroomBlock }> = [];
+			const otherWindowStates: Array<{ blocked: boolean; block?: UsageHeadroomBlock }> = [];
+			let credentialExhaustedBlock: UsageHeadroomBlock | undefined;
+			let credentialAllModeBlock: UsageHeadroomBlock | undefined;
+
+			for (const limit of scopedLimits) {
+				const kind = this.#classifyUsageWindow(limit);
+				// PLAN.md D7: report every evaluated window with normalized usage when available.
+				const usedFraction = resolveUsedFraction(limit);
+				const hasUsedFraction = typeof usedFraction === "number" && Number.isFinite(usedFraction);
+				const resetsAt =
+					typeof limit.window?.resetsAt === "number" && Number.isFinite(limit.window.resetsAt)
+						? limit.window.resetsAt
+						: undefined;
+				// PLAN.md D6: stale windows are treated as already reset and excluded from blocking.
+				const stale = resetsAt !== undefined && resetsAt <= nowMs;
+				const window: UsageHeadroomWindow = { kind, exhausted: stale ? false : this.#isUsageLimitExhausted(limit) };
+				if (hasUsedFraction) window.usedFraction = usedFraction;
+				if (resetsAt !== undefined) window.resetsAt = resetsAt;
+				windows.push(window);
+
+				if (stale) {
+					// PLAN.md D6: stale reset windows are nonblocking but still satisfy any-mode.
+					const state: { blocked: boolean } = { blocked: false };
+					if (kind === "other") {
+						otherWindowStates.push(state);
+					} else {
+						primaryWindowStates.push(state);
+					}
+					continue;
+				}
+
+				const block: UsageHeadroomBlock = { kind, windows };
+				if (window.usedFraction !== undefined) block.usedFraction = window.usedFraction;
+				if (resetsAt !== undefined) block.resetAtMs = resetsAt;
+
+				// PLAN.md D5: a non-stale exhausted scoped window is a hard gate in every mode.
+				if (window.exhausted) {
+					credentialExhaustedBlock = chooseEarlierUsageHeadroomBlock(credentialExhaustedBlock, block);
+					continue;
+				}
+
+				// PLAN.md D2: strict threshold, so room exists only while usage is below utilizationMax.
+				const blockedByUtilization = hasUsedFraction && usedFraction >= utilizationMax;
+				if (blockedByUtilization) {
+					credentialAllModeBlock = chooseEarlierUsageHeadroomBlock(credentialAllModeBlock, block);
+				}
+				const state: { blocked: boolean; block?: UsageHeadroomBlock } = { blocked: blockedByUtilization };
+				if (blockedByUtilization) state.block = block;
+				if (kind === "other") {
+					otherWindowStates.push(state);
+				} else {
+					primaryWindowStates.push(state);
+				}
+			}
+
+			lastWindows = windows;
+
+			if (credentialExhaustedBlock) {
+				exhaustedBlock = chooseEarlierUsageHeadroomBlock(exhaustedBlock, credentialExhaustedBlock);
+				continue;
+			}
+
+			let credentialUtilizationBlock: UsageHeadroomBlock | undefined;
+			if (windowMode === "all") {
+				// PLAN.md D1: default all-mode blocks if any classified non-stale window reaches the threshold.
+				credentialUtilizationBlock = credentialAllModeBlock;
+			} else {
+				// PLAN.md D1: any-mode only fails when every relevant 5h/weekly window blocks; others are fallback-only.
+				const relevantStates = primaryWindowStates.length > 0 ? primaryWindowStates : otherWindowStates;
+				if (relevantStates.length > 0 && relevantStates.every(state => state.blocked)) {
+					for (const state of relevantStates) {
+						if (state.block) {
+							credentialUtilizationBlock = chooseEarlierUsageHeadroomBlock(
+								credentialUtilizationBlock,
+								state.block,
+							);
+						}
+					}
+				}
+			}
+			if (credentialUtilizationBlock) {
+				utilizationBlock = chooseEarlierUsageHeadroomBlock(utilizationBlock, credentialUtilizationBlock);
+				continue;
+			}
+
+			return { hasRoom: true, windows };
+		}
+
+		if (blockedCount === credentials.length) {
+			const result: UsageHeadroom = { hasRoom: false, reason: "credential-blocked" };
+			if (credentialResetAtMs !== undefined) result.resetAtMs = credentialResetAtMs;
+			return result;
+		}
+		if (exhaustedBlock) {
+			const result: UsageHeadroom = { hasRoom: false, reason: "window-exhausted", window: exhaustedBlock.kind };
+			if (exhaustedBlock.resetAtMs !== undefined) result.resetAtMs = exhaustedBlock.resetAtMs;
+			if (lastWindows && lastWindows.length > 0) result.windows = lastWindows;
+			return result;
+		}
+		if (utilizationBlock) {
+			const result: UsageHeadroom = {
+				hasRoom: false,
+				reason: "window-utilization",
+				window: utilizationBlock.kind,
+			};
+			if (utilizationBlock.resetAtMs !== undefined) result.resetAtMs = utilizationBlock.resetAtMs;
+			if (lastWindows && lastWindows.length > 0) result.windows = lastWindows;
+			return result;
+		}
+
+		return { hasRoom: true };
+	}
+
+	/**
 	 * Marks the current session's credential as temporarily blocked due to usage limits.
 	 * Uses usage reports to determine accurate reset time when available.
 	 * Returns whether a sibling credential is available now; when none is, also
@@ -3435,6 +3662,58 @@ export class AuthStorage {
 	}
 
 	/**
+	 * Keep sticky probes in acquisition parity with #rankOAuthSelections. If the
+	 * gate yields on usage data the ranker will not also see and hard-block, the
+	 * re-pin step restores the sticky credential and the session ranks every
+	 * request without switching.
+	 */
+	async #getStickyProbeUsageReport(
+		provider: Provider,
+		credential: OAuthCredential,
+		options?: AuthApiKeyOptions,
+	): Promise<UsageReport | null> {
+		const cached = this.#getUsageReportCacheFirst(provider, credential, options);
+		if (cached) return cached;
+		if (provider === "anthropic" && options?.modelId) return this.#getUsageReport(provider, credential, options);
+		return null;
+	}
+
+	/** Read-only sticky probe: only yields when sticky exhaustion matches the ranker hard-block predicate. */
+	async #stickyCredentialShouldYield(
+		provider: string,
+		providerKey: string,
+		stickyIndex: number,
+		credentials: { credential: OAuthCredential; index: number }[],
+		strategy: CredentialRankingStrategy,
+		rankingContext: CredentialRankingContext,
+		blockScope: string | undefined,
+		options?: AuthApiKeyOptions,
+	): Promise<boolean> {
+		const sticky = credentials.find(selection => selection.index === stickyIndex);
+		if (!sticky) return false;
+		const stickyReport = await this.#getStickyProbeUsageReport(provider, sticky.credential, {
+			...options,
+			timeoutMs: this.#usageRequestTimeoutMs,
+		});
+		if (!stickyReport) return false;
+		const stickyLimits = this.#getScopedUsageLimits(strategy, stickyReport, rankingContext);
+		if (!this.#isUsageLimitReached(stickyLimits)) return false;
+
+		for (const selection of credentials) {
+			if (selection.index === stickyIndex) continue;
+			if (this.#isCredentialBlocked(providerKey, selection.index, blockScope)) continue;
+			const siblingReport = await this.#getStickyProbeUsageReport(provider, selection.credential, {
+				...options,
+				timeoutMs: this.#usageRequestTimeoutMs,
+			});
+			if (!siblingReport) return true;
+			const siblingLimits = this.#getScopedUsageLimits(strategy, siblingReport, rankingContext);
+			if (!this.#isUsageLimitReached(siblingLimits)) return true;
+		}
+		return false;
+	}
+
+	/**
 	 * Resolves an OAuth credential, trying credentials in priority order.
 	 * Skips blocked credentials and checks usage limits for providers with usage data.
 	 * Falls back to earliest-unblocking credential if all are blocked.
@@ -3463,13 +3742,32 @@ export class AuthStorage {
 		const checkUsage = strategy !== undefined && (credentials.length > 1 || requiresProModel);
 		const sessionCredential = this.#getSessionCredential(provider, sessionId);
 		const sessionPreferredIndex = sessionCredential?.type === "oauth" ? sessionCredential.index : undefined;
+		const stickyShouldYield =
+			checkUsage &&
+			strategy !== undefined &&
+			sessionId !== undefined &&
+			sessionPreferredIndex !== undefined &&
+			(await this.#stickyCredentialShouldYield(
+				provider,
+				providerKey,
+				sessionPreferredIndex,
+				credentials,
+				strategy,
+				rankingContext,
+				blockScope,
+				options,
+			));
 		// Skip ranking only when the session already has a working preferred credential — re-ranking
 		// mid-session causes account switches that cold-start the server-side prompt cache. New sessions
 		// (no preference) and sessions whose preferred is blocked still rank, so we pick the account
-		// with the most headroom proactively and fall back intelligently when rate-limited.
+		// with the most headroom proactively and fall back intelligently when rate-limited. Keep this
+		// sticky-yield predicate exactly as strict as the ranker's hard-block predicate
+		// (#isUsageLimitReached): a looser utilization threshold would rank every request while the
+		// ranker leaves the sticky unblocked, letting the re-pin block restore it and busy-loop forever.
 		const sessionPreferredIsAvailable =
 			sessionPreferredIndex !== undefined &&
-			!this.#isCredentialBlocked(providerKey, sessionPreferredIndex, blockScope);
+			!this.#isCredentialBlocked(providerKey, sessionPreferredIndex, blockScope) &&
+			!stickyShouldYield;
 		const shouldRank = checkUsage && (!sessionPreferredIsAvailable || requiresProModel);
 		const rankingOrder = shouldRank && sessionId ? credentials.map((_credential, index) => index) : order;
 		const candidates = shouldRank
@@ -4951,15 +5249,33 @@ type SerializedCredentialRecord = {
 const AUTH_SCHEMA_VERSION = 5;
 const SQLITE_NOW_EPOCH = "CAST(strftime('%s','now') AS INTEGER)";
 
+function getSqliteErrorCode(err: unknown): string | undefined {
+	if (err === null || typeof err !== "object" || !("code" in err)) return undefined;
+	return typeof err.code === "string" ? err.code : undefined;
+}
+
 /**
  * SQLite's busy result code family — base `SQLITE_BUSY` plus the extended
  * variants `SQLITE_BUSY_RECOVERY` (concurrent WAL recovery), `SQLITE_BUSY_SNAPSHOT`,
  * and `SQLITE_BUSY_TIMEOUT`. All warrant the same backoff-and-retry treatment.
  */
 export function isSqliteBusyError(err: unknown): boolean {
-	if (err === null || typeof err !== "object") return false;
-	const code = (err as { code?: unknown }).code;
-	return typeof code === "string" && code.startsWith("SQLITE_BUSY");
+	return getSqliteErrorCode(err)?.startsWith("SQLITE_BUSY") ?? false;
+}
+
+// Keep the IOERR side narrow: broad `SQLITE_IOERR*` retry would mask fatal
+// extended codes such as `SQLITE_IOERR_CORRUPTFS` instead of surfacing them.
+const TRANSIENT_SQLITE_IOERR_CODES = new Set([
+	"SQLITE_IOERR_FSTAT",
+	"SQLITE_IOERR_READ",
+	"SQLITE_IOERR_WRITE",
+	"SQLITE_IOERR_SHORT_READ",
+	"SQLITE_IOERR_LOCK",
+]);
+
+export function isSqliteTransientError(err: unknown): boolean {
+	const code = getSqliteErrorCode(err);
+	return isSqliteBusyError(err) || (code !== undefined && TRANSIENT_SQLITE_IOERR_CODES.has(code));
 }
 
 function normalizeStoredAccountId(accountId: string | null | undefined): string | null {
@@ -5158,9 +5474,9 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	#updateUsageHistoryStmt: Statement;
 	#closed = false;
 
-	constructor(db: Database) {
+	constructor(db: Database, dbPath?: string) {
 		this.#db = db;
-		this.#initializeSchema();
+		this.#initializeSchema(dbPath);
 
 		this.#listActiveStmt = this.#db.prepare(
 			"SELECT id, provider, credential_type, data, disabled_cause, identity_key FROM auth_credentials WHERE disabled_cause IS NULL ORDER BY id ASC",
@@ -5233,11 +5549,13 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 
 		// Concurrent omp startups can race against WAL recovery and the schema
 		// init's first lock-taking statement. Bun's default `busy_timeout` is 0,
-		// so retry the open on `SQLITE_BUSY` / `SQLITE_BUSY_RECOVERY` with bounded
+		// so retry the open on transient SQLite lock/I/O failures with bounded
 		// exponential backoff before surfacing the failure. See issue #2421.
+		// Schema-init IOERRs such as WAL `FSTAT` get a fresh Database handle on
+		// retry; anything outside the transient allowlist still fails immediately.
 		const maxAttempts = 4;
 		const baseDelayMs = 100;
-		let lastBusyError: Error | undefined;
+		let lastTransientError: Error | undefined;
 		for (let attempt = 0; attempt < maxAttempts; attempt++) {
 			let db: Database | undefined;
 			try {
@@ -5247,44 +5565,60 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 				} catch {
 					// Ignore chmod failures (e.g., Windows)
 				}
-				return new SqliteAuthCredentialStore(db);
+				return new SqliteAuthCredentialStore(db, dbPath);
 			} catch (err) {
 				db?.close();
-				if (!isSqliteBusyError(err)) {
+				if (!isSqliteTransientError(err)) {
 					throw err;
 				}
-				lastBusyError = err instanceof Error ? err : new Error(String(err));
+				lastTransientError = err instanceof Error ? err : new Error(String(err));
 				if (attempt < maxAttempts - 1) {
 					await Bun.sleep(baseDelayMs * 2 ** attempt);
 				}
 			}
 		}
 		throw new AIError.ConfigurationError(
-			`Failed to open auth database at '${dbPath}' after ${maxAttempts} attempts: ${lastBusyError?.message}`,
-			{ cause: lastBusyError },
+			`Failed to open auth database at '${dbPath}' after ${maxAttempts} attempts: ${lastTransientError?.message}`,
+			{ cause: lastTransientError },
 		);
 	}
 
-	#initializeSchema(): void {
+	#initializeSchema(dbPath?: string): void {
 		// Install the busy handler BEFORE any lock-taking statement (incl.
 		// `PRAGMA journal_mode=WAL`, which acquires an exclusive lock during WAL
 		// recovery). Without this, concurrent omp startups can crash here with
-		// `SQLITE_BUSY` / `SQLITE_BUSY_RECOVERY`. See issue #2421.
+		// `SQLITE_BUSY` / `SQLITE_BUSY_RECOVERY`. Keep WAL mode out of the DDL
+		// batch so schema creation cannot be skipped if the journal-mode
+		// transition completes differently from ordinary DDL. Some temporary
+		// filesystems reject WAL writes; in that case reopen the connection in
+		// the default journal mode so schema creation starts from a clean handle.
+		// See issue #2421.
 		this.#db.run("PRAGMA busy_timeout = 5000");
-		this.#db.run(`
-			PRAGMA journal_mode=WAL;
-			PRAGMA synchronous=NORMAL;
-			CREATE TABLE IF NOT EXISTS auth_schema_version (
+		try {
+			this.#db.run("PRAGMA journal_mode=WAL");
+		} catch (err) {
+			if (!(err && typeof err === "object" && "code" in err && err.code === "SQLITE_IOERR_WRITE" && dbPath)) {
+				throw err;
+			}
+			this.#db.close();
+			this.#db = new Database(dbPath);
+			this.#db.run("PRAGMA busy_timeout = 5000");
+		}
+		this.#db.run("PRAGMA synchronous=NORMAL");
+		// Run WAL/synchronous pragmas before DDL so a journal-mode transition
+		// cannot make later table creation in a shared batch disappear.
+		const ddlStatements = [
+			`CREATE TABLE IF NOT EXISTS auth_schema_version (
 				id INTEGER PRIMARY KEY CHECK (id = 1),
 				version INTEGER NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS cache (
+			)`,
+			`CREATE TABLE IF NOT EXISTS cache (
 				key TEXT PRIMARY KEY,
 				value TEXT NOT NULL,
 				expires_at INTEGER NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache(expires_at);
-			CREATE TABLE IF NOT EXISTS usage_history (
+			)`,
+			"CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache(expires_at)",
+			`CREATE TABLE IF NOT EXISTS usage_history (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				recorded_at INTEGER NOT NULL,
 				provider TEXT NOT NULL,
@@ -5297,18 +5631,21 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 				used_fraction REAL,
 				status TEXT,
 				resets_at INTEGER
-			);
-			CREATE INDEX IF NOT EXISTS idx_usage_history_series ON usage_history(provider, account_key, limit_id, recorded_at);
-			CREATE TABLE IF NOT EXISTS usage_cost_history (
+			)`,
+			"CREATE INDEX IF NOT EXISTS idx_usage_history_series ON usage_history(provider, account_key, limit_id, recorded_at)",
+			`CREATE TABLE IF NOT EXISTS usage_cost_history (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				recorded_at INTEGER NOT NULL,
 				provider TEXT NOT NULL,
 				account_key TEXT NOT NULL,
 				cost_usd REAL NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS idx_usage_cost_history_lookup ON usage_cost_history(provider, account_key, recorded_at);
-			CREATE INDEX IF NOT EXISTS idx_usage_history_recorded ON usage_history(recorded_at);
-		`);
+			)`,
+			"CREATE INDEX IF NOT EXISTS idx_usage_cost_history_lookup ON usage_cost_history(provider, account_key, recorded_at)",
+			"CREATE INDEX IF NOT EXISTS idx_usage_history_recorded ON usage_history(recorded_at)",
+		];
+		for (const statement of ddlStatements) {
+			this.#db.run(statement);
+		}
 
 		if (!this.#authCredentialsTableExists()) {
 			this.#createAuthCredentialsTable();

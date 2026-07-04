@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { type Api, Effort, type Model } from "@oh-my-pi/pi-ai";
+import { type Api, type AuthStorage, Effort, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
+import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import {
 	type CanonicalModelRegistry,
 	expandRoleAlias,
@@ -17,6 +18,7 @@ import {
 	resolveModelOverride,
 	resolveModelRoleValue,
 	resolveModelScope,
+	selectHeadroomAwareModelPatterns,
 } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 
@@ -1717,5 +1719,154 @@ describe("effort-tier variant aliases", () => {
 	test("consumed X-thinking twins resolve via the grammar fallback", () => {
 		expect(parseModelPattern("venice/kimi-k2-thinking", variantModels).model?.id).toBe("kimi-k2");
 		expect(parseModelPattern("kimi-k2-thinking", variantModels).model?.id).toBe("kimi-k2");
+	});
+});
+
+describe("selectHeadroomAwareModelPatterns", () => {
+	const fableModel = buildModel({
+		id: "claude-fable-5",
+		name: "Claude Fable 5",
+		api: "anthropic-messages",
+		provider: "anthropic",
+		baseUrl: "https://api.anthropic.com",
+		reasoning: true,
+		thinking: {
+			mode: "budget",
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High],
+		},
+		input: ["text", "image"],
+		cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+		contextWindow: 200000,
+		maxTokens: 8192,
+	});
+	const routingModels: Model<Api>[] = [fableModel, openaiGpt55Models[0], mockModels[0]];
+	const registry = {
+		getAvailable: () => routingModels,
+	} as unknown as ModelRegistry;
+	const enabledSettings = Settings.isolated({ "task.limitAwareModelRouting": true });
+	const patterns = ["anthropic/claude-fable-5:low", "openai/gpt-5.5:high", "anthropic/claude-sonnet-4-5"];
+	type HeadroomRoutingOptions = { utilizationMax?: number; windowMode?: "all" | "any" };
+
+	function createHeadroomAuthStorage(
+		hasRoomByModelId: Readonly<Record<string, boolean>> = {},
+		calls?: Array<{ modelId: string; opts: HeadroomRoutingOptions | undefined }>,
+	): AuthStorage {
+		return {
+			getUsageHeadroom: (model: Model<Api>, opts?: HeadroomRoutingOptions) => {
+				calls?.push({ modelId: model.id, opts });
+				return { hasRoom: hasRoomByModelId[model.id] ?? true };
+			},
+		} as unknown as AuthStorage;
+	}
+
+	test("returns configured order unchanged by default when limit-aware routing is not enabled", () => {
+		const result = selectHeadroomAwareModelPatterns(patterns, {
+			authStorage: createHeadroomAuthStorage({ "claude-fable-5": false }),
+			registry,
+			settings: Settings.isolated(),
+		});
+
+		expect(result).toEqual(["anthropic/claude-fable-5:low", "openai/gpt-5.5:high", "anthropic/claude-sonnet-4-5"]);
+	});
+
+	test("returns configured order unchanged without auth storage", () => {
+		const result = selectHeadroomAwareModelPatterns(patterns, { registry, settings: enabledSettings });
+
+		expect(result).toEqual(["anthropic/claude-fable-5:low", "openai/gpt-5.5:high", "anthropic/claude-sonnet-4-5"]);
+	});
+
+	test("returns configured order unchanged without a registry", () => {
+		const result = selectHeadroomAwareModelPatterns(patterns, {
+			authStorage: createHeadroomAuthStorage({ "claude-fable-5": false }),
+			settings: enabledSettings,
+		});
+
+		expect(result).toEqual(["anthropic/claude-fable-5:low", "openai/gpt-5.5:high", "anthropic/claude-sonnet-4-5"]);
+	});
+
+	test("returns single-element pattern lists unchanged", () => {
+		const result = selectHeadroomAwareModelPatterns(["anthropic/claude-fable-5:low"], {
+			authStorage: createHeadroomAuthStorage({ "claude-fable-5": false }),
+			registry,
+			settings: enabledSettings,
+		});
+
+		expect(result).toEqual(["anthropic/claude-fable-5:low"]);
+	});
+
+	test("demotes a resolved Fable pattern without headroom behind roomed models", () => {
+		expect(resolveModelFromString(patterns[0], routingModels, undefined)?.id).toBe("claude-fable-5");
+		expect(resolveModelFromString(patterns[1], routingModels, undefined)?.id).toBe("gpt-5.5");
+		expect(resolveModelFromString(patterns[2], routingModels, undefined)?.id).toBe("claude-sonnet-4-5");
+		const calls: Array<{ modelId: string; opts: HeadroomRoutingOptions | undefined }> = [];
+		const authStorage = createHeadroomAuthStorage({ "claude-fable-5": false }, calls);
+
+		const result = selectHeadroomAwareModelPatterns(patterns, { authStorage, registry, settings: enabledSettings });
+
+		expect(result).toEqual(["openai/gpt-5.5:high", "anthropic/claude-sonnet-4-5", "anthropic/claude-fable-5:low"]);
+		expect(result).not.toEqual(patterns);
+		expect(calls).toEqual([
+			{ modelId: "claude-fable-5", opts: { utilizationMax: 0.5, windowMode: "all" } },
+			{ modelId: "gpt-5.5", opts: { utilizationMax: 0.5, windowMode: "all" } },
+			{ modelId: "claude-sonnet-4-5", opts: { utilizationMax: 0.5, windowMode: "all" } },
+		]);
+	});
+
+	test("forwards configured headroom threshold and window mode when enabled", () => {
+		const calls: Array<{ modelId: string; opts: HeadroomRoutingOptions | undefined }> = [];
+		const authStorage = createHeadroomAuthStorage({ "claude-fable-5": false }, calls);
+		const customSettings = Settings.isolated({
+			"task.limitAwareModelRouting": true,
+			"task.modelRoutingUtilizationMax": 0.25,
+			"task.modelRoutingWindowMode": "any",
+		});
+
+		const result = selectHeadroomAwareModelPatterns(patterns, { authStorage, registry, settings: customSettings });
+
+		expect(result).toEqual(["openai/gpt-5.5:high", "anthropic/claude-sonnet-4-5", "anthropic/claude-fable-5:low"]);
+		expect(calls).toEqual([
+			{ modelId: "claude-fable-5", opts: { utilizationMax: 0.25, windowMode: "any" } },
+			{ modelId: "gpt-5.5", opts: { utilizationMax: 0.25, windowMode: "any" } },
+			{ modelId: "claude-sonnet-4-5", opts: { utilizationMax: 0.25, windowMode: "any" } },
+		]);
+	});
+
+	test("keeps configured order when all resolved models have headroom", () => {
+		const result = selectHeadroomAwareModelPatterns(patterns, {
+			authStorage: createHeadroomAuthStorage(),
+			registry,
+			settings: enabledSettings,
+		});
+
+		expect(result).toEqual(["anthropic/claude-fable-5:low", "openai/gpt-5.5:high", "anthropic/claude-sonnet-4-5"]);
+	});
+
+	test("keeps configured order when all resolved models lack headroom", () => {
+		const result = selectHeadroomAwareModelPatterns(patterns, {
+			authStorage: createHeadroomAuthStorage({
+				"claude-fable-5": false,
+				"claude-sonnet-4-5": false,
+				"gpt-5.5": false,
+			}),
+			registry,
+			settings: enabledSettings,
+		});
+
+		expect(result).toEqual(["anthropic/claude-fable-5:low", "openai/gpt-5.5:high", "anthropic/claude-sonnet-4-5"]);
+	});
+
+	test("keeps unresolved patterns optimistic ahead of resolved patterns without headroom", () => {
+		const mixedPatterns = ["anthropic/claude-fable-5:low", "unknown-provider/not-cataloged", "openai/gpt-5.5:high"];
+		expect(resolveModelFromString(mixedPatterns[0], routingModels, undefined)?.id).toBe("claude-fable-5");
+		expect(resolveModelFromString(mixedPatterns[1], routingModels, undefined)).toBeUndefined();
+		expect(resolveModelFromString(mixedPatterns[2], routingModels, undefined)?.id).toBe("gpt-5.5");
+
+		const result = selectHeadroomAwareModelPatterns(mixedPatterns, {
+			authStorage: createHeadroomAuthStorage({ "claude-fable-5": false }),
+			registry,
+			settings: enabledSettings,
+		});
+
+		expect(result).toEqual(["unknown-provider/not-cataloged", "openai/gpt-5.5:high", "anthropic/claude-fable-5:low"]);
 	});
 });

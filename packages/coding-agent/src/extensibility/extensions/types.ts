@@ -14,7 +14,7 @@ import type {
 	ThinkingLevel,
 	ToolApproval,
 } from "@oh-my-pi/pi-agent-core";
-import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
+import type { CompactionProgressUpdate, CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	Api,
 	AssistantMessageEvent,
@@ -292,6 +292,14 @@ export interface ContextUsage {
 export interface CompactOptions {
 	onComplete?: (result: CompactionResult) => void;
 	onError?: (error: Error) => void;
+	/**
+	 * Live streaming-progress callback forwarded into the underlying
+	 * `compaction.compact()` `SummaryOptions.onProgress`. Fires per SSE event
+	 * during V2-streaming remote compaction so the manual `/compact` overlay can
+	 * render the `~N tok` counter, matching the auto path. V1/local paths never
+	 * fire it.
+	 */
+	onProgress?: (u: CompactionProgressUpdate) => void;
 	/**
 	 * Force a one-off compaction mode for this invocation, overriding the
 	 * configured `compaction.strategy` / `remoteEnabled` (the `/compact`

@@ -11,9 +11,8 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
-import { isSqliteBusyError, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
+import { isSqliteBusyError, isSqliteTransientError, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
 import { removeWithRetries } from "../../utils/src/temp";
 
 interface SqliteBusyShape extends Error {
@@ -26,6 +25,26 @@ function makeBusyError(code: string, errno: number): SqliteBusyShape {
 	err.code = code;
 	err.errno = errno;
 	return err;
+}
+
+function readJournalMode(db: Database): string {
+	const row = db.query("PRAGMA journal_mode").get();
+	if (!row || typeof row !== "object" || !("journal_mode" in row) || typeof row.journal_mode !== "string") {
+		throw new Error("PRAGMA journal_mode returned an unexpected row");
+	}
+	return row.journal_mode;
+}
+
+function readUserTableNames(db: Database): string[] {
+	const rows = db
+		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+		.all();
+	return rows.map(row => {
+		if (!row || typeof row !== "object" || !("name" in row) || typeof row.name !== "string") {
+			throw new Error("sqlite_master returned an unexpected row");
+		}
+		return row.name;
+	});
 }
 
 describe("isSqliteBusyError", () => {
@@ -46,11 +65,33 @@ describe("isSqliteBusyError", () => {
 	});
 });
 
+// This classifier is the retry boundary: CORRUPTFS and other fatal IOERRs must
+// stay out of the allowlist so open() does not hide storage corruption.
+describe("isSqliteTransientError", () => {
+	test("recognizes BUSY and selected transient IOERR family codes", () => {
+		expect(isSqliteTransientError(makeBusyError("SQLITE_BUSY_RECOVERY", 261))).toBe(true);
+		expect(isSqliteTransientError(makeBusyError("SQLITE_IOERR_FSTAT", 1802))).toBe(true);
+		expect(isSqliteTransientError(makeBusyError("SQLITE_IOERR_READ", 266))).toBe(true);
+		expect(isSqliteTransientError(makeBusyError("SQLITE_IOERR_WRITE", 778))).toBe(true);
+		expect(isSqliteTransientError(makeBusyError("SQLITE_IOERR_SHORT_READ", 522))).toBe(true);
+		expect(isSqliteTransientError(makeBusyError("SQLITE_IOERR_LOCK", 3850))).toBe(true);
+	});
+
+	test("rejects non-transient SQLite errors and non-error values", () => {
+		expect(isSqliteTransientError(makeBusyError("SQLITE_LOCKED", 6))).toBe(false);
+		expect(isSqliteTransientError(makeBusyError("SQLITE_CORRUPT", 11))).toBe(false);
+		expect(isSqliteTransientError(makeBusyError("SQLITE_IOERR_CORRUPTFS", 8458))).toBe(false);
+		expect(isSqliteTransientError(new Error("plain"))).toBe(false);
+		expect(isSqliteTransientError(null)).toBe(false);
+		expect(isSqliteTransientError(undefined)).toBe(false);
+		expect(isSqliteTransientError("SQLITE_IOERR_FSTAT")).toBe(false);
+	});
+});
 describe("SqliteAuthCredentialStore.open SQLITE_BUSY handling", () => {
 	let tempDir = "";
 
 	beforeEach(async () => {
-		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ai-sqlite-busy-"));
+		tempDir = await fs.mkdtemp(path.join(process.cwd(), ".tmp-pi-ai-sqlite-busy-"));
 	});
 
 	afterEach(async () => {
@@ -64,20 +105,51 @@ describe("SqliteAuthCredentialStore.open SQLITE_BUSY handling", () => {
 	test("installs busy_timeout BEFORE any lock-taking statement", async () => {
 		const store = await SqliteAuthCredentialStore.open(path.join(tempDir, "agent.db"));
 		try {
-			// The store doesn't expose the handle, so open a sibling read-only
-			// connection and verify the persisted side-effect of the open: WAL
-			// mode is set (PRAGMA journal_mode=WAL persists to the header), and
-			// the busy_timeout PRAGMA executed without throwing — the latter is
-			// proven by `open()` returning a store at all.
+			// The store doesn't expose the handle, so open a sibling connection
+			// and verify open completed after installing the busy handler and
+			// attempting WAL. Some temp filesystems reject WAL; schema creation
+			// must still be complete in the fallback journal mode.
 			const observer = new Database(path.join(tempDir, "agent.db"));
 			try {
-				const row = observer.query("PRAGMA journal_mode").get() as { journal_mode: string };
-				expect(row.journal_mode).toBe("wal");
+				expect(["delete", "wal"]).toContain(readJournalMode(observer));
+				expect(readUserTableNames(observer)).toContain("cache");
 			} finally {
 				observer.close();
 			}
 		} finally {
 			store.close();
+		}
+	});
+
+	// Fresh DB initialization should be deterministic even under parallel
+	// opens; every expected user table must exist after each open returns.
+	test("fresh database schema init is deterministic under parallel opens", async () => {
+		const expectedTables = [
+			"auth_credentials",
+			"auth_schema_version",
+			"cache",
+			"usage_cost_history",
+			"usage_history",
+		];
+		const attempts = Array.from({ length: 25 }, (_, index) => index);
+
+		for (let batchStart = 0; batchStart < attempts.length; batchStart += 5) {
+			await Promise.all(
+				attempts.slice(batchStart, batchStart + 5).map(async index => {
+					const dbPath = path.join(tempDir, `fresh-${index}.db`);
+					const store = await SqliteAuthCredentialStore.open(dbPath);
+					try {
+						const observer = new Database(dbPath);
+						try {
+							expect(readUserTableNames(observer)).toEqual(expectedTables);
+						} finally {
+							observer.close();
+						}
+					} finally {
+						store.close();
+					}
+				}),
+			);
 		}
 	});
 
@@ -109,7 +181,37 @@ describe("SqliteAuthCredentialStore.open SQLITE_BUSY handling", () => {
 		}
 	});
 
-	test("non-BUSY errors short-circuit retries", async () => {
+	// WAL can surface a transient filesystem IOERR before schema DDL runs;
+	// open() should retry that path instead of treating startup as failed.
+	test("retries through a transient WAL SQLITE_IOERR_FSTAT and eventually succeeds", async () => {
+		const dbPath = path.join(tempDir, "retry-fstat.db");
+		let throws = 2;
+		const realRun = Database.prototype.run;
+		const spy = vi.spyOn(Database.prototype, "run").mockImplementation(function (
+			this: Database,
+			...args: Parameters<typeof realRun>
+		) {
+			if (args[0] === "PRAGMA journal_mode=WAL" && throws > 0) {
+				throws--;
+				throw makeBusyError("SQLITE_IOERR_FSTAT", 1802);
+			}
+			return realRun.apply(this, args);
+		});
+		const sleepSpy = vi.spyOn(Bun, "sleep").mockResolvedValue(undefined);
+
+		const store = await SqliteAuthCredentialStore.open(dbPath);
+		try {
+			expect(throws).toBe(0);
+			expect(spy).toHaveBeenCalled();
+			expect(sleepSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			store.close();
+		}
+	});
+
+	// Fatal/non-transient errors must surface on the first failed attempt
+	// rather than being converted into a generic retry-exhausted failure.
+	test("non-transient errors short-circuit retries", async () => {
 		const dbPath = path.join(tempDir, "fatal.db");
 		const realRun = Database.prototype.run;
 		let runCalls = 0;

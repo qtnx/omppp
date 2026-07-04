@@ -105,4 +105,69 @@ describe("CommandController /usage", () => {
 		expect(output).toContain(`(${futureIso.slice(0, 10)})`);
 		expect(output).toContain(`expired (${expiredIso.slice(0, 10)})`);
 	});
+
+	it("clears live usage refresh eligibility when another command panel renders", async () => {
+		const present = vi.fn();
+		const ctx = {
+			session: {
+				getAsyncJobSnapshot: () => ({ running: [], recent: [] }),
+			},
+			ui: { terminal: { columns: 100 } },
+			present,
+			showWarning: vi.fn(),
+			showError: vi.fn(),
+		} as unknown as InteractiveModeContext;
+		const controller = new CommandController(ctx);
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: 1_700_000_000_000,
+				limits: [],
+				metadata: { email: "user@example.com" },
+			},
+		];
+
+		await controller.handleUsageCommand(reports);
+		expect(controller.isUsagePanelActive()).toBe(true);
+
+		await controller.handleJobsCommand();
+
+		expect(controller.isUsagePanelActive()).toBe(false);
+	});
+
+	it("clears live usage refresh eligibility when memory and learning commands run", async () => {
+		const ctx = {
+			session: {},
+			sessionManager: { getCwd: () => "/tmp/project" },
+			settings: {
+				get: () => "off",
+				getAgentDir: () => "/tmp/agent",
+			},
+			ui: { terminal: { columns: 100 } },
+			present: vi.fn(),
+			showWarning: vi.fn(),
+			showError: vi.fn(),
+		} as unknown as InteractiveModeContext;
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: 1_700_000_000_000,
+				limits: [],
+				metadata: { email: "user@example.com" },
+			},
+		];
+		const memoryController = new CommandController(ctx);
+		await memoryController.handleUsageCommand(reports);
+		expect(memoryController.isUsagePanelActive()).toBe(true);
+
+		await memoryController.handleMemoryCommand("/memory unknown");
+		expect(memoryController.isUsagePanelActive()).toBe(false);
+
+		const learningController = new CommandController(ctx);
+		await learningController.handleUsageCommand(reports);
+		expect(learningController.isUsagePanelActive()).toBe(true);
+
+		await learningController.handleLearningCommand("/learning unknown");
+		expect(learningController.isUsagePanelActive()).toBe(false);
+	});
 });

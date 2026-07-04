@@ -1,14 +1,15 @@
-Request planner takeover when executor control is unsafe.
+Request planner takeover when executor control is unsafe or fresh planning is required.
 
-Use this tool when:
+Use `purpose: "recover"` (the default) when:
 - The executor drifts from the approved plan.
 - The executor repeats failed attempts on the same problem.
-- The executor claims completion without trustworthy evidence.
+- The executor is off-track, looping, or worsening state.
 
-Purposes:
-- `recover`: executor is off-track, looping, or worsening state.
-- `verify`: completion claim needs independent planner verification.
+Use `purpose: "plan"` when:
+- A user prompt introduces scope, architecture, or product ambiguity that needs the planner before execution digs in.
+- The current request is plan-shaped and should return the Fable model to planning rather than recover from executor failure.
+- The executor should stop before implementation calcifies around a wrong structure.
 
-Cooldown may convert `recover` into high-severity advice instead of takeover.
+Recover cooldown may convert a recover request into high-severity advice instead of takeover. Planning takeover does not use recover cooldown.
 
-`reason` MUST cite transcript evidence. `directive` MUST state the planner's first action after takeover.
+`reason` MUST cite transcript evidence. For `purpose: "recover"`, `directive` MUST state the planner's first action after takeover. For `purpose: "plan"`, `directive` is ignored.

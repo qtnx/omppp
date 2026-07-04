@@ -1,13 +1,13 @@
 /**
- * Thinking-block clamping + gist store for the advisor feed.
+ * Advisor note artifact store with opt-in clamping.
  *
- * Primary agents running at high effort emit huge thinking blocks; feeding them
- * verbatim to the advisor is the single largest input cost. This store keeps the
- * head/tail of a large block verbatim (obfuscated), elides the middle behind a
- * `{{GIST:<id>}}` placeholder, and persists the full obfuscated text as a
- * session artifact the advisor can `read` by line range. When gisting is enabled
- * a tiny/smol model later summarizes the elided middles; the placeholder is
- * substituted with those bullets just before the batch is sent.
+ * Primary agents can emit large private note blocks. By default (clamp off, or
+ * blocks within the configured threshold), this store forwards the full
+ * obfuscated block verbatim. Only blocks exceeding `advisor.thinkingClampChars`
+ * (>0) are redacted from the feed, persisted as a session artifact, replaced by
+ * a `{{GIST:<id>}}` placeholder plus elision marker, and later summarized with
+ * a neutral gist. Empty/trivial whitespace remains redacted-only so blank blocks
+ * do not create useless artifacts.
  *
  * The store is dependency-injected (no direct session imports) so it stays unit
  * testable: a fake `artifactsDir`/`obfuscate`/`gistFn` covers every path.
@@ -19,11 +19,7 @@ import { resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { ONLINE_TINY_TITLE_MODEL_KEY } from "../tiny/models";
 
-/** Blocks at or under this length are fed verbatim (obfuscated); no clamp/gist. */
-const CLAMP_THRESHOLD = 2000;
-/** Verbatim head/tail character budget kept around the elided middle. */
-const HEAD_TAIL_CHARS = 400;
-/** LRU cap for the in-memory middle-slice map (id → obfuscated middle). */
+/** LRU cap for the in-memory gist-source map (id → full obfuscated note). */
 const MIDDLE_LRU_CAP = 64;
 /** Artifact subdirectory under the session artifacts dir. */
 const ARTIFACT_SUBDIR = "__advisor-artifacts";
@@ -35,7 +31,7 @@ const GIST_MAX_TOKENS = 700;
 const GIST_TIMEOUT_MS = 5_000;
 
 const GIST_SYSTEM_PROMPT =
-	"You summarize elided middles of an AI agent's thinking. For each excerpt, output `<id>:` followed by ≤3 terse bullets — decisions made, discoveries, risks/uncertainties. No preamble, no commentary.";
+	"You summarize neutral note excerpts from an AI agent. For each excerpt, output `<id>:` followed by ≤3 terse bullets — decisions made, discoveries, risks/uncertainties. No preamble, no commentary.";
 
 export interface ThinkingArtifactDeps {
 	/** Session artifacts dir (absolute), e.g. `<sessionFile minus .jsonl>`; undefined → artifacts skipped (marker only). */
@@ -46,49 +42,50 @@ export interface ThinkingArtifactDeps {
 	gistFn?: (excerpts: Array<{ id: string; text: string }>, signal: AbortSignal) => Promise<Map<string, string> | null>;
 	/** Setting gate for the smol call (advisor.thinkingGist). */
 	gistEnabled: () => boolean;
-	/** Optional character budget for clamping; 0 or less disables clamping. */
+	/** Opt-in clamp threshold in chars (advisor.thinkingClampChars); 0/absent → full passthrough. */
 	clampThreshold?: () => number;
 }
 
 export class ThinkingArtifactStore {
 	readonly #deps: ThinkingArtifactDeps;
-	/** id → obfuscated middle slice (LRU, oldest evicted at {@link MIDDLE_LRU_CAP}). */
-	readonly #middles = new Map<string, string>();
+	/** id → full obfuscated note source (LRU, oldest evicted at {@link MIDDLE_LRU_CAP}). */
+	readonly #gistSources = new Map<string, string>();
 	/** id → resolved gist bullets (survives re-renders; substituted verbatim). */
 	readonly #gistCache = new Map<string, string>();
-	readonly #clampThreshold?: () => number;
 
 	constructor(deps: ThinkingArtifactDeps) {
 		this.#deps = deps;
-		this.#clampThreshold = deps.clampThreshold;
 	}
 
 	/**
-	 * Clamp a thinking block for the advisor feed. Short blocks are returned
-	 * obfuscated verbatim; large blocks are clamped to head/tail + a
-	 * `{{GIST:<id>}}` placeholder, with the full obfuscated text spilled to an
-	 * artifact (fire-and-forget). Always obfuscates — this text feeds the model.
+	 * Render an advisor-safe note block. By default, and for blocks within the
+	 * opt-in clamp threshold, the full obfuscated block is forwarded verbatim.
+	 * Oversized blocks are spilled to an artifact and replaced by a `{{GIST:<id>}}`
+	 * placeholder plus elision marker for later smol summarization.
 	 */
 	renderThinking(text: string): string {
 		const obfuscated = this.#deps.obfuscate(text);
-		const threshold = this.#clampThreshold?.() ?? CLAMP_THRESHOLD;
-		if (threshold <= 0 || text.length <= threshold) return obfuscated;
+		if (text.trim().length === 0) return obfuscated;
+
+		// Clamping is opt-in (advisor.thinkingClampChars). Default/absent (≤0) and
+		// blocks within the threshold forward the full obfuscated thinking verbatim —
+		// no gist, no elision, no artifact spill. Only oversized blocks are clamped.
+		const threshold = this.#deps.clampThreshold?.() ?? 0;
+		if (threshold <= 0 || obfuscated.length <= threshold) return obfuscated;
+
 		// Content hash → stable id across re-renders (natural dedupe of the same
 		// block re-rendered each turn) and a natural artifact filename.
 		const id = Bun.hash(text).toString(36);
-		const head = obfuscated.slice(0, HEAD_TAIL_CHARS);
-		const tail = obfuscated.slice(Math.max(HEAD_TAIL_CHARS, obfuscated.length - HEAD_TAIL_CHARS));
-		const middle = obfuscated.slice(HEAD_TAIL_CHARS, Math.max(HEAD_TAIL_CHARS, obfuscated.length - HEAD_TAIL_CHARS));
-		this.#storeMiddle(id, middle);
+		this.#storeGistSource(id, obfuscated);
 
 		const dir = this.#deps.artifactsDir();
 		let artifactPath: string | undefined;
 		if (dir) {
-			artifactPath = `${dir}/${ARTIFACT_SUBDIR}/thinking-${id}.md`;
+			artifactPath = `${dir}/${ARTIFACT_SUBDIR}/notes-${id}.md`;
 			// Fire-and-forget: a spill failure must never break rendering the feed.
 			// Bun.write creates parent dirs.
 			Bun.write(artifactPath, obfuscated).catch(err => {
-				logger.debug("thinking-artifacts: failed to persist artifact", {
+				logger.debug("advisor-notes-artifacts: failed to persist artifact", {
 					id,
 					error: err instanceof Error ? err.message : String(err),
 				});
@@ -96,14 +93,14 @@ export class ThinkingArtifactStore {
 		}
 
 		const elided = artifactPath
-			? `[… ${middle.length} chars elided — full: ${artifactPath} (read supports :start-end line ranges)]`
-			: `[… ${middle.length} chars elided]`;
-		return `${head}\n{{GIST:${id}}}\n${elided}\n${tail}`;
+			? `[… ${obfuscated.length} chars elided — full: ${artifactPath} (read supports :start-end line ranges)]`
+			: `[… ${obfuscated.length} chars elided]`;
+		return `{{GIST:${id}}}\n${elided}`;
 	}
 
 	/**
 	 * Substitute `{{GIST:<id>}}` placeholders in a batch. Only ids the store owns
-	 * (present in the middle-map or already gisted) are touched — a literal
+	 * (present in the gist-source map or already gisted) are touched — a literal
 	 * `{{GIST:...}}` in user text with an unknown id is left as-is. Cached gists
 	 * substitute immediately; uncached misses trigger ONE smol call (when enabled)
 	 * for all of them; anything unresolved substitutes to "" (the adjacent elided
@@ -116,7 +113,7 @@ export class ThinkingArtifactStore {
 			const id = match[1];
 			if (this.#gistCache.has(id)) {
 				ownsAny = true;
-			} else if (this.#middles.has(id)) {
+			} else if (this.#gistSources.has(id)) {
 				ownsAny = true;
 				misses.add(id);
 			}
@@ -124,7 +121,7 @@ export class ThinkingArtifactStore {
 		if (!ownsAny) return batch;
 
 		if (misses.size > 0 && this.#deps.gistEnabled() && this.#deps.gistFn) {
-			const excerpts = [...misses].map(id => ({ id, text: this.#middles.get(id) ?? "" }));
+			const excerpts = [...misses].map(id => ({ id, text: this.#gistSources.get(id) ?? "" }));
 			try {
 				const result = await this.#deps.gistFn(excerpts, AbortSignal.timeout(GIST_TIMEOUT_MS));
 				if (result) {
@@ -141,28 +138,28 @@ export class ThinkingArtifactStore {
 		return batch.replace(GIST_PLACEHOLDER_RE, (whole, id: string) => {
 			const cached = this.#gistCache.get(id);
 			if (cached) return `_gist:_ ${cached}`;
-			if (this.#middles.has(id)) return "";
+			if (this.#gistSources.has(id)) return "";
 			return whole; // unknown id — not ours
 		});
 	}
 
-	#storeMiddle(id: string, middle: string): void {
+	#storeGistSource(id: string, source: string): void {
 		// Refresh recency on re-insert; evict oldest past the cap.
-		if (this.#middles.has(id)) this.#middles.delete(id);
-		this.#middles.set(id, middle);
-		while (this.#middles.size > MIDDLE_LRU_CAP) {
-			const oldest = this.#middles.keys().next().value;
+		if (this.#gistSources.has(id)) this.#gistSources.delete(id);
+		this.#gistSources.set(id, source);
+		while (this.#gistSources.size > MIDDLE_LRU_CAP) {
+			const oldest = this.#gistSources.keys().next().value;
 			if (oldest === undefined) break;
-			this.#middles.delete(oldest);
+			this.#gistSources.delete(oldest);
 		}
 	}
 }
 
 /**
- * Build the production `gistFn`: a one-shot smol-model summarizer for the elided
- * middles. Mirrors `title-generator.ts` for the side-request pattern and the
- * local-tiny billing-consent rule (issue #3187): when the user has configured a
- * local on-device tiny model (`providers.tinyModel` ≠ `ONLINE_TINY_TITLE_MODEL_KEY`),
+ * Build the production `gistFn`: a one-shot smol-model summarizer for elided
+ * note sources. Mirrors `title-generator.ts` for the side-request pattern and
+ * the local-tiny billing-consent rule (issue #3187): when the user has configured
+ * a local on-device tiny model (`providers.tinyModel` ≠ `ONLINE_TINY_TITLE_MODEL_KEY`),
  * we must NOT silently fall back to an online smol model that would bill an
  * arbitrary provider without consent — so we return `undefined` (gisting
  * unavailable; placeholders resolve to "" next to the artifact pointer). Only
@@ -201,7 +198,7 @@ export function createSmolGistFn(opts: {
 			if (response.stopReason === "error") return null;
 			return parseGistResponse(response.content, excerpts);
 		} catch (err) {
-			logger.debug("thinking-artifacts: smol gist failed", {
+			logger.debug("advisor-notes-artifacts: smol gist failed", {
 				error: err instanceof Error ? err.message : String(err),
 			});
 			return null;

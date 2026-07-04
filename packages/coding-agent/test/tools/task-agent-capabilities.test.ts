@@ -17,7 +17,7 @@ describe("task agent capability descriptions", () => {
 		expect(explore.tools).toContain("bash");
 		expect(isReadOnlyAgent(explore)).toBe(false);
 		expect(explore.systemPrompt).toContain("You MUST operate as read-only");
-		expect(explore.systemPrompt).toContain("You MUST NOT use `bash` to write");
+		expect(explore.systemPrompt).toContain("You NEVER use `bash` to write, edit, delete, install");
 		for (const name of ["task", "quick_task", "heavy_task", "plan", "reviewer", "tester", "designer"]) {
 			expect(isReadOnlyAgent(agentByName(agents, name))).toBe(false);
 		}

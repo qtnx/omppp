@@ -66,7 +66,8 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 			description:
 				"High-accuracy implementer for heavy feature work with concrete deliverables; opt-in reviewer+fixer pass via self_review",
 			spawns: "*",
-			model: ["pi/task", "pi/slow"],
+			// Rate-limit-aware routing prefers Fable, falls back to GPT-5.5, then session roles.
+			model: ["anthropic/claude-fable-5:low", "openai-codex/gpt-5.5:high", "pi/task", "pi/slow"],
 			thinkingLevel: Effort.High,
 			reviewGate: {
 				enabled: true,

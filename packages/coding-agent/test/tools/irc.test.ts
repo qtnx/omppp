@@ -178,7 +178,8 @@ describe("IRC", () => {
 			});
 
 			const receipt = await bus.send({ from: "0-Main", to: "0-Parked", body: "wake up" });
-			expect(receipt.outcome).toBe("revived");
+			// Revive is metadata on the successful wake receipt, not its own delivery outcome.
+			expect(receipt).toEqual({ to: "0-Parked", outcome: "woken", revived: true });
 			expect(sub.delivered.map(msg => msg.body)).toEqual(["wake up"]);
 			expect(registry.get("0-Parked")?.status).toBe("idle");
 		});

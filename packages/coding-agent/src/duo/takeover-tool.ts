@@ -2,14 +2,15 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import { prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import requestTakeoverDescription from "../prompts/tools/duo-request-takeover.md" with { type: "text" };
+import { ToolError } from "../tools/tool-errors";
 import type { TakeoverDecision, TakeoverPurpose } from "./state";
 
 const takeoverSchema = type({
-	purpose: type("'recover' | 'verify'").describe(
-		"recover = executor is off-track or looping; verify = completion claim needs independent verification.",
-	),
 	reason: type("string").describe("Evidence-backed justification for the takeover request."),
-	directive: type("string").describe("What the planner should do first after taking over."),
+	"directive?": type("string").describe("For recover purpose only: what the planner should do first after takeover."),
+	"purpose?": type("'recover' | 'plan'").describe(
+		"Use recover for failed execution recovery; use plan when the planner must re-plan before execution continues. Defaults to recover.",
+	),
 });
 
 type RequestTakeoverParams = typeof takeoverSchema.infer;
@@ -23,6 +24,7 @@ export class RequestTakeoverTool implements AgentTool<typeof takeoverSchema, und
 
 	constructor(
 		private readonly onTakeover: (purpose: TakeoverPurpose, reason: string, directive: string) => TakeoverDecision,
+		private readonly onPlanTakeover?: (reason: string) => Promise<boolean>,
 	) {
 		this.description = prompt.render(requestTakeoverDescription);
 	}
@@ -34,7 +36,30 @@ export class RequestTakeoverTool implements AgentTool<typeof takeoverSchema, und
 		_onUpdate?: AgentToolUpdateCallback<undefined>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<undefined>> {
-		const decision = this.onTakeover(args.purpose, args.reason, args.directive);
+		const purpose = args.purpose ?? "recover";
+		if (purpose === "plan") {
+			if (!this.onPlanTakeover) {
+				throw new ToolError(
+					"request_takeover purpose plan is unavailable: no duo plan-takeover callback is wired.",
+				);
+			}
+			const accepted = await this.onPlanTakeover(args.reason);
+			return {
+				content: [
+					{
+						type: "text",
+						text: accepted
+							? "Planning takeover accepted: the planner takes the main stream now."
+							: "Planning takeover unavailable: duo is not executing, the planner already holds the stream, or no planner is available.",
+					},
+				],
+				useless: true,
+			};
+		}
+		if (!args.directive?.trim()) {
+			throw new ToolError("request_takeover purpose recover requires directive.");
+		}
+		const decision = this.onTakeover("recover", args.reason, args.directive);
 		if (decision === "accepted") {
 			return {
 				content: [

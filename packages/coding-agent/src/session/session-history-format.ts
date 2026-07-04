@@ -384,7 +384,7 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 						body.push(toolCallLine(block.name, block.arguments, result, opts));
 					} else if (opts?.includeThinking && block.type === "thinking" && block.thinking.trim()) {
 						const thinking = opts.renderThinking ? opts.renderThinking(block.thinking) : block.thinking;
-						body.push(`_thinking:_ ${thinking}`);
+						body.push(`_notes:_ ${thinking}`);
 					}
 					// redactedThinking elided entirely (no readable text)
 				}

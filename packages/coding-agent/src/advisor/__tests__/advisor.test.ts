@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { type } from "arktype";
@@ -30,6 +33,7 @@ import {
 	resolveAdvisorDeliveryChannel,
 	type WatchdogConfigDoc,
 } from "..";
+import { ThinkingArtifactStore } from "../thinking-artifacts";
 
 describe("advisor", () => {
 	describe("advisor system prompt", () => {
@@ -110,7 +114,37 @@ describe("advisor", () => {
 			} as AgentMessage;
 			const md = formatSessionHistoryMarkdown([assistantMsg], { includeThinking: true });
 			expect(md).toContain(thinking);
-			expect(md).toContain("_thinking:_");
+			expect(md).toContain("_notes:_");
+		});
+
+		it("renders assistant thinking through gist placeholders without leaking verbatim notes", async () => {
+			const dir = await mkdtemp(join(tmpdir(), "advisor-thinking-feed-"));
+			try {
+				const store = new ThinkingArtifactStore({
+					artifactsDir: () => dir,
+					obfuscate: text => text,
+					gistEnabled: () => true,
+					gistFn: async excerpts => new Map(excerpts.map(e => [e.id, "- safe summary"])),
+					clampThreshold: () => 1,
+				});
+				const thinking = "VERBATIM_COT_MARKER reasoning about the exploit";
+				const assistantMsg = {
+					role: "assistant",
+					content: [{ type: "thinking", thinking }],
+					timestamp: Date.now(),
+				} as AgentMessage;
+
+				const md = formatSessionHistoryMarkdown([assistantMsg], {
+					includeThinking: true,
+					renderThinking: text => store.renderThinking(text),
+				});
+
+				expect(md).toContain("_notes:_");
+				expect(md).toMatch(/\{\{GIST:[a-z0-9]+\}\}/);
+				expect(md).not.toContain("VERBATIM_COT_MARKER");
+			} finally {
+				await rm(dir, { recursive: true, force: true });
+			}
 		});
 
 		it("elides thinking text by default", () => {
@@ -122,7 +156,7 @@ describe("advisor", () => {
 			} as AgentMessage;
 			const md = formatSessionHistoryMarkdown([assistantMsg]);
 			expect(md).not.toContain(thinking);
-			expect(md).not.toContain("_thinking:_");
+			expect(md).not.toContain("_notes:_");
 		});
 	});
 
@@ -371,6 +405,34 @@ describe("advisor", () => {
 			expect(onAdvice).toHaveBeenNthCalledWith(1, note, "nit");
 			expect(onAdvice).toHaveBeenNthCalledWith(2, note, "concern");
 			expect(onAdvice).toHaveBeenNthCalledWith(3, note, "blocker");
+		});
+
+		it("lets a one-shot consult answer bypass its own duplicate filter", async () => {
+			const onAdvice = vi.fn();
+			const tool = new AdviseTool(onAdvice);
+			const note = "Repeat the prior async consult answer.";
+
+			const first = await tool.execute("tc-1", { note, severity: "concern" });
+			expect(first.content).toEqual([{ type: "text", text: "Recorded." }]);
+			expect(onAdvice).toHaveBeenCalledTimes(1);
+
+			const duplicate = await tool.execute("tc-2", { note, severity: "concern" });
+			expect(duplicate.content).toEqual([{ type: "text", text: "Duplicate advice ignored." }]);
+			expect(onAdvice).toHaveBeenCalledTimes(1);
+
+			tool.setConsultAnswerExemption(true);
+			const exempted = await tool.execute("tc-3", { note, severity: "concern" });
+			expect(exempted.content).toEqual([{ type: "text", text: "Recorded." }]);
+			expect(onAdvice).toHaveBeenCalledTimes(2);
+			expect(onAdvice).toHaveBeenNthCalledWith(2, note, "concern");
+
+			const oneShotDuplicate = await tool.execute("tc-4", { note, severity: "concern" });
+			expect(oneShotDuplicate.content).toEqual([{ type: "text", text: "Duplicate advice ignored." }]);
+			expect(onAdvice).toHaveBeenCalledTimes(2);
+
+			const normalDuplicate = await tool.execute("tc-5", { note, severity: "concern" });
+			expect(normalDuplicate.content).toEqual([{ type: "text", text: "Duplicate advice ignored." }]);
+			expect(onAdvice).toHaveBeenCalledTimes(2);
 		});
 
 		it("validates parameters using ArkType", () => {
@@ -1513,6 +1575,10 @@ describe("advisor", () => {
 	});
 
 	describe("AdvisorRuntime consult", () => {
+		afterEach(() => {
+			vi.restoreAllMocks();
+		});
+
 		function makeConsultAgent(promptInputs: string[], respond: (input: string) => AgentMessage[]): AdvisorAgent {
 			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
 			return {
@@ -1534,6 +1600,14 @@ describe("advisor", () => {
 				role: "assistant",
 				content: [{ type: "text", text: t }],
 				stopReason: "stop",
+				timestamp: Date.now(),
+			}) as unknown as AgentMessage;
+
+		const toolCall = (name: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [{ type: "toolCall", id: `call-${name}`, name, arguments: {} }],
+				stopReason: "toolUse",
 				timestamp: Date.now(),
 			}) as unknown as AgentMessage;
 
@@ -1569,6 +1643,67 @@ describe("advisor", () => {
 			expect(promptInputs).toHaveLength(1);
 			expect(promptInputs[0]).toContain("### Consultation request");
 			expect(promptInputs[0]).toContain("Which approach?");
+		});
+
+		it("consultAsync returns immediately and asks the advisor to answer through advise", async () => {
+			const promptInputs: string[] = [];
+			const { promise: started, resolve: markStarted } = Promise.withResolvers<void>();
+			const { promise: releasePrompt, resolve: finishPrompt } = Promise.withResolvers<void>();
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					markStarted();
+					await releasePrompt;
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "async-context", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.consultAsync("background-question");
+			await started;
+			expect(promptInputs[0]).toContain("### Consultation request (async)");
+			expect(promptInputs[0]).toContain("background-question");
+			expect(promptInputs[0]).toContain("Deliver your answer by calling your `advise` tool");
+			expect(promptInputs[0]).not.toContain("Reply with your consultation answer as plain text.");
+			finishPrompt();
+		});
+
+		it("consultAsync injects a plain-text fallback when the advisor forgot to call advise", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeConsultAgent(promptInputs, () => [text("Re your consult: choose the safer path.")]);
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const enqueueAdvice = vi.spyOn(host, "enqueueAdvice");
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.consultAsync("async-q");
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(enqueueAdvice).toHaveBeenCalledTimes(1);
+			expect(enqueueAdvice).toHaveBeenCalledWith("Re your consult: choose the safer path.");
+		});
+
+		it("consultAsync does not double-deliver when the advisor called advise", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeConsultAgent(promptInputs, () => [
+				toolCall("advise"),
+				text("Re your consult: already advised."),
+			]);
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const enqueueAdvice = vi.spyOn(host, "enqueueAdvice");
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.consultAsync("async-q");
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(enqueueAdvice).not.toHaveBeenCalled();
 		});
 
 		it("sends a queued delta and the consult in the SAME prompt, delta before the request", async () => {

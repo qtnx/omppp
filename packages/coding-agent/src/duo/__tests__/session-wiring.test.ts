@@ -4,23 +4,29 @@ import { Effort, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { DuoResolvedConfig } from "../../config/model-resolver";
-import type { AgentSession } from "../../session/agent-session";
 import {
-	handleDuoEscalateVerifyVerdict,
+	type AgentSession,
 	resolveDuoAdvisorStopAction,
+	resolveDuoOrchestratorOwnership,
 	shouldNotifyDuoPlanApproved,
 } from "../../session/agent-session";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
 import type { ToolSession } from "../../tools";
 import { DuoController, type DuoControllerHost, type DuoHandoffResult } from "../controller";
+import advisorInstructionsRaw from "../prompts/advisor-instructions.md" with { type: "text" };
+import duoExecutorOverlayRaw from "../prompts/executor-overlay.md" with { type: "text" };
+import manualPlanBriefPrompt from "../prompts/manual-plan-brief.md" with { type: "text" };
 import duoPlannerOverlayPrompt from "../prompts/planner-notice.md" with { type: "text" };
-import type { DuoStateSnapshot } from "../state";
+import type { DuoExecutionScope, DuoStateSnapshot } from "../state";
 
 const _session = {} as AgentSession;
-const _handoffCheck: (resolution: string) => Promise<DuoHandoffResult> = _session.duoHandoffToExecutor;
+const _handoffCheck: (resolution: string, scope?: DuoExecutionScope) => Promise<DuoHandoffResult> =
+	_session.duoHandoffToExecutor;
 const _escalateCheck: NonNullable<ToolSession["duoEscalateToPlanner"]> = _session.duoEscalateToPlanner;
+const _summonCheck: () => Promise<boolean> = _session.duoSummon;
 void _handoffCheck;
 void _escalateCheck;
+void _summonCheck;
 
 function anthropicModel(id: string): Model {
 	const name = id
@@ -51,6 +57,7 @@ const executor = anthropicModel("claude-opus-4.8");
 function duoConfig(overrides: Partial<DuoResolvedConfig> = {}): DuoResolvedConfig {
 	return {
 		mode: "on",
+		orchestrator: "auto",
 		planner,
 		plannerThinking: AUTO_THINKING,
 		executor,
@@ -58,6 +65,9 @@ function duoConfig(overrides: Partial<DuoResolvedConfig> = {}): DuoResolvedConfi
 		cooldownTurns: 2,
 		maxConsecutive: 2,
 		doneGate: "strict",
+		advisorPromptReview: true,
+		manualSwitchIntent: "plan",
+		signals: { enabled: true, sentiment: true, failureThreshold: 3, loopThreshold: 3, planningNeeded: true },
 		...overrides,
 	};
 }
@@ -65,18 +75,24 @@ function duoConfig(overrides: Partial<DuoResolvedConfig> = {}): DuoResolvedConfi
 interface FakeHost extends DuoControllerHost {
 	model: Model | undefined;
 	planMode: boolean;
+	planReady: boolean;
 	switches: { model: Model; thinkingLevel?: ConfiguredThinkingLevel }[];
 	ensured: Model[];
 	persisted: DuoStateSnapshot[];
+	reviveScheduled: number;
+	briefs: string[];
 }
 
 function fakeHost(): FakeHost {
 	return {
 		model: planner,
 		planMode: true,
+		planReady: false,
 		switches: [],
 		ensured: [],
 		persisted: [],
+		reviveScheduled: 0,
+		briefs: [],
 		currentModel() {
 			return this.model;
 		},
@@ -101,7 +117,9 @@ function fakeHost(): FakeHost {
 		stopDuoAdvisor() {},
 		pauseAdvisor() {},
 		resumeAdvisor() {},
-		injectBrief() {},
+		injectBrief(text) {
+			this.briefs.push(text);
+		},
 		emitNotice() {},
 		persistSnapshot(snapshot) {
 			this.persisted.push(snapshot);
@@ -116,40 +134,16 @@ function fakeHost(): FakeHost {
 		planModeActive() {
 			return this.planMode;
 		},
+		planArtifactReady() {
+			return this.planReady;
+		},
+		scheduleAdvisorRevive() {
+			this.reviveScheduled += 1;
+		},
 	};
 }
 
 describe("AgentSession duo wiring helpers", () => {
-	test("escalate_verify verdict requests a verify takeover and defers stop when accepted", () => {
-		const calls: { purpose: "verify"; reason: string; directive: string }[] = [];
-		let emitted = 0;
-
-		const deferred = handleDuoEscalateVerifyVerdict(
-			{
-				verdict: "escalate_verify",
-				note: "claim lacks proof",
-				missing: ["fresh test output", "browser evidence"],
-			},
-			(purpose, reason, directive) => {
-				calls.push({ purpose, reason, directive });
-				return "accepted";
-			},
-			() => {
-				emitted++;
-			},
-		);
-
-		expect(deferred).toBe(true);
-		expect(calls).toEqual([
-			{
-				purpose: "verify",
-				reason: "claim lacks proof",
-				directive: "fresh test output; browser evidence",
-			},
-		]);
-		expect(emitted).toBe(1);
-	});
-
 	test("plan approval notification drives executor switch and pins advisor to planner", async () => {
 		expect(
 			shouldNotifyDuoPlanApproved(
@@ -181,6 +175,55 @@ describe("AgentSession duo wiring helpers", () => {
 		expect(host.ensured.map(model => model.id)).toEqual([planner.id, planner.id]);
 	});
 
+	test("planning artifact readiness is consumed by planning progress nudges", async () => {
+		const host = fakeHost();
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("planning");
+
+		host.briefs = [];
+		await controller.notifyTurnEnd();
+		expect(host.briefs).toEqual([]);
+
+		host.planReady = true;
+		await controller.notifyTurnEnd();
+		expect(host.briefs.at(-1)).toContain("The plan is locked");
+	});
+
+	test("controller-side advisor startup failure schedules advisor revive", async () => {
+		const host = fakeHost();
+		host.model = executor;
+		host.planMode = false;
+		host.orchestratorEnabled = () => true;
+		host.ensureAdvisorStarted = pinned => {
+			host.ensured.push(pinned);
+			return false;
+		};
+		const controller = new DuoController(host, duoConfig());
+
+		await controller.reevaluate();
+
+		expect(controller.status.phase).toBe("degraded");
+		expect(host.reviveScheduled).toBe(1);
+	});
+
+	test("duo summon keeps executing phase and switches the main stream to the planner", async () => {
+		const host = fakeHost();
+		host.model = executor;
+		host.planMode = false;
+		host.orchestratorEnabled = () => true;
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("executing");
+
+		const summoned = await controller.summonPlanner();
+
+		expect(summoned).toBe(true);
+		expect(controller.status.phase).toBe("executing");
+		expect(host.switches.at(-1)?.model.id).toBe(planner.id);
+		expect(host.briefs.at(-1)).toContain("summons");
+	});
+
 	test("duo planner overlay renders current main-stream model identity", () => {
 		const rendered = prompt.render(duoPlannerOverlayPrompt, {
 			current: "anthropic/claude-fable-5",
@@ -193,6 +236,28 @@ describe("AgentSession duo wiring helpers", () => {
 		);
 	});
 
+	test("manual plan brief demands a complete locked plan handed off via duo_handoff", () => {
+		const rendered = prompt.render(manualPlanBriefPrompt, {
+			planArtifact: "local://PLAN.md",
+			executor: "anthropic/claude-opus-4-8",
+		});
+
+		expect(rendered).toContain("COMPLETE");
+		expect(rendered).toContain("local://PLAN.md");
+		expect(rendered).toContain("duo_handoff");
+		expect(rendered).not.toContain("{{");
+	});
+
+	test("executor overlay routes planning needs to duo_escalate, never plan-mode round-trips", () => {
+		expect(duoExecutorOverlayRaw).toContain("duo_escalate");
+		expect(duoExecutorOverlayRaw).not.toContain("re-enters plan mode");
+	});
+
+	test("advisor instructions name the automatic takeover signals and the strong-signal bypass", () => {
+		expect(advisorInstructionsRaw).toContain("automatic");
+		expect(advisorInstructionsRaw).toContain("bypass");
+	});
+
 	test("duo advisor stop clears the planner pin for user-owned advisors", () => {
 		// Duo-owned advisor: full stop regardless of pin state.
 		expect(resolveDuoAdvisorStopAction(true, planner, planner)).toBe("stop");
@@ -203,5 +268,52 @@ describe("AgentSession duo wiring helpers", () => {
 		expect(resolveDuoAdvisorStopAction(false, planner, executor)).toBe("none");
 		expect(resolveDuoAdvisorStopAction(false, undefined, planner)).toBe("none");
 		expect(resolveDuoAdvisorStopAction(false, planner, undefined)).toBe("none");
+	});
+
+	test("duo orchestrator ownership guard never tears down a user-owned session", () => {
+		// Fresh off -> on flip driven by duo: duo takes ownership and enables.
+		expect(resolveDuoOrchestratorOwnership(true, false, false)).toEqual({ apply: "enable", owns: true });
+		// After a duo-driven enable, a disable releases what duo owns.
+		expect(resolveDuoOrchestratorOwnership(false, true, true)).toEqual({ apply: "disable", owns: false });
+		// User already had orchestrator on (no off->on flip): a no-op NEVER adopts,
+		// so a later single-scope disable is refused and live mode stays orchestrator.
+		expect(resolveDuoOrchestratorOwnership(true, true, false)).toEqual({ apply: undefined, owns: false });
+		expect(resolveDuoOrchestratorOwnership(false, true, false)).toEqual({ apply: undefined, owns: false });
+		// Disable when already off is a no-op regardless of ownership.
+		expect(resolveDuoOrchestratorOwnership(false, false, true)).toEqual({ apply: undefined, owns: true });
+	});
+
+	test("executor overlay conditionally renders orchestrator vs direct-execution text by live state", () => {
+		const orchestrated = prompt.render(duoExecutorOverlayRaw, {
+			current: "anthropic/claude-opus-4-8",
+			planner: "anthropic/claude-fable-5",
+			executor: "anthropic/claude-opus-4-8",
+			orchestrator: true,
+		});
+		expect(orchestrated).toContain("Safe orchestrator mode");
+		expect(orchestrated).toContain("delegating to subagents");
+		expect(orchestrated).not.toContain("direct-execution mode");
+		expect(orchestrated).toContain("mandatory checkpoints");
+		expect(orchestrated).toContain("Committing to a plan");
+		expect(orchestrated).toContain("Ending your turn");
+		expect(orchestrated).not.toContain("{{");
+
+		const direct = prompt.render(duoExecutorOverlayRaw, {
+			current: "anthropic/claude-opus-4-8",
+			planner: "anthropic/claude-fable-5",
+			executor: "anthropic/claude-opus-4-8",
+			orchestrator: false,
+		});
+		expect(direct).toContain("direct-execution mode");
+		expect(direct).toContain("orchestrator_mode");
+		expect(direct).not.toContain("decomposing it into work packages");
+		expect(direct).toContain("mandatory checkpoints");
+		expect(direct).toContain("Committing to a plan");
+		expect(direct).toContain("Ending your turn");
+		expect(direct).not.toContain("{{");
+		// Shared paragraphs stay outside the conditional in both variants.
+		expect(orchestrated).toContain("watches as your advisor");
+		expect(direct).toContain("watches as your advisor");
+		expect(direct).toContain("duo_escalate");
 	});
 });

@@ -14,7 +14,7 @@ describe("bundled task agents", () => {
 
 		const heavy = getBundledAgent("heavy_task");
 		expect(heavy?.description).toContain("heavy");
-		expect(heavy?.model).toEqual(["pi/task", "pi/slow"]);
+		expect(heavy?.model).toEqual(["anthropic/claude-fable-5:low", "openai-codex/gpt-5.5:high", "pi/task", "pi/slow"]);
 		expect(heavy?.reviewGate).toEqual({
 			enabled: true,
 			reviewerAgent: "reviewer",
@@ -53,11 +53,11 @@ describe("bundled task agents", () => {
 
 		expect(explore?.resourceProfile).toBe("minimal");
 		expect(explore?.thinkingLevel).toBe(Effort.Medium);
-		expect(explore?.tools).toEqual(["read", "grep", "glob", "bash", "web_search", "yield"]);
+		expect(explore?.tools).toEqual(["read", "grep", "glob", "bash", "web_search", "irc", "yield"]);
 		expect(explore?.tools).toContain("web_search");
 		expect(explore?.systemPrompt).toContain("Target at most 8 tool calls");
 		expect(explore?.systemPrompt).toContain("12 is the hard ceiling");
-		expect(explore?.systemPrompt).toContain("MUST NOT use Context GC tools");
+		expect(explore?.systemPrompt).toContain("NEVER use Context GC tools");
 		expect(explore?.systemPrompt).toContain("context_unload");
 		expect(explore?.systemPrompt).toContain("MAY use `bash` only for read-only diagnostics");
 		expect(explore?.systemPrompt).toContain("shell redirection");
@@ -73,7 +73,7 @@ describe("bundled task agents", () => {
 
 		expect(browserQa).toBeDefined();
 		expect(browserQa?.description).toContain("QA");
-		expect(browserQa?.tools).toEqual(["browser", "read", "grep", "glob", "bash", "yield"]);
+		expect(browserQa?.tools).toEqual(["browser", "read", "grep", "glob", "bash", "irc", "yield"]);
 		expect(browserQa?.tools).not.toContain("edit");
 		expect(browserQa?.tools).not.toContain("write");
 		expect(browserQa?.model).toEqual(["pi/task"]);
@@ -102,11 +102,11 @@ describe("bundled task agents", () => {
 		const qa = getBundledAgent("qa");
 
 		expect(qa).toBeDefined();
-		expect(qa?.tools).toEqual(["read", "grep", "glob", "bash", "lsp", "yield"]);
+		expect(qa?.tools).toEqual(["read", "grep", "glob", "bash", "lsp", "irc", "yield"]);
 		expect(qa?.tools).not.toContain("edit");
 		expect(qa?.tools).not.toContain("write");
 		expect(qa?.spawns).toEqual(["browser_qa"]);
-		expect(qa?.model).toEqual(["pi/task"]);
+		expect(qa?.model).toEqual(["anthropic/claude-fable-5:low", "openai-codex/gpt-5.5:high", "pi/task"]);
 		expect(qa?.thinkingLevel).toBe(Effort.High);
 		expect(qa?.blocking).toBeFalsy();
 		expect(qa?.output).toEqual({

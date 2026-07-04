@@ -4,12 +4,15 @@ import { type } from "arktype";
 import handoffDescription from "../prompts/tools/duo-handoff.md" with { type: "text" };
 import { ToolError } from "../tools/tool-errors";
 import type { DuoHandoffResult } from "./controller";
-import type { TakeoverDecision, TakeoverPurpose } from "./state";
+import type { DuoExecutionScope, TakeoverDecision, TakeoverPurpose } from "./state";
 
 const handoffSchema = type({
 	to: type("'executor'").describe("The duo executor model."),
 	resolution: type("string").describe(
 		"Brief for the executor and advisor: what was planned or resolved, current state, and next steps.",
+	),
+	"scope?": type("'single' | 'multi'").describe(
+		"Task scope for the executor: 'single' = one-phase task, executor works directly with full tools; 'multi' = multi-phase work, executor runs in Safe orchestrator mode and delegates. Omit to keep the current scope.",
 	),
 });
 
@@ -22,7 +25,9 @@ export class DuoHandoffTool implements AgentTool<typeof handoffSchema, undefined
 	readonly description: string;
 	readonly parameters = handoffSchema;
 
-	constructor(private readonly requestHandoff: (resolution: string) => Promise<DuoHandoffResult>) {
+	constructor(
+		private readonly requestHandoff: (resolution: string, scope?: DuoExecutionScope) => Promise<DuoHandoffResult>,
+	) {
 		this.description = prompt.render(handoffDescription);
 	}
 
@@ -33,7 +38,7 @@ export class DuoHandoffTool implements AgentTool<typeof handoffSchema, undefined
 		_onUpdate?: AgentToolUpdateCallback<undefined>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<undefined>> {
-		const result = await this.requestHandoff(args.resolution);
+		const result = await this.requestHandoff(args.resolution, args.scope);
 		if (result === "no-controller") {
 			throw new ToolError("duo_handoff is unavailable: no duo controller is active in this session.");
 		}

@@ -111,6 +111,8 @@ const agentEventTypes = new Set<AgentEvent["type"]>([
 const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
 	...agentEventTypes,
 	"auto_compaction_start",
+	// WP2: forward live compaction progress alongside start/end.
+	"auto_compaction_progress",
 	"auto_compaction_end",
 	"auto_retry_start",
 	"auto_retry_end",

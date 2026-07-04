@@ -8,18 +8,16 @@ const DEFAULT_RETENTION_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RUNNING_JOBS = 15;
 
 /**
- * Adaptive ("smart") `job` poll-wait ladder (ms). A tight poll loop climbs
- * these rungs so each immediate re-poll backs off and stops spending turns on
- * "still running" frames; the floor (first rung) is the shortest wait and the
- * top rung is the longest a smart poll will ever block. Only used when
- * `async.pollWaitDuration` is set to `smart`; fixed durations wait verbatim.
+ * Scheduled `job` poll wait ladder (ms). Each `job poll` waits one bounded
+ * window; consecutive re-polls climb the ladder, while a gap of at least
+ * POLL_ESCALATION_RESET_MS resets to the 5 minute floor.
  */
-const POLL_WAIT_LADDER_MS = [5_000, 10_000, 30_000, 60_000, 300_000] as const;
+const POLL_WAIT_LADDER_MS = [300_000, 600_000] as const;
 /**
- * Going at least this long between poll calls means the agent stepped out of
- * the poll loop to do real work — the next poll drops back to the ladder floor.
+ * Going at least this long between scheduled poll calls means the agent stepped
+ * out of the wait loop to reassess or do real work, so the next poll resets.
  */
-const POLL_ESCALATION_RESET_MS = 60_000;
+const POLL_ESCALATION_RESET_MS = 120_000;
 
 interface PollEscalationState {
 	/** Index into POLL_WAIT_LADDER_MS used for the most recent poll wait. */
@@ -141,6 +139,8 @@ export class AsyncJobManager {
 	readonly #watchedJobs = new Set<string>();
 	readonly #evictionTimers = new Map<string, NodeJS.Timeout>();
 	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
+	#pollLadderMs: readonly number[] = POLL_WAIT_LADDER_MS;
+	#pollResetMs = POLL_ESCALATION_RESET_MS;
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
 	readonly #retentionMs: number;
@@ -167,6 +167,12 @@ export class AsyncJobManager {
 		this.#maxRunningJobs = Math.max(1, Math.floor(options.maxRunningJobs ?? DEFAULT_MAX_RUNNING_JOBS));
 		this.#retentionMs = Math.max(0, Math.floor(options.retentionMs ?? DEFAULT_RETENTION_MS));
 		this.#eventBus = options.eventBus;
+	}
+
+	/** Test seam for bounded poll-window schedules without mutating module constants. */
+	configurePollSchedule(schedule: { ladderMs: readonly number[]; resetMs: number }): void {
+		this.#pollLadderMs = schedule.ladderMs.length > 0 ? schedule.ladderMs : POLL_WAIT_LADDER_MS;
+		this.#pollResetMs = schedule.resetMs;
 	}
 
 	#lifecyclePayload(job: AsyncJob): AsyncJobLifecyclePayload {
@@ -380,19 +386,26 @@ export class AsyncJobManager {
 	}
 
 	/**
-	 * Compute the next adaptive ("smart") wait (ms) for a blocking `job` poll by
-	 * the given owner. Consecutive polls — those starting within
-	 * POLL_ESCALATION_RESET_MS of the previous poll returning — climb
-	 * POLL_WAIT_LADDER_MS so a tight wait loop backs off; a longer gap means the
-	 * agent left to do real work, so the wait resets to the floor. Pair each call
-	 * with `recordPollWaitEnd()` once the wait returns.
+	 * Compute and record the next scheduled wait (ms) for a `job` poll by owner.
+	 * Consecutive re-polls climb the configured ladder; reassessment gaps reset
+	 * to the floor. Pair each call with `recordPollWaitEnd()` once the wait ends.
 	 */
 	nextPollWaitMs(ownerId: string | undefined, now: number = Date.now()): number {
 		const prev = this.#pollEscalation.get(ownerId);
-		const reset = !prev || now - prev.lastPollEndAt >= POLL_ESCALATION_RESET_MS;
-		const level = reset ? 0 : Math.min(prev.level + 1, POLL_WAIT_LADDER_MS.length - 1);
+		const ladder = this.#pollLadderMs;
+		const reset = !prev || now - prev.lastPollEndAt >= this.#pollResetMs;
+		const level = reset ? 0 : Math.min(prev.level + 1, ladder.length - 1);
 		this.#pollEscalation.set(ownerId, { level, lastPollEndAt: prev?.lastPollEndAt ?? now });
-		return POLL_WAIT_LADDER_MS[level];
+		return ladder[level] ?? POLL_WAIT_LADDER_MS[0];
+	}
+
+	/** Preview the next scheduled poll wait without mutating escalation state. */
+	peekNextPollWaitMs(ownerId: string | undefined, now: number = Date.now()): number {
+		const prev = this.#pollEscalation.get(ownerId);
+		const ladder = this.#pollLadderMs;
+		const reset = !prev || now - prev.lastPollEndAt >= this.#pollResetMs;
+		const level = reset ? 0 : Math.min(prev.level + 1, ladder.length - 1);
+		return ladder[level] ?? POLL_WAIT_LADDER_MS[0];
 	}
 
 	/**
@@ -757,3 +770,4 @@ export class AsyncJobManager {
 		return Math.min(DELIVERY_RETRY_MAX_MS, backoffMs + jitterMs);
 	}
 }
+// revert-canary-tracked 2026-07-04T13:51:21+07:00

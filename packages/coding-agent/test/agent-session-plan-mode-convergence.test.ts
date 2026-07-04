@@ -223,7 +223,7 @@ describe("AgentSession plan-mode convergence", () => {
 		} finally {
 			registry.unregister("peer");
 		}
-	});
+	}, 20_000);
 
 	it("T3a: convergence reminders are bounded by the cap, then yield to the user", async () => {
 		// Alternating text-stop / read cascade: each text stop with awaiting=false

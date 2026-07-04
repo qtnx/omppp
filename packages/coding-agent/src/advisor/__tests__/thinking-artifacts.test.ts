@@ -1,10 +1,10 @@
 /**
- * Unit coverage for the advisor thinking clamp + gist store.
+ * Unit coverage for the advisor gist-only note artifact store.
  *
  * Fully dependency-injected: a fake `obfuscate`, a tmp `artifactsDir`, and a spy
  * `gistFn` exercise every path without touching a real session or model.
  */
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +20,10 @@ async function makeTmpDir(): Promise<string> {
 
 afterAll(async () => {
 	await Promise.all(tmpDirs.map(dir => rm(dir, { recursive: true, force: true })));
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 /** Redact literal "SECRET" so we can assert obfuscation reached every surface. */
@@ -47,108 +51,154 @@ function extractGistId(rendered: string): string {
 }
 
 describe("ThinkingArtifactStore.renderThinking", () => {
-	it("returns short text verbatim but obfuscated", () => {
+	it("renders short non-empty notes as a gist-only elision without leaking text", () => {
 		const store = new ThinkingArtifactStore({
 			artifactsDir: () => undefined,
 			obfuscate,
 			gistEnabled: () => true,
+			clampThreshold: () => 1,
 		});
-		const out = store.renderThinking("a short SECRET thought");
-		expect(out).toBe("a short REDACTED thought");
+		const text = "a short SECRET thought";
+		const out = store.renderThinking(text);
+
+		expect(out).toMatch(/\{\{GIST:[a-z0-9]+\}\}/);
+		expect(out).toContain(`[… ${obfuscate(text).length} chars elided]`);
+		expect(out).not.toContain("full:");
+		expect(out).not.toContain(text);
 		expect(out).not.toContain("SECRET");
+		expect(out).not.toContain("REDACTED");
 	});
 
-	it("clamps large text to head + gist placeholder + elided marker with path + tail", async () => {
-		const dir = await makeTmpDir();
+	it("renders large notes with the same gist-only shape and no verbatim head or tail", () => {
 		const store = new ThinkingArtifactStore({
-			artifactsDir: () => dir,
+			artifactsDir: () => undefined,
 			obfuscate,
 			gistEnabled: () => true,
+			clampThreshold: () => 1,
 		});
 		const text = largeText();
 		const out = store.renderThinking(text);
 
-		// No raw secret leaks (head/tail were obfuscated).
+		expect(out).toMatch(/\{\{GIST:[a-z0-9]+\}\}/);
+		expect(out).toContain(`[… ${obfuscate(text).length} chars elided]`);
+		expect(out).not.toContain("full:");
 		expect(out).not.toContain("SECRET");
-		expect(out).toContain("REDACTED-head");
-		expect(out).toContain("REDACTED-tail");
+		expect(out).not.toContain("REDACTED-head");
+		expect(out).not.toContain("REDACTED-tail");
+	});
 
+	it("writes the full obfuscated artifact and sends the same source to the gist function", async () => {
+		const dir = await makeTmpDir();
+		const text = largeText();
+		const obfuscated = obfuscate(text);
+		const gistFn = vi.fn(async (excerpts: Array<{ id: string; text: string }>) => {
+			return new Map(excerpts.map(e => [e.id, "- summarized safely"]));
+		});
+		const store = new ThinkingArtifactStore({
+			artifactsDir: () => dir,
+			obfuscate,
+			gistEnabled: () => true,
+			gistFn,
+			clampThreshold: () => 1,
+		});
+
+		const out = store.renderThinking(text);
 		const id = extractGistId(out);
-		const artifactPath = join(dir, "__advisor-artifacts", `thinking-${id}.md`);
-		expect(out).toContain(`{{GIST:${id}}}`);
-		expect(out).toContain("chars elided — full:");
-		expect(out).toContain(artifactPath);
-		expect(out).toContain("read supports :start-end line ranges");
-
-		// Middle char count reported.
-		expect(out).toMatch(/\[… \d+ chars elided/);
+		const artifactPath = join(dir, "__advisor-artifacts", `notes-${id}.md`);
+		expect(out).toBe(
+			`{{GIST:${id}}}\n[… ${obfuscated.length} chars elided — full: ${artifactPath} (read supports :start-end line ranges)]`,
+		);
+		expect(out).not.toContain("SECRET");
+		expect(out).not.toContain("REDACTED-head");
+		expect(out).not.toContain("REDACTED-tail");
 
 		expect(await waitForFile(artifactPath)).toBe(true);
-		const artifact = await Bun.file(artifactPath).text();
-		expect(artifact).not.toContain("SECRET");
-		expect(artifact).toContain("REDACTED-head");
-		expect(artifact).toContain("REDACTED-tail");
+		await store.resolveGists(out);
+
+		expect(await Bun.file(artifactPath).text()).toBe(obfuscated);
+		expect(gistFn).toHaveBeenCalledTimes(1);
+		expect(gistFn.mock.calls[0]?.[0]).toEqual([{ id, text: obfuscated }]);
 	});
 
-	it("passes full obfuscated text without writing an artifact when clamp threshold is disabled", async () => {
-		const dir = await makeTmpDir();
+	it("returns obfuscated whitespace as-is without creating a gist", () => {
 		const store = new ThinkingArtifactStore({
-			artifactsDir: () => dir,
-			obfuscate,
+			artifactsDir: () => undefined,
+			obfuscate: text => `obfuscated:${text}`,
 			gistEnabled: () => true,
-			clampThreshold: () => 0,
 		});
-		const text = largeText();
-		const out = store.renderThinking(text);
+		const out = store.renderThinking(" \n\t ");
 
-		expect(out).toBe(obfuscate(text));
-		expect(out).not.toContain("SECRET");
-		expect(out).toContain("REDACTED-head");
-		expect(out).toContain("REDACTED-tail");
+		expect(out).toBe("obfuscated: \n\t ");
 		expect(out).not.toContain("{{GIST:");
-		expect(await Bun.file(join(dir, "__advisor-artifacts")).exists()).toBe(false);
 	});
 
-	it("clamps text that exceeds a configured positive threshold", () => {
+	it("defaults clamping off and forwards full obfuscated notes without spilling artifacts", async () => {
+		const text = "SECRET full note";
+		const obfuscated = obfuscate(text);
+		const id = Bun.hash(text).toString(36);
+		for (const clampThreshold of [undefined, () => 0] as const) {
+			const dir = await makeTmpDir();
+			const store = new ThinkingArtifactStore({
+				artifactsDir: () => dir,
+				obfuscate,
+				gistEnabled: () => true,
+				...(clampThreshold ? { clampThreshold } : {}),
+			});
+
+			const out = store.renderThinking(text);
+
+			expect(out).toBe(obfuscated);
+			expect(out).not.toContain("{{GIST:");
+			expect(out).not.toContain("chars elided");
+			expect(await Bun.file(join(dir, "__advisor-artifacts", `notes-${id}.md`)).exists()).toBe(false);
+		}
+	});
+
+	it("keeps stable ids for identical text and evicts the oldest owned gist source past the cap", async () => {
+		const resolvedIds: string[] = [];
 		const store = new ThinkingArtifactStore({
 			artifactsDir: () => undefined,
 			obfuscate,
 			gistEnabled: () => true,
-			clampThreshold: () => 500,
+			clampThreshold: () => 1,
+			gistFn: async excerpts => {
+				resolvedIds.push(...excerpts.map(e => e.id));
+				return new Map(excerpts.map(e => [e.id, "- still owned"]));
+			},
 		});
-		const out = store.renderThinking("x".repeat(600));
+		const first = store.renderThinking("SECRET note 0");
+		const firstId = extractGistId(first);
+		const second = store.renderThinking("SECRET note 1");
+		const secondId = extractGistId(second);
+		const repeatedFirstId = extractGistId(store.renderThinking("SECRET note 0"));
+		expect(repeatedFirstId).toBe(firstId);
+		for (let i = 2; i <= 64; i++) store.renderThinking(`SECRET note ${i}`);
 
-		expect(out).toMatch(/\{\{GIST:[a-z0-9]+\}\}/);
+		expect(await store.resolveGists(second)).toBe(second);
+
+		const resolvedFirst = await store.resolveGists(first);
+		expect(resolvedFirst).toContain("_gist:_ - still owned");
+		expect(resolvedIds).toEqual([firstId]);
+		expect(resolvedIds).not.toContain(secondId);
 	});
 
-	it("omits the artifact path from the marker when no artifactsDir is configured", () => {
-		const store = new ThinkingArtifactStore({
-			artifactsDir: () => undefined,
-			obfuscate,
-			gistEnabled: () => true,
-		});
-		const out = store.renderThinking(largeText());
-		expect(out).toMatch(/\{\{GIST:[a-z0-9]+\}\}/);
-		expect(out).toContain("chars elided]");
-		expect(out).not.toContain("full:");
-	});
-
-	it("gives the same id and a single artifact file for identical text", async () => {
+	it("writes a single deduped artifact file for identical clamped text", async () => {
 		const dir = await makeTmpDir();
 		const store = new ThinkingArtifactStore({
 			artifactsDir: () => dir,
 			obfuscate,
 			gistEnabled: () => true,
+			clampThreshold: () => 1,
 		});
 		const text = largeText();
 		const first = extractGistId(store.renderThinking(text));
 		const second = extractGistId(store.renderThinking(text));
 		expect(second).toBe(first);
 
-		const artifactPath = join(dir, "__advisor-artifacts", `thinking-${first}.md`);
+		const artifactPath = join(dir, "__advisor-artifacts", `notes-${first}.md`);
 		expect(await waitForFile(artifactPath)).toBe(true);
 		const files = await readdir(join(dir, "__advisor-artifacts"));
-		expect(files).toEqual([`thinking-${first}.md`]);
+		expect(files).toEqual([`notes-${first}.md`]);
 	});
 });
 
@@ -158,45 +208,52 @@ describe("ThinkingArtifactStore.resolveGists", () => {
 		dir = await makeTmpDir();
 	});
 
-	function clampedBatch(store: ThinkingArtifactStore): { batch: string; id: string } {
-		const rendered = store.renderThinking(largeText());
-		return { batch: `before\n${rendered}\nafter`, id: extractGistId(rendered) };
+	function renderedBatch(store: ThinkingArtifactStore): { batch: string; id: string; obfuscated: string } {
+		const text = largeText();
+		const rendered = store.renderThinking(text);
+		return { batch: `before\n${rendered}\nafter`, id: extractGistId(rendered), obfuscated: obfuscate(text) };
 	}
 
-	it("substitutes gist bullets on success", async () => {
+	it("substitutes cached gist bullets on success", async () => {
 		let calls = 0;
 		const store = new ThinkingArtifactStore({
 			artifactsDir: () => dir,
 			obfuscate,
 			gistEnabled: () => true,
+			clampThreshold: () => 1,
 			gistFn: async excerpts => {
 				calls++;
 				return new Map(excerpts.map(e => [e.id, "- decided X\n- found Y"]));
 			},
 		});
-		const { batch, id } = clampedBatch(store);
+		const { batch, id } = renderedBatch(store);
 		const out = await store.resolveGists(batch);
 		expect(calls).toBe(1);
 		expect(out).toContain("_gist:_ - decided X");
 		expect(out).not.toContain(`{{GIST:${id}}}`);
+
+		const cached = await store.resolveGists(batch);
+		expect(calls).toBe(1);
+		expect(cached).toContain("_gist:_ - decided X");
 	});
 
-	it("uses the cache on the second pass and does not call gistFn again", async () => {
-		let calls = 0;
+	it("passes the full obfuscated source as the gist excerpt", async () => {
+		let received: Array<{ id: string; text: string }> = [];
 		const store = new ThinkingArtifactStore({
 			artifactsDir: () => dir,
 			obfuscate,
 			gistEnabled: () => true,
+			clampThreshold: () => 1,
 			gistFn: async excerpts => {
-				calls++;
-				return new Map(excerpts.map(e => [e.id, "- cached bullet"]));
+				received = excerpts;
+				return new Map(excerpts.map(e => [e.id, "- excerpt captured"]));
 			},
 		});
-		const { batch } = clampedBatch(store);
+		const { batch, id, obfuscated } = renderedBatch(store);
+
 		await store.resolveGists(batch);
-		const out = await store.resolveGists(batch);
-		expect(calls).toBe(1);
-		expect(out).toContain("_gist:_ - cached bullet");
+
+		expect(received).toEqual([{ id, text: obfuscated }]);
 	});
 
 	it("leaves unknown ids untouched", async () => {
@@ -206,7 +263,7 @@ describe("ThinkingArtifactStore.resolveGists", () => {
 			gistEnabled: () => true,
 			gistFn: async () => new Map(),
 		});
-		const batch = "user wrote {{GIST:notarealid}} literally";
+		const batch = "user wrote {{GIST:zzz}} literally";
 		const out = await store.resolveGists(batch);
 		expect(out).toBe(batch);
 	});
@@ -216,9 +273,10 @@ describe("ThinkingArtifactStore.resolveGists", () => {
 			artifactsDir: () => dir,
 			obfuscate,
 			gistEnabled: () => true,
+			clampThreshold: () => 1,
 			gistFn: async () => null,
 		});
-		const { batch, id } = clampedBatch(store);
+		const { batch, id } = renderedBatch(store);
 		const out = await store.resolveGists(batch);
 		expect(out).not.toContain(`{{GIST:${id}}}`);
 		expect(out).not.toContain("_gist:_");
@@ -229,11 +287,12 @@ describe("ThinkingArtifactStore.resolveGists", () => {
 			artifactsDir: () => dir,
 			obfuscate,
 			gistEnabled: () => true,
+			clampThreshold: () => 1,
 			gistFn: async () => {
 				throw new Error("boom");
 			},
 		});
-		const { batch, id } = clampedBatch(store);
+		const { batch, id } = renderedBatch(store);
 		const out = await store.resolveGists(batch);
 		expect(out).not.toContain(`{{GIST:${id}}}`);
 		expect(out).not.toContain("_gist:_");
@@ -245,12 +304,13 @@ describe("ThinkingArtifactStore.resolveGists", () => {
 			artifactsDir: () => dir,
 			obfuscate,
 			gistEnabled: () => false,
+			clampThreshold: () => 1,
 			gistFn: async () => {
 				calls++;
 				return new Map();
 			},
 		});
-		const { batch, id } = clampedBatch(store);
+		const { batch, id } = renderedBatch(store);
 		const out = await store.resolveGists(batch);
 		expect(calls).toBe(0);
 		expect(out).not.toContain(`{{GIST:${id}}}`);
@@ -262,8 +322,9 @@ describe("ThinkingArtifactStore.resolveGists", () => {
 			artifactsDir: () => dir,
 			obfuscate,
 			gistEnabled: () => true,
+			clampThreshold: () => 1,
 		});
-		const { batch, id } = clampedBatch(store);
+		const { batch, id } = renderedBatch(store);
 		const out = await store.resolveGists(batch);
 		expect(out).not.toContain(`{{GIST:${id}}}`);
 		expect(out).not.toContain("_gist:_");

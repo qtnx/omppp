@@ -408,6 +408,17 @@ export const SETTINGS_SCHEMA = {
 				"Pair a second model (assigned to the 'advisor' role) that passively reviews each turn and injects notes.",
 		},
 	},
+	"advisor.fallbackModel": {
+		type: "string",
+		default: "gpt-5.5",
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Fallback Model",
+			description:
+				"Model the advisor falls back to when the primary is blocked by a provider safeguard refusal; the primary is retried first on every subsequent request.",
+		},
+	},
 	"advisor.subagents": {
 		type: "boolean",
 		default: false,
@@ -472,7 +483,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Advisor",
 			label: "Advisor Thinking Clamp Chars",
 			description:
-				"Max characters of a primary thinking block fed to the advisor before it is clamped (head/tail + gist marker, full text spilled to an artifact). 0 = pass full thinking untruncated (default); set e.g. 2000 to re-enable clamping.",
+				"Max characters of a primary thinking block fed to the advisor before it is clamped (middle elided behind a gist marker, full text spilled to an artifact). 0 = pass full thinking untruncated (default); set e.g. 2000 to re-enable clamping.",
 			condition: "advisorEnabled",
 		},
 	},
@@ -510,6 +521,18 @@ export const SETTINGS_SCHEMA = {
 			label: "Duo Mode",
 			description:
 				"Automatic Fable<->Opus planner/executor pairing; auto activates in orchestrator mode or when the main model is a Fable-family model.",
+		},
+	},
+	"duo.orchestrator": {
+		type: "enum",
+		values: ["auto", "always"] as const,
+		default: "auto",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Orchestrator",
+			description:
+				"Controls when duo uses orchestrator mode: auto switches by execution scope, always keeps orchestrator mode enabled.",
 		},
 	},
 	"duo.plannerModel": {
@@ -565,6 +588,16 @@ export const SETTINGS_SCHEMA = {
 				"Thinking level for the Fable advisor while it monitors the executor. Higher = more thorough gap-catching. Values: auto|off|minimal|low|medium|high|xhigh|max.",
 		},
 	},
+	"duo.advisorPromptReview": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Advisor Prompt Review",
+			description: "Advisor reviews each user prompt to decide a plan-first takeover.",
+		},
+	},
 	"duo.doneGate": {
 		type: "enum",
 		values: ["strict", "inherit"] as const,
@@ -604,6 +637,71 @@ export const SETTINGS_SCHEMA = {
 			group: "Duo",
 			label: "Duo Takeover Max Consecutive",
 			description: "Maximum consecutive planner takeovers before requiring manual handoff.",
+		},
+	},
+	"duo.manualSwitchIntent": {
+		type: "enum",
+		values: ["plan", "summon"] as const,
+		default: "plan",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Manual Switch Intent",
+			description:
+				"What a manual switch to the planner model during duo executing means. plan = enter the duo planning phase to write a complete locked plan (duo_handoff hands it to the executor); summon = transient advisory summon that returns to the executor quickly.",
+		},
+	},
+	"duo.takeover.signals.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Takeover Signals",
+			description:
+				"Automatically request planner takeover from per-turn executor signals: tool-failure streaks, loops, and unverified done claims.",
+		},
+	},
+	"duo.takeover.signals.sentiment": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Sentiment Signal",
+			description:
+				"Include negative user sentiment (scolding) in automatic takeover signals; combined with a failure streak or loop it bypasses the recover cooldown.",
+		},
+	},
+	"duo.takeover.signals.failureThreshold": {
+		type: "number",
+		default: 3,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Failure Signal Threshold",
+			description: "Consecutive failed tool results that trigger an automatic recover takeover request.",
+		},
+	},
+	"duo.takeover.signals.loopThreshold": {
+		type: "number",
+		default: 3,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Loop Signal Threshold",
+			description: "Identical tool calls (same name and arguments) since the last user prompt that count as a loop.",
+		},
+	},
+	"duo.takeover.signals.planningNeeded": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Planning-Needed Signal",
+			description:
+				"Automatically enter the duo planning phase (planner takeover) when an incoming user message is plan-shaped: imperative build language plus scope markers such as lists, multiple clauses, or multiple file mentions.",
 		},
 	},
 	shellPath: { type: "string", default: undefined },
@@ -1641,6 +1739,17 @@ export const SETTINGS_SCHEMA = {
 			group: "Input",
 			label: "Interrupt Mode",
 			description: "When steering messages interrupt tool execution",
+		},
+	},
+
+	"steering.holdDuringSubagentWaits": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Input",
+			label: "Hold Steering During Subagent Waits",
+			description: "Hold user steering messages until a blocking subagent wait ends, then deliver them wrapped.",
 		},
 	},
 
@@ -4031,6 +4140,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"browser.gpu": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Grep & Browser",
+			label: "Browser GPU",
+			description:
+				"Use hardware GPU (Vulkan/ANGLE) for WebGL in the headless browser; disable to force software rendering.",
+		},
+	},
+
 	"browser.cmux": {
 		type: "boolean",
 		default: true,
@@ -4115,15 +4236,20 @@ export const SETTINGS_SCHEMA = {
 
 	"async.pollWaitDuration": {
 		type: "enum",
-		values: ["5s", "10s", "30s", "1m", "5m", "block"] as const,
-		default: "block",
+		values: ["scheduled", "5s", "10s", "30s", "1m", "5m", "block"] as const,
+		default: "scheduled",
 		ui: {
 			tab: "tools",
 			group: "Execution",
 			label: "Poll Wait",
 			description:
-				"How long the poll tool waits for background job updates before returning the current state. Fixed values cap the wait at that duration. `block` waits until a watched job settles, a peer or user message arrives, another job's result lands, or the call is aborted.",
+				"How long the poll tool waits for background job updates before returning the current state. `scheduled` uses bounded escalating windows (5m first, 10m on consecutive re-polls) and returns a live progress snapshot at each expiry. Fixed durations use one fixed window then snapshot. `block` waits indefinitely with a silent watchdog re-check.",
 			options: [
+				{
+					value: "scheduled",
+					label: "Scheduled",
+					description: "Default — bounded escalating windows with a live progress snapshot at each expiry",
+				},
 				{ value: "5s", label: "5 seconds" },
 				{ value: "10s", label: "10 seconds" },
 				{ value: "30s", label: "30 seconds" },
@@ -4132,8 +4258,46 @@ export const SETTINGS_SCHEMA = {
 				{
 					value: "block",
 					label: "Block",
-					description: "Default — wait until a watched job finishes or new agent context arrives",
+					description: "Wait indefinitely until a watched job finishes or new agent context arrives",
 				},
+			],
+		},
+	},
+
+	"async.pollWatchdogMs": {
+		type: "number",
+		default: 600_000,
+		ui: {
+			tab: "tools",
+			group: "Execution",
+			label: "Blocking-Wait Re-check Interval (ms)",
+			description:
+				"While a job poll blocks on subagents in block mode, re-check every N milliseconds whether watched jobs are still running and keep waiting if they are. 0 disables the re-check and blocks forever. (block mode only)",
+			options: [
+				{ value: "0", label: "Disabled" },
+				{ value: "20000", label: "20 seconds" },
+				{ value: "60000", label: "1 minute" },
+				{ value: "300000", label: "5 minutes" },
+				{ value: "600000", label: "10 minutes" },
+			],
+		},
+	},
+
+	"async.stallThresholdMs": {
+		type: "number",
+		default: 600_000,
+		ui: {
+			tab: "tools",
+			group: "Execution",
+			label: "Stall Threshold (ms)",
+			description:
+				"Flag a watched job as STALLED in `job` results when its subagent shows no activity for this many ms; 0 disables.",
+			options: [
+				{ value: "0", label: "Disabled" },
+				{ value: "60000", label: "1 minute" },
+				{ value: "300000", label: "5 minutes" },
+				{ value: "600000", label: "10 minutes" },
+				{ value: "1800000", label: "30 minutes" },
 			],
 		},
 	},
@@ -4145,9 +4309,11 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "Execution",
 			label: "IRC Timeout",
-			description: "Default timeout for irc wait (and send await:true) in milliseconds; 0 disables the timeout",
+			// IRC waits are bounded so timeout 0 means one maximum window, not forever.
+			description:
+				"Default timeout for irc wait (and send await:true) in milliseconds; 0 means one max window (10m)",
 			options: [
-				{ value: "0", label: "Disabled" },
+				{ value: "0", label: "10-minute max window" },
 				{ value: "30000", label: "30 seconds" },
 				{ value: "60000", label: "1 minute" },
 				{ value: "120000", label: "2 minutes" },
@@ -4447,6 +4613,43 @@ export const SETTINGS_SCHEMA = {
 			label: "Delegation Reminder Threshold",
 			description:
 				"Hands-on tool calls (edit/write/ast_edit/bash) in a single turn without delegating before the delegation reminder fires (minimum 1)",
+		},
+	},
+
+	"task.limitAwareModelRouting": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Limit-aware model routing",
+			description:
+				"Default OFF. When enabled, prefer a subagent model that has rate-limit headroom (5h AND weekly windows under the threshold) and fall through its model chain when Fable/GPT-5.5 windows are busy.",
+		},
+	},
+
+	"task.modelRoutingUtilizationMax": {
+		type: "number",
+		default: 0.5,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Model routing utilization max",
+			description:
+				"Strict upper bound (0..1) on a window's utilization for a model to still be preferred; default 0.5 leaves reserve for your own usage.",
+		},
+	},
+
+	"task.modelRoutingWindowMode": {
+		type: "enum",
+		values: ["all", "any"] as const,
+		default: "all",
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Model routing window mode",
+			description:
+				"'all' = both the 5-hour and weekly windows must have room; 'any' = one window under the threshold is enough.",
 		},
 	},
 

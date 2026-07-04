@@ -3,7 +3,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { SegmentContext } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
-import { renderSegment } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
+import {
+	__setStatusLinePathRootOverridesForTests,
+	renderSegment,
+} from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { getProjectDir, removeSyncWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
 
@@ -61,6 +64,7 @@ function createPathContext(): SegmentContext {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	__setStatusLinePathRootOverridesForTests(null);
 	setProjectDir(originalProjectDir);
 });
 
@@ -72,21 +76,23 @@ function expectContentToContainPath(content: string, expected: string): void {
 	expect(content).toContain(expected);
 }
 
-function createFakeHome(): { home: string; projectsRoot: string } {
-	const homeRoot = path.join(originalProjectDir, ".wt");
-	fs.mkdirSync(homeRoot, { recursive: true });
-	const home = fs.mkdtempSync(path.join(homeRoot, "omp-status-line-home-"));
+function createHermeticPathRoots(): { home: string; projectsRoot: string; scratchRoot: string; cleanupRoot: string } {
+	const cleanupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-roots-"));
+	const home = path.join(cleanupRoot, "home");
 	const projectsRoot = path.join(home, "Projects");
+	const scratchRoot = path.join(cleanupRoot, "scratch");
 	fs.mkdirSync(projectsRoot, { recursive: true });
+	fs.mkdirSync(scratchRoot, { recursive: true });
 	vi.spyOn(os, "homedir").mockReturnValue(home);
-	return { home, projectsRoot };
+	__setStatusLinePathRootOverridesForTests({ displayRoots: [projectsRoot, "/work"], scratchRoots: [scratchRoot] });
+	return { home, projectsRoot, scratchRoot, cleanupRoot };
 }
 
 describe("status line path segment", () => {
 	it("strips the Projects root for symlink-equivalent aliases", () => {
 		if (process.platform === "win32") return;
 
-		const { home, projectsRoot } = createFakeHome();
+		const { home, projectsRoot, cleanupRoot } = createHermeticPathRoots();
 
 		const realProjectDir = fs.mkdtempSync(path.join(projectsRoot, "omp-status-line-"));
 		const nestedDir = path.join(realProjectDir, "nested");
@@ -111,12 +117,13 @@ describe("status line path segment", () => {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(aliasRoot);
 			removeSyncWithRetries(realProjectDir);
-			removeSyncWithRetries(home);
+			removeSyncWithRetries(cleanupRoot);
 		}
 	});
 
-	it("strips the scratch root and shows only the trailing folder inside the OS tmp dir", () => {
-		const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-scratch-"));
+	it("strips the scratch root and shows only the trailing folder inside the controlled scratch dir", () => {
+		const roots = createHermeticPathRoots();
+		const scratchDir = fs.mkdtempSync(path.join(roots.scratchRoot, "omp-status-line-scratch-"));
 		try {
 			setProjectDir(scratchDir);
 
@@ -124,17 +131,18 @@ describe("status line path segment", () => {
 			expect(rendered.visible).toBe(true);
 			expect(rendered.content).toContain(theme.icon.scratchFolder);
 			expect(rendered.content).not.toContain(theme.icon.folder);
-			// Display is just the scratch-relative tail — no leading tmpdir, no ancestor segments.
+			// Display is just the scratch-relative tail — no leading scratch root, no ancestor segments.
 			expectContentToContainPath(rendered.content, path.basename(getProjectDir()));
-			expect(rendered.content).not.toContain(os.tmpdir());
+			expect(rendered.content).not.toContain(roots.scratchRoot);
 		} finally {
 			setProjectDir(originalProjectDir);
-			removeSyncWithRetries(scratchDir);
+			removeSyncWithRetries(roots.cleanupRoot);
 		}
 	});
 
 	it("keeps nested subpaths visible under a scratch root", () => {
-		const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-scratch-nest-"));
+		const roots = createHermeticPathRoots();
+		const scratchDir = fs.mkdtempSync(path.join(roots.scratchRoot, "omp-status-line-scratch-nest-"));
 		const nested = path.join(scratchDir, "sub", "deep");
 		fs.mkdirSync(nested, { recursive: true });
 		try {
@@ -144,15 +152,16 @@ describe("status line path segment", () => {
 			const tail = `${path.basename(path.dirname(path.dirname(getProjectDir())))}${path.sep}sub${path.sep}deep`;
 			expect(rendered.content).toContain(theme.icon.scratchFolder);
 			expectContentToContainPath(rendered.content, tail);
-			expect(rendered.content).not.toContain(os.tmpdir());
+			expect(rendered.content).not.toContain(roots.scratchRoot);
 		} finally {
 			setProjectDir(originalProjectDir);
-			removeSyncWithRetries(scratchDir);
+			removeSyncWithRetries(roots.cleanupRoot);
 		}
 	});
 
 	it("keeps the folder icon for scratch paths when stripWorkPrefix is disabled", () => {
-		const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-scratch-noprefix-"));
+		const roots = createHermeticPathRoots();
+		const scratchDir = fs.mkdtempSync(path.join(roots.scratchRoot, "omp-status-line-scratch-noprefix-"));
 		try {
 			setProjectDir(scratchDir);
 
@@ -164,12 +173,12 @@ describe("status line path segment", () => {
 			expect(rendered.content).not.toContain(theme.icon.scratchFolder);
 		} finally {
 			setProjectDir(originalProjectDir);
-			removeSyncWithRetries(scratchDir);
+			removeSyncWithRetries(roots.cleanupRoot);
 		}
 	});
 
 	it("keeps the folder icon for paths outside any scratch root", () => {
-		const { home, projectsRoot } = createFakeHome();
+		const { projectsRoot, cleanupRoot } = createHermeticPathRoots();
 		const realProjectDir = fs.mkdtempSync(path.join(projectsRoot, "omp-status-line-real-"));
 		try {
 			setProjectDir(realProjectDir);
@@ -181,12 +190,13 @@ describe("status line path segment", () => {
 		} finally {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(realProjectDir);
-			removeSyncWithRetries(home);
+			removeSyncWithRetries(cleanupRoot);
 		}
 	});
 
 	it("renders the active nested repo suffix after the parent cwd", () => {
-		const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-parent-"));
+		const roots = createHermeticPathRoots();
+		const parentDir = fs.mkdtempSync(path.join(roots.scratchRoot, "omp-status-line-parent-"));
 		const repoDir = path.join(parentDir, "pr-workspace");
 		fs.mkdirSync(repoDir);
 		try {
@@ -203,15 +213,16 @@ describe("status line path segment", () => {
 			const expected = `${path.basename(getProjectDir())} ↳ pr-workspace`;
 			expect(rendered.visible).toBe(true);
 			expectContentToContainPath(rendered.content, expected);
-			expect(rendered.content).not.toContain(os.tmpdir());
+			expect(rendered.content).not.toContain(roots.scratchRoot);
 		} finally {
 			setProjectDir(originalProjectDir);
-			removeSyncWithRetries(parentDir);
+			removeSyncWithRetries(roots.cleanupRoot);
 		}
 	});
 
 	it("keeps the active nested repo suffix visible when the parent path is truncated", () => {
-		const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-parent-"));
+		const roots = createHermeticPathRoots();
+		const parentDir = fs.mkdtempSync(path.join(roots.scratchRoot, "omp-status-line-parent-"));
 		const repoDir = path.join(parentDir, "pr-workspace");
 		fs.mkdirSync(repoDir);
 		try {
@@ -230,7 +241,7 @@ describe("status line path segment", () => {
 			expect(rendered.content).toContain("↳ pr-workspace");
 		} finally {
 			setProjectDir(originalProjectDir);
-			removeSyncWithRetries(parentDir);
+			removeSyncWithRetries(roots.cleanupRoot);
 		}
 	});
 });

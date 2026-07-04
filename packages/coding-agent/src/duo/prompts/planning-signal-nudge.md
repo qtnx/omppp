@@ -1,0 +1,1 @@
+You are doing planning-shaped work while the executor holds the main stream. If this needs planner-grade reasoning, call duo_escalate now with the blocker and required planning objective instead of continuing to plan inline.

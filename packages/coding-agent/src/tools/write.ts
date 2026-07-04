@@ -581,6 +581,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		signal: AbortSignal | undefined,
 	): Promise<AgentToolResult<WriteToolDetails>> {
 		const absolutePath = entry.absolutePath;
+		// Route conflict resolution through the shared mutation seam so orchestrator
+		// .md-only and plan-mode read-only enforcement both apply to the real target file.
+		enforcePlanModeWrite(this.session, absolutePath, { op: "update" });
 		if (!(await fs.exists(absolutePath))) {
 			throw new ToolError(`Conflict #${entry.id} target '${entry.displayPath}' no longer exists.`);
 		}
@@ -681,6 +684,13 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			const bucket = byFile.get(entry.absolutePath) ?? [];
 			bucket.push(entry);
 			byFile.set(entry.absolutePath, bucket);
+		}
+
+		// Fail closed: gate every target file through the shared mutation seam
+		// before writing any, so a mixed .md/non-.md batch is rejected wholesale
+		// in orchestrator mode (and blocked entirely in plan mode) with no partial writes.
+		for (const absolutePath of byFile.keys()) {
+			enforcePlanModeWrite(this.session, absolutePath, { op: "update" });
 		}
 
 		const succeededFiles: { displayPath: string; count: number; header?: string }[] = [];

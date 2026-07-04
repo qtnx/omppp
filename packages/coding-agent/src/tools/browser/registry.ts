@@ -58,6 +58,7 @@ function browserKey(kind: BrowserKind): string {
 export interface AcquireBrowserOptions {
 	cwd: string;
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
+	gpu?: boolean;
 	appArgs?: string[];
 	signal?: AbortSignal;
 }
@@ -120,7 +121,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		};
 	}
 	if (kind.kind === "headless") {
-		const browser = await launchHeadlessBrowser({ headless: kind.headless, viewport: opts.viewport });
+		const browser = await launchHeadlessBrowser({ headless: kind.headless, viewport: opts.viewport, gpu: opts.gpu });
 		return {
 			key: browserKey(kind),
 			kind,

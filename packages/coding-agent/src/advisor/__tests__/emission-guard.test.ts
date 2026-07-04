@@ -78,6 +78,26 @@ describe("AdvisorEmissionGuard", () => {
 		expect(guard.accept("New concern: cache eviction never fires.")).toBe(true);
 	});
 
+	it("drops duplicate concrete advice across later update cycles", () => {
+		const guard = new AdvisorEmissionGuard();
+		expect(guard.accept("Still missing verification evidence.")).toBe(true);
+		for (let i = 0; i < 8; i++) {
+			guard.beginUpdate();
+			expect(guard.accept("Still missing verification evidence.")).toBe(false);
+		}
+	});
+
+	it("renews standing reminders after five advisor update cycles", () => {
+		const guard = new AdvisorEmissionGuard();
+		expect(guard.accept("Reminder: keep demanding browser QA evidence.")).toBe(true);
+		for (let i = 0; i < 4; i++) {
+			guard.beginUpdate();
+			expect(guard.accept("Reminder: keep demanding browser QA evidence.")).toBe(false);
+		}
+		guard.beginUpdate();
+		expect(guard.accept("Reminder: keep demanding browser QA evidence.")).toBe(true);
+	});
+
 	it("reset clears dedupe and the per-update gate so a re-primed advisor can re-raise old issues", () => {
 		// Compaction / session-switch rewrites the primary transcript. The
 		// advisor is re-primed from scratch and may legitimately re-raise the
@@ -87,6 +107,34 @@ describe("AdvisorEmissionGuard", () => {
 		expect(guard.accept("Race in #handleRetry.")).toBe(false);
 		guard.reset();
 		expect(guard.accept("Race in #handleRetry.")).toBe(true);
+	});
+
+	it("allows one consult-answer exemption without poisoning normal advice", () => {
+		const guard = new AdvisorEmissionGuard();
+
+		guard.beginUpdate({ consultAnswer: true });
+		expect(guard.accept("Looks good.")).toBe(true);
+		expect(guard.accept("Do X.")).toBe(false);
+
+		guard.beginUpdate();
+		expect(guard.accept("Looks good.")).toBe(false);
+
+		const unconsumedGuard = new AdvisorEmissionGuard();
+		unconsumedGuard.beginUpdate({ consultAnswer: true });
+		unconsumedGuard.beginUpdate();
+		expect(unconsumedGuard.accept("Looks good.")).toBe(false);
+
+		const unpoisonedGuard = new AdvisorEmissionGuard();
+		unpoisonedGuard.beginUpdate({ consultAnswer: true });
+		expect(unpoisonedGuard.accept("Async answer: retry with the new token.")).toBe(true);
+		unpoisonedGuard.beginUpdate();
+		expect(unpoisonedGuard.accept("Async answer: retry with the new token.")).toBe(true);
+		unpoisonedGuard.beginUpdate();
+		expect(unpoisonedGuard.accept("Async answer: retry with the new token.")).toBe(false);
+
+		guard.beginUpdate({ consultAnswer: true });
+		guard.reset();
+		expect(guard.accept("Looks good.")).toBe(false);
 	});
 
 	it("evicts oldest entries when dedupe history exceeds capacity", () => {
@@ -116,13 +164,11 @@ describe("AdvisorEmissionGuard", () => {
 		expect(guard.accept("Concrete advice.")).toBe(true);
 	});
 
-	it("end-to-end: the reporter's 309-call spam log produces ≤1 accepted note across many updates", () => {
+	it("end-to-end: the reporter's spam log only allows one concrete advice copy", () => {
 		// Mimic the issue's distribution: 114× "Stop.", 52× "No issue; continue.",
 		// 41× "Done.", plus 102 copies of one concrete-but-repeated nit. Spread
-		// the calls across 50 advisor update cycles. Each cycle is allowed at
-		// most one accepted note, and identical-text repeats never escape the
-		// guard. After all calls, exactly the concrete nit has been accepted
-		// — and only once.
+		// the calls across 50 advisor update cycles. Content-free phrases never
+		// escape, and concrete repeats are session-scoped duplicates.
 		const guard = new AdvisorEmissionGuard();
 		const accepted: string[] = [];
 		const stream: string[] = [

@@ -1875,9 +1875,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getServiceTierByFamily: () => session?.serviceTierByFamily,
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
 			consultAdvisor: (question, signal) => session?.consultAdvisor(question, signal) ?? Promise.resolve(null),
+			consultAdvisorAsync: question => session?.consultAdvisorAsync(question) ?? false,
 			isAdvisorActive: () => session?.isAdvisorActive() ?? false,
-			duoHandoffToExecutor: resolution =>
-				session?.duoHandoffToExecutor(resolution) ?? Promise.resolve("no-controller"),
+			duoHandoffToExecutor: (resolution, scope) =>
+				session?.duoHandoffToExecutor(resolution, scope) ?? Promise.resolve("no-controller"),
 			duoEscalateToPlanner: reason => session?.duoEscalateToPlanner(reason) ?? Promise.resolve("unavailable"),
 			getPlanModeState: () => session?.getPlanModeState(),
 			getOrchestratorModeState: () => session?.getOrchestratorModeState(),
@@ -1899,6 +1900,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					status: "unavailable",
 					detail: "session is not ready yet",
 				},
+			considerCompactionWhileWaiting: reason =>
+				session?.considerCompactionWhileWaiting(reason) ?? {
+					status: "unavailable",
+					detail: "session is not ready yet",
+				},
 			requestShake: mode =>
 				session?.requestShakeFromAgent(mode) ?? {
 					status: "unavailable",
@@ -1912,6 +1918,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getFileMutationVersion: path => fileMutationVersions.get(path) ?? 0,
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
+			appendCustomEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data),
+			enterSubagentWait: () => session.enterSubagentWait(),
+			exitSubagentWait: () => session.exitSubagentWait(),
 			isMCPDiscoveryEnabled: () => session.isMCPDiscoveryEnabled(),
 			getSelectedMCPToolNames: () => session.getSelectedMCPToolNames(),
 			activateDiscoveredMCPTools: toolNames => session.activateDiscoveredMCPTools(toolNames),
@@ -2894,6 +2903,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (settings.get("task.eager") !== "default" && toolRegistry.has("task")) {
 				forceActive.add("task");
 			}
+			// irc is loadMode "discoverable" and non-essential, so discovery-all filtering would strip it
+			// from the initial actives. But the agent-registry `ircEnabled` flag (~:2931) and the irc
+			// sender gate (tools/irc.ts) are snapshotted from initialToolNames — stripping irc registers
+			// the subagent as mute and permanently rejects DMs ("agent has no irc tool and cannot reply").
+			// filterInitialToolsForDiscoveryAll is preserve-only, so this only KEEPS irc when it was
+			// already registered (subagents, taskDepth>0); an agent whose explicit tools list omits irc is
+			// unaffected because irc never enters initialToolNames.
+			if (toolRegistry.has("irc")) {
+				forceActive.add("irc");
+			}
 			initialToolNames = filterInitialToolsForDiscoveryAll(initialToolNames, {
 				loadModeOf: name => toolRegistry.get(name)?.loadMode,
 				essentialNames: new Set(computeEssentialBuiltinNames(settings)),
@@ -3321,6 +3340,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			skillsSettings,
 			modelRegistry,
 			toolRegistry,
+			toolSession,
 			builtInToolNames: builtInRegistryToolNames,
 			transformContext,
 			contextGcDbPath,

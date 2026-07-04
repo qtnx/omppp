@@ -92,7 +92,10 @@ export interface ReloadFromDiskOptions {
 /**
  * Get a nested value from an object by path segments.
  */
-function getByPath(obj: RawSettings, segments: readonly string[]): unknown {
+function getByPath(obj: RawSettings, segments: readonly string[] | null | undefined): unknown {
+	if (segments === null || segments === undefined) {
+		return undefined;
+	}
 	let current: unknown = obj;
 	for (const segment of segments) {
 		if (current === null || current === undefined || typeof current !== "object") {
@@ -407,7 +410,11 @@ export class Settings {
 			return this.#resolvedCache.get(path) as SettingValue<P>;
 		}
 
-		const value = getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]);
+		const segments = SETTING_PATH_SEGMENTS[path];
+		if (segments === undefined) {
+			return undefined as SettingValue<P>;
+		}
+		const value = getByPath(this.#merged, segments);
 		const resolved =
 			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
 		this.#resolvedCache.set(path, resolved);
@@ -1035,15 +1042,15 @@ export class Settings {
 			raw["compaction.strategy"] = "shake";
 		}
 
-		// Removed adaptive mode; block is now the default. Preserve the old
-		// "wait until useful wake" intent.
+		// Removed legacy "smart"; scheduled preserves the old bounded re-poll
+		// intent while keeping explicit "block" values untouched.
 		const legacySmartPollWaitDuration = "smart";
 		const asyncObj = raw.async as Record<string, unknown> | undefined;
 		if (asyncObj?.pollWaitDuration === legacySmartPollWaitDuration) {
-			asyncObj.pollWaitDuration = "block";
+			asyncObj.pollWaitDuration = "scheduled";
 		}
 		if (raw["async.pollWaitDuration"] === legacySmartPollWaitDuration) {
-			raw["async.pollWaitDuration"] = "block";
+			raw["async.pollWaitDuration"] = "scheduled";
 		}
 
 		// snapcompact.systemPrompt: boolean -> scoped enum.

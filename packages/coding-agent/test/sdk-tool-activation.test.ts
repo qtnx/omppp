@@ -245,7 +245,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		});
 
 		try {
-			const expectedToolNames = ["read", "grep", "glob", "bash", "web_search", "yield"];
+			const expectedToolNames = ["read", "grep", "glob", "bash", "web_search", "irc", "yield"];
 			const contextGcToolNames = [
 				"context_debug",
 				"context_global_stats",

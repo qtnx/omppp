@@ -1,13 +1,11 @@
 /**
  * Regression tests for MCP OAuth refresh failure handling (issue #1908).
  *
- * Before the fix, a refresh that came back with `invalid_grant` was logged and
- * the stale access token was re-attached as `Authorization: Bearer …` on every
- * subsequent MCP request — producing a permanent 401 / reauth loop until the
- * user hand-cleared the row in `agent.db`. The fix routes definitive failures
- * (`invalid_grant`, `invalid_token`, `revoked`, plain 401/403 not classified as
- * transient) through `AuthStorage.remove(credentialId)` and suppresses the
- * Bearer injection, so the next request surfaces a clean auth error instead.
+ * The refresh path must distinguish definitive dead-grant responses from
+ * transient auth-service failures. `invalid_grant` is definitive and clears the
+ * credential; a bare token-endpoint HTTP 401 is not definitive (see
+ * packages/ai CHANGELOG: transient bare 401 no longer logs out the credential
+ * pool), so it keeps the stale bearer for one best-effort request.
  */
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
@@ -94,15 +92,16 @@ describe("MCPManager OAuth refresh failure", () => {
 		expect(authStorage.get(CREDENTIAL_ID)).toBeUndefined();
 	});
 
-	test("clears the credential when the token endpoint replies HTTP 401", async () => {
+	test("keeps the credential when the token endpoint replies with a bare HTTP 401", async () => {
 		vi.spyOn(oauthFlow, "refreshMCPOAuthToken").mockRejectedValue(
 			new Error("MCP OAuth refresh failed: 401 Unauthorized"),
 		);
 
 		const prepared = await manager.prepareConfig(serverConfig);
 
-		expect(getAuthorizationHeader(prepared)).toBeUndefined();
-		expect(authStorage.get(CREDENTIAL_ID)).toBeUndefined();
+		expect(getAuthorizationHeader(prepared)).toBe(`Bearer ${STALE_ACCESS}`);
+		const remaining = authStorage.get(CREDENTIAL_ID);
+		expect(remaining).toMatchObject({ type: "oauth", access: STALE_ACCESS, refresh: STALE_REFRESH });
 	});
 
 	test("keeps the credential and falls back to the existing token on transient failure", async () => {
