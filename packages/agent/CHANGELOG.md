@@ -2,13 +2,6 @@
 
 ## [Unreleased]
 
-## [1.5.1] - 2026-07-04
-
-### Added
-
-- Added a streamed V2 remote-compaction progress callback (`SummaryOptions.onProgress` / `CompactionProgressUpdate`) that reports cumulative SSE event and decoded-byte counts as compaction runs, enabling hosts to render an indeterminate live progress indicator. Only the V2 streaming path emits it; V1 and local summarization are unchanged.
-- Added `ThinkingLevel.Max` so callers can request model-scoped maximum reasoning and compaction preserves that level when the target model supports it.
-
 ## [16.3.3] - 2026-07-02
 
 ### Changed
@@ -966,6 +959,13 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.1] - 2026-07-04
+
+### Added
+
+- Added a streamed V2 remote-compaction progress callback (`SummaryOptions.onProgress` / `CompactionProgressUpdate`) that reports cumulative SSE event and decoded-byte counts as compaction runs, enabling hosts to render an indeterminate live progress indicator. Only the V2 streaming path emits it; V1 and local summarization are unchanged.
+- Added `ThinkingLevel.Max` so callers can request model-scoped maximum reasoning and compaction preserves that level when the target model supports it.
 
 ## [1.4.0] - 2026-06-19
 

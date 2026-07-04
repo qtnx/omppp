@@ -2,20 +2,6 @@
 
 ## [Unreleased]
 
-## [1.5.1] - 2026-07-04
-
-### Added
-
-- Added `AuthStorage.getUsageHeadroom(model, opts?)`, a synchronous cache-first advisory probe for model-scoped usage headroom that evaluates the 5-hour and weekly usage windows explicitly (strict `<0.5` default utilization threshold, a `windowMode: "all" | "any"` option, and per-window headroom reporting), so callers can route subagents around exhausted Anthropic/Codex model buckets while preserving reserve on both windows — without minting tokens or fetching usage inline.
-
-### Fixed
-
-- Fixed Anthropic OAuth multi-account routing so exhausted sticky accounts yield only when the account-selection ranker has the same model-scoped usage data, preventing broker-backed sessions without a model id from re-ranking on every request without switching.
-- Fixed auth-broker remote credential snapshots so streamed broker entry/removal updates trigger client `AuthStorage` reloads, allowing running broker-backed sessions to see newly added or removed accounts without restart.
-- Fixed Anthropic OAuth refresh handling so a transient bare 401 no longer logs out the credential pool; only explicit dead-grant responses such as `invalid_grant` disable a credential.
-- Fixed flaky SQLite auth-storage schema initialization crashes in the issue #2421 WAL path by applying WAL/synchronous PRAGMAs before the DDL batch, preventing intermittent `no such table: main.cache` failures under process/test load.
-- Fixed auth DB open/schema initialization to retry selected transient SQLite I/O failures (including `SQLITE_IOERR_FSTAT`) across fresh connections, closing the remaining issue #2421 class startup race without masking fatal SQLite errors.
-
 ## [16.3.3] - 2026-07-02
 
 ### Added
@@ -3960,6 +3946,20 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.1] - 2026-07-04
+
+### Added
+
+- Added `AuthStorage.getUsageHeadroom(model, opts?)`, a synchronous cache-first advisory probe for model-scoped usage headroom that evaluates the 5-hour and weekly usage windows explicitly (strict `<0.5` default utilization threshold, a `windowMode: "all" | "any"` option, and per-window headroom reporting), so callers can route subagents around exhausted Anthropic/Codex model buckets while preserving reserve on both windows — without minting tokens or fetching usage inline.
+
+### Fixed
+
+- Fixed Anthropic OAuth multi-account routing so exhausted sticky accounts yield only when the account-selection ranker has the same model-scoped usage data, preventing broker-backed sessions without a model id from re-ranking on every request without switching.
+- Fixed auth-broker remote credential snapshots so streamed broker entry/removal updates trigger client `AuthStorage` reloads, allowing running broker-backed sessions to see newly added or removed accounts without restart.
+- Fixed Anthropic OAuth refresh handling so a transient bare 401 no longer logs out the credential pool; only explicit dead-grant responses such as `invalid_grant` disable a credential.
+- Fixed flaky SQLite auth-storage schema initialization crashes in the issue #2421 WAL path by applying WAL/synchronous PRAGMAs before the DDL batch, preventing intermittent `no such table: main.cache` failures under process/test load.
+- Fixed auth DB open/schema initialization to retry selected transient SQLite I/O failures (including `SQLITE_IOERR_FSTAT`) across fresh connections, closing the remaining issue #2421 class startup race without masking fatal SQLite errors.
 
 ## [1.5.0] - 2026-07-03
 

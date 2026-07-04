@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.5.1] - 2026-07-04
-
-### Fixed
-
-- Blocked project `.env` files from reintroducing host directory override variables inside the Linux Podman workspace sandbox.
-
 ## [16.3.1] - 2026-07-02
 
 ### Fixed
@@ -244,6 +238,12 @@
 ### Added
 
 - Added an XDG-aware tiny-title model cache directory helper for coding-agent local title models.
+
+## [1.5.1] - 2026-07-04
+
+### Fixed
+
+- Blocked project `.env` files from reintroducing host directory override variables inside the Linux Podman workspace sandbox.
 
 ## [1.0.7] - 2026-06-09
 
