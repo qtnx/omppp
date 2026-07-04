@@ -371,7 +371,12 @@ describe("Settings", () => {
 			const savedSettings = await readSettings();
 			expect(savedSettings.modelRoles).toEqual({
 				default: "anthropic/claude-sonnet-4-5",
+				task: "openai-codex/gpt-5.5:low",
 				smol: "anthropic/claude-haiku-4-5",
+				slow: "openai-codex/gpt-5.5:xhigh",
+				plan: "anthropic/claude-fable-5:high",
+				designer: "anthropic/claude-opus-4-8",
+				commit: "openai-codex/gpt-5.5:low",
 			});
 			expect(settings.getModelRole("default")).toBe("openai/gpt-5.2-codex");
 			expect(settings.getModelRole("smol")).toBe("anthropic/claude-haiku-4-5");
@@ -534,10 +539,20 @@ describe("Settings", () => {
 
 			expect(settings.get("retry.fallbackChains")).toEqual({
 				smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
+				task: ["openai-codex/gpt-5.5:low", "anthropic/claude-opus-4-8"],
+				plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
 			});
 
 			// The single-segment sibling must survive the flat-dotted migration.
-			expect(settings.get("modelRoles")).toEqual({ smol: "cursor/composer-2.5" });
+			expect(settings.get("modelRoles")).toEqual({
+				smol: "cursor/composer-2.5",
+				default: "openai-codex/gpt-5.5",
+				task: "openai-codex/gpt-5.5:low",
+				slow: "openai-codex/gpt-5.5:xhigh",
+				plan: "anthropic/claude-fable-5:high",
+				designer: "anthropic/claude-opus-4-8",
+				commit: "openai-codex/gpt-5.5:low",
+			});
 		});
 
 		it("migrates boolean task.eager/todo.eager true to always", async () => {
@@ -750,6 +765,94 @@ describe("Settings", () => {
 			});
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			expect(settings.get("power.sleepPrevention")).toBe("off");
+		});
+
+		it("applies setupVersion 1 config defaults without clobbering user values or persisting schema defaults", async () => {
+			await writeSettings({
+				setupVersion: 0,
+				modelRoles: {
+					default: "custom/default",
+				},
+				task: {
+					agentModelOverrides: {
+						qa: "custom/qa",
+					},
+				},
+				memory: {
+					backend: "local",
+				},
+				theme: {
+					dark: "custom-dark",
+				},
+				retry: {
+					fallbackChains: {
+						task: ["custom/task-primary", "custom/task-secondary"],
+					},
+				},
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			await settings.flush();
+
+			expect(settings.get("setupVersion")).toBe(1);
+			expect(settings.get("modelRoles")).toEqual({
+				default: "custom/default",
+				task: "openai-codex/gpt-5.5:low",
+				smol: "openai-codex/gpt-5.5:low",
+				slow: "openai-codex/gpt-5.5:xhigh",
+				plan: "anthropic/claude-fable-5:high",
+				designer: "anthropic/claude-opus-4-8",
+				commit: "openai-codex/gpt-5.5:low",
+			});
+			expect(settings.get("task.agentModelOverrides")).toEqual({
+				designer: "anthropic/claude-opus-4-8:xhigh",
+				oracle: "openai-codex/gpt-5.5:xhigh",
+				plan: "openai-codex/gpt-5.5:xhigh",
+				qa: "custom/qa",
+				tester: "openai-codex/gpt-5.5:medium",
+				quick_task: "openai-codex/gpt-5.5:low",
+				reviewer: "openai-codex/gpt-5.5:xhigh",
+				task: "openai-codex/gpt-5.5:low",
+			});
+			expect(settings.get("memory.backend")).toBe("local");
+			expect(settings.get("theme.dark")).toBe("custom-dark");
+			expect(settings.get("display.syntaxHighlighting")).toBe("basic");
+			expect(settings.get("dev.autoqa.consent")).toBe("denied");
+			expect(settings.get("learning.enabled")).toBe(true);
+			expect(settings.get("learning.classifierModels")).toEqual([
+				"openai-codex/gpt-5.4-mini",
+				"openai-codex/gpt-5.3-codex-spark",
+				"anthropic/claude-haiku-4-5",
+				"pi/smol",
+				"pi/default",
+			]);
+			expect(settings.get("providers.webSearch")).toBe("perplexity");
+			expect(settings.get("retry.fallbackChains")).toEqual({
+				task: ["custom/task-primary", "custom/task-secondary"],
+				smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
+				plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
+			});
+
+			const onDisk = await readSettings();
+			expect(onDisk.setupVersion).toBe(1);
+			expect(onDisk.modelRoles).toEqual(settings.get("modelRoles"));
+			expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual(
+				settings.get("task.agentModelOverrides"),
+			);
+			expect(onDisk.memory).toEqual({ backend: "local" });
+			expect(onDisk.theme).toEqual({ dark: "custom-dark" });
+			expect(onDisk.workflow).toBeUndefined();
+			expect(onDisk.hindsight).toBeUndefined();
+			expect(onDisk.hideThinkingBlock).toBeUndefined();
+			expect(onDisk.symbolPreset).toBeUndefined();
+			expect((onDisk.task as Record<string, unknown>).showResolvedModelBadge).toBeUndefined();
+
+			const firstMigration = structuredClone(onDisk);
+			resetSettingsForTest();
+			const rerunSettings = await Settings.init({ cwd: projectDir, agentDir });
+			await rerunSettings.flush();
+			expect(rerunSettings.get("setupVersion")).toBe(1);
+			expect(await readSettings()).toEqual(firstMigration);
 		});
 
 		describe("provider request limits", () => {
