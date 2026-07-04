@@ -151,6 +151,105 @@ function migrateFlatSettingPaths(raw: RawSettings): void {
 	}
 }
 
+type RawSettingRecord = Record<string, unknown>;
+
+type SetupConfigRecordMigration = {
+	path: SettingPath;
+	target: RawSettingRecord;
+};
+
+type SetupConfigScalarMigration = {
+	path: SettingPath;
+	target: unknown;
+};
+
+type RawSettingsMigrationOptions = {
+	applySetupConfigMigration?: boolean;
+	persistModifiedPaths?: boolean;
+};
+
+export type ConfigMigrationApplyResult = {
+	changed: boolean;
+	setupVersion: number;
+	currentVersion: number;
+	changedPaths: string[];
+};
+
+const SETUP_CONFIG_VERSION = 1;
+
+const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
+	{
+		path: "modelRoles",
+		target: {
+			default: "openai-codex/gpt-5.5",
+			task: "openai-codex/gpt-5.5:low",
+			smol: "openai-codex/gpt-5.5:low",
+			slow: "openai-codex/gpt-5.5:xhigh",
+			plan: "anthropic/claude-fable-5:high",
+			designer: "anthropic/claude-opus-4-8",
+			commit: "openai-codex/gpt-5.5:low",
+		},
+	},
+	{
+		path: "task.agentModelOverrides",
+		target: {
+			designer: "anthropic/claude-opus-4-8:xhigh",
+			oracle: "openai-codex/gpt-5.5:xhigh",
+			plan: "openai-codex/gpt-5.5:xhigh",
+			qa: "openai-codex/gpt-5.5:high",
+			tester: "openai-codex/gpt-5.5:medium",
+			quick_task: "openai-codex/gpt-5.5:low",
+			reviewer: "openai-codex/gpt-5.5:xhigh",
+			task: "openai-codex/gpt-5.5:low",
+		},
+	},
+	{
+		path: "retry.fallbackChains",
+		target: {
+			task: ["openai-codex/gpt-5.5:low", "anthropic/claude-opus-4-8"],
+			smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
+			plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
+		},
+	},
+];
+
+const SETUP_CONFIG_SCALAR_MIGRATIONS: readonly SetupConfigScalarMigration[] = [
+	{ path: "task.showResolvedModelBadge", target: true },
+	{ path: "workflow.enabled", target: true },
+	{ path: "dev.autoqa.consent", target: "denied" },
+	{ path: "memory.backend", target: "mnemopi" },
+	{ path: "learning.enabled", target: true },
+	{
+		path: "learning.classifierModels",
+		target: [
+			"openai-codex/gpt-5.4-mini",
+			"openai-codex/gpt-5.3-codex-spark",
+			"anthropic/claude-haiku-4-5",
+			"pi/smol",
+			"pi/default",
+		],
+	},
+	{ path: "hindsight.apiUrl", target: "http://localhost:8888" },
+	{ path: "hideThinkingBlock", target: false },
+	{ path: "providers.webSearch", target: "perplexity" },
+	{ path: "symbolPreset", target: "unicode" },
+	{ path: "theme.dark", target: "titanium" },
+	{ path: "display.syntaxHighlighting", target: "basic" },
+];
+
+function valuesEqual(a: unknown, b: unknown): boolean {
+	if (Object.is(a, b)) return true;
+	if (Array.isArray(a) && Array.isArray(b)) {
+		return a.length === b.length && a.every((item, index) => valuesEqual(item, b[index]));
+	}
+	if (isRecord(a) && isRecord(b)) {
+		const aKeys = Object.keys(a);
+		const bKeys = Object.keys(b);
+		return aKeys.length === bKeys.length && aKeys.every(key => Object.hasOwn(b, key) && valuesEqual(a[key], b[key]));
+	}
+	return false;
+}
+
 export function normalizeProviderMaxInFlightRequests(value: unknown): Record<string, number> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
 	const normalized: Record<string, number> = {};
@@ -299,6 +398,8 @@ export class Settings {
 
 	/** Paths modified during this session (for partial save) */
 	#modified = new Set<string>();
+	/** Setup migration paths pending an explicit config update/flush report. */
+	#pendingSetupConfigMigrationPaths = new Set<string>();
 
 	/** Legacy `lastChangelogVersion` captured from config.yml during migration (now a marker file). */
 	#legacyLastChangelogVersion?: string;
@@ -524,6 +625,25 @@ export class Settings {
 		if (this.#modified.size > 0) {
 			await this.#saveNow();
 		}
+	}
+
+	/**
+	 * Persist setup config migrations discovered while loading config.yml and
+	 * report whether the persisted config changed.
+	 */
+	async applyPendingMigrations(): Promise<ConfigMigrationApplyResult> {
+		const changedPaths = [...this.#pendingSetupConfigMigrationPaths].sort();
+		await this.flush();
+		this.#pendingSetupConfigMigrationPaths.clear();
+		for (const changedPath of changedPaths) {
+			this.#modified.delete(changedPath);
+		}
+		return {
+			changed: changedPaths.length > 0,
+			setupVersion: this.get("setupVersion"),
+			currentVersion: SETUP_CONFIG_VERSION,
+			changedPaths,
+		};
 	}
 
 	async cloneForCwd(cwd: string): Promise<Settings> {
@@ -812,14 +932,19 @@ export class Settings {
 		return this;
 	}
 
-	async #loadYaml(filePath: string): Promise<RawSettings> {
+	async #loadYaml(filePath: string, options: { trackSetupMigration?: boolean } = {}): Promise<RawSettings> {
 		try {
 			const content = await Bun.file(filePath).text();
 			const parsed = YAML.parse(content);
-			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			if (parsed !== null && parsed !== undefined && (typeof parsed !== "object" || Array.isArray(parsed))) {
 				return {};
 			}
-			return this.#migrateRawSettings(parsed as RawSettings);
+			const raw = (parsed ?? {}) as RawSettings;
+			const applySetupConfigMigration = this.#persist && filePath === this.#configPath;
+			return this.#migrateRawSettings(raw, {
+				applySetupConfigMigration,
+				persistModifiedPaths: applySetupConfigMigration && (options.trackSetupMigration ?? true),
+			});
 		} catch (error) {
 			if (isEnoent(error)) return {};
 			logger.warn("Settings: failed to load", { path: filePath, error: String(error) });
@@ -929,7 +1054,7 @@ export class Settings {
 	}
 
 	/** Apply schema migrations to raw settings */
-	#migrateRawSettings(raw: RawSettings): RawSettings {
+	#migrateRawSettings(raw: RawSettings, options: RawSettingsMigrationOptions = {}): RawSettings {
 		migrateFlatSettingPaths(raw);
 
 		// queueMode -> steeringMode
@@ -1373,6 +1498,51 @@ export class Settings {
 		if (tierTouched) raw.tier = tierObj;
 		delete raw.fastModeScope;
 
+		const setupVersion = typeof raw.setupVersion === "number" ? raw.setupVersion : 0;
+		if (options.applySetupConfigMigration && setupVersion < SETUP_CONFIG_VERSION) {
+			const setupModifiedPaths = new Set<SettingPath>();
+
+			for (const migration of SETUP_CONFIG_RECORD_MIGRATIONS) {
+				if (valuesEqual(migration.target, getDefault(migration.path))) continue;
+
+				const current = getByPath(raw, SETTING_PATH_SEGMENTS[migration.path]);
+				if (current !== undefined && !isRecord(current)) continue;
+
+				const record = current === undefined ? {} : current;
+				let changed = current === undefined;
+				for (const [key, value] of Object.entries(migration.target)) {
+					if (!(key in record)) {
+						record[key] = structuredClone(value);
+						changed = true;
+					}
+				}
+				if (changed) {
+					setByPath(raw, migration.path.split("."), record);
+					setupModifiedPaths.add(migration.path);
+				}
+			}
+
+			for (const migration of SETUP_CONFIG_SCALAR_MIGRATIONS) {
+				if (valuesEqual(migration.target, getDefault(migration.path))) continue;
+
+				const current = getByPath(raw, SETTING_PATH_SEGMENTS[migration.path]);
+				if (current === undefined || valuesEqual(current, getDefault(migration.path))) {
+					if (!valuesEqual(current, migration.target)) {
+						setByPath(raw, migration.path.split("."), structuredClone(migration.target));
+						setupModifiedPaths.add(migration.path);
+					}
+				}
+			}
+
+			raw.setupVersion = SETUP_CONFIG_VERSION;
+			setupModifiedPaths.add("setupVersion");
+			if (options.persistModifiedPaths) {
+				for (const path of setupModifiedPaths) {
+					this.#modified.add(path);
+					this.#pendingSetupConfigMigrationPaths.add(path);
+				}
+			}
+		}
 		return raw;
 	}
 
@@ -1432,7 +1602,7 @@ export class Settings {
 		try {
 			await withFileLock(configPath, async () => {
 				// Re-read to preserve external changes
-				const current = await this.#loadYaml(configPath);
+				const current = await this.#loadYaml(configPath, { trackSetupMigration: false });
 
 				// Apply only our modified paths
 				for (const modPath of modifiedPaths) {

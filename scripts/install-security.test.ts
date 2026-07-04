@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 const repoRoot = path.join(import.meta.dir, "..");
@@ -10,6 +9,7 @@ const standardConfigPath = path.join(repoRoot, "packages", "coding-agent", "exam
 const powershellCommand = findExecutable(["pwsh", "powershell"]);
 const describePowerShell = powershellCommand ? describe : describe.skip;
 const installerProcessTestOptions = { timeout: 30_000 };
+const installerTempRoot = path.join(repoRoot, ".tmp-install-security");
 
 function findExecutable(names: readonly string[]): string | null {
 	const pathExts = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
@@ -68,7 +68,8 @@ async function createFakeInstallerTools(
 	binaryContent: string,
 	checksum: string,
 ): Promise<{ root: string; installDir: string }> {
-	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ompx-install-test-"));
+	await fs.promises.mkdir(installerTempRoot, { recursive: true });
+	const root = await fs.promises.mkdtemp(`${installerTempRoot}${path.sep}`);
 	const binDir = path.join(root, "bin");
 	const installDir = path.join(root, "install");
 	await fs.promises.mkdir(binDir, { recursive: true });
@@ -288,6 +289,49 @@ describe("installer supply-chain hardening", () => {
 			expect(result.exitCode).toBe(0);
 			expect(await Bun.file(configPath).text()).toBe(
 				"display:\n  smoothStreaming: true\n  syntaxHighlighting: basic\ntheme:\n  dark: custom\n",
+			);
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("runs the installed config update command for existing shell configs", async () => {
+		const binaryContent = `#!/bin/sh
+if [ "$1" != "config" ] || [ "$2" != "update" ] || [ "$3" != "--json" ] || [ "$#" -ne 3 ]; then
+  printf "unexpected args: %s\\n" "$*" >&2
+  exit 64
+fi
+config_file="$PI_CODING_AGENT_DIR/config.yml"
+marker_file="$PI_CODING_AGENT_DIR/config-update-ran"
+tmp_file="$config_file.tmp"
+while IFS= read -r line; do
+  case "$line" in
+    "setupVersion: 0") printf "setupVersion: 1\\n" ;;
+    *) printf "%s\\n" "$line" ;;
+  esac
+done < "$config_file" > "$tmp_file"
+mv "$tmp_file" "$config_file"
+printf "called\\n" > "$marker_file"
+`;
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const codingAgentDir = path.join(root, "agent");
+		const configPath = path.join(codingAgentDir, "config.yml");
+		const markerPath = path.join(codingAgentDir, "config-update-ran");
+		try {
+			await fs.promises.mkdir(codingAgentDir, { recursive: true });
+			await Bun.write(
+				configPath,
+				"setupVersion: 0\ntheme:\n  dark: custom\ndisplay:\n  syntaxHighlighting: vivid\nmodelRoles:\n  default: custom-model\n",
+			);
+			const result = await runShellInstaller(root, installDir, ["--binary"], {
+				PI_CODING_AGENT_DIR: codingAgentDir,
+			});
+
+			expect(result.exitCode).toBe(0);
+			expect(await Bun.file(markerPath).exists()).toBe(true);
+			expect(await Bun.file(configPath).text()).toBe(
+				"setupVersion: 1\ntheme:\n  dark: custom\ndisplay:\n  syntaxHighlighting: vivid\nmodelRoles:\n  default: custom-model\n",
 			);
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });

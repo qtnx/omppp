@@ -1,13 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import { runConfigCommand } from "@oh-my-pi/pi-coding-agent/cli/config-cli";
+import { type ConfigCommandArgs, parseConfigArgs, runConfigCommand } from "@oh-my-pi/pi-coding-agent/cli/config-cli";
 import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { getConfigRootDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { YAML } from "bun";
 
 let testAgentDir: TempDir | undefined;
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
+
+const getConfigPath = () => path.join(testAgentDir?.path() ?? fallbackAgentDir, "config.yml");
+
+const writeSettings = async (settings: Record<string, unknown>) => {
+	await Bun.write(getConfigPath(), YAML.stringify(settings, null, 2));
+};
+
+const readSettings = async (): Promise<Record<string, unknown>> => {
+	const content = await Bun.file(getConfigPath()).text();
+	const parsed = YAML.parse(content);
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+	return parsed as Record<string, unknown>;
+};
 
 beforeEach(() => {
 	resetSettingsForTest();
@@ -165,5 +179,134 @@ describe("config CLI schema coverage", () => {
 		expect(parsed.key).toBe("defaultThinkingLevel");
 		expect(parsed.type).toBe("enum");
 		expect(parsed.value).toBe("max");
+	});
+});
+
+describe("config update", () => {
+	it("persists setupVersion 1 diff-only migration values and preserves explicit custom values", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		await writeSettings({
+			setupVersion: 0,
+			modelRoles: {
+				default: "custom/default",
+			},
+			task: {
+				agentModelOverrides: {
+					qa: "custom/qa",
+				},
+			},
+			memory: {
+				backend: "local",
+			},
+			theme: {
+				dark: "custom-dark",
+			},
+			retry: {
+				fallbackChains: {
+					task: ["custom/task-primary", "custom/task-secondary"],
+				},
+			},
+		});
+
+		await runConfigCommand({ action: "update" as ConfigCommandArgs["action"], flags: { json: true } });
+
+		const payload = logSpy.mock.calls.at(-1)?.[0];
+		expect(typeof payload).toBe("string");
+		expect(JSON.parse(String(payload))).toMatchObject({
+			changed: true,
+			setupVersion: 1,
+			currentVersion: 1,
+		});
+
+		const onDisk = await readSettings();
+		expect(onDisk.setupVersion).toBe(1);
+		expect(onDisk.modelRoles).toEqual({
+			default: "custom/default",
+			task: "openai-codex/gpt-5.5:low",
+			smol: "openai-codex/gpt-5.5:low",
+			slow: "openai-codex/gpt-5.5:xhigh",
+			plan: "anthropic/claude-fable-5:high",
+			designer: "anthropic/claude-opus-4-8",
+			commit: "openai-codex/gpt-5.5:low",
+		});
+		expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual({
+			designer: "anthropic/claude-opus-4-8:xhigh",
+			oracle: "openai-codex/gpt-5.5:xhigh",
+			plan: "openai-codex/gpt-5.5:xhigh",
+			qa: "custom/qa",
+			tester: "openai-codex/gpt-5.5:medium",
+			quick_task: "openai-codex/gpt-5.5:low",
+			reviewer: "openai-codex/gpt-5.5:xhigh",
+			task: "openai-codex/gpt-5.5:low",
+		});
+		expect(onDisk.memory).toEqual({ backend: "local" });
+		expect(onDisk.theme).toEqual({ dark: "custom-dark" });
+		expect(onDisk.retry).toEqual({
+			fallbackChains: {
+				task: ["custom/task-primary", "custom/task-secondary"],
+				smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
+				plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
+			},
+		});
+		expect(onDisk.workflow).toBeUndefined();
+		expect(onDisk.hindsight).toBeUndefined();
+		expect(onDisk.hideThinkingBlock).toBeUndefined();
+		expect(onDisk.symbolPreset).toBeUndefined();
+		expect((onDisk.task as Record<string, unknown>).showResolvedModelBadge).toBeUndefined();
+	});
+
+	it("updates an existing empty config file", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		await Bun.write(path.join(testAgentDir!.path(), "config.yml"), "");
+
+		await runConfigCommand({ action: "update", flags: { json: true } });
+
+		const payload = logSpy.mock.calls.at(-1)?.[0];
+		expect(typeof payload).toBe("string");
+		expect(JSON.parse(String(payload))).toMatchObject({
+			changed: true,
+			setupVersion: 1,
+			currentVersion: 1,
+		});
+		expect((await readSettings()).setupVersion).toBe(1);
+	});
+
+	it("reports unchanged JSON and leaves config stable on a second run", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		await writeSettings({
+			setupVersion: 0,
+			modelRoles: {
+				default: "custom/default",
+			},
+		});
+
+		await runConfigCommand({ action: "update" as ConfigCommandArgs["action"], flags: { json: true } });
+		const firstMigration = await readSettings();
+		await runConfigCommand({ action: "update" as ConfigCommandArgs["action"], flags: { json: true } });
+
+		const payload = logSpy.mock.calls.at(-1)?.[0];
+		expect(typeof payload).toBe("string");
+		expect(JSON.parse(String(payload))).toMatchObject({
+			changed: false,
+			setupVersion: 1,
+			currentVersion: 1,
+		});
+		expect(await readSettings()).toEqual(firstMigration);
+	});
+
+	it("parses update as a config action without requiring a key or value", () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(process, "exit").mockImplementation((() => {
+			throw new Error("process.exit");
+		}) as typeof process.exit);
+
+		let parsed: ConfigCommandArgs | undefined;
+		expect(() => {
+			parsed = parseConfigArgs(["config", "update", "--json"]);
+		}).not.toThrow();
+		expect(parsed).toEqual({
+			action: "update",
+			flags: { json: true },
+		});
 	});
 });
