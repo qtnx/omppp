@@ -144,7 +144,6 @@ function formatPrStatus(pr: NonNullable<SegmentContext["git"]["pr"]>): string | 
 	return state === "OPEN" ? "open" : null;
 }
 
-
 function classifyProjectDir(pwd: string): { scratch: boolean; relative: string | null } {
 	for (const root of getScratchRoots()) {
 		if (pathIsWithin(root, pwd)) {

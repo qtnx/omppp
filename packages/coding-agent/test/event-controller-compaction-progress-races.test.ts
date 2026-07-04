@@ -95,14 +95,24 @@ function startEvent(): Extract<AgentSessionEvent, { type: "auto_compaction_start
 	return { type: "auto_compaction_start", reason: "overflow", action: "context-full" };
 }
 
-function progressEvent(bytes: number, estTokens?: number): Extract<AgentSessionEvent, { type: "auto_compaction_progress" }> {
+function progressEvent(
+	bytes: number,
+	estTokens?: number,
+): Extract<AgentSessionEvent, { type: "auto_compaction_progress" }> {
 	return { type: "auto_compaction_progress", action: "context-full", elapsedMs: 0, events: 1, bytes, estTokens };
 }
 
 function endEvent(
 	overrides: Partial<Extract<AgentSessionEvent, { type: "auto_compaction_end" }>> = {},
 ): Extract<AgentSessionEvent, { type: "auto_compaction_end" }> {
-	return { type: "auto_compaction_end", action: "context-full", result: undefined, aborted: false, willRetry: false, ...overrides };
+	return {
+		type: "auto_compaction_end",
+		action: "context-full",
+		result: undefined,
+		aborted: false,
+		willRetry: false,
+		...overrides,
+	};
 }
 
 // A `tool_execution_update` for a tool the controller is not tracking: it runs
@@ -197,7 +207,10 @@ describe("EventController auto-compaction progress lifecycle/races", () => {
 		{ name: "aborted", overrides: { aborted: true } },
 		{ name: "errorMessage set", overrides: { errorMessage: "compaction failed" } },
 		{ name: "willRetry", overrides: { willRetry: true } },
-		{ name: "normal result", overrides: { result: {} as Extract<AgentSessionEvent, { type: "auto_compaction_end" }>["result"] } },
+		{
+			name: "normal result",
+			overrides: { result: {} as Extract<AgentSessionEvent, { type: "auto_compaction_end" }>["result"] },
+		},
 	];
 
 	for (const variant of exitVariants) {
@@ -246,7 +259,9 @@ describe("EventController auto-compaction progress lifecycle/races", () => {
 		expect(line).toContain("tok");
 		expect(line).toContain("100"); // estTokens forwarded verbatim
 
-		await controller.handleEvent(endEvent({ result: {} as Extract<AgentSessionEvent, { type: "auto_compaction_end" }>["result"] }));
+		await controller.handleEvent(
+			endEvent({ result: {} as Extract<AgentSessionEvent, { type: "auto_compaction_end" }>["result"] }),
+		);
 		expect(statusContainer.children).toHaveLength(0);
 		expect(ctx.autoCompactionProgress).toBeUndefined();
 	});
