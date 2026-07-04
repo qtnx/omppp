@@ -117,16 +117,6 @@ export class DuoController {
 			await this.#applySwitch(this.#config.planner, this.#config.plannerThinking);
 		} else if (activated && nextPhase === "executing") {
 			if (await this.#applySwitch(this.#config.executor, this.#config.executorThinking)) {
-				if (!modelsAreEqual(this.#config.executor, this.#config.planner)) {
-					if (!this.#host.ensureAdvisorStarted(this.#config.planner)) {
-						this.#machine.onAdvisorDropped();
-						this.#advisorPaused = false;
-						this.#host.emitNotice(
-							"warning",
-							"Duo advisor could not be started; continuing with the executor without takeover support.",
-						);
-					}
-				}
 				await this.#host.setOrchestratorEnabled(true);
 			}
 		} else if (deactivated) {
@@ -152,23 +142,12 @@ export class DuoController {
 		if (desiredMain) {
 			const currentModel = this.#host.currentModel();
 			const mainModelReady = currentModel ? modelsAreEqual(currentModel, desiredMain.model) : false;
-			const switchApplied =
-				mainModelReady || (await this.#applySwitch(desiredMain.model, desiredMain.thinkingLevel));
-			if (
-				!activated &&
-				this.#isExecutingLike() &&
-				switchApplied &&
-				!modelsAreEqual(desiredMain.model, this.#config.planner)
-			) {
-				if (!this.#host.ensureAdvisorStarted(this.#config.planner)) {
-					this.#machine.onAdvisorDropped();
-					this.#advisorPaused = false;
-					this.#host.emitNotice(
-						"warning",
-						"Duo advisor could not be started; continuing with the executor without takeover support.",
-					);
-				}
+			if (!mainModelReady) {
+				await this.#applySwitch(desiredMain.model, desiredMain.thinkingLevel);
 			}
+		}
+		if (this.#phaseShouldHavePlannerAdvisor()) {
+			this.#ensurePlannerAdvisor();
 		}
 		this.#syncAdvisorSelfPause();
 		this.#persistSnapshot();
@@ -450,6 +429,28 @@ export class DuoController {
 
 	#isExecutingLike(): boolean {
 		return this.#machine.phase === "executing" || this.#machine.phase === "degraded";
+	}
+
+	#phaseShouldHavePlannerAdvisor(): boolean {
+		switch (this.#machine.phase) {
+			case "planning":
+			case "executing":
+			case "takeover":
+			case "degraded":
+				return !modelsAreEqual(this.#config.executor, this.#config.planner);
+			default:
+				return false;
+		}
+	}
+
+	#ensurePlannerAdvisor(): void {
+		if (this.#host.ensureAdvisorStarted(this.#config.planner)) return;
+		this.#machine.onAdvisorDropped();
+		this.#advisorPaused = false;
+		this.#host.emitNotice(
+			"warning",
+			"Duo advisor could not be started; continuing with the executor without takeover support.",
+		);
 	}
 
 	async #applySwitch(model: Model, thinkingLevel: ConfiguredThinkingLevel): Promise<boolean> {

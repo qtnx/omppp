@@ -2,9 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { isUsageLimit } from "@oh-my-pi/pi-ai/error/flags";
 import {
 	calculateRateLimitBackoffMs,
+	extractRotationRetryAfterMs,
 	isUsageLimitOutcome,
 	isUsageLimitStatus,
 	parseRateLimitReason,
+	ROTATION_RETRY_AFTER_THRESHOLD_MS,
 } from "@oh-my-pi/pi-ai/error/rate-limit";
 
 describe("parseRateLimitReason", () => {
@@ -168,6 +170,68 @@ describe("isUsageLimitOutcome", () => {
 				'{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}',
 			),
 		).toBe(true);
+	});
+
+	it("rotates on 429 retry-after hints at or above the credential-rotation threshold", () => {
+		expect(
+			isUsageLimitOutcome(429, `429 Too many requests retry-after-ms=${ROTATION_RETRY_AFTER_THRESHOLD_MS}`),
+		).toBe(true);
+		expect(
+			isUsageLimitOutcome(429, `429 {"type":"error","error":{"type":"rate_limit_error"}} retry-after-ms=900000`),
+		).toBe(true);
+	});
+
+	it("keeps short retry-after 429s in the upstream-backoff lane", () => {
+		expect(
+			isUsageLimitOutcome(429, `429 Too many requests retry-after-ms=${ROTATION_RETRY_AFTER_THRESHOLD_MS - 1}`),
+		).toBe(false);
+		expect(isUsageLimitOutcome(429, "429 Too many requests retry-after-ms=1000")).toBe(false);
+	});
+
+	it("extracts retry-after-ms headers for rotation eligibility", () => {
+		const retryAfterMs = ROTATION_RETRY_AFTER_THRESHOLD_MS + 1;
+		const error = Object.assign(new Error("429 Too many requests"), {
+			headers: new Headers({ "retry-after-ms": String(retryAfterMs) }),
+		});
+		expect(extractRotationRetryAfterMs(error)).toBe(retryAfterMs);
+		expect(isUsageLimitOutcome(429, error.message, extractRotationRetryAfterMs(error))).toBe(true);
+	});
+
+	it("extracts standard retry-after headers for rotation eligibility", () => {
+		const standardSeconds = Object.assign(new Error("429 Too many requests"), {
+			headers: new Headers({ "retry-after": "3600" }),
+		});
+		const standardSecondsMs = extractRotationRetryAfterMs(standardSeconds);
+		expect(standardSecondsMs).toBeGreaterThanOrEqual(ROTATION_RETRY_AFTER_THRESHOLD_MS);
+		expect(isUsageLimitOutcome(429, standardSeconds.message, standardSecondsMs)).toBe(true);
+
+		const retryAfterDate = Object.assign(new Error("429 Too many requests"), {
+			headers: new Headers({ "retry-after": new Date(Date.now() + 60 * 60_000).toUTCString() }),
+		});
+		const retryAfterDateMs = extractRotationRetryAfterMs(retryAfterDate);
+		expect(retryAfterDateMs).toBeGreaterThanOrEqual(ROTATION_RETRY_AFTER_THRESHOLD_MS);
+		expect(isUsageLimitOutcome(429, retryAfterDate.message, retryAfterDateMs)).toBe(true);
+
+		const resetMs = Object.assign(new Error("429 Too many requests"), {
+			headers: new Headers({ "x-ratelimit-reset-ms": "600000" }),
+		});
+		const resetRetryAfterMs = extractRotationRetryAfterMs(resetMs);
+		expect(resetRetryAfterMs).toBeGreaterThanOrEqual(ROTATION_RETRY_AFTER_THRESHOLD_MS);
+		expect(isUsageLimitOutcome(429, resetMs.message, resetRetryAfterMs)).toBe(true);
+
+		const shortRetryAfter = Object.assign(new Error("429 Too many requests"), {
+			headers: new Headers({ "retry-after": "60" }),
+		});
+		const shortRetryAfterMs = extractRotationRetryAfterMs(shortRetryAfter);
+		expect(shortRetryAfterMs).toBeLessThan(ROTATION_RETRY_AFTER_THRESHOLD_MS);
+		expect(isUsageLimitOutcome(429, shortRetryAfter.message, shortRetryAfterMs)).toBe(false);
+
+		const zeroRetryAfter = Object.assign(new Error("429 Too many requests"), {
+			headers: new Headers({ "retry-after": "0" }),
+		});
+		const zeroRetryAfterMs = extractRotationRetryAfterMs(zeroRetryAfter);
+		expect(zeroRetryAfterMs ?? 0).toBe(0);
+		expect(isUsageLimitOutcome(429, zeroRetryAfter.message, zeroRetryAfterMs)).toBe(false);
 	});
 
 	it("rotates on usage-limit message regardless of status", () => {

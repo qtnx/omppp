@@ -178,7 +178,7 @@ describe("AgentSession duo wiring helpers", () => {
 
 		expect(controller.status.phase).toBe("executing");
 		expect(host.switches.map(call => call.model.id)).toEqual([planner.id, executor.id]);
-		expect(host.ensured.map(model => model.id)).toEqual([planner.id]);
+		expect(host.ensured.map(model => model.id)).toEqual([planner.id, planner.id]);
 	});
 
 	test("duo planner overlay renders current main-stream model identity", () => {

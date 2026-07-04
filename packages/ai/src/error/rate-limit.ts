@@ -3,6 +3,8 @@
  * Ported from opencode-antigravity-auth plugin for consistency.
  */
 
+import { getHeadersFromError, getRetryAfterMsFromHeaders, type HeadersLike } from "../utils/retry-after";
+
 export type RateLimitReason =
 	| "QUOTA_EXHAUSTED"
 	| "RATE_LIMIT_EXCEEDED"
@@ -15,6 +17,7 @@ const RATE_LIMIT_EXCEEDED_BACKOFF_MS = 30 * 1000; // 30s
 const MODEL_CAPACITY_BASE_MS = 45 * 1000; // 45s base
 const MODEL_CAPACITY_JITTER_MS = 30 * 1000; // ±15s
 const SERVER_ERROR_BACKOFF_MS = 20 * 1000; // 20s
+export const ROTATION_RETRY_AFTER_THRESHOLD_MS = 5 * 60_000;
 
 const ACCOUNT_RATE_LIMIT_PATTERN =
 	/\baccount(?:'s)?\b[^\n]{0,80}\brate.?limit\b|\brate.?limit\b[^\n]{0,80}\baccount\b/i;
@@ -101,6 +104,22 @@ export function calculateRateLimitBackoffMs(reason: RateLimitReason): number {
 /** Detect usage/quota limit errors in error messages (persistent, requires credential switch). */
 const USAGE_LIMIT_PATTERN =
 	/usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?exceeded|quota.?reached|resource.?exhausted|exhausted your capacity|quota will reset|insufficient.?(?:balance|quota)/i;
+const RETRY_AFTER_MS_HINT_PATTERN = /\bretry-after-ms\s*[:=]\s*(\d+(?:\.\d+)?)/i;
+
+function parseRetryAfterMsValue(value: string | undefined | null): number | undefined {
+	if (!value) return undefined;
+	const parsed = Number.parseFloat(value);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function getRetryAfterMsHeader(headers: HeadersLike): number | undefined {
+	if (!headers) return undefined;
+	if (headers instanceof Headers) return parseRetryAfterMsValue(headers.get("retry-after-ms"));
+	for (const [name, value] of Object.entries(headers)) {
+		if (name.toLowerCase() === "retry-after-ms") return parseRetryAfterMsValue(value);
+	}
+	return undefined;
+}
 
 /**
  * HTTP status codes that, absent richer body classification, represent an
@@ -110,6 +129,19 @@ const USAGE_LIMIT_PATTERN =
  */
 export function isUsageLimitStatus(status: number | undefined): boolean {
 	return status === 429;
+}
+
+export function extractRotationRetryAfterMs(error: unknown, message?: string): number | undefined {
+	const headers = getHeadersFromError(error);
+	const fromRetryAfterMsHeader = getRetryAfterMsHeader(headers);
+	if (fromRetryAfterMsHeader !== undefined) return fromRetryAfterMsHeader;
+	const fromHeaders = getRetryAfterMsFromHeaders(headers);
+	if (fromHeaders !== undefined) return fromHeaders;
+	const text = message ?? (error instanceof Error ? error.message : typeof error === "string" ? error : undefined);
+	if (!text) return undefined;
+	const match = RETRY_AFTER_MS_HINT_PATTERN.exec(text);
+	if (!match) return undefined;
+	return parseRetryAfterMsValue(match[1]!);
 }
 
 /**
@@ -129,12 +161,22 @@ export function isUsageLimitStatus(status: number | undefined): boolean {
  *     `SERVER_ERROR`, and `UNKNOWN` (`Please retry in 5s`) stay in the
  *     provider's own backoff layer so transient 429s don't burn sibling
  *     credentials.
+ *  5. Body classifies as transient but carries a retry-after at or above
+ *     {@link ROTATION_RETRY_AFTER_THRESHOLD_MS} → rotate. Long 429 retry hints
+ *     mean account-level exhaustion in providers that use `rate_limit_error`
+ *     for both per-minute throttles and multi-hour account caps.
  */
-export function isUsageLimitOutcome(status: number | undefined, message: string | undefined): boolean {
+export function isUsageLimitOutcome(
+	status: number | undefined,
+	message: string | undefined,
+	retryAfterMs?: number,
+): boolean {
 	if (message && matchesUsageLimitText(message)) return true;
 	if (!isUsageLimitStatus(status)) return false;
 	if (!message || isOpaqueStatusBody(message)) return true;
-	return parseRateLimitReason(message) === "QUOTA_EXHAUSTED";
+	if (parseRateLimitReason(message) === "QUOTA_EXHAUSTED") return true;
+	const retryAfter = retryAfterMs ?? extractRotationRetryAfterMs(undefined, message);
+	return retryAfter !== undefined && retryAfter >= ROTATION_RETRY_AFTER_THRESHOLD_MS;
 }
 
 /**

@@ -7,6 +7,8 @@ export interface DuoStateSnapshot {
 	phase: DuoPhase;
 	plannerId?: string;
 	executorId?: string;
+	advisorModelId?: string;
+	duoOwnsAdvisor?: boolean;
 	takeoverPurpose?: TakeoverPurpose;
 	takeoverCount: number;
 	consecutiveTakeovers: number;
