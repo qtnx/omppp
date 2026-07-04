@@ -8,7 +8,7 @@ import type { ToolSession } from "../../tools";
 import { getLatestTodoPhasesFromEntries, type TodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import { ToolError } from "../../tools/tool-errors";
 import type { AdvisorAgent, AdvisorRuntimeHost } from "..";
-import { AdvisorRuntime, SetTodosTool, UpdateBriefTool } from "..";
+import { AdvisorRuntime, ReadAdvisorStateTool, SetTodosTool, UpdateAdvisorStateTool, UpdateBriefTool } from "..";
 
 const tempDirs: string[] = [];
 
@@ -94,6 +94,40 @@ describe("advisor oversight contracts", () => {
 		expect(textFromResult(await tool.execute("brief-cap", { content: capped }))).toContain("8192 bytes");
 		await expect(tool.execute("brief-over-cap", { content: `${capped}x` })).rejects.toThrow(ToolError);
 		await expect(tool.execute("brief-over-cap-message", { content: `${capped}x` })).rejects.toThrow("8192 byte cap");
+	});
+
+	it("read_advisor_state reports missing state and reads exact content after update_advisor_state writes it", async () => {
+		const artifactsDir = await createTempDir("advisor-state-");
+		const session = {
+			cwd: artifactsDir,
+			localProtocolOptions: { getArtifactsDir: () => artifactsDir, getSessionId: () => "state-test" },
+			getArtifactsDir: () => artifactsDir,
+			getSessionId: () => "state-test",
+		} as unknown as ToolSession;
+		const readTool = new ReadAdvisorStateTool(session);
+		const updateTool = new UpdateAdvisorStateTool(session);
+		const targetPath = resolveLocalUrlToPath("local://advisor-state.md", session.localProtocolOptions ?? {});
+
+		expect(path.basename(targetPath)).toBe("advisor-state.md");
+		expect(textFromResult(await readTool.execute("read-missing", {}))).toContain(
+			"No advisor state has been written yet.",
+		);
+
+		const content = "## Goal\nKeep a durable ledger.\n";
+		const byteLength = new TextEncoder().encode(content).byteLength;
+		const updateResult = await updateTool.execute("state", { content });
+		expect(textFromResult(updateResult)).toContain(`Advisor state updated (${byteLength} bytes).`);
+		expect(await fs.readFile(targetPath, "utf8")).toBe(content);
+
+		const readResult = textFromResult(await readTool.execute("read", {}));
+		expect(readResult).toBe(`Advisor state at local://advisor-state.md:\n\n${content}`);
+
+		const capped = "x".repeat(16_384);
+		expect(textFromResult(await updateTool.execute("state-cap", { content: capped }))).toContain("16384 bytes");
+		await expect(updateTool.execute("state-over-cap", { content: `${capped}x` })).rejects.toThrow(ToolError);
+		await expect(updateTool.execute("state-over-cap-message", { content: `${capped}x` })).rejects.toThrow(
+			"16384 byte cap",
+		);
 	});
 
 	it("set_todos full-replaces live phases and appends durable user_todo_edit data preserving reorder", async () => {
