@@ -2505,9 +2505,16 @@ export class AgentSession {
 			},
 			persist: (mode, state) => {
 				if (mode === "none") {
-					this.sessionManager.appendModeChange("none");
+					// When a goal ends while orchestrator mode remains active, keep the
+					// single persisted mode slot resumable as orchestrator rather than none.
+					this.sessionManager.appendModeChange(this.getOrchestratorModeState()?.enabled ? "orchestrator" : "none");
 				} else if (state) {
-					this.sessionManager.appendModeChange(mode, { goal: state.goal });
+					// Persist the coactive orchestrator flag with the goal entry so resume
+					// can restore the goal overlay and Safe orchestrator mode together.
+					this.sessionManager.appendModeChange(mode, {
+						goal: state.goal,
+						orchestrator: this.getOrchestratorModeState()?.enabled === true,
+					});
 				}
 			},
 			sendHiddenMessage: async message => {
@@ -6606,10 +6613,12 @@ export class AgentSession {
 		// Orchestrator mode installs an exact curated safe toolset (`job`, `task`, `workflow`, ...);
 		// while the mode is active those tools stay allowed regardless of the session's base
 		// `--tools` allowlist, so a re-apply (MCP/SSH refresh, discovery reconcile) cannot strip
-		// them from the delegation surface.
+		// them from the delegation surface. Goal mode is also an additive overlay; keeping "goal"
+		// allowed while active preserves the invariant even under explicit tool allowlists.
 		if (
-			this.#orchestratorModeState?.enabled &&
-			(ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES as readonly string[]).includes(normalized)
+			(this.#orchestratorModeState?.enabled &&
+				(ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES as readonly string[]).includes(normalized)) ||
+			(normalized === "goal" && this.#goalModeState?.enabled === true)
 		) {
 			return true;
 		}
@@ -6773,6 +6782,11 @@ export class AgentSession {
 			for (const name of ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES) {
 				if (this.#toolRegistry.has(name)) forceActive.add(name);
 			}
+		}
+		// Goal mode owns only the "goal" tool; force it active across discovery reconciles
+		// while enabled so the overlay remains additive rather than snapshot-based.
+		if (this.#goalModeState?.enabled === true && this.#toolRegistry.has("goal")) {
+			forceActive.add("goal");
 		}
 		return forceActive;
 	}
@@ -7886,9 +7900,6 @@ export class AgentSession {
 			if (this.#planModeState !== undefined) {
 				this.setPlanModeState(undefined);
 			}
-			if (this.#goalModeState !== undefined) {
-				this.setGoalModeState(undefined);
-			}
 			if (this.#standingResolveHandler !== undefined) {
 				this.setStandingResolveHandler(null);
 			}
@@ -7898,13 +7909,25 @@ export class AgentSession {
 				this.#orchestratorModePreviousToolNames = this.getActiveToolNames();
 			}
 			this.#orchestratorModeState = state;
-			await this.#applyActiveToolsByName([...ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES], {
+			// Goal mode remains an additive overlay; include "goal" only while enabled
+			// so the active-tool invariant survives Safe orchestrator activation.
+			const orchestratorToolNames: string[] = [...ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES];
+			if (this.#goalModeState?.enabled === true) {
+				orchestratorToolNames.push("goal");
+			}
+			await this.#applyActiveToolsByName(orchestratorToolNames, {
 				respectRequestedToolNames: false,
 				includeAutoQa: false,
 			});
 			this.agent.setSystemPrompt(this.#baseSystemPromptWithModeOverlay());
 			if (persistModeChange && !wasEnabled) {
-				this.sessionManager.appendModeChange("orchestrator");
+				// Keep the persisted mode slot as "goal" when goal mode is active,
+				// with a coactive flag recording Safe orchestrator mode.
+				if (this.#goalModeState?.enabled === true) {
+					this.sessionManager.appendModeChange("goal", { goal: this.#goalModeState.goal, orchestrator: true });
+				} else {
+					this.sessionManager.appendModeChange("orchestrator");
+				}
 			}
 			if (!wasEnabled) {
 				await this.#emitSessionEvent({ type: "mode_changed", mode: "orchestrator" });
@@ -7917,7 +7940,16 @@ export class AgentSession {
 		this.#orchestratorModeState = undefined;
 		this.#orchestratorModePreviousToolNames = undefined;
 		if (previousToolNames !== undefined && restorePreviousTools) {
-			await this.#applyActiveToolsByName(previousToolNames, {
+			const restoredToolNames = [...previousToolNames];
+			if (this.#goalModeState?.enabled === true) {
+				restoredToolNames.push("goal");
+			} else {
+				const goalIndex = restoredToolNames.indexOf("goal");
+				if (goalIndex !== -1) restoredToolNames.splice(goalIndex, 1);
+			}
+			// Restore the pre-orchestrator tool snapshot, then enforce the goal
+			// overlay invariant according to the current goal state.
+			await this.#applyActiveToolsByName([...new Set(restoredToolNames)], {
 				respectRequestedToolNames: false,
 				includeAutoQa: false,
 			});
@@ -7926,7 +7958,13 @@ export class AgentSession {
 			await this.refreshBaseSystemPrompt();
 		}
 		if (persistModeChange && wasEnabled) {
-			this.sessionManager.appendModeChange("none");
+			// Leaving Safe orchestrator mode must preserve an active goal entry
+			// while flipping only the stored coactive orchestrator flag.
+			if (this.#goalModeState?.enabled === true) {
+				this.sessionManager.appendModeChange("goal", { goal: this.#goalModeState.goal, orchestrator: false });
+			} else {
+				this.sessionManager.appendModeChange("none");
+			}
 		}
 		if (wasEnabled) {
 			await this.#emitSessionEvent({ type: "mode_changed", mode: "none" });
@@ -8356,21 +8394,22 @@ export class AgentSession {
 	async #maybeAutoEnterOrchestratorMode(text: string): Promise<void> {
 		if (!this.#magicKeywordEnabled("orchestrate") || !containsOrchestrate(text)) return;
 		if (this.getOrchestratorModeState()?.enabled) return;
-		// Entering orchestrator mode clears BOTH plan and goal state (see
-		// setOrchestratorModeState), so never auto-switch while either is active OR
-		// resumable - that would silently destroy a paused/resumable plan or goal.
-		// A paused *goal* keeps #goalModeState populated (enabled:false + resumable
-		// status), so check the live state here.
+		// Plan mode remains exclusive, but active goal mode can coexist with orchestrator:
+		// goal supplies the budget/objective while orchestrator consumes delegation tools.
 		if (this.getPlanModeState()?.enabled) return;
 		const goalState = this.getGoalModeState();
 		const goalStatus = goalState?.goal?.status;
-		if (goalState?.enabled || goalStatus === "paused" || goalStatus === "blocked" || goalStatus === "usage-limited") {
+		if (
+			!goalState?.enabled &&
+			(goalStatus === "paused" || goalStatus === "blocked" || goalStatus === "usage-limited")
+		) {
 			return;
 		}
 		// A paused *plan* clears #planModeState, so it is invisible above; the
-		// resolved session-context mode still records it (plan_paused/goal_paused/
-		// loop). Only auto-switch from a clean `none` context.
-		if (this.sessionManager.buildSessionContext().mode !== "none") return;
+		// resolved session-context mode still records it (plan_paused/loop). Auto-switch
+		// only from a clean context or from active goal mode, which now coexists.
+		const contextMode = this.sessionManager.buildSessionContext().mode;
+		if (contextMode !== "none" && contextMode !== "goal") return;
 		await this.setOrchestratorModeState({ enabled: true });
 	}
 

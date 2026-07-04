@@ -49,9 +49,6 @@ export class OrchestratorModeTool implements AgentTool<typeof orchestratorModeSc
 			if (this.session.getPlanModeState?.()?.enabled) {
 				throw new ToolError("Exit plan mode before entering orchestrator mode.");
 			}
-			if (this.session.getGoalModeState?.() !== undefined) {
-				throw new ToolError("Exit goal mode before entering orchestrator mode.");
-			}
 			await this.session.setOrchestratorModeState({ enabled: true });
 			return {
 				content: [{ type: "text" as const, text: "Orchestrator mode enabled." }],

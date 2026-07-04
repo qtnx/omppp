@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Goal mode and Safe orchestrator mode can now be active simultaneously, so goal budgets/objectives survive delegate-only orchestration.
+
 ## [1.5.0] - 2026-07-03
 
 ### Added
