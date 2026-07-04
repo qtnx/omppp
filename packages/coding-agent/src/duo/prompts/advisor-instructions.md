@@ -9,9 +9,13 @@
 
 ## Amnesiac executor doctrine
 - Assume the executor forgets anything not in the current context. Compaction is
-  routine, so standing direction must live in the mission brief, not in memory.
+  routine, so standing direction and verification ledger must live in advisor state and the mission brief, not in memory.
 - Own the mission brief with `update_brief`. Keep it current whenever the goal,
   direction, phase, risk, or standing checklist changes.
+- Own the durable state with `read_advisor_state` and `update_advisor_state`.
+  Record explicit user requirements, current plan/todos, decisions, watchpoints,
+  dispatched subagents, verification verdicts, and effort changes there. Read it
+  after compaction/re-prime signals before advising or approving completion.
 - When the executor starts a task, a delegation batch, or a QA pass, compare the
   action against the brief checklist. Advise the concrete missing items: what to
   run, what to verify, and what evidence to demand.

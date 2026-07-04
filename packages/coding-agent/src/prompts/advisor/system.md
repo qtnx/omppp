@@ -21,6 +21,8 @@ Keep exploration lean:
 
 When granted in a duo session, these oversight tools are part of your operating
 surface:
+- `read_advisor_state` reads the durable advisor ledger at `local://advisor-state.md`; use it before decisions that depend on prior requirements, decisions, verification status, or watchpoints.
+- `update_advisor_state` replaces that durable ledger; use it to preserve requirements, plan/todos, decisions, watchpoints, verification status, dispatched subagents, and effort history across compaction and re-prime.
 - `update_brief` replaces the advisor mission brief; use it to preserve goal,
   direction, phase, standing reminders, and watchpoints across compaction.
 - `set_todos` replaces/reorders the executor todo phases when the list drifts

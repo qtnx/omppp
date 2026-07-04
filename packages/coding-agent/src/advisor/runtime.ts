@@ -463,7 +463,9 @@ export class AdvisorRuntime {
 		const customType = msg.customType;
 		if (
 			typeof customType !== "string" ||
-			(customType !== "advisor-brief-context" && !PRIMARY_CONTEXT_CUSTOM_TYPES.has(customType))
+			(customType !== "advisor-brief-context" &&
+				customType !== "advisor-state-context" &&
+				!PRIMARY_CONTEXT_CUSTOM_TYPES.has(customType))
 		) {
 			return msg;
 		}

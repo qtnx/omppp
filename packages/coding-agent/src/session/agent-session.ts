@@ -161,10 +161,12 @@ import {
 	formatAdvisorBatchContent,
 	isAdvisorInterruptImmuneTurnActive,
 	isInterruptingSeverity,
+	ReadAdvisorStateTool,
 	resolveAdvisorDeliveryChannel,
 	SetTodosTool,
 	slugifyAdvisorName,
 	ThinkingArtifactStore,
+	UpdateAdvisorStateTool,
 	UpdateBriefTool,
 } from "../advisor";
 import { type AsyncJob, type AsyncJobDeliveryState, AsyncJobManager } from "../async";
@@ -279,6 +281,7 @@ import type { PlanModeState } from "../plan-mode/state";
 import advisorBriefContextPrompt from "../prompts/advisor/brief-context.md" with { type: "text" };
 import delegationStatsPrompt from "../prompts/advisor/delegation-stats.md" with { type: "text" };
 import doneReviewMd from "../prompts/advisor/done-review.md" with { type: "text" };
+import advisorStateContextPrompt from "../prompts/advisor/state-context.md" with { type: "text" };
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
 import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
@@ -3221,6 +3224,8 @@ export class AgentSession {
 			const duoAdvisorTools =
 				isDuoOwnedAdvisor && this.#duoController && duoAdvisorToolSession
 					? [
+							new ReadAdvisorStateTool(duoAdvisorToolSession),
+							new UpdateAdvisorStateTool(duoAdvisorToolSession),
 							new UpdateBriefTool(duoAdvisorToolSession),
 							new SetTodosTool(duoAdvisorToolSession),
 							new SetExecutorEffortTool(
@@ -3370,7 +3375,7 @@ export class AgentSession {
 					resolveGists: batch => thinkingStore.resolveGists(batch),
 					renderThinking: text => thinkingStore.renderThinking(text),
 					renderStatsHeader: isDuoOwnedAdvisor ? () => this.#renderDelegationStatsHeader() : undefined,
-					renderPrimeSeed: isDuoOwnedAdvisor ? () => this.#readAdvisorBriefSync() : undefined,
+					renderPrimeSeed: isDuoOwnedAdvisor ? () => this.#readAdvisorPrimeSeedSync() : undefined,
 					notifyFailure: error => {
 						const message = error instanceof Error ? error.message : String(error);
 						this.emitNotice(
@@ -6189,17 +6194,32 @@ export class AgentSession {
 		};
 	}
 
-	#readAdvisorBriefSync(): string | undefined {
+	#readLocalAdvisorFileSync(url: string, label: string): string | undefined {
 		try {
-			const content = fs
-				.readFileSync(resolveLocalUrlToPath("local://advisor-brief.md", this.#localProtocolOptions()), "utf8")
-				.trim();
-			return content.length > 0 ? content : undefined;
+			const content = fs.readFileSync(resolveLocalUrlToPath(url, this.#localProtocolOptions()), "utf8").trim();
+			return content.length > 0 ? `${label}\n\n${content}` : undefined;
 		} catch (err) {
 			if (isEnoent(err)) return undefined;
-			logger.warn("Failed to read advisor brief", { err: String(err) });
+			logger.warn(`Failed to read ${label}`, { err: String(err) });
 			return undefined;
 		}
+	}
+
+	#readAdvisorPrimeSeedSync(): string | undefined {
+		const state = this.#readLocalAdvisorFileSync(
+			"local://advisor-state.md",
+			"Advisor durable state (authoritative):",
+		);
+		const brief = this.#readLocalAdvisorFileSync(
+			"local://advisor-brief.md",
+			"Advisor mission brief (authoritative):",
+		);
+		return (
+			[state, brief]
+				.filter((part): part is string => Boolean(part))
+				.join("\n\n")
+				.trim() || undefined
+		);
 	}
 
 	#maybeAbortStreamingEdit(event: AgentEvent): void {
@@ -8639,31 +8659,51 @@ export class AgentSession {
 		};
 	}
 
-	async #buildAdvisorBriefContext(): Promise<CustomMessage | null> {
+	async #buildAdvisorLocalContext(
+		url: string,
+		customType: string,
+		template: string,
+		logLabel: string,
+	): Promise<CustomMessage | null> {
 		const status = this.#duoController?.status;
 		if (!status || status.phase === "inactive") return null;
 		let content: string;
 		try {
 			content = (
-				await fs.promises.readFile(
-					resolveLocalUrlToPath("local://advisor-brief.md", this.#localProtocolOptions()),
-					"utf8",
-				)
+				await fs.promises.readFile(resolveLocalUrlToPath(url, this.#localProtocolOptions()), "utf8")
 			).trim();
 		} catch (err) {
 			if (isEnoent(err)) return null;
-			logger.warn("Failed to build advisor brief context", { err: String(err) });
+			logger.warn(`Failed to build ${logLabel} context`, { err: String(err) });
 			return null;
 		}
 		if (content.length === 0) return null;
 		return {
 			role: "custom",
-			customType: "advisor-brief-context",
-			content: prompt.render(advisorBriefContextPrompt, { content }),
+			customType,
+			content: prompt.render(template, { content }),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
 		};
+	}
+
+	#buildAdvisorStateContext(): Promise<CustomMessage | null> {
+		return this.#buildAdvisorLocalContext(
+			"local://advisor-state.md",
+			"advisor-state-context",
+			advisorStateContextPrompt,
+			"advisor state",
+		);
+	}
+
+	#buildAdvisorBriefContext(): Promise<CustomMessage | null> {
+		return this.#buildAdvisorLocalContext(
+			"local://advisor-brief.md",
+			"advisor-brief-context",
+			advisorBriefContextPrompt,
+			"advisor brief",
+		);
 	}
 
 	#recordDelegationToolCall(args: unknown): void {
@@ -9237,6 +9277,10 @@ export class AgentSession {
 			const goalModeMessage = this.#buildGoalModeMessage();
 			if (goalModeMessage) {
 				messages.push(goalModeMessage);
+			}
+			const advisorStateMessage = await this.#buildAdvisorStateContext();
+			if (advisorStateMessage) {
+				messages.push(advisorStateMessage);
 			}
 			const advisorBriefMessage = await this.#buildAdvisorBriefContext();
 			if (advisorBriefMessage) {
