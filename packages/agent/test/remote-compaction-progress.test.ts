@@ -220,3 +220,47 @@ describe("compact() onProgress is a V2-streaming-only sink", () => {
 		expect(spy).not.toHaveBeenCalled();
 	});
 });
+
+describe("compact() e2e: caller onProgress survives the summaryOptions rebuild", () => {
+	test("drives the real V2 streaming path so onProgress fires and a compacted result is produced", async () => {
+		const model = makeOpenAiModel({
+			remoteCompaction: {
+				enabled: true,
+				v2StreamingEnabled: true,
+				v2Endpoint: "https://compact.example/v1/responses",
+			},
+		});
+		expect(shouldUseCompactionV2Streaming(model)).toBe(true);
+
+		const compactionItem = { type: "compaction", encrypted_content: "enc_progress" };
+		const streamEvents: Array<Record<string, unknown>> = [
+			{ type: "response.created", response: {} },
+			{ type: "response.in_progress", response: {} },
+			{ type: "response.output_item.added", output_index: 0, item: { type: "reasoning" } },
+			{ type: "response.output_item.done", output_index: 0, item: compactionItem },
+			{ type: "response.completed", response: { usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } } },
+		];
+		const fetchMock: FetchImpl = async () => sseResponse(streamEvents);
+
+		const recorder = { onProgress: (_u: CompactionProgressUpdate) => {} };
+		const spy = vi.spyOn(recorder, "onProgress");
+
+		const result = await compact(makePreparation(), model, "test-key", undefined, undefined, {
+			fetch: fetchMock,
+			onProgress: u => recorder.onProgress(u),
+		});
+
+		expect(spy).toHaveBeenCalled();
+
+		const updates = spy.mock.calls.map(call => call[0]);
+		for (let i = 0; i < updates.length; i++) {
+			expect(updates[i].events).toBe(i + 1);
+		}
+		for (let i = 1; i < updates.length; i++) {
+			expect(updates[i].bytes).toBeGreaterThanOrEqual(updates[i - 1].bytes);
+		}
+
+		expect(result.shortSummary).toBe("Remote compaction");
+		expect(result.summary).toContain("Remote compaction preserved provider-native history");
+	});
+});

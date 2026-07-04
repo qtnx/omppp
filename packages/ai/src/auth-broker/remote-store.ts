@@ -133,6 +133,8 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	readonly #client: AuthBrokerClient;
 	readonly #streamSnapshots: boolean;
 	readonly #onSnapshot?: (snapshot: SnapshotResponse, generation: number) => void;
+	/** Session AuthStorage instances subscribe here so broker-delivered snapshot changes trigger a reload. */
+	#snapshotChangedListeners: Set<() => void> = new Set();
 	#snapshot: SnapshotResponse = emptySnapshot();
 	#snapshotReceivedAt = Date.now();
 	#generation = 0;
@@ -155,7 +157,10 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	constructor(opts: RemoteAuthCredentialStoreOptions) {
 		this.#client = opts.client;
 		this.#streamSnapshots = opts.streamSnapshots ?? true;
-		this.#applySnapshot(opts.initialSnapshot ?? emptySnapshot(), opts.initialSnapshot?.generation ?? 0);
+		// Seed the constructor snapshot without notifying consumers; no external broker change occurred yet.
+		this.#applySnapshot(opts.initialSnapshot ?? emptySnapshot(), opts.initialSnapshot?.generation ?? 0, {
+			notifyChanged: false,
+		});
 		this.#onSnapshot = opts.onSnapshot;
 		void this.#runBackground();
 	}
@@ -168,16 +173,35 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		return this.#snapshot;
 	}
 
-	#applySnapshot(snapshot: SnapshotResponse, generation: number): void {
+	onSnapshotChanged(listener: () => void): () => void {
+		this.#snapshotChangedListeners.add(listener);
+		return () => {
+			this.#snapshotChangedListeners.delete(listener);
+		};
+	}
+
+	#applySnapshot(snapshot: SnapshotResponse, generation: number, opts: { notifyChanged?: boolean } = {}): void {
 		this.#snapshot = snapshot;
 		this.#generation = generation;
 		this.#snapshotReceivedAt = Date.now();
 		const onSnapshot = this.#onSnapshot;
-		if (!onSnapshot) return;
-		try {
-			onSnapshot(snapshot, generation);
-		} catch (error) {
-			logger.debug("auth-broker snapshot callback failed", { error: String(error) });
+		if (onSnapshot) {
+			try {
+				onSnapshot(snapshot, generation);
+			} catch (error) {
+				logger.debug("auth-broker snapshot callback failed", { error: String(error) });
+			}
+		}
+		if (opts.notifyChanged !== false) this.#notifySnapshotChanged();
+	}
+
+	#notifySnapshotChanged(): void {
+		for (const listener of [...this.#snapshotChangedListeners]) {
+			try {
+				listener();
+			} catch (error) {
+				logger.debug("auth-broker snapshot change listener failed", { error: String(error) });
+			}
 		}
 	}
 
@@ -274,6 +298,8 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		this.#snapshot = { ...this.#snapshot, generation, serverNowMs, refresher, credentials };
 		this.#generation = generation;
 		this.#snapshotReceivedAt = Date.now();
+		// Entry frames mutate the cached broker snapshot just like full snapshots, so AuthStorage must reload.
+		this.#notifySnapshotChanged();
 	}
 
 	#removeStreamCredential(id: number, refresher: RefresherSchedule, generation: number, serverNowMs: number): void {
@@ -281,6 +307,8 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		this.#snapshot = { ...this.#snapshot, generation, serverNowMs, refresher, credentials };
 		this.#generation = generation;
 		this.#snapshotReceivedAt = Date.now();
+		// Removal frames mutate the cached broker snapshot just like full snapshots, so AuthStorage must reload.
+		this.#notifySnapshotChanged();
 	}
 
 	/** Re-hydrate the in-memory snapshot from the broker. */
@@ -679,8 +707,8 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#backgroundAbort.abort();
-		this.#cache.clear();
 		this.#usageOverlays.clear();
+		this.#snapshotChangedListeners.clear();
 	}
 }
 

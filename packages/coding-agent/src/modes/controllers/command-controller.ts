@@ -72,8 +72,35 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 	ctx.present(block);
 }
 
+const usagePanelControllers = new WeakMap<InteractiveModeContext["session"], CommandController>();
+
+export async function refreshActiveUsagePanelForSession(session: InteractiveModeContext["session"]): Promise<void> {
+	const controller = usagePanelControllers.get(session);
+	if (!controller?.isUsagePanelActive()) return;
+	await controller.refreshActiveUsagePanel();
+}
+
 export class CommandController {
-	constructor(private readonly ctx: InteractiveModeContext) {}
+	#usagePanelActive = false;
+
+	constructor(private readonly ctx: InteractiveModeContext) {
+		// Main subscribes to AuthStorage generation changes; this registry lets it refresh only the last-rendered /usage view.
+		usagePanelControllers.set(ctx.session, this);
+	}
+
+	isUsagePanelActive(): boolean {
+		return this.#usagePanelActive;
+	}
+
+	clearUsagePanelActive(): void {
+		this.#usagePanelActive = false;
+	}
+
+	async refreshActiveUsagePanel(): Promise<void> {
+		if (!this.#usagePanelActive) return;
+		// Re-use the normal renderer so account identity, usage reports, and active-account highlighting are all fresh.
+		await this.handleUsageCommand();
+	}
 
 	openInBrowser(urlOrPath: string): void {
 		openPath(urlOrPath);
@@ -256,6 +283,7 @@ export class CommandController {
 	}
 
 	async handleSessionCommand(): Promise<void> {
+		this.clearUsagePanelActive();
 		const stats = this.ctx.session.getSessionStats();
 		const premiumRequests =
 			"premiumRequests" in stats && typeof stats.premiumRequests === "number"
@@ -361,6 +389,7 @@ export class CommandController {
 	}
 
 	async handleAdvisorStatusCommand(): Promise<void> {
+		this.clearUsagePanelActive();
 		const stats = this.ctx.session.getAdvisorStats();
 		if (!stats.active) {
 			this.ctx.present([
@@ -429,6 +458,7 @@ export class CommandController {
 	}
 
 	async handleJobsCommand(): Promise<void> {
+		this.clearUsagePanelActive();
 		const snapshot = this.ctx.session.getAsyncJobSnapshot({ recentLimit: 5 });
 		if (!snapshot) {
 			this.ctx.showWarning("Async background jobs are unavailable in this session.");
@@ -470,18 +500,21 @@ export class CommandController {
 		if (!usageReports) {
 			const provider = this.ctx.session as { fetchUsageReports?: () => Promise<UsageReport[] | null> };
 			if (!provider.fetchUsageReports) {
+				this.#usagePanelActive = false;
 				this.ctx.showWarning("Usage reporting is not configured for this session.");
 				return;
 			}
 			try {
 				usageReports = await provider.fetchUsageReports();
 			} catch (error) {
+				this.#usagePanelActive = false;
 				this.ctx.showError(`Failed to fetch usage data: ${error instanceof Error ? error.message : String(error)}`);
 				return;
 			}
 		}
 
 		if (!usageReports || usageReports.length === 0) {
+			this.#usagePanelActive = false;
 			this.ctx.showWarning("No usage data available.");
 			return;
 		}
@@ -498,9 +531,12 @@ export class CommandController {
 			provider === currentProvider ? activeAccount : undefined,
 		);
 		this.ctx.present([new Spacer(1), new Text(output, 1, 0)]);
+		// A successful render marks /usage as the last account-dependent panel eligible for live refresh.
+		this.#usagePanelActive = true;
 	}
 
 	async handleChangelogCommand(showFull = false): Promise<void> {
+		this.clearUsagePanelActive();
 		const changelogPath = getChangelogPath();
 		const allEntries = await parseChangelog(changelogPath);
 		// Default to showing only the latest 3 versions unless --full is specified
@@ -528,16 +564,19 @@ export class CommandController {
 	}
 
 	handleHotkeysCommand(): void {
+		this.clearUsagePanelActive();
 		const hotkeys = buildHotkeysMarkdown({ keybindings: this.ctx.keybindings });
 		showMarkdownPanel(this.ctx, "Keyboard Shortcuts", hotkeys);
 	}
 
 	handleToolsCommand(): void {
+		this.clearUsagePanelActive();
 		const tools = buildToolsMarkdown({ tools: this.ctx.session.agent.state.tools });
 		showMarkdownPanel(this.ctx, "Available Tools", tools);
 	}
 
 	handleContextCommand(): void {
+		this.clearUsagePanelActive();
 		const breakdown = computeContextBreakdown(this.ctx.session, { snapcompactSavings: true });
 		if (breakdown.contextWindow <= 0) {
 			this.ctx.showWarning("Context usage is unavailable: no model is selected for this session.");
@@ -554,6 +593,7 @@ export class CommandController {
 	}
 
 	async handleMemoryCommand(text: string): Promise<void> {
+		this.clearUsagePanelActive();
 		const argumentText = text.slice(7).trim();
 		const action = argumentText.split(/\s+/, 1)[0]?.toLowerCase() || "view";
 		const agentDir = this.ctx.settings.getAgentDir();
@@ -620,6 +660,7 @@ export class CommandController {
 	}
 
 	async handleLearningCommand(text: string): Promise<void> {
+		this.clearUsagePanelActive();
 		const argumentText = text.slice(9).trim();
 		const parts = argumentText.split(/\s+/).filter(Boolean);
 		const action = parts[0]?.toLowerCase() || "view";

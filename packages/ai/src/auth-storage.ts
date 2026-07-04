@@ -665,6 +665,7 @@ type UsageRequestDescriptor = {
 type AuthApiKeyOptions = {
 	baseUrl?: string;
 	modelId?: string;
+	timeoutMs?: number;
 	/**
 	 * Caller's cancel signal. Threaded into any broker-bound OAuth refresh so
 	 * `ESC` / request abort actually kills a hung broker fetch instead of
@@ -3661,6 +3662,58 @@ export class AuthStorage {
 	}
 
 	/**
+	 * Keep sticky probes in acquisition parity with #rankOAuthSelections. If the
+	 * gate yields on usage data the ranker will not also see and hard-block, the
+	 * re-pin step restores the sticky credential and the session ranks every
+	 * request without switching.
+	 */
+	async #getStickyProbeUsageReport(
+		provider: Provider,
+		credential: OAuthCredential,
+		options?: AuthApiKeyOptions,
+	): Promise<UsageReport | null> {
+		const cached = this.#getUsageReportCacheFirst(provider, credential, options);
+		if (cached) return cached;
+		if (provider === "anthropic" && options?.modelId) return this.#getUsageReport(provider, credential, options);
+		return null;
+	}
+
+	/** Read-only sticky probe: only yields when sticky exhaustion matches the ranker hard-block predicate. */
+	async #stickyCredentialShouldYield(
+		provider: string,
+		providerKey: string,
+		stickyIndex: number,
+		credentials: { credential: OAuthCredential; index: number }[],
+		strategy: CredentialRankingStrategy,
+		rankingContext: CredentialRankingContext,
+		blockScope: string | undefined,
+		options?: AuthApiKeyOptions,
+	): Promise<boolean> {
+		const sticky = credentials.find(selection => selection.index === stickyIndex);
+		if (!sticky) return false;
+		const stickyReport = await this.#getStickyProbeUsageReport(provider, sticky.credential, {
+			...options,
+			timeoutMs: this.#usageRequestTimeoutMs,
+		});
+		if (!stickyReport) return false;
+		const stickyLimits = this.#getScopedUsageLimits(strategy, stickyReport, rankingContext);
+		if (!this.#isUsageLimitReached(stickyLimits)) return false;
+
+		for (const selection of credentials) {
+			if (selection.index === stickyIndex) continue;
+			if (this.#isCredentialBlocked(providerKey, selection.index, blockScope)) continue;
+			const siblingReport = await this.#getStickyProbeUsageReport(provider, selection.credential, {
+				...options,
+				timeoutMs: this.#usageRequestTimeoutMs,
+			});
+			if (!siblingReport) return true;
+			const siblingLimits = this.#getScopedUsageLimits(strategy, siblingReport, rankingContext);
+			if (!this.#isUsageLimitReached(siblingLimits)) return true;
+		}
+		return false;
+	}
+
+	/**
 	 * Resolves an OAuth credential, trying credentials in priority order.
 	 * Skips blocked credentials and checks usage limits for providers with usage data.
 	 * Falls back to earliest-unblocking credential if all are blocked.
@@ -3689,13 +3742,32 @@ export class AuthStorage {
 		const checkUsage = strategy !== undefined && (credentials.length > 1 || requiresProModel);
 		const sessionCredential = this.#getSessionCredential(provider, sessionId);
 		const sessionPreferredIndex = sessionCredential?.type === "oauth" ? sessionCredential.index : undefined;
+		const stickyShouldYield =
+			checkUsage &&
+			strategy !== undefined &&
+			sessionId !== undefined &&
+			sessionPreferredIndex !== undefined &&
+			(await this.#stickyCredentialShouldYield(
+				provider,
+				providerKey,
+				sessionPreferredIndex,
+				credentials,
+				strategy,
+				rankingContext,
+				blockScope,
+				options,
+			));
 		// Skip ranking only when the session already has a working preferred credential — re-ranking
 		// mid-session causes account switches that cold-start the server-side prompt cache. New sessions
 		// (no preference) and sessions whose preferred is blocked still rank, so we pick the account
-		// with the most headroom proactively and fall back intelligently when rate-limited.
+		// with the most headroom proactively and fall back intelligently when rate-limited. Keep this
+		// sticky-yield predicate exactly as strict as the ranker's hard-block predicate
+		// (#isUsageLimitReached): a looser utilization threshold would rank every request while the
+		// ranker leaves the sticky unblocked, letting the re-pin block restore it and busy-loop forever.
 		const sessionPreferredIsAvailable =
 			sessionPreferredIndex !== undefined &&
-			!this.#isCredentialBlocked(providerKey, sessionPreferredIndex, blockScope);
+			!this.#isCredentialBlocked(providerKey, sessionPreferredIndex, blockScope) &&
+			!stickyShouldYield;
 		const shouldRank = checkUsage && (!sessionPreferredIsAvailable || requiresProModel);
 		const rankingOrder = shouldRank && sessionId ? credentials.map((_credential, index) => index) : order;
 		const candidates = shouldRank

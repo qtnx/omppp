@@ -4236,15 +4236,20 @@ export const SETTINGS_SCHEMA = {
 
 	"async.pollWaitDuration": {
 		type: "enum",
-		values: ["5s", "10s", "30s", "1m", "5m", "block"] as const,
-		default: "block",
+		values: ["scheduled", "5s", "10s", "30s", "1m", "5m", "block"] as const,
+		default: "scheduled",
 		ui: {
 			tab: "tools",
 			group: "Execution",
 			label: "Poll Wait",
 			description:
-				"How long the poll tool waits for background job updates before returning the current state. Fixed values cap the wait at that duration. `block` waits until a watched job settles, a peer or user message arrives, another job's result lands, or the call is aborted.",
+				"How long the poll tool waits for background job updates before returning the current state. `scheduled` uses bounded escalating windows (5m first, 10m on consecutive re-polls) and returns a live progress snapshot at each expiry. Fixed durations use one fixed window then snapshot. `block` waits indefinitely with a silent watchdog re-check.",
 			options: [
+				{
+					value: "scheduled",
+					label: "Scheduled",
+					description: "Default — bounded escalating windows with a live progress snapshot at each expiry",
+				},
 				{ value: "5s", label: "5 seconds" },
 				{ value: "10s", label: "10 seconds" },
 				{ value: "30s", label: "30 seconds" },
@@ -4253,7 +4258,7 @@ export const SETTINGS_SCHEMA = {
 				{
 					value: "block",
 					label: "Block",
-					description: "Default — wait until a watched job finishes or new agent context arrives",
+					description: "Wait indefinitely until a watched job finishes or new agent context arrives",
 				},
 			],
 		},
@@ -4267,13 +4272,32 @@ export const SETTINGS_SCHEMA = {
 			group: "Execution",
 			label: "Blocking-Wait Re-check Interval (ms)",
 			description:
-				"While a job poll blocks on subagents in block mode, re-check every N milliseconds whether watched jobs are still running and keep waiting if they are. 0 disables the re-check and blocks forever.",
+				"While a job poll blocks on subagents in block mode, re-check every N milliseconds whether watched jobs are still running and keep waiting if they are. 0 disables the re-check and blocks forever. (block mode only)",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "20000", label: "20 seconds" },
 				{ value: "60000", label: "1 minute" },
 				{ value: "300000", label: "5 minutes" },
 				{ value: "600000", label: "10 minutes" },
+			],
+		},
+	},
+
+	"async.stallThresholdMs": {
+		type: "number",
+		default: 600_000,
+		ui: {
+			tab: "tools",
+			group: "Execution",
+			label: "Stall Threshold (ms)",
+			description:
+				"Flag a watched job as STALLED in `job` results when its subagent shows no activity for this many ms; 0 disables.",
+			options: [
+				{ value: "0", label: "Disabled" },
+				{ value: "60000", label: "1 minute" },
+				{ value: "300000", label: "5 minutes" },
+				{ value: "600000", label: "10 minutes" },
+				{ value: "1800000", label: "30 minutes" },
 			],
 		},
 	},
@@ -4285,9 +4309,11 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "Execution",
 			label: "IRC Timeout",
-			description: "Default timeout for irc wait (and send await:true) in milliseconds; 0 disables the timeout",
+			// IRC waits are bounded so timeout 0 means one maximum window, not forever.
+			description:
+				"Default timeout for irc wait (and send await:true) in milliseconds; 0 means one max window (10m)",
 			options: [
-				{ value: "0", label: "Disabled" },
+				{ value: "0", label: "10-minute max window" },
 				{ value: "30000", label: "30 seconds" },
 				{ value: "60000", label: "1 minute" },
 				{ value: "120000", label: "2 minutes" },

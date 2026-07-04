@@ -61,7 +61,7 @@ describe("job renderer live stats", () => {
 
 	// A running task row should expose live token IO/rate, not just duration.
 	it("renders live token counts and output rate for running task jobs", () => {
-		setJobLiveStatsProvider(jobId => (jobId === "LiveTask" ? progress() : undefined));
+		setJobLiveStatsProvider(jobId => (jobId === "LiveTask" ? { progress: progress() } : undefined));
 
 		const output = renderJob({
 			id: "LiveTask",
@@ -104,7 +104,7 @@ describe("job renderer live stats", () => {
 		};
 		const baseline = renderJob(job);
 
-		setJobLiveStatsProvider(jobId => (jobId === "ShellJob" ? progress({ id: "ShellJob" }) : undefined));
+		setJobLiveStatsProvider(jobId => (jobId === "ShellJob" ? { progress: progress({ id: "ShellJob" }) } : undefined));
 		const withProvider = renderJob(job);
 
 		expect(withProvider).toBe(baseline);

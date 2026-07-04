@@ -245,7 +245,7 @@ task(agent="explore", context="Implementing JWT auth for the REST API in src/api
    - If you have DIFFERENT independent work → do it now
    - Otherwise → **END YOUR RESPONSE.**
 3. **STOP. END YOUR RESPONSE.** The system will notify you when tasks complete.
-4. Genuinely blocked - no non-overlapping work left AND the next step needs the results → **blocking wait**: `job` poll with the exact ids. ONE call sleeps until those agents yield and returns their output inline, so you continue in the SAME turn. This is the sanctioned wait-for-results; it is NOT busy-polling (busy-poll = looping `job` list/poll while work could proceed) - NEVER busy-poll.
+4. Genuinely blocked - no non-overlapping work left AND the next step needs the results → **blocking wait**: `job` poll with the exact ids. ONE call sleeps up to the scheduled window (5m first, 10m after) and returns finished results OR a live progress snapshot inline, so you continue in the SAME turn. On a snapshot, reassess before re-polling: nudge/cancel STALLED jobs via `irc`/cancel, consider `compact`/`shake`, then re-issue only if continued waiting is still correct. This is the sanctioned wait-for-results; it is NOT busy-polling (busy-poll = tight re-polls without assessment) - NEVER busy-poll.
 5. Cleanup: cancel stalled/obsolete tasks individually via `job` cancel with explicit ids
 6. Follow-ups to a finished/idle agent → `irc` send to its agent id (messaging wakes it); read its transcript at `history://<agentId>`
 
@@ -276,9 +276,9 @@ When you need the delegated results but they're not ready:
 4. **Do NOT** impatiently re-search the same topics while waiting
 
 **Two ways to wait - pick by whether other work remains:**
-- **Blocking wait (continue this turn):** no non-overlapping work left and you need the result to proceed → `job` poll the exact subagent ids. It blocks until they yield, returns results inline, and you keep going with no turn boundary. Preferred when the very next step depends on the result.
+- **Blocking wait (continue this turn):** no non-overlapping work left and you need the result to proceed → `job` poll the exact subagent ids. It sleeps up to the scheduled window (5m first, 10m after), returns finished results or a live progress snapshot inline, and lets you keep going with no turn boundary. On a snapshot, reassess: nudge/cancel STALLED jobs via `irc`/cancel, consider `compact`/`shake`, then re-issue if still blocked.
 - **Yield (free the stream):** end your response; the harness re-triggers you when they finish. Preferred when you want the main-stream context idle meanwhile.
-Either way: NEVER busy-poll (loop `job` list/poll) and NEVER re-run the delegated work while waiting.
+Either way: NEVER busy-poll (tight `job` list/poll re-polls without assessment) and NEVER re-run the delegated work while waiting.
 
 ### Why This Matters:
 
