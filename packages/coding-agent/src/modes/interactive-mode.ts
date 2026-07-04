@@ -790,11 +790,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
 		this.#observerRegistry = new SessionObserverRegistry();
-		// Register once: task job ids are subagent ids, so the job renderer can
-		// resolve live progress by looking up the observer session with that id.
-		setJobLiveStatsProvider(
-			jobId => this.#observerRegistry.getSessions().find(session => session.id === jobId)?.progress,
-		);
+		// Register once: task job ids are subagent ids, so job snapshots can
+		// resolve live progress and last-activity time by observer session id.
+		setJobLiveStatsProvider(jobId => {
+			const session = this.#observerRegistry.getSessions().find(candidate => candidate.id === jobId);
+			return session ? { progress: session.progress, lastUpdate: session.lastUpdate } : undefined;
+		});
 	}
 
 	#handleMcpConnectionStatusEvent(event: McpConnectionStatusEvent): void {
@@ -4580,6 +4581,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	showAdvisorConfigure(): void {
+		this.#commandController.clearUsagePanelActive();
 		this.#selectorController.showAdvisorConfigure();
 	}
 

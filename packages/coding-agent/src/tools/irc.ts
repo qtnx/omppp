@@ -35,6 +35,8 @@ import {
 } from "./render-utils";
 
 const DEFAULT_IRC_TIMEOUT_MS = 120_000;
+// Bound each blocking wait so agents can reassess instead of sleeping forever.
+const IRC_MAX_WAIT_MS = 600_000;
 
 /**
  * IRC availability: there must be someone to chat with. True for every
@@ -59,7 +61,9 @@ const ircSchema = type({
 	"awaitReply?": type("boolean").describe("send: legacy alias for await"),
 	"await?": type("boolean").describe('send: wait for the recipient\'s reply (invalid with to:"all")'),
 	"from?": type("string").describe("wait: only accept a message from this agent id"),
-	"timeoutMs?": type("number").describe("wait: timeout in milliseconds (0 waits indefinitely)"),
+	"timeoutMs?": type("number").describe(
+		"wait: timeout in milliseconds (0 = one max window (10m); re-issue wait to keep waiting)",
+	),
 	"peek?": type("boolean").describe("inbox: list messages without consuming them"),
 });
 
@@ -421,7 +425,12 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		if (!waited) {
 			const filterNote = from ? ` from ${from}` : "";
 			return {
-				content: [{ type: "text", text: `No message${filterNote} within ${formatDuration(timeoutMs)}.` }],
+				content: [
+					{
+						type: "text",
+						text: `No message${filterNote} within ${formatDuration(timeoutMs)}; re-issue \`irc wait\` to keep waiting.`,
+					},
+				],
 				details: { op: "wait", from: senderId, waited: null },
 				// A clean wait timeout carries no information once consumed.
 				useless: true,
@@ -473,11 +482,12 @@ function errorResult(text: string, details: IrcDetails): AgentToolResult<IrcDeta
 	};
 }
 
-function normalizeIrcTimeoutMs(value: number): number {
-	if (value === 0) return 0; // 0 = timeout disabled
+export function normalizeIrcTimeoutMs(value: number): number {
+	if (value === 0) return IRC_MAX_WAIT_MS;
 	// Negative or non-finite settings are misconfigurations — fall back to the
 	// default instead of producing an instant 1 ms timeout.
 	if (!Number.isFinite(value) || value < 0) return DEFAULT_IRC_TIMEOUT_MS;
+	if (value > IRC_MAX_WAIT_MS) return IRC_MAX_WAIT_MS;
 	return Math.max(1, Math.trunc(value));
 }
 

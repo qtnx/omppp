@@ -1042,15 +1042,15 @@ export class Settings {
 			raw["compaction.strategy"] = "shake";
 		}
 
-		// Removed adaptive mode; block is now the default. Preserve the old
-		// "wait until useful wake" intent.
+		// Removed legacy "smart"; scheduled preserves the old bounded re-poll
+		// intent while keeping explicit "block" values untouched.
 		const legacySmartPollWaitDuration = "smart";
 		const asyncObj = raw.async as Record<string, unknown> | undefined;
 		if (asyncObj?.pollWaitDuration === legacySmartPollWaitDuration) {
-			asyncObj.pollWaitDuration = "block";
+			asyncObj.pollWaitDuration = "scheduled";
 		}
 		if (raw["async.pollWaitDuration"] === legacySmartPollWaitDuration) {
-			raw["async.pollWaitDuration"] = "block";
+			raw["async.pollWaitDuration"] = "scheduled";
 		}
 
 		// snapcompact.systemPrompt: boolean -> scoped enum.

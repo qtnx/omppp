@@ -10,6 +10,8 @@ import {
 	AuthStorage,
 	type StoredAuthCredential,
 } from "@oh-my-pi/pi-ai/auth-storage";
+import { isUsageLimitOutcome } from "@oh-my-pi/pi-ai/error/rate-limit";
+import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
 import type { Api, Model } from "@oh-my-pi/pi-ai/types";
 import type { UsageHeadroom, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai/usage";
 import * as claudeUsage from "@oh-my-pi/pi-ai/usage/claude";
@@ -56,6 +58,21 @@ function makeStore(rows: StoredAuthCredential[]): ObservableStore {
 			cache.set(key, { value, expiresAtSec });
 		},
 		cleanExpiredCache() {},
+	};
+}
+
+function makeStoreBackedUsageStore(
+	rows: StoredAuthCredential[],
+	reportsByAccountId: Record<string, UsageReport>,
+): ObservableStore {
+	const store = makeStore(rows);
+	return {
+		...store,
+		// Broker-backed stores own the usage snapshot, so sticky routing must read this hook instead of local cache.
+		getUsageReport(_provider, credential) {
+			if (credential.type !== "oauth" || !credential.accountId) return Promise.resolve(null);
+			return Promise.resolve(reportsByAccountId[credential.accountId] ?? null);
+		},
 	};
 }
 
@@ -221,6 +238,39 @@ async function warmUsageCache(storage: AuthStorage, syntheticReport: UsageReport
 	const fetchSpy = vi.spyOn(claudeUsage.claudeUsageProvider, "fetchUsage").mockResolvedValue(syntheticReport);
 	await storage.fetchUsageReports();
 	return fetchSpy.mock.calls.length;
+}
+function oauthUsageCacheKey(credential: AuthCredential): string {
+	if (credential.type !== "oauth") throw new Error("expected OAuth credential");
+	return `usage_cache:report:anthropic:default:oauth|account:${credential.accountId}|email:${credential.email?.toLowerCase()}`;
+}
+
+function seedUsageCache(store: ObservableStore, credential: AuthCredential, syntheticReport: UsageReport): void {
+	const expiresAt = Date.now() + 60_000;
+	store.setCache(
+		oauthUsageCacheKey(credential),
+		JSON.stringify({ value: syntheticReport, expiresAt }),
+		Math.floor(expiresAt / 1000),
+	);
+}
+
+function seedStickySession(
+	store: ObservableStore,
+	provider: string,
+	sessionId: string,
+	row: StoredAuthCredential,
+): void {
+	store.setCache(
+		`session:sticky:${provider}:${sessionId}`,
+		JSON.stringify({ type: row.credential.type, index: 0, credentialId: row.id }),
+		Math.floor((Date.now() + 60_000) / 1000),
+	);
+}
+
+function mockAnthropicOAuthAccess(): void {
+	vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async (provider, credentials) => {
+		const credential = credentials[provider];
+		return credential ? { newCredentials: credential, apiKey: `api-${credential.accountId}` } : null;
+	});
 }
 
 async function makeStorage(rows: StoredAuthCredential[] = [oauthRow(1)]): Promise<AuthStorage> {
@@ -457,5 +507,189 @@ describe("AuthStorage.getUsageHeadroom", () => {
 		} finally {
 			noScopedLimitsStorage.close();
 		}
+	});
+
+	describe("AuthStorage Anthropic OAuth sticky usage gate", () => {
+		it("switches from a hard-exhausted sticky account to a sibling with room", async () => {
+			const rowA = oauthRow(1);
+			const rowB = oauthRow(2);
+			const store = makeStore([rowA, rowB]);
+			const storage = new AuthStorage(store, {
+				usageProviderResolver: provider => (provider === "anthropic" ? claudeUsage.claudeUsageProvider : undefined),
+			});
+			mockAnthropicOAuthAccess();
+			try {
+				seedStickySession(store, "anthropic", "sticky-a", rowA);
+				await storage.reload();
+				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+				seedUsageCache(store, rowA.credential, dualWindowReport({ fiveHourFraction: 1, weeklyFraction: 0.1 }));
+				seedUsageCache(store, rowB.credential, dualWindowReport({ fiveHourFraction: 0.1, weeklyFraction: 0.1 }));
+
+				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+					"api-account-2",
+				);
+			} finally {
+				storage.close();
+			}
+		});
+
+		it("keeps a hard-exhausted sticky account when no sibling has room", async () => {
+			const rowA = oauthRow(1);
+			const rowB = oauthRow(2);
+			const store = makeStore([rowA, rowB]);
+			const storage = new AuthStorage(store, {
+				usageProviderResolver: provider => (provider === "anthropic" ? claudeUsage.claudeUsageProvider : undefined),
+			});
+			mockAnthropicOAuthAccess();
+			try {
+				seedStickySession(store, "anthropic", "sticky-a", rowA);
+				await storage.reload();
+				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+				seedUsageCache(store, rowA.credential, dualWindowReport({ fiveHourFraction: 1, weeklyFraction: 0.1 }));
+				seedUsageCache(store, rowB.credential, dualWindowReport({ fiveHourFraction: 0.1, weeklyFraction: 1 }));
+
+				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+					"api-account-1",
+				);
+			} finally {
+				storage.close();
+			}
+		});
+
+		it("skips ranking when the sticky account still has room", async () => {
+			const rowA = oauthRow(1);
+			const rowB = oauthRow(2);
+			const store = makeStore([rowA, rowB]);
+			const storage = new AuthStorage(store, {
+				usageProviderResolver: provider => (provider === "anthropic" ? claudeUsage.claudeUsageProvider : undefined),
+			});
+			mockAnthropicOAuthAccess();
+			try {
+				seedStickySession(store, "anthropic", "sticky-a", rowA);
+				await storage.reload();
+				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+				seedUsageCache(store, rowA.credential, dualWindowReport({ fiveHourFraction: 0.1, weeklyFraction: 0.1 }));
+				const fetchSpy = vi.spyOn(claudeUsage.claudeUsageProvider, "fetchUsage").mockResolvedValue(null);
+
+				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+					"api-account-1",
+				);
+				// Ranking would have to fetch sibling B's missing usage for Anthropic model-scoped selection.
+				expect(fetchSpy).not.toHaveBeenCalled();
+			} finally {
+				storage.close();
+			}
+		});
+
+		it("switches using broker-backed usage reports when no local cache exists", async () => {
+			const rowA = oauthRow(1);
+			const rowB = oauthRow(2);
+			const reports: Record<string, UsageReport> = {
+				"account-1": dualWindowReport({ fiveHourFraction: 1, weeklyFraction: 0.1 }),
+				"account-2": dualWindowReport({ fiveHourFraction: 0.1, weeklyFraction: 0.1 }),
+			};
+			const store = makeStoreBackedUsageStore([rowA, rowB], reports);
+			const storage = new AuthStorage(store, {
+				usageProviderResolver: provider => (provider === "anthropic" ? claudeUsage.claudeUsageProvider : undefined),
+			});
+			mockAnthropicOAuthAccess();
+			try {
+				seedStickySession(store, "anthropic", "sticky-a", rowA);
+				await storage.reload();
+				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+
+				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+					"api-account-2",
+				);
+			} finally {
+				storage.close();
+			}
+		});
+
+		it("does not yield a sticky account that is only over the soft headroom threshold", async () => {
+			const rowA = oauthRow(1);
+			const rowB = oauthRow(2);
+			const store = makeStore([rowA, rowB]);
+			const storage = new AuthStorage(store, {
+				usageProviderResolver: provider => (provider === "anthropic" ? claudeUsage.claudeUsageProvider : undefined),
+			});
+			mockAnthropicOAuthAccess();
+			try {
+				seedStickySession(store, "anthropic", "sticky-a", rowA);
+				await storage.reload();
+				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+				// 0.9 is above HEADROOM_UTILIZATION_MAX (0.5) but below the hard exhaustion boundary (1.0).
+				seedUsageCache(store, rowA.credential, dualWindowReport({ fiveHourFraction: 0.9, weeklyFraction: 0.1 }));
+				seedUsageCache(store, rowB.credential, dualWindowReport({ fiveHourFraction: 0.1, weeklyFraction: 0.1 }));
+				const fetchSpy = vi.spyOn(claudeUsage.claudeUsageProvider, "fetchUsage").mockResolvedValue(null);
+
+				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+					"api-account-1",
+				);
+				// A looser sticky gate would rank and fetch missing usage instead of staying on hard-limit parity.
+				expect(fetchSpy).not.toHaveBeenCalled();
+			} finally {
+				storage.close();
+			}
+		});
+
+		it("yields an exhausted broker-backed sticky account to a sibling with missing usage", async () => {
+			const rowA = oauthRow(1);
+			const rowB = oauthRow(2);
+			const reports: Record<string, UsageReport> = {
+				"account-1": dualWindowReport({ fiveHourFraction: 1, weeklyFraction: 0.1 }),
+			};
+			const store = makeStoreBackedUsageStore([rowA, rowB], reports);
+			const storage = new AuthStorage(store, {
+				usageProviderResolver: provider => (provider === "anthropic" ? claudeUsage.claudeUsageProvider : undefined),
+			});
+			mockAnthropicOAuthAccess();
+			try {
+				seedStickySession(store, "anthropic", "sticky-a", rowA);
+				await storage.reload();
+				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+
+				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+					"api-account-2",
+				);
+			} finally {
+				storage.close();
+			}
+		});
+
+		it("keeps broker-backed sticky selection without model-scoped usage parity data", async () => {
+			const rowA = oauthRow(1);
+			const rowB = oauthRow(2);
+			const reports: Record<string, UsageReport> = {
+				"account-1": dualWindowReport({ fiveHourFraction: 1, weeklyFraction: 0.1 }),
+				"account-2": dualWindowReport({ fiveHourFraction: 0.1, weeklyFraction: 0.1 }),
+			};
+			const store = makeStoreBackedUsageStore([rowA, rowB], reports);
+			const getUsageReportSpy = vi.spyOn(store, "getUsageReport");
+			const storage = new AuthStorage(store, {
+				usageProviderResolver: provider => (provider === "anthropic" ? claudeUsage.claudeUsageProvider : undefined),
+			});
+			mockAnthropicOAuthAccess();
+			try {
+				seedStickySession(store, "anthropic", "sticky-a", rowA);
+				await storage.reload();
+				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+
+				expect(await storage.getApiKey("anthropic", "sticky-a")).toBe("api-account-1");
+				// No modelId means the sticky probe mirrors the ranker: cache-first broker refreshes only for
+				// the sticky check and the selected credential preflight, without the extra awaited
+				// authoritative reads that would force needless ranking and then re-pin the sticky account.
+				expect(getUsageReportSpy).toHaveBeenCalledTimes(2);
+			} finally {
+				storage.close();
+			}
+		});
+
+		it("classifies a representative Anthropic account usage-limit 429 as a usage-limit outcome", () => {
+			const message =
+				'{"type":"error","error":{"type":"rate_limit_error","message":"This account has reached the 5-hour usage limit for Claude. Please try again later."}}';
+
+			expect(isUsageLimitOutcome(429, message)).toBe(true);
+		});
 	});
 });

@@ -5,8 +5,8 @@ Background tasks deliver their results automatically the moment they finish. You
 # Interventions
 
 - **Snapshot:** Pass `list: true` to inspect what's running without waiting.
-- **Block and wait:** Pass `poll` with specific job IDs when you are completely blocked and cannot do any other work. The call returns as soon as one watched job finishes, the wait window elapses, or an IRC / steering message interrupts the wait — NOT when all jobs finish; re-issue to keep waiting.
-  - With a fixed `async.pollWaitDuration` (`5s`–`5m`) the wait is additionally capped at that duration and may return a still-running snapshot.
+- **Block and wait:** Pass `poll` with specific job IDs when you are completely blocked and cannot do any other work. A poll sleeps up to the current scheduled window (5m first poll, 10m on consecutive re-polls), returns EARLY when a watched job finishes or IRC/steering arrives, and on expiry returns a still-running snapshot with per-job live stats (elapsed, model, tools, tokens, last activity, STALLED flag) plus the next window size; re-issue `job poll` to keep waiting (sanctioned wait, NOT busy-polling).
+  - `async.pollWaitDuration: "block"` restores indefinite blocking; fixed `5s`..`5m` values use one fixed window then snapshot.
   - To watch EVERY running job, issue a call with NO fields at all (no `poll`, no `cancel`, no `list`). NEVER pass an array of every running ID.
   - A finished job's output, or the interrupting message and reason, is included in the next turn.
 - **Stop execution:** Pass `cancel` with job IDs to kill jobs that have hung, stalled, or are no longer needed. A cancel-only call returns immediately.

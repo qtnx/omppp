@@ -41,6 +41,8 @@ const WAIT_DURATION_MS: Record<string, number> = {
 };
 
 const POLL_WATCHDOG_DEFAULT_MS = 10 * 60_000;
+// Scheduled wait snapshots use this default to flag subagents with no live updates.
+const STALL_THRESHOLD_DEFAULT_MS = 10 * 60_000;
 
 interface JobSnapshot {
 	id: string;
@@ -48,6 +50,12 @@ interface JobSnapshot {
 	status: "running" | "completed" | "failed" | "cancelled";
 	label: string;
 	durationMs: number;
+	model?: string;
+	toolCount?: number;
+	inputTokens?: number;
+	outputTokens?: number;
+	lastActivityAt?: number;
+	stalled?: boolean;
 	resultText?: string;
 	errorText?: string;
 }
@@ -55,7 +63,12 @@ interface JobSnapshot {
 type CancelStatus = "cancelled" | "not_found" | "already_completed";
 // InteractiveMode installs this hook so the generic job renderer can sample
 // subagent progress without depending on the session observer registry.
-type JobLiveStatsProvider = (jobId: string) => AgentProgress | undefined;
+export interface JobLiveStats {
+	progress?: AgentProgress;
+	lastUpdate?: number;
+}
+
+export type JobLiveStatsProvider = (jobId: string) => JobLiveStats | undefined;
 
 let jobLiveStatsProvider: JobLiveStatsProvider | undefined;
 
@@ -105,6 +118,13 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		const value = this.session.settings.get("async.pollWatchdogMs");
 		if (value === 0) return 0;
 		if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return POLL_WATCHDOG_DEFAULT_MS;
+		return value;
+	}
+
+	#resolveStallThresholdMs(): number {
+		const value = this.session.settings.get("async.stallThresholdMs");
+		if (value === 0) return 0;
+		if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return STALL_THRESHOLD_DEFAULT_MS;
 		return value;
 	}
 
@@ -201,12 +221,13 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		}
 
 		// Wait until at least one running job finishes, pending agent context
-		// arrives, the call is aborted, or a fixed configured window elapses.
-		// `async.pollWaitDuration=block` and unknown/legacy values (including
-		// `smart`) use a watchdog re-check instead of a fixed return timeout.
+		// arrives, the call is aborted, or the configured bounded window elapses.
+		// `block` restores indefinite waiting with watchdog re-checks.
 		const pollSetting = this.session.settings.get("async.pollWaitDuration");
-		const waitMs: number | undefined = WAIT_DURATION_MS[pollSetting];
-		const isBlockMode = waitMs === undefined;
+		const isBlockMode = pollSetting === "block";
+		const fixedWaitMs = WAIT_DURATION_MS[pollSetting];
+		const isScheduled = !isBlockMode && fixedWaitMs === undefined;
+		const waitMs = isBlockMode ? undefined : isScheduled ? manager.nextPollWaitMs(ownerId) : fixedWaitMs;
 		const watchdogMs = isBlockMode ? this.#resolvePollWatchdogMs() : undefined;
 		const { promise: asideWake, resolve: asideWakeResolve } = Promise.withResolvers<void>();
 		let asideWoke = false;
@@ -316,13 +337,27 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		} finally {
 			this.session.exitSubagentWait?.();
 			manager.unwatchJobs(watchedJobIds);
+			if (isScheduled) manager.recordPollWaitEnd(ownerId);
 			clearTimeout(timeoutHandle);
 			clearInterval(progressTimer);
 			if (signal) signal.removeEventListener("abort", onAbort);
 		}
 
 		considerWaitingCompaction();
-		return this.#buildResult(manager, allTrackedJobs, cancelOutcomes, compactionScheduledDuringWait);
+		const windowExpired =
+			isScheduled &&
+			!signal?.aborted &&
+			!asideWoke &&
+			!breakForCompaction &&
+			!this.session.hasPendingAgentAsides?.() &&
+			watchedJobIds.every(id => manager.getJob(id)?.status === "running");
+		return this.#buildResult(
+			manager,
+			allTrackedJobs,
+			cancelOutcomes,
+			compactionScheduledDuringWait,
+			windowExpired ? { windowMs: waitMs!, nextWindowMs: manager.peekNextPollWaitMs(ownerId) } : undefined,
+		);
 	}
 
 	/**
@@ -353,15 +388,29 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		}[],
 	): JobSnapshot[] {
 		const now = Date.now();
+		const stallThresholdMs = this.#resolveStallThresholdMs();
 		return jobs.map(j => {
 			const current = this.session.asyncJobManager?.getJob(j.id);
 			const latest = current ?? j;
+			// Running task jobs can expose live subagent telemetry for wait snapshots.
+			const stats = latest.status === "running" ? jobLiveStatsProvider?.(latest.id) : undefined;
+			const progress = stats?.progress;
+			const lastActivityAt = stats?.lastUpdate;
+			const model = progress ? formatProgressModel(progress) : undefined;
+			const inactiveMs = lastActivityAt === undefined ? undefined : now - lastActivityAt;
+			const stalled = stallThresholdMs > 0 && inactiveMs !== undefined && inactiveMs >= stallThresholdMs;
 			return {
 				id: latest.id,
 				type: latest.type,
 				status: latest.status as JobSnapshot["status"],
 				label: latest.label,
 				durationMs: Math.max(0, now - latest.startTime),
+				...(model !== undefined ? { model } : {}),
+				...(progress ? { toolCount: progress.toolCount } : {}),
+				...(progress ? { inputTokens: progress.inputTokens } : {}),
+				...(progress ? { outputTokens: progress.outputTokens } : {}),
+				...(lastActivityAt !== undefined ? { lastActivityAt } : {}),
+				...(stalled ? { stalled } : {}),
 				...(latest.resultText ? { resultText: latest.resultText } : {}),
 				...(latest.errorText ? { errorText: latest.errorText } : {}),
 			};
@@ -381,6 +430,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		}[],
 		cancelOutcomes: CancelOutcome[],
 		compactionScheduled = false,
+		waitInfo?: { windowMs: number; nextWindowMs: number },
 	): AgentToolResult<JobToolDetails> {
 		// Deduplicate by id (cancelled jobs may also appear in the watched set).
 		const seen = new Set<string>();
@@ -425,8 +475,29 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 
 		if (running.length > 0) {
 			lines.push(`## Still Running (${running.length})\n`);
+			const now = Date.now();
 			for (const j of running) {
-				lines.push(`- \`${j.id}\` [${j.type}] — ${j.label}`);
+				// Scheduled wait snapshots carry enough live telemetry to reassess before re-polling.
+				const details = [`running ${formatDuration(j.durationMs)}`];
+				if (j.model) details.push(j.model);
+				if (j.toolCount !== undefined) details.push(`${formatNumber(j.toolCount).toLowerCase()} tools`);
+				if (j.inputTokens !== undefined && j.outputTokens !== undefined) {
+					details.push(`${formatLiveTokenCount(j.inputTokens)} in / ${formatLiveTokenCount(j.outputTokens)} out`);
+				}
+				if (j.lastActivityAt !== undefined) {
+					details.push(`last activity ${formatDuration(Math.max(0, now - j.lastActivityAt))} ago`);
+				}
+				const stalledText =
+					j.stalled && j.lastActivityAt !== undefined
+						? ` — STALLED: no activity for ${formatDuration(Math.max(0, now - j.lastActivityAt))}; consider \`irc\` ping or \`cancel\``
+						: "";
+				lines.push(`- \`${j.id}\` [${j.type}] — ${j.label} · ${details.join(" · ")}${stalledText}`);
+			}
+			if (waitInfo) {
+				lines.push(
+					"",
+					`Wait window elapsed after ${formatDuration(waitInfo.windowMs)}; the jobs above are still running. The next \`job poll\` waits up to ${formatDuration(waitInfo.nextWindowMs)}. Reassess before re-polling: nudge or cancel any STALLED job (irc send to its id), otherwise re-issue \`job poll\` to keep waiting. If context is heavy, run \`compact\`/\`shake\` first.`,
+				);
 			}
 		}
 
@@ -443,6 +514,13 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 			...(isWaitingPollDetails(details) ? { useless: true } : {}),
 		};
 	}
+}
+
+function formatProgressModel(progress: AgentProgress): string | undefined {
+	if (progress.resolvedModel) return progress.resolvedModel;
+	const override = progress.modelOverride;
+	if (Array.isArray(override)) return override.join(", ");
+	return override;
 }
 
 // =============================================================================
@@ -652,8 +730,9 @@ export const jobToolRenderer = {
 							}
 							// Only running task jobs have job ids that map to subagent progress;
 							// bash/workflow/no-progress rows keep their previous byte output.
-							const progress =
+							const stats =
 								job.status === "running" && job.type === "task" ? jobLiveStatsProvider?.(job.id) : undefined;
+							const progress = stats?.progress;
 							const durationMs = progress ? Math.max(job.durationMs, progress.durationMs) : job.durationMs;
 							const durationText = uiTheme.fg("dim", formatDuration(durationMs));
 							// Surface live token IO and rate beside duration so "waiting" rows

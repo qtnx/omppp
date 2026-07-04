@@ -209,6 +209,12 @@ export async function discoverAuthStorage(options: DiscoverAuthStorageOptions = 
 			sourceLabel: options.sourceLabel ?? `broker ${brokerConfig.url}`,
 		});
 		await storage.reload();
+		// Broker snapshot pushes update the remote store first; reload AuthStorage so its in-memory credential cache advances too.
+		store.onSnapshotChanged(() => {
+			void storage.reload().catch(error => {
+				logger.debug("auth-broker AuthStorage reload after snapshot failed", { error: String(error) });
+			});
+		});
 		return storage;
 	}
 

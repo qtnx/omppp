@@ -1300,6 +1300,8 @@ export async function compact(
 		promptCacheKey: options?.promptCacheKey,
 		tools: options?.tools,
 		fetch: options?.fetch,
+		// Preserve the caller's streaming progress callback through the summaryOptions rebuild.
+		onProgress: options?.onProgress,
 		completeImpl: options?.completeImpl,
 	};
 

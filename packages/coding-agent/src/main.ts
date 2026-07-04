@@ -12,6 +12,8 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	$env,
 	directoryExists,
+	getAgentDbPath,
+	getAgentDir,
 	getLogPath,
 	getProjectDir,
 	logger,
@@ -51,6 +53,7 @@ import { ExtensionRunner } from "./extensibility/extensions/runner";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
 import type { MCPManager } from "./mcp";
+import { refreshActiveUsagePanelForSession } from "./modes/controllers/command-controller";
 import { InteractiveMode } from "./modes/interactive-mode";
 import type { PrintModeOptions } from "./modes/print-mode";
 import { CURRENT_SETUP_VERSION } from "./modes/setup-version";
@@ -66,7 +69,9 @@ import {
 	loadSessionExtensions,
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
+import { resolveAuthBrokerConfig } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
+import { type CredentialWatcherHandle, startCredentialWatcher } from "./session/credential-watcher";
 import { describePendingToolCalls } from "./session/exit-diagnostics";
 import { resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { SessionManager } from "./session/session-manager";
@@ -418,6 +423,15 @@ async function runInteractiveMode(
 		mcpManager,
 		eventBus,
 	);
+	// AuthStorage generation changes (local watcher, in-process /login, broker push) refresh the last-rendered /usage panel.
+	const unsubscribeUsageRefresh = session.modelRegistry.authStorage.onGenerationChanged(() => {
+		void refreshActiveUsagePanelForSession(session).catch(error => {
+			logger.debug("usage panel refresh after auth generation change failed", { error: String(error) });
+		});
+	});
+	postmortem.register(`usage-panel-refresh:${session.sessionId}`, () => {
+		unsubscribeUsageRefresh();
+	});
 
 	// Cold-launch gate: the full setup wizard (every scene + the overlay and
 	// their TUI/OAuth/search/theme deps) is heavy, yet the common case only needs
@@ -1068,6 +1082,26 @@ export async function runRootCommand(
 		Bun.env.PI_NO_TITLE = "1";
 	}
 	const mode = parsedArgs.mode || "text";
+	let credentialWatcher: CredentialWatcherHandle | undefined;
+	let unregisterCredentialWatcherCleanup: (() => void) | undefined;
+	const brokerConfigForCredentialWatcher = await logger.time(
+		"resolveAuthBrokerConfig:credentialWatcher",
+		resolveAuthBrokerConfig,
+	);
+	if (!brokerConfigForCredentialWatcher) {
+		const credentialDbPath = getAgentDbPath(getAgentDir());
+		// Local SQLite credentials use WAL, so watch the DB directory for agent.db/-wal/-shm writes from sibling logins.
+		credentialWatcher = startCredentialWatcher({
+			authStorage,
+			dbPath: credentialDbPath,
+			onError: error => {
+				logger.warn("local credential watcher error", { dbPath: credentialDbPath, error: String(error) });
+			},
+		});
+		unregisterCredentialWatcherCleanup = postmortem.register("local-credential-watcher", () => {
+			credentialWatcher?.stop();
+		});
+	}
 	const isProtocolMode = mode === "rpc" || mode === "rpc-ui" || mode === "acp";
 	// Protocol modes own stdin; treating it as prompt text would consume JSON-RPC frames before their transports start.
 	const pipedInput = isProtocolMode ? undefined : await logger.time("readPipedInput", readPipedInput);
@@ -1475,6 +1509,9 @@ export async function runRootCommand(
 				logger.printTimings();
 			}
 			await session.dispose();
+			// Single-shot sessions dispose explicitly, so release the local credential watcher before process teardown.
+			credentialWatcher?.stop();
+			unregisterCredentialWatcherCleanup?.();
 			stopThemeWatcher();
 			await postmortem.quit(0);
 		}
