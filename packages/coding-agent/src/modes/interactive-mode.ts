@@ -1066,6 +1066,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.#handleSessionAccentInputsChanged();
 			}),
 		);
+		settings.startWatching();
 		// Set up theme file watcher
 		this.#eventBusUnsubscribers.push(
 			onThemeChange(event => {
@@ -3865,6 +3866,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			clearInterval(this.#binaryUpdateInterval);
 			this.#binaryUpdateInterval = undefined;
 		}
+		settings.stopWatching();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#extensionUiController.clearHookWidgets();
 		for (const unsubscribe of this.#eventBusUnsubscribers) {

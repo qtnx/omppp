@@ -22,6 +22,7 @@
 
 - Fixed Claude Fable/Mythos OAuth requests defaulting adaptive thinking to `display: "summarized"`, which solicited a human-readable rendering of the model's chain-of-thought and frequently tripped Anthropic's `reasoning_extraction` refusal classifier. Fable/Mythos now default to `display: "omitted"` (matching the official Claude CLI and the API's own default), resolved once via a model-aware effective-display helper that feeds both the request body and the `redact-thinking-2026-02-12` beta-header gate so they never disagree. Opus/Sonnet keep `summarized`, and an explicit `thinkingDisplay` still overrides in both directions.
 - Fixed Anthropic OAuth refresh-token rotation races across concurrent local processes by leasing each SQLite credential row before POSTing a single-use refresh token, with peer-token adoption when another process has already rotated the row.
+- Fixed credential rotation not triggering on account-exhaustion rate limits: a 429 whose reason is a quota/usage cap, or whose retry-after is at least 5 minutes, now rotates to a sibling account with remaining quota (parking the exhausted credential until its retry-after) instead of failing on the current account. Short, transient 429s keep the existing backoff behavior.
 ## [16.3.3] - 2026-07-02
 
 ### Added

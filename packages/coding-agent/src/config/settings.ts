@@ -26,6 +26,7 @@ import {
 	setWorktreesDir,
 } from "@oh-my-pi/pi-utils";
 import { JSONC, YAML } from "bun";
+import { clearCache as clearCapabilityFileCache, invalidate as invalidateCapabilityFileCache } from "../capability/fs";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
@@ -49,6 +50,7 @@ import {
 	type SettingPath,
 	type SettingValue,
 } from "./settings-schema";
+import { SettingsWatcher } from "./settings-watcher";
 
 // Re-export types that callers need
 export type * from "./settings-schema";
@@ -76,6 +78,11 @@ export interface SettingsOptions {
 	overrides?: Partial<Record<SettingPath, unknown>>;
 	/** Extra config.yml-style overlays loaded after global/project settings */
 	configFiles?: string[];
+}
+
+export interface ReloadFromDiskOptions {
+	source?: "manual" | "watcher";
+	changedPath?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -249,6 +256,20 @@ function resolvePathScopedStringArray(settingPath: SettingPath, value: unknown, 
 	return resolved;
 }
 
+function hashSettingsContent(content: string | null): string {
+	return content === null ? "missing" : `${content.length}:${Bun.hash(content).toString(36)}`;
+}
+
+function settingsValuesEqual(a: unknown, b: unknown): boolean {
+	if (Object.is(a, b)) return true;
+	if (typeof a !== "object" || a === null || typeof b !== "object" || b === null) return false;
+	try {
+		return JSON.stringify(a) === JSON.stringify(b);
+	} catch {
+		return false;
+	}
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Settings Class
 // ═══════════════════════════════════════════════════════════════════════════
@@ -264,6 +285,8 @@ export class Settings {
 	#global: RawSettings = {};
 	/** Project settings from .claude/settings.yml etc */
 	#project: RawSettings = {};
+	/** Exact project settings files consumed by the settings capability on the last project-layer load */
+	#projectSettingsPaths: string[] = [];
 	/** Extra config.yml-style overlays passed by CLI */
 	#configOverlay: RawSettings = {};
 	/** Runtime overrides (not persisted) */
@@ -279,7 +302,9 @@ export class Settings {
 
 	/** Legacy `lastChangelogVersion` captured from config.yml during migration (now a marker file). */
 	#legacyLastChangelogVersion?: string;
-
+	/** Settings disk watcher (opt-in for interactive mode) */
+	#watcher?: SettingsWatcher;
+	#lastWrittenFileHashes = new Map<string, string>();
 	/** Pending save (debounced) */
 	#saveTimer?: NodeJS.Timeout;
 	#savePromise?: Promise<void>;
@@ -433,12 +458,7 @@ export class Settings {
 		const next = this.get(path);
 		this.#queueSave();
 
-		// Trigger hook if exists
-		const hook = SETTING_HOOKS[path];
-		if (hook) {
-			hook(next, prev);
-		}
-		this.#fireEffectiveSettingChanged(path, next, prev);
+		this.#fireSettingChanged(path, next, prev, { forceHook: true });
 	}
 
 	/**
@@ -449,7 +469,7 @@ export class Settings {
 		const segments = path.split(".");
 		setByPath(this.#overrides, segments, value);
 		this.#rebuildMerged();
-		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
+		this.#fireSettingChanged(path, this.get(path), prev);
 	}
 
 	/**
@@ -466,7 +486,20 @@ export class Settings {
 		}
 		delete current[segments[segments.length - 1]];
 		this.#rebuildMerged();
-		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
+		this.#fireSettingChanged(path, this.get(path), prev);
+	}
+
+	#fireSettingChanged(path: SettingPath, value: unknown, prev: unknown, options: { forceHook?: boolean } = {}): void {
+		const changed = !settingsValuesEqual(value, prev);
+		if (changed || options.forceHook) {
+			const hook = SETTING_HOOKS[path];
+			if (hook) {
+				hook(value as never, prev as never);
+			}
+		}
+		if (changed) {
+			this.#fireEffectiveSettingChanged(path, value, prev);
+		}
 	}
 
 	#fireEffectiveSettingChanged(path: SettingPath, value: unknown, prev: unknown): void {
@@ -533,6 +566,38 @@ export class Settings {
 		this.#fireAllHooks();
 	}
 
+	async reloadFromDisk(options: ReloadFromDiskOptions = {}): Promise<void> {
+		if (!this.#persist) return;
+		if (options.source === "watcher" && (await this.#shouldSuppressWatcherReload(options.changedPath))) {
+			return;
+		}
+
+		const previous = this.#snapshotResolvedSettings();
+		this.#invalidateProjectSettingsCaches(options.changedPath);
+
+		const nextGlobal = this.#configPath ? await this.#loadYaml(this.#configPath) : {};
+		for (const modifiedPath of this.#modified) {
+			const segments = modifiedPath.split(".");
+			const value = getByPath(this.#global, segments);
+			setByPath(nextGlobal, segments, value);
+		}
+
+		this.#global = nextGlobal;
+		this.#project = await this.#loadProjectSettings();
+		this.#rebuildMerged();
+		this.#fireChangedSettings(previous);
+	}
+
+	startWatching(): void {
+		this.#watcher ??= new SettingsWatcher(this);
+		this.#watcher.start();
+	}
+
+	stopWatching(): void {
+		this.#watcher?.stop();
+		this.#watcher = undefined;
+	}
+
 	// ─────────────────────────────────────────────────────────────────────────
 	// Accessors
 	// ─────────────────────────────────────────────────────────────────────────
@@ -547,6 +612,14 @@ export class Settings {
 
 	getAgentDir(): string {
 		return this.#agentDir;
+	}
+
+	getConfigPath(): string | null {
+		return this.#configPath;
+	}
+
+	getProjectSettingsPaths(): string[] {
+		return [...this.#projectSettingsPaths];
 	}
 
 	getPlansDirectory(): string {
@@ -758,13 +831,17 @@ export class Settings {
 		try {
 			const result = await loadCapability(settingsCapability.id, { cwd: this.#cwd });
 			let merged: RawSettings = {};
+			const projectSettingsPaths: string[] = [];
 			for (const item of result.items as SettingsCapabilityItem[]) {
 				if (item.level === "project") {
+					projectSettingsPaths.push(path.normalize(item.path));
 					merged = this.#deepMerge(merged, item.data as RawSettings);
 				}
 			}
+			this.#projectSettingsPaths = projectSettingsPaths;
 			return this.#migrateRawSettings(merged);
 		} catch {
+			this.#projectSettingsPaths = [];
 			return {};
 		}
 	}
@@ -1333,19 +1410,25 @@ export class Settings {
 		}
 		this.#saveTimer = setTimeout(() => {
 			this.#saveTimer = undefined;
-			this.#saveNow().catch(err => {
-				logger.warn("Settings: background save failed", { error: String(err) });
-			});
+			this.#savePromise = this.#saveNow();
+			this.#savePromise
+				.catch(err => {
+					logger.warn("Settings: background save failed", { error: String(err) });
+				})
+				.finally(() => {
+					this.#savePromise = undefined;
+				});
 		}, 100);
+		this.#saveTimer.unref?.();
 	}
 
 	async #saveNow(): Promise<void> {
 		if (!this.#persist || !this.#configPath || this.#modified.size === 0) return;
 
+		const previous = this.#snapshotResolvedSettings();
 		const configPath = this.#configPath;
 		const modifiedPaths = [...this.#modified];
 		this.#modified.clear();
-
 		try {
 			await withFileLock(configPath, async () => {
 				// Re-read to preserve external changes
@@ -1360,7 +1443,9 @@ export class Settings {
 
 				// Update our global with any external changes we preserved
 				this.#global = current;
-				await Bun.write(configPath, YAML.stringify(this.#global, null, 2));
+				const serialized = YAML.stringify(this.#global, null, 2);
+				await Bun.write(configPath, serialized);
+				this.#lastWrittenFileHashes.set(path.normalize(configPath), hashSettingsContent(serialized));
 			});
 		} catch (error) {
 			logger.warn("Settings: save failed", { error: String(error) });
@@ -1371,11 +1456,62 @@ export class Settings {
 		}
 
 		this.#rebuildMerged();
+		this.#fireChangedSettings(previous);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Utilities
 	// ─────────────────────────────────────────────────────────────────────────
+
+	async #shouldSuppressWatcherReload(changedPath: string | undefined): Promise<boolean> {
+		if (!changedPath) return false;
+		const normalized = path.normalize(changedPath);
+		const lastWrittenHash = this.#lastWrittenFileHashes.get(normalized);
+		if (!lastWrittenHash) return false;
+		try {
+			const content = await Bun.file(normalized).text();
+			return lastWrittenHash === hashSettingsContent(content);
+		} catch (error) {
+			if (isEnoent(error)) return lastWrittenHash === hashSettingsContent(null);
+			return false;
+		}
+	}
+
+	#snapshotResolvedSettings(): Map<SettingPath, unknown> {
+		const snapshot = new Map<SettingPath, unknown>();
+		for (const key of Object.keys(SETTINGS_SCHEMA) as SettingPath[]) {
+			snapshot.set(key, this.get(key));
+		}
+		return snapshot;
+	}
+
+	#fireChangedSettings(previous: ReadonlyMap<SettingPath, unknown>): void {
+		for (const key of Object.keys(SETTINGS_SCHEMA) as SettingPath[]) {
+			const prev = previous.get(key);
+			const next = this.get(key);
+			if (!settingsValuesEqual(next, prev)) {
+				this.#fireSettingChanged(key, next, prev);
+			}
+		}
+	}
+
+	#invalidateProjectSettingsCaches(changedPath: string | undefined): void {
+		if (changedPath) {
+			invalidateCapabilityFileCache(changedPath);
+			const parent = path.dirname(changedPath);
+			if (parent !== changedPath) {
+				invalidateCapabilityFileCache(parent);
+			}
+		} else {
+			clearCapabilityFileCache();
+		}
+		for (const filePath of this.#projectSettingsPaths) {
+			invalidateCapabilityFileCache(filePath);
+		}
+		if (this.#configPath) {
+			invalidateCapabilityFileCache(this.#configPath);
+		}
+	}
 
 	#rebuildMerged(): void {
 		this.#merged = this.#deepMerge(this.#deepMerge({}, this.#global), this.#project);

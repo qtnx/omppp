@@ -11,6 +11,8 @@ export interface DuoStateSnapshot {
 	executionScope?: DuoExecutionScope;
 	plannerId?: string;
 	executorId?: string;
+	advisorModelId?: string;
+	duoOwnsAdvisor?: boolean;
 	takeoverPurpose?: TakeoverPurpose;
 	takeoverCount: number;
 	consecutiveTakeovers: number;

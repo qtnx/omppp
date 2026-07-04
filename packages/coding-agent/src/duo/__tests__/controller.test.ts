@@ -660,7 +660,7 @@ describe("DuoController", () => {
 		expect(controller.status.phase).toBe("takeover");
 		expect(host.switches.at(-1)).toEqual({ model: planner, thinkingLevel: AUTO_THINKING });
 		expect(controller.status.advisorPaused).toBe(true);
-		expect(host.ensured).toEqual([]);
+		expect(host.ensured).toEqual([planner]);
 	});
 
 	test("plan mode re-entry while executing returns the stream to the planner", async () => {
@@ -759,7 +759,7 @@ describe("DuoController", () => {
 
 		expect(controller.status.phase).toBe("executing");
 		expect(host.switches.at(-1)).toEqual({ model: executor, thinkingLevel: ThinkingLevel.Max });
-		expect(host.ensured).toEqual([planner]);
+		expect(host.ensured).toEqual([planner, planner]);
 		expect(host.briefs).toEqual([]);
 		expect(host.persisted.at(-1)?.phase).toBe("executing");
 	});
@@ -847,7 +847,7 @@ describe("DuoController", () => {
 		await planningController.reevaluate();
 		expect(await planningController.forceExec()).toBe("ok");
 		expect(planningController.status.phase).toBe("executing");
-		expect(planningHost.ensured).toEqual([planner]);
+		expect(planningHost.ensured).toEqual([planner, planner]);
 	});
 
 	test("manual-change guard ignores self-initiated model changes and disables on external foreign switches", async () => {

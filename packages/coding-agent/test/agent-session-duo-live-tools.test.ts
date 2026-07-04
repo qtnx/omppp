@@ -158,7 +158,7 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		session.settings.clearOverride("duo.mode");
 		await session.setDuoEnabled(true);
 		expect(session.getDuoStatus()?.phase).toBe("planning");
-		expect(session.isAdvisorActive()).toBe(false);
+		expect(session.isAdvisorActive()).toBe(true);
 
 		const result = await session.duoHandoffToExecutor("plan locked", "multi");
 		expect(result).toBe("ok");

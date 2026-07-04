@@ -228,6 +228,35 @@ describe("AuthStorage forceRefresh + rotateSessionCredential", () => {
 		}
 	});
 
+	test("rotateSessionCredential parks long retry-after 429s until the hinted retry time and selects a sibling", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+		registerProvider();
+		await authStorage.set(PROVIDER, [
+			{ type: "oauth", access: "acc-A", refresh: "ref-A", expires: farExpiry() },
+			{ type: "oauth", access: "acc-B", refresh: "ref-B", expires: farExpiry() },
+		]);
+
+		const sessionId = "long-retry-after";
+		const first = await authStorage.getApiKey(PROVIDER, sessionId);
+		const retryAfterMs = 3_600_000;
+		const blockedBefore = Date.now();
+		const rotated = await authStorage.rotateSessionCredential(PROVIDER, sessionId, {
+			error: Object.assign(new Error(`429 Too many requests retry-after-ms=${retryAfterMs}`), { status: 429 }),
+		});
+		const blockedAfter = Date.now();
+
+		expect(rotated).toBe(true);
+		const second = await authStorage.getApiKey(PROVIDER, sessionId);
+		expect(second).not.toBe(first);
+
+		await authStorage.getApiKey(PROVIDER, "block-sibling");
+		const exhausted = await authStorage.markUsageLimitReached(PROVIDER, "block-sibling", { retryAfterMs: 30_000 });
+		expect(exhausted.switched).toBe(false);
+		expect(exhausted.retryAtMs).toBeDefined();
+		expect(exhausted.retryAtMs!).toBeGreaterThanOrEqual(blockedBefore + retryAfterMs);
+		expect(exhausted.retryAtMs!).toBeLessThanOrEqual(blockedAfter + retryAfterMs);
+	});
+
 	test("rotateSessionCredential reports no sibling for a single-credential setup", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 		registerProvider();

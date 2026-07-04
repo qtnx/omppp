@@ -13,7 +13,7 @@ import * as path from "node:path";
 import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "./auth-retry";
 import * as AIError from "./error";
-import { isUsageLimitOutcome } from "./error/rate-limit";
+import { extractRotationRetryAfterMs, isUsageLimitOutcome } from "./error/rate-limit";
 import { getProviderDefinition, PASTE_CODE_LOGIN_PROVIDERS } from "./registry";
 import { getOAuthApiKey, getOAuthProvider, refreshOAuthToken } from "./registry/oauth";
 import type { OAuthController, OAuthCredentials, OAuthProvider, OAuthProviderId } from "./registry/oauth/types";
@@ -4856,9 +4856,11 @@ export class AuthStorage {
 		const error = options?.error;
 		const status = AIError.status(error);
 		const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
-		if (isUsageLimitOutcome(status, message)) {
+		const retryAfterMs = extractRotationRetryAfterMs(error, message);
+		if (isUsageLimitOutcome(status, message, retryAfterMs)) {
 			return (
 				await this.markUsageLimitReached(provider, sessionId, {
+					retryAfterMs,
 					modelId: options?.modelId,
 					signal: options?.signal,
 				})
