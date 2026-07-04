@@ -160,8 +160,10 @@ import {
 	isAdvisorInterruptImmuneTurnActive,
 	isInterruptingSeverity,
 	resolveAdvisorDeliveryChannel,
+	SetTodosTool,
 	slugifyAdvisorName,
 	ThinkingArtifactStore,
+	UpdateBriefTool,
 } from "../advisor";
 import { type AsyncJob, type AsyncJobDeliveryState, AsyncJobManager } from "../async";
 import { classifyDifficulty } from "../auto-thinking/classifier";
@@ -201,6 +203,7 @@ import {
 	parseRetryAfterMs,
 	RequestTakeoverTool,
 	renderDuoAdvisorInstructions,
+	SetExecutorEffortTool,
 } from "../duo";
 import duoExecutorOverlayPrompt from "../duo/prompts/executor-overlay.md" with { type: "text" };
 import duoPlannerOverlayPrompt from "../duo/prompts/planner-notice.md" with { type: "text" };
@@ -270,6 +273,8 @@ import { containsWorkflow, WORKFLOW_NOTICE } from "../modes/workflow";
 import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES, type OrchestratorModeState } from "../orchestrator-mode/state";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import type { PlanModeState } from "../plan-mode/state";
+import advisorBriefContextPrompt from "../prompts/advisor/brief-context.md" with { type: "text" };
+import delegationStatsPrompt from "../prompts/advisor/delegation-stats.md" with { type: "text" };
 import doneReviewMd from "../prompts/advisor/done-review.md" with { type: "text" };
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
 import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
@@ -281,6 +286,7 @@ import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
+import heldSteeringNoticePrompt from "../prompts/system/held-steering-notice.md" with { type: "text" };
 import interruptedThinkingTemplate from "../prompts/system/interrupted-thinking.md" with { type: "text" };
 import ircAutoReplyTemplate from "../prompts/system/irc-autoreply.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
@@ -1866,6 +1872,11 @@ export class AgentSession {
 	#duoPlanReferenceSetDuringPlanMode = false;
 	#duoAwaitingApprovedPlanReference = false;
 	#duoPlanApprovedNotified = false;
+	// Held steering buffers user steers while a blocking subagent wait owns the turn.
+	#subagentWaitDepth = 0;
+	#heldSteering: string[] = [];
+	// Per-primary-turn delegation stats are injected into the duo advisor's update feed.
+	#delegationStats: { taskCalls: number; widths: number[] } = { taskCalls: 0, widths: [] };
 	/**
 	 * Successful mutating tool results (bash/eval/edit/write/ast_edit) since the
 	 * agent last touched the `todo` tool. Drives {@link #takeMidRunTodoNudge} so
@@ -2414,6 +2425,7 @@ export class AgentSession {
 		this.agent.setRawSseEventInterceptor(this.#onSseEvent);
 		this.agent.setOnTurnEnd(async (messages, signal, context) => {
 			if (signal?.aborted) return;
+			this.#flushHeldSteering();
 			const rewindReport = this.#extractRewindReport(messages);
 			if (rewindReport) {
 				this.#pendingRewindReport = undefined;
@@ -2549,9 +2561,14 @@ export class AgentSession {
 			},
 			persist: (mode, state) => {
 				if (mode === "none") {
-					this.sessionManager.appendModeChange("none");
+					// When a goal ends while orchestrator mode remains active, keep the
+					// single persisted mode slot resumable as orchestrator rather than none.
+					this.sessionManager.appendModeChange(this.getOrchestratorModeState()?.enabled ? "orchestrator" : "none");
 				} else if (state) {
-					this.sessionManager.appendModeChange(mode, { goal: state.goal });
+					this.sessionManager.appendModeChange(mode, {
+						goal: state.goal,
+						orchestrator: this.getOrchestratorModeState()?.enabled === true,
+					});
 				}
 			},
 			sendHiddenMessage: async message => {
@@ -2632,17 +2649,6 @@ export class AgentSession {
 					{ deliverAs },
 				);
 			},
-			requestAgentContinue: () => {
-				// Duo continuation is intentionally requested after the model switch
-				// settles, so queued next-turn briefs run under the incoming model.
-				if (this.#isDisposed) return;
-				if (this.#clientBridge?.deferAgentInitiatedTurns && !this.#allowAcpAgentInitiatedTurns) return;
-				if (this.#pendingNextTurnMessages.length > 0) {
-					this.#triggerHiddenNextTurnDelivery();
-					return;
-				}
-				this.#scheduleAgentContinue({ delayMs: 1, generation: this.#promptGeneration });
-			},
 			emitNotice: (level, text) => this.emitNotice(level, text, "duo"),
 			persistSnapshot: snapshot => {
 				this.sessionManager.appendCustomMessageEntry("duo_state", "", false, snapshot, "agent");
@@ -2658,8 +2664,11 @@ export class AgentSession {
 					this.#duoOwnsOrchestrator,
 				);
 				this.#duoOwnsOrchestrator = decision.owns;
-				if (decision.apply === "enable") await this.setOrchestratorModeState({ enabled: true });
-				else if (decision.apply === "disable") await this.setOrchestratorModeState(undefined);
+				// FIX #1: duo-owned orchestrator is session-live-only; user-owned orchestrator still persists elsewhere.
+				if (decision.apply === "enable")
+					await this.setOrchestratorModeState({ enabled: true }, { persistModeChange: false });
+				else if (decision.apply === "disable")
+					await this.setOrchestratorModeState(undefined, { persistModeChange: false, restorePreviousTools: true });
 			},
 			setPlanModeEnabled: enabled => {
 				const current = this.getPlanModeState()?.enabled === true;
@@ -3061,9 +3070,23 @@ export class AgentSession {
 						new RequestTakeoverTool(
 							(purpose, reason, directive) =>
 								this.#duoController?.requestTakeover(purpose, reason, directive) ?? "rejected",
+							async reason => this.#duoController?.requestPlanTakeover(reason) ?? false,
 						),
 					]
 				: [];
+			const isDuoOwnedAdvisor =
+				this.#duoAdvisorPinnedModel !== undefined && modelsAreEqual(advisorModel, this.#duoAdvisorPinnedModel);
+			const duoAdvisorToolSession = isDuoOwnedAdvisor ? this.#buildAdvisorToolSession() : undefined;
+			const duoAdvisorTools =
+				isDuoOwnedAdvisor && this.#duoController && duoAdvisorToolSession
+					? [
+							new UpdateBriefTool(duoAdvisorToolSession),
+							new SetTodosTool(duoAdvisorToolSession),
+							new SetExecutorEffortTool(
+								(level, reason) => this.#duoController?.setExecutorThinkingOverride(level, reason) ?? false,
+							),
+						]
+					: [];
 
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
@@ -3118,7 +3141,7 @@ export class AgentSession {
 					systemPrompt,
 					model: advisorModel,
 					thinkingLevel: toReasoningEffort(advisorThinkingLevel),
-					tools: [adviseTool, doneVerdictTool, ...duoTakeoverTools, ...tools],
+					tools: [adviseTool, doneVerdictTool, ...duoTakeoverTools, ...duoAdvisorTools, ...tools],
 				},
 				appendOnlyContext,
 				sessionId: advisorSessionId,
@@ -3189,7 +3212,7 @@ export class AgentSession {
 					sessionId: this.sessionId,
 				}),
 				gistEnabled: () => this.settings.get("advisor.thinkingGist"),
-				clampThreshold: () => this.settings.get("advisor.thinkingClampChars") ?? 0,
+				clampThreshold: () => this.settings.get("advisor.thinkingClampChars"),
 			});
 			const runtime = new AdvisorRuntime(
 				advisorAgentFacade,
@@ -3198,9 +3221,15 @@ export class AgentSession {
 					enqueueAdvice: (note, severity) => this.#routeAdvice(advisorRef, note, severity),
 					maintainContext: incomingTokens => this.#maintainAdvisorContext(advisorRef, incomingTokens),
 					obfuscator: this.#obfuscator,
-					beginAdvisorUpdate: () => advisorRef.emissionGuard.beginUpdate(),
+					beginAdvisorUpdate: opts => {
+						advisorRef.emissionGuard.beginUpdate(opts);
+						// Mirror the guard's one-shot consult-answer exemption in the advise tool.
+						advisorRef.adviseTool.setConsultAnswerExemption(opts?.consultAnswer === true);
+					},
 					resolveGists: batch => thinkingStore.resolveGists(batch),
 					renderThinking: text => thinkingStore.renderThinking(text),
+					renderStatsHeader: isDuoOwnedAdvisor ? () => this.#renderDelegationStatsHeader() : undefined,
+					renderPrimeSeed: isDuoOwnedAdvisor ? () => this.#readAdvisorBriefSync() : undefined,
 					notifyFailure: error => {
 						const message = error instanceof Error ? error.message : String(error);
 						this.emitNotice(
@@ -3392,7 +3421,7 @@ export class AgentSession {
 	/**
 	 * "Phone a friend": ask the always-watching advisor a question mid-turn and
 	 * block until it answers. Resolves with the advisor's plain-text reply, or
-	 * `null` when the advisor is inactive / did not answer within 120s / was
+	 * `null` when the advisor is inactive / did not answer within 5 minutes / was
 	 * aborted. Sets {@link #advisorConsultInFlight} for the duration so an
 	 * interrupting advice note is downgraded to an aside instead of aborting the
 	 * consult tool that is awaiting this answer. Invoked by the `consult` tool.
@@ -3402,10 +3431,22 @@ export class AgentSession {
 		if (!advisor || advisor.runtime.disposed) return null;
 		this.#advisorConsultInFlight = true;
 		try {
-			return await advisor.runtime.consult(question, { signal, timeoutMs: 120_000 });
+			// 5-minute ceiling for a blocking consult; interruptible, so a slow advisor won't wedge the primary.
+			return await advisor.runtime.consult(question, { signal, timeoutMs: 300_000 });
 		} finally {
 			this.#advisorConsultInFlight = false;
 		}
+	}
+
+	/**
+	 * Background consult: enqueue the advisor question and keep the primary moving.
+	 * Unlike blocking consults, advice is delivered normally through #routeAdvice.
+	 */
+	consultAdvisorAsync(question: string): boolean {
+		const advisor = this.#advisors[0];
+		if (!advisor || advisor.runtime.disposed || advisor.runtime.paused) return false;
+		advisor.runtime.consultAsync(question);
+		return true;
 	}
 
 	/** Resolve and clear any in-flight done-review verdict resolver with `null`. */
@@ -4417,6 +4458,7 @@ export class AgentSession {
 		}
 
 		if (event.type === "turn_start") {
+			this.#delegationStats = { taskCalls: 0, widths: [] };
 			const usage = this.getSessionStats().tokens;
 			this.#goalRuntime.onTurnStart(`turn-${++this.#goalTurnCounter}`, {
 				input: usage.input,
@@ -4428,6 +4470,9 @@ export class AgentSession {
 
 		if (event.type === "tool_execution_start") {
 			this.#recordToolExecutionStart(event);
+			if (event.toolName === "task") {
+				this.#recordDelegationToolCall(event.args);
+			}
 		}
 
 		try {
@@ -5985,6 +6030,37 @@ export class AgentSession {
 		};
 	}
 
+	#buildAdvisorToolSession(): ToolSession {
+		return {
+			cwd: this.sessionManager.getCwd(),
+			hasUI: false,
+			getSessionFile: () => this.sessionManager.getSessionFile() ?? null,
+			getSessionId: () => this.sessionManager.getSessionId(),
+			getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
+			getSessionSpawns: () => null,
+			localProtocolOptions: this.#localProtocolOptions(),
+			settings: this.settings,
+			getTodoPhases: () => this.getTodoPhases(),
+			setTodoPhases: phases => this.setTodoPhases(phases),
+			appendCustomEntry: (customType, data) => this.sessionManager.appendCustomEntry(customType, data),
+			enterSubagentWait: () => this.enterSubagentWait(),
+			exitSubagentWait: () => this.exitSubagentWait(),
+		};
+	}
+
+	#readAdvisorBriefSync(): string | undefined {
+		try {
+			const content = fs
+				.readFileSync(resolveLocalUrlToPath("local://advisor-brief.md", this.#localProtocolOptions()), "utf8")
+				.trim();
+			return content.length > 0 ? content : undefined;
+		} catch (err) {
+			if (isEnoent(err)) return undefined;
+			logger.warn("Failed to read advisor brief", { err: String(err) });
+			return undefined;
+		}
+	}
+
 	#maybeAbortStreamingEdit(event: AgentEvent): void {
 		if (!this.settings.get("edit.streamingAbort")) return;
 		if (this.#streamingEditAbortTriggered) return;
@@ -6760,11 +6836,14 @@ export class AgentSession {
 		// Orchestrator mode installs an exact curated safe toolset (`job`, `task`, `workflow`, ...);
 		// while the mode is active those tools stay allowed regardless of the session's base
 		// `--tools` allowlist, so a re-apply (MCP/SSH refresh, discovery reconcile) cannot strip
-		// them from the delegation surface. Live duo/advisor tools get the same protection even
-		// outside orchestrator mode so handoff/escalate/consult cannot disappear mid-session.
+		// them from the delegation surface. Goal mode is also an additive overlay; keeping "goal"
+		// allowed while active preserves the invariant even under explicit tool allowlists. Live
+		// duo/advisor tools get the same protection even outside orchestrator mode so
+		// handoff/escalate/consult cannot disappear mid-session.
 		if (
 			(this.#orchestratorModeState?.enabled &&
 				(ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES as readonly string[]).includes(normalized)) ||
+			(normalized === "goal" && this.#goalModeState?.enabled === true) ||
 			this.#liveDuoToolNames().includes(normalized)
 		) {
 			return true;
@@ -6948,6 +7027,11 @@ export class AgentSession {
 			for (const name of ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES) {
 				if (this.#toolRegistry.has(name)) forceActive.add(name);
 			}
+		}
+		// Goal mode owns only the "goal" tool; force it active across discovery reconciles
+		// while enabled so the overlay remains additive rather than snapshot-based.
+		if (this.#goalModeState?.enabled === true && this.#toolRegistry.has("goal")) {
+			forceActive.add("goal");
 		}
 		for (const name of this.#liveDuoToolNames()) {
 			forceActive.add(name);
@@ -8067,9 +8151,6 @@ export class AgentSession {
 			if (this.#planModeState !== undefined) {
 				this.setPlanModeState(undefined);
 			}
-			if (this.#goalModeState !== undefined) {
-				this.setGoalModeState(undefined);
-			}
 			if (this.#standingResolveHandler !== undefined) {
 				this.setStandingResolveHandler(null);
 			}
@@ -8079,13 +8160,23 @@ export class AgentSession {
 				this.#orchestratorModePreviousToolNames = this.getActiveToolNames();
 			}
 			this.#orchestratorModeState = state;
-			await this.#applyActiveToolsByName([...ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES], {
+			// Explicit applies with respectRequestedToolNames:false keep "goal"; #applyActiveToolsByName
+			// only filters requested-tool allowlists when that option is true.
+			const orchestratorToolNames: string[] = [...ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES];
+			if (this.#goalModeState?.enabled === true) {
+				orchestratorToolNames.push("goal");
+			}
+			await this.#applyActiveToolsByName(orchestratorToolNames, {
 				respectRequestedToolNames: false,
 				includeAutoQa: false,
 			});
 			this.agent.setSystemPrompt(this.#baseSystemPromptWithModeOverlay());
 			if (persistModeChange && !wasEnabled) {
-				this.sessionManager.appendModeChange("orchestrator");
+				if (this.#goalModeState?.enabled === true) {
+					this.sessionManager.appendModeChange("goal", { goal: this.#goalModeState.goal, orchestrator: true });
+				} else {
+					this.sessionManager.appendModeChange("orchestrator");
+				}
 			}
 			if (!wasEnabled) {
 				await this.#emitSessionEvent({ type: "mode_changed", mode: "orchestrator" });
@@ -8099,6 +8190,12 @@ export class AgentSession {
 		this.#orchestratorModePreviousToolNames = undefined;
 		if (previousToolNames !== undefined && restorePreviousTools) {
 			const restoredToolNames = [...new Set([...previousToolNames, ...this.#liveDuoToolNames()])];
+			if (this.#goalModeState?.enabled === true) {
+				restoredToolNames.push("goal");
+			} else {
+				const goalIndex = restoredToolNames.indexOf("goal");
+				if (goalIndex !== -1) restoredToolNames.splice(goalIndex, 1);
+			}
 			await this.#applyActiveToolsByName(restoredToolNames, {
 				respectRequestedToolNames: false,
 				includeAutoQa: false,
@@ -8108,7 +8205,11 @@ export class AgentSession {
 			await this.refreshBaseSystemPrompt();
 		}
 		if (persistModeChange && wasEnabled) {
-			this.sessionManager.appendModeChange("none");
+			if (this.#goalModeState?.enabled === true) {
+				this.sessionManager.appendModeChange("goal", { goal: this.#goalModeState.goal, orchestrator: false });
+			} else {
+				this.sessionManager.appendModeChange("none");
+			}
 		}
 		if (wasEnabled) {
 			await this.#emitSessionEvent({ type: "mode_changed", mode: "none" });
@@ -8396,6 +8497,58 @@ export class AgentSession {
 			timestamp: Date.now(),
 		};
 	}
+
+	async #buildAdvisorBriefContext(): Promise<CustomMessage | null> {
+		const status = this.#duoController?.status;
+		if (!status || status.phase === "inactive") return null;
+		let content: string;
+		try {
+			content = (
+				await fs.promises.readFile(
+					resolveLocalUrlToPath("local://advisor-brief.md", this.#localProtocolOptions()),
+					"utf8",
+				)
+			).trim();
+		} catch (err) {
+			if (isEnoent(err)) return null;
+			logger.warn("Failed to build advisor brief context", { err: String(err) });
+			return null;
+		}
+		if (content.length === 0) return null;
+		return {
+			role: "custom",
+			customType: "advisor-brief-context",
+			content: prompt.render(advisorBriefContextPrompt, { content }),
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+	}
+
+	#recordDelegationToolCall(args: unknown): void {
+		const width = isRecord(args) && Array.isArray(args.tasks) ? args.tasks.length : 0;
+		this.#delegationStats.taskCalls++;
+		this.#delegationStats.widths.push(width);
+	}
+
+	#renderDelegationStatsHeader(): string | undefined {
+		const running =
+			this.#asyncJobManager
+				?.getRunningJobs(this.#agentId ? { ownerId: this.#agentId } : undefined)
+				.filter(job => job.type === "task").length ?? 0;
+		if (this.#delegationStats.taskCalls === 0 && running === 0) return undefined;
+		const openTodos = this.getTodoPhases().reduce(
+			(count, phase) =>
+				count + phase.tasks.filter(task => task.status === "pending" || task.status === "in_progress").length,
+			0,
+		);
+		return prompt.render(delegationStatsPrompt, {
+			taskCalls: String(this.#delegationStats.taskCalls),
+			widths: this.#delegationStats.widths.join(", ") || "none",
+			running: String(running),
+			openTodos: String(openTodos),
+		});
+	}
 	async #buildDollarMentionContextMessages(text: string): Promise<CustomMessage[]> {
 		if (!text.includes("$")) return [];
 		const agents = text.includes("$agent:") ? (await discoverAgents(this.sessionManager.getCwd())).agents : [];
@@ -8538,21 +8691,22 @@ export class AgentSession {
 	async #maybeAutoEnterOrchestratorMode(text: string): Promise<void> {
 		if (!this.#magicKeywordEnabled("orchestrate") || !containsOrchestrate(text)) return;
 		if (this.getOrchestratorModeState()?.enabled) return;
-		// Entering orchestrator mode clears BOTH plan and goal state (see
-		// setOrchestratorModeState), so never auto-switch while either is active OR
-		// resumable - that would silently destroy a paused/resumable plan or goal.
-		// A paused *goal* keeps #goalModeState populated (enabled:false + resumable
-		// status), so check the live state here.
+		// Plan mode remains exclusive, but active goal mode can coexist with orchestrator:
+		// goal supplies the budget/objective while orchestrator consumes delegation tools.
 		if (this.getPlanModeState()?.enabled) return;
 		const goalState = this.getGoalModeState();
 		const goalStatus = goalState?.goal?.status;
-		if (goalState?.enabled || goalStatus === "paused" || goalStatus === "blocked" || goalStatus === "usage-limited") {
+		if (
+			!goalState?.enabled &&
+			(goalStatus === "paused" || goalStatus === "blocked" || goalStatus === "usage-limited")
+		) {
 			return;
 		}
 		// A paused *plan* clears #planModeState, so it is invisible above; the
-		// resolved session-context mode still records it (plan_paused/goal_paused/
-		// loop). Only auto-switch from a clean `none` context.
-		if (this.sessionManager.buildSessionContext().mode !== "none") return;
+		// resolved session-context mode still records it (plan_paused/loop). Auto-switch
+		// only from a clean context or from active goal mode, which now coexists.
+		const contextMode = this.sessionManager.buildSessionContext().mode;
+		if (contextMode !== "none" && contextMode !== "goal") return;
 		await this.setOrchestratorModeState({ enabled: true });
 	}
 
@@ -8566,7 +8720,16 @@ export class AgentSession {
 			this.settings.get("duo.takeover.signals.planningNeeded"),
 			expandedText,
 		);
-		if (!decision.request) return;
+		if (!decision.request) {
+			const status = this.#duoController?.status;
+			const pinned = this.#duoAdvisorPinnedModel;
+			if (status?.phase === "executing" && pinned && this.settings.get("duo.advisorPromptReview") === true) {
+				this.#advisors
+					.find(advisor => modelsAreEqual(advisor.agent.state.model, pinned))
+					?.runtime.onUserPrompt(expandedText);
+			}
+			return;
+		}
 		await this.#duoController?.requestPlanTakeover?.(decision.reason);
 	}
 
@@ -8934,6 +9097,10 @@ export class AgentSession {
 			if (goalModeMessage) {
 				messages.push(goalModeMessage);
 			}
+			const advisorBriefMessage = await this.#buildAdvisorBriefContext();
+			if (advisorBriefMessage) {
+				messages.push(advisorBriefMessage);
+			}
 			if (options?.prependMessages) {
 				messages.push(...options.prependMessages);
 			}
@@ -9208,6 +9375,34 @@ export class AgentSession {
 		}
 	}
 
+	enterSubagentWait(): void {
+		this.#subagentWaitDepth++;
+	}
+
+	exitSubagentWait(): void {
+		if (this.#subagentWaitDepth > 0) {
+			this.#subagentWaitDepth--;
+		}
+		if (this.#subagentWaitDepth === 0) {
+			this.#flushHeldSteering();
+		}
+	}
+
+	#flushHeldSteering(): void {
+		if (this.#heldSteering.length === 0) return;
+		const held = this.#heldSteering;
+		this.#heldSteering = [];
+		for (const message of held) {
+			this.agent.steer({
+				role: "user",
+				content: prompt.render(heldSteeringNoticePrompt, { message }),
+				steering: true,
+				attribution: "user",
+				timestamp: Date.now(),
+			});
+		}
+	}
+
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
 	 */
@@ -9244,6 +9439,16 @@ export class AgentSession {
 		const dollarMentionMessages = await this.#buildDollarMentionContextMessages(text);
 		const normalizedImages = await this.#normalizeImagesForModel(images);
 		const displayText = text || (images && images.length > 0 ? "[Image]" : "");
+		if (
+			mode === "steer" &&
+			this.#subagentWaitDepth > 0 &&
+			this.settings.get("steering.holdDuringSubagentWaits") === true
+		) {
+			this.#steeringMessages.push({ text: displayText });
+			this.#heldSteering.push(text);
+			this.#scheduleIdleQueueDrain();
+			return;
+		}
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (normalizedImages?.length) {
 			content.push(...normalizedImages);
@@ -9636,12 +9841,14 @@ export class AgentSession {
 	} {
 		const steeringAll = this.agent.peekSteeringQueue();
 		const followUpAll = this.agent.peekFollowUpQueue();
-		const steering = steeringAll.filter(isUserQueuedMessage).map(toRestoredQueuedMessage);
+		const heldSteering = this.#heldSteering.map(text => ({ text }));
+		const steering = [...steeringAll.filter(isUserQueuedMessage).map(toRestoredQueuedMessage), ...heldSteering];
 		const followUp = followUpAll.filter(isUserQueuedMessage).map(toRestoredQueuedMessage);
 		const keep: (m: AgentMessage) => boolean = options?.forInterrupt
 			? isAdvisorCard
 			: m => !isUserQueuedMessage(m) && !isHiddenUserCompanion(m);
 		this.agent.replaceQueues(steeringAll.filter(keep), followUpAll.filter(keep));
+		this.#heldSteering = [];
 		return { steering, followUp };
 	}
 
@@ -9652,7 +9859,8 @@ export class AgentSession {
 		return (
 			this.agent.peekSteeringQueue().filter(isDisplayableQueuedMessage).length +
 			this.agent.peekFollowUpQueue().filter(isDisplayableQueuedMessage).length +
-			this.#pendingNextTurnMessages.length
+			this.#pendingNextTurnMessages.length +
+			this.#heldSteering.length
 		);
 	}
 
@@ -9666,13 +9874,17 @@ export class AgentSession {
 		return (
 			this.agent.peekSteeringQueue().some(isDisplayableQueuedMessage) ||
 			this.agent.peekFollowUpQueue().some(isDisplayableQueuedMessage) ||
-			this.#scheduledHiddenNextTurnGeneration !== undefined
+			this.#scheduledHiddenNextTurnGeneration !== undefined ||
+			this.#heldSteering.length > 0
 		);
 	}
 
 	getQueuedMessages(): { steering: readonly string[]; followUp: readonly string[] } {
 		return {
-			steering: this.agent.peekSteeringQueue().filter(isUserQueuedMessage).map(queueChipText),
+			steering: [
+				...this.agent.peekSteeringQueue().filter(isUserQueuedMessage).map(queueChipText),
+				...this.#heldSteering,
+			],
 			followUp: this.agent.peekFollowUpQueue().filter(isUserQueuedMessage).map(queueChipText),
 		};
 	}
@@ -9683,6 +9895,8 @@ export class AgentSession {
 	 * Steps over agent-authored queued messages (advisor cards, hidden/internal steers).
 	 */
 	popLastQueuedMessage(): RestoredQueuedMessage | undefined {
+		const held = this.#heldSteering.pop();
+		if (held !== undefined) return { text: held };
 		const steering = this.agent.peekSteeringQueue();
 		const followUp = this.agent.peekFollowUpQueue();
 		const lastUserIndex = (queue: readonly AgentMessage[]): number => {
@@ -9924,6 +10138,7 @@ export class AgentSession {
 			}
 		} finally {
 			this.#abortInProgress = false;
+			this.#flushHeldSteering();
 			this.#drainStrandedQueuedMessages();
 		}
 	}
@@ -9989,6 +10204,7 @@ export class AgentSession {
 		this.#rekeyMnemopiMemoryForCurrentSessionId();
 		await this.#resetMemoryContextForNewTranscript();
 		this.#pendingNextTurnMessages = [];
+		this.#heldSteering = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 
 		this.sessionManager.appendThinkingLevelChange(this.thinkingLevel, this.configuredThinkingLevel());
@@ -11564,6 +11780,7 @@ export class AgentSession {
 			this.#rekeyMnemopiMemoryForCurrentSessionId();
 			await this.#resetMemoryContextForNewTranscript();
 			this.#pendingNextTurnMessages = [];
+			this.#heldSteering = [];
 			this.#scheduledHiddenNextTurnGeneration = undefined;
 			this.#todoReminderCount = 0;
 			this.#todoReminderAwaitingProgress = false;
@@ -15844,7 +16061,7 @@ export class AgentSession {
 			this.#pendingIrcInterrupts.length > 0 ||
 			this.#pendingIrcAsides.length > 0 ||
 			this.yieldQueue.hasIdleFlushableEntries() ||
-			this.agent.peekSteeringQueue().length > 0
+			(this.#subagentWaitDepth === 0 && this.agent.peekSteeringQueue().length > 0)
 		);
 	}
 
@@ -16153,6 +16370,7 @@ export class AgentSession {
 
 		this.agent.clearAllQueues();
 		this.#pendingNextTurnMessages = [];
+		this.#heldSteering = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 
 		try {
@@ -16373,6 +16591,7 @@ export class AgentSession {
 
 		// Clear pending messages (bound to old session state)
 		this.#pendingNextTurnMessages = [];
+		this.#heldSteering = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 
 		// Flush pending writes before branching
@@ -16472,9 +16691,11 @@ export class AgentSession {
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 		this.agent.replaceQueues([], []);
+		this.#heldSteering = [];
 		if (this.isStreaming) {
 			await this.abort({ goalReason: "internal", reason: "branching /btw" });
 			this.agent.replaceQueues([], []);
+			this.#heldSteering = [];
 		}
 		await this.sessionManager.flush();
 		this.#cancelOwnAsyncJobs();

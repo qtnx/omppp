@@ -1,7 +1,9 @@
+import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+
 export type DuoPhase = "inactive" | "planning" | "executing" | "takeover" | "suspended" | "degraded";
 export type DuoExecutionScope = "single" | "multi";
 export type DuoMode = "auto" | "on" | "off";
-export type TakeoverPurpose = "recover";
+export type TakeoverPurpose = "recover" | "plan";
 export type DuoSuspendReason = "set-model-failed" | "unresolvable";
 
 export interface DuoStateSnapshot {
@@ -15,6 +17,8 @@ export interface DuoStateSnapshot {
 	cooldownRemaining: number;
 	suspendReason?: DuoSuspendReason;
 	preDuoThinking?: string;
+	/** Advisor-selected executor effort override that survives duo snapshot resume. */
+	executorThinkingOverride?: ThinkingLevel;
 }
 
 export interface DuoActivationInput {
@@ -142,6 +146,16 @@ export class DuoStateMachine {
 		return true;
 	}
 
+	/** Advisor/user prompt takeover for fresh planning; unlike recover takeover, counters and cooldown stay untouched. */
+	onPlanTakeoverRequested(): boolean {
+		if (this.#state.phase !== "executing") {
+			return false;
+		}
+		this.#state.phase = "planning";
+		this.#state.takeoverPurpose = undefined;
+		return true;
+	}
+
 	/** Executor self-escalation is voluntary recovery, so it bypasses the
 	 *  recover cooldown but still respects max consecutive takeovers. */
 	onExecutorEscalate(): TakeoverDecision {
@@ -217,6 +231,7 @@ export class DuoStateMachine {
 		this.#state.suspendReason = undefined;
 		this.#state.takeoverPurpose = undefined;
 		this.#state.executionScope = "multi";
+		this.#state.executorThinkingOverride = undefined;
 	}
 
 	#suspend(reason: DuoSuspendReason): void {

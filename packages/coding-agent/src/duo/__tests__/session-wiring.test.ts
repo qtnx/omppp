@@ -292,6 +292,10 @@ describe("AgentSession duo wiring helpers", () => {
 		expect(orchestrated).toContain("Safe orchestrator mode");
 		expect(orchestrated).toContain("delegating to subagents");
 		expect(orchestrated).not.toContain("direct-execution mode");
+		expect(orchestrated).toContain("mandatory checkpoints");
+		expect(orchestrated).toContain("Committing to a plan");
+		expect(orchestrated).toContain("Ending your turn");
+		expect(orchestrated).not.toContain("{{");
 
 		const direct = prompt.render(duoExecutorOverlayRaw, {
 			current: "anthropic/claude-opus-4-8",
@@ -302,6 +306,10 @@ describe("AgentSession duo wiring helpers", () => {
 		expect(direct).toContain("direct-execution mode");
 		expect(direct).toContain("orchestrator_mode");
 		expect(direct).not.toContain("decomposing it into work packages");
+		expect(direct).toContain("mandatory checkpoints");
+		expect(direct).toContain("Committing to a plan");
+		expect(direct).toContain("Ending your turn");
+		expect(direct).not.toContain("{{");
 		// Shared paragraphs stay outside the conditional in both variants.
 		expect(orchestrated).toContain("watches as your advisor");
 		expect(direct).toContain("watches as your advisor");

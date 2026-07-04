@@ -276,19 +276,52 @@ describe("DuoController", () => {
 		expect(host.ensured).toEqual([planner]);
 	});
 
-	test("manual override survives reevaluate", async () => {
+	test("manual switch to a foreign model disables duo for the session", async () => {
 		const host = fakeHost({ model: otherModel, planModeOn: false });
 		const controller = new DuoController(host, duoConfig());
 		await controller.reevaluate();
 		host.model = otherModel;
-		controller.notifyManualModelChange();
-		const nonPlannerNotice = host.notices.at(-1)?.text;
-		const switchCount = host.switches.length;
 
+		controller.notifyManualModelChange();
+
+		expect(controller.status.phase).toBe("inactive");
+		expect(host.notices.at(-1)).toMatchObject({
+			level: "info",
+			text: expect.stringMatching(
+				/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the Fable\/Opus pair/,
+			),
+		});
+		const switchCount = host.switches.length;
 		await controller.reevaluate();
+		expect(controller.status.phase).toBe("inactive");
 		expect(host.switches).toHaveLength(switchCount);
-		expect(controller.status.executor).toBe("anthropic/claude-sonnet-4.5");
-		expect(nonPlannerNotice).toBe("Duo executor set to anthropic/claude-sonnet-4.5 (manual switch).");
+	});
+
+	test("foreign manual model switch disables duo while executor-pair switches stay active", async () => {
+		const controlHost = fakeHost({ model: executor, planModeOn: false });
+		const controlController = new DuoController(controlHost, duoConfig());
+		await controlController.reevaluate();
+
+		controlHost.model = executor;
+		controlController.notifyManualModelChange();
+
+		expect(controlController.status.phase).toBe("executing");
+		expect(controlHost.notices.some(notice => notice.text.includes("Duo disabled"))).toBe(false);
+
+		const host = fakeHost({ model: executor, planModeOn: false });
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+
+		host.model = otherModel;
+		controller.notifyManualModelChange();
+
+		expect(controller.status.phase).toBe("inactive");
+		expect(host.notices.at(-1)?.text).toMatch(
+			/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the Fable\/Opus pair/,
+		);
+		expect(host.orchestratorEnables.at(-1)).toBe(false);
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("inactive");
 	});
 
 	test("manual switch to the planner during executing enters planning with the full-plan brief (default intent)", async () => {
@@ -379,19 +412,22 @@ describe("DuoController", () => {
 		expect(host.thinkingChanges).toEqual([AUTO_THINKING]);
 	});
 
-	test("manual override to a non-planner model does not inject summon protocol", async () => {
+	test("manual switch to a foreign model disables duo and restores pre-duo thinking without summon protocol", async () => {
 		const host = fakeHost({ model: executor, planModeOn: false });
 		const controller = new DuoController(host, duoConfig());
 		await controller.reevaluate();
 		host.briefs = [];
 		host.model = otherModel;
+
 		controller.notifyManualModelChange();
 
+		expect(controller.status.phase).toBe("inactive");
 		expect(host.briefs.filter(brief => brief.text.includes("summons to reason"))).toHaveLength(0);
-		expect(host.thinkingChanges).toEqual([]);
+		expect(host.thinkingChanges).toEqual([ThinkingLevel.Low]);
+		expect(host.notices.some(notice => notice.text.startsWith("Duo executor set to"))).toBe(false);
 	});
 
-	test("manual override to planner model re-summons after switching away", async () => {
+	test("manual switch to the planner is ignored after a foreign switch disables duo", async () => {
 		const host = fakeHost({ model: otherModel, planModeOn: false });
 		const controller = new DuoController(host, duoConfig({ manualSwitchIntent: "summon" }));
 		await controller.reevaluate();
@@ -403,7 +439,9 @@ describe("DuoController", () => {
 		host.model = planner;
 		controller.notifyManualModelChange();
 
-		expect(host.briefs.filter(brief => brief.text.includes("summons to reason"))).toHaveLength(2);
+		expect(controller.status.phase).toBe("inactive");
+		expect(host.briefs.filter(brief => brief.text.includes("summons to reason"))).toHaveLength(1);
+		expect(host.notices.at(-1)?.text).toMatch(/outside the Fable\/Opus pair/);
 	});
 
 	test("manual planner model change during takeover does not inject summon protocol", async () => {
@@ -433,21 +471,24 @@ describe("DuoController", () => {
 		expect(controller.status.phase).toBe("executing");
 	});
 
-	test("switching away from the Fable model resumes the advisor", async () => {
+	test("switching from the Fable model to a foreign model disables duo and stops the advisor", async () => {
 		const host = fakeHost({ model: otherModel, planModeOn: false });
 		const controller = new DuoController(host, duoConfig({ manualSwitchIntent: "summon" }));
 		await controller.reevaluate();
 		host.model = planner;
 		controller.notifyManualModelChange();
 		host.notices = [];
+		const stopCount = host.stops;
 
 		host.model = otherModel;
 		controller.notifyManualModelChange();
 
-		expect(host.resumes).toHaveLength(1);
-		expect(host.resumes.at(-1)).toBeUndefined();
-		expect(host.notices.at(-1)?.text).toContain("resumed");
-		expect(controller.status.phase).toBe("executing");
+		expect(host.stops).toBe(stopCount + 1);
+		expect(host.resumes).toHaveLength(0);
+		expect(host.notices.at(-1)?.text).toMatch(
+			/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the Fable\/Opus pair/,
+		);
+		expect(controller.status.phase).toBe("inactive");
 	});
 
 	test("Fable dwell on the executing stream nags every third turn", async () => {
@@ -808,7 +849,7 @@ describe("DuoController", () => {
 		expect(planningHost.ensured).toEqual([planner]);
 	});
 
-	test("manual-change guard ignores self-initiated model changes and records external executor slot override", async () => {
+	test("manual-change guard ignores self-initiated model changes and disables on external foreign switches", async () => {
 		const host = fakeHost();
 		let controller: DuoController | undefined;
 		host.onSwitch = () => controller?.notifyManualModelChange();
@@ -820,9 +861,12 @@ describe("DuoController", () => {
 
 		host.model = otherModel;
 		controller.notifyManualModelChange();
-		expect(controller.status.phase).toBe("executing");
-		expect(host.persisted.at(-1)?.executorId).toBe("anthropic/claude-sonnet-4.5");
-		expect(host.notices.at(-1)).toMatchObject({ level: "info" });
+		expect(controller.status.phase).toBe("inactive");
+		expect(host.persisted.at(-1)?.phase).toBe("inactive");
+		expect(host.notices.at(-1)).toMatchObject({
+			level: "info",
+			text: expect.stringMatching(/outside the Fable\/Opus pair/),
+		});
 	});
 
 	test("advisor drop degrades executing state and emits warning", async () => {
@@ -1319,5 +1363,54 @@ describe("DuoController", () => {
 			expect(controller.status.phase).toBe("inactive");
 			expect(host.orchestratorEnables.at(-1)).toBe(false);
 		});
+	});
+
+	test("mid-turn handoff after escalation resumes the advisor and does not re-pause it", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("executing");
+		host.pauses = 0;
+		host.resumes = [];
+
+		host.streaming = true;
+		expect(await controller.escalateToPlanner("stuck")).toBe(true);
+		expect(host.pauses).toBe(1);
+
+		host.streaming = false;
+		await controller.notifyTurnEnd();
+		expect(host.model).toBe(planner);
+
+		host.streaming = true;
+		expect(await controller.handoffToExecutor("resolved")).toBe("ok");
+		expect(host.resumes).toHaveLength(1);
+		expect(host.pauses).toBe(1);
+
+		host.streaming = false;
+		await controller.notifyTurnEnd();
+		expect(host.switches.at(-1)?.model).toEqual(executor);
+		expect(host.pauses).toBe(1);
+		expect(controller.status).toMatchObject({ phase: "executing", advisorPaused: false });
+	});
+
+	test("plan approval resumes the advisor paused by plan-mode re-entry", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("executing");
+		host.pauses = 0;
+		host.resumes = [];
+		host.ensured = [];
+
+		expect(await controller.notifyPlanModeEntered()).toBe(true);
+		expect(host.pauses).toBe(1);
+
+		host.planModeOn = false;
+		await controller.notifyPlanApproved();
+
+		expect(host.resumes).toHaveLength(1);
+		expect(host.pauses).toBe(1);
+		expect(controller.status).toMatchObject({ phase: "executing", advisorPaused: false });
+		expect(host.ensured).toContainEqual(planner);
 	});
 });

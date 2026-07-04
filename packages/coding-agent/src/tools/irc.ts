@@ -312,6 +312,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			}
 		}
 
+		if (shouldAwaitReply) this.session.enterSubagentWait?.();
 		try {
 			// Broadcasts fan out to live peers only (running | idle); reviving every
 			// parked agent on a broadcast would be a stampede. Direct sends go
@@ -401,6 +402,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 				isError: delivered.length === 0 && targets.length > 0,
 			};
 		} finally {
+			if (shouldAwaitReply) this.session.exitSubagentWait?.();
 			awaitAbort?.abort(awaitCancelled);
 			removeAwaitAbortListener?.();
 		}
@@ -409,7 +411,13 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 	async #executeWait(senderId: string, params: IrcParams, signal?: AbortSignal): Promise<AgentToolResult<IrcDetails>> {
 		const from = params.from?.trim() || undefined;
 		const timeoutMs = this.#resolveTimeoutMs(params);
-		const waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal);
+		this.session.enterSubagentWait?.();
+		let waited: IrcMessage | null;
+		try {
+			waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal);
+		} finally {
+			this.session.exitSubagentWait?.();
+		}
 		if (!waited) {
 			const filterNote = from ? ` from ${from}` : "";
 			return {

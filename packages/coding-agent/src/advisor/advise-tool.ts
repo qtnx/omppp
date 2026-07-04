@@ -168,11 +168,20 @@ export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails>
 	 *  by retagging the same text at a lower or equal severity. */
 	#deliveredNoteSeverities = new Map<string, number>();
 
+	#consultAnswerExempt = false;
+
 	constructor(private readonly onAdvice: (note: string, severity?: AdviseDetails["severity"]) => void) {}
 
 	/** Clear delivered-note memory when the advisor starts a fresh conversation. */
 	resetDeliveredNotes(): void {
 		this.#deliveredNoteSeverities.clear();
+	}
+
+	/** One-shot: the next advise bypasses this tool's own duplicate filter so an
+	 *  async consult answer is never dropped upstream of the emission guard. Armed
+	 *  and cleared each cycle via the host's beginAdvisorUpdate (mirrors the guard). */
+	setConsultAnswerExemption(on: boolean): void {
+		this.#consultAnswerExempt = on;
 	}
 
 	async execute(
@@ -185,6 +194,18 @@ export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails>
 		const key = advisorNoteDedupeKey(args.note);
 		const rank = advisorSeverityRank(args.severity);
 		const previousRank = this.#deliveredNoteSeverities.get(key) ?? 0;
+		if (this.#consultAnswerExempt) {
+			// Async consult answer: bypass this tool's own dedupe so the answer reaches the
+			// primary; the emission guard's one-shot exemption delivers it past its dedupe
+			// too. Not recorded here, so it can't poison later duplicate filtering.
+			this.#consultAnswerExempt = false;
+			this.onAdvice(args.note, args.severity);
+			return {
+				content: [{ type: "text", text: "Recorded." }],
+				details: { note: args.note, severity: args.severity },
+				useless: true,
+			};
+		}
 		if (rank <= previousRank) {
 			return {
 				content: [{ type: "text", text: "Duplicate advice ignored." }],

@@ -551,7 +551,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #version: string;
 	readonly #changelogMarkdown: string | undefined;
 	#planModePreviousTools: string[] | undefined;
-	#goalModePreviousTools: string[] | undefined;
 	#goalContinuationTimer: NodeJS.Timeout | undefined;
 	#goalTurnHadToolCalls = false;
 	#goalContinuationTurnInFlight = false;
@@ -2465,13 +2464,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		if (this.goalModeEnabled || this.goalModePaused) {
-			if (this.#goalModePreviousTools !== undefined) {
-				await this.session.setActiveToolsByName(this.#goalModePreviousTools);
-			}
+			// Goal mode is an additive overlay: snapshot restore would drop tools activated
+			// during the goal (for example via search_tool_bm25), so remove only "goal".
+			const nextTools = this.session.getActiveToolNames().filter(name => name !== "goal");
+			await this.session.setActiveToolsByName(nextTools);
 			this.session.setGoalModeState(undefined);
 			this.goalModeEnabled = false;
 			this.goalModePaused = false;
-			this.#goalModePreviousTools = undefined;
 			this.#goalTurnHadToolCalls = false;
 			this.#goalContinuationTurnInFlight = false;
 			this.#goalSuppressNextContinuation = false;
@@ -2506,7 +2505,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #reconcileModeFromSession(options?: { preserveActiveGoal?: boolean }): Promise<void> {
 		const sessionContext = this.sessionManager.buildSessionContext();
 		await this.#clearTransientModeState({
-			preserveOrchestrator: sessionContext.mode === "orchestrator",
+			preserveOrchestrator: sessionContext.mode === "orchestrator" || sessionContext.modeData?.orchestrator === true,
 			persistOrchestratorClear: false,
 		});
 		const goalEnabled = this.session.settings.get("goal.enabled");
@@ -2526,17 +2525,23 @@ export class InteractiveMode implements InteractiveModeContext {
 				mode: "active",
 				goal,
 			});
+			const restoreCoactiveOrchestrator =
+				sessionContext.modeData?.orchestrator === true && sessionContext.mode === "goal";
 			const restored = await this.session.goalRuntime.onThreadResumed({
-				preserveActiveGoal: options?.preserveActiveGoal,
+				preserveActiveGoal: options?.preserveActiveGoal === true || restoreCoactiveOrchestrator,
 			});
 			this.goalModeEnabled = restored?.enabled === true;
 			this.goalModePaused = restored?.enabled !== true && restored?.goal.status === "paused";
-			// sdk.ts excludes "goal" from the initial active tool set unconditionally.
-			// Re-add it now so the agent can call resume, complete, or drop on this goal.
-			if (restored?.goal) {
-				const previousTools = this.session.getActiveToolNames().filter(name => name !== "goal");
-				this.#goalModePreviousTools = previousTools;
-				await this.session.setActiveToolsByName([...new Set([...previousTools, "goal"])]);
+			// Goal mode is an additive overlay; add only the "goal" tool while the
+			// restored goal is active so the active-tool invariant stays precise.
+			if (restored?.enabled === true) {
+				const nextTools = [...new Set([...this.session.getActiveToolNames(), "goal"])];
+				await this.session.setActiveToolsByName(nextTools);
+			}
+			if (sessionContext.modeData?.orchestrator === true && restored?.enabled === true) {
+				await this.session.setOrchestratorModeState({ enabled: true }, { persistModeChange: false });
+				this.orchestratorModeEnabled = true;
+				this.#updateOrchestratorModeStatus();
 			}
 			this.#updateGoalModeStatus();
 			return;
@@ -2764,14 +2769,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Exit plan mode first.");
 			return;
 		}
-		const previousTools = this.session.getActiveToolNames().filter(name => name !== "goal");
-		const goalTools = [...new Set([...previousTools, "goal"])];
-		this.#goalModePreviousTools = previousTools;
-		this.goalModePaused = false;
 		const state = options.resume
 			? await this.session.goalRuntime.resumeGoal()
 			: await this.session.goalRuntime.createGoal({ objective: options.objective ?? "" });
+		// Goal mode is an additive overlay: snapshot restore would drop tools activated
+		// during the goal (for example via search_tool_bm25), so add only "goal".
+		const goalTools = [...new Set([...this.session.getActiveToolNames(), "goal"])];
 		await this.session.setActiveToolsByName(goalTools);
+		this.goalModePaused = false;
 		this.session.setGoalModeState(state);
 		this.goalModeEnabled = true;
 		this.#resetGoalContinuationSuppression();
@@ -2789,14 +2794,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		paused?: boolean;
 		reason?: "completed" | "paused" | "dropped";
 	}): Promise<void> {
-		const previousTools = this.#goalModePreviousTools;
-		if (this.goalModeEnabled && previousTools) {
-			await this.session.setActiveToolsByName(previousTools);
-		}
 		const currentState = this.session.getGoalModeState();
-		if (options?.reason === "completed") {
+		if (options?.reason === "completed" || options?.reason === "dropped") {
 			this.session.setGoalModeState(undefined);
-			this.sessionManager.appendModeChange("none");
+		}
+		if (options?.reason === "completed") {
+			this.sessionManager.appendModeChange(
+				this.session.getOrchestratorModeState()?.enabled ? "orchestrator" : "none",
+			);
+		}
+		const nextTools = this.session.getActiveToolNames().filter(name => name !== "goal");
+		if (this.session.getOrchestratorModeState()?.enabled === true) {
+			await this.session.setOrchestratorModeState({ enabled: true }, { persistModeChange: false });
+		} else {
+			await this.session.setActiveToolsByName(nextTools);
+		}
+		if (options?.reason === "completed") {
 			this.sessionManager.appendCustomEntry("goal-completed", {
 				objective: currentState?.goal?.objective,
 				tokensUsed: currentState?.goal?.tokensUsed,
@@ -2806,7 +2819,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.goalModeEnabled = false;
 		this.goalModePaused = options?.paused ?? false;
-		this.#goalModePreviousTools = undefined;
 		this.#goalContinuationTurnInFlight = false;
 		this.#cancelGoalContinuation();
 		this.#updateGoalModeStatus();
@@ -3228,10 +3240,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	async handleOrchestratorModeCommand(initialPrompt?: string): Promise<void> {
 		if (this.planModeEnabled || this.planModePaused) {
 			this.showWarning("Exit plan mode first.");
-			return;
-		}
-		if (this.goalModeEnabled || this.goalModePaused) {
-			this.showWarning("Exit goal mode first.");
 			return;
 		}
 		if (this.orchestratorModeEnabled || this.session.getOrchestratorModeState()?.enabled) {

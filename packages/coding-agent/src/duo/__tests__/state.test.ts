@@ -44,6 +44,24 @@ describe("DuoStateMachine activation", () => {
 
 		expect(machine.evaluateActivation(input({ mainModelKind: "fable" }))).toBe("executing");
 	});
+	it("activates executing for executor-kind main model without orchestrator mode", () => {
+		const active = new DuoStateMachine(config);
+		const autoOpus = input({
+			mode: "auto",
+			orchestratorEnabled: false,
+			mainModelKind: "opus",
+			plannerResolvable: true,
+			executorResolvable: true,
+			planModeActive: false,
+		});
+
+		expect(active.evaluateActivation(autoOpus)).toBe("executing");
+		expect(active.phase).toBe("executing");
+
+		const inactive = new DuoStateMachine(config);
+		expect(inactive.evaluateActivation({ ...autoOpus, mainModelKind: "other" })).toBe("inactive");
+		expect(inactive.phase).toBe("inactive");
+	});
 
 	it("starts in planning when plan mode is active", () => {
 		const machine = new DuoStateMachine(config);

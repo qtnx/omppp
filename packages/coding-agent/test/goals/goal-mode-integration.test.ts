@@ -436,14 +436,39 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(harness.session.getGoalModeState()).toBeUndefined();
 	});
 
-	it("refuses /plan while goal mode is active", async () => {
+	it("enables orchestrator mode without exiting an active goal", async () => {
 		await harness.mode.handleGoalModeCommand("Ship the release");
 		const showWarning = vi.spyOn(harness.mode, "showWarning");
 
-		await harness.mode.handlePlanModeCommand();
+		await harness.mode.handleOrchestratorModeCommand();
 
-		expect(showWarning).toHaveBeenCalledWith("Exit goal mode first.");
-		expect(harness.mode.planModeEnabled).toBe(false);
+		expect(showWarning).not.toHaveBeenCalledWith("Exit goal mode first.");
+		expect(harness.mode.orchestratorModeEnabled).toBe(true);
+		expect(harness.session.getOrchestratorModeState()).toEqual({ enabled: true });
+		expect(harness.mode.goalModeEnabled).toBe(true);
+		expect(harness.session.getGoalModeState()?.enabled).toBe(true);
+		expect(await toolNamesFor(harness)).toContain("goal");
+	});
+
+	it("keeps goal mode and goal tool active across orchestrator enable and disable", async () => {
+		await harness.mode.handleGoalModeCommand("Ship the release");
+
+		await harness.mode.handleOrchestratorModeCommand();
+
+		let activeToolNames = await toolNamesFor(harness);
+		expect(harness.mode.orchestratorModeEnabled).toBe(true);
+		expect(harness.mode.goalModeEnabled).toBe(true);
+		expect(harness.session.getGoalModeState()?.enabled).toBe(true);
+		expect(activeToolNames).toContain("goal");
+
+		await harness.mode.handleOrchestratorModeCommand();
+
+		activeToolNames = await toolNamesFor(harness);
+		expect(harness.mode.orchestratorModeEnabled).toBe(false);
+		expect(harness.session.getOrchestratorModeState()).toBeUndefined();
+		expect(harness.mode.goalModeEnabled).toBe(true);
+		expect(harness.session.getGoalModeState()?.enabled).toBe(true);
+		expect(activeToolNames).toContain("goal");
 	});
 
 	it("rejects a new /goal objective while paused", async () => {
@@ -544,8 +569,14 @@ describe("InteractiveMode goal mode integration", () => {
 
 		const nextTurn = harness.mode.getUserInput();
 		// getUserInput observes mode === "exiting" and awaits #exitGoalMode before
-		// arming onInputCallback. Drain microtasks until that side-effect lands.
-		for (let i = 0; i < 100 && harness.session.getGoalModeState() !== undefined; i++) {
+		// arming onInputCallback. Drain until both the synchronous state clear and
+		// the awaited tool refresh finish, otherwise the state can be gone while the
+		// mode flag is still being cleared in #exitGoalMode.
+		for (
+			let i = 0;
+			i < 100 && (harness.session.getGoalModeState() !== undefined || harness.mode.goalModeEnabled);
+			i++
+		) {
 			await Bun.sleep(0);
 		}
 		expect(harness.mode.goalModeEnabled).toBe(false);
@@ -560,6 +591,60 @@ describe("InteractiveMode goal mode integration", () => {
 				tokensUsed: 0,
 			}),
 		);
+
+		harness.mode.onInputCallback?.(harness.mode.startPendingSubmission({ text: "next turn" }));
+		await nextTurn;
+	});
+
+	it("keeps orchestrator mode resumable when an active goal completes", async () => {
+		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleOrchestratorModeCommand();
+
+		expect(harness.mode.orchestratorModeEnabled).toBe(true);
+		expect(harness.session.getOrchestratorModeState()).toEqual({ enabled: true });
+		expect(harness.mode.goalModeEnabled).toBe(true);
+		expect(harness.session.getGoalModeState()?.enabled).toBe(true);
+		expect(await toolNamesFor(harness)).toContain("goal");
+
+		const modeChangeCountBeforeCompletion = harness.session.sessionManager
+			.getEntries()
+			.filter(entry => entry.type === "mode_change").length;
+		const goalTool = (await createTools(harness.toolSession, harness.session.getActiveToolNames())).find(
+			tool => tool.name === "goal",
+		);
+		if (!goalTool) {
+			throw new Error("Expected goal tool to be active");
+		}
+
+		await goalTool.execute("call-1", { op: "complete" });
+		expect(harness.session.getGoalModeState()?.mode).toBe("exiting");
+		expect(harness.session.getGoalModeState()?.enabled).toBe(false);
+		expect(await toolNamesFor(harness)).not.toContain("goal");
+
+		const nextTurn = harness.mode.getUserInput();
+		for (
+			let i = 0;
+			i < 100 && (harness.session.getGoalModeState() !== undefined || harness.mode.goalModeEnabled);
+			i++
+		) {
+			await waitForMicrotasks();
+		}
+
+		expect(harness.mode.goalModeEnabled).toBe(false);
+		expect(harness.session.getGoalModeState()).toBeUndefined();
+		const activeToolNames = await toolNamesFor(harness);
+		expect(activeToolNames).not.toContain("goal");
+		expect(harness.mode.orchestratorModeEnabled).toBe(true);
+		expect(harness.session.getOrchestratorModeState()).toEqual({ enabled: true });
+
+		const completionModeChangeModes = harness.session.sessionManager
+			.getEntries()
+			.filter(entry => entry.type === "mode_change")
+			.slice(modeChangeCountBeforeCompletion)
+			.map(entry => entry.mode);
+		expect(completionModeChangeModes).toContain("orchestrator");
+		expect(completionModeChangeModes.at(-1)).toBe("orchestrator");
+		expect(completionModeChangeModes).not.toContain("none");
 
 		harness.mode.onInputCallback?.(harness.mode.startPendingSubmission({ text: "next turn" }));
 		await nextTurn;

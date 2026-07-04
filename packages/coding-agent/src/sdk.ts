@@ -1875,6 +1875,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getServiceTierByFamily: () => session?.serviceTierByFamily,
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
 			consultAdvisor: (question, signal) => session?.consultAdvisor(question, signal) ?? Promise.resolve(null),
+			consultAdvisorAsync: question => session?.consultAdvisorAsync(question) ?? false,
 			isAdvisorActive: () => session?.isAdvisorActive() ?? false,
 			duoHandoffToExecutor: (resolution, scope) =>
 				session?.duoHandoffToExecutor(resolution, scope) ?? Promise.resolve("no-controller"),
@@ -1917,6 +1918,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getFileMutationVersion: path => fileMutationVersions.get(path) ?? 0,
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
+			appendCustomEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data),
+			enterSubagentWait: () => session.enterSubagentWait(),
+			exitSubagentWait: () => session.exitSubagentWait(),
 			isMCPDiscoveryEnabled: () => session.isMCPDiscoveryEnabled(),
 			getSelectedMCPToolNames: () => session.getSelectedMCPToolNames(),
 			activateDiscoveredMCPTools: toolNames => session.activateDiscoveredMCPTools(toolNames),

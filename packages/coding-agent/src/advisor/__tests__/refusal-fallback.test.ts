@@ -151,7 +151,7 @@ describe("AdvisorRuntime refusal fallback", () => {
 		expect(setModelSpy.mock.calls.map(call => call[0].id)).toEqual([fallback.id, primary.id]);
 	});
 
-	it("restores the primary before prompting the next batch after fallback success", async () => {
+	it("restores the primary immediately after a fallback batch drains", async () => {
 		const messages = [userMessage("alpha", 1)];
 		const promptedModels: string[] = [];
 		let calls = 0;
@@ -168,15 +168,13 @@ describe("AdvisorRuntime refusal fallback", () => {
 
 		runtime.onTurnEnd(messages);
 		await flushMicrotasks();
-		messages.push(userMessage("beta", 2));
-		runtime.onTurnEnd(messages);
-		await flushMicrotasks();
 
-		expect(promptedModels).toEqual([primary.id, fallback.id, primary.id]);
+		expect(promptedModels).toEqual([primary.id, fallback.id]);
 		expect(setModelSpy.mock.calls.map(call => call[0].id)).toEqual([fallback.id, primary.id]);
+		expect(agent.model).toBe(primary);
 	});
 
-	it("reset after fallback success keeps the construction-time primary for the next batch", async () => {
+	it("reset after fallback success keeps the eagerly restored construction-time primary for the next batch", async () => {
 		const messages = [userMessage("alpha", 1)];
 		const promptedModels: string[] = [];
 		let calls = 0;
@@ -194,6 +192,8 @@ describe("AdvisorRuntime refusal fallback", () => {
 		runtime.onTurnEnd(messages);
 		await flushMicrotasks();
 		expect(promptedModels).toEqual([primary.id, fallback.id]);
+		expect(setModelSpy.mock.calls.map(call => call[0].id)).toEqual([fallback.id, primary.id]);
+		expect(agent.model).toBe(primary);
 
 		runtime.reset();
 		messages.push(userMessage("beta", 2));

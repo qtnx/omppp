@@ -1396,6 +1396,7 @@ export interface DuoResolvedConfig {
 	plannerThinking: ConfiguredThinkingLevel;
 	executor: Model;
 	executorThinking: ConfiguredThinkingLevel;
+	advisorPromptReview: boolean;
 	cooldownTurns: number;
 	maxConsecutive: number;
 	doneGate: "strict" | "inherit";
@@ -1481,7 +1482,8 @@ export function resolveDuoConfig(
 		executorThinking:
 			executor.thinkingLevel ??
 			parseConfiguredThinkingLevel(settings.get("duo.executorThinking")) ??
-			ThinkingLevel.Max,
+			ThinkingLevel.High,
+		advisorPromptReview: settings.get("duo.advisorPromptReview"),
 		cooldownTurns: settings.get("duo.takeover.cooldownTurns"),
 		maxConsecutive: settings.get("duo.takeover.maxConsecutive"),
 		doneGate: settings.get("duo.doneGate"),

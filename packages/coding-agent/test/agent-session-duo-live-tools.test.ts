@@ -173,6 +173,12 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		expect(active).toContain("duo_escalate");
 	}
 
+	function orchestratorModeChangeCount(session: AgentSession): number {
+		return session.sessionManager
+			.getEntries()
+			.filter(entry => entry.type === "mode_change" && entry.mode === "orchestrator").length;
+	}
+
 	it("activates consult and duo tools when the duo advisor starts after orchestrator mode is already on", async () => {
 		const session = createHarness();
 
@@ -210,6 +216,32 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		expect(session.getToolByName("consult")?.name).toBe("consult");
 		expect(session.getAllToolNames()).toContain("consult");
 		expect(session.getActiveToolNames()).toContain("consult");
+	});
+
+	it("keeps duo-driven orchestrator enables out of restorable session mode", async () => {
+		const session = createHarness({ activeToolNames: ["read"] });
+		session.settings.override("duo.mode", "off");
+		session.setPlanModeState({ enabled: true, planFilePath: "local://PLAN.md" });
+		session.settings.clearOverride("duo.mode");
+		await session.setDuoEnabled(true);
+		expect(session.getDuoStatus()?.phase).toBe("planning");
+		const persistedOrchestratorBeforeHandoff = orchestratorModeChangeCount(session);
+
+		const result = await session.duoHandoffToExecutor("plan locked", "multi");
+
+		expect(result).toBe("ok");
+		expect(session.getDuoStatus()?.phase).toBe("executing");
+		expect(session.getOrchestratorModeState()).toEqual({ enabled: true });
+		expect(orchestratorModeChangeCount(session)).toBe(persistedOrchestratorBeforeHandoff);
+		expect(session.sessionManager.buildSessionContext().mode).not.toBe("orchestrator");
+
+		const userSession = createHarness({ duoMode: "off", activeToolNames: ["read"] });
+		const userPersistedOrchestratorBefore = orchestratorModeChangeCount(userSession);
+
+		await userSession.setOrchestratorModeState({ enabled: true });
+
+		expect(orchestratorModeChangeCount(userSession)).toBe(userPersistedOrchestratorBefore + 1);
+		expect(userSession.sessionManager.buildSessionContext().mode).toBe("orchestrator");
 	});
 
 	it("does not register consult for a plain non-duo non-advisor session", () => {

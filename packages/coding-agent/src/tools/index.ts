@@ -361,6 +361,12 @@ export interface ToolSession {
 	getTodoPhases?: () => TodoPhase[];
 	/** Replace cached todo phases for this session. */
 	setTodoPhases?: (phases: TodoPhase[]) => void;
+	/** Append a durable custom branch entry for tool-owned session state. */
+	appendCustomEntry?: (customType: string, data?: unknown) => string;
+	/** Mark the session as blocked inside a subagent wait tool. */
+	enterSubagentWait?: () => void;
+	/** Release a prior subagent wait marker, flushing held steering at depth zero. */
+	exitSubagentWait?: () => void;
 	/** Whether MCP tool discovery is active for this session. */
 	isMCPDiscoveryEnabled?: () => boolean;
 	/** Get MCP tools activated by prior search_tool_bm25 calls. */
@@ -463,6 +469,8 @@ export interface ToolSession {
 	 * Used by the `consult` tool.
 	 */
 	consultAdvisor?: (question: string, signal?: AbortSignal) => Promise<string | null>;
+	/** Fire-and-forget consult; advisor answers later through its advice channel. */
+	consultAdvisorAsync?: (question: string) => boolean;
 	/** Whether an advisor runtime is currently live for this session. */
 	isAdvisorActive?: () => boolean;
 	/** Handoff an approved duo planner/takeover turn back to the executor. */

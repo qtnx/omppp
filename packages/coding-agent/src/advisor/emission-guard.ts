@@ -101,6 +101,15 @@ const SUPPRESSED_NORMALIZED_PHRASES: Record<string, true> = {
 const DEFAULT_HISTORY_CAPACITY = 4096;
 
 /**
+ * Concrete reminders may be renewed after several advisor cycles. This keeps
+ * long-running QA/checklist warnings visible after executor drift without
+ * allowing same-cycle or immediate repeat spam.
+ */
+const RENEW_AFTER_UPDATE_CYCLES = 5;
+
+const RENEWABLE_REMINDER_KEY_PATTERN = /^(?:reminder |qa reminder |checklist )/u;
+
+/**
  * Decides whether an advisor `advise()` call should reach the primary agent.
  *
  * Enforces — in this order — the noise filter, session-scoped exact-text
@@ -117,7 +126,10 @@ export class AdvisorEmissionGuard {
 	#seen = new Set<string>();
 	/** Insertion-order log to drive FIFO eviction without an extra Map. */
 	#seenOrder: string[] = [];
+	#seenUpdate = new Map<string, number>();
+	#updateCycle = 0;
 	#consumedThisUpdate = false;
+	#consultAnswerExempt = false;
 	readonly #capacity: number;
 
 	constructor(opts: { capacity?: number } = {}) {
@@ -133,7 +145,10 @@ export class AdvisorEmissionGuard {
 	reset(): void {
 		this.#seen.clear();
 		this.#seenOrder.length = 0;
+		this.#seenUpdate.clear();
+		this.#updateCycle = 0;
 		this.#consumedThisUpdate = false;
+		this.#consultAnswerExempt = false;
 	}
 
 	/**
@@ -141,8 +156,10 @@ export class AdvisorEmissionGuard {
 	 * before each `agent.prompt(batch)` invocation so the next advisor model
 	 * cycle starts with a fresh budget of one advise.
 	 */
-	beginUpdate(): void {
+	beginUpdate(opts?: { consultAnswer?: boolean }): void {
 		this.#consumedThisUpdate = false;
+		this.#updateCycle++;
+		this.#consultAnswerExempt = opts?.consultAnswer === true;
 	}
 
 	/**
@@ -157,16 +174,43 @@ export class AdvisorEmissionGuard {
 	accept(note: string): boolean {
 		const key = normalizeAdvisorNote(note);
 		if (!key) return false;
+		if (this.#consultAnswerExempt) {
+			this.#consultAnswerExempt = false;
+			if (this.#consumedThisUpdate) return false;
+			this.#consumedThisUpdate = true;
+			return true;
+		}
 		if (SUPPRESSED_NORMALIZED_PHRASES[key]) return false;
-		if (this.#seen.has(key)) return false;
+		if (this.#seen.has(key)) {
+			const lastUpdate = this.#seenUpdate.get(key);
+			if (
+				!RENEWABLE_REMINDER_KEY_PATTERN.test(key) ||
+				lastUpdate === undefined ||
+				this.#updateCycle - lastUpdate < RENEW_AFTER_UPDATE_CYCLES
+			) {
+				return false;
+			}
+		}
 		if (this.#consumedThisUpdate) return false;
 		this.#consumedThisUpdate = true;
+		this.#recordAccepted(key);
+		return true;
+	}
+
+	#recordAccepted(key: string): void {
+		if (this.#seen.delete(key)) {
+			const existingIndex = this.#seenOrder.indexOf(key);
+			if (existingIndex >= 0) this.#seenOrder.splice(existingIndex, 1);
+		}
 		this.#seen.add(key);
+		this.#seenUpdate.set(key, this.#updateCycle);
 		this.#seenOrder.push(key);
 		if (this.#seenOrder.length > this.#capacity) {
 			const stale = this.#seenOrder.shift();
-			if (stale !== undefined) this.#seen.delete(stale);
+			if (stale !== undefined) {
+				this.#seen.delete(stale);
+				this.#seenUpdate.delete(stale);
+			}
 		}
-		return true;
 	}
 }

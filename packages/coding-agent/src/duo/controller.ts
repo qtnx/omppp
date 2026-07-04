@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { isFableOrMythos, parseAnthropicModel } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
@@ -5,7 +6,10 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import type { DuoResolvedConfig } from "../config/model-resolver";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
 import advisorInstructions from "./prompts/advisor-instructions.md" with { type: "text" };
+import effortChangeNotice from "./prompts/effort-change-notice.md" with { type: "text" };
 import handbackBrief from "./prompts/handback-brief.md" with { type: "text" };
+import manualPlanBrief from "./prompts/manual-plan-brief.md" with { type: "text" };
+import planTakeoverNotice from "./prompts/plan-takeover-notice.md" with { type: "text" };
 import plannerNotice from "./prompts/planner-notice.md" with { type: "text" };
 import plannerSummon from "./prompts/planner-summon.md" with { type: "text" };
 import takeoverBrief from "./prompts/takeover-brief.md" with { type: "text" };
@@ -77,6 +81,8 @@ export class DuoController {
 	#advisorSelfPaused = false;
 	#applyingOwnSwitch = false;
 	#plannerDwellTurns = 0;
+	/** Advisor-selected executor effort; persisted separately from the user's configured default. */
+	#executorThinkingOverride: ThinkingLevel | undefined;
 
 	constructor(host: DuoControllerHost, config: DuoResolvedConfig, restored?: DuoStateSnapshot) {
 		this.#host = host;
@@ -88,6 +94,7 @@ export class DuoController {
 			restored,
 		);
 		this.#advisorPaused = restored?.phase === "takeover";
+		this.#executorThinkingOverride = restored?.executorThinkingOverride;
 		this.#refreshSnapshotMetadata(restored?.preDuoThinking);
 	}
 
@@ -116,7 +123,7 @@ export class DuoController {
 			this.#host.injectBrief(prompt.render(plannerNotice), "nextTurn");
 			await this.#applySwitch(this.#config.planner, this.#config.plannerThinking);
 		} else if (activated && nextPhase === "executing") {
-			if (await this.#applySwitch(this.#config.executor, this.#config.executorThinking)) {
+			if (await this.#applySwitch(this.#config.executor, this.#executorThinking())) {
 				if (!modelsAreEqual(this.#config.executor, this.#config.planner)) {
 					if (!this.#host.ensureAdvisorStarted(this.#config.planner)) {
 						this.#machine.onAdvisorDropped();
@@ -134,6 +141,8 @@ export class DuoController {
 			this.#host.stopDuoAdvisor();
 			this.#pendingSwitch = undefined;
 			this.#advisorPaused = false;
+			this.#executorThinkingOverride = undefined;
+			this.#refreshSnapshotMetadata(preDuoThinking);
 			this.#plannerDwellTurns = 0;
 			const restoredThinking = parseConfiguredThinkingLevel(preDuoThinking);
 			if (restoredThinking !== undefined) {
@@ -177,7 +186,7 @@ export class DuoController {
 	async notifyPlanApproved(): Promise<void> {
 		if (this.#machine.onPlanApproved()) {
 			this.#refreshSnapshotMetadata();
-			if (await this.#applySwitch(this.#config.executor, this.#config.executorThinking)) {
+			if (await this.#applySwitch(this.#config.executor, this.#executorThinking())) {
 				if (!this.#host.ensureAdvisorStarted(this.#config.planner)) {
 					this.#machine.onAdvisorDropped();
 					this.#advisorPaused = false;
@@ -185,9 +194,18 @@ export class DuoController {
 						"warning",
 						"Duo advisor could not be started; continuing with the executor without takeover support.",
 					);
+				} else {
+					// A plan approval returns to executing but never resumed the advisor that
+					// notifyPlanModeEntered/requestPlanTakeover paused when the planner took the
+					// stream, leaving it paused for the whole executing phase. Resume it here.
+					this.#host.resumeAdvisor();
+					this.#advisorPaused = false;
+					this.#advisorSelfPaused = false;
 				}
 				this.#host.setPlanModeEnabled(false);
 				await this.#host.setOrchestratorEnabled(true);
+				this.#plannerDwellTurns = 0;
+				this.#syncAdvisorSelfPause();
 			}
 			this.#persistSnapshot();
 		}
@@ -254,7 +272,7 @@ export class DuoController {
 			this.#config = {
 				...this.#config,
 				executor: model,
-				executorThinking: configuredThinking ?? this.#config.executorThinking,
+				executorThinking: configuredThinking ?? this.#executorThinking(),
 			};
 			this.#host.emitNotice(
 				"info",
@@ -320,6 +338,50 @@ export class DuoController {
 		return decision;
 	}
 
+	async requestPlanTakeover(reason: string): Promise<boolean> {
+		if (this.#machine.phase !== "executing") {
+			return false;
+		}
+		const currentModel = this.#host.currentModel();
+		if (currentModel && modelsAreEqual(currentModel, this.#config.planner)) {
+			return false;
+		}
+		const planner = this.#host.availableModels().find(model => modelsAreEqual(model, this.#config.planner));
+		if (!planner || !this.#machine.onPlanTakeoverRequested()) {
+			return false;
+		}
+		this.#refreshSnapshotMetadata();
+		if (!(await this.#applySwitch(planner, this.#config.plannerThinking))) {
+			return false;
+		}
+		this.#host.pauseAdvisor();
+		this.#advisorPaused = true;
+		this.#plannerDwellTurns = 0;
+		this.#host.setPlanModeEnabled(true);
+		this.#host.injectBrief(
+			prompt.render(manualPlanBrief, {
+				planArtifact: "local://duo-plan.md",
+				executor: this.#formatModel(this.#config.executor),
+			}),
+			"nextTurn",
+		);
+		this.#persistSnapshot();
+		this.#host.emitNotice("info", prompt.render(planTakeoverNotice, { reason }));
+		return true;
+	}
+
+	setExecutorThinkingOverride(level: ThinkingLevel | undefined, reason: string): boolean {
+		// The advisor override is persisted so subsequent executor handoffs keep the raised effort.
+		this.#executorThinkingOverride = level;
+		this.#refreshSnapshotMetadata();
+		if (this.#machine.phase === "executing") {
+			this.#host.setThinkingLevel(this.#executorThinking());
+		}
+		this.#host.emitNotice("info", prompt.render(effortChangeNotice, { level: level ?? "default", reason }));
+		this.#persistSnapshot();
+		return true;
+	}
+
 	/** Executor-initiated escalation: hand the main stream to the planner. */
 	async escalateToPlanner(reason: string): Promise<boolean> {
 		if (this.#machine.onExecutorEscalate() !== "accepted") return false;
@@ -349,7 +411,7 @@ export class DuoController {
 				return "already-executor";
 			}
 			this.#config = { ...this.#config, executor: this.#resolvedExecutor };
-			if (!(await this.#applySwitch(this.#resolvedExecutor, this.#config.executorThinking))) {
+			if (!(await this.#applySwitch(this.#resolvedExecutor, this.#executorThinking()))) {
 				this.#persistSnapshot();
 				return "switch-failed";
 			}
@@ -369,7 +431,7 @@ export class DuoController {
 		}
 		this.#refreshSnapshotMetadata();
 		const brief = prompt.render(handbackBrief, { resolution });
-		if (!(await this.#applySwitch(this.#config.executor, this.#config.executorThinking))) {
+		if (!(await this.#applySwitch(this.#config.executor, this.#executorThinking()))) {
 			this.#persistSnapshot();
 			return "switch-failed";
 		}
@@ -404,6 +466,7 @@ export class DuoController {
 		this.#host.setPlanModeEnabled(false);
 		this.#host.stopDuoAdvisor();
 		this.#advisorPaused = false;
+		this.#executorThinkingOverride = undefined;
 		this.#plannerDwellTurns = 0;
 		const restoredThinking = parseConfiguredThinkingLevel(snapshot.preDuoThinking);
 		if (restoredThinking !== undefined) {
@@ -439,7 +502,7 @@ export class DuoController {
 		switch (this.#machine.phase) {
 			case "executing":
 			case "degraded":
-				return { model: this.#config.executor, thinkingLevel: this.#config.executorThinking };
+				return { model: this.#config.executor, thinkingLevel: this.#executorThinking() };
 			case "planning":
 			case "takeover":
 				return { model: this.#config.planner, thinkingLevel: this.#config.plannerThinking };
@@ -450,6 +513,10 @@ export class DuoController {
 
 	#isExecutingLike(): boolean {
 		return this.#machine.phase === "executing" || this.#machine.phase === "degraded";
+	}
+
+	#executorThinking(): ConfiguredThinkingLevel {
+		return this.#executorThinkingOverride ?? this.#config.executorThinking;
 	}
 
 	async #applySwitch(model: Model, thinkingLevel: ConfiguredThinkingLevel): Promise<boolean> {
@@ -505,7 +572,10 @@ export class DuoController {
 			this.#plannerDwellTurns = 0;
 			return;
 		}
-		const current = this.#host.currentModel();
+		// A model switch queued while streaming lands only at turn end, so currentModel()
+		// still reports the planner mid-handoff. Evaluate the model that WILL hold the
+		// stream (the pending target) so we don't re-pause the advisor we just resumed.
+		const current = this.#pendingSwitch?.model ?? this.#host.currentModel();
 		if (!current) {
 			return;
 		}
@@ -534,6 +604,7 @@ export class DuoController {
 				plannerId: this.#formatModel(this.#config.planner),
 				executorId: this.#formatModel(this.#config.executor),
 				preDuoThinking,
+				executorThinkingOverride: this.#executorThinkingOverride,
 			},
 		);
 	}

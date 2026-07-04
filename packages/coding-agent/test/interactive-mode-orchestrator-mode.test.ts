@@ -10,6 +10,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { ModelRegistry } from "../src/config/model-registry";
+import type { Goal } from "../src/goals/state";
 import { InteractiveMode } from "../src/modes/interactive-mode";
 import type { OrchestratorModeState } from "../src/orchestrator-mode/state";
 import orchestratorModeActivePrompt from "../src/prompts/system/orchestrator-mode-active.md" with { type: "text" };
@@ -47,7 +48,31 @@ const SAFE_ORCHESTRATOR_TOOLS = [
 
 const NON_ESSENTIAL_ORCHESTRATOR_TOOLS = ["job", "task", "workflow", "irc", "web_search", "grep", "lsp"] as const;
 
-const DIRECT_TOOLS = ["write", "edit", "bash", "eval"] as const;
+const MARKDOWN_WRITE_TOOLS = ["write", "edit"] as const;
+const DIRECT_TOOLS = ["bash", "eval"] as const;
+
+interface HarnessOptions {
+	registryToolNames?: readonly string[];
+	activeToolNames?: readonly string[];
+	registryToolLoadModes?: Partial<Record<string, BuiltinToolLoadMode>>;
+	autoQa?: boolean;
+	systemPrompt?: readonly string[];
+	initialContextWindow?: number;
+}
+
+function makeGoal(overrides: Partial<Goal> = {}): Goal {
+	const now = Date.now();
+	return {
+		id: "goal-1",
+		objective: "orchestrate safely",
+		status: "active",
+		tokensUsed: 0,
+		timeUsedSeconds: 0,
+		createdAt: now,
+		updatedAt: now,
+		...overrides,
+	};
+}
 
 describe("InteractiveMode orchestrator mode", () => {
 	let tempDir: TempDir;
@@ -87,16 +112,38 @@ describe("InteractiveMode orchestrator mode", () => {
 		return model;
 	}
 
-	function createHarness(
-		options: {
-			registryToolNames?: readonly string[];
-			activeToolNames?: readonly string[];
-			registryToolLoadModes?: Partial<Record<string, BuiltinToolLoadMode>>;
-			autoQa?: boolean;
-			systemPrompt?: readonly string[];
-			initialContextWindow?: number;
-		} = {},
-	): InteractiveMode {
+	async function writeSessionFile(name: string, entries: Array<Record<string, unknown>>): Promise<string> {
+		const sessionFile = path.join(tempDir.path(), `${name}-${Bun.nanoseconds()}.jsonl`);
+		const timestamp = "2026-06-01T00:00:00.000Z";
+		await Bun.write(
+			sessionFile,
+			`${[{ type: "session", version: 3, id: `${name}-session`, timestamp, cwd: tempDir.path() }, ...entries]
+				.map(entry => JSON.stringify(entry))
+				.join("\n")}\n`,
+		);
+		return sessionFile;
+	}
+
+	async function writeGoalModeSession(
+		name: string,
+		modeName: "goal" | "goal_paused",
+		goal: Goal,
+		options: { orchestrator?: boolean } = {},
+	): Promise<string> {
+		const timestamp = "2026-06-01T00:00:00.000Z";
+		return await writeSessionFile(name, [
+			{
+				type: "mode_change",
+				id: `${name}-${modeName}`,
+				parentId: null,
+				timestamp,
+				mode: modeName,
+				data: { goal, orchestrator: options.orchestrator === true },
+			},
+		]);
+	}
+
+	function createHarnessWithManager(manager: SessionManager, options: HarnessOptions = {}): InteractiveMode {
 		void OrchestratorModeTool;
 		const _stateContract: OrchestratorModeState | undefined = undefined;
 		void _stateContract;
@@ -120,7 +167,6 @@ describe("InteractiveMode orchestrator mode", () => {
 			if (!tool) throw new Error(`Missing active tool ${name}`);
 			return tool;
 		});
-		const manager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), `active-${Bun.nanoseconds()}`));
 		const createdSession = new AgentSession({
 			agent: new Agent({
 				initialState: {
@@ -142,6 +188,63 @@ describe("InteractiveMode orchestrator mode", () => {
 		return mode;
 	}
 
+	function createHarness(options: HarnessOptions = {}): InteractiveMode {
+		const manager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), `active-${Bun.nanoseconds()}`));
+		return createHarnessWithManager(manager, options);
+	}
+
+	async function createResumeHarness(sessionFile: string, options: HarnessOptions = {}): Promise<InteractiveMode> {
+		const manager = await SessionManager.open(sessionFile, path.join(tempDir.path(), "sessions"));
+		return createHarnessWithManager(manager, options);
+	}
+
+	it("restores active goal and orchestrator together from a goal mode session with orchestrator data", async () => {
+		const goal = makeGoal();
+		const sessionFile = await writeGoalModeSession("active-goal-orchestrator", "goal", goal, { orchestrator: true });
+		const created = await createResumeHarness(sessionFile, {
+			registryToolNames: ["read", "goal", ...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
+		});
+
+		await created.init({ suppressWelcomeIntro: true });
+
+		expect(created.goalModeEnabled).toBe(true);
+		expect(created.goalModePaused).toBe(false);
+		expect(created.orchestratorModeEnabled).toBe(true);
+		expect(session?.getGoalModeState()).toMatchObject({
+			enabled: true,
+			goal: { id: goal.id, objective: goal.objective, status: "active" },
+		});
+		expect(session?.getOrchestratorModeState()).toEqual({ enabled: true });
+		expect(session?.getActiveToolNames()).toEqual([
+			...ORCHESTRATOR_CONTROL_TOOLS,
+			...SAFE_ORCHESTRATOR_TOOLS,
+			"goal",
+		]);
+	});
+
+	it("keeps a paused goal paused without restoring orchestrator from orchestrator data", async () => {
+		const goal = makeGoal({ status: "paused" });
+		const sessionFile = await writeGoalModeSession("paused-goal-orchestrator", "goal_paused", goal, {
+			orchestrator: true,
+		});
+		const created = await createResumeHarness(sessionFile, {
+			registryToolNames: ["read", "goal", ...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
+		});
+
+		await created.init({ suppressWelcomeIntro: true });
+
+		expect(created.goalModeEnabled).toBe(false);
+		expect(created.goalModePaused).toBe(true);
+		expect(created.orchestratorModeEnabled).toBe(false);
+		expect(session?.getGoalModeState()).toMatchObject({
+			enabled: false,
+			goal: { id: goal.id, objective: goal.objective, status: "paused" },
+		});
+		expect(session?.getOrchestratorModeState()).toBeUndefined();
+		expect(session?.getActiveToolNames()).toEqual(["read"]);
+		expect(session?.getActiveToolNames()).not.toContain("goal");
+	});
+
 	it("enters orchestrator mode and persists enabled state", async () => {
 		const created = createHarness({
 			registryToolNames: ["read", ...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
@@ -156,6 +259,7 @@ describe("InteractiveMode orchestrator mode", () => {
 		const allRegistryTools = [
 			...ORCHESTRATOR_CONTROL_TOOLS,
 			...SAFE_ORCHESTRATOR_TOOLS,
+			...MARKDOWN_WRITE_TOOLS,
 			...DIRECT_TOOLS,
 			"unrelated",
 		];
@@ -166,7 +270,11 @@ describe("InteractiveMode orchestrator mode", () => {
 
 		await created.handleOrchestratorModeCommand();
 
-		expect(session?.getActiveToolNames()).toEqual([...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS]);
+		expect(session?.getActiveToolNames()).toEqual([
+			...ORCHESTRATOR_CONTROL_TOOLS,
+			...SAFE_ORCHESTRATOR_TOOLS,
+			...MARKDOWN_WRITE_TOOLS,
+		]);
 		for (const directTool of DIRECT_TOOLS) {
 			expect(session?.getActiveToolNames()).not.toContain(directTool);
 		}
@@ -180,6 +288,7 @@ describe("InteractiveMode orchestrator mode", () => {
 				"compact",
 				"shake",
 				"context_unload",
+				...MARKDOWN_WRITE_TOOLS,
 				...DIRECT_TOOLS,
 			],
 			activeToolNames: ["read"],
@@ -207,8 +316,7 @@ describe("InteractiveMode orchestrator mode", () => {
 
 		await created.handleOrchestratorModeCommand();
 
-		expect(session?.getActiveToolNames()).toEqual(["orchestrator_mode", "task", "read", "grep"]);
-		expect(session?.getActiveToolNames()).not.toContain("write");
+		expect(session?.getActiveToolNames()).toEqual(["orchestrator_mode", "task", "read", "grep", "write"]);
 		expect(session?.getActiveToolNames()).not.toContain("eval");
 	});
 
@@ -244,13 +352,22 @@ describe("InteractiveMode orchestrator mode", () => {
 	it("exits orchestrator mode and restores the previous active tools on second command", async () => {
 		const previousTools = ["read", "write", "bash"];
 		const created = createHarness({
-			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS, ...DIRECT_TOOLS],
+			registryToolNames: [
+				...ORCHESTRATOR_CONTROL_TOOLS,
+				...SAFE_ORCHESTRATOR_TOOLS,
+				...MARKDOWN_WRITE_TOOLS,
+				...DIRECT_TOOLS,
+			],
 			activeToolNames: previousTools,
 		});
 
 		await created.handleOrchestratorModeCommand();
 		expect(session?.getOrchestratorModeState()).toEqual({ enabled: true });
-		expect(session?.getActiveToolNames()).toEqual([...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS]);
+		expect(session?.getActiveToolNames()).toEqual([
+			...ORCHESTRATOR_CONTROL_TOOLS,
+			...SAFE_ORCHESTRATOR_TOOLS,
+			...MARKDOWN_WRITE_TOOLS,
+		]);
 
 		await created.handleOrchestratorModeCommand();
 
@@ -258,28 +375,32 @@ describe("InteractiveMode orchestrator mode", () => {
 		expect(session?.getActiveToolNames()).toEqual(previousTools);
 	});
 
-	it("clears stale goal state when entering orchestrator mode", async () => {
+	it("enters orchestrator mode through the UI command while an active goal stays intact", async () => {
 		const created = createHarness({
-			registryToolNames: ["read", ...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
+			registryToolNames: ["read", "goal", ...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
 		});
-		session?.setGoalModeState({
-			enabled: true,
-			mode: "active",
-			goal: {
-				id: "goal-1",
-				objective: "orchestrate safely",
-				status: "active",
-				tokensUsed: 0,
-				timeUsedSeconds: 0,
-				createdAt: 1,
-				updatedAt: 1,
-			},
-		});
+		const showWarning = vi.spyOn(created, "showWarning").mockImplementation(() => {});
+
+		await created.handleGoalModeCommand("orchestrate safely");
+		const goalState = session?.getGoalModeState();
+		if (!goalState) throw new Error("Expected active goal state");
 
 		await created.handleOrchestratorModeCommand();
 
-		expect(session?.getGoalModeState()).toBeUndefined();
+		expect(showWarning).not.toHaveBeenCalledWith("Exit goal mode first.");
+		expect(created.goalModeEnabled).toBe(true);
+		expect(created.goalModePaused).toBe(false);
+		expect(session?.getGoalModeState()).toMatchObject({
+			enabled: true,
+			goal: { id: goalState.goal.id, objective: "orchestrate safely", status: "active" },
+		});
+		expect(created.orchestratorModeEnabled).toBe(true);
 		expect(session?.getOrchestratorModeState()).toEqual({ enabled: true });
+		expect(session?.getActiveToolNames()).toEqual([
+			...ORCHESTRATOR_CONTROL_TOOLS,
+			...SAFE_ORCHESTRATOR_TOOLS,
+			"goal",
+		]);
 	});
 
 	it("restores an empty previous toolset without auto-adding Auto QA", async () => {
@@ -330,7 +451,12 @@ describe("InteractiveMode orchestrator mode", () => {
 
 	it("injects orchestrator context reminding the agent to use subagents instead of direct tools", async () => {
 		const created = createHarness({
-			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS, ...DIRECT_TOOLS],
+			registryToolNames: [
+				...ORCHESTRATOR_CONTROL_TOOLS,
+				...SAFE_ORCHESTRATOR_TOOLS,
+				...MARKDOWN_WRITE_TOOLS,
+				...DIRECT_TOOLS,
+			],
 			activeToolNames: ["read"],
 		});
 
@@ -338,17 +464,10 @@ describe("InteractiveMode orchestrator mode", () => {
 
 		const modeContext = session?.systemPrompt.join("\n") ?? "";
 		expect(modeContext).toMatch(/subagents/i);
-		expect(modeContext).toMatch(/instead of direct/i);
+		expect(modeContext).toMatch(/dispatched to subagents/i);
 		for (const directTool of DIRECT_TOOLS) {
 			expect(modeContext).toContain(directTool);
 		}
-	});
-
-	it("documents the QA verification gate in the orchestrator overlay prompt", () => {
-		expect(orchestratorModeActivePrompt).toContain("harness-ready handoff");
-		expect(orchestratorModeActivePrompt).toContain("HARD-BLOCKS completion");
-		expect(orchestratorModeActivePrompt).toContain("Max 2 fix→re-QA loops");
-		expect(orchestratorModeActivePrompt).toContain("`qa` agent");
 	});
 
 	it("replaces the core system prompt block while preserving context blocks in orchestrator mode", async () => {

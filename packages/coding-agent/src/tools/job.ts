@@ -274,6 +274,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		}
 
 		let timeoutHandle: NodeJS.Timeout | undefined;
+		this.session.enterSubagentWait?.();
 		try {
 			while (true) {
 				const stillRunningJobIds = watchedJobIds.filter(id => manager.getJob(id)?.status === "running");
@@ -313,6 +314,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 				}
 			}
 		} finally {
+			this.session.exitSubagentWait?.();
 			manager.unwatchJobs(watchedJobIds);
 			clearTimeout(timeoutHandle);
 			clearInterval(progressTimer);

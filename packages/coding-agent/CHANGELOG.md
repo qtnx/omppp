@@ -4,12 +4,29 @@
 
 ### Added
 
+- Goal mode and Safe orchestrator mode can now be active simultaneously, so goal budgets/objectives survive delegate-only orchestration.
 - Duo now auto-toggles Safe orchestrator mode by handoff scope (`duo_handoff` `scope: single|multi`): single-phase tasks run the executor with direct tools; multi-phase tasks stay delegate-only. New `duo.orchestrator` setting (`auto`|`always`).
 - `heavy_task`, `plan`, and `qa` now default to `anthropic/claude-fable-5:low` then `openai-codex/gpt-5.5:high`, and subagent model selection is rate-limit-aware: when a model's 5h or weekly window is exhausted it falls through to the next configured model. Gate with `task.limitAwareModelRouting` (default on).
+- `consult` tool now accepts `async: true`: a fire-and-forget consultation that dispatches the question to the duo advisor without blocking the main stream — the advisor replies later through its normal advisory-note (`advise`) channel. Default (`async` omitted) still blocks until the advisor answers. A one-shot emission-guard exemption plus a plain-text fallback guarantee the async answer reaches the primary even when a bare reply would normally be suppressed/deduped or the advisor answers in plain text.
+- The duo executor overlay now carries a mandatory `consult` checkpoints block (in both orchestrator and direct-execution modes) defining gating checkpoints to consult the advisor before: committing to a plan, architecture/design decisions, task-shaping decisions, applying a bug fix, risky/irreversible actions, QA/test-plan review, and ending the turn — plus exemptions and a guide to writing a terse consult.
+- Duo advisor now maintains a persistent mission brief at `local://advisor-brief.md` (goal, direction, current phase, standing task/QA checklists) via a new advisor `update_brief` tool. The brief is re-injected into the executor's context every turn so it survives compaction and re-seeds the advisor after a re-prime — this is the channel for persistent reminding; advisor doctrine now treats the executor as amnesiac, keeping the brief current and distrusting completion claims (without weakening the existing duplicate-advice flood guard).
+- Duo advisor can now reorder or repair the executor's todo list via a new `set_todos` tool; changes are committed as `user_todo_edit` entries so the reordering survives compaction and resume.
+- Duo advisor can now tune executor reasoning effort at runtime via a new `set_executor_effort` tool (`high`/`xhigh`/`max`); the override applies immediately during the executing phase and persists across handoffs and snapshot restore, with doctrine to escalate to `xhigh`/`max` on hard problems and drop back to `high` for routine work.
+- Duo advisor now reviews each user prompt during execution and can request a plan-first takeover (`request_takeover` with purpose `plan`), backed by a new `DuoController.requestPlanTakeover` that enters the planning phase, switches to the planner synchronously, and injects the full-plan brief; gated by new `duo.advisorPromptReview` (default on).
+- Duo advisor now receives a per-turn delegation-stats header (task-call count, `tasks[]` batch widths, running subagents, open todos) plus parallelism-enforcement doctrine to push under-parallelized work toward wide parallel fan-out instead of serial 1–2-agent delegation.
+
+### Changed
+
+- Raised the blocking (synchronous) `consult` advisor timeout from 120s to 300s; the async fire-and-forget path stays timeout-free and the tool remains interruptible, so a slow advisor never wedges the primary.
+- Lowered the duo executor's default reasoning effort (`duo.executorThinking`) from `max` to `high`; the advisor's new `set_executor_effort` governor raises it on demand.
 
 ### Fixed
 
+- Fixed the duo advisor always receiving gisted/elided primary thinking regardless of `advisor.thinkingClampChars`. `ThinkingArtifactStore.renderThinking` now honors the setting (default `0`): blocks within the threshold (and the default-off case) forward the full obfuscated thinking verbatim; only blocks exceeding a configured `>0` threshold are clamped to a gist marker. An omitted `clampThreshold` dep fails open to full passthrough.
+
 - Duo handoff/escalate/takeover/summon now auto-continue the stream after the model switch applies — the incoming model starts its turn immediately instead of waiting for user input.
+- User steering typed while the main stream is blocked waiting on subagents is now held until the wait ends and delivered wrapped with a notice, instead of aborting the wait and interleaving with subagent results mid-task; new `steering.holdDuringSubagentWaits` (default on) gates it.
+- Fixed the duo advisor never resuming after the controller returned to the executing phase. Two holes: (1) a mid-turn `duo_handoff` after an escalation/takeover queued the executor switch while streaming, so `#syncAdvisorSelfPause` still saw the planner on `currentModel()` and re-paused the advisor it had just resumed — it now evaluates the pending-switch target; (2) plan approval (planning → executing) never called `resumeAdvisor()`, leaving an advisor paused by plan-mode re-entry paused for the whole executing phase.
 
 ## [1.5.0] - 2026-07-03
 

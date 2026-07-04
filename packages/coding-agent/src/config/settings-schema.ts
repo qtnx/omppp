@@ -483,7 +483,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Advisor",
 			label: "Advisor Thinking Clamp Chars",
 			description:
-				"Max characters of a primary thinking block fed to the advisor before it is clamped (head/tail + gist marker, full text spilled to an artifact). 0 = pass full thinking untruncated (default); set e.g. 2000 to re-enable clamping.",
+				"Max characters of a primary thinking block fed to the advisor before it is clamped (middle elided behind a gist marker, full text spilled to an artifact). 0 = pass full thinking untruncated (default); set e.g. 2000 to re-enable clamping.",
 			condition: "advisorEnabled",
 		},
 	},
@@ -574,6 +574,16 @@ export const SETTINGS_SCHEMA = {
 			label: "Duo Advisor Thinking",
 			description:
 				"Thinking level for the Fable advisor while it monitors the executor. Higher = more thorough gap-catching. Values: auto|off|minimal|low|medium|high|xhigh|max.",
+		},
+	},
+	"duo.advisorPromptReview": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Advisor Prompt Review",
+			description: "Advisor reviews each user prompt to decide a plan-first takeover.",
 		},
 	},
 	"duo.doneGate": {
@@ -1717,6 +1727,17 @@ export const SETTINGS_SCHEMA = {
 			group: "Input",
 			label: "Interrupt Mode",
 			description: "When steering messages interrupt tool execution",
+		},
+	},
+
+	"steering.holdDuringSubagentWaits": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Input",
+			label: "Hold Steering During Subagent Waits",
+			description: "Hold user steering messages until a blocking subagent wait ends, then deliver them wrapped.",
 		},
 	},
 
