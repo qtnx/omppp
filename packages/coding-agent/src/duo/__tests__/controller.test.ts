@@ -85,6 +85,7 @@ function duoConfig(overrides: Partial<DuoResolvedConfig> = {}): DuoResolvedConfi
 		cooldownTurns: 2,
 		maxConsecutive: 2,
 		doneGate: "strict",
+		advisorPromptReview: true,
 		manualSwitchIntent: "plan",
 		signals: { enabled: true, sentiment: true, failureThreshold: 3, loopThreshold: 3, planningNeeded: true },
 		...overrides,
@@ -1326,6 +1327,21 @@ describe("DuoController", () => {
 
 			expect(host.orchestratorEnables.length).toBe(before);
 			expect(host.persisted.at(-1)?.executionScope).toBe("single");
+		});
+
+		test("summon-return handoff with scope updates orchestrator and injects the handback brief", async () => {
+			const host = fakeHost({ model: planner, planModeOn: true, orchestrator: true });
+			const controller = new DuoController(host, duoConfig());
+			await controller.reevaluate();
+			expect(await controller.handoffToExecutor("plan locked", "multi")).toBe("ok");
+			expect(await controller.summonPlanner()).toBe(true);
+
+			host.briefs = [];
+			expect(await controller.handoffToExecutor("single-phase follow-up", "single")).toBe("ok");
+
+			expect(host.orchestratorEnables.at(-1)).toBe(false);
+			expect(host.persisted.at(-1)?.executionScope).toBe("single");
+			expect(host.briefs.at(-1)?.text).toContain("single-phase follow-up");
 		});
 
 		test("recover handback without scope keeps single scope (no force-on)", async () => {

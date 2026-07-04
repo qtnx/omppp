@@ -10,6 +10,7 @@ import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
+import { CompactionProgressComponent } from "../../modes/components/compaction-progress";
 import {
 	ReadToolGroupComponent,
 	readArgsHaveTarget,
@@ -153,6 +154,7 @@ export class EventController {
 			tool_execution_update: e => this.#handleToolExecutionUpdate(e),
 			tool_execution_end: e => this.#handleToolExecutionEnd(e),
 			auto_compaction_start: e => this.#handleAutoCompactionStart(e),
+			auto_compaction_progress: e => this.#handleAutoCompactionProgress(e),
 			auto_compaction_end: e => this.#handleAutoCompactionEnd(e),
 			auto_retry_start: e => this.#handleAutoRetryStart(e),
 			auto_retry_end: e => this.#handleAutoRetryEnd(e),
@@ -1194,7 +1196,9 @@ export class EventController {
 	#ensureWorkingLoaderWhileStreaming(): void {
 		const viewSession = this.ctx.viewSession ?? this.ctx.session;
 		if (!viewSession.isStreaming) return;
-		if (this.ctx.autoCompactionLoader || this.ctx.retryLoader) return;
+		// Also skip while the compaction progress overlay is live, else a streaming
+		// event mid-compaction would restore the "Working…" loader over it.
+		if (this.ctx.autoCompactionLoader || this.ctx.autoCompactionProgress || this.ctx.retryLoader) return;
 		this.ctx.ensureLoadingAnimation();
 	}
 
@@ -1241,24 +1245,55 @@ export class EventController {
 					: event.action === "snapcompact"
 						? "Auto-snapcompact"
 						: "Auto context-full maintenance";
-		this.ctx.autoCompactionLoader = new Loader(
-			this.#loaderUi(),
-			spinner => theme.fg("accent", spinner),
-			text => theme.fg("muted", text),
+		// Replace the plain Loader with the live progress overlay: animated spinner +
+		// label + INDETERMINATE shimmer bar + local m:ss timer, plus a token counter
+		// once streamed bytes arrive. start() kicks the 1s local timer so it advances
+		// even on non-streaming compaction paths (V1 POST / local summary / Anthropic).
+		const progress = new CompactionProgressComponent(
 			`${reasonText}${actionLabel}…${this.#maintenanceEscHint()}`,
+			this.#loaderUi(),
 			getSymbolTheme().spinnerFrames,
 		);
-		this.ctx.statusContainer.addChild(this.ctx.autoCompactionLoader);
+		progress.start();
+		this.ctx.autoCompactionProgress = progress;
+		this.ctx.statusContainer.addChild(progress);
 		this.ctx.ui.requestRender();
+	}
+
+	/**
+	 * Forward throttled cumulative SSE counters (events/bytes/estTokens) to the live
+	 * compaction progress overlay. Guarded: the overlay may be absent (e.g. an event
+	 * lands after end/abort nulled it), in which case the update is a no-op.
+	 */
+	async #handleAutoCompactionProgress(
+		event: Extract<AgentSessionEvent, { type: "auto_compaction_progress" }>,
+	): Promise<void> {
+		this.ctx.autoCompactionProgress?.update({
+			events: event.events,
+			bytes: event.bytes,
+			estTokens: event.estTokens,
+		});
 	}
 
 	async #handleAutoCompactionEnd(event: Extract<AgentSessionEvent, { type: "auto_compaction_end" }>): Promise<void> {
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
 		this.#setTerminalProgress(false);
+		// Stop + null BOTH the legacy loader (defensive) and the progress overlay so
+		// the 1s timer is released and no handle leaks. Mirrors the #handleAgentEnd /
+		// #stopWorkingLoader pattern: clearing the container without nulling the handle
+		// would strip the spinner yet leak the reference (the known bug class).
+		// Track whether an overlay was live so we only clear the container when one was.
+		const hadCompactionOverlay = Boolean(this.ctx.autoCompactionLoader || this.ctx.autoCompactionProgress);
 		if (this.ctx.autoCompactionLoader) {
 			this.ctx.autoCompactionLoader.stop();
 			this.ctx.autoCompactionLoader = undefined;
+		}
+		if (this.ctx.autoCompactionProgress) {
+			this.ctx.autoCompactionProgress.stop();
+			this.ctx.autoCompactionProgress = undefined;
+		}
+		if (hadCompactionOverlay) {
 			this.ctx.statusContainer.clear();
 		}
 		const isHandoffAction = event.action === "handoff";

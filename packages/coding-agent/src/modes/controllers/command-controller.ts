@@ -30,6 +30,7 @@ import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogTe
 import { resolveMemoryBackend } from "../../memory-backend";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
+import { CompactionProgressComponent } from "../../modes/components/compaction-progress";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import { MoveOverlay, type MoveOverlayResult } from "../../modes/components/move-overlay";
@@ -1244,14 +1245,13 @@ export class CommandController {
 		this.ctx.statusContainer.clear();
 
 		const label = isAuto ? "Auto-compacting context... (esc to cancel)" : "Compacting context... (esc to cancel)";
-		const compactingLoader = new Loader(
-			this.ctx.ui,
-			spinner => theme.fg("accent", spinner),
-			text => theme.fg("muted", text),
-			label,
-			getSymbolTheme().spinnerFrames,
-		);
-		this.ctx.statusContainer.addChild(compactingLoader);
+		// Manual /compact does NOT route through the session's auto_compaction_* events
+		// (those fire only on the auto-maintenance path), so drive the progress overlay
+		// directly here. start() ticks a local 1s timer + indeterminate shimmer bar so
+		// the user sees liveness even though this path emits no streamed-token progress.
+		const compactingProgress = new CompactionProgressComponent(label, this.ctx.ui, getSymbolTheme().spinnerFrames);
+		compactingProgress.start();
+		this.ctx.statusContainer.addChild(compactingProgress);
 		this.ctx.ui.requestRender();
 
 		let outcome: CompactionOutcome = "ok";
@@ -1264,13 +1264,25 @@ export class CommandController {
 			// The slash path passes `mode` positionally; the extension path carries
 			// it inside the options object. Either source wins over no mode.
 			const effectiveMode = mode ?? baseOptions?.mode;
-			const options =
-				baseOptions || effectiveMode
-					? { ...baseOptions, ...(effectiveMode ? { mode: effectiveMode } : {}) }
-					: undefined;
+			const callerOnProgress = baseOptions?.onProgress;
+			// Always build an options object so we can attach onProgress. Manual
+			// /compact drives the local overlay directly (no session event), so we
+			// feed the streaming SSE counters straight into it. compactingProgress
+			// is created unconditionally above and is still live here (stop() runs
+			// only after this await), so no undefined guard is needed. This lights
+			// up the `~N tok` counter on V2-streaming remote compaction, matching
+			// the auto path.
+			const options: CompactOptions = {
+				...baseOptions,
+				...(effectiveMode ? { mode: effectiveMode } : {}),
+				onProgress: u => {
+					callerOnProgress?.(u);
+					compactingProgress.update({ events: u.events, bytes: u.bytes, estTokens: u.estTokens });
+				},
+			};
 			await this.ctx.session.compact(instructions, options);
 
-			compactingLoader.stop();
+			compactingProgress.stop(); // release the local timer before rebuild
 			this.ctx.statusContainer.clear();
 			this.ctx.rebuildChatFromMessages();
 
@@ -1286,7 +1298,7 @@ export class CommandController {
 				this.ctx.showError(`Compaction failed: ${message}`);
 			}
 		} finally {
-			compactingLoader.stop();
+			compactingProgress.stop(); // idempotent teardown on every exit path
 			this.ctx.statusContainer.clear();
 		}
 		// Run the caller's pre-flush hook (e.g. the plan-approval model transition)

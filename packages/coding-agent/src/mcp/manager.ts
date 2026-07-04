@@ -1279,13 +1279,12 @@ export class MCPManager {
 					} catch (refreshError) {
 						const errorMsg = refreshError instanceof Error ? refreshError.message : String(refreshError);
 						if (isDefinitiveOAuthFailure(errorMsg)) {
-							// `invalid_grant` / `invalid_token` / 401 from the token endpoint means
-							// the server has retired this credential — keeping the stale access
-							// token would just re-fail with 401 on every MCP request and leave a
-							// poisoned row in agent.db that survives restarts. Drop it now so the
-							// next connect attempt surfaces a clean "needs reauth" failure and
-							// the user can recover with `/mcp reauth <server>` (or `/mcp unauth`
-							// to forget the server entirely).
+							// Only explicit dead-grant signals (invalid_grant /
+							// unauthorized_client / revoked refresh token) prove the
+							// server has retired this credential. Bare 401/403 responses
+							// can be transient token-service/WAF failures, so those keep
+							// the stale access token for one best-effort request instead
+							// of logging the user out.
 							logger.warn("MCP OAuth refresh failed definitively; cleared credential", {
 								credentialId,
 								error: errorMsg,

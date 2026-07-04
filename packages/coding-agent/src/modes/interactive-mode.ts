@@ -134,6 +134,7 @@ import { WORKFLOW_PROGRESS_CHANNEL, type WorkflowProgressFrame } from "../workfl
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "./components/chat-block";
+import type { CompactionProgressComponent } from "./components/compaction-progress";
 import { CustomEditor } from "./components/custom-editor";
 import { DynamicBorder } from "./components/dynamic-border";
 import { ErrorBannerComponent } from "./components/error-banner";
@@ -504,6 +505,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	lastAssistantUsage: Usage | undefined = undefined;
 	loadingAnimation: Loader | undefined = undefined;
 	autoCompactionLoader: Loader | undefined = undefined;
+	// Live compaction progress overlay; replaces the plain compaction Loader.
+	autoCompactionProgress: CompactionProgressComponent | undefined = undefined;
 	retryLoader: Loader | undefined = undefined;
 	#pendingWorkingMessage: string | undefined;
 	#workingMessageAccentCacheKey?: WorkingMessageAccentCacheKey;
@@ -605,6 +608,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.autoCompactionLoader) {
 			this.autoCompactionLoader.stop();
 			this.autoCompactionLoader = undefined;
+		}
+		// Stop + null the compaction progress overlay so its 1s timer is released
+		// and the handle never leaks (same bug-class guard as the loaders above).
+		if (this.autoCompactionProgress) {
+			this.autoCompactionProgress.stop();
+			this.autoCompactionProgress = undefined;
 		}
 		if (this.retryLoader) {
 			this.retryLoader.stop();

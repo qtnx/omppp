@@ -1392,6 +1392,7 @@ export function resolveAdvisorRoleSelection(
 
 export interface DuoResolvedConfig {
 	mode: DuoMode;
+	orchestrator: "auto" | "always";
 	planner: Model;
 	plannerThinking: ConfiguredThinkingLevel;
 	executor: Model;
@@ -1400,6 +1401,14 @@ export interface DuoResolvedConfig {
 	cooldownTurns: number;
 	maxConsecutive: number;
 	doneGate: "strict" | "inherit";
+	manualSwitchIntent: "plan" | "summon";
+	signals: {
+		enabled: boolean;
+		sentiment: boolean;
+		failureThreshold: number;
+		loopThreshold: number;
+		planningNeeded: boolean;
+	};
 }
 
 function compareAnthropicVersion(
@@ -1473,6 +1482,8 @@ export function resolveDuoConfig(
 	);
 	if (!planner || !executor) return undefined;
 
+	const orchestrator = settings.get("duo.orchestrator");
+
 	return {
 		mode: settings.get("duo.mode"),
 		planner: planner.model,
@@ -1487,6 +1498,15 @@ export function resolveDuoConfig(
 		cooldownTurns: settings.get("duo.takeover.cooldownTurns"),
 		maxConsecutive: settings.get("duo.takeover.maxConsecutive"),
 		doneGate: settings.get("duo.doneGate"),
+		orchestrator: orchestrator === "always" ? "always" : "auto",
+		manualSwitchIntent: settings.get("duo.manualSwitchIntent"),
+		signals: {
+			enabled: settings.get("duo.takeover.signals.enabled"),
+			sentiment: settings.get("duo.takeover.signals.sentiment"),
+			failureThreshold: settings.get("duo.takeover.signals.failureThreshold"),
+			loopThreshold: settings.get("duo.takeover.signals.loopThreshold"),
+			planningNeeded: settings.get("duo.takeover.signals.planningNeeded"),
+		},
 	};
 }
 

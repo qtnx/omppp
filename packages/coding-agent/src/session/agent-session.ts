@@ -51,6 +51,8 @@ import {
 	applyShakeRegions,
 	CompactionCancelledError,
 	type CompactionPreparation,
+	// WP2: live compaction progress payload from the agent-core SSE read-loop.
+	type CompactionProgressUpdate,
 	type CompactionResult,
 	type CompactionSettings,
 	calculateContextTokens,
@@ -549,6 +551,17 @@ export type AgentSessionEvent =
 			errorMessage?: string;
 			/** True when compaction was skipped for a benign reason (no model, no candidates, nothing to compact). */
 			skipped?: boolean;
+	  }
+	| {
+			// WP2: throttled live progress emitted between start/end while a real-model
+			// compaction runs. Provider gives no total, so this carries only cumulative
+			// counters + a locally-computed elapsed timer (no fabricated percentage).
+			type: "auto_compaction_progress";
+			action: "context-full" | "handoff" | "shake" | "snapcompact";
+			elapsedMs: number;
+			events: number;
+			bytes: number;
+			estTokens?: number;
 	  }
 	| {
 			type: "auto_retry_start";
@@ -2604,6 +2617,7 @@ export class AgentSession {
 		const mode = this.settings.get("duo.mode");
 		if (mode === "off") return false;
 		if (mode === "on") return true;
+		if (this.settings.get("duo.orchestrator") === "always") return true;
 		const parsed = parseAnthropicModel(this.model?.id ?? "");
 		return this.getOrchestratorModeState()?.enabled === true || (parsed !== null && isFableOrMythos(parsed.kind));
 	}
@@ -2654,6 +2668,15 @@ export class AgentSession {
 				this.sessionManager.appendCustomMessageEntry("duo_state", "", false, snapshot, "agent");
 				this.#syncDuoPromptOverlay();
 			},
+			planArtifactReady: () => {
+				const planReferencePath = this.#planReferencePath.trim();
+				if (!planReferencePath) return false;
+				const resolvedPlanPath = planReferencePath.startsWith("local:")
+					? resolveLocalUrlToPath(normalizeLocalScheme(planReferencePath), this.#localProtocolOptions())
+					: resolveToCwd(planReferencePath, this.sessionManager.getCwd());
+				return fs.existsSync(resolvedPlanPath);
+			},
+			scheduleAdvisorRevive: retryAfterMs => this.#scheduleAdvisorRevive(retryAfterMs),
 			orchestratorEnabled: () => this.getOrchestratorModeState()?.enabled === true,
 			setOrchestratorEnabled: async enabled => {
 				// Delegate the ownership decision to the pure helper (unit-tested at the
@@ -2690,6 +2713,9 @@ export class AgentSession {
 				this.setPlanModeState(undefined);
 			},
 			planModeActive: () => this.getPlanModeState()?.enabled === true,
+			requestAgentContinue: () => {
+				this.#scheduleAgentContinue({ delayMs: 1, generation: this.#promptGeneration });
+			},
 		};
 	}
 
@@ -11405,6 +11431,12 @@ export class AgentSession {
 							extraContext: compactionPrep.hookContext,
 							remoteInstructions: this.#baseSystemPrompt.join("\n\n"),
 							convertToLlm: messages => this.#convertToLlmForSideRequest(messages),
+							// Forward the manual-path streaming-progress callback so the
+							// local /compact overlay gets the live `~N tok` counter on
+							// V2-streaming remote compaction, matching the auto path.
+							// #compactWithFallbackModel spreads this SummaryOptions-shaped
+							// object into compaction.compact(), so onProgress rides along.
+							onProgress: options?.onProgress,
 						},
 						compactionCandidates,
 					);
@@ -14037,6 +14069,10 @@ export class AgentSession {
 			// a message typed as the compaction loader appears must land in the compaction
 			// queue, not the core steering queue (which handoff's agent.reset() would wipe).
 			await this.#emitSessionEvent({ type: "auto_compaction_start", reason, action });
+			// WP2: anchor the live-progress elapsed timer to the start emit, and track
+			// the last progress emit so we can throttle the SSE-driven onProgress bursts.
+			const compactionStartedAt = Date.now();
+			let lastProgressEmitAt = 0;
 			if (action === "handoff") {
 				const handoffFocus = AUTO_HANDOFF_THRESHOLD_FOCUS;
 				const handoffResult = await this.handoff(handoffFocus, {
@@ -14315,6 +14351,25 @@ export class AgentSession {
 									tools: this.agent.state.tools,
 									sessionId: this.sessionId,
 									promptCacheKey: this.sessionId,
+									// WP2: live compaction progress. agent-core invokes this from
+									// the V2 SSE read-loop with cumulative counters (no total is
+									// available). Throttle to ~200ms, but always emit the first
+									// update, so the TUI bar/timer come alive immediately without
+									// flooding the event stream. Lands between start/end because
+									// compact() resolves before the end emit.
+									onProgress: (u: CompactionProgressUpdate) => {
+										const nowMs = Date.now();
+										if (lastProgressEmitAt !== 0 && nowMs - lastProgressEmitAt < 200) return;
+										lastProgressEmitAt = nowMs;
+										void this.#emitSessionEvent({
+											type: "auto_compaction_progress",
+											action,
+											elapsedMs: nowMs - compactionStartedAt,
+											events: u.events,
+											bytes: u.bytes,
+											estTokens: u.estTokens,
+										});
+									},
 								},
 							);
 							break;

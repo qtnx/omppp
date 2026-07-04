@@ -6,21 +6,27 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import type { DuoResolvedConfig } from "../config/model-resolver";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
 import advisorInstructions from "./prompts/advisor-instructions.md" with { type: "text" };
+import autoSignalDirective from "./prompts/auto-signal-directive.md" with { type: "text" };
 import effortChangeNotice from "./prompts/effort-change-notice.md" with { type: "text" };
 import handbackBrief from "./prompts/handback-brief.md" with { type: "text" };
 import manualPlanBrief from "./prompts/manual-plan-brief.md" with { type: "text" };
 import planTakeoverNotice from "./prompts/plan-takeover-notice.md" with { type: "text" };
+import plannerHandoffNudge from "./prompts/planner-handoff-nudge.md" with { type: "text" };
 import plannerNotice from "./prompts/planner-notice.md" with { type: "text" };
 import plannerSummon from "./prompts/planner-summon.md" with { type: "text" };
+import planningSignalNudge from "./prompts/planning-signal-nudge.md" with { type: "text" };
 import takeoverBrief from "./prompts/takeover-brief.md" with { type: "text" };
 import {
 	type DuoActivationInput,
+	type DuoExecutionScope,
 	type DuoPhase,
 	DuoStateMachine,
 	type DuoStateSnapshot,
 	type TakeoverDecision,
 	type TakeoverPurpose,
+	type TakeoverRequestOptions,
 } from "./state";
+import type { TakeoverSignalReport } from "./takeover-signals";
 
 export interface DuoControllerHost {
 	currentModel(): Model | undefined;
@@ -31,8 +37,10 @@ export interface DuoControllerHost {
 	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined;
 	ensureAdvisorStarted(pinned: Model): boolean;
 	stopDuoAdvisor(): void;
+	scheduleAdvisorRevive?(retryAfterMs?: number): void;
 	pauseAdvisor(): void;
 	resumeAdvisor(catchupBrief?: string): void;
+	planArtifactReady?(): boolean;
 	injectBrief(text: string, deliverAs: "steer" | "nextTurn"): void;
 	emitNotice(level: "info" | "warning", text: string): void;
 	persistSnapshot(snapshot: DuoStateSnapshot): void;
@@ -42,6 +50,8 @@ export interface DuoControllerHost {
 	/** Engage/release session plan mode for the duo planning phase (no-op when the state already matches or duo does not own it). */
 	setPlanModeEnabled(enabled: boolean): void;
 	planModeActive(): boolean;
+	/** Continue after a duo-owned model switch that landed outside the normal user prompt flow. */
+	requestAgentContinue?(): void;
 }
 
 export type DuoHandoffResult = "ok" | "no-controller" | "wrong-phase" | "already-executor" | "switch-failed";
@@ -51,6 +61,7 @@ export interface DuoStatus {
 	planner?: string;
 	executor?: string;
 	takeoverPurpose?: TakeoverPurpose;
+	executionScope?: DuoExecutionScope;
 	takeoverCount: number;
 	advisorPaused: boolean;
 }
@@ -58,6 +69,7 @@ export interface DuoStatus {
 interface PendingSwitch {
 	model: Model;
 	thinkingLevel: ConfiguredThinkingLevel;
+	requestContinuation?: boolean;
 }
 
 export interface DuoAdvisorInstructionsInput {
@@ -74,13 +86,14 @@ export class DuoController {
 	#config: DuoResolvedConfig;
 	#machine: DuoStateMachine;
 	#resolvedExecutor: Model;
-	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: captured with the resolved executor so manual slot overrides cannot erase the original duo pair.
 	#resolvedPlanner: Model;
 	#pendingSwitch: PendingSwitch | undefined;
 	#advisorPaused: boolean;
 	#advisorSelfPaused = false;
 	#applyingOwnSwitch = false;
 	#plannerDwellTurns = 0;
+	#planningHandoffNudges = 0;
+	#planningSignalNudged = false;
 	/** Advisor-selected executor effort; persisted separately from the user's configured default. */
 	#executorThinkingOverride: ThinkingLevel | undefined;
 
@@ -106,6 +119,7 @@ export class DuoController {
 			executor: snapshot.executorId ?? this.#formatModel(this.#config.executor),
 			takeoverPurpose: snapshot.takeoverPurpose,
 			takeoverCount: snapshot.takeoverCount,
+			executionScope: snapshot.executionScope ?? "multi",
 			advisorPaused: this.#advisorPaused,
 		};
 	}
@@ -132,9 +146,10 @@ export class DuoController {
 							"warning",
 							"Duo advisor could not be started; continuing with the executor without takeover support.",
 						);
+						this.#host.scheduleAdvisorRevive?.();
 					}
 				}
-				await this.#host.setOrchestratorEnabled(true);
+				await this.#setOrchestratorForExecutionScope();
 			}
 		} else if (deactivated) {
 			this.#host.setPlanModeEnabled(false);
@@ -176,6 +191,7 @@ export class DuoController {
 						"warning",
 						"Duo advisor could not be started; continuing with the executor without takeover support.",
 					);
+					this.#host.scheduleAdvisorRevive?.();
 				}
 			}
 		}
@@ -203,7 +219,7 @@ export class DuoController {
 					this.#advisorSelfPaused = false;
 				}
 				this.#host.setPlanModeEnabled(false);
-				await this.#host.setOrchestratorEnabled(true);
+				await this.#setOrchestratorForExecutionScope();
 				this.#plannerDwellTurns = 0;
 				this.#syncAdvisorSelfPause();
 			}
@@ -230,7 +246,7 @@ export class DuoController {
 		const pending = this.#pendingSwitch;
 		this.#pendingSwitch = undefined;
 		if (pending) {
-			await this.#applySwitchNow(pending.model, pending.thinkingLevel);
+			await this.#applySwitchNow(pending.model, pending.thinkingLevel, pending.requestContinuation);
 		}
 		const before = this.#machine.snapshot;
 		this.#machine.onExecutorTurnEnd();
@@ -238,6 +254,7 @@ export class DuoController {
 			this.#refreshSnapshotMetadata(before.preDuoThinking);
 			this.#persistSnapshot();
 		}
+		this.#trackPlanningHandoffNudge();
 		this.#trackPlannerDwell();
 	}
 
@@ -246,7 +263,7 @@ export class DuoController {
 		const pending = this.#pendingSwitch;
 		this.#pendingSwitch = undefined;
 		if (pending) {
-			await this.#applySwitchNow(pending.model, pending.thinkingLevel);
+			await this.#applySwitchNow(pending.model, pending.thinkingLevel, pending.requestContinuation);
 		}
 	}
 
@@ -268,7 +285,42 @@ export class DuoController {
 			if (modelsAreEqual(model, this.#config.executor)) {
 				return;
 			}
-			const switchedToPlannerSlot = modelsAreEqual(model, this.#config.planner);
+			if (modelsAreEqual(model, this.#resolvedExecutor)) {
+				this.#config = {
+					...this.#config,
+					executor: this.#resolvedExecutor,
+					executorThinking: configuredThinking ?? this.#executorThinking(),
+				};
+				this.#plannerDwellTurns = 0;
+				this.#syncAdvisorSelfPause();
+				this.#refreshSnapshotMetadata();
+				this.#persistSnapshot();
+				return;
+			}
+			if (!modelsAreEqual(model, this.#resolvedPlanner)) {
+				this.#disableForForeignManualSwitch(model);
+				return;
+			}
+			if (this.#config.manualSwitchIntent === "plan") {
+				if (this.#machine.onPlanTakeoverRequested()) {
+					this.#refreshSnapshotMetadata();
+					this.#host.pauseAdvisor();
+					this.#advisorPaused = true;
+					this.#advisorSelfPaused = false;
+					this.#plannerDwellTurns = 0;
+					const thinking = parseConfiguredThinkingLevel(this.#config.plannerThinking);
+					if (thinking !== undefined) this.#host.setThinkingLevel(thinking);
+					this.#host.injectBrief(
+						prompt.render(manualPlanBrief, {
+							planArtifact: "local://duo-plan.md",
+							executor: this.#formatModel(this.#resolvedExecutor),
+						}),
+						"nextTurn",
+					);
+					this.#persistSnapshot();
+				}
+				return;
+			}
 			this.#config = {
 				...this.#config,
 				executor: model,
@@ -276,13 +328,11 @@ export class DuoController {
 			};
 			this.#host.emitNotice(
 				"info",
-				`Duo executor set to ${this.#formatModel(model)} (manual switch).${switchedToPlannerSlot ? " Tip: use /duo plan to put the planner on the main stream for planning." : ""}`,
+				`Duo executor set to ${this.#formatModel(model)} (manual switch). Tip: use /duo plan to put the planner on the main stream for planning.`,
 			);
-			if (switchedToPlannerSlot) {
-				this.#host.injectBrief(prompt.render(plannerSummon), "nextTurn");
-				const thinking = parseConfiguredThinkingLevel(this.#config.plannerThinking);
-				if (thinking !== undefined) this.#host.setThinkingLevel(thinking);
-			}
+			this.#host.injectBrief(prompt.render(plannerSummon), "nextTurn");
+			const thinking = parseConfiguredThinkingLevel(this.#config.plannerThinking);
+			if (thinking !== undefined) this.#host.setThinkingLevel(thinking);
 		} else {
 			if (modelsAreEqual(model, this.#config.planner)) {
 				return;
@@ -316,8 +366,13 @@ export class DuoController {
 		}
 	}
 
-	requestTakeover(purpose: TakeoverPurpose, reason: string, directive: string): TakeoverDecision {
-		const decision = this.#machine.onTakeoverRequested(purpose);
+	requestTakeover(
+		purpose: TakeoverPurpose,
+		reason: string,
+		directive: string,
+		options?: TakeoverRequestOptions,
+	): TakeoverDecision {
+		const decision = this.#machine.onTakeoverRequested(purpose, options);
 		if (decision === "accepted") {
 			this.#refreshSnapshotMetadata();
 			this.#host.pauseAdvisor();
@@ -370,6 +425,56 @@ export class DuoController {
 		return true;
 	}
 
+	notifyAutoSignals(report: TakeoverSignalReport): void {
+		if (!this.#config.signals.enabled || this.#machine.phase !== "executing") {
+			return;
+		}
+		const current = this.#pendingSwitch?.model ?? this.#host.currentModel();
+		if (current && modelsAreEqual(current, this.#config.planner)) {
+			return;
+		}
+		const failureSignal = report.consecutiveFailures >= this.#config.signals.failureThreshold;
+		const loopSignal = report.loop;
+		const strongSignal = this.#config.signals.sentiment && report.strong;
+		if (this.#config.signals.planningNeeded && report.planningShapedWork) {
+			if (!this.#planningSignalNudged) {
+				this.#host.injectBrief(prompt.render(planningSignalNudge), "nextTurn");
+				this.#planningSignalNudged = true;
+			}
+		} else {
+			this.#planningSignalNudged = false;
+		}
+		if (!strongSignal && !failureSignal && !loopSignal) {
+			return;
+		}
+		const evidence = report.evidence.length > 0 ? report.evidence.join("; ") : "automatic takeover threshold tripped";
+		this.requestTakeover("recover", `Automatic signal: ${evidence}`, prompt.render(autoSignalDirective), {
+			bypassCooldown: strongSignal,
+		});
+	}
+
+	async summonPlanner(): Promise<boolean> {
+		if (!this.#isExecutingLike()) {
+			return false;
+		}
+		const currentModel = this.#host.currentModel();
+		if (currentModel && modelsAreEqual(currentModel, this.#config.planner)) {
+			return false;
+		}
+		const planner = this.#host.availableModels().find(model => modelsAreEqual(model, this.#config.planner));
+		if (!planner) {
+			return false;
+		}
+		if (!(await this.#applySwitch(planner, this.#config.plannerThinking, true))) {
+			return false;
+		}
+		this.#host.injectBrief(prompt.render(plannerSummon), "nextTurn");
+		this.#syncAdvisorSelfPause();
+		this.#refreshSnapshotMetadata();
+		this.#persistSnapshot();
+		return true;
+	}
+
 	setExecutorThinkingOverride(level: ThinkingLevel | undefined, reason: string): boolean {
 		// The advisor override is persisted so subsequent executor handoffs keep the raised effort.
 		this.#executorThinkingOverride = level;
@@ -389,7 +494,7 @@ export class DuoController {
 		this.#host.pauseAdvisor();
 		this.#advisorPaused = true;
 		this.#plannerDwellTurns = 0;
-		await this.#applySwitch(this.#config.planner, this.#config.plannerThinking);
+		await this.#applySwitch(this.#config.planner, this.#config.plannerThinking, true);
 		this.#host.injectBrief(
 			prompt.render(takeoverBrief, {
 				purpose: "recover",
@@ -404,19 +509,28 @@ export class DuoController {
 		return true;
 	}
 
-	async handoffToExecutor(resolution: string): Promise<DuoHandoffResult> {
+	async handoffToExecutor(resolution: string, scope?: DuoExecutionScope): Promise<DuoHandoffResult> {
 		if (this.#isExecutingLike()) {
 			const currentModel = this.#host.currentModel();
 			if (currentModel && modelsAreEqual(currentModel, this.#resolvedExecutor)) {
 				return "already-executor";
 			}
 			this.#config = { ...this.#config, executor: this.#resolvedExecutor };
-			if (!(await this.#applySwitch(this.#resolvedExecutor, this.#executorThinking()))) {
+			const brief = prompt.render(handbackBrief, { resolution });
+			if (!(await this.#applySwitch(this.#resolvedExecutor, this.#executorThinking(), true))) {
 				this.#persistSnapshot();
 				return "switch-failed";
 			}
+			if (scope !== undefined) {
+				this.#machine.applyExecutionScope(scope);
+				await this.#setOrchestratorForExecutionScope();
+			}
+			this.#host.resumeAdvisor(brief);
+			this.#advisorPaused = false;
+			this.#advisorSelfPaused = false;
 			this.#syncAdvisorSelfPause();
 			this.#plannerDwellTurns = 0;
+			this.#host.injectBrief(brief, "nextTurn");
 			this.#host.emitNotice(
 				"info",
 				`Duo executor restored: ${this.#formatModel(this.#resolvedExecutor)} takes the main stream.`,
@@ -426,17 +540,17 @@ export class DuoController {
 			return "ok";
 		}
 		const previousPhase = this.#machine.phase;
-		if (!this.#machine.onHandoffToExecutor()) {
+		if (!this.#machine.onHandoffToExecutor(scope)) {
 			return "wrong-phase";
 		}
 		this.#refreshSnapshotMetadata();
 		const brief = prompt.render(handbackBrief, { resolution });
-		if (!(await this.#applySwitch(this.#config.executor, this.#executorThinking()))) {
+		if (!(await this.#applySwitch(this.#config.executor, this.#executorThinking(), true))) {
 			this.#persistSnapshot();
 			return "switch-failed";
 		}
 		this.#host.setPlanModeEnabled(false);
-		await this.#host.setOrchestratorEnabled(true);
+		await this.#setOrchestratorForExecutionScope();
 		if (previousPhase === "planning" && !this.#host.ensureAdvisorStarted(this.#config.planner)) {
 			this.#machine.onAdvisorDropped();
 			this.#advisorPaused = false;
@@ -472,6 +586,7 @@ export class DuoController {
 		if (restoredThinking !== undefined) {
 			this.#host.setThinkingLevel(restoredThinking);
 		}
+		await this.#host.setOrchestratorEnabled(false);
 		this.#refreshSnapshotMetadata(snapshot.preDuoThinking);
 		this.#persistSnapshot();
 	}
@@ -490,7 +605,7 @@ export class DuoController {
 		}
 		return {
 			mode: this.#config.mode,
-			orchestratorEnabled: this.#host.orchestratorEnabled(),
+			orchestratorEnabled: this.#config.orchestrator === "always" || this.#host.orchestratorEnabled(),
 			mainModelKind,
 			plannerResolvable: Boolean(this.#config.planner),
 			executorResolvable: Boolean(this.#config.executor),
@@ -519,18 +634,27 @@ export class DuoController {
 		return this.#executorThinkingOverride ?? this.#config.executorThinking;
 	}
 
-	async #applySwitch(model: Model, thinkingLevel: ConfiguredThinkingLevel): Promise<boolean> {
+	async #applySwitch(
+		model: Model,
+		thinkingLevel: ConfiguredThinkingLevel,
+		requestContinuation = false,
+	): Promise<boolean> {
 		if (this.#host.isStreaming()) {
-			this.#pendingSwitch = { model, thinkingLevel };
+			this.#pendingSwitch = { model, thinkingLevel, requestContinuation };
 			return true;
 		}
-		return await this.#applySwitchNow(model, thinkingLevel);
+		return await this.#applySwitchNow(model, thinkingLevel, requestContinuation);
 	}
 
-	async #applySwitchNow(model: Model, thinkingLevel: ConfiguredThinkingLevel): Promise<boolean> {
+	async #applySwitchNow(
+		model: Model,
+		thinkingLevel: ConfiguredThinkingLevel,
+		requestContinuation = false,
+	): Promise<boolean> {
 		this.#applyingOwnSwitch = true;
 		try {
 			await this.#host.setModelTemporary(model, thinkingLevel);
+			if (requestContinuation) this.#host.requestAgentContinue?.();
 			return true;
 		} catch (error) {
 			const before = this.#machine.snapshot;
@@ -546,6 +670,23 @@ export class DuoController {
 		} finally {
 			this.#applyingOwnSwitch = false;
 		}
+	}
+
+	#trackPlanningHandoffNudge(): void {
+		if (this.#machine.phase !== "planning") {
+			this.#planningHandoffNudges = 0;
+			return;
+		}
+		if (!this.#host.planArtifactReady?.()) {
+			this.#planningHandoffNudges = 0;
+			return;
+		}
+		this.#planningHandoffNudges += 1;
+		if (this.#planningHandoffNudges === 1) {
+			this.#host.injectBrief(prompt.render(plannerHandoffNudge), "nextTurn");
+			return;
+		}
+		this.#host.emitNotice("warning", "The plan artifact is ready; call duo_handoff now to return to the executor.");
 	}
 
 	#trackPlannerDwell(): void {
@@ -593,6 +734,36 @@ export class DuoController {
 			this.#advisorSelfPaused = false;
 			this.#host.emitNotice("info", "Duo advisor resumed.");
 		}
+	}
+
+	async #setOrchestratorForExecutionScope(): Promise<void> {
+		if (this.#config.orchestrator === "always") {
+			await this.#host.setOrchestratorEnabled(true);
+			return;
+		}
+		await this.#host.setOrchestratorEnabled(this.#machine.executionScope === "multi");
+	}
+
+	#disableForForeignManualSwitch(model: Model): void {
+		const snapshot = this.#machine.snapshot;
+		this.#machine.onDuoOff();
+		this.#pendingSwitch = undefined;
+		this.#host.setPlanModeEnabled(false);
+		this.#host.stopDuoAdvisor();
+		this.#advisorPaused = false;
+		this.#advisorSelfPaused = false;
+		this.#plannerDwellTurns = 0;
+		this.#planningHandoffNudges = 0;
+		this.#executorThinkingOverride = undefined;
+		const restoredThinking = parseConfiguredThinkingLevel(snapshot.preDuoThinking);
+		if (restoredThinking !== undefined) this.#host.setThinkingLevel(restoredThinking);
+		void this.#host.setOrchestratorEnabled(false);
+		this.#host.emitNotice(
+			"info",
+			`Duo disabled: main model ${this.#formatModel(model)} is outside the Fable/Opus pair.`,
+		);
+		this.#refreshSnapshotMetadata(snapshot.preDuoThinking);
+		this.#persistSnapshot();
 	}
 
 	#refreshSnapshotMetadata(preDuoThinking = this.#machine.snapshot.preDuoThinking): void {

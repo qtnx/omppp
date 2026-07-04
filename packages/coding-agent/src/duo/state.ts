@@ -134,6 +134,10 @@ export class DuoStateMachine {
 		return true;
 	}
 
+	applyExecutionScope(scope: DuoExecutionScope): void {
+		this.#state.executionScope = scope;
+	}
+
 	/** Plan mode re-entered while executing: hand the main stream back to the
 	 *  planner. Not a takeover — counters and cooldown are untouched. */
 	onReplanRequested(): boolean {
@@ -264,5 +268,5 @@ function canActivate(input: DuoActivationInput): boolean {
 	if (input.mode === "on") {
 		return true;
 	}
-	return input.orchestratorEnabled || input.mainModelKind === "fable";
+	return input.orchestratorEnabled || input.mainModelKind === "fable" || input.mainModelKind === "opus";
 }

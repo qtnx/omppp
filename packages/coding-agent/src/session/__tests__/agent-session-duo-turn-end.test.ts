@@ -28,7 +28,7 @@ interface MockHandle {
 	mockRestore(): void;
 }
 
-type AutoSignalPrototype = DuoController & { notifyAutoSignals?: (report: unknown) => void };
+type AutoSignalPrototype = Omit<DuoController, "notifyAutoSignals"> & { notifyAutoSignals?: (report: unknown) => void };
 
 const sessions: AgentSession[] = [];
 const tempDirs: TempDir[] = [];
@@ -167,12 +167,12 @@ function installThrowingAutoSignals(): void {
 }
 
 describe("AgentSession duo turn-end maintenance", () => {
-	test("continues to notify turn end when executing duo lacks notifyAutoSignals", async () => {
+	test("continues to notify turn end when automatic signals are available", async () => {
 		const notifyTurnEnd = track(spyOn(DuoController.prototype, "notifyTurnEnd"));
 		const harness = await createTurnEndHarness();
 		const proto = DuoController.prototype as AutoSignalPrototype;
 
-		expect(proto.notifyAutoSignals).toBeUndefined();
+		expect(proto.notifyAutoSignals).toBeFunction();
 		await harness.runTurnEnd();
 
 		expect(notifyTurnEnd).toHaveBeenCalledTimes(1);

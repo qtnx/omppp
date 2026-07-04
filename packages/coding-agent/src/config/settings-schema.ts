@@ -523,6 +523,18 @@ export const SETTINGS_SCHEMA = {
 				"Automatic Fable<->Opus planner/executor pairing; auto activates in orchestrator mode or when the main model is a Fable-family model.",
 		},
 	},
+	"duo.orchestrator": {
+		type: "enum",
+		values: ["auto", "always"] as const,
+		default: "auto",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Orchestrator",
+			description:
+				"Controls when duo uses orchestrator mode: auto switches by execution scope, always keeps orchestrator mode enabled.",
+		},
+	},
 	"duo.plannerModel": {
 		type: "string",
 		default: "",

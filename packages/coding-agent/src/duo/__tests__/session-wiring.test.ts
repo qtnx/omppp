@@ -65,6 +65,7 @@ function duoConfig(overrides: Partial<DuoResolvedConfig> = {}): DuoResolvedConfi
 		cooldownTurns: 2,
 		maxConsecutive: 2,
 		doneGate: "strict",
+		advisorPromptReview: true,
 		manualSwitchIntent: "plan",
 		signals: { enabled: true, sentiment: true, failureThreshold: 3, loopThreshold: 3, planningNeeded: true },
 		...overrides,
