@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-07-04
+
 ### Added
 
 - Goal mode and Safe orchestrator mode can now be active simultaneously, so goal budgets/objectives survive delegate-only orchestration.
@@ -29,46 +31,9 @@
 
 - Fixed multi-account auth state refresh in running sessions: local SQLite credentials are watched through WAL-aware directory events, `auth-broker serve` reloads its storage when sibling broker-login/import/logout processes update the DB, and the active `/usage` panel refreshes only while it remains the current account-dependent panel.
 - Fixed the duo advisor always receiving gisted/elided primary thinking regardless of `advisor.thinkingClampChars`. `ThinkingArtifactStore.renderThinking` now honors the setting (default `0`): blocks within the threshold (and the default-off case) forward the full obfuscated thinking verbatim; only blocks exceeding a configured `>0` threshold are clamped to a gist marker. An omitted `clampThreshold` dep fails open to full passthrough.
-
 - Duo handoff/escalate/takeover/summon now auto-continue the stream after the model switch applies — the incoming model starts its turn immediately instead of waiting for user input.
 - User steering typed while the main stream is blocked waiting on subagents is now held until the wait ends and delivered wrapped with a notice, instead of aborting the wait and interleaving with subagent results mid-task; new `steering.holdDuringSubagentWaits` (default on) gates it.
 - Fixed the duo advisor never resuming after the controller returned to the executing phase. Two holes: (1) a mid-turn `duo_handoff` after an escalation/takeover queued the executor switch while streaming, so `#syncAdvisorSelfPause` still saw the planner on `currentModel()` and re-paused the advisor it had just resumed — it now evaluates the pending-switch target; (2) plan approval (planning → executing) never called `resumeAdvisor()`, leaving an advisor paused by plan-mode re-entry paused for the whole executing phase.
-
-## [1.5.0] - 2026-07-03
-
-### Added
-
-- Duo now actively nags when the planner's model lingers on the executing main stream: every third such turn the controller emits a warning notice and injects a next-turn reminder into the model's context telling it to call `duo_handoff` to restore the executor unless planner-grade reasoning is genuinely needed. The dwell counter resets on executor restore, manual switch away from the planner model, or any phase exit.
-- Advisor safeguard-refusal fallback: when the primary advisor model is blocked by a provider refusal, the advisor falls back to `advisor.fallbackModel` (default `gpt-5.5`) for that request and retries the primary first on every subsequent request.
-- The main session now checks whether context compaction is warranted while blocked waiting on subagents (during a `job` poll) and schedules it to run at the turn boundary.
-- Added live token input/output and output-rate stats to running task rows in the `job` wait widget.
-- Hardware GPU (Vulkan/ANGLE) WebGL rendering for the headless browser via new `browser.gpu` setting (default on); always enables `--enable-unsafe-swiftshader` so WebGL never fails on Chrome ≥137.
-
-- Manually switching the executing main stream to the planner's model now injects a "planner summon" protocol brief: the planner reasons about the current request, settles the direction, then hands the stream back via `duo_handoff` whose `resolution` is the executor's working brief — the executor continues the work from it immediately while the planner returns to advising.
-- Added `advisor.thinkingClampChars` setting to control how much of a primary thinking block is fed to the duo advisor (0 = full/untruncated; set e.g. 2000 to clamp with head/tail + gist).
-
-### Changed
-
-- The duo advisor now receives full (untruncated) primary thinking by default; previously thinking blocks over 2000 chars were clamped to head/tail + a gist marker. Set `advisor.thinkingClampChars` above 0 to re-enable clamping.
-- Advisor feed and prompts no longer emit the word "thinking" (rendered as "notes") to avoid tripping Anthropic's reasoning_extraction safeguard on Fable/Mythos advisor models.
-
-### Fixed
-
-- Fixed idle IRC wake turns silently losing messages when the provider request resolved into agent error state instead of rejecting: failed wake turns now log an error and re-buffer the message for `wait`/`inbox`, and delivery receipts truthfully report `revived` separately from the actual `woken`/`injected` outcome while legacy persisted `revived` receipts still render safely.
-
-- Fixed IRC coordination for restricted/read-only bundled agents by granting them the `irc` tool, failing direct sends to custom non-IRC agents before they wake a mute turn, and re-deriving cold-parked agents' IRC capability from their persisted tool list before revival.
-
-- Fixed subagent spawns to reuse the parent session's auth storage/model registry, avoiding Anthropic OAuth refresh-token rotation races from duplicate in-process AuthStorage instances.
-- Fixed `Esc` interrupting an active chat stream immediately while the `Working...` loader was visible; it now uses the same second-press confirmation as other streaming states.
-- Fixed inaccurate Herdr pane agent state when a stale herdr-installed managed reporter (`herdr-omp-agent-state.ts`) loaded alongside the native reporter: both wrote conflicting `pane.report_agent` updates to the same pane with independent sequence numbers. Main-session discovery now drops only stale managed files (those without the per-send fallback sentinel), the native reporter marks itself authoritative only after its handlers actually register, and sentinel-carrying managed files stay loaded as a live fallback — a Herdr pane can no longer end up with zero reporters.
-- Fixed the native Herdr reporter staying completely silent when registration was skipped or raced: it now publishes the pane's `idle` state immediately at registration instead of waiting for the first lifecycle event, and enable/filter/append/transport decisions leave `logger` breadcrumbs in `~/.omp/logs` for diagnosis.
-- Fixed Herdr pane state permanently dying after killing and respawning `ompx` in the same pane: Herdr tombstones a `(pane, source)` pair once that source sends `pane.release_agent`, silently ignoring every later `pane.report_agent` from it. The reporter (native and managed fallback) now uses a unique per-session source (`herdr:omp:<suffix>`), so each new process claims the pane cleanly while a dying process only tombstones its own source.
-- Fixed Herdr pane agent state reporting so panes reflect what actually needs the user's attention: successful runs now report `done` instead of fading to plain idle, waiting on the `ask` tool or a tool-approval prompt now reports `need review` instead of `running`, and non-retryable run errors now report `need review` instead of silently going idle. Stale states can no longer strand a pane: review waits are dropped when a run ends, `session_switch` resets run-scoped state, and user input clears a stranded failure without disturbing live retry holds.
-- Fixed config and settings edits not applying until the CLI restarted: a debounced watcher on the global agent config dir and project settings dirs (including OpenCode `opencode.json`) now reloads changed values and fires the corresponding setting-change hooks. Watched paths derive from the settings-capability loader so no consumed settings file is missed, and the watcher ignores the CLI's own saves.
-- Fixed duo mode losing its pinned advisor model (the planner/Fable model) and takeover support after a CLI restart, instead of falling back to a default model. The advisor pin and duo-ownership flag are now persisted in the duo state snapshot and restored before the advisor runtime is built.
-### Fixed
-
-- Fixed `omp usage` hiding sibling-only limits such as Claude 7 Day (Fable) on accounts whose current report omitted that scoped bucket; the account now renders an explicit `not reported` row instead of looking like the usage refresh skipped the column.
 
 ## [16.3.3] - 2026-07-02
 
@@ -10697,6 +10662,37 @@ Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mon
 
 - Changed shell detection to prefer user's `$SHELL` when it's bash or zsh, with improved fallback path resolution
 - Changed Edit tool to reject `.ipynb` files with guidance to use NotebookEdit tool instead
+
+## [1.5.0] - 2026-07-03
+
+### Added
+
+- Duo now actively nags when the planner's model lingers on the executing main stream: every third such turn the controller emits a warning notice and injects a next-turn reminder into the model's context telling it to call `duo_handoff` to restore the executor unless planner-grade reasoning is genuinely needed. The dwell counter resets on executor restore, manual switch away from the planner model, or any phase exit.
+- Advisor safeguard-refusal fallback: when the primary advisor model is blocked by a provider refusal, the advisor falls back to `advisor.fallbackModel` (default `gpt-5.5`) for that request and retries the primary first on every subsequent request.
+- The main session now checks whether context compaction is warranted while blocked waiting on subagents (during a `job` poll) and schedules it to run at the turn boundary.
+- Added live token input/output and output-rate stats to running task rows in the `job` wait widget.
+- Hardware GPU (Vulkan/ANGLE) WebGL rendering for the headless browser via new `browser.gpu` setting (default on); always enables `--enable-unsafe-swiftshader` so WebGL never fails on Chrome ≥137.
+- Manually switching the executing main stream to the planner's model now injects a "planner summon" protocol brief: the planner reasons about the current request, settles the direction, then hands the stream back via `duo_handoff` whose `resolution` is the executor's working brief — the executor continues the work from it immediately while the planner returns to advising.
+- Added `advisor.thinkingClampChars` setting to control how much of a primary thinking block is fed to the duo advisor (0 = full/untruncated; set e.g. 2000 to clamp with head/tail + gist).
+
+### Changed
+
+- The duo advisor now receives full (untruncated) primary thinking by default; previously thinking blocks over 2000 chars were clamped to head/tail + a gist marker. Set `advisor.thinkingClampChars` above 0 to re-enable clamping.
+- Advisor feed and prompts no longer emit the word "thinking" (rendered as "notes") to avoid tripping Anthropic's reasoning_extraction safeguard on Fable/Mythos advisor models.
+
+### Fixed
+
+- Fixed idle IRC wake turns silently losing messages when the provider request resolved into agent error state instead of rejecting: failed wake turns now log an error and re-buffer the message for `wait`/`inbox`, and delivery receipts truthfully report `revived` separately from the actual `woken`/`injected` outcome while legacy persisted `revived` receipts still render safely.
+- Fixed IRC coordination for restricted/read-only bundled agents by granting them the `irc` tool, failing direct sends to custom non-IRC agents before they wake a mute turn, and re-deriving cold-parked agents' IRC capability from their persisted tool list before revival.
+- Fixed subagent spawns to reuse the parent session's auth storage/model registry, avoiding Anthropic OAuth refresh-token rotation races from duplicate in-process AuthStorage instances.
+- Fixed `Esc` interrupting an active chat stream immediately while the `Working...` loader was visible; it now uses the same second-press confirmation as other streaming states.
+- Fixed inaccurate Herdr pane agent state when a stale herdr-installed managed reporter (`herdr-omp-agent-state.ts`) loaded alongside the native reporter: both wrote conflicting `pane.report_agent` updates to the same pane with independent sequence numbers. Main-session discovery now drops only stale managed files (those without the per-send fallback sentinel), the native reporter marks itself authoritative only after its handlers actually register, and sentinel-carrying managed files stay loaded as a live fallback — a Herdr pane can no longer end up with zero reporters.
+- Fixed the native Herdr reporter staying completely silent when registration was skipped or raced: it now publishes the pane's `idle` state immediately at registration instead of waiting for the first lifecycle event, and enable/filter/append/transport decisions leave `logger` breadcrumbs in `~/.omp/logs` for diagnosis.
+- Fixed Herdr pane state permanently dying after killing and respawning `ompx` in the same pane: Herdr tombstones a `(pane, source)` pair once that source sends `pane.release_agent`, silently ignoring every later `pane.report_agent` from it. The reporter (native and managed fallback) now uses a unique per-session source (`herdr:omp:<suffix>`), so each new process claims the pane cleanly while a dying process only tombstones its own source.
+- Fixed Herdr pane agent state reporting so panes reflect what actually needs the user's attention: successful runs now report `done` instead of fading to plain idle, waiting on the `ask` tool or a tool-approval prompt now reports `need review` instead of `running`, and non-retryable run errors now report `need review` instead of silently going idle. Stale states can no longer strand a pane: review waits are dropped when a run ends, `session_switch` resets run-scoped state, and user input clears a stranded failure without disturbing live retry holds.
+- Fixed config and settings edits not applying until the CLI restarted: a debounced watcher on the global agent config dir and project settings dirs (including OpenCode `opencode.json`) now reloads changed values and fires the corresponding setting-change hooks. Watched paths derive from the settings-capability loader so no consumed settings file is missed, and the watcher ignores the CLI's own saves.
+- Fixed duo mode losing its pinned advisor model (the planner/Fable model) and takeover support after a CLI restart, instead of falling back to a default model. The advisor pin and duo-ownership flag are now persisted in the duo state snapshot and restored before the advisor runtime is built.
+- Fixed `omp usage` hiding sibling-only limits such as Claude 7 Day (Fable) on accounts whose current report omitted that scoped bucket; the account now renders an explicit `not reported` row instead of looking like the usage refresh skipped the column.
 
 ## [1.5.0] - 2026-01-03
 

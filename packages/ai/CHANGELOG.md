@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-07-04
+
 ### Added
 
 - Added `AuthStorage.getUsageHeadroom(model, opts?)`, a synchronous cache-first advisory probe for model-scoped usage headroom that evaluates the 5-hour and weekly usage windows explicitly (strict `<0.5` default utilization threshold, a `windowMode: "all" | "any"` option, and per-window headroom reporting), so callers can route subagents around exhausted Anthropic/Codex model buckets while preserving reserve on both windows — without minting tokens or fetching usage inline.
@@ -14,17 +16,6 @@
 - Fixed flaky SQLite auth-storage schema initialization crashes in the issue #2421 WAL path by applying WAL/synchronous PRAGMAs before the DDL batch, preventing intermittent `no such table: main.cache` failures under process/test load.
 - Fixed auth DB open/schema initialization to retry selected transient SQLite I/O failures (including `SQLITE_IOERR_FSTAT`) across fresh connections, closing the remaining issue #2421 class startup race without masking fatal SQLite errors.
 
-## [1.5.0] - 2026-07-03
-
-### Added
-
-- Added `thinkingDisplay` to the generic `SimpleStreamOptions` so callers can force `summarized`/`omitted` reasoning display (or leave it unset for the Anthropic provider's model-aware default); the Anthropic mapping prefers it over the legacy `hideThinkingSummary` boolean, and `AnthropicThinkingDisplay` is now an alias of the shared `ThinkingDisplay` type.
-
-### Fixed
-
-- Fixed Claude Fable/Mythos OAuth requests defaulting adaptive thinking to `display: "summarized"`, which solicited a human-readable rendering of the model's chain-of-thought and frequently tripped Anthropic's `reasoning_extraction` refusal classifier. Fable/Mythos now default to `display: "omitted"` (matching the official Claude CLI and the API's own default), resolved once via a model-aware effective-display helper that feeds both the request body and the `redact-thinking-2026-02-12` beta-header gate so they never disagree. Opus/Sonnet keep `summarized`, and an explicit `thinkingDisplay` still overrides in both directions.
-- Fixed Anthropic OAuth refresh-token rotation races across concurrent local processes by leasing each SQLite credential row before POSTing a single-use refresh token, with peer-token adoption when another process has already rotated the row.
-- Fixed credential rotation not triggering on account-exhaustion rate limits: a 429 whose reason is a quota/usage cap, or whose retry-after is at least 5 minutes, now rotates to a sibling account with remaining quota (parking the exhausted credential until its retry-after) instead of failing on the current account. Short, transient 429s keep the existing backoff behavior.
 ## [16.3.3] - 2026-07-02
 
 ### Added
@@ -3969,6 +3960,18 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.0] - 2026-07-03
+
+### Added
+
+- Added `thinkingDisplay` to the generic `SimpleStreamOptions` so callers can force `summarized`/`omitted` reasoning display (or leave it unset for the Anthropic provider's model-aware default); the Anthropic mapping prefers it over the legacy `hideThinkingSummary` boolean, and `AnthropicThinkingDisplay` is now an alias of the shared `ThinkingDisplay` type.
+
+### Fixed
+
+- Fixed Claude Fable/Mythos OAuth requests defaulting adaptive thinking to `display: "summarized"`, which solicited a human-readable rendering of the model's chain-of-thought and frequently tripped Anthropic's `reasoning_extraction` refusal classifier. Fable/Mythos now default to `display: "omitted"` (matching the official Claude CLI and the API's own default), resolved once via a model-aware effective-display helper that feeds both the request body and the `redact-thinking-2026-02-12` beta-header gate so they never disagree. Opus/Sonnet keep `summarized`, and an explicit `thinkingDisplay` still overrides in both directions.
+- Fixed Anthropic OAuth refresh-token rotation races across concurrent local processes by leasing each SQLite credential row before POSTing a single-use refresh token, with peer-token adoption when another process has already rotated the row.
+- Fixed credential rotation not triggering on account-exhaustion rate limits: a 429 whose reason is a quota/usage cap, or whose retry-after is at least 5 minutes, now rotates to a sibling account with remaining quota (parking the exhausted credential until its retry-after) instead of failing on the current account. Short, transient 429s keep the existing backoff behavior.
 
 ## [1.4.1] - 2026-06-28
 
