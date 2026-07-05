@@ -151,6 +151,7 @@ import {
 	type CustomMessage,
 	convertToLlm,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
+	MAX_BACKGROUND_BROWSER_ANNOTATIONS,
 	stripOversizedCompactionSummaryImagesForCodex,
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
@@ -281,7 +282,6 @@ type McpNotificationEntry = {
 	serverName: string;
 	uri: string;
 };
-const MAX_BACKGROUND_BROWSER_ANNOTATIONS = 20;
 
 type BrowserAnnotationDetails = {
 	annotations: Array<{ tab: string; url: string; title?: string; timestamp: number }>;

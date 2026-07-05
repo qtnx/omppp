@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/annotate` session command (`on`/`off`/`status`) that starts a local loopback HTTP intake server with a pairing code, letting the OMPx Annotate Chrome extension (`packages/chrome-annotate`) send element-pick, screenshot, and comment annotations into the running session via the existing browser-annotate delivery pipeline.
+
 ## [16.3.3] - 2026-07-02
 
 ### Breaking Changes
