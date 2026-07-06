@@ -177,7 +177,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(prompt).toContain("Discoverable native tools are hidden until activated.");
 		expect(prompt).toContain("Grep (`grep`):");
 		expect(prompt).not.toContain("Find (`find`):");
-		expect(prompt).toContain("# Orchestrator Mode / Eager Delegation");
+		expect(prompt).toContain("# Agent routing — match the work to the specialist");
 		expect(prompt).toContain("call `search_tool_bm25` before concluding no such tool exists");
 		expect(searchTool?.description).toContain("Total discoverable tools available:");
 	});
