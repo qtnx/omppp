@@ -12,6 +12,7 @@ export * from "./proxy";
 export * from "./replay-policy";
 // Run-level telemetry collector + aggregators
 export * from "./run-collector";
+export * from "./single-turn";
 // Telemetry
 export * from "./telemetry";
 // Thinking selectors

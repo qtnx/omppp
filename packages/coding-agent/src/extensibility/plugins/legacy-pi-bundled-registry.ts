@@ -348,6 +348,7 @@ import * as bundledPiCodingAgentConfigSandboxDefaults from "@oh-my-pi/pi-coding-
 import * as bundledPiCodingAgentConfigServiceTier from "@oh-my-pi/pi-coding-agent/config/service-tier";
 import * as bundledPiCodingAgentConfigSettings from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as bundledPiCodingAgentConfigSettingsSchema from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+import * as bundledPiCodingAgentConfigSettingsWatcher from "@oh-my-pi/pi-coding-agent/config/settings-watcher";
 import * as bundledPiCodingAgentDap from "@oh-my-pi/pi-coding-agent/dap";
 import * as bundledPiCodingAgentDapClient from "@oh-my-pi/pi-coding-agent/dap/client";
 import * as bundledPiCodingAgentDapConfig from "@oh-my-pi/pi-coding-agent/dap/config";
@@ -370,6 +371,7 @@ import * as bundledPiCodingAgentDiscoveryAgentsMd from "@oh-my-pi/pi-coding-agen
 import * as bundledPiCodingAgentDiscoveryAtImports from "@oh-my-pi/pi-coding-agent/discovery/at-imports";
 import * as bundledPiCodingAgentDiscoveryBuiltin from "@oh-my-pi/pi-coding-agent/discovery/builtin";
 import * as bundledPiCodingAgentDiscoveryBuiltinDefaults from "@oh-my-pi/pi-coding-agent/discovery/builtin-defaults";
+import * as bundledPiCodingAgentDiscoveryBundledSkills from "@oh-my-pi/pi-coding-agent/discovery/bundled-skills";
 import * as bundledPiCodingAgentDiscoveryClaude from "@oh-my-pi/pi-coding-agent/discovery/claude";
 import * as bundledPiCodingAgentDiscoveryClaudePlugins from "@oh-my-pi/pi-coding-agent/discovery/claude-plugins";
 import * as bundledPiCodingAgentDiscoveryCline from "@oh-my-pi/pi-coding-agent/discovery/cline";
@@ -1916,6 +1918,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/config/settings-schema": bundledPiCodingAgentConfigSettingsSchema as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/config/settings-watcher":
+		bundledPiCodingAgentConfigSettingsWatcher as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/config/settings": bundledPiCodingAgentConfigSettings as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -1973,6 +1977,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/discovery/builtin": bundledPiCodingAgentDiscoveryBuiltin as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/discovery/bundled-skills":
+		bundledPiCodingAgentDiscoveryBundledSkills as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/discovery/claude-plugins":
 		bundledPiCodingAgentDiscoveryClaudePlugins as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/discovery/claude": bundledPiCodingAgentDiscoveryClaude as unknown as Readonly<
