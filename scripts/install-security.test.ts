@@ -273,7 +273,9 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 
 			expect(result.exitCode).toBe(0);
 			expect(result.output).toContain("Updating Superpowers skills");
-			expect(await Bun.file(superpowersLog).text()).toBe("config update --json\ninstall git:github.com/obra/superpowers\n");
+			expect(await Bun.file(superpowersLog).text()).toBe(
+				"config update --json\ninstall git:github.com/obra/superpowers\n",
+			);
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
