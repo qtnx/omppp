@@ -78,6 +78,28 @@ describe("system prompt tool inventory", () => {
 		return systemPrompt.join("\n\n");
 	}
 
+	async function renderOrchestratorPrompt(): Promise<string> {
+		const tools = new Map<string, SystemPromptToolMetadata>(TOOLS);
+		tools.set("task", {
+			label: "Task",
+			description: "Runs subagents.",
+			parameters: { type: "object", properties: { tasks: { type: "array" } } },
+		});
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: ["read", "bash", "task"],
+			tools,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			nativeTools: true,
+			inlineToolDescriptors: false,
+			eagerTasks: true,
+		});
+		return systemPrompt.join("\n\n");
+	}
+
 	function inventoryFrom(text: string): string {
 		// Tolerate either prompt layout: the merge-base "# Inventory" / "ENV" framing and the
 		// reordered "# Tool Inventory" / "TOOL POLICY" framing on current main. The slice just
@@ -249,5 +271,22 @@ describe("system prompt tool inventory", () => {
 
 		expect(text).toContain("<skills>");
 		expect(text).toContain("- frontend-design: Frontend UI workflow");
+	});
+
+	it("renders independent QA as conditional for non-trivial work only", async () => {
+		const text = await renderOrchestratorPrompt();
+
+		expect(text).not.toContain("Completion claims REQUIRE the collected qa verdict");
+		expect(text).toMatch(/non-trivial work/i);
+		expect(text).toMatch(
+			/simple self-verified work[\s\S]{0,80}skip independent QA|skip independent QA[\s\S]{0,80}simple self-verified work/i,
+		);
+	});
+
+	it("routes UI and frontend visual work to designer instead of the generic task tier", async () => {
+		const text = await renderOrchestratorPrompt();
+
+		expect(text).toMatch(/UI\s*\/\s*UX\s*\/\s*frontend visual work[\s\S]{0,120}`designer`/i);
+		expect(text).not.toContain("Normal backend/frontend changes.");
 	});
 });

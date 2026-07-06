@@ -344,6 +344,32 @@ EOF_CONFIG
     echo "✓ Seeded OMPx standard config at ${config_file}"
 }
 
+install_superpowers_skill() {
+    if [ "${OMPX_INSTALL_SKIP_SUPERPOWERS:-}" = "1" ]; then
+        return
+    fi
+
+    ompx_cmd=""
+    if [ -x "${INSTALL_DIR}/ompx" ]; then
+        ompx_cmd="${INSTALL_DIR}/ompx"
+    elif command -v ompx >/dev/null 2>&1; then
+        ompx_cmd="$(command -v ompx)"
+    fi
+
+    if [ -z "$ompx_cmd" ]; then
+        echo "Skipping Superpowers skill update; ompx was not found." >&2
+        return
+    fi
+
+    echo "Updating Superpowers skills..."
+    if "$ompx_cmd" install git:github.com/obra/superpowers; then
+        echo "✓ Installed/updated Superpowers skills"
+    else
+        echo "Failed to update Superpowers skills; run 'ompx install git:github.com/obra/superpowers' manually." >&2
+    fi
+}
+
+
 # Install via bun
 install_via_bun() {
     echo "Installing via bun..."
@@ -384,6 +410,7 @@ install_via_bun() {
         }
     fi
     install_standard_config
+    install_superpowers_skill
     echo ""
     echo "✓ Installed OMPx via bun"
     echo "Run 'ompx' to get started!"
@@ -453,6 +480,7 @@ install_binary() {
     mv "$TMP_BINARY" "${INSTALL_DIR}/ompx"
     chmod +x "${INSTALL_DIR}/ompx"
     install_standard_config
+    install_superpowers_skill
     echo ""
     echo "✓ Installed OMPx to ${INSTALL_DIR}/ompx"
 

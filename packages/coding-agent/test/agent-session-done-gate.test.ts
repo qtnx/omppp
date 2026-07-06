@@ -117,6 +117,21 @@ describe("AgentSession advisor done-review gate", () => {
 		}).length;
 	}
 
+	function developerMessageTexts(): string[] {
+		const texts: string[] = [];
+		for (const entry of sessionManager.getBranch()) {
+			if (entry.type !== "message" || entry.message.role !== "developer") continue;
+			const { content } = entry.message;
+			if (!Array.isArray(content)) continue;
+			for (const item of content) {
+				if (item && typeof item === "object" && (item as TextContent).type === "text") {
+					texts.push((item as TextContent).text);
+				}
+			}
+		}
+		return texts;
+	}
+
 	function noticeMessages(): string[] {
 		return notices.map(n => n.message);
 	}
@@ -128,6 +143,26 @@ describe("AgentSession advisor done-review gate", () => {
 		session.agent.state.messages.push(
 			{ role: "user", content: [{ type: "text", text: "make the change" }], timestamp: Date.now() } as never,
 			{ role: "toolResult", toolName: "edit", isError: false, content: "ok", timestamp: Date.now() } as never,
+		);
+	}
+
+	function seedMutationAndVerificationHistory(): void {
+		session.agent.state.messages.push(
+			{ role: "user", content: [{ type: "text", text: "make the simple change" }], timestamp: Date.now() } as never,
+			{
+				role: "toolResult",
+				toolName: "edit",
+				isError: false,
+				content: "changed one test file",
+				timestamp: Date.now(),
+			} as never,
+			{
+				role: "toolResult",
+				toolName: "bash",
+				isError: false,
+				content: "bun test packages/coding-agent/test/focused.test.ts\n1 pass",
+				timestamp: Date.now(),
+			} as never,
 		);
 	}
 
@@ -162,15 +197,16 @@ describe("AgentSession advisor done-review gate", () => {
 	}
 
 	/** Replace the runtime's consult with a stub that resolves on demand. */
-	function stubConsult(): { resolveConsult: () => void } {
+	function stubConsult(): { consultStarted: Promise<void>; resolveConsult: () => void } {
 		const runtime = session.getAdvisorRuntimeForTest();
 		if (!runtime) throw new Error("advisor runtime not live");
-		let resolveConsult!: () => void;
-		const consultPromise = new Promise<string | null>(r => {
-			resolveConsult = () => r(null);
+		const { promise: consultPromise, resolve: resolveConsult } = Promise.withResolvers<string | null>();
+		const { promise: consultStarted, resolve: resolveConsultStarted } = Promise.withResolvers<void>();
+		vi.spyOn(runtime, "consult").mockImplementation(() => {
+			resolveConsultStarted();
+			return consultPromise;
 		});
-		vi.spyOn(runtime, "consult").mockReturnValue(consultPromise);
-		return { resolveConsult };
+		return { consultStarted, resolveConsult: () => resolveConsult(null) };
 	}
 
 	async function enableAdvisor(): Promise<void> {
@@ -311,6 +347,25 @@ describe("AgentSession advisor done-review gate", () => {
 		await idle;
 
 		expect(doneReminderCount()).toBe(0);
+	});
+
+	it("does not require independent QA after advisor-approved simple verified work", async () => {
+		await enableAdvisor();
+		const { consultStarted, resolveConsult } = stubConsult();
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		seedMutationAndVerificationHistory();
+
+		const idle = (async () => {
+			stopWith("Done — implemented and verified with the focused Bun test.");
+			await session.waitForIdle();
+		})();
+		await consultStarted;
+		driveVerdict("approve");
+		resolveConsult();
+		await idle;
+
+		expect(developerMessageTexts().filter(text => text.includes("Independent QA"))).toHaveLength(0);
+		expect(continueSpy).not.toHaveBeenCalled();
 	});
 
 	it("caps at 2 rejections then stops firing", async () => {

@@ -297,7 +297,7 @@ Route each unit of work to the agent built for it. NEVER default to `task`/`heav
 - Scouting / codebase exploration / call-site mapping / fact-finding → `explore` (read-only). NEVER use an implementer tier to scout.
 - Planning / architecture / multi-file design / work breakdown → `plan`. NEVER hand plan-writing to `heavy_task` or `task`.
 - External library / API research → `librarian`.
-- UI / UX / visual design and implementation → `designer`.
+- UI / UX / frontend visual work → `designer`.
 - Code review (quality / security) → `reviewer`.
 - Independent verification of completed work → `qa`; browser / E2E cases → `browser_qa`.
 - Hard debugging that resisted attempts, second opinions, architectural judgment → `oracle`.
@@ -402,7 +402,7 @@ Requires:
 `task`
 Use for:
 - Contained feature slices.
-- Normal backend/frontend changes.
+- Normal non-UI application changes.
 - Local refactors.
 - API/controller/service changes with clear spec.
 - Tests from a locked test matrix.
@@ -536,7 +536,7 @@ Independent QA (adversarial, background):
   - Known limitations.
 - Incomplete handoff → qa returns `blocked` with `harness_gaps`: supply them and re-dispatch.
 - `fail` → fix, then re-QA the failed cases. Max 2 fix→re-QA loops, then surface findings to the user.
-- Completion claims REQUIRE the collected qa verdict: `pass` with evidence, or the user's explicit waiver.
+- QA-required or non-trivial completion claims REQUIRE the collected qa verdict: `pass` with evidence, or the user's explicit waiver. Simple self-verified work with decisive local evidence may skip independent QA and state that skip.
 
 Final response should include:
 - Delegation summary.
@@ -608,6 +608,8 @@ Call `{{toolRefs.compact}}` as the LAST action of the turn when ANY hold:
 - The NEXT turn starts a context-heavy phase (large reads, builds, test sweeps).
 
 The decision does not have to wait for mid-task pressure: right after a turn that completed its work, if you notice any condition above already holds, call `{{toolRefs.compact}}` immediately in the next turn — a turn whose only action is scheduling compaction is legitimate.
+
+Blocking `job poll` during subagent waits may auto-schedule context compaction. A scheduled-compaction poll result is a hard yield point: restate active plan/todos, running subagent ids/statuses, open decisions, and next verification step, then end the turn before any further poll so remote/local compaction can run.
 
 Before calling, restate in your reply any plan, next steps, or facts that live only in older history — recent messages survive; older history is archived.
 NEVER call mid-task while exact details (line numbers, hashes, diffs, error text) are still needed, while a failure is under active investigation, or while a question or approval is pending.

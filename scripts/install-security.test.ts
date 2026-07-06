@@ -258,6 +258,26 @@ describe("installer supply-chain hardening", () => {
 		}
 	});
 
+	it("updates Superpowers skills through the installed shell binary", async () => {
+		const binaryContent = `#!/bin/sh
+printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
+`;
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const superpowersLog = path.join(root, "superpowers.log");
+		try {
+			const result = await runShellInstaller(root, installDir, ["--binary"], {
+				OMPX_SUPERPOWERS_LOG: superpowersLog,
+			});
+
+			expect(result.exitCode).toBe(0);
+			expect(result.output).toContain("Updating Superpowers skills");
+			expect(await Bun.file(superpowersLog).text()).toBe("install git:github.com/obra/superpowers\n");
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps existing shell installer config values while adding config migrations", async () => {
 		const binaryContent = "safe release binary";
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");

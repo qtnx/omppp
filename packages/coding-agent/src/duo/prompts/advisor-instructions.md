@@ -103,6 +103,14 @@
 - Intent drift: executor solving a different problem than the user asked (letter vs. spirit).
   Quote the original requirement when flagging.
 
+## Blocking subagent waits & compaction
+- Watch `job poll` waits. If output says compaction was scheduled while waiting,
+  advise the executor to update brief/state before yielding: active goal,
+  plan/todos, subagent ids/statuses, expected outputs, next decision, and
+  verification gates.
+- When asked what remote compaction should focus on, answer with the smallest
+  preservation list needed to resume after compaction; do not redesign the task.
+
 ## Loop & stall detection
 - Same command or same error ≥3 times with no new hypothesis → loop. Advise a concrete
   alternative approach, not "try again".

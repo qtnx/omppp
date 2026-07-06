@@ -26,7 +26,7 @@ import { initXdg } from "./commands/init-xdg";
 // Types
 // =============================================================================
 
-export type ConfigAction = "list" | "get" | "set" | "reset" | "path" | "init-xdg";
+export type ConfigAction = "list" | "get" | "set" | "reset" | "path" | "init-xdg" | "update";
 
 export interface ConfigCommandArgs {
 	action: ConfigAction;
@@ -74,7 +74,7 @@ function getSettingValues(def: CliSettingDef): readonly string[] | undefined {
 // Argument Parser
 // =============================================================================
 
-const VALID_ACTIONS: ConfigAction[] = ["list", "get", "set", "reset", "path", "init-xdg"];
+const VALID_ACTIONS: ConfigAction[] = ["list", "get", "set", "reset", "path", "init-xdg", "update"];
 
 /**
  * Parse config subcommand arguments.
@@ -258,6 +258,9 @@ export async function runConfigCommand(cmd: ConfigCommandArgs): Promise<void> {
 		case "init-xdg":
 			await initXdg();
 			break;
+		case "update":
+			await handleUpdate(cmd.flags);
+			break;
 	}
 }
 
@@ -384,6 +387,21 @@ async function handleReset(key: string | undefined, flags: { json?: boolean }): 
 	}
 }
 
+async function handleUpdate(flags: { json?: boolean }): Promise<void> {
+	const result = await settings.applyPendingMigrations();
+
+	if (flags.json) {
+		console.log(JSON.stringify(result));
+		return;
+	}
+
+	if (result.changed) {
+		console.log(chalk.green(`${theme.status.success} Updated config to setupVersion ${result.setupVersion}`));
+	} else {
+		console.log(chalk.dim(`Config already up to date (setupVersion ${result.setupVersion})`));
+	}
+}
+
 function handlePath(): void {
 	console.log(getAgentDir());
 }
@@ -402,6 +420,7 @@ ${chalk.bold("Commands:")}
   reset <key>        Reset a setting to its default value
   path               Print the config directory path
   init-xdg           Initialize XDG Base Directory structure
+  update             Apply config migrations to config.yml
 
 ${chalk.bold("Options:")}
   --json             Output as JSON
@@ -415,6 +434,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} config reset steeringMode
   ${APP_NAME} config list --json
   ${APP_NAME} config init-xdg
+  ${APP_NAME} config update
 
 ${chalk.bold("Boolean Values:")}
   true, false, yes, no, on, off, 1, 0

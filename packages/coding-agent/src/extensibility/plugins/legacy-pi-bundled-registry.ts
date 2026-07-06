@@ -576,6 +576,7 @@ import * as bundledPiCodingAgentModesComponentsCacheInvalidationMarker from "@oh
 import * as bundledPiCodingAgentModesComponentsChatBlock from "@oh-my-pi/pi-coding-agent/modes/components/chat-block";
 import * as bundledPiCodingAgentModesComponentsChatTranscriptBuilder from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
 import * as bundledPiCodingAgentModesComponentsCollabPromptMessage from "@oh-my-pi/pi-coding-agent/modes/components/collab-prompt-message";
+import * as bundledPiCodingAgentModesComponentsCompactionProgress from "@oh-my-pi/pi-coding-agent/modes/components/compaction-progress";
 import * as bundledPiCodingAgentModesComponentsCompactionSummaryMessage from "@oh-my-pi/pi-coding-agent/modes/components/compaction-summary-message";
 import * as bundledPiCodingAgentModesComponentsCopySelector from "@oh-my-pi/pi-coding-agent/modes/components/copy-selector";
 import * as bundledPiCodingAgentModesComponentsCountdownTimer from "@oh-my-pi/pi-coding-agent/modes/components/countdown-timer";
@@ -726,6 +727,7 @@ import * as bundledPiCodingAgentSessionBlobStore from "@oh-my-pi/pi-coding-agent
 import * as bundledPiCodingAgentSessionClientBridge from "@oh-my-pi/pi-coding-agent/session/client-bridge";
 import * as bundledPiCodingAgentSessionCodexAutoReset from "@oh-my-pi/pi-coding-agent/session/codex-auto-reset";
 import * as bundledPiCodingAgentSessionCompactModes from "@oh-my-pi/pi-coding-agent/session/compact-modes";
+import * as bundledPiCodingAgentSessionCredentialWatcher from "@oh-my-pi/pi-coding-agent/session/credential-watcher";
 import * as bundledPiCodingAgentSessionDollarMentions from "@oh-my-pi/pi-coding-agent/session/dollar-mentions";
 import * as bundledPiCodingAgentSessionExitDiagnostics from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import * as bundledPiCodingAgentSessionHistoryStorage from "@oh-my-pi/pi-coding-agent/session/history-storage";
@@ -2479,6 +2481,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		bundledPiCodingAgentModesComponentsChatTranscriptBuilder as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/collab-prompt-message":
 		bundledPiCodingAgentModesComponentsCollabPromptMessage as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/modes/components/compaction-progress":
+		bundledPiCodingAgentModesComponentsCompactionProgress as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/compaction-summary-message":
 		bundledPiCodingAgentModesComponentsCompactionSummaryMessage as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/copy-selector":
@@ -2746,6 +2750,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/session/compact-modes": bundledPiCodingAgentSessionCompactModes as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/session/credential-watcher":
+		bundledPiCodingAgentSessionCredentialWatcher as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/dollar-mentions":
 		bundledPiCodingAgentSessionDollarMentions as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/exit-diagnostics":

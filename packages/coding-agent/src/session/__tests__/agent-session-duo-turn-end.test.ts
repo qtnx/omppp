@@ -2,9 +2,9 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as path from "node:path";
 import { Agent, type AgentMessage, type AgentTurnEndContext, type StreamFn } from "@oh-my-pi/pi-agent-core";
 import { type AssistantMessage, Effort, type Model, type TextContent, type Usage } from "@oh-my-pi/pi-ai";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { ModelRegistry } from "../../config/model-registry";
 import { Settings } from "../../config/settings";
 import { DuoController } from "../../duo/controller";
@@ -239,7 +239,9 @@ describe("AgentSession duo turn-end maintenance", () => {
 					const content = message.content as unknown;
 					if (typeof content === "string") return content;
 					if (!Array.isArray(content)) return "";
-					return content.map(part => (typeof part === "object" && part && "text" in part ? String(part.text) : "")).join("");
+					return content
+						.map(part => (typeof part === "object" && part && "text" in part ? String(part.text) : ""))
+						.join("");
 				})
 				.join("\n");
 			const contextText = [...(context.systemPrompt ?? []), messageText].join("\n");
@@ -249,7 +251,9 @@ describe("AgentSession duo turn-end maintenance", () => {
 				try {
 					if (!requestedHandoff) {
 						requestedHandoff = true;
-						const result = await session?.duoHandoffToExecutor("Planner resolved the blocker; continue execution.");
+						const result = await session?.duoHandoffToExecutor(
+							"Planner resolved the blocker; continue execution.",
+						);
 						expect(result).toBe("ok");
 					}
 					emitTextResponse(stream, model, `turn ${callNumber}`);
