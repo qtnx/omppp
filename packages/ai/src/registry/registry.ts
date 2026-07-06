@@ -49,6 +49,7 @@ import { qwenPortalProvider } from "./qwen-portal";
 import { sakanaProvider } from "./sakana";
 import { syntheticProvider } from "./synthetic";
 import { tavilyProvider } from "./tavily";
+import { tnxProvider } from "./tnx";
 import { togetherProvider } from "./together";
 import type { ProviderDefinition } from "./types";
 import { umansProvider } from "./umans";
@@ -119,6 +120,7 @@ const ALL = [
 	vercelAiGatewayProvider,
 	cloudflareAiGatewayProvider,
 	litellmProvider,
+	tnxProvider,
 	kiloProvider,
 	zenmuxProvider,
 	opencodeZenProvider,

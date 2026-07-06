@@ -767,7 +767,7 @@ describe("Settings", () => {
 			expect(settings.get("power.sleepPrevention")).toBe("off");
 		});
 
-		it("applies setupVersion 1 config defaults without clobbering user values or persisting schema defaults", async () => {
+		it("applies setupVersion 2 config defaults without clobbering user values or persisting schema defaults", async () => {
 			await writeSettings({
 				setupVersion: 0,
 				modelRoles: {
@@ -794,7 +794,7 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			await settings.flush();
 
-			expect(settings.get("setupVersion")).toBe(1);
+			expect(settings.get("setupVersion")).toBe(2);
 			expect(settings.get("modelRoles")).toEqual({
 				default: "custom/default",
 				task: "openai-codex/gpt-5.5:low",
@@ -805,7 +805,7 @@ describe("Settings", () => {
 				commit: "openai-codex/gpt-5.5:low",
 			});
 			expect(settings.get("task.agentModelOverrides")).toEqual({
-				designer: "anthropic/claude-opus-4-8:xhigh",
+				designer: "pi/designer",
 				oracle: "openai-codex/gpt-5.5:xhigh",
 				plan: "openai-codex/gpt-5.5:xhigh",
 				qa: "custom/qa",
@@ -834,7 +834,7 @@ describe("Settings", () => {
 			});
 
 			const onDisk = await readSettings();
-			expect(onDisk.setupVersion).toBe(1);
+			expect(onDisk.setupVersion).toBe(2);
 			expect(onDisk.modelRoles).toEqual(settings.get("modelRoles"));
 			expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual(
 				settings.get("task.agentModelOverrides"),
@@ -851,8 +851,28 @@ describe("Settings", () => {
 			resetSettingsForTest();
 			const rerunSettings = await Settings.init({ cwd: projectDir, agentDir });
 			await rerunSettings.flush();
-			expect(rerunSettings.get("setupVersion")).toBe(1);
+			expect(rerunSettings.get("setupVersion")).toBe(2);
 			expect(await readSettings()).toEqual(firstMigration);
+		});
+
+		it("migrates the old concrete designer agent override to the designer role alias", async () => {
+			await writeSettings({
+				setupVersion: 1,
+				task: {
+					agentModelOverrides: {
+						designer: "anthropic/claude-opus-4-8:xhigh",
+						qa: "custom/qa",
+					},
+				},
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("setupVersion")).toBe(2);
+			expect(settings.get("task.agentModelOverrides")).toMatchObject({
+				designer: "pi/designer",
+				qa: "custom/qa",
+			});
 		});
 
 		describe("provider request limits", () => {

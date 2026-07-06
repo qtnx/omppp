@@ -1482,6 +1482,44 @@ describe("ModelRegistry", () => {
 	});
 
 	describe("disabled provider filtering", () => {
+		test("fresh registry exposes TNX static fallback model with default key for discovery", async () => {
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+
+			expect(registry.getDiscoverableProviders()).toContain("tnx");
+			const tnxModel = registry.getAvailable().find(model => model.provider === "tnx" && model.id === "gpt-5.5");
+			expect(tnxModel).toMatchObject({
+				name: "GPT-5.5",
+				contextWindow: 272000,
+				maxTokens: 128000,
+				reasoning: true,
+				input: ["text", "image"],
+			});
+			await expect(registry.getApiKeyForProvider("tnx")).resolves.toMatch(/^sk-/);
+		});
+
+		test("disabled provider settings hide TNX from discoverable providers", async () => {
+			writeRawModelsJson({
+				tnx: {
+					baseUrl: "http://codemc:20128/v1",
+					api: "openai-completions",
+					auth: "none",
+					discovery: { type: "openai-models-list" },
+				},
+			});
+			const enabledRegistry = new ModelRegistry(authStorage, modelsJsonPath);
+			expect(enabledRegistry.getDiscoverableProviders()).toContain("tnx");
+
+			await Settings.init({
+				inMemory: true,
+				overrides: {
+					disabledProviders: ["tnx"],
+				},
+			});
+			const disabledRegistry = new ModelRegistry(authStorage, modelsJsonPath);
+
+			expect(disabledRegistry.getDiscoverableProviders()).not.toContain("tnx");
+		});
+
 		test("getAvailable and getDiscoverableProviders exclude disabled providers from settings", async () => {
 			writeRawModelsJson({
 				ollama: {

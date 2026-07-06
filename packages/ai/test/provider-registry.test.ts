@@ -21,6 +21,7 @@ const ENV_KEYS = [
 	"UMANS_AI_CODING_PLAN_API_KEY",
 	"LLAMA_CPP_API_KEY",
 	"WANDB_API_KEY",
+	"TNX_API_KEY",
 ] as const;
 const originalEnv = new Map(ENV_KEYS.map(key => [key, Bun.env[key]]));
 
@@ -47,6 +48,8 @@ describe("provider registry auth surface", () => {
 		expect(getEnvApiKey("umans")).toBe("umans-env");
 		Bun.env.LLAMA_CPP_API_KEY = "llama-env";
 		expect(getEnvApiKey("llama.cpp")).toBe("llama-env");
+		Bun.env.TNX_API_KEY = "tnx-env";
+		expect(getEnvApiKey("tnx")).toBe("tnx-env");
 		// Legacy search-tool key preserved (not a registry provider def).
 		expect(getEnvApiKey("exa")).toBe("exa-env");
 	});

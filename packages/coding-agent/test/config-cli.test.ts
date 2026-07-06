@@ -183,7 +183,7 @@ describe("config CLI schema coverage", () => {
 });
 
 describe("config update", () => {
-	it("persists setupVersion 1 diff-only migration values and preserves explicit custom values", async () => {
+	it("persists setupVersion 2 diff-only migration values and preserves explicit custom values", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		await writeSettings({
 			setupVersion: 0,
@@ -214,12 +214,12 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: true,
-			setupVersion: 1,
-			currentVersion: 1,
+			setupVersion: 2,
+			currentVersion: 2,
 		});
 
 		const onDisk = await readSettings();
-		expect(onDisk.setupVersion).toBe(1);
+		expect(onDisk.setupVersion).toBe(2);
 		expect(onDisk.modelRoles).toEqual({
 			default: "custom/default",
 			task: "openai-codex/gpt-5.5:low",
@@ -230,7 +230,7 @@ describe("config update", () => {
 			commit: "openai-codex/gpt-5.5:low",
 		});
 		expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual({
-			designer: "anthropic/claude-opus-4-8:xhigh",
+			designer: "pi/designer",
 			oracle: "openai-codex/gpt-5.5:xhigh",
 			plan: "openai-codex/gpt-5.5:xhigh",
 			qa: "custom/qa",
@@ -265,10 +265,10 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: true,
-			setupVersion: 1,
-			currentVersion: 1,
+			setupVersion: 2,
+			currentVersion: 2,
 		});
-		expect((await readSettings()).setupVersion).toBe(1);
+		expect((await readSettings()).setupVersion).toBe(2);
 	});
 
 	it("reports unchanged JSON and leaves config stable on a second run", async () => {
@@ -288,8 +288,8 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: false,
-			setupVersion: 1,
-			currentVersion: 1,
+			setupVersion: 2,
+			currentVersion: 2,
 		});
 		expect(await readSettings()).toEqual(firstMigration);
 	});

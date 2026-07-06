@@ -10,6 +10,7 @@ import type {
 	SimpleStreamOptions,
 	ThinkingConfig,
 } from "@oh-my-pi/pi-ai/types";
+import { Effort } from "@oh-my-pi/pi-ai/types";
 import type { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { isVertexExpressOpenAIUrl } from "@oh-my-pi/pi-catalog/hosts";
@@ -47,6 +48,9 @@ const STARTUP_MODEL_CACHE_PROVIDER_IDS: readonly string[] = [
 // provider modules at startup. Must match packages/ai/src/registry/llama-cpp.ts,
 // packages/ai/src/registry/lm-studio.ts, and packages/ai/src/registry/vllm.ts.
 const LOCAL_PROVIDER_PLACEHOLDERS = new Set<string>(["llama-cpp-local", "lm-studio-local", "vllm-local"]);
+const TNX_DEFAULT_BASE_URL = "http://codemc:20128/v1";
+const TNX_DEFAULT_MODEL_ID = "gpt-5.5";
+const TNX_DEFAULT_API_KEY = "sk-daf152fc8f22af06-lcnxi7-64c35215";
 
 import type { ApiKeyResolver, FetchImpl } from "@oh-my-pi/pi-ai";
 import { registerOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
@@ -971,7 +975,7 @@ export class ModelRegistry {
 	/** Load built-in models, applying provider-level overrides only.
 	 *  Per-model overrides are applied later by #applyModelOverrides. */
 	#loadBuiltInModels(overrides: Map<string, ProviderOverride>): Model<Api>[] {
-		return getBundledProviders().flatMap(provider => {
+		const bundledModels = getBundledProviders().flatMap(provider => {
 			const models = getBundledModels(provider as Parameters<typeof getBundledModels>[0]) as Model<Api>[];
 			const providerOverride = overrides.get(provider);
 
@@ -984,6 +988,29 @@ export class ModelRegistry {
 				} as ModelSpec<Api>);
 			});
 		});
+		const tnxModel = buildModel({
+			id: TNX_DEFAULT_MODEL_ID,
+			name: "GPT-5.5",
+			provider: "tnx",
+			api: "openai-completions",
+			baseUrl: Bun.env.TNX_BASE_URL || TNX_DEFAULT_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+			contextWindow: 272000,
+			maxTokens: 128000,
+			thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] },
+		});
+		const tnxOverride = overrides.get("tnx");
+		if (!tnxOverride) return [...bundledModels, tnxModel];
+		const withTransportOverride = this.#applyProviderTransportOverride(tnxModel, tnxOverride);
+		return [
+			...bundledModels,
+			buildModel({
+				...withTransportOverride,
+				compat: mergeCompat(tnxModel.compatConfig, tnxOverride.compat),
+			} as ModelSpec<Api>),
+		];
 	}
 
 	#mergeResolvedModels(baseModels: Model<Api>[], replacementModels: Model<Api>[]): Model<Api>[] {
@@ -1200,6 +1227,16 @@ export class ModelRegistry {
 				optional: true,
 			});
 			this.#keylessProviders.add("lm-studio");
+		}
+		if (!configuredProviders.has("tnx") && !disabledProviders.has("tnx")) {
+			this.#discoverableProviders.push({
+				provider: "tnx",
+				api: "openai-completions",
+				baseUrl: Bun.env.TNX_BASE_URL || TNX_DEFAULT_BASE_URL,
+				discovery: { type: "openai-models-list" },
+				optional: true,
+			});
+			this.#keylessProviders.add("tnx");
 		}
 	}
 
@@ -1885,6 +1922,9 @@ export class ModelRegistry {
 	async getApiKey(model: Model<Api>, sessionId?: string): Promise<string | undefined> {
 		const commandKey = this.#resolveCommandBackedApiKey(model.provider);
 		if (commandKey.configured) return commandKey.value;
+		if (model.provider === "tnx" && !this.authStorage.hasAuth(model.provider)) {
+			return TNX_DEFAULT_API_KEY;
+		}
 		if (this.#keylessProviders.has(model.provider) && !this.authStorage.hasAuth(model.provider)) {
 			return kNoAuth;
 		}
@@ -1905,6 +1945,9 @@ export class ModelRegistry {
 	): Promise<string | undefined> {
 		const commandKey = this.#resolveCommandBackedApiKey(provider);
 		if (commandKey.configured) return commandKey.value;
+		if (provider === "tnx" && !this.authStorage.hasAuth(provider)) {
+			return TNX_DEFAULT_API_KEY;
+		}
 		if (this.#keylessProviders.has(provider) && !this.authStorage.hasAuth(provider)) {
 			return kNoAuth;
 		}

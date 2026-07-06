@@ -175,7 +175,7 @@ export type ConfigMigrationApplyResult = {
 	changedPaths: string[];
 };
 
-const SETUP_CONFIG_VERSION = 1;
+const SETUP_CONFIG_VERSION = 2;
 
 const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 	{
@@ -193,7 +193,7 @@ const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 	{
 		path: "task.agentModelOverrides",
 		target: {
-			designer: "anthropic/claude-opus-4-8:xhigh",
+			designer: "pi/designer",
 			oracle: "openai-codex/gpt-5.5:xhigh",
 			plan: "openai-codex/gpt-5.5:xhigh",
 			qa: "openai-codex/gpt-5.5:high",
@@ -1520,6 +1520,16 @@ export class Settings {
 					setByPath(raw, migration.path.split("."), record);
 					setupModifiedPaths.add(migration.path);
 				}
+			}
+
+			const agentModelOverrides = getByPath(raw, SETTING_PATH_SEGMENTS["task.agentModelOverrides"]);
+			if (
+				setupVersion < 2 &&
+				isRecord(agentModelOverrides) &&
+				agentModelOverrides.designer === "anthropic/claude-opus-4-8:xhigh"
+			) {
+				agentModelOverrides.designer = "pi/designer";
+				setupModifiedPaths.add("task.agentModelOverrides");
 			}
 
 			for (const migration of SETUP_CONFIG_SCALAR_MIGRATIONS) {

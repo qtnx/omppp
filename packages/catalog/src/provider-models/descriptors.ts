@@ -38,6 +38,7 @@ import {
 	qwenPortalModelManagerOptions,
 	sakanaModelManagerOptions,
 	syntheticModelManagerOptions,
+	tnxModelManagerOptions,
 	togetherModelManagerOptions,
 	umansModelManagerOptions,
 	veniceModelManagerOptions,
@@ -346,6 +347,13 @@ export const CATALOG_PROVIDERS = [
 		envVars: ["TOGETHER_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => togetherModelManagerOptions(config),
 		catalogDiscovery: { label: "Together" },
+	},
+	{
+		id: "tnx",
+		defaultModel: "gpt-5.5",
+		envVars: ["TNX_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => tnxModelManagerOptions(config),
+		allowUnauthenticated: true,
 	},
 	{
 		id: "umans",
