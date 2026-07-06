@@ -107,6 +107,20 @@ describe("EventController spinner across compaction and retry", () => {
 		expect(context.ensureLoadingAnimation).not.toHaveBeenCalled();
 	});
 
+	it("keeps the central Escape handler installed when auto-compaction starts", async () => {
+		const { context, controller } = createHarness({ isStreaming: true, withSpinner: false });
+		const centralEscapeHandler = vi.fn();
+		context.editor.onEscape = centralEscapeHandler;
+
+		await controller.handleEvent({
+			type: "auto_compaction_start",
+			reason: "requested",
+			action: "context-full",
+		});
+
+		expect(context.editor.onEscape).toBe(centralEscapeHandler);
+	});
+
 	it("stops the working spinner on retry start and restores it after a successful retry", async () => {
 		const { context, controller } = createHarness({ isStreaming: true, withSpinner: true });
 		const spinner = context.loadingAnimation;
@@ -127,5 +141,21 @@ describe("EventController spinner across compaction and retry", () => {
 			success: true,
 		});
 		expect(context.ensureLoadingAnimation).toHaveBeenCalled();
+	});
+
+	it("keeps the central Escape handler installed when auto-retry starts", async () => {
+		const { context, controller } = createHarness({ isStreaming: true, withSpinner: false });
+		const centralEscapeHandler = vi.fn();
+		context.editor.onEscape = centralEscapeHandler;
+
+		await controller.handleEvent({
+			type: "auto_retry_start",
+			attempt: 1,
+			maxAttempts: 3,
+			delayMs: 1000,
+			errorMessage: "overloaded",
+		});
+
+		expect(context.editor.onEscape).toBe(centralEscapeHandler);
 	});
 });

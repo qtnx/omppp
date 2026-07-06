@@ -25,3 +25,89 @@ describe("InputController tool output expansion", () => {
 		expect(requestRender).not.toHaveBeenCalled();
 	});
 });
+
+describe("InputController streaming escape cancellation", () => {
+	it("routes Esc cancellation through global input listeners when focus is outside the editor", () => {
+		type InputListenerResult = { consume?: boolean } | undefined;
+		type InputListener = (data: string) => InputListenerResult;
+
+		const inputListeners: InputListener[] = [];
+		const abort = vi.fn(async () => {});
+		const editor = {
+			setActionKeys: vi.fn(),
+			getText: vi.fn(() => ""),
+			setText: vi.fn(),
+			clearCustomKeyHandlers: vi.fn(),
+			setCustomKeyHandler: vi.fn(),
+			pendingImages: [],
+			pendingImageLinks: [],
+		};
+		const focusedLoader = {};
+		const ctx = {
+			editor,
+			keybindings: {
+				getKeys: vi.fn((action: string) => (action === "app.interrupt" ? ["escape"] : [])),
+			},
+			session: {
+				isStreaming: true,
+				isBashRunning: false,
+				isEvalRunning: false,
+				queuedMessageCount: 0,
+				subscribe: vi.fn(),
+				abort,
+				clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
+			},
+			viewSession: {
+				isCompacting: false,
+				isGeneratingHandoff: false,
+				isRetrying: false,
+			},
+			ui: {
+				addInputListener: vi.fn((listener: InputListener) => {
+					inputListeners.push(listener);
+				}),
+				addStartListener: vi.fn(),
+				getFocused: vi.fn(() => focusedLoader),
+				requestRender: vi.fn(),
+				resetDisplay: vi.fn(),
+			},
+			loadingAnimation: focusedLoader,
+			loopModeEnabled: false,
+			focusedAgentId: undefined,
+			collabGuest: undefined,
+			hasActiveBtw: vi.fn(() => false),
+			handleBtwEscape: vi.fn(() => false),
+			hasActiveOmfg: vi.fn(() => false),
+			handleOmfgEscape: vi.fn(() => false),
+			cancelPendingSubmission: vi.fn(() => false),
+			locallySubmittedUserSignatures: new Set(),
+			compactionQueuedMessages: [],
+			updatePendingMessagesDisplay: vi.fn(),
+			showStatus: vi.fn(),
+			lastEscapeTime: 0,
+			showTreeSelector: vi.fn(),
+			showUserMessageSelector: vi.fn(),
+			showModelSelector: vi.fn(),
+			showDebugSelector: vi.fn(),
+			showHistorySearch: vi.fn(),
+			toggleThinkingBlockVisibility: vi.fn(),
+			handlePlanModeCommand: vi.fn(),
+			handleOrchestratorModeCommand: vi.fn(),
+			handleClearCommand: vi.fn(),
+			showSessionSelector: vi.fn(),
+			handleSTTToggle: vi.fn(),
+			showAgentHub: vi.fn(),
+			updateEditorBorderColor: vi.fn(),
+		} as unknown as InteractiveModeContext;
+
+		new InputController(ctx).setupKeyHandlers();
+
+		// Send two interrupts so this regression targets routing loss, not the
+		// existing double-Esc confirmation policy.
+		for (const listener of inputListeners) listener("\x1b");
+		for (const listener of inputListeners) listener("\x1b");
+
+		expect(abort).toHaveBeenCalled();
+		expect(abort).toHaveBeenCalledWith({ reason: "Interrupted by user" });
+	});
+});
