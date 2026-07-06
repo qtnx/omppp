@@ -46,6 +46,14 @@ function usageLimitError(): Error & { status: number } {
 	});
 }
 
+function longRetryAfter429Message(): string {
+	return '429 {"type":"error","error":{"type":"rate_limit_error","message":"Too many requests"}} retry-after-ms=900000';
+}
+
+function shortRetryAfter429Message(): string {
+	return '429 {"type":"error","error":{"type":"rate_limit_error","message":"Too many requests"}} retry-after-ms=1000';
+}
+
 function googleResourceExhaustedMessage(): string {
 	return "Google API error (429): Resource exhausted. Please try again later.";
 }
@@ -505,6 +513,88 @@ describe("streamSimple resolver auth retry", () => {
 			{ lastChance: true, hasError: true },
 		]);
 		expect((retryContexts[1]?.error as Error).message).toContain("Resource exhausted");
+	});
+
+	it("rotates on long retry-after 429 error events before content", async () => {
+		const keys: unknown[] = [];
+		const retryContexts: ApiKeyResolveContext[] = [];
+		registerCustomApi(
+			API,
+			(_model: Model<Api>, _context: Context, options?: SimpleStreamOptions) => {
+				pushKey(keys, options);
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					if (options?.apiKey === "next-key") {
+						ok(stream);
+						return;
+					}
+					stream.push({ type: "start", partial: assistant() });
+					stream.push({
+						type: "error",
+						reason: "error",
+						error: assistantError(longRetryAfter429Message(), 429),
+					});
+				});
+				return stream;
+			},
+			SOURCE_ID,
+		);
+
+		const stream = streamSimple(model(), context, {
+			apiKey: async ctx => {
+				if (ctx.error !== undefined) retryContexts.push(ctx);
+				return ctx.error === undefined ? "old-key" : ctx.lastChance ? "next-key" : "old-key";
+			},
+		});
+		for await (const _event of stream) {
+			// drain
+		}
+
+		expect((await stream.result()).content).toEqual([{ type: "text", text: "ok" }]);
+		expect(keys).toEqual(["old-key", "next-key"]);
+		expect(retryContexts.map(ctx => ({ lastChance: ctx.lastChance, hasError: ctx.error !== undefined }))).toEqual([
+			{ lastChance: false, hasError: true },
+			{ lastChance: true, hasError: true },
+		]);
+	});
+
+	it("does not rotate on short retry-after 429 error events before content", async () => {
+		const keys: unknown[] = [];
+		const retryContexts: ApiKeyResolveContext[] = [];
+		registerCustomApi(
+			API,
+			(_model: Model<Api>, _context: Context, options?: SimpleStreamOptions) => {
+				pushKey(keys, options);
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: assistant() });
+					stream.push({
+						type: "error",
+						reason: "error",
+						error: assistantError(shortRetryAfter429Message(), 429),
+					});
+				});
+				return stream;
+			},
+			SOURCE_ID,
+		);
+
+		const stream = streamSimple(model(), context, {
+			apiKey: async ctx => {
+				if (ctx.error !== undefined) retryContexts.push(ctx);
+				return ctx.error === undefined ? "old-key" : "next-key";
+			},
+		});
+		const eventTypes: string[] = [];
+		for await (const event of stream) {
+			eventTypes.push(event.type);
+		}
+		const result = await stream.result();
+
+		expect(keys).toEqual(["old-key"]);
+		expect(retryContexts).toEqual([]);
+		expect(eventTypes).toEqual(["start", "error"]);
+		expect(result.errorMessage).toContain("retry-after-ms=1000");
 	});
 
 	it("surfaces the original error when the resolver declines every retry", async () => {

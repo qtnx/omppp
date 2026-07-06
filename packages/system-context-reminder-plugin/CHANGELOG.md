@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-07-04
+
 ### Fixed
 
 - Kept the System Context Reminder prompt as the final provider system text block for Anthropic-style request payloads.

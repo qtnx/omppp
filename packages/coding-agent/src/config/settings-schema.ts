@@ -4140,6 +4140,29 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"browser.annotateHttpHost": {
+		type: "string",
+		default: "0.0.0.0",
+		ui: {
+			tab: "tools",
+			group: "Grep & Browser",
+			label: "Annotate HTTP Host",
+			description:
+				"Bind host for the Chrome-extension annotate intake server (default 0.0.0.0 binds all interfaces so Tailscale/LAN devices can connect; set to 127.0.0.1 to restrict to loopback).",
+		},
+	},
+
+	"browser.annotateHttpPort": {
+		type: "number",
+		default: 3848,
+		ui: {
+			tab: "tools",
+			group: "Grep & Browser",
+			label: "Annotate HTTP Port",
+			description: "Preferred port for the annotate intake server (falls forward up to +9 when the port is busy).",
+		},
+	},
+
 	"browser.gpu": {
 		type: "boolean",
 		default: true,

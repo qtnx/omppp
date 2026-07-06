@@ -1,0 +1,8 @@
+{
+  "extends": "../tsconfig.workspace.json",
+  "include": ["src", "build.ts"],
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["chrome", "bun"]
+  }
+}

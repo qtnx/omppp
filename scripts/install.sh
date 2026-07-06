@@ -263,6 +263,39 @@ migrate_syntax_highlighting_config() {
     echo "✓ Migrated config syntax highlighting to basic at ${config_file}"
 }
 
+run_config_update() {
+    config_update_command="$1"
+
+    if [ -z "$config_update_command" ]; then
+        echo "Warning: OMPx config update command is unavailable; continuing install." >&2
+        return 0
+    fi
+
+    case "$config_update_command" in
+        */*)
+            if [ ! -x "$config_update_command" ]; then
+                echo "Warning: OMPx config update command is unavailable at ${config_update_command}; continuing install." >&2
+                return 0
+            fi
+            config_update_path="$config_update_command"
+            ;;
+        *)
+            if config_update_path="$(command -v "$config_update_command" 2>/dev/null)"; then
+                :
+            else
+                echo "Warning: OMPx config update command is unavailable: ${config_update_command}; continuing install." >&2
+                return 0
+            fi
+            ;;
+    esac
+
+    if "$config_update_path" config update --json >/dev/null 2>&1; then
+        echo "✓ Updated OMPx config via ${config_update_path}"
+    else
+        echo "Warning: OMPx config update failed via ${config_update_path}; continuing install." >&2
+    fi
+}
+
 install_standard_config() {
     if [ "${OMPX_INSTALL_SKIP_STANDARD_CONFIG:-}" = "1" ]; then
         return
@@ -410,6 +443,7 @@ install_via_bun() {
         }
     fi
     install_standard_config
+    run_config_update "ompx"
     install_superpowers_skill
     echo ""
     echo "✓ Installed OMPx via bun"
@@ -480,6 +514,7 @@ install_binary() {
     mv "$TMP_BINARY" "${INSTALL_DIR}/ompx"
     chmod +x "${INSTALL_DIR}/ompx"
     install_standard_config
+    run_config_update "${INSTALL_DIR}/ompx"
     install_superpowers_skill
     echo ""
     echo "✓ Installed OMPx to ${INSTALL_DIR}/ompx"

@@ -20,7 +20,7 @@ import { getCustomApi } from "./api-registry";
 import { AUTH_RETRY_STEPS, isApiKeyResolver, resolveRetryKey } from "./auth-retry";
 import * as AIError from "./error";
 import { ProviderHttpError } from "./error";
-import { isUsageLimitOutcome } from "./error/rate-limit";
+import { extractRotationRetryAfterMs, isUsageLimitOutcome } from "./error/rate-limit";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
 import type { CursorOptions } from "./providers/cursor";
@@ -980,8 +980,7 @@ function isRetryableUpstreamError(error: unknown, status: number | undefined, me
 	// `parseRateLimitReason` and stay in the provider's own backoff layer
 	// instead of burning siblings.
 	if (status === 401) return true;
-	void error;
-	return isUsageLimitOutcome(status, message);
+	return isUsageLimitOutcome(status, message, extractRotationRetryAfterMs(error, message));
 }
 
 function createAssistantAuthError(message: AssistantMessage): Error {

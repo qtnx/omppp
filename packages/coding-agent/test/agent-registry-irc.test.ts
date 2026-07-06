@@ -89,8 +89,8 @@ describe("IrcTool model-facing guidance", () => {
 		const registry = new AgentRegistry();
 		const description = new IrcTool(createToolSession(registry, "sender")).description;
 
-		expect(description).toContain("IRC waits are not subagent-result waits");
-		expect(description).toContain("Use `job` poll");
+		expect(description).toContain("IRC waits are for explicit peer answers and IRC/steering interruptions");
+		expect(description).toContain("use `job` poll");
 		expect(description).toContain("Subagent completions");
 	});
 });

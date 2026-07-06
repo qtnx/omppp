@@ -34,6 +34,7 @@ import type { InteractiveModeContext } from "../modes/types";
 import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
 import type { AgentSession, FreshSessionResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
+import { BROWSER_ANNOTATION_MESSAGE_TYPE, MAX_BACKGROUND_BROWSER_ANNOTATIONS } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import {
@@ -41,6 +42,9 @@ import {
 	formatMacOSSandboxRestartCommand,
 	resolveMacOSSandboxWorkspaceDirs,
 } from "../task/omp-command";
+import type { BrowserAnnotationEntry } from "../tools";
+import { createBrowserAnnotationListener } from "../tools/browser";
+import { disableAnnotateHttp, enableAnnotateHttp, getAnnotateHttpStatus } from "../tools/browser/annotate-http";
 import { expandTilde, resolveToCwd } from "../tools/path-utils";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { urlHyperlinkAlways } from "../tui";
@@ -491,6 +495,17 @@ function parseContextGcArgs(args: string): ParsedContextGcArgs {
 	}
 
 	return { action, status, groupBy, limit, includeRecords };
+}
+
+const ANNOTATE_HTTP_KEYS = new WeakMap<AgentSession, object>();
+
+function annotateHttpKey(session: AgentSession): object {
+	let key = ANNOTATE_HTTP_KEYS.get(session);
+	if (!key) {
+		key = {};
+		ANNOTATE_HTTP_KEYS.set(session, key);
+	}
+	return key;
 }
 
 const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
@@ -1345,6 +1360,65 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			}
 			runtime.ctx.showStatus(`Browser mode: ${next ? "headless" : "visible"}`);
 			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "annotate",
+		description: "Enable Chrome-extension annotation intake over localhost",
+		acpInputHint: "[on|off|status]",
+		subcommands: [
+			{ name: "on", description: "Start the loopback annotation intake" },
+			{ name: "off", description: "Stop the loopback annotation intake" },
+			{ name: "status", description: "Show annotation intake URL, code, and received count" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const { verb } = parseSubcommand(command.args);
+			const key = annotateHttpKey(runtime.session);
+			if (!verb || verb === "status") {
+				const status = getAnnotateHttpStatus(key);
+				await runtime.output(
+					status
+						? `Annotation intake enabled: ${status.url}\nPairing code: ${status.code}\nReceived: ${status.received}`
+						: "Annotation intake disabled.",
+				);
+				return commandConsumed();
+			}
+			if (verb === "off" || verb === "disable") {
+				const disabled = await disableAnnotateHttp(key);
+				await runtime.output(disabled ? "Annotation intake disabled." : "Annotation intake already disabled.");
+				return commandConsumed();
+			}
+			if (verb !== "on" && verb !== "enable") {
+				return usage("Usage: /annotate [on|off|status]", runtime);
+			}
+
+			const configuredHost = runtime.settings.get("browser.annotateHttpHost" as SettingPath) as string | undefined;
+			const configuredPort = runtime.settings.get("browser.annotateHttpPort" as SettingPath) as number | undefined;
+			const host = typeof configuredHost === "string" && configuredHost.trim() ? configuredHost.trim() : "0.0.0.0";
+			const portNumber = typeof configuredPort === "number" ? configuredPort : Number(configuredPort);
+			const port = Number.isFinite(portNumber) && portNumber > 0 ? Math.trunc(portNumber) : 3848;
+			const listener = createBrowserAnnotationListener(
+				{
+					queueBrowserAnnotation: (entry: BrowserAnnotationEntry) => {
+						runtime.session.yieldQueue.enqueue<BrowserAnnotationEntry>(BROWSER_ANNOTATION_MESSAGE_TYPE, entry, {
+							maxEntries: MAX_BACKGROUND_BROWSER_ANNOTATIONS,
+						});
+					},
+				},
+				"chrome-extension",
+			);
+			if (!listener)
+				return usage("Annotation intake unavailable: browser annotation queue is not enabled.", runtime);
+			const info = await enableAnnotateHttp({
+				key,
+				sessionLabel: runtime.session.sessionName || runtime.session.sessionId || "OMPx session",
+				host,
+				port,
+				deliver: listener,
+			});
+			await runtime.output(`Annotation intake enabled: ${info.url}\nPairing code: ${info.code}`);
+			return commandConsumed();
 		},
 	},
 	{

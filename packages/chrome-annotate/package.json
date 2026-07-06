@@ -1,0 +1,18 @@
+{
+  "type": "module",
+  "name": "@oh-my-pi/chrome-annotate",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Chrome extension: annotate any page and send feedback to a paired ompx session",
+  "scripts": {
+    "build": "bun run build.ts",
+    "check": "biome check . && tsgo -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "@types/chrome": "^0.0.268"
+  },
+  "engines": {
+    "bun": ">=1.3.14"
+  }
+}

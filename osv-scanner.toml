@@ -9,9 +9,9 @@ ignoreUntil = 2026-12-31
 reason = "number_prefix 0.4.0 has no fixed version available. Revisit during dependency updates."
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2026-0173"
+id = "RUSTSEC-2026-0192"
 ignoreUntil = 2026-12-31
-reason = "proc-macro-error2 2.0.1 has no fixed version available. Revisit during dependency updates."
+reason = "ttf-parser 0.21.1 is transitive via usvg/resvg; advisory has no fixed version available. Revisit during dependency updates."
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0320"
