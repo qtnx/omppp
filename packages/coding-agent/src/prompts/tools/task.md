@@ -85,7 +85,14 @@ RIGHT:
 {{#if spawningDisabled}}
 Agent spawning is currently disabled.
 {{else}}
-Prefer delegating implementation here. Decompose the work into the smallest independent units, dispatch each to the most fitting agent, and run disjoint units in parallel. Pick the implementer tier per unit by speed/model/review depth:
+Prefer delegating implementation here. Decompose the work into the smallest independent units, dispatch each to the most fitting agent, and run disjoint units in parallel. Specialist routing comes before generic implementer tiers:
+- UI/UX/frontend/design/visual tasks → `designer` as the stable default design lead.
+- Frontend/UI implementation or build tasks → `frontend_ui`.
+- UI/UX/design review, audit, critique, or quality feedback → `ui_ux_reviewer`.
+- UX/UI copy, copywriting, microcopy, error-state, empty-state, onboarding, or guidance text → `ux_copywriter`.
+- Prefer these specialists before `quick_task` / `task` / `heavy_task` for their domains.
+
+Pick the implementer tier per unit by speed/model/review depth when no specialist above owns the work:
 - `heavy_task` — load-bearing or high-accuracy work: a full feature, a cross-module change, tricky logic, anything where a bug is expensive. Richest review depth when `self_review: true`.
 - `task` — routine medium-complexity work: a contained feature slice or a well-scoped change across a few files. Moderate review depth when `self_review: true`.
 - `quick_task` — light mechanical work or a small contained feature with a locked spec: rename, move, boilerplate, localized edits, data collection. Fastest and safe to fan out widely.

@@ -18,6 +18,7 @@
 - Compaction now shows a live progress overlay while it runs: a spinner, an indeterminate shimmer progress bar, an elapsed `m:ss` timer, and a live `~N tok` streamed-token counter. On the auto (context-full) path it is driven by a new throttled `auto_compaction_progress` session event (action, elapsed ms, cumulative SSE events/bytes, optional token estimate) emitted between `auto_compaction_start` and `auto_compaction_end` and forwarded over RPC; on the manual `/compact` path the streaming progress callback is forwarded directly to the same overlay. The token counter reflects OpenAI V2 streaming remote compaction; V1, local summarization, and Anthropic show the spinner + bar + timer only (no per-token counter).
 - `async.stallThresholdMs` setting (default 10m): running rows in `job` results are flagged `STALLED` when the subagent shows no activity beyond the threshold (0 disables).
 - POSIX installs and updates now run `ompx install git:github.com/obra/superpowers` after OMPx is installed, keeping the Superpowers skill pack installed or updated automatically.
+- Added a built-in production frontend/UI/UX skill bundle plus dedicated design-team subagents (`frontend_ui`, `ui_ux_reviewer`, `ux_copywriter`) so orchestrated UI work routes to design specialists with anti-internal-copy safeguards.
 
 ### Changed
 

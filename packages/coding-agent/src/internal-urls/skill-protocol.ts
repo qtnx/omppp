@@ -73,6 +73,16 @@ export class SkillProtocolHandler implements ProtocolHandler {
 			}
 		} else {
 			targetPath = skill.filePath;
+			if (skill.content !== undefined) {
+				return {
+					url: url.href,
+					content: skill.content,
+					contentType: "text/markdown",
+					size: Buffer.byteLength(skill.content, "utf-8"),
+					sourcePath: skill.filePath,
+					notes: [],
+				};
+			}
 		}
 
 		let stats: fsTypes.Stats;

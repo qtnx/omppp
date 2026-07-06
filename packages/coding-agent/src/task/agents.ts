@@ -9,18 +9,20 @@ import { parseAgentFields } from "../discovery/helpers";
 import browserQaMd from "../prompts/agents/browser_qa.md" with { type: "text" };
 import designerMd from "../prompts/agents/designer.md" with { type: "text" };
 import exploreMd from "../prompts/agents/explore.md" with { type: "text" };
+import frontendUiMd from "../prompts/agents/frontend_ui.md" with { type: "text" };
 // Embed agent markdown files at build time
 import agentFrontmatterTemplate from "../prompts/agents/frontmatter.md" with { type: "text" };
 import heavyTaskMd from "../prompts/agents/heavy_task.md" with { type: "text" };
 import librarianMd from "../prompts/agents/librarian.md" with { type: "text" };
 import oracleMd from "../prompts/agents/oracle.md" with { type: "text" };
-
 import planMd from "../prompts/agents/plan.md" with { type: "text" };
 import qaMd from "../prompts/agents/qa.md" with { type: "text" };
 import quickTaskMd from "../prompts/agents/quick_task.md" with { type: "text" };
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
 import testerMd from "../prompts/agents/tester.md" with { type: "text" };
+import uiUxReviewerMd from "../prompts/agents/ui_ux_reviewer.md" with { type: "text" };
+import uxCopywriterMd from "../prompts/agents/ux_copywriter.md" with { type: "text" };
 import workflowSubagentMd from "../prompts/agents/workflow-subagent.md" with { type: "text" };
 
 import type { AgentDefinition, AgentReviewGatePolicy, AgentSource } from "./types";
@@ -53,6 +55,9 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "explore.md", template: exploreMd },
 	{ fileName: "plan.md", template: planMd },
 	{ fileName: "designer.md", template: designerMd },
+	{ fileName: "frontend_ui.md", template: frontendUiMd },
+	{ fileName: "ui_ux_reviewer.md", template: uiUxReviewerMd },
+	{ fileName: "ux_copywriter.md", template: uxCopywriterMd },
 	{ fileName: "browser_qa.md", template: browserQaMd },
 	{ fileName: "reviewer.md", template: reviewerMd },
 	{ fileName: "qa.md", template: qaMd },

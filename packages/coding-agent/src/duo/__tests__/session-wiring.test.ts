@@ -350,6 +350,18 @@ describe("AgentSession duo wiring helpers", () => {
 		expect(orchestratorBlock).not.toContain("- `rule://<name>`: rule details");
 		expect(orchestratorBlock.slice(orchestratorBlock.indexOf("# Skills & Rules"))).toBe(baseSkillsSection);
 	});
+
+	test("orchestrator overlay teaches scheduled compaction at work boundaries", () => {
+		const [orchestratorBlock] = buildSystemPromptWithOrchestratorOverlay(["Base identity block.", "Tool block"]);
+		const compactGuidance = orchestratorBlock.match(/.{0,500}compact.{0,700}/gis)?.join("\n---\n") ?? "";
+
+		expect(compactGuidance).toMatch(/compact/i);
+		expect(compactGuidance).toMatch(/schedul\w*[\s\S]{0,220}archiv\w*|archiv\w*[\s\S]{0,220}schedul\w*/i);
+		expect(compactGuidance).toMatch(
+			/(?:stale|older)[\s\S]{0,260}context[\s\S]{0,260}(?:no longer needed|not needed (?:for )?next)|context[\s\S]{0,260}(?:no longer needed|not needed (?:for )?next)/i,
+		);
+		expect(compactGuidance).toMatch(/work boundar\w*|phase boundar\w*|task boundar\w*|after finishing/i);
+	});
 	test("advisor skills prompt preserves Skills & Rules and reminds advisor to supervise skill use", () => {
 		const baseSkillsSection = [
 			"# Skills & Rules",

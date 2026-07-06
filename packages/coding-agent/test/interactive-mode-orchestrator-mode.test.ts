@@ -470,6 +470,54 @@ describe("InteractiveMode orchestrator mode", () => {
 		}
 	});
 
+	it("requires verify-before-done skill before orchestrator completion claims", async () => {
+		const created = createHarness({
+			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
+			activeToolNames: ["read"],
+		});
+
+		await created.handleOrchestratorModeCommand();
+
+		const modeContext = session?.systemPrompt.join("\n") ?? "";
+		expect(modeContext).toContain("skill://verify-before-done");
+		expect(modeContext).toMatch(
+			/(?:MUST|REQUIRED)[\s\S]{0,240}skill:\/\/verify-before-done[\s\S]{0,240}(?:done|fixed|ready|complete|completion|claim)|(?:done|fixed|ready|complete|completion|claim)[\s\S]{0,240}skill:\/\/verify-before-done[\s\S]{0,240}(?:MUST|REQUIRED)/i,
+		);
+	});
+
+	it("ties orchestrator mode skill references to delegation review and verification claims", async () => {
+		const created = createHarness({
+			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
+			activeToolNames: ["read"],
+		});
+
+		await created.handleOrchestratorModeCommand();
+
+		const modeContext = session?.systemPrompt.join("\n") ?? "";
+		const contracts: Array<[skillRef: string, tiedGuidance: RegExp]> = [
+			["skill://subagents-development", /delegat|dispatch|subagents?/i],
+			["skill://code-review-lens", /review|reviewer/i],
+			["skill://codebase-recon", /codebase|recon|investigat|explor/i],
+			["skill://writing-tests-that-matter", /tests?|test suite|coverage|verification/i],
+			["skill://verify-before-done", /done|fixed|ready|complete|completion|claim|verification/i],
+		];
+		const missingSkillRefs = contracts
+			.map(([skillRef]) => skillRef)
+			.filter(skillRef => !modeContext.includes(skillRef));
+		const untiedSkillRefs = contracts
+			.filter(([skillRef, tiedGuidance]) => {
+				const escapedRef = skillRef.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+				const windowAroundRef = modeContext.match(new RegExp(`.{0,260}${escapedRef}.{0,260}`, "is"))?.[0] ?? "";
+				return windowAroundRef === "" || !tiedGuidance.test(windowAroundRef);
+			})
+			.map(([skillRef]) => skillRef);
+
+		expect({ missingSkillRefs, untiedSkillRefs }).toEqual({
+			missingSkillRefs: [],
+			untiedSkillRefs: [],
+		});
+	});
+
 	it("replaces the core system prompt block while preserving context blocks in orchestrator mode", async () => {
 		const created = createHarness({
 			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],

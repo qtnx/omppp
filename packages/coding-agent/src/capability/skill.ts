@@ -44,7 +44,7 @@ export interface Skill {
 	/** Parsed frontmatter */
 	frontmatter?: SkillFrontmatter;
 	/** Source level */
-	level: "user" | "project";
+	level: "user" | "project" | "native";
 	/** Source metadata */
 	_source: SourceMeta;
 }

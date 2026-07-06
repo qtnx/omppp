@@ -1,0 +1,47 @@
+---
+name: writing-tests-that-matter
+description: MANDATORY when writing or adding tests, increasing coverage, testing a module, or creating a regression test. Contains the can-this-test-fail mutation check, table-driven patterns per stack, factory-over-fixture-copy-paste, target selection (branches, boundaries, invariants, error paths), and the anti-flaky rules (pin the clock, never sleep, isolate state).
+---
+
+# Writing Tests That Matter
+
+Coverage % is not the goal; a test suite is a tripwire field. Every test must be able to fail on a plausible mistake — if you cannot name the code change that would fail it, it is decoration: fix or delete it.
+
+## Target selection — what earns a test
+In priority order, for the code you changed:
+1. Every new/changed CONDITIONAL BRANCH — both sides.
+2. BOUNDARIES — empty, 0, 1, max, one-past-max, unicode/emoji strings, very large input, duplicate entries.
+3. ERROR PATHS — and assert the SPECIFIC error: code/type/message field, not just `expect(...).toThrow()`. A designed 422 and an accidental crash both "throw"; only the assertion tells them apart.
+4. INVARIANTS across fields — totals reconcile, state machine only takes legal transitions, output sorted/unique when promised.
+5. The bug you just fixed — regression test that fails on the pre-fix code (watch it red before green).
+NOT worth tests: trivial getters, framework glue the framework already tests, private implementation details.
+
+## Assert behavior through the public surface
+Test what the caller observes, not how it's done inside. Reaching into privates or asserting "method X was called" (except at an external boundary) welds the test to the implementation — every refactor breaks it while real bugs slip past.
+
+## Structure
+- One behavior per test; name states the behavior: `rejects_expired_token`, not `test2`.
+- Arrange-Act-Assert visibly separated.
+- Table-driven for input matrices:
+  - Go: `tests := []struct{name string; in X; want Y}{...}` + `t.Run(tt.name, ...)`
+  - JS: `it.each([[in, want], ...])('%s', ...)` (vitest/jest)
+  - Python: `@pytest.mark.parametrize("inp,want", [...])`
+- Factories over copy-pasted fixtures: one `makeUser(overrides)` returning a valid default with per-test overrides — when the shape gains a required field, you fix ONE factory, not 60 literals.
+
+## The mutation check (do it mentally, or actually)
+For each test written, name the mutation it catches: "flip this `<=` to `<` → this test fails." Can't name one? The test asserts nothing. Spot check for real: temporarily break the code, confirm the test goes red, restore.
+
+## Anti-flaky rules
+- TIME: pin the clock — `vi.useFakeTimers()` / `freezegun` / inject a clock; never assert "createdAt is within 100ms of now".
+- NO SLEEPS: `sleep(500)` then assert is a race with a timer. Await the condition: poll with timeout, or await the actual promise/event.
+- ORDER: each test builds and tears down its own state; no test depends on another having run; DB tests wrap in a rolled-back transaction or truncate between.
+- RANDOMNESS: seed it or inject it.
+- NETWORK: unit tests never touch the real network; boundary fakes assert the OUTBOUND request (payload, headers) — the contract from your side.
+- PARALLELISM: unique resources per test (temp dirs via mkdtemp, random free ports), never shared literal paths/ports.
+A test that fails 1/50 runs is a bug NOW: reproduce with a 50x loop, fix the race, never mark-as-retry.
+
+## Test doubles ladder
+real > fake (in-memory impl honoring the contract) > stub (canned responses) > mock (interaction assertions). Take the realest that keeps the test fast and deterministic; mocks only at true external boundaries, and then assert what your code SENT, not merely "was called".
+
+## Definition of done for a testing task
+Suite green; every changed branch and error path exercised (name them); zero sleeps introduced; each new test passes the mutation check; run count printed as evidence (skill://verify-before-done).
