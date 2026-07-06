@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as path from "node:path";
-import { Agent, type AgentMessage, type AgentTurnEndContext } from "@oh-my-pi/pi-agent-core";
-import { Effort, type Model } from "@oh-my-pi/pi-ai";
+import { Agent, type AgentMessage, type AgentTurnEndContext, type StreamFn } from "@oh-my-pi/pi-agent-core";
+import { type AssistantMessage, Effort, type Model, type TextContent, type Usage } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { ModelRegistry } from "../../config/model-registry";
 import { Settings } from "../../config/settings";
 import { DuoController } from "../../duo/controller";
 import { AgentSession } from "../agent-session";
 import { AuthStorage } from "../auth-storage";
+import { convertToLlm } from "../messages";
 import { SessionManager } from "../session-manager";
 
 type TurnEndCallback = (
@@ -22,6 +24,10 @@ interface TurnEndHarness {
 	messages: AgentMessage[];
 	context: AgentTurnEndContext;
 	runTurnEnd(): Promise<void>;
+}
+
+interface TurnEndHarnessOptions {
+	streamFn?: StreamFn;
 }
 
 interface MockHandle {
@@ -68,6 +74,38 @@ function anthropicModel(id: string): Model {
 	});
 }
 
+function createUsage(): Usage {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+function emitTextResponse(stream: AssistantMessageEventStream, model: Model, text: string): void {
+	const content: TextContent[] = [];
+	const message: AssistantMessage = {
+		role: "assistant",
+		content,
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: createUsage(),
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+	stream.push({ type: "start", partial: message });
+	const block: TextContent = { type: "text", text };
+	content.push(block);
+	stream.push({ type: "text_start", contentIndex: 0, partial: message });
+	stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
+	stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
+	stream.push({ type: "done", reason: "stop", message });
+}
+
 const planner = anthropicModel("claude-fable-5");
 const executor = anthropicModel("claude-opus-4.8");
 
@@ -104,7 +142,7 @@ function createMessages(): AgentMessage[] {
 	return [{ role: "user", content: "please run a tool", timestamp: 1 } as AgentMessage, assistant];
 }
 
-async function createTurnEndHarness(): Promise<TurnEndHarness> {
+async function createTurnEndHarness(options: TurnEndHarnessOptions = {}): Promise<TurnEndHarness> {
 	const tempDir = TempDir.createSync("@pi-duo-turn-end-");
 	tempDirs.push(tempDir);
 	const messages = createMessages();
@@ -116,6 +154,8 @@ async function createTurnEndHarness(): Promise<TurnEndHarness> {
 			tools: [],
 			messages,
 		},
+		streamFn: options.streamFn,
+		convertToLlm,
 	});
 	const setOnTurnEnd = agent.setOnTurnEnd.bind(agent);
 	agent.setOnTurnEnd = ((fn: TurnEndCallback | undefined) => {
@@ -186,5 +226,50 @@ describe("AgentSession duo turn-end maintenance", () => {
 		await harness.runTurnEnd();
 
 		expect(notifyTurnEnd).toHaveBeenCalledTimes(1);
+	});
+
+	test("duo handoff at turn end starts the next model turn automatically", async () => {
+		const providerCalls: Array<{ modelId: string; contextText: string }> = [];
+		let session: AgentSession | undefined;
+		let requestedHandoff = false;
+		const streamFn: StreamFn = (model, context) => {
+			const callNumber = providerCalls.length + 1;
+			const messageText = context.messages
+				.map(message => {
+					const content = message.content as unknown;
+					if (typeof content === "string") return content;
+					if (!Array.isArray(content)) return "";
+					return content.map(part => (typeof part === "object" && part && "text" in part ? String(part.text) : "")).join("");
+				})
+				.join("\n");
+			const contextText = [...(context.systemPrompt ?? []), messageText].join("\n");
+			providerCalls.push({ modelId: model.id, contextText });
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(async () => {
+				try {
+					if (!requestedHandoff) {
+						requestedHandoff = true;
+						const result = await session?.duoHandoffToExecutor("Planner resolved the blocker; continue execution.");
+						expect(result).toBe("ok");
+					}
+					emitTextResponse(stream, model, `turn ${callNumber}`);
+				} catch (error) {
+					stream.fail(error);
+				}
+			});
+			return stream;
+		};
+		const harness = await createTurnEndHarness({ streamFn });
+		session = harness.session;
+
+		// Regression: duo_handoff runs before the planner turn has fully ended, so
+		// the handback brief is a hidden next-turn message rather than a queued user prompt.
+		await harness.session.setModelTemporary(planner);
+		expect(harness.session.getDuoStatus()?.phase).toBe("planning");
+
+		await harness.session.prompt("finish the plan");
+
+		expect(providerCalls.map(call => call.modelId)).toEqual([planner.id, executor.id]);
+		expect(providerCalls[1]?.contextText).toContain("Planner resolved the blocker; continue execution.");
 	});
 });

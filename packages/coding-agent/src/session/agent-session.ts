@@ -1668,6 +1668,7 @@ type ScheduledAgentContinueOptions = {
 	delayMs?: number;
 	generation?: number;
 	shouldContinue?: () => boolean;
+	preferHiddenNextTurn?: boolean;
 	onSkip?: (reason: AgentContinueSkipReason) => void;
 	onError?: () => void;
 };
@@ -2717,7 +2718,11 @@ export class AgentSession {
 			},
 			planModeActive: () => this.getPlanModeState()?.enabled === true,
 			requestAgentContinue: () => {
-				this.#scheduleAgentContinue({ delayMs: 1, generation: this.#promptGeneration });
+				this.#scheduleAgentContinue({
+					delayMs: 1,
+					generation: this.#promptGeneration,
+					preferHiddenNextTurn: true,
+				});
 			},
 		};
 	}
@@ -5112,6 +5117,32 @@ export class AgentSession {
 				}
 				if (options?.shouldContinue && !options.shouldContinue()) {
 					this.#skipAgentContinue("should-continue-false", options);
+					return;
+				}
+				if (options?.preferHiddenNextTurn && this.#pendingNextTurnMessages.length > 0) {
+					try {
+						if (this.agent.state.isStreaming) {
+							await this.agent.waitForIdle();
+						}
+						if (options.generation !== undefined && this.#promptGeneration !== options.generation) {
+							this.#skipAgentContinue("stale-generation", options);
+							return;
+						}
+						if (signal.aborted || this.#isDisposed || this.isCompacting || this.isGeneratingHandoff) {
+							this.#skipAgentContinue("session-unavailable", options);
+							return;
+						}
+						if (this.#pendingNextTurnMessages.length === 0) {
+							return;
+						}
+						await this.#promptQueuedHiddenNextTurnMessages();
+					} catch (error) {
+						logger.warn("agent.nextTurn prompt failed after scheduling", {
+							error: error instanceof Error ? error.message : String(error),
+							stack: error instanceof Error ? error.stack : undefined,
+						});
+						options.onError?.();
+					}
 					return;
 				}
 				this.#beginInFlight();
