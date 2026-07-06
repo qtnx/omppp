@@ -10,6 +10,7 @@ import {
 	type DollarMentionSkill,
 	extractDollarMentions,
 } from "../src/session/dollar-mentions";
+import { convertToLlm } from "../src/session/messages";
 
 const skill: DollarMentionSkill = {
 	name: "analyze",
@@ -103,5 +104,47 @@ describe("dollar mention extraction", () => {
 		expect(messages[0]?.content).toContain("Skill body instructions");
 		expect(messages[1]?.content).toContain("reviewer");
 		expect(messages.every(message => message.display === false)).toBe(true);
+	});
+
+	it("loads dollar-mentioned skills as user-invoked submit context with prompt args", async () => {
+		const tempDir = await mkdtemp(path.join(os.tmpdir(), "omp-dollar-mention-skill-"));
+		const skillPath = path.join(tempDir, "SKILL.md");
+		const uniqueBody = "UNIQUE_SYSTEM_PROMPTS_DOLLAR_MENTION_INSTRUCTION";
+		await writeFile(
+			skillPath,
+			`---\nname: system-prompts\ndescription: System prompt house style\n---\n\n${uniqueBody}`,
+			"utf-8",
+		);
+
+		const messages = await buildDollarMentionContextMessages("tighten this prompt $skill:system-prompts now", {
+			skills: [
+				{
+					name: "system-prompts",
+					description: "System prompt house style",
+					filePath: skillPath,
+					baseDir: tempDir,
+				},
+			],
+			agents: [],
+		});
+
+		expect(messages).toHaveLength(1);
+		const message = messages[0];
+		expect(message).toBeDefined();
+		if (!message) throw new Error("expected dollar-mentioned skill prompt");
+		if (typeof message.content !== "string") throw new Error("expected text-only skill prompt");
+		expect(message.customType).toBe("skill-prompt");
+		expect(message.content).toContain(uniqueBody);
+		expect(message.content).toContain(`[Skill directory: ${tempDir}]`);
+		expect(message.content).toContain("User: tighten this prompt now");
+		expect(message.attribution).toBe("user");
+
+		const llmMessages = convertToLlm([
+			message,
+			{ role: "user", content: "tighten this prompt $skill:system-prompts now", timestamp: Date.now() },
+		]);
+		expect(llmMessages[0]?.role).toBe("user");
+		expect(llmMessages[0]?.content).toEqual([{ type: "text", text: message.content }]);
+		expect(llmMessages[1]?.role).toBe("user");
 	});
 });

@@ -32,6 +32,21 @@ function normalizeMentionName(rawName: string): string {
 	return rawName.replace(TRAILING_PUNCTUATION_REGEX, "");
 }
 
+function stripRecognizedSkillMentions(text: string, catalog: DollarMentionCatalog): string {
+	const skillByName = new Map(catalog.skills.map(skill => [skill.name, skill]));
+	const stripped = text.replace(DOLLAR_MENTION_REGEX, (_match, prefix: string, kind: string, rawName: string) => {
+		if (kind !== "skill") {
+			return _match;
+		}
+		const name = normalizeMentionName(rawName);
+		if (!skillByName.has(name)) {
+			return _match;
+		}
+		return prefix;
+	});
+	return stripped.replace(/\s+/g, " ").trim();
+}
+
 export function extractDollarMentions(text: string, catalog: DollarMentionCatalog): DollarMentionExtraction {
 	const skillByName = new Map(catalog.skills.map(skill => [skill.name, skill]));
 	const agentByName = new Map(catalog.agents.map(agent => [agent.name, agent]));
@@ -68,16 +83,17 @@ export async function buildDollarMentionContextMessages(
 ): Promise<CustomMessage[]> {
 	const mentions = extractDollarMentions(text, catalog);
 	const messages: CustomMessage[] = [];
+	const skillPromptArgs = stripRecognizedSkillMentions(text, catalog);
 
 	for (const skill of mentions.skills) {
-		const built = await buildSkillPromptMessage(skill, "");
+		const built = await buildSkillPromptMessage(skill, skillPromptArgs, "user");
 		messages.push({
 			role: "custom",
 			customType: SKILL_PROMPT_MESSAGE_TYPE,
 			content: built.message,
 			display: false,
 			details: built.details,
-			attribution: "agent",
+			attribution: "user",
 			timestamp: Date.now(),
 		});
 	}

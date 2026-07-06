@@ -327,6 +327,20 @@ function maxSegmentVisualCol(text: string, isLastSegment: boolean): number {
 	return isLastSegment ? total : Math.max(0, total - lastWidth);
 }
 
+/** Dollar-mention prefix ending at cursor; grammar aligned with coding-agent's `getDollarMentionPrefix`. */
+function dollarMentionPrefixAtEnd(textBeforeCursor: string): string | null {
+	const dollarIndex = textBeforeCursor.lastIndexOf("$");
+	if (dollarIndex === -1) return null;
+	if (dollarIndex > 0 && !/[\s([{<"'`]/.test(textBeforeCursor[dollarIndex - 1] ?? "")) return null;
+
+	const query = textBeforeCursor.slice(dollarIndex + 1);
+	if (query.startsWith("{") || /[\s]/.test(query)) {
+		return null;
+	}
+
+	return textBeforeCursor.slice(dollarIndex);
+}
+
 const DEFAULT_PAGE_SCROLL_LINES = 10;
 
 const MAX_UNDO_STACK = 100;
@@ -1821,8 +1835,16 @@ export class Editor implements Component, Focusable {
 			else if (char === "#") {
 				this.#tryTriggerAutocomplete();
 			}
+			// Auto-trigger for "$" skill/mention tokens after whitespace or delimiters
+			else if (char === "$") {
+				const currentLine = this.#state.lines[this.#state.cursorLine] || "";
+				const textBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
+				if (dollarMentionPrefixAtEnd(textBeforeCursor) !== null) {
+					this.#tryTriggerAutocomplete();
+				}
+			}
 			// Also auto-trigger when typing letters/path chars in a completable context
-			else if (/[a-zA-Z0-9.\-_/]/.test(char)) {
+			else if (/[a-zA-Z0-9.\-_/:]/.test(char)) {
 				const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 				const textBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
 				// Check if we're in a slash command or mid-prompt skill lookup.
@@ -1835,6 +1857,10 @@ export class Editor implements Component, Focusable {
 				}
 				// Check if we're in a # prompt action context
 				else if (textBeforeCursor.match(/#[^\s#]*$/)) {
+					this.#tryTriggerAutocomplete();
+				}
+				// Check if we're in a $ mention context
+				else if (dollarMentionPrefixAtEnd(textBeforeCursor) !== null) {
 					this.#tryTriggerAutocomplete();
 				}
 				// Check if we're in a :emoji shortcode context
@@ -1953,6 +1979,8 @@ export class Editor implements Component, Focusable {
 		} else if (textBeforeCursor.match(/(?:^|[\s])@[^\s]*$/)) {
 			this.#tryTriggerAutocomplete();
 		} else if (textBeforeCursor.match(/#[^\s#]*$/)) {
+			this.#tryTriggerAutocomplete();
+		} else if (dollarMentionPrefixAtEnd(textBeforeCursor) !== null) {
 			this.#tryTriggerAutocomplete();
 		} else if (this.#textTriggersUrlAutocomplete(textBeforeCursor)) {
 			this.#tryTriggerAutocomplete();
@@ -2126,6 +2154,10 @@ export class Editor implements Component, Focusable {
 			else if (textBeforeCursor.match(/#[^\s#]*$/)) {
 				this.#tryTriggerAutocomplete();
 			}
+			// $ mention context
+			else if (dollarMentionPrefixAtEnd(textBeforeCursor) !== null) {
+				this.#tryTriggerAutocomplete();
+			}
 			// internal URL scheme context (e.g. local://, skill://)
 			else if (this.#textTriggersUrlAutocomplete(textBeforeCursor)) {
 				this.#tryTriggerAutocomplete();
@@ -2288,6 +2320,8 @@ export class Editor implements Component, Focusable {
 			} else if (textBeforeCursor.match(/(?:^|[\s])@[^\s]*$/)) {
 				this.#tryTriggerAutocomplete();
 			} else if (textBeforeCursor.match(/#[^\s#]*$/)) {
+				this.#tryTriggerAutocomplete();
+			} else if (dollarMentionPrefixAtEnd(textBeforeCursor) !== null) {
 				this.#tryTriggerAutocomplete();
 			} else if (this.#textTriggersUrlAutocomplete(textBeforeCursor)) {
 				this.#tryTriggerAutocomplete();
@@ -2632,6 +2666,10 @@ export class Editor implements Component, Focusable {
 			else if (textBeforeCursor.match(/#[^\s#]*$/)) {
 				this.#tryTriggerAutocomplete();
 			}
+			// $ mention context
+			else if (dollarMentionPrefixAtEnd(textBeforeCursor) !== null) {
+				this.#tryTriggerAutocomplete();
+			}
 			// internal URL scheme context (e.g. local://, skill://)
 			else if (this.#textTriggersUrlAutocomplete(textBeforeCursor)) {
 				this.#tryTriggerAutocomplete();
@@ -2878,6 +2916,8 @@ export class Editor implements Component, Focusable {
 	 *   inner slash), matching `applyCompletion`'s slash-branch guard.
 	 * - `@`-file branch re-anchors via `#extractAtPrefix`; safe when the current text
 	 *   still ends in a whitespace-anchored `@<token>`.
+	 * - `$`-mention branch accepts a boundary-valid live dollar token that extends
+	 *   the stored prefix and re-anchors the prefix so providers replace the live token.
 	 * - Everything else is stale — accepting it would corrupt the buffer (issue #4295).
 	 */
 	#autocompletePrefixMatchesCursorText(currentTextBeforeCursor: string): boolean {
@@ -2894,6 +2934,16 @@ export class Editor implements Component, Focusable {
 
 		if (this.#autocompletePrefix.startsWith("@")) {
 			return /(?:^|\s)@[^\s]*$/.test(currentTextBeforeCursor);
+		}
+
+		if (dollarMentionPrefixAtEnd(this.#autocompletePrefix) !== null) {
+			const currentDollarPrefix = dollarMentionPrefixAtEnd(currentTextBeforeCursor);
+			if (currentDollarPrefix === null) return false;
+			if (currentDollarPrefix.startsWith(this.#autocompletePrefix)) {
+				this.#autocompletePrefix = currentDollarPrefix;
+				return true;
+			}
+			return false;
 		}
 
 		return currentTextBeforeCursor.endsWith(this.#autocompletePrefix);
