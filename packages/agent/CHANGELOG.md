@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-07-07
+
 ### Added
 
 - Added a `runSingleTurnAgent` helper for one-shot review/opinion model calls without entering the agent tool loop.

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-07-07
+
 ### Added
 
 - Added the initial OMPx Annotate Chrome extension package.

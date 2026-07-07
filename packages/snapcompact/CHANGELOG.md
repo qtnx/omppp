@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-07-07
+
 ### Changed
 
 - Added a first-class TNX provider image budget so snapcompact can pack large `tnx/super` review payloads into image frames instead of falling back to the unknown-provider floor.
