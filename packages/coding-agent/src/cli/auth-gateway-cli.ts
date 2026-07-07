@@ -2,15 +2,16 @@
  * `ompx auth-gateway` command handlers.
  *
  * Boots a forward-proxy server that lets less-trusted clients (the macOS
- * usage widget, robomp containers, …) make provider API calls without ever
- * seeing the access token. The gateway is itself a broker client and
- * resolves credentials through the configured broker (via the same
- * `OMP_AUTH_BROKER_URL` / `auth.broker.url` precedence used elsewhere).
+ * usage widget, robomp containers, teammates on a tailnet, …) make provider
+ * API calls without ever seeing upstream access tokens. By default the
+ * gateway follows the same credential source as the CLI: configured broker
+ * first, otherwise local SQLite/env/config credentials. `--local` bypasses a
+ * configured broker and serves only this machine's local credentials.
  *
  * Sub-verbs:
- *   - `serve [--bind=…]` — boots the gateway against the configured broker.
+ *   - `serve [--bind=…] [--local]` — boots the gateway.
  *   - `token` / `token --regenerate` — manages the gateway bearer token file.
- *   - `status` — prints the locally-stored gateway token and bind hint.
+ *   - `status` — prints the locally-stored gateway token and source hint.
  */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
@@ -21,14 +22,19 @@ import {
 	type CompletionProbe,
 	type CompletionProbeInput,
 	type CredentialCompletionResult,
+	type CredentialHealthResult,
 	completeSimple,
 	type Model,
+	type Provider,
 } from "@oh-my-pi/pi-ai";
 import { AuthBrokerClient, RemoteAuthCredentialStore, type SnapshotResponse } from "@oh-my-pi/pi-ai/auth-broker";
 import { DEFAULT_AUTH_GATEWAY_BIND, startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
-import { type GeneratedProvider, getBundledModels, getBundledProviders } from "@oh-my-pi/pi-catalog/models";
-import { APP_NAME, getConfigRootDir, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
+import { type GeneratedProvider, getBundledModels } from "@oh-my-pi/pi-catalog/models";
+import { APP_NAME, getAgentDbPath, getConfigRootDir, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { ModelRegistry } from "../config/model-registry";
+import { ModelsConfigFile } from "../config/models-config";
+import { resolveConfigValue } from "../config/resolve-config-value";
 import { type AuthBrokerClientConfig, resolveAuthBrokerConfig } from "../session/auth-broker-config";
 
 export type AuthGatewayAction = "serve" | "token" | "status" | "check";
@@ -53,6 +59,8 @@ export interface AuthGatewayCommandArgs {
 		 * actually usable" signal. Slower and consumes a tiny amount of quota.
 		 */
 		strict?: boolean;
+		/** Use local SQLite/env/config credentials even when an auth broker is configured. */
+		local?: boolean;
 	};
 }
 
@@ -135,46 +143,171 @@ async function fetchBrokerSnapshot(client: AuthBrokerClient): Promise<SnapshotRe
 	return result.snapshot;
 }
 
-async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
-	const brokerConfig = await resolveAuthBrokerConfig();
-	if (!brokerConfig) {
-		throw new Error(
-			`\`${APP_NAME} auth-gateway serve\` requires OMP_AUTH_BROKER_URL (or \`auth.broker.url\`/\`auth.broker.token\` in config.yml). The gateway is itself a broker client.`,
-		);
-	}
-	const bind = flags.bind ?? DEFAULT_AUTH_GATEWAY_BIND;
-	const gatewayToken = flags.noAuth ? null : await ensureToken();
+type AuthGatewayCredentialSource =
+	| { kind: "broker"; url: string; storage: AuthStorage; credentialCount: number }
+	| { kind: "local"; dbPath: string; storage: AuthStorage; credentialCount: number };
 
-	// Build a broker-backed AuthStorage — same pattern as discoverAuthStorage()
-	// in sdk.ts. The gateway never touches local SQLite.
+async function createBrokerCredentialSource(
+	brokerConfig: AuthBrokerClientConfig,
+): Promise<AuthGatewayCredentialSource> {
 	const client = createBrokerClient(brokerConfig);
 	const initialSnapshot = await fetchBrokerSnapshot(client);
 	const store = new RemoteAuthCredentialStore({ client, initialSnapshot });
-	// Refresh + usage both flow through the store's broker hooks automatically —
-	// `RemoteAuthCredentialStore.refreshOAuthCredential` and `.fetchUsageReports`.
-	// AuthStorage discovers them when no explicit option overrides them, so the
-	// gateway only needs to construct the store and pass it in.
 	const storage = new AuthStorage(store, {
 		sourceLabel: `broker ${brokerConfig.url}`,
 	});
 	await storage.reload();
+	return {
+		kind: "broker",
+		url: brokerConfig.url,
+		storage,
+		credentialCount: initialSnapshot.credentials.length,
+	};
+}
 
-	// Build the model resolver + catalog from pi-ai's bundled metadata, scoped
-	// to providers we hold credentials for. Format handlers ask `resolveModel`
-	// to translate a client-requested `model` field into a pi-ai `Model<Api>`
-	// before dispatch; `listModels` powers `/v1/models`.
-	const snapshot = storage.exportSnapshot();
-	const providersWithCreds = new Set<string>();
-	for (const entry of snapshot.credentials) providersWithCreds.add(entry.provider);
-	const modelById = new Map<string, Model<Api>>();
-	for (const provider of getBundledProviders()) {
-		if (!providersWithCreds.has(provider)) continue;
-		for (const model of getBundledModels(provider as GeneratedProvider)) {
-			// Always set the qualified key (no collision possible)
-			modelById.set(`${model.provider}/${model.id}`, model);
-			// Bare id as fallback for legacy clients (first-write-wins)
-			if (!modelById.has(model.id)) modelById.set(model.id, model);
+async function createLocalCredentialSource(): Promise<AuthGatewayCredentialSource> {
+	const dbPath = getAgentDbPath();
+	const storage = await AuthStorage.create(dbPath, {
+		configValueResolver: resolveConfigValue,
+		sourceLabel: `local ${dbPath}`,
+	});
+	await storage.reload();
+	return {
+		kind: "local",
+		dbPath,
+		storage,
+		credentialCount: storage.exportSnapshot().credentials.length,
+	};
+}
+
+async function resolveGatewayCredentialSource(
+	flags: AuthGatewayCommandArgs["flags"],
+): Promise<AuthGatewayCredentialSource> {
+	if (!flags.local) {
+		const brokerConfig = await resolveAuthBrokerConfig();
+		if (brokerConfig) return createBrokerCredentialSource(brokerConfig);
+	}
+	return createLocalCredentialSource();
+}
+
+interface GatewayModelIndex {
+	listModels: Model<Api>[];
+	resolveById: Map<string, Model<Api>>;
+}
+interface BuildGatewayModelIndexOptions {
+	includeAliases?: boolean;
+}
+
+function qualifiedModelId(model: Model<Api>): string {
+	return `${model.provider}/${model.id}`;
+}
+
+function modelIdEntries(model: Model<Api>): string[] {
+	return [qualifiedModelId(model), model.id];
+}
+
+function cloneAliasModel(alias: string, target: Model<Api>): Model<Api> {
+	return { ...target, id: alias };
+}
+function aliasShortId(alias: string): string | undefined {
+	const slashIndex = alias.indexOf("/");
+	if (slashIndex <= 0 || slashIndex === alias.length - 1) return undefined;
+	return alias.slice(slashIndex + 1);
+}
+
+function setAliasResolution(
+	resolveById: Map<string, Model<Api>>,
+	alias: string,
+	entry: string,
+	target: Model<Api>,
+): void {
+	const existing = resolveById.get(entry);
+	if (existing && existing !== target) {
+		throw new Error(
+			`auth-gateway model alias "${alias}" short id "${entry}" collides with existing model ${qualifiedModelId(existing)}`,
+		);
+	}
+	resolveById.set(entry, target);
+}
+
+function assertAliasCapabilities(
+	alias: string,
+	targetName: string,
+	aliasModel: Model<Api> | undefined,
+	target: Model<Api>,
+): void {
+	if (!aliasModel?.input) return;
+	const targetInputs = new Set(target.input ?? []);
+	const missingInputs = aliasModel.input.filter(input => !targetInputs.has(input));
+	if (missingInputs.length === 0) return;
+	throw new Error(
+		`auth-gateway model alias "${alias}" target "${targetName}" is missing input capabilities: ${missingInputs.join(", ")}`,
+	);
+}
+
+function loadAuthGatewayModelAliases(): Record<string, string> {
+	const result = ModelsConfigFile.relocate().tryLoad();
+	if (result.status === "error") throw result.error;
+	return result.value?.authGateway?.modelAliases ?? {};
+}
+
+function buildGatewayModelIndex(
+	source: AuthGatewayCredentialSource,
+	options: BuildGatewayModelIndexOptions = {},
+): GatewayModelIndex {
+	const storage = source.storage;
+	const registry =
+		source.kind === "broker"
+			? new ModelRegistry(storage, undefined, { ignoreUserConfig: true })
+			: new ModelRegistry(storage);
+	const allModelById = new Map<string, Model<Api>>();
+	for (const model of registry.getAll()) {
+		for (const entry of modelIdEntries(model)) {
+			if (!allModelById.has(entry)) allModelById.set(entry, model);
 		}
+	}
+	const models = source.kind === "broker" ? registry.getAll() : registry.getAvailable();
+	const resolveById = new Map<string, Model<Api>>();
+	const listModels: Model<Api>[] = [];
+	for (const model of models) {
+		if (source.kind === "broker" ? !storage.has(model.provider) : !storage.hasAuth(model.provider)) continue;
+		listModels.push(model);
+		for (const entry of modelIdEntries(model)) {
+			if (!resolveById.has(entry)) resolveById.set(entry, model);
+		}
+	}
+	if (options.includeAliases === false) return { listModels, resolveById };
+	for (const [alias, targetName] of Object.entries(loadAuthGatewayModelAliases())) {
+		const target = resolveById.get(targetName);
+		if (!target) {
+			throw new Error(`auth-gateway model alias "${alias}" target "${targetName}" is not available`);
+		}
+		assertAliasCapabilities(alias, targetName, allModelById.get(alias), target);
+		for (const entry of modelIdEntries(cloneAliasModel(alias, target))) {
+			setAliasResolution(resolveById, alias, entry, target);
+		}
+		const shortId = aliasShortId(alias);
+		if (shortId) setAliasResolution(resolveById, alias, shortId, target);
+		listModels.push(cloneAliasModel(alias, target));
+	}
+	return { listModels, resolveById };
+}
+
+function describeSource(source: AuthGatewayCredentialSource): string {
+	return source.kind === "broker" ? `broker ${source.url}` : `local ${source.dbPath}`;
+}
+
+async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
+	const bind = flags.bind ?? DEFAULT_AUTH_GATEWAY_BIND;
+	const gatewayToken = flags.noAuth ? null : await ensureToken();
+	const source = await resolveGatewayCredentialSource(flags);
+	const storage = source.storage;
+	const modelIndex = buildGatewayModelIndex(source);
+	if (modelIndex.resolveById.size === 0) {
+		storage.close();
+		throw new Error(
+			`No auth-gateway models available from ${describeSource(source)}. Add a provider API key or OAuth credential first.`,
+		);
 	}
 
 	const handle = startAuthGateway({
@@ -182,8 +315,8 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		bind,
 		bearerTokens: gatewayToken ? [gatewayToken] : [],
 		version: VERSION,
-		resolveModel: (id: string) => modelById.get(id),
-		listModels: () => modelById.values(),
+		resolveModel: (id: string) => modelIndex.resolveById.get(id),
+		listModels: () => modelIndex.listModels,
 	});
 	process.stdout.write(`auth-gateway listening on ${handle.url}\n`);
 	if (gatewayToken) {
@@ -191,7 +324,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	} else {
 		process.stdout.write(`auth: disabled (--no-auth) — any client can call this gateway\n`);
 	}
-	process.stdout.write(`upstream broker: ${brokerConfig.url}\n`);
+	process.stdout.write(`credential source: ${describeSource(source)}\n`);
 
 	const stopped = Promise.withResolvers<void>();
 	let shutdownStarted = false;
@@ -251,22 +384,28 @@ async function runToken(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 
 async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const token = await readToken();
-	const brokerConfig = await resolveAuthBrokerConfig();
 	const tokenFile = getTokenFilePath();
-	if (!brokerConfig) {
+	let source: AuthGatewayCredentialSource;
+	try {
+		source = await resolveGatewayCredentialSource(flags);
+	} catch (error) {
+		const brokerConfig = flags.local ? null : await resolveAuthBrokerConfig().catch(() => null);
+		const message = error instanceof Error ? error.message : String(error);
 		const status = {
 			ready: false,
-			reason: "not_configured",
+			reason: "credential_source_unavailable",
 			tokenFile,
 			tokenPresent: token !== null,
-			broker: null,
-			brokerConfigured: false,
+			broker: brokerConfig?.url ?? null,
+			brokerConfigured: brokerConfig !== null,
 			brokerAuthenticated: false,
+			source: flags.local ? "local" : brokerConfig ? "broker" : "unknown",
+			error: message,
 		};
 		if (flags.json) {
 			process.stdout.write(`${JSON.stringify(status)}\n`);
 		} else {
-			process.stdout.write(`${chalk.yellow("No broker configured.")} Set OMP_AUTH_BROKER_URL.\n`);
+			process.stdout.write(`${chalk.red("FAILED")} credential source unavailable: ${message}\n`);
 			process.stdout.write(
 				`token: ${status.tokenPresent ? chalk.green("present") : chalk.red("missing")} at ${status.tokenFile}\n`,
 			);
@@ -276,25 +415,26 @@ async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> 
 	}
 
 	try {
-		const snapshot = await fetchBrokerSnapshot(createBrokerClient(brokerConfig));
 		const tokenPresent = token !== null;
 		const status = {
 			ready: tokenPresent,
 			reason: tokenPresent ? null : "token_missing",
 			tokenFile,
 			tokenPresent,
-			broker: brokerConfig.url,
-			brokerConfigured: true,
-			brokerAuthenticated: true,
-			credentialCount: snapshot.credentials.length,
+			broker: source.kind === "broker" ? source.url : null,
+			brokerConfigured: source.kind === "broker",
+			brokerAuthenticated: source.kind === "broker",
+			source: source.kind,
+			credentialSource: describeSource(source),
+			credentialCount: source.credentialCount,
 		};
 		if (flags.json) {
 			process.stdout.write(`${JSON.stringify(status)}\n`);
 		} else {
-			const brokerLine = `upstream broker: ${brokerConfig.url} (${snapshot.credentials.length} credential${
-				snapshot.credentials.length === 1 ? "" : "s"
+			const sourceLine = `${describeSource(source)} (${source.credentialCount} credential${
+				source.credentialCount === 1 ? "" : "s"
 			})`;
-			process.stdout.write(`${tokenPresent ? chalk.green("ready") : chalk.yellow("not ready")} ${brokerLine}\n`);
+			process.stdout.write(`${tokenPresent ? chalk.green("ready") : chalk.yellow("not ready")} ${sourceLine}\n`);
 			process.stdout.write(
 				`token: ${tokenPresent ? chalk.green("present") : chalk.red("missing")} at ${status.tokenFile}\n`,
 			);
@@ -305,27 +445,8 @@ async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> 
 			}
 		}
 		if (!tokenPresent) process.exitCode = 1;
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		const status = {
-			ready: false,
-			reason: "broker_unavailable",
-			tokenFile,
-			tokenPresent: token !== null,
-			broker: brokerConfig.url,
-			brokerConfigured: true,
-			brokerAuthenticated: false,
-			error: message,
-		};
-		if (flags.json) {
-			process.stdout.write(`${JSON.stringify(status)}\n`);
-		} else {
-			process.stdout.write(`${chalk.red("FAILED")} upstream broker: ${brokerConfig.url}: ${message}\n`);
-			process.stdout.write(
-				`token: ${status.tokenPresent ? chalk.green("present") : chalk.red("missing")} at ${status.tokenFile}\n`,
-			);
-		}
-		process.exitCode = 1;
+	} finally {
+		source.storage.close();
 	}
 }
 
@@ -518,12 +639,56 @@ function formatCompletionStatus(completion: CredentialCompletionResult | undefin
 	return chalk.yellow(" [chat: skip]");
 }
 
+const SYNTHETIC_LOCAL_CREDENTIAL_ID = 0;
+
+async function appendResolvedLocalCredentialResults(
+	source: AuthGatewayCredentialSource,
+	results: CredentialHealthResult[],
+	completionProbe: CompletionProbe | undefined,
+): Promise<CredentialHealthResult[]> {
+	if (source.kind !== "local") return results;
+	const storage = source.storage;
+	const providerNames = new Set(
+		buildGatewayModelIndex(source, { includeAliases: false }).listModels.map(model => model.provider),
+	);
+	const extraResults: CredentialHealthResult[] = [];
+	for (const provider of [...providerNames].sort()) {
+		const origin = storage.getCredentialOrigin(provider);
+		if (
+			origin?.kind !== "runtime" &&
+			origin?.kind !== "config" &&
+			origin?.kind !== "env" &&
+			origin?.kind !== "fallback"
+		) {
+			continue;
+		}
+		const apiKey = await storage.getApiKey(provider);
+		const result: CredentialHealthResult = {
+			id: SYNTHETIC_LOCAL_CREDENTIAL_ID,
+			provider,
+			type: "api_key",
+			ok: null,
+			reason: `${origin.kind} credential is not stored; usage health is unavailable`,
+		};
+		if (completionProbe && apiKey) {
+			result.completion = await completionProbe({
+				provider: provider as Provider,
+				credentialId: SYNTHETIC_LOCAL_CREDENTIAL_ID,
+				credential: { type: "api_key", apiKey },
+				signal: AbortSignal.timeout(STRICT_PROBE_OVERALL_TIMEOUT_MS),
+			});
+		}
+		extraResults.push(result);
+	}
+	return [...extraResults, ...results];
+}
+
 /**
- * `ompx auth-gateway check` — probe each broker-supplied credential and print
+ * `ompx auth-gateway check` — probe each selected-source credential and print
  * per-credential auth health. Use this when the gateway is returning 401s and
- * you need to find which row in a multi-account pool is the bad one. The
- * aggregate `/v1/usage` endpoint silently drops failed credentials, so a
- * dedicated diagnostic is the only way to see which credentials failed.
+ * you need to find which local or broker row is bad. The aggregate `/v1/usage`
+ * endpoint silently drops failed credentials, so a dedicated diagnostic is the
+ * only way to see which credentials failed.
  *
  * Strict mode (`--strict`) additionally exercises each credential against a
  * cheap chat model from its provider's bundled catalog. This catches the case
@@ -531,28 +696,28 @@ function formatCompletionStatus(completion: CredentialCompletionResult | undefin
  * bearer (revoked OAuth scope, mislabeled provider row, etc).
  */
 async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
-	const brokerConfig = await resolveAuthBrokerConfig();
-	if (!brokerConfig) {
-		throw new Error(
-			`\`${APP_NAME} auth-gateway check\` requires OMP_AUTH_BROKER_URL (or \`auth.broker.url\`/\`auth.broker.token\` in config.yml). It probes the same credentials the gateway would serve.`,
-		);
-	}
-
-	const client = createBrokerClient(brokerConfig);
-	const initialSnapshot = await fetchBrokerSnapshot(client);
-	const store = new RemoteAuthCredentialStore({ client, initialSnapshot });
-	const storage = new AuthStorage(store, { sourceLabel: `broker ${brokerConfig.url}` });
+	const source = await resolveGatewayCredentialSource(flags);
+	const storage = source.storage;
 	try {
-		await storage.reload();
-		const results = await storage.checkCredentials(
-			flags.strict
-				? { completionProbe: createStrictCompletionProbe(), completionTimeoutMs: STRICT_PROBE_OVERALL_TIMEOUT_MS }
-				: undefined,
+		const completionProbe = flags.strict ? createStrictCompletionProbe() : undefined;
+		const storedResults = await storage.checkCredentials(
+			completionProbe ? { completionProbe, completionTimeoutMs: STRICT_PROBE_OVERALL_TIMEOUT_MS } : undefined,
 		);
+		const results = await appendResolvedLocalCredentialResults(source, storedResults, completionProbe);
 
 		if (flags.json) {
 			process.stdout.write(
-				`${JSON.stringify({ broker: brokerConfig.url, strict: flags.strict === true, credentials: results }, null, 2)}\n`,
+				`${JSON.stringify(
+					{
+						broker: source.kind === "broker" ? source.url : null,
+						source: source.kind,
+						credentialSource: describeSource(source),
+						strict: flags.strict === true,
+						credentials: results,
+					},
+					null,
+					2,
+				)}\n`,
 			);
 		} else {
 			const grouped = new Map<string, typeof results>();
@@ -562,7 +727,7 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 				grouped.set(row.provider, list);
 			}
 			const providers = [...grouped.keys()].sort();
-			process.stdout.write(`broker: ${brokerConfig.url}${flags.strict ? chalk.dim(" [strict]") : ""}\n`);
+			process.stdout.write(`${describeSource(source)}${flags.strict ? chalk.dim(" [strict]") : ""}\n`);
 			for (const provider of providers) {
 				const rows = grouped.get(provider) ?? [];
 				process.stdout.write(`\n${chalk.bold(provider)} (${rows.length})\n`);

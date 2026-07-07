@@ -485,6 +485,29 @@ describe("InteractiveMode orchestrator mode", () => {
 		);
 	});
 
+	it("rejects prompt-template gates as phase 3 completion evidence for coding-agent behavior", async () => {
+		const created = createHarness({
+			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
+			activeToolNames: ["read"],
+		});
+
+		await created.handleOrchestratorModeCommand();
+
+		const modeContext = session?.systemPrompt.join("\n") ?? "";
+		const phase3Start = modeContext.indexOf("## Phase 3 - Verification & Completion");
+		expect(phase3Start).toBeGreaterThan(-1);
+		const phase3 = modeContext.slice(phase3Start, phase3Start + 1400);
+
+		expect(phase3).toMatch(/prompt-template gates are NOT completion evidence/i);
+		expect(phase3).toMatch(
+			/Require a verification subagent[\s\S]{0,160}build\/install\/run installed `ompx`[\s\S]{0,160}changed-path scenario/i,
+		);
+		expect(phase3).not.toMatch(/prompt-template gates are completion evidence/i);
+		expect(phase3).not.toMatch(
+			/prompt-template gates (?:satisfy|replace|substitute for) (?:rung|entrypoint|completion) evidence/i,
+		);
+	});
+
 	it("ties orchestrator mode skill references to delegation review and verification claims", async () => {
 		const created = createHarness({
 			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],

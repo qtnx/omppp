@@ -3,27 +3,32 @@ import * as path from "node:path";
 import {
 	type AgentTool,
 	type AgentToolResult,
+	countTokens,
 	instrumentedCompleteSimple,
 	resolveTelemetry,
 } from "@oh-my-pi/pi-agent-core";
-import { type Api, Effort, type Model, type Tool } from "@oh-my-pi/pi-ai";
+import { type Api, Effort, type ImageContent, type Model, type TextContent } from "@oh-my-pi/pi-ai";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { prompt } from "@oh-my-pi/pi-utils";
+import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type } from "arktype";
-import { extractTextContent, extractToolCall, parseJsonPayload } from "../commit/utils";
+import { extractTextContent } from "../commit/utils";
 import { formatModelString, getModelMatchPreferences, resolveModelFromString } from "../config/model-resolver";
-import superReviewRespondToolDescription from "../prompts/system/super-review-respond-tool.md" with { type: "text" };
+import superReviewImageMaterialPrompt from "../prompts/system/super-review-image-material.md" with { type: "text" };
+import superReviewSnapcompactNote from "../prompts/system/super-review-snapcompact-note.md" with { type: "text" };
 import superReviewSystemPrompt from "../prompts/system/super-review-system.md" with { type: "text" };
 import superReviewUserPrompt from "../prompts/system/super-review-user.md" with { type: "text" };
 import superReviewDescription from "../prompts/tools/super-review.md" with { type: "text" };
 import type { ToolSession } from ".";
+import { resolveAuthGatewayBearer, routeToolOneTurnThroughAuthGateway } from "./one-turn-auth-gateway";
 import { formatPathRelativeToCwd, parseLineRanges } from "./path-utils";
 import { ToolError } from "./tool-errors";
 
-const STRUCTURED_TOOL_NAME = "respond";
 const SUPER_REVIEW_MODEL = "tnx/super";
 const MAX_FILE_BYTES = 2_000_000;
 const MAX_TOTAL_BYTES = 4_000_000;
+const MIN_SNAPCOMPACT_TOKENS = 3000;
+const SNAPCOMPACT_SAVINGS_MARGIN = 0.9;
 
 const fileAttachmentSchema = type({
 	path: type("string>0").describe(
@@ -40,10 +45,17 @@ const superReviewSchema = type({
 	question: type("string>0").describe("specific review question or decision to critique"),
 	"content?": type("string").describe("inline plan, action, QA plan, or context to review"),
 	"files?": fileAttachmentSchema.array().describe("explicit file attachments to read into the review prompt"),
-	"output_schema?": type("Record<string,unknown>").describe("optional JSON Schema for structured review output"),
 });
 
-export type SuperReviewParams = typeof superReviewSchema.infer;
+const legacySuperReviewSchema = type({
+	review_type: type("'plan'|'critical_action'|'qa_plan'|'architecture'|'security'|'other'"),
+	question: "string>0",
+	"content?": "string",
+	"files?": fileAttachmentSchema.array(),
+	"output_schema?": "Record<string,unknown>",
+});
+
+export type SuperReviewParams = typeof legacySuperReviewSchema.infer;
 type SuperReviewFileAttachment = NonNullable<SuperReviewParams["files"]>[number];
 
 export interface SuperReviewAttachmentDetails {
@@ -71,7 +83,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function parseArgs(rawArgs: unknown): SuperReviewParams {
-	const parsed = superReviewSchema(rawArgs);
+	const parsed = legacySuperReviewSchema(rawArgs);
 	if (parsed instanceof type.errors) {
 		throw new ToolError(`super_review received invalid arguments: ${parsed.summary}`);
 	}
@@ -211,28 +223,63 @@ function renderReviewPrompt(params: SuperReviewParams, attachments: PreparedAtta
 	});
 }
 
+function renderReviewImageMaterial(params: SuperReviewParams, attachments: PreparedAttachment[]): string {
+	return prompt
+		.render(superReviewImageMaterialPrompt, {
+			content: params.content,
+			has_content: Boolean(params.content),
+			has_attachments: attachments.length > 0,
+			attachments,
+		})
+		.trim();
+}
+
+function canUseSnapcompact(model: Model<Api>): boolean {
+	return model.input.includes("image");
+}
+
+function attachmentPromptMetadata(attachments: PreparedAttachment[]): PreparedAttachment[] {
+	return attachments.map(attachment => ({ ...attachment, content: "" }));
+}
+
+function passesSnapcompactGate(text: string, model: Model<Api>, shape: snapcompact.Shape): boolean {
+	const textTokens = countTokens(text);
+	if (textTokens < MIN_SNAPCOMPACT_TOKENS) return false;
+	const frameCount = snapcompact.frames(text, { shape });
+	if (frameCount <= 0) return false;
+	if (frameCount > snapcompact.providerImageBudget(model.provider)) return false;
+	return frameCount * shape.frameTokenEstimate <= textTokens * SNAPCOMPACT_SAVINGS_MARGIN;
+}
+
+async function renderReviewContent(
+	params: SuperReviewParams,
+	attachments: PreparedAttachment[],
+	model: Model<Api>,
+): Promise<(TextContent | ImageContent)[]> {
+	const textPrompt = renderReviewPrompt(params, attachments);
+	if (!canUseSnapcompact(model)) return [{ type: "text", text: textPrompt }];
+	const imageMaterial = renderReviewImageMaterial(params, attachments);
+	const shape = snapcompact.resolveShape(model);
+	if (!passesSnapcompactGate(imageMaterial, model, shape)) return [{ type: "text", text: textPrompt }];
+	const frames = await snapcompact.renderMany(imageMaterial, {
+		shape,
+		maxFrames: snapcompact.providerImageBudget(model.provider),
+	});
+	if (frames.length === 0) return [{ type: "text", text: textPrompt }];
+	const metadataPrompt = renderReviewPrompt({ ...params, content: undefined }, attachmentPromptMetadata(attachments));
+	return [{ type: "text", text: `${prompt.render(superReviewSnapcompactNote)}\n\n${metadataPrompt}` }, ...frames];
+}
+
 async function runSuperReview(
 	params: SuperReviewParams,
 	session: ToolSession,
 	signal?: AbortSignal,
 ): Promise<{ text: string; details: SuperReviewDetails }> {
-	const model = resolveSuperModel(session);
+	const model = routeToolOneTurnThroughAuthGateway(resolveSuperModel(session));
 	const registry = session.modelRegistry;
-	const apiKey = await registry?.getApiKey(model);
-	if (!registry || !apiKey) throw new ToolError(`super_review has no API key for ${formatModelString(model)}.`);
+	if (!registry) throw new ToolError("super_review requires a model registry.");
 
 	const attachments = await prepareAttachments(session, params.files);
-	const schema = params.output_schema;
-	const tools: Tool[] | undefined = schema
-		? [
-				{
-					name: STRUCTURED_TOOL_NAME,
-					description: prompt.render(superReviewRespondToolDescription),
-					parameters: schema,
-					strict: false,
-				},
-			]
-		: undefined;
 	const telemetry = resolveTelemetry(session.getTelemetry?.(), session.getSessionId?.() ?? undefined);
 	const response = await instrumentedCompleteSimple(
 		model,
@@ -241,17 +288,17 @@ async function runSuperReview(
 			messages: [
 				{
 					role: "user",
-					content: [{ type: "text", text: renderReviewPrompt(params, attachments) }],
+					content: await renderReviewContent(params, attachments, model),
 					timestamp: Date.now(),
 				},
 			],
-			tools,
+			tools: undefined,
 		},
 		{
-			apiKey: registry.resolver(model, session.getSessionId?.() ?? undefined),
+			apiKey: resolveAuthGatewayBearer(),
 			signal,
 			reasoning: reasoningForModel(model),
-			toolChoice: schema ? { type: "tool", name: STRUCTURED_TOOL_NAME } : undefined,
+			toolChoice: undefined,
 		},
 		{ telemetry, oneshotKind: "super_review" },
 	);
@@ -259,32 +306,14 @@ async function runSuperReview(
 	if (response.stopReason === "error") throw new ToolError(response.errorMessage ?? "super_review request failed.");
 	if (response.stopReason === "aborted") throw new ToolError("super_review request aborted.");
 
-	let text: string;
-	if (schema) {
-		const call = extractToolCall(response, STRUCTURED_TOOL_NAME);
-		let value: unknown;
-		if (call) {
-			value = call.arguments;
-		} else {
-			const rawText = extractTextContent(response);
-			if (!rawText) throw new ToolError("super_review returned no structured response.");
-			try {
-				value = parseJsonPayload(rawText);
-			} catch {
-				throw new ToolError("super_review did not return a structured response matching the schema.");
-			}
-		}
-		text = JSON.stringify(value);
-	} else {
-		text = extractTextContent(response);
-		if (!text) throw new ToolError("super_review returned no text output.");
-	}
+	const text = extractTextContent(response);
+	if (!text) throw new ToolError("super_review returned no text output.");
 	return {
 		text,
 		details: {
 			model: formatModelString(model),
 			reviewType: params.review_type,
-			structured: Boolean(schema),
+			structured: false,
 			attachments: attachments.map(({ content: _content, ...attachment }) => attachment),
 		},
 	};

@@ -4,15 +4,15 @@ Run one expensive high-intelligence review call on `tnx/super`.
 Use for plan review, critical-action review, QA-plan review, architecture/security checks, and decisions where one stronger model pass is worth the cost.
 Do NOT use for cheap summarization, routine extraction, repo navigation, edits, shell work, or multi-turn delegation.
 This is one model request only: no subagent, no tools, no history, no loop.
+The result is always plain text. NEVER request JSON, schemas, or structured output.
 Attach files only when the exact file content must be reviewed.
 </instruction>
 
 <input>
 - `review_type`: `plan` | `critical_action` | `qa_plan` | `architecture` | `security` | `other`.
-- `question`: the exact decision or artifact to critique.
+- `question`: exact decision/artifact to critique.
 - `content`: inline plan/action/QA context.
 - `files`: explicit workspace file attachments `{ path, label?, range? }`.
-- `output_schema`: optional JSON Schema for structured output.
 </input>
 
 <critical>

@@ -459,6 +459,7 @@ export const PROVIDER_IMAGE_BUDGETS: Record<string, number> = {
 	"amazon-bedrock": 90,
 	openai: 200,
 	"openai-codex": 200,
+	tnx: 200,
 	google: 200,
 	"google-vertex": 200,
 	"google-gemini-cli": 200,

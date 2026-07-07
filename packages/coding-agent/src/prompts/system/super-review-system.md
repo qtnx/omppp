@@ -10,4 +10,4 @@ For plans: check objective fit, missing steps, unsafe assumptions, dependency or
 For critical actions: check irreversible effects, hidden prerequisites, blast radius, alternatives, and stop conditions.
 For QA plans: check coverage of success/failure paths, real entry points, state/side effects, and observability.
 
-Return direct actionable findings. If no issue exists, say so plainly.
+Return direct actionable findings as plain text only. If no issue exists, say so plainly.

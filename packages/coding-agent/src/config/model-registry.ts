@@ -52,6 +52,7 @@ const TNX_DEFAULT_BASE_URL = "http://codemc:20128/v1";
 const TNX_DEFAULT_MODEL_ID = "gpt-5.5";
 const TNX_SMOL_MODEL_ID = "smol";
 const TNX_DESIGNER_MODEL_ID = "designer";
+const TNX_SUPER_MODEL_ID = "super";
 const TNX_DEFAULT_API_KEY = "sk-daf152fc8f22af06-lcnxi7-64c35215";
 
 import type { ApiKeyResolver, FetchImpl } from "@oh-my-pi/pi-ai";
@@ -736,6 +737,11 @@ function getDisabledProviderIdsFromSettings(): Set<string> {
 	}
 }
 
+interface ModelRegistryOptions {
+	fetch?: FetchImpl;
+	ignoreUserConfig?: boolean;
+}
+
 /**
  * Model registry - loads and manages models, resolves API keys via AuthStorage.
  */
@@ -767,6 +773,7 @@ export class ModelRegistry {
 	// Keyed by provider name; use the same SQLite cache path as builtins.
 	#runtimeModelManagers: Map<string, { options: ModelManagerOptions<Api>; sourceId: string }> = new Map();
 	#fetch: FetchImpl;
+	#ignoreUserConfig: boolean;
 
 	#resolveCommandBackedApiKey(provider: string): CommandApiKeyResolution {
 		const keyConfig = this.#customProviderApiKeys.get(provider);
@@ -802,7 +809,7 @@ export class ModelRegistry {
 	constructor(
 		readonly authStorage: AuthStorage,
 		modelsPath?: string,
-		options?: { fetch?: FetchImpl },
+		options?: ModelRegistryOptions,
 	) {
 		this.#fetch =
 			options?.fetch ??
@@ -811,6 +818,7 @@ export class ModelRegistry {
 				: wrapFetchForExtraCa(fetch));
 		this.#modelsConfigFile = ModelsConfigFile.relocate(modelsPath);
 		this.#cacheDbPath = modelsPath ? path.join(path.dirname(modelsPath), "models.db") : undefined;
+		this.#ignoreUserConfig = options?.ignoreUserConfig ?? false;
 		// Set up fallback resolver for custom provider API keys
 		this.authStorage.setFallbackResolver(provider => {
 			const keyConfig = this.#customProviderApiKeys.get(provider);
@@ -959,6 +967,9 @@ export class ModelRegistry {
 
 	#loadModels() {
 		// Load custom models from models.json first (to know which providers to override)
+		const customModelResult: CustomModelsResult = this.#ignoreUserConfig
+			? { found: false }
+			: this.#loadCustomModels();
 		const {
 			models: customModels = [],
 			overrides = new Map(),
@@ -967,7 +978,7 @@ export class ModelRegistry {
 			discoverableProviders = [],
 			configuredProviders = new Set(),
 			error: configError,
-		} = this.#loadCustomModels();
+		} = customModelResult;
 		this.#configError = configError;
 		this.#keylessProviders = keylessProviders;
 		this.#discoverableProviders = discoverableProviders;
@@ -1068,6 +1079,31 @@ export class ModelRegistry {
 				cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 				contextWindow: 1000000,
 				maxTokens: 128000,
+				thinking: {
+					mode: "anthropic-adaptive",
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+					effortMap: {
+						[Effort.Minimal]: Effort.Low,
+						[Effort.Low]: Effort.Medium,
+						[Effort.Medium]: Effort.High,
+						[Effort.High]: Effort.XHigh,
+						[Effort.XHigh]: Effort.Max,
+						[Effort.Max]: Effort.Max,
+					},
+					supportsDisplay: true,
+				},
+			}),
+			buildModel({
+				id: TNX_SUPER_MODEL_ID,
+				name: "super",
+				provider: "tnx",
+				api: "openai-completions",
+				baseUrl: tnxBaseUrl,
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+				contextWindow: 1_000_000,
+				maxTokens: 128_000,
 				thinking: {
 					mode: "anthropic-adaptive",
 					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],

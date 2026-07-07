@@ -176,6 +176,17 @@ function toOptionalString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+async function resolveExplicitRepoInput(input: string): Promise<{ resolved: string; repoRoot: string } | null> {
+	const resolved = path.resolve(expandTilde(input));
+	const realResolved = await fs.realpath(resolved).catch(() => resolved);
+	const repository = await git.repo.resolve(realResolved).catch(() => null);
+	if (!repository) return null;
+	const realRepoRoot = await fs.realpath(repository.repoRoot).catch(() => repository.repoRoot);
+	if (path.resolve(realRepoRoot) !== path.resolve(realResolved)) return null;
+	const repoRoot = (await git.repo.primaryRoot(realResolved).catch(() => null)) ?? repository.repoRoot;
+	return { resolved: realResolved, repoRoot };
+}
+
 export function normalizePersistedWorkspaceRoots(value: unknown): PersistedWorkspaceRoot[] {
 	if (!Array.isArray(value)) return [];
 	const roots: PersistedWorkspaceRoot[] = [];
@@ -248,9 +259,9 @@ async function createRepoWorktree(
 	primary: boolean,
 	notices: string[],
 ): Promise<WorkspaceRoot | null> {
-	const resolved = path.resolve(expandTilde(input));
-	const repoRoot =
-		(await git.repo.primaryRoot(resolved).catch(() => null)) ?? (await git.repo.root(resolved).catch(() => null));
+	const explicitRepo = await resolveExplicitRepoInput(input);
+	const resolved = explicitRepo?.resolved ?? path.resolve(expandTilde(input));
+	const repoRoot = explicitRepo?.repoRoot ?? null;
 	if (!repoRoot) {
 		notices.push(`--${tag}: ${resolved} is not a git repository; skipping.`);
 		return null;
@@ -296,8 +307,9 @@ async function tagRepoInPlace(
 	primary: boolean,
 	notices: string[],
 ): Promise<WorkspaceRoot | null> {
-	const resolved = path.resolve(expandTilde(input));
-	const repoRoot = await git.repo.root(resolved).catch(() => null);
+	const explicitRepo = await resolveExplicitRepoInput(input);
+	const resolved = explicitRepo?.resolved ?? path.resolve(expandTilde(input));
+	const repoRoot = explicitRepo?.repoRoot ?? null;
 	if (!repoRoot) {
 		notices.push(`--${tag}: ${resolved} is not a git repository; skipping.`);
 		return null;

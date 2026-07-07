@@ -1,0 +1,1 @@
+Large review material is attached as snapcompact image frames. Read the frames as text before reviewing; each packed section carries its own inline-content or attachment header. The review question, type, and attachment metadata remain in text below.

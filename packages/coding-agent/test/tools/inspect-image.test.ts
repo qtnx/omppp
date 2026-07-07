@@ -1,8 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AuthStorage, type completeSimple, type ImageContent, type Model } from "@oh-my-pi/pi-ai";
+import * as core from "@oh-my-pi/pi-agent-core";
+import {
+	type Api,
+	type AssistantMessage,
+	AuthStorage,
+	type Context,
+	type completeSimple,
+	type ImageContent,
+	type Model,
+	type SimpleStreamOptions,
+} from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -45,6 +55,46 @@ interface CreateSessionOptions {
 	imageAttachments?: { label: string; uri: string; image: ImageContent }[];
 }
 
+type InstrumentedCall = [
+	model: Model<Api>,
+	context: Context,
+	options: SimpleStreamOptions,
+	span: { oneshotKind?: string; completeImpl?: unknown },
+];
+
+interface InstrumentedSpy {
+	mock: {
+		calls: unknown[][];
+	};
+}
+
+function instrumentedCallAt(spy: InstrumentedSpy, index: number): InstrumentedCall {
+	const rawCall = spy.mock.calls[index];
+	if (!rawCall) throw new Error(`missing instrumentedCompleteSimple call ${index}`);
+	return rawCall as InstrumentedCall;
+}
+
+async function resolveRequestApiKey(options: SimpleStreamOptions): Promise<string | undefined> {
+	const resolver = options.apiKey;
+	if (typeof resolver !== "function")
+		throw new Error("expected instrumentedCompleteSimple apiKey option to be a resolver");
+	return await resolver({ lastChance: false, error: undefined });
+}
+
+async function withGatewayToken<T>(token: string, run: () => Promise<T>): Promise<T> {
+	const previous = Bun.env.OMP_AUTH_GATEWAY_TOKEN;
+	Bun.env.OMP_AUTH_GATEWAY_TOKEN = token;
+	try {
+		return await run();
+	} finally {
+		if (previous === undefined) {
+			delete Bun.env.OMP_AUTH_GATEWAY_TOKEN;
+		} else {
+			Bun.env.OMP_AUTH_GATEWAY_TOKEN = previous;
+		}
+	}
+}
+
 interface CompleteSimpleStub {
 	calls: unknown[][];
 	fn: typeof completeSimple;
@@ -53,7 +103,7 @@ interface CompleteSimpleStub {
 function createSession(
 	cwd: string,
 	model: Model<"openai-responses">,
-	apiKey: string | undefined = "test-key",
+	apiKey: string | null | undefined = "test-key",
 	settings = Settings.isolated(),
 	options: CreateSessionOptions = {},
 ): ToolSession {
@@ -83,6 +133,26 @@ function createSession(
 		session.getImageAttachments = () => options.imageAttachments ?? [];
 	}
 	return session;
+}
+
+function assistantWithText(text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		api: visionModel.api,
+		provider: visionModel.provider,
+		model: visionModel.id,
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+		content: [{ type: "text", text }],
+	};
 }
 
 function createCompleteSimpleSuccessStub(text: string): CompleteSimpleStub {
@@ -129,6 +199,7 @@ describe("InspectImageTool", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		removeSyncWithRetries(testDir);
 	});
 
@@ -154,6 +225,54 @@ describe("InspectImageTool", () => {
 		const contentParts = (Array.isArray(content) ? content : []) as Array<{ type: string; text?: string }>;
 		expect(contentParts[0]?.type).toBe("image");
 		expect(contentParts[1]).toEqual({ type: "text", text: "Extract visible UI labels." });
+	});
+
+	it("routes the vision one-turn call through the auth gateway model and bearer", async () => {
+		await withGatewayToken("vision-gateway-token", async () => {
+			const imagePath = path.join(testDir, "gateway-screen.png");
+			fs.writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+			const completeSpy = vi
+				.spyOn(core, "instrumentedCompleteSimple")
+				.mockResolvedValue(assistantWithText("Gateway image inspected."));
+			const tool = new InspectImageTool(createSession(testDir, visionModel, "local-upstream-key"));
+
+			const result = await tool.execute("call-gateway", {
+				path: imagePath,
+				question: "What text is visible?",
+			});
+
+			expect(result.content).toEqual([{ type: "text", text: "Gateway image inspected." }]);
+			expect(completeSpy).toHaveBeenCalledTimes(1);
+			const [model, , options, span] = instrumentedCallAt(completeSpy, 0);
+			expect(`${model.provider}/${model.id}`).toBe("openai/gpt-4o");
+			expect(model.baseUrl).toBe("http://codemc:4000/v1");
+			expect(await resolveRequestApiKey(options)).toBe("vision-gateway-token");
+			expect(span.oneshotKind).toBe("inspect_image");
+		});
+	});
+
+	it("does not require a local upstream key before calling the inspect_image gateway model", async () => {
+		await withGatewayToken("vision-gateway-token-without-upstream", async () => {
+			const imagePath = path.join(testDir, "gateway-no-upstream-screen.png");
+			fs.writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+			const completeSpy = vi
+				.spyOn(core, "instrumentedCompleteSimple")
+				.mockResolvedValue(assistantWithText("Gateway image inspected without upstream key."));
+			const tool = new InspectImageTool(createSession(testDir, visionModel, null));
+
+			const result = await tool.execute("call-gateway-no-upstream", {
+				path: imagePath,
+				question: "Can inspect_image run with only the OMP gateway token?",
+			});
+
+			expect(result.content).toEqual([{ type: "text", text: "Gateway image inspected without upstream key." }]);
+			expect(completeSpy).toHaveBeenCalledTimes(1);
+			const [model, , options, span] = instrumentedCallAt(completeSpy, 0);
+			expect(`${model.provider}/${model.id}`).toBe("openai/gpt-4o");
+			expect(model.baseUrl).toBe("http://codemc:4000/v1");
+			expect(await resolveRequestApiKey(options)).toBe("vision-gateway-token-without-upstream");
+			expect(span.oneshotKind).toBe("inspect_image");
+		});
 	});
 
 	it("resolves pasted image labels from current attachments without using cwd", async () => {
@@ -385,19 +504,6 @@ describe("InspectImageTool", () => {
 
 		await expect(tool.execute("call-2", { path: imagePath, question: "What is visible?" })).rejects.toThrow(
 			/does not support image input/i,
-		);
-		expect(stub.calls).toHaveLength(0);
-	});
-
-	it("fails with actionable error when API key is missing", async () => {
-		const imagePath = path.join(testDir, "screen.png");
-		fs.writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
-
-		const stub = createCompleteSimpleForbiddenStub();
-		const tool = new InspectImageTool(createSession(testDir, visionModel, ""), stub.fn);
-
-		await expect(tool.execute("call-3", { path: imagePath, question: "What is visible?" })).rejects.toThrow(
-			/No API key available/i,
 		);
 		expect(stub.calls).toHaveLength(0);
 	});

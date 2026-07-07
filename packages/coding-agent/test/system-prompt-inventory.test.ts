@@ -153,6 +153,14 @@ describe("system prompt tool inventory", () => {
 		return text.slice(inventoryStart, inventoryEnd);
 	}
 
+	function executionHarnessFrom(text: string): string {
+		const harnessStart = text.indexOf("EXECUTION HARNESS");
+		expect(harnessStart).toBeGreaterThan(-1);
+		const executionStart = text.indexOf("EXECUTION\n=========", harnessStart);
+		expect(executionStart).toBeGreaterThan(harnessStart);
+		return text.slice(harnessStart, executionStart);
+	}
+
 	it("renders a compact name list only when native tools are active and descriptors stay in schemas", async () => {
 		const text = await render({ nativeTools: true, inlineToolDescriptors: false });
 		expect(text).toContain("- Read: `read`");
@@ -531,6 +539,40 @@ describe("system prompt tool inventory", () => {
 		expect(harness).toMatch(/Anti-theater rules[\s\S]{0,240}Boot is not verification/i);
 		expect(harness).toMatch(/Missing harness[\s\S]{0,1000}VERIFIED to rung N/i);
 		expect(harness).toMatch(/Evidence format[\s\S]{0,240}RUNG 3\+4 — POST \/users/i);
+	});
+
+	it("classifies coding-agent prompt configuration as behavioral and requires installed ompx evidence", async () => {
+		const text = await renderOrchestratorPrompt();
+		const harness = executionHarnessFrom(text);
+
+		expect(text).toMatch(
+			/Executable configuration exception:[\s\S]{0,260}packages\/coding-agent\/src[\s\S]{0,260}(?:system\/agent prompts|tool definitions|model routing|orchestrator\/duo\/advisor|workers|TUI)[\s\S]{0,80}YES/i,
+		);
+		expect(harness).toMatch(
+			/Prompt\/tool\/agent\/routing\/orchestrator\/TUI changes under `packages\/coding-agent\/src` require this installed-entrypoint evidence/i,
+		);
+	});
+
+	it("requires production-equivalent installed ompx for CLI and agent rung 3 evidence", async () => {
+		const harness = executionHarnessFrom(await renderOrchestratorPrompt());
+
+		expect(harness).toMatch(
+			/Recipe — CLI \(rung 3\)[\s\S]{0,360}PRODUCTION-EQUIVALENT entrypoint[\s\S]{0,180}clean shell outside the repo[\s\S]{0,180}build\/package[\s\S]{0,180}install into a clean prefix[\s\S]{0,180}installed `ompx`\/published bin/i,
+		);
+		expect(harness).toMatch(
+			/Dev-tree invocations[\s\S]{0,220}`node dist\/cli\.js`[\s\S]{0,160}`tsx src`[\s\S]{0,160}workspace links[\s\S]{0,160}`bun link`[\s\S]{0,160}below rung 3/i,
+		);
+		expect(harness).toMatch(/`--help`\/`--version`[\s\S]{0,140}smoke only[\s\S]{0,140}not verification/i);
+		expect(harness).toMatch(
+			/Recipe — TUI \/ interactive agent \(rung 3\)[\s\S]{0,260}installed `ompx`[\s\S]{0,260}changed path/i,
+		);
+	});
+
+	it("requires changed-path evidence that is revert-sensitive, not adjacent smoke output", async () => {
+		const harness = executionHarnessFrom(await renderOrchestratorPrompt());
+
+		expect(harness).toMatch(/BANNED:[\s\S]{0,220}changed path[\s\S]{0,220}adjacent output/i);
+		expect(harness).toMatch(/revert-sensitive:[\s\S]{0,180}reverting the diff[\s\S]{0,180}asserted output\/state/i);
 	});
 
 	it("keeps browser QA wording gated to task-capable prompts", async () => {

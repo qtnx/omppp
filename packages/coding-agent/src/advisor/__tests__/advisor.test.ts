@@ -76,7 +76,21 @@ describe("advisor", () => {
 		it("documents the consultation and done-review protocols", () => {
 			expect(advisorSystemPrompt).toContain("Consultation request");
 			expect(advisorSystemPrompt).toContain("done_verdict");
+			expect(advisorSystemPrompt).toContain(
+				"NEVER call `done_verdict` for ordinary consultations. DONE-REVIEW REQUEST consultations are the exception",
+			);
 			expect(advisorSystemPrompt).toContain("done-review");
+		});
+
+		it("reminds the advisor to check completion evidence before done-review", () => {
+			expect(advisorSystemPrompt).toContain(
+				"When the agent starts finalizing or drafting a completion response before a done-review request",
+			);
+			expect(advisorSystemPrompt).toContain("run the same evidence check early");
+			expect(advisorSystemPrompt).toContain(
+				"Call `advise` once with the exact gap and the shortest command/verdict needed to close it",
+			);
+			expect(advisorSystemPrompt).toContain("Agent on track with evidence? Stay silent.");
 		});
 
 		it("ships the done-review request template", () => {

@@ -1047,6 +1047,7 @@ describe("archive helpers", () => {
 		expect(snapcompact.providerImageBudget(undefined)).toBe(snapcompact.DEFAULT_PROVIDER_IMAGE_BUDGET);
 		expect(snapcompact.providerImageBudget("some-new-router")).toBe(snapcompact.DEFAULT_PROVIDER_IMAGE_BUDGET);
 		expect(snapcompact.providerImageBudget("openai-codex")).toBe(200);
+		expect(snapcompact.providerImageBudget("tnx")).toBe(200);
 		// The default frame budget must stay under the Anthropic image wire cap:
 		// compaction no longer clamps the archive per provider, so a default above
 		// the cap would silently drop frames or error on large-window Claude.

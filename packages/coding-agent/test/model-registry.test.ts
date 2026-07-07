@@ -1533,6 +1533,18 @@ describe("ModelRegistry", () => {
 			expect(tnxDesigner?.name).toBe("designer");
 			expect(tnxDesigner?.thinking).toEqual(anthropicOpus?.thinking);
 
+			const tnxSuper = availableModels.find(model => model.provider === "tnx" && model.id === "super");
+			expect(tnxSuper).toMatchObject({
+				provider: "tnx",
+				id: "super",
+				api: "openai-completions",
+				baseUrl: "http://codemc:20128/v1",
+				reasoning: true,
+			});
+			expect(tnxSuper?.input).toContain("image");
+			expect(tnxSuper?.contextWindow).toBeGreaterThanOrEqual(1_000_000);
+			expect(tnxSuper?.maxTokens).toBeGreaterThanOrEqual(128_000);
+
 			const settings = Settings.isolated();
 			const resolvedDesignerRole = resolveModelRoleValue("pi/designer", availableModels, { settings });
 			expect(resolvedDesignerRole.model?.provider).toBe("tnx");
