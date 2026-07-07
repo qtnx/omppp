@@ -20,6 +20,11 @@ runs:
              echo "System deps already present (preloaded runner image); skipping apt."
              exit 0
            fi
+           # GitHub-hosted runners sometimes expose broken packages.microsoft.com
+           # apt sources; these deps all come from Ubuntu repos, so drop them there only.
+           if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+             sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
+           fi
            sudo apt-get update
            sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep imagemagick
            sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
