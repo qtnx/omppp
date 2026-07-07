@@ -3055,6 +3055,11 @@ export class AgentSession {
 		}
 	}
 
+	#availableModelsForAdvisorRuntime(): Model[] {
+		const getAvailable = this.#modelRegistry.getAvailable;
+		return typeof getAvailable === "function" ? getAvailable.call(this.#modelRegistry) : [];
+	}
+
 	#resolveAdvisorRuntimeDescriptors(emitWarnings: boolean): AdvisorRuntimeDescriptor[] {
 		const legacy = !this.#advisorConfigs?.length;
 		const roster: AdvisorConfig[] = legacy ? [{ name: "default" }] : this.#advisorConfigs!;
@@ -3094,7 +3099,8 @@ export class AgentSession {
 					continue;
 				}
 			} else {
-				const sel = resolveAdvisorRoleSelection(this.settings, this.#modelRegistry.getAvailable());
+				const availableModels = this.#availableModelsForAdvisorRuntime();
+				const sel = resolveAdvisorRoleSelection(this.settings, availableModels);
 				if (!sel) {
 					if (emitWarnings) {
 						logger.debug("advisor enabled but no model assigned to the 'advisor' role; advisor inactive", {
@@ -3197,7 +3203,7 @@ export class AgentSession {
 		const descriptors = this.#resolveEffectiveAdvisorRuntimeDescriptors(true);
 
 		const fallbackSetting = this.settings.get("advisor.fallbackModel");
-		const fallbackSelection = resolveModelRoleValue(fallbackSetting, this.#modelRegistry.getAvailable(), {
+		const fallbackSelection = resolveModelRoleValue(fallbackSetting, this.#availableModelsForAdvisorRuntime(), {
 			settings: this.settings,
 			modelRegistry: this.#modelRegistry,
 		});

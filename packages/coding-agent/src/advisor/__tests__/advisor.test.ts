@@ -2026,12 +2026,12 @@ describe("advisor", () => {
 	});
 
 	describe("advisor default tools", () => {
-		it("defaults to read/grep/glob, a subset of the full grantable tool pool", () => {
-			expect([...ADVISOR_DEFAULT_TOOL_NAMES]).toEqual(["read", "grep", "glob"]);
+		it("defaults to read/grep/glob/super_review, all present in the built-in grantable tool pool", () => {
+			expect([...ADVISOR_DEFAULT_TOOL_NAMES]).toEqual(["read", "grep", "glob", "super_review"]);
 			// The advisor is a full agent now: every built tool is grantable (no hard
 			// read-only restriction), including mutating ones like edit/bash/write.
 			const builtin = new Set<string>(BUILTIN_TOOL_NAMES);
-			for (const name of ["read", "grep", "glob", "edit", "bash", "write"]) {
+			for (const name of ["read", "grep", "glob", "super_review", "edit", "bash", "write"]) {
 				expect(builtin.has(name)).toBe(true);
 			}
 			for (const name of ADVISOR_DEFAULT_TOOL_NAMES) {
@@ -2275,7 +2275,7 @@ describe("advisor", () => {
 			expect(text).toContain("Save & apply");
 			// Right preview reflects the highlighted (first) advisor.
 			expect(text).toContain("x-ai/grok-code-fast:high");
-			expect(text).toContain("read, grep, glob (default)");
+			expect(text).toContain("read, grep, glob, super_review (default)");
 		});
 
 		it("moves the preview with keyboard selection and preserves an explicit tool set", async () => {

@@ -98,6 +98,8 @@ describe("AgentSession goal/orchestrator coexistence", () => {
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
 			"contextPromotion.enabled": false,
+			"advisor.consult": false,
+			"advisor.enabled": false,
 			"duo.mode": "off",
 			"goal.enabled": true,
 			"todo.enabled": false,

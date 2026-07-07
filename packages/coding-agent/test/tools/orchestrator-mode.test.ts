@@ -81,7 +81,12 @@ type AgentSessionHarness = {
 function createAgentSessionHarness(initialToolNames: readonly string[]): AgentSessionHarness {
 	const model = getBundledModel("openai", "gpt-4o-mini");
 	if (!model) throw new Error("Expected bundled OpenAI test model to exist");
-	const settings = Settings.isolated({ "compaction.enabled": false, "duo.mode": "off", "goal.enabled": true });
+	const settings = Settings.isolated({
+		"advisor.enabled": false,
+		"compaction.enabled": false,
+		"duo.mode": "off",
+		"goal.enabled": true,
+	});
 	const sessionManager = SessionManager.inMemory();
 	const registryToolNames = [...new Set([...ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES, "goal", ...initialToolNames])];
 	const toolRegistry = new Map(registryToolNames.map(name => [name, makeTool(name)] as const));
@@ -123,6 +128,10 @@ function createAgentSessionHarness(initialToolNames: readonly string[]): AgentSe
 }
 
 describe("OrchestratorModeTool", () => {
+	it("includes super_review in the orchestrator active tool allowlist", () => {
+		expect(ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES).toContain("super_review");
+	});
+
 	it("enters orchestrator mode through the session switch seam", async () => {
 		const states: Array<OrchestratorModeState | undefined> = [];
 		const session = createSession({
@@ -229,6 +238,7 @@ describe("OrchestratorModeTool", () => {
 			for (const toolName of ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES) {
 				expect(activeToolNames).toContain(toolName);
 			}
+			expect(activeToolNames).toContain("super_review");
 			expect(activeToolNames).toContain("goal");
 		} finally {
 			await session.dispose();

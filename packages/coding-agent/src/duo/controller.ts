@@ -125,9 +125,10 @@ export class DuoController {
 	}
 
 	async reevaluate(): Promise<void> {
+		const activationInput = this.#activationInput();
 		const previousPhase = this.#machine.phase;
 		const previousPreDuoThinking = this.#machine.snapshot.preDuoThinking;
-		const nextPhase = this.#machine.evaluateActivation(this.#activationInput());
+		const nextPhase = this.#machine.evaluateActivation(activationInput);
 		const activated = previousPhase === "inactive" && nextPhase !== "inactive";
 		const deactivated = previousPhase !== "inactive" && nextPhase === "inactive";
 		const preDuoThinking = activated ? this.#host.configuredThinkingLevel() : previousPreDuoThinking;
@@ -138,7 +139,7 @@ export class DuoController {
 			await this.#applySwitch(this.#config.planner, this.#config.plannerThinking);
 		} else if (activated && nextPhase === "executing") {
 			if (await this.#applySwitch(this.#config.executor, this.#executorThinking())) {
-				await this.#setOrchestratorForExecutionScope();
+				await this.#setOrchestratorForExecutionScope(activationInput);
 			}
 		} else if (deactivated) {
 			this.#host.setPlanModeEnabled(false);
@@ -736,12 +737,19 @@ export class DuoController {
 		}
 	}
 
-	async #setOrchestratorForExecutionScope(): Promise<void> {
+	async #setOrchestratorForExecutionScope(activationInput?: DuoActivationInput): Promise<void> {
 		if (this.#config.orchestrator === "always") {
 			await this.#host.setOrchestratorEnabled(true);
 			return;
 		}
-		await this.#host.setOrchestratorEnabled(this.#machine.executionScope === "multi");
+		const shouldEnable = this.#machine.executionScope === "multi";
+		// A manual orchestrator toggle can disable the host while an earlier auto
+		// reevaluation is still awaiting the model switch; do not resurrect that stale
+		// activation if the current host state no longer matches its input snapshot.
+		if (shouldEnable && activationInput?.orchestratorEnabled === true && !this.#host.orchestratorEnabled()) {
+			return;
+		}
+		await this.#host.setOrchestratorEnabled(shouldEnable);
 	}
 
 	#disableForForeignManualSwitch(model: Model): void {

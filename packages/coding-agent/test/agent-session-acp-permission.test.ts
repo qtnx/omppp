@@ -80,7 +80,12 @@ async function createSession(
 	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 	if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
 
-	const settings = Settings.isolated({ "compaction.enabled": false, ...settingsOverrides });
+	const settings = Settings.isolated({
+		"advisor.consult": false,
+		"advisor.enabled": false,
+		"compaction.enabled": false,
+		...settingsOverrides,
+	});
 	const sessionManager = SessionManager.inMemory(tempDir.path());
 
 	const agent = new Agent({
@@ -113,7 +118,11 @@ async function createSessionWithMockModel(
 	responses: NonNullable<MockModelOptions["responses"]>,
 ): Promise<AgentSession> {
 	const mock = createMockModel({ responses });
-	const settings = Settings.isolated({ "compaction.enabled": false });
+	const settings = Settings.isolated({
+		"advisor.consult": false,
+		"advisor.enabled": false,
+		"compaction.enabled": false,
+	});
 	const sessionManager = SessionManager.inMemory(tempDir.path());
 	const agent = new Agent({
 		getApiKey: () => "test-key",

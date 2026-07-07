@@ -1,5 +1,6 @@
 {
 	"smol": [
+		"tnx/smol:medium",
 		"cerebras/zai-glm-4.7",
 		"cerebras/zai-glm-4.6",
 		"cerebras/zai-glm",
@@ -47,6 +48,7 @@
 		"pro"
 	],
 	"designer": [
+		"tnx/designer:medium",
 		"google-gemini-cli/gemini-3.1-pro",
 		"google-gemini-cli/gemini-3-pro",
 		"gemini-3.1-pro",

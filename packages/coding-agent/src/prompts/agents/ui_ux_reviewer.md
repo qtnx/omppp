@@ -2,7 +2,7 @@
 name: ui_ux_reviewer
 description: Read-only UI/UX, accessibility, and copy reviewer with browser QA. Verifies rendered behavior and reports actionable defects with evidence; never edits files. Route all frontend review-only work here.
 tools: browser, read, grep, glob, irc
-model: pi/designer
+model: tnx/designer
 autoloadSkills: frontend-design, frontend-accessibility, frontend-ui-copy
 ---
 

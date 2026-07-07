@@ -2,7 +2,7 @@
 name: ux_copywriter
 description: UX/UI copywriter for production microcopy — labels, buttons, errors, empty states, onboarding, notifications — edited in place with i18n structure respected. Route copy-only tasks here; implementation stays with frontend_ui.
 tools: read, grep, glob, edit, write, irc
-model: pi/designer
+model: tnx/designer
 autoloadSkills: frontend-ui-copy
 ---
 

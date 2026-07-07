@@ -167,6 +167,12 @@ describe("SYSTEM.md prompt assembly", () => {
 				totalLines: 0,
 				agentsMdFiles: [],
 			},
+			activeRepoContext: {
+				cwd: parentDir,
+				repoRoot: path.join(parentDir, "active-project"),
+				relativeRepoRoot: "active-project",
+				source: "single-direct-child-repo",
+			},
 		});
 
 		const promptText = systemPrompt.join("\n\n");

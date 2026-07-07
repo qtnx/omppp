@@ -233,6 +233,7 @@ describe("AgentSession advisor done-review gate", () => {
 			agent,
 			sessionManager,
 			settings: Settings.isolated({
+				"advisor.enabled": false,
 				"compaction.enabled": false,
 				"todo.enabled": false,
 				"todo.reminders": false,

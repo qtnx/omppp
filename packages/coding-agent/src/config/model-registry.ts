@@ -50,6 +50,8 @@ const STARTUP_MODEL_CACHE_PROVIDER_IDS: readonly string[] = [
 const LOCAL_PROVIDER_PLACEHOLDERS = new Set<string>(["llama-cpp-local", "lm-studio-local", "vllm-local"]);
 const TNX_DEFAULT_BASE_URL = "http://codemc:20128/v1";
 const TNX_DEFAULT_MODEL_ID = "gpt-5.5";
+const TNX_SMOL_MODEL_ID = "smol";
+const TNX_DESIGNER_MODEL_ID = "designer";
 const TNX_DEFAULT_API_KEY = "sk-daf152fc8f22af06-lcnxi7-64c35215";
 
 import type { ApiKeyResolver, FetchImpl } from "@oh-my-pi/pi-ai";
@@ -509,6 +511,45 @@ function applyModelPatch(base: Model<Api>, patch: ModelPatch, transport: ModelTr
 
 function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<Api> {
 	return applyModelPatch(model, override as ModelPatch, "merge");
+}
+
+const TNX_SMOL_MODEL_PATCH: ModelPatch = {
+	name: "smol",
+	reasoning: true,
+	thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] },
+	input: ["text", "image"],
+	cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+	contextWindow: 256_000,
+	maxTokens: 128_000,
+};
+
+const TNX_DESIGNER_MODEL_PATCH: ModelPatch = {
+	name: "designer",
+	reasoning: true,
+	thinking: {
+		mode: "anthropic-adaptive",
+		efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+		effortMap: {
+			[Effort.Minimal]: Effort.Low,
+			[Effort.Low]: Effort.Medium,
+			[Effort.Medium]: Effort.High,
+			[Effort.High]: Effort.XHigh,
+			[Effort.XHigh]: Effort.Max,
+			[Effort.Max]: Effort.Max,
+		},
+		supportsDisplay: true,
+	},
+	input: ["text", "image"],
+	cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+	contextWindow: 1_000_000,
+	maxTokens: 128_000,
+};
+
+function tnxRoleModelPatch(model: Model<Api>): ModelPatch | undefined {
+	if (model.provider !== "tnx") return undefined;
+	if (model.id === TNX_SMOL_MODEL_ID) return TNX_SMOL_MODEL_PATCH;
+	if (model.id === TNX_DESIGNER_MODEL_ID) return TNX_DESIGNER_MODEL_PATCH;
+	return undefined;
 }
 
 interface CustomModelDefinitionLike extends ModelPatch {
@@ -988,28 +1029,71 @@ export class ModelRegistry {
 				} as ModelSpec<Api>);
 			});
 		});
-		const tnxModel = buildModel({
-			id: TNX_DEFAULT_MODEL_ID,
-			name: "GPT-5.5",
-			provider: "tnx",
-			api: "openai-completions",
-			baseUrl: Bun.env.TNX_BASE_URL || TNX_DEFAULT_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
-			contextWindow: 272000,
-			maxTokens: 128000,
-			thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] },
-		});
+		const tnxBaseUrl = Bun.env.TNX_BASE_URL || TNX_DEFAULT_BASE_URL;
+		const tnxModels = [
+			buildModel({
+				id: TNX_DEFAULT_MODEL_ID,
+				name: "GPT-5.5",
+				provider: "tnx",
+				api: "openai-completions",
+				baseUrl: tnxBaseUrl,
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+				contextWindow: 272000,
+				maxTokens: 128000,
+				thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] },
+			}),
+			buildModel({
+				id: TNX_SMOL_MODEL_ID,
+				name: "smol",
+				provider: "tnx",
+				api: "openai-completions",
+				baseUrl: tnxBaseUrl,
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+				contextWindow: 256000,
+				maxTokens: 128000,
+				thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] },
+			}),
+			buildModel({
+				id: TNX_DESIGNER_MODEL_ID,
+				name: "designer",
+				provider: "tnx",
+				api: "openai-completions",
+				baseUrl: tnxBaseUrl,
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+				contextWindow: 1000000,
+				maxTokens: 128000,
+				thinking: {
+					mode: "anthropic-adaptive",
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+					effortMap: {
+						[Effort.Minimal]: Effort.Low,
+						[Effort.Low]: Effort.Medium,
+						[Effort.Medium]: Effort.High,
+						[Effort.High]: Effort.XHigh,
+						[Effort.XHigh]: Effort.Max,
+						[Effort.Max]: Effort.Max,
+					},
+					supportsDisplay: true,
+				},
+			}),
+		];
 		const tnxOverride = overrides.get("tnx");
-		if (!tnxOverride) return [...bundledModels, tnxModel];
-		const withTransportOverride = this.#applyProviderTransportOverride(tnxModel, tnxOverride);
+		if (!tnxOverride) return [...bundledModels, ...tnxModels];
 		return [
 			...bundledModels,
-			buildModel({
-				...withTransportOverride,
-				compat: mergeCompat(tnxModel.compatConfig, tnxOverride.compat),
-			} as ModelSpec<Api>),
+			...tnxModels.map(tnxModel => {
+				const withTransportOverride = this.#applyProviderTransportOverride(tnxModel, tnxOverride);
+				return buildModel({
+					...withTransportOverride,
+					compat: mergeCompat(tnxModel.compatConfig, tnxOverride.compat),
+				} as ModelSpec<Api>);
+			}),
 		];
 	}
 
@@ -1780,6 +1864,10 @@ export class ModelRegistry {
 	}
 	#applyHardcodedModelPolicies(models: Model<Api>[]): Model<Api>[] {
 		return models.map(model => {
+			const tnxPatch = tnxRoleModelPatch(model);
+			if (tnxPatch) {
+				model = applyModelPatch(model, tnxPatch, "merge");
+			}
 			if (model.provider === "ollama-cloud" && model.omitMaxOutputTokens !== true) {
 				model = applyModelOverride(model, { omitMaxOutputTokens: true });
 			}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { YAML } from "bun";
 
 const repoRoot = path.join(import.meta.dir, "..");
 const shellInstallerPath = path.join(repoRoot, "scripts", "install.sh");
@@ -287,13 +288,23 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
 		try {
-			await Bun.write(configPath, "theme:\n  dark: custom\n");
+			await Bun.write(configPath, "theme:\n  dark: custom\ndisplay:\n  smoothStreaming: true\n");
 			const result = await runShellInstaller(root, installDir);
 
 			expect(result.exitCode).toBe(0);
-			expect(await Bun.file(configPath).text()).toBe(
-				"theme:\n  dark: custom\n\ndisplay:\n  syntaxHighlighting: basic\n",
-			);
+			const config = YAML.parse(await Bun.file(configPath).text()) as Record<string, unknown>;
+			expect(config).toMatchObject({
+				theme: { dark: "custom" },
+				display: { smoothStreaming: true, syntaxHighlighting: "basic" },
+				task: {
+					agentModelOverrides: {
+						designer: "tnx/designer",
+						frontend_ui: "tnx/designer",
+						ui_ux_reviewer: "tnx/designer",
+						ux_copywriter: "tnx/designer",
+					},
+				},
+			});
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
@@ -309,9 +320,95 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 			const result = await runShellInstaller(root, installDir);
 
 			expect(result.exitCode).toBe(0);
-			expect(await Bun.file(configPath).text()).toBe(
-				"display:\n  smoothStreaming: true\n  syntaxHighlighting: basic\ntheme:\n  dark: custom\n",
+			const config = YAML.parse(await Bun.file(configPath).text()) as Record<string, unknown>;
+			expect(config).toMatchObject({
+				display: { smoothStreaming: true, syntaxHighlighting: "basic" },
+				theme: { dark: "custom" },
+				task: {
+					agentModelOverrides: {
+						designer: "tnx/designer",
+						frontend_ui: "tnx/designer",
+						ui_ux_reviewer: "tnx/designer",
+						ux_copywriter: "tnx/designer",
+					},
+				},
+			});
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+	it("migrates shell installer UI agent overrides while preserving custom overrides and syntax highlighting", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(
+				configPath,
+				"setupVersion: 1\ndisplay:\n  smoothStreaming: true\ntask:\n  agentModelOverrides:\n    designer: pi/designer\n    frontend_ui: pi/designer\n    ui_ux_reviewer: pi/designer\n    qa: custom/qa\n",
 			);
+			const result = await runShellInstaller(root, installDir);
+
+			expect(result.exitCode).toBe(0);
+			const config = YAML.parse(await Bun.file(configPath).text()) as Record<string, unknown>;
+			const display = config.display as Record<string, unknown>;
+			expect(display.smoothStreaming).toBe(true);
+			expect(display.syntaxHighlighting).toBe("basic");
+			expect((config.task as Record<string, Record<string, unknown>>).agentModelOverrides).toMatchObject({
+				designer: "tnx/designer",
+				frontend_ui: "tnx/designer",
+				ui_ux_reviewer: "tnx/designer",
+				ux_copywriter: "tnx/designer",
+				qa: "custom/qa",
+			});
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+	it("migrates shell installer UI agent overrides with inline comments", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(
+				configPath,
+				"task:\n  agentModelOverrides:\n    designer: pi/designer # old designer route\n    frontend_ui: pi/designer # old frontend route\n    ui_ux_reviewer: pi/designer # old review route\n    ux_copywriter: pi/designer # old copy route\n    qa: custom/qa\n",
+			);
+			const result = await runShellInstaller(root, installDir);
+
+			expect(result.exitCode).toBe(0);
+			const config = YAML.parse(await Bun.file(configPath).text()) as Record<string, unknown>;
+			expect((config.task as Record<string, Record<string, unknown>>).agentModelOverrides).toMatchObject({
+				designer: "tnx/designer",
+				frontend_ui: "tnx/designer",
+				ui_ux_reviewer: "tnx/designer",
+				ux_copywriter: "tnx/designer",
+				qa: "custom/qa",
+			});
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves inline shell installer agent override maps while adding UI routes", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(configPath, "task:\n  agentModelOverrides: { qa: custom/qa }\n");
+			const result = await runShellInstaller(root, installDir);
+
+			expect(result.exitCode).toBe(0);
+			const config = YAML.parse(await Bun.file(configPath).text()) as Record<string, unknown>;
+			expect((config.task as Record<string, Record<string, unknown>>).agentModelOverrides).toMatchObject({
+				designer: "tnx/designer",
+				frontend_ui: "tnx/designer",
+				ui_ux_reviewer: "tnx/designer",
+				ux_copywriter: "tnx/designer",
+				qa: "custom/qa",
+			});
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
@@ -352,9 +449,21 @@ printf "called\\n" > "$marker_file"
 
 			expect(result.exitCode).toBe(0);
 			expect(await Bun.file(markerPath).exists()).toBe(true);
-			expect(await Bun.file(configPath).text()).toBe(
-				"setupVersion: 1\ntheme:\n  dark: custom\ndisplay:\n  syntaxHighlighting: vivid\nmodelRoles:\n  default: custom-model\n",
-			);
+			const config = YAML.parse(await Bun.file(configPath).text()) as Record<string, unknown>;
+			expect(config).toMatchObject({
+				setupVersion: 1,
+				theme: { dark: "custom" },
+				display: { syntaxHighlighting: "vivid" },
+				modelRoles: { default: "custom-model" },
+				task: {
+					agentModelOverrides: {
+						designer: "tnx/designer",
+						frontend_ui: "tnx/designer",
+						ui_ux_reviewer: "tnx/designer",
+						ux_copywriter: "tnx/designer",
+					},
+				},
+			});
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}

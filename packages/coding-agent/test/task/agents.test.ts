@@ -76,22 +76,24 @@ describe("bundled task agents", () => {
 		const designer = designers[0];
 		expect(designer?.tools ?? []).toContain("browser");
 		expect(designer?.autoloadSkills).toEqual(FRONTEND_SKILLS);
-		expect(designer?.model).toEqual(["pi/designer"]);
+		expect(designer?.model).toEqual(["tnx/designer"]);
 		expect(designer?.description).toMatch(/design lead[\s\S]{0,160}(direction|system|concept)/i);
 		expect(designer?.description).toMatch(/scoped[\s\S]{0,160}(frontend_ui|ui_ux_reviewer)/i);
 		expect(designer?.systemPrompt).toMatch(/production design lead/i);
 		expect(designer?.systemPrompt).not.toMatch(REVIEW_COMMENT_PATTERN);
 	});
 
-	test("registers specialized design team agents beside the stable designer lead", () => {
+	test("front-end specialized agents route to the designer model", () => {
 		const names = loadBundledAgents().map(agent => agent.name);
 		expect(names.filter(name => name === "designer")).toHaveLength(1);
+		const designer = getBundledAgent("designer");
+		expect(designer?.model).toEqual(["tnx/designer"]);
 
 		const frontendUi = getBundledAgent("frontend_ui");
 		expect(frontendUi?.name).toBe("frontend_ui");
 		expect(frontendUi?.tools).toContain("browser");
 		expect(frontendUi?.autoloadSkills).toEqual(FRONTEND_SKILLS);
-		expect(frontendUi?.model).toEqual(["pi/designer"]);
+		expect(frontendUi?.model).toEqual(["tnx/designer"]);
 		expect(frontendUi?.description).toMatch(/scoped[\s\S]{0,80}UI[\s\S]{0,80}(build|implement)/i);
 		expect(frontendUi?.description).toMatch(/existing design system/i);
 		expect(frontendUi?.description).toMatch(
@@ -105,7 +107,7 @@ describe("bundled task agents", () => {
 		expect(uiUxReviewer?.name).toBe("ui_ux_reviewer");
 		expect(uiUxReviewer?.tools).toEqual(["browser", "read", "grep", "glob", "irc", "yield"]);
 		expect(uiUxReviewer?.autoloadSkills).toEqual(FRONTEND_SKILLS);
-		expect(uiUxReviewer?.model).toEqual(["pi/designer"]);
+		expect(uiUxReviewer?.model).toEqual(["tnx/designer"]);
 		expect(uiUxReviewer?.description).toMatch(/(UI|UX|design)[\s\S]{0,80}review/i);
 		expect(uiUxReviewer?.systemPrompt).toMatch(/UI\/UX review specialist/i);
 		expect(uiUxReviewer?.systemPrompt).toMatch(/accessibility[\s\S]{0,160}interface states/i);
@@ -114,7 +116,7 @@ describe("bundled task agents", () => {
 		const uxCopywriter = getBundledAgent("ux_copywriter");
 		expect(uxCopywriter?.name).toBe("ux_copywriter");
 		expect(uxCopywriter?.autoloadSkills).toEqual(["frontend-ui-copy"]);
-		expect(uxCopywriter?.model).toEqual(["pi/designer"]);
+		expect(uxCopywriter?.model).toEqual(["tnx/designer"]);
 		expect(uxCopywriter?.description).toMatch(/UX[\s\S]{0,80}(copy|copywriting|microcopy)/i);
 		expect(uxCopywriter?.systemPrompt).toMatch(/keep scope to strings/i);
 		expect(uxCopywriter?.systemPrompt).toMatch(/i18n|source locale|source-language|source language/i);

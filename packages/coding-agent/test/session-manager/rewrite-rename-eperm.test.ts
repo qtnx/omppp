@@ -27,7 +27,7 @@ class RenameEpermOnceStorage extends FileSessionStorage {
 	override renameSync(source: string, target: string): void {
 		if (
 			this.failNextSessionReplace &&
-			source.includes(".tmp") &&
+			path.basename(source).endsWith(".tmp") &&
 			target.endsWith(".jsonl") &&
 			this.existsSync(target)
 		) {
@@ -97,7 +97,7 @@ describe("SessionManager rewrite EPERM rollback failure", () => {
 				if (!this.failureMode) return super.renameSync(source, target);
 				// Every temp -> target rename fails with EPERM (both the upstream attempt in
 				// writeTextAtomic and the retry inside #replaceSessionFileAfterEpermSync).
-				if (source.includes(".tmp") && target.endsWith(".jsonl")) {
+				if (path.basename(source).endsWith(".tmp") && target.endsWith(".jsonl")) {
 					this.tempRenameAttempts++;
 					const tag = this.tempRenameAttempts === 1 ? "original" : "retry";
 					throw new FsCodeError("EPERM", `EPERM ${tag}: rename '${source}' -> '${target}'`);
@@ -165,7 +165,7 @@ describe("FileSessionStorage.writeTextAtomic commitGuard cleanup", () => {
 		let guardCalls = 0;
 		class EpermThenGuardStorage extends FileSessionStorage {
 			override renameSync(source: string, targetPath: string): void {
-				if (source.includes(".tmp") && targetPath.endsWith(".jsonl") && !epermAttempted) {
+				if (path.basename(source).endsWith(".tmp") && targetPath.endsWith(".jsonl") && !epermAttempted) {
 					epermAttempted = true;
 					throw new FsCodeError("EPERM", `EPERM: operation not permitted, rename '${source}' -> '${targetPath}'`);
 				}
@@ -199,7 +199,7 @@ describe("FileSessionStorage.writeTextAtomic commitGuard cleanup", () => {
 		let guardCalls = 0;
 		class EpermMissingTargetStorage extends FileSessionStorage {
 			override renameSync(source: string, targetPath: string): void {
-				if (source.includes(".tmp") && targetPath.endsWith(".jsonl") && !epermAttempted) {
+				if (path.basename(source).endsWith(".tmp") && targetPath.endsWith(".jsonl") && !epermAttempted) {
 					epermAttempted = true;
 					throw new FsCodeError("EPERM", `EPERM: operation not permitted, rename '${source}' -> '${targetPath}'`);
 				}

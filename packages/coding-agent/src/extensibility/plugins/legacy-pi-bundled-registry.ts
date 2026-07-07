@@ -876,6 +876,7 @@ import * as bundledPiCodingAgentToolsSearchToolBm25 from "@oh-my-pi/pi-coding-ag
 import * as bundledPiCodingAgentToolsShake from "@oh-my-pi/pi-coding-agent/tools/shake";
 import * as bundledPiCodingAgentToolsSqliteReader from "@oh-my-pi/pi-coding-agent/tools/sqlite-reader";
 import * as bundledPiCodingAgentToolsSsh from "@oh-my-pi/pi-coding-agent/tools/ssh";
+import * as bundledPiCodingAgentToolsSuperReview from "@oh-my-pi/pi-coding-agent/tools/super-review";
 import * as bundledPiCodingAgentToolsTodo from "@oh-my-pi/pi-coding-agent/tools/todo";
 import * as bundledPiCodingAgentToolsToolErrors from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import * as bundledPiCodingAgentToolsToolResult from "@oh-my-pi/pi-coding-agent/tools/tool-result";
@@ -3131,6 +3132,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/ssh": bundledPiCodingAgentToolsSsh as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/tools/super-review": bundledPiCodingAgentToolsSuperReview as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/tools/todo": bundledPiCodingAgentToolsTodo as unknown as Readonly<
 		Record<string, unknown>
 	>,

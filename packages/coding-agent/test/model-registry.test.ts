@@ -7,6 +7,7 @@ import { Effort, type FetchImpl, type Model, type OpenAICompat, type ThinkingCon
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { resolveModelRoleValue } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
@@ -1482,11 +1483,13 @@ describe("ModelRegistry", () => {
 	});
 
 	describe("disabled provider filtering", () => {
-		test("fresh registry exposes TNX static fallback model with default key for discovery", async () => {
+		test("fresh registry exposes TNX static fallback models with Designer and Smol role defaults", async () => {
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			const availableModels = registry.getAvailable();
 
 			expect(registry.getDiscoverableProviders()).toContain("tnx");
-			const tnxModel = registry.getAvailable().find(model => model.provider === "tnx" && model.id === "gpt-5.5");
+
+			const tnxModel = availableModels.find(model => model.provider === "tnx" && model.id === "gpt-5.5");
 			expect(tnxModel).toMatchObject({
 				name: "GPT-5.5",
 				contextWindow: 272000,
@@ -1494,6 +1497,56 @@ describe("ModelRegistry", () => {
 				reasoning: true,
 				input: ["text", "image"],
 			});
+
+			const tnxSmol = availableModels.find(model => model.provider === "tnx" && model.id === "smol");
+			expect(tnxSmol).toMatchObject({
+				provider: "tnx",
+				id: "smol",
+				api: "openai-completions",
+				baseUrl: "http://codemc:20128/v1",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: tnxModel?.cost,
+				contextWindow: 256_000,
+				maxTokens: 128_000,
+			});
+			expect(tnxSmol?.contextWindow).toBe(256_000);
+			expect(tnxSmol?.maxTokens).toBe(128_000);
+
+			const anthropicOpus = registry
+				.getAll()
+				.find(model => model.provider === "anthropic" && model.id === "claude-opus-4-8");
+			expect(anthropicOpus).toBeDefined();
+
+			const tnxDesigner = availableModels.find(model => model.provider === "tnx" && model.id === "designer");
+			expect(tnxDesigner).toMatchObject({
+				provider: "tnx",
+				id: "designer",
+				api: "openai-completions",
+				baseUrl: "http://codemc:20128/v1",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+				contextWindow: 1_000_000,
+				maxTokens: 128_000,
+			});
+			expect(tnxDesigner?.name).toBe("designer");
+			expect(tnxDesigner?.thinking).toEqual(anthropicOpus?.thinking);
+
+			const settings = Settings.isolated();
+			const resolvedDesignerRole = resolveModelRoleValue("pi/designer", availableModels, { settings });
+			expect(resolvedDesignerRole.model?.provider).toBe("tnx");
+			expect(resolvedDesignerRole.model?.id).toBe("designer");
+			expect(resolvedDesignerRole.thinkingLevel).toBe(Effort.Medium);
+			expect(resolvedDesignerRole.explicitThinkingLevel).toBe(true);
+			expect(resolvedDesignerRole.warning).toBeUndefined();
+			const resolvedSmolRole = resolveModelRoleValue("pi/smol", availableModels, { settings });
+			expect(resolvedSmolRole.model?.provider).toBe("tnx");
+			expect(resolvedSmolRole.model?.id).toBe("smol");
+			expect(resolvedSmolRole.thinkingLevel).toBe(Effort.Medium);
+			expect(resolvedSmolRole.explicitThinkingLevel).toBe(true);
+			expect(resolvedSmolRole.warning).toBeUndefined();
+
 			await expect(registry.getApiKeyForProvider("tnx")).resolves.toMatch(/^sk-/);
 		});
 
@@ -1782,6 +1835,7 @@ describe("ModelRegistry", () => {
 	describe("cached discovery on startup", () => {
 		let legacySentinels: ModelRegistry;
 		let standardCache: ModelRegistry;
+		let tnxCachedRoleAliases: ModelRegistry;
 		let specialCache: ModelRegistry;
 		let vertexAuthoritative: ModelRegistry;
 		let syntheticCacheLoad: ModelRegistry;
@@ -1881,6 +1935,46 @@ describe("ModelRegistry", () => {
 									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 									contextWindow: 128_000,
 									maxTokens: 64_000,
+								}),
+							],
+							true,
+							"",
+							dbPath,
+						);
+					},
+				},
+			);
+			tnxCachedRoleAliases = readonlyRegistry(
+				{ providers: {} },
+				{
+					seedCache: dbPath => {
+						writeModelCache(
+							"tnx",
+							Date.now(),
+							[
+								buildModel({
+									id: "designer",
+									name: "designer",
+									api: "openai-completions",
+									provider: "tnx",
+									baseUrl: "http://codemc:20128/v1",
+									reasoning: false,
+									input: ["text"],
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+									contextWindow: 128_000,
+									maxTokens: 32_768,
+								}),
+								buildModel({
+									id: "smol",
+									name: "smol",
+									api: "openai-completions",
+									provider: "tnx",
+									baseUrl: "http://codemc:20128/v1",
+									reasoning: false,
+									input: ["text"],
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+									contextWindow: 128_000,
+									maxTokens: 32_768,
 								}),
 							],
 							true,
@@ -2105,6 +2199,39 @@ describe("ModelRegistry", () => {
 			expect(cacheOnlyModel).toBeDefined();
 			expect(cacheOnlyModel?.maxTokens).toBe(64_000);
 			expect(cacheOnlyModel?.omitMaxOutputTokens).toBe(true);
+		});
+
+		test("normalizes cached TNX role aliases over generic live discovery metadata", () => {
+			const designer = tnxCachedRoleAliases.find("tnx", "designer");
+			expect(designer?.name).toBe("designer");
+			expect(designer?.contextWindow).toBe(1_000_000);
+			expect(designer?.maxTokens).toBe(128_000);
+			expect(designer?.reasoning).toBe(true);
+			expect(designer?.thinking).toEqual({
+				mode: "anthropic-adaptive",
+				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+				effortMap: {
+					[Effort.Minimal]: Effort.Low,
+					[Effort.Low]: Effort.Medium,
+					[Effort.Medium]: Effort.High,
+					[Effort.High]: Effort.XHigh,
+					[Effort.XHigh]: Effort.Max,
+					[Effort.Max]: Effort.Max,
+				},
+				supportsDisplay: true,
+			});
+			expect(designer?.input).toEqual(["text", "image"]);
+
+			const smol = tnxCachedRoleAliases.find("tnx", "smol");
+			expect(smol?.name).toBe("smol");
+			expect(smol?.contextWindow).toBe(256_000);
+			expect(smol?.maxTokens).toBe(128_000);
+			expect(smol?.reasoning).toBe(true);
+			expect(smol?.thinking).toEqual({
+				mode: "effort",
+				efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			});
+			expect(smol?.input).toEqual(["text", "image"]);
 		});
 
 		test("loads cached special provider discovery models on startup", () => {

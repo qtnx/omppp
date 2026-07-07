@@ -183,7 +183,7 @@ describe("config CLI schema coverage", () => {
 });
 
 describe("config update", () => {
-	it("persists setupVersion 2 diff-only migration values and preserves explicit custom values", async () => {
+	it("persists setupVersion 3 diff-only migration values and preserves explicit custom values", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		await writeSettings({
 			setupVersion: 0,
@@ -214,23 +214,26 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: true,
-			setupVersion: 2,
-			currentVersion: 2,
+			setupVersion: 3,
+			currentVersion: 3,
 		});
 
 		const onDisk = await readSettings();
-		expect(onDisk.setupVersion).toBe(2);
+		expect(onDisk.setupVersion).toBe(3);
 		expect(onDisk.modelRoles).toEqual({
 			default: "custom/default",
 			task: "openai-codex/gpt-5.5:low",
-			smol: "openai-codex/gpt-5.5:low",
+			smol: "tnx/smol:medium",
 			slow: "openai-codex/gpt-5.5:xhigh",
 			plan: "anthropic/claude-fable-5:high",
-			designer: "anthropic/claude-opus-4-8",
+			designer: "tnx/designer:medium",
 			commit: "openai-codex/gpt-5.5:low",
 		});
 		expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual({
-			designer: "pi/designer",
+			designer: "tnx/designer",
+			frontend_ui: "tnx/designer",
+			ui_ux_reviewer: "tnx/designer",
+			ux_copywriter: "tnx/designer",
 			oracle: "openai-codex/gpt-5.5:xhigh",
 			plan: "openai-codex/gpt-5.5:xhigh",
 			qa: "custom/qa",
@@ -265,10 +268,10 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: true,
-			setupVersion: 2,
-			currentVersion: 2,
+			setupVersion: 3,
+			currentVersion: 3,
 		});
-		expect((await readSettings()).setupVersion).toBe(2);
+		expect((await readSettings()).setupVersion).toBe(3);
 	});
 
 	it("reports unchanged JSON and leaves config stable on a second run", async () => {
@@ -288,8 +291,8 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: false,
-			setupVersion: 2,
-			currentVersion: 2,
+			setupVersion: 3,
+			currentVersion: 3,
 		});
 		expect(await readSettings()).toEqual(firstMigration);
 	});

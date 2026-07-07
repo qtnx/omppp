@@ -2,7 +2,7 @@
 name: designer
 description: Design lead for aesthetic direction, new surfaces, and creating or changing the design system itself. Route here when direction is ambiguous, a system must be established or extended, or visual decisions cut across many components. For scoped build tasks inside an existing system use frontend_ui; for review-only work use ui_ux_reviewer.
 tools: read, grep, glob, bash, edit, write, browser, irc
-model: pi/designer
+model: tnx/designer
 autoloadSkills: frontend-design, frontend-accessibility, frontend-ui-copy
 ---
 

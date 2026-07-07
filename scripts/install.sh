@@ -263,6 +263,228 @@ migrate_syntax_highlighting_config() {
     echo "✓ Migrated config syntax highlighting to basic at ${config_file}"
 }
 
+migrate_ui_agent_overrides_config() {
+    config_file="$1"
+
+    if [ ! -f "$config_file" ]; then
+        return
+    fi
+
+    tmp_config="$(mktemp "${config_file}.XXXXXX")"
+    awk '
+        function trim(value) {
+            gsub(/^[[:space:]]+/, "", value)
+            gsub(/[[:space:]]+$/, "", value)
+            return value
+        }
+        function remember_ui_key(key) {
+            if (key == "designer") {
+                have_designer = 1
+            } else if (key == "frontend_ui") {
+                have_frontend_ui = 1
+            } else if (key == "ui_ux_reviewer") {
+                have_ui_ux_reviewer = 1
+            } else if (key == "ux_copywriter") {
+                have_ux_copywriter = 1
+            }
+        }
+        function normalized_ui_value(key, value) {
+            if (value == "pi/designer") {
+                return "tnx/designer"
+            }
+            if (key == "designer" && value == "anthropic/claude-opus-4-8:xhigh") {
+                return "tnx/designer"
+            }
+            return value
+        }
+        function insert_missing_ui_overrides() {
+            if (!have_designer) {
+                print override_indent "designer: tnx/designer"
+            }
+            if (!have_frontend_ui) {
+                print override_indent "frontend_ui: tnx/designer"
+            }
+            if (!have_ui_ux_reviewer) {
+                print override_indent "ui_ux_reviewer: tnx/designer"
+            }
+            if (!have_ux_copywriter) {
+                print override_indent "ux_copywriter: tnx/designer"
+            }
+        }
+        function child_indent(indent_len) {
+            return sprintf("%*s", indent_len + 2, "")
+        }
+        function append_ui_overrides_block(child) {
+            print child "agentModelOverrides:"
+            print child "  designer: tnx/designer"
+            print child "  frontend_ui: tnx/designer"
+            print child "  ui_ux_reviewer: tnx/designer"
+            print child "  ux_copywriter: tnx/designer"
+        }
+        function emit_inline_override(entry, key, value, colon) {
+            entry = trim(entry)
+            if (entry == "") {
+                return
+            }
+            colon = index(entry, ":")
+            if (colon == 0) {
+                return
+            }
+            key = trim(substr(entry, 1, colon - 1))
+            value = trim(substr(entry, colon + 1))
+            value = normalized_ui_value(key, value)
+            remember_ui_key(key)
+            print override_indent key ": " value
+        }
+        function emit_inline_overrides(line, body, count, i) {
+            match(line, /^[[:space:]]*/)
+            parent_indent_len = RLENGTH
+            override_indent = substr(line, RSTART, RLENGTH) "  "
+            body = line
+            sub(/^[^{]*\{[[:space:]]*/, "", body)
+            sub(/[[:space:]]*\}[[:space:]]*(#.*)?$/, "", body)
+            print substr(line, RSTART, RLENGTH) "agentModelOverrides:"
+            count = split(body, inline_entries, ",")
+            for (i = 1; i <= count; i++) {
+                emit_inline_override(inline_entries[i])
+            }
+            insert_missing_ui_overrides()
+        }
+        BEGIN {
+            in_overrides = 0
+            found_overrides = 0
+            in_task = 0
+            inserted_overrides = 0
+            override_indent = ""
+            have_designer = 0
+            have_frontend_ui = 0
+            have_ui_ux_reviewer = 0
+            have_ux_copywriter = 0
+            parent_indent_len = 0
+            task_indent_len = 0
+        }
+        {
+            if (in_overrides == 0 && $0 ~ /^[[:space:]]*agentModelOverrides:[[:space:]]*\{.*\}[[:space:]]*(#.*)?$/) {
+                found_overrides = 1
+                inserted_overrides = 1
+                in_task = 0
+                emit_inline_overrides($0)
+                next
+            }
+
+            if (in_overrides == 0 && $0 ~ /^[[:space:]]*agentModelOverrides:[[:space:]]*($|#)/) {
+                found_overrides = 1
+                inserted_overrides = 1
+                in_task = 0
+                in_overrides = 1
+                match($0, /^[[:space:]]*/)
+                parent_indent_len = RLENGTH
+                override_indent = substr($0, RSTART, RLENGTH) "  "
+                print
+                next
+            }
+
+            if (in_overrides == 1) {
+                if ($0 ~ /^[[:space:]]*$/) {
+                    print
+                    next
+                }
+                if ($0 ~ /^[[:space:]]*#/) {
+                    print
+                    next
+                }
+
+                match($0, /^[[:space:]]*/)
+                current_indent_len = RLENGTH
+                if (current_indent_len <= parent_indent_len) {
+                    insert_missing_ui_overrides()
+                    in_overrides = 0
+                    print
+                    next
+                }
+
+                if ($0 ~ /^[[:space:]]*designer:[[:space:]]*/) {
+                    have_designer = 1
+                    if ($0 ~ /^[[:space:]]*designer:[[:space:]]*pi\/designer[[:space:]]*(#.*)?$/) {
+                        sub(/pi\/designer/, "tnx/designer")
+                    } else if ($0 ~ /^[[:space:]]*designer:[[:space:]]*anthropic\/claude-opus-4-8:xhigh[[:space:]]*(#.*)?$/) {
+                        sub(/anthropic\/claude-opus-4-8:xhigh/, "tnx/designer")
+                    }
+                } else if ($0 ~ /^[[:space:]]*frontend_ui:[[:space:]]*/) {
+                    have_frontend_ui = 1
+                    if ($0 ~ /^[[:space:]]*frontend_ui:[[:space:]]*pi\/designer[[:space:]]*(#.*)?$/) {
+                        sub(/pi\/designer/, "tnx/designer")
+                    }
+                } else if ($0 ~ /^[[:space:]]*ui_ux_reviewer:[[:space:]]*/) {
+                    have_ui_ux_reviewer = 1
+                    if ($0 ~ /^[[:space:]]*ui_ux_reviewer:[[:space:]]*pi\/designer[[:space:]]*(#.*)?$/) {
+                        sub(/pi\/designer/, "tnx/designer")
+                    }
+                } else if ($0 ~ /^[[:space:]]*ux_copywriter:[[:space:]]*/) {
+                    have_ux_copywriter = 1
+                    if ($0 ~ /^[[:space:]]*ux_copywriter:[[:space:]]*pi\/designer[[:space:]]*(#.*)?$/) {
+                        sub(/pi\/designer/, "tnx/designer")
+                    }
+                }
+
+                print
+                next
+            }
+
+            if (found_overrides == 0 && inserted_overrides == 0 && in_task == 0 && $0 ~ /^[[:space:]]*task:[[:space:]]*($|#)/) {
+                in_task = 1
+                match($0, /^[[:space:]]*/)
+                task_indent_len = RLENGTH
+                print
+                next
+            }
+
+            if (in_task == 1 && inserted_overrides == 0) {
+                if ($0 ~ /^[[:space:]]*$/) {
+                    print
+                    next
+                }
+                if ($0 ~ /^[[:space:]]*#/) {
+                    print
+                    next
+                }
+
+                match($0, /^[[:space:]]*/)
+                current_indent_len = RLENGTH
+                if (current_indent_len <= task_indent_len) {
+                    append_ui_overrides_block(child_indent(task_indent_len))
+                    inserted_overrides = 1
+                    in_task = 0
+                    print
+                    next
+                }
+
+                print
+                next
+            }
+
+            print
+        }
+        END {
+            if (in_overrides == 1) {
+                insert_missing_ui_overrides()
+            }
+            if (in_task == 1 && inserted_overrides == 0) {
+                append_ui_overrides_block(child_indent(task_indent_len))
+                inserted_overrides = 1
+            }
+            if (found_overrides == 0 && inserted_overrides == 0) {
+                print ""
+                print "task:"
+                append_ui_overrides_block("  ")
+            }
+        }
+    ' "$config_file" > "$tmp_config"
+    mv "$tmp_config" "$config_file"
+    chmod 600 "$config_file" 2>/dev/null || true
+}
+
+
 run_config_update() {
     config_update_command="$1"
 
@@ -306,6 +528,7 @@ install_standard_config() {
     if [ -e "$config_file" ]; then
         echo "✓ Existing config kept at ${config_file}"
         migrate_syntax_highlighting_config "$config_file"
+        migrate_ui_agent_overrides_config "$config_file"
         return
     fi
 
@@ -332,7 +555,10 @@ task:
     code-reviewer: openai-codex/codex-auto-review
     code-simplifier: anthropic/claude-opus-4-8
     codex-rescue: openai-codex/gpt-5.5:medium
-    designer: anthropic/claude-opus-4-8:xhigh
+    designer: tnx/designer
+    frontend_ui: tnx/designer
+    ui_ux_reviewer: tnx/designer
+    ux_copywriter: tnx/designer
     oracle: openai-codex/gpt-5.5:xhigh
     plan: openai-codex/gpt-5.5:xhigh
     quick_task: openai-codex/gpt-5.5:low

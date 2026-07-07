@@ -19,6 +19,8 @@
 - `async.stallThresholdMs` setting (default 10m): running rows in `job` results are flagged `STALLED` when the subagent shows no activity beyond the threshold (0 disables).
 - POSIX installs and updates now run `ompx install git:github.com/obra/superpowers` after OMPx is installed, keeping the Superpowers skill pack installed or updated automatically.
 - Added a built-in production frontend/UI/UX skill bundle plus dedicated design-team subagents (`frontend_ui`, `ui_ux_reviewer`, `ux_copywriter`) so orchestrated UI work routes to design specialists with anti-internal-copy safeguards.
+- Added built-in TNX role models `tnx/designer` (Claude Opus 4.8-like capabilities, 1M context) and `tnx/smol` (256K context) for local TNX routing.
+- Added `super_review`, a discoverable one-shot review tool backed by `tnx/super` for high-context plan, action, architecture, security, and QA-plan reviews with explicit workspace file attachments, optional structured output, orchestrator-mode access, and advisor-default access.
 
 ### Changed
 
@@ -26,6 +28,7 @@
 - Lowered the duo executor's default reasoning effort (`duo.executorThinking`) from `max` to `high`; the advisor's new `set_executor_effort` governor raises it on demand.
 - `job` poll now waits on a bounded schedule instead of blocking indefinitely: new `async.pollWaitDuration` default `scheduled` waits 5m on the first poll and 10m on consecutive re-polls (2m gap resets the ladder), returning a live still-running snapshot at each window expiry with per-job stats (elapsed, model, tool count, tokens in/out, last activity) plus guidance naming the next window. `block` remains an explicit opt-in for the old indefinite wait; legacy `smart` now migrates to `scheduled`.
 - `irc` waits are capped at a 10-minute max window: `timeoutMs: 0` now means one max window instead of waiting forever, and oversized timeouts are clamped.
+- Default `pi/designer` and `pi/smol` role routing now prefer the built-in TNX role models at explicit `:medium` thinking level.
 
 ### Fixed
 
