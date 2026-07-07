@@ -46,6 +46,47 @@ class HashActionProvider implements AutocompleteProvider {
 	calls = 0;
 }
 
+class DollarSkillProvider implements AutocompleteProvider {
+	seenPrefixes: string[] = [];
+	applyCalls = 0;
+
+	async getSuggestions(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
+		const textBeforeCursor = (lines[cursorLine] || "").slice(0, cursorCol);
+		const match = /(?:^|\s)(\$[^\s$]*)$/.exec(textBeforeCursor);
+		if (!match) return null;
+
+		const prefix = match[1]!;
+		this.seenPrefixes.push(prefix);
+		return {
+			prefix,
+			items: [{ value: "$skill:brainstorming", label: "$skill:brainstorming" }],
+		};
+	}
+
+	applyCompletion(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		item: AutocompleteItem,
+		prefix: string,
+	): { lines: string[]; cursorLine: number; cursorCol: number } {
+		this.applyCalls += 1;
+		const line = lines[cursorLine] || "";
+		const replaceStart = cursorCol - prefix.length;
+		const nextLines = [...lines];
+		nextLines[cursorLine] = `${line.slice(0, replaceStart)}${item.value} ${line.slice(cursorCol)}`;
+		return {
+			lines: nextLines,
+			cursorLine,
+			cursorCol: replaceStart + item.value.length + 1,
+		};
+	}
+}
+
 describe("Editor hash autocomplete actions", () => {
 	it("auto-triggers # suggestions and runs autocomplete callbacks on selection", async () => {
 		const provider = new HashActionProvider();
@@ -80,6 +121,48 @@ describe("Editor slash autocomplete acceptance", () => {
 		expect(editor.getText()).toBe("/skills:fix-bug ");
 	});
 });
+
+describe("Editor dollar autocomplete acceptance", () => {
+	it("auto-opens dollar autocomplete mid-paragraph and preserves surrounding prose on Tab", async () => {
+		const provider = new DollarSkillProvider();
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(provider);
+
+		editor.setText("please use  now");
+		for (let i = 0; i < 4; i += 1) editor.handleInput("\x1b[D");
+		editor.handleInput("$");
+		await Promise.resolve();
+
+		expect(provider.seenPrefixes).toContain("$");
+		expect(editor.isShowingAutocomplete()).toBe(true);
+
+		editor.handleInput("\t");
+
+		expect(provider.applyCalls).toBe(1);
+		expect(editor.getText()).toBe("please use $skill:brainstorming  now");
+	});
+
+	it("applies a dollar skill when Tab arrives before the typed query debounce refreshes", async () => {
+		const provider = new DollarSkillProvider();
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(provider);
+
+		editor.setText("please use  now");
+		for (let i = 0; i < 4; i += 1) editor.handleInput("\x1b[D");
+		editor.handleInput("$");
+		await Promise.resolve();
+
+		expect(editor.isShowingAutocomplete()).toBe(true);
+
+		editor.handleInput("b");
+		editor.handleInput("r");
+		editor.handleInput("a");
+		editor.handleInput("\t");
+
+		expect(editor.getText()).toBe("please use $skill:brainstorming  now");
+	});
+});
+
 class SyncSlashProvider implements AutocompleteProvider {
 	async getSuggestions(
 		_lines: string[],

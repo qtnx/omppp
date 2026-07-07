@@ -408,6 +408,7 @@ ${chalk.bold("Available Tools (default-enabled unless noted):")}
   task          - Launch sub-agents for parallel tasks
   todo          - Manage todo/task lists
   web_search    - Search the web
+  super_review  - Run one high-intelligence review call on tnx/super
   ask           - Ask user questions (interactive mode only)
 
 ${chalk.bold("Plugin Options:")}

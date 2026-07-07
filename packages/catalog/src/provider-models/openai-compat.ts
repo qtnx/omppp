@@ -2778,6 +2778,33 @@ export function qianfanModelManagerOptions(
 ): ModelManagerOptions<"openai-completions"> {
 	return createSimpleOpenAICompletionsOptions("qianfan", "https://qianfan.baidubce.com/v2", config);
 }
+// ---------------------------------------------------------------------------
+// 18.5 TNX
+// ---------------------------------------------------------------------------
+
+const TNX_BASE_URL = "http://codemc:20128/v1";
+
+export interface TnxModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+}
+
+export function tnxModelManagerOptions(config?: TnxModelManagerConfig): ModelManagerOptions<"openai-completions"> {
+	const apiKey = config?.apiKey;
+	const baseUrl = config?.baseUrl ?? TNX_BASE_URL;
+	return {
+		providerId: "tnx",
+		fetchDynamicModels: () =>
+			fetchOpenAICompatibleModels({
+				api: "openai-completions",
+				provider: "tnx",
+				baseUrl,
+				apiKey,
+				fetch: config?.fetch,
+			}),
+	};
+}
 
 // ---------------------------------------------------------------------------
 // 19. Cloudflare AI Gateway

@@ -94,6 +94,21 @@ describe("built-in tool loadMode annotations", () => {
 		});
 		expect(kept).toEqual(["eval"]);
 	});
+
+	it("marks super_review essential so it is visible after restart", async () => {
+		const metadata = await getToolMetadata();
+		expect(metadata.get("super_review")?.loadMode).toBe("essential");
+		const essential = computeEssentialBuiltinNames(Settings.isolated({}));
+		expect(essential).toContain("super_review");
+		const kept = filterInitialToolsForDiscoveryAll(["super_review"], {
+			loadModeOf: name => metadata.get(name)?.loadMode as BuiltinToolLoadMode | undefined,
+			essentialNames: new Set<string>(essential),
+			explicitlyRequested: new Set<string>(),
+			restored: new Set<string>(),
+			forceActive: new Set<string>(),
+		});
+		expect(kept).toEqual(["super_review"]);
+	});
 });
 
 describe("computeEssentialBuiltinNames", () => {

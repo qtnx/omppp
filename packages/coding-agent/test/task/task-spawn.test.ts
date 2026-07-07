@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { type AsyncJob, AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { Skill } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
@@ -29,7 +30,21 @@ const taskAgent: AgentDefinition = {
 	source: "bundled",
 };
 
-function createSession(options: { manager?: AsyncJobManager; settings?: Record<string, unknown> }): ToolSession {
+function skill(name: string, description: string, source: string): Skill {
+	return {
+		name,
+		description,
+		filePath: `/skills/${name}/SKILL.md`,
+		baseDir: `/skills/${name}`,
+		source,
+	};
+}
+
+function createSession(options: {
+	manager?: AsyncJobManager;
+	settings?: Record<string, unknown>;
+	skills?: Skill[];
+}): ToolSession {
 	return {
 		cwd: "/tmp",
 		hasUI: false,
@@ -37,6 +52,7 @@ function createSession(options: { manager?: AsyncJobManager; settings?: Record<s
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
 		asyncJobManager: options.manager,
+		skills: options.skills ?? [],
 	} as unknown as ToolSession;
 }
 
@@ -144,6 +160,47 @@ describe("task spawn routing", () => {
 		expect(job!.resultText).toContain("message it via `irc` to follow up");
 		expect(job!.resultText).toContain("history://Spawnling");
 		expect(runSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("autoloads bundled frontend skills plus matching repo skills for design agents", async () => {
+		const designAgent: AgentDefinition = {
+			name: "designer",
+			description: "Design lead",
+			systemPrompt: "You are a design agent.",
+			source: "bundled",
+			model: ["pi/designer"],
+			autoloadSkills: ["frontend-design", "frontend-accessibility", "frontend-ui-copy"],
+		};
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [designAgent],
+			projectAgentsDir: null,
+		});
+		const runSpy = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(makeResult("Design"));
+		const skills = [
+			skill("frontend-design", "Bundled frontend design", "bundled:native"),
+			skill("frontend-accessibility", "Bundled accessibility", "bundled:native"),
+			skill("frontend-ui-copy", "Bundled UI copy", "bundled:native"),
+			skill("repo-design-system", "Project design tokens and designer workflow", "project"),
+			skill("backend-rust", "Database migrations", "project"),
+		];
+
+		const tool = await TaskTool.create(
+			createSession({ skills, settings: { modelRoles: { designer: "custom/designer" } } }),
+		);
+		await tool.execute("tc-design", {
+			agent: "designer",
+			id: "Design",
+			assignment: "Design the thing.",
+		} as TaskParams);
+
+		const [options] = runSpy.mock.calls[0]!;
+		expect(options.modelOverride).toEqual(["custom/designer"]);
+		expect(options.autoloadSkills?.map(item => item.name)).toEqual([
+			"frontend-design",
+			"frontend-accessibility",
+			"frontend-ui-copy",
+			"repo-design-system",
+		]);
 	});
 
 	it("bounds concurrent job bodies with the session spawn semaphore", async () => {

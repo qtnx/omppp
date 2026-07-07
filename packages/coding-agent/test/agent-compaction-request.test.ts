@@ -373,7 +373,7 @@ describe("system prompt compaction guidance", () => {
 		expect(withCompactText).toContain("# Context Compaction");
 		expect(withCompactText).toContain("LAST action of the turn");
 		// Mid-task scope split is rendered when context GC tools coexist.
-		expect(withCompactText).toContain("`context_unload` instead");
+		expect(withCompactText).toContain("use `context_unload`");
 
 		const withoutCompact = await buildSystemPrompt({ ...base, toolNames: ["read", "context_unload"] });
 		expect(withoutCompact.systemPrompt.join("\n\n")).not.toContain("# Context Compaction");

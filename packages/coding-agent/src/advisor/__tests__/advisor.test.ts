@@ -76,7 +76,21 @@ describe("advisor", () => {
 		it("documents the consultation and done-review protocols", () => {
 			expect(advisorSystemPrompt).toContain("Consultation request");
 			expect(advisorSystemPrompt).toContain("done_verdict");
+			expect(advisorSystemPrompt).toContain(
+				"NEVER call `done_verdict` for ordinary consultations. DONE-REVIEW REQUEST consultations are the exception",
+			);
 			expect(advisorSystemPrompt).toContain("done-review");
+		});
+
+		it("reminds the advisor to check completion evidence before done-review", () => {
+			expect(advisorSystemPrompt).toContain(
+				"When the agent starts finalizing or drafting a completion response before a done-review request",
+			);
+			expect(advisorSystemPrompt).toContain("run the same evidence check early");
+			expect(advisorSystemPrompt).toContain(
+				"Call `advise` once with the exact gap and the shortest command/verdict needed to close it",
+			);
+			expect(advisorSystemPrompt).toContain("Agent on track with evidence? Stay silent.");
 		});
 
 		it("ships the done-review request template", () => {
@@ -2026,12 +2040,12 @@ describe("advisor", () => {
 	});
 
 	describe("advisor default tools", () => {
-		it("defaults to read/grep/glob, a subset of the full grantable tool pool", () => {
-			expect([...ADVISOR_DEFAULT_TOOL_NAMES]).toEqual(["read", "grep", "glob"]);
+		it("defaults to read/grep/glob/super_review, all present in the built-in grantable tool pool", () => {
+			expect([...ADVISOR_DEFAULT_TOOL_NAMES]).toEqual(["read", "grep", "glob", "super_review"]);
 			// The advisor is a full agent now: every built tool is grantable (no hard
 			// read-only restriction), including mutating ones like edit/bash/write.
 			const builtin = new Set<string>(BUILTIN_TOOL_NAMES);
-			for (const name of ["read", "grep", "glob", "edit", "bash", "write"]) {
+			for (const name of ["read", "grep", "glob", "super_review", "edit", "bash", "write"]) {
 				expect(builtin.has(name)).toBe(true);
 			}
 			for (const name of ADVISOR_DEFAULT_TOOL_NAMES) {
@@ -2275,7 +2289,7 @@ describe("advisor", () => {
 			expect(text).toContain("Save & apply");
 			// Right preview reflects the highlighted (first) advisor.
 			expect(text).toContain("x-ai/grok-code-fast:high");
-			expect(text).toContain("read, grep, glob (default)");
+			expect(text).toContain("read, grep, glob, super_review (default)");
 		});
 
 		it("moves the preview with keyboard selection and preserves an explicit tool set", async () => {

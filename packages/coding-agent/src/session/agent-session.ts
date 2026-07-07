@@ -304,6 +304,7 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 	type: "text",
 };
 import rewindReportTemplate from "../prompts/system/rewind-report.md" with { type: "text" };
+
 import sandboxRelaunchContinuePrompt from "../prompts/system/sandbox-relaunch-continue.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
@@ -425,6 +426,39 @@ import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { classifyUnexpectedStop, isUnexpectedStopCandidate } from "./unexpected-stop-classifier";
 import { YieldQueue } from "./yield-queue";
+
+const SKILLS_AND_RULES_HEADING = "# Skills & Rules";
+const INTERNAL_URLS_HEADING = "# Internal URLs";
+
+function extractSkillsAndRulesSection(systemPromptBlock: string): string | undefined {
+	const start = systemPromptBlock.indexOf(SKILLS_AND_RULES_HEADING);
+	if (start < 0) return undefined;
+
+	const nextSection = systemPromptBlock.indexOf(`\n${INTERNAL_URLS_HEADING}`, start);
+	const end = nextSection < 0 ? systemPromptBlock.length : nextSection;
+	const section = systemPromptBlock.slice(start, end).trim();
+	return section.length > 0 ? section : undefined;
+}
+
+export function buildSystemPromptWithOrchestratorOverlay(baseSystemPrompt: string[]): string[] {
+	const skillsAndRules = extractSkillsAndRulesSection(baseSystemPrompt[0] ?? "");
+	const orchestratorPrompt = skillsAndRules
+		? `${orchestratorModeActivePrompt.trimEnd()}\n\n${skillsAndRules}`
+		: orchestratorModeActivePrompt;
+	return [orchestratorPrompt, ...baseSystemPrompt.slice(1)];
+}
+
+export function buildAdvisorSkillsAndRulesPrompt(baseSystemPrompt: string[]): string | undefined {
+	const skillsAndRules = extractSkillsAndRulesSection(baseSystemPrompt[0] ?? "");
+	if (!skillsAndRules) return undefined;
+
+	return [
+		skillsAndRules,
+		"<skill-oversight>",
+		"You MUST monitor skill usage. When applicable, if the executor starts work covered by a listed skill and the transcript does not show `skill://<name>` read or assigned to a subagent, advise the executor or subagent to read/use the exact skill and state why it applies. Stay silent after the skill is read or assigned.",
+		"</skill-oversight>",
+	].join("\n\n");
+}
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
 const PLAN_MODE_REMINDER_MAX = 3;
@@ -1669,6 +1703,7 @@ type ScheduledAgentContinueOptions = {
 	delayMs?: number;
 	generation?: number;
 	shouldContinue?: () => boolean;
+	preferHiddenNextTurn?: boolean;
 	onSkip?: (reason: AgentContinueSkipReason) => void;
 	onError?: () => void;
 };
@@ -1859,11 +1894,6 @@ export class AgentSession {
 	 */
 	#advisorDoneGateRejections = 0;
 	#qaVerifiedThisCycle = false;
-	/**
-	 * One-shot guard for the duo done-review QA requirement: set after injecting
-	 * the directive to spawn an independent QA subagent for this prompt cycle.
-	 */
-	#qaRequirementReminderSent = false;
 	/**
 	 * In-flight resolver for an active advisor done-review. `done_verdict` resolves
 	 * it; the gate races it against timeout/abort. Nulled after the first
@@ -2727,7 +2757,11 @@ export class AgentSession {
 			},
 			planModeActive: () => this.getPlanModeState()?.enabled === true,
 			requestAgentContinue: () => {
-				this.#scheduleAgentContinue({ delayMs: 1, generation: this.#promptGeneration });
+				this.#scheduleAgentContinue({
+					delayMs: 1,
+					generation: this.#promptGeneration,
+					preferHiddenNextTurn: true,
+				});
 			},
 		};
 	}
@@ -3021,6 +3055,11 @@ export class AgentSession {
 		}
 	}
 
+	#availableModelsForAdvisorRuntime(): Model[] {
+		const getAvailable = this.#modelRegistry.getAvailable;
+		return typeof getAvailable === "function" ? getAvailable.call(this.#modelRegistry) : [];
+	}
+
 	#resolveAdvisorRuntimeDescriptors(emitWarnings: boolean): AdvisorRuntimeDescriptor[] {
 		const legacy = !this.#advisorConfigs?.length;
 		const roster: AdvisorConfig[] = legacy ? [{ name: "default" }] : this.#advisorConfigs!;
@@ -3060,7 +3099,8 @@ export class AgentSession {
 					continue;
 				}
 			} else {
-				const sel = resolveAdvisorRoleSelection(this.settings, this.#modelRegistry.getAvailable());
+				const availableModels = this.#availableModelsForAdvisorRuntime();
+				const sel = resolveAdvisorRoleSelection(this.settings, availableModels);
 				if (!sel) {
 					if (emitWarnings) {
 						logger.debug("advisor enabled but no model assigned to the 'advisor' role; advisor inactive", {
@@ -3163,7 +3203,7 @@ export class AgentSession {
 		const descriptors = this.#resolveEffectiveAdvisorRuntimeDescriptors(true);
 
 		const fallbackSetting = this.settings.get("advisor.fallbackModel");
-		const fallbackSelection = resolveModelRoleValue(fallbackSetting, this.#modelRegistry.getAvailable(), {
+		const fallbackSelection = resolveModelRoleValue(fallbackSetting, this.#availableModelsForAdvisorRuntime(), {
 			settings: this.settings,
 			modelRegistry: this.#modelRegistry,
 		});
@@ -3237,6 +3277,8 @@ export class AgentSession {
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
 			const systemPrompt = [advisorSystemPrompt];
+			const advisorSkillsAndRulesPrompt = buildAdvisorSkillsAndRulesPrompt(this.#baseSystemPrompt);
+			if (advisorSkillsAndRulesPrompt) systemPrompt.push(advisorSkillsAndRulesPrompt);
 			if (this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
 			if (this.#advisorWatchdogPrompt) systemPrompt.push(this.#advisorWatchdogPrompt);
 			if (this.#advisorSharedInstructions) systemPrompt.push(this.#advisorSharedInstructions);
@@ -3734,23 +3776,8 @@ export class AgentSession {
 			this.#qaVerifiedThisCycle = true;
 			return true;
 		}
-		if (this.#qaVerifiedThisCycle || this.#qaRequirementReminderSent) return false;
-
-		this.#qaRequirementReminderSent = true;
-		const reminder =
-			"<system-reminder>Independent QA is required before done. Spawn a `qa` subagent with a harness-ready handoff — " +
-			"exact build/run/test commands, changed-file scope, acceptance criteria, ports/env/seed — and do NOT accept done until it returns a pass verdict.</system-reminder>";
-
-		const reminderMessage: Message = {
-			role: "developer",
-			content: [{ type: "text", text: reminder }],
-			attribution: "agent",
-			timestamp: Date.now(),
-		};
-		this.agent.appendMessage(reminderMessage);
-		this.sessionManager.appendMessage(reminderMessage);
-		this.#scheduleAgentContinue({ generation });
-		return true;
+		if (this.#qaVerifiedThisCycle) return false;
+		return false;
 	}
 
 	/** Subscribe the advisor agent's finalized messages into the transcript recorder.
@@ -5227,6 +5254,32 @@ export class AgentSession {
 				}
 				if (options?.shouldContinue && !options.shouldContinue()) {
 					this.#skipAgentContinue("should-continue-false", options);
+					return;
+				}
+				if (options?.preferHiddenNextTurn && this.#pendingNextTurnMessages.length > 0) {
+					try {
+						if (this.agent.state.isStreaming) {
+							await this.agent.waitForIdle();
+						}
+						if (options.generation !== undefined && this.#promptGeneration !== options.generation) {
+							this.#skipAgentContinue("stale-generation", options);
+							return;
+						}
+						if (signal.aborted || this.#isDisposed || this.isCompacting || this.isGeneratingHandoff) {
+							this.#skipAgentContinue("session-unavailable", options);
+							return;
+						}
+						if (this.#pendingNextTurnMessages.length === 0) {
+							return;
+						}
+						await this.#promptQueuedHiddenNextTurnMessages();
+					} catch (error) {
+						logger.warn("agent.nextTurn prompt failed after scheduling", {
+							error: error instanceof Error ? error.message : String(error),
+							stack: error instanceof Error ? error.stack : undefined,
+						});
+						options.onError?.();
+					}
 					return;
 				}
 				this.#beginInFlight();
@@ -7731,7 +7784,7 @@ export class AgentSession {
 
 	#baseSystemPromptWithModeOverlay(): string[] {
 		const base = this.#orchestratorModeState?.enabled
-			? [orchestratorModeActivePrompt, ...this.#baseSystemPrompt.slice(1)]
+			? buildSystemPromptWithOrchestratorOverlay(this.#baseSystemPrompt)
 			: this.#baseSystemPrompt;
 		const duoStatus = this.#duoController?.status;
 		const model = this.model;
@@ -9196,7 +9249,6 @@ export class AgentSession {
 			this.#todoReminderAwaitingProgress = false;
 			this.#qaGateReminderSent = false;
 			this.#qaVerifiedThisCycle = false;
-			this.#qaRequirementReminderSent = false;
 			this.#advisorDoneGateRejections = 0;
 			this.#mutationsSinceLastTodoTouch = 0;
 			this.#midRunNudgeCount = 0;
@@ -10409,7 +10461,6 @@ export class AgentSession {
 		this.#todoReminderAwaitingProgress = false;
 		this.#qaGateReminderSent = false;
 		this.#qaVerifiedThisCycle = false;
-		this.#qaRequirementReminderSent = false;
 		this.#advisorDoneGateRejections = 0;
 		this.#mutationsSinceLastTodoTouch = 0;
 		this.#midRunNudgeCount = 0;
@@ -11977,7 +12028,6 @@ export class AgentSession {
 			this.#todoReminderAwaitingProgress = false;
 			this.#qaGateReminderSent = false;
 			this.#qaVerifiedThisCycle = false;
-			this.#qaRequirementReminderSent = false;
 			this.#advisorDoneGateRejections = 0;
 			this.#mutationsSinceLastTodoTouch = 0;
 			this.#midRunNudgeCount = 0;
@@ -15004,6 +15054,16 @@ export class AgentSession {
 		return id;
 	}
 
+	#isCodexWebSocketTransportRetryMessage(message: AssistantMessage): boolean {
+		if (message.stopReason !== "error") return false;
+		const api = this.model?.api ?? message.api;
+		if (api !== "openai-codex-responses") return false;
+		if (!message.errorMessage?.includes("Codex websocket transport error:")) return false;
+
+		const id = this.#classifyRetryMessage(message);
+		return AIError.is(id, AIError.Flag.Transient);
+	}
+
 	#isGenericAbortSentinel(message: AssistantMessage): boolean {
 		return message.errorMessage === "Request was aborted" || message.errorMessage === "Request was aborted.";
 	}
@@ -15535,7 +15595,8 @@ export class AgentSession {
 			}
 		}
 
-		const allowModelFallback = options?.allowModelFallback !== false;
+		const allowModelFallback =
+			options?.allowModelFallback !== false && !this.#isCodexWebSocketTransportRetryMessage(message);
 		const currentSelector = this.model ? formatRetryFallbackSelector(this.model, this.thinkingLevel) : undefined;
 		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
 			if (allowModelFallback && retrySettings.modelFallback) {

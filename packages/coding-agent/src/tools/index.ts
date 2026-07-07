@@ -80,6 +80,7 @@ import { reportFindingTool } from "./review";
 import { SearchToolBm25Tool } from "./search-tool-bm25";
 import { ShakeTool } from "./shake";
 import { loadSshTool } from "./ssh";
+import { SuperReviewTool } from "./super-review";
 import { type TodoPhase, TodoTool } from "./todo";
 import { WriteTool } from "./write";
 import { YieldTool } from "./yield";
@@ -123,6 +124,7 @@ export * from "./review";
 export * from "./search-tool-bm25";
 export * from "./shake";
 export * from "./ssh";
+export * from "./super-review";
 export * from "./todo";
 export * from "./tts";
 export * from "./write";
@@ -495,6 +497,7 @@ export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = [
 	"task",
 	"todo",
 	"browser",
+	"super_review",
 ] as const;
 
 /**
@@ -589,6 +592,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "sandbox", ToolFactory> = {
 	learn: LearnTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
 	consult: s => new ConsultTool(s),
+	super_review: s => new SuperReviewTool(s),
 };
 
 export const HIDDEN_TOOLS: Record<string, ToolFactory> = {

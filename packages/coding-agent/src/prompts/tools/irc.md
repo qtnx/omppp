@@ -12,8 +12,9 @@ Use `op: "send"` to deliver a message to a specific peer or broadcast to `"all"`
 
 # Waiting and Inboxes
 Messages only arrive when the peer actively sends one—do not interrogate a peer for status.
+- IRC waits are for explicit peer answers and IRC/steering interruptions, not subagent-result waits. Subagent completions arrive through async job delivery; use `job` poll for blocking waits on subagent/job results.
 - If you are completely blocked and MUST wait for an answer, use `op: "wait"` (or `await: true` on a send). Waits are capped at a 10-minute max window; `timeoutMs: 0` means one max window (NOT forever), so re-issue `wait` to continue. The wait returns when a matching message arrives, the timeout elapses, or any IRC / steering message interrupts the wait. Parent-agent IRC interrupts with steering-level priority.
-- No need to alternate `irc wait`, `irc inbox`, and `job poll`: waits surface cross-channel interrupts promptly. The next turn includes the interrupt reason and message.
+- No need to alternate `irc wait` and `irc inbox`: waits surface cross-channel interrupts promptly. The next turn includes the interrupt reason and message.
 - To check for messages without blocking, use `op: "inbox"` to drain your queue.
 
 # When to Coordinate

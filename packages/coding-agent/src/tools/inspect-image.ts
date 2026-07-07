@@ -17,6 +17,7 @@ import {
 	webpExclusionForModel,
 } from "../utils/image-loading";
 import type { ToolSession } from "./index";
+import { resolveAuthGatewayBearer, routeToolOneTurnThroughAuthGateway } from "./one-turn-auth-gateway";
 import { ToolError } from "./tool-errors";
 
 const inspectImageSchema = type({
@@ -170,13 +171,7 @@ export class InspectImageTool implements AgentTool<typeof inspectImageSchema, In
 				`Resolved model ${model.provider}/${model.id} does not support image input. Configure a vision-capable model for modelRoles.vision.`,
 			);
 		}
-
-		const apiKey = await modelRegistry.getApiKey(model);
-		if (!apiKey) {
-			throw new ToolError(
-				`No API key available for ${model.provider}/${model.id}. Configure credentials for this provider or choose another vision-capable model.`,
-			);
-		}
+		const requestModel = routeToolOneTurnThroughAuthGateway(model);
 
 		let imageInput: LoadedImageInput | null;
 		const autoResize = this.session.settings.get("images.autoResize");
@@ -213,7 +208,7 @@ export class InspectImageTool implements AgentTool<typeof inspectImageSchema, In
 
 		const telemetry = resolveTelemetry(this.session.getTelemetry?.(), this.session.getSessionId?.() ?? undefined);
 		const response = await instrumentedCompleteSimple(
-			model,
+			requestModel,
 			{
 				systemPrompt: [prompt.render(inspectImageSystemPromptTemplate)],
 				messages: [
@@ -228,7 +223,7 @@ export class InspectImageTool implements AgentTool<typeof inspectImageSchema, In
 				],
 			},
 			{
-				apiKey: modelRegistry.resolver(model, this.session.getSessionId?.() ?? undefined),
+				apiKey: resolveAuthGatewayBearer(),
 				signal,
 			},
 			{ telemetry, oneshotKind: "inspect_image", completeImpl: this.completeImageRequest },

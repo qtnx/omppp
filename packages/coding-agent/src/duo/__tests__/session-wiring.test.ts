@@ -6,6 +6,8 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import type { DuoResolvedConfig } from "../../config/model-resolver";
 import {
 	type AgentSession,
+	buildAdvisorSkillsAndRulesPrompt,
+	buildSystemPromptWithOrchestratorOverlay,
 	resolveDuoAdvisorStopAction,
 	resolveDuoOrchestratorOwnership,
 	shouldNotifyDuoPlanApproved,
@@ -315,5 +317,80 @@ describe("AgentSession duo wiring helpers", () => {
 		expect(orchestrated).toContain("watches as your advisor");
 		expect(direct).toContain("watches as your advisor");
 		expect(direct).toContain("duo_escalate");
+	});
+
+	test("orchestrator overlay preserves only the base Skills & Rules section", () => {
+		const baseSkillsSection = [
+			"# Skills & Rules",
+			"Skills are specialized knowledge. If one matches your task, you MUST read `skill://<name>` before proceeding.",
+			"<skills>",
+			"- brainstorming: Use before creative work.",
+			"- test-driven-development: Use before production code.",
+			"</skills>",
+		].join("\n");
+		const baseInternalUrlsSection = [
+			"# Internal URLs",
+			"- `skill://<name>`: skill instructions; `/<path>` = file within",
+			"- `rule://<name>`: rule details",
+		].join("\n");
+		const basePrompt = [
+			["Base identity block.", baseSkillsSection, baseInternalUrlsSection].join("\n\n"),
+			"Tool block",
+		];
+
+		const [orchestratorBlock, ...unchangedBlocks] = buildSystemPromptWithOrchestratorOverlay(basePrompt);
+
+		expect(unchangedBlocks).toEqual(["Tool block"]);
+		expect(orchestratorBlock).toContain("Safe orchestrator mode");
+		expect(orchestratorBlock).toContain("`skill://<name>`");
+		expect(orchestratorBlock).toContain("- brainstorming: Use before creative work.");
+		expect(orchestratorBlock).toContain("- test-driven-development: Use before production code.");
+		expect(orchestratorBlock).not.toContain("Base identity block.");
+		expect(orchestratorBlock).not.toContain("# Internal URLs");
+		expect(orchestratorBlock).not.toContain("- `rule://<name>`: rule details");
+		expect(orchestratorBlock.slice(orchestratorBlock.indexOf("# Skills & Rules"))).toBe(baseSkillsSection);
+	});
+
+	test("orchestrator overlay teaches scheduled compaction at work boundaries", () => {
+		const [orchestratorBlock] = buildSystemPromptWithOrchestratorOverlay(["Base identity block.", "Tool block"]);
+		const compactGuidance = orchestratorBlock.match(/.{0,500}compact.{0,700}/gis)?.join("\n---\n") ?? "";
+
+		expect(compactGuidance).toMatch(/compact/i);
+		expect(compactGuidance).toMatch(/schedul\w*[\s\S]{0,220}archiv\w*|archiv\w*[\s\S]{0,220}schedul\w*/i);
+		expect(compactGuidance).toMatch(
+			/(?:stale|older)[\s\S]{0,260}context[\s\S]{0,260}(?:no longer needed|not needed (?:for )?next)|context[\s\S]{0,260}(?:no longer needed|not needed (?:for )?next)/i,
+		);
+		expect(compactGuidance).toMatch(/work boundar\w*|phase boundar\w*|task boundar\w*|after finishing/i);
+	});
+	test("advisor skills prompt preserves Skills & Rules and reminds advisor to supervise skill use", () => {
+		const baseSkillsSection = [
+			"# Skills & Rules",
+			"Skills are specialized knowledge. If one matches your task, you MUST read `skill://<name>` before proceeding.",
+			"<skills>",
+			"- brainstorming: Use before creative work.",
+			"- test-driven-development: Use before production code.",
+			"</skills>",
+		].join("\n");
+		const baseInternalUrlsSection = [
+			"# Internal URLs",
+			"- `skill://<name>`: skill instructions; `/<path>` = file within",
+			"- `rule://<name>`: rule details",
+		].join("\n");
+		const basePrompt = [
+			["Base identity block.", baseSkillsSection, baseInternalUrlsSection].join("\n\n"),
+			"Tool block",
+		];
+
+		const advisorSkillsPrompt = buildAdvisorSkillsAndRulesPrompt(basePrompt);
+
+		expect(advisorSkillsPrompt).toContain(baseSkillsSection);
+		expect(advisorSkillsPrompt).toMatch(/monitor(?:ing)? skill usage/i);
+		expect(advisorSkillsPrompt).toMatch(/advise(?:s|d|r|ing)? (?:the )?(?:executor|subagent)/i);
+		expect(advisorSkillsPrompt).toContain("`skill://<name>`");
+		expect(advisorSkillsPrompt).toMatch(/when applicable/i);
+		expect(advisorSkillsPrompt).not.toContain("Base identity block.");
+		expect(advisorSkillsPrompt).not.toContain("# Internal URLs");
+		expect(advisorSkillsPrompt).not.toContain("- `rule://<name>`: rule details");
+		expect(buildAdvisorSkillsAndRulesPrompt(["Base identity block.", "Tool block"])).toBeUndefined();
 	});
 });

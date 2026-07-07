@@ -375,7 +375,7 @@ describe("Settings", () => {
 				smol: "anthropic/claude-haiku-4-5",
 				slow: "openai-codex/gpt-5.5:xhigh",
 				plan: "anthropic/claude-fable-5:high",
-				designer: "anthropic/claude-opus-4-8",
+				designer: "tnx/designer:medium",
 				commit: "openai-codex/gpt-5.5:low",
 			});
 			expect(settings.getModelRole("default")).toBe("openai/gpt-5.2-codex");
@@ -550,7 +550,7 @@ describe("Settings", () => {
 				task: "openai-codex/gpt-5.5:low",
 				slow: "openai-codex/gpt-5.5:xhigh",
 				plan: "anthropic/claude-fable-5:high",
-				designer: "anthropic/claude-opus-4-8",
+				designer: "tnx/designer:medium",
 				commit: "openai-codex/gpt-5.5:low",
 			});
 		});
@@ -767,7 +767,7 @@ describe("Settings", () => {
 			expect(settings.get("power.sleepPrevention")).toBe("off");
 		});
 
-		it("applies setupVersion 1 config defaults without clobbering user values or persisting schema defaults", async () => {
+		it("applies setupVersion 3 config defaults without clobbering user values or persisting schema defaults", async () => {
 			await writeSettings({
 				setupVersion: 0,
 				modelRoles: {
@@ -794,18 +794,21 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			await settings.flush();
 
-			expect(settings.get("setupVersion")).toBe(1);
+			expect(settings.get("setupVersion")).toBe(3);
 			expect(settings.get("modelRoles")).toEqual({
 				default: "custom/default",
 				task: "openai-codex/gpt-5.5:low",
-				smol: "openai-codex/gpt-5.5:low",
+				smol: "tnx/smol:medium",
 				slow: "openai-codex/gpt-5.5:xhigh",
 				plan: "anthropic/claude-fable-5:high",
-				designer: "anthropic/claude-opus-4-8",
+				designer: "tnx/designer:medium",
 				commit: "openai-codex/gpt-5.5:low",
 			});
 			expect(settings.get("task.agentModelOverrides")).toEqual({
-				designer: "anthropic/claude-opus-4-8:xhigh",
+				designer: "tnx/designer",
+				frontend_ui: "tnx/designer",
+				ui_ux_reviewer: "tnx/designer",
+				ux_copywriter: "tnx/designer",
 				oracle: "openai-codex/gpt-5.5:xhigh",
 				plan: "openai-codex/gpt-5.5:xhigh",
 				qa: "custom/qa",
@@ -834,7 +837,7 @@ describe("Settings", () => {
 			});
 
 			const onDisk = await readSettings();
-			expect(onDisk.setupVersion).toBe(1);
+			expect(onDisk.setupVersion).toBe(3);
 			expect(onDisk.modelRoles).toEqual(settings.get("modelRoles"));
 			expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual(
 				settings.get("task.agentModelOverrides"),
@@ -851,8 +854,80 @@ describe("Settings", () => {
 			resetSettingsForTest();
 			const rerunSettings = await Settings.init({ cwd: projectDir, agentDir });
 			await rerunSettings.flush();
-			expect(rerunSettings.get("setupVersion")).toBe(1);
+			expect(rerunSettings.get("setupVersion")).toBe(3);
 			expect(await readSettings()).toEqual(firstMigration);
+		});
+
+		it("migrates old designer agent overrides to the designer provider alias", async () => {
+			await writeSettings({
+				setupVersion: 1,
+				task: {
+					agentModelOverrides: {
+						designer: "anthropic/claude-opus-4-8:xhigh",
+						frontend_ui: "pi/designer",
+						ui_ux_reviewer: "pi/designer",
+						ux_copywriter: "pi/designer",
+						qa: "custom/qa",
+					},
+				},
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("setupVersion")).toBe(3);
+			expect(settings.get("task.agentModelOverrides")).toMatchObject({
+				designer: "tnx/designer",
+				frontend_ui: "tnx/designer",
+				ui_ux_reviewer: "tnx/designer",
+				ux_copywriter: "tnx/designer",
+				qa: "custom/qa",
+			});
+		});
+
+		it("does not clobber custom UI specialist overrides when migrating designer defaults", async () => {
+			await writeSettings({
+				setupVersion: 1,
+				task: {
+					agentModelOverrides: {
+						designer: "custom/designer",
+						frontend_ui: "custom/frontend",
+						ui_ux_reviewer: "custom/reviewer",
+						ux_copywriter: "custom/copy",
+						qa: "custom/qa",
+					},
+				},
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("setupVersion")).toBe(3);
+			expect(settings.get("task.agentModelOverrides")).toMatchObject({
+				designer: "custom/designer",
+				frontend_ui: "custom/frontend",
+				ui_ux_reviewer: "custom/reviewer",
+				ux_copywriter: "custom/copy",
+				qa: "custom/qa",
+			});
+		});
+
+		it("migrates exact old TNX role defaults to medium thinking without clobbering custom roles", async () => {
+			await writeSettings({
+				setupVersion: 2,
+				modelRoles: {
+					smol: "tnx/smol",
+					designer: "tnx/designer",
+					task: "custom/task",
+				},
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("setupVersion")).toBe(3);
+			expect(settings.get("modelRoles")).toMatchObject({
+				smol: "tnx/smol:medium",
+				designer: "tnx/designer:medium",
+				task: "custom/task",
+			});
 		});
 
 		describe("provider request limits", () => {

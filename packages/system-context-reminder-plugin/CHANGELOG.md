@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Required the System Context Reminder persona check to use the recovered bố/con persona instead of Ngài or lord.
+
 ## [1.5.1] - 2026-07-04
 
 ### Fixed

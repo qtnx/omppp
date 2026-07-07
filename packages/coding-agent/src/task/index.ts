@@ -22,6 +22,7 @@ import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { ContextFileEntry, ToolSession } from "..";
 import { resolveAgentModelPatterns, selectHeadroomAwareModelPatterns } from "../config/model-resolver";
+import type { Skill } from "../extensibility/skills";
 import type { Theme } from "../modes/theme/theme";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
@@ -81,6 +82,16 @@ import {
 	parseIsolationMode,
 	type WorktreeBaseline,
 } from "./worktree";
+
+const DESIGN_SKILL_AGENT_NAMES = new Set(["designer", "frontend_ui", "ui_ux_reviewer", "ux_copywriter"]);
+const DESIGN_RELATED_SKILL_PATTERN =
+	/(^|[-_\\s])(frontend|front-end|ui|ux|design|designer|visual|accessibility|a11y|copy|microcopy|responsive)([-_\\s]|$)/i;
+
+function isDesignRelatedSkill(skill: Skill): boolean {
+	const sourceLevel = skill._source?.level;
+	if (sourceLevel === "native" || skill.source === "native" || skill.source.endsWith(":native")) return false;
+	return DESIGN_RELATED_SKILL_PATTERN.test(`${skill.name} ${skill.description}`);
+}
 
 function renderSubagentUserPrompt(assignment: string): string {
 	return prompt.render(subagentUserPromptTemplate, {
@@ -1388,12 +1399,25 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			}
 
 			const availableSkills = this.session.skills ?? [];
-			const resolveAutoloadSkills = (agentDefinition: AgentDefinition) =>
-				agentDefinition.autoloadSkills?.length && availableSkills.length > 0
-					? agentDefinition.autoloadSkills
-							.map(name => availableSkills.find(skill => skill.name === name))
-							.filter((skill): skill is NonNullable<typeof skill> => skill !== undefined)
-					: [];
+			const resolveAutoloadSkills = (agentDefinition: AgentDefinition): Skill[] => {
+				if (availableSkills.length === 0) return [];
+				const resolved: Skill[] = [];
+				const seen = new Set<string>();
+				for (const name of agentDefinition.autoloadSkills ?? []) {
+					const skill = availableSkills.find(candidate => candidate.name === name);
+					if (!skill || seen.has(skill.name)) continue;
+					seen.add(skill.name);
+					resolved.push(skill);
+				}
+				if (DESIGN_SKILL_AGENT_NAMES.has(agentDefinition.name)) {
+					for (const skill of availableSkills) {
+						if (seen.has(skill.name) || !isDesignRelatedSkill(skill)) continue;
+						seen.add(skill.name);
+						resolved.push(skill);
+					}
+				}
+				return resolved;
+			};
 			const resolveSessionSkills = (agentDefinition: AgentDefinition) =>
 				usesRestrictedResourceProfile(agentDefinition) ? resolveAutoloadSkills(agentDefinition) : availableSkills;
 			const resolvedAutoloadSkills = resolveAutoloadSkills(effectiveAgent);

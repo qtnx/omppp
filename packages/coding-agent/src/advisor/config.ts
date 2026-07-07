@@ -66,7 +66,7 @@ const KNOWN_TOOL_NAMES = new Set<string>(BUILTIN_TOOL_NAMES);
  * Keep only valid tool names from an advisor's `tools` list, dropping unknowns
  * with a warning. The advisor is a full agent, so any built tool may be granted;
  * the runtime further filters to what's actually available this session. An empty
- * result (or no list) means "use the default subset" (read/grep/glob).
+ * result (or no list) means "use the default subset" (read/grep/glob/super_review).
  */
 function filterAdvisorTools(tools: string[] | undefined, sourcePath: string): string[] | undefined {
 	if (!tools || tools.length === 0) return undefined;

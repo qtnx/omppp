@@ -175,7 +175,7 @@ export type ConfigMigrationApplyResult = {
 	changedPaths: string[];
 };
 
-const SETUP_CONFIG_VERSION = 1;
+const SETUP_CONFIG_VERSION = 3;
 
 const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 	{
@@ -183,17 +183,20 @@ const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 		target: {
 			default: "openai-codex/gpt-5.5",
 			task: "openai-codex/gpt-5.5:low",
-			smol: "openai-codex/gpt-5.5:low",
+			smol: "tnx/smol:medium",
 			slow: "openai-codex/gpt-5.5:xhigh",
 			plan: "anthropic/claude-fable-5:high",
-			designer: "anthropic/claude-opus-4-8",
+			designer: "tnx/designer:medium",
 			commit: "openai-codex/gpt-5.5:low",
 		},
 	},
 	{
 		path: "task.agentModelOverrides",
 		target: {
-			designer: "anthropic/claude-opus-4-8:xhigh",
+			designer: "tnx/designer",
+			frontend_ui: "tnx/designer",
+			ui_ux_reviewer: "tnx/designer",
+			ux_copywriter: "tnx/designer",
 			oracle: "openai-codex/gpt-5.5:xhigh",
 			plan: "openai-codex/gpt-5.5:xhigh",
 			qa: "openai-codex/gpt-5.5:high",
@@ -1519,6 +1522,43 @@ export class Settings {
 				if (changed) {
 					setByPath(raw, migration.path.split("."), record);
 					setupModifiedPaths.add(migration.path);
+				}
+			}
+
+			const agentModelOverrides = getByPath(raw, SETTING_PATH_SEGMENTS["task.agentModelOverrides"]);
+			if (isRecord(agentModelOverrides)) {
+				const uiSpecialistOverrideKeys = ["designer", "frontend_ui", "ui_ux_reviewer", "ux_copywriter"] as const;
+				let overridesChanged = false;
+				for (const key of uiSpecialistOverrideKeys) {
+					const value = agentModelOverrides[key];
+					if (value === "pi/designer") {
+						agentModelOverrides[key] = "tnx/designer";
+						overridesChanged = true;
+						continue;
+					}
+					if (key === "designer" && value === "anthropic/claude-opus-4-8:xhigh") {
+						agentModelOverrides[key] = "tnx/designer";
+						overridesChanged = true;
+					}
+				}
+				if (overridesChanged) {
+					setupModifiedPaths.add("task.agentModelOverrides");
+				}
+			}
+
+			const modelRoles = getByPath(raw, SETTING_PATH_SEGMENTS.modelRoles);
+			if (setupVersion < 3 && isRecord(modelRoles)) {
+				let modelRolesChanged = false;
+				if (modelRoles.smol === "tnx/smol") {
+					modelRoles.smol = "tnx/smol:medium";
+					modelRolesChanged = true;
+				}
+				if (modelRoles.designer === "tnx/designer") {
+					modelRoles.designer = "tnx/designer:medium";
+					modelRolesChanged = true;
+				}
+				if (modelRolesChanged) {
+					setupModifiedPaths.add("modelRoles");
 				}
 			}
 

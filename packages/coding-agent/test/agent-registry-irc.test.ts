@@ -84,6 +84,17 @@ function bundledAgentIrcEnabled(name: string): boolean {
 	return agent.tools === undefined || agent.tools.includes("irc");
 }
 
+describe("IrcTool model-facing guidance", () => {
+	it("distinguishes IRC messages from subagent result delivery", () => {
+		const registry = new AgentRegistry();
+		const description = new IrcTool(createToolSession(registry, "sender")).description;
+
+		expect(description).toContain("IRC waits are for explicit peer answers and IRC/steering interruptions");
+		expect(description).toContain("use `job` poll");
+		expect(description).toContain("Subagent completions");
+	});
+});
+
 describe("filterInitialToolsForDiscoveryAll IRC preservation", () => {
 	const filterWithForcedIrc = (initialToolNames: string[]): string[] =>
 		filterInitialToolsForDiscoveryAll(initialToolNames, {

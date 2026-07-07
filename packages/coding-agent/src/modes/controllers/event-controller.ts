@@ -1218,10 +1218,6 @@ export class EventController {
 	): Promise<void> {
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
-		this.ctx.autoCompactionEscapeHandler = this.ctx.editor.onEscape;
-		this.ctx.editor.onEscape = () => {
-			this.ctx.session.abortCompaction();
-		};
 		this.#setTerminalProgress(true);
 		this.#stopWorkingLoader();
 		this.ctx.statusContainer.clear();
@@ -1364,10 +1360,6 @@ export class EventController {
 	}
 
 	async #handleAutoRetryStart(event: Extract<AgentSessionEvent, { type: "auto_retry_start" }>): Promise<void> {
-		this.ctx.retryEscapeHandler = this.ctx.editor.onEscape;
-		this.ctx.editor.onEscape = () => {
-			this.ctx.session.abortRetry();
-		};
 		this.#stopWorkingLoader();
 		this.ctx.statusContainer.clear();
 		if (AIError.is(event.errorId, AIError.Flag.ThinkingLoop)) {

@@ -84,6 +84,7 @@ describe("AgentSession retry fallback", () => {
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		authStorage.setRuntimeApiKey("anthropic", "anthropic-test-key");
 		authStorage.setRuntimeApiKey("openai", "openai-test-key");
+		authStorage.setRuntimeApiKey("openai-codex", "openai-codex-test-key");
 		authStorage.setRuntimeApiKey("google", "google-test-key");
 		authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
 		authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
@@ -663,6 +664,87 @@ describe("AgentSession retry fallback", () => {
 		const lastAssistant = getLastAssistantMessage(session);
 		expect(lastAssistant.stopReason).toBe("stop");
 		expect(lastAssistant.content).toContainEqual({ type: "text", text: "Recovered on primary retry" });
+	});
+
+	it("does not fall back for Codex websocket transport errors", async () => {
+		const primaryModel = getBundledModel("openai-codex", "gpt-5.5");
+		const fallbackModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled Codex and fallback test models to exist");
+		}
+
+		const transportMessage =
+			"The socket connection was closed unexpectedly: Codex websocket transport error: websocket closed (1006)";
+		const requestedModels: string[] = [];
+		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+		const transportError = new Error(transportMessage);
+		transportError.name = "CodexWebSocketTransportError";
+		const mock = createMockModel({
+			responses: [{ throw: transportError }, { content: ["Recovered on Codex websocket retry"] }],
+		});
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => {
+				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
+				return mock.stream(requestedModel, context, options);
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": true,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+			},
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents, retryEndEvents } = trackRetryEvents(session);
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_applied") {
+				fallbackAppliedEvents.push(event);
+			}
+		});
+
+		await session.prompt("Retry Codex websocket transport error");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+		]);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryStartEvents[0]).toMatchObject({
+			attempt: 1,
+			maxAttempts: 1,
+			errorMessage: transportMessage,
+		});
+		expect(retryStartEvents[0].delayMs).toBeGreaterThan(0);
+		expect(retryStartEvents[0].delayMs).toBeLessThanOrEqual(5);
+		expect(waitSpy).toHaveBeenCalledWith(retryStartEvents[0].delayMs, { signal: expect.any(AbortSignal) });
+		expect(retryEndEvents).toHaveLength(1);
+		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 1 });
+		expect(fallbackAppliedEvents).toHaveLength(0);
+		expect(session.model?.provider).toBe(primaryModel.provider);
+		expect(session.model?.id).toBe(primaryModel.id);
+		const lastAssistant = getLastAssistantMessage(session);
+		expect(lastAssistant.stopReason).toBe("stop");
+		expect(lastAssistant.content).toContainEqual({ type: "text", text: "Recovered on Codex websocket retry" });
 	});
 
 	it("auto-retries preserved OpenAI first-event timeout errors", async () => {

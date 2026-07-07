@@ -242,25 +242,25 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		const allTrackedJobs = [...cancelledJobs, ...jobsToWatch];
 
 		let waitingCompactionChecked = false;
-		let compactionScheduledDuringWait = false;
-		// A fresh waiting-triggered request should escape this tool call quickly so
-		// the safe turn-end compaction boundary runs before large job results arrive.
-		let breakForCompaction = false;
+		let showCompactionScheduledNote = false;
+		// A waiting-triggered request must escape this tool call quickly so the
+		// safe turn-end compaction boundary runs before large job results arrive.
+		let yieldForCompactionBoundary = false;
 		const considerWaitingCompaction = (): void => {
 			if (waitingCompactionChecked) return;
 			const result = this.session.considerCompactionWhileWaiting?.("context heavy while waiting on subagents");
 			if (result?.status === "scheduled" || result?.status === "already-scheduled") {
 				waitingCompactionChecked = true;
-				compactionScheduledDuringWait = result.status === "scheduled";
-				breakForCompaction = result.status === "scheduled";
+				showCompactionScheduledNote = true;
+				yieldForCompactionBoundary = true;
 			}
 		};
 		considerWaitingCompaction();
-		if (breakForCompaction && watchedJobIds.some(id => manager.getJob(id)?.status === "running")) {
+		if (yieldForCompactionBoundary && watchedJobIds.some(id => manager.getJob(id)?.status === "running")) {
 			// Return the still-running snapshot now; onTurnEnd will consume the fresh
 			// request and compact before the model's next poll.
 			manager.unwatchJobs(watchedJobIds);
-			return this.#buildResult(manager, allTrackedJobs, cancelOutcomes, compactionScheduledDuringWait);
+			return this.#buildResult(manager, allTrackedJobs, cancelOutcomes, showCompactionScheduledNote);
 		}
 
 		const PROGRESS_INTERVAL_MS = 500;
@@ -328,7 +328,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 				if (watchedJobIds.some(id => manager.getJob(id)?.status !== "running")) break;
 				if (!isBlockMode) break;
 				considerWaitingCompaction();
-				if (breakForCompaction && watchedJobIds.some(id => manager.getJob(id)?.status === "running")) {
+				if (yieldForCompactionBoundary && watchedJobIds.some(id => manager.getJob(id)?.status === "running")) {
 					// Break only while a running job remains, preserving normal completed-result
 					// delivery when the race resolved because the watched jobs finished.
 					break;
@@ -348,14 +348,14 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 			isScheduled &&
 			!signal?.aborted &&
 			!asideWoke &&
-			!breakForCompaction &&
+			!yieldForCompactionBoundary &&
 			!this.session.hasPendingAgentAsides?.() &&
 			watchedJobIds.every(id => manager.getJob(id)?.status === "running");
 		return this.#buildResult(
 			manager,
 			allTrackedJobs,
 			cancelOutcomes,
-			compactionScheduledDuringWait,
+			showCompactionScheduledNote,
 			windowExpired ? { windowMs: waitMs!, nextWindowMs: manager.peekNextPollWaitMs(ownerId) } : undefined,
 		);
 	}

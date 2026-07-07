@@ -10,6 +10,7 @@ import type {
 	SimpleStreamOptions,
 	ThinkingConfig,
 } from "@oh-my-pi/pi-ai/types";
+import { Effort } from "@oh-my-pi/pi-ai/types";
 import type { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { isVertexExpressOpenAIUrl } from "@oh-my-pi/pi-catalog/hosts";
@@ -47,6 +48,12 @@ const STARTUP_MODEL_CACHE_PROVIDER_IDS: readonly string[] = [
 // provider modules at startup. Must match packages/ai/src/registry/llama-cpp.ts,
 // packages/ai/src/registry/lm-studio.ts, and packages/ai/src/registry/vllm.ts.
 const LOCAL_PROVIDER_PLACEHOLDERS = new Set<string>(["llama-cpp-local", "lm-studio-local", "vllm-local"]);
+const TNX_DEFAULT_BASE_URL = "http://codemc:20128/v1";
+const TNX_DEFAULT_MODEL_ID = "gpt-5.5";
+const TNX_SMOL_MODEL_ID = "smol";
+const TNX_DESIGNER_MODEL_ID = "designer";
+const TNX_SUPER_MODEL_ID = "super";
+const TNX_DEFAULT_API_KEY = "sk-daf152fc8f22af06-lcnxi7-64c35215";
 
 import type { ApiKeyResolver, FetchImpl } from "@oh-my-pi/pi-ai";
 import { registerOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
@@ -507,6 +514,45 @@ function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<A
 	return applyModelPatch(model, override as ModelPatch, "merge");
 }
 
+const TNX_SMOL_MODEL_PATCH: ModelPatch = {
+	name: "smol",
+	reasoning: true,
+	thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] },
+	input: ["text", "image"],
+	cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+	contextWindow: 256_000,
+	maxTokens: 128_000,
+};
+
+const TNX_DESIGNER_MODEL_PATCH: ModelPatch = {
+	name: "designer",
+	reasoning: true,
+	thinking: {
+		mode: "anthropic-adaptive",
+		efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+		effortMap: {
+			[Effort.Minimal]: Effort.Low,
+			[Effort.Low]: Effort.Medium,
+			[Effort.Medium]: Effort.High,
+			[Effort.High]: Effort.XHigh,
+			[Effort.XHigh]: Effort.Max,
+			[Effort.Max]: Effort.Max,
+		},
+		supportsDisplay: true,
+	},
+	input: ["text", "image"],
+	cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+	contextWindow: 1_000_000,
+	maxTokens: 128_000,
+};
+
+function tnxRoleModelPatch(model: Model<Api>): ModelPatch | undefined {
+	if (model.provider !== "tnx") return undefined;
+	if (model.id === TNX_SMOL_MODEL_ID) return TNX_SMOL_MODEL_PATCH;
+	if (model.id === TNX_DESIGNER_MODEL_ID) return TNX_DESIGNER_MODEL_PATCH;
+	return undefined;
+}
+
 interface CustomModelDefinitionLike extends ModelPatch {
 	id: string;
 	api?: Api;
@@ -691,6 +737,11 @@ function getDisabledProviderIdsFromSettings(): Set<string> {
 	}
 }
 
+interface ModelRegistryOptions {
+	fetch?: FetchImpl;
+	ignoreUserConfig?: boolean;
+}
+
 /**
  * Model registry - loads and manages models, resolves API keys via AuthStorage.
  */
@@ -722,6 +773,7 @@ export class ModelRegistry {
 	// Keyed by provider name; use the same SQLite cache path as builtins.
 	#runtimeModelManagers: Map<string, { options: ModelManagerOptions<Api>; sourceId: string }> = new Map();
 	#fetch: FetchImpl;
+	#ignoreUserConfig: boolean;
 
 	#resolveCommandBackedApiKey(provider: string): CommandApiKeyResolution {
 		const keyConfig = this.#customProviderApiKeys.get(provider);
@@ -757,7 +809,7 @@ export class ModelRegistry {
 	constructor(
 		readonly authStorage: AuthStorage,
 		modelsPath?: string,
-		options?: { fetch?: FetchImpl },
+		options?: ModelRegistryOptions,
 	) {
 		this.#fetch =
 			options?.fetch ??
@@ -766,6 +818,7 @@ export class ModelRegistry {
 				: wrapFetchForExtraCa(fetch));
 		this.#modelsConfigFile = ModelsConfigFile.relocate(modelsPath);
 		this.#cacheDbPath = modelsPath ? path.join(path.dirname(modelsPath), "models.db") : undefined;
+		this.#ignoreUserConfig = options?.ignoreUserConfig ?? false;
 		// Set up fallback resolver for custom provider API keys
 		this.authStorage.setFallbackResolver(provider => {
 			const keyConfig = this.#customProviderApiKeys.get(provider);
@@ -914,6 +967,9 @@ export class ModelRegistry {
 
 	#loadModels() {
 		// Load custom models from models.json first (to know which providers to override)
+		const customModelResult: CustomModelsResult = this.#ignoreUserConfig
+			? { found: false }
+			: this.#loadCustomModels();
 		const {
 			models: customModels = [],
 			overrides = new Map(),
@@ -922,7 +978,7 @@ export class ModelRegistry {
 			discoverableProviders = [],
 			configuredProviders = new Set(),
 			error: configError,
-		} = this.#loadCustomModels();
+		} = customModelResult;
 		this.#configError = configError;
 		this.#keylessProviders = keylessProviders;
 		this.#discoverableProviders = discoverableProviders;
@@ -971,7 +1027,7 @@ export class ModelRegistry {
 	/** Load built-in models, applying provider-level overrides only.
 	 *  Per-model overrides are applied later by #applyModelOverrides. */
 	#loadBuiltInModels(overrides: Map<string, ProviderOverride>): Model<Api>[] {
-		return getBundledProviders().flatMap(provider => {
+		const bundledModels = getBundledProviders().flatMap(provider => {
 			const models = getBundledModels(provider as Parameters<typeof getBundledModels>[0]) as Model<Api>[];
 			const providerOverride = overrides.get(provider);
 
@@ -984,6 +1040,97 @@ export class ModelRegistry {
 				} as ModelSpec<Api>);
 			});
 		});
+		const tnxBaseUrl = Bun.env.TNX_BASE_URL || TNX_DEFAULT_BASE_URL;
+		const tnxModels = [
+			buildModel({
+				id: TNX_DEFAULT_MODEL_ID,
+				name: "GPT-5.5",
+				provider: "tnx",
+				api: "openai-completions",
+				baseUrl: tnxBaseUrl,
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+				contextWindow: 272000,
+				maxTokens: 128000,
+				thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] },
+			}),
+			buildModel({
+				id: TNX_SMOL_MODEL_ID,
+				name: "smol",
+				provider: "tnx",
+				api: "openai-completions",
+				baseUrl: tnxBaseUrl,
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+				contextWindow: 256000,
+				maxTokens: 128000,
+				thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] },
+			}),
+			buildModel({
+				id: TNX_DESIGNER_MODEL_ID,
+				name: "designer",
+				provider: "tnx",
+				api: "openai-completions",
+				baseUrl: tnxBaseUrl,
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+				contextWindow: 1000000,
+				maxTokens: 128000,
+				thinking: {
+					mode: "anthropic-adaptive",
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+					effortMap: {
+						[Effort.Minimal]: Effort.Low,
+						[Effort.Low]: Effort.Medium,
+						[Effort.Medium]: Effort.High,
+						[Effort.High]: Effort.XHigh,
+						[Effort.XHigh]: Effort.Max,
+						[Effort.Max]: Effort.Max,
+					},
+					supportsDisplay: true,
+				},
+			}),
+			buildModel({
+				id: TNX_SUPER_MODEL_ID,
+				name: "super",
+				provider: "tnx",
+				api: "openai-completions",
+				baseUrl: tnxBaseUrl,
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+				contextWindow: 1_000_000,
+				maxTokens: 128_000,
+				thinking: {
+					mode: "anthropic-adaptive",
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+					effortMap: {
+						[Effort.Minimal]: Effort.Low,
+						[Effort.Low]: Effort.Medium,
+						[Effort.Medium]: Effort.High,
+						[Effort.High]: Effort.XHigh,
+						[Effort.XHigh]: Effort.Max,
+						[Effort.Max]: Effort.Max,
+					},
+					supportsDisplay: true,
+				},
+			}),
+		];
+		const tnxOverride = overrides.get("tnx");
+		if (!tnxOverride) return [...bundledModels, ...tnxModels];
+		return [
+			...bundledModels,
+			...tnxModels.map(tnxModel => {
+				const withTransportOverride = this.#applyProviderTransportOverride(tnxModel, tnxOverride);
+				return buildModel({
+					...withTransportOverride,
+					compat: mergeCompat(tnxModel.compatConfig, tnxOverride.compat),
+				} as ModelSpec<Api>);
+			}),
+		];
 	}
 
 	#mergeResolvedModels(baseModels: Model<Api>[], replacementModels: Model<Api>[]): Model<Api>[] {
@@ -1200,6 +1347,16 @@ export class ModelRegistry {
 				optional: true,
 			});
 			this.#keylessProviders.add("lm-studio");
+		}
+		if (!configuredProviders.has("tnx") && !disabledProviders.has("tnx")) {
+			this.#discoverableProviders.push({
+				provider: "tnx",
+				api: "openai-completions",
+				baseUrl: Bun.env.TNX_BASE_URL || TNX_DEFAULT_BASE_URL,
+				discovery: { type: "openai-models-list" },
+				optional: true,
+			});
+			this.#keylessProviders.add("tnx");
 		}
 	}
 
@@ -1743,6 +1900,10 @@ export class ModelRegistry {
 	}
 	#applyHardcodedModelPolicies(models: Model<Api>[]): Model<Api>[] {
 		return models.map(model => {
+			const tnxPatch = tnxRoleModelPatch(model);
+			if (tnxPatch) {
+				model = applyModelPatch(model, tnxPatch, "merge");
+			}
 			if (model.provider === "ollama-cloud" && model.omitMaxOutputTokens !== true) {
 				model = applyModelOverride(model, { omitMaxOutputTokens: true });
 			}
@@ -1885,6 +2046,9 @@ export class ModelRegistry {
 	async getApiKey(model: Model<Api>, sessionId?: string): Promise<string | undefined> {
 		const commandKey = this.#resolveCommandBackedApiKey(model.provider);
 		if (commandKey.configured) return commandKey.value;
+		if (model.provider === "tnx" && !this.authStorage.hasAuth(model.provider)) {
+			return TNX_DEFAULT_API_KEY;
+		}
 		if (this.#keylessProviders.has(model.provider) && !this.authStorage.hasAuth(model.provider)) {
 			return kNoAuth;
 		}
@@ -1905,6 +2069,9 @@ export class ModelRegistry {
 	): Promise<string | undefined> {
 		const commandKey = this.#resolveCommandBackedApiKey(provider);
 		if (commandKey.configured) return commandKey.value;
+		if (provider === "tnx" && !this.authStorage.hasAuth(provider)) {
+			return TNX_DEFAULT_API_KEY;
+		}
 		if (this.#keylessProviders.has(provider) && !this.authStorage.hasAuth(provider)) {
 			return kNoAuth;
 		}

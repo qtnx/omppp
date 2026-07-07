@@ -74,6 +74,7 @@ describe("settings layout", () => {
 		const advisorDependentPaths: SettingPath[] = ["advisor.subagents", "advisor.syncBacklog", "advisor.immuneTurns"];
 		const advisorDependentPathSet = new Set(advisorDependentPaths);
 		const defs = getSettingsForTab("model").filter(def => advisorDependentPathSet.has(def.path));
+		Settings.instance.set("advisor.enabled", false);
 
 		expect(defs.map(def => def.path)).toEqual(advisorDependentPaths);
 		for (const def of defs) {

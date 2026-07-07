@@ -85,7 +85,11 @@ describe("AgentSession tool-discovery mode reconcile", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "tools.discoveryMode": "off" }),
+			settings: Settings.isolated({
+				"advisor.consult": false,
+				"advisor.enabled": false,
+				"tools.discoveryMode": "off",
+			}),
 			modelRegistry: {} as never,
 			toolRegistry,
 			rebuildSystemPrompt: async toolNames => ({ systemPrompt: [`tools:${toolNames.join(",")}`] }),
@@ -122,7 +126,11 @@ describe("AgentSession tool-discovery mode reconcile", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "tools.discoveryMode": "all" }),
+			settings: Settings.isolated({
+				"advisor.consult": false,
+				"advisor.enabled": false,
+				"tools.discoveryMode": "all",
+			}),
 			modelRegistry: {} as never,
 			toolRegistry,
 			rebuildSystemPrompt: async toolNames => ({ systemPrompt: [`tools:${toolNames.join(",")}`] }),

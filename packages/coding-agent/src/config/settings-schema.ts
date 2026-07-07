@@ -399,7 +399,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"advisor.enabled": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "model",
 			group: "Advisor",

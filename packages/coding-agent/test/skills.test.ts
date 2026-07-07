@@ -5,12 +5,14 @@ import * as path from "node:path";
 import { type Skill as CapabilitySkill, skillCapability } from "@oh-my-pi/pi-coding-agent/capability/skill";
 import { getCapability } from "@oh-my-pi/pi-coding-agent/discovery";
 import {
+	buildSkillPromptMessage,
 	loadSkills,
 	loadSkillsFromDir,
 	parseSkillInvocation,
 	type Skill,
 } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 
 const fixturesDir = path.resolve(import.meta.dirname, "fixtures/skills");
 const collisionFixturesDir = path.resolve(import.meta.dirname, "fixtures/skills-collision");
@@ -24,6 +26,28 @@ const expectedFixtureSkillOrder: string[] = [
 	"unknown-field",
 	"valid-skill",
 ];
+
+const ARCHIVE_ENGINEERING_SKILL_NAMES = [
+	"api-design",
+	"bug-hunting",
+	"code-review-lens",
+	"codebase-recon",
+	"concurrency-correctness",
+	"database-craft",
+	"dependency-doctor",
+	"feature-anatomy",
+	"git-craft",
+	"incident-response",
+	"migration-upgrade",
+	"observability-instrumentation",
+	"refactoring-safely",
+	"repo-runbook",
+	"security-review",
+	"subagents-development",
+	"verify-before-done",
+	"work-playbooks",
+	"writing-tests-that-matter",
+] as const;
 
 /**
  * Disable every named built-in skill source. Used by `loadSkills` option tests
@@ -399,6 +423,293 @@ description: Skill loaded from a tilde-expanded custom directory.
 			homedirSpy.mockRestore();
 			await removeWithRetries(fakeHome);
 		}
+	});
+
+	describe("bundled frontend skills", () => {
+		const setupIsolatedFrontendSkillHome = async (prefix: string) => {
+			const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+			const tempCwd = path.join(tempHome, "work");
+			const originalAgentDir = getAgentDir();
+			await fs.mkdir(tempCwd, { recursive: true });
+			const homedirSpy = spyOn(os, "homedir").mockReturnValue(tempHome);
+			setAgentDir(path.join(tempHome, ".omp", "agent"));
+
+			return {
+				tempHome,
+				tempCwd,
+				async cleanup() {
+					homedirSpy.mockRestore();
+					setAgentDir(originalAgentDir);
+					await removeWithRetries(tempHome);
+				},
+			};
+		};
+
+		const expectOnlyBundledFrontendSkills = (skills: Skill[]) => {
+			const frontendSkills = skills
+				.filter(skill => skill.name.startsWith("frontend-"))
+				.map(skill => [skill.name, skill.source] as const)
+				.toSorted(([leftName], [rightName]) => leftName.localeCompare(rightName));
+
+			expect(frontendSkills).toEqual([
+				["frontend-accessibility", "bundled:native"],
+				["frontend-design", "bundled:native"],
+				["frontend-ui-copy", "bundled:native"],
+			]);
+		};
+
+		const expectNoReviewerComments = (message: string) => {
+			expect(message).not.toContain("[REVIEW");
+			expect(message).not.toContain("# REVIEW");
+		};
+
+		it("loads archive engineering skills as bundled native skills with renderable guidance", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-engineering-skills-home-");
+
+			try {
+				const { skills, warnings } = await loadSkills({ cwd: fixture.tempCwd });
+				const byName = new Map(skills.map(skill => [skill.name, skill]));
+				const missingSkills = ARCHIVE_ENGINEERING_SKILL_NAMES.filter(name => !byName.has(name));
+				const wrongSources = ARCHIVE_ENGINEERING_SKILL_NAMES.flatMap(name => {
+					const skill = byName.get(name);
+					return skill && skill.source !== "bundled:native" ? [`${name}: ${skill.source}`] : [];
+				});
+				const emptyDescriptions = ARCHIVE_ENGINEERING_SKILL_NAMES.filter(name => {
+					const description = byName.get(name)?.description;
+					return description !== undefined && description.trim() === "";
+				});
+
+				expect(warnings).toEqual([]);
+				expect({ missingSkills, wrongSources, emptyDescriptions }).toEqual({
+					missingSkills: [],
+					wrongSources: [],
+					emptyDescriptions: [],
+				});
+
+				for (const name of ARCHIVE_ENGINEERING_SKILL_NAMES) {
+					const skill = byName.get(name);
+					if (!skill) throw new Error(`Missing bundled skill ${name}`);
+
+					const { message, details } = await buildSkillPromptMessage(skill, "", "autoload");
+					expect(details.name).toBe(name);
+					expect(message.trim()).not.toBe("");
+					expectNoReviewerComments(message);
+					expect(message).not.toMatch(/<!--|-->/);
+				}
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+
+		it("discovers exactly the three bundled frontend skills without filesystem skill directories", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-frontend-skills-home-");
+
+			try {
+				const { skills, warnings } = await loadSkills({ cwd: fixture.tempCwd });
+
+				expect(warnings).toEqual([]);
+				expectOnlyBundledFrontendSkills(skills);
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+
+		it("keeps exactly the three bundled frontend skills when third-party sources are disabled but native agents are enabled", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-native-skills-home-");
+
+			try {
+				const { skills, warnings } = await loadSkills({
+					enableCodexUser: false,
+					enableClaudeUser: false,
+					enableClaudeProject: false,
+					enablePiUser: false,
+					enablePiProject: false,
+					cwd: fixture.tempCwd,
+				});
+
+				expect(warnings).toEqual([]);
+				expectOnlyBundledFrontendSkills(skills);
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+
+		it("restores bundled frontend-design when a higher-priority native duplicate is disabled", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-shadowed-skills-home-");
+			const nativeSkillDir = path.join(fixture.tempHome, ".omp", "agent", "skills", "frontend-design");
+			await fs.mkdir(nativeSkillDir, { recursive: true });
+			await fs.writeFile(
+				path.join(nativeSkillDir, "SKILL.md"),
+				["---", "description: Disabled native duplicate", "---", "", "# frontend-design"].join("\n"),
+			);
+
+			try {
+				const { skills } = await loadSkills({
+					enableCodexUser: false,
+					enableClaudeUser: false,
+					enableClaudeProject: false,
+					enablePiUser: false,
+					enablePiProject: false,
+					cwd: fixture.tempCwd,
+				});
+				const frontendDesign = skills.find(skill => skill.name === "frontend-design");
+
+				expect(frontendDesign).toBeDefined();
+				expect(frontendDesign?.source).toBe("bundled:native");
+				expect(frontendDesign?.description).toContain("Foundation for all production frontend/UI/UX work");
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+
+		it("autoloads frontend-design guidance for production UI work", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-design-skill-home-");
+
+			try {
+				const { skills } = await loadSkills({ cwd: fixture.tempCwd });
+				const frontendDesign = skills.find(skill => skill.name === "frontend-design");
+				expect(frontendDesign).toBeDefined();
+
+				const { message, details } = await buildSkillPromptMessage(frontendDesign!, "", "autoload");
+				const guidance = message.toLowerCase();
+
+				expect(details.name).toBe("frontend-design");
+				expect(guidance).toContain("design-system");
+				expect(guidance).toContain("mockup");
+				expect(guidance).toContain("responsive");
+				expect(guidance).toContain("motion");
+				expect(guidance).toMatch(/definition[- ]of[- ]done/);
+				expectNoReviewerComments(message);
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+
+		it("autoloads frontend-accessibility guidance for concrete regression checks", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-accessibility-skill-home-");
+
+			try {
+				const { skills } = await loadSkills({ cwd: fixture.tempCwd });
+				const accessibility = skills.find(skill => skill.name === "frontend-accessibility");
+				expect(accessibility).toBeDefined();
+
+				const { message, details } = await buildSkillPromptMessage(accessibility!, "", "autoload");
+				const guidance = message.toLowerCase();
+
+				expect(details.name).toBe("frontend-accessibility");
+				expect(guidance).toContain("keyboard");
+				expect(guidance).toContain("focus");
+				expect(guidance).toContain("form");
+				expect(guidance).toContain("contrast");
+				expect(guidance).toMatch(/live[- ]region/);
+				expect(guidance).toMatch(/red[- ]flag/);
+				expectNoReviewerComments(message);
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+
+		it("autoloads frontend-ui-copy guidance that prevents internal-note leakage", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-ui-copy-skill-home-");
+
+			try {
+				const { skills } = await loadSkills({ cwd: fixture.tempCwd });
+				const uiCopySkill = skills.find(skill => skill.name === "frontend-ui-copy");
+				expect(uiCopySkill).toBeDefined();
+
+				const { message, details } = await buildSkillPromptMessage(uiCopySkill!, "", "autoload");
+				const guidance = message.toLowerCase();
+
+				expect(details.name).toBe("frontend-ui-copy");
+				expect(guidance).toContain("internal note");
+				expect(guidance).toContain("hard rule");
+				expect(guidance).toContain("i18n");
+				expect(guidance).toContain("grep");
+				expect(guidance).toContain("did not");
+				expectNoReviewerComments(message);
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+
+		it("loads bundled verify-before-done native skill with autoload verification contract", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-verify-before-done-skill-home-");
+
+			try {
+				const { skills } = await loadSkills({ cwd: fixture.tempCwd });
+				const verifySkill = skills.find(skill => skill.name === "verify-before-done");
+				if (!verifySkill) throw new Error("verify-before-done bundled skill did not load");
+
+				expect(verifySkill.source).toBe("bundled:native");
+
+				const { message, details } = await buildSkillPromptMessage(verifySkill, "", "autoload");
+				const runtimeVerificationContracts: Array<[contract: string, pattern: RegExp]> = [
+					["real runtime entry point", /real entry point/i],
+					[
+						"built binary or distributable artifact",
+						/built (?:artifact|binary|distributable)|distributable artifact/i,
+					],
+					[
+						"outside repository or source-path install",
+						/(?:outside|not from|away from)[\s\S]{0,120}(?:repo|repository|source path)|(?:clean temp|temporary)[\s\S]{0,120}(?:install|unpack)/i,
+					],
+					[
+						"interactive TUI runtime exercise",
+						/interactive[\s\S]{0,120}(?:TUI|terminal UI)|(?:TUI|terminal UI)[\s\S]{0,120}interactive/i,
+					],
+					["long-running TUI supervision", /tmux|nohup|equivalent/i],
+					[
+						"tests and smoke alone are insufficient",
+						/(?:smoke tests?|tests?\/typecheck|typecheck)[\s\S]{0,160}(?:not enough|insufficient)|(?:not enough|insufficient)[\s\S]{0,160}(?:smoke tests?|tests?\/typecheck|typecheck)/i,
+					],
+					["failure path is exercised", /failure path|failing path|negative path|error path/i],
+					[
+						"cleanup removes VERIFY-TEMP while harness handoff is allowed",
+						/(?:always )?remove VERIFY-TEMP[\s\S]{0,200}(?:prove|markers remain|before completion)|leave[\s\S]{0,160}(?:harness|dev (?:server|harness))[\s\S]{0,120}manual testing[\s\S]{0,120}cleanup command/i,
+					],
+					[
+						"existing dev server or harness reuse",
+						/reuse an existing (?:dev server|compose|preview)|reuse[\s\S]{0,80}existing (?:dev server|session|compose)/i,
+					],
+					[
+						"hot reload or live reload freshness proof",
+						/hot\/live[- ]reload|without proven hot\/live reload|hot\/live-reload proof/i,
+					],
+					[
+						"avoid duplicate harness or server startup",
+						/do not start a duplicate (?:server|harness)|duplicate harnesses behind/i,
+					],
+					[
+						"restart or boot when stale or wrong env/store",
+						/when fresh and on the correct env\/store|restart before re-testing|otherwise boot/i,
+					],
+					["manual testing handoff", /manual testing|manual script|close with:/i],
+					[
+						"VERIFY-TEMP cleanup is required",
+						/VERIFY-TEMP[\s\S]{0,120}(?:remove|cleanup|searching for VERIFY-TEMP)|prove no VERIFY-TEMP markers remain/i,
+					],
+					["runtime side effects or state are checked", /side effects?|state/i],
+				];
+
+				const missingContracts = runtimeVerificationContracts
+					.filter(([, pattern]) => !pattern.test(message))
+					.map(([contract]) => contract);
+
+				expect(details.name).toBe("verify-before-done");
+				expect(missingContracts).toEqual([]);
+				expect(message).toMatch(/SELF-RESCUE/);
+				expect(message).toMatch(/VERIFY-TEMP/);
+				expect(message).toMatch(/browser/i);
+				expect(message).toMatch(/mobile/i);
+				expect(message).toMatch(/desktop/i);
+				expect(message).toMatch(/installed artifact/i);
+				expect(message).toMatch(/microservices/i);
+				expect(message).toMatch(/Evidence block/i);
+				expectNoReviewerComments(message);
+			} finally {
+				await fixture.cleanup();
+			}
+		});
 	});
 
 	it("should return empty when all sources disabled and no custom dirs", async () => {

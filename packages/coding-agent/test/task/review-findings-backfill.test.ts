@@ -13,6 +13,20 @@ async function makeTempDir(): Promise<string> {
 	return dir;
 }
 
+async function runGit(cwd: string, args: string[]): Promise<void> {
+	const env = { ...process.env, HOME: cwd, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+	const proc = Bun.spawn(["git", "-C", cwd, ...args], { env, stdout: "ignore", stderr: "pipe" });
+	const code = await proc.exited;
+	if (code !== 0) {
+		const stderr = await new Response(proc.stderr).text();
+		throw new Error(`git ${args.join(" ")} failed (${code}): ${stderr}`);
+	}
+}
+
+async function initGitRepo(dir: string): Promise<void> {
+	await runGit(dir, ["init", "-q", "-b", "main"]);
+}
+
 describe("review findings backfill", () => {
 	afterEach(async () => {
 		for (const dir of tempDirs) {
@@ -183,9 +197,11 @@ describe("review findings backfill", () => {
 		const targetSessionFile = path.join(sessionDir, "target.jsonl");
 		const otherSessionFile = path.join(sessionDir, "other.jsonl");
 		const agentDbPath = path.join(dir, "agent.db");
+		await fs.mkdir(sessionDir, { recursive: true });
 		await fs.mkdir(targetRepo, { recursive: true });
 		await fs.mkdir(otherRepo, { recursive: true });
-		await fs.mkdir(sessionDir, { recursive: true });
+		await initGitRepo(targetRepo);
+		await initGitRepo(otherRepo);
 		await Bun.write(
 			targetSessionFile,
 			`${[

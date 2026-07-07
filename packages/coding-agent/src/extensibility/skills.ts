@@ -21,6 +21,7 @@ export interface Skill {
 	filePath: string;
 	baseDir: string;
 	source: string;
+	content?: string;
 	/**
 	 * When `true`, the skill is loaded and reachable via `skill://<name>` and
 	 * (when enabled) `/skill:<name>`, but is excluded from the rendered system
@@ -144,8 +145,8 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 	// Fall-through gate for third-party CLI providers (claude-plugins, opencode,
 	// gemini, github, ...) that share user intent with the named third-party
 	// source toggles but don't have a dedicated control of their own. Only the
-	// third-party toggles count here: the OMP-native providers (`agents`,
-	// `native`) get explicit branches in `isSourceEnabled` below, so folding
+	// third-party toggles count here: the OMP-native providers (`agents`, `native`,
+	// `bundled`) get explicit branches in `isSourceEnabled` below, so folding
 	// them into the fallback would re-enable unrelated third-party CLIs whenever
 	// the user kept the default `.agent[s]/skills` toggles on while turning off
 	// Codex/Claude/Pi (issue #2401 / PR #2405 review).
@@ -158,6 +159,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		// — third-party CLI toggles must never silently hide them (cf. #2401). The
 		// master `enabled` flag above still gates them.
 		if (provider === MANAGED_SKILLS_PROVIDER_ID) return true;
+		if (provider === "bundled") return enableAgentsUser || enableAgentsProject;
 		if (provider === "codex" && level === "user") return enableCodexUser;
 		if (provider === "claude" && level === "user") return enableClaudeUser;
 		if (provider === "claude" && level === "project") return enableClaudeProject;
@@ -236,6 +238,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 				filePath: capSkill.path,
 				baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 				source: `${capSkill._source.provider}:${capSkill.level}`,
+				...(capSkill._source.level === "native" ? { content: capSkill.content } : {}),
 				hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 				_source: capSkill._source,
 			});
@@ -307,6 +310,32 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 			skillMap.set(skill.name, skill);
 			realPathSet.add(resolvedPath);
 		}
+	}
+
+	// Bundled skills are OMP-native defaults. Capability-level dedup runs before
+	// source toggles, so a disabled higher-priority native/user skill can shadow a
+	// bundled default. Re-add bundled candidates from the pre-dedup superset only
+	// when no enabled/custom skill claimed the name above.
+	const bundledCandidates = result.all.filter(
+		capSkill =>
+			capSkill._source.provider === "bundled" &&
+			!disabledSkillNames.has(capSkill.name) &&
+			isSourceEnabled(capSkill._source) &&
+			!matchesIgnorePatterns(capSkill.name) &&
+			matchesIncludePatterns(capSkill.name),
+	);
+	for (const capSkill of bundledCandidates) {
+		if (skillMap.has(capSkill.name)) continue;
+		skillMap.set(capSkill.name, {
+			name: capSkill.name,
+			description: typeof capSkill.frontmatter?.description === "string" ? capSkill.frontmatter.description : "",
+			filePath: capSkill.path,
+			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
+			source: `${capSkill._source.provider}:${capSkill.level}`,
+			content: capSkill.content,
+			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
+			_source: capSkill._source,
+		});
 	}
 
 	// Managed (auto-learn) skills resolve dead-last with first-wins. Source from
@@ -466,11 +495,11 @@ function startsWithLocalExecutionPrefix(trimmedStart: string): boolean {
 export type SkillInvocationKind = "user" | "autoload";
 
 export async function buildSkillPromptMessage(
-	skill: Pick<Skill, "name" | "filePath" | "baseDir">,
+	skill: Pick<Skill, "name" | "filePath" | "baseDir" | "content">,
 	args: string,
 	invocation: SkillInvocationKind = "user",
 ): Promise<BuiltSkillPromptMessage> {
-	const content = await Bun.file(skill.filePath).text();
+	const content = skill.content ?? (await Bun.file(skill.filePath).text());
 	const body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
 	const trimmedArgs = args.trim();
 	let message: string;

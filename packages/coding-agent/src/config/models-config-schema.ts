@@ -287,8 +287,20 @@ const ProviderConfigSchema = type({
 	return true;
 });
 
+const AuthGatewayConfigSchema = type({
+	"modelAliases?": { "[string]": "string" },
+}).narrow((value, ctx) => {
+	const aliases = value.modelAliases ?? {};
+	for (const [alias, target] of Object.entries(aliases)) {
+		if (alias.length === 0) return ctx.mustBe("authGateway.modelAliases keys to be non-empty strings");
+		if (target.length === 0) return ctx.mustBe(`authGateway.modelAliases.${alias} a non-empty string`);
+	}
+	return true;
+});
+
 export const ModelsConfigSchema = type({
 	"providers?": { "[string]": ProviderConfigSchema },
+	"authGateway?": AuthGatewayConfigSchema,
 });
 
 export type ModelsConfig = typeof ModelsConfigSchema.infer;

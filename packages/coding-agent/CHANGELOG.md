@@ -4,6 +4,79 @@
 
 ### Added
 
+- Goal mode and Safe orchestrator mode can now be active simultaneously, so goal budgets/objectives survive delegate-only orchestration.
+- Duo now auto-toggles Safe orchestrator mode by handoff scope (`duo_handoff` `scope: single|multi`): single-phase tasks run the executor with direct tools; multi-phase tasks stay delegate-only. New `duo.orchestrator` setting (`auto`|`always`).
+- `heavy_task`, `plan`, and `qa` now default to `anthropic/claude-fable-5:low` then `openai-codex/gpt-5.5:high`, and subagent model selection is rate-limit-aware: when a model's 5h or weekly window is exhausted it falls through to the next configured model. Gate with `task.limitAwareModelRouting` (default on).
+- `consult` tool now accepts `async: true`: a fire-and-forget consultation that dispatches the question to the duo advisor without blocking the main stream — the advisor replies later through its normal advisory-note (`advise`) channel. Default (`async` omitted) still blocks until the advisor answers. A one-shot emission-guard exemption plus a plain-text fallback guarantee the async answer reaches the primary even when a bare reply would normally be suppressed/deduped or the advisor answers in plain text.
+- The duo executor overlay now carries a mandatory `consult` checkpoints block (in both orchestrator and direct-execution modes) defining gating checkpoints to consult the advisor before: committing to a plan, architecture/design decisions, task-shaping decisions, applying a bug fix, risky/irreversible actions, QA/test-plan review, and ending the turn — plus exemptions and a guide to writing a terse consult.
+- Duo advisor now maintains a persistent mission brief at `local://advisor-brief.md` (goal, direction, current phase, standing task/QA checklists) via a new advisor `update_brief` tool. The brief is re-injected into the executor's context every turn so it survives compaction and re-seeds the advisor after a re-prime — this is the channel for persistent reminding; advisor doctrine now treats the executor as amnesiac, keeping the brief current and distrusting completion claims (without weakening the existing duplicate-advice flood guard).
+- Duo advisor can now maintain a durable ledger at `local://advisor-state.md` via new `read_advisor_state` and `update_advisor_state` tools; the state is re-injected into executor context and advisor re-prime alongside the mission brief.
+- Duo advisor can now reorder or repair the executor's todo list via a new `set_todos` tool; changes are committed as `user_todo_edit` entries so the reordering survives compaction and resume.
+- Duo advisor can now tune executor reasoning effort at runtime via a new `set_executor_effort` tool (`high`/`xhigh`/`max`); the override applies immediately during the executing phase and persists across handoffs and snapshot restore, with doctrine to escalate to `xhigh`/`max` on hard problems and drop back to `high` for routine work.
+- Duo advisor now reviews each user prompt during execution and can request a plan-first takeover (`request_takeover` with purpose `plan`), backed by a new `DuoController.requestPlanTakeover` that enters the planning phase, switches to the planner synchronously, and injects the full-plan brief; gated by new `duo.advisorPromptReview` (default on).
+- Duo advisor now receives a per-turn delegation-stats header (task-call count, `tasks[]` batch widths, running subagents, open todos) plus parallelism-enforcement doctrine to push under-parallelized work toward wide parallel fan-out instead of serial 1–2-agent delegation.
+- Compaction now shows a live progress overlay while it runs: a spinner, an indeterminate shimmer progress bar, an elapsed `m:ss` timer, and a live `~N tok` streamed-token counter. On the auto (context-full) path it is driven by a new throttled `auto_compaction_progress` session event (action, elapsed ms, cumulative SSE events/bytes, optional token estimate) emitted between `auto_compaction_start` and `auto_compaction_end` and forwarded over RPC; on the manual `/compact` path the streaming progress callback is forwarded directly to the same overlay. The token counter reflects OpenAI V2 streaming remote compaction; V1, local summarization, and Anthropic show the spinner + bar + timer only (no per-token counter).
+- `async.stallThresholdMs` setting (default 10m): running rows in `job` results are flagged `STALLED` when the subagent shows no activity beyond the threshold (0 disables).
+- POSIX installs and updates now run `ompx install git:github.com/obra/superpowers` after OMPx is installed, keeping the Superpowers skill pack installed or updated automatically.
+- Added a built-in production frontend/UI/UX skill bundle plus dedicated design-team subagents (`frontend_ui`, `ui_ux_reviewer`, `ux_copywriter`) so orchestrated UI work routes to design specialists with anti-internal-copy safeguards.
+- Added built-in TNX role models `tnx/designer` (Claude Opus 4.8-like capabilities, 1M context) and `tnx/smol` (256K context) for local TNX routing.
+- Added `super_review`, a discoverable one-shot plain-text review tool backed by `tnx/super` for high-context plan, action, architecture, security, and QA-plan reviews with explicit workspace file attachments, snapcompact image packing for large vision-capable review payloads, orchestrator-mode access, and advisor-default access.
+- `ompx auth-gateway serve/status/check` can now use this machine's local SQLite/env/config credentials when no auth broker is configured, with `--local` to force local credentials even when broker env/config exists.
+
+### Changed
+
+- Raised the blocking (synchronous) `consult` advisor timeout from 120s to 300s; the async fire-and-forget path stays timeout-free and the tool remains interruptible, so a slow advisor never wedges the primary.
+- Lowered the duo executor's default reasoning effort (`duo.executorThinking`) from `max` to `high`; the advisor's new `set_executor_effort` governor raises it on demand.
+- `job` poll now waits on a bounded schedule instead of blocking indefinitely: new `async.pollWaitDuration` default `scheduled` waits 5m on the first poll and 10m on consecutive re-polls (2m gap resets the ladder), returning a live still-running snapshot at each window expiry with per-job stats (elapsed, model, tool count, tokens in/out, last activity) plus guidance naming the next window. `block` remains an explicit opt-in for the old indefinite wait; legacy `smart` now migrates to `scheduled`.
+- `irc` waits are capped at a 10-minute max window: `timeoutMs: 0` now means one max window instead of waiting forever, and oversized timeouts are clamped.
+- Default `pi/designer` and `pi/smol` role routing now prefer the built-in TNX role models at explicit `:medium` thinking level.
+
+### Fixed
+
+- Added the built-in `tnx/super` registry entry required by `super_review`, so the one-turn tool can resolve the model before routing requests through the auth gateway.
+- Fixed `super_review` snapcompact packing to keep the live review type, question, and attachment metadata as text while rendering only bulky untrusted review material into image frames.
+- Built-in one-turn tools (`super_review` and `inspect_image`) now route model calls through the hardcoded auth gateway at `http://codemc:4000`, using `OMP_AUTH_GATEWAY_TOKEN` as the gateway bearer when set and leaving upstream provider credentials on the gateway side.
+- `auth-gateway` can now expose daemon-local `authGateway.modelAliases` from `models.yml`, validating targets and input capabilities before `serve` starts.
+- Fixed multi-account auth state refresh in running sessions: local SQLite credentials are watched through WAL-aware directory events, `auth-broker serve` reloads its storage when sibling broker-login/import/logout processes update the DB, and the active `/usage` panel refreshes only while it remains the current account-dependent panel.
+- Fixed the duo advisor always receiving gisted/elided primary thinking regardless of `advisor.thinkingClampChars`. `ThinkingArtifactStore.renderThinking` now honors the setting (default `0`): blocks within the threshold (and the default-off case) forward the full obfuscated thinking verbatim; only blocks exceeding a configured `>0` threshold are clamped to a gist marker. An omitted `clampThreshold` dep fails open to full passthrough.
+
+- Duo handoff/escalate/takeover/summon now auto-continue the stream after the model switch applies — the incoming model starts its turn immediately instead of waiting for user input.
+- User steering typed while the main stream is blocked waiting on subagents is now held until the wait ends and delivered wrapped with a notice, instead of aborting the wait and interleaving with subagent results mid-task; new `steering.holdDuringSubagentWaits` (default on) gates it.
+- Fixed the duo advisor never resuming after the controller returned to the executing phase. Two holes: (1) a mid-turn `duo_handoff` after an escalation/takeover queued the executor switch while streaming, so `#syncAdvisorSelfPause` still saw the planner on `currentModel()` and re-paused the advisor it had just resumed — it now evaluates the pending-switch target; (2) plan approval (planning → executing) never called `resumeAdvisor()`, leaving an advisor paused by plan-mode re-entry paused for the whole executing phase.
+
+## [1.5.0] - 2026-07-03
+
+### Added
+
+- Duo now actively nags when the planner's model lingers on the executing main stream: every third such turn the controller emits a warning notice and injects a next-turn reminder into the model's context telling it to call `duo_handoff` to restore the executor unless planner-grade reasoning is genuinely needed. The dwell counter resets on executor restore, manual switch away from the planner model, or any phase exit.
+- Advisor safeguard-refusal fallback: when the primary advisor model is blocked by a provider refusal, the advisor falls back to `advisor.fallbackModel` (default `gpt-5.5`) for that request and retries the primary first on every subsequent request.
+- The main session now checks whether context compaction is warranted while blocked waiting on subagents (during a `job` poll) and schedules it to run at the turn boundary.
+- Added live token input/output and output-rate stats to running task rows in the `job` wait widget.
+- Hardware GPU (Vulkan/ANGLE) WebGL rendering for the headless browser via new `browser.gpu` setting (default on); always enables `--enable-unsafe-swiftshader` so WebGL never fails on Chrome ≥137.
+
+- Manually switching the executing main stream to the planner's model now injects a "planner summon" protocol brief: the planner reasons about the current request, settles the direction, then hands the stream back via `duo_handoff` whose `resolution` is the executor's working brief — the executor continues the work from it immediately while the planner returns to advising.
+- Added `advisor.thinkingClampChars` setting to control how much of a primary thinking block is fed to the duo advisor (0 = full/untruncated; set e.g. 2000 to clamp with head/tail + gist).
+
+### Changed
+
+- The duo advisor now receives full (untruncated) primary thinking by default; previously thinking blocks over 2000 chars were clamped to head/tail + a gist marker. Set `advisor.thinkingClampChars` above 0 to re-enable clamping.
+- Advisor feed and prompts no longer emit the word "thinking" (rendered as "notes") to avoid tripping Anthropic's reasoning_extraction safeguard on Fable/Mythos advisor models.
+
+### Fixed
+
+- Fixed idle IRC wake turns silently losing messages when the provider request resolved into agent error state instead of rejecting: failed wake turns now log an error and re-buffer the message for `wait`/`inbox`, and delivery receipts truthfully report `revived` separately from the actual `woken`/`injected` outcome while legacy persisted `revived` receipts still render safely.
+
+- Fixed IRC coordination for restricted/read-only bundled agents by granting them the `irc` tool, failing direct sends to custom non-IRC agents before they wake a mute turn, and re-deriving cold-parked agents' IRC capability from their persisted tool list before revival.
+
+- Fixed subagent spawns to reuse the parent session's auth storage/model registry, avoiding Anthropic OAuth refresh-token rotation races from duplicate in-process AuthStorage instances.
+- Fixed `Esc` interrupting an active chat stream immediately while the `Working...` loader was visible; it now uses the same second-press confirmation as other streaming states.
+- Fixed inaccurate Herdr pane agent state when a stale herdr-installed managed reporter (`herdr-omp-agent-state.ts`) loaded alongside the native reporter: both wrote conflicting `pane.report_agent` updates to the same pane with independent sequence numbers. Main-session discovery now drops only stale managed files (those without the per-send fallback sentinel), the native reporter marks itself authoritative only after its handlers actually register, and sentinel-carrying managed files stay loaded as a live fallback — a Herdr pane can no longer end up with zero reporters.
+- Fixed the native Herdr reporter staying completely silent when registration was skipped or raced: it now publishes the pane's `idle` state immediately at registration instead of waiting for the first lifecycle event, and enable/filter/append/transport decisions leave `logger` breadcrumbs in `~/.omp/logs` for diagnosis.
+- Fixed Herdr pane state permanently dying after killing and respawning `ompx` in the same pane: Herdr tombstones a `(pane, source)` pair once that source sends `pane.release_agent`, silently ignoring every later `pane.report_agent` from it. The reporter (native and managed fallback) now uses a unique per-session source (`herdr:omp:<suffix>`), so each new process claims the pane cleanly while a dying process only tombstones its own source.
+- Fixed Herdr pane agent state reporting so panes reflect what actually needs the user's attention: successful runs now report `done` instead of fading to plain idle, waiting on the `ask` tool or a tool-approval prompt now reports `need review` instead of `running`, and non-retryable run errors now report `need review` instead of silently going idle. Stale states can no longer strand a pane: review waits are dropped when a run ends, `session_switch` resets run-scoped state, and user input clears a stranded failure without disturbing live retry holds.
+### Fixed
+
+- Fixed `omp usage` hiding sibling-only limits such as Claude 7 Day (Fable) on accounts whose current report omitted that scoped bucket; the account now renders an explicit `not reported` row instead of looking like the usage refresh skipped the column.
 - Added `/annotate` session command (`on`/`off`/`status`) that starts a local loopback HTTP intake server with a pairing code, letting the OMPx Annotate Chrome extension (`packages/chrome-annotate`) send element-pick, screenshot, and comment annotations into the running session via the existing browser-annotate delivery pipeline.
 
 ## [16.3.3] - 2026-07-02

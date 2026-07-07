@@ -73,7 +73,7 @@ describe("disabledExtensions runtime filtering", () => {
 			includeDisabled: true,
 		});
 
-		expect(result.items).toHaveLength(1);
-		expect(path.basename(result.items[0]!.path)).toBe("AGENTS.md");
+		const fixturePath = path.join(tempDir, ".omp", "AGENTS.md");
+		expect(result.items.some(item => item.path === fixturePath)).toBe(true);
 	});
 });

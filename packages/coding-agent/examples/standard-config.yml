@@ -19,7 +19,10 @@ task:
     code-reviewer: openai-codex/codex-auto-review
     code-simplifier: anthropic/claude-opus-4-8
     codex-rescue: openai-codex/gpt-5.5:medium
-    designer: anthropic/claude-opus-4-8:xhigh
+    designer: tnx/designer
+    frontend_ui: tnx/designer
+    ui_ux_reviewer: tnx/designer
+    ux_copywriter: tnx/designer
     oracle: openai-codex/gpt-5.5:xhigh
     plan: openai-codex/gpt-5.5:xhigh
     quick_task: openai-codex/gpt-5.5:low

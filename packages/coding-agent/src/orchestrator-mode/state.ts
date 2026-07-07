@@ -19,6 +19,7 @@ export const ORCHESTRATOR_MODE_SAFE_TOOL_NAMES = [
 	"duo_handoff",
 	"duo_escalate",
 	"consult",
+	"super_review",
 ] as const;
 
 export const ORCHESTRATOR_MODE_CONTEXT_TOOL_NAMES = [

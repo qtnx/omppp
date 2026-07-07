@@ -470,6 +470,77 @@ describe("InteractiveMode orchestrator mode", () => {
 		}
 	});
 
+	it("requires verify-before-done skill before orchestrator completion claims", async () => {
+		const created = createHarness({
+			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
+			activeToolNames: ["read"],
+		});
+
+		await created.handleOrchestratorModeCommand();
+
+		const modeContext = session?.systemPrompt.join("\n") ?? "";
+		expect(modeContext).toContain("skill://verify-before-done");
+		expect(modeContext).toMatch(
+			/(?:MUST|REQUIRED)[\s\S]{0,240}skill:\/\/verify-before-done[\s\S]{0,240}(?:done|fixed|ready|complete|completion|claim)|(?:done|fixed|ready|complete|completion|claim)[\s\S]{0,240}skill:\/\/verify-before-done[\s\S]{0,240}(?:MUST|REQUIRED)/i,
+		);
+	});
+
+	it("rejects prompt-template gates as phase 3 completion evidence for coding-agent behavior", async () => {
+		const created = createHarness({
+			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
+			activeToolNames: ["read"],
+		});
+
+		await created.handleOrchestratorModeCommand();
+
+		const modeContext = session?.systemPrompt.join("\n") ?? "";
+		const phase3Start = modeContext.indexOf("## Phase 3 - Verification & Completion");
+		expect(phase3Start).toBeGreaterThan(-1);
+		const phase3 = modeContext.slice(phase3Start, phase3Start + 1400);
+
+		expect(phase3).toMatch(/prompt-template gates are NOT completion evidence/i);
+		expect(phase3).toMatch(
+			/Require a verification subagent[\s\S]{0,160}build\/install\/run installed `ompx`[\s\S]{0,160}changed-path scenario/i,
+		);
+		expect(phase3).not.toMatch(/prompt-template gates are completion evidence/i);
+		expect(phase3).not.toMatch(
+			/prompt-template gates (?:satisfy|replace|substitute for) (?:rung|entrypoint|completion) evidence/i,
+		);
+	});
+
+	it("ties orchestrator mode skill references to delegation review and verification claims", async () => {
+		const created = createHarness({
+			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
+			activeToolNames: ["read"],
+		});
+
+		await created.handleOrchestratorModeCommand();
+
+		const modeContext = session?.systemPrompt.join("\n") ?? "";
+		const contracts: Array<[skillRef: string, tiedGuidance: RegExp]> = [
+			["skill://subagents-development", /delegat|dispatch|subagents?/i],
+			["skill://code-review-lens", /review|reviewer/i],
+			["skill://codebase-recon", /codebase|recon|investigat|explor/i],
+			["skill://writing-tests-that-matter", /tests?|test suite|coverage|verification/i],
+			["skill://verify-before-done", /done|fixed|ready|complete|completion|claim|verification/i],
+		];
+		const missingSkillRefs = contracts
+			.map(([skillRef]) => skillRef)
+			.filter(skillRef => !modeContext.includes(skillRef));
+		const untiedSkillRefs = contracts
+			.filter(([skillRef, tiedGuidance]) => {
+				const escapedRef = skillRef.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+				const windowAroundRef = modeContext.match(new RegExp(`.{0,260}${escapedRef}.{0,260}`, "is"))?.[0] ?? "";
+				return windowAroundRef === "" || !tiedGuidance.test(windowAroundRef);
+			})
+			.map(([skillRef]) => skillRef);
+
+		expect({ missingSkillRefs, untiedSkillRefs }).toEqual({
+			missingSkillRefs: [],
+			untiedSkillRefs: [],
+		});
+	});
+
 	it("replaces the core system prompt block while preserving context blocks in orchestrator mode", async () => {
 		const created = createHarness({
 			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],

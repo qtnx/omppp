@@ -82,7 +82,7 @@ function previewLine(text: string | undefined): string {
 	return first.length > PREVIEW_WIDTH ? `${first.slice(0, PREVIEW_WIDTH - 1)}…` : first;
 }
 
-/** Default when the set is empty or exactly read/grep/glob; else the available-ordered subset. */
+/** Default when the set is empty or exactly read/grep/glob/super_review; else the available-ordered subset. */
 function commitTools(selected: ReadonlySet<string>, all: readonly string[]): string[] | undefined {
 	if (selected.size === 0) return undefined;
 	if (selected.size === ADVISOR_DEFAULT_TOOL_NAMES.size) {
@@ -266,7 +266,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 
 	#advisorPreview(advisor: AdvisorConfig, bodyWidth: number): string[] {
 		const model = advisor.model?.trim() || this.#defaultModelLabel || "advisor role default";
-		const tools = advisor.tools?.length ? advisor.tools.join(", ") : "read, grep, glob (default)";
+		const tools = advisor.tools?.length ? advisor.tools.join(", ") : "read, grep, glob, super_review (default)";
 		const lines = [
 			theme.bold(advisor.name || "(unnamed)"),
 			"",
@@ -309,7 +309,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 
 	#advisorSummary(advisor: AdvisorConfig): string {
 		const model = advisor.model?.trim() || this.#defaultModelLabel || "advisor role default";
-		const tools = advisor.tools?.length ? advisor.tools.join(", ") : "(default: read/grep/glob)";
+		const tools = advisor.tools?.length ? advisor.tools.join(", ") : "(default: read/grep/glob/super_review)";
 		return `${model} · ${tools}`;
 	}
 
@@ -384,7 +384,9 @@ export class AdvisorConfigOverlayComponent implements Component {
 			return;
 		}
 		const modelDescription = advisor.model?.trim() || this.#defaultModelLabel || "advisor role default";
-		const toolsDescription = advisor.tools?.length ? advisor.tools.join(", ") : "(default: read/grep/glob)";
+		const toolsDescription = advisor.tools?.length
+			? advisor.tools.join(", ")
+			: "(default: read/grep/glob/super_review)";
 		const items: SelectItem[] = [
 			{ value: "name", label: "Name", description: advisor.name },
 			{ value: "model", label: "Model", description: modelDescription },
@@ -524,7 +526,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#setScreen(
 			"tools",
 			list,
-			"Enter / click toggle · select Done or Esc to apply (empty or read/grep/glob = default)",
+			"Enter / click toggle · select Done or Esc to apply (empty or read/grep/glob/super_review = default)",
 		);
 	}
 

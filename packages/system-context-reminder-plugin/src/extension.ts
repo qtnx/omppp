@@ -16,9 +16,10 @@ export const SYSTEM_CONTEXT_REMINDER_CUSTOM_TYPE = "system-context-reminder";
 export const SYSTEM_CONTEXT_REMINDER_PROMPT = systemContextReminderPrompt.trim();
 export const SYSTEM_CONTEXT_REMINDER_MESSAGE = reminderMessage.trim();
 
-const REQUIRED_USER_ADDRESS_PATTERN = /(?:^|[^\p{L}\p{N}_])(?:ngài|lord)(?:$|[^\p{L}\p{N}_])/iu;
-const FORBIDDEN_USER_ADDRESS_PATTERN =
-	/(?:^|[^\p{L}\p{N}_])(?:anh|bạn|bố|chị|cậu|mày|tao|quý khách)(?:$|[^\p{L}\p{N}_])/iu;
+const FATHER_TERM_PATTERN = /(?:^|[^\p{L}\p{N}_])bố(?:$|[^\p{L}\p{N}_])/iu;
+const SELF_TERM_PATTERN = /(?:^|[^\p{L}\p{N}_])con(?:$|[^\p{L}\p{N}_])/iu;
+const FORBIDDEN_PERSONA_TERM_PATTERN =
+	/(?:^|[^\p{L}\p{N}_])(?:anh|bạn|chị|cậu|em|mình|quý khách|ta|tôi|tớ|tao|mày)(?:$|[^\p{L}\p{N}_])/iu;
 
 type AssistantContentBlock = AssistantMessage["content"][number];
 type AssistantTextBlock = Extract<AssistantContentBlock, { type: "text" }>;
@@ -135,8 +136,8 @@ function shouldQueueReminder(message: TurnEndEvent["message"]): boolean {
 	if (!isAssistantMessage(message)) return false;
 	if (message.stopReason === "aborted" || message.stopReason === "error") return false;
 	if (hasToolCall(message)) return false;
-	const { hasText, hasRequiredUserAddress, hasForbiddenUserAddress } = scanVisiblePersona(message);
-	return hasText && (hasForbiddenUserAddress || !hasRequiredUserAddress);
+	const { hasText, hasFatherTerm, hasSelfTerm, hasForbiddenPersonaTerm } = scanVisiblePersona(message);
+	return hasText && (hasForbiddenPersonaTerm || !hasFatherTerm || !hasSelfTerm);
 }
 
 function isAssistantMessage(message: TurnEndEvent["message"]): message is AssistantMessage {
@@ -149,20 +150,23 @@ function hasToolCall(message: AssistantMessage): boolean {
 
 function scanVisiblePersona(message: AssistantMessage): {
 	hasText: boolean;
-	hasRequiredUserAddress: boolean;
-	hasForbiddenUserAddress: boolean;
+	hasFatherTerm: boolean;
+	hasSelfTerm: boolean;
+	hasForbiddenPersonaTerm: boolean;
 } {
 	let hasText = false;
-	let hasRequiredUserAddress = false;
-	let hasForbiddenUserAddress = false;
+	let hasFatherTerm = false;
+	let hasSelfTerm = false;
+	let hasForbiddenPersonaTerm = false;
 	for (const block of message.content) {
 		if (!isTextBlock(block)) continue;
 		if (block.text.trim().length === 0) continue;
 		hasText = true;
-		hasRequiredUserAddress ||= REQUIRED_USER_ADDRESS_PATTERN.test(block.text);
-		hasForbiddenUserAddress ||= FORBIDDEN_USER_ADDRESS_PATTERN.test(block.text);
+		hasFatherTerm ||= FATHER_TERM_PATTERN.test(block.text);
+		hasSelfTerm ||= SELF_TERM_PATTERN.test(block.text);
+		hasForbiddenPersonaTerm ||= FORBIDDEN_PERSONA_TERM_PATTERN.test(block.text);
 	}
-	return { hasText, hasRequiredUserAddress, hasForbiddenUserAddress };
+	return { hasText, hasFatherTerm, hasSelfTerm, hasForbiddenPersonaTerm };
 }
 
 function isTextBlock(block: AssistantContentBlock): block is AssistantTextBlock {

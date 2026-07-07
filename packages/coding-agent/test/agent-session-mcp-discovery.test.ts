@@ -11,7 +11,7 @@ import {
 } from "@oh-my-pi/pi-agent-core";
 import { Effort, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -112,6 +112,14 @@ function createOversizedMcpTool(name: string, serverName: string, mcpToolName: s
 	} as CustomTool;
 }
 
+function mcpTestSettings(overrides: Partial<Record<SettingPath, unknown>> = {}): Settings {
+	return Settings.isolated({
+		"advisor.consult": false,
+		"advisor.enabled": false,
+		...overrides,
+	});
+}
+
 /**
  * Execute-time context with tiny spill thresholds so a few KB of output trips
  * the artifact spill deterministically. The spill reads `context.settings`, not
@@ -120,7 +128,7 @@ function createOversizedMcpTool(name: string, serverName: string, mcpToolName: s
 function createSpillContext(sessionManager: SessionManager = SessionManager.inMemory()): AgentToolContext {
 	return {
 		sessionManager,
-		settings: Settings.isolated({
+		settings: mcpTestSettings({
 			"tools.artifactSpillThreshold": 1,
 			"tools.artifactHeadBytes": 1,
 			"tools.artifactTailBytes": 1,
@@ -172,7 +180,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -219,7 +227,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": false }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": false }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: false,
@@ -261,7 +269,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": false }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": false }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: false,
@@ -301,7 +309,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": false }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": false }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: false,
@@ -355,7 +363,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -403,7 +411,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -448,7 +456,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager,
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -495,7 +503,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager,
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -530,7 +538,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager,
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry: new Map([[readTool.name, readTool]]),
 			mcpDiscoveryEnabled: true,
@@ -568,7 +576,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager,
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -613,7 +621,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager,
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -658,7 +666,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager,
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -707,7 +715,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager,
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -771,7 +779,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager,
-			settings: Settings.isolated({
+			settings: mcpTestSettings({
 				"mcp.discoveryMode": true,
 				defaultThinkingLevel: "high",
 				"tier.openai": "priority",
@@ -840,7 +848,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager,
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -900,7 +908,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -934,7 +942,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": true }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: true,
@@ -977,7 +985,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "tools.discoveryMode": "all" }),
+			settings: mcpTestSettings({ "tools.discoveryMode": "all" }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: false,
@@ -1003,7 +1011,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager,
-			settings: Settings.isolated({ "mcp.discoveryMode": false }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": false }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: false,
@@ -1041,7 +1049,7 @@ describe("AgentSession MCP discovery", () => {
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "mcp.discoveryMode": false }),
+			settings: mcpTestSettings({ "mcp.discoveryMode": false }),
 			modelRegistry: {} as never,
 			toolRegistry,
 			mcpDiscoveryEnabled: false,

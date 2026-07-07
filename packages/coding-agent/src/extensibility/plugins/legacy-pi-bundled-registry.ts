@@ -348,6 +348,7 @@ import * as bundledPiCodingAgentConfigSandboxDefaults from "@oh-my-pi/pi-coding-
 import * as bundledPiCodingAgentConfigServiceTier from "@oh-my-pi/pi-coding-agent/config/service-tier";
 import * as bundledPiCodingAgentConfigSettings from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as bundledPiCodingAgentConfigSettingsSchema from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+import * as bundledPiCodingAgentConfigSettingsWatcher from "@oh-my-pi/pi-coding-agent/config/settings-watcher";
 import * as bundledPiCodingAgentDap from "@oh-my-pi/pi-coding-agent/dap";
 import * as bundledPiCodingAgentDapClient from "@oh-my-pi/pi-coding-agent/dap/client";
 import * as bundledPiCodingAgentDapConfig from "@oh-my-pi/pi-coding-agent/dap/config";
@@ -370,6 +371,7 @@ import * as bundledPiCodingAgentDiscoveryAgentsMd from "@oh-my-pi/pi-coding-agen
 import * as bundledPiCodingAgentDiscoveryAtImports from "@oh-my-pi/pi-coding-agent/discovery/at-imports";
 import * as bundledPiCodingAgentDiscoveryBuiltin from "@oh-my-pi/pi-coding-agent/discovery/builtin";
 import * as bundledPiCodingAgentDiscoveryBuiltinDefaults from "@oh-my-pi/pi-coding-agent/discovery/builtin-defaults";
+import * as bundledPiCodingAgentDiscoveryBundledSkills from "@oh-my-pi/pi-coding-agent/discovery/bundled-skills";
 import * as bundledPiCodingAgentDiscoveryClaude from "@oh-my-pi/pi-coding-agent/discovery/claude";
 import * as bundledPiCodingAgentDiscoveryClaudePlugins from "@oh-my-pi/pi-coding-agent/discovery/claude-plugins";
 import * as bundledPiCodingAgentDiscoveryCline from "@oh-my-pi/pi-coding-agent/discovery/cline";
@@ -576,6 +578,7 @@ import * as bundledPiCodingAgentModesComponentsCacheInvalidationMarker from "@oh
 import * as bundledPiCodingAgentModesComponentsChatBlock from "@oh-my-pi/pi-coding-agent/modes/components/chat-block";
 import * as bundledPiCodingAgentModesComponentsChatTranscriptBuilder from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
 import * as bundledPiCodingAgentModesComponentsCollabPromptMessage from "@oh-my-pi/pi-coding-agent/modes/components/collab-prompt-message";
+import * as bundledPiCodingAgentModesComponentsCompactionProgress from "@oh-my-pi/pi-coding-agent/modes/components/compaction-progress";
 import * as bundledPiCodingAgentModesComponentsCompactionSummaryMessage from "@oh-my-pi/pi-coding-agent/modes/components/compaction-summary-message";
 import * as bundledPiCodingAgentModesComponentsCopySelector from "@oh-my-pi/pi-coding-agent/modes/components/copy-selector";
 import * as bundledPiCodingAgentModesComponentsCountdownTimer from "@oh-my-pi/pi-coding-agent/modes/components/countdown-timer";
@@ -726,6 +729,7 @@ import * as bundledPiCodingAgentSessionBlobStore from "@oh-my-pi/pi-coding-agent
 import * as bundledPiCodingAgentSessionClientBridge from "@oh-my-pi/pi-coding-agent/session/client-bridge";
 import * as bundledPiCodingAgentSessionCodexAutoReset from "@oh-my-pi/pi-coding-agent/session/codex-auto-reset";
 import * as bundledPiCodingAgentSessionCompactModes from "@oh-my-pi/pi-coding-agent/session/compact-modes";
+import * as bundledPiCodingAgentSessionCredentialWatcher from "@oh-my-pi/pi-coding-agent/session/credential-watcher";
 import * as bundledPiCodingAgentSessionDollarMentions from "@oh-my-pi/pi-coding-agent/session/dollar-mentions";
 import * as bundledPiCodingAgentSessionExitDiagnostics from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import * as bundledPiCodingAgentSessionHistoryStorage from "@oh-my-pi/pi-coding-agent/session/history-storage";
@@ -872,6 +876,7 @@ import * as bundledPiCodingAgentToolsSearchToolBm25 from "@oh-my-pi/pi-coding-ag
 import * as bundledPiCodingAgentToolsShake from "@oh-my-pi/pi-coding-agent/tools/shake";
 import * as bundledPiCodingAgentToolsSqliteReader from "@oh-my-pi/pi-coding-agent/tools/sqlite-reader";
 import * as bundledPiCodingAgentToolsSsh from "@oh-my-pi/pi-coding-agent/tools/ssh";
+import * as bundledPiCodingAgentToolsSuperReview from "@oh-my-pi/pi-coding-agent/tools/super-review";
 import * as bundledPiCodingAgentToolsTodo from "@oh-my-pi/pi-coding-agent/tools/todo";
 import * as bundledPiCodingAgentToolsToolErrors from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import * as bundledPiCodingAgentToolsToolResult from "@oh-my-pi/pi-coding-agent/tools/tool-result";
@@ -1914,6 +1919,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/config/settings-schema": bundledPiCodingAgentConfigSettingsSchema as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/config/settings-watcher":
+		bundledPiCodingAgentConfigSettingsWatcher as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/config/settings": bundledPiCodingAgentConfigSettings as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -1971,6 +1978,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/discovery/builtin": bundledPiCodingAgentDiscoveryBuiltin as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/discovery/bundled-skills":
+		bundledPiCodingAgentDiscoveryBundledSkills as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/discovery/claude-plugins":
 		bundledPiCodingAgentDiscoveryClaudePlugins as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/discovery/claude": bundledPiCodingAgentDiscoveryClaude as unknown as Readonly<
@@ -2479,6 +2488,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		bundledPiCodingAgentModesComponentsChatTranscriptBuilder as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/collab-prompt-message":
 		bundledPiCodingAgentModesComponentsCollabPromptMessage as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/modes/components/compaction-progress":
+		bundledPiCodingAgentModesComponentsCompactionProgress as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/compaction-summary-message":
 		bundledPiCodingAgentModesComponentsCompactionSummaryMessage as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/copy-selector":
@@ -2746,6 +2757,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/session/compact-modes": bundledPiCodingAgentSessionCompactModes as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/session/credential-watcher":
+		bundledPiCodingAgentSessionCredentialWatcher as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/dollar-mentions":
 		bundledPiCodingAgentSessionDollarMentions as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/exit-diagnostics":
@@ -3119,6 +3132,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/ssh": bundledPiCodingAgentToolsSsh as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/tools/super-review": bundledPiCodingAgentToolsSuperReview as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/tools/todo": bundledPiCodingAgentToolsTodo as unknown as Readonly<
 		Record<string, unknown>
 	>,

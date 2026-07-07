@@ -159,6 +159,7 @@ export class InputController {
 	#focusedLeftTapListenerInstalled = false;
 	#btwBranchListenerInstalled = false;
 	#btwCopyListenerInstalled = false;
+	#globalInterruptListenerInstalled = false;
 	// Tap counter for the double-← gesture; reset whenever a quiet gap
 	// (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
 	// #detectLeftDoubleTap.
@@ -257,6 +258,154 @@ export class InputController {
 		this.ctx.showStatus("Press Esc again within 2s to cancel streaming.");
 	}
 
+	#matchesInterruptKey(data: string): boolean {
+		const interruptKeys = this.ctx.keybindings.getKeys("app.interrupt");
+		if (interruptKeys.length > 0) {
+			for (const key of interruptKeys) {
+				if (matchesKey(data, key)) return true;
+			}
+			return false;
+		}
+		return matchesKey(data, "escape") || matchesKey(data, "esc");
+	}
+
+	#hasGlobalInterruptWork(): boolean {
+		if (this.ctx.focusedAgentId) return false;
+		const viewSession = this.ctx.viewSession;
+		return Boolean(
+			viewSession.isCompacting ||
+				viewSession.isGeneratingHandoff ||
+				viewSession.isRetrying ||
+				this.ctx.loopModeEnabled ||
+				this.ctx.hasActiveBtw() ||
+				this.ctx.hasActiveOmfg() ||
+				(this.ctx.collabGuest && (this.ctx.collabGuest.state?.isStreaming || this.ctx.loadingAnimation)) ||
+				this.ctx.loadingAnimation ||
+				this.ctx.session.isBashRunning ||
+				this.ctx.isBashMode ||
+				this.ctx.session.isEvalRunning ||
+				this.ctx.isPythonMode ||
+				this.ctx.session.isStreaming,
+		);
+	}
+
+	#handleEscape(): void {
+		// Active context maintenance owns Esc: auto/manual compaction,
+		// handoff generation, and auto-retry backoff all advertise
+		// "(esc to cancel)". Dispatch on live session state instead of
+		// swapping onEscape handlers — interleaved start/end events used
+		// to clobber the single saved-handler slot (auto-compaction start
+		// → /compact → auto end → manual finally), leaving Esc wired to a
+		// stale no-op closure until restart.
+		//
+		// While a subagent is focused, Esc honors the advertised view action
+		// ("Esc returns to main") instead of cancelling maintenance —
+		// accidentally killing a focused subagent's compaction on the way out
+		// was #2819. The auto-maintenance loaders relabel their hint to match
+		// (see EventController). Main-session maintenance still owns Esc and
+		// stays cancellable from the main view (focused submit gates /compact
+		// and handoff, so manual maintenance is main-only anyway).
+		if (!this.ctx.focusedAgentId) {
+			const viewSession = this.ctx.viewSession;
+			let aborted = false;
+			if (viewSession.isCompacting) {
+				safeAbort("compaction", () => viewSession.abortCompaction());
+				aborted = true;
+			}
+			if (viewSession.isGeneratingHandoff) {
+				safeAbort("handoff", () => viewSession.abortHandoff());
+				aborted = true;
+			}
+			if (viewSession.isRetrying) {
+				safeAbort("retry", () => viewSession.abortRetry());
+				aborted = true;
+			}
+			if (aborted) return;
+		}
+
+		if (this.ctx.loopModeEnabled) {
+			this.ctx.pauseLoop();
+			if (this.ctx.session.isStreaming) {
+				this.#handleStreamingEscape();
+			} else {
+				this.ctx.cancelPendingSubmission();
+			}
+			return;
+		}
+		if (this.ctx.hasActiveBtw() && this.ctx.handleBtwEscape()) {
+			return;
+		}
+		if (this.ctx.hasActiveOmfg() && this.ctx.handleOmfgEscape()) {
+			return;
+		}
+		if (this.ctx.focusedAgentId) {
+			// Esc never interrupts the focused agent's turn: clear typed text,
+			// else return the view to the main session. Interrupt via empty
+			// steer-flush submit if needed.
+			if (this.ctx.editor.getText().trim()) {
+				this.ctx.editor.setText("");
+				this.ctx.ui.requestRender();
+			} else {
+				void this.ctx.unfocusSession();
+			}
+			return; // double-escape backtrack (/tree, /branch) stays main-only
+		}
+		if (this.ctx.collabGuest) {
+			// Guest Esc: ask the host to interrupt its agent; the local replica
+			// session is never streaming, so the native abort path below would
+			// no-op.
+			if (this.ctx.collabGuest.state?.isStreaming || this.ctx.loadingAnimation) {
+				this.ctx.collabGuest.sendAbort();
+			}
+			return;
+		}
+		if (this.ctx.loadingAnimation) {
+			if (this.ctx.session.isStreaming) {
+				this.#handleStreamingEscape(() => this.restoreQueuedMessagesToEditor({ abort: true }));
+				return;
+			}
+			if (this.ctx.cancelPendingSubmission()) {
+				return;
+			}
+			this.restoreQueuedMessagesToEditor({ abort: true });
+		} else if (this.ctx.session.isBashRunning) {
+			this.ctx.session.abortBash();
+		} else if (this.ctx.isBashMode) {
+			this.ctx.editor.setText("");
+			this.ctx.isBashMode = false;
+			this.ctx.updateEditorBorderColor();
+		} else if (this.ctx.session.isEvalRunning) {
+			this.ctx.session.abortEval();
+		} else if (this.ctx.isPythonMode) {
+			this.ctx.editor.setText("");
+			this.ctx.isPythonMode = false;
+			this.ctx.updateEditorBorderColor();
+		} else if (this.ctx.session.isStreaming) {
+			this.#handleStreamingEscape();
+		} else if (this.ctx.editor.getText().trim()) {
+			// Esc must not destroy an in-progress draft; it only disarms a previous empty-editor Esc.
+			this.ctx.lastEscapeTime = 0;
+			this.#clearStreamingEscapeArm();
+		} else {
+			// Double-interrupt with empty editor triggers /tree, /branch, or nothing based on setting
+			const action = settings.get("doubleEscapeAction");
+			if (action !== "none") {
+				const now = Date.now();
+				if (now - this.ctx.lastEscapeTime < 500) {
+					if (action === "tree") {
+						this.ctx.showTreeSelector();
+					} else {
+						this.ctx.showUserMessageSelector();
+					}
+					this.ctx.ui.resetDisplay();
+					this.ctx.lastEscapeTime = 0;
+				} else {
+					this.ctx.lastEscapeTime = now;
+				}
+			}
+		}
+	}
+
 	setupKeyHandlers(): void {
 		this.ctx.editor.setActionKeys("app.interrupt", this.ctx.keybindings.getKeys("app.interrupt"));
 		if (!this.#streamingEscapeSessionSubscribed && typeof this.ctx.session.subscribe === "function") {
@@ -300,122 +449,18 @@ export class InputController {
 				return { consume: true };
 			});
 		}
-		this.ctx.editor.onEscape = () => {
-			// Active context maintenance owns Esc: auto/manual compaction,
-			// handoff generation, and auto-retry backoff all advertise
-			// "(esc to cancel)". Dispatch on live session state instead of
-			// swapping onEscape handlers — interleaved start/end events used
-			// to clobber the single saved-handler slot (auto-compaction start
-			// → /compact → auto end → manual finally), leaving Esc wired to a
-			// stale no-op closure until restart.
-			//
-			// While a subagent is focused, Esc honors the advertised view action
-			// ("Esc returns to main") instead of cancelling maintenance —
-			// accidentally killing a focused subagent's compaction on the way out
-			// was #2819. The auto-maintenance loaders relabel their hint to match
-			// (see EventController). Main-session maintenance still owns Esc and
-			// stays cancellable from the main view (focused submit gates /compact
-			// and handoff, so manual maintenance is main-only anyway).
-			if (!this.ctx.focusedAgentId) {
-				const viewSession = this.ctx.viewSession;
-				let aborted = false;
-				if (viewSession.isCompacting) {
-					safeAbort("compaction", () => viewSession.abortCompaction());
-					aborted = true;
-				}
-				if (viewSession.isGeneratingHandoff) {
-					safeAbort("handoff", () => viewSession.abortHandoff());
-					aborted = true;
-				}
-				if (viewSession.isRetrying) {
-					safeAbort("retry", () => viewSession.abortRetry());
-					aborted = true;
-				}
-				if (aborted) return;
-			}
-
-			if (this.ctx.loopModeEnabled) {
-				this.ctx.pauseLoop();
-				if (this.ctx.session.isStreaming) {
-					this.#handleStreamingEscape();
-				} else {
-					this.ctx.cancelPendingSubmission();
-				}
-				return;
-			}
-			if (this.ctx.hasActiveBtw() && this.ctx.handleBtwEscape()) {
-				return;
-			}
-			if (this.ctx.hasActiveOmfg() && this.ctx.handleOmfgEscape()) {
-				return;
-			}
-			if (this.ctx.focusedAgentId) {
-				// Esc never interrupts the focused agent's turn: clear typed text,
-				// else return the view to the main session. Interrupt via empty
-				// steer-flush submit if needed.
-				if (this.ctx.editor.getText().trim()) {
-					this.ctx.editor.setText("");
-					this.ctx.ui.requestRender();
-				} else {
-					void this.ctx.unfocusSession();
-				}
-				return; // double-escape backtrack (/tree, /branch) stays main-only
-			}
-			if (this.ctx.collabGuest) {
-				// Guest Esc: ask the host to interrupt its agent; the local replica
-				// session is never streaming, so the native abort path below would
-				// no-op.
-				if (this.ctx.collabGuest.state?.isStreaming || this.ctx.loadingAnimation) {
-					this.ctx.collabGuest.sendAbort();
-				}
-				return;
-			}
-			if (this.ctx.loadingAnimation) {
-				if (this.ctx.session.isStreaming) {
-					this.#handleStreamingEscape(() => this.restoreQueuedMessagesToEditor({ abort: true }));
-					return;
-				}
-				if (this.ctx.cancelPendingSubmission()) {
-					return;
-				}
-				this.restoreQueuedMessagesToEditor({ abort: true });
-			} else if (this.ctx.session.isBashRunning) {
-				this.ctx.session.abortBash();
-			} else if (this.ctx.isBashMode) {
-				this.ctx.editor.setText("");
-				this.ctx.isBashMode = false;
-				this.ctx.updateEditorBorderColor();
-			} else if (this.ctx.session.isEvalRunning) {
-				this.ctx.session.abortEval();
-			} else if (this.ctx.isPythonMode) {
-				this.ctx.editor.setText("");
-				this.ctx.isPythonMode = false;
-				this.ctx.updateEditorBorderColor();
-			} else if (this.ctx.session.isStreaming) {
-				this.#handleStreamingEscape();
-			} else if (this.ctx.editor.getText().trim()) {
-				// Esc must not destroy an in-progress draft; it only disarms a previous empty-editor Esc.
-				this.ctx.lastEscapeTime = 0;
-				this.#clearStreamingEscapeArm();
-			} else {
-				// Double-interrupt with empty editor triggers /tree, /branch, or nothing based on setting
-				const action = settings.get("doubleEscapeAction");
-				if (action !== "none") {
-					const now = Date.now();
-					if (now - this.ctx.lastEscapeTime < 500) {
-						if (action === "tree") {
-							this.ctx.showTreeSelector();
-						} else {
-							this.ctx.showUserMessageSelector();
-						}
-						this.ctx.ui.resetDisplay();
-						this.ctx.lastEscapeTime = 0;
-					} else {
-						this.ctx.lastEscapeTime = now;
-					}
-				}
-			}
-		};
+		if (!this.#globalInterruptListenerInstalled) {
+			this.#globalInterruptListenerInstalled = true;
+			this.ctx.ui.addInputListener(data => {
+				if (!this.#matchesInterruptKey(data)) return undefined;
+				const focused = this.ctx.ui.getFocused();
+				if (focused === this.ctx.editor && this.ctx.editor.isShowingAutocomplete()) return undefined;
+				if (!this.#hasGlobalInterruptWork()) return undefined;
+				this.#handleEscape();
+				return { consume: true };
+			});
+		}
+		this.ctx.editor.onEscape = () => this.#handleEscape();
 
 		this.ctx.editor.setActionKeys("app.clear", this.ctx.keybindings.getKeys("app.clear"));
 		this.ctx.editor.onClear = () => this.handleCtrlC();

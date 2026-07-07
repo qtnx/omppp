@@ -236,4 +236,21 @@ describe("JobTool wait compaction scheduling", () => {
 
 		expect(text).toContain("[compaction scheduled while waiting — running at next boundary]");
 	});
+
+	test("returns promptly on immediate re-poll when waiting compaction was already scheduled", async () => {
+		const manager = new AsyncJobManager({ onJobComplete: () => undefined });
+		const session = createAgentSession(manager);
+		spyOn(compaction, "prepareCompaction").mockReturnValue(createPreparedCompaction());
+		spyOn(compaction, "shouldCompact").mockReturnValue(true);
+		vi.useFakeTimers();
+
+		expect(session.considerCompactionWhileWaiting("first wait").status).toBe("scheduled");
+
+		const result = await runPollBeforeCompletion(session, manager);
+
+		expect(result.statuses).toEqual(["running"]);
+		expect(result.useless).toBe(true);
+		expect(result.text).toContain("[compaction scheduled while waiting — running at next boundary]");
+		expect(result.text).toContain("## Still Running (1)");
+	});
 });
