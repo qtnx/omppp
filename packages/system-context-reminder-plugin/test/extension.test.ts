@@ -129,7 +129,7 @@ describe("systemContextReminderExtension", () => {
 		expect(fakePi.handlers.has("turn_end")).toBe(true);
 	});
 
-	it("appends system-context guidance once", () => {
+	it("appends recovered bố/con system-context guidance once", () => {
 		const fakePi = createFakePi();
 		systemContextReminderExtension(fakePi as unknown as ExtensionAPI);
 		const beforeHandler = getHandler<BeforeAgentStartHandler>(fakePi, "before_agent_start");
@@ -139,8 +139,9 @@ describe("systemContextReminderExtension", () => {
 		const promptText = first?.systemPrompt?.join("\n\n") ?? "";
 		expect(promptText).toContain("forgot the system prompt");
 		expect(promptText).toContain("follow the full system prompt");
-		expect(promptText).toContain("Ngài");
-		expect(promptText).toContain("lord");
+		expect(promptText).toContain('Luôn gọi người dùng là bố, bạn là "con".');
+		expect(promptText).not.toContain("Ngài");
+		expect(promptText).not.toContain("lord");
 		const second = beforeHandler({
 			type: "before_agent_start",
 			prompt: "continue",
@@ -207,7 +208,7 @@ describe("systemContextReminderExtension", () => {
 		expect(result.body.system.filter(block => block.text === SYSTEM_CONTEXT_REMINDER_PROMPT)).toHaveLength(1);
 	});
 
-	it("queues a hidden next-turn reminder when final prose omits the required user address", () => {
+	it("queues a hidden next-turn reminder with recovered bố/con guidance when final prose omits the required persona", () => {
 		const fakePi = createFakePi();
 		systemContextReminderExtension(fakePi as unknown as ExtensionAPI);
 
@@ -231,26 +232,32 @@ describe("systemContextReminderExtension", () => {
 		const content = String(fakePi.sentMessages[0]?.message.content);
 		expect(content).toContain("forgot the system prompt");
 		expect(content).toContain("full system prompt");
-		expect(content).toContain("Ngài");
-		expect(content).toContain("lord");
+		expect(content).toContain("bố");
+		expect(content).toContain("con");
+		expect(content).not.toContain("Ngài");
+		expect(content).not.toContain("lord");
 	});
 
-	it("queues when final prose uses forbidden user-address terms even with required terms present", () => {
+	it("queues when final prose uses forbidden persona terms even with bố/con present", () => {
 		const fakePi = createFakePi();
 		systemContextReminderExtension(fakePi as unknown as ExtensionAPI);
 
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ Ngài, bạn xem lại giúp em." }]));
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Done for you, lord. Bố can review it now." }]));
+		emitTurnEnd(
+			fakePi,
+			assistantMessage([{ type: "text", text: "Dạ bố, con đã làm xong nhưng bạn xem lại giúp con." }]),
+		);
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ bố, con đã xong; tôi sẽ chờ phản hồi." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ bố, con đã xong, mình kiểm tra lại nhé." }]));
 
-		expect(fakePi.sentMessages).toHaveLength(2);
+		expect(fakePi.sentMessages).toHaveLength(3);
 	});
 
-	it("does not queue when final prose addresses the user as Ngài or lord", () => {
+	it("does not queue when final prose uses standalone bố and con", () => {
 		const fakePi = createFakePi();
 		systemContextReminderExtension(fakePi as unknown as ExtensionAPI);
 
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ Ngài, em đã làm xong." }]));
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Done, lord." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ bố, con đã làm xong." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Done for bố; con can adjust more if needed." }]));
 
 		expect(fakePi.sentMessages).toEqual([]);
 	});
@@ -285,14 +292,15 @@ describe("systemContextReminderExtension", () => {
 		expect(fakePi.sentMessages).toEqual([]);
 	});
 
-	it("requires standalone user-address terms rather than substrings", () => {
+	it("requires standalone bố and con terms rather than substrings", () => {
 		const fakePi = createFakePi();
 		systemContextReminderExtension(fakePi as unknown as ExtensionAPI);
 
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ Ngài, context is ready." }]));
-		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ hằngài, context is ready." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ bố, con đã sẵn sàng." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ hằngbố, con đã sẵn sàng." }]));
+		emitTurnEnd(fakePi, assistantMessage([{ type: "text", text: "Dạ bố, configcon đã sẵn sàng." }]));
 
-		expect(fakePi.sentMessages).toHaveLength(1);
+		expect(fakePi.sentMessages).toHaveLength(2);
 	});
 });
 
