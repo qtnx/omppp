@@ -19,9 +19,10 @@
  */
 
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
+import { isAnthropicOAuthToken } from "@oh-my-pi/pi-catalog/utils";
 import { extractHttpStatusFromError, extractRetryHint, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "../auth-retry";
-import type { AuthStorage } from "../auth-storage";
+import type { AuthApiKeyResolution, AuthStorage } from "../auth-storage";
 import { classifyGatewayError } from "../error/gateway";
 import { isUsageLimitOutcome } from "../error/rate-limit";
 import * as anthropicMessages from "../providers/anthropic-messages-server";
@@ -396,9 +397,9 @@ async function handleFormatEndpoint(
 	// expected to resolve the credential and pass it as `options.apiKey`.
 	// For OAuth providers this returns the access token (refreshed via the
 	// broker override on AuthStorage when needed).
-	let apiKey: string | undefined;
+	let apiKeyResolution: AuthApiKeyResolution | undefined;
 	try {
-		apiKey = await bootOpts.storage.getApiKey(model.provider, sessionId, {
+		apiKeyResolution = await bootOpts.storage.getApiKeyWithOrigin(model.provider, sessionId, {
 			modelId: model.id,
 			signal: controller.signal,
 		});
@@ -409,13 +410,18 @@ async function handleFormatEndpoint(
 		return route.module.formatError(classified.status, classified.type, classified.message);
 	}
 	if (controller.signal.aborted) return clientClosedResponse(route);
-	if (!apiKey) {
+	if (!apiKeyResolution) {
 		return route.module.formatError(
 			401,
 			"authentication_error",
 			`No credential available for provider ${model.provider}`,
 		);
 	}
+	const { apiKey, origin: credentialOrigin } = apiKeyResolution;
+	const credentialAuthType: "oauth" | "api_key" =
+		credentialOrigin.kind === "oauth" || (model.provider === "anthropic" && isAnthropicOAuthToken(apiKey))
+			? "oauth"
+			: "api_key";
 
 	const streamOpts = buildStreamOptions(parsed, model.api, controller.signal);
 	streamOpts.apiKey = buildGatewayApiKeyResolver(
@@ -435,6 +441,8 @@ async function handleFormatEndpoint(
 		resolvedModel: model.id,
 		stream: parsed.stream,
 		peer,
+		credentialOrigin: credentialOrigin.kind,
+		credentialAuthType,
 	});
 
 	if (!parsed.stream) {
@@ -552,9 +560,9 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	const sessionId = parsed.options.sessionId ?? deriveSessionId(parsed.modelId, parsed.context);
 	parsed.options.sessionId ??= sessionId;
 
-	let apiKey: string | undefined;
+	let apiKeyResolution: AuthApiKeyResolution | undefined;
 	try {
-		apiKey = await bootOpts.storage.getApiKey(model.provider, sessionId, {
+		apiKeyResolution = await bootOpts.storage.getApiKeyWithOrigin(model.provider, sessionId, {
 			modelId: model.id,
 			signal: controller.signal,
 		});
@@ -565,13 +573,18 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 		return piNative.formatError(classified.status, classified.type, classified.message);
 	}
 	if (controller.signal.aborted) return aborted();
-	if (!apiKey) {
+	if (!apiKeyResolution) {
 		return piNative.formatError(
 			401,
 			"authentication_error",
 			`No credential available for provider ${model.provider}`,
 		);
 	}
+	const { apiKey, origin: credentialOrigin } = apiKeyResolution;
+	const credentialAuthType: "oauth" | "api_key" =
+		credentialOrigin.kind === "oauth" || (model.provider === "anthropic" && isAnthropicOAuthToken(apiKey))
+			? "oauth"
+			: "api_key";
 
 	// Build the SimpleStreamOptions actually handed to `streamSimple`. We
 	// trust the client's options (already allow-listed by `parseRequest`) and
@@ -610,6 +623,8 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 		resolvedModel: model.id,
 		stream: parsed.stream,
 		peer,
+		credentialOrigin: credentialOrigin.kind,
+		credentialAuthType,
 	});
 
 	if (!parsed.stream) {

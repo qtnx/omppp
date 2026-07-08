@@ -18,7 +18,6 @@ import { loadSkills, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
-import openAiCodexSystemPromptTemplate from "./prompts/system/openai-codex-system-prompt.md" with { type: "text" };
 import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
 import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
@@ -95,14 +94,6 @@ function firstNonEmpty(...values: (string | undefined | null)[]): string | null 
 	return null;
 }
 
-function isOpenAiCodexPromptModel(model: string | undefined): boolean {
-	if (!model) return false;
-	const normalized = model.toLowerCase();
-	const slash = normalized.indexOf("/");
-	const provider = slash === -1 ? "" : normalized.slice(0, slash);
-	const id = slash === -1 ? normalized : normalized.slice(slash + 1);
-	return provider === "openai-codex" || id.includes("codex");
-}
 
 function renderActiveRepoContextPrompt(activeRepoContext: ActiveRepoContext | null): string {
 	if (!activeRepoContext) return "";
@@ -824,14 +815,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		includeWorkspaceTree,
 		renderMermaid,
 	};
-	const rendered = prompt.render(
-		resolvedCustomPrompt
-			? customSystemPromptTemplate
-			: isOpenAiCodexPromptModel(model)
-				? openAiCodexSystemPromptTemplate
-				: systemPromptTemplate,
-		data,
-	);
+	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
 	const systemPrompt = [rendered];
 	// Custom prompt templates already render context files and append text; the
 	// project footer still carries environment, cwd, workspace, and dir-context.

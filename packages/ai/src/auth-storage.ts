@@ -103,6 +103,11 @@ export interface CredentialOrigin {
 	envVar?: string;
 }
 
+export interface AuthApiKeyResolution {
+	apiKey: string;
+	origin: CredentialOrigin;
+}
+
 /**
  * Serialized representation of AuthStorage for passing to subagent workers.
  * Contains only the essential credential data, not runtime state.
@@ -4403,11 +4408,15 @@ export class AuthStorage {
 	 * 5. Stored API key (e.g. a broker-migrated copy) — last resort, so an explicit env var wins
 	 * 6. Fallback resolver (models.yml custom providers, last-resort)
 	 */
-	async getApiKey(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined> {
+	async getApiKeyWithOrigin(
+		provider: string,
+		sessionId?: string,
+		options?: AuthApiKeyOptions,
+	): Promise<AuthApiKeyResolution | undefined> {
 		// Runtime override takes highest priority
 		const runtimeKey = this.#runtimeOverrides.get(provider);
 		if (runtimeKey) {
-			return runtimeKey;
+			return { apiKey: runtimeKey, origin: { kind: "runtime" } };
 		}
 
 		// Config override: explicit apiKey pinned in models.yml beats the broker's
@@ -4417,14 +4426,14 @@ export class AuthStorage {
 		// won't accept.
 		const configKey = this.#configOverrides.get(provider);
 		if (configKey) {
-			return configKey;
+			return { apiKey: configKey, origin: { kind: "config" } };
 		}
 
 		// Precedence: a deliberate OAuth login wins, then an explicit env var, then a stored
 		// static api_key (which may be a stale broker-migrated copy) as a last resort.
 		const oauthResolved = await this.#resolveOAuthSelection(provider, sessionId, options);
 		if (oauthResolved) {
-			return oauthResolved.apiKey;
+			return { apiKey: oauthResolved.apiKey, origin: { kind: "oauth" } };
 		}
 
 		// Past OAuth: the session sticky (if any) is stale — the request authenticates via
@@ -4432,16 +4441,23 @@ export class AuthStorage {
 		// suppresses account_uuid for this session.
 		this.#clearSessionCredential(provider, sessionId);
 		const envKey = getEnvApiKey(provider);
-		if (envKey) return envKey;
+		if (envKey) return { apiKey: envKey, origin: { kind: "env", envVar: getEnvApiKeyName(provider) } };
 
 		const apiKeySelection = this.#selectCredentialByType(provider, "api_key", sessionId);
 		if (apiKeySelection) {
 			this.#recordSessionCredential(provider, sessionId, "api_key", apiKeySelection.index);
-			return this.#configValueResolver(apiKeySelection.credential.key);
+			const apiKey = await this.#configValueResolver(apiKeySelection.credential.key);
+			if (apiKey === undefined) return undefined;
+			return { apiKey, origin: { kind: "api_key" } };
 		}
 
-		// Fall back to custom resolver (e.g., models.json custom providers)
-		return this.#fallbackResolver?.(provider) ?? undefined;
+		const fallbackKey = this.#fallbackResolver?.(provider);
+		if (fallbackKey !== undefined) return { apiKey: fallbackKey, origin: { kind: "fallback" } };
+		return undefined;
+	}
+
+	async getApiKey(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined> {
+		return (await this.getApiKeyWithOrigin(provider, sessionId, options))?.apiKey;
 	}
 
 	/**

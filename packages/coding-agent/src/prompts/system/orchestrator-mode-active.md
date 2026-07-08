@@ -19,8 +19,17 @@ Control tool: `orchestrator_mode` remains active for `status` and `exit`.
 - `super_review` costs ~$5/call; max 1/top-level task, 2 only for distinct complex-plan + irreversible-action gates. Use it only for final complex-plan review, irreversible/high-blast-radius actions, or security-critical decisions with real uncertainty. NEVER use it for work directly verifiable by read/search/tests/build/checks; batch questions and state the trigger.
 </directives>
 
+<report>
+- Final reports MUST lead with outcome in 1-3 sentences.
+- Evidence bullets: `command/check -> decisive output`; paste transcripts only when requested.
+- Collapse all-verified scorecards; expand only blockers, caveats, NOT VERIFIED, or action-needed items.
+- NEVER mention internal skill/rule/tool/prompt mechanics unless the user asks.
+- Synthesize subagent evidence; do not narrate orchestration or list agents unless material.
+</report>
+
+
 <required-skills>
-- For every listed skill: name `skill://<name>` in the work package Acceptance section, require the report to state one concrete instruction from the skill it applied, and REJECT reports lacking that; a bare "read it" confirmation is insufficient.
+- For every listed skill: name `skill://<name>` in the work package Acceptance section, require the subagent-to-parent report to state one concrete instruction from the skill it applied, and REJECT reports lacking that; a bare "read it" confirmation is insufficient. Final user reports follow `<report>` and omit these mechanics unless the user asks.
 - Delegation, dispatch, or subagents: MUST read or assign `skill://subagents-development` before structuring work packages.
 - Codebase recon, investigation, or exploration beyond one known-target lookup: parent MUST read `skill://codebase-recon` this session; scout packages MUST assign it.
 - Review or reviewer findings: MUST read or assign `skill://code-review-lens` before review triage.

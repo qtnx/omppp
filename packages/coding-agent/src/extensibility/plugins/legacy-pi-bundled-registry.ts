@@ -861,6 +861,7 @@ import * as bundledPiCodingAgentToolsMemoryRecall from "@oh-my-pi/pi-coding-agen
 import * as bundledPiCodingAgentToolsMemoryReflect from "@oh-my-pi/pi-coding-agent/tools/memory-reflect";
 import * as bundledPiCodingAgentToolsMemoryRender from "@oh-my-pi/pi-coding-agent/tools/memory-render";
 import * as bundledPiCodingAgentToolsMemoryRetain from "@oh-my-pi/pi-coding-agent/tools/memory-retain";
+import * as bundledPiCodingAgentToolsOneTurnAuthGateway from "@oh-my-pi/pi-coding-agent/tools/one-turn-auth-gateway";
 import * as bundledPiCodingAgentToolsOrchestratorMode from "@oh-my-pi/pi-coding-agent/tools/orchestrator-mode";
 import * as bundledPiCodingAgentToolsOutputMeta from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import * as bundledPiCodingAgentToolsOutputSchemaValidator from "@oh-my-pi/pi-coding-agent/tools/output-schema-validator";
@@ -3091,6 +3092,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/tools/memory-retain": bundledPiCodingAgentToolsMemoryRetain as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/tools/one-turn-auth-gateway":
+		bundledPiCodingAgentToolsOneTurnAuthGateway as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/tools/orchestrator-mode":
 		bundledPiCodingAgentToolsOrchestratorMode as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/tools/output-meta": bundledPiCodingAgentToolsOutputMeta as unknown as Readonly<
