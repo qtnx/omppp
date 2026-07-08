@@ -168,7 +168,7 @@ async function prepareAttachment(
 	const selected = selectRange(fullText, entry.range);
 	const budget = Math.max(0, Math.min(MAX_FILE_BYTES, remainingBytes));
 	const truncated = truncateUtf8(selected.text, budget);
-	const displayPath = formatPathRelativeToCwd(realPath, cwd);
+	const displayPath = formatPathRelativeToCwd(realPath, realCwd);
 	return {
 		path: displayPath,
 		label: entry.label,

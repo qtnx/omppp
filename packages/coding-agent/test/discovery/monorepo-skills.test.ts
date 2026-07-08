@@ -24,6 +24,10 @@ function writeSkill(dir: string, name: string, description: string): void {
 	);
 }
 
+function testTempRoot(): string {
+	return process.platform === "win32" ? os.tmpdir() : "/tmp";
+}
+
 describe("monorepo skill discovery", () => {
 	let tempDir!: string;
 	let repoRoot!: string;
@@ -32,7 +36,7 @@ describe("monorepo skill discovery", () => {
 
 	beforeEach(() => {
 		clearCache();
-		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-monorepo-skills-"));
+		tempDir = fs.mkdtempSync(path.join(testTempRoot(), "pi-monorepo-skills-"));
 		repoRoot = path.join(tempDir, "repo");
 		subProject = path.join(repoRoot, "packages", "my-app");
 		fs.mkdirSync(subProject, { recursive: true });
@@ -46,13 +50,7 @@ describe("monorepo skill discovery", () => {
 		removeSyncWithRetries(tempDir);
 	});
 
-	test("finds skills in ancestor .omp/skills/ directories", async () => {
-		// Root has a skill
-		writeSkill(path.join(repoRoot, ".omp", "skills"), "root-skill", "From repo root");
-		// Sub-project has a skill
-		writeSkill(path.join(subProject, ".omp", "skills"), "local-skill", "From sub-project");
-
-		// Simulate the walk-up pattern used by the builtin provider
+	async function scanAncestorSkills(): Promise<LoadResult<Skill>[]> {
 		const results: LoadResult<Skill>[] = [];
 		let current = subProject;
 		while (true) {
@@ -62,10 +60,21 @@ describe("monorepo skill discovery", () => {
 				level: "project",
 			});
 			results.push(result);
+			if (current === (ctx.repoRoot ?? ctx.home)) break;
 			const parent = path.dirname(current);
 			if (parent === current) break;
 			current = parent;
 		}
+		return results;
+	}
+
+	test("finds skills in ancestor .omp/skills/ directories", async () => {
+		// Root has a skill
+		writeSkill(path.join(repoRoot, ".omp", "skills"), "root-skill", "From repo root");
+		// Sub-project has a skill
+		writeSkill(path.join(subProject, ".omp", "skills"), "local-skill", "From sub-project");
+
+		const results = await scanAncestorSkills();
 
 		const allItems = results.flatMap(r => r.items);
 		const names = allItems.map(s => s.name);
@@ -82,19 +91,7 @@ describe("monorepo skill discovery", () => {
 		writeSkill(path.join(repoRoot, ".omp", "skills"), "shared-skill", "Root version");
 		writeSkill(path.join(subProject, ".omp", "skills"), "shared-skill", "Local version");
 
-		const results: LoadResult<Skill>[] = [];
-		let current = subProject;
-		while (true) {
-			const result = await scanSkillsFromDir(ctx, {
-				dir: path.join(current, ".omp", "skills"),
-				providerId: "native",
-				level: "project",
-			});
-			results.push(result);
-			const parent = path.dirname(current);
-			if (parent === current) break;
-			current = parent;
-		}
+		const results = await scanAncestorSkills();
 
 		const allItems = results.flatMap(r => r.items);
 		const sharedSkills = allItems.filter(s => s.name === "shared-skill");
@@ -107,19 +104,7 @@ describe("monorepo skill discovery", () => {
 
 	test("works when no ancestor has skills", async () => {
 		// No skills anywhere
-		const results: LoadResult<Skill>[] = [];
-		let current = subProject;
-		while (true) {
-			const result = await scanSkillsFromDir(ctx, {
-				dir: path.join(current, ".omp", "skills"),
-				providerId: "native",
-				level: "project",
-			});
-			results.push(result);
-			const parent = path.dirname(current);
-			if (parent === current) break;
-			current = parent;
-		}
+		const results = await scanAncestorSkills();
 
 		const allItems = results.flatMap(r => r.items);
 		expect(allItems).toHaveLength(0);
@@ -132,19 +117,7 @@ describe("monorepo skill discovery", () => {
 		writeSkill(path.join(packagesDir, ".omp", "skills"), "packages-skill", "Packages");
 		writeSkill(path.join(subProject, ".omp", "skills"), "app-skill", "App");
 
-		const results: LoadResult<Skill>[] = [];
-		let current = subProject;
-		while (true) {
-			const result = await scanSkillsFromDir(ctx, {
-				dir: path.join(current, ".omp", "skills"),
-				providerId: "native",
-				level: "project",
-			});
-			results.push(result);
-			const parent = path.dirname(current);
-			if (parent === current) break;
-			current = parent;
-		}
+		const results = await scanAncestorSkills();
 
 		const names = results.flatMap(r => r.items).map(s => s.name);
 		expect(names).toContain("root-skill");
@@ -163,20 +136,7 @@ describe("monorepo skill discovery", () => {
 		writeSkill(path.join(repoRoot, ".omp", "skills"), "root-skill", "At repo root");
 
 		// Simulate the walk-up with repo root boundary (matching builtin provider pattern)
-		const results: LoadResult<Skill>[] = [];
-		let current = subProject;
-		while (true) {
-			const result = await scanSkillsFromDir(ctx, {
-				dir: path.join(current, ".omp", "skills"),
-				providerId: "native",
-				level: "project",
-			});
-			results.push(result);
-			if (current === (ctx.repoRoot ?? ctx.home)) break; // stop at repo root or home
-			const parent = path.dirname(current);
-			if (parent === current) break;
-			current = parent;
-		}
+		const results = await scanAncestorSkills();
 
 		const names = results.flatMap(r => r.items).map(s => s.name);
 		expect(names).toContain("root-skill");

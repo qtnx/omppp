@@ -20,11 +20,15 @@ function linkWorktree(project: string, worktreeRoot: string): void {
 	fs.writeFileSync(path.join(worktreeRoot, ".git"), `gitdir: ${path.relative(worktreeRoot, gitDir)}\n`, "utf8");
 }
 
+function testTempRoot(): string {
+	return process.platform === "win32" ? os.tmpdir() : "/tmp";
+}
+
 describe("git repo.linkedWorktreeSync", () => {
 	let tempRoot: string;
 
 	beforeEach(() => {
-		tempRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "omp-linked-worktree-")));
+		tempRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(testTempRoot(), "omp-linked-worktree-")));
 	});
 
 	afterEach(() => {

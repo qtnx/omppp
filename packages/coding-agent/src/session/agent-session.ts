@@ -357,6 +357,7 @@ import {
 	type ToolWaitingCompactionCheck,
 } from "../tools";
 import { assertEditableFile } from "../tools/auto-generated-guard";
+import { disableAnnotateHttp } from "../tools/browser/annotate-http";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
 import { normalizeToolNames } from "../tools/builtin-names";
 import type { CheckpointState, CompletedRewindState } from "../tools/checkpoint";
@@ -6784,6 +6785,14 @@ export class AgentSession {
 		this.#recordSessionExit(options.reason ?? "dispose");
 		this.#cancelExitRecorder?.();
 		this.#cancelExitRecorder = undefined;
+		try {
+			const disabledAnnotationIntake = await disableAnnotateHttp(this);
+			if (disabledAnnotationIntake) {
+				logger.debug("Annotation intake disabled during session dispose", { sessionId: this.sessionId });
+			}
+		} catch (error) {
+			logger.warn("Failed to disable annotation intake during session dispose", { error: String(error) });
+		}
 		try {
 			if (this.#extensionRunner?.hasHandlers("session_shutdown")) {
 				await this.#extensionRunner.emit({ type: "session_shutdown" });

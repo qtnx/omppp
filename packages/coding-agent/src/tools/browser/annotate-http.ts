@@ -29,6 +29,20 @@ export interface AnnotateHttpInfo {
 	url: string;
 }
 
+export class AnnotateHttpPortUnavailableError extends Error {
+	host: string;
+	firstPort: number;
+	lastPort: number;
+
+	constructor(host: string, firstPort: number, lastPort: number) {
+		super(`annotate intake: no free port in ${firstPort}-${lastPort}`);
+		this.name = "AnnotateHttpPortUnavailableError";
+		this.host = host;
+		this.firstPort = firstPort;
+		this.lastPort = lastPort;
+	}
+}
+
 /** Options for {@link enableAnnotateHttp}. */
 export interface EnableAnnotateHttpOptions {
 	/** Opaque identity for this registration; the same object toggles it off. */
@@ -64,7 +78,8 @@ const ALLOWED_SCREENSHOT_MIME: Record<string, true> = {
 };
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
 const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
-const PORT_FALLBACK_SPAN = 9;
+const PORT_FALLBACK_COUNT = 256;
+const MAX_PORT = 65_535;
 const INVALID_CODE_WINDOW_MS = 60_000;
 const INVALID_CODE_LIMIT = 20;
 
@@ -298,16 +313,17 @@ async function handleRequest(req: Request): Promise<Response> {
 }
 
 /**
- * Start the shared server on the first available port in
- * `[preferredPort, preferredPort + PORT_FALLBACK_SPAN]`. `Bun.serve` throws
- * synchronously when a port is already bound, so probe each in turn.
+ * Start the shared server on the first available port in the configured
+ * fallback window. `Bun.serve` throws synchronously when a port is already
+ * bound, so probe each in turn.
  */
 function ensureServer(host: string, preferredPort: number): void {
 	if (server) {
 		return;
 	}
-	const lastPort = preferredPort + PORT_FALLBACK_SPAN;
-	for (let port = preferredPort; port <= lastPort; port++) {
+	const firstPort = Math.max(1, Math.min(MAX_PORT, Math.trunc(preferredPort)));
+	const lastPort = Math.min(MAX_PORT, firstPort + PORT_FALLBACK_COUNT - 1);
+	for (let port = firstPort; port <= lastPort; port++) {
 		try {
 			const started = Bun.serve({ hostname: host, port, fetch: handleRequest });
 			server = started;
@@ -323,7 +339,7 @@ function ensureServer(host: string, preferredPort: number): void {
 			});
 		}
 	}
-	throw new Error(`annotate intake: no free port in ${preferredPort}-${lastPort}`);
+	throw new AnnotateHttpPortUnavailableError(host, firstPort, lastPort);
 }
 
 /**

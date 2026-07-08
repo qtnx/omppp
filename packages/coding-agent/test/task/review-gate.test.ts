@@ -30,6 +30,10 @@ const IMPLEMENTER_AGENT = "task";
 const REVIEWER_AGENT = "code-reviewer";
 const FIXER_AGENT = "code-fixer";
 
+function testTempRoot(): string {
+	return process.platform === "win32" ? os.tmpdir() : "/tmp";
+}
+
 // --- Role queue ---------------------------------------------------------------
 
 type ReviewerFinding = {
@@ -299,10 +303,16 @@ async function initUnbornStatsRepo(): Promise<string> {
 }
 
 function createSession(overrides: Partial<Record<string, unknown>> = {}, cwd = "/tmp"): ToolSession {
+	const authStorage = {
+		onCredentialDisabled: () => () => {},
+	};
 	const modelRegistry = {
-		authStorage: undefined,
+		authStorage,
 		refresh: async () => {},
 		getAvailable: () => [],
+		syncExtensionSources: () => {},
+		clearSourceRegistrations: () => {},
+		refreshRuntimeProviders: async () => {},
 		getApiKey: async () => null,
 	} as unknown as ModelRegistry;
 
@@ -776,7 +786,8 @@ describe("task review gate", () => {
 	});
 	it("reports missing git repository without labeling non-isolated review gate as isolated execution", async () => {
 		mockAgents();
-		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-review-gate-no-git-"));
+		mockSessionQueue([{ role: "implementer" }]);
+		const cwd = await fs.mkdtemp(path.join(testTempRoot(), "omp-review-gate-no-git-"));
 		try {
 			const tool = await TaskTool.create(
 				createSession(

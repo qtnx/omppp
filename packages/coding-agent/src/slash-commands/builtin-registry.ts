@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { renderContextGcReport } from "@oh-my-pi/context-gc-plugin";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { type AutocompleteItem, Spacer } from "@oh-my-pi/pi-tui";
-import { APP_NAME, getProjectDir, sanitizeText, setProjectDir } from "@oh-my-pi/pi-utils";
+import { APP_NAME, getProjectDir, logger, sanitizeText, setProjectDir } from "@oh-my-pi/pi-utils";
 import { COLLAB_GUEST_ALLOWED_COMMANDS, CollabGuestLink } from "../collab/guest";
 import { CollabHost } from "../collab/host";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
@@ -44,7 +44,13 @@ import {
 } from "../task/omp-command";
 import type { BrowserAnnotationEntry } from "../tools";
 import { createBrowserAnnotationListener } from "../tools/browser";
-import { disableAnnotateHttp, enableAnnotateHttp, getAnnotateHttpStatus } from "../tools/browser/annotate-http";
+import {
+	type AnnotateHttpInfo,
+	AnnotateHttpPortUnavailableError,
+	disableAnnotateHttp,
+	enableAnnotateHttp,
+	getAnnotateHttpStatus,
+} from "../tools/browser/annotate-http";
 import { expandTilde, resolveToCwd } from "../tools/path-utils";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { urlHyperlinkAlways } from "../tui";
@@ -497,15 +503,8 @@ function parseContextGcArgs(args: string): ParsedContextGcArgs {
 	return { action, status, groupBy, limit, includeRecords };
 }
 
-const ANNOTATE_HTTP_KEYS = new WeakMap<AgentSession, object>();
-
 function annotateHttpKey(session: AgentSession): object {
-	let key = ANNOTATE_HTTP_KEYS.get(session);
-	if (!key) {
-		key = {};
-		ANNOTATE_HTTP_KEYS.set(session, key);
-	}
-	return key;
+	return session;
 }
 
 const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
@@ -1410,13 +1409,29 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			);
 			if (!listener)
 				return usage("Annotation intake unavailable: browser annotation queue is not enabled.", runtime);
-			const info = await enableAnnotateHttp({
-				key,
-				sessionLabel: runtime.session.sessionName || runtime.session.sessionId || "OMPx session",
-				host,
-				port,
-				deliver: listener,
-			});
+			let info: AnnotateHttpInfo;
+			try {
+				info = await enableAnnotateHttp({
+					key,
+					sessionLabel: runtime.session.sessionName || runtime.session.sessionId || "OMPx session",
+					host,
+					port,
+					deliver: listener,
+				});
+			} catch (error) {
+				if (error instanceof AnnotateHttpPortUnavailableError) {
+					logger.warn("Annotation intake failed to bind", {
+						host: error.host,
+						firstPort: error.firstPort,
+						lastPort: error.lastPort,
+					});
+					await runtime.output(
+						`Annotation intake failed: no free port in ${error.firstPort}-${error.lastPort} on ${error.host}. Intake remains disabled; stop another ompx process or set browser.annotateHttpPort.`,
+					);
+					return commandConsumed();
+				}
+				throw error;
+			}
 			await runtime.output(`Annotation intake enabled: ${info.url}\nPairing code: ${info.code}`);
 			return commandConsumed();
 		},
