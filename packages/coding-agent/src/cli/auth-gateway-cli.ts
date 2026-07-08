@@ -12,6 +12,7 @@
  *   - `serve [--bind=…] [--local]` — boots the gateway.
  *   - `token` / `token --regenerate` — manages the gateway bearer token file.
  *   - `status` — prints the locally-stored gateway token and source hint.
+ *   - `serve --daemon` — boots the gateway in the background and returns after readiness.
  */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
@@ -61,6 +62,8 @@ export interface AuthGatewayCommandArgs {
 		strict?: boolean;
 		/** Use local SQLite/env/config credentials even when an auth broker is configured. */
 		local?: boolean;
+		/** Run `serve` in a detached background process and return after /healthz is ready. */
+		daemon?: boolean;
 	};
 }
 
@@ -68,6 +71,96 @@ const ACTIONS: readonly AuthGatewayAction[] = ["serve", "token", "status", "chec
 
 function getTokenFilePath(): string {
 	return path.join(getConfigRootDir(), "auth-gateway.token");
+}
+
+function getDaemonPidFilePath(): string {
+	return path.join(getConfigRootDir(), "auth-gateway.pid");
+}
+
+function getDaemonStateFilePath(): string {
+	return path.join(getConfigRootDir(), "auth-gateway.daemon.json");
+}
+
+function getDaemonLogFilePath(): string {
+	return path.join(getConfigRootDir(), "auth-gateway.log");
+}
+
+function cleanEnvWithDaemonLog(logFile: string): Record<string, string> {
+	const env: Record<string, string> = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (value !== undefined) env[key] = value;
+	}
+	env.OMP_AUTH_GATEWAY_DAEMON_LOG = logFile;
+	return env;
+}
+
+function selfCliCommandPrefix(): string[] {
+	const entry = process.argv[1];
+	if (entry && (entry.endsWith(".ts") || entry.endsWith(".js"))) return [process.execPath, entry];
+	return [process.execPath];
+}
+
+function daemonChildCommand(flags: AuthGatewayCommandArgs["flags"], bind: string): string[] {
+	const cmd = [...selfCliCommandPrefix(), "auth-gateway", "serve", "--bind", bind];
+	if (flags.noAuth) cmd.push("--no-auth");
+	if (flags.local) cmd.push("--local");
+	return cmd;
+}
+
+function healthUrlForBind(bind: string): string {
+	let host = "127.0.0.1";
+	let portText = "";
+	if (bind.startsWith("[")) {
+		const close = bind.indexOf("]");
+		if (close === -1 || bind[close + 1] !== ":") throw new Error(`Invalid bind address for daemon: ${bind}`);
+		host = bind.slice(1, close);
+		portText = bind.slice(close + 2);
+	} else {
+		const idx = bind.lastIndexOf(":");
+		if (idx === -1) {
+			portText = bind;
+		} else {
+			host = bind.slice(0, idx) || "127.0.0.1";
+			portText = bind.slice(idx + 1);
+		}
+	}
+	const port = Number(portText);
+	if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+		throw new Error(`--daemon requires an explicit non-zero TCP port in --bind (got ${bind})`);
+	}
+	if (host === "0.0.0.0" || host === "::" || host === "[::]") host = "127.0.0.1";
+	const urlHost = host.includes(":") ? `[${host}]` : host;
+	return `http://${urlHost}:${port}`;
+}
+
+async function fetchHealthReady(url: string): Promise<boolean> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 500);
+	timeout.unref?.();
+	try {
+		const res = await fetch(`${url}/healthz`, { signal: controller.signal });
+		return res.ok;
+	} catch {
+		return false;
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+async function waitForDaemonReady(url: string, timeoutMs = 5_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (await fetchHealthReady(url)) return;
+		await Bun.sleep(100);
+	}
+	throw new Error(`auth-gateway daemon did not become healthy at ${url}/healthz within ${timeoutMs}ms`);
+}
+
+function writeServeOutput(text: string): Promise<void> | void {
+	process.stdout.write(text);
+	const logFile = process.env.OMP_AUTH_GATEWAY_DAEMON_LOG;
+	if (!logFile) return;
+	return fs.appendFile(logFile, text);
 }
 
 async function readToken(): Promise<string | null> {
@@ -297,8 +390,58 @@ function describeSource(source: AuthGatewayCredentialSource): string {
 	return source.kind === "broker" ? `broker ${source.url}` : `local ${source.dbPath}`;
 }
 
+async function runServeDaemon(flags: AuthGatewayCommandArgs["flags"], bind: string): Promise<void> {
+	const url = healthUrlForBind(bind);
+	const pidFile = getDaemonPidFilePath();
+	const stateFile = getDaemonStateFilePath();
+	const logFile = getDaemonLogFilePath();
+	await fs.mkdir(path.dirname(stateFile), { recursive: true, mode: 0o700 });
+	await fs.appendFile(logFile, `[${new Date().toISOString()}] starting auth-gateway daemon at ${url}\n`);
+	const cmd = daemonChildCommand(flags, bind);
+	const child = Bun.spawn(cmd, {
+		cwd: process.cwd(),
+		env: cleanEnvWithDaemonLog(logFile),
+		stdin: "ignore",
+		stdout: "ignore",
+		stderr: "ignore",
+		detached: true,
+	});
+	if (child.pid === undefined) throw new Error("auth-gateway daemon did not expose a process id");
+	child.unref();
+	await fs.writeFile(pidFile, `${child.pid}\n`, { mode: 0o600 });
+	try {
+		await fs.chmod(pidFile, 0o600);
+	} catch {
+		// Best-effort (e.g. Windows).
+	}
+	const state = {
+		pid: child.pid,
+		url,
+		bind,
+		logFile,
+		pidFile,
+		startedAt: new Date().toISOString(),
+	};
+	await fs.writeFile(stateFile, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+	try {
+		await fs.chmod(stateFile, 0o600);
+	} catch {
+		// Best-effort (e.g. Windows).
+	}
+	await waitForDaemonReady(url);
+	process.stdout.write(`auth-gateway daemon started\n`);
+	process.stdout.write(`url: ${url}\n`);
+	process.stdout.write(`pid: ${child.pid}\n`);
+	process.stdout.write(`pid file: ${pidFile}\n`);
+	process.stdout.write(`log file: ${logFile}\n`);
+}
+
 async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const bind = flags.bind ?? DEFAULT_AUTH_GATEWAY_BIND;
+	if (flags.daemon) {
+		await runServeDaemon(flags, bind);
+		return;
+	}
 	const gatewayToken = flags.noAuth ? null : await ensureToken();
 	const source = await resolveGatewayCredentialSource(flags);
 	const storage = source.storage;
@@ -318,20 +461,20 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		resolveModel: (id: string) => modelIndex.resolveById.get(id),
 		listModels: () => modelIndex.listModels,
 	});
-	process.stdout.write(`auth-gateway listening on ${handle.url}\n`);
+	writeServeOutput(`auth-gateway listening on ${handle.url}\n`);
 	if (gatewayToken) {
-		process.stdout.write(`bearer token: ${getTokenFilePath()} (chmod 0600)\n`);
+		writeServeOutput(`bearer token: ${getTokenFilePath()} (chmod 0600)\n`);
 	} else {
-		process.stdout.write(`auth: disabled (--no-auth) — any client can call this gateway\n`);
+		writeServeOutput(`auth: disabled (--no-auth) — any client can call this gateway\n`);
 	}
-	process.stdout.write(`credential source: ${describeSource(source)}\n`);
+	writeServeOutput(`credential source: ${describeSource(source)}\n`);
 
 	const stopped = Promise.withResolvers<void>();
 	let shutdownStarted = false;
 	const stop = async (signal: NodeJS.Signals): Promise<void> => {
 		if (shutdownStarted) return;
 		shutdownStarted = true;
-		process.stdout.write(`\nReceived ${signal}, shutting down...\n`);
+		await writeServeOutput(`\nReceived ${signal}, shutting down...\n`);
 		let closeError: unknown;
 		try {
 			await handle.close();
@@ -451,6 +594,9 @@ async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> 
 }
 
 export async function runAuthGatewayCommand(cmd: AuthGatewayCommandArgs): Promise<void> {
+	if (cmd.flags.daemon && cmd.action !== "serve") {
+		throw new Error("`--daemon` is only supported with `auth-gateway serve`");
+	}
 	switch (cmd.action) {
 		case "serve":
 			await runServe(cmd.flags);

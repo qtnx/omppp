@@ -485,6 +485,31 @@ describe("InteractiveMode orchestrator mode", () => {
 		);
 	});
 
+	it("keeps orchestrator report guidance concise and human-facing", async () => {
+		const created = createHarness({
+			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],
+			activeToolNames: ["read"],
+		});
+
+		await created.handleOrchestratorModeCommand();
+
+		const modeContext = session?.systemPrompt.join("\n") ?? "";
+		expect(modeContext).toContain("skill://verify-before-done");
+
+		const reportOpenTags = modeContext.match(/^\s*<report>\s*$/gm) ?? [];
+		const reportCloseTags = modeContext.match(/^\s*<\/report>\s*$/gm) ?? [];
+		expect(reportOpenTags).toHaveLength(1);
+		expect(reportCloseTags).toHaveLength(1);
+
+		const reportSection = modeContext.match(/^\s*<report>\s*$([\s\S]*?)^\s*<\/report>\s*$/m)?.[1] ?? "";
+		expect(reportSection).toMatch(/final reports?[\s\S]{0,120}(?:lead|start|begin)[\s\S]{0,120}outcome[\s\S]{0,120}1-3 sentences?/i);
+		expect(reportSection).toMatch(/evidence bullets?[\s\S]{0,120}`command\/check -> decisive output`/i);
+		expect(reportSection).toMatch(
+			/(?:never|do not|don't|must not)[\s\S]{0,160}(?:internal )?skill\/rule\/tool\/prompt mechanics[\s\S]{0,160}unless the user asks/i,
+		);
+		expect(reportSection).not.toContain("skill://");
+	});
+
 	it("rejects prompt-template gates as phase 3 completion evidence for coding-agent behavior", async () => {
 		const created = createHarness({
 			registryToolNames: [...ORCHESTRATOR_CONTROL_TOOLS, ...SAFE_ORCHESTRATOR_TOOLS],

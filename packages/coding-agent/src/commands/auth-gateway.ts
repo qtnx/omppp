@@ -27,6 +27,7 @@ export default class AuthGateway extends Command {
 		json: Flags.boolean({ description: "Output JSON (token/status/check)" }),
 		bind: Flags.string({ description: "Bind address for `serve` (host:port)", char: "b" }),
 		regenerate: Flags.boolean({ description: "Regenerate the gateway bearer token (token)" }),
+		daemon: Flags.boolean({ description: "Run `serve` in the background and exit after the gateway is healthy" }),
 		"no-auth": Flags.boolean({
 			description:
 				"Disable inbound bearer-token auth (serve). Useful when bound to loopback — any caller is allowed.",
@@ -43,6 +44,7 @@ export default class AuthGateway extends Command {
 
 	static examples = [
 		`# Boot the gateway from broker credentials when configured, otherwise local credentials\n  ${APP_NAME} auth-gateway serve`,
+		`# Boot the gateway in the background and return after /healthz is ready\n  ${APP_NAME} auth-gateway serve --daemon`,
 		`# Force this machine's local credentials even when a broker is configured\n  ${APP_NAME} auth-gateway serve --local`,
 		`# Print the gateway bearer token (creates one on first run)\n  ${APP_NAME} auth-gateway token`,
 		`# Rotate the gateway bearer token\n  ${APP_NAME} auth-gateway token --regenerate`,
@@ -68,6 +70,7 @@ export default class AuthGateway extends Command {
 				noAuth: flags["no-auth"],
 				strict: flags.strict,
 				local: flags.local,
+				daemon: flags.daemon,
 			},
 		};
 		await initTheme();

@@ -11,6 +11,7 @@
 - Added built-in TNX role models `tnx/designer` (Claude Opus 4.8-like capabilities, 1M context) and `tnx/smol` (256K context) for local TNX routing.
 - Added `super_review`, a discoverable one-shot plain-text review tool backed by `tnx/super` for high-context plan, action, architecture, security, and QA-plan reviews with explicit workspace file attachments, snapcompact image packing for large vision-capable review payloads, orchestrator-mode access, and advisor-default access.
 - `ompx auth-gateway serve/status/check` can now use this machine's local SQLite/env/config credentials when no auth broker is configured, with `--local` to force local credentials even when broker env/config exists.
+- `ompx auth-gateway serve --daemon` now starts the gateway as a detached background process, waits for `/healthz`, and writes pid/state/log paths under the OMPx config directory.
 
 ### Changed
 

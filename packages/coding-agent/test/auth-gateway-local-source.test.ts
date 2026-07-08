@@ -19,7 +19,7 @@ import AuthGateway from "@oh-my-pi/pi-coding-agent/commands/auth-gateway";
 import { ModelsConfigFile } from "@oh-my-pi/pi-coding-agent/config/models-config";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as theme from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { getAgentDbPath, getAgentDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import { getAgentDbPath, getAgentDir, getConfigRootDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
 
 const ENV_KEYS = ["OMP_AUTH_BROKER_URL", "OMP_AUTH_BROKER_TOKEN"] as const;
@@ -540,6 +540,69 @@ describe("auth-gateway check credential source selection", () => {
 	});
 });
 
+type CapturedSpawnOptions = {
+	detached?: boolean;
+	stdin?: unknown;
+	stdout?: unknown;
+	stderr?: unknown;
+};
+
+describe("auth-gateway serve daemon", () => {
+	it("spawns a detached serve child, waits for health, and writes daemon state", async () => {
+		await seedLocalCredential("anthropic", "local-anthropic-key");
+		const starts: AuthGatewayBootOptions[] = [];
+		stubGatewayServer(starts);
+		const unref = vi.fn();
+		const spawnCalls: Array<{ cmd: string[]; options: CapturedSpawnOptions }> = [];
+		spyOn(Bun, "spawn").mockImplementation(((cmd: unknown, options: unknown) => {
+			spawnCalls.push({ cmd: cmd as string[], options: options as CapturedSpawnOptions });
+			return {
+				pid: 43_210,
+				unref,
+				exited: new Promise<number>(() => {}),
+			};
+		}) as unknown as typeof Bun.spawn);
+		spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+		await expect(
+			runAuthGatewayCommand({
+				action: "serve",
+				flags: { bind: "127.0.0.1:49011", noAuth: true, daemon: true },
+			}),
+		).resolves.toBeUndefined();
+
+		expect(starts).toHaveLength(0);
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.cmd).toContain("auth-gateway");
+		expect(spawnCalls[0]?.cmd).toContain("serve");
+		expect(spawnCalls[0]?.cmd).not.toContain("--daemon");
+		expect(spawnCalls[0]?.options.detached).toBe(true);
+		expect(spawnCalls[0]?.options.stdin).toBe("ignore");
+		expect(spawnCalls[0]?.options.stdout).toBe("ignore");
+		expect(spawnCalls[0]?.options.stderr).toBe("ignore");
+		expect(unref).toHaveBeenCalled();
+		expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:49011/healthz", expect.any(Object));
+
+		const configRoot = getConfigRootDir();
+		const state = JSON.parse(await Bun.file(path.join(configRoot, "auth-gateway.daemon.json")).text()) as {
+			pid: number;
+			url: string;
+			logFile: string;
+		};
+		expect(state.pid).toBe(43_210);
+		expect(state.url).toBe("http://127.0.0.1:49011");
+		expect(state.logFile).toBe(path.join(configRoot, "auth-gateway.log"));
+		expect(await Bun.file(path.join(configRoot, "auth-gateway.pid")).text()).toBe("43210\n");
+		expect(capturedStdout).toContain("pid: 43210");
+	});
+
+	it("rejects daemon mode for non-serve actions", async () => {
+		await expect(runAuthGatewayCommand({ action: "status", flags: { daemon: true } })).rejects.toThrow(
+			/only supported with `auth-gateway serve`/,
+		);
+	});
+});
+
 describe("auth-gateway status broker failure metadata", () => {
 	it("preserves configured broker metadata when the broker snapshot is unavailable", async () => {
 		configuredBrokerEnv();
@@ -560,11 +623,11 @@ describe("auth-gateway status broker failure metadata", () => {
 });
 
 describe("auth-gateway command parser", () => {
-	it("forwards --local into AuthGatewayCommandArgs flags", async () => {
+	it("forwards --local and --daemon into AuthGatewayCommandArgs flags", async () => {
 		const runSpy = spyOn(authGatewayCli, "runAuthGatewayCommand").mockResolvedValue(undefined);
 		spyOn(theme, "initTheme").mockResolvedValue(undefined);
 
-		const command = new AuthGateway(["serve", "--local"], TEST_CONFIG);
+		const command = new AuthGateway(["serve", "--local", "--daemon"], TEST_CONFIG);
 		await command.run();
 
 		expect(runSpy).toHaveBeenCalledWith({
@@ -576,6 +639,7 @@ describe("auth-gateway command parser", () => {
 				noAuth: undefined,
 				strict: undefined,
 				local: true,
+				daemon: true,
 			},
 		});
 	});

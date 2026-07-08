@@ -62,7 +62,24 @@ describe("system prompt model identifier", () => {
 		expect(systemPrompt.join("\n\n")).not.toContain("Model:");
 	});
 
-	it("uses a compact upstream-style prompt for OpenAI Codex models", async () => {
+	it("uses the main system prompt for OpenAI Codex GPT-5.5 models", async () => {
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: [],
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			model: "openai-codex/gpt-5.5",
+		});
+		const firstSystemPrompt = systemPrompt[0] ?? "";
+
+		expect(firstSystemPrompt).toContain("You are the senior engineer the team trusts");
+		expect(firstSystemPrompt).toContain("Lead with outcome in 1-3 sentences");
+		expect(firstSystemPrompt).not.toContain("You are Codex, based on GPT-5");
+	});
+
+	it("uses the main system prompt for codex-family model ids", async () => {
 		const tools = new Map<string, SystemPromptToolMetadata>([
 			["read", { label: "Read", description: "Read files", wireName: "read" }],
 			["bash", { label: "Bash", description: "Run commands", wireName: "bash" }],
@@ -80,13 +97,12 @@ describe("system prompt model identifier", () => {
 		});
 		const promptText = systemPrompt.join("\n\n");
 
-		expect(promptText).toContain("You are Codex, based on GPT-5");
+		expect(promptText).toContain("You are the senior engineer the team trusts");
+		expect(promptText).toContain("Lead with outcome in 1-3 sentences");
 		expect(promptText).toContain("read");
 		expect(promptText).toContain("bash");
 		expect(promptText).toContain("Project rule");
-		expect(promptText).not.toContain("<THINKING_FRAMEWORK>");
-		expect(promptText).not.toContain("Your goal is not to produce the first plausible answer");
-		expect(Buffer.byteLength(promptText, "utf8")).toBeLessThan(16_000);
+		expect(promptText).not.toContain("You are Codex, based on GPT-5");
 	});
 });
 
