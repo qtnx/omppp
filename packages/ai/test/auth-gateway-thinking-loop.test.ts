@@ -8,6 +8,7 @@ import { startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
 import { AuthStorage } from "@oh-my-pi/pi-ai/auth-storage";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { THINKING_LOOP_ERROR_MARKER } from "@oh-my-pi/pi-ai/utils/thinking-loop";
+import { logger } from "@oh-my-pi/pi-utils";
 
 /** A degenerate near-duplicate reasoning loop (the gemini-3.5-flash shape). */
 function loopThinking(): string {
@@ -105,6 +106,95 @@ describe("auth-gateway non-streaming thinking-loop cook", () => {
 			expect(mock.calls).toHaveLength(1);
 			expect(THINKING_LOOP_ERROR_MARKER.length).toBeGreaterThan(0);
 		} finally {
+			await handle.close();
+			storage.close();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("logs credential origin and auth type without exposing the token", async () => {
+		registerMockApi();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-credential-log-"));
+		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
+		const token = "sk-ant-oat-test-token";
+		storage.setRuntimeApiKey("anthropic", token);
+		const mock = createMockModel({ provider: "anthropic", id: "claude-test" });
+		mock.push({ content: ["ok"] });
+		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			resolveModel: () => mock.model,
+			version: "test",
+		});
+		try {
+			const res = await fetch(`${handle.url}/v1/chat/completions`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				body: JSON.stringify({
+					model: "claude-test",
+					messages: [{ role: "user", content: "hi" }],
+					stream: false,
+				}),
+			});
+
+			expect(res.status).toBe(200);
+			const requestLog = infoSpy.mock.calls.find(([message]) => message === "auth-gateway request");
+			expect(requestLog?.[1]).toMatchObject({
+				resolvedProvider: "anthropic",
+				resolvedModel: "claude-test",
+				credentialOrigin: "runtime",
+				credentialAuthType: "oauth",
+			});
+			expect(JSON.stringify(requestLog)).not.toContain(token);
+		} finally {
+			infoSpy.mockRestore();
+			await handle.close();
+			storage.close();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("logs credential origin and auth type on pi-native requests", async () => {
+		registerMockApi();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-pi-native-credential-log-"));
+		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
+		const token = "sk-ant-oat-pi-native-test-token";
+		storage.setRuntimeApiKey("anthropic", token);
+		const mock = createMockModel({ provider: "anthropic", id: "claude-test" });
+		mock.push({ content: ["ok"] });
+		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			resolveModel: () => mock.model,
+			version: "test",
+		});
+		try {
+			const res = await fetch(`${handle.url}/v1/pi/stream`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				body: JSON.stringify({
+					modelId: "claude-test",
+					context: { messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }] },
+					stream: false,
+				}),
+			});
+
+			expect(res.status).toBe(200);
+			const requestLog = infoSpy.mock.calls.find(([message]) => message === "auth-gateway request");
+			expect(requestLog?.[1]).toMatchObject({
+				format: "pi-native",
+				resolvedProvider: "anthropic",
+				resolvedModel: "claude-test",
+				credentialOrigin: "runtime",
+				credentialAuthType: "oauth",
+			});
+			expect(JSON.stringify(requestLog)).not.toContain(token);
+		} finally {
+			infoSpy.mockRestore();
 			await handle.close();
 			storage.close();
 			await fs.rm(dir, { recursive: true, force: true });

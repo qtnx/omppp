@@ -89,6 +89,30 @@ describe("AuthStorage.getCredentialOrigin", () => {
 		});
 	});
 
+	test("getApiKeyWithOrigin reports the same branch that returned the key", async () => {
+		await withEnv({ ...SUPPRESS_ENV, OPENAI_API_KEY: "sk-env" }, async () => {
+			if (!auth) throw new Error("test setup failed");
+			await auth.set("openai", [{ type: "api_key", key: "sk-stored" }]);
+			expect(await auth.getApiKeyWithOrigin("openai")).toEqual({
+				apiKey: "sk-env",
+				origin: { kind: "env", envVar: "OPENAI_API_KEY" },
+			});
+		});
+	});
+
+	test("getApiKeyWithOrigin reports OAuth when stored OAuth returns the key", async () => {
+		await withEnv({ ...SUPPRESS_ENV, ANTHROPIC_API_KEY: "sk-env" }, async () => {
+			if (!auth) throw new Error("test setup failed");
+			await auth.set("anthropic", [
+				{ type: "oauth", access: "sk-ant-oat-test", refresh: "refresh", expires: Date.now() + 3_600_000 },
+			]);
+			expect(await auth.getApiKeyWithOrigin("anthropic")).toEqual({
+				apiKey: "sk-ant-oat-test",
+				origin: { kind: "oauth" },
+			});
+		});
+	});
+
 	test("config then runtime overrides take precedence over stored credentials", async () => {
 		await withEnv(SUPPRESS_ENV, async () => {
 			if (!auth) throw new Error("test setup failed");
