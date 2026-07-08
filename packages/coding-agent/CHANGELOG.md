@@ -2,27 +2,11 @@
 
 ## [Unreleased]
 
-## [1.5.3] - 2026-07-07
+## [1.5.4] - 2026-07-08
 
 ### Added
 
-- POSIX installs and updates now run `ompx install git:github.com/obra/superpowers` after OMPx is installed, keeping the Superpowers skill pack installed or updated automatically.
-- Added a built-in production frontend/UI/UX skill bundle plus dedicated design-team subagents (`frontend_ui`, `ui_ux_reviewer`, `ux_copywriter`) so orchestrated UI work routes to design specialists with anti-internal-copy safeguards.
-- Added built-in TNX role models `tnx/designer` (Claude Opus 4.8-like capabilities, 1M context) and `tnx/smol` (256K context) for local TNX routing.
-- Added `super_review`, a discoverable one-shot plain-text review tool backed by `tnx/super` for high-context plan, action, architecture, security, and QA-plan reviews with explicit workspace file attachments, snapcompact image packing for large vision-capable review payloads, orchestrator-mode access, and advisor-default access.
-- `ompx auth-gateway serve/status/check` can now use this machine's local SQLite/env/config credentials when no auth broker is configured, with `--local` to force local credentials even when broker env/config exists.
 - `ompx auth-gateway serve --daemon` now starts the gateway as a detached background process, waits for `/healthz`, and writes pid/state/log paths under the OMPx config directory.
-
-### Changed
-
-- Default `pi/designer` and `pi/smol` role routing now prefer the built-in TNX role models at explicit `:medium` thinking level.
-
-### Fixed
-
-- Added the built-in `tnx/super` registry entry required by `super_review`, so the one-turn tool can resolve the model before routing requests through the auth gateway.
-- Fixed `super_review` snapcompact packing to keep the live review type, question, and attachment metadata as text while rendering only bulky untrusted review material into image frames.
-- Built-in one-turn tools (`super_review` and `inspect_image`) now route model calls through the hardcoded auth gateway at `http://codemc:4000`, using `OMP_AUTH_GATEWAY_TOKEN` as the gateway bearer when set and leaving upstream provider credentials on the gateway side.
-- `auth-gateway` can now expose daemon-local `authGateway.modelAliases` from `models.yml`, validating targets and input capabilities before `serve` starts.
 
 ## [16.3.3] - 2026-07-02
 
@@ -10638,6 +10622,27 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.3] - 2026-07-07
+
+### Added
+
+- POSIX installs and updates now run `ompx install git:github.com/obra/superpowers` after OMPx is installed, keeping the Superpowers skill pack installed or updated automatically.
+- Added a built-in production frontend/UI/UX skill bundle plus dedicated design-team subagents (`frontend_ui`, `ui_ux_reviewer`, `ux_copywriter`) so orchestrated UI work routes to design specialists with anti-internal-copy safeguards.
+- Added built-in TNX role models `tnx/designer` (Claude Opus 4.8-like capabilities, 1M context) and `tnx/smol` (256K context) for local TNX routing.
+- Added `super_review`, a discoverable one-shot plain-text review tool backed by `tnx/super` for high-context plan, action, architecture, security, and QA-plan reviews with explicit workspace file attachments, snapcompact image packing for large vision-capable review payloads, orchestrator-mode access, and advisor-default access.
+- `ompx auth-gateway serve/status/check` can now use this machine's local SQLite/env/config credentials when no auth broker is configured, with `--local` to force local credentials even when broker env/config exists.
+
+### Changed
+
+- Default `pi/designer` and `pi/smol` role routing now prefer the built-in TNX role models at explicit `:medium` thinking level.
+
+### Fixed
+
+- Added the built-in `tnx/super` registry entry required by `super_review`, so the one-turn tool can resolve the model before routing requests through the auth gateway.
+- Fixed `super_review` snapcompact packing to keep the live review type, question, and attachment metadata as text while rendering only bulky untrusted review material into image frames.
+- Built-in one-turn tools (`super_review` and `inspect_image`) now route model calls through the hardcoded auth gateway at `http://codemc:4000`, using `OMP_AUTH_GATEWAY_TOKEN` as the gateway bearer when set and leaving upstream provider credentials on the gateway side.
+- `auth-gateway` can now expose daemon-local `authGateway.modelAliases` from `models.yml`, validating targets and input capabilities before `serve` starts.
 
 ## [1.5.1] - 2026-07-04
 

@@ -495,14 +495,22 @@ describe("system prompt tool inventory", () => {
 
 		expect(report).toMatch(/Lead with outcome[\s\S]{0,80}1-3 sentences/i);
 		expect(report).toMatch(/Default final report\s*<=10 human prose lines/i);
-		expect(report).toMatch(/NEVER restate the task[\s\S]{0,120}narrate process[\s\S]{0,120}preamble[\s\S]{0,120}ceremony[\s\S]{0,120}mechanical headers/i);
+		expect(report).toMatch(
+			/NEVER restate the task[\s\S]{0,120}narrate process[\s\S]{0,120}preamble[\s\S]{0,120}ceremony[\s\S]{0,120}mechanical headers/i,
+		);
 		expect(report).toMatch(/Evidence bullets:\s*`command\/check -> decisive output`/i);
-		expect(report).toMatch(/NEVER mention internal skill[\s\S]{0,80}rule[\s\S]{0,80}tool[\s\S]{0,80}prompt mechanics/i);
+		expect(report).toMatch(
+			/NEVER mention internal skill[\s\S]{0,80}rule[\s\S]{0,80}tool[\s\S]{0,80}prompt mechanics/i,
+		);
 		expect(text).not.toContain("Yield with `Self-verified:");
 		expect(text).not.toContain("yield with `Self-verified: <gates>`");
 		expect(report).toMatch(/All gates verified\?[\s\S]{0,80}Collapse scorecard to one line/i);
-		expect(report).toMatch(/Expand ONLY caveats[\s\S]{0,80}action-needed[\s\S]{0,80}blockers[\s\S]{0,80}NOT VERIFIED/i);
-		expect(report).toMatch(/ASCII tables\/diagrams[\s\S]{0,80}replace prose[\s\S]{0,80}<=12 lines[\s\S]{0,80}<=80 cols[\s\S]{0,80}no decoration/i);
+		expect(report).toMatch(
+			/Expand ONLY caveats[\s\S]{0,80}action-needed[\s\S]{0,80}blockers[\s\S]{0,80}NOT VERIFIED/i,
+		);
+		expect(report).toMatch(
+			/ASCII tables\/diagrams[\s\S]{0,80}replace prose[\s\S]{0,80}<=12 lines[\s\S]{0,80}<=80 cols[\s\S]{0,80}no decoration/i,
+		);
 		expect(report).toMatch(/two competent devs talking[\s\S]{0,80}direct[\s\S]{0,80}concrete/i);
 		expect(report).toMatch(
 			/Good report:[\s\S]{0,500}\| path\s+\|\s+result \|[\s\S]{0,120}\|[-\s]+\|[-\s]+\|[\s\S]{0,220}\| valid refresh\s+\|\s+200\s+\|/i,

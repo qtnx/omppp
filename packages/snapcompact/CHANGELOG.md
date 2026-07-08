@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.5.3] - 2026-07-07
-
-### Changed
-
-- Added a first-class TNX provider image budget so snapcompact can pack large `tnx/super` review payloads into image frames instead of falling back to the unknown-provider floor.
-
 ## [16.2.8] - 2026-06-30
 
 ### Fixed
@@ -176,3 +170,9 @@
 
 - Fixed frame rendering at archive chunk boundaries to reopen dim spans when a chunk ends inside a dimmed tool-result segment
 - Fixed message serialization to strip user- and assistant-provided dim markers so only renderer-generated dim spans can be applied
+
+## [1.5.3] - 2026-07-07
+
+### Changed
+
+- Added a first-class TNX provider image budget so snapcompact can pack large `tnx/super` review payloads into image frames instead of falling back to the unknown-provider floor.

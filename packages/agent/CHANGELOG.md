@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.5.3] - 2026-07-07
-
-### Added
-
-- Added a `runSingleTurnAgent` helper for one-shot review/opinion model calls without entering the agent tool loop.
-
 ## [16.3.3] - 2026-07-02
 
 ### Changed
@@ -965,6 +959,12 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.3] - 2026-07-07
+
+### Added
+
+- Added a `runSingleTurnAgent` helper for one-shot review/opinion model calls without entering the agent tool loop.
 
 ## [1.5.1] - 2026-07-04
 
