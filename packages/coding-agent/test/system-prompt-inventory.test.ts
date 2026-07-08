@@ -161,6 +161,16 @@ describe("system prompt tool inventory", () => {
 		return text.slice(harnessStart, executionStart);
 	}
 
+	function reportSectionFrom(text: string): string {
+		expect(text.match(/^<report>$/gm) ?? []).toHaveLength(1);
+		expect(text.match(/^<\/report>$/gm) ?? []).toHaveLength(1);
+		const reportStart = /^<report>$/m.exec(text)?.index ?? -1;
+		const reportEnd = /^<\/report>$/m.exec(text)?.index ?? -1;
+		expect(reportStart).toBeGreaterThan(-1);
+		expect(reportEnd).toBeGreaterThan(reportStart);
+		return text.slice(reportStart, reportEnd + "</report>".length);
+	}
+
 	it("renders a compact name list only when native tools are active and descriptors stay in schemas", async () => {
 		const text = await render({ nativeTools: true, inlineToolDescriptors: false });
 		expect(text).toContain("- Read: `read`");
@@ -477,6 +487,26 @@ describe("system prompt tool inventory", () => {
 		expect(text).toContain("<done-scorecard>");
 		expect(text).toMatch(/BUILD[\s\S]{0,240}GATES[\s\S]{0,240}TESTS/i);
 		expect(text).toMatch(/done-scorecard is complete[\s\S]{0,120}NOT VERIFIED/i);
+	});
+
+	it("renders concise report guidance", async () => {
+		const text = await renderOrchestratorPrompt();
+		const report = reportSectionFrom(text);
+
+		expect(report).toMatch(/Lead with outcome[\s\S]{0,80}1-3 sentences/i);
+		expect(report).toMatch(/Default final report\s*<=10 human prose lines/i);
+		expect(report).toMatch(/NEVER restate the task[\s\S]{0,120}narrate process[\s\S]{0,120}preamble[\s\S]{0,120}ceremony[\s\S]{0,120}mechanical headers/i);
+		expect(report).toMatch(/Evidence bullets:\s*`command\/check -> decisive output`/i);
+		expect(report).toMatch(/NEVER mention internal skill[\s\S]{0,80}rule[\s\S]{0,80}tool[\s\S]{0,80}prompt mechanics/i);
+		expect(text).not.toContain("Yield with `Self-verified:");
+		expect(text).not.toContain("yield with `Self-verified: <gates>`");
+		expect(report).toMatch(/All gates verified\?[\s\S]{0,80}Collapse scorecard to one line/i);
+		expect(report).toMatch(/Expand ONLY caveats[\s\S]{0,80}action-needed[\s\S]{0,80}blockers[\s\S]{0,80}NOT VERIFIED/i);
+		expect(report).toMatch(/ASCII tables\/diagrams[\s\S]{0,80}replace prose[\s\S]{0,80}<=12 lines[\s\S]{0,80}<=80 cols[\s\S]{0,80}no decoration/i);
+		expect(report).toMatch(/two competent devs talking[\s\S]{0,80}direct[\s\S]{0,80}concrete/i);
+		expect(report).toMatch(
+			/Good report:[\s\S]{0,500}\| path\s+\|\s+result \|[\s\S]{0,120}\|[-\s]+\|[-\s]+\|[\s\S]{0,220}\| valid refresh\s+\|\s+200\s+\|/i,
+		);
 	});
 
 	it("keeps work profile base guidance outside task-only delegation gates", async () => {
