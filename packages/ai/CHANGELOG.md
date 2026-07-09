@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-07-09
+
 ### Added
 
 - Added completion-time auth-gateway audit logs with request status, duration, credential origin, and token usage without logging request bodies or credential secrets.
