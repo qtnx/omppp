@@ -74,6 +74,23 @@ function anthropicModel(id: string): Model {
 	});
 }
 
+function openaiModel(id: string): Model {
+	return buildModel({
+		id,
+		name: id,
+		api: "openai-responses",
+		provider: "openai",
+		baseUrl: "https://api.openai.com/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1 },
+		contextWindow: 200000,
+		maxTokens: 8192,
+	});
+}
+
+const gpt55 = openaiModel("gpt-5.5");
+
 function createUsage(): Usage {
 	return {
 		input: 0,
@@ -166,8 +183,9 @@ async function createTurnEndHarness(options: TurnEndHarnessOptions = {}): Promis
 	const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 	authStorages.push(authStorage);
 	authStorage.setRuntimeApiKey("anthropic", "test-api-key");
+	authStorage.setRuntimeApiKey("openai", "test-api-key");
 	const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
-	track(spyOn(modelRegistry, "getAvailable").mockReturnValue([planner, executor]));
+	track(spyOn(modelRegistry, "getAvailable").mockReturnValue([planner, executor, gpt55]));
 	track(spyOn(modelRegistry, "hasConfiguredAuth").mockReturnValue(true));
 	track(spyOn(modelRegistry, "refreshSelectedModelMetadata").mockImplementation(async (model: Model) => model));
 	const settings = createSettings();
@@ -216,6 +234,62 @@ describe("AgentSession duo turn-end maintenance", () => {
 		await harness.runTurnEnd();
 
 		expect(notifyTurnEnd).toHaveBeenCalledTimes(1);
+	});
+
+	test("duo start rebuilds an existing same-model advisor with escalation options", async () => {
+		const tempDir = TempDir.createSync("@pi-duo-existing-advisor-");
+		tempDirs.push(tempDir);
+		const providerCalls: string[] = [];
+		const streamFn: StreamFn = model => {
+			providerCalls.push(model.id);
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => emitTextResponse(stream, model, "advisor answer"));
+			return stream;
+		};
+		const agent = new Agent({
+			initialState: {
+				model: executor,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: createMessages(),
+			},
+			streamFn,
+			convertToLlm,
+		});
+		const sessionManager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "session.jsonl"));
+		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-api-key");
+		authStorage.setRuntimeApiKey("openai", "test-api-key");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+		track(spyOn(modelRegistry, "getAvailable").mockReturnValue([planner, executor, gpt55]));
+		track(spyOn(modelRegistry, "hasConfiguredAuth").mockReturnValue(true));
+		track(spyOn(modelRegistry, "refreshSelectedModelMetadata").mockImplementation(async (model: Model) => model));
+		const settings = createSettings();
+		settings.set("advisor.enabled", true);
+		settings.set("modelRoles", { advisor: "openai/gpt-5.5" });
+		settings.set("duo.advisorModel", "openai/gpt-5.5");
+		settings.set("duo.advisorEscalationModel", "");
+		const session = new AgentSession({
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry,
+			persistInitialMCPToolSelection: false,
+			agentKind: "main",
+			advisorStreamFn: streamFn,
+			advisorTools: [],
+		});
+		sessions.push(session);
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+
+		const normalAnswer = await session.consultAdvisor("Normal advisor?");
+		expect(providerCalls).toEqual([gpt55.id]);
+		expect(normalAnswer).toBe("advisor answer");
+		await session.setDuoEnabled(true);
+		const answer = await session.consultAdvisor("Should the done gate pass?");
+		expect(answer).toBe("advisor answer");
+		expect(providerCalls).toEqual([gpt55.id, planner.id]);
 	});
 
 	test("contains takeover-signal failures so notifyTurnEnd still runs", async () => {

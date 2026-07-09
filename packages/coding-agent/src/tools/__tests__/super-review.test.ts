@@ -426,6 +426,66 @@ describe("SuperReviewTool", () => {
 		}
 	});
 
+	it("accepts adversarial review type and sends adversarial instructions", async () => {
+		const completeSpy = vi
+			.spyOn(core, "instrumentedCompleteSimple")
+			.mockResolvedValue(assistantWithText("Probe the rollback path."));
+		const tool = new SuperReviewTool(makeSession());
+
+		const result = await tool.execute("tc-adversarial", {
+			review_type: "adversarial",
+			question: "Can this plan survive attack review?",
+			content: "Plan: switch advisor tiers, then verify consult escalation.",
+		});
+
+		expect(resultText(result)).toBe("Probe the rollback path.");
+		const [, context] = instrumentedCallAt(completeSpy, 0);
+		const outbound = promptPayload(context);
+		expect(outbound).toContain("adversarial");
+		expect(outbound).toContain("Can this plan survive attack review?");
+		expect(outbound).toContain("switch advisor tiers");
+		expect(outbound).toContain("attack the submitted plan");
+		expect(outbound).toContain("false assumptions");
+	});
+
+	it("keeps all documented review types accepted", async () => {
+		const completeSpy = vi.spyOn(core, "instrumentedCompleteSimple").mockResolvedValue(assistantWithText("accepted"));
+		const tool = new SuperReviewTool(makeSession());
+		const reviewTypes = [
+			"plan",
+			"critical_action",
+			"qa_plan",
+			"architecture",
+			"security",
+			"adversarial",
+			"other",
+		] as const;
+
+		for (const reviewType of reviewTypes) {
+			const result = await tool.execute(`tc-review-type-${reviewType}`, {
+				review_type: reviewType,
+				question: `Accept ${reviewType}?`,
+			});
+			expect(resultText(result)).toBe("accepted");
+		}
+		expect(completeSpy).toHaveBeenCalledTimes(reviewTypes.length);
+	});
+
+	it("rejects unknown review types before any model call", async () => {
+		const completeSpy = vi
+			.spyOn(core, "instrumentedCompleteSimple")
+			.mockResolvedValue(assistantWithText("should not run"));
+		const tool = new SuperReviewTool(makeSession());
+
+		await expect(
+			tool.execute("tc-review-type-invalid", {
+				review_type: "tone_polish" as never,
+				question: "Should invalid review types run?",
+			}),
+		).rejects.toThrow(/review_type|tone_polish|invalid/i);
+		expect(completeSpy).not.toHaveBeenCalled();
+	});
+
 	it("keeps super_review text-only when legacy output_schema is present", async () => {
 		const completeSpy = vi
 			.spyOn(core, "instrumentedCompleteSimple")

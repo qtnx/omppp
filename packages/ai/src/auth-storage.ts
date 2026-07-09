@@ -1504,6 +1504,45 @@ export class AuthStorage {
 				blockedUntil = persistedScopedBlockedUntil;
 			}
 		}
+		// Preserve legacy Codex OAuth blocks written before model-pool scopes split
+		// "shared" into "main" and "spark"; a stale row must still suppress use.
+		if (provider === "openai-codex" && blockScope !== "shared") {
+			const persistedLegacySharedBlockedUntil = this.#readPersistedCredentialBlock(
+				credentialId,
+				providerKey,
+				"shared",
+			);
+			if (
+				persistedLegacySharedBlockedUntil !== undefined &&
+				(blockedUntil === undefined || persistedLegacySharedBlockedUntil > blockedUntil)
+			) {
+				blockedUntil = persistedLegacySharedBlockedUntil;
+			}
+		}
+		return blockedUntil;
+	}
+
+	#getAnyCredentialBlockedUntil(
+		providerKey: string,
+		credentialId: number,
+		credentialIndex: number,
+	): number | undefined {
+		const nowMs = Date.now();
+		const scopedPrefix = `${providerKey}\0`;
+		let blockedUntil: number | undefined;
+		for (const [key] of this.#credentialBackoff) {
+			if (key !== providerKey && !key.startsWith(scopedPrefix)) continue;
+			const candidate = this.#getCredentialBlockedUntilForKey(key, credentialIndex, nowMs);
+			if (candidate !== undefined && (blockedUntil === undefined || candidate > blockedUntil)) {
+				blockedUntil = candidate;
+			}
+		}
+		for (const blockScope of ["", "main", "spark", "shared"]) {
+			const candidate = this.#readPersistedCredentialBlock(credentialId, providerKey, blockScope);
+			if (candidate !== undefined && (blockedUntil === undefined || candidate > blockedUntil)) {
+				blockedUntil = candidate;
+			}
+		}
 		return blockedUntil;
 	}
 
@@ -4982,8 +5021,8 @@ export class AuthStorage {
 	 * Self-heal a stale Codex usage-limit block: when a fresh live usage report
 	 * shows the account is allowed and below every limit, drop the persisted and
 	 * in-memory `openai-codex:oauth` blocks so the balancer re-includes it. Only
-	 * Codex — its ranking strategy uses the single model-independent `"shared"`
-	 * scope, so clearing every block for the credential id is exact.
+	 * Codex — clear every scoped pool for the credential because the ranking
+	 * strategy has split over time (`main`, `spark`, and legacy unscoped rows).
 	 */
 	#isHealthyCodexUsageReport(report: UsageReport): boolean {
 		const metadata = report.metadata;
@@ -5000,10 +5039,7 @@ export class AuthStorage {
 		const providerKey = this.#getProviderTypeKey(provider, "oauth");
 		const credentialIndex = this.#getStoredCredentials(provider).findIndex(entry => entry.id === credentialId);
 		if (credentialIndex < 0) return;
-		// Mirror selection: consult the same strategy scope `markUsageLimitReached`
-		// persists under, else a scoped block is invisible here and never healed.
-		const blockScope = this.#rankingStrategyResolver?.(provider)?.blockScope?.({});
-		const blockedUntilMs = this.#getCredentialBlockedUntil(provider, providerKey, credentialIndex, blockScope);
+		const blockedUntilMs = this.#getAnyCredentialBlockedUntil(providerKey, credentialId, credentialIndex);
 		if (blockedUntilMs === undefined) return;
 		this.#clearCredentialBlocks(provider, credentialId);
 		logger.info("Cleared stale Codex usage-limit block after healthy live usage report", {

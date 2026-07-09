@@ -1965,6 +1965,9 @@ export class AgentSession {
 	#duoOwnsOrchestrator = false;
 	#duoAdvisorPinnedModel?: Model;
 	#duoAdvisorPinnedModelId?: string;
+	#duoAdvisorPinnedThinking?: ThinkingLevel;
+	#duoAdvisorEscalationModel?: Model;
+	#duoAdvisorEscalationThinking?: ThinkingLevel;
 	#duoPlanReferenceSetDuringPlanMode = false;
 	#duoAwaitingApprovedPlanReference = false;
 	#duoPlanApprovedNotified = false;
@@ -2899,15 +2902,51 @@ export class AgentSession {
 		return { ...snapshot, advisorModelId, duoOwnsAdvisor: Boolean(advisorModelId && this.#duoOwnsAdvisor) };
 	}
 
-	#ensureDuoAdvisorStarted(pinned: Model): boolean {
-		this.#duoAdvisorPinnedModel = pinned;
-		this.#duoAdvisorPinnedModelId = `${pinned.provider}/${pinned.id}`;
+	#resolveDuoAdvisorPin(planner: Model): { model: Model; thinkingLevel?: ThinkingLevel } {
+		const configured = (this.settings.get("duo.advisorModel") ?? "").trim();
+		if (!configured) return { model: planner };
+		const resolved = resolveModelRoleValue(configured, this.#availableModelsForAdvisorRuntime(), {
+			settings: this.settings,
+			modelRegistry: this.#modelRegistry,
+		});
+		if (resolved.model && this.#modelRegistry.hasConfiguredAuth(resolved.model)) {
+			return { model: resolved.model, thinkingLevel: concreteThinkingLevel(resolved.thinkingLevel) };
+		}
+		this.emitNotice("warning", `Duo advisor model "${configured}" unavailable; using planner model.`, "advisor");
+		return { model: planner };
+	}
+
+	#resolveDuoAdvisorEscalation(planner: Model): { model: Model; thinkingLevel: ThinkingLevel } {
+		const configured = (this.settings.get("duo.advisorEscalationModel") ?? "").trim();
+		const resolved = configured
+			? resolveModelRoleValue(configured, this.#availableModelsForAdvisorRuntime(), {
+					settings: this.settings,
+					modelRegistry: this.#modelRegistry,
+				})
+			: undefined;
+		const model = resolved?.model && this.#modelRegistry.hasConfiguredAuth(resolved.model) ? resolved.model : planner;
+		const configuredThinking =
+			resolved?.thinkingLevel ?? parseConfiguredThinkingLevel(this.settings.get("duo.advisorEscalationThinking"));
+		const thinkingLevel = resolveThinkingLevelForModel(
+			model,
+			concreteThinkingLevel(configuredThinking) ?? ThinkingLevel.XHigh,
+		);
+		return { model, thinkingLevel: thinkingLevel ?? ThinkingLevel.Inherit };
+	}
+
+	#ensureDuoAdvisorStarted(planner: Model): boolean {
+		const pinned = this.#resolveDuoAdvisorPin(planner);
+		const escalation = this.#resolveDuoAdvisorEscalation(planner);
+		this.#duoAdvisorPinnedModel = pinned.model;
+		this.#duoAdvisorPinnedThinking = pinned.thinkingLevel;
+		this.#duoAdvisorPinnedModelId = `${pinned.model.provider}/${pinned.model.id}`;
+		this.#duoAdvisorEscalationModel = escalation.model;
+		this.#duoAdvisorEscalationThinking = escalation.thinkingLevel;
 		if (!this.#advisorEnabled) {
 			this.#advisorEnabled = true;
 			this.#duoOwnsAdvisor = true;
 		}
-		const advisorModel = this.#advisors[0]?.agent.state.model;
-		if (advisorModel && !modelsAreEqual(advisorModel, pinned)) {
+		if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) {
 			this.#stopAdvisorRuntime();
 		}
 		return this.#buildAdvisorRuntime(true);
@@ -2977,6 +3016,9 @@ export class AgentSession {
 		const pinned = this.#duoAdvisorPinnedModel;
 		this.#duoAdvisorPinnedModel = undefined;
 		this.#duoAdvisorPinnedModelId = undefined;
+		this.#duoAdvisorPinnedThinking = undefined;
+		this.#duoAdvisorEscalationModel = undefined;
+		this.#duoAdvisorEscalationThinking = undefined;
 		const action = resolveDuoAdvisorStopAction(this.#duoOwnsAdvisor, pinned, this.#advisors[0]?.agent.state.model);
 		if (action === "stop") {
 			this.#stopAdvisorRuntime();
@@ -3216,6 +3258,7 @@ export class AgentSession {
 	}
 
 	#duoPinnedAdvisorThinkingLevel(fallback: ThinkingLevel): ThinkingLevel {
+		if (this.#duoAdvisorPinnedThinking !== undefined) return this.#duoAdvisorPinnedThinking;
 		const configured = parseConfiguredThinkingLevel(this.settings.get("duo.advisorThinking"));
 		if (configured === undefined || configured === AUTO_THINKING || configured === ThinkingLevel.Inherit) {
 			return fallback;
@@ -3265,9 +3308,23 @@ export class AgentSession {
 	): string {
 		const tools = config.tools?.length ? config.tools.join("\u001e") : "";
 		const instructions = config.instructions?.trim() ?? "";
-		return [config.name, slug, formatModelStringWithRouting(model), thinkingLevel, tools, instructions].join(
-			"\u001f",
-		);
+		const duoEscalation =
+			this.#duoAdvisorPinnedModel && this.#duoAdvisorEscalationModel
+				? [
+						this.#duoOwnsAdvisor ? "duo-owned" : "duo-pinned",
+						formatModelStringWithRouting(this.#duoAdvisorEscalationModel),
+						this.#duoAdvisorEscalationThinking,
+					]
+				: [];
+		return [
+			config.name,
+			slug,
+			formatModelStringWithRouting(model),
+			thinkingLevel,
+			tools,
+			instructions,
+			...duoEscalation,
+		].join("\u001f");
 	}
 
 	#advisorRuntimeMatchesCurrentConfig(): boolean {
@@ -3449,9 +3506,18 @@ export class AgentSession {
 				get model() {
 					return advisorAgent.state.model;
 				},
+				get disableReasoning() {
+					return advisorAgent.state.disableReasoning;
+				},
 				setModel: model => {
 					advisorAgent.setModel(model);
 					appendOnlyContext.invalidateForModelChange();
+				},
+				setThinkingLevel: level => {
+					advisorAgent.setThinkingLevel(level);
+				},
+				setDisableReasoning: disabled => {
+					advisorAgent.setDisableReasoning(disabled);
 				},
 				rollbackTo: count => {
 					// Drop the failed user batch + synthetic assistant-error turn
@@ -3508,7 +3574,7 @@ export class AgentSession {
 					renderThinking: text => thinkingStore.renderThinking(text),
 					renderStatsHeader: isDuoOwnedAdvisor ? () => this.#renderDelegationStatsHeader() : undefined,
 					renderPrimeSeed: isDuoOwnedAdvisor ? () => this.#readAdvisorPrimeSeedSync() : undefined,
-					onTurnError: async error => {
+					onTurnError: async (error, failedModel) => {
 						// Mirror the auth-gateway's usage-limit remedy: the in-stream a/b/c
 						// auth retry rotates through siblings within one request but never
 						// blocks the LAST failing credential, so without this the advisor
@@ -3517,10 +3583,11 @@ export class AgentSession {
 						// suspect-mark a credential on a transient advisor error).
 						const message = error instanceof Error ? error.message : String(error);
 						if (!isUsageLimitOutcome(extractHttpStatusFromError(error), message)) return;
-						await this.#modelRegistry.authStorage.markUsageLimitReached(advisorModel.provider, advisorSessionId, {
+						const model = failedModel ?? advisorModel;
+						await this.#modelRegistry.authStorage.markUsageLimitReached(model.provider, advisorSessionId, {
 							retryAfterMs: extractRetryHint(undefined, message),
-							baseUrl: advisorModel.baseUrl,
-							modelId: advisorModel.id,
+							baseUrl: model.baseUrl,
+							modelId: model.id,
 						});
 					},
 					notifyFailure: error => {
@@ -3535,7 +3602,18 @@ export class AgentSession {
 					},
 				},
 				1000,
-				{ fallbackModel: advisorFallbackModel },
+				{
+					fallbackModel: advisorFallbackModel,
+					escalationModel: isDuoOwnedAdvisor ? this.#duoAdvisorEscalationModel : undefined,
+					normalThinkingLevel: toReasoningEffort(advisorThinkingLevel),
+					normalDisableReasoning: shouldDisableReasoning(advisorThinkingLevel),
+					escalationThinkingLevel: isDuoOwnedAdvisor
+						? toReasoningEffort(this.#duoAdvisorEscalationThinking)
+						: undefined,
+					escalationDisableReasoning: isDuoOwnedAdvisor
+						? shouldDisableReasoning(this.#duoAdvisorEscalationThinking)
+						: undefined,
+				},
 			);
 
 			const advisorRef: ActiveAdvisor = {

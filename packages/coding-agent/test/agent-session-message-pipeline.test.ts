@@ -151,21 +151,20 @@ describe("AgentSession message pipeline", () => {
 			maxTokens: 1024,
 			compat: undefined,
 		} satisfies Model;
+		const workflowTool: AgentTool = {
+			name: "workflow",
+			label: "Workflow",
+			description: "Mock workflow tool",
+			parameters: type({}),
+			execute: async () => ({ content: [] }),
+		};
 		const session = new AgentSession({
 			agent: new Agent({
 				initialState: {
 					model,
 					systemPrompt: ["system prompt"],
 					messages: [],
-					tools: [
-						{
-							name: "workflow",
-							label: "Workflow",
-							description: "Mock workflow tool",
-							parameters: type({}),
-							execute: async () => ({ content: [] }),
-						},
-					],
+					tools: [workflowTool],
 				},
 				convertToLlm: messages => {
 					capturedAgentMessages = messages;

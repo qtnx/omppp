@@ -84,7 +84,9 @@ describe("AgentSession magic keyword settings", () => {
 
 	function customTypesFromPrompt(promptSpy: { mock: { calls: unknown[][] } }): string[] {
 		const promptMessages = promptSpy.mock.calls[0]![0] as Array<{ customType?: string }>;
-		return promptMessages.map(message => message.customType).filter(type => type !== undefined);
+		return promptMessages
+			.map(message => message.customType)
+			.filter(type => type === "ultrathink-notice" || type === "orchestrate-notice" || type === "workflow-notice");
 	}
 
 	it("does not append magic keyword notices when disabled", async () => {
@@ -96,8 +98,7 @@ describe("AgentSession magic keyword settings", () => {
 
 		await session.prompt("please workflowz this and ultrathink through it");
 
-		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
-		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([]);
+		expect(customTypesFromPrompt(promptSpy)).toEqual([]);
 	});
 
 	it("honors non-ultrathink per-keyword notice toggles", async () => {
@@ -110,8 +111,7 @@ describe("AgentSession magic keyword settings", () => {
 
 		await session.prompt("please orchestrate and workflowz this");
 
-		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
-		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([]);
+		expect(customTypesFromPrompt(promptSpy)).toEqual([]);
 	});
 
 	it("still appends enabled non-ultrathink notices", async () => {
@@ -136,9 +136,9 @@ describe("AgentSession magic keyword settings", () => {
 
 		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ content?: string; customType?: string }>;
 		const notice = promptMessages.find(message => message.customType === "workflow-notice")?.content ?? "";
-		expect(notice).toContain("once per independent subagent");
-		expect(notice).toContain("Do not pass `context` or `tasks[]`");
-		expect(notice).not.toContain("Call `task` once per independent fan-out batch");
+		expect(notice).toContain("call the `workflow` tool");
+		expect(notice).toContain("Scout inline first");
+		expect(notice).toContain("NEVER use Python `eval`");
 	});
 
 	it("skips workflowz notice when the workflow tool is inactive", async () => {

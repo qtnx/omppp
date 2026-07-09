@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
-import type { Api, ImageContent, Model } from "@oh-my-pi/pi-ai";
+import { type Api, Effort, type ImageContent, type Model } from "@oh-my-pi/pi-ai";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import type { Shape } from "@oh-my-pi/snapcompact";
 import * as snapcompact from "@oh-my-pi/snapcompact";
@@ -906,6 +906,221 @@ describe("advisor", () => {
 			expect(answer).toBeNull();
 			expect(promptInputs).toHaveLength(0);
 			expect(runtime.backlog).toBe(0);
+		});
+
+		it("routes blocking consults through escalation model and restores the normal model", async () => {
+			const normal = makeAdvisorModel("gpt-5.5", ["text"], "openai");
+			const escalation = makeAdvisorModel("claude-fable-5", ["text"], "anthropic");
+			const promptedModels: string[] = [];
+			let currentModel = normal;
+			let currentThinking: Effort | undefined = Effort.Low;
+			let reasoningDisabled = false;
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					promptedModels.push(
+						`${currentModel.provider}/${currentModel.id}:${currentThinking}:${reasoningDisabled}`,
+					);
+					state.messages.push({
+						role: "assistant",
+						content: [{ type: "text", text: "Escalated answer." }],
+						timestamp: Date.now(),
+					} as AgentMessage);
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				get model() {
+					return currentModel;
+				},
+				setModel: model => {
+					currentModel = model;
+				},
+				setThinkingLevel: level => {
+					currentThinking = level;
+				},
+				setDisableReasoning: disabled => {
+					reasoningDisabled = disabled;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "current context", timestamp: 1 } as AgentMessage];
+			const runtime = new AdvisorRuntime(agent, makeAdvisorHost(messages), 0, {
+				escalationModel: escalation,
+				normalThinkingLevel: Effort.Low,
+				normalDisableReasoning: false,
+				escalationThinkingLevel: Effort.High,
+				escalationDisableReasoning: true,
+			});
+
+			const answer = await runtime.consult("Should the done gate pass?", { timeoutMs: 1000 });
+
+			expect(answer).toBe("Escalated answer.");
+			expect(promptedModels).toEqual(["anthropic/claude-fable-5:high:true"]);
+			expect(currentModel).toBe(normal);
+			expect(currentThinking).toBe(Effort.Low);
+			expect(reasoningDisabled).toBe(false);
+		});
+
+		it("reports blocking consult failures against the escalation model", async () => {
+			const normal = makeAdvisorModel("gpt-5.5", ["text"], "openai");
+			const escalation = makeAdvisorModel("claude-fable-5", ["text"], "anthropic");
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			let currentModel = normal;
+			const failedModels: Array<Model | undefined> = [];
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					state.error = "rate limit";
+				},
+				abort: () => {},
+				reset: () => {
+					state.error = undefined;
+				},
+				get model() {
+					return currentModel;
+				},
+				setModel: model => {
+					currentModel = model;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "current context", timestamp: 1 } as AgentMessage];
+			const runtime = new AdvisorRuntime(
+				agent,
+				{
+					...makeAdvisorHost(messages),
+					onTurnError: (_error, model) => {
+						failedModels.push(model);
+					},
+				},
+				1,
+				{ escalationModel: escalation },
+			);
+
+			await runtime.consult("Should escalation fail on Fable?", { timeoutMs: 50 });
+
+			expect(failedModels.length).toBeGreaterThan(0);
+			expect(failedModels.every(model => model?.provider === "anthropic" && model.id === "claude-fable-5")).toBe(
+				true,
+			);
+			expect(currentModel).toBe(normal);
+		});
+
+		it("keeps blocking consult escalation active after context maintenance promotes the normal advisor", async () => {
+			const normal = makeAdvisorModel("gpt-5.5", ["text"], "openai");
+			const promoted = makeAdvisorModel("gpt-5.5-long", ["text"], "openai");
+			const escalation = makeAdvisorModel("claude-fable-5", ["text"], "anthropic");
+			const promptedModels: string[] = [];
+			let currentModel = normal;
+			let currentThinking: Effort | undefined = Effort.Low;
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					promptedModels.push(`${currentModel.provider}/${currentModel.id}:${currentThinking}`);
+					state.messages.push({
+						role: "assistant",
+						content: [{ type: "text", text: "Escalated answer." }],
+						timestamp: Date.now(),
+					} as AgentMessage);
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				get model() {
+					return currentModel;
+				},
+				setModel: model => {
+					currentModel = model;
+				},
+				setThinkingLevel: level => {
+					currentThinking = level;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "current context", timestamp: 1 } as AgentMessage];
+			const host = makeAdvisorHost(messages);
+			host.maintainContext = async () => {
+				currentModel = promoted;
+				currentThinking = Effort.Medium;
+				return false;
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0, {
+				escalationModel: escalation,
+				normalThinkingLevel: Effort.Medium,
+				escalationThinkingLevel: Effort.High,
+			});
+
+			const answer = await runtime.consult("Should the done gate pass?", { timeoutMs: 1000 });
+
+			expect(answer).toBe("Escalated answer.");
+			expect(promptedModels).toEqual(["anthropic/claude-fable-5:high"]);
+			expect(currentModel).toBe(promoted);
+			expect(currentThinking as Effort | undefined).toBe(Effort.Medium);
+		});
+
+		it("falls back after escalated safeguard refusal and restores normal advisor state", async () => {
+			const normal = makeAdvisorModel("gpt-5.5", ["text"], "openai");
+			const escalation = makeAdvisorModel("claude-fable-5", ["text"], "anthropic");
+			const fallback = makeAdvisorModel("gpt-5.5-fallback", ["text"], "openai");
+			const promptedModels: string[] = [];
+			let currentModel = normal;
+			let currentThinking: Effort | undefined = Effort.Low;
+			let reasoningDisabled = false;
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					promptedModels.push(
+						`${currentModel.provider}/${currentModel.id}:${currentThinking}:${reasoningDisabled}`,
+					);
+					if (currentModel === escalation) {
+						throw new Error("Content flagged by safety filters");
+					}
+					state.messages.push({
+						role: "assistant",
+						content: [{ type: "text", text: "Fallback answer." }],
+						timestamp: Date.now(),
+					} as AgentMessage);
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				get model() {
+					return currentModel;
+				},
+				setModel: model => {
+					currentModel = model;
+				},
+				setThinkingLevel: level => {
+					currentThinking = level;
+				},
+				setDisableReasoning: disabled => {
+					reasoningDisabled = disabled;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "current context", timestamp: 1 } as AgentMessage];
+			const runtime = new AdvisorRuntime(agent, makeAdvisorHost(messages), 0, {
+				fallbackModel: fallback,
+				escalationModel: escalation,
+				normalThinkingLevel: Effort.Low,
+				normalDisableReasoning: false,
+				escalationThinkingLevel: Effort.High,
+				escalationDisableReasoning: true,
+			});
+
+			const answer = await runtime.consult("Should the done gate pass?", { timeoutMs: 1000 });
+
+			expect(answer).toBe("Fallback answer.");
+			expect(promptedModels).toEqual(["anthropic/claude-fable-5:high:true", "openai/gpt-5.5-fallback:low:false"]);
+			expect(currentModel).toBe(normal);
+			expect(currentThinking).toBe(Effort.Low);
+			expect(reasoningDisabled).toBe(false);
 		});
 
 		it("drains the coalesced paused backlog with one prompt on resume", async () => {

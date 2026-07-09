@@ -38,9 +38,10 @@ export { renderKernelDisplay } from "./display";
 
 const TRACE_IPC = $flag("PI_PYTHON_IPC_TRACE");
 
-// Cache the runner script on disk so the subprocess loads it normally. Cached
-// per script hash so installs don't race across versions.
-const RUNNER_CACHE_DIR = path.join(os.tmpdir(), "omp-python-runner");
+// Cache the runner script on disk so the subprocess loads it normally. Keep it
+// per OS user: shared `/tmp/omp-python-runner` directories can be owned by a
+// different local account and block tests/CLI sessions with EACCES.
+const RUNNER_CACHE_DIR = path.join(os.tmpdir(), `omp-python-runner-${process.getuid?.() ?? os.userInfo().username}`);
 let RUNNER_SCRIPT_PATH: string | null = null;
 
 async function ensureRunnerScript(): Promise<string> {

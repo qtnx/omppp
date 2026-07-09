@@ -1,6 +1,6 @@
 import { type AgentMessage, countTokens } from "@oh-my-pi/pi-agent-core";
 import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, ImageContent, Model, TextContent } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Effort, ImageContent, Model, TextContent } from "@oh-my-pi/pi-ai";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
@@ -23,6 +23,9 @@ export interface AdvisorAgent {
 	reset(): void;
 	readonly model?: Model;
 	setModel?(model: Model): void;
+	setThinkingLevel?(level: Effort | undefined): void;
+	setDisableReasoning?(disabled: boolean): void;
+	readonly disableReasoning?: boolean;
 	/**
 	 * Drop messages appended past `count`. Called after a failed `prompt()` so a
 	 * retry doesn't replay the failed user batch + synthetic assistant-error
@@ -70,7 +73,7 @@ export interface AdvisorRuntimeHost {
 	 * same usage-limited account on every retry. Errors thrown here are logged
 	 * and swallowed.
 	 */
-	onTurnError?(error: unknown): Promise<void> | void;
+	onTurnError?(error: unknown, model: Model | undefined): Promise<void> | void;
 	/** Surface a non-recovering advisor failure to the host UI without adding model-visible context. */
 	notifyFailure?(error: unknown): void;
 	/**
@@ -127,6 +130,11 @@ interface CatchupWaiter {
 
 export interface AdvisorRuntimeOptions {
 	fallbackModel?: Model;
+	escalationModel?: Model;
+	normalThinkingLevel?: Effort;
+	normalDisableReasoning?: boolean;
+	escalationThinkingLevel?: Effort;
+	escalationDisableReasoning?: boolean;
 }
 
 // Blocking consult ceiling: the advisor is a strong, slow model; the consult tool is interruptible so a generous wait is safe.
@@ -168,11 +176,11 @@ function passesFableAdvisorImageGate(text: string, model: Model, shape: snapcomp
 }
 
 async function prepareFableAdvisorPromptPayload(batch: string, model: Model): Promise<AdvisorPromptPayload> {
-	const { imageMaterial, preservedText } = splitAdvisorImageMaterial(batch);
-	if (!imageMaterial.trim()) return { text: batch };
-	const shape = snapcompact.resolveShape(model);
-	if (!passesFableAdvisorImageGate(imageMaterial, model, shape)) return { text: batch };
 	try {
+		const { imageMaterial, preservedText } = splitAdvisorImageMaterial(batch);
+		if (!imageMaterial.trim()) return { text: batch };
+		const shape = snapcompact.resolveShape(model);
+		if (!passesFableAdvisorImageGate(imageMaterial, model, shape)) return { text: batch };
 		const frames = await snapcompact.renderMany(imageMaterial, {
 			shape,
 			maxFrames: snapcompact.providerImageBudget(model.provider),
@@ -226,6 +234,11 @@ export class AdvisorRuntime {
 	#primaryModel?: Model;
 	#fallbackModel?: Model;
 	#onFallbackModel = false;
+	#escalationModel?: Model;
+	#normalThinkingLevel?: Effort;
+	#normalDisableReasoning?: boolean;
+	#escalationThinkingLevel?: Effort;
+	#escalationDisableReasoning?: boolean;
 	#fallbackRetryItemCount = 0;
 	/** Bumped by every external {@link reset}/{@link dispose}. A drain iteration
 	 *  captures it before its awaits; a mismatch on resume means a reset aborted
@@ -242,6 +255,32 @@ export class AdvisorRuntime {
 	) {
 		this.#primaryModel = agent.model;
 		this.#fallbackModel = options.fallbackModel;
+		this.#escalationModel = options.escalationModel;
+		this.#normalThinkingLevel = options.normalThinkingLevel;
+		this.#normalDisableReasoning = options.normalDisableReasoning;
+		this.#escalationThinkingLevel = options.escalationThinkingLevel;
+		this.#escalationDisableReasoning = options.escalationDisableReasoning;
+	}
+
+	#switchToEscalationModel(): (() => void) | undefined {
+		const escalationModel = this.#escalationModel;
+		if (!escalationModel) return undefined;
+		const normalModel = this.agent.model;
+		const normalDisableReasoning = this.agent.disableReasoning ?? this.#normalDisableReasoning ?? false;
+		const restoreDisableReasoning =
+			this.#normalDisableReasoning !== undefined || this.#escalationDisableReasoning !== undefined;
+		this.agent.setModel?.(escalationModel);
+		this.agent.setThinkingLevel?.(this.#escalationThinkingLevel);
+		if (this.#escalationDisableReasoning !== undefined) {
+			this.agent.setDisableReasoning?.(this.#escalationDisableReasoning);
+		}
+		return () => {
+			if (normalModel) this.agent.setModel?.(normalModel);
+			this.agent.setThinkingLevel?.(this.#normalThinkingLevel);
+			if (restoreDisableReasoning) {
+				this.agent.setDisableReasoning?.(normalDisableReasoning);
+			}
+		};
 	}
 
 	get backlog(): number {
@@ -676,6 +715,11 @@ export class AdvisorRuntime {
 					}
 					return deltaPart || null;
 				};
+				let restoreEscalation: (() => void) | undefined;
+				const restoreEscalationIfNeeded = () => {
+					restoreEscalation?.();
+					restoreEscalation = undefined;
+				};
 
 				const candidateBatch = buildBatch(deltasText);
 				let candidatePrepared: { source: string; payload: AdvisorPromptPayload } | undefined;
@@ -688,6 +732,7 @@ export class AdvisorRuntime {
 							: { text: candidateBatch },
 					};
 					if (this.#epoch !== epoch) {
+						restoreEscalationIfNeeded();
 						consult?.resolve(null);
 						continue;
 					}
@@ -710,6 +755,7 @@ export class AdvisorRuntime {
 				}
 				// A reset/dispose during context maintenance invalidates this batch.
 				if (this.#epoch !== epoch) {
+					restoreEscalationIfNeeded();
 					consult?.resolve(null);
 					continue;
 				}
@@ -737,6 +783,7 @@ export class AdvisorRuntime {
 
 				const finalBatchBase = buildBatch(deltaPart);
 				if (this.disposed || finalBatchBase === null) {
+					restoreEscalationIfNeeded();
 					consult?.resolve(null);
 					this.#backlog = Math.max(0, this.#backlog - finalTurns);
 					this.#notifyWaiters();
@@ -758,18 +805,24 @@ export class AdvisorRuntime {
 					}
 					// A reset/dispose during substitution invalidates this batch.
 					if (this.#epoch !== epoch) {
+						restoreEscalationIfNeeded();
 						consult?.resolve(null);
 						continue;
 					}
 				}
+				if (consult && !consult.async && !batchAlreadyUsedFallback) {
+					restoreEscalation = this.#switchToEscalationModel();
+				}
+				const escalationActive = restoreEscalation !== undefined;
 				const finalModel = this.agent.model;
 				const promptPayload =
-					candidatePrepared && candidatePrepared.source === finalBatch
+					!escalationActive && candidatePrepared && candidatePrepared.source === finalBatch
 						? candidatePrepared.payload
 						: isFableVisionAdvisorModel(finalModel)
 							? await prepareFableAdvisorPromptPayload(finalBatch, finalModel)
 							: { text: finalBatch };
 				if (this.#epoch !== epoch) {
+					restoreEscalationIfNeeded();
 					consult?.resolve(null);
 					continue;
 				}
@@ -815,6 +868,7 @@ export class AdvisorRuntime {
 					// (reset already cleared #pending and rewound the cursor) instead of
 					// requeuing it into the post-reset conversation.
 					if (this.#epoch !== epoch) {
+						restoreEscalationIfNeeded();
 						consult?.resolve(null);
 						continue;
 					}
@@ -823,6 +877,7 @@ export class AdvisorRuntime {
 						? this.#fallbackModel
 						: undefined;
 					if (fallbackModel) {
+						restoreEscalationIfNeeded();
 						this.agent.setModel?.(fallbackModel);
 						this.#onFallbackModel = true;
 						logger.warn("advisor refused, falling back", {
@@ -846,13 +901,14 @@ export class AdvisorRuntime {
 					}
 					logger.debug("advisor turn failed", { err: String(err) });
 					try {
-						await this.host.onTurnError?.(err);
+						await this.host.onTurnError?.(err, this.agent.model);
 					} catch (hookErr) {
 						logger.debug("advisor onTurnError hook failed", { err: String(hookErr) });
 					}
 					// The hook awaits; a reset during it invalidates this batch like the
 					// prompt await above — drop it instead of requeueing stale content.
 					if (this.#epoch !== epoch) {
+						restoreEscalationIfNeeded();
 						consult?.resolve(null);
 						continue;
 					}
@@ -894,6 +950,7 @@ export class AdvisorRuntime {
 						await Bun.sleep(this.retryDelayMs);
 					}
 				}
+				restoreEscalationIfNeeded();
 
 				if (success && this.#epoch === epoch) {
 					this.#backlog = Math.max(0, this.#backlog - finalTurns);
@@ -912,6 +969,10 @@ export class AdvisorRuntime {
 
 	#restorePrimaryModel(): void {
 		if (this.#primaryModel) this.agent.setModel?.(this.#primaryModel);
+		this.agent.setThinkingLevel?.(this.#normalThinkingLevel);
+		if (this.#normalDisableReasoning !== undefined || this.#escalationDisableReasoning !== undefined) {
+			this.agent.setDisableReasoning?.(this.#normalDisableReasoning ?? false);
+		}
 		this.#onFallbackModel = false;
 	}
 
@@ -919,8 +980,10 @@ export class AdvisorRuntime {
 		if (!isSafeguardRefusal(err)) return false;
 		if (batchAlreadyUsedFallback) return false;
 		if (!this.#fallbackModel || !this.#primaryModel || !this.agent.model || !this.agent.setModel) return false;
-		if (this.#onFallbackModel) return false;
-		return modelsAreEqual(this.agent.model, this.#primaryModel);
+		const onEscalationModel = this.#escalationModel ? modelsAreEqual(this.agent.model, this.#escalationModel) : false;
+		if (this.#onFallbackModel && !onEscalationModel) return false;
+		if (modelsAreEqual(this.agent.model, this.#primaryModel)) return true;
+		return onEscalationModel;
 	}
 }
 

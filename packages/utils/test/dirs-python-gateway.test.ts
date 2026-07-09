@@ -15,8 +15,7 @@ describe("python gateway directory", () => {
 		originalAgentDir = getAgentDir();
 		originalConfigDir = process.env.PI_CONFIG_DIR;
 		originalXdgStateHome = process.env.XDG_STATE_HOME;
-		tempRoot = path.join(os.tmpdir(), "pi-utils-python-gateway", Snowflake.next());
-		await fs.mkdir(tempRoot, { recursive: true });
+		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-utils-python-gateway-"));
 	});
 
 	afterEach(async () => {

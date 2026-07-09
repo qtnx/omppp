@@ -577,6 +577,17 @@ export const SETTINGS_SCHEMA = {
 			description: "Executor thinking selector used when the model pattern does not include a :thinking suffix.",
 		},
 	},
+	"duo.advisorModel": {
+		type: "string",
+		default: "gpt-5.5",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Advisor Model",
+			description:
+				"Continuous duo advisor model pattern; falls back to the planner model when unavailable. Supports :thinking suffix.",
+		},
+	},
 	"duo.advisorThinking": {
 		type: "string",
 		default: "xhigh",
@@ -585,7 +596,29 @@ export const SETTINGS_SCHEMA = {
 			group: "Duo",
 			label: "Duo Advisor Thinking",
 			description:
-				"Thinking level for the Fable advisor while it monitors the executor. Higher = more thorough gap-catching. Values: auto|off|minimal|low|medium|high|xhigh|max.",
+				"Thinking selector for the continuous duo advisor when the model pattern does not include a :thinking suffix.",
+		},
+	},
+	"duo.advisorEscalationModel": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Advisor Escalation Model",
+			description:
+				"High-tier advisor model pattern for blocking consult and done-review boundaries. Empty uses the duo planner model.",
+		},
+	},
+	"duo.advisorEscalationThinking": {
+		type: "string",
+		default: "xhigh",
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Advisor Escalation Thinking",
+			description:
+				"Thinking selector for high-importance duo advisor consults when the escalation model pattern has no :thinking suffix.",
 		},
 	},
 	"duo.advisorPromptReview": {
