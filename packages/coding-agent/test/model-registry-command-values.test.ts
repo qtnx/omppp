@@ -92,7 +92,9 @@ describe("ModelRegistry command-resolved models.yml values", () => {
 		fs.writeFileSync(counterFile, "0");
 
 		// Command increments a counter and then fails (exit 1).
-		const trackingCommand = `node -e "const fs=require('fs'); fs.writeFileSync('${counterFile.replace(/\\/g, "/")}', String(Number(fs.readFileSync('${counterFile.replace(/\\/g, "/")}', 'utf8')) + 1)); process.exit(1);"`;
+		const trackingCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+			`const fs=require("fs"); fs.writeFileSync(${JSON.stringify(counterFile)}, String(Number(fs.readFileSync(${JSON.stringify(counterFile)}, "utf8")) + 1)); process.exit(1);`,
+		)}`;
 
 		fs.writeFileSync(
 			modelsPath,
