@@ -2199,7 +2199,6 @@ export class AgentSession {
 		this.#unexpectedStopRetryCount = 0;
 		this.#yieldTerminationPending = false;
 	}
-
 	async #completeSideRequestResult(
 		requestModel: Model,
 		requestContext: Context,
