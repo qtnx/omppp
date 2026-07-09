@@ -5,6 +5,7 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
+import { disableAnnotateHttp, enableAnnotateHttp } from "../../tools/browser/annotate-http";
 import { AgentSession, type AgentSessionConfig, type AgentSessionEvent } from "../agent-session";
 import type { SessionManager } from "../session-manager";
 
@@ -303,5 +304,43 @@ describe("AgentSession mid-run waiting compaction", () => {
 		expect(harness.events.filter(event => event.type === "auto_compaction_start")).toHaveLength(0);
 		expect(harness.appendedCompactions).toHaveLength(0);
 		expect(harness.replacedMessages).toBeUndefined();
+	});
+});
+
+describe("AgentSession annotation intake cleanup", () => {
+	test("dispose stops annotation intake server after enabling HTTP annotations", async () => {
+		let stoppedWith: boolean | undefined;
+		track(
+			spyOn(Bun, "serve").mockImplementation(((options: { hostname?: string; port?: number }) => {
+				return {
+					hostname: options.hostname ?? "127.0.0.1",
+					port: options.port ?? 0,
+					stop: async (closeActiveConnections?: boolean) => {
+						stoppedWith = closeActiveConnections;
+					},
+				} as unknown as Bun.Server<undefined>;
+			}) as typeof Bun.serve),
+		);
+		const { session } = createAgentSessionHarness(enabledCompactionSettings);
+		let registered = false;
+
+		try {
+			await enableAnnotateHttp({
+				key: session,
+				sessionLabel: "Dispose cleanup",
+				host: "127.0.0.1",
+				port: 38_481,
+				deliver: () => {},
+			});
+			registered = true;
+
+			await session.dispose();
+
+			expect(stoppedWith).toBe(true);
+		} finally {
+			if (registered) {
+				await disableAnnotateHttp(session);
+			}
+		}
 	});
 });

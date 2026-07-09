@@ -46,6 +46,10 @@ import { sanitizeText, TempDir } from "@oh-my-pi/pi-utils";
 import DEFAULTS from "../../src/lsp/defaults.json" with { type: "json" };
 import { getLanguageFromPath } from "../../src/utils/lang-from-path";
 
+function testTempRoot(): string {
+	return process.platform === "win32" ? os.tmpdir() : "/tmp";
+}
+
 interface RpcMessage {
 	jsonrpc?: string;
 	id?: number | string;
@@ -649,7 +653,7 @@ describe("lsp regressions", () => {
 	});
 
 	it("skips rust-analyzer workspace polling for standalone Rust files", async () => {
-		const tempDir = TempDir.createSync("@omp-lsp-rust-standalone-");
+		const tempDir = TempDir.createSync(path.join(testTempRoot(), "omp-lsp-rust-standalone-"));
 		try {
 			const sourcePath = path.join(tempDir.path(), "foo.rs");
 			await Bun.write(sourcePath, 'fn greet() -> &\'static str { "hi" }\n');

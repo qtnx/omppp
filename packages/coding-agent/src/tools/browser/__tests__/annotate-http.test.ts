@@ -72,6 +72,38 @@ afterEach(async () => {
 });
 
 describe("annotate HTTP intake", () => {
+	it("binds to a port beyond the first ten failed port attempts", async () => {
+		const key = {};
+		const port = 41_000;
+		const stop = vi.fn();
+		let serveCalls = 0;
+		const serveSpy = vi.spyOn(Bun, "serve").mockImplementation(((options: { hostname?: string; port?: number }) => {
+			serveCalls += 1;
+			if (serveCalls <= 12) {
+				throw new Error(`port ${options.port} unavailable`);
+			}
+			return {
+				hostname: options.hostname ?? "127.0.0.1",
+				port: options.port ?? 0,
+				stop,
+			} as unknown as Bun.Server<undefined>;
+		}) as typeof Bun.serve);
+
+		const info = await enableAnnotateHttp({
+			key,
+			sessionLabel: "Port fallback",
+			host: "127.0.0.1",
+			port,
+			deliver: () => {},
+		});
+		enabledKeys.push(key);
+
+		expect(info.port).toBe(port + 12);
+		expect(serveSpy).toHaveBeenCalledTimes(13);
+		expect(await disableAnnotateHttp(key)).toBe(true);
+		expect(stop).toHaveBeenCalledWith(true);
+	});
+
 	it("pairs issued and normalized codes and rejects unknown codes", async () => {
 		const { info } = await enableSession("Design review");
 

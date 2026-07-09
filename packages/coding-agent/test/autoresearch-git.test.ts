@@ -8,9 +8,12 @@ import type { ExtensionAPI } from "../src/extensibility/extensions";
 import * as jj from "../src/utils/jj";
 
 const tempDirs: string[] = [];
+function testTempRoot(): string {
+	return process.platform === "win32" ? os.tmpdir() : "/tmp";
+}
 
 async function mkTempDir(prefix: string): Promise<string> {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+	const dir = await fs.mkdtemp(path.join(testTempRoot(), prefix));
 	tempDirs.push(dir);
 	return dir;
 }

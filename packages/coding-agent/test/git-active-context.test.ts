@@ -27,6 +27,10 @@ function createLinkedWorktreeGitFile(worktreeRoot: string, gitDir: string, commo
 	fs.writeFileSync(path.join(worktreeRoot, ".git"), `gitdir: ${path.relative(worktreeRoot, gitDir)}\n`, "utf8");
 }
 
+function testTempRoot(): string {
+	return process.platform === "win32" ? os.tmpdir() : "/tmp";
+}
+
 async function expectResolvers(cwd: string, expected: ActiveRepoContext | null): Promise<void> {
 	expect(resolveActiveRepoContextSync(cwd)).toEqual(expected);
 	expect(await resolveActiveRepoContext(cwd)).toEqual(expected);
@@ -36,7 +40,7 @@ describe("resolveActiveRepoContext", () => {
 	let tempRoot: string;
 
 	beforeEach(() => {
-		tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omp-active-repo-context-"));
+		tempRoot = fs.mkdtempSync(path.join(testTempRoot(), "omp-active-repo-context-"));
 	});
 
 	afterEach(() => {

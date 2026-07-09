@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -19,6 +20,11 @@ describe("advisor watchdog prompt discovery", () => {
 			await tempDir.remove();
 		}
 	});
+
+	function createOutsideGitTempDir(): TempDir {
+		const tempRoot = process.platform === "win32" ? os.tmpdir() : "/tmp";
+		return TempDir.createSync(path.join(tempRoot, "pi-advisor-watchdog-"));
+	}
 
 	async function withAdvisorHistory(
 		tempDir: TempDir,
@@ -134,7 +140,7 @@ describe("advisor watchdog prompt discovery", () => {
 	});
 
 	it("adds built-in active child repo context to the advisor prompt", async () => {
-		const tempDir = TempDir.createSync("@pi-advisor-watchdog-");
+		const tempDir = createOutsideGitTempDir();
 		tempDirs.push(tempDir);
 		const cwd = tempDir.join("parent-cwd");
 		fs.mkdirSync(path.join(cwd, "active-project", ".git"), { recursive: true });
@@ -154,7 +160,7 @@ describe("advisor watchdog prompt discovery", () => {
 	});
 
 	it("omits built-in active child repo context when multiple direct child repos exist", async () => {
-		const tempDir = TempDir.createSync("@pi-advisor-watchdog-");
+		const tempDir = createOutsideGitTempDir();
 		tempDirs.push(tempDir);
 		const cwd = tempDir.join("parent-cwd");
 		fs.mkdirSync(path.join(cwd, "active-project", ".git"), { recursive: true });

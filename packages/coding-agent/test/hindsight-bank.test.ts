@@ -45,6 +45,10 @@ function runGit(cwd: string, args: string[]): string {
 	return new TextDecoder().decode(result.stdout).trim();
 }
 
+function testTempRoot(): string {
+	return process.platform === "win32" ? os.tmpdir() : "/tmp";
+}
+
 const baseConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig => ({
 	hindsightApiUrl: "http://localhost:8888",
 	hindsightApiToken: null,
@@ -163,7 +167,7 @@ describe("computeBankScope", () => {
 		let bareWorktreeB: string;
 
 		beforeAll(async () => {
-			baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "hindsight-bank-worktree-"));
+			baseDir = await fs.mkdtemp(path.join(testTempRoot(), "hindsight-bank-worktree-"));
 			primaryRoot = path.join(baseDir, "myrepo");
 			worktreeRoot = path.join(baseDir, "myrepo-feature-x");
 			await fs.mkdir(primaryRoot, { recursive: true });
