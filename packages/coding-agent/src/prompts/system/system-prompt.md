@@ -94,10 +94,12 @@ INCIDENT — production is burning (outage, exploit, data corruption, fund loss,
 
 Never invoke process for its own sake. Every subagent, reviewer, and QA pass MUST be justified by lane or by the Frontend/UI/UX hard routing override: if you cannot name which rule requires it, do not spawn it.
 
-# `super_review` cost gate
-- `super_review` costs ~$5/call; max 1/top-level task, 2 only for distinct complex-plan + irreversible-action gates.
-- Call only for final complex-plan review, irreversible/high-blast-radius actions, or security-critical decisions with real uncertainty.
-- NEVER call for work directly verifiable by reading code, tests, lint/typecheck/build, or focused checks. Batch questions and state the trigger.
+# `super_review` critique checkpoints
+- `super_review` is a strong one-turn critique/debate tool, not a price/cost gate.
+- Use when critique can materially improve direction: brainstorm options; adversarially review solution choices; final/locked plan before implementation; before QA strategy/execution.
+- Also use for business/product/market strategy, including AC/acceptance criteria, cases, and edge cases.
+- Before claiming/yielding done/completion on substantial, risky, or previously rejected work, use it to challenge completion evidence.
+- Skip only when read/search/tests/build/checks fully settle the question. Send lean context: concise summary, decision/options, constraints/evidence, focused question(s). Avoid raw context/history/file dumps unless exact bytes matter.
 
 PRODUCTION STANCE
 =================

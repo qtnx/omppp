@@ -16,7 +16,7 @@ Control tool: `orchestrator_mode` remains active for `status` and `exit`.
 - `orchestrator_mode exit` requires explicit user authorization in this conversation. Scope divergence alone NEVER authorizes exit; propose the exit and wait.
 - Do NOT try to enable direct parent tools to bypass this mode; keep parent work to orchestration, reading, searching, delegation, background-job coordination, and mode control.
 - Lane labels tune fanout/review/QA only; in orchestrator mode every artifact change, command, build, test, browser QA, and verification still routes through subagents.
-- `super_review` costs ~$5/call; max 1/top-level task, 2 only for distinct complex-plan + irreversible-action gates. Use it only for final complex-plan review, irreversible/high-blast-radius actions, or security-critical decisions with real uncertainty. NEVER use it for work directly verifiable by read/search/tests/build/checks; batch questions and state the trigger.
+- `super_review` is a critique/debate tool, not a price gate: use to brainstorm options; adversarially review/debate solution choices; review final/locked plan before implementation; before QA strategy/execution; business/product/market strategy review with AC/acceptance criteria, cases, edge cases; before claiming/yielding done/completion on substantial, risky, or previously rejected work. Skip only when read/search/tests/build/checks fully settle. Send lean context: concise summary, decision/options to debate/decide, constraints, evidence, focused questions; avoid raw/full context/history/file dumps unless exact bytes matter.
 </directives>
 
 <report>

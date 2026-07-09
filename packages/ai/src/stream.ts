@@ -34,7 +34,7 @@ import type { GoogleVertexOptions } from "./providers/google-vertex";
 import { isKimiModel, streamKimi } from "./providers/kimi";
 import type { OllamaChatOptions } from "./providers/ollama";
 import type { OpenAICompletionsOptions } from "./providers/openai-completions";
-import { streamPiNative } from "./providers/pi-native-client";
+import { completePiNative, streamPiNative } from "./providers/pi-native-client";
 // Heavy provider stream functions are imported lazily via register-builtins,
 // which wraps each provider module in a dynamic import. This keeps the
 // AWS SDK, google-auth-library, @google/genai, @bufbuild/protobuf, and
@@ -601,6 +601,29 @@ function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal"
 		}
 	})();
 	return outer;
+}
+
+async function withProviderInFlightLimitResult<
+	TOptions extends Pick<StreamOptions, "signal" | "maxInFlightRequests">,
+	TResult,
+>(model: Model<Api>, options: TOptions | undefined, dispatch: () => Promise<TResult>): Promise<TResult> {
+	const limit = resolveProviderInFlightLimit(model.provider, options);
+	if (limit === undefined) return dispatch();
+
+	let release: (() => Promise<void>) | undefined;
+	try {
+		const startedWaitingAt = Date.now();
+		release = await acquireProviderInFlightSlot(model.provider, limit, options?.signal);
+		if (Date.now() - startedWaitingAt >= PROVIDER_INFLIGHT_SIGNAL_FALLBACK_MS) {
+			logger.debug("Provider in-flight limit wait completed", { provider: model.provider, limit });
+		}
+		if (options?.signal?.aborted) {
+			throw options.signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
+		}
+		return await dispatch();
+	} finally {
+		await release?.();
+	}
 }
 
 function createVertexAuthenticatedFetch(options: StreamOptions | undefined): FetchImpl {
@@ -1217,6 +1240,18 @@ export async function completeSimple<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): Promise<AssistantMessage> {
+	if (model.transport === "pi-native") {
+		const baseOptions = (options || {}) as SimpleStreamOptions;
+		const debugOptions = withExtraCaFetch(withRequestDebugFetch(baseOptions));
+		const requestOptions = {
+			...debugOptions,
+			fetch: wrapFetchForProxy(debugOptions.fetch ?? (globalThis.fetch as FetchImpl), model.provider),
+		} as SimpleStreamOptions;
+		return withProviderInFlightLimitResult(model, requestOptions, () =>
+			completePiNative(model, context, requestOptions),
+		);
+	}
+
 	return resolveWithThinkingLoopCook(
 		options?.signal,
 		() => streamSimple(model, context, options),

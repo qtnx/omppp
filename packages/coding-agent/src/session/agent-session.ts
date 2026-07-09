@@ -113,6 +113,7 @@ import type {
 import {
 	calculateRateLimitBackoffMs,
 	clearAnthropicFastModeFallback,
+	completeSimple,
 	deriveClaudeDeviceId,
 	Effort,
 	isUsageLimitOutcome,
@@ -2199,6 +2200,18 @@ export class AgentSession {
 		this.#yieldTerminationPending = false;
 	}
 
+	async #completeSideRequestResult(
+		requestModel: Model,
+		requestContext: Context,
+		requestOptions?: SimpleStreamOptions,
+	): Promise<AssistantMessage> {
+		if (requestModel.transport === "pi-native") {
+			return completeSimple(requestModel, requestContext, requestOptions ?? {});
+		}
+		const stream = await this.#sideStreamFn(requestModel, requestContext, requestOptions);
+		return stream.result();
+	}
+
 	#acquirePowerAssertion(): void {
 		if (process.platform !== "darwin") return;
 		if (isBunTestRuntime()) return;
@@ -3428,7 +3441,7 @@ export class AgentSession {
 			advisorAgent.setDisableReasoning(shouldDisableReasoning(advisorThinkingLevel));
 
 			const advisorAgentFacade: AdvisorAgent = {
-				prompt: input => advisorAgent.prompt(input),
+				prompt: (input, images) => advisorAgent.prompt(input, images),
 				abort: reason => advisorAgent.abort(reason),
 				reset: () => {
 					advisorAgent.reset();
@@ -12190,10 +12203,8 @@ export class AgentSession {
 				model,
 				{
 					streamOptions: handoffStreamOptions,
-					completeImpl: async (requestModel, requestContext, requestOptions) => {
-						const stream = await this.#sideStreamFn(requestModel, requestContext, requestOptions);
-						return stream.result();
-					},
+					completeImpl: (requestModel, requestContext, requestOptions) =>
+						this.#completeSideRequestResult(requestModel, requestContext, requestOptions),
 					telemetry: resolveTelemetry(this.agent.telemetry, this.sessionId),
 					// Honor the user's /model thinking selection on the handoff path.
 					// Clamped per-model inside generateHandoffFromContext via
@@ -14219,18 +14230,17 @@ export class AgentSession {
 						tools: this.agent.state.tools,
 						sessionId: this.sessionId,
 						promptCacheKey: this.sessionId,
-						// Route every summarization HTTP request through the
+						// Route non-pi-native summarization HTTP requests through the
 						// session's side-stream transport so the provider
 						// concurrency cap (e.g. providers.ollama-cloud.maxConcurrency)
 						// brackets compaction the same way it brackets the live
 						// agent turn — without this, multiple ollama-cloud
 						// subagents auto/manually compacting issued uncapped
 						// summary requests in parallel (chatgpt-codex review on
-						// #3751).
-						completeImpl: async (requestModel, requestContext, requestOptions) => {
-							const stream = await this.#sideStreamFn(requestModel, requestContext, requestOptions);
-							return stream.result();
-						},
+						// #3751). Pi-native result-only summaries use the JSON
+						// completion path instead of opening SSE streams.
+						completeImpl: (requestModel, requestContext, requestOptions) =>
+							this.#completeSideRequestResult(requestModel, requestContext, requestOptions),
 					},
 				);
 			} catch (error) {
@@ -17524,11 +17534,9 @@ export class AgentSession {
 				convertToLlm: messages => this.#convertToLlmForSideRequest(messages),
 				telemetry: resolveTelemetry(this.agent.telemetry, this.sessionId),
 				// Same per-provider concurrency cap rationale as the compaction
-				// path above (chatgpt-codex review on #3751).
-				completeImpl: async (requestModel, requestContext, requestOptions) => {
-					const stream = await this.#sideStreamFn(requestModel, requestContext, requestOptions);
-					return stream.result();
-				},
+				// path above; pi-native result-only summaries use JSON completion.
+				completeImpl: (requestModel, requestContext, requestOptions) =>
+					this.#completeSideRequestResult(requestModel, requestContext, requestOptions),
 			});
 			this.#branchSummaryAbortController = undefined;
 			if (result.aborted) {

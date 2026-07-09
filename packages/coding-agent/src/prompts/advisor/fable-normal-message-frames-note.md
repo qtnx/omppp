@@ -1,0 +1,1 @@
+Large advisor session-update text is attached as snapcompact image frames. Read the frames as normal conversation history before advising. The latest consultation request or current instruction remains in text below.

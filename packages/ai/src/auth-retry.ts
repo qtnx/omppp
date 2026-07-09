@@ -129,7 +129,7 @@ export async function withAuth<T>(
 
 	const resolver = key;
 	const signal = opts?.signal;
-	let lastKey = await resolveRetryKey(resolver, false, undefined, signal);
+	let lastKey = (await resolver({ lastChance: false, error: undefined, signal })) || undefined;
 	if (lastKey === undefined) throw missingKey();
 
 	let lastError: unknown;

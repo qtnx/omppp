@@ -428,6 +428,70 @@ describe("system prompt tool inventory", () => {
 		);
 	});
 
+	it("renders super_review critique and debate guidance in the normal prompt", async () => {
+		const text = await render({ nativeTools: true, inlineToolDescriptors: false });
+		const exactPricePattern = /(?:~?\$1\/(?:call|task)|~?\$5\/call)/;
+		const superReviewGuidance = text.match(/`super_review`[\s\S]{0,2000}/)?.[0] ?? "";
+		const superReviewPolicyViolations: string[] = [];
+
+		if (!superReviewGuidance) {
+			superReviewPolicyViolations.push("missing `super_review` guidance");
+		}
+		if (exactPricePattern.test(text)) {
+			superReviewPolicyViolations.push("mentions exact super_review price/cost strings");
+		}
+		if (!/(?:final|locked)[\s\S]{0,80}plan[\s\S]{0,120}before[\s\S]{0,80}implementation/i.test(superReviewGuidance)) {
+			superReviewPolicyViolations.push("missing final or locked plan review before implementation");
+		}
+		if (!/before[\s\S]{0,80}QA[\s\S]{0,80}(?:strategy|execution)/i.test(superReviewGuidance)) {
+			superReviewPolicyViolations.push("missing QA strategy or execution review checkpoint");
+		}
+		if (!/before[\s\S]{0,80}(?:claiming|yielding)[\s\S]{0,120}(?:done|completion)/i.test(superReviewGuidance)) {
+			superReviewPolicyViolations.push("missing done or completion evidence checkpoint");
+		}
+		if (
+			!/(?=[\s\S]*(?:business|product|market))(?=[\s\S]*(?:strategy|review))(?=[\s\S]*\b(?:AC|acceptance criteria)\b)(?=[\s\S]*(?:\bcases\b[\s\S]{0,120}\bedge cases\b|\bedge cases\b[\s\S]{0,120}\bcases\b))/i.test(
+				superReviewGuidance,
+			)
+		) {
+			superReviewPolicyViolations.push(
+				"missing business/product/market strategy review with AC, cases, and edge cases",
+			);
+		}
+		if (
+			!/brainstorm(?:ing)?[\s\S]{0,120}(?:options|approaches|choices)|(?:options|approaches|choices)[\s\S]{0,120}brainstorm(?:ing)?/i.test(
+				superReviewGuidance,
+			)
+		) {
+			superReviewPolicyViolations.push("missing brainstorming options guidance");
+		}
+		if (
+			!/(?=[\s\S]*adversarial)(?=[\s\S]*(?:review|debate))(?=[\s\S]*(?:solution|choice|choices|approach|option))/i.test(
+				superReviewGuidance,
+			)
+		) {
+			superReviewPolicyViolations.push("missing adversarial review or debate of solution choices");
+		}
+		if (
+			!/(?=[\s\S]*(?:compact|concise|lean)[\s\S]{0,120}(?:summary|context))(?=[\s\S]*(?:decision|options?|choices?)[\s\S]{0,120}(?:debate|review|decide|choose))(?=[\s\S]*constraints?)(?=[\s\S]*evidence)(?=[\s\S]*focused[\s\S]{0,80}questions?)/i.test(
+				superReviewGuidance,
+			)
+		) {
+			superReviewPolicyViolations.push(
+				"missing lean context requirements: summary, decision/options, constraints/evidence, and focused questions",
+			);
+		}
+		if (
+			!/(?:avoid|do not|don't|unless|only)[\s\S]{0,180}(?:raw|full)[\s\S]{0,100}(?:context|history|file)[\s\S]{0,100}dumps?[\s\S]{0,180}(?:exact bytes|bytes matter)|(?:exact bytes|bytes matter)[\s\S]{0,180}(?:raw|full)[\s\S]{0,100}(?:context|history|file)[\s\S]{0,100}dumps?/i.test(
+				superReviewGuidance,
+			)
+		) {
+			superReviewPolicyViolations.push("missing raw context/history/file dump warning unless exact bytes matter");
+		}
+
+		expect(superReviewPolicyViolations).toEqual([]);
+	});
+
 	it("renders archive bundled skills and requires matching skill activation before work", async () => {
 		const { skills } = await loadSkills({ cwd: tempDir });
 		const { systemPrompt } = await buildSystemPrompt({

@@ -76,6 +76,19 @@ describe("withAuth", () => {
 		);
 	});
 
+	it("propagates initial resolver failures before any auth retry", async () => {
+		const brokerFailure = new Error("auth broker unavailable");
+
+		await expect(
+			withAuth(
+				() => {
+					throw brokerFailure;
+				},
+				async () => "never",
+			),
+		).rejects.toBe(brokerFailure);
+	});
+
 	it("refreshes the same account, then switches, in order", async () => {
 		const keys: string[] = [];
 		const contexts: ApiKeyResolveContext[] = [];
