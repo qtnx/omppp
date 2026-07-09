@@ -2084,15 +2084,16 @@ export class AuthStorage {
 	}
 
 	/**
-	 * as {@link AuthStorage.getApiKey}: runtime override → usable stored OAuth →
-	 * login-stored api_key → config override → env var → stored api_key →
+	 * Resolution order is the synchronous, side-effect-free approximation of
+	 * {@link AuthStorage.getApiKey}: runtime override → config override →
+	 * usable stored OAuth → login-stored api_key → env var → stored api_key →
 	 * fallback resolver. Expired OAuth is not treated as the active origin by this
-	 * synchronous classifier; it falls through to API-key fallbacks.
 	 *
 	 * Compact, structured counterpart to {@link describeCredentialSource}.
 	 */
 	getCredentialOrigin(provider: string): CredentialOrigin | undefined {
 		if (this.#runtimeOverrides.has(provider)) return { kind: "runtime" };
+		if (this.#configOverrides.has(provider)) return { kind: "config" };
 		const stored = this.#getCredentialsForProvider(provider);
 		if (
 			stored.some(
@@ -2112,7 +2113,6 @@ export class AuthStorage {
 		) {
 			return { kind: "api_key" };
 		}
-		if (this.#configOverrides.has(provider)) return { kind: "config" };
 		if (getEnvApiKey(provider)) return { kind: "env", envVar: getEnvApiKeyName(provider) };
 		if (
 			stored.some(
@@ -2153,10 +2153,9 @@ export class AuthStorage {
 		);
 		if (oauthCredentials.length === 0) return undefined;
 
-		// Runtime overrides bypass OAuth account_uuid attribution — the caller is
-		// authenticating with an explicit CLI key, not the broker's OAuth. Config
-		// API keys are only fallbacks and must not hide a live OAuth login.
-		if (this.#runtimeOverrides.has(provider)) return undefined;
+		// Runtime and config overrides bypass OAuth account_uuid attribution — the
+		// caller is authenticating with an explicit API key, not the broker's OAuth.
+		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) return undefined;
 
 		// Prefer the session-sticky credential when available.
 		const sessionPref = this.#getSessionCredential(provider, sessionId);
@@ -4629,8 +4628,11 @@ export class AuthStorage {
 			return runtimeKey;
 		}
 
-		// Precedence: runtime override wins, then a usable stored OAuth/login credential,
-		// then explicit config/env/static API-key fallbacks.
+		// Precedence: runtime/config overrides win, then a usable stored OAuth/login
+		// credential, then explicit env/static API-key fallbacks.
+		const configKey = this.#configOverrides.get(provider);
+		if (configKey) return configKey;
+
 		const oauthSelection = this.#selectCredentialByType(provider, "oauth");
 		if (oauthSelection) {
 			const expiresAt = oauthSelection.credential.expires;
@@ -4661,9 +4663,6 @@ export class AuthStorage {
 			this.#markApiKeyCredentialUnresolved(provider, loginApiKeySelection.index, loginApiKeySelection.credential);
 		}
 
-		const configKey = this.#configOverrides.get(provider);
-		if (configKey) return configKey;
-
 		const envKey = getEnvApiKey(provider);
 		if (envKey) return envKey;
 
@@ -4684,9 +4683,9 @@ export class AuthStorage {
 	 * Get API key for a provider.
 	 * Priority (first match wins):
 	 * 1. Runtime override (CLI --api-key)
-	 * 2. OAuth token from storage (auto-refreshed)
-	 * 3. API key persisted by a successful `/login`
-	 * 4. Config override (models.yml `providers.<name>.apiKey`)
+	 * 2. Config override (models.yml `providers.<name>.apiKey`)
+	 * 3. OAuth token from storage (auto-refreshed)
+	 * 4. API key persisted by a successful `/login`
 	 * 5. Environment variable
 	 * 6. Stored API key (e.g. a broker-migrated copy) — last resort, so an explicit env var wins
 	 * 7. Fallback resolver (models.yml custom providers, last-resort)
@@ -4702,9 +4701,15 @@ export class AuthStorage {
 			return { apiKey: runtimeKey, origin: { kind: "runtime" } };
 		}
 
-		// OAuth/login credentials from an explicit login are the primary identity for
-		// this provider. Config API keys are fallback credentials: useful when OAuth
-		// is absent/unusable, but they must not hide a live stored OAuth login.
+		// Explicit API keys from config override stored credentials. A configured
+		// gateway bearer is the credential actually used for outbound requests, so
+		// it must also suppress OAuth identity attribution.
+		const configKey = this.#configOverrides.get(provider);
+		if (configKey) {
+			this.#clearSessionCredential(provider, sessionId);
+			return { apiKey: configKey, origin: { kind: "config" } };
+		}
+
 		const oauthResolved = await this.#resolveOAuthSelection(provider, sessionId, options);
 		if (oauthResolved) {
 			return { apiKey: oauthResolved.apiKey, origin: { kind: "oauth" } };
@@ -4724,12 +4729,6 @@ export class AuthStorage {
 				return { apiKey, origin: { kind: "api_key" } };
 			}
 			this.#markApiKeyCredentialUnresolved(provider, loginApiKeySelection.index, loginApiKeySelection.credential);
-		}
-
-		const configKey = this.#configOverrides.get(provider);
-		if (configKey) {
-			this.#clearSessionCredential(provider, sessionId);
-			return { apiKey: configKey, origin: { kind: "config" } };
 		}
 
 		// Past OAuth: the session sticky (if any) is stale — the request authenticates via
@@ -4776,16 +4775,15 @@ export class AuthStorage {
 	 * scenarios, prefer {@link AuthStorage.getApiKey}.
 	 *
 	 * Returns `undefined` when no OAuth credential is available, the
-	 * credential fails to refresh, or a runtime override has replaced OAuth with
-	 * an explicit CLI API key. Config API keys are fallbacks and do not suppress
-	 * stored OAuth identity.
+	 * credential fails to refresh, or a runtime/config override has replaced
+	 * OAuth with an explicit API key.
 	 */
 	async getOAuthAccess(
 		provider: string,
 		sessionId?: string,
 		options?: AuthApiKeyOptions,
 	): Promise<OAuthAccess | undefined> {
-		if (this.#runtimeOverrides.has(provider)) {
+		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
 			return undefined;
 		}
 		const resolved = await this.#resolveOAuthSelection(provider, sessionId, options);
@@ -5617,9 +5615,9 @@ export class AuthStorage {
 	 *
 	 * Mirrors {@link AuthStorage.getApiKey} precedence, highest first:
 	 *   1. Runtime override (`--api-key`).
-	 *   2. Fresh stored OAuth credential.
-	 *   3. API key persisted by a successful `/login`.
-	 *   4. Config override (`models.yml` `providers.<name>.apiKey`).
+	 *   2. Config override (`models.yml` `providers.<name>.apiKey`).
+	 *   3. Fresh stored OAuth credential.
+	 *   4. API key persisted by a successful `/login`.
 	 *   5. Env var — overrides a stored static api_key (e.g. a stale broker copy).
 	 *   6. Stored api_key credential.
 	 *   7. Fallback resolver.
@@ -5653,7 +5651,9 @@ export class AuthStorage {
 			return `${baseLabel} · ${type} #${chosen.id} (${identity})`;
 		};
 
-		// Deliberate fresh OAuth/login credentials win; then config/env/API-key fallbacks.
+		if (this.#configOverrides.has(provider)) return "config override (models.yml)";
+
+		// Deliberate explicit overrides win; then OAuth/login credentials and lower fallbacks.
 		const oauthSource = describeStored(
 			"oauth",
 			credential =>
@@ -5668,7 +5668,6 @@ export class AuthStorage {
 				!this.#isApiKeyCredentialUnresolved(provider, index, credential),
 		);
 		if (loginApiKeySource) return loginApiKeySource;
-		if (this.#configOverrides.has(provider)) return "config override (models.yml)";
 		if (getEnvApiKey(provider)) return `env (over ${baseLabel})`;
 		const apiKeySource = describeStored(
 			"api_key",

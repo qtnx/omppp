@@ -90,6 +90,7 @@ describe("AgentSession duo advisor pin restore", () => {
 			"duo.plannerModel": plannerId,
 			"duo.executorModel": executorId,
 		});
+		s.override("duo.advisorModel", "");
 		s.setModelRole("advisor", standaloneAdvisorId);
 		return s;
 	}

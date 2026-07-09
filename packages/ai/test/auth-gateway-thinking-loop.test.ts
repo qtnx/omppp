@@ -179,7 +179,7 @@ describe("auth-gateway non-streaming thinking-loop cook", () => {
 		}
 	});
 
-	it("logs stored OAuth over config API key on gateway requests without exposing either secret", async () => {
+	it("logs config API key over stored OAuth on gateway requests without exposing either secret", async () => {
 		registerMockApi();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-oauth-config-credential-log-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
@@ -221,8 +221,8 @@ describe("auth-gateway non-streaming thinking-loop cook", () => {
 			expect(requestLog?.[1]).toMatchObject({
 				resolvedProvider: "anthropic",
 				resolvedModel: "claude-test",
-				credentialOrigin: "oauth",
-				credentialAuthType: "oauth",
+				credentialOrigin: "config",
+				credentialAuthType: "api_key",
 			});
 			const requestLogJson = JSON.stringify(requestLog);
 			expect(requestLogJson).not.toContain(oauthToken);

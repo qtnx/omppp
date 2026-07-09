@@ -165,7 +165,7 @@ describe("AuthStorage.getCredentialOrigin", () => {
 		});
 	});
 
-	test("OAuth beats a config API key for anthropic credential resolution", async () => {
+	test("config API key beats OAuth for anthropic credential resolution", async () => {
 		await withEnv(SUPPRESS_ENV, async () => {
 			if (!auth) throw new Error("test setup failed");
 			await auth.set("anthropic", [
@@ -180,8 +180,8 @@ describe("AuthStorage.getCredentialOrigin", () => {
 			auth.setConfigApiKey("anthropic", "gateway-key");
 
 			expect(await auth.getApiKeyWithOrigin("anthropic")).toEqual({
-				apiKey: "sk-ant-oat-oauth",
-				origin: { kind: "oauth" },
+				apiKey: "gateway-key",
+				origin: { kind: "config" },
 			});
 		});
 	});
@@ -211,7 +211,7 @@ describe("AuthStorage.getCredentialOrigin", () => {
 		});
 	});
 
-	test("OAuth origin and source description beat config API key", async () => {
+	test("config API key beats OAuth origin and source description", async () => {
 		await withEnv(SUPPRESS_ENV, async () => {
 			if (!auth) throw new Error("test setup failed");
 			await auth.set("anthropic", [
@@ -228,12 +228,12 @@ describe("AuthStorage.getCredentialOrigin", () => {
 
 			auth.setConfigApiKey("anthropic", "gateway-key");
 
-			expect(auth.getCredentialOrigin("anthropic")).toEqual({ kind: "oauth" });
-			expect(auth.describeCredentialSource("anthropic")).toContain("oauth");
+			expect(auth.getCredentialOrigin("anthropic")).toEqual({ kind: "config" });
+			expect(auth.describeCredentialSource("anthropic")).toBe("config override (models.yml)");
 		});
 	});
 
-	test("OAuth helpers expose stored OAuth when config API key is present", async () => {
+	test("OAuth helpers suppress active OAuth when config API key is present", async () => {
 		await withEnv(SUPPRESS_ENV, async () => {
 			if (!auth) throw new Error("test setup failed");
 			await auth.set("anthropic", [
@@ -256,14 +256,11 @@ describe("AuthStorage.getCredentialOrigin", () => {
 
 			auth.setConfigApiKey("anthropic", "gateway-key");
 
-			expect(auth.getOAuthAccountId("anthropic")).toBe("acct-oauth");
+			expect(auth.getOAuthAccountId("anthropic")).toBeUndefined();
 			expect(await auth.listOAuthAccounts("anthropic")).toEqual([
 				expect.objectContaining({ accountId: "acct-oauth" }),
 			]);
-			expect(await auth.getOAuthAccess("anthropic")).toEqual({
-				accessToken: "sk-ant-oat-oauth",
-				accountId: "acct-oauth",
-			});
+			expect(await auth.getOAuthAccess("anthropic")).toBeUndefined();
 		});
 	});
 
