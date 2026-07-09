@@ -4159,7 +4159,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "Grep & Browser",
 			label: "Annotate HTTP Port",
-			description: "Preferred port for the annotate intake server (falls forward up to +9 when the port is busy).",
+			description:
+				"Preferred port for the annotate intake server (tries 256 ports starting here when ports are busy).",
 		},
 	},
 

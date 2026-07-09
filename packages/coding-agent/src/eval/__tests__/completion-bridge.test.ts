@@ -27,6 +27,10 @@ function makeModel(provider: string, id: string, extra: Partial<Model<Api>> = {}
 		input: ["text"],
 		cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 1 },
 		contextWindow: 128000,
+		compat: {
+			strictResponsesPairing: true,
+			supportsImageDetailOriginal: true,
+		},
 		maxTokens: 4096,
 		...extra,
 	} as Model<Api>;
@@ -133,6 +137,10 @@ const SMOL = {
 	cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 1 },
 	contextWindow: 128000,
 	maxTokens: 4096,
+	compat: {
+		strictResponsesPairing: true,
+		supportsImageDetailOriginal: true,
+	},
 };
 const settings = Settings.isolated({ "async.enabled": false, "task.isolation.mode": "none" });
 settings.setModelRole("smol", "p/smol");
