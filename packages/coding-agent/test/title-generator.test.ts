@@ -74,14 +74,7 @@ describe("title generator", () => {
 		const model = getModelOrThrow("claude-sonnet-4-5");
 		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
 			stopReason: "stop",
-			content: [
-				{
-					type: "toolCall",
-					id: "call-title",
-					name: "set_title",
-					arguments: { title: "Single Resolve" },
-				},
-			],
+			content: [{ type: "text", text: "<title>Single Resolve</title>" }],
 		} as never);
 		const getApiKey = vi.fn(async () => "resolved-title-key");
 		const resolver = vi.fn(() => async () => "second-resolve-key");

@@ -23,6 +23,7 @@ import {
 	type ApiKeyResolver,
 	type Context,
 	type CredentialDisabledEvent,
+	Effort,
 	type ImageContent,
 	type Message,
 	type Model,
@@ -3382,7 +3383,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (!autoThinking) {
 				// Do not write the `auto` selector before the first turn resolves; auto
 				// classification persists its concrete effort once a real user turn runs.
-				sessionManager.appendThinkingLevelChange(effectiveThinkingLevel);
+				const persistedThinkingLevel =
+					!hasExistingSession && thinkingLevel === Effort.Max && restoredSessionThinkingLevel === undefined
+						? Effort.Max
+						: effectiveThinkingLevel;
+				sessionManager.appendThinkingLevelChange(persistedThinkingLevel);
 			}
 			if (Object.keys(initialServiceTierByFamily).length > 0) {
 				sessionManager.appendServiceTierChange(initialServiceTierByFamily);
@@ -3446,7 +3451,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			advisorConfigs: discoveredAdvisors.advisors,
 			agent,
 			pruneToolDescriptions: inlineToolDescriptors,
-			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
+			thinkingLevel:
+				autoThinking ||
+				(!hasExistingSession && thinkingLevel === Effort.Max && restoredSessionThinkingLevel === undefined)
+					? thinkingLevel
+					: effectiveThinkingLevel,
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
 			settings,

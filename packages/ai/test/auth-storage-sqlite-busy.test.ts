@@ -125,6 +125,7 @@ describe("SqliteAuthCredentialStore.open SQLITE_BUSY handling", () => {
 	// opens; every expected user table must exist after each open returns.
 	test("fresh database schema init is deterministic under parallel opens", async () => {
 		const expectedTables = [
+			"auth_credential_blocks",
 			"auth_credentials",
 			"auth_schema_version",
 			"cache",

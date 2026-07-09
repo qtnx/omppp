@@ -30,11 +30,11 @@ describe("release workflow triggers", () => {
 		const push = asRecord(workflowOn.push, "on.push");
 		expect(asArray(push.tags, "on.push.tags")).toEqual(["v*"]);
 
-		const gate = asRecord(jobs.gate, "jobs.gate");
-		const gateSteps = asArray(gate.steps, "jobs.gate.steps").map((step, index) =>
-			asRecord(step, `jobs.gate.steps[${index}]`),
+		const releaseMetadata = asRecord(jobs.release_metadata, "jobs.release_metadata");
+		const releaseMetadataSteps = asArray(releaseMetadata.steps, "jobs.release_metadata.steps").map((step, index) =>
+			asRecord(step, `jobs.release_metadata.steps[${index}]`),
 		);
-		const detectStep = gateSteps.find(step => step.name === "Detect release tag");
+		const detectStep = releaseMetadataSteps.find(step => step.name === "Detect release tag");
 		expect(detectStep).toBeDefined();
 		const run = asString(detectStep?.run, "Detect release tag run script");
 
@@ -45,8 +45,8 @@ describe("release workflow triggers", () => {
 	});
 
 	it("publishes the public GitHub release only after npm publish succeeds", () => {
-		const releaseNpm = asRecord(jobs["release-npm"], "jobs.release-npm");
-		expect(asString(releaseNpm.if, "release-npm if")).toContain(
+		const releaseNpm = asRecord(jobs.release_npm, "jobs.release_npm");
+		expect(asString(releaseNpm.if, "release_npm if")).toContain(
 			"needs['release-native-leaf-npm'].result == 'success'",
 		);
 
@@ -56,20 +56,22 @@ describe("release workflow triggers", () => {
 			"needs.release_github_verify.result == 'success'",
 		);
 
-		const releaseGithub = asRecord(jobs["release-github"], "jobs.release-github");
-		const releaseGithubSteps = asArray(releaseGithub.steps, "release-github steps").map((step, index) =>
+		const releaseGithub = asRecord(jobs.release_github, "jobs.release_github");
+		const releaseGithubSteps = asArray(releaseGithub.steps, "release_github steps").map((step, index) =>
 			asRecord(step, `release-github.steps[${index}]`),
 		);
-		const createReleaseStep = releaseGithubSteps.find(step => step.uses === "softprops/action-gh-release@v2");
+		const createReleaseStep = releaseGithubSteps.find(
+			step => typeof step.uses === "string" && step.uses.startsWith("softprops/action-gh-release@"),
+		);
 		expect(createReleaseStep).toBeDefined();
 		const createReleaseWith = asRecord(createReleaseStep?.with, "Create GitHub Release with");
 		expect(createReleaseWith.draft).toBe(true);
 
 		const publish = asRecord(jobs["release-github-publish"], "jobs.release-github-publish");
 		const publishNeeds = asArray(publish.needs, "release-github-publish needs");
-		expect(publishNeeds).toContain("release-npm");
+		expect(publishNeeds).toContain("release_npm");
 		const publishCondition = asString(publish.if, "release-github-publish if");
-		expect(publishCondition).toContain("needs['release-npm'].result == 'success'");
+		expect(publishCondition).toContain("needs.release_npm.result == 'success'");
 		expect(publishCondition).not.toContain("inputs.skip_npm");
 	});
 });

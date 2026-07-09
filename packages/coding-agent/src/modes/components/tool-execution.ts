@@ -571,6 +571,15 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		}
 	}
 
+	#requestAnimationRender(): void {
+		const ui = this.#ui as TUI & { requestComponentRender?: (component: Component) => void };
+		if (typeof ui.requestComponentRender === "function") {
+			ui.requestComponentRender(this);
+			return;
+		}
+		ui.requestRender();
+	}
+
 	/**
 	 * Start or stop spinner animation for live states that visibly tick.
 	 */
@@ -647,7 +656,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				// advanced. Component-scoped renders keep the rest of the root tree out
 				// of the animation path (issue #4377).
 				if (this.#toolName === "task" || glyphAdvanced) {
-					this.#ui.requestComponentRender(this);
+					this.#requestAnimationRender();
 				}
 			}, SPINNER_RENDER_INTERVAL_MS);
 		} else if (!needsSpinner && this.#spinnerInterval) {
@@ -707,7 +716,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			}
 			// Component-scoped: strike animation only mutates this tool block's
 			// glyph, so the TUI reuses every other root subtree (issue #4377).
-			this.#ui.requestComponentRender(this);
+			this.#requestAnimationRender();
 		}, 65);
 	}
 

@@ -24,6 +24,7 @@ import { isLowSignalTitleInput } from "../../tiny/text";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
+import { vocalizer } from "../../tts/vocalizer";
 import {
 	copyToClipboard,
 	readImageFromClipboard,
@@ -400,6 +401,10 @@ export class InputController {
 			this.#handleStreamingEscape();
 		} else if (this.ctx.editor.getText().trim()) {
 			// Esc must not destroy an in-progress draft; it only disarms a previous empty-editor Esc.
+			this.ctx.lastEscapeTime = 0;
+			this.#clearStreamingEscapeArm();
+		} else if (vocalizer.isSpeaking()) {
+			vocalizer.clear();
 			this.ctx.lastEscapeTime = 0;
 			this.#clearStreamingEscapeArm();
 		} else {

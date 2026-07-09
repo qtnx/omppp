@@ -23,9 +23,17 @@ const mockTaskTool: AgentTool = {
 	execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
 };
 
+const mockWorkflowTool: AgentTool = {
+	name: "workflow",
+	label: "Workflow",
+	description: "Mock workflow tool",
+	parameters: type({}),
+	execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
+};
+
 async function createMagicKeywordSession(
 	root: string,
-	tools: AgentTool[] = [mockTaskTool],
+	tools: AgentTool[] = [mockTaskTool, mockWorkflowTool],
 ): Promise<{
 	session: AgentSession;
 	settings: Settings;
@@ -46,6 +54,7 @@ async function createMagicKeywordSession(
 	authStorage.setRuntimeApiKey("anthropic", "test-key");
 	const modelRegistry = new ModelRegistry(authStorage, path.join(root, "models.yml"));
 	const settings = Settings.isolated();
+	settings.set("task.eager", "default");
 	const session = new AgentSession({
 		agent,
 		sessionManager: SessionManager.inMemory(),
@@ -132,8 +141,8 @@ describe("AgentSession magic keyword settings", () => {
 		expect(notice).not.toContain("Call `task` once per independent fan-out batch");
 	});
 
-	it("skips workflowz notice when the task tool is inactive", async () => {
-		const created = await createMagicKeywordSession(root, []);
+	it("skips workflowz notice when the workflow tool is inactive", async () => {
+		const created = await createMagicKeywordSession(root, [mockTaskTool]);
 		session = created.session;
 		authStorage = created.authStorage;
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
