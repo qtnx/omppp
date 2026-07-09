@@ -43,6 +43,10 @@ class RecordingComponent {
 	updateContent(message: AssistantMessage): void {
 		this.messages.push(message);
 	}
+
+	render(): string[] {
+		return [];
+	}
 }
 
 function makeController(options: { smooth?: boolean; hideThinking?: boolean; requestRender?: () => void } = {}) {

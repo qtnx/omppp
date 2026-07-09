@@ -1,4 +1,5 @@
-import workflowNotice from "../prompts/system/workflow-notice.md" with { type: "text" };
+import { prompt } from "@oh-my-pi/pi-utils";
+import workflowNoticeTemplate from "../prompts/system/workflow-notice.md" with { type: "text" };
 import { createGradientHighlighter, type KeywordHighlighter } from "./gradient-highlight";
 import { keywordInProse } from "./markdown-prose";
 
@@ -7,11 +8,10 @@ import { keywordInProse } from "./markdown-prose";
  *
  * Typing the standalone word in the input editor paints it with a warm
  * amber→green gradient ({@link highlightWorkflow}); submitting a message that
- * mentions it appends a hidden {@link WORKFLOW_NOTICE} that steers the model to
- * author and run a deterministic multi-subagent workflow through the workflow
- * tool. Matching is whitespace-delimited and case-sensitive (lowercase
- * only) — "workflow"/"workflows" trigger, but "workflowed", "Workflow", and
- * "workflow.ts" never do.
+ * mentions it appends a hidden workflow notice that steers the model to author
+ * and run a deterministic multi-subagent workflow through the workflow tool.
+ * Matching is case-sensitive (lowercase only): lowercase "workflow" prose
+ * substrings trigger for OMPx compatibility; code paths and file extensions do not.
  */
 
 // Detection: fork compatibility keeps any lowercase "workflow" prose substring
@@ -19,8 +19,13 @@ import { keywordInProse } from "./markdown-prose";
 // `keywordInProse`. Highlighting remains standalone-word only for editor display.
 const WORKFLOW_NOTICE_WORD = /(?<![/.])workflow(?!\.[A-Za-z0-9])/;
 
-/** Hidden system notice appended after a user message that mentions "workflow". */
-export const WORKFLOW_NOTICE: string = workflowNotice.trim();
+/** WORKFLOW_NOTICE is the default hidden notice for workflow-tool fan-out. */
+export const WORKFLOW_NOTICE: string = renderWorkflowNotice({ taskBatch: true });
+
+/** renderWorkflowNotice renders the workflow notice for the active task schema. */
+export function renderWorkflowNotice({ taskBatch }: { taskBatch: boolean }): string {
+	return prompt.render(workflowNoticeTemplate, { taskBatch }).trim();
+}
 
 /**
  * Whether `text` contains the lowercase substring "workflow" in prose — never

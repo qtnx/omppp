@@ -4,6 +4,7 @@ import { alibabaCodingPlanProvider } from "./alibaba-coding-plan";
 import { amazonBedrockProvider } from "./amazon-bedrock";
 import { anthropicProvider } from "./anthropic";
 import { azureProvider } from "./azure";
+import { basetenProvider } from "./baseten";
 import { cerebrasProvider } from "./cerebras";
 import { cloudflareAiGatewayProvider } from "./cloudflare-ai-gateway";
 import { coreWeaveProvider } from "./coreweave";
@@ -106,6 +107,7 @@ const ALL = [
 	deepseekProvider,
 	moonshotProvider,
 	cerebrasProvider,
+	basetenProvider,
 	fireworksProvider,
 	togetherProvider,
 	nvidiaProvider,

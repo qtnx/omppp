@@ -296,6 +296,11 @@ export const PRIMARY_CONTEXT_CUSTOM_TYPES: ReadonlySet<string> = new Set([
 	"orchestrator-mode-context",
 ]);
 
+/** Hidden non-primary custom messages whose content is needed to understand visible transcript entries. */
+const CONTEXTUAL_NON_PRIMARY_HIDDEN_CUSTOM_TYPES: Record<string, true> = {
+	"image-attachment-description": true,
+};
+
 /** One-liner for custom/hook messages: `[irc] A → B: body…`. */
 function customOneLiner(msg: CustomMessage | HookMessage, opts?: HistoryFormatOptions): string {
 	const details = (msg.details ?? {}) as Record<string, unknown>;
@@ -426,6 +431,13 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 			case "custom":
 			case "hookMessage": {
 				const custom = msg as CustomMessage | HookMessage;
+				if (
+					custom.display === false &&
+					!PRIMARY_CONTEXT_CUSTOM_TYPES.has(custom.customType) &&
+					CONTEXTUAL_NON_PRIMARY_HIDDEN_CUSTOM_TYPES[custom.customType] !== true
+				) {
+					break;
+				}
 				if (opts?.expandPrimaryContext && PRIMARY_CONTEXT_CUSTOM_TYPES.has(custom.customType)) {
 					const text = contentToText(custom.content).trim();
 					if (text) {

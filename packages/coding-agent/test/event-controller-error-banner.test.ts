@@ -60,11 +60,14 @@ function createFixture(streamingMessage?: AssistantMessage) {
 		markTranscriptBlockFinalized: vi.fn(),
 		setErrorPinned: vi.fn(),
 		setHideThinkingBlock: vi.fn((hide: boolean) => componentCalls.push(`hide:${hide}`)),
+		messagePersistenceKey: vi.fn(() => "test-persistence-key"),
+		applyRetryRecovery: vi.fn(),
 	};
 	const showPinnedError = vi.fn();
 	const clearPinnedError = vi.fn();
 	const statusContainer = {
 		clear: vi.fn(),
+		disposeChildren: vi.fn(),
 		addChild: vi.fn(),
 	};
 
@@ -281,7 +284,7 @@ describe("EventController working loader reconciliation", () => {
 		} as Extract<AgentSessionEvent, { type: "auto_compaction_end" }>);
 
 		expect(loader?.stop).toHaveBeenCalledTimes(1);
-		expect(ctx.statusContainer.clear).toHaveBeenCalledTimes(1);
+		expect(ctx.statusContainer.disposeChildren).toHaveBeenCalledTimes(1);
 		expect(ctx.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
 		expect(ctx.ensureLoadingAnimation).toHaveBeenCalledTimes(1);
 	});

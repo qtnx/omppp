@@ -31,7 +31,7 @@ interface FakeAcpBuiltinSession {
 	_switchedTo: string | undefined;
 	_movedFromEmptySessionFile: string | undefined;
 	toggleFastMode(): boolean;
-	setFastMode(enabled: boolean): void;
+	setFastMode(enabled: boolean): boolean;
 	isFastModeEnabled(): boolean;
 	setForcedToolChoice(toolName: string): void;
 	fetchUsageReports?: () => Promise<unknown>;
@@ -116,6 +116,7 @@ function createRuntime() {
 		},
 		setFastMode(enabled: boolean) {
 			this.fastMode = enabled;
+			return true;
 		},
 		isFastModeEnabled() {
 			return this.fastMode;

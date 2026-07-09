@@ -3,7 +3,7 @@ import * as path from "node:path";
 import type { Skill } from "../extensibility/skills";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import { validateRelativePath } from "../internal-urls/skill-protocol";
-import type { InternalResource } from "../internal-urls/types";
+import type { InternalResource, ResolveContext } from "../internal-urls/types";
 import { normalizeLocalScheme } from "./path-utils";
 import { ToolError } from "./tool-errors";
 
@@ -19,7 +19,7 @@ type SupportedInternalScheme = (typeof SUPPORTED_INTERNAL_SCHEMES)[number];
 
 interface InternalUrlResolver {
 	canHandle(input: string): boolean;
-	resolve(input: string): Promise<InternalResource>;
+	resolve(input: string, context?: ResolveContext): Promise<InternalResource>;
 }
 
 export interface InternalUrlExpansionOptions {
@@ -140,6 +140,30 @@ function unquoteToken(token: string): string {
 	return token;
 }
 
+function isInsideShellQuote(command: string, index: number): boolean {
+	let quote: "'" | '"' | undefined;
+	for (let i = 0; i < index; i++) {
+		const char = command[i];
+		if (char === "\\" && quote !== "'") {
+			i++;
+			continue;
+		}
+		if (char === "'" && quote !== '"') {
+			quote = quote === "'" ? undefined : "'";
+			continue;
+		}
+		if (char === '"' && quote !== "'") {
+			quote = quote === '"' ? undefined : '"';
+		}
+	}
+	return quote !== undefined;
+}
+
+function isEmbeddedInQuotedText(command: string, token: string, index: number): boolean {
+	if (token.startsWith("'") || token.startsWith('"')) return false;
+	return isInsideShellQuote(command, index);
+}
+
 /** Shell-escape a path using single quotes. */
 function shellEscape(p: string): string {
 	return `'${p.replace(/'/g, "'\\''")}'`;
@@ -184,7 +208,7 @@ async function resolveInternalUrlToPath(
 
 	let resource: InternalResource;
 	try {
-		resource = await internalRouter.resolve(url);
+		resource = await internalRouter.resolve(url, { pathOnly: true });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new ToolError(`Failed to resolve ${scheme}:// URL in bash command: ${url}\n${message}`);
@@ -216,6 +240,7 @@ export function expandSkillUrls(command: string, skills: readonly Skill[]): stri
 
 /**
  * Expand supported internal URLs in a bash command string to shell-escaped absolute paths.
+ * Unresolvable URLs and literal mentions inside larger quoted text are left unchanged.
  * Supported schemes: skill://, agent://, artifact://, memory://, rule://, local://
  */
 export async function expandInternalUrls(command: string, options: InternalUrlExpansionOptions): Promise<string> {
@@ -231,15 +256,22 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 		const index = match.index;
 		if (index === undefined) continue;
 
+		if (isEmbeddedInQuotedText(command, token, index)) continue;
+
 		const rawUrl = unquoteToken(token);
 		const url = normalizeLocalScheme(rawUrl);
-		const resolvedPath = await resolveInternalUrlToPath(
-			url,
-			options.skills,
-			options.internalRouter,
-			options.localOptions,
-			options.ensureLocalParentDirs,
-		);
+		let resolvedPath: string;
+		try {
+			resolvedPath = await resolveInternalUrlToPath(
+				url,
+				options.skills,
+				options.internalRouter,
+				options.localOptions,
+				options.ensureLocalParentDirs,
+			);
+		} catch {
+			continue;
+		}
 		const replacement = options.noEscape ? resolvedPath : shellEscape(resolvedPath);
 		expanded = `${expanded.slice(0, index)}${replacement}${expanded.slice(index + token.length)}`;
 	}

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
 	type AutocompleteItem,
 	type AutocompleteProvider,
@@ -7,6 +10,17 @@ import {
 } from "@oh-my-pi/pi-tui/autocomplete";
 import { Editor } from "@oh-my-pi/pi-tui/components/editor";
 import { defaultEditorTheme } from "./test-themes";
+
+function onceAutocompleteUpdate(editor: Editor): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	const previous = editor.onAutocompleteUpdate;
+	editor.onAutocompleteUpdate = () => {
+		editor.onAutocompleteUpdate = previous;
+		previous?.();
+		resolve();
+	};
+	return promise;
+}
 
 class HashActionProvider implements AutocompleteProvider {
 	async getSuggestions(
@@ -120,6 +134,63 @@ describe("Editor slash autocomplete acceptance", () => {
 
 		expect(editor.getText()).toBe("/skills:fix-bug ");
 	});
+
+	it("accepts an absolute path completion with Tab when the line has leading whitespace", async () => {
+		const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "editor-absolute-tab-"));
+		try {
+			fs.writeFileSync(path.join(baseDir, "alpha.ts"), "export {};\n");
+			const normalizedBaseDir = baseDir.replace(/\\/g, "/");
+			const prefix = `${normalizedBaseDir}/al`;
+			const completedPath = `${normalizedBaseDir}/alpha.ts`;
+			const editor = new Editor(defaultEditorTheme);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider([{ name: "model", description: "Switch model" }], baseDir),
+			);
+
+			editor.setText(`  ${prefix}`);
+			const autocompleteOpened = onceAutocompleteUpdate(editor);
+			editor.handleInput("\t");
+			await autocompleteOpened;
+			expect(editor.isShowingAutocomplete()).toBe(true);
+
+			editor.handleInput("\t");
+
+			expect(editor.getText()).toBe(`  ${completedPath}`);
+		} finally {
+			fs.rmSync(baseDir, { recursive: true, force: true });
+		}
+	});
+
+	it("applies an absolute path selection on Enter without submitting", async () => {
+		const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "editor-absolute-enter-"));
+		try {
+			fs.writeFileSync(path.join(baseDir, "alpha.ts"), "export {};\n");
+			const normalizedBaseDir = baseDir.replace(/\\/g, "/");
+			const prefix = `${normalizedBaseDir}/al`;
+			const completedPath = `${normalizedBaseDir}/alpha.ts`;
+			const editor = new Editor(defaultEditorTheme);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider([{ name: "model", description: "Switch model" }], baseDir),
+			);
+			let submitted = "";
+			editor.onSubmit = text => {
+				submitted = text;
+			};
+
+			editor.setText(prefix);
+			const autocompleteOpened = onceAutocompleteUpdate(editor);
+			editor.handleInput("\t");
+			await autocompleteOpened;
+			expect(editor.isShowingAutocomplete()).toBe(true);
+
+			editor.handleInput("\r");
+
+			expect(editor.getText()).toBe(completedPath);
+			expect(submitted).toBe("");
+		} finally {
+			fs.rmSync(baseDir, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("Editor dollar autocomplete acceptance", () => {
@@ -217,6 +288,94 @@ class SyncSlashProvider implements AutocompleteProvider {
 }
 
 describe("Editor Enter handler sync slash completion", () => {
+	const skillCommands = [
+		{ name: "skill:security-scan", description: "Security scan" },
+		{ name: "model", description: "Switch model" },
+	];
+
+	function createSkillEditor(): Editor {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(new CombinedAutocompleteProvider(skillCommands, "/tmp"));
+		return editor;
+	}
+
+	async function openMidPromptSkillAutocomplete(editor: Editor, prose: string): Promise<void> {
+		editor.handleInput(prose);
+		editor.handleInput("/");
+		await Promise.resolve();
+
+		expect(editor.getText()).toBe(`${prose}/`);
+		expect(editor.isShowingAutocomplete()).toBe(true);
+	}
+
+	it("accepts a bare mid-prompt skill slash with Tab without replacing prose", async () => {
+		const editor = createSkillEditor();
+
+		await openMidPromptSkillAutocomplete(editor, "run a ");
+		editor.handleInput("\t");
+
+		expect(editor.getText()).toBe("run a /skill:security-scan ");
+		expect(editor.isShowingAutocomplete()).toBe(false);
+	});
+
+	it("accepts a bare mid-prompt skill slash with Enter and submits the completed prompt", async () => {
+		const editor = createSkillEditor();
+		let submitted = "";
+		editor.onSubmit = text => {
+			submitted = text;
+		};
+
+		await openMidPromptSkillAutocomplete(editor, "run a ");
+		editor.handleInput("\r");
+
+		expect(submitted).toBe("run a /skill:security-scan");
+		expect(editor.getText()).toBe("");
+	});
+
+	it("hides mid-prompt skill autocomplete immediately when Backspace removes the slash", async () => {
+		const editor = createSkillEditor();
+
+		await openMidPromptSkillAutocomplete(editor, "run a ");
+		editor.handleInput("\x7f");
+
+		expect(editor.getText()).toBe("run a ");
+		expect(editor.isShowingAutocomplete()).toBe(false);
+	});
+
+	it("does not apply a stale mid-prompt skill suggestion when the live token stops matching", async () => {
+		const editor = createSkillEditor();
+
+		await openMidPromptSkillAutocomplete(editor, "see ");
+		// Race the 100 ms debounce: type a non-skill token before the popup refreshes.
+		editor.handleInput("tmp");
+		editor.handleInput("\t");
+
+		// The stale `skill:security-scan` popup must not rewrite `/tmp` to `/skill:…`.
+		expect(editor.getText()).toBe("see /tmp");
+		expect(editor.isShowingAutocomplete()).toBe(false);
+	});
+
+	it("accepts a stale mid-prompt skill suggestion when the live token still matches its description", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider(
+				[
+					{ name: "skill:hardening", description: "Security scan" },
+					{ name: "model", description: "Switch model" },
+				],
+				"/tmp",
+			),
+		);
+
+		await openMidPromptSkillAutocomplete(editor, "run a ");
+		// Race the 100 ms debounce: type a query that matches only the skill description.
+		editor.handleInput("scan");
+		editor.handleInput("\t");
+
+		expect(editor.getText()).toBe("run a /skill:hardening ");
+		expect(editor.isShowingAutocomplete()).toBe(false);
+	});
+
 	it("opens mid-prompt skill autocomplete and inserts the skill token without wiping the draft on Tab", async () => {
 		const editor = new Editor(defaultEditorTheme);
 		editor.setAutocompleteProvider(

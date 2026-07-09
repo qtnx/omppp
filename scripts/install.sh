@@ -172,7 +172,7 @@ verify_release_checksum() {
     checksums_url="${RELEASE_DOWNLOAD_BASE_URL}/${release_tag}/SHA256SUMS"
 
     echo "Verifying ${binary_name} checksum..."
-    if ! curl -fsSL "$checksums_url" -o "$checksums_path"; then
+    if ! curl -fsSL --connect-timeout 10 --max-time 60 "$checksums_url" -o "$checksums_path"; then
         echo "Failed to download SHA256SUMS for ${release_tag}; refusing to install an unverifiable binary." >&2
         echo "Retry later, or use --source after installing Bun ${MIN_BUN_VERSION} or newer." >&2
         exit 1
@@ -698,7 +698,7 @@ install_binary() {
     # Get release tag
     if [ -n "$REF" ]; then
         echo "Fetching release $REF..."
-        if RELEASE_JSON=$(curl -fsSL "${API_BASE_URL}/releases/tags/${REF}"); then
+        if RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "${API_BASE_URL}/releases/tags/${REF}"); then
             LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
         else
             echo "Failed to fetch release metadata for: $REF"
@@ -707,7 +707,7 @@ install_binary() {
         fi
     else
         echo "Fetching latest release..."
-        if RELEASE_JSON=$(curl -fsSL "${API_BASE_URL}/releases/latest"); then
+        if RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "${API_BASE_URL}/releases/latest"); then
             LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
         else
             echo "Failed to fetch latest release metadata."
@@ -732,9 +732,9 @@ install_binary() {
     # Show a progress bar on an interactive terminal; stay quiet when stderr is
     # not a TTY (piped installs, CI) so logs aren't flooded with bar redraws.
     if [ -t 2 ]; then
-        curl -fSL --progress-bar "$BINARY_URL" -o "$TMP_BINARY"
+        curl -fSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 --progress-bar "$BINARY_URL" -o "$TMP_BINARY"
     else
-        curl -fsSL "$BINARY_URL" -o "$TMP_BINARY"
+        curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$BINARY_URL" -o "$TMP_BINARY"
     fi
     verify_release_checksum "$BINARY" "$TMP_BINARY" "$LATEST" "$TMP_CHECKSUMS"
     mv "$TMP_BINARY" "${INSTALL_DIR}/ompx"

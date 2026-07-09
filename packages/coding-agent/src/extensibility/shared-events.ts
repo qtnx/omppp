@@ -14,7 +14,7 @@
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionPreparation, CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
-import type { ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantRetryRecovery, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { Rule } from "../capability/rule";
 import type { Goal, GoalModeState } from "../goals/state";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry } from "../session/session-entries";
@@ -33,7 +33,7 @@ export interface SessionStartEvent {
 export interface SessionBeforeSwitchEvent {
 	type: "session_before_switch";
 	/** Reason for the switch */
-	reason: "new" | "resume" | "fork";
+	reason: "new" | "resume" | "fork" | "handoff";
 	/** Session file we're switching to (only for "resume") */
 	targetSessionFile?: string;
 }
@@ -42,7 +42,7 @@ export interface SessionBeforeSwitchEvent {
 export interface SessionSwitchEvent {
 	type: "session_switch";
 	/** Reason for the switch */
-	reason: "new" | "resume" | "fork";
+	reason: "new" | "resume" | "fork" | "handoff";
 	/** Session file we came from */
 	previousSessionFile: string | undefined;
 }
@@ -244,12 +244,20 @@ export interface AutoRetryStartEvent {
 	errorId?: number;
 }
 
+export interface RecoveredRetryError {
+	entryId: string;
+	persistenceKey?: string;
+	note: string;
+	retryRecovery: AssistantRetryRecovery;
+}
+
 /** Fired when auto-retry ends */
 export interface AutoRetryEndEvent {
 	type: "auto_retry_end";
 	success: boolean;
 	attempt: number;
 	finalError?: string;
+	recoveredErrors?: RecoveredRetryError[];
 }
 
 // ============================================================================

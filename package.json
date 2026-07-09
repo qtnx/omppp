@@ -7,7 +7,7 @@
   "patchedDependencies": {
     "@ark/schema@0.56.1": "patches/@ark%2Fschema@0.56.1.patch",
     "fastembed@2.1.0": "patches/fastembed@2.1.0.patch",
-    "puppeteer-core@25.1.0": "patches/puppeteer-core@25.1.0.patch"
+    "puppeteer-core@25.3.0": "patches/puppeteer-core@25.3.0.patch"
   },
   "workspaces": {
     "packages": [
@@ -78,7 +78,7 @@
       "onnxruntime-node": "1.26.0",
       "postcss": "^8.5.15",
       "prettier": "^3.8.4",
-      "puppeteer-core": "25.1.0",
+      "puppeteer-core": "25.3.0",
       "react": "19.2.7",
       "react-chartjs-2": "^5.3.1",
       "react-dom": "19.2.7",
@@ -114,7 +114,7 @@
     "build:native": "bun --cwd=packages/natives run build",
     "test": "bun scripts/ci-test-ts.ts local",
     "test:ts": "bun scripts/ci-test-ts.ts local-ts",
-    "test:scripts": "bun test scripts/ci-concurrency.test.ts scripts/ci-release-notes.test.ts scripts/link-omp.test.ts",
+    "test:scripts": "bun test scripts/ci-concurrency.test.ts scripts/ci-release-notes.test.ts scripts/fix-dts-extensions.test.ts scripts/link-omp.test.ts",
     "test:rs": "bun scripts/run-rs-task.ts test:rs",
     "check": "bun run --parallel check:ts check:rs",
     "check:ts": "bun run check:tools && bun run --workspaces --if-present check",

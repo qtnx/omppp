@@ -960,11 +960,7 @@ export class CommandController {
 	}
 
 	async #runNewSessionFlow(options?: NewSessionOptions, label: string = "New session started"): Promise<void> {
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.clear();
+		this.ctx.clearTransientSessionUi();
 
 		if (this.ctx.session.isCompacting) {
 			this.ctx.session.abortCompaction();
@@ -978,14 +974,9 @@ export class CommandController {
 
 		this.ctx.statusLine.invalidate();
 		this.ctx.statusLine.resetActiveTime();
-		this.ctx.ui.requestRender();
 		this.ctx.updateEditorBorderColor();
-		this.ctx.chatContainer.clear();
-		this.ctx.pendingMessagesContainer.clear();
-		this.ctx.compactionQueuedMessages = [];
-		this.ctx.streamingComponent = undefined;
-		this.ctx.streamingMessage = undefined;
-		this.ctx.pendingTools.clear();
+		this.ctx.clearTransientSessionUi();
+		this.ctx.resetTranscript();
 
 		this.ctx.present([new Spacer(1), new Text(`${theme.fg("accent", `${theme.status.success} ${label}`)}`, 1, 1)]);
 		await this.ctx.reloadTodos();
@@ -1025,7 +1016,7 @@ export class CommandController {
 			this.ctx.loadingAnimation.stop();
 			this.ctx.loadingAnimation = undefined;
 		}
-		this.ctx.statusContainer.clear();
+		this.ctx.statusContainer.disposeChildren();
 
 		const success = await this.ctx.session.fork();
 		if (!success) {
@@ -1142,9 +1133,6 @@ export class CommandController {
 				return;
 			}
 			const name = this.ctx.sessionManager.getSessionName()!;
-			setSessionTerminalTitle(name, this.ctx.sessionManager.getCwd());
-			this.ctx.statusLine.invalidate();
-			this.ctx.updateEditorBorderColor();
 			this.ctx.showStatus(`Session renamed to "${name}".`);
 		} catch (err) {
 			this.ctx.showError(`Rename failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1237,6 +1225,7 @@ export class CommandController {
 		customInstructions?: string,
 		mode?: CompactMode,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
+		internalGuidance?: string,
 	): Promise<CompactionOutcome> {
 		const entries = this.ctx.sessionManager.getEntries();
 		const messageCount = entries.filter(e => e.type === "message").length;
@@ -1246,6 +1235,15 @@ export class CommandController {
 			return "ok";
 		}
 
+		// `internalGuidance` is a private summarizer directive (plan-mode
+		// "Approve and compact context") that MUST stay off the public
+		// `customInstructions` channel of the `session_before_compact` extension
+		// hook — extensions treat that field as user focus and would otherwise
+		// bias the summary toward the plan boilerplate (issue #4359). Ride it
+		// through as a CompactOptions field instead.
+		if (internalGuidance) {
+			return this.executeCompaction({ internalGuidance, ...(mode ? { mode } : {}) }, false, beforeFlush, mode);
+		}
 		return this.executeCompaction(customInstructions, false, beforeFlush, mode);
 	}
 
@@ -1283,7 +1281,7 @@ export class CommandController {
 			this.ctx.loadingAnimation.stop();
 			this.ctx.loadingAnimation = undefined;
 		}
-		this.ctx.statusContainer.clear();
+		this.ctx.statusContainer.disposeChildren();
 
 		const label = isAuto ? "Auto-compacting context... (esc to cancel)" : "Compacting context... (esc to cancel)";
 		// Manual /compact does NOT route through the session's auto_compaction_* events
@@ -1324,7 +1322,7 @@ export class CommandController {
 			await this.ctx.session.compact(instructions, options);
 
 			compactingProgress.stop(); // release the local timer before rebuild
-			this.ctx.statusContainer.clear();
+			this.ctx.statusContainer.disposeChildren();
 			this.ctx.rebuildChatFromMessages();
 
 			this.ctx.statusLine.invalidate();
@@ -1340,7 +1338,7 @@ export class CommandController {
 			}
 		} finally {
 			compactingProgress.stop(); // idempotent teardown on every exit path
-			this.ctx.statusContainer.clear();
+			this.ctx.statusContainer.disposeChildren();
 		}
 		// Run the caller's pre-flush hook (e.g. the plan-approval model transition)
 		// before queued user input is dispatched, so any turn queued during
@@ -1369,7 +1367,7 @@ export class CommandController {
 			this.ctx.loadingAnimation.stop();
 			this.ctx.loadingAnimation = undefined;
 		}
-		this.ctx.statusContainer.clear();
+		this.ctx.statusContainer.disposeChildren();
 
 		const handoffLoader = new Loader(
 			this.ctx.ui,
@@ -1390,11 +1388,10 @@ export class CommandController {
 				return;
 			}
 
-			// Rebuild chat from the new session (which now contains the handoff document)
-			this.ctx.rebuildChatFromMessages();
-
+			// Rebuild chat from the new session (which now contains the handoff document).
+			this.ctx.clearTransientSessionUi();
+			this.ctx.renderInitialMessages();
 			this.ctx.statusLine.invalidate();
-			this.ctx.ui.requestRender();
 			this.ctx.updateEditorBorderColor();
 			await this.ctx.reloadTodos();
 
@@ -1414,9 +1411,9 @@ export class CommandController {
 			}
 		} finally {
 			handoffLoader.stop();
-			this.ctx.statusContainer.clear();
+			this.ctx.statusContainer.disposeChildren();
 		}
-		this.ctx.ui.requestRender();
+		this.ctx.ui.requestRender(true, { clearScrollback: true });
 	}
 }
 

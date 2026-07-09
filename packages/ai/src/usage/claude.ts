@@ -629,6 +629,43 @@ function scopeClaudeLimitsForModel(report: UsageReport, context: CredentialRanki
 	);
 }
 
+/**
+ * A Fable/Mythos weekly row is trusted for gating only at full exhaustion
+ * (server `exhausted` status or used fraction >= 1) with a live reset
+ * timestamp. Anything below that stays untrusted: the counters are
+ * notoriously unreliable short of the cap (they report high utilization
+ * while the account can still serve requests).
+ */
+function isConfirmedExhaustedTierRow(limit: UsageLimit, nowMs: number): boolean {
+	const resetsAt = limit.window?.resetsAt;
+	if (typeof resetsAt !== "number" || !Number.isFinite(resetsAt) || resetsAt <= nowMs) return false;
+	if (limit.status === "exhausted") return true;
+	const fraction = resolveUsedFraction(limit);
+	return typeof fraction === "number" && fraction >= 1;
+}
+
+/**
+ * Scope limits for proactive hard-blocking (gating). Fable and Mythos tier
+ * weekly caps participate only when {@link isConfirmedExhaustedTierRow}
+ * confirms them, so a confirmed-dead account is skipped up front and a
+ * reactive 429 block extends to the tier reset in markUsageLimitReached,
+ * while unconfirmed rows remain ranking pressure only via
+ * scopeClaudeLimitsForModel.
+ */
+function scopeClaudeLimitsForModelHardBlock(
+	report: UsageReport,
+	context: CredentialRankingContext | undefined,
+): UsageLimit[] {
+	const kind = claudeModelTier(context?.modelId);
+	const requireConfirmedTierRow = kind === "fable" || kind === "mythos";
+	const nowMs = Date.now();
+	return report.limits.filter(limit => {
+		if (limit.scope.shared === true) return true;
+		if (kind === undefined || limit.scope.tier !== kind) return false;
+		return !requireConfirmedTierRow || isConfirmedExhaustedTierRow(limit, nowMs);
+	});
+}
+
 function rankingUsedFraction(limit: UsageLimit): number {
 	const fraction = resolveUsedFraction(limit);
 	if (typeof fraction !== "number" || !Number.isFinite(fraction)) return 0.5;
@@ -679,7 +716,7 @@ export const claudeRankingStrategy: CredentialRankingStrategy = {
 		const secondary = findClaudeSecondaryLimit(report, context);
 		return { primary, secondary };
 	},
-	scopeLimits: scopeClaudeLimitsForModel,
+	scopeLimits: scopeClaudeLimitsForModelHardBlock,
 	/**
 	 * Fable/Mythos usage-limit errors map to tier-local weekly counters. Scope
 	 * reactive backoff blocks for those tiers, mirroring the per-counter

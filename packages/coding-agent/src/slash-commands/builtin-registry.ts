@@ -717,8 +717,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				return commandConsumed();
 			}
 			if (arg === "on") {
-				runtime.session.setFastMode(true);
-				await runtime.output("Fast mode enabled.");
+				const supported = runtime.session.setFastMode(true);
+				await runtime.output(supported ? "Fast mode enabled." : "Fast mode is unavailable for the current model.");
 				return commandConsumed();
 			}
 			if (arg === "off") {
@@ -742,9 +742,11 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				return;
 			}
 			if (arg === "on") {
-				runtime.ctx.session.setFastMode(true);
+				const supported = runtime.ctx.session.setFastMode(true);
 				refreshStatusLine(runtime.ctx);
-				runtime.ctx.showStatus("Fast mode enabled.");
+				runtime.ctx.showStatus(
+					supported ? "Fast mode enabled." : "Fast mode is unavailable for the current model.",
+				);
 				runtime.ctx.editor.setText("");
 				return;
 			}
@@ -3176,6 +3178,7 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 	command => ({
 		name: command.name,
 		aliases: command.aliases,
+		allowArgs: command.allowArgs === true,
 		description: command.description,
 		subcommands: command.subcommands,
 		inlineHint: command.inlineHint,

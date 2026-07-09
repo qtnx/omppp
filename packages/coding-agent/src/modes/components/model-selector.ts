@@ -90,16 +90,20 @@ interface RoleAssignment {
 	autoSelected: boolean;
 }
 
+type ModelSelectorAction = "modelRole" | "retryFallback";
+
 type RoleSelectCallback = (
 	model: Model,
 	role: string | null,
 	thinkingLevel?: ConfiguredThinkingLevel,
 	selector?: string,
+	action?: ModelSelectorAction,
 ) => void;
 type CancelCallback = () => void;
 interface MenuRoleAction {
 	label: string;
-	role: string; // now accepts custom role strings
+	role: string;
+	action: ModelSelectorAction;
 }
 
 interface ProviderTabState {
@@ -284,14 +288,19 @@ export class ModelSelectorComponent extends Container {
 	}
 
 	#buildMenuRoleActions(): void {
-		this.#menuRoleActions = getKnownRoleIds(this.#settings).map(role => {
+		const roleActions = getKnownRoleIds(this.#settings).map(role => {
 			const roleInfo = getRoleInfo(role, this.#settings);
 			const roleLabel = roleInfo.tag ? `${roleInfo.tag} (${roleInfo.name})` : roleInfo.name;
 			return {
 				label: `Set as ${roleLabel}`,
 				role,
+				action: "modelRole" as const,
 			};
 		});
+		this.#menuRoleActions = [
+			...roleActions,
+			{ label: "Set as DEFAULT retry fallback", role: "default", action: "retryFallback" },
+		];
 	}
 
 	#loadRoleModels(autoCandidateModels?: ReadonlyArray<Model>): void {
@@ -704,29 +713,22 @@ export class ModelSelectorComponent extends Container {
 	#filterModels(query: string): void {
 		const activeProviderId = this.#getActiveProviderId();
 
-		let baseModels = this.#allModels;
-		if (activeProviderId) {
-			baseModels = this.#allModels.filter(m => m.provider === activeProviderId);
-		}
+		const baseModels = activeProviderId
+			? this.#allModels.filter(m => m.provider === activeProviderId)
+			: this.#allModels;
 
 		if (query.trim()) {
-			// If user is searching from a provider tab, auto-switch to ALL to show global provider results.
-			if (activeProviderId) {
-				this.#activeTabIndex = 0;
-				if (this.#tabBar && this.#tabBar.getActiveIndex() !== 0) {
-					this.#tabBar.setActiveIndex(0);
-					return;
-				}
-				this.#updateTabBar();
-				baseModels = this.#allModels;
-			}
-
 			// Match against the displayed "provider/id" string so the user can
 			// type what they see: bare names (`mimo`, `kimi`), provider prefixes
 			// (`openrouter`), or scoped queries (`openrouter/mimo`) all flow
 			// through the same fuzzy matcher. The score is biased by provider-
 			// prefix length, so re-sort by MRU/version afterwards; skip role
 			// rank so a weakly matching default doesn't trump a stronger match.
+			//
+			// Search stays scoped to the active provider tab. Auto-escaping to
+			// ALL on non-empty queries used to let the user pick a same-named
+			// model from a different provider and silently persist it under
+			// their default role — see issue #4522.
 			const fuzzyMatches = fuzzyFilter(baseModels, query, ({ id, provider }) => `${provider}/${id}`);
 			this.#sortModels(fuzzyMatches, { skipRoleRank: true });
 			this.#filteredModels = fuzzyMatches;
@@ -891,8 +893,15 @@ export class ModelSelectorComponent extends Container {
 				this.#listContainer.addChild(new Text(theme.fg("error", line), 0, 0));
 			}
 		} else if (visibleItems.length === 0) {
-			const statusMessage = this.#getProviderEmptyStateMessage();
-			this.#listContainer.addChild(new Text(theme.fg("muted", statusMessage ?? "  No matching models"), 0, 0));
+			const providerStatus = this.#getProviderEmptyStateMessage();
+			const activeProviderId = this.#getActiveProviderId();
+			const searching = this.#searchInput.getValue().trim().length > 0;
+			const message =
+				providerStatus ??
+				(searching && activeProviderId
+					? `  No matching models in ${formatProviderTabLabel(activeProviderId)}. Switch to ALL to search every provider.`
+					: "  No matching models");
+			this.#listContainer.addChild(new Text(theme.fg("muted", message), 0, 0));
 		} else {
 			const selected = visibleItems[this.#selectedIndex];
 			if (!selected) {
@@ -1195,6 +1204,11 @@ export class ModelSelectorComponent extends Container {
 			if (this.#menuStep === "role") {
 				const action = this.#menuRoleActions[this.#menuSelectedIndex];
 				if (!action) return;
+				if (action.action === "retryFallback") {
+					this.#handleSelect(selectedItem, action.role, undefined, action.action);
+					this.#closeMenu();
+					return;
+				}
 				this.#menuSelectedRole = action.role;
 				this.#menuStep = "thinking";
 				this.#menuSelectedIndex = this.#getThinkingPreselectIndex(action.role, selectedItem.model);
@@ -1206,7 +1220,7 @@ export class ModelSelectorComponent extends Container {
 			const thinkingOptions = this.#getThinkingLevelsForModel(selectedItem.model);
 			const thinkingLevel = thinkingOptions[this.#menuSelectedIndex];
 			if (!thinkingLevel) return;
-			this.#handleSelect(selectedItem, this.#menuSelectedRole, thinkingLevel);
+			this.#handleSelect(selectedItem, this.#menuSelectedRole, thinkingLevel, "modelRole");
 			this.#closeMenu();
 			return;
 		}
@@ -1225,13 +1239,23 @@ export class ModelSelectorComponent extends Container {
 		}
 	}
 
-	#handleSelect(item: ModelItem, role: string | null, thinkingLevel?: ConfiguredThinkingLevel): void {
+	#handleSelect(
+		item: ModelItem,
+		role: string | null,
+		thinkingLevel?: ConfiguredThinkingLevel,
+		action: ModelSelectorAction = "modelRole",
+	): void {
 		if (this.#isItemDisabled(item)) {
 			return;
 		}
 		// For temporary role, don't save to settings - just notify caller
 		if (role === null) {
-			this.#onSelectCallback(item.model, null, undefined, item.selector);
+			this.#onSelectCallback(item.model, null, undefined, item.selector, action);
+			return;
+		}
+
+		if (action === "retryFallback") {
+			this.#onSelectCallback(item.model, role, undefined, item.selector, action);
 			return;
 		}
 
@@ -1241,7 +1265,7 @@ export class ModelSelectorComponent extends Container {
 		this.#roles[role] = { model: item.model, thinkingLevel: selectedThinkingLevel, autoSelected: false };
 
 		// Notify caller (for updating agent state if needed)
-		this.#onSelectCallback(item.model, role, selectedThinkingLevel, item.selector);
+		this.#onSelectCallback(item.model, role, selectedThinkingLevel, item.selector, action);
 
 		// Update list to show new badges
 		this.#updateList();

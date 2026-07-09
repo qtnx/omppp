@@ -1060,6 +1060,10 @@ export class StatusLineComponent implements Component {
 			output: 0,
 			cacheRead: 0,
 			cacheWrite: 0,
+			totalTokens: 0,
+			orchestrationInput: 0,
+			orchestrationOutput: 0,
+			orchestrationCacheRead: 0,
 			premiumRequests: 0,
 			cost: 0,
 		};
@@ -1297,9 +1301,21 @@ export class StatusLineComponent implements Component {
 					}
 				}
 			}
+			const leftOverflowDropIndex = (): number => {
+				// Preserve the current working directory as long as possible. The
+				// previous right-to-left pop could collapse a normal-width bar to
+				// just the model segment, hiding the path before less-critical left
+				// segments such as model/mode/collab were removed.
+				for (let i = leftSegIds.length - 1; i >= 0; i--) {
+					if (leftSegIds[i] !== "path") return i;
+				}
+				return left.length - 1;
+			};
+
 			while (totalWidth() > topFillWidth && left.length > 0) {
-				left.pop();
-				leftSegIds.pop();
+				const dropIdx = leftOverflowDropIndex();
+				left.splice(dropIdx, 1);
+				leftSegIds.splice(dropIdx, 1);
 				leftWidth = groupWidth(left, leftCapWidth, leftSepWidth);
 			}
 		}

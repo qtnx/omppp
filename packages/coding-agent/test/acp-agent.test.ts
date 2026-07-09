@@ -370,8 +370,9 @@ class FakeAgentSession {
 		return this.fastMode;
 	}
 
-	setFastMode(enabled: boolean): void {
+	setFastMode(enabled: boolean): boolean {
 		this.fastMode = enabled;
+		return true;
 	}
 
 	isFastModeEnabled(): boolean {

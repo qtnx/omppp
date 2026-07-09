@@ -393,7 +393,7 @@ function Assert-BinaryChecksum {
     $ChecksumsUrl = "$ReleaseDownloadBaseUrl/$ReleaseTag/SHA256SUMS"
     Write-Host "Verifying $ExpectedFileName checksum..."
     try {
-        Invoke-WebRequest -Uri $ChecksumsUrl -OutFile $ChecksumsPath
+        Invoke-WebRequest -Uri $ChecksumsUrl -OutFile $ChecksumsPath -TimeoutSec 60
     } catch {
         throw "Failed to download SHA256SUMS for $ReleaseTag. Refusing to install an unverifiable binary. To use -Source instead, install Bun $MinimumBunVersion or newer first. Original error: $($_.Exception.Message)"
     }
@@ -423,14 +423,14 @@ function Install-Binary {
     if ($Ref) {
         Write-Host "Fetching release $Ref..."
         try {
-            $Release = Invoke-RestMethod -Uri "$ApiBaseUrl/releases/tags/$Ref"
+            $Release = Invoke-RestMethod -Uri "$ApiBaseUrl/releases/tags/$Ref" -TimeoutSec 60
         } catch {
             throw "Failed to fetch release metadata for $Ref. If this is a branch or commit, use -Source with -Ref. Original error: $($_.Exception.Message)"
         }
     } else {
         Write-Host "Fetching latest release..."
         try {
-            $Release = Invoke-RestMethod -Uri "$ApiBaseUrl/releases/latest"
+            $Release = Invoke-RestMethod -Uri "$ApiBaseUrl/releases/latest" -TimeoutSec 60
         } catch {
             throw "Failed to fetch latest release metadata. Original error: $($_.Exception.Message)"
         }
@@ -451,7 +451,7 @@ function Install-Binary {
     $TempBinary = Join-Path $InstallDir (".ompx-download-" + [System.Guid]::NewGuid().ToString("N") + ".exe")
     $TempChecksums = Join-Path $InstallDir (".ompx-checksums-" + [System.Guid]::NewGuid().ToString("N"))
     try {
-        Invoke-WebRequest -Uri $BinaryUrl -OutFile $TempBinary
+        Invoke-WebRequest -Uri $BinaryUrl -OutFile $TempBinary -TimeoutSec 900
         Assert-BinaryChecksum -BinaryPath $TempBinary -ExpectedFileName $BinaryName -ReleaseTag $Latest -ChecksumsPath $TempChecksums
         Move-Item -Path $TempBinary -Destination $OutPath -Force
     } finally {

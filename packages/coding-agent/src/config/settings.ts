@@ -315,6 +315,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function modelRoleValueFromUnknown(value: unknown): string | undefined {
+	if (typeof value === "string") return value;
+	if (!Array.isArray(value)) return undefined;
+
+	const entries = stringArrayFromUnknown(value);
+	return entries.length === value.length ? entries.join(",") : undefined;
+}
+
 type EditVariantEntry = {
 	patternLower: string;
 	mode: EditMode;
@@ -611,6 +619,9 @@ export class Settings {
 		if (path === "statusLine.sessionAccent") {
 			statusLineSessionAccentSignal.fire();
 		}
+		if (path === "modelRoles") {
+			modelRolesSignal.fire();
+		}
 	}
 
 	/**
@@ -681,11 +692,13 @@ export class Settings {
 	async reloadForCwd(cwd: string): Promise<void> {
 		const normalized = path.normalize(cwd);
 		if (normalized === this.#cwd) return;
+		const prevModelRoles = this.get("modelRoles");
 		this.#cwd = normalized;
 		if (this.#persist) {
 			this.#project = await this.#loadProjectSettings();
 		}
 		this.#rebuildMerged();
+		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prevModelRoles);
 		this.#fireAllHooks();
 	}
 
@@ -829,8 +842,8 @@ export class Settings {
 		const roles: Record<string, string> = {};
 		for (const role in value) {
 			if (!Object.hasOwn(value, role)) continue;
-			const modelId = value[role];
-			if (typeof modelId === "string") {
+			const modelId = modelRoleValueFromUnknown(value[role]);
+			if (modelId !== undefined) {
 				roles[role] = modelId;
 			}
 		}
@@ -863,15 +876,27 @@ export class Settings {
 	 * Get a model role (helper for modelRoles record).
 	 */
 	getModelRole(role: ModelRole | string): string | undefined {
-		const roles = this.get("modelRoles");
-		return roles[role];
+		const roles: unknown = this.get("modelRoles");
+		if (!isRecord(roles)) return undefined;
+		return modelRoleValueFromUnknown(roles[role]);
 	}
 
 	/**
 	 * Get all model roles (helper for modelRoles record).
 	 */
 	getModelRoles(): ReadOnlyDict<string> {
-		return { ...this.get("modelRoles") };
+		const roles: unknown = this.get("modelRoles");
+		if (!isRecord(roles)) return {};
+
+		const normalized: Record<string, string> = {};
+		for (const role in roles) {
+			if (!Object.hasOwn(roles, role)) continue;
+			const modelId = modelRoleValueFromUnknown(roles[role]);
+			if (modelId !== undefined) {
+				normalized[role] = modelId;
+			}
+		}
+		return normalized;
 	}
 
 	/*
@@ -1875,6 +1900,12 @@ const appendOnlyModeSignal = new SettingSignal<[value: string]>("provider.append
  * can register independently without overwriting each other.
  */
 export const onAppendOnlyModeChanged = (cb: (value: string) => void) => appendOnlyModeSignal.on(cb);
+
+/** Fires when any model role changes at runtime. */
+const modelRolesSignal = new SettingSignal("modelRoles");
+
+/** Subscribe to model role changes. Returns an unsubscribe function. */
+export const onModelRolesChanged: (cb: () => void) => () => void = modelRolesSignal.on.bind(modelRolesSignal);
 
 /** Fires when `statusLine.sessionAccent` changes at runtime. */
 const statusLineSessionAccentSignal = new SettingSignal("statusLine.sessionAccent");

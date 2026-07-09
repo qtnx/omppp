@@ -287,6 +287,10 @@ export interface ToolSession {
 	hasPendingAgentAsides?: () => boolean;
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
 	getToolByName?: (name: string) => AgentTool | undefined;
+	/** Return whether a built-in tool is active in this turn's tool set. */
+	isToolActive?: (name: string) => boolean;
+	/** Update the active built-in tool predicate when a session changes tools mid-run. */
+	setActiveToolNames?: (names: Iterable<string>) => void;
 	/** Agent registry for IRC routing across live sessions. */
 	agentRegistry?: AgentRegistry;
 	/** Get artifacts directory for artifact:// URLs */
@@ -568,7 +572,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "sandbox", ToolFactory> = {
 	ssh: loadSshTool,
 	sandbox: s => new MacOSSandboxTool(s),
 	github: GithubTool.createIf,
-	glob: s => new GlobTool(s),
+	glob: s => new GlobTool(s, { rootPathAlias: true }),
 	grep: s => new GrepTool(s),
 	lsp: LspTool.createIf,
 	inspect_image: s => new InspectImageTool(s),
@@ -800,6 +804,13 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 					...(goalEnabled ? CODEX_GOAL_HIDDEN_TOOL_NAMES.map(name => [name, HIDDEN_TOOLS[name]] as const) : []),
 					...(goalModeActive ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
 				];
+
+	const activeToolNames = new Set(baseEntries.map(([name]) => name));
+	if (session.setActiveToolNames) {
+		session.setActiveToolNames(activeToolNames);
+	} else {
+		session.isToolActive = name => activeToolNames.has(name);
+	}
 
 	const baseResults = await Promise.all(
 		baseEntries.map(async ([name, factory]) => {

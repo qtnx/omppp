@@ -42,7 +42,7 @@ export async function runCommitAgentSession(input: CommitAgentInput): Promise<Co
 		types_description: typesDescription,
 	});
 	const state: CommitAgentState = { diffText: input.diffText };
-	const spawns = "sonic";
+	const spawns = "quick_task";
 	const tools = createCommitTools({
 		cwd: input.cwd,
 		authStorage: input.authStorage,

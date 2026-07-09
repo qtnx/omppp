@@ -293,6 +293,7 @@ import * as bundledPiCodingAgentCommit from "@oh-my-pi/pi-coding-agent/commit";
 import * as bundledPiCodingAgentCommitAgentic from "@oh-my-pi/pi-coding-agent/commit/agentic";
 import * as bundledPiCodingAgentCommitAgenticAgent from "@oh-my-pi/pi-coding-agent/commit/agentic/agent";
 import * as bundledPiCodingAgentCommitAgenticFallback from "@oh-my-pi/pi-coding-agent/commit/agentic/fallback";
+import * as bundledPiCodingAgentCommitAgenticLockFiles from "@oh-my-pi/pi-coding-agent/commit/agentic/lock-files";
 import * as bundledPiCodingAgentCommitAgenticState from "@oh-my-pi/pi-coding-agent/commit/agentic/state";
 import * as bundledPiCodingAgentCommitAgenticTools from "@oh-my-pi/pi-coding-agent/commit/agentic/tools";
 import * as bundledPiCodingAgentCommitAgenticToolsAnalyzeFile from "@oh-my-pi/pi-coding-agent/commit/agentic/tools/analyze-file";
@@ -667,6 +668,7 @@ import * as bundledPiCodingAgentModesControllersTanCommandController from "@oh-m
 import * as bundledPiCodingAgentModesControllersTodoCommandController from "@oh-my-pi/pi-coding-agent/modes/controllers/todo-command-controller";
 import * as bundledPiCodingAgentModesControllersToolArgsReveal from "@oh-my-pi/pi-coding-agent/modes/controllers/tool-args-reveal";
 import * as bundledPiCodingAgentModesEmojiAutocomplete from "@oh-my-pi/pi-coding-agent/modes/emoji-autocomplete";
+import * as bundledPiCodingAgentModesGithubRefAutocomplete from "@oh-my-pi/pi-coding-agent/modes/github-ref-autocomplete";
 import * as bundledPiCodingAgentModesGradientHighlight from "@oh-my-pi/pi-coding-agent/modes/gradient-highlight";
 import * as bundledPiCodingAgentModesImageReferences from "@oh-my-pi/pi-coding-agent/modes/image-references";
 import * as bundledPiCodingAgentModesInteractiveMode from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
@@ -915,6 +917,7 @@ import * as bundledPiCodingAgentUtilsImageVisionFallback from "@oh-my-pi/pi-codi
 import * as bundledPiCodingAgentUtilsIpc from "@oh-my-pi/pi-coding-agent/utils/ipc";
 import * as bundledPiCodingAgentUtilsJj from "@oh-my-pi/pi-coding-agent/utils/jj";
 import * as bundledPiCodingAgentUtilsLangFromPath from "@oh-my-pi/pi-coding-agent/utils/lang-from-path";
+import * as bundledPiCodingAgentUtilsLocalDate from "@oh-my-pi/pi-coding-agent/utils/local-date";
 import * as bundledPiCodingAgentUtilsMarkit from "@oh-my-pi/pi-coding-agent/utils/markit";
 import * as bundledPiCodingAgentUtilsMarkitCache from "@oh-my-pi/pi-coding-agent/utils/markit-cache";
 import * as bundledPiCodingAgentUtilsMupdfWasmEmbed from "@oh-my-pi/pi-coding-agent/utils/mupdf-wasm-embed";
@@ -1817,6 +1820,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	>,
 	"@oh-my-pi/pi-coding-agent/commit/agentic/fallback":
 		bundledPiCodingAgentCommitAgenticFallback as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/commit/agentic/lock-files":
+		bundledPiCodingAgentCommitAgenticLockFiles as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/commit/agentic/state": bundledPiCodingAgentCommitAgenticState as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -2388,6 +2393,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	>,
 	"@oh-my-pi/pi-coding-agent/modes/emoji-autocomplete":
 		bundledPiCodingAgentModesEmojiAutocomplete as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/modes/github-ref-autocomplete":
+		bundledPiCodingAgentModesGithubRefAutocomplete as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/gradient-highlight":
 		bundledPiCodingAgentModesGradientHighlight as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/image-references": bundledPiCodingAgentModesImageReferences as unknown as Readonly<
@@ -3229,6 +3236,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/utils/ipc": bundledPiCodingAgentUtilsIpc as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/utils/jj": bundledPiCodingAgentUtilsJj as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/utils/lang-from-path": bundledPiCodingAgentUtilsLangFromPath as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/utils/local-date": bundledPiCodingAgentUtilsLocalDate as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/utils/markit-cache": bundledPiCodingAgentUtilsMarkitCache as unknown as Readonly<

@@ -1159,15 +1159,13 @@ async fn run_shell_command_once(
 
 	if !reader_finished {
 		reader_cancel.cancel();
-		if let Ok(res) = time::timeout(READER_SHUTDOWN_TIMEOUT, &mut reader_handle).await {
-			if let Ok(output) = res
-				&& let Ok(output) = output
-			{
-				reader_output = Some(output);
-			}
-		} else {
-			reader_handle.abort();
-			let _ = reader_handle.await;
+		match time::timeout(READER_SHUTDOWN_TIMEOUT, &mut reader_handle).await {
+			Ok(Ok(Ok(output))) => reader_output = Some(output),
+			Ok(_) => {},
+			Err(_) => {
+				reader_handle.abort();
+				let _ = reader_handle.await;
+			},
 		}
 	}
 	cancel_bridge.abort();
@@ -1374,7 +1372,14 @@ async fn read_output_bytes(
 
 impl SpawnObserver for process::SpawnRegistry {
 	fn on_spawn(&self, pid: i32, pgid: Option<i32>) {
-		self.record(pid, pgid);
+		// Pin a stable process reference *now*, before the pid can be recycled.
+		// On Windows an open handle keeps the pid slot reserved for the lifetime
+		// of the handle; on Linux the pidfd carries identity; on macOS the
+		// recorded start-time triple detects impersonation. Deferring the open
+		// to `build_targets` (as the old code did) let a recycled pid resolve
+		// to an unrelated process — issue #4605.
+		let process = process::Process::from_pid(pid);
+		self.record(pgid, process);
 	}
 }
 

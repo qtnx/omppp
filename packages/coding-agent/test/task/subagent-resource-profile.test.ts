@@ -22,6 +22,12 @@ import { EventBus } from "../../src/utils/event-bus";
 
 type CapturedCustomMessage = Parameters<AgentSession["sendCustomMessage"]>[0];
 
+type StructuredCustomMessagePayload = Extract<CapturedCustomMessage, { content?: unknown; details?: unknown }>;
+
+function isStructuredCustomMessagePayload(message: CapturedCustomMessage): message is StructuredCustomMessagePayload {
+	return typeof message === "object" && message !== null;
+}
+
 function createAssistantStopMessage(text: string): AssistantMessage {
 	return {
 		role: "assistant",
@@ -452,10 +458,11 @@ describe("subagent resource profile", () => {
 		await tool.execute("task-call", params);
 
 		expect(capturedOptions?.skills?.map(skill => skill.name)).toEqual([runtimeSkill.name]);
-		expect(customMessages.map(message => message.details)).toEqual([
+		const structuredCustomMessages = customMessages.filter(isStructuredCustomMessagePayload);
+		expect(structuredCustomMessages.map(message => message.details)).toEqual([
 			expect.objectContaining({ name: runtimeSkill.name, path: runtimeSkillPath }),
 		]);
-		expect(customMessages.map(message => message.content)).toEqual([
+		expect(structuredCustomMessages.map(message => message.content)).toEqual([
 			expect.stringContaining("Runtime debugging instructions."),
 		]);
 	});

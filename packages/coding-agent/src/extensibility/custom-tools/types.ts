@@ -26,7 +26,7 @@ import type * as PiCodingAgent from "../../index";
 import type { Theme } from "../../modes/theme/theme";
 import type { ReadonlySessionManager } from "../../session/session-manager";
 import type { TodoItem } from "../../tools/todo";
-import type { AutoCompactionReason } from "../shared-events";
+import type { AutoCompactionReason, RecoveredRetryError } from "../shared-events";
 import type * as TypeBox from "../typebox";
 
 /** Alias for clarity */
@@ -134,6 +134,7 @@ export type CustomToolSessionEvent =
 			success: boolean;
 			attempt: number;
 			finalError?: string;
+			recoveredErrors?: RecoveredRetryError[];
 	  }
 	| {
 			reason: "ttsr_triggered";
