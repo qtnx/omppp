@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import * as path from "node:path";
 import { Agent, type AgentMessage, type StreamFn } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, Model, ToolCall } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Model, SimpleStreamOptions, ToolCall } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -310,6 +310,117 @@ describe("AgentSession handoff", () => {
 		expect(result?.document).toBe(handoffText);
 		expect(sideStreamCalls).toBe(1);
 		expect(capturedSideSessionId).toStartWith(`${preHandoffSessionId}:side:`);
+	});
+
+	it("uses pi-native non-stream completion for handoff generation", async () => {
+		const handoffText = "## Goal\nContinue through pi-native complete";
+		const piNativeModel: Model = {
+			...model,
+			transport: "pi-native",
+			baseUrl: "https://gateway.test/",
+		};
+		const completedMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: handoffText }],
+			api: piNativeModel.api,
+			provider: piNativeModel.provider,
+			model: piNativeModel.id,
+			stopReason: "stop",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		};
+		let sideStreamCalls = 0;
+		const sideStreamFn: StreamFn = () => {
+			sideStreamCalls++;
+			throw new Error("pi-native handoff must use non-stream completion");
+		};
+		let capturedPiNativeRequest:
+			| {
+					url: string;
+					init: RequestInit;
+			  }
+			| undefined;
+		const fetchImpl: NonNullable<SimpleStreamOptions["fetch"]> = async (input, init) => {
+			capturedPiNativeRequest = {
+				url: input instanceof Request ? input.url : String(input),
+				init: init ?? {},
+			};
+			return new Response(JSON.stringify({ message: completedMessage }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		await session.dispose();
+		session = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model: piNativeModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+			}),
+			sessionManager,
+			settings: Settings.isolated({
+				"compaction.enabled": true,
+				"compaction.autoContinue": false,
+			}),
+			modelRegistry,
+			obfuscator,
+			sideStreamFn,
+		});
+
+		const generateHandoffSpy = vi
+			.spyOn(compactionModule, "generateHandoffFromContext")
+			.mockImplementation(async (context, requestModel, options) => {
+				expect(requestModel.transport).toBe("pi-native");
+				expect(options.completeImpl).toBeDefined();
+				const requestOptions: SimpleStreamOptions & { streamPiNative: true } = {
+					...options.streamOptions,
+					fetch: fetchImpl,
+					streamPiNative: true,
+				};
+				const message = await options.completeImpl!(requestModel, context, requestOptions);
+				return message.content
+					.filter(block => block.type === "text")
+					.map(block => block.text)
+					.join("\n");
+			});
+
+		const result = await session.handoff();
+
+		expect(generateHandoffSpy).toHaveBeenCalledTimes(1);
+		expect(result?.document).toBe(handoffText);
+		expect(sideStreamCalls).toBe(0);
+		if (!capturedPiNativeRequest) {
+			throw new Error("Expected pi-native non-stream fetch request");
+		}
+		expect(capturedPiNativeRequest.url).toBe("https://gateway.test/v1/pi/stream");
+		expect(capturedPiNativeRequest.init.method).toBe("POST");
+		const headers = new Headers(capturedPiNativeRequest.init.headers);
+		expect(headers.get("Accept")).toBe("application/json");
+		expect(headers.get("Authorization")).toBe("Bearer test-key");
+		const bodyText = capturedPiNativeRequest.init.body;
+		expect(typeof bodyText).toBe("string");
+		if (typeof bodyText !== "string") {
+			throw new Error("Expected pi-native non-stream JSON request body");
+		}
+		const body = JSON.parse(bodyText) as {
+			modelId?: unknown;
+			options?: Record<string, unknown>;
+			stream?: unknown;
+		};
+		expect(body.modelId).toBe(`${piNativeModel.provider}/${piNativeModel.id}`);
+		expect(body.stream).toBe(false);
+		expect(body.options?.streamPiNative).toBeUndefined();
 	});
 
 	it("preserves queued steering and follow-up messages across the handoff reset", async () => {

@@ -1,14 +1,34 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { streamPiNative } from "@oh-my-pi/pi-ai/providers/pi-native-client";
+import { __providerInFlightForTesting, completeSimple } from "@oh-my-pi/pi-ai";
+import * as piNativeClient from "@oh-my-pi/pi-ai/providers/pi-native-client";
 import type {
+	Api,
 	AssistantMessage,
 	AssistantMessageEvent,
 	Context,
 	FetchImpl,
 	Model,
 	ModelSpec,
+	SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { TempDir } from "@oh-my-pi/pi-utils";
+
+const { streamPiNative } = piNativeClient;
+
+type CompletePiNativeOptions = SimpleStreamOptions & {
+	streamPiNative?: unknown;
+};
+
+type CompletePiNative = <TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options?: CompletePiNativeOptions,
+) => Promise<AssistantMessage>;
+
+type PiNativeExportsWithCompletion = {
+	completePiNative: CompletePiNative;
+};
 
 function sseBytes(events: AssistantMessageEvent[]): Uint8Array {
 	const encoder = new TextEncoder();
@@ -139,6 +159,162 @@ async function collectEvents(stream: AsyncIterable<AssistantMessageEvent>): Prom
 
 afterEach(() => {
 	mock.restore();
+});
+
+describe("completeSimple pi-native request seam", () => {
+	it("uses the pi-native non-stream JSON helper for pi-native models", async () => {
+		const final = baseAssistant({ content: [{ type: "text", text: "simple done" }] });
+		const captured: { url?: string; init?: RequestInit } = {};
+		const fetchImpl: FetchImpl = (async (input, init) => {
+			captured.url = typeof input === "string" ? input : input.toString();
+			captured.init = init;
+			return new Response(JSON.stringify({ message: final }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}) as FetchImpl;
+
+		const result = await completeSimple(fakeModel(), baseContext, {
+			apiKey: "gw-bearer",
+			fetch: fetchImpl,
+			temperature: 0.4,
+		});
+
+		expect(result).toEqual(final);
+		expect(captured.url).toBe("http://llm-gateway.internal:4000/v1/pi/stream");
+
+		const headers = new Headers(captured.init?.headers);
+		expect(headers.get("Accept")).toBe("application/json");
+
+		const body = JSON.parse(captured.init?.body as string) as {
+			modelId?: unknown;
+			options?: Record<string, unknown>;
+			stream?: unknown;
+		};
+		expect(body.modelId).toBe("anthropic/claude-sonnet-4-5");
+		expect(body.stream).toBe(false);
+		expect(body.options?.temperature).toBe(0.4);
+		expect(body.options).not.toHaveProperty("apiKey");
+		expect(body.options).not.toHaveProperty("fetch");
+	});
+
+	it("honors provider in-flight limits for pi-native non-stream completions", async () => {
+		const root = TempDir.createSync("@pi-native-inflight-");
+		__providerInFlightForTesting.setRoot(root.path());
+		const firstGate = Promise.withResolvers<Response>();
+		const firstStarted = Promise.withResolvers<void>();
+		const secondStarted = Promise.withResolvers<void>();
+		const final = (text: string): Response =>
+			new Response(JSON.stringify({ message: baseAssistant({ content: [{ type: "text", text }] }) }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		let requests = 0;
+		const fetchImpl: FetchImpl = (async () => {
+			requests += 1;
+			if (requests === 1) {
+				firstStarted.resolve();
+				return firstGate.promise;
+			}
+			secondStarted.resolve();
+			return final("second");
+		}) as FetchImpl;
+
+		try {
+			const first = completeSimple(fakeModel(), baseContext, {
+				apiKey: "gw-bearer",
+				fetch: fetchImpl,
+				maxInFlightRequests: { anthropic: 1 },
+			});
+			await firstStarted.promise;
+
+			const second = completeSimple(fakeModel(), baseContext, {
+				apiKey: "gw-bearer",
+				fetch: fetchImpl,
+				maxInFlightRequests: { anthropic: 1 },
+			});
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(requests).toBe(1);
+
+			firstGate.resolve(final("first"));
+			expect(await first).toMatchObject({ content: [{ type: "text", text: "first" }] });
+			await secondStarted.promise;
+			expect(await second).toMatchObject({ content: [{ type: "text", text: "second" }] });
+		} finally {
+			__providerInFlightForTesting.setRoot(undefined);
+			await root.remove();
+		}
+	});
+});
+
+describe("completePiNative request shape", () => {
+	it("POSTs non-stream JSON, strips non-wire options, and returns the assistant message", async () => {
+		const completePiNative = (piNativeClient as typeof piNativeClient & Partial<PiNativeExportsWithCompletion>)
+			.completePiNative;
+		if (!completePiNative) throw new Error("completePiNative is not exported");
+
+		const final = baseAssistant({ content: [{ type: "text", text: "done" }] });
+		const captured: { url?: string; init?: RequestInit } = {};
+		const fetchImpl: FetchImpl = (async (input, init) => {
+			captured.url = typeof input === "string" ? input : input.toString();
+			captured.init = init;
+			return new Response(JSON.stringify({ message: final }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}) as FetchImpl;
+
+		const controller = new AbortController();
+		const result = await completePiNative(fakeModel(), baseContext, {
+			apiKey: "gw-bearer",
+			fetch: fetchImpl,
+			signal: controller.signal,
+			onPayload: () => undefined,
+			providerSessionState: new Map(),
+			streamPiNative: () => undefined,
+			temperature: 0.7,
+		});
+
+		expect(result).toEqual(final);
+		expect(captured.url).toBe("http://llm-gateway.internal:4000/v1/pi/stream");
+		expect(captured.init?.method).toBe("POST");
+		const headers = captured.init?.headers as Record<string, string>;
+		expect(headers["Content-Type"]).toBe("application/json");
+		expect(headers.Accept).toBe("application/json");
+		expect(headers.Authorization).toBe("Bearer gw-bearer");
+
+		const body = JSON.parse(captured.init?.body as string);
+		expect(body.modelId).toBe("anthropic/claude-sonnet-4-5");
+		expect(body.context).toEqual(baseContext);
+		expect(body.stream).toBe(false);
+		expect("apiKey" in body.options).toBe(false);
+		expect("fetch" in body.options).toBe(false);
+		expect("signal" in body.options).toBe(false);
+		expect("onPayload" in body.options).toBe(false);
+		expect("providerSessionState" in body.options).toBe(false);
+		expect("streamPiNative" in body.options).toBe(false);
+		expect(body.options.temperature).toBe(0.7);
+
+		const overrideCaptured: { init?: RequestInit } = {};
+		const overrideFetch: FetchImpl = (async (_input, init) => {
+			overrideCaptured.init = init;
+			return new Response(JSON.stringify({ message: final }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}) as FetchImpl;
+
+		await completePiNative(
+			fakeModel({ headers: { "x-omp-slot": "robomp-1", Authorization: "Bearer model-wins" } }),
+			baseContext,
+			{ apiKey: "options-loses", fetch: overrideFetch },
+		);
+
+		const overrideHeaders = overrideCaptured.init?.headers as Record<string, string>;
+		expect(overrideHeaders["x-omp-slot"]).toBe("robomp-1");
+		expect(overrideHeaders.Authorization).toBe("Bearer model-wins");
+	});
 });
 
 describe("streamPiNative request shape", () => {

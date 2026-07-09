@@ -32,6 +32,7 @@ type FakeEditor = {
 	setText(text: string): void;
 	getText(): string;
 	addToHistory(text: string): void;
+	isShowingAutocomplete(): boolean;
 	setActionKeys(action: string, keys: string[]): void;
 	setCustomKeyHandler(key: string, handler: () => void): void;
 	clearCustomKeyHandlers(): void;
@@ -120,6 +121,7 @@ function createContext(): {
 		getText() {
 			return editorText;
 		},
+		isShowingAutocomplete: vi.fn(() => false),
 		addToHistory: vi.fn(),
 		setActionKeys: vi.fn(),
 		setCustomKeyHandler: vi.fn(),
@@ -138,6 +140,7 @@ function createContext(): {
 		ui: {
 			requestRender,
 			resetDisplay,
+			getFocused: vi.fn(() => editor),
 			addInputListener: vi.fn(listener => {
 				inputListeners.push(listener as (data: string) => { consume?: boolean; data?: string } | undefined);
 				return () => {};
@@ -747,6 +750,24 @@ describe("InputController escape behavior", () => {
 		isSpeaking.mockReturnValue(false);
 		editor.onEscape?.();
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
+	});
+
+	it("routes the global interrupt key when the vocalizer is the only active work", () => {
+		const clear = vi.spyOn(vocalizer, "clear").mockImplementation(() => {});
+		vi.spyOn(vocalizer, "isSpeaking").mockReturnValue(true);
+		const { ctx, inputListeners } = createContext();
+		const controller = new InputController(ctx);
+		ctx.keybindings = {
+			getKeys: vi.fn((action: string) => (action === "app.interrupt" ? ["x"] : [])),
+		} as unknown as InteractiveModeContext["keybindings"];
+
+		controller.setupKeyHandlers();
+		const result = inputListeners.map(listener => listener("x")).find(value => value?.consume);
+
+		expect(result).toEqual({ consume: true });
+		expect(clear).toHaveBeenCalledTimes(1);
+		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
+		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
 	});
 });
 

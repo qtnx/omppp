@@ -2678,7 +2678,9 @@ async function runCodexWebSocketWarmupRequest(
 		state.canAppend = false;
 		return;
 	}
-	state.lastRequest = buildWarmupAppendBaseline(requestBodyForState);
+	const warmedRequest = buildWarmupAppendBaseline(requestBodyForState);
+	normalizeWarmupRequestInputForAppend(warmedRequest);
+	state.lastRequest = warmedRequest;
 	state.lastResponseId = responseId;
 	state.lastResponseItems = stripInputItemIds(outputItems);
 	state.canAppend = true;
@@ -2809,6 +2811,35 @@ function getCodexWebSocketSessionState(
 	};
 	providerSessionState.webSocketSessions.set(sessionKey, created);
 	return created;
+}
+
+function normalizeWarmupRequestInputForAppend(request: RequestBody): void {
+	request.input ??= [];
+	if (!Array.isArray(request.input) || request.input.length < 2) return;
+	const penultimate = request.input[request.input.length - 2];
+	const last = request.input[request.input.length - 1];
+	if (!isInputMessageRole(penultimate, "developer") || !isInputMessageRole(last, "user")) return;
+	const penultimateText = inputMessageText(penultimate);
+	const lastText = inputMessageText(last);
+	if (penultimateText !== undefined && penultimateText === lastText) request.input.pop();
+}
+
+function isInputMessageRole(item: unknown, role: string): boolean {
+	if (!item || typeof item !== "object" || !("role" in item)) return false;
+	return item.role === role;
+}
+
+function inputMessageText(item: unknown): string | undefined {
+	if (!item || typeof item !== "object" || !("content" in item)) return undefined;
+	const content = item.content;
+	if (!Array.isArray(content)) return undefined;
+	const parts: string[] = [];
+	for (const part of content) {
+		if (!part || typeof part !== "object" || !("type" in part) || !("text" in part)) return undefined;
+		if (part.type !== "input_text" || typeof part.text !== "string") return undefined;
+		parts.push(part.text);
+	}
+	return parts.join("\n");
 }
 
 function resetCodexWebSocketAppendState(state: CodexWebSocketSessionState): void {

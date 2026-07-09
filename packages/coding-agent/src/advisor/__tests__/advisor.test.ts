@@ -3,7 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
+import { type Api, Effort, type ImageContent, type Model } from "@oh-my-pi/pi-ai";
 import type { TUI } from "@oh-my-pi/pi-tui";
+import type { Shape } from "@oh-my-pi/snapcompact";
+import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type } from "arktype";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
@@ -80,6 +83,23 @@ describe("advisor", () => {
 				"NEVER call `done_verdict` for ordinary consultations. DONE-REVIEW REQUEST consultations are the exception",
 			);
 			expect(advisorSystemPrompt).toContain("done-review");
+		});
+
+		it("advisor embeds the full caveman skill for ordinary advice", () => {
+			const prompt = advisorSystemPrompt;
+
+			expect(prompt).toContain("https://github.com/JuliusBrussee/caveman/blob/main/skills/caveman/SKILL.md");
+			expect(prompt).toContain("Ultra-compressed communication mode. Cuts output tokens 65% (measured)");
+			expect(prompt).toContain("ACTIVE EVERY RESPONSE. No revert after many turns.");
+			expect(prompt).toContain("Default: **full**. Switch: `/caveman lite|full|ultra`.");
+			expect(prompt).toContain("Preserve user's dominant language.");
+			expect(prompt).toContain("No self-reference. Never name or announce the style.");
+			expect(prompt).toContain("No causal arrows (→) either");
+			expect(prompt).toContain("Code/commits/PRs: write normal.");
+			expect(prompt).toContain("Use the caveman skill for ordinary advisor turns and `advise` notes.");
+			expect(prompt).toContain(
+				"Advisor override: consultation requests MUST use normal full clear prose, not caveman or compressed style.",
+			);
 		});
 
 		it("reminds the advisor to check completion evidence before done-review", () => {
@@ -643,6 +663,174 @@ describe("advisor", () => {
 			};
 		}
 
+		interface AdvisorPromptCall {
+			text: string;
+			images?: ImageContent[];
+		}
+
+		function makeAdvisorModel(id: string, input: Array<"text" | "image">, provider = "test-provider"): Model<Api> {
+			return {
+				id,
+				name: id,
+				api: "openai-responses",
+				provider,
+				baseUrl: `https://${provider}.example.com/v1`,
+				reasoning: false,
+				input,
+				cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 4096,
+			} as Model<Api>;
+		}
+
+		function makePromptRecordingAgent(promptCalls: AdvisorPromptCall[], model: Model<Api>): AdvisorAgent {
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			return {
+				prompt: async (input: string, images?: ImageContent[]) => {
+					promptCalls.push({ text: input, images });
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				model,
+				state,
+			};
+		}
+
+		function makeAdvisorHost(messages: AgentMessage[]): AdvisorRuntimeHost {
+			return {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+		}
+
+		async function flushAdvisorPrompt(): Promise<void> {
+			for (let i = 0; i < 8; i++) await Promise.resolve();
+		}
+
+		describe("Fable normal-message imaging", () => {
+			afterEach(() => {
+				vi.restoreAllMocks();
+			});
+
+			it("packs large Fable vision session updates into snapcompact images while keeping the consultation question textual", async () => {
+				const largeMarker = "BEGIN_ADVISOR_FABLE_HISTORY_PAYLOAD";
+				const largeHistory = `${largeMarker}\n${"history-lane\n".repeat(2500)}END_ADVISOR_FABLE_HISTORY_PAYLOAD`;
+				const question = "Should the executor keep this latest consultation question as text?";
+				const frame: ImageContent = {
+					type: "image",
+					data: "ZmFrZS1hZHZpc29yLWZhYmxlLWZyYW1l",
+					mimeType: "image/png",
+				};
+				const shape = { frameTokenEstimate: 1 } as Shape;
+				vi.spyOn(snapcompact, "resolveShape").mockReturnValue(shape);
+				vi.spyOn(snapcompact, "frames").mockReturnValue(1);
+				const renderManySpy = vi.spyOn(snapcompact, "renderMany").mockResolvedValue([frame]);
+				const promptCalls: AdvisorPromptCall[] = [];
+				const agent = makePromptRecordingAgent(
+					promptCalls,
+					makeAdvisorModel("claude-fable-advisor-vision", ["text", "image"], "anthropic"),
+				);
+				const messages: AgentMessage[] = [{ role: "user", content: largeHistory, timestamp: 1 } as AgentMessage];
+				const runtime = new AdvisorRuntime(agent, makeAdvisorHost(messages));
+
+				const answer = await runtime.consult(question, { timeoutMs: 1000 });
+
+				expect(answer).toBeNull();
+				expect(renderManySpy).toHaveBeenCalledTimes(1);
+				const renderedInput = renderManySpy.mock.calls[0]?.[0] as string | undefined;
+				expect(renderedInput).toContain(largeMarker);
+				expect(renderedInput).not.toContain(question);
+				expect(promptCalls).toHaveLength(1);
+				const call = promptCalls[0];
+				expect(call?.images).toEqual([frame]);
+				expect(call?.text).toContain(question);
+				expect(call?.text).not.toContain(largeMarker);
+			});
+
+			it("keeps large advisor updates text-only for non-Fable and text-only Fable models", async () => {
+				const largeMarker = "BEGIN_ADVISOR_TEXT_ONLY_HISTORY_PAYLOAD";
+				const largeHistory = `${largeMarker}\n${"text-only-lane\n".repeat(2500)}END_ADVISOR_TEXT_ONLY_HISTORY_PAYLOAD`;
+				const renderManySpy = vi.spyOn(snapcompact, "renderMany");
+				const cases: Array<{ name: string; model: Model<Api> }> = [
+					{
+						name: "non-Fable vision model",
+						model: makeAdvisorModel("gpt-5.5-advisor", ["text", "image"], "openai"),
+					},
+					{
+						name: "Fable text-only model",
+						model: makeAdvisorModel("claude-fable-advisor-text", ["text"], "anthropic"),
+					},
+				];
+
+				for (const testCase of cases) {
+					const promptCalls: AdvisorPromptCall[] = [];
+					const agent = makePromptRecordingAgent(promptCalls, testCase.model);
+					const messages: AgentMessage[] = [{ role: "user", content: largeHistory, timestamp: 1 } as AgentMessage];
+					const runtime = new AdvisorRuntime(agent, makeAdvisorHost(messages));
+
+					runtime.onTurnEnd();
+					await flushAdvisorPrompt();
+
+					expect(promptCalls, testCase.name).toHaveLength(1);
+					const call = promptCalls[0];
+					expect(call?.images ?? [], testCase.name).toEqual([]);
+					expect(call?.text, testCase.name).toContain(largeMarker);
+				}
+				expect(renderManySpy).not.toHaveBeenCalled();
+			});
+
+			it("keeps small Fable vision advisor updates text-only", async () => {
+				const smallMarker = "SMALL_ADVISOR_FABLE_TEXT_MARKER";
+				const renderManySpy = vi.spyOn(snapcompact, "renderMany");
+				const promptCalls: AdvisorPromptCall[] = [];
+				const agent = makePromptRecordingAgent(
+					promptCalls,
+					makeAdvisorModel("claude-fable-advisor-vision", ["text", "image"], "anthropic"),
+				);
+				const messages: AgentMessage[] = [{ role: "user", content: smallMarker, timestamp: 1 } as AgentMessage];
+				const runtime = new AdvisorRuntime(agent, makeAdvisorHost(messages));
+
+				runtime.onTurnEnd();
+				await flushAdvisorPrompt();
+
+				expect(renderManySpy).not.toHaveBeenCalled();
+				expect(promptCalls).toHaveLength(1);
+				const call = promptCalls[0];
+				expect(call?.images ?? []).toEqual([]);
+				expect(call?.text).toContain(smallMarker);
+			});
+
+			it("falls back to text-only when Fable snapcompact rendering fails", async () => {
+				const largeMarker = "BEGIN_ADVISOR_FABLE_RENDER_FAILURE_PAYLOAD";
+				const largeHistory = `${largeMarker}\n${"render-failure-lane\n".repeat(2500)}END_ADVISOR_FABLE_RENDER_FAILURE_PAYLOAD`;
+				const shape = { frameTokenEstimate: 1 } as Shape;
+				vi.spyOn(snapcompact, "resolveShape").mockReturnValue(shape);
+				vi.spyOn(snapcompact, "frames").mockReturnValue(1);
+				const renderManySpy = vi
+					.spyOn(snapcompact, "renderMany")
+					.mockRejectedValue(new Error("snapcompact failed"));
+				const promptCalls: AdvisorPromptCall[] = [];
+				const agent = makePromptRecordingAgent(
+					promptCalls,
+					makeAdvisorModel("claude-fable-advisor-vision", ["text", "image"], "anthropic"),
+				);
+				const messages: AgentMessage[] = [{ role: "user", content: largeHistory, timestamp: 1 } as AgentMessage];
+				const runtime = new AdvisorRuntime(agent, makeAdvisorHost(messages));
+
+				runtime.onTurnEnd();
+				await flushAdvisorPrompt();
+
+				expect(renderManySpy).toHaveBeenCalledTimes(1);
+				expect(promptCalls).toHaveLength(1);
+				const call = promptCalls[0];
+				expect(call?.images ?? []).toEqual([]);
+				expect(call?.text).toContain(largeMarker);
+			});
+		});
+
 		it("coalesces multiple onTurnEnd calls while a prompt is in-flight", async () => {
 			const promptInputs: string[] = [];
 			const { promise: firstPromptPromise, resolve: finishFirstPrompt } = Promise.withResolvers<void>();
@@ -718,6 +906,221 @@ describe("advisor", () => {
 			expect(answer).toBeNull();
 			expect(promptInputs).toHaveLength(0);
 			expect(runtime.backlog).toBe(0);
+		});
+
+		it("routes blocking consults through escalation model and restores the normal model", async () => {
+			const normal = makeAdvisorModel("gpt-5.5", ["text"], "openai");
+			const escalation = makeAdvisorModel("claude-fable-5", ["text"], "anthropic");
+			const promptedModels: string[] = [];
+			let currentModel = normal;
+			let currentThinking: Effort | undefined = Effort.Low;
+			let reasoningDisabled = false;
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					promptedModels.push(
+						`${currentModel.provider}/${currentModel.id}:${currentThinking}:${reasoningDisabled}`,
+					);
+					state.messages.push({
+						role: "assistant",
+						content: [{ type: "text", text: "Escalated answer." }],
+						timestamp: Date.now(),
+					} as AgentMessage);
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				get model() {
+					return currentModel;
+				},
+				setModel: model => {
+					currentModel = model;
+				},
+				setThinkingLevel: level => {
+					currentThinking = level;
+				},
+				setDisableReasoning: disabled => {
+					reasoningDisabled = disabled;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "current context", timestamp: 1 } as AgentMessage];
+			const runtime = new AdvisorRuntime(agent, makeAdvisorHost(messages), 0, {
+				escalationModel: escalation,
+				normalThinkingLevel: Effort.Low,
+				normalDisableReasoning: false,
+				escalationThinkingLevel: Effort.High,
+				escalationDisableReasoning: true,
+			});
+
+			const answer = await runtime.consult("Should the done gate pass?", { timeoutMs: 1000 });
+
+			expect(answer).toBe("Escalated answer.");
+			expect(promptedModels).toEqual(["anthropic/claude-fable-5:high:true"]);
+			expect(currentModel).toBe(normal);
+			expect(currentThinking).toBe(Effort.Low);
+			expect(reasoningDisabled).toBe(false);
+		});
+
+		it("reports blocking consult failures against the escalation model", async () => {
+			const normal = makeAdvisorModel("gpt-5.5", ["text"], "openai");
+			const escalation = makeAdvisorModel("claude-fable-5", ["text"], "anthropic");
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			let currentModel = normal;
+			const failedModels: Array<Model | undefined> = [];
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					state.error = "rate limit";
+				},
+				abort: () => {},
+				reset: () => {
+					state.error = undefined;
+				},
+				get model() {
+					return currentModel;
+				},
+				setModel: model => {
+					currentModel = model;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "current context", timestamp: 1 } as AgentMessage];
+			const runtime = new AdvisorRuntime(
+				agent,
+				{
+					...makeAdvisorHost(messages),
+					onTurnError: (_error, model) => {
+						failedModels.push(model);
+					},
+				},
+				1,
+				{ escalationModel: escalation },
+			);
+
+			await runtime.consult("Should escalation fail on Fable?", { timeoutMs: 50 });
+
+			expect(failedModels.length).toBeGreaterThan(0);
+			expect(failedModels.every(model => model?.provider === "anthropic" && model.id === "claude-fable-5")).toBe(
+				true,
+			);
+			expect(currentModel).toBe(normal);
+		});
+
+		it("keeps blocking consult escalation active after context maintenance promotes the normal advisor", async () => {
+			const normal = makeAdvisorModel("gpt-5.5", ["text"], "openai");
+			const promoted = makeAdvisorModel("gpt-5.5-long", ["text"], "openai");
+			const escalation = makeAdvisorModel("claude-fable-5", ["text"], "anthropic");
+			const promptedModels: string[] = [];
+			let currentModel = normal;
+			let currentThinking: Effort | undefined = Effort.Low;
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					promptedModels.push(`${currentModel.provider}/${currentModel.id}:${currentThinking}`);
+					state.messages.push({
+						role: "assistant",
+						content: [{ type: "text", text: "Escalated answer." }],
+						timestamp: Date.now(),
+					} as AgentMessage);
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				get model() {
+					return currentModel;
+				},
+				setModel: model => {
+					currentModel = model;
+				},
+				setThinkingLevel: level => {
+					currentThinking = level;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "current context", timestamp: 1 } as AgentMessage];
+			const host = makeAdvisorHost(messages);
+			host.maintainContext = async () => {
+				currentModel = promoted;
+				currentThinking = Effort.Medium;
+				return false;
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0, {
+				escalationModel: escalation,
+				normalThinkingLevel: Effort.Medium,
+				escalationThinkingLevel: Effort.High,
+			});
+
+			const answer = await runtime.consult("Should the done gate pass?", { timeoutMs: 1000 });
+
+			expect(answer).toBe("Escalated answer.");
+			expect(promptedModels).toEqual(["anthropic/claude-fable-5:high"]);
+			expect(currentModel).toBe(promoted);
+			expect(currentThinking as Effort | undefined).toBe(Effort.Medium);
+		});
+
+		it("falls back after escalated safeguard refusal and restores normal advisor state", async () => {
+			const normal = makeAdvisorModel("gpt-5.5", ["text"], "openai");
+			const escalation = makeAdvisorModel("claude-fable-5", ["text"], "anthropic");
+			const fallback = makeAdvisorModel("gpt-5.5-fallback", ["text"], "openai");
+			const promptedModels: string[] = [];
+			let currentModel = normal;
+			let currentThinking: Effort | undefined = Effort.Low;
+			let reasoningDisabled = false;
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					promptedModels.push(
+						`${currentModel.provider}/${currentModel.id}:${currentThinking}:${reasoningDisabled}`,
+					);
+					if (currentModel === escalation) {
+						throw new Error("Content flagged by safety filters");
+					}
+					state.messages.push({
+						role: "assistant",
+						content: [{ type: "text", text: "Fallback answer." }],
+						timestamp: Date.now(),
+					} as AgentMessage);
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				get model() {
+					return currentModel;
+				},
+				setModel: model => {
+					currentModel = model;
+				},
+				setThinkingLevel: level => {
+					currentThinking = level;
+				},
+				setDisableReasoning: disabled => {
+					reasoningDisabled = disabled;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "current context", timestamp: 1 } as AgentMessage];
+			const runtime = new AdvisorRuntime(agent, makeAdvisorHost(messages), 0, {
+				fallbackModel: fallback,
+				escalationModel: escalation,
+				normalThinkingLevel: Effort.Low,
+				normalDisableReasoning: false,
+				escalationThinkingLevel: Effort.High,
+				escalationDisableReasoning: true,
+			});
+
+			const answer = await runtime.consult("Should the done gate pass?", { timeoutMs: 1000 });
+
+			expect(answer).toBe("Fallback answer.");
+			expect(promptedModels).toEqual(["anthropic/claude-fable-5:high:true", "openai/gpt-5.5-fallback:low:false"]);
+			expect(currentModel).toBe(normal);
+			expect(currentThinking).toBe(Effort.Low);
+			expect(reasoningDisabled).toBe(false);
 		});
 
 		it("drains the coalesced paused backlog with one prompt on resume", async () => {
@@ -1861,6 +2264,55 @@ describe("advisor", () => {
 			expect(promptInputs).toHaveLength(1);
 			expect(promptInputs[0]).toContain("### Consultation request");
 			expect(promptInputs[0]).toContain("Which approach?");
+		});
+
+		it("advisor caveman override makes blocking consult answers normal full prose", async () => {
+			const question = "Should we keep the public API contract or split it?";
+			const promptInputs: string[] = [];
+			const agent = makeConsultAgent(promptInputs, () => [text("Keep the public API contract.")]);
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			const answer = await runtime.consult(question);
+
+			expect(answer).toBe("Keep the public API contract.");
+			expect(promptInputs).toHaveLength(1);
+			const input = promptInputs[0];
+			expect(input).toContain("### Consultation request");
+			expect(input).toContain(question);
+			expect(input).toMatch(/(?:do not|don't|never)\s+use\s+(?:caveman|compressed|compression)/i);
+			expect(input).toMatch(/(?:normal|full|clear).*prose|prose.*(?:normal|full|clear)/i);
+		});
+
+		it("advisor caveman override makes async consult advice normal full prose while still using advise", async () => {
+			const question = "How should the executor verify the advisor prompt change?";
+			const promptInputs: string[] = [];
+			const { promise: started, resolve: markStarted } = Promise.withResolvers<void>();
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					markStarted();
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.consultAsync(question);
+			await started;
+
+			expect(promptInputs).toHaveLength(1);
+			const input = promptInputs[0];
+			expect(input).toContain("### Consultation request (async)");
+			expect(input).toContain(question);
+			expect(input).toContain("Deliver your answer by calling your `advise` tool");
+			expect(input).not.toContain("Reply with your consultation answer as plain text.");
+			expect(input).toMatch(/(?:do not|don't|never)\s+use\s+(?:caveman|compressed|compression)/i);
+			expect(input).toMatch(/(?:normal|full|clear).*prose|prose.*(?:normal|full|clear)/i);
 		});
 
 		it("consultAsync returns immediately and asks the advisor to answer through advise", async () => {

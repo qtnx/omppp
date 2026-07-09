@@ -16,6 +16,7 @@
  * itself stays credential-free.
  */
 import { readSseJson } from "@oh-my-pi/pi-utils";
+import { withAuth } from "../auth-retry";
 import * as AIError from "../error";
 import type {
 	Api,
@@ -37,20 +38,29 @@ import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs, iterateWithIdleTi
  * client's `apiKey` is the gateway *bearer*, sent in the `Authorization`
  * header rather than the request body).
  */
-const NON_WIRE_KEYS = new Set<keyof SimpleStreamOptions>([
-	"signal",
-	"apiKey",
-	"fetch",
-	"onPayload",
-	"onResponse",
-	"onSseEvent",
-	"execHandlers",
-	"cursorExecHandlers",
-	"cursorOnToolResult",
-	"providerSessionState",
-]);
+const NON_WIRE_KEYS: Record<string, true> = {
+	signal: true,
+	apiKey: true,
+	fetch: true,
+	onPayload: true,
+	onResponse: true,
+	onSseEvent: true,
+	execHandlers: true,
+	cursorExecHandlers: true,
+	cursorOnToolResult: true,
+	providerSessionState: true,
+	streamPiNative: true,
+};
 const PI_NATIVE_STREAM_IDLE_TIMEOUT_ERROR = "pi-native stream stalled while waiting for the next event";
 const PI_NATIVE_STREAM_FIRST_EVENT_TIMEOUT_ERROR = "pi-native stream timed out while waiting for the first event";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function isAssistantMessage(value: unknown): value is AssistantMessage {
+	return isRecord(value) && value.role === "assistant" && Array.isArray(value.content);
+}
 
 function isPiNativeProgressEvent(event: unknown): boolean {
 	if (typeof event !== "object" || event === null || !("type" in event)) return true;
@@ -62,7 +72,7 @@ function buildWireOptions(options: SimpleStreamOptions | undefined): Record<stri
 	const wire: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(options)) {
 		if (v === undefined) continue;
-		if (NON_WIRE_KEYS.has(k as keyof SimpleStreamOptions)) continue;
+		if (NON_WIRE_KEYS[k]) continue;
 		wire[k] = v;
 	}
 	return wire;
@@ -76,11 +86,11 @@ async function decodeGatewayError(response: Response): Promise<AIError.AuthGatew
 	} catch {
 		body = await response.text().catch(() => "");
 	}
-	if (typeof body === "object" && body !== null && "error" in body) {
-		const err = (body as { error: unknown }).error;
-		if (typeof err === "object" && err !== null) {
-			const message = (err as { message?: unknown }).message;
-			const type = (err as { type?: unknown }).type;
+	if (isRecord(body) && "error" in body) {
+		const err = body.error;
+		if (isRecord(err)) {
+			const message = err.message;
+			const type = err.type;
 			return new AIError.AuthGatewayError(
 				typeof message === "string" ? message : `auth-gateway ${status}`,
 				status,
@@ -112,10 +122,10 @@ function resolveStreamUrl(model: Model<Api>): string {
 	return `${model.baseUrl.replace(/\/+$/, "")}/v1/pi/stream`;
 }
 
-function buildHeaders(model: Model<Api>, apiKey: string | undefined): Record<string, string> {
+function buildHeaders(model: Model<Api>, apiKey: string | undefined, accept: string): Record<string, string> {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
-		Accept: "text/event-stream",
+		Accept: accept,
 		...(model.headers ?? {}),
 	};
 	if (apiKey && !headers.Authorization) {
@@ -130,10 +140,8 @@ function buildHeaders(model: Model<Api>, apiKey: string | undefined): Record<str
  * The returned {@link AssistantMessageEventStream} receives each parsed
  * `AssistantMessageEvent` verbatim from the gateway; the terminal `done` /
  * `error` event resolves `.result()` automatically via the base class's
- * completion check. Non-streaming consumers just call `.result()` and pay
- * for SSE framing they don't use — that overhead is dominated by provider
- * latency, so we always stream rather than maintaining a parallel
- * non-streaming path.
+ * completion check. Non-streaming callers should use {@link completePiNative}
+ * so the gateway can return one JSON assistant message instead of SSE frames.
  */
 export function streamPiNative<TApi extends Api>(
 	model: Model<TApi>,
@@ -171,6 +179,7 @@ export function streamPiNative<TApi extends Api>(
 			const headers = buildHeaders(
 				model as Model<Api>,
 				typeof options?.apiKey === "string" ? options.apiKey : undefined,
+				"text/event-stream",
 			);
 			const body = JSON.stringify({
 				modelId: `${model.provider}/${model.id}`,
@@ -243,6 +252,52 @@ export function streamPiNative<TApi extends Api>(
 	})();
 
 	return stream;
+}
+export async function completePiNative<TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options?: SimpleStreamOptions,
+): Promise<AssistantMessage> {
+	const runRequest = async (apiKey: string | undefined): Promise<AssistantMessage> => {
+		const url = resolveStreamUrl(model as Model<Api>);
+		const fetchImpl = options?.fetch ?? globalThis.fetch;
+		const headers = buildHeaders(model as Model<Api>, apiKey, "application/json");
+		const body = JSON.stringify({
+			modelId: `${model.provider}/${model.id}`,
+			context,
+			options: buildWireOptions(options),
+			stream: false,
+		});
+
+		const response = await fetchImpl(url, { method: "POST", headers, body, signal: options?.signal });
+		if (!response.ok) {
+			throw await decodeGatewayError(response);
+		}
+
+		let payload: unknown;
+		try {
+			payload = await response.json();
+		} catch {
+			throw new AIError.AuthGatewayError(
+				"auth-gateway returned malformed JSON completion response",
+				response.status,
+				response.headers,
+				"malformed_response",
+			);
+		}
+		if (!isRecord(payload) || !("message" in payload) || !isAssistantMessage(payload.message)) {
+			throw new AIError.AuthGatewayError(
+				"auth-gateway returned malformed JSON completion response",
+				response.status,
+				response.headers,
+				"malformed_response",
+			);
+		}
+		return payload.message;
+	};
+
+	if (options?.apiKey === undefined) return runRequest(undefined);
+	return withAuth(options.apiKey, runRequest, { signal: options.signal });
 }
 
 function makeSyntheticAssistant(model: Model<Api>): AssistantMessage {

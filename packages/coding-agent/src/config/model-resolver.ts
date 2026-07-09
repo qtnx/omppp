@@ -1397,6 +1397,10 @@ export interface DuoResolvedConfig {
 	plannerThinking: ConfiguredThinkingLevel;
 	executor: Model;
 	executorThinking: ConfiguredThinkingLevel;
+	advisor?: Model;
+	advisorThinking?: ConfiguredThinkingLevel;
+	advisorEscalation?: Model;
+	advisorEscalationThinking?: ConfiguredThinkingLevel;
 	advisorPromptReview: boolean;
 	cooldownTurns: number;
 	maxConsecutive: number;
@@ -1480,6 +1484,16 @@ export function resolveDuoConfig(
 		registry,
 		kind => kind === "opus",
 	);
+	const advisor = resolveExplicitDuoModel(
+		settings.get("duo.advisorModel") ?? "gpt-5.5",
+		availableModels,
+		settings,
+		registry,
+	);
+	const advisorEscalationPattern = (settings.get("duo.advisorEscalationModel") ?? "").trim();
+	const advisorEscalation = advisorEscalationPattern
+		? resolveExplicitDuoModel(advisorEscalationPattern, availableModels, settings, registry)
+		: undefined;
 	if (!planner || !executor) return undefined;
 
 	const orchestrator = settings.get("duo.orchestrator");
@@ -1494,6 +1508,16 @@ export function resolveDuoConfig(
 			executor.thinkingLevel ??
 			parseConfiguredThinkingLevel(settings.get("duo.executorThinking")) ??
 			ThinkingLevel.High,
+		advisor: advisor?.model ?? planner.model,
+		advisorThinking:
+			advisor?.thinkingLevel ??
+			parseConfiguredThinkingLevel(settings.get("duo.advisorThinking")) ??
+			ThinkingLevel.XHigh,
+		advisorEscalation: advisorEscalation?.model ?? planner.model,
+		advisorEscalationThinking:
+			advisorEscalation?.thinkingLevel ??
+			parseConfiguredThinkingLevel(settings.get("duo.advisorEscalationThinking")) ??
+			ThinkingLevel.XHigh,
 		advisorPromptReview: settings.get("duo.advisorPromptReview"),
 		cooldownTurns: settings.get("duo.takeover.cooldownTurns"),
 		maxConsecutive: settings.get("duo.takeover.maxConsecutive"),

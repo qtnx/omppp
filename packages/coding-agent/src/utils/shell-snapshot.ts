@@ -230,12 +230,11 @@ export async function getOrCreateSnapshot(
 
 	const rcFile = getShellConfigFile(shell, env);
 
-	// Create snapshot directory with owner-only perms — the script may inline
-	// env vars referenced by captured functions (#3470) and `os.tmpdir()` is
-	// shared on Linux. `mode: 0o700` applies to a fresh mkdir; an existing dir
-	// keeps its mode, so chmod it defensively. Ignore EPERM (dir owned by
-	// another user on a shared box).
-	const snapshotDir = path.join(os.tmpdir(), "omp-shell-snapshots");
+	// Create a per-user snapshot directory with owner-only perms — the script may
+	// inline env vars referenced by captured functions (#3470), and `os.tmpdir()`
+	// is shared on Linux. A fixed `/tmp/omp-shell-snapshots` path can be owned by
+	// another local account, which turns later snapshot writes into EACCES.
+	const snapshotDir = path.join(os.tmpdir(), `omp-shell-snapshots-${process.getuid?.() ?? os.userInfo().username}`);
 	fs.mkdirSync(snapshotDir, { recursive: true, mode: 0o700 });
 	try {
 		fs.chmodSync(snapshotDir, 0o700);

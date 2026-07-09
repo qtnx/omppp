@@ -520,8 +520,10 @@ function isCodexSparkModel(modelId: string | undefined): boolean {
 
 export const codexRankingStrategy: CredentialRankingStrategy = {
 	blockScope(context) {
-		const modelId = context?.modelId;
-		return modelId === undefined ? "shared" : isCodexSparkModel(modelId) ? "spark" : "main";
+		// Scope backoff by the actual pool a request consumes. Spark exhaustion must
+		// not park an account for main-pool Codex turns, and vice versa. Missing
+		// model context is treated as main-pool because Codex defaults consume it.
+		return isCodexSparkModel(context?.modelId) ? "spark" : "main";
 	},
 	findWindowLimits(report) {
 		const findLimit = (key: "primary" | "secondary"): UsageLimit | undefined => {

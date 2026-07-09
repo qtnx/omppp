@@ -113,6 +113,7 @@ import type {
 import {
 	calculateRateLimitBackoffMs,
 	clearAnthropicFastModeFallback,
+	completeSimple,
 	deriveClaudeDeviceId,
 	Effort,
 	isUsageLimitOutcome,
@@ -1964,6 +1965,9 @@ export class AgentSession {
 	#duoOwnsOrchestrator = false;
 	#duoAdvisorPinnedModel?: Model;
 	#duoAdvisorPinnedModelId?: string;
+	#duoAdvisorPinnedThinking?: ThinkingLevel;
+	#duoAdvisorEscalationModel?: Model;
+	#duoAdvisorEscalationThinking?: ThinkingLevel;
 	#duoPlanReferenceSetDuringPlanMode = false;
 	#duoAwaitingApprovedPlanReference = false;
 	#duoPlanApprovedNotified = false;
@@ -2197,6 +2201,17 @@ export class AgentSession {
 		this.#emptyStopRetryCount = 0;
 		this.#unexpectedStopRetryCount = 0;
 		this.#yieldTerminationPending = false;
+	}
+	async #completeSideRequestResult(
+		requestModel: Model,
+		requestContext: Context,
+		requestOptions?: SimpleStreamOptions,
+	): Promise<AssistantMessage> {
+		if (requestModel.transport === "pi-native") {
+			return completeSimple(requestModel, requestContext, requestOptions ?? {});
+		}
+		const stream = await this.#sideStreamFn(requestModel, requestContext, requestOptions);
+		return stream.result();
 	}
 
 	#acquirePowerAssertion(): void {
@@ -2887,15 +2902,51 @@ export class AgentSession {
 		return { ...snapshot, advisorModelId, duoOwnsAdvisor: Boolean(advisorModelId && this.#duoOwnsAdvisor) };
 	}
 
-	#ensureDuoAdvisorStarted(pinned: Model): boolean {
-		this.#duoAdvisorPinnedModel = pinned;
-		this.#duoAdvisorPinnedModelId = `${pinned.provider}/${pinned.id}`;
+	#resolveDuoAdvisorPin(planner: Model): { model: Model; thinkingLevel?: ThinkingLevel } {
+		const configured = (this.settings.get("duo.advisorModel") ?? "").trim();
+		if (!configured) return { model: planner };
+		const resolved = resolveModelRoleValue(configured, this.#availableModelsForAdvisorRuntime(), {
+			settings: this.settings,
+			modelRegistry: this.#modelRegistry,
+		});
+		if (resolved.model && this.#modelRegistry.hasConfiguredAuth(resolved.model)) {
+			return { model: resolved.model, thinkingLevel: concreteThinkingLevel(resolved.thinkingLevel) };
+		}
+		this.emitNotice("warning", `Duo advisor model "${configured}" unavailable; using planner model.`, "advisor");
+		return { model: planner };
+	}
+
+	#resolveDuoAdvisorEscalation(planner: Model): { model: Model; thinkingLevel: ThinkingLevel } {
+		const configured = (this.settings.get("duo.advisorEscalationModel") ?? "").trim();
+		const resolved = configured
+			? resolveModelRoleValue(configured, this.#availableModelsForAdvisorRuntime(), {
+					settings: this.settings,
+					modelRegistry: this.#modelRegistry,
+				})
+			: undefined;
+		const model = resolved?.model && this.#modelRegistry.hasConfiguredAuth(resolved.model) ? resolved.model : planner;
+		const configuredThinking =
+			resolved?.thinkingLevel ?? parseConfiguredThinkingLevel(this.settings.get("duo.advisorEscalationThinking"));
+		const thinkingLevel = resolveThinkingLevelForModel(
+			model,
+			concreteThinkingLevel(configuredThinking) ?? ThinkingLevel.XHigh,
+		);
+		return { model, thinkingLevel: thinkingLevel ?? ThinkingLevel.Inherit };
+	}
+
+	#ensureDuoAdvisorStarted(planner: Model): boolean {
+		const pinned = this.#resolveDuoAdvisorPin(planner);
+		const escalation = this.#resolveDuoAdvisorEscalation(planner);
+		this.#duoAdvisorPinnedModel = pinned.model;
+		this.#duoAdvisorPinnedThinking = pinned.thinkingLevel;
+		this.#duoAdvisorPinnedModelId = `${pinned.model.provider}/${pinned.model.id}`;
+		this.#duoAdvisorEscalationModel = escalation.model;
+		this.#duoAdvisorEscalationThinking = escalation.thinkingLevel;
 		if (!this.#advisorEnabled) {
 			this.#advisorEnabled = true;
 			this.#duoOwnsAdvisor = true;
 		}
-		const advisorModel = this.#advisors[0]?.agent.state.model;
-		if (advisorModel && !modelsAreEqual(advisorModel, pinned)) {
+		if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) {
 			this.#stopAdvisorRuntime();
 		}
 		return this.#buildAdvisorRuntime(true);
@@ -2965,6 +3016,9 @@ export class AgentSession {
 		const pinned = this.#duoAdvisorPinnedModel;
 		this.#duoAdvisorPinnedModel = undefined;
 		this.#duoAdvisorPinnedModelId = undefined;
+		this.#duoAdvisorPinnedThinking = undefined;
+		this.#duoAdvisorEscalationModel = undefined;
+		this.#duoAdvisorEscalationThinking = undefined;
 		const action = resolveDuoAdvisorStopAction(this.#duoOwnsAdvisor, pinned, this.#advisors[0]?.agent.state.model);
 		if (action === "stop") {
 			this.#stopAdvisorRuntime();
@@ -3204,6 +3258,7 @@ export class AgentSession {
 	}
 
 	#duoPinnedAdvisorThinkingLevel(fallback: ThinkingLevel): ThinkingLevel {
+		if (this.#duoAdvisorPinnedThinking !== undefined) return this.#duoAdvisorPinnedThinking;
 		const configured = parseConfiguredThinkingLevel(this.settings.get("duo.advisorThinking"));
 		if (configured === undefined || configured === AUTO_THINKING || configured === ThinkingLevel.Inherit) {
 			return fallback;
@@ -3253,9 +3308,23 @@ export class AgentSession {
 	): string {
 		const tools = config.tools?.length ? config.tools.join("\u001e") : "";
 		const instructions = config.instructions?.trim() ?? "";
-		return [config.name, slug, formatModelStringWithRouting(model), thinkingLevel, tools, instructions].join(
-			"\u001f",
-		);
+		const duoEscalation =
+			this.#duoAdvisorPinnedModel && this.#duoAdvisorEscalationModel
+				? [
+						this.#duoOwnsAdvisor ? "duo-owned" : "duo-pinned",
+						formatModelStringWithRouting(this.#duoAdvisorEscalationModel),
+						this.#duoAdvisorEscalationThinking,
+					]
+				: [];
+		return [
+			config.name,
+			slug,
+			formatModelStringWithRouting(model),
+			thinkingLevel,
+			tools,
+			instructions,
+			...duoEscalation,
+		].join("\u001f");
 	}
 
 	#advisorRuntimeMatchesCurrentConfig(): boolean {
@@ -3428,7 +3497,7 @@ export class AgentSession {
 			advisorAgent.setDisableReasoning(shouldDisableReasoning(advisorThinkingLevel));
 
 			const advisorAgentFacade: AdvisorAgent = {
-				prompt: input => advisorAgent.prompt(input),
+				prompt: (input, images) => advisorAgent.prompt(input, images),
 				abort: reason => advisorAgent.abort(reason),
 				reset: () => {
 					advisorAgent.reset();
@@ -3437,9 +3506,18 @@ export class AgentSession {
 				get model() {
 					return advisorAgent.state.model;
 				},
+				get disableReasoning() {
+					return advisorAgent.state.disableReasoning;
+				},
 				setModel: model => {
 					advisorAgent.setModel(model);
 					appendOnlyContext.invalidateForModelChange();
+				},
+				setThinkingLevel: level => {
+					advisorAgent.setThinkingLevel(level);
+				},
+				setDisableReasoning: disabled => {
+					advisorAgent.setDisableReasoning(disabled);
 				},
 				rollbackTo: count => {
 					// Drop the failed user batch + synthetic assistant-error turn
@@ -3496,7 +3574,7 @@ export class AgentSession {
 					renderThinking: text => thinkingStore.renderThinking(text),
 					renderStatsHeader: isDuoOwnedAdvisor ? () => this.#renderDelegationStatsHeader() : undefined,
 					renderPrimeSeed: isDuoOwnedAdvisor ? () => this.#readAdvisorPrimeSeedSync() : undefined,
-					onTurnError: async error => {
+					onTurnError: async (error, failedModel) => {
 						// Mirror the auth-gateway's usage-limit remedy: the in-stream a/b/c
 						// auth retry rotates through siblings within one request but never
 						// blocks the LAST failing credential, so without this the advisor
@@ -3505,10 +3583,11 @@ export class AgentSession {
 						// suspect-mark a credential on a transient advisor error).
 						const message = error instanceof Error ? error.message : String(error);
 						if (!isUsageLimitOutcome(extractHttpStatusFromError(error), message)) return;
-						await this.#modelRegistry.authStorage.markUsageLimitReached(advisorModel.provider, advisorSessionId, {
+						const model = failedModel ?? advisorModel;
+						await this.#modelRegistry.authStorage.markUsageLimitReached(model.provider, advisorSessionId, {
 							retryAfterMs: extractRetryHint(undefined, message),
-							baseUrl: advisorModel.baseUrl,
-							modelId: advisorModel.id,
+							baseUrl: model.baseUrl,
+							modelId: model.id,
 						});
 					},
 					notifyFailure: error => {
@@ -3523,7 +3602,18 @@ export class AgentSession {
 					},
 				},
 				1000,
-				{ fallbackModel: advisorFallbackModel },
+				{
+					fallbackModel: advisorFallbackModel,
+					escalationModel: isDuoOwnedAdvisor ? this.#duoAdvisorEscalationModel : undefined,
+					normalThinkingLevel: toReasoningEffort(advisorThinkingLevel),
+					normalDisableReasoning: shouldDisableReasoning(advisorThinkingLevel),
+					escalationThinkingLevel: isDuoOwnedAdvisor
+						? toReasoningEffort(this.#duoAdvisorEscalationThinking)
+						: undefined,
+					escalationDisableReasoning: isDuoOwnedAdvisor
+						? shouldDisableReasoning(this.#duoAdvisorEscalationThinking)
+						: undefined,
+				},
 			);
 
 			const advisorRef: ActiveAdvisor = {
@@ -12190,10 +12280,8 @@ export class AgentSession {
 				model,
 				{
 					streamOptions: handoffStreamOptions,
-					completeImpl: async (requestModel, requestContext, requestOptions) => {
-						const stream = await this.#sideStreamFn(requestModel, requestContext, requestOptions);
-						return stream.result();
-					},
+					completeImpl: (requestModel, requestContext, requestOptions) =>
+						this.#completeSideRequestResult(requestModel, requestContext, requestOptions),
 					telemetry: resolveTelemetry(this.agent.telemetry, this.sessionId),
 					// Honor the user's /model thinking selection on the handoff path.
 					// Clamped per-model inside generateHandoffFromContext via
@@ -14219,18 +14307,17 @@ export class AgentSession {
 						tools: this.agent.state.tools,
 						sessionId: this.sessionId,
 						promptCacheKey: this.sessionId,
-						// Route every summarization HTTP request through the
+						// Route non-pi-native summarization HTTP requests through the
 						// session's side-stream transport so the provider
 						// concurrency cap (e.g. providers.ollama-cloud.maxConcurrency)
 						// brackets compaction the same way it brackets the live
 						// agent turn — without this, multiple ollama-cloud
 						// subagents auto/manually compacting issued uncapped
 						// summary requests in parallel (chatgpt-codex review on
-						// #3751).
-						completeImpl: async (requestModel, requestContext, requestOptions) => {
-							const stream = await this.#sideStreamFn(requestModel, requestContext, requestOptions);
-							return stream.result();
-						},
+						// #3751). Pi-native result-only summaries use the JSON
+						// completion path instead of opening SSE streams.
+						completeImpl: (requestModel, requestContext, requestOptions) =>
+							this.#completeSideRequestResult(requestModel, requestContext, requestOptions),
 					},
 				);
 			} catch (error) {
@@ -17524,11 +17611,9 @@ export class AgentSession {
 				convertToLlm: messages => this.#convertToLlmForSideRequest(messages),
 				telemetry: resolveTelemetry(this.agent.telemetry, this.sessionId),
 				// Same per-provider concurrency cap rationale as the compaction
-				// path above (chatgpt-codex review on #3751).
-				completeImpl: async (requestModel, requestContext, requestOptions) => {
-					const stream = await this.#sideStreamFn(requestModel, requestContext, requestOptions);
-					return stream.result();
-				},
+				// path above; pi-native result-only summaries use JSON completion.
+				completeImpl: (requestModel, requestContext, requestOptions) =>
+					this.#completeSideRequestResult(requestModel, requestContext, requestOptions),
 			});
 			this.#branchSummaryAbortController = undefined;
 			if (result.aborted) {

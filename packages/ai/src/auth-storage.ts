@@ -1043,6 +1043,8 @@ export class AuthStorage {
 	#data: Map<string, StoredCredential[]> = new Map();
 	#runtimeOverrides: Map<string, string> = new Map();
 	#configOverrides: Map<string, string> = new Map();
+	/** Provider/index/key entries whose API-key config resolver last returned undefined. */
+	#unresolvedApiKeyCredentials: Set<string> = new Set();
 	/** Tracks next credential index per provider:type key for round-robin distribution (non-session use). */
 	#providerRoundRobinIndex: Map<string, number> = new Map();
 	/** Tracks the last used credential per provider for a session (used for rate-limit switching). */
@@ -1316,6 +1318,22 @@ export class AuthStorage {
 		this.#bumpGeneration("credentials");
 	}
 
+	#apiKeyCredentialResolutionKey(provider: string, index: number, credential: ApiKeyCredential): string {
+		return `${provider}:${index}:${credential.key}`;
+	}
+
+	#markApiKeyCredentialResolved(provider: string, index: number, credential: ApiKeyCredential): void {
+		this.#unresolvedApiKeyCredentials.delete(this.#apiKeyCredentialResolutionKey(provider, index, credential));
+	}
+
+	#markApiKeyCredentialUnresolved(provider: string, index: number, credential: ApiKeyCredential): void {
+		this.#unresolvedApiKeyCredentials.add(this.#apiKeyCredentialResolutionKey(provider, index, credential));
+	}
+
+	#isApiKeyCredentialUnresolved(provider: string, index: number, credential: ApiKeyCredential): boolean {
+		return this.#unresolvedApiKeyCredentials.has(this.#apiKeyCredentialResolutionKey(provider, index, credential));
+	}
+
 	#resolveOAuthDedupeIdentityKey(provider: string, credential: OAuthCredential): string | null {
 		return resolveCredentialIdentityKey(provider, credential);
 	}
@@ -1502,6 +1520,45 @@ export class AuthStorage {
 				(blockedUntil === undefined || persistedScopedBlockedUntil > blockedUntil)
 			) {
 				blockedUntil = persistedScopedBlockedUntil;
+			}
+		}
+		// Preserve legacy Codex OAuth blocks written before model-pool scopes split
+		// "shared" into "main" and "spark"; a stale row must still suppress use.
+		if (provider === "openai-codex" && blockScope !== "shared") {
+			const persistedLegacySharedBlockedUntil = this.#readPersistedCredentialBlock(
+				credentialId,
+				providerKey,
+				"shared",
+			);
+			if (
+				persistedLegacySharedBlockedUntil !== undefined &&
+				(blockedUntil === undefined || persistedLegacySharedBlockedUntil > blockedUntil)
+			) {
+				blockedUntil = persistedLegacySharedBlockedUntil;
+			}
+		}
+		return blockedUntil;
+	}
+
+	#getAnyCredentialBlockedUntil(
+		providerKey: string,
+		credentialId: number,
+		credentialIndex: number,
+	): number | undefined {
+		const nowMs = Date.now();
+		const scopedPrefix = `${providerKey}\0`;
+		let blockedUntil: number | undefined;
+		for (const [key] of this.#credentialBackoff) {
+			if (key !== providerKey && !key.startsWith(scopedPrefix)) continue;
+			const candidate = this.#getCredentialBlockedUntilForKey(key, credentialIndex, nowMs);
+			if (candidate !== undefined && (blockedUntil === undefined || candidate > blockedUntil)) {
+				blockedUntil = candidate;
+			}
+		}
+		for (const blockScope of ["", "main", "spark", "shared"]) {
+			const candidate = this.#readPersistedCredentialBlock(credentialId, providerKey, blockScope);
+			if (candidate !== undefined && (blockedUntil === undefined || candidate > blockedUntil)) {
+				blockedUntil = candidate;
 			}
 		}
 		return blockedUntil;
@@ -1751,6 +1808,11 @@ export class AuthStorage {
 	 * Called when credentials are added/removed to prevent stale index references.
 	 */
 	#resetProviderAssignments(provider: string): void {
+		for (const key of this.#unresolvedApiKeyCredentials.keys()) {
+			if (key.startsWith(`${provider}:`)) {
+				this.#unresolvedApiKeyCredentials.delete(key);
+			}
+		}
 		for (const key of this.#providerRoundRobinIndex.keys()) {
 			if (key.startsWith(`${provider}:`)) {
 				this.#providerRoundRobinIndex.delete(key);
@@ -2022,23 +2084,46 @@ export class AuthStorage {
 	}
 
 	/**
-	 * Classify where a provider's auth comes from, following the same precedence
-	 * as {@link AuthStorage.getApiKey}: runtime override → config override →
-	 * stored OAuth → login-stored api_key → env var → stored api_key →
-	 * fallback resolver. Returns undefined when no auth is configured.
+	 * as {@link AuthStorage.getApiKey}: runtime override → usable stored OAuth →
+	 * login-stored api_key → config override → env var → stored api_key →
+	 * fallback resolver. Expired OAuth is not treated as the active origin by this
+	 * synchronous classifier; it falls through to API-key fallbacks.
 	 *
 	 * Compact, structured counterpart to {@link describeCredentialSource}.
 	 */
 	getCredentialOrigin(provider: string): CredentialOrigin | undefined {
 		if (this.#runtimeOverrides.has(provider)) return { kind: "runtime" };
-		if (this.#configOverrides.has(provider)) return { kind: "config" };
 		const stored = this.#getCredentialsForProvider(provider);
-		if (stored.some(credential => credential.type === "oauth")) return { kind: "oauth" };
-		if (stored.some(credential => credential.type === "api_key" && credential.source === "login")) {
+		if (
+			stored.some(
+				credential =>
+					credential.type === "oauth" && Number.isFinite(credential.expires) && credential.expires > Date.now(),
+			)
+		) {
+			return { kind: "oauth" };
+		}
+		if (
+			stored.some(
+				(credential, index) =>
+					credential.type === "api_key" &&
+					credential.source === "login" &&
+					!this.#isApiKeyCredentialUnresolved(provider, index, credential),
+			)
+		) {
 			return { kind: "api_key" };
 		}
+		if (this.#configOverrides.has(provider)) return { kind: "config" };
 		if (getEnvApiKey(provider)) return { kind: "env", envVar: getEnvApiKeyName(provider) };
-		if (stored.some(credential => credential.type === "api_key")) return { kind: "api_key" };
+		if (
+			stored.some(
+				(credential, index) =>
+					credential.type === "api_key" &&
+					credential.source !== "login" &&
+					!this.#isApiKeyCredentialUnresolved(provider, index, credential),
+			)
+		) {
+			return { kind: "api_key" };
+		}
 		if (this.#fallbackResolver?.(provider)) return { kind: "fallback" };
 		return undefined;
 	}
@@ -2061,12 +2146,17 @@ export class AuthStorage {
 
 	#resolveActiveOAuthCredential(provider: string, sessionId?: string): OAuthCredential | undefined {
 		const allCredentials = this.#getCredentialsForProvider(provider);
-		const oauthCredentials = allCredentials.filter((c): c is OAuthCredential => c.type === "oauth");
+		const isFreshOAuth = (credential: OAuthCredential): boolean =>
+			Number.isFinite(credential.expires) && credential.expires > Date.now();
+		const oauthCredentials = allCredentials.filter(
+			(credential): credential is OAuthCredential => credential.type === "oauth" && isFreshOAuth(credential),
+		);
 		if (oauthCredentials.length === 0) return undefined;
 
-		// Runtime / config overrides bypass OAuth account_uuid attribution — the
-		// caller is authenticating with an explicit key, not the broker's OAuth.
-		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) return undefined;
+		// Runtime overrides bypass OAuth account_uuid attribution — the caller is
+		// authenticating with an explicit CLI key, not the broker's OAuth. Config
+		// API keys are only fallbacks and must not hide a live OAuth login.
+		if (this.#runtimeOverrides.has(provider)) return undefined;
 
 		// Prefer the session-sticky credential when available.
 		const sessionPref = this.#getSessionCredential(provider, sessionId);
@@ -2074,19 +2164,23 @@ export class AuthStorage {
 		if (sessionPref !== undefined && sessionPref.type !== "oauth") return undefined;
 
 		// When no session-sticky credential is recorded yet (first call before any getApiKey,
-		// or all stored credentials are unavailable), the request falls through to the env-key
-		// or fallback-resolver path in getApiKey() — neither is OAuth-authenticated, so
+		// or all stored OAuth credentials are expired), the request falls through to an
+		// env/fallback path in getApiKey() — neither is OAuth-authenticated, so
 		// account_uuid injection would misattribute traffic. Only apply this guard when
-		// sessionPref is absent; a recorded OAuth sticky (sessionPref.type === "oauth") must
-		// NOT be blocked even if an env key also happens to exist.
-		if (!sessionPref && (getEnvApiKey(provider) || this.#fallbackResolver?.(provider))) return undefined;
+		// sessionPref is absent; a recorded fresh OAuth sticky must NOT be blocked even if
+		// an env key also happens to exist.
+		if (!sessionPref && (getEnvApiKey(provider) || this.#fallbackResolver?.(provider))) {
+			return undefined;
+		}
 		// Resolve the sticky index against the full credential list — the index is
 		// recorded against the unfiltered provider array (by #recordSessionCredential /
 		// #tryOAuthCredential), not the OAuth-only subset, so dereferencing it into the
 		// filtered array would be off-by-N when any non-OAuth credential precedes the
 		// OAuth ones (e.g. [api_key, oauth_A, oauth_B] stored order).
 		const stickyCredential = sessionPref?.type === "oauth" ? allCredentials[sessionPref.index] : undefined;
-		return stickyCredential?.type === "oauth" ? stickyCredential : oauthCredentials[0];
+		return stickyCredential?.type === "oauth" && isFreshOAuth(stickyCredential)
+			? stickyCredential
+			: oauthCredentials[0];
 	}
 
 	/**
@@ -4535,13 +4629,8 @@ export class AuthStorage {
 			return runtimeKey;
 		}
 
-		const configKey = this.#configOverrides.get(provider);
-		if (configKey) {
-			return configKey;
-		}
-
-		// Precedence: a deliberate OAuth/login credential wins, then an explicit env var,
-		// then a stored static api_key (which may be a stale broker-migrated copy) as a last resort.
+		// Precedence: runtime override wins, then a usable stored OAuth/login credential,
+		// then explicit config/env/static API-key fallbacks.
 		const oauthSelection = this.#selectCredentialByType(provider, "oauth");
 		if (oauthSelection) {
 			const expiresAt = oauthSelection.credential.expires;
@@ -4564,15 +4653,28 @@ export class AuthStorage {
 			credential => credential.type === "api_key" && credential.source === "login",
 		);
 		if (loginApiKeySelection) {
-			return this.#configValueResolver(loginApiKeySelection.credential.key);
+			const apiKey = await this.#configValueResolver(loginApiKeySelection.credential.key);
+			if (apiKey !== undefined) {
+				this.#markApiKeyCredentialResolved(provider, loginApiKeySelection.index, loginApiKeySelection.credential);
+				return apiKey;
+			}
+			this.#markApiKeyCredentialUnresolved(provider, loginApiKeySelection.index, loginApiKeySelection.credential);
 		}
+
+		const configKey = this.#configOverrides.get(provider);
+		if (configKey) return configKey;
 
 		const envKey = getEnvApiKey(provider);
 		if (envKey) return envKey;
 
 		const apiKeySelection = this.#selectCredentialByType(provider, "api_key");
 		if (apiKeySelection) {
-			return this.#configValueResolver(apiKeySelection.credential.key);
+			const apiKey = await this.#configValueResolver(apiKeySelection.credential.key);
+			if (apiKey !== undefined) {
+				this.#markApiKeyCredentialResolved(provider, apiKeySelection.index, apiKeySelection.credential);
+				return apiKey;
+			}
+			this.#markApiKeyCredentialUnresolved(provider, apiKeySelection.index, apiKeySelection.credential);
 		}
 
 		return this.#fallbackResolver?.(provider) ?? undefined;
@@ -4582,9 +4684,9 @@ export class AuthStorage {
 	 * Get API key for a provider.
 	 * Priority (first match wins):
 	 * 1. Runtime override (CLI --api-key)
-	 * 2. Config override (models.yml `providers.<name>.apiKey`)
-	 * 3. OAuth token from storage (auto-refreshed)
-	 * 4. API key persisted by a successful `/login`
+	 * 2. OAuth token from storage (auto-refreshed)
+	 * 3. API key persisted by a successful `/login`
+	 * 4. Config override (models.yml `providers.<name>.apiKey`)
 	 * 5. Environment variable
 	 * 6. Stored API key (e.g. a broker-migrated copy) — last resort, so an explicit env var wins
 	 * 7. Fallback resolver (models.yml custom providers, last-resort)
@@ -4600,18 +4702,9 @@ export class AuthStorage {
 			return { apiKey: runtimeKey, origin: { kind: "runtime" } };
 		}
 
-		// Config override: explicit apiKey pinned in models.yml beats the broker's
-		// OAuth credentials. The user redirected a provider at a custom baseUrl
-		// (e.g. an auth-gateway) and supplied the bearer for that endpoint —
-		// honor it instead of forwarding an upstream OAuth token that the proxy
-		// won't accept.
-		const configKey = this.#configOverrides.get(provider);
-		if (configKey) {
-			return { apiKey: configKey, origin: { kind: "config" } };
-		}
-
-		// Precedence: a deliberate OAuth/login credential wins, then an explicit env var,
-		// then a stored static api_key (which may be a stale broker-migrated copy) as a last resort.
+		// OAuth/login credentials from an explicit login are the primary identity for
+		// this provider. Config API keys are fallback credentials: useful when OAuth
+		// is absent/unusable, but they must not hide a live stored OAuth login.
 		const oauthResolved = await this.#resolveOAuthSelection(provider, sessionId, options);
 		if (oauthResolved) {
 			return { apiKey: oauthResolved.apiKey, origin: { kind: "oauth" } };
@@ -4624,10 +4717,19 @@ export class AuthStorage {
 			credential => credential.type === "api_key" && credential.source === "login",
 		);
 		if (loginApiKeySelection) {
-			this.#recordSessionCredential(provider, sessionId, "api_key", loginApiKeySelection.index);
 			const apiKey = await this.#configValueResolver(loginApiKeySelection.credential.key);
-			if (apiKey === undefined) return undefined;
-			return { apiKey, origin: { kind: "api_key" } };
+			if (apiKey !== undefined) {
+				this.#markApiKeyCredentialResolved(provider, loginApiKeySelection.index, loginApiKeySelection.credential);
+				this.#recordSessionCredential(provider, sessionId, "api_key", loginApiKeySelection.index);
+				return { apiKey, origin: { kind: "api_key" } };
+			}
+			this.#markApiKeyCredentialUnresolved(provider, loginApiKeySelection.index, loginApiKeySelection.credential);
+		}
+
+		const configKey = this.#configOverrides.get(provider);
+		if (configKey) {
+			this.#clearSessionCredential(provider, sessionId);
+			return { apiKey: configKey, origin: { kind: "config" } };
 		}
 
 		// Past OAuth: the session sticky (if any) is stale — the request authenticates via
@@ -4644,10 +4746,13 @@ export class AuthStorage {
 			credential => credential.type !== "api_key" || credential.source !== "login",
 		);
 		if (apiKeySelection) {
-			this.#recordSessionCredential(provider, sessionId, "api_key", apiKeySelection.index);
 			const apiKey = await this.#configValueResolver(apiKeySelection.credential.key);
-			if (apiKey === undefined) return undefined;
-			return { apiKey, origin: { kind: "api_key" } };
+			if (apiKey !== undefined) {
+				this.#markApiKeyCredentialResolved(provider, apiKeySelection.index, apiKeySelection.credential);
+				this.#recordSessionCredential(provider, sessionId, "api_key", apiKeySelection.index);
+				return { apiKey, origin: { kind: "api_key" } };
+			}
+			this.#markApiKeyCredentialUnresolved(provider, apiKeySelection.index, apiKeySelection.credential);
 		}
 
 		const fallbackKey = this.#fallbackResolver?.(provider);
@@ -4671,18 +4776,16 @@ export class AuthStorage {
 	 * scenarios, prefer {@link AuthStorage.getApiKey}.
 	 *
 	 * Returns `undefined` when no OAuth credential is available, the
-	 * credential fails to refresh, or runtime/config overrides have replaced
-	 * OAuth with an explicit API key.
+	 * credential fails to refresh, or a runtime override has replaced OAuth with
+	 * an explicit CLI API key. Config API keys are fallbacks and do not suppress
+	 * stored OAuth identity.
 	 */
 	async getOAuthAccess(
 		provider: string,
 		sessionId?: string,
 		options?: AuthApiKeyOptions,
 	): Promise<OAuthAccess | undefined> {
-		// Runtime / config overrides intentionally short-circuit OAuth: when the
-		// user has pinned an API key, they expect the OAuth identity to be
-		// suppressed (same contract as `getOAuthAccountId`).
-		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+		if (this.#runtimeOverrides.has(provider)) {
 			return undefined;
 		}
 		const resolved = await this.#resolveOAuthSelection(provider, sessionId, options);
@@ -4762,7 +4865,7 @@ export class AuthStorage {
 	 * account" UI should render `position + 1`.
 	 */
 	listOAuthAccounts(provider: string): OAuthAccountSummary[] {
-		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+		if (this.#runtimeOverrides.has(provider)) {
 			return [];
 		}
 		return this.#getStoredOAuthSelections(provider).map((selection, position) => ({
@@ -4784,7 +4887,7 @@ export class AuthStorage {
 	 * exercise each stored account exactly once.
 	 */
 	async getOAuthAccesses(provider: string, options?: AuthApiKeyOptions): Promise<OAuthAccessResolution[]> {
-		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+		if (this.#runtimeOverrides.has(provider)) {
 			return [];
 		}
 		const providerKey = this.#getProviderTypeKey(provider, "oauth");
@@ -4803,15 +4906,15 @@ export class AuthStorage {
 	 * failure of the targeted account surfaces as a failed resolution rather than
 	 * silently rotating or rate-tripping a sibling.
 	 *
-	 * Returns `undefined` when `position` is out of range or runtime/config
-	 * overrides have replaced OAuth with an explicit API key.
+	 * Returns `undefined` when `position` is out of range or a runtime override
+	 * has replaced OAuth with an explicit CLI API key.
 	 */
 	async getOAuthAccessAt(
 		provider: string,
 		position: number,
 		options?: AuthApiKeyOptions,
 	): Promise<OAuthAccessResolution | undefined> {
-		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+		if (this.#runtimeOverrides.has(provider)) {
 			return undefined;
 		}
 		const selection = this.#getStoredOAuthSelections(provider)[position];
@@ -4982,8 +5085,8 @@ export class AuthStorage {
 	 * Self-heal a stale Codex usage-limit block: when a fresh live usage report
 	 * shows the account is allowed and below every limit, drop the persisted and
 	 * in-memory `openai-codex:oauth` blocks so the balancer re-includes it. Only
-	 * Codex — its ranking strategy uses the single model-independent `"shared"`
-	 * scope, so clearing every block for the credential id is exact.
+	 * Codex — clear every scoped pool for the credential because the ranking
+	 * strategy has split over time (`main`, `spark`, and legacy unscoped rows).
 	 */
 	#isHealthyCodexUsageReport(report: UsageReport): boolean {
 		const metadata = report.metadata;
@@ -5000,10 +5103,7 @@ export class AuthStorage {
 		const providerKey = this.#getProviderTypeKey(provider, "oauth");
 		const credentialIndex = this.#getStoredCredentials(provider).findIndex(entry => entry.id === credentialId);
 		if (credentialIndex < 0) return;
-		// Mirror selection: consult the same strategy scope `markUsageLimitReached`
-		// persists under, else a scoped block is invisible here and never healed.
-		const blockScope = this.#rankingStrategyResolver?.(provider)?.blockScope?.({});
-		const blockedUntilMs = this.#getCredentialBlockedUntil(provider, providerKey, credentialIndex, blockScope);
+		const blockedUntilMs = this.#getAnyCredentialBlockedUntil(providerKey, credentialId, credentialIndex);
 		if (blockedUntilMs === undefined) return;
 		this.#clearCredentialBlocks(provider, credentialId);
 		logger.info("Cleared stale Codex usage-limit block after healthy live usage report", {
@@ -5517,9 +5617,9 @@ export class AuthStorage {
 	 *
 	 * Mirrors {@link AuthStorage.getApiKey} precedence, highest first:
 	 *   1. Runtime override (`--api-key`).
-	 *   2. Config override (`models.yml` `providers.<name>.apiKey`).
-	 *   3. Stored OAuth credential.
-	 *   4. API key persisted by a successful `/login`.
+	 *   2. Fresh stored OAuth credential.
+	 *   3. API key persisted by a successful `/login`.
+	 *   4. Config override (`models.yml` `providers.<name>.apiKey`).
 	 *   5. Env var — overrides a stored static api_key (e.g. a stale broker copy).
 	 *   6. Stored api_key credential.
 	 *   7. Fallback resolver.
@@ -5530,20 +5630,18 @@ export class AuthStorage {
 		if (this.#runtimeOverrides.has(provider)) {
 			return "runtime override (--api-key)";
 		}
-		if (this.#configOverrides.has(provider)) {
-			return "config override (models.yml)";
-		}
-
 		const baseLabel = this.#sourceLabel ?? "local store";
 		const stored = this.#getStoredCredentials(provider);
 		const session = sessionId ? this.#sessionLastCredential.get(provider)?.get(sessionId) : undefined;
 		const describeStored = (
 			type: AuthCredential["type"],
-			filter?: (credential: AuthCredential) => boolean,
+			filter?: (credential: AuthCredential, index: number) => boolean,
 		): string | undefined => {
 			const typed = stored
 				.map((entry, index) => ({ entry, index }))
-				.filter(({ entry }) => entry.credential.type === type && (filter?.(entry.credential) ?? true));
+				.filter(
+					({ entry, index }) => entry.credential.type === type && (filter?.(entry.credential, index) ?? true),
+				);
 			if (typed.length === 0) return undefined;
 			const sticky = session?.type === type ? typed.find(entry => entry.index === session.index) : undefined;
 			const chosen = sticky?.entry ?? typed[0].entry;
@@ -5555,18 +5653,29 @@ export class AuthStorage {
 			return `${baseLabel} · ${type} #${chosen.id} (${identity})`;
 		};
 
-		// Deliberate login credentials win; then an explicit env var; then a stored static api_key.
-		const oauthSource = describeStored("oauth");
+		// Deliberate fresh OAuth/login credentials win; then config/env/API-key fallbacks.
+		const oauthSource = describeStored(
+			"oauth",
+			credential =>
+				credential.type === "oauth" && Number.isFinite(credential.expires) && credential.expires > Date.now(),
+		);
 		if (oauthSource) return oauthSource;
 		const loginApiKeySource = describeStored(
 			"api_key",
-			credential => credential.type === "api_key" && credential.source === "login",
+			(credential, index) =>
+				credential.type === "api_key" &&
+				credential.source === "login" &&
+				!this.#isApiKeyCredentialUnresolved(provider, index, credential),
 		);
 		if (loginApiKeySource) return loginApiKeySource;
+		if (this.#configOverrides.has(provider)) return "config override (models.yml)";
 		if (getEnvApiKey(provider)) return `env (over ${baseLabel})`;
 		const apiKeySource = describeStored(
 			"api_key",
-			credential => credential.type !== "api_key" || credential.source !== "login",
+			(credential, index) =>
+				credential.type === "api_key" &&
+				credential.source !== "login" &&
+				!this.#isApiKeyCredentialUnresolved(provider, index, credential),
 		);
 		if (apiKeySource) return apiKeySource;
 		if (this.#fallbackResolver?.(provider) !== undefined) return "fallback resolver";

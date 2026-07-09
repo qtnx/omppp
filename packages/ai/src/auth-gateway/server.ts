@@ -30,8 +30,17 @@ import * as openaiChat from "../providers/openai-chat-server";
 import * as openaiResponses from "../providers/openai-responses-server";
 import * as piNative from "../providers/pi-native-server";
 import { completeSimple, streamSimple } from "../stream";
-import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "../types";
+import type {
+	Api,
+	AssistantMessage,
+	AssistantMessageEvent,
+	Context,
+	Model,
+	SimpleStreamOptions,
+	Usage,
+} from "../types";
 import { deterministicUuid } from "../utils/deterministic-id";
+import { AssistantMessageEventStream } from "../utils/event-stream";
 import { parseBind } from "../utils/parse-bind";
 import { captureRequestHeaders, corsHeaders, isAuthorized, json, resolvePeer, withCors } from "./http";
 import type {
@@ -317,6 +326,138 @@ function clientClosedResponse(route: { module: FormatModule }): Response {
 	return route.module.formatError(499, "request_aborted", "client closed request");
 }
 
+type CredentialAuthType = "oauth" | "api_key";
+
+interface AuthGatewayAuditState {
+	requestId: string;
+	startedAt: number;
+	format: string;
+	model: string;
+	resolvedProvider: string;
+	resolvedModel: string;
+	stream: boolean;
+	peer: string;
+	credentialOrigin: string;
+	credentialAuthType: CredentialAuthType;
+}
+
+interface AuthGatewayAuditCompletion {
+	status: number;
+	reason?: "aborted" | "error";
+	usage?: Usage;
+}
+
+interface StreamingAuditCapture {
+	terminal?: AuthGatewayAuditCompletion;
+}
+
+function createAuditState(args: Omit<AuthGatewayAuditState, "requestId" | "startedAt">): AuthGatewayAuditState {
+	return { ...args, requestId: crypto.randomUUID(), startedAt: Date.now() };
+}
+
+function auditUsageFields(usage?: Usage): Record<string, number> {
+	return {
+		inputTokens: usage?.input ?? 0,
+		outputTokens: usage?.output ?? 0,
+		cacheReadTokens: usage?.cacheRead ?? 0,
+		cacheWriteTokens: usage?.cacheWrite ?? 0,
+		totalTokens: usage?.totalTokens ?? 0,
+		...(usage?.reasoningTokens === undefined ? {} : { reasoningTokens: usage.reasoningTokens }),
+	};
+}
+
+function logCompletionAudit(state: AuthGatewayAuditState, completion: AuthGatewayAuditCompletion): void {
+	logger.info("auth-gateway request", {
+		format: state.format,
+		model: state.model,
+		resolvedProvider: state.resolvedProvider,
+		resolvedModel: state.resolvedModel,
+		stream: state.stream,
+		peer: state.peer,
+		credentialOrigin: state.credentialOrigin,
+		credentialAuthType: state.credentialAuthType,
+		requestId: state.requestId,
+		durationMs: Date.now() - state.startedAt,
+		status: completion.status,
+		...(completion.reason === undefined ? {} : { reason: completion.reason }),
+		...auditUsageFields(completion.usage),
+	});
+}
+
+function auditCompletionFromError(error: unknown): AuthGatewayAuditCompletion {
+	const classified = classifyGatewayError(error);
+	return { status: classified.status, reason: "error" };
+}
+
+function auditCompletionFromMessage(message: AssistantMessage): AuthGatewayAuditCompletion {
+	if (message.stopReason === "aborted") return { status: 499, reason: "aborted", usage: message.usage };
+	if (message.stopReason === "error") {
+		const classified = classifyGatewayError(message.errorMessage ?? "Upstream request failed");
+		return { status: classified.status, reason: "error", usage: message.usage };
+	}
+	return { status: 200, usage: message.usage };
+}
+
+function auditCompletionFromEvent(event: AssistantMessageEvent): AuthGatewayAuditCompletion | undefined {
+	if (event.type === "done") return auditCompletionFromMessage(event.message);
+	if (event.type === "error") return auditCompletionFromMessage(event.error);
+	return undefined;
+}
+
+function captureStreamingTerminal(
+	source: AssistantMessageEventStream,
+	capture: StreamingAuditCapture,
+): AssistantMessageEventStream {
+	const outer = new AssistantMessageEventStream();
+	void (async () => {
+		try {
+			for await (const event of source) {
+				capture.terminal = auditCompletionFromEvent(event) ?? capture.terminal;
+				outer.push(event);
+			}
+			outer.end();
+		} catch (error) {
+			capture.terminal = auditCompletionFromError(error);
+			outer.fail(error);
+		}
+	})();
+	return outer;
+}
+
+function auditReadableStream(
+	stream: ReadableStream<Uint8Array>,
+	state: AuthGatewayAuditState,
+	capture: StreamingAuditCapture,
+): ReadableStream<Uint8Array> {
+	const reader = stream.getReader();
+	let logged = false;
+	const logOnce = (completion: AuthGatewayAuditCompletion): void => {
+		if (logged) return;
+		logged = true;
+		logCompletionAudit(state, completion);
+	};
+	return new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			try {
+				const chunk = await reader.read();
+				if (chunk.done) {
+					logOnce(capture.terminal ?? { status: 200 });
+					controller.close();
+					return;
+				}
+				controller.enqueue(chunk.value);
+			} catch (error) {
+				logOnce(auditCompletionFromError(error));
+				throw error;
+			}
+		},
+		async cancel(reason) {
+			logOnce({ status: 499, reason: "aborted" });
+			await reader.cancel(reason);
+		},
+	});
+}
+
 function mirrorRequestAbort(req: Request): AbortController {
 	const controller = new AbortController();
 	if (req.signal.aborted) {
@@ -435,7 +576,7 @@ async function handleFormatEndpoint(
 		peer,
 	);
 
-	logger.info("auth-gateway request", {
+	const audit = createAuditState({
 		format: route.label,
 		model: parsed.modelId,
 		resolvedProvider: model.provider,
@@ -448,8 +589,13 @@ async function handleFormatEndpoint(
 
 	if (!parsed.stream) {
 		try {
-			if (controller.signal.aborted) return clientClosedResponse(route);
+			if (controller.signal.aborted) {
+				logCompletionAudit(audit, { status: 499, reason: "aborted" });
+				return clientClosedResponse(route);
+			}
 			const message = await completeSimple(model, parsed.context, streamOpts);
+			const completion = auditCompletionFromMessage(message);
+			logCompletionAudit(audit, completion);
 			if (message.stopReason === "aborted" || message.stopReason === "error") {
 				const errorMessage =
 					message.errorMessage ??
@@ -468,8 +614,12 @@ async function handleFormatEndpoint(
 			}
 			return json(200, route.module.encodeResponse(message, parsed.modelId));
 		} catch (error) {
-			if (controller.signal.aborted) return clientClosedResponse(route);
+			if (controller.signal.aborted) {
+				logCompletionAudit(audit, { status: 499, reason: "aborted" });
+				return clientClosedResponse(route);
+			}
 			const classified = classifyGatewayError(error);
+			logCompletionAudit(audit, { status: classified.status, reason: "error" });
 			logger.warn("auth-gateway non-streaming aborted", {
 				format: route.label,
 				error: classified.message,
@@ -481,24 +631,38 @@ async function handleFormatEndpoint(
 
 	let events: AssistantMessageEventStream;
 	try {
-		if (controller.signal.aborted) return clientClosedResponse(route);
+		if (controller.signal.aborted) {
+			logCompletionAudit(audit, { status: 499, reason: "aborted" });
+			return clientClosedResponse(route);
+		}
 		events = streamSimple(model, parsed.context, streamOpts);
 	} catch (error) {
 		const classified = classifyGatewayError(error);
+		logCompletionAudit(audit, { status: classified.status, reason: "error" });
 		logger.warn("auth-gateway streamSimple threw", { format: route.label, error: classified.message, peer });
 		return route.module.formatError(classified.status, classified.type, classified.message);
 	}
-	if (controller.signal.aborted) return clientClosedResponse(route);
+	if (controller.signal.aborted) {
+		logCompletionAudit(audit, { status: 499, reason: "aborted" });
+		return clientClosedResponse(route);
+	}
 
-	const sseStream = route.module.encodeStream(events, parsed.modelId, parsed.options, {
-		signal: controller.signal,
-		onCancel: reason => {
-			if (!controller.signal.aborted) {
-				controller.abort(reason instanceof Error ? reason : new Error("client closed request"));
-			}
+	const capture: StreamingAuditCapture = {};
+	const sseStream = route.module.encodeStream(
+		captureStreamingTerminal(events, capture),
+		parsed.modelId,
+		parsed.options,
+		{
+			signal: controller.signal,
+			onCancel: reason => {
+				if (!controller.signal.aborted) {
+					controller.abort(reason instanceof Error ? reason : new Error("client closed request"));
+				}
+			},
 		},
-	});
-	return new Response(sseStream, {
+	);
+	const auditedStream = auditReadableStream(sseStream, audit, capture);
+	return new Response(auditedStream, {
 		status: 200,
 		headers: {
 			"Content-Type": "text/event-stream; charset=utf-8",
@@ -617,7 +781,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	streamOpts.headers = { ...captured, ...(streamOpts.headers ?? {}) };
 	streamOpts.sessionId ??= sessionId;
 
-	logger.info("auth-gateway request", {
+	const audit = createAuditState({
 		format: "pi-native",
 		model: parsed.modelId,
 		resolvedProvider: model.provider,
@@ -630,8 +794,13 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 
 	if (!parsed.stream) {
 		try {
-			if (controller.signal.aborted) return aborted();
+			if (controller.signal.aborted) {
+				logCompletionAudit(audit, { status: 499, reason: "aborted" });
+				return aborted();
+			}
 			const message = await completeSimple(model, parsed.context, streamOpts);
+			const completion = auditCompletionFromMessage(message);
+			logCompletionAudit(audit, completion);
 			if (message.stopReason === "aborted" || message.stopReason === "error") {
 				const errorMessage =
 					message.errorMessage ??
@@ -650,8 +819,12 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 			}
 			return json(200, { message });
 		} catch (error) {
-			if (controller.signal.aborted) return aborted();
+			if (controller.signal.aborted) {
+				logCompletionAudit(audit, { status: 499, reason: "aborted" });
+				return aborted();
+			}
 			const classified = classifyGatewayError(error);
+			logCompletionAudit(audit, { status: classified.status, reason: "error" });
 			logger.warn("auth-gateway non-streaming aborted", { format: "pi-native", error: classified.message, peer });
 			return piNative.formatError(classified.status, classified.type, classified.message);
 		}
@@ -659,16 +832,24 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 
 	let events: AssistantMessageEventStream;
 	try {
-		if (controller.signal.aborted) return aborted();
+		if (controller.signal.aborted) {
+			logCompletionAudit(audit, { status: 499, reason: "aborted" });
+			return aborted();
+		}
 		events = streamSimple(model, parsed.context, streamOpts);
 	} catch (error) {
 		const classified = classifyGatewayError(error);
+		logCompletionAudit(audit, { status: classified.status, reason: "error" });
 		logger.warn("auth-gateway streamSimple threw", { format: "pi-native", error: classified.message, peer });
 		return piNative.formatError(classified.status, classified.type, classified.message);
 	}
-	if (controller.signal.aborted) return aborted();
+	if (controller.signal.aborted) {
+		logCompletionAudit(audit, { status: 499, reason: "aborted" });
+		return aborted();
+	}
 
-	const sseStream = piNative.encodeStream(events, parsed.modelId, parsed.options, {
+	const capture: StreamingAuditCapture = {};
+	const sseStream = piNative.encodeStream(captureStreamingTerminal(events, capture), parsed.modelId, parsed.options, {
 		signal: controller.signal,
 		onCancel: reason => {
 			if (!controller.signal.aborted) {
@@ -676,7 +857,8 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 			}
 		},
 	});
-	return new Response(sseStream, {
+	const auditedStream = auditReadableStream(sseStream, audit, capture);
+	return new Response(auditedStream, {
 		status: 200,
 		headers: {
 			"Content-Type": "text/event-stream; charset=utf-8",

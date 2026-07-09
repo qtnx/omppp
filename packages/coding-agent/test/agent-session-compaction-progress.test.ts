@@ -3,7 +3,8 @@ import * as path from "node:path";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -19,13 +20,28 @@ import { type } from "arktype";
 // rapid synchronous bursts, then asserts throttling + chronology on the events
 // the session actually emits.
 
+function makeCompactionModel() {
+	return buildModel({
+		id: "gpt-5-compaction-progress",
+		name: "GPT-5 compaction progress",
+		api: "openai-responses",
+		provider: "openai",
+		baseUrl: "https://api.openai.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200_000,
+		maxTokens: 128_000,
+	} satisfies Partial<ModelSpec<"openai-responses">>);
+}
+
 function createAssistantResponse(text: string) {
 	return {
 		role: "assistant" as const,
 		content: [{ type: "text" as const, text }],
-		api: "anthropic-messages" as const,
-		provider: "anthropic" as const,
-		model: "claude-sonnet-4-5",
+		api: "openai-responses" as const,
+		provider: "openai" as const,
+		model: "gpt-5-compaction-progress",
 		usage: {
 			input: 0,
 			output: 0,
@@ -44,9 +60,9 @@ function emitHighUsageTurn(session: AgentSession, contextWindow: number): void {
 	const assistantMsg = {
 		role: "assistant" as const,
 		content: [{ type: "text" as const, text: "Done." }],
-		api: "anthropic-messages" as const,
-		provider: "anthropic" as const,
-		model: "claude-sonnet-4-5",
+		api: "openai-responses" as const,
+		provider: "openai" as const,
+		model: "gpt-5-compaction-progress",
 		stopReason: "stop" as const,
 		usage: {
 			input: Math.ceil(contextWindow * 0.9),
@@ -81,14 +97,13 @@ describe("AgentSession auto_compaction_progress", () => {
 	async function createHarness(): Promise<{
 		session: AgentSession;
 		events: AgentSessionEvent[];
+		waitForEnd: Promise<void>;
 		contextWindow: number;
 	}> {
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
-		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
-		if (model.contextWindow === null) throw new Error("Expected claude-sonnet-4-5 context window to exist");
+		const model = makeCompactionModel();
 
 		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.setRuntimeApiKey("openai", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 		const settings = Settings.isolated({
 			"compaction.enabled": true,
@@ -129,6 +144,7 @@ describe("AgentSession auto_compaction_progress", () => {
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, toolRegistry });
 
 		const events: AgentSessionEvent[] = [];
+		const compactionEnd = Promise.withResolvers<void>();
 		session.subscribe(event => {
 			if (
 				event.type === "auto_compaction_start" ||
@@ -136,6 +152,7 @@ describe("AgentSession auto_compaction_progress", () => {
 				event.type === "auto_compaction_end"
 			) {
 				events.push(event);
+				if (event.type === "auto_compaction_end") compactionEnd.resolve();
 			}
 		});
 
@@ -143,23 +160,16 @@ describe("AgentSession auto_compaction_progress", () => {
 			await session.dispose();
 			authStorage.close();
 		});
-		return { session, events, contextWindow: model.contextWindow };
-	}
-
-	/** Resolve once the terminal auto_compaction_end has been captured. */
-	function waitForEnd(events: AgentSessionEvent[]): Promise<void> {
-		const { promise, resolve } = Promise.withResolvers<void>();
-		const timer = setInterval(() => {
-			if (events.some(e => e.type === "auto_compaction_end")) {
-				clearInterval(timer);
-				resolve();
-			}
-		}, 5);
-		return promise;
+		return {
+			session,
+			events,
+			waitForEnd: compactionEnd.promise,
+			contextWindow: model.contextWindow ?? 200_000,
+		};
 	}
 
 	it("emits throttled progress between start and end during a real-model compaction", async () => {
-		const { session, events, contextWindow } = await createHarness();
+		const { session, events, waitForEnd, contextWindow } = await createHarness();
 
 		// Mock the summary so the SSE onProgress is driven directly (no network).
 		// Two bursts of 10 synchronous calls each, separated by a >200ms gap, so
@@ -171,7 +181,7 @@ describe("AgentSession auto_compaction_progress", () => {
 					for (let i = 1; i <= 10; i++) {
 						onProgress({ events: i, bytes: i * 400, estTokens: Math.ceil((i * 400) / 4) });
 					}
-					await Bun.sleep(220); // cross the throttle window before the second burst
+					await Bun.sleep(220); // Cross the production throttle window intentionally.
 					for (let i = 11; i <= 20; i++) {
 						onProgress({ events: i, bytes: i * 400, estTokens: Math.ceil((i * 400) / 4) });
 					}
@@ -188,7 +198,7 @@ describe("AgentSession auto_compaction_progress", () => {
 
 		await session.prompt("refactor the parser across modules");
 		emitHighUsageTurn(session, contextWindow);
-		await waitForEnd(events);
+		await waitForEnd;
 
 		const startIdx = events.findIndex(e => e.type === "auto_compaction_start");
 		const endIdx = events.findIndex(e => e.type === "auto_compaction_end");

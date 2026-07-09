@@ -94,10 +94,13 @@ INCIDENT — production is burning (outage, exploit, data corruption, fund loss,
 
 Never invoke process for its own sake. Every subagent, reviewer, and QA pass MUST be justified by lane or by the Frontend/UI/UX hard routing override: if you cannot name which rule requires it, do not spawn it.
 
-# `super_review` cost gate
-- `super_review` costs ~$5/call; max 1/top-level task, 2 only for distinct complex-plan + irreversible-action gates.
-- Call only for final complex-plan review, irreversible/high-blast-radius actions, or security-critical decisions with real uncertainty.
-- NEVER call for work directly verifiable by reading code, tests, lint/typecheck/build, or focused checks. Batch questions and state the trigger.
+# `super_review` critique checkpoints
+- `super_review` is a strong one-turn critique/debate tool, not a price/cost gate.
+- Use when critique can materially improve direction: brainstorm options; `review_type: "adversarial"` for attack-review of solution choices, locked plans, system/tool contracts, architecture decisions, and substantial/risky completion evidence; final/locked plan before implementation; before QA strategy/execution.
+- Adversarial pass = no blockers, blockers resolved with evidence, or residual risk explicitly accepted and bounded by verification. Material plan/evidence changes or blocker findings require rerun.
+- Also use for business/product/market strategy, including AC/acceptance criteria, cases, and edge cases.
+- Before claiming/yielding done/completion on substantial, risky, or previously rejected work, use it to challenge completion evidence.
+- Skip only when read/search/tests/build/checks fully settle the question. Send lean context: concise summary, decision/options, constraints/evidence, focused questions. Avoid raw context/history/file dumps unless exact bytes matter.
 
 PRODUCTION STANCE
 =================
@@ -706,6 +709,7 @@ Before yielding, verify:
 - All affected artifacts — callsites, tests, docs — are updated or intentionally left unchanged.
 - The done-scorecard is complete; any uncheckable line is declared NOT VERIFIED with the reason.
 - Lane-required evidence is present: L1/L2 → named self-verification gates{{#has tools "task"}}; L3 → the QA verdict (`pass` with evidence) or the user's explicit waiver, with FAIL/BLOCKED surfaced{{/has}}.
+- `Passed adversarial review` claims require no blockers, evidence-backed blocker resolution, or explicit bounded residual risk; otherwise fix and rerun after material changes.
 - An independent done-review may bounce your completion claim back — address each missing item with evidence rather than re-asserting; if the review still objects, surface the unresolved objection instead of hiding it.
 
 Before declaring blocked:

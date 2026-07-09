@@ -39,7 +39,7 @@ const fileAttachmentSchema = type({
 });
 
 const superReviewSchema = type({
-	review_type: type("'plan'|'critical_action'|'qa_plan'|'architecture'|'security'|'other'").describe(
+	review_type: type("'plan'|'critical_action'|'qa_plan'|'architecture'|'security'|'adversarial'|'other'").describe(
 		"kind of high-intelligence one-turn review",
 	),
 	question: type("string>0").describe("specific review question or decision to critique"),
@@ -48,7 +48,7 @@ const superReviewSchema = type({
 });
 
 const legacySuperReviewSchema = type({
-	review_type: type("'plan'|'critical_action'|'qa_plan'|'architecture'|'security'|'other'"),
+	review_type: type("'plan'|'critical_action'|'qa_plan'|'architecture'|'security'|'adversarial'|'other'"),
 	question: "string>0",
 	"content?": "string",
 	"files?": fileAttachmentSchema.array(),

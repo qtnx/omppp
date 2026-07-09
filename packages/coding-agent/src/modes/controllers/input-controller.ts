@@ -376,6 +376,11 @@ export class InputController {
 			}
 			return;
 		}
+		if (!this.#hasGlobalInterruptWork() && vocalizer.isSpeaking()) {
+			vocalizer.clear();
+			this.ctx.lastEscapeTime = 0;
+			return;
+		}
 		if (this.ctx.loadingAnimation) {
 			if (this.ctx.session.isStreaming) {
 				this.#handleStreamingEscape(() => this.restoreQueuedMessagesToEditor({ abort: true }));
@@ -476,7 +481,7 @@ export class InputController {
 				if (!this.#matchesInterruptKey(data)) return undefined;
 				const focused = this.ctx.ui.getFocused();
 				if (focused === this.ctx.editor && this.ctx.editor.isShowingAutocomplete()) return undefined;
-				if (!this.#hasGlobalInterruptWork()) return undefined;
+				if (!this.#hasGlobalInterruptWork() && !vocalizer.isSpeaking()) return undefined;
 				this.#handleEscape();
 				return { consume: true };
 			});

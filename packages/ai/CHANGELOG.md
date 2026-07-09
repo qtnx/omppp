@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added completion-time auth-gateway audit logs with request status, duration, credential origin, and token usage without logging request bodies or credential secrets.
+
+### Fixed
+
+- Fixed config API keys shadowing stored OAuth credentials for the same provider, so auth-gateway fallback keys no longer displace live OAuth identity, account attribution, or token refresh unless OAuth is unavailable.
+
 ## [16.3.12] - 2026-07-08
 
 ### Added
