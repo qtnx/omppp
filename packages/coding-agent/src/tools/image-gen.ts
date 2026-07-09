@@ -2,6 +2,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { type ApiKey, type FetchImpl, getEnvApiKey, type Model, withAuth } from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
 import {
 	CODEX_BASE_URL,
 	getCodexAccountId,
@@ -45,7 +46,7 @@ const IMAGE_SYSTEM_INSTRUCTION =
 	"You are an AI image generator. Generate images based on user descriptions. Focus on creating high-quality, visually appealing images that match the user's request.";
 
 export type ImageProvider = "antigravity" | "gemini" | "openai" | "openai-codex" | "openrouter" | "xai";
-export type ImageProviderPreference = Exclude<ImageProvider, "openai-codex"> | "auto";
+export type ImageProviderPreference = ImageProvider | "auto";
 
 interface ImageApiKey {
 	provider: ImageProvider;
@@ -57,7 +58,15 @@ interface ImageApiKey {
 const COMMON_IMAGE_ASPECT_RATIOS = ["1:1", "3:4", "4:3", "9:16", "16:9"] as const;
 const XAI_IMAGE_ASPECT_RATIOS = [...COMMON_IMAGE_ASPECT_RATIOS, "3:2", "2:3"] as const;
 const COMMON_IMAGE_ASPECT_RATIO_SET = new Set<string>(COMMON_IMAGE_ASPECT_RATIOS);
-const IMAGE_PROVIDER_PREFERENCES = new Set<string>(["auto", "antigravity", "gemini", "openai", "openrouter", "xai"]);
+const IMAGE_PROVIDER_PREFERENCES: Record<ImageProviderPreference, true> = {
+	auto: true,
+	antigravity: true,
+	gemini: true,
+	openai: true,
+	"openai-codex": true,
+	openrouter: true,
+	xai: true,
+};
 
 const responseModalitySchema = type('"IMAGE" | "TEXT"');
 
@@ -436,7 +445,7 @@ function extractOpenRouterImageUrls(message: OpenRouterMessage | undefined): str
 let preferredImageProvider: ImageProviderPreference = "auto";
 
 export function isImageProviderPreference(value: unknown): value is ImageProviderPreference {
-	return typeof value === "string" && IMAGE_PROVIDER_PREFERENCES.has(value);
+	return typeof value === "string" && value in IMAGE_PROVIDER_PREFERENCES;
 }
 
 /** Set the preferred image provider from settings */
@@ -547,13 +556,37 @@ async function findOpenAIHostedImageCredentials(
 	};
 }
 
+async function findOpenAICodexHostedImageCredentials(
+	modelRegistry: ModelRegistry | undefined,
+	sessionId?: string,
+): Promise<ImageApiKey | null> {
+	if (!modelRegistry) return null;
+	const candidates = modelRegistry
+		.getAvailable()
+		.filter(model => isOpenAIHostedImageModel(model) && getOpenAIHostedImageProvider(model) === "openai-codex");
+	const providerDefault = DEFAULT_MODEL_PER_PROVIDER["openai-codex"];
+	const candidate = candidates.find(model => model.id === providerDefault) ?? candidates[0];
+	if (!candidate) return null;
+	const apiKey = await modelRegistry.getApiKey(candidate, sessionId);
+	if (!isAuthenticated(apiKey)) return null;
+	return {
+		provider: "openai-codex",
+		apiKey,
+		model: candidate,
+	};
+}
+
 async function findImageApiKey(
 	modelRegistry?: ModelRegistry,
 	activeModel?: Model,
 	sessionId?: string,
 ): Promise<ImageApiKey | null> {
 	// If a specific provider is preferred, try it first.
-	if (preferredImageProvider === "openai") {
+	if (preferredImageProvider === "openai-codex") {
+		const codex = await findOpenAICodexHostedImageCredentials(modelRegistry, sessionId);
+		if (codex) return codex;
+		// Fall through to auto-detect if preferred provider key not found.
+	} else if (preferredImageProvider === "openai") {
 		const openAI = await findOpenAIHostedImageCredentials(modelRegistry, activeModel, sessionId);
 		if (openAI) return openAI;
 		// Fall through to auto-detect if preferred provider key not found.

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `providers.image=openai-codex` to prefer an authenticated OpenAI Codex Responses image-capable model for `generate_image` independently of the active chat model.
+
 ## [1.5.4] - 2026-07-08
 ## [16.3.12] - 2026-07-08
 

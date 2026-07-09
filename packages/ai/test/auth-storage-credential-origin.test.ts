@@ -126,4 +126,168 @@ describe("AuthStorage.getCredentialOrigin", () => {
 			expect(auth.getCredentialOrigin("openai")).toEqual({ kind: "runtime" });
 		});
 	});
+
+	test("config API key is the fallback when login API key cannot be resolved", async () => {
+		await withEnv(SUPPRESS_ENV, async () => {
+			if (!store) throw new Error("test setup failed");
+			auth = new AuthStorage(store, {
+				configValueResolver: async config => (config === "missing-login-key" ? undefined : config),
+			});
+			await auth.set("anthropic", [{ type: "api_key", key: "missing-login-key", source: "login" }]);
+			auth.setConfigApiKey("anthropic", "gateway-key");
+
+			expect(await auth.getApiKeyWithOrigin("anthropic")).toEqual({
+				apiKey: "gateway-key",
+				origin: { kind: "config" },
+			});
+			expect(await auth.peekApiKey("anthropic")).toBe("gateway-key");
+			expect(auth.getCredentialOrigin("anthropic")).toEqual({ kind: "config" });
+			expect(auth.describeCredentialSource("anthropic")).toContain("config");
+		});
+	});
+
+	test("config API key is the fallback when stored static API key cannot be resolved", async () => {
+		await withEnv(SUPPRESS_ENV, async () => {
+			if (!store) throw new Error("test setup failed");
+			auth = new AuthStorage(store, {
+				configValueResolver: async config => (config === "missing-static-key" ? undefined : config),
+			});
+			await auth.set("anthropic", [{ type: "api_key", key: "missing-static-key" }]);
+			auth.setConfigApiKey("anthropic", "gateway-key");
+
+			expect(await auth.getApiKeyWithOrigin("anthropic")).toEqual({
+				apiKey: "gateway-key",
+				origin: { kind: "config" },
+			});
+			expect(await auth.peekApiKey("anthropic")).toBe("gateway-key");
+			expect(auth.getCredentialOrigin("anthropic")).toEqual({ kind: "config" });
+			expect(auth.describeCredentialSource("anthropic")).toContain("config");
+		});
+	});
+
+	test("OAuth beats a config API key for anthropic credential resolution", async () => {
+		await withEnv(SUPPRESS_ENV, async () => {
+			if (!auth) throw new Error("test setup failed");
+			await auth.set("anthropic", [
+				{
+					type: "oauth",
+					access: "sk-ant-oat-oauth",
+					refresh: "refresh",
+					expires: Date.now() + 3_600_000,
+					accountId: "acct-oauth",
+				},
+			]);
+			auth.setConfigApiKey("anthropic", "gateway-key");
+
+			expect(await auth.getApiKeyWithOrigin("anthropic")).toEqual({
+				apiKey: "sk-ant-oat-oauth",
+				origin: { kind: "oauth" },
+			});
+		});
+	});
+
+	test("runtime API key beats OAuth and config while suppressing OAuth helpers", async () => {
+		await withEnv(SUPPRESS_ENV, async () => {
+			if (!auth) throw new Error("test setup failed");
+			await auth.set("anthropic", [
+				{
+					type: "oauth",
+					access: "sk-ant-oat-oauth",
+					refresh: "refresh",
+					expires: Date.now() + 3_600_000,
+					accountId: "acct-oauth",
+				},
+			]);
+			auth.setConfigApiKey("anthropic", "gateway-key");
+			auth.setRuntimeApiKey("anthropic", "runtime-key");
+
+			expect(await auth.getApiKeyWithOrigin("anthropic")).toEqual({
+				apiKey: "runtime-key",
+				origin: { kind: "runtime" },
+			});
+			expect(auth.getOAuthAccountId("anthropic")).toBeUndefined();
+			expect(await auth.listOAuthAccounts("anthropic")).toEqual([]);
+			expect(await auth.getOAuthAccess("anthropic")).toBeUndefined();
+		});
+	});
+
+	test("OAuth origin and source description beat config API key", async () => {
+		await withEnv(SUPPRESS_ENV, async () => {
+			if (!auth) throw new Error("test setup failed");
+			await auth.set("anthropic", [
+				{
+					type: "oauth",
+					access: "sk-ant-oat-oauth",
+					refresh: "refresh",
+					expires: Date.now() + 3_600_000,
+					accountId: "acct-oauth",
+				},
+			]);
+			expect(auth.getCredentialOrigin("anthropic")).toEqual({ kind: "oauth" });
+			expect(auth.describeCredentialSource("anthropic")).toContain("oauth");
+
+			auth.setConfigApiKey("anthropic", "gateway-key");
+
+			expect(auth.getCredentialOrigin("anthropic")).toEqual({ kind: "oauth" });
+			expect(auth.describeCredentialSource("anthropic")).toContain("oauth");
+		});
+	});
+
+	test("OAuth helpers expose stored OAuth when config API key is present", async () => {
+		await withEnv(SUPPRESS_ENV, async () => {
+			if (!auth) throw new Error("test setup failed");
+			await auth.set("anthropic", [
+				{
+					type: "oauth",
+					access: "sk-ant-oat-oauth",
+					refresh: "refresh",
+					expires: Date.now() + 3_600_000,
+					accountId: "acct-oauth",
+				},
+			]);
+			expect(auth.getOAuthAccountId("anthropic")).toBe("acct-oauth");
+			expect(await auth.listOAuthAccounts("anthropic")).toEqual([
+				expect.objectContaining({ accountId: "acct-oauth" }),
+			]);
+			expect(await auth.getOAuthAccess("anthropic")).toEqual({
+				accessToken: "sk-ant-oat-oauth",
+				accountId: "acct-oauth",
+			});
+
+			auth.setConfigApiKey("anthropic", "gateway-key");
+
+			expect(auth.getOAuthAccountId("anthropic")).toBe("acct-oauth");
+			expect(await auth.listOAuthAccounts("anthropic")).toEqual([
+				expect.objectContaining({ accountId: "acct-oauth" }),
+			]);
+			expect(await auth.getOAuthAccess("anthropic")).toEqual({
+				accessToken: "sk-ant-oat-oauth",
+				accountId: "acct-oauth",
+			});
+		});
+	});
+
+	test("config API key is the fallback when OAuth is expired", async () => {
+		await withEnv(SUPPRESS_ENV, async () => {
+			if (!auth) throw new Error("test setup failed");
+			await auth.set("anthropic", [
+				{
+					type: "oauth",
+					access: "sk-ant-oat-expired",
+					refresh: "refresh",
+					expires: Date.now() - 60_000,
+					accountId: "acct-expired",
+				},
+			]);
+			auth.setConfigApiKey("anthropic", "gateway-key");
+			expect(auth.getOAuthAccountId("anthropic")).toBeUndefined();
+
+			expect(await auth.getApiKeyWithOrigin("anthropic")).toEqual({
+				apiKey: "gateway-key",
+				origin: { kind: "config" },
+			});
+			expect(auth.getCredentialOrigin("anthropic")).toEqual({ kind: "config" });
+			expect(auth.describeCredentialSource("anthropic")).toContain("config");
+		});
+	});
 });
