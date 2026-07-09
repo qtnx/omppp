@@ -16,6 +16,17 @@ type SpawnOptions = Bun.SpawnOptions.SpawnOptions<
 
 type SpawnCall = { cmd: string[]; options: SpawnOptions };
 
+const realSpawn = Bun.spawn;
+const CLIPBOARD_COMMANDS: Record<string, true> = {
+	osascript: true,
+	pbpaste: true,
+	"powershell.exe": true,
+	"termux-clipboard-get": true,
+	"termux-clipboard-set": true,
+	"wl-paste": true,
+	xclip: true,
+};
+
 function streamOf(text: string): ReadableStream<Uint8Array> {
 	const body = new Response(text).body;
 	if (!body) throw new Error("Failed to create response stream.");
@@ -33,16 +44,23 @@ function fakeProcess(stdout: string, exitCode = 0): Subprocess {
 	} as unknown as Subprocess;
 }
 
-function spyPowershell(calls: SpawnCall[], stdout: string, exitCode = 0) {
+function spyClipboardSpawn(calls: SpawnCall[], createProcess: () => Subprocess) {
 	function mockSpawn(opts: SpawnOptions & { cmd: string[] }): Subprocess;
 	function mockSpawn(cmd: string[], opts?: SpawnOptions): Subprocess;
 	function mockSpawn(first: string[] | (SpawnOptions & { cmd: string[] }), second?: SpawnOptions): Subprocess {
 		const cmd = Array.isArray(first) ? first : first.cmd;
+		if (!CLIPBOARD_COMMANDS[cmd[0] ?? ""]) {
+			return Array.isArray(first) ? realSpawn(first, second) : realSpawn(first);
+		}
 		const options = Array.isArray(first) ? (second ?? ({} as SpawnOptions)) : (first as SpawnOptions);
 		calls.push({ cmd, options });
-		return fakeProcess(stdout, exitCode);
+		return createProcess();
 	}
 	return vi.spyOn(Bun, "spawn").mockImplementation(mockSpawn);
+}
+
+function spyPowershell(calls: SpawnCall[], stdout: string, exitCode = 0) {
+	return spyClipboardSpawn(calls, () => fakeProcess(stdout, exitCode));
 }
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
@@ -324,7 +342,7 @@ describe("readTextFromClipboard", () => {
 			})(),
 			kill: () => true,
 		} as unknown as Subprocess;
-		vi.spyOn(Bun, "spawn").mockReturnValue(slowProc);
+		spyClipboardSpawn([], () => slowProc);
 
 		let ticks = 0;
 		const timer = setInterval(() => {

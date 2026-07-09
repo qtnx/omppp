@@ -22,6 +22,13 @@ Common shapes:
 - Use `schema` for subagent outputs you branch on.
 - Keep subagent prompts self-contained: target files, constraints, acceptance.
 - After workflow completion, verify results yourself before claiming status.
+
+{{#if taskBatch}}
+- Call `task` once per independent fan-out batch.
+{{else}}
+- Call `task` once per independent subagent.
+- Do not pass `context` or `tasks[]`; the single-spawn task schema accepts one assignment directly.
+{{/if}}
 </workflow-use>
 
 <helpers>

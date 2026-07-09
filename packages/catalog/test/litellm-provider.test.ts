@@ -274,10 +274,23 @@ describe("LiteLLM provider discovery", () => {
 			api: "openai-completions",
 			provider: "litellm",
 			baseUrl: "http://primary:4000/v1",
+			contextWindow: 1048576,
+			maxTokens: 131072,
+			input: ["text"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			compat: {
+				supportsStore: false,
+				supportsDeveloperRole: false,
+			},
 			reasoning: true,
 			thinking: {
 				mode: "effort",
-				efforts: ["minimal", "low", "medium", "high", "xhigh"],
+				efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
 				effortMap: {
 					minimal: "none",
 					xhigh: "max",
@@ -706,10 +719,19 @@ describe("LiteLLM provider discovery", () => {
 			api: "openai-completions",
 			provider: "litellm",
 			baseUrl: "http://primary:4000/v1",
+			contextWindow: 1048576,
+			maxTokens: 131072,
+			input: ["text"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
 			reasoning: true,
 			thinking: {
 				mode: "effort",
-				efforts: ["minimal", "low", "medium", "high", "xhigh"],
+				efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
 				effortMap: {
 					minimal: "none",
 					xhigh: "max",

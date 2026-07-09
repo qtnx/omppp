@@ -519,8 +519,9 @@ function isCodexSparkModel(modelId: string | undefined): boolean {
 }
 
 export const codexRankingStrategy: CredentialRankingStrategy = {
-	blockScope() {
-		return "shared";
+	blockScope(context) {
+		const modelId = context?.modelId;
+		return modelId === undefined ? "shared" : isCodexSparkModel(modelId) ? "spark" : "main";
 	},
 	findWindowLimits(report) {
 		const findLimit = (key: "primary" | "secondary"): UsageLimit | undefined => {

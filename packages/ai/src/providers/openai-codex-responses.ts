@@ -2543,7 +2543,12 @@ export async function prewarmOpenAICodexResponses(
 	const transportSessionId = normalizeOpenAIResponsesPromptCacheKey(options?.sessionId);
 	const promptCacheKey = transportSessionId;
 	const providerSessionState = getCodexProviderSessionState(options?.providerSessionState);
-	const responsesLite = options?.responsesLite === true;
+	const prewarmBody = options?.context
+		? await buildTransformedCodexRequestBody(model, options.context, options, promptCacheKey)
+		: undefined;
+	const responsesLite = prewarmBody
+		? shouldUseCodexResponsesLite(prewarmBody, options?.responsesLite)
+		: options?.responsesLite === true;
 	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, apiKey, baseUrl, responsesLite);
 	const publicSessionKey = transportSessionId ? `${baseUrl}:${model.id}:${transportSessionId}` : undefined;
 	if (publicSessionKey && sessionKey) {
@@ -2582,8 +2587,7 @@ export async function prewarmOpenAICodexResponses(
 				},
 			},
 		);
-		if (options?.context && !state.lastRequest && !connection.hasActiveRequest()) {
-			const prewarmBody = await buildTransformedCodexRequestBody(model, options.context, options, promptCacheKey);
+		if (prewarmBody && !state.lastRequest && !connection.hasActiveRequest()) {
 			const prewarmRequest = {
 				type: "response.create",
 				...prewarmBody,
@@ -2613,8 +2617,8 @@ export async function prewarmOpenAICodexResponses(
 						idleTimeoutMs: getCodexWebSocketIdleTimeoutMs(),
 						firstEventTimeoutMs: getCodexWebSocketFirstEventTimeoutMs(),
 					},
-					options.signal,
-					options.onSseEvent ? event => options.onSseEvent?.(event, model) : undefined,
+					options?.signal,
+					options?.onSseEvent ? event => options.onSseEvent?.(event, model) : undefined,
 				);
 			}
 		}
@@ -2674,11 +2678,61 @@ async function runCodexWebSocketWarmupRequest(
 		state.canAppend = false;
 		return;
 	}
-	state.lastRequest = structuredCloneJSON(requestBodyForState);
+	state.lastRequest = buildWarmupAppendBaseline(requestBodyForState);
 	state.lastResponseId = responseId;
 	state.lastResponseItems = stripInputItemIds(outputItems);
 	state.canAppend = true;
 }
+function buildWarmupAppendBaseline(requestBody: RequestBody): RequestBody {
+	const input = requestBody.input;
+	if (!Array.isArray(input) || input.length === 0 || typeof requestBody.instructions !== "string") {
+		return structuredCloneJSON(requestBody);
+	}
+	const syntheticUserInput = input[input.length - 1];
+	if (
+		syntheticUserInput?.role !== "user" ||
+		!Array.isArray(syntheticUserInput.content) ||
+		syntheticUserInput.content.length !== 1
+	) {
+		return structuredCloneJSON(requestBody);
+	}
+	const [part] = syntheticUserInput.content;
+	if (
+		!part ||
+		typeof part !== "object" ||
+		!("type" in part) ||
+		part.type !== "input_text" ||
+		!("text" in part) ||
+		typeof part.text !== "string"
+	) {
+		return structuredCloneJSON(requestBody);
+	}
+	let lastDeveloperText: string | undefined;
+	for (const item of input.slice(0, -1)) {
+		if (item.role !== "developer" || !Array.isArray(item.content)) {
+			return structuredCloneJSON(requestBody);
+		}
+		for (const contentPart of item.content) {
+			if (
+				contentPart &&
+				typeof contentPart === "object" &&
+				"type" in contentPart &&
+				contentPart.type === "input_text" &&
+				"text" in contentPart &&
+				typeof contentPart.text === "string" &&
+				contentPart.text.trim().length > 0
+			) {
+				lastDeveloperText = contentPart.text;
+			}
+		}
+	}
+	const expectedSyntheticText = lastDeveloperText ?? requestBody.instructions;
+	if (part.text !== expectedSyntheticText) {
+		return structuredCloneJSON(requestBody);
+	}
+	return structuredCloneJSON({ ...requestBody, input: input.slice(0, -1) });
+}
+
 function stripInputItemIds(items: Array<Record<string, unknown>>): InputItem[] {
 	return items.map(item => {
 		if (item.id == null) return item as InputItem;

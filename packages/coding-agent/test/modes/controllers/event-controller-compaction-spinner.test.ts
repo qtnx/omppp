@@ -11,10 +11,30 @@ import type { Loader } from "@oh-my-pi/pi-tui";
  * stale handle made every later `ensureLoadingAnimation()` a no-op, so the
  * rest of the turn ran with no working spinner.
  */
+function disposeChildren(children: unknown[]): void {
+	for (const child of children) {
+		if (child && typeof child === "object" && "dispose" in child && typeof child.dispose === "function") {
+			child.dispose();
+		}
+	}
+	children.length = 0;
+}
+
 function createHarness(options: { isStreaming: boolean; withSpinner: boolean }): {
 	context: InteractiveModeContext;
 	controller: EventController;
 } {
+	const statusChildren: unknown[] = [];
+	const statusContainer = {
+		children: statusChildren,
+		clear: vi.fn(() => {
+			statusChildren.length = 0;
+		}),
+		addChild: vi.fn((child: unknown) => {
+			statusChildren.push(child);
+		}),
+		disposeChildren: vi.fn(() => disposeChildren(statusChildren)),
+	};
 	const context = {
 		isInitialized: true,
 		updateEditorTopBorder: vi.fn(),
@@ -28,7 +48,7 @@ function createHarness(options: { isStreaming: boolean; withSpinner: boolean }):
 		pendingTools: new Map<string, unknown>(),
 		ui: { requestRender: vi.fn() },
 		chatContainer: { removeChild: vi.fn() },
-		statusContainer: { clear: vi.fn(), addChild: vi.fn() },
+		statusContainer,
 		statusLine: { invalidate: vi.fn() },
 		editor: { getText: () => "", onEscape: undefined },
 		ensureLoadingAnimation: vi.fn(),

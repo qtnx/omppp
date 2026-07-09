@@ -9162,7 +9162,7 @@ export class AgentSession {
 		if (
 			this.#magicKeywordEnabled("workflow") &&
 			containsWorkflow(text) &&
-			this.getActiveToolNames().includes("task")
+			this.getActiveToolNames().includes("workflow")
 		) {
 			keywordNotices.push({
 				role: "custom",

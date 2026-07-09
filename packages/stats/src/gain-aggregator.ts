@@ -197,19 +197,19 @@ async function readSnapcompactRecords(cutoff: number | null, project: string | n
 		snapcompactCache = { key: cacheKey, records: parsed };
 	}
 
-	const filtered = cutoff === null ? parsed : parsed.filter(rec => rec.ts >= cutoff);
 	const seen = new Set<string>();
 	const deduped: SnapcompactRecord[] = [];
-	for (const rec of filtered) {
+	for (const rec of parsed) {
 		const key = `${rec.session}:${rec.toolCallId}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
 		deduped.push(rec);
 	}
-	const projectsBySession = await readProjectsBySession(deduped.map(rec => rec.session));
+	const filtered = cutoff === null ? deduped : deduped.filter(rec => rec.ts >= cutoff);
+	const projectsBySession = await readProjectsBySession(filtered.map(rec => rec.session));
 	const projects = new Set<string>();
 	const records: SnapcompactRecord[] = [];
-	for (const rec of deduped) {
+	for (const rec of filtered) {
 		const sessionProjects = projectsBySession.get(rec.session);
 		if (sessionProjects) {
 			for (const sessionProject of sessionProjects) projects.add(sessionProject);

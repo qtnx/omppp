@@ -35,6 +35,15 @@ function plain(component: CompactionProgressComponent, width = 80): string {
 	return component.render(width).join("\n").replace(ANSI, "");
 }
 
+function disposeChildren(children: unknown[]): void {
+	for (const child of children) {
+		if (child && typeof child === "object" && "dispose" in child && typeof child.dispose === "function") {
+			child.dispose();
+		}
+	}
+	children.length = 0;
+}
+
 function createHarness() {
 	// A minimal status container that records children so we can observe adds and
 	// clears the way the real TUI container would surface them.
@@ -45,7 +54,7 @@ function createHarness() {
 	const clear = vi.fn(() => {
 		children.length = 0;
 	});
-	const statusContainer = { children, addChild, clear };
+	const statusContainer = { children, addChild, clear, disposeChildren: vi.fn(() => disposeChildren(children)) };
 
 	const setProgress = vi.fn();
 	const requestRender = vi.fn();

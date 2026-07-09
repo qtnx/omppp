@@ -46,6 +46,28 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		}
 	});
 
+	it("falls back to a full render for spinner ticks when component-scoped render is unavailable", () => {
+		vi.useFakeTimers();
+		const requestRender = vi.fn();
+		const component = new ToolExecutionComponent(
+			"eval",
+			{ language: "py", code: "import time\ntime.sleep(10)" },
+			{},
+			undefined,
+			{ requestRender } as unknown as TUI,
+			process.cwd(),
+		);
+
+		try {
+			component.render(80);
+			vi.advanceTimersByTime(120);
+
+			expect(requestRender).toHaveBeenCalled();
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
 	it("animates a shell pending header while the call is live", () => {
 		vi.useFakeTimers();
 		const requestRender = vi.fn();

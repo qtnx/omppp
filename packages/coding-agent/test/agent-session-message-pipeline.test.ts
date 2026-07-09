@@ -41,6 +41,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getAgentDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { type } from "arktype";
 import { CONTEXT_GC_CUSTOM_TYPE, type ContextGcDelta } from "../../context-gc-plugin/src/schema";
 import { openContextGcStore } from "../../context-gc-plugin/src/storage";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
@@ -156,7 +157,15 @@ describe("AgentSession message pipeline", () => {
 					model,
 					systemPrompt: ["system prompt"],
 					messages: [],
-					tools: [],
+					tools: [
+						{
+							name: "workflow",
+							label: "Workflow",
+							description: "Mock workflow tool",
+							parameters: type({}),
+							execute: async () => ({ content: [] }),
+						},
+					],
 				},
 				convertToLlm: messages => {
 					capturedAgentMessages = messages;

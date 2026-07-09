@@ -39,8 +39,8 @@ function createAssistantResponse(text: string) {
 	};
 }
 
-/** Emit a high-usage assistant turn to drive threshold (context-full) auto-compaction. */
-function emitHighUsageTurn(session: AgentSession): void {
+/** Emit a high-usage assistant turn above the model's threshold to drive context-full auto-compaction. */
+function emitHighUsageTurn(session: AgentSession, contextWindow: number): void {
 	const assistantMsg = {
 		role: "assistant" as const,
 		content: [{ type: "text" as const, text: "Done." }],
@@ -49,11 +49,11 @@ function emitHighUsageTurn(session: AgentSession): void {
 		model: "claude-sonnet-4-5",
 		stopReason: "stop" as const,
 		usage: {
-			input: 190_000,
+			input: Math.ceil(contextWindow * 0.9),
 			output: 1_000,
 			cacheRead: 0,
 			cacheWrite: 0,
-			totalTokens: 191_000,
+			totalTokens: Math.ceil(contextWindow * 0.9) + 1_000,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		timestamp: Date.now(),
@@ -78,9 +78,14 @@ describe("AgentSession auto_compaction_progress", () => {
 		vi.restoreAllMocks();
 	});
 
-	async function createHarness(): Promise<{ session: AgentSession; events: AgentSessionEvent[] }> {
+	async function createHarness(): Promise<{
+		session: AgentSession;
+		events: AgentSessionEvent[];
+		contextWindow: number;
+	}> {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		if (model.contextWindow === null) throw new Error("Expected claude-sonnet-4-5 context window to exist");
 
 		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
@@ -138,7 +143,7 @@ describe("AgentSession auto_compaction_progress", () => {
 			await session.dispose();
 			authStorage.close();
 		});
-		return { session, events };
+		return { session, events, contextWindow: model.contextWindow };
 	}
 
 	/** Resolve once the terminal auto_compaction_end has been captured. */
@@ -154,7 +159,7 @@ describe("AgentSession auto_compaction_progress", () => {
 	}
 
 	it("emits throttled progress between start and end during a real-model compaction", async () => {
-		const { session, events } = await createHarness();
+		const { session, events, contextWindow } = await createHarness();
 
 		// Mock the summary so the SSE onProgress is driven directly (no network).
 		// Two bursts of 10 synchronous calls each, separated by a >200ms gap, so
@@ -182,7 +187,7 @@ describe("AgentSession auto_compaction_progress", () => {
 		);
 
 		await session.prompt("refactor the parser across modules");
-		emitHighUsageTurn(session);
+		emitHighUsageTurn(session, contextWindow);
 		await waitForEnd(events);
 
 		const startIdx = events.findIndex(e => e.type === "auto_compaction_start");
