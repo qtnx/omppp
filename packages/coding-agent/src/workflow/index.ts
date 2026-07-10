@@ -212,6 +212,7 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 			emit,
 			resolveAgent: this.#resolveAgent,
 			journal,
+			resolveSessionFile: transcriptDir ? agentId => path.join(transcriptDir, `${agentId}.jsonl`) : undefined,
 			runSubprocess: (options: ExecutorOptions) => {
 				const parentActiveModelPattern = this.session.getActiveModelString?.();
 				const modelOverride = resolveWorkflowAgentModelOverride({

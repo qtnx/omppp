@@ -1499,8 +1499,24 @@ export class SelectorController {
 			this.ctx.ui.setFocus(this.ctx.editor);
 			this.ctx.ui.requestRender();
 		};
-		const openTranscript = (agentId: string) => {
-			if (!agentRegistry.get(agentId)) return;
+		const openTranscript = (agentId: string, sessionFile?: string) => {
+			// Start-race: a workflow "start" frame surfaces the hub row before
+			// runSubprocess async-registers the live ref, so a plain get() gate would
+			// silently drop the open. Register a parked placeholder (guarded, non-collab)
+			// pointing at the deterministic transcript path so the viewer can tail it
+			// immediately; the later live registration clobbers it with the running
+			// session. Never register over an existing ref — register() overwrites in
+			// place and would detach a live session.
+			if (!this.ctx.collabGuest && sessionFile && !agentRegistry.get(agentId)) {
+				agentRegistry.register({
+					id: agentId,
+					displayName: agentId,
+					kind: "sub",
+					session: null,
+					sessionFile,
+					status: "parked",
+				});
+			}
 			closeTranscript();
 			const viewer = new AgentTranscriptViewer({
 				agentId,

@@ -29,6 +29,7 @@ function makeRun(overrides: Partial<WorkflowRunRecord> = {}): WorkflowRunRecord 
 				tokensIn: 120,
 				tokensOut: 80,
 				durationMs: 1_000,
+				sessionFile: "/t/run-active/agent-first.jsonl",
 				updatedAt: Date.now(),
 			},
 			{
@@ -39,6 +40,7 @@ function makeRun(overrides: Partial<WorkflowRunRecord> = {}): WorkflowRunRecord 
 				tokensIn: 50,
 				tokensOut: 25,
 				durationMs: 500,
+				sessionFile: "/t/run-active/agent-second.jsonl",
 				updatedAt: Date.now(),
 			},
 		],
@@ -92,8 +94,8 @@ describe("WorkflowHubOverlayComponent", () => {
 		component.handleInput("\r");
 
 		expect(requestRender).toHaveBeenCalledTimes(2);
-		expect(openTranscript).toHaveBeenNthCalledWith(1, "agent-second");
-		expect(openTranscript).toHaveBeenNthCalledWith(2, "agent-first");
+		expect(openTranscript).toHaveBeenNthCalledWith(1, "agent-second", "/t/run-active/agent-second.jsonl");
+		expect(openTranscript).toHaveBeenNthCalledWith(2, "agent-first", "/t/run-active/agent-first.jsonl");
 	});
 
 	it("keeps the selected agent within the long-list viewport", () => {

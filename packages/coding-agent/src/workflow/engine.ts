@@ -18,7 +18,7 @@ import {
 
 type AgentFrameUpdate = Omit<
 	Extract<WorkflowProgressFrame, { kind: "agent" }>,
-	"kind" | "runId" | "index" | "label" | "phaseTitle" | "agentId"
+	"kind" | "runId" | "index" | "label" | "phaseTitle" | "agentId" | "sessionFile"
 >;
 
 /** Concurrent agent() cap per workflow: min(16, cores-2), floored at 2. */
@@ -45,6 +45,8 @@ export interface WorkflowRunOptions {
 	runSubprocess: (options: ExecutorOptions) => Promise<SingleResult>;
 	/** Optional journal enabling cached-prefix resume. */
 	journal?: WorkflowJournal;
+	/** Resolve the deterministic transcript file for a spawned agent id, so the hub can tail it before the live registry ref exists. */
+	resolveSessionFile?: (agentId: string) => string | undefined;
 }
 
 export class WorkflowAgentCapError extends Error {
@@ -195,6 +197,7 @@ export class WorkflowRun {
 				phaseTitle,
 				state: "cached",
 				agentId: cached.agentId,
+				sessionFile: this.#opts.resolveSessionFile?.(cached.agentId),
 			});
 			return opts.schema ? parseStructuredOutput(cached.result, label) : cached.result;
 		}
@@ -219,6 +222,7 @@ export class WorkflowRun {
 				label,
 				phaseTitle,
 				agentId,
+				sessionFile: this.#opts.resolveSessionFile?.(agentId),
 				...frame,
 			});
 		};

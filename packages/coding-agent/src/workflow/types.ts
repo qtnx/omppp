@@ -53,6 +53,8 @@ export type WorkflowProgressFrame =
 			phaseTitle?: string;
 			state: WorkflowAgentState;
 			agentId?: string;
+			/** Deterministic transcript path for this spawn, so the hub can tail it before the live registry ref exists. */
+			sessionFile?: string;
 			model?: string;
 			error?: string;
 			tokens?: number;

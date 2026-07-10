@@ -17,6 +17,11 @@
 - System prompt and orchestrator-mode prompt now require todo-ledger maintenance while waiting on subagents/workflows: reconcile the todo list on every delivered result and poll snapshot, mark todos done the moment their evidence lands, and keep in-progress items matching the agents actually running.
 - Test policy now scales test authoring with criticality (CRITICAL/STANDARD/RUNS-FIRST): only the render/wiring surface (screens, component shells, internal tools, demos) is runs-first — proven by a real entry-point run instead of coverage chasing — while frontend logic (state machines, stores, validation, transforms, guards) ranks by the same axes as backend and still earns targeted tests, and money/auth/data/contract slices gate on green focused suites; applied to the system prompt TESTS policy, full-cycle package rules in both orchestrator prompts and heavy_task, the parallel-fanout and writing-tests-that-matter skills, and a new advisor loop-watch signature for test-theater grind.
 
+### Fixed
+
+- Workflow Hub transcript drill-through now streams live: the workflow agent progress frame carries the subagent's transcript `sessionFile`, so opening an agent (Enter) registers a parked placeholder ref pointing at the real transcript and the viewer tails it immediately — even during the start-race window before the live agent session registers. Previously the open silently no-opped when the ref was not yet in the registry.
+- Workflow Hub navigation gained arrow keys (↑/↓ alongside j/k) and `←` to go back (transcript → hub, hub → editor).
+
 ## [1.5.6] - 2026-07-10
 
 - Merged behavior keeps the bundled Tester subagent registered additively; testing guidance in the main system prompt does not remove it.
