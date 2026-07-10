@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { Agent } from "@oh-my-pi/pi-agent-core";
 import { agentLoop, agentLoopContinue, agentLoopDetailed } from "@oh-my-pi/pi-agent-core/agent-loop";
 import type {
 	AgentContext,
@@ -1187,6 +1188,223 @@ describe("agentLoop with AgentMessage", () => {
 			m => m.role === "user" && typeof m.content === "string" && m.content === "interrupt",
 		);
 		expect(sawInterruptInContext).toBe(true);
+	});
+
+	it("delivers a non-interrupting steer after an exclusive tool batch without skipping calls", async () => {
+		const toolSchema = type({ value: "string" });
+		const executed: string[] = [];
+		const firstStarted = Promise.withResolvers<void>();
+		const releaseFirst = Promise.withResolvers<void>();
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			concurrency: "exclusive",
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				if (params.value === "first") {
+					firstStarted.resolve();
+					await releaseFirst.promise;
+				}
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
+						{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			streamFn: mock.stream,
+		});
+		const advisorLikeMessage = {
+			...createUserMessage("<advisor>Inspect the completed tool batch before continuing.</advisor>"),
+			steering: true,
+		};
+
+		const run = agent.prompt("start");
+		await firstStarted.promise;
+		// Mutation guard: treating this boundary steer as an ordinary user steer
+		// skips the second exclusive call while the first call is still in flight.
+		agent.steer(advisorLikeMessage, { interruptToolExecution: false });
+		// Session persistence snapshots the public queue views and restores the
+		// same message objects before the in-flight batch reaches its boundary.
+		agent.replaceQueues([...agent.peekSteeringQueue()], [...agent.peekFollowUpQueue()]);
+		releaseFirst.resolve();
+		await run;
+
+		expect(executed).toEqual(["first", "second"]);
+		const nextContext = mock.calls[1]?.context.messages;
+		if (!nextContext) throw new Error("expected a second model context after boundary steering");
+		const toolResults = nextContext.filter((message): message is ToolResultMessage => message.role === "toolResult");
+		expect(toolResults.map(message => message.toolCallId)).toEqual(["tool-1", "tool-2"]);
+		expect(toolResults.map(message => message.isError)).toEqual([false, false]);
+		expect(
+			toolResults.flatMap(message => message.content.flatMap(part => (part.type === "text" ? [part.text] : []))),
+		).toEqual(["ok:first", "ok:second"]);
+
+		const advisorIndex = nextContext.findIndex(
+			message =>
+				message.role === "user" &&
+				typeof message.content === "string" &&
+				message.content === advisorLikeMessage.content,
+		);
+		const lastToolResultIndex = nextContext.reduce(
+			(last, message, index) => (message.role === "toolResult" ? index : last),
+			-1,
+		);
+		expect(advisorIndex).toBeGreaterThan(lastToolResultIndex);
+	});
+
+	it("delivers a leading advisor steer with its interrupting user companion in one-at-a-time mode", async () => {
+		const toolSchema = type({ value: "string" });
+		const executed: string[] = [];
+		const firstStarted = Promise.withResolvers<void>();
+		const releaseFirst = Promise.withResolvers<void>();
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			concurrency: "exclusive",
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				if (params.value === "first") {
+					firstStarted.resolve();
+					await releaseFirst.promise;
+				}
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
+						{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
+					],
+				},
+				{ content: ["handled both queued messages"] },
+				{ content: ["unexpected user-only turn"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			steeringMode: "one-at-a-time",
+			streamFn: mock.stream,
+		});
+		const advisorText = "<advisor>Inspect the interrupted tool batch.</advisor>";
+		const userText = "Use this correction before continuing.";
+		const advisorMessage = {
+			...createUserMessage(advisorText),
+			steering: true,
+		};
+		const userMessage = {
+			...createUserMessage(userText),
+			steering: true,
+		};
+
+		const run = agent.prompt("start");
+		await firstStarted.promise;
+		agent.steer(advisorMessage, { interruptToolExecution: false });
+		agent.steer(userMessage);
+		releaseFirst.resolve();
+		await run;
+
+		expect(executed).toEqual(["first"]);
+		const nextContext = mock.calls[1]?.context.messages;
+		if (!nextContext) throw new Error("expected a second model context after mixed steering");
+		const toolResults = nextContext.filter((message): message is ToolResultMessage => message.role === "toolResult");
+		expect(toolResults.map(message => message.toolCallId)).toEqual(["tool-1", "tool-2"]);
+		expect(toolResults.map(message => message.isError)).toEqual([false, true]);
+
+		const deliveredSteers = nextContext.flatMap(message => {
+			if (message.role !== "user" || typeof message.content !== "string") return [];
+			return message.content === advisorText || message.content === userText ? [message.content] : [];
+		});
+		// Mutation guard: dequeuing only the leading boundary steer delays the user
+		// message until an otherwise unnecessary third provider turn.
+		expect(deliveredSteers).toEqual([advisorText, userText]);
+		expect(mock.calls).toHaveLength(2);
+	});
+
+	it("restores default interrupting behavior when a removed non-interrupting message is re-steered", async () => {
+		const toolSchema = type({ value: "string" });
+		const executed: string[] = [];
+		const firstStarted = Promise.withResolvers<void>();
+		const releaseFirst = Promise.withResolvers<void>();
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			concurrency: "exclusive",
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				if (params.value === "first") {
+					firstStarted.resolve();
+					await releaseFirst.promise;
+				}
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
+						{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			streamFn: mock.stream,
+		});
+		const message = {
+			...createUserMessage("Re-apply this as an ordinary user steer."),
+			steering: true,
+		};
+
+		const run = agent.prompt("start");
+		await firstStarted.promise;
+		agent.steer(message, { interruptToolExecution: false });
+		const removed = agent.popLastSteer();
+		if (!removed) throw new Error("expected to remove the queued non-interrupting steer");
+		// Re-steering through the default public API must discard lifecycle state
+		// from the message's prior, explicitly non-interrupting enqueue.
+		agent.steer(removed);
+		releaseFirst.resolve();
+		await run;
+
+		expect(executed).toEqual(["first"]);
+		const nextContext = mock.calls[1]?.context.messages;
+		if (!nextContext) throw new Error("expected a second model context after the interrupting steer");
+		expect(
+			nextContext.some(
+				queued =>
+					queued.role === "user" && typeof queued.content === "string" && queued.content === message.content,
+			),
+		).toBe(true);
 	});
 
 	it("drains queued steering by aborting an interruptible tool mid-wait", async () => {

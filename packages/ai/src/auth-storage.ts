@@ -713,6 +713,10 @@ type AuthApiKeyOptions = {
 	 * that a peer/broker rotated out from under us is replaced before retrying.
 	 */
 	forceRefresh?: boolean;
+	/** Prefer a usable stored OAuth credential; use a config override only as fallback. */
+	preferOAuth?: boolean;
+	/** When false, treat an all-blocked OAuth pool as unavailable instead of retrying its earliest-unblocking credential. */
+	allowBlockedOAuthFallback?: boolean;
 };
 type OAuthResolutionResult = { apiKey: string; credential: OAuthCredential };
 
@@ -4228,7 +4232,11 @@ export class AuthStorage {
 			if (resolved) return resolved;
 		}
 
-		if (fallback && this.#isCredentialBlocked(provider, providerKey, fallback.selection.index, blockScope)) {
+		if (
+			options?.allowBlockedOAuthFallback !== false &&
+			fallback &&
+			this.#isCredentialBlocked(provider, providerKey, fallback.selection.index, blockScope)
+		) {
 			return this.#tryOAuthCredential(provider, fallback.selection, providerKey, sessionId, options, {
 				checkUsage,
 				allowBlocked: true,
@@ -4767,18 +4775,24 @@ export class AuthStorage {
 			return { apiKey: runtimeKey, origin: { kind: "runtime" } };
 		}
 
-		// Explicit API keys from config override stored credentials. A configured
-		// gateway bearer is the credential actually used for outbound requests, so
-		// it must also suppress OAuth identity attribution.
+		// Explicit config keys normally override stored credentials. Gateway callers can
+		// opt into OAuth-pool-first resolution while retaining this key as a fallback.
 		const configKey = this.#configOverrides.get(provider);
-		if (configKey) {
+		if (configKey && !options?.preferOAuth) {
 			this.#clearSessionCredential(provider, sessionId);
 			return { apiKey: configKey, origin: { kind: "config" } };
 		}
 
-		const oauthResolved = await this.#resolveOAuthSelection(provider, sessionId, options);
+		const oauthOptions =
+			configKey && options?.preferOAuth ? { ...options, allowBlockedOAuthFallback: false } : options;
+		const oauthResolved = await this.#resolveOAuthSelection(provider, sessionId, oauthOptions);
 		if (oauthResolved) {
 			return { apiKey: oauthResolved.apiKey, origin: { kind: "oauth" } };
+		}
+
+		if (configKey) {
+			this.#clearSessionCredential(provider, sessionId);
+			return { apiKey: configKey, origin: { kind: "config" } };
 		}
 
 		const loginApiKeySelection = this.#selectCredentialByType(

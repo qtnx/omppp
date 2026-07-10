@@ -3687,14 +3687,13 @@ export class AgentSession {
 	}
 
 	/**
-	 * Route one accepted advice note from `advisor` to the primary. Concern and
-	 * blocker interrupt the running agent through the steering channel; once the
-	 * loop has yielded, `triggerTurn` resumes it. After a deliberate user interrupt
-	 * auto-resume is suppressed while idle/unwinding (the note becomes a preserved
-	 * card re-entering on resume); a live-streaming turn is steered in directly. A
-	 * plain nit always rides the non-interrupting YieldQueue aside. Suppression by
-	 * the per-advisor emission guard drops the note silently — the model still saw
-	 * `Recorded.`, so it isn't tempted to rephrase the same note past the dedupe.
+	 * Route one accepted advice note from `advisor` to the primary. A concern or
+	 * blocker triggers an idle primary turn for immediate handling, but active
+	 * primary runs receive it as boundary steering after the current tool batch.
+	 * After a deliberate user interrupt, idle/unwinding high-severity notes become
+	 * preserved cards instead of auto-resuming. Suppression by the per-advisor
+	 * emission guard drops the note silently — the model still saw `Recorded.`, so
+	 * it isn't tempted to rephrase the same note past the dedupe.
 	 */
 	#routeAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity): void {
 		if (!advisor.emissionGuard.accept(note)) {
@@ -3715,11 +3714,9 @@ export class AgentSession {
 			aborting: this.#abortInProgress,
 			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
 		});
-		// While a consult or done-review is blocked awaiting the advisor, a "steer"
-		// would abort the very consult tool waiting for the answer (F6) and, during
-		// a done-review, race the gate's own continuation (F5). Downgrade it to an
-		// aside so the note still lands at the next step boundary; the "preserve"
-		// branch (deliberate-interrupt suppression) is left untouched.
+		// While a consult or done-review is blocked awaiting the advisor, an immediate
+		// steer would abort the tool waiting for that answer. Preserve its existing
+		// passive delivery; deliberate-interrupt preservation remains untouched.
 		if (channel === "steer" && this.#advisorConsultInFlight) {
 			channel = "aside";
 		}
@@ -3742,7 +3739,6 @@ export class AgentSession {
 			});
 			return;
 		}
-		this.#recordAdvisorInterruptDelivered();
 		if (this.#planModeState?.enabled) {
 			// Plan mode: record advice visibly in context but never wake an
 			// autonomous turn — only user-driven turns converge on ask/resolve.
@@ -3757,9 +3753,14 @@ export class AgentSession {
 			});
 			return;
 		}
+		if (channel === "steer") this.#recordAdvisorInterruptDelivered();
 		void this.sendCustomMessage(
 			{ customType: "advisor", content, display: true, attribution: "agent", details },
-			{ deliverAs: "steer", triggerTurn: true },
+			{
+				deliverAs: "steer",
+				triggerTurn: true,
+				interruptToolExecution: channel === "boundary" ? false : undefined,
+			},
 		).catch(err => logger.debug("advisor delivery failed", { err: String(err) }));
 	}
 
@@ -10222,7 +10223,12 @@ export class AgentSession {
 	 */
 	async sendCustomMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn"; queueChipText?: string },
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			queueChipText?: string;
+			interruptToolExecution?: boolean;
+		},
 	): Promise<boolean> {
 		const normalizedPayload = normalizeCustomMessagePayload<T>(message);
 		const details =
@@ -10253,7 +10259,7 @@ export class AgentSession {
 			if (options?.deliverAs === "followUp") {
 				this.agent.followUp(normalizedAppMessage);
 			} else {
-				this.agent.steer(normalizedAppMessage);
+				this.agent.steer(normalizedAppMessage, { interruptToolExecution: options?.interruptToolExecution });
 			}
 			this.#scheduleIdleQueueDrain();
 			return false;
@@ -16832,7 +16838,7 @@ export class AgentSession {
 			this.#pendingIrcInterrupts.length > 0 ||
 			this.#pendingIrcAsides.length > 0 ||
 			this.yieldQueue.hasIdleFlushableEntries() ||
-			(this.#subagentWaitDepth === 0 && this.agent.peekSteeringQueue().length > 0)
+			(this.#subagentWaitDepth === 0 && this.agent.hasInterruptingSteeringMessages())
 		);
 	}
 

@@ -9,6 +9,9 @@ import {
 	ROTATION_RETRY_AFTER_THRESHOLD_MS,
 } from "@oh-my-pi/pi-ai/error/rate-limit";
 
+const ANTHROPIC_LOW_CREDIT_MESSAGE =
+	"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.";
+
 describe("parseRateLimitReason", () => {
 	it("classifies Google Quota exceeded as QUOTA_EXHAUSTED", () => {
 		expect(
@@ -62,6 +65,10 @@ describe("parseRateLimitReason", () => {
 		).toBe("QUOTA_EXHAUSTED");
 	});
 
+	it("classifies Anthropic low-credit billing exhaustion as QUOTA_EXHAUSTED", () => {
+		expect(parseRateLimitReason(ANTHROPIC_LOW_CREDIT_MESSAGE)).toBe("QUOTA_EXHAUSTED");
+	});
+
 	it("classifies OpenCode Go insufficient balance as QUOTA_EXHAUSTED", () => {
 		expect(
 			parseRateLimitReason("401 Insufficient balance. Manage your billing here: https://opencode.ai/workspace/demo"),
@@ -89,6 +96,10 @@ describe("isUsageLimit", () => {
 				'429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}',
 			),
 		).toBe(true);
+	});
+
+	it("detects Anthropic low-credit billing exhaustion as a credential-rotatable usage limit", () => {
+		expect(isUsageLimit(ANTHROPIC_LOW_CREDIT_MESSAGE)).toBe(true);
 	});
 
 	it("detects OpenCode Go insufficient balance as a credential-rotatable usage limit", () => {
@@ -156,6 +167,10 @@ describe("isUsageLimitOutcome", () => {
 		for (const message of ["insufficient_quota", "usage_limit_exceeded", "usage_limit_reached"]) {
 			expect(isUsageLimitOutcome(429, message)).toBe(true);
 		}
+	});
+
+	it("rotates a status-400 Anthropic low-credit billing failure", () => {
+		expect(isUsageLimitOutcome(400, ANTHROPIC_LOW_CREDIT_MESSAGE)).toBe(true);
 	});
 
 	it("keeps informative transient 429s in the upstream-backoff lane", () => {

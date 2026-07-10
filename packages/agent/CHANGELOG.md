@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added optional non-interrupting boundary steering via `Agent.steer(message, { interruptToolExecution: false })` and `Agent.hasInterruptingSteeringMessages()`, delivering at the next tool boundary without skipping remaining calls while default steering remains interrupting.
+
 ## [16.3.12] - 2026-07-08
 
 ### Added

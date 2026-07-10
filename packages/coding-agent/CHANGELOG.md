@@ -10,6 +10,14 @@
 
 - The continuous duo advisor now defaults to `gpt-5.6-sol` (was `gpt-5.5`): updated the `duo.advisorModel` schema default and the resolver's unset-fallback so the advisor no longer routes to GPT-5.5.
 
+### Added
+
+- Added `ompx auth-gateway serve --verbose` to stream structured request/debug logs to the foreground terminal while preserving the rotating profile log.
+
+### Fixed
+
+- Fixed advisor concern/blocker notes interrupting or skipping active tool/function calls; notes now deliver at a safe boundary, including stream-tail recovery.
+
 ## [1.5.5] - 2026-07-09
 
 ### Added

@@ -21,6 +21,7 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import * as theme from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { getAgentDbPath, getAgentDir, getConfigRootDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
+import * as loggerModule from "@oh-my-pi/pi-utils/logger";
 
 const ENV_KEYS = ["OMP_AUTH_BROKER_URL", "OMP_AUTH_BROKER_TOKEN"] as const;
 const BROKER_URL = "http://127.0.0.1:48765";
@@ -329,6 +330,23 @@ describe("auth-gateway serve credential source selection", () => {
 		expect(capturedStdout).toContain("auth-gateway listening on http://127.0.0.1:49000");
 	});
 
+	it("enables console request logs while preserving rotating file logs in verbose foreground mode", async () => {
+		await seedLocalCredential("anthropic", "local-anthropic-key");
+		const starts: AuthGatewayBootOptions[] = [];
+		stubGatewayServer(starts);
+		const transportSpy = spyOn(loggerModule, "setTransports").mockImplementation(() => undefined);
+
+		await expect(
+			runAuthGatewayCommand({
+				action: "serve",
+				flags: { bind: "127.0.0.1:0", noAuth: true, verbose: true },
+			}),
+		).resolves.toBeUndefined();
+
+		expect(starts).toHaveLength(1);
+		expect(transportSpy).toHaveBeenCalledWith({ console: true, file: true });
+	});
+
 	it("keeps broker-backed credentials as the default when a broker is configured", async () => {
 		await seedLocalCredential("anthropic", "local-anthropic-key");
 		configuredBrokerEnv();
@@ -601,6 +619,15 @@ describe("auth-gateway serve daemon", () => {
 			/only supported with `auth-gateway serve`/,
 		);
 	});
+
+	it("rejects verbose logging outside foreground serve mode", async () => {
+		await expect(runAuthGatewayCommand({ action: "status", flags: { verbose: true } })).rejects.toThrow(
+			/only supported with `auth-gateway serve`/,
+		);
+		await expect(runAuthGatewayCommand({ action: "serve", flags: { daemon: true, verbose: true } })).rejects.toThrow(
+			/cannot be combined with `--daemon`/,
+		);
+	});
 });
 
 describe("auth-gateway status broker failure metadata", () => {
@@ -623,11 +650,11 @@ describe("auth-gateway status broker failure metadata", () => {
 });
 
 describe("auth-gateway command parser", () => {
-	it("forwards --local and --daemon into AuthGatewayCommandArgs flags", async () => {
+	it("forwards --local, --daemon, and --verbose into AuthGatewayCommandArgs flags", async () => {
 		const runSpy = spyOn(authGatewayCli, "runAuthGatewayCommand").mockResolvedValue(undefined);
 		spyOn(theme, "initTheme").mockResolvedValue(undefined);
 
-		const command = new AuthGateway(["serve", "--local", "--daemon"], TEST_CONFIG);
+		const command = new AuthGateway(["serve", "--local", "--daemon", "--verbose"], TEST_CONFIG);
 		await command.run();
 
 		expect(runSpy).toHaveBeenCalledWith({
@@ -640,6 +667,7 @@ describe("auth-gateway command parser", () => {
 				strict: undefined,
 				local: true,
 				daemon: true,
+				verbose: true,
 			},
 		});
 	});
