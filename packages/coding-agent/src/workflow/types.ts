@@ -44,6 +44,7 @@ export type WorkflowAgentState = "start" | "done" | "error" | "cached";
 export type WorkflowProgressFrame =
 	| { kind: "phase"; runId: string; index: number; title: string }
 	| { kind: "log"; runId: string; message: string }
+	| { kind: "done"; runId: string; ok: boolean; error?: string }
 	| {
 			kind: "agent";
 			runId: string;
