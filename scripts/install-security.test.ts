@@ -459,7 +459,7 @@ task:
 				custom: "local/custom-model",
 			});
 			expect(firstConfig.task.agentModelOverrides).toMatchObject({
-				heavy_task: "openai-codex/gpt-5.6-sol:high",
+				heavy_task: "openai-codex/gpt-5.6-terra:high",
 				oracle: "openai-codex/gpt-5.6-sol:high",
 				qa: "openai-codex/gpt-5.6-sol:high",
 				reviewer: "openai-codex/gpt-5.6-sol:high",
@@ -581,10 +581,47 @@ providers:
 			};
 
 			expect(config.task.agentModelOverrides).toMatchObject({
-				heavy_task: "openai-codex/gpt-5.6-sol:high",
+				heavy_task: "openai-codex/gpt-5.6-terra:high",
 				qa: "openai-codex/gpt-5.6-sol:high",
 				tester: "openai-codex/gpt-5.6-sol:medium",
 			});
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("bumps previously-shipped heavy_task sol:high override to terra:high while preserving custom overrides", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(
+				configPath,
+				`task:
+  agentModelOverrides:
+    heavy_task: openai-codex/gpt-5.6-sol:high
+    oracle: openai-codex/gpt-5.5:xhigh
+    custom_agent: local/foo
+`,
+			);
+
+			const firstResult = await runShellInstaller(root, installDir);
+			expect(firstResult.exitCode).toBe(0);
+			const firstConfig = YAML.parse(await Bun.file(configPath).text()) as {
+				task: { agentModelOverrides: Record<string, string> };
+			};
+
+			expect(firstConfig.task.agentModelOverrides).toMatchObject({
+				heavy_task: "openai-codex/gpt-5.6-terra:high",
+				oracle: "openai-codex/gpt-5.6-sol:high",
+				custom_agent: "local/foo",
+			});
+
+			const secondResult = await runShellInstaller(root, installDir);
+			expect(secondResult.exitCode).toBe(0);
+			const secondConfig = YAML.parse(await Bun.file(configPath).text());
+			expect(secondConfig).toEqual(firstConfig);
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}

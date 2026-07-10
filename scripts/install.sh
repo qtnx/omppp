@@ -499,7 +499,7 @@ migrate_gpt_5_6_model_config() {
         }
         function insert_missing_gpt_overrides() {
             if (!have_heavy_task) {
-                print override_indent "heavy_task: openai-codex/gpt-5.6-sol:high"
+                print override_indent "heavy_task: openai-codex/gpt-5.6-terra:high"
             }
             if (!have_qa) {
                 print override_indent "qa: openai-codex/gpt-5.6-sol:high"
@@ -557,7 +557,9 @@ migrate_gpt_5_6_model_config() {
                     if ($0 ~ /^[[:space:]]*heavy_task:[[:space:]]*/) {
                         have_heavy_task = 1
                         if ($0 ~ /openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/) {
-                            sub(/openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/, "openai-codex/gpt-5.6-sol:high")
+                            sub(/openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/, "openai-codex/gpt-5.6-terra:high")
+                        } else if ($0 ~ /openai-codex\/gpt-5\.6-sol:high/) {
+                            sub(/openai-codex\/gpt-5\.6-sol:high/, "openai-codex/gpt-5.6-terra:high")
                         }
                     } else if ($0 ~ /^[[:space:]]*oracle:[[:space:]]*/ || $0 ~ /^[[:space:]]*qa:[[:space:]]*/ || $0 ~ /^[[:space:]]*reviewer:[[:space:]]*/) {
                         if ($0 ~ /^[[:space:]]*qa:[[:space:]]*/) {
@@ -769,20 +771,20 @@ install_standard_config() {
 # Copy to ~/.omp/agent/config.yml before first run, or let the installer seed it
 # when the target config file does not already exist.
 modelRoles:
-  default: openai-codex/gpt-5.6-sol:xhigh
+  default: anthropic/claude-opus-4-8
   task: openai-codex/gpt-5.6-terra:medium
-  smol: cerebras/gpt-oss-120b
+  smol: xai-oauth/grok-build
   slow: openai-codex/gpt-5.6-sol:high
-  plan: openai-codex/gpt-5.6-sol:xhigh
-  designer: tnx/designer
-  commit: openai-codex/gpt-5.6-luna:high
+  plan: openai-codex/gpt-5.6-sol:high
+  designer: anthropic/claude-opus-4-8
+  commit: xai-oauth/grok-build
 task:
   showResolvedModelBadge: true
   agentModelOverrides:
     designer: tnx/designer
     explore: pi/smol
     frontend_ui: tnx/designer
-    heavy_task: openai-codex/gpt-5.6-sol:high
+    heavy_task: openai-codex/gpt-5.6-terra:high
     oracle: openai-codex/gpt-5.6-sol:high
     plan: anthropic/claude-fable-5:high
     qa: openai-codex/gpt-5.6-sol:high
@@ -790,6 +792,8 @@ task:
     reviewer: openai-codex/gpt-5.6-sol:high
     task: openai-codex/gpt-5.6-terra:medium
     tester: openai-codex/gpt-5.6-sol:medium
+    ui_ux_reviewer: tnx/designer
+    ux_copywriter: tnx/designer
 workflow:
   enabled: true
 dev:
