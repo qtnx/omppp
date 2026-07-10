@@ -214,20 +214,20 @@ function Install-StandardConfig {
 # Copy to ~/.omp/agent/config.yml before first run, or let the installer seed it
 # when the target config file does not already exist.
 modelRoles:
-  default: openai-codex/gpt-5.6-sol:xhigh
+  default: anthropic/claude-opus-4-8
   task: openai-codex/gpt-5.6-terra:medium
-  smol: cerebras/gpt-oss-120b
+  smol: xai-oauth/grok-build
   slow: openai-codex/gpt-5.6-sol:high
-  plan: openai-codex/gpt-5.6-sol:xhigh
-  designer: tnx/designer
-  commit: openai-codex/gpt-5.6-luna:high
+  plan: openai-codex/gpt-5.6-sol:high
+  designer: anthropic/claude-opus-4-8
+  commit: xai-oauth/grok-build
 task:
   showResolvedModelBadge: true
   agentModelOverrides:
     designer: tnx/designer
     explore: pi/smol
     frontend_ui: tnx/designer
-    heavy_task: openai-codex/gpt-5.6-sol:high
+    heavy_task: openai-codex/gpt-5.6-terra:high
     oracle: openai-codex/gpt-5.6-sol:high
     plan: anthropic/claude-fable-5:high
     qa: openai-codex/gpt-5.6-sol:high
@@ -235,6 +235,8 @@ task:
     reviewer: openai-codex/gpt-5.6-sol:high
     task: openai-codex/gpt-5.6-terra:medium
     tester: openai-codex/gpt-5.6-sol:medium
+    ui_ux_reviewer: tnx/designer
+    ux_copywriter: tnx/designer
 workflow:
   enabled: true
 dev:
@@ -269,6 +271,8 @@ retry:
     smol:
       - openai-codex/gpt-5.3-codex-spark
       - anthropic/claude-haiku-4-5
+    heavy_task:
+      - anthropic/claude-opus-4-8:high
 '@ | Set-Content -Path $ConfigFile -Encoding UTF8
     Write-Host "✓ Seeded OMPx standard config at $ConfigFile" -ForegroundColor Green
 }

@@ -579,7 +579,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"duo.advisorModel": {
 		type: "string",
-		default: "gpt-5.5",
+		default: "gpt-5.6-sol",
 		ui: {
 			tab: "model",
 			group: "Duo",
