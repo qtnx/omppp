@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.5.6] - 2026-07-10
-
-### Added
-
-- Added optional non-interrupting boundary steering via `Agent.steer(message, { interruptToolExecution: false })` and `Agent.hasInterruptingSteeringMessages()`, delivering at the next tool boundary without skipping remaining calls while default steering remains interrupting.
-
 ## [16.3.12] - 2026-07-08
 
 ### Added
@@ -982,6 +976,12 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.6] - 2026-07-10
+
+### Added
+
+- Added optional non-interrupting boundary steering via `Agent.steer(message, { interruptToolExecution: false })` and `Agent.hasInterruptingSteeringMessages()`, delivering at the next tool boundary without skipping remaining calls while default steering remains interrupting.
 
 ## [1.5.3] - 2026-07-07
 

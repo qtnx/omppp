@@ -2,13 +2,6 @@
 
 ## [Unreleased]
 
-## [1.5.6] - 2026-07-10
-
-### Fixed
-
-- Fixed auth-gateway to prefer and rotate stored OAuth credentials before using a `models.yml` config API key fallback, including Anthropic account-level `credit balance is too low` responses, persistent fallback after the OAuth pool is exhausted, and audit attribution to the credential actually used.
-- Redacted unsupported request `user` and `previous_response_id` values from auth-gateway debug logs while preserving boolean presence markers for diagnostics.
-
 ## [16.3.15] - 2026-07-09
 
 ### Breaking Changes
@@ -4086,6 +4079,13 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.6] - 2026-07-10
+
+### Fixed
+
+- Fixed auth-gateway to prefer and rotate stored OAuth credentials before using a `models.yml` config API key fallback, including Anthropic account-level `credit balance is too low` responses, persistent fallback after the OAuth pool is exhausted, and audit attribution to the credential actually used.
+- Redacted unsupported request `user` and `previous_response_id` values from auth-gateway debug logs while preserving boolean presence markers for diagnostics.
 
 ## [1.5.5] - 2026-07-09
 
