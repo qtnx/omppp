@@ -13,6 +13,7 @@
 - Duo advisor system prompt gained a loop-watch duty: detect retry/ping-pong/foundation-growth loops, remind the executor of the main objective with the concrete exit step, and escalate to takeover when the loop persists.
 - The heavy_task subagent prompt now instructs it to prefer decomposing and dispatching parallel task/quick_task/explore subagents (C/R test, full-cycle slices per skill://parallel-fanout), keeping only the indivisible load-bearing core for itself.
 - System prompt and orchestrator-mode prompt now require todo-ledger maintenance while waiting on subagents/workflows: reconcile the todo list on every delivered result and poll snapshot, mark todos done the moment their evidence lands, and keep in-progress items matching the agents actually running.
+- Test policy now scales test authoring with criticality (CRITICAL/STANDARD/RUNS-FIRST): frontend, internal-tool, and demo surfaces prove they run through the real entry point instead of chasing coverage or full-suite green, while money/auth/data/contract and load-bearing backend slices still gate on green focused suites — applied to the system prompt TESTS policy, full-cycle package rules in both orchestrator prompts, the parallel-fanout and writing-tests-that-matter skills, and a new advisor loop-watch signature for test-theater grind.
 
 ## [1.5.6] - 2026-07-10
 

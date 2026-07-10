@@ -76,7 +76,7 @@ RIGHT — prefix: parent writes `src/chat/contracts.ts` + `src/docs/contracts.ts
 | P7 WireAndIntegrate | src/chat/index.ts + integration test | P1+P3+P4 working code | R | task | 2 | integration test through the real entry point |
 | P8 MigrateLegacyEvents | scripts/migrate-events.ts + test | P5 working code | R | task | 2 | idempotent dry-run + count verification |
 
-Wave 1 = ONE `task` batch of P1–P6 (six agents in parallel). P7 dispatches when P1+P3+P4 land; P8 when P5 lands. Each assignment pastes in: owned files, forbidden files, the locked contract snippet, acceptance commands, and "done = your tests pass".
+Wave 1 = ONE `task` batch of P1–P6 (six agents in parallel). P7 dispatches when P1+P3+P4 land; P8 when P5 lands. Each assignment pastes in: owned files, forbidden files, the locked contract snippet, acceptance commands, and "done = your Acceptance passes".
 
 ## One workflow run = the whole wave plan
 
@@ -106,9 +106,21 @@ Rules: one wave = one `parallel([...])` (use `pipeline()` for per-item chains li
 
 ## Full-cycle ownership — never split TDD across agents
 
-- One package = red test + implementation + fix loop + green, inside ONE subagent. Exit condition = ITS OWN tests passing.
+- One package = its Acceptance driven to green inside ONE subagent — red test + implement + fix where the slice earns tests; build + real render/run probe for runs-first slices. Exit condition = ITS OWN acceptance passing.
 - BANNED: a "write failing tests" agent, then an "implement" agent, then a "fix" agent over the same files. Each hop re-pays dispatch latency, loses the context the previous agent built, and the loop can cycle indefinitely.
 - A separate test package is legitimate ONLY for cross-owner integration (the wave-2 R-package); unit/behavior tests for a slice belong to the slice's owner.
+
+## Test budget — the Acceptance column scales with criticality
+
+"Does it RUN?" is proven for every package (its Acceptance runs the real thing); how much test AUTHORING a slice earns depends on what breaks if it breaks:
+
+| Tier | Surfaces | Acceptance shape |
+|---|---|---|
+| CRITICAL | money/ledger, auth/tenant isolation, data integrity/migrations, published API contracts, load-bearing backend logic | full targeted coverage — branches, edge values, error paths, invariants; green focused suite is the gate (P1–P4 above) |
+| STANDARD | ordinary backend/services/libraries other code calls | targeted tests on the changed behavior only |
+| RUNS-FIRST | FE screens/components, internal tools, admin dashboards, demos, one-off scripts | the real run: story/page renders its states, CLI probe happy path + one failure path (P6 above); tests only for intricate embedded logic (parsers, calculations, state machines) |
+
+Tier comes from blast radius, never file extension — a FE slice carrying auth/payment logic is CRITICAL. On RUNS-FIRST slices, NEVER chase coverage or full-suite green; a pre-existing unrelated red test is reported to the parent, not adopted.
 
 ## Scout fanout — Phase 0, one wave, many aspects
 

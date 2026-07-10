@@ -7,6 +7,13 @@ description: MANDATORY when writing or adding tests, increasing coverage, testin
 
 Coverage % is not the goal; a test suite is a tripwire field. Every test must be able to fail on a plausible mistake — if you cannot name the code change that would fail it, it is decoration: fix or delete it.
 
+## Test budget — criticality sets the investment
+"Does it RUN?" is proven for every change (entry-point probe per skill://verify-before-done); how much test AUTHORING the change earns depends on what breaks if it breaks:
+- CRITICAL — money/payment/ledger, auth/permissions/tenant isolation, data integrity/migrations, published API contracts, load-bearing backend logic → full targeted coverage below; green focused suites are a completion gate.
+- STANDARD — ordinary backend, services, libraries other code calls → targeted tests on the changed behavior (priority list below); stop there.
+- RUNS-FIRST — frontend screens/components, internal tools, admin dashboards, demos, one-off scripts → the real run is the primary evidence (browser/CLI probe: happy path + one failure path); author tests ONLY for genuinely intricate embedded logic (parsers, calculations, state machines). Do NOT chase coverage or full-suite green here; a pre-existing unrelated red test is reported, not adopted.
+Tier comes from blast radius, not file extension: a frontend change carrying auth or payment logic is CRITICAL.
+
 ## Target selection — what earns a test
 In priority order, for the code you changed:
 1. Every new/changed CONDITIONAL BRANCH — both sides.
