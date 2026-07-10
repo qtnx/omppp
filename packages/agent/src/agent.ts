@@ -352,6 +352,8 @@ export class Agent {
 	#transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 	#transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 	#steeringQueue: AgentMessage[] = [];
+	/** Messages that wait for a normal steering boundary without interrupting tool batches. */
+	#nonInterruptingSteeringMessages = new Set<AgentMessage>();
 	#followUpQueue: AgentMessage[] = [];
 	#steeringMode: "all" | "one-at-a-time";
 	#followUpMode: "all" | "one-at-a-time";
@@ -857,8 +859,15 @@ export class Agent {
 	}
 
 	replaceQueues(steering: AgentMessage[], followUp: AgentMessage[]) {
+		const retainedNonInterruptingMessages = new Set<AgentMessage>();
+		for (const message of steering) {
+			if (this.#nonInterruptingSteeringMessages.has(message)) {
+				retainedNonInterruptingMessages.add(message);
+			}
+		}
 		this.#steeringQueue = steering.slice();
 		this.#followUpQueue = followUp.slice();
+		this.#nonInterruptingSteeringMessages = retainedNonInterruptingMessages;
 	}
 
 	appendMessage(m: AgentMessage) {
@@ -874,10 +883,16 @@ export class Agent {
 	}
 
 	/**
-	 * Queue a steering message to interrupt the agent mid-run.
-	 * Delivered after current tool execution, skips remaining tools.
+	 * Queue a steering message. By default, it interrupts the current tool batch
+	 * after the active call finishes; boundary steering remains queued until the
+	 * normal injection boundary without skipping calls.
 	 */
-	steer(m: AgentMessage) {
+	steer(m: AgentMessage, options?: { interruptToolExecution?: boolean }) {
+		if (options?.interruptToolExecution === false) {
+			this.#nonInterruptingSteeringMessages.add(m);
+		} else {
+			this.#nonInterruptingSteeringMessages.delete(m);
+		}
 		this.#steeringQueue.push(m);
 	}
 
@@ -891,6 +906,7 @@ export class Agent {
 
 	clearSteeringQueue() {
 		this.#steeringQueue = [];
+		this.#nonInterruptingSteeringMessages.clear();
 	}
 
 	clearFollowUpQueue() {
@@ -900,6 +916,7 @@ export class Agent {
 	clearAllQueues() {
 		this.#steeringQueue = [];
 		this.#followUpQueue = [];
+		this.#nonInterruptingSteeringMessages.clear();
 	}
 
 	hasQueuedMessages(): boolean {
@@ -912,6 +929,10 @@ export class Agent {
 	 *  single source of truth. */
 	peekSteeringQueue(): readonly AgentMessage[] {
 		return this.#steeringQueue;
+	}
+	/** Whether any queued steering message should interrupt the active turn. */
+	hasInterruptingSteeringMessages(): boolean {
+		return this.#steeringQueue.some(message => !this.#nonInterruptingSteeringMessages.has(message));
 	}
 
 	/** Non-consuming view of the pending follow-up queue. See
@@ -926,15 +947,27 @@ export class Agent {
 
 	#dequeueSteeringMessages(): AgentMessage[] {
 		if (this.#steeringMode === "one-at-a-time") {
-			if (this.#steeringQueue.length > 0) {
-				const first = this.#steeringQueue[0];
-				this.#steeringQueue = this.#steeringQueue.slice(1);
-				return [first];
+			const first = this.#steeringQueue[0];
+			if (!first) return [];
+			if (this.#nonInterruptingSteeringMessages.has(first)) {
+				const firstInterruptingIndex = this.#steeringQueue.findIndex(
+					message => !this.#nonInterruptingSteeringMessages.has(message),
+				);
+				if (firstInterruptingIndex >= 0) {
+					// A later user steer caused this boundary: preserve insertion order and
+					// inject it with leading boundary messages instead of delaying it.
+					const steering = this.#steeringQueue.splice(0, firstInterruptingIndex + 1);
+					for (const message of steering) this.#nonInterruptingSteeringMessages.delete(message);
+					return steering;
+				}
 			}
-			return [];
+			const steering = this.#steeringQueue.splice(0, 1);
+			this.#nonInterruptingSteeringMessages.delete(first);
+			return steering;
 		}
 		const steering = this.#steeringQueue.slice();
 		this.#steeringQueue = [];
+		this.#nonInterruptingSteeringMessages.clear();
 		return steering;
 	}
 
@@ -957,7 +990,9 @@ export class Agent {
 	 * Used by dequeue keybinding.
 	 */
 	popLastSteer(): AgentMessage | undefined {
-		return this.#steeringQueue.pop();
+		const message = this.#steeringQueue.pop();
+		if (message) this.#nonInterruptingSteeringMessages.delete(message);
+		return message;
 	}
 
 	/**
@@ -988,6 +1023,7 @@ export class Agent {
 		this.#state.error = undefined;
 		this.#steeringQueue = [];
 		this.#followUpQueue = [];
+		this.#nonInterruptingSteeringMessages.clear();
 	}
 
 	/** Send a prompt with an AgentMessage */
@@ -1202,7 +1238,7 @@ export class Agent {
 				}
 				return this.#dequeueSteeringMessages();
 			},
-			hasSteeringMessages: () => this.#steeringQueue.length > 0,
+			hasSteeringMessages: () => this.hasInterruptingSteeringMessages(),
 			hasIrcInterrupts: this.hasIrcInterrupts,
 			getFollowUpMessages: async () => this.#dequeueFollowUpMessages(),
 			getAsideMessages: async () => (await this.#asideMessageProvider?.()) ?? [],

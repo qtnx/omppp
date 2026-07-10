@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed advisor concern/blocker notes interrupting or skipping active tool/function calls; notes now deliver at a safe boundary, including stream-tail recovery.
+
 ## [1.5.5] - 2026-07-09
 
 ### Added

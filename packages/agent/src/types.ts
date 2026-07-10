@@ -185,7 +185,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	getSteeringMessages?: () => Promise<AgentMessage[]>;
 
 	/**
-	 * Peeks whether steering messages are queued, without consuming them.
+	 * Peeks whether interrupting steering messages are queued, without consuming
+	 * them. Boundary steering remains pending here only for normal dequeue via
+	 * {@link getSteeringMessages}; it never skips remaining tool calls.
 	 *
 	 * Called after each tool execution (unless interruptMode is "wait") to decide
 	 * whether to skip the remaining tool calls in the batch. The queue keeps

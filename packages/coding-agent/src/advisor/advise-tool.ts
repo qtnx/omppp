@@ -66,17 +66,17 @@ export function formatAdvisorBatchContent(notes: readonly AdvisorNote[]): string
 }
 
 /**
- * Whether advice at this severity should interrupt the running agent (delivered
- * via the steering channel, aborting in-flight tools) rather than ride the
- * non-interrupting aside queue that lands at the next step boundary. `concern`
- * and `blocker` interrupt; a plain `nit` queues.
+ * Whether advice at this severity needs immediate handling when the primary is
+ * idle. Active primary runs always receive advisor notes at the next safe aside
+ * boundary; `concern` and `blocker` trigger an idle turn, while a plain `nit`
+ * always queues.
  */
 export function isInterruptingSeverity(severity: AdvisorSeverity | undefined): boolean {
 	return severity === "concern" || severity === "blocker";
 }
 
 /** How an advisor note is routed to the primary. */
-export type AdvisorDeliveryChannel = "aside" | "steer" | "preserve";
+export type AdvisorDeliveryChannel = "aside" | "boundary" | "steer" | "preserve";
 /** Half-open turn-count fence for the post-interrupt cooldown. */
 export function isAdvisorInterruptImmuneTurnActive(opts: {
 	completedTurns: number;
@@ -90,20 +90,17 @@ export function isAdvisorInterruptImmuneTurnActive(opts: {
 /**
  * Decide how one advisor note reaches the primary agent.
  *
- * - A non-interrupting `nit` always rides the non-interrupting aside queue.
- * - An interrupting `concern`/`blocker` is normally steered into the agent: into
- *   the live turn while one is streaming, or (when idle) a triggered turn so the
- *   advice is acted on immediately.
- * - After a deliberate user interrupt (`autoResumeSuppressed`) the advisor must
- *   not auto-resume the stopped run. While the agent is idle — or still tearing
- *   the interrupted turn down (`aborting`) — the note is preserved as a visible
- *   card instead of restarting the run. But once a turn is actively streaming
- *   again (a resume the user already drove), steering the note in does NOT
- *   auto-resume anything, so it is delivered live. Parking it during an active
- *   run instead strands it (it never reaches the running agent) and the withheld
- *   notes dump as one burst at the next user prompt — the bug this guards.
- * - During the post-interrupt immune-turn window, further `concern`/`blocker`
- *   notes are downgraded to asides; suppression preservation still wins.
+ * - A non-interrupting `nit` always rides the passive aside queue.
+ * - After a deliberate user interrupt (`autoResumeSuppressed`), an interrupting
+ *   note is preserved as a visible card while the agent is idle or tearing the
+ *   interrupted turn down (`aborting`), so it cannot auto-resume the stopped run.
+ * - During the post-interrupt immune-turn window, remaining `concern`/`blocker`
+ *   notes are downgraded to passive asides, including while the primary streams.
+ * - Otherwise, while the primary agent's core loop is streaming,
+ *   `concern`/`blocker` notes become boundary steering: they dequeue after the
+ *   current tool batch without aborting or skipping its remaining calls.
+ * - Only an idle, unsuppressed, non-immune `concern`/`blocker` is steered to
+ *   trigger immediate handling.
  */
 export function resolveAdvisorDeliveryChannel(opts: {
 	severity: AdvisorSeverity | undefined;
@@ -115,6 +112,7 @@ export function resolveAdvisorDeliveryChannel(opts: {
 	if (!isInterruptingSeverity(opts.severity)) return "aside";
 	if (opts.autoResumeSuppressed && (opts.aborting || !opts.streaming)) return "preserve";
 	if (opts.interruptImmuneTurnActive) return "aside";
+	if (opts.streaming) return "boundary";
 	return "steer";
 }
 

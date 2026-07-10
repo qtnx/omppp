@@ -2781,18 +2781,15 @@ describe("advisor", () => {
 		});
 	});
 
-	// Regression: the advisor must not withhold interrupting advice from a turn
-	// that is actively streaming again after a user interrupt. The latch only
-	// guards auto-resume of a stopped/idle run; parking a note mid-stream stranded
-	// it (the agent never heard it) and dumped the backlog as one burst at the next
-	// user prompt. See the 7-concern same-instant burst in session 019ed1dd.
+	// Streaming advisor concerns use a boundary steer: they must wait for the
+	// current tool call to settle without entering the interrupting user-steering
+	// path that skips remaining calls. Idle unsuppressed concerns still steer to
+	// trigger immediate action, while deliberate-interrupt suppression still
+	// preserves the card.
 	//
 	// `streaming` here means the live agent-CORE loop (agent.state.isStreaming) —
 	// NOT session `isStreaming`, which also counts `#promptInFlightCount` during
-	// post-turn unwind. Only a running core loop consumes a steer; in the unwind
-	// window (`streaming: false`) a suppressed note must `preserve`, never `steer`,
-	// or it strands and #drainStrandedQueuedMessages auto-resumes it. Do not swap
-	// the call site back to session `isStreaming`.
+	// post-turn unwind. Only a live core loop has a safe post-tool boundary.
 	describe("resolveAdvisorDeliveryChannel", () => {
 		it("routes a non-interrupting nit to the aside queue regardless of state", () => {
 			expect(
@@ -2813,18 +2810,48 @@ describe("advisor", () => {
 			).toBe("aside");
 		});
 
-		it("steers concern/blocker when no user interrupt is in effect", () => {
+		it("routes streaming non-immune concern/blocker to the boundary channel regardless of suppression", () => {
 			for (const severity of ["concern", "blocker"] as const) {
-				for (const streaming of [true, false]) {
+				for (const autoResumeSuppressed of [false, true]) {
 					expect(
 						resolveAdvisorDeliveryChannel({
 							severity,
-							autoResumeSuppressed: false,
-							streaming,
+							autoResumeSuppressed,
+							streaming: true,
 							aborting: false,
+							interruptImmuneTurnActive: false,
 						}),
-					).toBe("steer");
+					).toBe("boundary");
 				}
+			}
+		});
+
+		it("keeps streaming concern/blocker passive during interrupt-immune turns", () => {
+			for (const severity of ["concern", "blocker"] as const) {
+				for (const autoResumeSuppressed of [false, true]) {
+					expect(
+						resolveAdvisorDeliveryChannel({
+							severity,
+							autoResumeSuppressed,
+							streaming: true,
+							aborting: false,
+							interruptImmuneTurnActive: true,
+						}),
+					).toBe("aside");
+				}
+			}
+		});
+
+		it("steers idle concern/blocker when no user interrupt is in effect", () => {
+			for (const severity of ["concern", "blocker"] as const) {
+				expect(
+					resolveAdvisorDeliveryChannel({
+						severity,
+						autoResumeSuppressed: false,
+						streaming: false,
+						aborting: false,
+					}),
+				).toBe("steer");
 			}
 		});
 
@@ -2833,7 +2860,7 @@ describe("advisor", () => {
 				resolveAdvisorDeliveryChannel({
 					severity: "concern",
 					autoResumeSuppressed: false,
-					streaming: true,
+					streaming: false,
 					aborting: false,
 					interruptImmuneTurnActive: true,
 				}),
@@ -2872,19 +2899,6 @@ describe("advisor", () => {
 					aborting: true,
 				}),
 			).toBe("preserve");
-		});
-
-		it("steers an interrupting note while suppressed once a turn is streaming again and not aborting (the fix)", () => {
-			for (const severity of ["concern", "blocker"] as const) {
-				expect(
-					resolveAdvisorDeliveryChannel({
-						severity,
-						autoResumeSuppressed: true,
-						streaming: true,
-						aborting: false,
-					}),
-				).toBe("steer");
-			}
 		});
 	});
 	describe("advisor transcript filenames", () => {
