@@ -1485,7 +1485,7 @@ export function resolveDuoConfig(
 		kind => kind === "opus",
 	);
 	const advisor = resolveExplicitDuoModel(
-		settings.get("duo.advisorModel") ?? "gpt-5.5",
+		settings.get("duo.advisorModel") ?? "gpt-5.6-sol",
 		availableModels,
 		settings,
 		registry,

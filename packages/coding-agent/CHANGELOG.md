@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The continuous duo advisor now defaults to `gpt-5.6-sol` (was `gpt-5.5`): updated the `duo.advisorModel` schema default and the resolver's unset-fallback so the advisor no longer routes to GPT-5.5.
+
 ## [1.5.5] - 2026-07-09
 
 ### Added
