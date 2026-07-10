@@ -673,7 +673,9 @@ EXECUTION WORKFLOW
 # 5. Verify
 - NEVER yield non-trivial work without proof.
 - Run tests you added or modified unless asked otherwise.
-- Aim checks at branches, edges, invariants, and errors.
+- Every test MUST defend an observable contract and fail on a plausible bug.
+- Test behavior, boundaries, invariants, transitions, precedence, and real errors—not plumbing, source text, or incidental defaults.
+- Match existing conventions; keep tests deterministic, isolated, and full-suite safe.
 
 # 6. Cleanup
 - Changelog, tests, docs, scaffolding removal are last.

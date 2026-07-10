@@ -183,7 +183,7 @@ describe("config CLI schema coverage", () => {
 });
 
 describe("config update", () => {
-	it("persists setupVersion 3 diff-only migration values and preserves explicit custom values", async () => {
+	it("persists setupVersion 4 diff-only migration values and preserves explicit custom values", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		await writeSettings({
 			setupVersion: 0,
@@ -214,33 +214,33 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: true,
-			setupVersion: 3,
-			currentVersion: 3,
+			setupVersion: 4,
+			currentVersion: 4,
 		});
 
 		const onDisk = await readSettings();
-		expect(onDisk.setupVersion).toBe(3);
+		expect(onDisk.setupVersion).toBe(4);
 		expect(onDisk.modelRoles).toEqual({
 			default: "custom/default",
-			task: "openai-codex/gpt-5.5:low",
-			smol: "tnx/smol:medium",
-			slow: "openai-codex/gpt-5.5:xhigh",
-			plan: "anthropic/claude-fable-5:high",
-			designer: "tnx/designer:medium",
-			commit: "openai-codex/gpt-5.5:low",
+			task: "openai-codex/gpt-5.6-terra:medium",
+			smol: "cerebras/gpt-oss-120b",
+			slow: "openai-codex/gpt-5.6-sol:high",
+			plan: "openai-codex/gpt-5.6-sol:xhigh",
+			designer: "tnx/designer",
+			commit: "openai-codex/gpt-5.6-luna:high",
 		});
 		expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual({
 			designer: "tnx/designer",
+			explore: "pi/smol",
 			frontend_ui: "tnx/designer",
-			ui_ux_reviewer: "tnx/designer",
-			ux_copywriter: "tnx/designer",
-			oracle: "openai-codex/gpt-5.5:xhigh",
-			plan: "openai-codex/gpt-5.5:xhigh",
+			heavy_task: "openai-codex/gpt-5.6-sol:high",
+			oracle: "openai-codex/gpt-5.6-sol:high",
+			plan: "anthropic/claude-fable-5:high",
 			qa: "custom/qa",
-			tester: "openai-codex/gpt-5.5:medium",
-			quick_task: "openai-codex/gpt-5.5:low",
-			reviewer: "openai-codex/gpt-5.5:xhigh",
-			task: "openai-codex/gpt-5.5:low",
+			tester: "openai-codex/gpt-5.6-sol:medium",
+			quick_task: "openai-codex/gpt-5.6-luna:high",
+			reviewer: "openai-codex/gpt-5.6-sol:high",
+			task: "openai-codex/gpt-5.6-terra:medium",
 		});
 		expect(onDisk.memory).toEqual({ backend: "local" });
 		expect(onDisk.theme).toEqual({ dark: "custom-dark" });
@@ -268,10 +268,10 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: true,
-			setupVersion: 3,
-			currentVersion: 3,
+			setupVersion: 4,
+			currentVersion: 4,
 		});
-		expect((await readSettings()).setupVersion).toBe(3);
+		expect((await readSettings()).setupVersion).toBe(4);
 	});
 
 	it("reports unchanged JSON and leaves config stable on a second run", async () => {
@@ -291,8 +291,86 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: false,
+			setupVersion: 4,
+			currentVersion: 4,
+		});
+		expect(await readSettings()).toEqual(firstMigration);
+	});
+
+	it("updates setupVersion 3 routes once and reports the migrated public paths", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		await writeSettings({
 			setupVersion: 3,
-			currentVersion: 3,
+			modelRoles: {
+				default: "openai-codex/gpt-5.5:xhigh",
+				smol: "tnx/smol",
+				designer: "tnx/designer:medium",
+				custom_role: "custom/role-model",
+			},
+			task: {
+				agentModelOverrides: {
+					quick_task: "openai-codex/gpt-5.5:low",
+					qa: "openai-codex/gpt-5.5:high",
+					custom_agent: "custom/agent-model",
+				},
+			},
+		});
+
+		await runConfigCommand({ action: "update", flags: { json: true } });
+
+		const firstPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(firstPayload).toEqual({
+			changed: true,
+			setupVersion: 4,
+			currentVersion: 4,
+			changedPaths: [
+				"dev.autoqa.consent",
+				"display.syntaxHighlighting",
+				"learning.classifierModels",
+				"learning.enabled",
+				"memory.backend",
+				"modelRoles",
+				"providers.webSearch",
+				"retry.fallbackChains",
+				"setupVersion",
+				"task.agentModelOverrides",
+			],
+		});
+		const firstMigration = await readSettings();
+		expect(firstMigration.setupVersion).toBe(4);
+		expect(firstMigration.modelRoles).toEqual({
+			default: "openai-codex/gpt-5.6-sol:xhigh",
+			task: "openai-codex/gpt-5.6-terra:medium",
+			smol: "cerebras/gpt-oss-120b",
+			slow: "openai-codex/gpt-5.6-sol:high",
+			plan: "openai-codex/gpt-5.6-sol:xhigh",
+			designer: "tnx/designer",
+			commit: "openai-codex/gpt-5.6-luna:high",
+			custom_role: "custom/role-model",
+		});
+		expect((firstMigration.task as Record<string, unknown>).agentModelOverrides).toEqual({
+			designer: "tnx/designer",
+			explore: "pi/smol",
+			frontend_ui: "tnx/designer",
+			heavy_task: "openai-codex/gpt-5.6-sol:high",
+			oracle: "openai-codex/gpt-5.6-sol:high",
+			plan: "anthropic/claude-fable-5:high",
+			qa: "openai-codex/gpt-5.6-sol:high",
+			tester: "openai-codex/gpt-5.6-sol:medium",
+			quick_task: "openai-codex/gpt-5.6-luna:high",
+			reviewer: "openai-codex/gpt-5.6-sol:high",
+			task: "openai-codex/gpt-5.6-terra:medium",
+			custom_agent: "custom/agent-model",
+		});
+
+		await runConfigCommand({ action: "update", flags: { json: true } });
+
+		const secondPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(secondPayload).toEqual({
+			changed: false,
+			setupVersion: 4,
+			currentVersion: 4,
+			changedPaths: [],
 		});
 		expect(await readSettings()).toEqual(firstMigration);
 	});

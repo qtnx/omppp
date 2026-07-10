@@ -37,7 +37,8 @@ const KITTY_PRINTABLE_DEDUP_WINDOW_MS = 25;
 // any-motion tracking, so report floods plus render stalls make the split
 // routine — see the settings search leaking `[<35;8;16M`).
 const SGR_MOUSE_PARTIAL = /^\x1b\[<[\d;]*$/;
-const DOUBLE_ESC_CSI_WINDOW_REPORT = /^\x1b\x1b\[(?:\d+;){2}\d+t$/;
+const DOUBLE_ESC_CSI_WINDOW_REPORT =
+	/^\x1b\x1b\[(?:(?:\d+;){2}\d+|48;\d+(?::\d+)*;\d+(?::\d+)*;\d+(?::\d+)*;\d+(?::\d+)*)t$/;
 // Upper bound on how long an unambiguous partial is held past the flush
 // timeout before being delivered raw anyway (terminal died mid-sequence).
 // This is also the worst-case added latency for a partial that never

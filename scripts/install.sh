@@ -582,7 +582,7 @@ migrate_gpt_5_6_model_config() {
                             sub(/openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/, "openai-codex/gpt-5.6-sol:medium")
                         }
                     } else if ($0 ~ /^[[:space:]]*plan:[[:space:]]*openai-codex\/gpt-5\.5:xhigh[[:space:]]*(#.*)?$/) {
-                        sub(/openai-codex\/gpt-5\.5:xhigh/, "openai-codex/gpt-5.6-sol:xhigh")
+                        sub(/openai-codex\/gpt-5\.5:xhigh/, "anthropic/claude-fable-5:high")
                     }
                     print
                     next
@@ -819,7 +819,7 @@ theme:
   dark: titanium
 display:
   syntaxHighlighting: basic
-setupVersion: 3
+setupVersion: 4
 retry:
   fallbackChains:
     task:

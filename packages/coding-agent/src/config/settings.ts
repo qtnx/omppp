@@ -22,6 +22,7 @@ import {
 	getProjectDir,
 	isEnoent,
 	logger,
+	MAIN_CONFIG_FILENAMES,
 	procmgr,
 	setWorktreesDir,
 } from "@oh-my-pi/pi-utils";
@@ -68,7 +69,7 @@ export interface RawSettings {
 export interface SettingsOptions {
 	/** Current working directory for project settings discovery */
 	cwd?: string;
-	/** Agent directory for config.yml storage */
+	/** Agent directory for config.yml/config.yaml storage */
 	agentDir?: string;
 	/** Don't persist to disk (for tests) */
 	inMemory?: boolean;
@@ -175,35 +176,35 @@ export type ConfigMigrationApplyResult = {
 	changedPaths: string[];
 };
 
-const SETUP_CONFIG_VERSION = 3;
+const SETUP_CONFIG_VERSION = 4;
 
 const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 	{
 		path: "modelRoles",
 		target: {
-			default: "openai-codex/gpt-5.5",
-			task: "openai-codex/gpt-5.5:low",
-			smol: "tnx/smol:medium",
-			slow: "openai-codex/gpt-5.5:xhigh",
-			plan: "anthropic/claude-fable-5:high",
-			designer: "tnx/designer:medium",
-			commit: "openai-codex/gpt-5.5:low",
+			default: "openai-codex/gpt-5.6-sol:xhigh",
+			task: "openai-codex/gpt-5.6-terra:medium",
+			smol: "cerebras/gpt-oss-120b",
+			slow: "openai-codex/gpt-5.6-sol:high",
+			plan: "openai-codex/gpt-5.6-sol:xhigh",
+			designer: "tnx/designer",
+			commit: "openai-codex/gpt-5.6-luna:high",
 		},
 	},
 	{
 		path: "task.agentModelOverrides",
 		target: {
 			designer: "tnx/designer",
+			explore: "pi/smol",
 			frontend_ui: "tnx/designer",
-			ui_ux_reviewer: "tnx/designer",
-			ux_copywriter: "tnx/designer",
-			oracle: "openai-codex/gpt-5.5:xhigh",
-			plan: "openai-codex/gpt-5.5:xhigh",
-			qa: "openai-codex/gpt-5.5:high",
-			tester: "openai-codex/gpt-5.5:medium",
-			quick_task: "openai-codex/gpt-5.5:low",
-			reviewer: "openai-codex/gpt-5.5:xhigh",
-			task: "openai-codex/gpt-5.5:low",
+			heavy_task: "openai-codex/gpt-5.6-sol:high",
+			oracle: "openai-codex/gpt-5.6-sol:high",
+			plan: "anthropic/claude-fable-5:high",
+			qa: "openai-codex/gpt-5.6-sol:high",
+			tester: "openai-codex/gpt-5.6-sol:medium",
+			quick_task: "openai-codex/gpt-5.6-luna:high",
+			reviewer: "openai-codex/gpt-5.6-sol:high",
+			task: "openai-codex/gpt-5.6-terra:medium",
 		},
 	},
 	{
@@ -216,6 +217,31 @@ const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 	},
 ];
 
+type SetupConfigRecognizedOldValues = Readonly<
+	Partial<Record<SettingPath, Readonly<Record<string, readonly string[]>>>>
+>;
+
+const SETUP_CONFIG_RECOGNIZED_OLD_VALUES: SetupConfigRecognizedOldValues = {
+	modelRoles: {
+		default: ["openai-codex/gpt-5.5", "openai-codex/gpt-5.5:xhigh"],
+		task: ["openai-codex/gpt-5.5:low", "openai-codex/gpt-5.5:medium"],
+		smol: ["tnx/smol", "tnx/smol:medium"],
+		slow: ["openai-codex/gpt-5.5:xhigh", "openai-codex/gpt-5.5:high"],
+		plan: ["anthropic/claude-fable-5:high", "openai-codex/gpt-5.5:xhigh"],
+		designer: ["tnx/designer:medium"],
+		commit: ["openai-codex/gpt-5.5:low"],
+	},
+	"task.agentModelOverrides": {
+		quick_task: ["openai-codex/gpt-5.5:low"],
+		task: ["openai-codex/gpt-5.5:low", "openai-codex/gpt-5.5:medium"],
+		heavy_task: ["openai-codex/gpt-5.5:high"],
+		oracle: ["openai-codex/gpt-5.5:xhigh"],
+		reviewer: ["openai-codex/gpt-5.5:xhigh"],
+		tester: ["openai-codex/gpt-5.5:medium"],
+		plan: ["openai-codex/gpt-5.5:xhigh"],
+		qa: ["openai-codex/gpt-5.5:high"],
+	},
+};
 const SETUP_CONFIG_SCALAR_MIGRATIONS: readonly SetupConfigScalarMigration[] = [
 	{ path: "task.showResolvedModelBadge", target: true },
 	{ path: "workflow.enabled", target: true },
@@ -391,7 +417,7 @@ export class Settings {
 	#storage: AgentStorage | null = null;
 
 	#configFiles: string[] = [];
-	/** Global settings from config.yml */
+	/** Global settings from config.yml/config.yaml */
 	#global: RawSettings = {};
 	/** Project settings from .claude/settings.yml etc */
 	#project: RawSettings = {};
@@ -427,7 +453,7 @@ export class Settings {
 	private constructor(options: SettingsOptions = {}) {
 		this.#cwd = path.normalize(options.cwd ?? getProjectDir());
 		this.#agentDir = path.normalize(options.agentDir ?? getAgentDir());
-		this.#configPath = options.inMemory ? null : path.join(this.#agentDir, "config.yml");
+		this.#configPath = options.inMemory ? null : path.join(this.#agentDir, MAIN_CONFIG_FILENAMES[0]);
 		this.#configFiles = options.configFiles?.map(file => path.resolve(this.#cwd, expandTilde(file))) ?? [];
 		this.#persist = !options.inMemory && options.readOnly !== true;
 
@@ -667,6 +693,7 @@ export class Settings {
 			inMemory: !this.#persist,
 		});
 		cloned.#storage = this.#storage;
+		cloned.#configPath = this.#configPath;
 		cloned.#global = structuredClone(this.#global);
 		cloned.#project = this.#persist ? await cloned.#loadProjectSettings() : structuredClone(this.#project);
 		cloned.#configFiles = [...this.#configFiles];
@@ -709,12 +736,15 @@ export class Settings {
 		}
 
 		const previous = this.#snapshotResolvedSettings();
+		const previousModifiedPaths = new Set(this.#modified);
+		const previousGlobal = this.#global;
 		this.#invalidateProjectSettingsCaches(options.changedPath);
 
-		const nextGlobal = this.#configPath ? await this.#loadYaml(this.#configPath) : {};
-		for (const modifiedPath of this.#modified) {
+		const rediscoveredGlobal = await this.#loadExistingMainYaml();
+		const nextGlobal = rediscoveredGlobal ?? {};
+		for (const modifiedPath of previousModifiedPaths) {
 			const segments = modifiedPath.split(".");
-			const value = getByPath(this.#global, segments);
+			const value = getByPath(previousGlobal, segments);
 			setByPath(nextGlobal, segments, value);
 		}
 
@@ -925,16 +955,22 @@ export class Settings {
 
 	async #load(): Promise<Settings> {
 		// Project settings load (loadCapability scans cwd) is independent of the
-		// persist chain (storage open → legacy migration → global config.yml read),
-		// so kick it off first and await after the persist chain completes. The
-		// persist steps remain sequential: migration may write config.yml, which
-		// #loadYaml then reads; migration's db fallback needs #storage opened.
+		// persist chain (storage open → legacy migration → global config read), so
+		// kick it off first and await after the persist chain completes. The
+		// persist steps remain sequential: existing config discovery decides
+		// whether migration may write config.yml before the global config is read;
+		// migration's db fallback needs #storage opened.
 		const projectPromise = this.#loadProjectSettings();
 
 		if (this.#persist) {
 			this.#storage = await AgentStorage.open(getAgentDbPath(this.#agentDir));
-			await this.#migrateFromLegacy();
-			this.#global = await this.#loadYaml(this.#configPath!);
+			const existingConfig = await this.#loadExistingMainYaml();
+			if (existingConfig) {
+				this.#global = existingConfig;
+			} else {
+				await this.#migrateFromLegacy();
+				this.#global = await this.#loadYaml(this.#configPath!);
+			}
 			await this.#seedLastChangelogVersionMarker();
 		}
 
@@ -950,8 +986,9 @@ export class Settings {
 	async #loadReadOnly(): Promise<Settings> {
 		const projectPromise = this.#loadProjectSettings();
 
-		if (this.#configPath) {
-			this.#global = await this.#loadYaml(this.#configPath);
+		const existingConfig = await this.#loadExistingMainYaml();
+		if (existingConfig) {
+			this.#global = existingConfig;
 		}
 
 		this.#project = await projectPromise;
@@ -961,8 +998,23 @@ export class Settings {
 	}
 
 	async #loadYaml(filePath: string, options: { trackSetupMigration?: boolean } = {}): Promise<RawSettings> {
+		const loaded = await this.#loadYamlIfPresent(filePath, options);
+		return loaded ?? {};
+	}
+
+	async #loadYamlIfPresent(
+		filePath: string,
+		options: { trackSetupMigration?: boolean } = {},
+	): Promise<RawSettings | null> {
+		let content: string;
 		try {
-			const content = await Bun.file(filePath).text();
+			content = await Bun.file(filePath).text();
+		} catch (error) {
+			if (isEnoent(error)) return null;
+			logger.warn("Settings: failed to load", { path: filePath, error: String(error) });
+			return {};
+		}
+		try {
 			const parsed = YAML.parse(content);
 			if (parsed !== null && parsed !== undefined && (typeof parsed !== "object" || Array.isArray(parsed))) {
 				return {};
@@ -974,10 +1026,23 @@ export class Settings {
 				persistModifiedPaths: applySetupConfigMigration && (options.trackSetupMigration ?? true),
 			});
 		} catch (error) {
-			if (isEnoent(error)) return {};
 			logger.warn("Settings: failed to load", { path: filePath, error: String(error) });
 			return {};
 		}
+	}
+
+	async #loadExistingMainYaml(): Promise<RawSettings | null> {
+		if (!this.#configPath) return null;
+		for (const filename of MAIN_CONFIG_FILENAMES) {
+			const configPath = path.join(this.#agentDir, filename);
+			this.#configPath = configPath;
+			const loaded = await this.#loadYamlIfPresent(configPath);
+			if (loaded) {
+				return loaded;
+			}
+		}
+		this.#configPath = path.join(this.#agentDir, MAIN_CONFIG_FILENAMES[0]);
+		return null;
 	}
 
 	async #loadProjectSettings(): Promise<RawSettings> {
@@ -1038,14 +1103,6 @@ export class Settings {
 
 	async #migrateFromLegacy(): Promise<void> {
 		if (!this.#configPath) return;
-
-		// Check if config.yml already exists
-		try {
-			await Bun.file(this.#configPath).text();
-			return; // Already exists, no migration needed
-		} catch (err) {
-			if (!isEnoent(err)) return;
-		}
 
 		let settings: RawSettings = {};
 		let migrated = false;
@@ -1539,7 +1596,13 @@ export class Settings {
 				const record = current === undefined ? {} : current;
 				let changed = current === undefined;
 				for (const [key, value] of Object.entries(migration.target)) {
-					if (!(key in record)) {
+					const recognizedOldValues = SETUP_CONFIG_RECOGNIZED_OLD_VALUES[migration.path]?.[key];
+					if (
+						!(key in record) ||
+						(recognizedOldValues !== undefined &&
+							typeof record[key] === "string" &&
+							recognizedOldValues.includes(record[key]))
+					) {
 						record[key] = structuredClone(value);
 						changed = true;
 					}
@@ -1568,22 +1631,6 @@ export class Settings {
 				}
 				if (overridesChanged) {
 					setupModifiedPaths.add("task.agentModelOverrides");
-				}
-			}
-
-			const modelRoles = getByPath(raw, SETTING_PATH_SEGMENTS.modelRoles);
-			if (setupVersion < 3 && isRecord(modelRoles)) {
-				let modelRolesChanged = false;
-				if (modelRoles.smol === "tnx/smol") {
-					modelRoles.smol = "tnx/smol:medium";
-					modelRolesChanged = true;
-				}
-				if (modelRoles.designer === "tnx/designer") {
-					modelRoles.designer = "tnx/designer:medium";
-					modelRolesChanged = true;
-				}
-				if (modelRolesChanged) {
-					setupModifiedPaths.add("modelRoles");
 				}
 			}
 

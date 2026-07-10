@@ -262,7 +262,7 @@ theme:
   dark: titanium
 display:
   syntaxHighlighting: basic
-setupVersion: 3
+setupVersion: 4
 retry:
   fallbackChains:
     task:
@@ -279,6 +279,15 @@ retry:
 
 function Install-Bun {
     throw "Bun $MinimumBunVersion or newer is required for source installs. Install Bun from https://bun.sh/docs/installation, then rerun this installer."
+}
+
+function Invoke-ConfigUpdate {
+    param([string]$ExecutablePath)
+
+    $process = Start-Process -FilePath $ExecutablePath -ArgumentList @("config", "update", "--json") -Wait -PassThru -NoNewWindow
+    if ($process.ExitCode -ne 0) {
+        throw "Failed to update existing OMPx config (exit code $($process.ExitCode))"
+    }
 }
 
 function Install-ViaBun {
@@ -341,6 +350,7 @@ function Install-ViaBun {
     }
 
     Install-StandardConfig
+    Invoke-ConfigUpdate "ompx"
     Write-Host ""
     Write-Host "✓ Installed OMPx via bun" -ForegroundColor Green
 
@@ -460,6 +470,7 @@ function Install-Binary {
     }
 
     Install-StandardConfig
+    Invoke-ConfigUpdate $OutPath
     Write-Host ""
     Write-Host "✓ Installed OMPx to $OutPath" -ForegroundColor Green
 
