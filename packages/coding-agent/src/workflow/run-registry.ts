@@ -9,6 +9,7 @@ export interface WorkflowRunAgentEntry {
 	tokensIn?: number;
 	tokensOut?: number;
 	durationMs?: number;
+	sessionFile?: string;
 	updatedAt: number;
 }
 
@@ -113,6 +114,7 @@ export class WorkflowRunRegistry {
 			tokensIn: progress?.inputTokens ?? current?.tokensIn,
 			tokensOut: progress?.outputTokens ?? frame.tokens ?? current?.tokensOut,
 			durationMs: frame.durationMs ?? progress?.durationMs ?? current?.durationMs,
+			sessionFile: frame.sessionFile ?? current?.sessionFile,
 			updatedAt: at,
 		};
 

@@ -469,6 +469,11 @@ export class AgentTranscriptViewer implements Component {
 			this.deps.onClose();
 			return;
 		}
+		if (matchesKey(data, "left") && (!this.#editor || this.#editor.getText().trim() === "")) {
+			// Left = go back one level (to the hub), unless composing a message (then it moves the cursor).
+			this.deps.onClose();
+			return;
+		}
 
 		for (const key of this.deps.expandKeys) {
 			if (matchesKey(data, key)) {

@@ -2,13 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/workflows` is now an interactive Workflow Hub overlay (mirroring `/agents`): browse workflow runs → phases → agents with live state/model/token/duration stats, press Enter on an agent to open its transcript in the existing viewer; backed by a new `WorkflowRunRegistry` that folds progress frames into per-run records and a terminal `done` frame emitted when a run finishes.
+- Added a live workflow HUD under the composer: while any workflow run is active, its phases and agents render and refresh from progress frames (like the task-subagents tree) without opening `/workflows`, and clear when the run completes.
+
+### Fixed
+
+- Workflow Hub transcript drill-through now streams live: the workflow agent progress frame carries the subagent's transcript `sessionFile`, so opening an agent (Enter) registers a parked placeholder ref pointing at the real transcript and the viewer tails it immediately — even during the start-race window before the live agent session registers. Previously the open silently no-opped when the ref was not yet in the registry.
+- Workflow Hub navigation gained arrow keys (↑/↓ alongside j/k) and `←` to go back (transcript → hub, hub → editor).
+
 ## [1.5.7] - 2026-07-10
 
 ### Added
 
 - Added bundled `parallel-fanout` skill: 7-phase fanout pipeline, feature-slicing dimension table, contract-vs-runtime (C/R) dependency test, tier table, required wave-plan table with a worked example, a one-workflow rule with a script template (a whole wave plan executes as ONE `workflow` run), one-wave scout fanout with a two-wave exploration budget, and the full-cycle rule (one subagent owns red test + implement + fix until green).
-- `/workflows` is now an interactive Workflow Hub overlay (mirroring `/agents`): browse workflow runs → phases → agents with live state/model/token/duration stats, press Enter on an agent to open its transcript in the existing viewer; backed by a new `WorkflowRunRegistry` that folds progress frames into per-run records and a terminal `done` frame emitted when a run finishes.
-- Added a live workflow HUD under the composer: while any workflow run is active, its phases and agents render and refresh from progress frames (like the task-subagents tree) without opening `/workflows`, and clear when the run completes.
 
 ### Changed
 

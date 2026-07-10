@@ -3,6 +3,7 @@ import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import type { WorkflowRunAgentEntry, WorkflowRunRecord } from "../../workflow/run-registry";
 import type { Theme, ThemeColor } from "../theme/theme";
+import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 
 const AGE_TICK_MS = 5_000;
 
@@ -15,7 +16,7 @@ interface WorkflowHubRow {
 
 export interface WorkflowHubDeps {
 	registry: { list(): WorkflowRunRecord[]; get(id: string): WorkflowRunRecord | undefined };
-	openTranscript: (agentId: string) => void;
+	openTranscript: (agentId: string, sessionFile?: string) => void;
 	close: () => void;
 	theme: Theme;
 	requestRender?: () => void;
@@ -24,7 +25,7 @@ export interface WorkflowHubDeps {
 /** In-session workflow run browser with transcript drill-through for agent rows. */
 export class WorkflowHubOverlayComponent extends Container {
 	#registry: WorkflowHubDeps["registry"];
-	#openTranscript: (agentId: string) => void;
+	#openTranscript: (agentId: string, sessionFile?: string) => void;
 	#close: () => void;
 	#theme: Theme;
 	#requestRender: () => void;
@@ -68,17 +69,21 @@ export class WorkflowHubOverlayComponent extends Container {
 			this.refresh();
 			return;
 		}
-		if (keyData === "j") {
+		if (matchesKey(keyData, "left")) {
+			this.#close();
+			return;
+		}
+		if (keyData === "j" || matchesSelectDown(keyData)) {
 			this.#moveSelection(1);
 			return;
 		}
-		if (keyData === "k") {
+		if (keyData === "k" || matchesSelectUp(keyData)) {
 			this.#moveSelection(-1);
 			return;
 		}
 		if (matchesKey(keyData, "enter") || keyData === "\r" || keyData === "\n") {
 			const agent = this.#rows[this.#selectedRow]?.agent;
-			if (agent) this.#openTranscript(agent.id);
+			if (agent) this.#openTranscript(agent.id, agent.sessionFile);
 		}
 	}
 
@@ -127,7 +132,7 @@ export class WorkflowHubOverlayComponent extends Container {
 		}
 		lines.push(
 			"",
-			` ${this.#theme.fg("dim", "j/k:select  Enter:open transcript  r:refresh  Esc:close")}`,
+			` ${this.#theme.fg("dim", "↑/↓ j/k:select  Enter:open  ←:back  r:refresh  Esc:close")}`,
 			this.#border(width),
 		);
 		return lines;
