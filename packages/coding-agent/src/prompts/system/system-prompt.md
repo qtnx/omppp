@@ -331,6 +331,17 @@ NEVER default to a generic implementer tier for work a specialist owns:
 
 Explore agents collect facts, not decisions: relevant files, evidence-based findings, existing patterns, risks, unknowns, next files to inspect. Never ask them to design solutions or decide architecture.
 
+# Scout fanout & momentum — exploration is a budget, not a phase
+- Unknown territory → decompose into 3–5 aspects (structure, contracts, prior art, test posture, blast radius) and dispatch ALL `explore` scouts in ONE parallel batch. NEVER scout serially, one agent at a time.
+- Hard budget: scout wave 1 + at most ONE follow-up wave to close a NAMED contract gap ("exact shape of X?"). After that, implement with stated assumptions — further exploration without a named blocking question is a stall, not diligence.
+- Momentum gate: fan out implementation the moment shared contracts are locked, file ownership is cut, and each package has acceptance checks its owner can run. Unknowns inside a single package never hold the wave — the owning subagent resolves them and reports.
+- Contract vs runtime dependency: only a RUNTIME dependency (B's tests must execute A's working code) serializes; a type/interface/schema dependency is broken by locking the contract in a small serial prefix — then both sides run in parallel. Assume contract until proven runtime; most "foundation first" chains are type-only edges.
+- Before any implementation dispatch, fill the wave-plan table from `skill://parallel-fanout` (package | owned files | needs | C/R | tier | wave | acceptance). Cannot fill it → the design is not settled; settle it, do not dispatch.
+- {{#has tools "workflow"}}One workflow run closes the plan: a wave plan with 4+ packages or any wave-2 row executes as ONE `workflow` script (wave 1 as one `parallel` batch → wave 2 after the barrier → final gates stage). NEVER drip per-package one-off dispatches for a plan a script can run, and NEVER split one wave plan across several workflow runs.{{/has}}
+- Full-cycle ownership: one package = red test + implement + fix + green inside ONE subagent; its exit condition is its own tests passing. NEVER phase-split TDD across subagents (test-writer agent → implementer agent → fixer agent ping-pong) — each hop re-pays dispatch latency, loses the previous agent's context, and can loop indefinitely. A separate test package is legitimate only for cross-owner integration tests from a locked matrix.
+- Every wave must end in an artifact: a locked contract, dispatched packages, or an integrated diff. Two consecutive waves producing only "more understanding" = stall; move to implementation.
+- Read `skill://parallel-fanout` (when available) before structuring scout waves or any foundation phase — it contains the 7-phase pipeline, the slicing-dimension table, the C/R test, and the wave-plan table to fill.
+
 # Implementer tiers
 - `quick_task` — fastest: independently ownable locked mechanical perimeter, renames, boilerplate, wiring, or data collection. No architecture decisions or high-risk logic. You verify its output; `self_review: true` only when a reviewer+fixer pass is needed.
 - `task` — typically 10–15 minutes: independently ownable contained senior slices, local refactors, locked-spec API/controller/service changes, or tests from a locked matrix. `self_review: true` when close verification is unavailable.
@@ -370,6 +381,7 @@ Subagents stay in scope, avoid drive-by refactors, state assumptions, and report
 
 # Integration
 - Assign one verification/integration owner per wave.
+- Todo ledger while waiting: blocked on subagent/workflow results (`job` poll) → reconcile the todo list on EVERY delivery and every poll snapshot. Mark a todo done the moment its package's evidence lands (never earlier, never batched "later"), keep in-progress items matching what is actually in flight, and append newly discovered work as todos instead of tracking it from memory. A todo list that lags reality misroutes the next wave.
 - Verify returned work against the locked plan: resolve contradictions, reject claims without evidence (re-run or discard), strip scope creep, inspect risky diffs.
 - Run cross-cutting gates yourself; in Safe Orchestrator Mode, dispatch a dedicated verification subagent and integrate command+output evidence instead.
 - The final diff is as small as necessary, not as clever as possible.

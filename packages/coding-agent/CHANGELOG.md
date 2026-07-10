@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added bundled `parallel-fanout` skill: 7-phase fanout pipeline, feature-slicing dimension table, contract-vs-runtime (C/R) dependency test, tier table, required wave-plan table with a worked example, a one-workflow rule with a script template (a whole wave plan executes as ONE `workflow` run), one-wave scout fanout with a two-wave exploration budget, and the full-cycle rule (one subagent owns red test + implement + fix until green).
+
+### Changed
+
+- System prompt DELEGATION now gates exploration and dispatch: multi-aspect scout fanout in one batch, two-wave exploration budget, C/R dependency test, mandatory wave-plan table before dispatch, one `workflow` run per wave plan, and no TDD phase-splitting across subagents.
+- Orchestrator-mode prompt requires `skill://parallel-fanout` before scout/implementation waves and adds full-cycle package, scout-budget, C/R, and one-workflow-run rules to the parallel-execution contract; the orchestrate notice aligns subagent verification with package-local focused tests.
+- Duo advisor system prompt gained a loop-watch duty: detect retry/ping-pong/foundation-growth loops, remind the executor of the main objective with the concrete exit step, and escalate to takeover when the loop persists.
+- The heavy_task subagent prompt now instructs it to prefer decomposing and dispatching parallel task/quick_task/explore subagents (C/R test, full-cycle slices per skill://parallel-fanout), keeping only the indivisible load-bearing core for itself.
+- System prompt and orchestrator-mode prompt now require todo-ledger maintenance while waiting on subagents/workflows: reconcile the todo list on every delivered result and poll snapshot, mark todos done the moment their evidence lands, and keep in-progress items matching the agents actually running.
+
 ## [1.5.6] - 2026-07-10
 
 - Merged behavior keeps the bundled Tester subagent registered additively; testing guidance in the main system prompt does not remove it.
