@@ -186,6 +186,32 @@ describe("AuthStorage.getCredentialOrigin", () => {
 		});
 	});
 
+	test("preferOAuth treats a config API key as fallback without changing default precedence", async () => {
+		await withEnv(SUPPRESS_ENV, async () => {
+			if (!auth) throw new Error("test setup failed");
+			await auth.set("anthropic", [
+				{
+					type: "oauth",
+					access: "sk-ant-oat-preferred",
+					refresh: "refresh",
+					expires: Date.now() + 3_600_000,
+				},
+			]);
+			auth.setConfigApiKey("anthropic", "gateway-fallback");
+
+			expect(await auth.getApiKeyWithOrigin("anthropic", undefined, { preferOAuth: true })).toEqual({
+				apiKey: "sk-ant-oat-preferred",
+				origin: { kind: "oauth" },
+			});
+
+			await auth.set("anthropic", []);
+			expect(await auth.getApiKeyWithOrigin("anthropic", undefined, { preferOAuth: true })).toEqual({
+				apiKey: "gateway-fallback",
+				origin: { kind: "config" },
+			});
+		});
+	});
+
 	test("runtime API key beats OAuth and config while suppressing OAuth helpers", async () => {
 		await withEnv(SUPPRESS_ENV, async () => {
 			if (!auth) throw new Error("test setup failed");

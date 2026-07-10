@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `ompx auth-gateway serve --verbose` to stream structured request/debug logs to the foreground terminal while preserving the rotating profile log.
+
 ### Fixed
 
 - Fixed advisor concern/blocker notes interrupting or skipping active tool/function calls; notes now deliver at a safe boundary, including stream-tail recovery.

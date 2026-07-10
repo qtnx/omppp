@@ -193,10 +193,10 @@ function buildStreamOptions(parsed: ParsedFormatRequest, api: Api, signal: Abort
 		logger.debug("auth-gateway dropped unsupported typed options", {
 			api,
 			parallelToolCalls: options.parallelToolCalls,
-			previousResponseId: options.previousResponseId,
+			hasPreviousResponseId: options.previousResponseId !== undefined,
 			seed: options.seed,
 			hasLogitBias: options.logitBias !== undefined,
-			user: options.user,
+			hasUser: options.user !== undefined,
 			hasResponseFormat: options.responseFormat !== undefined,
 		});
 	}
@@ -235,7 +235,7 @@ async function refreshGatewayApiKeyAfterAuthError(
 	signal: AbortSignal,
 	format: string,
 	peer: string,
-): Promise<string | undefined> {
+): Promise<AuthApiKeyResolution | undefined> {
 	const message = error instanceof Error ? error.message : String(error);
 	if (isUsageLimitOutcome(extractHttpStatusFromError(error), message)) {
 		const retryAfterMs = extractRetryHint(undefined, message);
@@ -255,8 +255,11 @@ async function refreshGatewayApiKeyAfterAuthError(
 			retryAtMs,
 			error: message,
 		});
-		if (!switched) return undefined;
-		return storage.getApiKey(provider, sessionId, { modelId: model.id, signal });
+		return storage.getApiKeyWithOrigin(provider, sessionId, {
+			modelId: model.id,
+			signal,
+			preferOAuth: switched,
+		});
 	}
 	await storage.invalidateCredentialMatching(provider, oldKey, { sessionId, signal });
 	logger.debug("auth-gateway retrying provider request after credential invalidation", {
@@ -265,7 +268,11 @@ async function refreshGatewayApiKeyAfterAuthError(
 		peer,
 		error: message,
 	});
-	return storage.getApiKey(provider, sessionId, { modelId: model.id, signal });
+	return storage.getApiKeyWithOrigin(provider, sessionId, {
+		modelId: model.id,
+		signal,
+		preferOAuth: true,
+	});
 }
 
 /**
@@ -278,47 +285,56 @@ async function refreshGatewayApiKeyAfterAuthError(
  * - step (c) `lastChance` → {@link refreshGatewayApiKeyAfterAuthError} switches
  *   to a sibling (usage-limit block vs credential invalidation by error class).
  *
- * `lastKey` tracks the most recent bearer so the switch step invalidates the
- * credential that actually failed.
+ * `lastResolution` tracks both the most recent bearer and its origin so the
+ * switch step invalidates the credential that failed and audits the replacement.
  */
 function buildGatewayApiKeyResolver(
 	storage: AuthStorage,
 	model: Model<Api>,
 	sessionId: string,
-	initialKey: string,
+	initialResolution: AuthApiKeyResolution,
 	requestSignal: AbortSignal,
 	format: string,
 	peer: string,
+	onResolution: (resolution: AuthApiKeyResolution) => void,
 ): ApiKeyResolver {
-	let lastKey = initialKey;
+	let lastResolution = initialResolution;
+	const attemptedKeys = new Set<string>();
+	const select = (resolution: AuthApiKeyResolution | undefined): string | undefined => {
+		if (!resolution || attemptedKeys.has(resolution.apiKey)) return undefined;
+		lastResolution = resolution;
+		onResolution(resolution);
+		return resolution.apiKey;
+	};
 	return async ({ lastChance, error, signal }) => {
 		const sig = signal ?? requestSignal;
 		if (error === undefined) {
-			lastKey = initialKey;
-			return initialKey;
+			lastResolution = initialResolution;
+			attemptedKeys.clear();
+			return initialResolution.apiKey;
 		}
+		attemptedKeys.add(lastResolution.apiKey);
 		if (!lastChance) {
-			const refreshed = await storage.getApiKey(model.provider, sessionId, {
+			const refreshed = await storage.getApiKeyWithOrigin(model.provider, sessionId, {
 				modelId: model.id,
 				signal: sig,
 				forceRefresh: true,
+				preferOAuth: true,
 			});
-			lastKey = refreshed ?? lastKey;
-			return refreshed;
+			return select(refreshed);
 		}
 		const next = await refreshGatewayApiKeyAfterAuthError(
 			storage,
 			model,
 			sessionId,
 			model.provider,
-			lastKey,
+			lastResolution.apiKey,
 			error,
 			sig,
 			format,
 			peer,
 		);
-		lastKey = next ?? lastKey;
-		return next;
+		return select(next);
 	};
 }
 
@@ -327,6 +343,12 @@ function clientClosedResponse(route: { module: FormatModule }): Response {
 }
 
 type CredentialAuthType = "oauth" | "api_key";
+
+function credentialAuthTypeForResolution(provider: string, resolution: AuthApiKeyResolution): CredentialAuthType {
+	return resolution.origin.kind === "oauth" || (provider === "anthropic" && isAnthropicOAuthToken(resolution.apiKey))
+		? "oauth"
+		: "api_key";
+}
 
 interface AuthGatewayAuditState {
 	requestId: string;
@@ -544,6 +566,7 @@ async function handleFormatEndpoint(
 		apiKeyResolution = await bootOpts.storage.getApiKeyWithOrigin(model.provider, sessionId, {
 			modelId: model.id,
 			signal: controller.signal,
+			preferOAuth: true,
 		});
 	} catch (error) {
 		if (controller.signal.aborted) return clientClosedResponse(route);
@@ -559,22 +582,9 @@ async function handleFormatEndpoint(
 			`No credential available for provider ${model.provider}`,
 		);
 	}
-	const { apiKey, origin: credentialOrigin } = apiKeyResolution;
-	const credentialAuthType: "oauth" | "api_key" =
-		credentialOrigin.kind === "oauth" || (model.provider === "anthropic" && isAnthropicOAuthToken(apiKey))
-			? "oauth"
-			: "api_key";
+	const credentialAuthType = credentialAuthTypeForResolution(model.provider, apiKeyResolution);
 
 	const streamOpts = buildStreamOptions(parsed, model.api, controller.signal);
-	streamOpts.apiKey = buildGatewayApiKeyResolver(
-		bootOpts.storage,
-		model,
-		sessionId,
-		apiKey,
-		controller.signal,
-		route.label,
-		peer,
-	);
 
 	const audit = createAuditState({
 		format: route.label,
@@ -583,9 +593,22 @@ async function handleFormatEndpoint(
 		resolvedModel: model.id,
 		stream: parsed.stream,
 		peer,
-		credentialOrigin: credentialOrigin.kind,
+		credentialOrigin: apiKeyResolution.origin.kind,
 		credentialAuthType,
 	});
+	streamOpts.apiKey = buildGatewayApiKeyResolver(
+		bootOpts.storage,
+		model,
+		sessionId,
+		apiKeyResolution,
+		controller.signal,
+		route.label,
+		peer,
+		resolution => {
+			audit.credentialOrigin = resolution.origin.kind;
+			audit.credentialAuthType = credentialAuthTypeForResolution(model.provider, resolution);
+		},
+	);
 
 	if (!parsed.stream) {
 		try {
@@ -730,6 +753,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 		apiKeyResolution = await bootOpts.storage.getApiKeyWithOrigin(model.provider, sessionId, {
 			modelId: model.id,
 			signal: controller.signal,
+			preferOAuth: true,
 		});
 	} catch (error) {
 		if (controller.signal.aborted) return aborted();
@@ -745,26 +769,14 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 			`No credential available for provider ${model.provider}`,
 		);
 	}
-	const { apiKey, origin: credentialOrigin } = apiKeyResolution;
-	const credentialAuthType: "oauth" | "api_key" =
-		credentialOrigin.kind === "oauth" || (model.provider === "anthropic" && isAnthropicOAuthToken(apiKey))
-			? "oauth"
-			: "api_key";
+	const { apiKey } = apiKeyResolution;
+	const credentialAuthType = credentialAuthTypeForResolution(model.provider, apiKeyResolution);
 
 	// Build the SimpleStreamOptions actually handed to `streamSimple`. We
 	// trust the client's options (already allow-listed by `parseRequest`) and
 	// only inject server-controlled fields. The codex sampling strip mirrors
 	// `buildStreamOptions` — Codex rejects every one with a 400 (#3117).
 	const streamOpts: SimpleStreamOptions = { ...parsed.options, apiKey, signal: controller.signal };
-	streamOpts.apiKey = buildGatewayApiKeyResolver(
-		bootOpts.storage,
-		model,
-		sessionId,
-		apiKey,
-		controller.signal,
-		"pi-native",
-		peer,
-	);
 	if (model.api === "openai-codex-responses") {
 		delete streamOpts.temperature;
 		delete streamOpts.topP;
@@ -788,9 +800,22 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 		resolvedModel: model.id,
 		stream: parsed.stream,
 		peer,
-		credentialOrigin: credentialOrigin.kind,
+		credentialOrigin: apiKeyResolution.origin.kind,
 		credentialAuthType,
 	});
+	streamOpts.apiKey = buildGatewayApiKeyResolver(
+		bootOpts.storage,
+		model,
+		sessionId,
+		apiKeyResolution,
+		controller.signal,
+		"pi-native",
+		peer,
+		resolution => {
+			audit.credentialOrigin = resolution.origin.kind;
+			audit.credentialAuthType = credentialAuthTypeForResolution(model.provider, resolution);
+		},
+	);
 
 	if (!parsed.stream) {
 		try {

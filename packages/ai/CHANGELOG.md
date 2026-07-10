@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed auth-gateway to prefer and rotate stored OAuth credentials before using a `models.yml` config API key fallback, including Anthropic account-level `credit balance is too low` responses, persistent fallback after the OAuth pool is exhausted, and audit attribution to the credential actually used.
+- Redacted unsupported request `user` and `previous_response_id` values from auth-gateway debug logs while preserving boolean presence markers for diagnostics.
+
 ## [1.5.5] - 2026-07-09
 
 ### Added

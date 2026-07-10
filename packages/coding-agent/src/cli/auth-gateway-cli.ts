@@ -9,7 +9,7 @@
  * configured broker and serves only this machine's local credentials.
  *
  * Sub-verbs:
- *   - `serve [--bind=…] [--local]` — boots the gateway.
+ *   - `serve [--bind=…] [--local] [--verbose]` — boots the gateway.
  *   - `token` / `token --regenerate` — manages the gateway bearer token file.
  *   - `status` — prints the locally-stored gateway token and source hint.
  *   - `serve --daemon` — boots the gateway in the background and returns after readiness.
@@ -32,6 +32,7 @@ import { AuthBrokerClient, RemoteAuthCredentialStore, type SnapshotResponse } fr
 import { DEFAULT_AUTH_GATEWAY_BIND, startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
 import { type GeneratedProvider, getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { APP_NAME, getAgentDbPath, getConfigRootDir, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
+import { setTransports as setLoggerTransports } from "@oh-my-pi/pi-utils/logger";
 import chalk from "chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { ModelsConfigFile } from "../config/models-config";
@@ -64,6 +65,8 @@ export interface AuthGatewayCommandArgs {
 		local?: boolean;
 		/** Run `serve` in a detached background process and return after /healthz is ready. */
 		daemon?: boolean;
+		/** Stream structured gateway logs to the terminal while preserving rotating file logs. */
+		verbose?: boolean;
 	};
 }
 
@@ -442,6 +445,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		await runServeDaemon(flags, bind);
 		return;
 	}
+	if (flags.verbose) setLoggerTransports({ console: true, file: true });
 	const gatewayToken = flags.noAuth ? null : await ensureToken();
 	const source = await resolveGatewayCredentialSource(flags);
 	const storage = source.storage;
@@ -596,6 +600,12 @@ async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> 
 export async function runAuthGatewayCommand(cmd: AuthGatewayCommandArgs): Promise<void> {
 	if (cmd.flags.daemon && cmd.action !== "serve") {
 		throw new Error("`--daemon` is only supported with `auth-gateway serve`");
+	}
+	if (cmd.flags.verbose && cmd.action !== "serve") {
+		throw new Error("`--verbose` is only supported with `auth-gateway serve`");
+	}
+	if (cmd.flags.verbose && cmd.flags.daemon) {
+		throw new Error("`--verbose` cannot be combined with `--daemon`; tail the daemon log instead");
 	}
 	switch (cmd.action) {
 		case "serve":

@@ -24,6 +24,50 @@ function loopThinking(): string {
 
 const AUDIT_PROMPT = "AUDIT_SECRET_PROMPT_BODY";
 const EXPECTED_MOCK_USAGE = { input: 11, output: 7, cacheRead: 3, cacheWrite: 5, totalTokens: 31, reasoningTokens: 2 };
+
+const ANTHROPIC_LOW_CREDIT_MESSAGE =
+	"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.";
+const OAUTH_CREDENTIAL_A = "anthropic-oauth-test-a";
+const OAUTH_CREDENTIAL_B = "anthropic-oauth-test-b";
+const LOW_CREDIT_SESSION = "anthropic-low-credit-session";
+const CONFIG_API_KEY_FALLBACK = "anthropic-config-fallback";
+
+function upstreamHttpError(status: number, message: string): Error {
+	return Object.assign(new Error(message), { status });
+}
+
+async function storeAnthropicCredentialPair(storage: AuthStorage): Promise<void> {
+	await storage.set("anthropic", [
+		{
+			type: "oauth",
+			access: OAUTH_CREDENTIAL_A,
+			refresh: "refresh-low-credit-a",
+			expires: Date.now() + 3_600_000,
+			accountId: "account-low-credit-a",
+		},
+		{
+			type: "oauth",
+			access: OAUTH_CREDENTIAL_B,
+			refresh: "refresh-low-credit-b",
+			expires: Date.now() + 3_600_000,
+			accountId: "account-low-credit-b",
+		},
+	]);
+	storage.setConfigApiKey("anthropic", CONFIG_API_KEY_FALLBACK);
+}
+
+function postChat(handleUrl: string, model: string, stream: boolean): Promise<Response> {
+	return fetch(`${handleUrl}/v1/chat/completions`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+		body: JSON.stringify({
+			model,
+			messages: [{ role: "user", content: "hi" }],
+			stream,
+			prompt_cache_key: LOW_CREDIT_SESSION,
+		}),
+	});
+}
 const EXPECTED_AUDIT_USAGE = {
 	inputTokens: 11,
 	outputTokens: 7,
@@ -135,14 +179,36 @@ describe("auth-gateway non-streaming thinking-loop cook", () => {
 		}
 	});
 
-	it("logs credential origin and auth type without exposing the token", async () => {
+	it("keeps the attempted OAuth audit origin when auth fallback resolves the same bearer", async () => {
 		registerMockApi();
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-credential-log-"));
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-auth-same-bearer-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
-		const token = "sk-ant-oat-test-token";
-		storage.setRuntimeApiKey("anthropic", token);
-		const mock = createMockModel({ provider: "anthropic", id: "claude-test" });
-		mock.push({ content: ["ok"], usage: EXPECTED_MOCK_USAGE });
+		await storage.set("anthropic", [
+			{
+				type: "oauth",
+				access: OAUTH_CREDENTIAL_A,
+				refresh: "refresh-same-bearer",
+				expires: Date.now() + 3_600_000,
+				accountId: "account-same-bearer",
+			},
+		]);
+		storage.setConfigApiKey("anthropic", OAUTH_CREDENTIAL_A);
+		const originalGetApiKeyWithOrigin = storage.getApiKeyWithOrigin.bind(storage);
+		const resolutionSpy = spyOn(storage, "getApiKeyWithOrigin").mockImplementation(
+			async (provider, sessionId, options) => {
+				if (options?.forceRefresh) {
+					return { apiKey: OAUTH_CREDENTIAL_A, origin: { kind: "config" } };
+				}
+				return originalGetApiKeyWithOrigin(provider, sessionId, options);
+			},
+		);
+		const mock = createMockModel({
+			provider: "anthropic",
+			id: "claude-auth-same-bearer",
+			handler: () => {
+				throw upstreamHttpError(401, "Invalid authentication credentials");
+			},
+		});
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
@@ -152,13 +218,144 @@ describe("auth-gateway non-streaming thinking-loop cook", () => {
 			version: "test",
 		});
 		try {
-			const res = await fetch(`${handle.url}/v1/chat/completions`, {
+			const response = await postChat(handle.url, mock.id, false);
+			await response.text();
+
+			expect(response.status).toBe(401);
+			expect(mock.calls.map(call => call.options?.apiKey)).toEqual([OAUTH_CREDENTIAL_A]);
+			expect(auditPayloads(infoSpy.mock.calls)).toMatchObject([
+				{ credentialOrigin: "oauth", credentialAuthType: "oauth", status: 401 },
+			]);
+		} finally {
+			resolutionSpy.mockRestore();
+			infoSpy.mockRestore();
+			await handle.close();
+			storage.close();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not cycle back to a credential that already failed earlier in the request", async () => {
+		registerMockApi();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-auth-key-cycle-"));
+		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
+		const resolutions = [
+			{ apiKey: OAUTH_CREDENTIAL_A, origin: { kind: "config" as const } },
+			{ apiKey: OAUTH_CREDENTIAL_B, origin: { kind: "oauth" as const } },
+			{ apiKey: OAUTH_CREDENTIAL_A, origin: { kind: "config" as const } },
+		];
+		const resolutionSpy = spyOn(storage, "getApiKeyWithOrigin").mockImplementation(async () => resolutions.shift());
+		const mock = createMockModel({
+			provider: "anthropic",
+			id: "claude-auth-key-cycle",
+			handler: () => {
+				throw upstreamHttpError(401, "Invalid authentication credentials");
+			},
+		});
+		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			resolveModel: () => mock.model,
+			version: "test",
+		});
+		try {
+			const response = await postChat(handle.url, mock.id, false);
+			await response.text();
+
+			expect(response.status).toBe(401);
+			expect(mock.calls.map(call => call.options?.apiKey)).toEqual([OAUTH_CREDENTIAL_A, OAUTH_CREDENTIAL_B]);
+			expect(auditPayloads(infoSpy.mock.calls)).toMatchObject([
+				{ credentialOrigin: "oauth", credentialAuthType: "oauth", status: 401 },
+			]);
+		} finally {
+			infoSpy.mockRestore();
+			resolutionSpy.mockRestore();
+			await handle.close();
+			storage.close();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the attempted OAuth audit origin when low-credit fallback resolves the same bearer", async () => {
+		registerMockApi();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-low-credit-same-bearer-"));
+		const storage = await AuthStorage.create(path.join(dir, "auth.db"), {
+			usageProviderResolver: () => undefined,
+			rankingStrategyResolver: () => undefined,
+		});
+		await storage.set("anthropic", [
+			{
+				type: "oauth",
+				access: OAUTH_CREDENTIAL_A,
+				refresh: "refresh-low-credit-same-bearer",
+				expires: Date.now() + 3_600_000,
+				accountId: "account-low-credit-same-bearer",
+			},
+		]);
+		storage.setConfigApiKey("anthropic", OAUTH_CREDENTIAL_A);
+		const mock = createMockModel({
+			provider: "anthropic",
+			id: "claude-low-credit-same-bearer",
+			handler: () => {
+				throw upstreamHttpError(400, ANTHROPIC_LOW_CREDIT_MESSAGE);
+			},
+		});
+		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			resolveModel: () => mock.model,
+			version: "test",
+		});
+		try {
+			const response = await postChat(handle.url, mock.id, false);
+			await response.text();
+
+			expect(response.status).toBe(400);
+			expect(mock.calls.map(call => call.options?.apiKey)).toEqual([OAUTH_CREDENTIAL_A]);
+			expect(auditPayloads(infoSpy.mock.calls)).toMatchObject([
+				{ credentialOrigin: "oauth", credentialAuthType: "oauth", status: 400 },
+			]);
+		} finally {
+			infoSpy.mockRestore();
+			await handle.close();
+			storage.close();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("logs credential origin and auth type without exposing the token", async () => {
+		registerMockApi();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-credential-log-"));
+		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
+		const token = "sk-ant-oat-test-token";
+		const user = "sensitive-user@example.com";
+		const previousResponseId = "resp-sensitive-chain-id";
+		storage.setRuntimeApiKey("anthropic", token);
+		const mock = createMockModel({ provider: "anthropic", id: "claude-test" });
+		mock.push({ content: ["ok"], usage: EXPECTED_MOCK_USAGE });
+		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
+		const debugSpy = spyOn(logger, "debug").mockImplementation(() => undefined);
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			resolveModel: () => mock.model,
+			version: "test",
+		});
+		try {
+			const res = await fetch(`${handle.url}/v1/responses`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
 				body: JSON.stringify({
 					model: "claude-test",
-					messages: [{ role: "user", content: "hi" }],
+					input: "hi",
 					stream: false,
+					user,
+					previous_response_id: previousResponseId,
 				}),
 			});
 
@@ -171,7 +368,14 @@ describe("auth-gateway non-streaming thinking-loop cook", () => {
 				credentialAuthType: "oauth",
 			});
 			expect(JSON.stringify(requestLog)).not.toContain(token);
+			const unsupportedOptionsLog = debugSpy.mock.calls.find(
+				([message]) => message === "auth-gateway dropped unsupported typed options",
+			);
+			expect(unsupportedOptionsLog?.[1]).toMatchObject({ hasPreviousResponseId: true, hasUser: true });
+			expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(user);
+			expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(previousResponseId);
 		} finally {
+			debugSpy.mockRestore();
 			infoSpy.mockRestore();
 			await handle.close();
 			storage.close();
@@ -179,7 +383,7 @@ describe("auth-gateway non-streaming thinking-loop cook", () => {
 		}
 	});
 
-	it("logs config API key over stored OAuth on gateway requests without exposing either secret", async () => {
+	it("logs stored OAuth over the gateway config fallback without exposing either secret", async () => {
 		registerMockApi();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-oauth-config-credential-log-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
@@ -217,12 +421,13 @@ describe("auth-gateway non-streaming thinking-loop cook", () => {
 			});
 
 			expect(res.status).toBe(200);
+			expect(mock.calls.map(call => call.options?.apiKey)).toEqual([oauthToken]);
 			const requestLog = infoSpy.mock.calls.find(([message]) => message === "auth-gateway request");
 			expect(requestLog?.[1]).toMatchObject({
 				resolvedProvider: "anthropic",
 				resolvedModel: "claude-test",
-				credentialOrigin: "config",
-				credentialAuthType: "api_key",
+				credentialOrigin: "oauth",
+				credentialAuthType: "oauth",
 			});
 			const requestLogJson = JSON.stringify(requestLog);
 			expect(requestLogJson).not.toContain(oauthToken);
@@ -481,6 +686,274 @@ describe("auth-gateway completion audit logs", () => {
 			expect(auditJson).not.toContain(AUDIT_PROMPT);
 		} finally {
 			infoSpy.mockRestore();
+			await handle.close();
+			storage.close();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("auth-gateway Anthropic low-credit credential failover", () => {
+	it("rotates a non-streaming request to the next OAuth credential and keeps the session there", async () => {
+		registerMockApi();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-low-credit-non-stream-"));
+		const storage = await AuthStorage.create(path.join(dir, "auth.db"), {
+			usageProviderResolver: () => undefined,
+			rankingStrategyResolver: () => undefined,
+		});
+		await storeAnthropicCredentialPair(storage);
+		const mock = createMockModel({
+			provider: "anthropic",
+			id: "claude-low-credit-non-stream",
+			handler: (_context, options) => {
+				if (options?.apiKey === OAUTH_CREDENTIAL_A) {
+					throw upstreamHttpError(400, ANTHROPIC_LOW_CREDIT_MESSAGE);
+				}
+				if (options?.apiKey !== OAUTH_CREDENTIAL_B) throw new Error("unexpected test credential");
+				return { content: ["non-streaming rotated success"], usage: EXPECTED_MOCK_USAGE };
+			},
+		});
+		const usageLimitSpy = spyOn(storage, "markUsageLimitReached");
+		const invalidateSpy = spyOn(storage, "invalidateCredentialMatching");
+		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
+		const warnSpy = spyOn(logger, "warn").mockImplementation(() => undefined);
+		const debugSpy = spyOn(logger, "debug").mockImplementation(() => undefined);
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			resolveModel: () => mock.model,
+			version: "test",
+		});
+		try {
+			const first = await postChat(handle.url, mock.id, false);
+			const firstBody = (await first.json()) as {
+				error?: unknown;
+				choices?: Array<{ message?: { content?: string | null } }>;
+			};
+
+			expect(mock.calls.map(call => call.options?.apiKey)).toEqual([OAUTH_CREDENTIAL_A, OAUTH_CREDENTIAL_B]);
+			expect(first.status).toBe(200);
+			expect(firstBody.error).toBeUndefined();
+			expect(firstBody.choices?.[0]?.message?.content).toBe("non-streaming rotated success");
+			expect(usageLimitSpy).toHaveBeenCalledTimes(1);
+			expect(usageLimitSpy).toHaveBeenCalledWith(
+				"anthropic",
+				LOW_CREDIT_SESSION,
+				expect.objectContaining({ apiKey: OAUTH_CREDENTIAL_A, modelId: mock.id }),
+			);
+			expect(invalidateSpy).toHaveBeenCalledTimes(0);
+
+			const second = await postChat(handle.url, mock.id, false);
+			const secondBody = (await second.json()) as {
+				choices?: Array<{ message?: { content?: string | null } }>;
+			};
+			expect(second.status).toBe(200);
+			expect(secondBody.choices?.[0]?.message?.content).toBe("non-streaming rotated success");
+			expect(mock.calls.map(call => call.options?.apiKey)).toEqual([
+				OAUTH_CREDENTIAL_A,
+				OAUTH_CREDENTIAL_B,
+				OAUTH_CREDENTIAL_B,
+			]);
+			expect(usageLimitSpy).toHaveBeenCalledTimes(1);
+			expect(invalidateSpy).toHaveBeenCalledTimes(0);
+
+			const serializedLogs = JSON.stringify([infoSpy.mock.calls, warnSpy.mock.calls, debugSpy.mock.calls]);
+			expect(serializedLogs.includes(OAUTH_CREDENTIAL_A)).toBe(false);
+			expect(serializedLogs.includes(OAUTH_CREDENTIAL_B)).toBe(false);
+		} finally {
+			debugSpy.mockRestore();
+			warnSpy.mockRestore();
+			infoSpy.mockRestore();
+			invalidateSpy.mockRestore();
+			usageLimitSpy.mockRestore();
+			await handle.close();
+			storage.close();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("replays a pre-output streaming failure with the next OAuth credential and emits only successful SSE", async () => {
+		registerMockApi();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-low-credit-stream-"));
+		const storage = await AuthStorage.create(path.join(dir, "auth.db"), {
+			usageProviderResolver: () => undefined,
+			rankingStrategyResolver: () => undefined,
+		});
+		await storeAnthropicCredentialPair(storage);
+		const mock = createMockModel({
+			provider: "anthropic",
+			id: "claude-low-credit-stream",
+			handler: (_context, options) => {
+				if (options?.apiKey === OAUTH_CREDENTIAL_A) {
+					throw upstreamHttpError(400, ANTHROPIC_LOW_CREDIT_MESSAGE);
+				}
+				if (options?.apiKey !== OAUTH_CREDENTIAL_B) throw new Error("unexpected test credential");
+				return { content: ["streaming rotated success"], usage: EXPECTED_MOCK_USAGE };
+			},
+		});
+		const usageLimitSpy = spyOn(storage, "markUsageLimitReached");
+		const invalidateSpy = spyOn(storage, "invalidateCredentialMatching");
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			resolveModel: () => mock.model,
+			version: "test",
+		});
+		try {
+			const response = await postChat(handle.url, mock.id, true);
+			const body = await response.text();
+			const frames = body
+				.trim()
+				.split("\n\n")
+				.map(frame => {
+					expect(frame).toStartWith("data: ");
+					const data = frame.slice("data: ".length);
+					return data === "[DONE]" ? data : JSON.parse(data);
+				});
+
+			expect(mock.calls.map(call => call.options?.apiKey)).toEqual([OAUTH_CREDENTIAL_A, OAUTH_CREDENTIAL_B]);
+			expect(response.status).toBe(200);
+			expect(frames).toHaveLength(4);
+			expect(frames[3]).toBe("[DONE]");
+			expect(
+				(frames.slice(0, 3) as Array<{ choices: Array<{ delta: unknown; finish_reason: string | null }> }>).map(
+					frame => ({
+						delta: frame.choices[0]?.delta,
+						finishReason: frame.choices[0]?.finish_reason,
+					}),
+				),
+			).toEqual([
+				{ delta: { role: "assistant" }, finishReason: null },
+				{ delta: { content: "streaming rotated success" }, finishReason: null },
+				{ delta: {}, finishReason: "stop" },
+			]);
+			expect(usageLimitSpy).toHaveBeenCalledTimes(1);
+			expect(usageLimitSpy).toHaveBeenCalledWith(
+				"anthropic",
+				LOW_CREDIT_SESSION,
+				expect.objectContaining({ apiKey: OAUTH_CREDENTIAL_A, modelId: mock.id }),
+			);
+			expect(invalidateSpy).toHaveBeenCalledTimes(0);
+		} finally {
+			invalidateSpy.mockRestore();
+			usageLimitSpy.mockRestore();
+			await handle.close();
+			storage.close();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("falls back to the config API key after the only OAuth credential reaches its usage limit", async () => {
+		registerMockApi();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-low-credit-config-fallback-"));
+		const storage = await AuthStorage.create(path.join(dir, "auth.db"), {
+			usageProviderResolver: () => undefined,
+			rankingStrategyResolver: () => undefined,
+		});
+		await storage.set("anthropic", [
+			{
+				type: "oauth",
+				access: OAUTH_CREDENTIAL_A,
+				refresh: "refresh-low-credit-a",
+				expires: Date.now() + 3_600_000,
+				accountId: "account-low-credit-a",
+			},
+		]);
+		storage.setConfigApiKey("anthropic", CONFIG_API_KEY_FALLBACK);
+		const mock = createMockModel({
+			provider: "anthropic",
+			id: "claude-low-credit-config-fallback",
+			handler: (_context, options) => {
+				if (options?.apiKey === OAUTH_CREDENTIAL_A) {
+					throw upstreamHttpError(400, ANTHROPIC_LOW_CREDIT_MESSAGE);
+				}
+				if (options?.apiKey !== CONFIG_API_KEY_FALLBACK) throw new Error("unexpected test credential");
+				return { content: ["config fallback success"], usage: EXPECTED_MOCK_USAGE };
+			},
+		});
+		const usageLimitSpy = spyOn(storage, "markUsageLimitReached");
+		const invalidateSpy = spyOn(storage, "invalidateCredentialMatching");
+		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			resolveModel: () => mock.model,
+			version: "test",
+		});
+		try {
+			const response = await postChat(handle.url, mock.id, false);
+			const body = (await response.json()) as { choices?: Array<{ message?: { content?: string | null } }> };
+
+			expect(response.status).toBe(200);
+			expect(body.choices?.[0]?.message?.content).toBe("config fallback success");
+			expect(mock.calls.map(call => call.options?.apiKey)).toEqual([OAUTH_CREDENTIAL_A, CONFIG_API_KEY_FALLBACK]);
+			expect(auditPayloads(infoSpy.mock.calls)).toMatchObject([
+				{ credentialOrigin: "config", credentialAuthType: "api_key", status: 200 },
+			]);
+
+			const second = await postChat(handle.url, mock.id, false);
+			const secondBody = (await second.json()) as { choices?: Array<{ message?: { content?: string | null } }> };
+			expect(second.status).toBe(200);
+			expect(secondBody.choices?.[0]?.message?.content).toBe("config fallback success");
+			expect(mock.calls.map(call => call.options?.apiKey)).toEqual([
+				OAUTH_CREDENTIAL_A,
+				CONFIG_API_KEY_FALLBACK,
+				CONFIG_API_KEY_FALLBACK,
+			]);
+			expect(auditPayloads(infoSpy.mock.calls)).toMatchObject([
+				{ credentialOrigin: "config", credentialAuthType: "api_key", status: 200 },
+				{ credentialOrigin: "config", credentialAuthType: "api_key", status: 200 },
+			]);
+			expect(usageLimitSpy).toHaveBeenCalledTimes(1);
+			expect(invalidateSpy).toHaveBeenCalledTimes(0);
+		} finally {
+			infoSpy.mockRestore();
+			invalidateSpy.mockRestore();
+			usageLimitSpy.mockRestore();
+			await handle.close();
+			storage.close();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not rotate stored OAuth credentials for a provider-wide 503", async () => {
+		registerMockApi();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-provider-503-"));
+		const storage = await AuthStorage.create(path.join(dir, "auth.db"), {
+			usageProviderResolver: () => undefined,
+			rankingStrategyResolver: () => undefined,
+		});
+		await storeAnthropicCredentialPair(storage);
+		const mock = createMockModel({
+			provider: "anthropic",
+			id: "claude-provider-503",
+			handler: () => {
+				throw upstreamHttpError(503, "Service unavailable");
+			},
+		});
+		const usageLimitSpy = spyOn(storage, "markUsageLimitReached");
+		const invalidateSpy = spyOn(storage, "invalidateCredentialMatching");
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			resolveModel: () => mock.model,
+			version: "test",
+		});
+		try {
+			const response = await postChat(handle.url, mock.id, false);
+			await response.text();
+
+			expect(response.status).toBe(503);
+			expect(mock.calls.map(call => call.options?.apiKey)).toEqual([OAUTH_CREDENTIAL_A]);
+			expect(usageLimitSpy).toHaveBeenCalledTimes(0);
+			expect(invalidateSpy).toHaveBeenCalledTimes(0);
+		} finally {
+			invalidateSpy.mockRestore();
+			usageLimitSpy.mockRestore();
 			await handle.close();
 			storage.close();
 			await fs.rm(dir, { recursive: true, force: true });
