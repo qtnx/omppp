@@ -484,6 +484,149 @@ migrate_ui_agent_overrides_config() {
     chmod 600 "$config_file" 2>/dev/null || true
 }
 
+migrate_gpt_5_6_model_config() {
+    config_file="$1"
+
+    if [ ! -f "$config_file" ]; then
+        return
+    fi
+
+    tmp_config="$(mktemp "${config_file}.XXXXXX")"
+    awk '
+        function indent_length(line) {
+            match(line, /^[[:space:]]*/)
+            return RLENGTH
+        }
+        function insert_missing_gpt_overrides() {
+            if (!have_heavy_task) {
+                print override_indent "heavy_task: openai-codex/gpt-5.6-sol:high"
+            }
+            if (!have_qa) {
+                print override_indent "qa: openai-codex/gpt-5.6-sol:high"
+            }
+            if (!have_tester) {
+                print override_indent "tester: openai-codex/gpt-5.6-sol:medium"
+            }
+        }
+        BEGIN {
+            in_model_roles = 0
+            in_task = 0
+            in_overrides = 0
+            model_roles_indent = 0
+            task_indent = 0
+            overrides_indent = 0
+            override_indent = ""
+            have_heavy_task = 0
+            have_qa = 0
+            have_tester = 0
+        }
+        {
+            if (in_model_roles) {
+                if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
+                    print
+                    next
+                }
+                current_indent = indent_length($0)
+                if (current_indent <= model_roles_indent) {
+                    in_model_roles = 0
+                } else {
+                    if ($0 ~ /^[[:space:]]*default:[[:space:]]*openai-codex\/gpt-5\.5:xhigh[[:space:]]*(#.*)?$/ || $0 ~ /^[[:space:]]*plan:[[:space:]]*openai-codex\/gpt-5\.5:xhigh[[:space:]]*(#.*)?$/) {
+                        sub(/openai-codex\/gpt-5\.5:xhigh/, "openai-codex/gpt-5.6-sol:xhigh")
+                    } else if ($0 ~ /^[[:space:]]*task:[[:space:]]*openai-codex\/gpt-5\.5:medium[[:space:]]*(#.*)?$/) {
+                        sub(/openai-codex\/gpt-5\.5:medium/, "openai-codex/gpt-5.6-terra:medium")
+                    } else if ($0 ~ /^[[:space:]]*slow:[[:space:]]*openai-codex\/gpt-5\.5:high[[:space:]]*(#.*)?$/) {
+                        sub(/openai-codex\/gpt-5\.5:high/, "openai-codex/gpt-5.6-sol:high")
+                    } else if ($0 ~ /^[[:space:]]*commit:[[:space:]]*openai-codex\/gpt-5\.5:low[[:space:]]*(#.*)?$/) {
+                        sub(/openai-codex\/gpt-5\.5:low/, "openai-codex/gpt-5.6-luna:high")
+                    }
+                    print
+                    next
+                }
+            }
+
+            if (in_overrides) {
+                if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
+                    print
+                    next
+                }
+                current_indent = indent_length($0)
+                if (current_indent <= overrides_indent) {
+                    insert_missing_gpt_overrides()
+                    in_overrides = 0
+                } else {
+                    if ($0 ~ /^[[:space:]]*heavy_task:[[:space:]]*/) {
+                        have_heavy_task = 1
+                        if ($0 ~ /openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/) {
+                            sub(/openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/, "openai-codex/gpt-5.6-sol:high")
+                        }
+                    } else if ($0 ~ /^[[:space:]]*oracle:[[:space:]]*/ || $0 ~ /^[[:space:]]*qa:[[:space:]]*/ || $0 ~ /^[[:space:]]*reviewer:[[:space:]]*/) {
+                        if ($0 ~ /^[[:space:]]*qa:[[:space:]]*/) {
+                            have_qa = 1
+                        }
+                        if ($0 ~ /openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/) {
+                            sub(/openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/, "openai-codex/gpt-5.6-sol:high")
+                        }
+                    } else if ($0 ~ /^[[:space:]]*quick_task:[[:space:]]*/) {
+                        if ($0 ~ /openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/) {
+                            sub(/openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/, "openai-codex/gpt-5.6-luna:high")
+                        }
+                    } else if ($0 ~ /^[[:space:]]*task:[[:space:]]*/) {
+                        if ($0 ~ /openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/) {
+                            sub(/openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/, "openai-codex/gpt-5.6-terra:medium")
+                        }
+                    } else if ($0 ~ /^[[:space:]]*tester:[[:space:]]*/) {
+                        have_tester = 1
+                        if ($0 ~ /openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/) {
+                            sub(/openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/, "openai-codex/gpt-5.6-sol:medium")
+                        }
+                    } else if ($0 ~ /^[[:space:]]*plan:[[:space:]]*openai-codex\/gpt-5\.5:xhigh[[:space:]]*(#.*)?$/) {
+                        sub(/openai-codex\/gpt-5\.5:xhigh/, "openai-codex/gpt-5.6-sol:xhigh")
+                    }
+                    print
+                    next
+                }
+            }
+
+            if (in_task) {
+                if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
+                    print
+                    next
+                }
+                current_indent = indent_length($0)
+                if (current_indent <= task_indent) {
+                    in_task = 0
+                } else if ($0 ~ /^[[:space:]]*agentModelOverrides:[[:space:]]*($|#)/) {
+                    in_overrides = 1
+                    overrides_indent = current_indent
+                    override_indent = substr($0, 1, current_indent) "  "
+                    print
+                    next
+                } else {
+                    print
+                    next
+                }
+            }
+
+            if ($0 ~ /^modelRoles:[[:space:]]*($|#)/) {
+                in_model_roles = 1
+                model_roles_indent = 0
+            } else if ($0 ~ /^task:[[:space:]]*($|#)/) {
+                in_task = 1
+                task_indent = 0
+            }
+            print
+        }
+        END {
+            if (in_overrides) {
+                insert_missing_gpt_overrides()
+            }
+        }
+    ' "$config_file" > "$tmp_config"
+    mv "$tmp_config" "$config_file"
+    chmod 600 "$config_file" 2>/dev/null || true
+    echo "✓ Migrated legacy GPT-5.5 config models to GPT-5.6 at ${config_file}"
+}
+
 
 run_config_update() {
     config_update_command="$1"
@@ -539,31 +682,27 @@ install_standard_config() {
 # Copy to ~/.omp/agent/config.yml before first run, or let the installer seed it
 # when the target config file does not already exist.
 modelRoles:
-  default: openai-codex/gpt-5.5:xhigh
-  task: anthropic/claude-opus-4-8
-  smol: anthropic/claude-sonnet-4-6
-  slow: openai-codex/gpt-5.5:high
-  plan: anthropic/claude-opus-4-8:xhigh
-  designer: anthropic/claude-opus-4-8
-  commit: openai-codex/gpt-5.5:low
+  default: openai-codex/gpt-5.6-sol:xhigh
+  task: openai-codex/gpt-5.6-terra:medium
+  smol: cerebras/gpt-oss-120b
+  slow: openai-codex/gpt-5.6-sol:high
+  plan: openai-codex/gpt-5.6-sol:xhigh
+  designer: tnx/designer
+  commit: openai-codex/gpt-5.6-luna:high
 task:
   showResolvedModelBadge: true
   agentModelOverrides:
-    agent-creator: anthropic/
-    code-architect: pi/plan
-    code-explorer: pi/smol
-    code-reviewer: openai-codex/codex-auto-review
-    code-simplifier: anthropic/claude-opus-4-8
-    codex-rescue: openai-codex/gpt-5.5:medium
     designer: tnx/designer
+    explore: pi/smol
     frontend_ui: tnx/designer
-    ui_ux_reviewer: tnx/designer
-    ux_copywriter: tnx/designer
-    oracle: openai-codex/gpt-5.5:xhigh
-    plan: openai-codex/gpt-5.5:xhigh
-    quick_task: openai-codex/gpt-5.5:low
-    reviewer: openai-codex/gpt-5.5:xhigh
-    task: openai-codex/gpt-5.5:medium
+    heavy_task: openai-codex/gpt-5.6-sol:high
+    oracle: openai-codex/gpt-5.6-sol:high
+    plan: anthropic/claude-fable-5:high
+    qa: openai-codex/gpt-5.6-sol:high
+    quick_task: openai-codex/gpt-5.6-luna:high
+    reviewer: openai-codex/gpt-5.6-sol:high
+    task: openai-codex/gpt-5.6-terra:medium
+    tester: openai-codex/gpt-5.6-sol:medium
 workflow:
   enabled: true
 dev:
@@ -589,7 +728,7 @@ theme:
   dark: titanium
 display:
   syntaxHighlighting: basic
-setupVersion: 1
+setupVersion: 3
 retry:
   fallbackChains:
     task:
@@ -670,6 +809,7 @@ install_via_bun() {
     fi
     install_standard_config
     run_config_update "ompx"
+    migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
     echo ""
     echo "✓ Installed OMPx via bun"
@@ -741,6 +881,7 @@ install_binary() {
     chmod +x "${INSTALL_DIR}/ompx"
     install_standard_config
     run_config_update "${INSTALL_DIR}/ompx"
+    migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
     echo ""
     echo "✓ Installed OMPx to ${INSTALL_DIR}/ompx"

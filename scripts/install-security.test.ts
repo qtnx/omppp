@@ -414,6 +414,104 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 		}
 	});
 
+	it("migrates legacy GPT-5.5 routes idempotently while preserving custom routes", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(
+				configPath,
+				`modelRoles:
+  default: openai-codex/gpt-5.5:xhigh
+  plan: openai-codex/gpt-5.5:xhigh
+  task: openai-codex/gpt-5.5:medium
+  slow: openai-codex/gpt-5.5:high
+  commit: openai-codex/gpt-5.5:low
+  smol: anthropic/claude-sonnet-4-6
+  custom: local/custom-model
+task:
+  agentModelOverrides:
+    oracle: openai-codex/gpt-5.5:xhigh
+    reviewer: openai-codex/gpt-5.5:xhigh
+    plan: openai-codex/gpt-5.5:xhigh
+    quick_task: openai-codex/gpt-5.5:low
+    task: openai-codex/gpt-5.5:medium
+    designer: tnx/designer
+    custom_agent: custom/provider
+`,
+			);
+
+			const firstResult = await runShellInstaller(root, installDir);
+			expect(firstResult.exitCode).toBe(0);
+			const firstConfig = YAML.parse(await Bun.file(configPath).text()) as {
+				modelRoles: Record<string, string>;
+				task: { agentModelOverrides: Record<string, string> };
+			};
+
+			expect(firstConfig.modelRoles).toMatchObject({
+				default: "openai-codex/gpt-5.6-sol:xhigh",
+				plan: "openai-codex/gpt-5.6-sol:xhigh",
+				task: "openai-codex/gpt-5.6-terra:medium",
+				slow: "openai-codex/gpt-5.6-sol:high",
+				commit: "openai-codex/gpt-5.6-luna:high",
+				smol: "anthropic/claude-sonnet-4-6",
+				custom: "local/custom-model",
+			});
+			expect(firstConfig.task.agentModelOverrides).toMatchObject({
+				heavy_task: "openai-codex/gpt-5.6-sol:high",
+				oracle: "openai-codex/gpt-5.6-sol:high",
+				qa: "openai-codex/gpt-5.6-sol:high",
+				reviewer: "openai-codex/gpt-5.6-sol:high",
+				quick_task: "openai-codex/gpt-5.6-luna:high",
+				task: "openai-codex/gpt-5.6-terra:medium",
+				tester: "openai-codex/gpt-5.6-sol:medium",
+				plan: "openai-codex/gpt-5.6-sol:xhigh",
+				designer: "tnx/designer",
+				custom_agent: "custom/provider",
+			});
+
+			const secondResult = await runShellInstaller(root, installDir);
+			expect(secondResult.exitCode).toBe(0);
+			const secondConfig = YAML.parse(await Bun.file(configPath).text());
+			expect(secondConfig).toEqual(firstConfig);
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("migrates existing legacy GPT-5.5 heavy, QA, and tester overrides", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(
+				configPath,
+				`task:
+  agentModelOverrides:
+    heavy_task: openai-codex/gpt-5.5:high
+    qa: openai-codex/gpt-5.5:high
+    tester: openai-codex/gpt-5.5:medium
+`,
+			);
+
+			const result = await runShellInstaller(root, installDir);
+			expect(result.exitCode).toBe(0);
+			const config = YAML.parse(await Bun.file(configPath).text()) as {
+				task: { agentModelOverrides: Record<string, string> };
+			};
+
+			expect(config.task.agentModelOverrides).toMatchObject({
+				heavy_task: "openai-codex/gpt-5.6-sol:high",
+				qa: "openai-codex/gpt-5.6-sol:high",
+				tester: "openai-codex/gpt-5.6-sol:medium",
+			});
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it("runs the installed config update command for existing shell configs", async () => {
 		const binaryContent = `#!/bin/sh
 if [ "$1" != "config" ] || [ "$2" != "update" ] || [ "$3" != "--json" ] || [ "$#" -ne 3 ]; then
