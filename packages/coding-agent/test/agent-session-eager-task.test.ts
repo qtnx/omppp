@@ -193,7 +193,7 @@ describe("AgentSession eager task prelude", () => {
 		expect(observedCalls[0]?.toolChoice).toBeUndefined();
 		expect(observedCalls[0]?.messageRoles).toEqual(["developer", "user"]);
 		expect(observedCalls[0]?.messageTexts[0]).toContain("delegation is enabled");
-		expect(observedCalls[0]?.messageTexts[0]).toContain("Batch independent slices");
+		expect(observedCalls[0]?.messageTexts[0]).toContain("Group independent slices");
 		expect(observedCalls[0]?.messageTexts[0]).toContain("`task`");
 		expect(
 			observedCalls[0]?.messageTexts.filter(text => text.includes("refactor the parser across modules")),
@@ -308,7 +308,7 @@ describe("AgentSession eager task prelude", () => {
 		expect(observedCalls).toHaveLength(1);
 		const reminder = observedCalls[0]?.messageTexts[0] ?? "";
 		expect(reminder).toContain("delegation is enabled");
-		expect(reminder).not.toContain("Batch independent slices");
+		expect(reminder).not.toContain("Group independent slices");
 	});
 
 	it("renders the task tool's wire name in the eager reminder", async () => {
