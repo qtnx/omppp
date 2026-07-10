@@ -10,9 +10,9 @@ Coverage % is not the goal; a test suite is a tripwire field. Every test must be
 ## Test budget — criticality sets the investment
 "Does it RUN?" is proven for every change (entry-point probe per skill://verify-before-done); how much test AUTHORING the change earns depends on what breaks if it breaks:
 - CRITICAL — money/payment/ledger, auth/permissions/tenant isolation, data integrity/migrations, published API contracts, load-bearing backend logic → full targeted coverage below; green focused suites are a completion gate.
-- STANDARD — ordinary backend, services, libraries other code calls → targeted tests on the changed behavior (priority list below); stop there.
-- RUNS-FIRST — frontend screens/components, internal tools, admin dashboards, demos, one-off scripts → the real run is the primary evidence (browser/CLI probe: happy path + one failure path); author tests ONLY for genuinely intricate embedded logic (parsers, calculations, state machines). Do NOT chase coverage or full-suite green here; a pre-existing unrelated red test is reported, not adopted.
-Tier comes from blast radius, not file extension: a frontend change carrying auth or payment logic is CRITICAL.
+- STANDARD — ordinary backend, services, libraries other code calls, AND frontend logic (state machines, reducers/stores, form validation, data transforms, calculations, permission/routing guards) → targeted tests on the changed behavior (priority list below); stop there.
+- RUNS-FIRST — the render/wiring surface ONLY: screens, components, layout/styling, internal tools, admin dashboards, demos, one-off scripts → the real run is the primary evidence (browser/CLI probe: happy path + one failure path). Do NOT chase coverage or full-suite green here; a pre-existing unrelated red test is reported, not adopted.
+Frontend LOGIC is never runs-first: extract it from the component where practical (store/reducer/validation module) and test it at its tier; only the thin rendering shell stays probe-verified. Tier comes from blast radius, not file extension: a frontend change carrying auth or payment logic is CRITICAL.
 
 ## Target selection — what earns a test
 In priority order, for the code you changed:

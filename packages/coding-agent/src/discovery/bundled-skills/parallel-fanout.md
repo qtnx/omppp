@@ -117,10 +117,10 @@ Rules: one wave = one `parallel([...])` (use `pipeline()` for per-item chains li
 | Tier | Surfaces | Acceptance shape |
 |---|---|---|
 | CRITICAL | money/ledger, auth/tenant isolation, data integrity/migrations, published API contracts, load-bearing backend logic | full targeted coverage — branches, edge values, error paths, invariants; green focused suite is the gate (P1–P4 above) |
-| STANDARD | ordinary backend/services/libraries other code calls | targeted tests on the changed behavior only |
-| RUNS-FIRST | FE screens/components, internal tools, admin dashboards, demos, one-off scripts | the real run: story/page renders its states, CLI probe happy path + one failure path (P6 above); tests only for intricate embedded logic (parsers, calculations, state machines) |
+| STANDARD | ordinary backend/services/libraries — and FRONTEND LOGIC: state machines, reducers/stores, form validation, transforms, calculations, permission/routing guards | targeted tests on the changed behavior only |
+| RUNS-FIRST | the render/wiring surface ONLY: screens/components/styling, internal tools, admin dashboards, demos, one-off scripts | the real run: story/page renders its states, CLI probe happy path + one failure path (P6 above) |
 
-Tier comes from blast radius, never file extension — a FE slice carrying auth/payment logic is CRITICAL. On RUNS-FIRST slices, NEVER chase coverage or full-suite green; a pre-existing unrelated red test is reported to the parent, not adopted.
+Tier comes from blast radius, never file extension — a FE slice carrying auth/payment logic is CRITICAL, and FE logic is NEVER runs-first: when a UI package embeds real logic, cut it as its own STANDARD/CRITICAL logic package with tests (a store/reducer/validation module the component imports), leaving the component shell as the runs-first slice. On RUNS-FIRST slices, NEVER chase coverage or full-suite green; a pre-existing unrelated red test is reported to the parent, not adopted.
 
 ## Scout fanout — Phase 0, one wave, many aspects
 
