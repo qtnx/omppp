@@ -2,6 +2,8 @@ import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { prompt } from "@oh-my-pi/pi-utils";
+import eagerTaskPrompt from "./prompts/system/eager-task.md" with { type: "text" };
 import { buildSystemPrompt } from "./system-prompt";
 
 interface ProbeRunResult {
@@ -187,5 +189,222 @@ describe.skipIf(process.platform !== "linux")("system prompt CPU model", () => {
 		} finally {
 			cpus.mockRestore();
 		}
+	});
+});
+
+// This helper defends the batch-schema behavior through rendered prompt output, not prompt source text.
+function expectCompatibleSameAgentBatchWave(rendered: string): void {
+	expect(rendered).toMatch(
+		/(?:per\s+(?:agent|specialist)\s+type[\s\S]{0,60}partition|partition[\s\S]{0,60}(?:each|every)\s+group)[\s\S]{0,100}compatible\s+same[- ]agent\s+batches?/i,
+	);
+	expect(rendered).toMatch(
+		/dispatch\s+(?:every|all)\s+(?:resulting\s+)?batch(?:es)?\s+concurrently[\s\S]{0,100}(?:in\s+)?(?:the\s+)?(?:(?:same|single)\s+)?(?:ready\s+)?wave/i,
+	);
+	expect(rendered).not.toMatch(
+		/(?:incompatible|remaining|remainder|fallback)[\s\S]{0,120}flat[\s-]+(?:`?task`?[\s-]+)?calls?|flat[\s-]+(?:`?task`?[\s-]+)?calls?[\s\S]{0,120}(?:incompatible|remaining|remainder|fallback)/i,
+	);
+}
+
+describe("normal system prompt delegation contract", () => {
+	it("minimizes latency without down-tiering load-bearing work", async () => {
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: import.meta.dir,
+			toolNames: ["read", "bash", "edit", "write", "task"],
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			workspaceTree: {
+				rootPath: import.meta.dir,
+				rendered: "",
+				truncated: false,
+				totalLines: 0,
+				agentsMdFiles: [],
+			},
+			activeRepoContext: null,
+			personality: "none",
+			taskBatch: true,
+		});
+		const rendered = systemPrompt[0] ?? "";
+		const contractChecks = [
+			{
+				name: "minimizes the dependency-graph critical path",
+				satisfied:
+					/critical[ -]path/i.test(rendered) &&
+					/(?:minimi[sz]|shorten|reduce)[a-z]*/i.test(rendered) &&
+					/(?:dependency[ -]graph|\bDAG\b)/i.test(rendered),
+			},
+			{
+				name: "batches every ready independent package in one wave",
+				satisfied:
+					/batch(?:es|ing)?/i.test(rendered) &&
+					/(?:every|all)[\s\S]{0,80}ready[\s\S]{0,80}independent[\s\S]{0,80}(?:package|work)[\s\S]{0,160}(?:ready[ -])?wave|(?:ready[ -])?wave[\s\S]{0,160}(?:every|all)[\s\S]{0,80}ready[\s\S]{0,80}independent[\s\S]{0,80}(?:package|work)/i.test(
+						rendered,
+					),
+			},
+			// A top-level task call selects one agent, so a mixed wave requires concurrent type-specific groups.
+			{
+				name: "groups heterogeneous ready waves by agent type, dispatches every group concurrently, batches only compatible same-agent packages, and preserves specialist/RISK routing over one-call minimization",
+				satisfied:
+					/(?:heterogeneous|mixed)[\s-]+(?:ready[\s-]+)?wave[\s\S]{0,180}(?:group|partition|split)[\s\S]{0,140}(?:agent|specialist)[\s-]+type|(?:group|partition|split)[\s\S]{0,140}(?:heterogeneous|mixed)[\s-]+(?:ready[\s-]+)?wave[\s\S]{0,140}(?:agent|specialist)[\s-]+type/i.test(
+						rendered,
+					) &&
+					/(?:every|all)[\s-]+groups?[\s\S]{0,120}concurrent|concurrent[\s\S]{0,120}(?:every|all)[\s-]+groups?/i.test(
+						rendered,
+					) &&
+					/(?:each|every)[\s\S]{0,80}(?:batch(?:ed)?|call)[\s\S]{0,160}(?:only[\s\S]{0,60})?(?:same[\s-]+agent|compatible[\s\S]{0,80}(?:agent|specialist))|(?:only[\s\S]{0,60})?(?:compatible[\s-]+)?same[\s-]+agent[\s\S]{0,100}(?:batch|call)/i.test(
+						rendered,
+					) &&
+					/(?:never|must not|do not)[\s\S]{0,120}(?:sacrific|change|override|down[\s-]?tier)[\s\S]{0,160}(?:specialist|risk|routing)[\s\S]{0,180}(?:single|one)[\s-]+(?:batch|call)|(?:specialist|risk|routing)[\s\S]{0,160}(?:never|must not|do not)[\s\S]{0,120}(?:single|one)[\s-]+(?:batch|call)/i.test(
+						rendered,
+					),
+			},
+			{
+				name: "forbids waterfall or one-agent-at-a-time dispatch",
+				satisfied:
+					/(?:avoid|never|must not|do not)[\s\S]{0,140}(?:waterfall|one[ -](?:agent|package|task)[ -]at[ -]a[ -]time)|(?:waterfall|one[ -](?:agent|package|task)[ -]at[ -]a[ -]time)[\s\S]{0,140}(?:avoid|never|must not|do not)/i.test(
+						rendered,
+					),
+			},
+			{
+				name: "keeps risky or load-bearing core work on heavy_task",
+				satisfied:
+					/heavy_task/i.test(rendered) &&
+					/(?:risk|load-bearing|core)[\s\S]{0,180}(?:remain|stay|keep)[\s\S]{0,180}heavy_task|heavy_task[\s\S]{0,180}(?:remain|stay|keep)[\s\S]{0,180}(?:risk|load-bearing|core)|(?:keep|leave)[\s\S]{0,180}(?:risk|load-bearing|core)[\s\S]{0,180}heavy_task/i.test(
+						rendered,
+					),
+			},
+			{
+				name: "routes only independently ownable contained senior slices to task",
+				satisfied:
+					/(?:independent|ownable)[\s\S]{0,180}(?:contained|senior)[\s\S]{0,180}\btask\b|\btask\b[\s\S]{0,180}(?:contained|senior)[\s\S]{0,180}(?:independent|ownable)/i.test(
+						rendered,
+					),
+			},
+			{
+				name: "routes only independently ownable locked mechanical slices to quick_task",
+				satisfied:
+					/(?:independent|ownable)[\s\S]{0,180}(?:locked|mechanical|perimeter)[\s\S]{0,180}quick_task|quick_task[\s\S]{0,180}(?:locked|mechanical|perimeter)[\s\S]{0,180}(?:independent|ownable)/i.test(
+						rendered,
+					),
+			},
+			{
+				name: "preserves specialist routing and exclusive ownership",
+				satisfied:
+					/(?:specialist|specializ[a-z]*)[\s\S]{0,180}(?:route|routing|prefer)|(?:route|routing|prefer)[\s\S]{0,180}(?:specialist|specializ[a-z]*)/i.test(
+						rendered,
+					) && /exclusive[\s-]+(?:file[\s-]+)?ownership/i.test(rendered),
+			},
+			{
+				name: "makes sub-10-minute latency conditional on the DAG, never a risk downgrade",
+				satisfied:
+					/(?:sub[ -]?10|under 10|<\s*10)[ -]minute[\s\S]{0,160}(?:only[\s-]+)?when[\s\S]{0,100}(?:dependency[ -]graph|\bDAG\b)|(?:dependency[ -]graph|\bDAG\b)[\s\S]{0,100}(?:only[\s-]+)?when[\s\S]{0,160}(?:sub[ -]?10|under 10|<\s*10)[ -]minute/i.test(
+						rendered,
+					) &&
+					/(?:never|must not|do not|not)[\s\S]{0,180}down[ -]?tier[\s\S]{0,180}(?:risk|load-bearing)|down[ -]?tier[\s\S]{0,180}(?:risk|load-bearing)[\s\S]{0,180}(?:never|must not|do not|not)/i.test(
+						rendered,
+					),
+			},
+		];
+
+		expect(contractChecks.filter(check => !check.satisfied).map(check => check.name)).toEqual([]);
+		// One batch per agent type or a flat fallback omits at least one required rendered clause.
+		expectCompatibleSameAgentBatchWave(rendered);
+	}, 15_000);
+
+	it("uses concurrent flat task calls when task batching is disabled", async () => {
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: import.meta.dir,
+			toolNames: ["read", "bash", "edit", "write", "task"],
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			workspaceTree: {
+				rootPath: import.meta.dir,
+				rendered: "",
+				truncated: false,
+				totalLines: 0,
+				agentsMdFiles: [],
+			},
+			activeRepoContext: null,
+			personality: "none",
+			taskBatch: false,
+		});
+		const rendered = systemPrompt.join("\n");
+
+		// A flat schema still fans out ready work, but never receives the batch-only tasks array.
+		expect(rendered).toMatch(
+			/(?:every|all)[\s\S]{0,80}(?:ready|independent)[\s\S]{0,120}concurrent[\s\S]{0,120}(?:available[\s-]+)?`?task`?[\s-]+calls/i,
+		);
+		expect(rendered).not.toMatch(/`?tasks`?\s*(?:\[\s*\]|array\b|:)/i);
+	}, 15_000);
+
+	it("keeps eager task reminders partitioned into concurrent compatible batches", async () => {
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: import.meta.dir,
+			toolNames: ["read", "bash", "edit", "write", "task"],
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			workspaceTree: {
+				rootPath: import.meta.dir,
+				rendered: "",
+				truncated: false,
+				totalLines: 0,
+				agentsMdFiles: [],
+			},
+			activeRepoContext: null,
+			personality: "none",
+			taskBatch: true,
+			eagerTasks: true,
+			eagerTasksAlways: true,
+		});
+		const rendered = systemPrompt.join("\n");
+
+		expect(rendered).toMatch(
+			/(?:heterogeneous|mixed)[\s-]+(?:ready[\s-]+)?wave[\s\S]{0,180}(?:group|partition|split)[\s\S]{0,140}(?:agent|specialist)[\s-]+type|(?:group|partition|split)[\s\S]{0,140}(?:heterogeneous|mixed)[\s-]+(?:ready[\s-]+)?wave[\s\S]{0,140}(?:agent|specialist)[\s-]+type/i,
+		);
+		expect(rendered).toMatch(
+			/(?:every|all)[\s-]+groups?[\s\S]{0,120}concurrent|concurrent[\s\S]{0,120}(?:every|all)[\s-]+groups?/i,
+		);
+		expect(rendered).toMatch(
+			/(?:each|every)[\s\S]{0,80}(?:batch(?:ed)?|call)[\s\S]{0,160}(?:only[\s\S]{0,60})?(?:same[\s-]+agent|compatible[\s\S]{0,80}(?:agent|specialist))|(?:only[\s\S]{0,60})?(?:compatible[\s-]+)?same[\s-]+agent[\s\S]{0,100}(?:batch|call)/i,
+		);
+		expectCompatibleSameAgentBatchWave(rendered);
+
+		// A global one-call reminder overrides the type-specific grouping contract even when both are rendered.
+		const globalOneCallReminder = rendered.match(
+			/(?:batch|combine|dispatch|group|put|send)[\s\S]{0,80}(?:all|every|independent|ready)?[\s\S]{0,80}(?:slices?|packages?|tasks?|work)[\s\S]{0,80}(?:into|in|using|via)[\s\S]{0,40}(?:one|single)[\s-]+(?:parallel[\s-]+)?`?task`?[\s-]+call/i,
+		)?.[0];
+		expect(globalOneCallReminder).toBeUndefined();
+	}, 15_000);
+});
+
+describe("eager task runtime reminder", () => {
+	it("renders every compatible same-agent batch concurrently in one wave", () => {
+		const rendered = prompt.render(eagerTaskPrompt, {
+			toolRefs: { task: "task" },
+			taskBatch: true,
+		});
+
+		// Semantic clauses survive harmless wording changes but reject one-batch-per-type and flat fallbacks.
+		expectCompatibleSameAgentBatchWave(rendered);
+		expect(rendered).toContain(
+			"Work alone only for: a single-file edit under ~30 lines, a direct answer requiring no code changes, or a command the user explicitly asked you to run.",
+		);
+	});
+
+	it("renders every ready slice as a concurrent flat call when batching is disabled", () => {
+		const rendered = prompt.render(eagerTaskPrompt, {
+			toolRefs: { task: "task" },
+			taskBatch: false,
+		});
+
+		expect(rendered).toContain(
+			"Dispatch EVERY independent ready slice concurrently as flat `task` calls; NEVER dispatch one at a time.",
+		);
+		expect(rendered).not.toContain("batch ONLY compatible same-agent slices per `task` call");
+		expect(rendered).toContain(
+			"Work alone only for: a single-file edit under ~30 lines, a direct answer requiring no code changes, or a command the user explicitly asked you to run.",
+		);
 	});
 });

@@ -362,6 +362,117 @@ describe("AgentSession duo wiring helpers", () => {
 		);
 		expect(compactGuidance).toMatch(/work boundar\w*|phase boundar\w*|task boundar\w*|after finishing/i);
 	});
+
+	test("safe orchestrator minimizes latency without down-tiering load-bearing work", () => {
+		const [rendered = ""] = buildSystemPromptWithOrchestratorOverlay(["Base identity block.", "Tool block"]);
+		const contractChecks = [
+			{
+				name: "minimizes the dependency-graph critical path",
+				satisfied:
+					/critical[ -]path/i.test(rendered) &&
+					/(?:minimi[sz]|shorten|reduce)[a-z]*/i.test(rendered) &&
+					/(?:dependency[ -]graph|\bDAG\b)/i.test(rendered),
+			},
+			{
+				name: "batches every ready independent package in one wave",
+				satisfied:
+					/batch(?:es|ing)?/i.test(rendered) &&
+					/(?:every|all)[\s\S]{0,80}ready[\s\S]{0,80}independent[\s\S]{0,80}(?:package|work)[\s\S]{0,160}(?:ready[ -])?wave|(?:ready[ -])?wave[\s\S]{0,160}(?:every|all)[\s\S]{0,80}ready[\s\S]{0,80}independent[\s\S]{0,80}(?:package|work)/i.test(
+						rendered,
+					),
+			},
+			// The static overlay describes grouping semantics without depending on the live task schema fields.
+			{
+				name: "groups heterogeneous ready waves by agent type, dispatches every group concurrently, batches only compatible same-agent packages, and preserves specialist/RISK routing over one-call minimization",
+				satisfied:
+					/(?:heterogeneous|mixed)[\s-]+(?:ready[\s-]+)?wave[\s\S]{0,180}(?:group|partition|split)[\s\S]{0,140}(?:agent|specialist)[\s-]+type|(?:group|partition|split)[\s\S]{0,140}(?:heterogeneous|mixed)[\s-]+(?:ready[\s-]+)?wave[\s\S]{0,140}(?:agent|specialist)[\s-]+type/i.test(
+						rendered,
+					) &&
+					/(?:every|all)[\s-]+groups?[\s\S]{0,120}concurrent|concurrent[\s\S]{0,120}(?:every|all)[\s-]+groups?/i.test(
+						rendered,
+					) &&
+					/(?:each|every)[\s\S]{0,80}(?:batch(?:ed)?|call)[\s\S]{0,160}(?:only[\s\S]{0,60})?(?:same[\s-]+agent|compatible[\s\S]{0,80}(?:agent|specialist))|(?:only[\s\S]{0,60})?(?:compatible[\s-]+)?same[\s-]+agent[\s\S]{0,100}(?:batch|call)/i.test(
+						rendered,
+					) &&
+					/(?:never|must not|do not)[\s\S]{0,120}(?:sacrific|change|override|down[\s-]?tier)[\s\S]{0,160}(?:specialist|risk|routing)[\s\S]{0,180}(?:single|one)[\s-]+(?:batch|call)|(?:specialist|risk|routing)[\s\S]{0,160}(?:never|must not|do not)[\s\S]{0,120}(?:single|one)[\s-]+(?:batch|call)/i.test(
+						rendered,
+					),
+			},
+			{
+				name: "forbids waterfall or one-agent-at-a-time dispatch",
+				satisfied:
+					/(?:avoid|never|must not|do not)[\s\S]{0,140}(?:waterfall|one[ -](?:agent|package|task)[ -]at[ -]a[ -]time)|(?:waterfall|one[ -](?:agent|package|task)[ -]at[ -]a[ -]time)[\s\S]{0,140}(?:avoid|never|must not|do not)/i.test(
+						rendered,
+					),
+			},
+			{
+				name: "keeps risky or load-bearing core work on heavy_task",
+				satisfied:
+					/heavy_task/i.test(rendered) &&
+					/(?:risk|load-bearing|core)[\s\S]{0,180}(?:remain|stay|keep)[\s\S]{0,180}heavy_task|heavy_task[\s\S]{0,180}(?:remain|stay|keep)[\s\S]{0,180}(?:risk|load-bearing|core)|(?:keep|leave)[\s\S]{0,180}(?:risk|load-bearing|core)[\s\S]{0,180}heavy_task/i.test(
+						rendered,
+					),
+			},
+			{
+				name: "routes only independently ownable contained senior slices to task",
+				satisfied:
+					/(?:independent|ownable)[\s\S]{0,180}(?:contained|senior)[\s\S]{0,180}\btask\b|\btask\b[\s\S]{0,180}(?:contained|senior)[\s\S]{0,180}(?:independent|ownable)/i.test(
+						rendered,
+					),
+			},
+			{
+				name: "routes only independently ownable locked mechanical slices to quick_task",
+				satisfied:
+					/(?:independent|ownable)[\s\S]{0,180}(?:locked|mechanical|perimeter)[\s\S]{0,180}quick_task|quick_task[\s\S]{0,180}(?:locked|mechanical|perimeter)[\s\S]{0,180}(?:independent|ownable)/i.test(
+						rendered,
+					),
+			},
+			{
+				name: "preserves specialist routing and exclusive ownership",
+				satisfied:
+					/(?:specialist|specializ[a-z]*)[\s\S]{0,180}(?:route|routing|prefer)|(?:route|routing|prefer)[\s\S]{0,180}(?:specialist|specializ[a-z]*)/i.test(
+						rendered,
+					) && /exclusive[\s-]+(?:file[\s-]+)?ownership/i.test(rendered),
+			},
+			{
+				name: "makes sub-10-minute latency conditional on the DAG, never a risk downgrade",
+				satisfied:
+					/(?:sub[ -]?10|under 10|<\s*10)[ -]minute[\s\S]{0,160}(?:only[\s-]+)?when[\s\S]{0,100}(?:dependency[ -]graph|\bDAG\b)|(?:dependency[ -]graph|\bDAG\b)[\s\S]{0,100}(?:only[\s-]+)?when[\s\S]{0,160}(?:sub[ -]?10|under 10|<\s*10)[ -]minute/i.test(
+						rendered,
+					) &&
+					/(?:never|must not|do not|not)[\s\S]{0,180}down[ -]?tier[\s\S]{0,180}(?:risk|load-bearing)|down[ -]?tier[\s\S]{0,180}(?:risk|load-bearing)[\s\S]{0,180}(?:never|must not|do not|not)/i.test(
+						rendered,
+					),
+			},
+		];
+
+		expect(contractChecks.filter(check => !check.satisfied).map(check => check.name)).toEqual([]);
+		// Rendered overlay must split same-type work by compatibility before one-wave concurrent dispatch.
+		expect(rendered).toMatch(
+			/(?:per\s+(?:agent|specialist)\s+type[\s\S]{0,60}partition|partition[\s\S]{0,60}(?:each|every)\s+group)[\s\S]{0,100}compatible\s+same[- ]agent\s+batches?/i,
+		);
+		expect(rendered).toMatch(
+			/dispatch\s+(?:every|all)\s+(?:resulting\s+)?batch(?:es)?\s+concurrently[\s\S]{0,100}(?:in\s+)?(?:the\s+)?(?:(?:same|single)\s+)?(?:ready\s+)?wave/i,
+		);
+		expect(rendered).not.toMatch(
+			/(?:incompatible|remaining|remainder|fallback)[\s\S]{0,120}flat[\s-]+(?:`?task`?[\s-]+)?calls?|flat[\s-]+(?:`?task`?[\s-]+)?calls?[\s\S]{0,120}(?:incompatible|remaining|remainder|fallback)/i,
+		);
+	});
+
+	test("safe orchestrator keeps concurrent task dispatch schema-neutral", () => {
+		const [rendered = ""] = buildSystemPromptWithOrchestratorOverlay(["Base identity block.", "Tool block"]);
+
+		// The static overlay delegates concurrency and leaves the invocation fields to the live tool schema.
+		expect(rendered).toMatch(
+			/(?:every|all)[\s\S]{0,80}(?:ready|independent)[\s\S]{0,140}concurrent[\s\S]{0,160}(?:active|available)[\s-]+(?:task[\s-]+)?call[\s-]+shape/i,
+		);
+		expect(rendered).not.toMatch(/`?tasks`?\s*(?:\[\s*\]|array\b|:)/i);
+		// Unqualified batch-all guidance conflicts with concurrent heterogeneous dispatch; batching must be scoped to compatible same-agent work.
+		expect(rendered).not.toMatch(
+			/\bMUST\s+batch\s+all\s+ready\s+(?:scouts|packages)(?:\s*\/\s*(?:scouts|packages))?\b/i,
+		);
+	});
+
 	test("advisor skills prompt preserves Skills & Rules and reminds advisor to supervise skill use", () => {
 		const baseSkillsSection = [
 			"# Skills & Rules",
