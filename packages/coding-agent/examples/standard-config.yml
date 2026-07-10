@@ -3,31 +3,27 @@
 # Copy to ~/.omp/agent/config.yml before first run, or let the installer seed it
 # when the target config file does not already exist.
 modelRoles:
-  default: openai-codex/gpt-5.5:xhigh
-  task: anthropic/claude-opus-4-8
-  smol: anthropic/claude-sonnet-4-6
-  slow: openai-codex/gpt-5.5:high
-  plan: anthropic/claude-opus-4-8:xhigh
-  designer: anthropic/claude-opus-4-8
-  commit: openai-codex/gpt-5.5:low
+  default: openai-codex/gpt-5.6-sol:xhigh
+  task: openai-codex/gpt-5.6-terra:medium
+  smol: cerebras/gpt-oss-120b
+  slow: openai-codex/gpt-5.6-sol:high
+  plan: openai-codex/gpt-5.6-sol:xhigh
+  designer: tnx/designer
+  commit: openai-codex/gpt-5.6-luna:high
 task:
   showResolvedModelBadge: true
   agentModelOverrides:
-    agent-creator: anthropic/
-    code-architect: pi/plan
-    code-explorer: pi/smol
-    code-reviewer: openai-codex/codex-auto-review
-    code-simplifier: anthropic/claude-opus-4-8
-    codex-rescue: openai-codex/gpt-5.5:medium
     designer: tnx/designer
+    explore: pi/smol
     frontend_ui: tnx/designer
-    ui_ux_reviewer: tnx/designer
-    ux_copywriter: tnx/designer
-    oracle: openai-codex/gpt-5.5:xhigh
-    plan: openai-codex/gpt-5.5:xhigh
-    quick_task: openai-codex/gpt-5.5:low
-    reviewer: openai-codex/gpt-5.5:xhigh
-    task: openai-codex/gpt-5.5:medium
+    heavy_task: openai-codex/gpt-5.6-sol:high
+    oracle: openai-codex/gpt-5.6-sol:high
+    plan: anthropic/claude-fable-5:high
+    qa: openai-codex/gpt-5.6-sol:high
+    quick_task: openai-codex/gpt-5.6-luna:high
+    reviewer: openai-codex/gpt-5.6-sol:high
+    task: openai-codex/gpt-5.6-terra:medium
+    tester: openai-codex/gpt-5.6-sol:medium
 workflow:
   enabled: true
 dev:
@@ -53,7 +49,7 @@ theme:
   dark: titanium
 display:
   syntaxHighlighting: basic
-setupVersion: 1
+setupVersion: 3
 retry:
   fallbackChains:
     task:
