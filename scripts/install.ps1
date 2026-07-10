@@ -269,6 +269,8 @@ retry:
     smol:
       - openai-codex/gpt-5.3-codex-spark
       - anthropic/claude-haiku-4-5
+    heavy_task:
+      - anthropic/claude-opus-4-8:high
 '@ | Set-Content -Path $ConfigFile -Encoding UTF8
     Write-Host "✓ Seeded OMPx standard config at $ConfigFile" -ForegroundColor Green
 }

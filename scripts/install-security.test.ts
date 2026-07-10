@@ -480,6 +480,84 @@ task:
 		}
 	});
 
+	it("adds shell installer heavy_task fallback chain to existing retry chains idempotently", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(
+				configPath,
+				`modelRoles:
+  default: local/default-model
+task:
+  agentModelOverrides:
+    designer: tnx/designer
+retry:
+  fallbackChains:
+    task:
+      - openai-codex/gpt-5.6-terra:medium
+    smol:
+      - cerebras/gpt-oss-120b
+  otherRetryKey: keepme
+providers:
+  local:
+    baseURL: http://localhost:1234/v1
+`,
+			);
+
+			const firstResult = await runShellInstaller(root, installDir);
+			expect(firstResult.exitCode).toBe(0);
+			const firstConfig = YAML.parse(await Bun.file(configPath).text()) as {
+				retry: {
+					fallbackChains: Record<string, string[]>;
+					otherRetryKey: string;
+				};
+			};
+
+			expect(firstConfig.retry.fallbackChains.heavy_task).toEqual(["anthropic/claude-opus-4-8:high"]);
+			expect(firstConfig.retry.fallbackChains.task).toEqual(["openai-codex/gpt-5.6-terra:medium"]);
+			expect(firstConfig.retry.fallbackChains.smol).toEqual(["cerebras/gpt-oss-120b"]);
+			expect(firstConfig.retry.otherRetryKey).toBe("keepme");
+
+			const secondResult = await runShellInstaller(root, installDir);
+			expect(secondResult.exitCode).toBe(0);
+			const secondConfig = YAML.parse(await Bun.file(configPath).text());
+			expect(secondConfig).toEqual(firstConfig);
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("does not create shell installer heavy_task fallback chain without retry chains", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(
+				configPath,
+				`modelRoles:
+  default: local/default-model
+providers:
+  local:
+    baseURL: http://localhost:1234/v1
+`,
+			);
+
+			const result = await runShellInstaller(root, installDir);
+			expect(result.exitCode).toBe(0);
+			const config = YAML.parse(await Bun.file(configPath).text()) as {
+				retry?: { fallbackChains?: Record<string, string[]> };
+			};
+
+			expect(config.retry).toBeUndefined();
+			expect(config.retry?.fallbackChains?.heavy_task).toBeUndefined();
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it("migrates existing legacy GPT-5.5 heavy, QA, and tester overrides", async () => {
 		const binaryContent = "safe release binary";
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
