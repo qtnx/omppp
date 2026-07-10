@@ -132,7 +132,7 @@ import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
 import { messageHasDisplayableThinking } from "../utils/thinking-display";
 import { popTerminalTitle, pushTerminalTitle, setSessionTerminalTitle } from "../utils/title-generator";
-import { renderWorkflowTree } from "../workflow/render";
+import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { WORKFLOW_PROGRESS_CHANNEL, type WorkflowProgressFrame } from "../workflow/types";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
@@ -150,6 +150,7 @@ import { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import { WelcomeComponent, type LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
+import { WorkflowHudComponent } from "./components/workflow-hud";
 import { BtwController } from "./controllers/btw-controller";
 import { CommandController } from "./controllers/command-controller";
 import { EventController } from "./controllers/event-controller";
@@ -449,6 +450,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	statusContainer: Container;
 	todoContainer: Container;
 	subagentContainer: Container;
+	workflowContainer: Container;
 	btwContainer: Container;
 	omfgContainer: Container;
 	errorBannerContainer: Container;
@@ -589,8 +591,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#planModeHasEntered = false;
 	#planReviewOverlay: PlanReviewOverlay | undefined;
 	#planReviewOverlayHandle: OverlayHandle | undefined;
-	#workflowFrames: WorkflowProgressFrame[] = [];
-	#workflowPanel: Container | undefined;
+	#workflowRunRegistry = new WorkflowRunRegistry();
 	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
 	mcpManager?: MCPManager;
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
@@ -706,8 +707,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(WORKFLOW_PROGRESS_CHANNEL, data => {
-					this.#workflowFrames.push(data as WorkflowProgressFrame);
-					if (this.#workflowPanel) this.#renderWorkflowsPanel();
+					const frame = data as WorkflowProgressFrame;
+					this.#workflowRunRegistry.ingest(frame);
+					this.#renderWorkflowHud();
+					this.ui.requestRender();
+					this.#selectorController.refreshWorkflowHub();
 				}),
 			);
 			this.#eventBusUnsubscribers.push(
@@ -734,6 +738,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusContainer = new AnchoredLiveContainer();
 		this.todoContainer = new AnchoredLiveContainer();
 		this.subagentContainer = new AnchoredLiveContainer();
+		this.workflowContainer = new AnchoredLiveContainer();
 		this.btwContainer = new AnchoredLiveContainer();
 		this.omfgContainer = new AnchoredLiveContainer();
 		this.errorBannerContainer = new AnchoredLiveContainer();
@@ -986,6 +991,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.todoContainer);
 		this.ui.addChild(this.subagentContainer);
+		this.ui.addChild(this.workflowContainer);
 		this.ui.addChild(this.btwContainer);
 		this.ui.addChild(this.omfgContainer);
 		this.ui.addChild(this.errorBannerContainer);
@@ -2350,6 +2356,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
 
+	/** Anchored HUD of active workflow runs, refreshed by workflow progress frames. */
+	#renderWorkflowHud(): void {
+		this.workflowContainer.clear();
+		const hud = new WorkflowHudComponent({ registry: this.#workflowRunRegistry });
+		if (hud.render(this.ui.terminal.columns).length === 0) return;
+		this.workflowContainer.addChild(hud);
+	}
+
 	async #loadTodoList(): Promise<void> {
 		this.todoPhases = this.session.getTodoPhases();
 		this.#syncTodoAutoClearTimer();
@@ -3044,23 +3058,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#planReviewOverlay = undefined;
 	}
 
-	#renderWorkflowsPanel(): void {
-		const existing = this.#workflowPanel;
-		const panel = existing ?? new Container();
-		panel.clear();
-		panel.addChild(new Spacer(1));
-		panel.addChild(new DynamicBorder());
-		panel.addChild(new Text(theme.bold(theme.fg("accent", "Workflows")), 1, 1));
-		panel.addChild(new Spacer(1));
-		panel.addChild(new Text(renderWorkflowTree(this.#workflowFrames, { theme, expanded: false }), 1, 1));
-		panel.addChild(new DynamicBorder());
-		if (!existing) this.chatContainer.addChild(panel);
-		this.#workflowPanel = panel;
-		this.ui.requestRender();
-	}
-
 	showWorkflowsDashboard(): void {
-		this.#renderWorkflowsPanel();
+		this.#selectorController.showWorkflowHub(this.#workflowRunRegistry, this.#observerRegistry);
 	}
 
 	#getEditorTerminalPath(): string | null {
@@ -4532,7 +4531,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.clearPinnedError();
 		this.#hidePlanReview();
-		this.#workflowPanel = undefined;
+		this.#workflowRunRegistry.clear();
 	}
 
 	async handleClearCommand(options?: { preserveLoopPrompt?: boolean }): Promise<void> {
