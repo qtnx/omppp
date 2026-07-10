@@ -627,6 +627,93 @@ migrate_gpt_5_6_model_config() {
     echo "✓ Migrated legacy GPT-5.5 config models to GPT-5.6 at ${config_file}"
 }
 
+migrate_heavy_task_fallback_chain() {
+    config_file="$1"
+
+    if [ ! -f "$config_file" ]; then
+        return
+    fi
+
+    tmp_config="$(mktemp "${config_file}.XXXXXX")"
+    awk '
+        function indent_length(line) {
+            match(line, /^[[:space:]]*/)
+            return RLENGTH
+        }
+        function insert_heavy_task_fallback() {
+            if (seen_child && !have_heavy_task) {
+                print key_indent "heavy_task:"
+                print key_indent "  - anthropic/claude-opus-4-8:high"
+            }
+        }
+        BEGIN {
+            in_retry = 0
+            in_chains = 0
+            retry_indent = 0
+            chains_indent = 0
+            key_indent = ""
+            seen_child = 0
+            have_heavy_task = 0
+        }
+        {
+            if (in_chains) {
+                if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
+                    print
+                    next
+                }
+                current_indent = indent_length($0)
+                if (current_indent > chains_indent) {
+                    seen_child = 1
+                    if ($0 ~ /^[[:space:]]*heavy_task:[[:space:]]*($|#)/) {
+                        have_heavy_task = 1
+                    }
+                    print
+                    next
+                }
+                insert_heavy_task_fallback()
+                in_chains = 0
+                in_retry = 0
+            }
+
+            if (in_retry) {
+                if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
+                    print
+                    next
+                }
+                current_indent = indent_length($0)
+                if (current_indent <= retry_indent) {
+                    in_retry = 0
+                } else if ($0 ~ /^[[:space:]]*fallbackChains:[[:space:]]*($|#)/) {
+                    in_chains = 1
+                    chains_indent = current_indent
+                    key_indent = substr($0, 1, current_indent) "  "
+                    seen_child = 0
+                    have_heavy_task = 0
+                    print
+                    next
+                } else {
+                    print
+                    next
+                }
+            }
+
+            if ($0 ~ /^retry:[[:space:]]*($|#)/) {
+                in_retry = 1
+                retry_indent = 0
+            }
+            print
+        }
+        END {
+            if (in_chains) {
+                insert_heavy_task_fallback()
+            }
+        }
+    ' "$config_file" > "$tmp_config"
+    mv "$tmp_config" "$config_file"
+    chmod 600 "$config_file" 2>/dev/null || true
+    echo "✓ Ensured heavy_task fallback chain at ${config_file}"
+}
+
 
 run_config_update() {
     config_update_command="$1"
@@ -737,6 +824,8 @@ retry:
     smol:
       - openai-codex/gpt-5.3-codex-spark
       - anthropic/claude-haiku-4-5
+    heavy_task:
+      - anthropic/claude-opus-4-8:high
 EOF_CONFIG
     chmod 600 "$config_file" 2>/dev/null || true
     echo "✓ Seeded OMPx standard config at ${config_file}"
@@ -810,6 +899,7 @@ install_via_bun() {
     install_standard_config
     run_config_update "ompx"
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
+    migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
     echo ""
     echo "✓ Installed OMPx via bun"
@@ -882,6 +972,7 @@ install_binary() {
     install_standard_config
     run_config_update "${INSTALL_DIR}/ompx"
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
+    migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
     echo ""
     echo "✓ Installed OMPx to ${INSTALL_DIR}/ompx"

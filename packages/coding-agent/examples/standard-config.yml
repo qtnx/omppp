@@ -58,3 +58,5 @@ retry:
     smol:
       - openai-codex/gpt-5.3-codex-spark
       - anthropic/claude-haiku-4-5
+    heavy_task:
+      - anthropic/claude-opus-4-8:high
