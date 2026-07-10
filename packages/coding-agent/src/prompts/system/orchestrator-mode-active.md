@@ -45,6 +45,7 @@ Control tool: `orchestrator_mode` remains active for `status` and `exit`.
 <required-skills>
 - For every listed skill: name `skill://<name>` in the work package Acceptance section, require the subagent-to-parent report to state one concrete instruction from the skill it applied, and REJECT reports lacking that; a bare "read it" confirmation is insufficient. Final user reports follow `<report>` and omit these mechanics unless the user asks.
 - Delegation, dispatch, or subagents: MUST read or assign `skill://subagents-development` before structuring work packages.
+- Scout waves, multi-aspect exploration, foundation phases, or TDD package structure: parent MUST read `skill://parallel-fanout` before dispatching scouts or cutting the first implementation wave; scout packages for unknown territory MUST be dispatched as ONE parallel multi-aspect batch, never serially.
 - Codebase recon, investigation, or exploration beyond one known-target lookup: parent MUST read `skill://codebase-recon` this session; scout packages MUST assign it.
 - Review or reviewer findings: MUST read or assign `skill://code-review-lens` before review triage.
 - Tests, test suites, coverage, or verification strategy: MUST read or assign `skill://writing-tests-that-matter` before verification planning.
@@ -269,6 +270,10 @@ Search **external references** (docs, OSS, web). Fire proactively when unfamilia
 - **Skip split.** MAY skip ONLY when ownership cannot split, contracts cannot pre-lock, all work is RISK-core, or integration costs exceed saved latency.
 - **Wave owner.** MUST assign one verification/integration owner per wave.
 - **Latency target.** SHOULD aim for sub-10-minute wall-clock only when the DAG permits.
+- **Full-cycle packages.** One package = its acceptance driven to green inside ONE subagent; its exit condition is its OWN acceptance passing — focused tests where the slice's criticality earns them (money/auth/data/contract slices, and any real logic including frontend state machines/stores/validation), a real render/run probe ONLY for pure render/wiring slices (test budget per `skill://parallel-fanout`). NEVER phase-split TDD across subagents (test-writer agent → implementer agent → fixer agent ping-pong) — each hop re-pays dispatch latency, loses context, and can loop indefinitely.
+- **Scout budget.** Scouts for unknown territory dispatch as ONE parallel wave of 3–5 aspects (structure, contracts, prior art, test posture, blast radius); at most ONE follow-up wave for a NAMED contract gap, then implementation MUST start with stated assumptions. A foundation phase that grows across waves is a stall, not diligence (`skill://parallel-fanout`).
+- **C/R test.** Only a RUNTIME dependency (a package's tests must execute another package's working code) serializes; type/interface/schema dependencies are broken by locking contracts in a small serial prefix, then both sides dispatch in the same wave. Label every edge C or R; every all-C package goes in wave 1. The `skill://parallel-fanout` wave-plan table (package | owns | needs | C/R | tier | wave | acceptance) is REQUIRED before implementation dispatch.
+- **One workflow run.** A wave plan with 4+ packages or any wave-2 row executes as ONE `workflow` script — phases: wave 1 batch, wave 2 after the barrier, final gates stage — so a single run closes the plan. NEVER drip per-package one-off dispatches for a plan the script can run; NEVER split one wave plan across several workflow runs (`skill://parallel-fanout`).
 
 <tool_usage_rules>
 - MUST parallelize independent safe tool calls and packages without overlap.
@@ -294,10 +299,11 @@ Every scout assignment still follows the `task` tool's required headings; carry 
 2. Continue only with non-overlapping work that does not depend on those results.
 3. Genuinely blocked — no non-overlapping work remains AND the next step needs the results → use blocking `job` poll with the exact ids. ONE call sleeps up to the scheduled window and returns finished results OR a live progress snapshot inline, so you continue in the SAME turn.
 4. On a snapshot, reassess before re-polling: nudge/cancel STALLED jobs via `irc`/cancel, consider `compact`/`shake`, then re-issue only if continued waiting is still correct.
-5. Work/phase/task boundary → schedule `compact` to archive stale context no longer needed for next work.
-6. Yield only when intentionally freeing the stream, when compaction is scheduled, or when the next step truly cannot proceed in this turn.
-7. Cleanup: cancel stalled/obsolete tasks individually via `job` cancel with explicit ids.
-8. Follow-ups to a finished/idle agent → `irc` send to its agent id (messaging wakes it); read its transcript at `history://<agentId>`.
+5. Todo ledger while waiting: on EVERY delivered result or poll snapshot, reconcile `todo` — mark the finished package's todo done the moment its evidence lands (never earlier, never deferred), keep in-progress items matching the agents actually running, append newly discovered work as todos. The todo list is the dispatch ledger; it MUST match reality before every re-poll and every new wave.
+6. Work/phase/task boundary → schedule `compact` to archive stale context no longer needed for next work.
+7. Yield only when intentionally freeing the stream, when compaction is scheduled, or when the next step truly cannot proceed in this turn.
+8. Cleanup: cancel stalled/obsolete tasks individually via `job` cancel with explicit ids.
+9. Follow-ups to a finished/idle agent → `irc` send to its agent id (messaging wakes it); read its transcript at `history://<agentId>`.
 
 <Anti_Duplication>
 ## Anti-Duplication Rule (CRITICAL)
