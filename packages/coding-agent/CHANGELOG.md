@@ -1,49 +1,26 @@
 # Changelog
 
 ## [Unreleased]
+
+## [1.5.6] - 2026-07-10
+
 - Merged behavior keeps the bundled Tester subagent registered additively; testing guidance in the main system prompt does not remove it.
 - Merged behavior keeps explicit high-effort pins for bundled plan and reviewer subagents.
 - Escape cancellation remains two-step: the first press requests confirmation and the second cancels the active stream.
 - Merged Settings discovery recognizes `config.yml` first and `config.yaml` as a fallback, preserving the existing extension as the writeback target.
 
-### Changed
-
-- The continuous duo advisor now defaults to `gpt-5.6-sol` (was `gpt-5.5`): updated the `duo.advisorModel` schema default and the resolver's unset-fallback so the advisor no longer routes to GPT-5.5.
-
 ### Added
 
 - Added `ompx auth-gateway serve --verbose` to stream structured request/debug logs to the foreground terminal while preserving the rotating profile log.
+
+### Changed
+
+- The continuous duo advisor now defaults to `gpt-5.6-sol` (was `gpt-5.5`): updated the `duo.advisorModel` schema default and the resolver's unset-fallback so the advisor no longer routes to GPT-5.5.
 
 ### Fixed
 
 - Fixed advisor concern/blocker notes interrupting or skipping active tool/function calls; notes now deliver at a safe boundary, including stream-tail recovery.
 
-## [1.5.5] - 2026-07-09
-
-### Added
-
-- Added `providers.image=openai-codex` to prefer an authenticated OpenAI Codex Responses image-capable model for `generate_image` independently of the active chat model.
-- Goal mode and Safe orchestrator mode can now be active simultaneously, so goal budgets/objectives survive delegate-only orchestration.
-- Duo now auto-toggles Safe orchestrator mode by handoff scope (`duo_handoff` `scope: single|multi`): single-phase tasks run the executor with direct tools; multi-phase tasks stay delegate-only. New `duo.orchestrator` setting (`auto`|`always`).
-- `heavy_task`, `plan`, and `qa` now default to `anthropic/claude-fable-5:low` then `openai-codex/gpt-5.5:high`, and subagent model selection is rate-limit-aware: when a model's 5h or weekly window is exhausted it falls through to the next configured model. Gate with `task.limitAwareModelRouting` (default on).
-- `consult` tool now accepts `async: true`: a fire-and-forget consultation that dispatches the question to the duo advisor without blocking the main stream — the advisor replies later through its normal advisory-note (`advise`) channel. Default (`async` omitted) still blocks until the advisor answers. A one-shot emission-guard exemption plus a plain-text fallback guarantee the async answer reaches the primary even when a bare reply would normally be suppressed/deduped or the advisor answers in plain text.
-- The duo executor overlay now carries a mandatory `consult` checkpoints block (in both orchestrator and direct-execution modes) defining gating checkpoints to consult the advisor before: committing to a plan, architecture/design decisions, task-shaping decisions, applying a bug fix, risky/irreversible actions, QA/test-plan review, and ending the turn — plus exemptions and a guide to writing a terse consult.
-- Duo advisor now maintains a persistent mission brief at `local://advisor-brief.md` (goal, direction, current phase, standing task/QA checklists) via a new advisor `update_brief` tool. The brief is re-injected into the executor's context every turn so it survives compaction and re-seeds the advisor after a re-prime — this is the channel for persistent reminding; advisor doctrine now treats the executor as amnesiac, keeping the brief current and distrusting completion claims (without weakening the existing duplicate-advice flood guard).
-- Duo advisor can now maintain a durable ledger at `local://advisor-state.md` via new `read_advisor_state` and `update_advisor_state` tools; the state is re-injected into executor context and advisor re-prime alongside the mission brief.
-- Duo advisor can now reorder or repair the executor's todo list via a new `set_todos` tool; changes are committed as `user_todo_edit` entries so the reordering survives compaction and resume.
-- Duo advisor can now tune executor reasoning effort at runtime via a new `set_executor_effort` tool (`high`/`xhigh`/`max`); the override applies immediately during the executing phase and persists across handoffs and snapshot restore, with doctrine to escalate to `xhigh`/`max` on hard problems and drop back to `high` for routine work.
-- Duo advisor now reviews each user prompt during execution and can request a plan-first takeover (`request_takeover` with purpose `plan`), backed by a new `DuoController.requestPlanTakeover` that enters the planning phase, switches to the planner synchronously, and injects the full-plan brief; gated by new `duo.advisorPromptReview` (default on).
-- Duo advisor now receives a per-turn delegation-stats header (task-call count, `tasks[]` batch widths, running subagents, open todos) plus parallelism-enforcement doctrine to push under-parallelized work toward wide parallel fan-out instead of serial 1–2-agent delegation.
-- Compaction now shows a live progress overlay while it runs: a spinner, an indeterminate shimmer progress bar, an elapsed `m:ss` timer, and a live `~N tok` streamed-token counter. On the auto (context-full) path it is driven by a new throttled `auto_compaction_progress` session event (action, elapsed ms, cumulative SSE events/bytes, optional token estimate) emitted between `auto_compaction_start` and `auto_compaction_end` and forwarded over RPC; on the manual `/compact` path the streaming progress callback is forwarded directly to the same overlay. The token counter reflects OpenAI V2 streaming remote compaction; V1, local summarization, and Anthropic show the spinner + bar + timer only (no per-token counter).
-- `async.stallThresholdMs` setting (default 10m): running rows in `job` results are flagged `STALLED` when the subagent shows no activity beyond the threshold (0 disables).
-- POSIX installs and updates now run `ompx install git:github.com/obra/superpowers` after OMPx is installed, keeping the Superpowers skill pack installed or updated automatically.
-- Added a built-in production frontend/UI/UX skill bundle plus dedicated design-team subagents (`frontend_ui`, `ui_ux_reviewer`, `ux_copywriter`) so orchestrated UI work routes to design specialists with anti-internal-copy safeguards.
-- Added built-in TNX role models `tnx/designer` (Claude Opus 4.8-like capabilities, 1M context) and `tnx/smol` (256K context) for local TNX routing.
-- Added `super_review`, a discoverable one-shot plain-text review tool backed by `tnx/super` for high-context plan, action, architecture, security, and QA-plan reviews with explicit workspace file attachments, snapcompact image packing for large vision-capable review payloads, orchestrator-mode access, and advisor-default access.
-- Fable advisors now send large normal session-update history as snapcompact image frames, keeping the latest consultation text readable while reducing advisor context tokens.
-- Advisor turns now embed the linked caveman skill for ordinary advisory notes while consultation requests explicitly force normal full prose.
-- `ompx auth-gateway serve/status/check` can now use this machine's local SQLite/env/config credentials when no auth broker is configured, with `--local` to force local credentials even when broker env/config exists.
-- `ompx auth-gateway serve --daemon` now starts the gateway as a detached background process, waits for `/healthz`, and writes pid/state/log paths under the OMPx config directory.
 ## [16.3.15] - 2026-07-09
 
 ### Changed
@@ -10890,6 +10867,33 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.5] - 2026-07-09
+
+### Added
+
+- Added `providers.image=openai-codex` to prefer an authenticated OpenAI Codex Responses image-capable model for `generate_image` independently of the active chat model.
+- Goal mode and Safe orchestrator mode can now be active simultaneously, so goal budgets/objectives survive delegate-only orchestration.
+- Duo now auto-toggles Safe orchestrator mode by handoff scope (`duo_handoff` `scope: single|multi`): single-phase tasks run the executor with direct tools; multi-phase tasks stay delegate-only. New `duo.orchestrator` setting (`auto`|`always`).
+- `heavy_task`, `plan`, and `qa` now default to `anthropic/claude-fable-5:low` then `openai-codex/gpt-5.5:high`, and subagent model selection is rate-limit-aware: when a model's 5h or weekly window is exhausted it falls through to the next configured model. Gate with `task.limitAwareModelRouting` (default on).
+- `consult` tool now accepts `async: true`: a fire-and-forget consultation that dispatches the question to the duo advisor without blocking the main stream — the advisor replies later through its normal advisory-note (`advise`) channel. Default (`async` omitted) still blocks until the advisor answers. A one-shot emission-guard exemption plus a plain-text fallback guarantee the async answer reaches the primary even when a bare reply would normally be suppressed/deduped or the advisor answers in plain text.
+- The duo executor overlay now carries a mandatory `consult` checkpoints block (in both orchestrator and direct-execution modes) defining gating checkpoints to consult the advisor before: committing to a plan, architecture/design decisions, task-shaping decisions, applying a bug fix, risky/irreversible actions, QA/test-plan review, and ending the turn — plus exemptions and a guide to writing a terse consult.
+- Duo advisor now maintains a persistent mission brief at `local://advisor-brief.md` (goal, direction, current phase, standing task/QA checklists) via a new advisor `update_brief` tool. The brief is re-injected into the executor's context every turn so it survives compaction and re-seeds the advisor after a re-prime — this is the channel for persistent reminding; advisor doctrine now treats the executor as amnesiac, keeping the brief current and distrusting completion claims (without weakening the existing duplicate-advice flood guard).
+- Duo advisor can now maintain a durable ledger at `local://advisor-state.md` via new `read_advisor_state` and `update_advisor_state` tools; the state is re-injected into executor context and advisor re-prime alongside the mission brief.
+- Duo advisor can now reorder or repair the executor's todo list via a new `set_todos` tool; changes are committed as `user_todo_edit` entries so the reordering survives compaction and resume.
+- Duo advisor can now tune executor reasoning effort at runtime via a new `set_executor_effort` tool (`high`/`xhigh`/`max`); the override applies immediately during the executing phase and persists across handoffs and snapshot restore, with doctrine to escalate to `xhigh`/`max` on hard problems and drop back to `high` for routine work.
+- Duo advisor now reviews each user prompt during execution and can request a plan-first takeover (`request_takeover` with purpose `plan`), backed by a new `DuoController.requestPlanTakeover` that enters the planning phase, switches to the planner synchronously, and injects the full-plan brief; gated by new `duo.advisorPromptReview` (default on).
+- Duo advisor now receives a per-turn delegation-stats header (task-call count, `tasks[]` batch widths, running subagents, open todos) plus parallelism-enforcement doctrine to push under-parallelized work toward wide parallel fan-out instead of serial 1–2-agent delegation.
+- Compaction now shows a live progress overlay while it runs: a spinner, an indeterminate shimmer progress bar, an elapsed `m:ss` timer, and a live `~N tok` streamed-token counter. On the auto (context-full) path it is driven by a new throttled `auto_compaction_progress` session event (action, elapsed ms, cumulative SSE events/bytes, optional token estimate) emitted between `auto_compaction_start` and `auto_compaction_end` and forwarded over RPC; on the manual `/compact` path the streaming progress callback is forwarded directly to the same overlay. The token counter reflects OpenAI V2 streaming remote compaction; V1, local summarization, and Anthropic show the spinner + bar + timer only (no per-token counter).
+- `async.stallThresholdMs` setting (default 10m): running rows in `job` results are flagged `STALLED` when the subagent shows no activity beyond the threshold (0 disables).
+- POSIX installs and updates now run `ompx install git:github.com/obra/superpowers` after OMPx is installed, keeping the Superpowers skill pack installed or updated automatically.
+- Added a built-in production frontend/UI/UX skill bundle plus dedicated design-team subagents (`frontend_ui`, `ui_ux_reviewer`, `ux_copywriter`) so orchestrated UI work routes to design specialists with anti-internal-copy safeguards.
+- Added built-in TNX role models `tnx/designer` (Claude Opus 4.8-like capabilities, 1M context) and `tnx/smol` (256K context) for local TNX routing.
+- Added `super_review`, a discoverable one-shot plain-text review tool backed by `tnx/super` for high-context plan, action, architecture, security, and QA-plan reviews with explicit workspace file attachments, snapcompact image packing for large vision-capable review payloads, orchestrator-mode access, and advisor-default access.
+- Fable advisors now send large normal session-update history as snapcompact image frames, keeping the latest consultation text readable while reducing advisor context tokens.
+- Advisor turns now embed the linked caveman skill for ordinary advisory notes while consultation requests explicitly force normal full prose.
+- `ompx auth-gateway serve/status/check` can now use this machine's local SQLite/env/config credentials when no auth broker is configured, with `--local` to force local credentials even when broker env/config exists.
+- `ompx auth-gateway serve --daemon` now starts the gateway as a detached background process, waits for `/healthz`, and writes pid/state/log paths under the OMPx config directory.
 
 ## [1.5.3] - 2026-07-07
 
