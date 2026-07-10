@@ -8,7 +8,8 @@ const shellInstallerPath = path.join(repoRoot, "scripts", "install.sh");
 const powershellInstallerPath = path.join(repoRoot, "scripts", "install.ps1");
 const standardConfigPath = path.join(repoRoot, "packages", "coding-agent", "examples", "standard-config.yml");
 const powershellCommand = findExecutable(["pwsh", "powershell"]);
-const describePowerShell = powershellCommand ? describe : describe.skip;
+const windowsPowerShellCompiler = process.platform === "win32" ? findExecutable(["powershell"]) : null;
+const describePowerShell = powershellCommand && windowsPowerShellCompiler ? describe : describe.skip;
 const installerProcessTestOptions = { timeout: 30_000 };
 const installerTempRoot = path.join(repoRoot, ".tmp-install-security");
 
@@ -191,9 +192,100 @@ async function runPowerShellInstaller(
 	return { exitCode, output: `${stdout}${stderr}` };
 }
 
+async function createPowerShellCommandStub(root: string): Promise<{ argvLogPath: string; binaryContent: Uint8Array }> {
+	if (!windowsPowerShellCompiler) throw new Error("Windows PowerShell is not available");
+
+	const stubPath = path.join(root, "ompx-command-stub.exe");
+	const argvLogPath = path.join(root, "ompx-config-update-argv.log");
+	const source = `
+using System;
+using System.IO;
+
+public static class OmpxCommandStub
+{
+    public static int Main(string[] args)
+    {
+        string command = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]);
+        if (String.Equals(command, "bun", StringComparison.OrdinalIgnoreCase))
+        {
+            if (args.Length == 1 && args[0] == "--version")
+            {
+                Console.WriteLine("1.3.14");
+            }
+            return 0;
+        }
+
+        string logPath = Environment.GetEnvironmentVariable("OMPX_TEST_ARGV_LOG");
+        if (String.IsNullOrEmpty(logPath))
+        {
+            return 65;
+        }
+
+        File.AppendAllText(logPath, String.Join("\\t", args) + Environment.NewLine);
+        string configuredExitCode = Environment.GetEnvironmentVariable("OMPX_TEST_EXIT_CODE");
+        return String.IsNullOrEmpty(configuredExitCode) ? 0 : Int32.Parse(configuredExitCode);
+    }
+}
+`;
+	const proc = Bun.spawn(
+		[
+			windowsPowerShellCompiler,
+			"-NoProfile",
+			"-Command",
+			"Add-Type -TypeDefinition ([Console]::In.ReadToEnd()) -Language CSharp -OutputAssembly $env:OMPX_TEST_STUB_PATH -OutputType ConsoleApplication",
+		],
+		{
+			env: { ...process.env, OMPX_TEST_STUB_PATH: stubPath },
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+		},
+	);
+	proc.stdin.write(source);
+	proc.stdin.end();
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) {
+		throw new Error(`Failed to compile Windows command stub: ${stdout}${stderr}`);
+	}
+
+	const binaryContent = new Uint8Array(await Bun.file(stubPath).arrayBuffer());
+	await Promise.all([
+		Bun.write(path.join(root, "bin", "bun.exe"), binaryContent),
+		Bun.write(path.join(root, "bin", "ompx.exe"), binaryContent),
+	]);
+	return { argvLogPath, binaryContent };
+}
+
+async function createPowerShellInstallerFixture(): Promise<{
+	root: string;
+	installDir: string;
+	argvLogPath: string;
+	binaryContent: Uint8Array;
+}> {
+	const { root, installDir } = await createFakeInstallerTools("", "");
+	try {
+		return { root, installDir, ...(await createPowerShellCommandStub(root)) };
+	} catch (error) {
+		await fs.promises.rm(root, { recursive: true, force: true });
+		throw error;
+	}
+}
+
+async function expectSingleConfigUpdate(argvLogPath: string): Promise<void> {
+	const invocations = (await Bun.file(argvLogPath).text())
+		.replace(/\r\n/g, "\n")
+		.trimEnd()
+		.split("\n")
+		.map(line => line.split("\t"));
+	expect(invocations).toEqual([["config", "update", "--json"]]);
+}
 function startReleaseServer(
 	binaryName: string,
-	binaryContent: string,
+	binaryContent: string | Uint8Array,
 	checksum: string,
 ): { url: string; stop: () => void } {
 	const server = Bun.serve({
@@ -466,7 +558,7 @@ task:
 				quick_task: "openai-codex/gpt-5.6-luna:high",
 				task: "openai-codex/gpt-5.6-terra:medium",
 				tester: "openai-codex/gpt-5.6-sol:medium",
-				plan: "openai-codex/gpt-5.6-sol:xhigh",
+				plan: "anthropic/claude-fable-5:high",
 				designer: "tnx/designer",
 				custom_agent: "custom/provider",
 			});
@@ -616,19 +708,23 @@ printf "called\\n" > "$marker_file"
 
 describePowerShell("install.ps1 supply-chain hardening", () => {
 	it(
-		"installs a release binary only after matching SHA256SUMS",
+		"installs a release binary and updates config exactly once after matching SHA256SUMS",
 		async () => {
-			const binaryContent = "safe windows release binary";
+			const { root, installDir, argvLogPath, binaryContent } = await createPowerShellInstallerFixture();
 			const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
-			const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 			const server = startReleaseServer("ompx-windows-x64.exe", binaryContent, checksum);
 			try {
-				const result = await runPowerShellInstaller(root, installDir, server.url);
+				const result = await runPowerShellInstaller(root, installDir, server.url, ["-Binary"], {
+					OMPX_TEST_ARGV_LOG: argvLogPath,
+				});
 
 				expect(result.exitCode).toBe(0);
 				expect(result.output).toContain("Verifying ompx-windows-x64.exe checksum");
-				expect(await Bun.file(path.join(installDir, "ompx.exe")).text()).toBe(binaryContent);
+				expect(new Uint8Array(await Bun.file(path.join(installDir, "ompx.exe")).arrayBuffer())).toEqual(
+					binaryContent,
+				);
 				expect(normalizeConfig(await Bun.file(powerShellConfigPath(root)).text())).toBe(await readStandardConfig());
+				await expectSingleConfigUpdate(argvLogPath);
 			} finally {
 				server.stop();
 				await fs.promises.rm(root, { recursive: true, force: true });
@@ -638,19 +734,21 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 	);
 
 	it(
-		"does not overwrite an existing PowerShell installer config",
+		"preserves an existing PowerShell config while updating it exactly once",
 		async () => {
-			const binaryContent = "safe windows release binary";
+			const { root, installDir, argvLogPath, binaryContent } = await createPowerShellInstallerFixture();
 			const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
-			const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 			const server = startReleaseServer("ompx-windows-x64.exe", binaryContent, checksum);
 			const configPath = powerShellConfigPath(root);
 			try {
 				await Bun.write(configPath, "theme:\n  dark: custom\n");
-				const result = await runPowerShellInstaller(root, installDir, server.url);
+				const result = await runPowerShellInstaller(root, installDir, server.url, ["-Binary"], {
+					OMPX_TEST_ARGV_LOG: argvLogPath,
+				});
 
 				expect(result.exitCode).toBe(0);
 				expect(await Bun.file(configPath).text()).toBe("theme:\n  dark: custom\n");
+				await expectSingleConfigUpdate(argvLogPath);
 			} finally {
 				server.stop();
 				await fs.promises.rm(root, { recursive: true, force: true });
@@ -660,21 +758,19 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 	);
 
 	it(
-		"skips PowerShell installer config seeding when requested",
+		"updates config exactly once after a source install",
 		async () => {
-			const binaryContent = "safe windows release binary";
-			const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
-			const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
-			const server = startReleaseServer("ompx-windows-x64.exe", binaryContent, checksum);
+			const { root, installDir, argvLogPath } = await createPowerShellInstallerFixture();
 			try {
-				const result = await runPowerShellInstaller(root, installDir, server.url, ["-Binary"], {
-					OMPX_INSTALL_SKIP_STANDARD_CONFIG: "1",
+				const result = await runPowerShellInstaller(root, installDir, "http://127.0.0.1:1", ["-Source"], {
+					OMPX_TEST_ARGV_LOG: argvLogPath,
 				});
 
 				expect(result.exitCode).toBe(0);
-				expect(await Bun.file(powerShellConfigPath(root)).exists()).toBe(false);
+				expect(result.output).toContain("Installing via bun");
+				expect(normalizeConfig(await Bun.file(powerShellConfigPath(root)).text())).toBe(await readStandardConfig());
+				await expectSingleConfigUpdate(argvLogPath);
 			} finally {
-				server.stop();
 				await fs.promises.rm(root, { recursive: true, force: true });
 			}
 		},
@@ -682,23 +778,20 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 	);
 
 	it(
-		"writes detected bash shell path to PowerShell installer config.yml",
+		"fails when the installed binary cannot update config",
 		async () => {
-			const binaryContent = "safe windows release binary";
+			const { root, installDir, argvLogPath, binaryContent } = await createPowerShellInstallerFixture();
 			const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
-			const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 			const server = startReleaseServer("ompx-windows-x64.exe", binaryContent, checksum);
-			const bashPath = path.join(root, "bin", "bash.exe");
 			try {
-				await writeExecutable(bashPath, "#!/bin/sh\nexit 0\n");
 				const result = await runPowerShellInstaller(root, installDir, server.url, ["-Binary"], {
-					OMPX_INSTALL_SKIP_BASH_CONFIG: "0",
+					OMPX_TEST_ARGV_LOG: argvLogPath,
+					OMPX_TEST_EXIT_CODE: "23",
 				});
 
-				expect(result.exitCode).toBe(0);
-				const config = await Bun.file(powerShellConfigPath(root)).text();
-				expect(config).toContain("shellPath: '");
-				expect(await Bun.file(path.join(root, "profile", ".omp", "agent", "settings.json")).exists()).toBe(false);
+				expect(result.exitCode).toBe(1);
+				expect(result.output).toContain("Failed to update existing OMPx config (exit code 23)");
+				await expectSingleConfigUpdate(argvLogPath);
 			} finally {
 				server.stop();
 				await fs.promises.rm(root, { recursive: true, force: true });
@@ -708,18 +801,23 @@ describePowerShell("install.ps1 supply-chain hardening", () => {
 	);
 
 	it(
-		"falls back to the verified binary path when default mode finds an outdated Bun",
+		"falls back to the verified binary path and updates config exactly once when Bun is outdated",
 		async () => {
-			const binaryContent = "safe windows fallback binary";
+			const { root, installDir, argvLogPath, binaryContent } = await createPowerShellInstallerFixture();
 			const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
-			const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 			const server = startReleaseServer("ompx-windows-x64.exe", binaryContent, checksum);
 			try {
-				const result = await runPowerShellInstaller(root, installDir, server.url, []);
+				await fs.promises.rm(path.join(root, "bin", "bun.exe"));
+				const result = await runPowerShellInstaller(root, installDir, server.url, [], {
+					OMPX_TEST_ARGV_LOG: argvLogPath,
+				});
 
 				expect(result.exitCode).toBe(0);
 				expect(result.output).toContain("Verifying ompx-windows-x64.exe checksum");
-				expect(await Bun.file(path.join(installDir, "ompx.exe")).text()).toBe(binaryContent);
+				expect(new Uint8Array(await Bun.file(path.join(installDir, "ompx.exe")).arrayBuffer())).toEqual(
+					binaryContent,
+				);
+				await expectSingleConfigUpdate(argvLogPath);
 			} finally {
 				server.stop();
 				await fs.promises.rm(root, { recursive: true, force: true });

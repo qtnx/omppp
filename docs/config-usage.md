@@ -79,6 +79,8 @@ A named profile (`omp --profile <name>`, the `--alias` shortcut, or `OMP_PROFILE
 
 The relocation is uniform across the native provider (`builtin.ts`) and the generic `config.ts` helpers, so it covers slash commands, rules, prompts, instructions, hooks, tools, extensions, settings, skills, and MCP, plus the top-level `SYSTEM.md` / `RULES.md` / `AGENTS.md` files and runtime state (sessions, blobs, `agent.db`). A profile sees only its own OMP config, never the default profile's `~/.omp/agent`.
 
+Keybindings are the one exception: a named profile merges the default profile's `~/.omp/agent/keybindings.*` under its own `~/.omp/profiles/<name>/agent/keybindings.*`, with the profile file overriding per binding ([#4867](https://github.com/can1357/oh-my-pi/issues/4867)). Keybindings describe the terminal/keyboard in front of the user, which doesn't change with the active profile, so user-level remaps keep working in every profile unless the profile explicitly overrides them. The inherited file is read-only for the profile process — legacy-format migration of the default profile's file only happens when the default profile itself runs.
+
 The other source bases are not profile-scoped and load identically under every profile: the external-tool bases (`~/.claude`, `~/.codex`, `~/.gemini`) belong to those tools, and the project-level bases (`<cwd>/.omp`, `<cwd>/.claude`, ...) are keyed to the working directory. Throughout this document, read `~/.omp/agent` as shorthand for the active profile's agent directory.
 
 ## Important constraint
@@ -145,30 +147,43 @@ Legacy migration still supported:
 
 The runtime settings model is layered:
 
-1. Global settings: `~/.omp/agent/config.yml`
+1. Global settings: the active global main config file under `~/.omp/agent/`
 2. Project settings: discovered via settings capability (`settings.json` and `config.yml` from providers)
 3. CLI config overlays: `omp --config <path>` / repeated `--config` files, loaded as `config.yml`-style YAML for this process only
 4. Runtime overrides: in-memory, non-persistent
 5. Schema defaults: from `SETTINGS_SCHEMA`
 
-Effective precedence:
+### Global main config discovery and precedence
+
+For the global settings file, the loader checks these candidates in order:
+
+1. `~/.omp/agent/config.yml` (canonical)
+2. `~/.omp/agent/config.yaml` (fallback)
+
+The first existing candidate is selected. If its read or YAML parse fails, the loader logs the failure and uses empty global settings; it does not fall through to the next candidate. If both files exist, `config.yml` wins and `config.yaml` is ignored. If neither exists, a fresh install uses the canonical `config.yml` path.
+
+Effective precedence is:
 
 `defaults <- global <- project <- CLI config overlays <- overrides`
 
 Write behavior:
 
-- `settings.set(...)` writes to the **global** layer (`config.yml`) and queues background save.
+- `settings.set(...)` writes to the selected global main config path and queues background save.
+- When `config.yaml` was selected because `config.yml` is absent, saves and setup-migration writeback stay on `config.yaml`; the loader does not create a competing `config.yml`.
+- When neither candidate exists, writes use canonical `config.yml`.
 - Project settings are read-only from capability discovery.
 
 ## Migration behavior still active
 
-On startup, if `config.yml` is missing:
+On startup, if neither main config candidate exists:
 
 1. Migrate from `~/.omp/agent/settings.json` (renamed to `.bak` on success)
 2. Merge with legacy DB settings from `agent.db`
-3. Write merged result to `config.yml`
+3. Write the merged result to canonical `config.yml`
 
-The macOS/Linux and Windows installer scripts seed the global file with a config matching `packages/coding-agent/examples/standard-config.yml` when `~/.omp/agent/config.yml` does not exist. Existing user config is never overwritten; set `OMPX_INSTALL_SKIP_STANDARD_CONFIG=1` before running the installer to skip the seed. Direct Bun installs do not run the repository installer, so copy the template manually when bootstrapping that way.
+If `config.yaml` already exists, it is treated as the existing main config and is preserved as the writeback target; it is not renamed or copied to `config.yml` merely because `config.yml` is canonical.
+
+The macOS/Linux and Windows installer scripts seed `~/.omp/agent/config.yml` when that file does not exist, using a config matching `packages/coding-agent/examples/standard-config.yml`. If `~/.omp/agent/config.yaml` exists without `config.yml`, the installer still creates `config.yml`, which takes precedence over the existing YAML-extension file. Existing `config.yml` is never overwritten; set `OMPX_INSTALL_SKIP_STANDARD_CONFIG=1` before running the installer to skip the seed. Direct Bun installs do not run the repository installer, so copy the template manually when bootstrapping that way.
 
 Field-level migrations in `#migrateRawSettings`:
 

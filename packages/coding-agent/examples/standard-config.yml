@@ -49,7 +49,7 @@ theme:
   dark: titanium
 display:
   syntaxHighlighting: basic
-setupVersion: 3
+setupVersion: 4
 retry:
   fallbackChains:
     task:

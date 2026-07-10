@@ -17,6 +17,7 @@ import {
 	shouldUseCompactionV2Streaming,
 	shouldUseOpenAiRemoteCompaction,
 } from "@oh-my-pi/pi-agent-core/compaction/openai";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core/types";
 import * as ai from "@oh-my-pi/pi-ai";
 import type { AssistantMessage, FetchImpl, Model, ToolResultMessage } from "@oh-my-pi/pi-ai/types";
@@ -823,6 +824,87 @@ describe("compact() remote compaction failure handling", () => {
 		expect(remote?.replacementHistory.at(-1)).toEqual(compactionItem);
 		expect(result.summary).toContain("Remote compaction preserved provider-native history");
 		expect(completeSpy).not.toHaveBeenCalled();
+	});
+
+	test("sends pro reasoning mode in V2 streaming compaction requests", async () => {
+		const preparation = makePreparation();
+		preparation.settings = { ...preparation.settings, remoteStreamingV2Enabled: true };
+		const model = makeOpenAiModel({
+			id: "gpt-5.6-sol-pro",
+			name: "GPT-5.6 Sol Pro",
+			requestModelId: "gpt-5.6-sol",
+			reasoningMode: "pro",
+			remoteCompaction: {
+				enabled: true,
+				v2StreamingEnabled: true,
+				v2Endpoint: "https://compact.example/v1/responses",
+			},
+		});
+		let requestBody: { model: string; reasoning?: Record<string, unknown> } | undefined;
+		const fetchMock: FetchImpl = async (_input, init) => {
+			requestBody = JSON.parse(String(init?.body)) as {
+				model: string;
+				reasoning?: Record<string, unknown>;
+			};
+			return sseResponse([
+				{
+					type: "response.output_item.done",
+					output_index: 0,
+					item: { type: "compaction", encrypted_content: "enc_pro" },
+				},
+				{
+					type: "response.completed",
+					response: { usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } },
+				},
+			]);
+		};
+
+		await compact(preparation, model, "test-key", undefined, undefined, { fetch: fetchMock });
+
+		expect(requestBody?.model).toBe("gpt-5.6-sol");
+		expect(requestBody?.reasoning).toEqual({ effort: "xhigh", summary: "auto", mode: "pro" });
+	});
+
+	test("sends pro reasoning mode when V2 compaction reasoning effort is disabled", async () => {
+		const preparation = makePreparation();
+		preparation.settings = { ...preparation.settings, remoteStreamingV2Enabled: true };
+		const model = makeOpenAiModel({
+			id: "gpt-5.6-sol-pro",
+			name: "GPT-5.6 Sol Pro",
+			requestModelId: "gpt-5.6-sol",
+			reasoningMode: "pro",
+			remoteCompaction: {
+				enabled: true,
+				v2StreamingEnabled: true,
+				v2Endpoint: "https://compact.example/v1/responses",
+			},
+		});
+		let requestBody: { model: string; reasoning?: Record<string, unknown> } | undefined;
+		const fetchMock: FetchImpl = async (_input, init) => {
+			requestBody = JSON.parse(String(init?.body)) as {
+				model: string;
+				reasoning?: Record<string, unknown>;
+			};
+			return sseResponse([
+				{
+					type: "response.output_item.done",
+					output_index: 0,
+					item: { type: "compaction", encrypted_content: "enc_pro_without_effort" },
+				},
+				{
+					type: "response.completed",
+					response: { usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } },
+				},
+			]);
+		};
+
+		await compact(preparation, model, "test-key", undefined, undefined, {
+			fetch: fetchMock,
+			thinkingLevel: ThinkingLevel.Off,
+		});
+
+		expect(requestBody?.model).toBe("gpt-5.6-sol");
+		expect(requestBody?.reasoning).toEqual({ mode: "pro" });
 	});
 
 	test("re-expands a prior V2 compaction's originals when no candidate can reuse the replay", async () => {

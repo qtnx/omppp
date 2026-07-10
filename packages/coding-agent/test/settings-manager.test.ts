@@ -70,6 +70,86 @@ describe("Settings", () => {
 		await Bun.sleep(0);
 		await tempDir?.remove();
 	});
+
+	describe("main config file selection", () => {
+		it("migrates an existing config.yaml in place without creating config.yml", async () => {
+			const yamlConfigPath = path.join(agentDir, "config.yaml");
+			await Bun.write(
+				yamlConfigPath,
+				YAML.stringify({ setupVersion: 2, modelRoles: { smol: "tnx/smol" } }, null, 2),
+			);
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			await settings.flush();
+
+			expect(settings.get("setupVersion")).toBe(4);
+			expect(settings.get("modelRoles")).toMatchObject({ smol: "cerebras/gpt-oss-120b" });
+			const savedSettings = YAML.parse(await Bun.file(yamlConfigPath).text()) as Record<string, unknown>;
+			expect(savedSettings.setupVersion).toBe(4);
+			expect(savedSettings.modelRoles).toMatchObject({ smol: "cerebras/gpt-oss-120b" });
+			expect(await Bun.file(getConfigPath()).exists()).toBe(false);
+		});
+
+		it("reloads from config.yaml when the selected config.yml disappears", async () => {
+			await writeSettings({ setupVersion: 4, shellPath: "/initial-shell" });
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const yamlConfigPath = path.join(agentDir, "config.yaml");
+			await Bun.write(yamlConfigPath, YAML.stringify({ setupVersion: 4, shellPath: "/fallback-shell" }, null, 2));
+			await fs.promises.unlink(getConfigPath());
+
+			await settings.reloadFromDisk();
+
+			expect(settings.get("shellPath")).toBe("/fallback-shell");
+			settings.set("shellPath", "/updated-shell");
+			await settings.flush();
+			const savedSettings = YAML.parse(await Bun.file(yamlConfigPath).text()) as Record<string, unknown>;
+			expect(savedSettings.shellPath).toBe("/updated-shell");
+			expect(await Bun.file(getConfigPath()).exists()).toBe(false);
+		});
+
+		it("keeps migrated config.yaml values when reload fallback adds modified paths", async () => {
+			await writeSettings({ setupVersion: 4, modelRoles: { smol: "stale/smol" } });
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const yamlConfigPath = path.join(agentDir, "config.yaml");
+			await Bun.write(
+				yamlConfigPath,
+				YAML.stringify({ setupVersion: 2, modelRoles: { smol: "tnx/smol" } }, null, 2),
+			);
+			await fs.promises.unlink(getConfigPath());
+
+			await settings.reloadFromDisk();
+
+			expect(settings.get("modelRoles")).toMatchObject({ smol: "cerebras/gpt-oss-120b" });
+		});
+
+		it("clones the selected config.yaml path for persisted settings", async () => {
+			const yamlConfigPath = path.join(agentDir, "config.yaml");
+			await Bun.write(yamlConfigPath, YAML.stringify({ setupVersion: 1 }, null, 2));
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const cloned = await settings.cloneForCwd(tempDir.join("other-project"));
+
+			cloned.set("setupVersion", 2);
+			await cloned.flush();
+
+			const savedSettings = YAML.parse(await Bun.file(yamlConfigPath).text()) as Record<string, unknown>;
+			expect(savedSettings.setupVersion).toBe(2);
+			expect(await Bun.file(getConfigPath()).exists()).toBe(false);
+		});
+
+		it("creates config.yml for new persisted settings when no main config exists", async () => {
+			const yamlConfigPath = path.join(agentDir, "config.yaml");
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.set("setupVersion", 1);
+			await settings.flush();
+
+			expect(await Bun.file(getConfigPath()).exists()).toBe(true);
+			expect(await Bun.file(yamlConfigPath).exists()).toBe(false);
+			expect((await readSettings()).setupVersion).toBe(1);
+		});
+	});
+
 	describe("defaults", () => {
 		it("keeps eight inline images live by default", async () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
@@ -371,12 +451,12 @@ describe("Settings", () => {
 			const savedSettings = await readSettings();
 			expect(savedSettings.modelRoles).toEqual({
 				default: "anthropic/claude-sonnet-4-5",
-				task: "openai-codex/gpt-5.5:low",
+				task: "openai-codex/gpt-5.6-terra:medium",
 				smol: "anthropic/claude-haiku-4-5",
-				slow: "openai-codex/gpt-5.5:xhigh",
-				plan: "anthropic/claude-fable-5:high",
-				designer: "tnx/designer:medium",
-				commit: "openai-codex/gpt-5.5:low",
+				slow: "openai-codex/gpt-5.6-sol:high",
+				plan: "openai-codex/gpt-5.6-sol:xhigh",
+				designer: "tnx/designer",
+				commit: "openai-codex/gpt-5.6-luna:high",
 			});
 			expect(settings.getModelRole("default")).toBe("openai/gpt-5.2-codex");
 			expect(settings.getModelRole("smol")).toBe("anthropic/claude-haiku-4-5");
@@ -546,12 +626,12 @@ describe("Settings", () => {
 			// The single-segment sibling must survive the flat-dotted migration.
 			expect(settings.get("modelRoles")).toEqual({
 				smol: "cursor/composer-2.5",
-				default: "openai-codex/gpt-5.5",
-				task: "openai-codex/gpt-5.5:low",
-				slow: "openai-codex/gpt-5.5:xhigh",
-				plan: "anthropic/claude-fable-5:high",
-				designer: "tnx/designer:medium",
-				commit: "openai-codex/gpt-5.5:low",
+				default: "openai-codex/gpt-5.6-sol:xhigh",
+				task: "openai-codex/gpt-5.6-terra:medium",
+				slow: "openai-codex/gpt-5.6-sol:high",
+				plan: "openai-codex/gpt-5.6-sol:xhigh",
+				designer: "tnx/designer",
+				commit: "openai-codex/gpt-5.6-luna:high",
 			});
 		});
 
@@ -767,7 +847,63 @@ describe("Settings", () => {
 			expect(settings.get("power.sleepPrevention")).toBe("off");
 		});
 
-		it("applies setupVersion 3 config defaults without clobbering user values or persisting schema defaults", async () => {
+		it.each([
+			{
+				name: "bare smol and medium designer aliases",
+				input: { smol: "tnx/smol", designer: "tnx/designer:medium" },
+				expected: { smol: "cerebras/gpt-oss-120b", designer: "tnx/designer" },
+			},
+			{
+				name: "medium smol alias and canonical designer",
+				input: { smol: "tnx/smol:medium", designer: "tnx/designer" },
+				expected: { smol: "cerebras/gpt-oss-120b", designer: "tnx/designer" },
+			},
+			{
+				name: "canonical smol and custom designer",
+				input: { smol: "cerebras/gpt-oss-120b", designer: "custom/designer" },
+				expected: { smol: "cerebras/gpt-oss-120b", designer: "custom/designer" },
+			},
+			{
+				name: "custom smol and canonical designer",
+				input: { smol: "custom/smol", designer: "tnx/designer" },
+				expected: { smol: "custom/smol", designer: "tnx/designer" },
+			},
+		])("migrates model-role aliases while preserving canonical and custom values: $name", async ({
+			input,
+			expected,
+		}) => {
+			await writeSettings({ setupVersion: 2, modelRoles: input });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const expectedRoles = {
+				default: "openai-codex/gpt-5.6-sol:xhigh",
+				task: "openai-codex/gpt-5.6-terra:medium",
+				smol: expected.smol,
+				slow: "openai-codex/gpt-5.6-sol:high",
+				plan: "openai-codex/gpt-5.6-sol:xhigh",
+				designer: expected.designer,
+				commit: "openai-codex/gpt-5.6-luna:high",
+			};
+			const effective = settings.get("modelRoles");
+
+			await settings.flush();
+			const firstMigration = await readSettings();
+
+			resetSettingsForTest();
+			const rerunSettings = await Settings.init({ cwd: projectDir, agentDir });
+			const rerunEffective = rerunSettings.get("modelRoles");
+			await rerunSettings.flush();
+			const secondMigration = await readSettings();
+
+			expect({ effective, persisted: firstMigration.modelRoles, rerunEffective, secondMigration }).toEqual({
+				effective: expectedRoles,
+				persisted: expectedRoles,
+				rerunEffective: expectedRoles,
+				secondMigration: firstMigration,
+			});
+		});
+
+		it("applies setupVersion 4 config defaults without clobbering user values or persisting schema defaults", async () => {
 			await writeSettings({
 				setupVersion: 0,
 				modelRoles: {
@@ -794,28 +930,28 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			await settings.flush();
 
-			expect(settings.get("setupVersion")).toBe(3);
+			expect(settings.get("setupVersion")).toBe(4);
 			expect(settings.get("modelRoles")).toEqual({
 				default: "custom/default",
-				task: "openai-codex/gpt-5.5:low",
-				smol: "tnx/smol:medium",
-				slow: "openai-codex/gpt-5.5:xhigh",
-				plan: "anthropic/claude-fable-5:high",
-				designer: "tnx/designer:medium",
-				commit: "openai-codex/gpt-5.5:low",
+				task: "openai-codex/gpt-5.6-terra:medium",
+				smol: "cerebras/gpt-oss-120b",
+				slow: "openai-codex/gpt-5.6-sol:high",
+				plan: "openai-codex/gpt-5.6-sol:xhigh",
+				designer: "tnx/designer",
+				commit: "openai-codex/gpt-5.6-luna:high",
 			});
 			expect(settings.get("task.agentModelOverrides")).toEqual({
 				designer: "tnx/designer",
+				explore: "pi/smol",
 				frontend_ui: "tnx/designer",
-				ui_ux_reviewer: "tnx/designer",
-				ux_copywriter: "tnx/designer",
-				oracle: "openai-codex/gpt-5.5:xhigh",
-				plan: "openai-codex/gpt-5.5:xhigh",
+				heavy_task: "openai-codex/gpt-5.6-sol:high",
+				oracle: "openai-codex/gpt-5.6-sol:high",
+				plan: "anthropic/claude-fable-5:high",
 				qa: "custom/qa",
-				tester: "openai-codex/gpt-5.5:medium",
-				quick_task: "openai-codex/gpt-5.5:low",
-				reviewer: "openai-codex/gpt-5.5:xhigh",
-				task: "openai-codex/gpt-5.5:low",
+				tester: "openai-codex/gpt-5.6-sol:medium",
+				quick_task: "openai-codex/gpt-5.6-luna:high",
+				reviewer: "openai-codex/gpt-5.6-sol:high",
+				task: "openai-codex/gpt-5.6-terra:medium",
 			});
 			expect(settings.get("memory.backend")).toBe("local");
 			expect(settings.get("theme.dark")).toBe("custom-dark");
@@ -837,7 +973,7 @@ describe("Settings", () => {
 			});
 
 			const onDisk = await readSettings();
-			expect(onDisk.setupVersion).toBe(3);
+			expect(onDisk.setupVersion).toBe(4);
 			expect(onDisk.modelRoles).toEqual(settings.get("modelRoles"));
 			expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual(
 				settings.get("task.agentModelOverrides"),
@@ -854,8 +990,232 @@ describe("Settings", () => {
 			resetSettingsForTest();
 			const rerunSettings = await Settings.init({ cwd: projectDir, agentDir });
 			await rerunSettings.flush();
-			expect(rerunSettings.get("setupVersion")).toBe(3);
+			expect(rerunSettings.get("setupVersion")).toBe(4);
 			expect(await readSettings()).toEqual(firstMigration);
+		});
+
+		it("migrates prior-fork and Unix-seeded setupVersion 2 GPT-5.5 routes to the full canonical matrix", async () => {
+			const fixtures = [
+				{
+					name: "prior-fork defaults",
+					modelRoles: {
+						default: "openai-codex/gpt-5.5",
+						task: "openai-codex/gpt-5.5:low",
+						smol: "anthropic/claude-sonnet-4-6",
+						slow: "openai-codex/gpt-5.5:xhigh",
+						plan: "anthropic/claude-fable-5:high",
+						commit: "openai-codex/gpt-5.5:low",
+						custom: "local/custom-model",
+					},
+					agentOverrides: {
+						quick_task: "openai-codex/gpt-5.5:low",
+						task: "openai-codex/gpt-5.5:low",
+						heavy_task: "openai-codex/gpt-5.5:high",
+						oracle: "openai-codex/gpt-5.5:xhigh",
+						reviewer: "openai-codex/gpt-5.5:xhigh",
+						tester: "openai-codex/gpt-5.5:medium",
+						plan: "openai-codex/gpt-5.5:xhigh",
+						qa: "openai-codex/gpt-5.5:high",
+						custom_agent: "custom/provider",
+					},
+					expectedQa: "openai-codex/gpt-5.6-sol:high",
+				},
+				{
+					name: "Unix installer defaults",
+					modelRoles: {
+						default: "openai-codex/gpt-5.5:xhigh",
+						task: "openai-codex/gpt-5.5:medium",
+						smol: "anthropic/claude-sonnet-4-6",
+						slow: "openai-codex/gpt-5.5:high",
+						plan: "openai-codex/gpt-5.5:xhigh",
+						commit: "openai-codex/gpt-5.5:low",
+						custom: "local/custom-model",
+					},
+					agentOverrides: {
+						quick_task: "openai-codex/gpt-5.5:low",
+						task: "openai-codex/gpt-5.5:medium",
+						heavy_task: "openai-codex/gpt-5.5:high",
+						oracle: "openai-codex/gpt-5.5:xhigh",
+						reviewer: "openai-codex/gpt-5.5:xhigh",
+						tester: "openai-codex/gpt-5.5:medium",
+						plan: "openai-codex/gpt-5.5:xhigh",
+						qa: "custom/qa",
+						custom_agent: "custom/provider",
+					},
+					expectedQa: "custom/qa",
+				},
+			] as const;
+			const expectedModelRoles = {
+				default: "openai-codex/gpt-5.6-sol:xhigh",
+				task: "openai-codex/gpt-5.6-terra:medium",
+				smol: "anthropic/claude-sonnet-4-6",
+				slow: "openai-codex/gpt-5.6-sol:high",
+				plan: "openai-codex/gpt-5.6-sol:xhigh",
+				designer: "tnx/designer",
+				commit: "openai-codex/gpt-5.6-luna:high",
+				custom: "local/custom-model",
+			};
+			const canonicalAgentOverrides = {
+				designer: "tnx/designer",
+				explore: "pi/smol",
+				frontend_ui: "tnx/designer",
+				heavy_task: "openai-codex/gpt-5.6-sol:high",
+				oracle: "openai-codex/gpt-5.6-sol:high",
+				plan: "anthropic/claude-fable-5:high",
+				tester: "openai-codex/gpt-5.6-sol:medium",
+				quick_task: "openai-codex/gpt-5.6-luna:high",
+				reviewer: "openai-codex/gpt-5.6-sol:high",
+				task: "openai-codex/gpt-5.6-terra:medium",
+				custom_agent: "custom/provider",
+			};
+
+			for (const fixture of fixtures) {
+				resetSettingsForTest();
+				await writeSettings({
+					setupVersion: 2,
+					modelRoles: fixture.modelRoles,
+					task: { agentModelOverrides: fixture.agentOverrides },
+				});
+
+				const settings = await Settings.init({ cwd: projectDir, agentDir });
+				await settings.flush();
+				const onDisk = await readSettings();
+				const persistedTask = onDisk.task as { agentModelOverrides: Record<string, string> };
+				const expectedAgentOverrides = { ...canonicalAgentOverrides, qa: fixture.expectedQa };
+
+				for (const [surface, setupVersion, modelRoles, agentOverrides] of [
+					[
+						"effective settings",
+						settings.get("setupVersion"),
+						settings.get("modelRoles"),
+						settings.get("task.agentModelOverrides"),
+					],
+					["persisted config", onDisk.setupVersion, onDisk.modelRoles, persistedTask.agentModelOverrides],
+				] as const) {
+					expect({ setupVersion, modelRoles, agentOverrides }, `${fixture.name}: ${surface}`).toEqual({
+						setupVersion: 4,
+						modelRoles: expectedModelRoles,
+						agentOverrides: expectedAgentOverrides,
+					});
+				}
+
+				const firstMigration = structuredClone(onDisk);
+				resetSettingsForTest();
+				const rerunSettings = await Settings.init({ cwd: projectDir, agentDir });
+				await rerunSettings.flush();
+				expect(rerunSettings.get("modelRoles"), `${fixture.name}: idempotent effective settings`).toEqual(
+					expectedModelRoles,
+				);
+				expect(
+					rerunSettings.get("task.agentModelOverrides"),
+					`${fixture.name}: idempotent effective settings`,
+				).toEqual(expectedAgentOverrides);
+				expect(await readSettings(), `${fixture.name}: idempotent persisted config`).toEqual(firstMigration);
+			}
+		});
+
+		const setupVersion3RouteFixture = {
+			input: {
+				setupVersion: 3,
+				modelRoles: {
+					default: "openai-codex/gpt-5.5:xhigh",
+					task: "openai-codex/gpt-5.5:medium",
+					smol: "tnx/smol",
+					slow: "openai-codex/gpt-5.5:high",
+					plan: "openai-codex/gpt-5.5:xhigh",
+					designer: "tnx/designer:medium",
+					commit: "openai-codex/gpt-5.5:low",
+					custom_role: "custom/role-model",
+				},
+				task: {
+					agentModelOverrides: {
+						quick_task: "openai-codex/gpt-5.5:low",
+						task: "openai-codex/gpt-5.5:medium",
+						heavy_task: "openai-codex/gpt-5.5:high",
+						oracle: "openai-codex/gpt-5.5:xhigh",
+						reviewer: "openai-codex/gpt-5.5:xhigh",
+						tester: "openai-codex/gpt-5.5:medium",
+						plan: "openai-codex/gpt-5.5:xhigh",
+						qa: "openai-codex/gpt-5.5:high",
+						custom_agent: "custom/agent-model",
+					},
+				},
+			},
+			expectedModelRoles: {
+				default: "openai-codex/gpt-5.6-sol:xhigh",
+				task: "openai-codex/gpt-5.6-terra:medium",
+				smol: "cerebras/gpt-oss-120b",
+				slow: "openai-codex/gpt-5.6-sol:high",
+				plan: "openai-codex/gpt-5.6-sol:xhigh",
+				designer: "tnx/designer",
+				commit: "openai-codex/gpt-5.6-luna:high",
+				custom_role: "custom/role-model",
+			},
+			expectedAgentOverrides: {
+				designer: "tnx/designer",
+				explore: "pi/smol",
+				frontend_ui: "tnx/designer",
+				heavy_task: "openai-codex/gpt-5.6-sol:high",
+				oracle: "openai-codex/gpt-5.6-sol:high",
+				plan: "anthropic/claude-fable-5:high",
+				qa: "openai-codex/gpt-5.6-sol:high",
+				tester: "openai-codex/gpt-5.6-sol:medium",
+				quick_task: "openai-codex/gpt-5.6-luna:high",
+				reviewer: "openai-codex/gpt-5.6-sol:high",
+				task: "openai-codex/gpt-5.6-terra:medium",
+				custom_agent: "custom/agent-model",
+			},
+		} as const;
+
+		it("migrates setupVersion 3 routes once to the canonical setupVersion 4 matrix", async () => {
+			await writeSettings(setupVersion3RouteFixture.input);
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const firstEffective = {
+				setupVersion: settings.get("setupVersion"),
+				modelRoles: settings.get("modelRoles"),
+				agentOverrides: settings.get("task.agentModelOverrides"),
+			};
+			await settings.flush();
+			const firstPersisted = await readSettings();
+
+			resetSettingsForTest();
+			const reloaded = await Settings.init({ cwd: projectDir, agentDir });
+			const secondEffective = {
+				setupVersion: reloaded.get("setupVersion"),
+				modelRoles: reloaded.get("modelRoles"),
+				agentOverrides: reloaded.get("task.agentModelOverrides"),
+			};
+			await reloaded.flush();
+			const secondPersisted = await readSettings();
+			const expected = {
+				setupVersion: 4,
+				modelRoles: setupVersion3RouteFixture.expectedModelRoles,
+				agentOverrides: setupVersion3RouteFixture.expectedAgentOverrides,
+			};
+
+			expect(firstEffective).toEqual(expected);
+			expect({
+				setupVersion: firstPersisted.setupVersion,
+				modelRoles: firstPersisted.modelRoles,
+				agentOverrides: (firstPersisted.task as Record<string, unknown>).agentModelOverrides,
+			}).toEqual(expected);
+			expect(secondEffective).toEqual(expected);
+			expect(secondPersisted).toEqual(firstPersisted);
+		});
+
+		it("leaves a fresh setupVersion 4 canonical route matrix unchanged", async () => {
+			const canonical = {
+				setupVersion: 4,
+				modelRoles: setupVersion3RouteFixture.expectedModelRoles,
+				task: { agentModelOverrides: setupVersion3RouteFixture.expectedAgentOverrides },
+			};
+			await writeSettings(canonical);
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			await settings.flush();
+
+			expect(await readSettings()).toEqual(canonical);
 		});
 
 		it("migrates old designer agent overrides to the designer provider alias", async () => {
@@ -874,7 +1234,7 @@ describe("Settings", () => {
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-			expect(settings.get("setupVersion")).toBe(3);
+			expect(settings.get("setupVersion")).toBe(4);
 			expect(settings.get("task.agentModelOverrides")).toMatchObject({
 				designer: "tnx/designer",
 				frontend_ui: "tnx/designer",
@@ -900,33 +1260,13 @@ describe("Settings", () => {
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-			expect(settings.get("setupVersion")).toBe(3);
+			expect(settings.get("setupVersion")).toBe(4);
 			expect(settings.get("task.agentModelOverrides")).toMatchObject({
 				designer: "custom/designer",
 				frontend_ui: "custom/frontend",
 				ui_ux_reviewer: "custom/reviewer",
 				ux_copywriter: "custom/copy",
 				qa: "custom/qa",
-			});
-		});
-
-		it("migrates exact old TNX role defaults to medium thinking without clobbering custom roles", async () => {
-			await writeSettings({
-				setupVersion: 2,
-				modelRoles: {
-					smol: "tnx/smol",
-					designer: "tnx/designer",
-					task: "custom/task",
-				},
-			});
-
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
-
-			expect(settings.get("setupVersion")).toBe(3);
-			expect(settings.get("modelRoles")).toMatchObject({
-				smol: "tnx/smol:medium",
-				designer: "tnx/designer:medium",
-				task: "custom/task",
 			});
 		});
 

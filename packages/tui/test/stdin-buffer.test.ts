@@ -112,6 +112,14 @@ describe("StdinBuffer", () => {
 			expect(buffer.getBuffer()).toBe("");
 		});
 
+		it("emits a pending bare Escape before a DEC-2048 resize report", () => {
+			processInput("\x1b");
+			expect(emittedSequences).toEqual([]);
+
+			processInput("\x1b[48;40;100;800;1000:0t");
+			expect(emittedSequences).toEqual(["\x1b", "\x1b[48;40;100;800;1000:0t"]);
+		});
+
 		it("reassembles an OSC whose ST is split exactly at the chunk boundary", () => {
 			// Chunk 1 ends on the ESC of `ESC \`; chunk 2 opens with the `\`.
 			// The resume overlap (`resumeSearchFrom - 1`) must re-inspect the

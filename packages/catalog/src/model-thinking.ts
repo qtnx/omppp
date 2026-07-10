@@ -19,6 +19,7 @@ import {
 	type ParsedModel,
 	parseAnthropicModel,
 	parseKnownModel,
+	parseOpenAIModel,
 	semverEqual,
 	semverGte,
 } from "./identity/classify";
@@ -111,12 +112,15 @@ const MIMO_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
 };
 
 /**
- * Effort → wire-value map for the adaptive Anthropic scale (Opus 4.7+ and
- * Fable/Mythos 5 on the Messages API). Existing user-facing levels keep their
- * historical shifted mapping (`high` → `xhigh`, `xhigh` → `max`); the explicit
- * `max` selector is an alias for the same unconstrained wire tier.
+ * Effort → wire-value map for a shifted five-tier scale (`low..max`):
+ * user-facing efforts shift up one notch so the top tier reaches the genuine
+ * "max" and "high" lands on the recommended "xhigh" coding/agentic default.
+ * Used by Anthropic adaptive models with a real xhigh tier (Opus 4.7+ and
+ * Fable/Mythos 5 on the Messages API) and by GPT-5.6+ wire-effort models.
+ * Anthropic models that expose user `Effort.Max` alias it to the same
+ * unconstrained wire tier; GPT-5.6 keeps that selector filtered out.
  */
-export const ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER: Readonly<Partial<Record<Effort, string>>> = {
+export const SHIFTED_FIVE_TIER_EFFORT_MAP: Readonly<Partial<Record<Effort, string>>> = {
 	[Effort.Minimal]: "low",
 	[Effort.Low]: "medium",
 	[Effort.Medium]: "high",
@@ -307,6 +311,27 @@ function isOpenAICompatReasoningApi(api: Api): boolean {
 	return api === "openai-completions" || api === "openrouter";
 }
 
+/**
+ * GPT-5.6+ addressed through a wire `reasoning.effort`/`reasoning_effort`
+ * field, where the shifted five-tier map applies. Devin (`devin-agent`)
+ * selects effort by routing to per-tier sibling model ids instead and must
+ * stay unmapped.
+ */
+function isGpt56PlusWireEffortModel<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
+	switch (spec.api) {
+		case "openai-responses":
+		case "openai-codex-responses":
+		case "azure-openai-responses":
+		case "openai-completions":
+		case "openrouter":
+			break;
+		default:
+			return false;
+	}
+	const parsed = parseOpenAIModel(bareModelId(spec.id));
+	return parsed !== null && semverGte(parsed.version, "5.6");
+}
+
 function getModelDefinedEfforts<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
@@ -324,6 +349,12 @@ function getModelDefinedEfforts<TApi extends Api>(
 	}
 	if (isSakanaFuguReasoningModel(spec)) {
 		return FUGU_REASONING_EFFORTS;
+	}
+	if (isGpt56PlusWireEffortModel(spec)) {
+		// Normalize stale baked/discovered `low..xhigh` surfaces to the full
+		// five-tier ladder so the shifted map keeps the native `low` tier
+		// reachable (user `minimal`).
+		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
 	}
 	return isOpenAICompatReasoningApi(spec.api) &&
 		(isMinimaxM2FamilyModelId(spec.id) ||
@@ -385,7 +416,7 @@ function inferDetectedEffortMap<TApi extends Api>(
 			return MINIMAX_ANTHROPIC_ADAPTIVE_EFFORT_MAP;
 		}
 		return anthropicModelHasRealXHighEffort(spec, parsedModel)
-			? ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER
+			? SHIFTED_FIVE_TIER_EFFORT_MAP
 			: ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER;
 	}
 	// GLM-5.2 coding SKUs accept `reasoning_effort`, but the effort dialect is
@@ -408,6 +439,9 @@ function inferDetectedEffortMap<TApi extends Api>(
 	}
 	if (isSakanaFuguReasoningModel(spec)) {
 		return FUGU_REASONING_EFFORT_MAP;
+	}
+	if (isGpt56PlusWireEffortModel(spec)) {
+		return SHIFTED_FIVE_TIER_EFFORT_MAP;
 	}
 	if (!isOpenAICompatReasoningApi(spec.api)) {
 		return undefined;
@@ -458,7 +492,7 @@ function getOpenRouterAnthropicReasoningEffortMap(modelId: string): EffortMap | 
 	if (!isAnthropicAdaptiveGenAtLeast(parsed, "4.6")) return undefined;
 
 	const hasRealXHigh = isAnthropicAdaptiveGenAtLeast(parsed, "4.7");
-	return hasRealXHigh ? ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER : ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER;
+	return hasRealXHigh ? SHIFTED_FIVE_TIER_EFFORT_MAP : ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER;
 }
 
 function inferSupportedEfforts<TApi extends Api>(
@@ -487,6 +521,11 @@ function inferSupportedEfforts<TApi extends Api>(
 function inferOpenAISupportedEfforts(model: OpenAIModel): readonly Effort[] {
 	if (model.variant === "codex-mini" && semverEqual(model.version, "5.1")) {
 		return GPT_5_1_CODEX_MINI_EFFORTS;
+	}
+	// 5.6+ exposes the full five-tier ladder: the shifted wire map spans
+	// low..max, with user `minimal` reaching the native `low` tier.
+	if (semverGte(model.version, "5.6")) {
+		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
 	}
 	if (semverGte(model.version, "5.2")) {
 		return GPT_5_2_PLUS_EFFORTS;

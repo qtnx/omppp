@@ -10,7 +10,7 @@
 import type { Api, FetchImpl, Model } from "@oh-my-pi/pi-ai";
 import { isTransientStatus, ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import {
-	getOpenAIResponsesPromptCacheKey,
+	getOpenAIPromptCacheKey,
 	getOpenAIResponsesRoutingSessionId,
 	parseAzureDeploymentNameMap,
 	resolveOpenAIRequestSetup,
@@ -67,8 +67,8 @@ export interface CompactionV2Request {
 	instructions: string;
 	retainedMessageBudget: number;
 	tools?: unknown[];
-	/** Responses reasoning param (effort + summary), matching a normal turn; omitted for non-reasoning models. */
-	reasoning?: { effort: string; summary: string };
+	/** Responses reasoning params; omitted when neither effort/summary nor mode is configured. */
+	reasoning?: { effort?: string; summary?: string; mode?: string };
 	sessionId?: string;
 	promptCacheKey?: string;
 }
@@ -191,18 +191,23 @@ export function buildCompactionV2Request(
 	instructions: string,
 	options?: {
 		tools?: unknown[];
-		reasoning?: { effort: string; summary: string };
+		reasoning?: { effort: string; summary: string; mode?: string };
 		sessionId?: string;
 		promptCacheKey?: string;
 		retainedMessageBudget?: number;
 	},
 ): CompactionV2Request {
+	const reasoning =
+		options?.reasoning || model.reasoningMode
+			? { ...options?.reasoning, ...(model.reasoningMode ? { mode: model.reasoningMode } : {}) }
+			: undefined;
+
 	return {
 		model: resolveCompactionV2Model(model),
 		input,
 		instructions,
 		retainedMessageBudget: resolveCompactionV2RetainedMessageBudget(options?.retainedMessageBudget),
-		reasoning: options?.reasoning,
+		reasoning,
 		tools: options?.tools,
 		sessionId: options?.sessionId,
 		promptCacheKey: options?.promptCacheKey,
@@ -292,7 +297,7 @@ async function attemptCompactionV2Streaming(
 	// of an otherwise-normal Responses request, then stream the result. `store`
 	// stays false — compaction must never persist a server-side response object.
 	const cacheOptions = { sessionId: request.sessionId, promptCacheKey: request.promptCacheKey };
-	const promptCacheKey = getOpenAIResponsesPromptCacheKey(cacheOptions);
+	const promptCacheKey = getOpenAIPromptCacheKey(cacheOptions);
 	const body: Record<string, unknown> = {
 		model: request.model,
 		input: [...request.input, COMPACTION_TRIGGER_ITEM],
@@ -334,7 +339,7 @@ function buildCompactionV2Headers(model: Model, apiKey: string, request: Compact
 	const api = compactionV2Api(model);
 	const cacheOptions = { sessionId: request.sessionId, promptCacheKey: request.promptCacheKey };
 	const routingSessionId = getOpenAIResponsesRoutingSessionId(cacheOptions);
-	const promptCacheSessionId = getOpenAIResponsesPromptCacheKey(cacheOptions);
+	const promptCacheSessionId = getOpenAIPromptCacheKey(cacheOptions);
 	const headers: Record<string, string> =
 		api === "azure-openai-responses"
 			? {

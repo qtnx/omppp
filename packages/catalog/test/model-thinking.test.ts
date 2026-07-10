@@ -573,6 +573,143 @@ describe("model thinking derivation", () => {
 		expect(getSupportedEfforts(model)).toEqual([]);
 		expect(clampThinkingLevelForModel(model, Effort.High)).toBeUndefined();
 	});
+
+	type InferenceContractCase = readonly [
+		name: string,
+		mutation: string,
+		resolve: () => {
+			efforts: readonly Effort[] | undefined;
+			effortMap: Partial<Record<Effort, string>> | undefined;
+		},
+		expectedEfforts: readonly Effort[],
+		expectedEffortMap: Partial<Record<Effort, string>> | undefined,
+	];
+
+	const shiftedFiveTierMap = {
+		minimal: "low",
+		low: "medium",
+		medium: "high",
+		high: "xhigh",
+		xhigh: "max",
+	};
+	const shiftedFiveTierMapWithMax = { ...shiftedFiveTierMap, max: "max" };
+	const fiveUserEfforts = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
+	const sixUserEfforts = [...fiveUserEfforts, Effort.Max];
+
+	it.each([
+		[
+			"GPT-5.6 wire-effort model exposes five shifted user tiers without user Max",
+			"removing the GPT-5.6 wire-effort branch or leaking Effort.Max into its user surface",
+			() => {
+				const model = createModel({
+					id: "gpt-5.6-sol",
+					api: "openai-codex-responses",
+					provider: "openai-codex",
+				});
+				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
+			},
+			fiveUserEfforts,
+			shiftedFiveTierMap,
+		],
+		[
+			"GPT-5.6 stale OpenRouter metadata normalizes through the same inference path",
+			"skipping model-defined effort normalization for explicit cached metadata",
+			() => {
+				const model = createModel({
+					id: "openai/gpt-5.6-terra",
+					api: "openrouter",
+					provider: "openrouter",
+					baseUrl: "https://openrouter.ai/api/v1",
+					thinking: {
+						mode: "effort",
+						efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+					},
+				});
+				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
+			},
+			fiveUserEfforts,
+			shiftedFiveTierMap,
+		],
+		[
+			"pre-5.6 GPT boundary keeps its unshifted four-tier surface",
+			"changing the GPT-5.6 threshold from >=5.6 to >=5.5",
+			() => {
+				const model = createModel({ id: "gpt-5.5", api: "openai-responses", provider: "openai" });
+				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
+			},
+			[Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			undefined,
+		],
+		[
+			"Devin tier-routed GPT remains unmapped",
+			"treating devin-agent model routing as a wire reasoning-effort API",
+			() => {
+				const model = createModel({
+					id: "gpt-5-6-sol",
+					api: "devin-agent",
+					provider: "devin",
+					baseUrl: "https://server.codeium.com",
+					thinking: {
+						mode: "effort",
+						efforts: fiveUserEfforts,
+						effortRouting: {
+							off: "gpt-5-6-sol-none",
+							minimal: "gpt-5-6-sol-low",
+							low: "gpt-5-6-sol-medium",
+							medium: "gpt-5-6-sol-high",
+							high: "gpt-5-6-sol-xhigh",
+							xhigh: "gpt-5-6-sol-max",
+						},
+					},
+				});
+				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
+			},
+			fiveUserEfforts,
+			undefined,
+		],
+		[
+			"Fable adaptive inference preserves the fork Max selector",
+			"narrowing Fable to the upstream five-tier user surface or dropping the Max alias",
+			() => {
+				const model = createModel({ id: "claude-fable-5", api: "anthropic-messages", provider: "anthropic" });
+				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
+			},
+			sixUserEfforts,
+			shiftedFiveTierMapWithMax,
+		],
+		[
+			"Mythos OpenRouter inference preserves the fork Max selector",
+			"removing Mythos from fork Max inference on OpenRouter",
+			() => {
+				const model = createModel({
+					id: "anthropic/claude-mythos-5",
+					api: "openrouter",
+					provider: "openrouter",
+					baseUrl: "https://openrouter.ai/api/v1",
+				});
+				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
+			},
+			sixUserEfforts,
+			shiftedFiveTierMapWithMax,
+		],
+		[
+			"GLM-5.2 semantic inference preserves Max",
+			'deleting the parsed-model case "glm" or its 5.2 Max boundary',
+			() => {
+				const model = createModel({
+					id: "glm-5.2",
+					api: "openai-completions",
+					provider: "zai",
+					compat: { thinkingFormat: "openai", supportsReasoningEffort: true },
+				});
+				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
+			},
+			sixUserEfforts,
+			{ xhigh: "max" },
+		],
+	] satisfies readonly InferenceContractCase[])("%s (mutation caught: %s)", (_name, _mutation, resolve, efforts, map) => {
+		expect(resolve()).toEqual({ efforts, effortMap: map });
+	});
 });
 
 describe("model thinking runtime helpers", () => {

@@ -83,6 +83,7 @@ import {
 	createInitialResponsesAssistantMessage,
 	createOpenAIStrictToolsState,
 	disableStrictToolsForScope,
+	getOpenAIPromptCacheKey,
 	getOpenAIStrictToolsScope,
 	isCompiledGrammarTooLargeStrictError,
 	isOpenRouterAnthropicModel,
@@ -619,6 +620,7 @@ const streamOpenAICompletionsOnce = (
 				apiKey,
 				options?.headers,
 				options?.initiatorOverride,
+				getOpenAIPromptCacheKey(options),
 			);
 			const premiumRequestsTotal = copilotPremiumRequests;
 			let appliedStrictTools = false;
@@ -1362,6 +1364,7 @@ function createRequestSetup(
 	apiKey?: string,
 	extraHeaders?: Record<string, string>,
 	initiatorOverride?: MessageAttribution,
+	promptCacheSessionId?: string,
 ): OpenAIRequestSetup & { baseUrl: string } {
 	const apiVersion = $env.AZURE_OPENAI_API_VERSION || "2024-10-21";
 	const deploymentName = parseAzureDeploymentNameMap($env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP).get(model.id) ?? model.id;
@@ -1369,6 +1372,7 @@ function createRequestSetup(
 		apiKey,
 		extraHeaders,
 		initiatorOverride,
+		promptCacheSessionId,
 		messages: context.messages,
 		defaultBaseUrl: "https://api.openai.com/v1",
 		// Provider auth/header overlay: Kimi-code hosts require shared client
@@ -1416,7 +1420,11 @@ function buildParams(
 	context: Context,
 	options: OpenAICompletionsOptions | undefined,
 	toolStrictModeOverride?: ToolStrictModeOverride,
-): { params: OpenAICompletionsParams; toolStrictMode: AppliedToolStrictMode; strictToolsApplied: boolean } {
+): {
+	params: OpenAICompletionsParams;
+	toolStrictMode: AppliedToolStrictMode;
+	strictToolsApplied: boolean;
+} {
 	const initialPolicy = resolveOpenAICompatForRequest(model, options);
 	const initialCompat = initialPolicy.compat as ResolvedOpenAICompat;
 
