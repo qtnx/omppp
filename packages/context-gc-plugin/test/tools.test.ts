@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
+import type { ActiveSnapshot } from "../src/active-context";
 import { JSON_MEDIA_TYPE, payloadFromContent } from "../src/extract";
 import { renderContextGcReport } from "../src/report";
 import {
@@ -22,7 +23,7 @@ import {
 	createContextStatsTool,
 	createContextTreeTool,
 } from "../src/tools/context-report";
-import { createContextUnloadTool, runContextUnload } from "../src/tools/context-unload";
+import { createContextUnloadTool, formatContextUnload, runContextUnload } from "../src/tools/context-unload";
 
 const originalAgentDir = getAgentDir();
 let tempDir: string;
@@ -273,7 +274,7 @@ describe("Context GC tools", () => {
 
 		expect(stats).toContain(`DB path: ${getContextGcDbPath(tempDir)}`);
 		expect(stats).toContain("Current branch records: 3");
-		expect(stats).toContain("Estimated active tokens saved: 17 branch-effective unloaded token(s)");
+		expect(stats).toContain("Active projected net savings: unavailable");
 		expect(stats).toContain("- file_read: 1");
 		expect(stats).not.toContain("99");
 		expect(tree).toContain("file_read:");
@@ -305,10 +306,10 @@ describe("Context GC tools", () => {
 		expect(global).toContain("Context GC global stats");
 		expect(global).toContain("Global sessions: 2");
 		expect(global).toContain("Global records: 3");
-		expect(global).toContain("Candidate tokens: 11 (1 record(s))");
-		expect(global).toContain("Unloaded tokens: 17 (1 record(s))");
-		expect(global).toContain("Pinned tokens: 5 (1 record(s))");
-		expect(global).toContain("Estimated global tokens saved: 17 unloaded token(s)");
+		expect(global).toContain("Durable candidate source estimate: 11 (1 record(s))");
+		expect(global).toContain("Durable unloaded source estimate: 17 (1 record(s))");
+		expect(global).toContain("Durable pinned source estimate: 5 (1 record(s))");
+		expect(global).toContain("Global projection state: unavailable (durable view)");
 		expect(global).toContain("- file_read: 1 record(s), 17 token(s), 1 recall(s)");
 	});
 
@@ -328,7 +329,7 @@ describe("Context GC tools", () => {
 		const text = global.content[0]?.type === "text" ? global.content[0].text : "";
 		expect(text).toContain("Context GC global stats");
 		expect(text).toContain("Global records: 1");
-		expect(text).toContain("Estimated global tokens saved: 13");
+		expect(text).toContain("Durable unloaded source estimate: 13");
 	});
 
 	it("registered report tools render text using active branch state", async () => {
@@ -361,12 +362,73 @@ describe("Context GC tools", () => {
 		);
 
 		expect(stats.content[0]?.type === "text" ? stats.content[0].text : "").toContain(
-			"Estimated active tokens saved: 13",
+			"Active projected net savings: unavailable",
 		);
 		expect(tree.content[0]?.type === "text" ? tree.content[0].text : "").toContain("tool branch summary");
 		expect(debug.content[0]?.type === "text" ? debug.content[0].text : "").toContain("Branch delta count: 1");
 	});
 
+	it("uses a valid active snapshot for net savings and invalidates it after branch rewind", () => {
+		insertRecord({ id: "active-unloaded", tokenEstimate: 17, kind: "tool_result" });
+		insertRecord({ id: "stale-unloaded", tokenEstimate: 99, kind: "tool_result" });
+		const activeDelta = makeDelta("unload", "active-unloaded", "active summary");
+		const staleDelta = makeDelta("unload", "stale-unloaded", "stale summary");
+		const branchMessage = {
+			type: "message",
+			id: "snapshot-entry",
+			message: {
+				role: "toolResult",
+				toolCallId: "snapshot-call",
+				toolName: "read",
+				content: [{ type: "text", text: "snapshot payload" }],
+			},
+		};
+		const ctx = makeToolContext([branchMessage, deltaEntry(activeDelta), deltaEntry(staleDelta)]);
+		const snapshot = {
+			sessionId: "session-a",
+			branchEntryIds: ["snapshot-entry"],
+			activeRecordIds: ["active-unloaded"],
+			estimates: [{ id: "active-unloaded", sourceTokens: 17, potentialTokens: 100, netTokens: 88 }],
+			issueCounts: { legacy_record: 1, payload_mismatch: 2, inactive_identity: 3, duplicate_claim: 4 },
+		} satisfies ActiveSnapshot;
+
+		const active = renderContextGcReport({
+			agentDir: tempDir,
+			cwd: tempDir,
+			sessionManager: ctx.sessionManager,
+			action: "stats",
+			activeSnapshot: snapshot,
+		});
+		expect(active).toContain("Active snapshot: available");
+		expect(active).toContain("Active unloaded source estimate: 17");
+		expect(active).toContain("Active projected net savings: 88 token(s)");
+		expect(active).not.toContain("99");
+
+		const invalid = renderContextGcReport({
+			agentDir: tempDir,
+			cwd: tempDir,
+			sessionManager: makeToolContext([deltaEntry(activeDelta), deltaEntry(staleDelta)]).sessionManager,
+			action: "stats",
+			activeSnapshot: snapshot,
+		});
+		expect(invalid).toContain("Active snapshot: unavailable");
+		expect(invalid).toContain("Active projected net savings: unavailable");
+		expect(invalid).toContain("unloaded source estimate: 116");
+
+		insertRecord({ id: "orphaned", sessionId: "session-b", tokenEstimate: 7, kind: "tool_result" });
+		const orphanedDelta = {
+			...makeDelta("unload", "orphaned"),
+			sessionId: "session-b",
+		};
+		const debug = renderContextGcReport({
+			agentDir: tempDir,
+			cwd: tempDir,
+			sessionManager: makeToolContext([deltaEntry(orphanedDelta)]).sessionManager,
+			action: "debug",
+		});
+		expect(debug).toContain("Orphaned session delta count: 1");
+		expect(debug).toContain("Payload mismatch count: 0");
+	});
 	it("pins and unpins records", async () => {
 		insertRecord({ id: "pin-me" });
 
@@ -448,5 +510,46 @@ describe("Context GC tools", () => {
 
 		const unloadedOnly = await runContextInventory(store, "session-a", { status: "unloaded" }, branchScoped);
 		expect(unloadedOnly.records.map(record => record.id)).toEqual(["u1"]);
+	});
+	it("deduplicates unload ids and keeps record ids out of the agent-facing result", async () => {
+		insertRecord({ id: "dedupe" });
+
+		const result = await runContextUnload(store, "session-a", {
+			ids: ["dedupe", "dedupe", "absent-record", "absent-record"],
+			summary: "short replacement summary",
+			reason: "not needed now",
+		});
+
+		expect(result.unloaded).toEqual(["dedupe"]);
+		expect(result.skipped).toEqual([{ id: "absent-record", reason: "missing" }]);
+		const formatted = formatContextUnload(result);
+		expect(formatted).toContain("Context GC unloaded 1 record(s).");
+		expect(formatted).toContain("Skipped: missing=1");
+		expect(formatted).not.toContain("dedupe");
+		expect(formatted).not.toContain("absent-record");
+	});
+
+	it("appends one unload delta for duplicate ids while withholding ids from the rendered result", async () => {
+		insertRecord({ id: "delta-once" });
+		const deltas: ContextGcDelta[] = [];
+		const unloadTool = createContextUnloadTool(store, (_type, data) => deltas.push(data));
+		const toolContext = makeToolContext() as unknown as Parameters<typeof unloadTool.execute>[4];
+		const response = await unloadTool.execute(
+			"duplicate-unload-call",
+			{
+				ids: ["delta-once", "delta-once"],
+				summary: "short replacement summary",
+				reason: "not needed now",
+			},
+			undefined,
+			undefined,
+			toolContext,
+		);
+
+		expect(deltas).toHaveLength(1);
+		expect(deltas[0]?.id).toBe("delta-once");
+		const result = response.content[0];
+		const text = result?.type === "text" ? result.text : "";
+		expect(text).not.toContain("delta-once");
 	});
 });

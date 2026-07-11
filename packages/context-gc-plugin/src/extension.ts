@@ -8,6 +8,12 @@ import type {
 } from "@oh-my-pi/pi-coding-agent";
 import { logger } from "@oh-my-pi/pi-utils";
 import contextGcSystemPrompt from "./context-gc-system-prompt.md" with { type: "text" };
+import {
+	analyzeActiveContext,
+	createActiveSnapshot,
+	isActiveSnapshotValid,
+	type ActiveSnapshot,
+} from "./active-context";
 import { isContextGcInspectionTool, projectUnloadedContext } from "./context-transform";
 import { extractMessagePayload, payloadForMessage, payloadFromContent } from "./extract";
 import { buildContextGcReminder } from "./reminder";
@@ -444,11 +450,20 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 		return;
 	}
 
-	pi.registerTool(createContextStatsTool(store));
+	const activeSnapshots = new Map<string, ActiveSnapshot>();
+	const getActiveSnapshot = (ctx: ExtensionContext): ActiveSnapshot | undefined => {
+		const state = readContextGcSessionState(ctx);
+		const snapshot = activeSnapshots.get(state.sessionId);
+		if (isActiveSnapshotValid(snapshot, state)) return snapshot;
+		activeSnapshots.delete(state.sessionId);
+		return undefined;
+	};
+
+	pi.registerTool(createContextStatsTool(store, getActiveSnapshot));
 	pi.registerTool(createContextGlobalStatsTool(store));
-	pi.registerTool(createContextTreeTool(store));
-	pi.registerTool(createContextDebugTool(store));
-	pi.registerTool(createContextInventoryTool(store));
+	pi.registerTool(createContextTreeTool(store, getActiveSnapshot));
+	pi.registerTool(createContextDebugTool(store, getActiveSnapshot));
+	pi.registerTool(createContextInventoryTool(store, getActiveSnapshot));
 	pi.registerTool(createContextUnloadTool(store, pi.appendEntry.bind(pi)));
 	pi.registerTool(createContextRecallTool(store, pi.appendEntry.bind(pi)));
 	pi.registerTool(createContextPinTool(store, pi.appendEntry.bind(pi)));
@@ -462,13 +477,22 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 		await inventoryLargeCustomMessages(store, pi, event.messages, ctx, state);
 		await inventoryLargeFileMentionMessages(store, pi, event.messages, ctx, state);
 		await inventoryLargeExecutionMessages(store, pi, event.messages, ctx, state);
-		const records = branchRecords(store, readContextGcSessionState(ctx));
-		return { messages: projectUnloadedContext(event.messages, records) };
+		const currentState = readContextGcSessionState(ctx);
+		const records = branchRecords(store, currentState);
+		const analysis = analyzeActiveContext(event.messages, records);
+		activeSnapshots.set(currentState.sessionId, createActiveSnapshot(currentState, analysis));
+		return { messages: projectUnloadedContext(event.messages, records, analysis) };
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
 		const systemPrompt = appendContextGcSystemPrompt(event.systemPrompt);
-		const reminder = buildContextGcReminder(branchRecords(store, readContextGcSessionState(ctx)), {
+		const state = readContextGcSessionState(ctx);
+		const snapshot = getActiveSnapshot(ctx);
+		const records = branchRecords(store, state);
+		const activeRecords = snapshot
+			? records.filter(record => snapshot.activeRecordIds.includes(record.id))
+			: records;
+		const reminder = buildContextGcReminder(activeRecords, {
 			thresholdTokens: REMINDER_THRESHOLD_TOKENS,
 			contextUsage: ctx.getContextUsage(),
 			minContextUsagePercent: REMINDER_CONTEXT_USAGE_THRESHOLD_PERCENT,
@@ -481,6 +505,7 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 	});
 
 	pi.on("session_shutdown", () => {
+		activeSnapshots.clear();
 		store.close();
 	});
 }

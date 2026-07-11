@@ -330,13 +330,16 @@ export function buildSessionContext(
 			const normalized = normalizeCustomMessagePayload(entry);
 			const attribution = entry.attribution === undefined ? undefined : normalized.attribution;
 			pushMessage(
-				createCustomMessage(
-					normalized.customType,
-					normalized.content,
-					normalized.display,
-					normalized.details,
-					entry.timestamp,
-					attribution,
+				tagNonToolEntrySurface(
+					createCustomMessage(
+						normalized.customType,
+						normalized.content,
+						normalized.display,
+						normalized.details,
+						entry.timestamp,
+						attribution,
+					),
+					entry.id,
 				),
 			);
 		} else if (entry.type === "branch_summary" && entry.summary) {

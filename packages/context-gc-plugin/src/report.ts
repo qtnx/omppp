@@ -1,4 +1,5 @@
 import * as os from "node:os";
+import { activeSnapshotEstimate, isActiveSnapshotValid, type ActiveSnapshot } from "./active-context";
 import type {
 	ContextGcDelta,
 	ContextGcReportGroupBy,
@@ -33,7 +34,13 @@ interface BranchStats {
 	byKind: Map<ContextKind, number>;
 }
 
-export function renderContextGcReport(options: ContextGcReportOptions): string {
+interface RuntimeReportOptions {
+	activeSnapshot?: ActiveSnapshot;
+}
+
+type ContextGcRuntimeReportOptions = ContextGcReportOptions & RuntimeReportOptions;
+
+export function renderContextGcReport(options: ContextGcRuntimeReportOptions): string {
 	const dbPath = getContextGcDbPath(options.agentDir);
 	const store = openContextGcStore({ dbPath });
 	try {
@@ -43,16 +50,24 @@ export function renderContextGcReport(options: ContextGcReportOptions): string {
 	}
 }
 
-export function renderContextGcReportForStore(options: ContextGcReportOptions, store: ContextGcStore): string {
+export function renderContextGcReportForStore(options: ContextGcRuntimeReportOptions, store: ContextGcStore): string {
 	const dbPath = store.dbPath;
 	const state = readContextGcSessionStateFromSessionManager({
 		cwd: options.cwd,
 		sessionManager: options.sessionManager,
 	});
-	const records = branchRecords(store, state);
+	const durableRecords = branchRecords(store, state);
+	const snapshot = isActiveSnapshotValid(options.activeSnapshot, state) ? options.activeSnapshot : undefined;
+	const records = snapshot
+		? durableRecords.filter(record => snapshot.activeRecordIds.includes(record.id))
+		: durableRecords;
+	const orphanedSessionDeltas = state.deltas.filter(delta => {
+		const record = store.getRecord(delta.id);
+		return record !== null && record.sessionId !== state.sessionId;
+	}).length;
 	switch (options.action) {
 		case "stats":
-			return renderStatsReport(options, dbPath, state.sessionId, state.sessionFile, records);
+			return renderStatsReport(options, dbPath, state.sessionId, state.sessionFile, records, snapshot);
 		case "global":
 			return renderGlobalStatsReport(dbPath, state.sessionId, store.getGlobalStats());
 		case "tree":
@@ -63,9 +78,11 @@ export function renderContextGcReportForStore(options: ContextGcReportOptions, s
 				dbPath,
 				state.sessionId,
 				state.sessionFile,
-				records,
+				durableRecords,
 				state.deltas,
 				state.messageEntries.length,
+				snapshot,
+				orphanedSessionDeltas,
 				store.getAggregateTotals({ sessionId: state.sessionId }),
 				store.getAggregateTotals(),
 			);
@@ -79,21 +96,29 @@ function renderStatsReport(
 	sessionId: string,
 	sessionFile: string | undefined,
 	records: readonly ContextRecord[],
+	snapshot: ActiveSnapshot | undefined,
 ): string {
 	const stats = computeBranchStats(records);
 	const candidate = stats.byStatus.get("candidate") ?? { count: 0, tokens: 0 };
 	const unloaded = stats.byStatus.get("unloaded") ?? { count: 0, tokens: 0 };
 	const pinned = stats.byStatus.get("pinned") ?? { count: 0, tokens: 0 };
+	const activeNetSavings = snapshot
+		? records
+				.filter(record => record.status === "unloaded")
+				.reduce((total, record) => total + (activeSnapshotEstimate(snapshot, record.id)?.netTokens ?? 0), 0)
+		: undefined;
+	const sourceLabel = snapshot ? "Active" : "Branch (snapshot unavailable)";
 	const lines = [
 		"Context GC stats",
 		`DB path: ${displayPath(dbPath)}`,
 		`Session id: ${sessionId}`,
 		`Session file: ${displayPath(sessionFile)}`,
+		`Active snapshot: ${snapshot ? "available" : "unavailable"}`,
 		`Current branch records: ${stats.records}`,
-		`Candidate tokens: ${candidate.tokens} (${candidate.count} record(s))`,
-		`Unloaded tokens: ${unloaded.tokens} (${unloaded.count} record(s))`,
-		`Pinned tokens: ${pinned.tokens} (${pinned.count} record(s))`,
-		`Estimated active tokens saved: ${unloaded.tokens} branch-effective unloaded token(s)`,
+		`${sourceLabel} candidate source estimate: ${candidate.tokens} (${candidate.count} record(s))`,
+		`${sourceLabel} unloaded source estimate: ${unloaded.tokens} (${unloaded.count} record(s))`,
+		`${sourceLabel} pinned source estimate: ${pinned.tokens} (${pinned.count} record(s))`,
+		`Active projected net savings: ${activeNetSavings === undefined ? "unavailable" : `${activeNetSavings} token(s)`}`,
 		`Recall count: ${stats.recallCount}`,
 	];
 	if (options.contextUsage) {
@@ -118,10 +143,10 @@ function renderGlobalStatsReport(dbPath: string, sessionId: string, globalStats:
 		`Global sessions: ${globalStats.sessions}`,
 		`Global payloads: ${globalStats.payloads} (${globalStats.payloadBytes} byte(s))`,
 		`Global records: ${globalStats.totals.records}`,
-		`Candidate tokens: ${candidate.tokens} (${candidate.records} record(s))`,
-		`Unloaded tokens: ${unloaded.tokens} (${unloaded.records} record(s))`,
-		`Pinned tokens: ${pinned.tokens} (${pinned.records} record(s))`,
-		`Estimated global tokens saved: ${unloaded.tokens} unloaded token(s)`,
+		`Durable candidate source estimate: ${candidate.tokens} (${candidate.records} record(s))`,
+		`Durable unloaded source estimate: ${unloaded.tokens} (${unloaded.records} record(s))`,
+		`Durable pinned source estimate: ${pinned.tokens} (${pinned.records} record(s))`,
+		"Global projection state: unavailable (durable view)",
 		`Recall count: ${globalStats.totals.recallCount}`,
 		"By kind:",
 	];
@@ -164,6 +189,8 @@ function renderDebugReport(
 	records: readonly ContextRecord[],
 	deltas: readonly ContextGcDelta[],
 	messageCount: number,
+	snapshot: ActiveSnapshot | undefined,
+	orphanedSessionDeltas: number,
 	sessionAggregate: ContextGcAggregateTotals,
 	databaseAggregate: ContextGcAggregateTotals,
 ): string {
@@ -179,8 +206,14 @@ function renderDebugReport(
 		`Session file: ${displayPath(sessionFile)}`,
 		`Branch delta count: ${deltas.length}`,
 		`Branch message count: ${messageCount}`,
-		`Current branch records: ${visibleRecords.length}${options.status ? ` (${options.status})` : ""}`,
-		`Current branch aggregate: ${formatAggregate(aggregateRecords(records))}`,
+		`Active snapshot: ${snapshot ? "available" : "unavailable"}`,
+		`Payload mismatch count: ${snapshot?.issueCounts.payload_mismatch ?? 0}`,
+		`Legacy record count: ${snapshot?.issueCounts.legacy_record ?? 0}`,
+		`Inactive identity count: ${snapshot?.issueCounts.inactive_identity ?? 0}`,
+		`Duplicate claim count: ${snapshot?.issueCounts.duplicate_claim ?? 0}`,
+		`Orphaned session delta count: ${orphanedSessionDeltas}`,
+		`Current branch durable records: ${visibleRecords.length}${options.status ? ` (${options.status})` : ""}`,
+		`Current branch durable aggregate: ${formatAggregate(aggregateRecords(records))}`,
 		`Current session raw DB aggregate: ${formatAggregate(sessionAggregate)}`,
 		`Raw database aggregate: ${formatAggregate(databaseAggregate)}`,
 		`Missing delta record ids: ${missingDeltaIds.length === 0 ? "(none)" : missingDeltaIds.join(", ")}`,

@@ -4,6 +4,7 @@ import type {
 	ExtensionContext,
 	ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
+import { isActiveSnapshotValid, type ActiveSnapshot } from "../active-context";
 import { type ContextRecord, type ContextStatus, inventoryInputSchema } from "../schema";
 import { branchRecords, readContextGcSessionState } from "../session-state";
 import type { ContextGcStore } from "../storage";
@@ -67,7 +68,12 @@ export function formatContextInventory(result: ContextInventoryResult): string {
 	].join("\n");
 }
 
-export function createContextInventoryTool(store: ContextGcStore): ToolDefinition<typeof inventoryInputSchema> {
+type GetActiveSnapshot = (ctx: ExtensionContext) => ActiveSnapshot | undefined;
+
+export function createContextInventoryTool(
+	store: ContextGcStore,
+	getActiveSnapshot?: GetActiveSnapshot,
+): ToolDefinition<typeof inventoryInputSchema> {
 	return {
 		name: "context_inventory",
 		label: "Context inventory",
@@ -81,7 +87,12 @@ export function createContextInventoryTool(store: ContextGcStore): ToolDefinitio
 			ctx: ExtensionContext,
 		): Promise<AgentToolResult> {
 			const session = readContextGcSessionState(ctx);
-			const result = await runContextInventory(store, session.sessionId, params, branchRecords(store, session));
+			const branchScoped = branchRecords(store, session);
+			const snapshot = getActiveSnapshot?.(ctx);
+			const records = snapshot && isActiveSnapshotValid(snapshot, session)
+				? branchScoped.filter(record => snapshot.activeRecordIds.includes(record.id))
+				: branchScoped;
+			const result = await runContextInventory(store, session.sessionId, params, records);
 			return { content: [{ type: "text", text: formatContextInventory(result) }], details: result };
 		},
 	};

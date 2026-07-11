@@ -177,7 +177,7 @@ export function deriveBranchSummaries(deltas: readonly ContextGcDelta[]): Map<st
  * trust global DB state for visible control.
  */
 export function branchRecords(store: ContextGcStore, state: ContextGcSessionState): ContextRecord[] {
-	const control = deriveBranchControl(state.deltas);
+	const control = deriveBranchControl(state.deltas.filter(delta => delta.sessionId === state.sessionId));
 	const records: ContextRecord[] = [];
 	for (const [id, ctrl] of control) {
 		const record = store.getRecord(id);

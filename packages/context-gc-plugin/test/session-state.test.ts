@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ContextGcDelta, ContextStatus } from "../src/schema";
 import {
 	branchRecords,
@@ -11,6 +12,7 @@ import {
 	readContextGcSessionStateFromSessionManager,
 } from "../src/session-state";
 import { type ContextGcStore, openContextGcStore } from "../src/storage";
+import { isActiveSnapshotValid, type ActiveSnapshot } from "../src/active-context";
 
 let tempDir: string | undefined;
 let store: ContextGcStore | undefined;
@@ -52,7 +54,7 @@ function makeState(deltas: ContextGcDelta[]): ContextGcSessionState {
 	return { sessionId: "session-a", sessionFile: undefined, cwd: ".", deltas, messageEntries: [] };
 }
 
-import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { SessionManager, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { extractMessagePayload, payloadForMessage } from "../src/extract";
 
 interface FakeSessionEntry {
@@ -180,8 +182,81 @@ describe("readContextGcSessionState", () => {
 		expect(resolveBranchEntryId("custom", hash, state, consumed, "tool-output")).toBe("cm-2");
 		expect(resolveBranchEntryId("custom", hash, state, consumed, "tool-output")).toBeUndefined();
 	});
+	it("retains entry-id tagging and canonical payload hashes through the real SessionManager context builder", () => {
+		const manager = SessionManager.inMemory();
+		const payload = "persisted custom payload\n".repeat(2_000);
+		const entryId = manager.appendCustomMessageEntry("tool-output", payload, false);
+		const liveMessage = manager
+			.buildSessionContext()
+			.messages.find(message => message.role === "custom" && message.customType === "tool-output");
+		if (
+			!liveMessage ||
+			liveMessage.role !== "custom" ||
+			!("entryId" in liveMessage) ||
+			typeof liveMessage.entryId !== "string"
+		) {
+			throw new Error("Expected an entry-id-stamped custom session message");
+		}
+		expect(liveMessage.entryId).toBe(entryId);
+		expect(payloadForMessage(liveMessage).stored).toBe(payload);
+
+		const state = readContextGcSessionStateFromSessionManager({ cwd: ".", sessionManager: manager });
+		const persisted = state.messageEntries.find(entry => entry.id === entryId);
+		if (!persisted) throw new Error("Expected the session message entry");
+		expect(payloadForMessage(persisted.message).stored).toBe(payload);
+	});
 });
 
+
+describe("active snapshot lineage", () => {
+	const snapshot: ActiveSnapshot = {
+		sessionId: "session-a",
+		branchEntryIds: ["captured"],
+		activeRecordIds: [],
+		estimates: [],
+		issueCounts: { legacy_record: 0, payload_mismatch: 0, inactive_identity: 0, duplicate_claim: 0 },
+	};
+
+	it("keeps the snapshot valid when only an assistant envelope extends the branch", () => {
+		const captured = { role: "assistant", content: [], timestamp: 1 } as unknown as AgentMessage;
+		const assistant = { role: "assistant", content: [], timestamp: 2 } as unknown as AgentMessage;
+		const state: ContextGcSessionState = {
+			...makeState([]),
+			messageEntries: [
+				{ id: "captured", message: captured },
+				{ id: "assistant-envelope", message: assistant },
+			],
+		};
+
+		expect(isActiveSnapshotValid(snapshot, state)).toBe(true);
+	});
+
+	it("invalidates the snapshot when a new projectable tool result extends the branch", () => {
+		const captured = { role: "assistant", content: [], timestamp: 1 } as unknown as AgentMessage;
+		const toolResult = {
+			role: "toolResult",
+			toolCallId: "new-tool-call",
+			toolName: "read",
+			content: [{ type: "text", text: "new result" }],
+			isError: false,
+		} as unknown as AgentMessage;
+		const state: ContextGcSessionState = {
+			...makeState([]),
+			messageEntries: [
+				{ id: "captured", message: captured },
+				{ id: "new-tool-result", message: toolResult },
+			],
+		};
+
+		expect(isActiveSnapshotValid(snapshot, state)).toBe(false);
+	});
+
+	it("invalidates the snapshot when a branch rewind drops a captured entry", () => {
+		const state: ContextGcSessionState = { ...makeState([]), messageEntries: [] };
+
+		expect(isActiveSnapshotValid(snapshot, state)).toBe(false);
+	});
+});
 describe("deriveBranchStatuses", () => {
 	it("keeps a record a candidate on a branch without an unload delta", () => {
 		const statuses = deriveBranchStatuses([delta("candidate", "r1")]);
@@ -281,5 +356,17 @@ describe("branchRecords", () => {
 		const records = branchRecords(active, makeState([unload, unpin]));
 		expect(records[0]?.status).toBe("candidate");
 		expect(records[0]?.summary).toBe("summary r4");
+	});
+	it("does not authorize a same-record delta inherited from another session", () => {
+		const active = openStore();
+		seedRecord(active, "r5", "candidate");
+		const inherited: ContextGcDelta = {
+			op: "unload",
+			id: "r5",
+			sessionId: "session-b",
+			createdAt: new Date().toISOString(),
+		};
+
+		expect(branchRecords(active, makeState([inherited]))).toEqual([]);
 	});
 });

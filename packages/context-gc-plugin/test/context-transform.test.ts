@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { analyzeActiveContext } from "../src/active-context";
 import { projectUnloadedContext } from "../src/context-transform";
-import { extractMessagePayload, textFromContent } from "../src/extract";
+import { extractMessagePayload, payloadForMessage, textFromContent } from "../src/extract";
 import type { ContextRecord } from "../src/schema";
 
 describe("extract helpers", () => {
@@ -51,7 +52,7 @@ describe("projectUnloadedContext", () => {
 		expect(projected[0]).not.toBe(messages[0]);
 		expect(out.toolCallId).toBe("call_a");
 		expect(out.toolName).toBe("bash");
-		expect(out.content).toEqual([{ type: "text", text: expect.stringContaining("Context unloaded: ctx_a") }]);
+		expect(out.content).toEqual([{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_a"}') }]);
 		expect(String((out.content as Array<{ text: string }>)[0].text)).not.toContain("very long output");
 	});
 
@@ -295,7 +296,9 @@ describe("projectUnloadedContext", () => {
 
 		expect(projected[0]).toBe(messages[0]);
 		expect(first.content).toBe("first custom payload");
-		expect(second.content).toEqual([{ type: "text", text: expect.stringContaining("Context unloaded: ctx_custom") }]);
+		expect(second.content).toEqual([
+			{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_custom"}') },
+		]);
 		expect(second.details).toBeUndefined();
 		expect(String((second.content as Array<{ text: string }>)[0].text)).not.toContain("second custom payload");
 	});
@@ -349,7 +352,7 @@ describe("projectUnloadedContext", () => {
 		const outA = projected[0] as unknown as Record<string, unknown>;
 		const outB = projected[1] as unknown as Record<string, unknown>;
 
-		expect(outA.content).toEqual([{ type: "text", text: expect.stringContaining("Context unloaded: ctx_type_a") }]);
+		expect(outA.content).toBe(sharedContent);
 		expect(projected[1]).toBe(messageB);
 		expect(outB.content).toBe(sharedContent);
 	});
@@ -377,7 +380,7 @@ describe("projectUnloadedContext", () => {
 		const projected = projectUnloadedContext([customMessage], records)[0] as unknown as Record<string, unknown>;
 
 		expect(projected.content).toEqual([
-			{ type: "text", text: expect.stringContaining("Context unloaded: ctx_entry") },
+			{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_entry"}') },
 		]);
 		expect(projected.details).toBeUndefined();
 		expect(String((projected.content as Array<{ text: string }>)[0].text)).not.toContain(largePayload);
@@ -432,7 +435,7 @@ describe("projectUnloadedContext", () => {
 		// Unload only the first occurrence: the same-content sibling must stay verbatim.
 		const onlyA = projectUnloadedContext([messageA, messageB], [recordFor("ctx_A", "entry-A")]);
 		expect((onlyA[0] as unknown as Record<string, unknown>).content).toEqual([
-			{ type: "text", text: expect.stringContaining("Context unloaded: ctx_A") },
+			{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_A"}') },
 		]);
 		expect(onlyA[1]).toBe(messageB);
 
@@ -442,10 +445,10 @@ describe("projectUnloadedContext", () => {
 			[recordFor("ctx_A", "entry-A"), recordFor("ctx_B", "entry-B")],
 		);
 		expect((both[0] as unknown as Record<string, unknown>).content).toEqual([
-			{ type: "text", text: expect.stringContaining("Context unloaded: ctx_A") },
+			{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_A"}') },
 		]);
 		expect((both[1] as unknown as Record<string, unknown>).content).toEqual([
-			{ type: "text", text: expect.stringContaining("Context unloaded: ctx_B") },
+			{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_B"}') },
 		]);
 	});
 
@@ -500,7 +503,7 @@ describe("projectUnloadedContext", () => {
 		// Positionally-first, same-payload occurrence A stays verbatim; only entry-B is projected.
 		expect(projected[0]).toBe(messageA);
 		expect((projected[1] as unknown as Record<string, unknown>).content).toEqual([
-			{ type: "text", text: expect.stringContaining("Context unloaded: ctx_dup_entry") },
+			{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_dup_entry"}') },
 		]);
 	});
 
@@ -529,12 +532,8 @@ describe("projectUnloadedContext", () => {
 
 		const projected = projectUnloadedContext([messageOne, messageTwo], [record]);
 
-		expect((projected[0] as unknown as Record<string, unknown>).content).toEqual([
-			{ type: "text", text: expect.stringContaining("Context unloaded: ctx_dup") },
-		]);
-		// The record is consumed by the first match; the duplicate stays verbatim.
+		expect(projected[0]).toBe(messageOne);
 		expect(projected[1]).toBe(messageTwo);
-		expect((projected[1] as unknown as Record<string, unknown>).content).toBe(shared);
 	});
 
 	test("two image-bearing records with identical text projection match by stored-payload hash", () => {
@@ -549,6 +548,7 @@ describe("projectUnloadedContext", () => {
 		];
 		const messageA = {
 			role: "custom",
+			entryId: "image-entry-a",
 			customType: "vision",
 			content: contentA,
 			timestamp: 1,
@@ -563,7 +563,7 @@ describe("projectUnloadedContext", () => {
 		const recordA = {
 			...makeRecord({ id: "ctx_imgA", toolCallId: "", toolName: "custom" }),
 			kind: "custom_tool_output",
-			source: { customType: "vision" },
+			source: { entryId: "image-entry-a", customType: "vision" },
 			payloadHash: sha256Hex(JSON.stringify(contentA)),
 			summary: "Image A summary",
 		} as unknown as ContextRecord;
@@ -571,7 +571,7 @@ describe("projectUnloadedContext", () => {
 		const projected = projectUnloadedContext([messageA, messageB], [recordA]);
 
 		expect((projected[0] as unknown as Record<string, unknown>).content).toEqual([
-			{ type: "text", text: expect.stringContaining("Context unloaded: ctx_imgA") },
+			{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_imgA"}') },
 		]);
 		// Same text projection but different image bytes -> must NOT alias onto record A.
 		expect(projected[1]).toBe(messageB);
@@ -607,7 +607,7 @@ describe("projectUnloadedContext", () => {
 
 		expect(replaced.role).toBe("custom");
 		expect(replaced.customType).toBe("context-gc-projected");
-		expect(replaced.content).toEqual([{ type: "text", text: expect.stringContaining("Context unloaded: ctx_file") }]);
+		expect(replaced.content).toEqual([{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_file"}') }]);
 		expect(String((replaced.content as Array<{ text: string }>)[0].text)).not.toContain(fileContent);
 		expect(projected[1]).toBe(messages[1]);
 	});
@@ -641,15 +641,16 @@ describe("projectUnloadedContext", () => {
 		const customText = `shifted custom payload ${"q".repeat(2_000)}`;
 		const customMessage = {
 			role: "custom",
+			entryId: "shifted-entry",
 			customType: "tool-output",
 			content: customText,
 			timestamp: 3,
 		} as unknown as AgentMessage;
-		// Record carries no positional `context:${index}` id — only a stable customType + payload hash.
+		// Entry identity stays stable while its position shifts within the context.
 		const record = {
 			...makeRecord({ id: "ctx_shift", toolCallId: "", toolName: "custom" }),
 			kind: "custom_tool_output",
-			source: { customType: "tool-output" },
+			source: { entryId: "shifted-entry", customType: "tool-output" },
 			payloadHash: sha256Hex(customText),
 			summary: "Shifted custom summary",
 		} as unknown as ContextRecord;
@@ -664,14 +665,14 @@ describe("projectUnloadedContext", () => {
 		const atIndexOne = projectUnloadedContext([leadingNoise[0], customMessage], [record]);
 		expect(atIndexOne[0]).toBe(leadingNoise[0]);
 		expect((atIndexOne[1] as unknown as Record<string, unknown>).content).toEqual([
-			{ type: "text", text: expect.stringContaining("Context unloaded: ctx_shift") },
+			{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_shift"}') },
 		]);
 
 		const shifted = projectUnloadedContext([...leadingNoise, customMessage], [record]);
 		expect(shifted.slice(0, 3)).toEqual(leadingNoise);
 		const replaced = shifted[3] as unknown as Record<string, unknown>;
 		expect(replaced.content).toEqual([
-			{ type: "text", text: expect.stringContaining("Context unloaded: ctx_shift") },
+			{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_shift"}') },
 		]);
 		expect(String((replaced.content as Array<{ text: string }>)[0].text)).not.toContain(customText);
 	});
@@ -679,6 +680,7 @@ describe("projectUnloadedContext", () => {
 	test("projects unloaded bash and python execution messages matched by payload hash", () => {
 		const bashMessage = {
 			role: "bashExecution",
+			entryId: "bash-entry",
 			command: "make build",
 			output: "b".repeat(2_000),
 			exitCode: 0,
@@ -686,6 +688,7 @@ describe("projectUnloadedContext", () => {
 		} as unknown as AgentMessage;
 		const pythonMessage = {
 			role: "pythonExecution",
+			entryId: "python-entry",
 			code: "run()",
 			output: "p".repeat(2_000),
 			exitCode: 0,
@@ -695,14 +698,14 @@ describe("projectUnloadedContext", () => {
 			{
 				...makeRecord({ id: "ctx_bash", toolCallId: "", toolName: "bash" }),
 				kind: "bash_execution",
-				source: { command: "make build" },
+				source: { entryId: "bash-entry", command: "make build" },
 				payloadHash: sha256Hex(extractMessagePayload(bashMessage).text),
 				summary: "Bash summary",
 			} as unknown as ContextRecord,
 			{
 				...makeRecord({ id: "ctx_python", toolCallId: "", toolName: "python" }),
 				kind: "python_execution",
-				source: { command: "run()" },
+				source: { entryId: "python-entry", command: "run()" },
 				payloadHash: sha256Hex(extractMessagePayload(pythonMessage).text),
 				summary: "Python summary",
 			} as unknown as ContextRecord,
@@ -714,9 +717,13 @@ describe("projectUnloadedContext", () => {
 
 		expect(bashOut.role).toBe("custom");
 		expect(bashOut.customType).toBe("context-gc-projected");
-		expect(String((bashOut.content as Array<{ text: string }>)[0].text)).toContain("Context unloaded: ctx_bash");
+		expect(String((bashOut.content as Array<{ text: string }>)[0].text)).toContain(
+			'context_recall {"id":"ctx_bash"}',
+		);
 		expect(pythonOut.customType).toBe("context-gc-projected");
-		expect(String((pythonOut.content as Array<{ text: string }>)[0].text)).toContain("Context unloaded: ctx_python");
+		expect(String((pythonOut.content as Array<{ text: string }>)[0].text)).toContain(
+			'context_recall {"id":"ctx_python"}',
+		);
 	});
 
 	test("does not project execution messages excluded from context", () => {
@@ -739,6 +746,171 @@ describe("projectUnloadedContext", () => {
 		const projected = projectUnloadedContext([excludedBashMessage], [record]);
 
 		expect(projected[0]).toBe(excludedBashMessage);
+	});
+	test("requires a matching canonical payload hash for tool-result projection", () => {
+		const message = {
+			role: "toolResult",
+			toolCallId: "call-stale",
+			toolName: "read",
+			content: [{ type: "text", text: "rewritten live result" }],
+			isError: false,
+		} as unknown as AgentMessage;
+		const record = {
+			...makeRecord({ id: "ctx_stale_tool", toolCallId: "call-stale", toolName: "read" }),
+			payloadHash: sha256Hex("original stored result"),
+		} as ContextRecord;
+
+		expect(projectUnloadedContext([message], [record])[0]).toBe(message);
+	});
+
+	test("classifies same-identity rewrites as payload mismatches and legacy records as inactive", () => {
+		const rewritten = {
+			role: "toolResult",
+			toolCallId: "call-rewritten",
+			toolName: "read",
+			content: [{ type: "text", text: "post-shake replacement" }],
+			isError: false,
+		} as unknown as AgentMessage;
+		const rewrittenRecord = {
+			...makeRecord({ id: "ctx-rewritten", toolCallId: "call-rewritten", toolName: "read" }),
+			payloadHash: sha256Hex("pre-shake original"),
+		} as ContextRecord;
+		const legacyRecord = {
+			...makeRecord({ id: "ctx-legacy-debug", toolCallId: "", toolName: "custom" }),
+			kind: "custom_tool_output",
+			source: { customType: "tool-output" },
+			payloadHash: sha256Hex("legacy payload"),
+		} as ContextRecord;
+
+		const analysis = analyzeActiveContext([rewritten], [rewrittenRecord, legacyRecord]);
+		expect(analysis.activeRecordIds).toEqual([]);
+		expect(analysis.issueCounts.payload_mismatch).toBe(1);
+		expect(analysis.issueCounts.legacy_record).toBe(1);
+	});
+
+	test("never projects a legacy non-tool record without an entry identity", () => {
+		const message = {
+			role: "custom",
+			customType: "tool-output",
+			content: "legacy shared payload",
+			display: false,
+		} as unknown as AgentMessage;
+		const record = {
+			...makeRecord({ id: "ctx_legacy", toolCallId: "", toolName: "custom" }),
+			kind: "custom_tool_output",
+			source: { customType: "tool-output" },
+			payloadHash: sha256Hex("legacy shared payload"),
+		} as ContextRecord;
+
+		expect(projectUnloadedContext([message], [record])[0]).toBe(message);
+	});
+
+	test("keeps the record id only in the recall command within a concise placeholder", () => {
+		const message = {
+			role: "toolResult",
+			toolCallId: "call-placeholder",
+			toolName: "read",
+			content: [{ type: "text", text: "large result" }],
+		} as unknown as AgentMessage;
+		const record = {
+			...makeRecord({ id: "ctx-placeholder", toolCallId: "call-placeholder", toolName: "read" }),
+			payloadHash: sha256Hex("large result"),
+			summary: "Concise result summary",
+			artifactId: "artifact-placeholder",
+		} as ContextRecord;
+
+		const projected = projectUnloadedContext([message], [record])[0];
+		if (!projected) throw new Error("Expected projected placeholder");
+		const text = payloadForMessage(projected).text;
+		expect(text.match(/ctx-placeholder/g)).toHaveLength(1);
+		expect(text).toContain('context_recall {"id":"ctx-placeholder"}');
+		expect(text).toContain("Summary: Concise result summary");
+		expect(text).toContain("Artifact: artifact-placeholder");
+		expect(text).not.toContain("Kind:");
+	});
+	test("analyzes and projects active tool, custom, file, bash, and python records across successive passes", () => {
+		const large = "active payload line\n".repeat(2_000);
+		const tool = {
+			role: "toolResult",
+			toolCallId: "active-tool-call",
+			toolName: "read",
+			content: [{ type: "text", text: large }],
+			isError: false,
+		};
+		const custom = {
+			role: "custom",
+			entryId: "active-custom-entry",
+			customType: "tool-output",
+			content: large,
+			display: false,
+		};
+		const file = {
+			role: "fileMention",
+			entryId: "active-file-entry",
+			files: [{ path: "src/active.ts", content: large, lineCount: 2_000, byteSize: large.length }],
+		};
+		const bash = {
+			role: "bashExecution",
+			entryId: "active-bash-entry",
+			command: "bun test",
+			output: large,
+			exitCode: 0,
+		};
+		const python = {
+			role: "pythonExecution",
+			entryId: "active-python-entry",
+			code: "print('active')",
+			output: large,
+			exitCode: 0,
+		};
+		const messages = [tool, custom, file, bash, python] as unknown as AgentMessage[];
+		const records = [
+			{
+				...makeRecord({ id: "active-tool", toolCallId: "active-tool-call", toolName: "read" }),
+				payloadHash: sha256Hex(payloadForMessage(messages[0]!).stored),
+			},
+			{
+				...makeRecord({ id: "active-custom", toolCallId: "", toolName: "custom" }),
+				kind: "custom_tool_output",
+				source: { entryId: "active-custom-entry", customType: "tool-output" },
+				payloadHash: sha256Hex(payloadForMessage(messages[1]!).stored),
+			},
+			{
+				...makeRecord({ id: "active-file", toolCallId: "", toolName: "fileMention" }),
+				kind: "file_mention",
+				source: { entryId: "active-file-entry", path: "src/active.ts" },
+				payloadHash: sha256Hex(payloadForMessage(messages[2]!).stored),
+			},
+			{
+				...makeRecord({ id: "active-bash", toolCallId: "", toolName: "bash" }),
+				kind: "bash_execution",
+				source: { entryId: "active-bash-entry", command: "bun test" },
+				payloadHash: sha256Hex(payloadForMessage(messages[3]!).stored),
+			},
+			{
+				...makeRecord({ id: "active-python", toolCallId: "", toolName: "python" }),
+				kind: "python_execution",
+				source: { entryId: "active-python-entry", command: "print('active')" },
+				payloadHash: sha256Hex(payloadForMessage(messages[4]!).stored),
+			},
+		] as ContextRecord[];
+
+		const analysis = analyzeActiveContext(messages, records);
+		expect(analysis.activeRecordIds).toEqual(records.map(record => record.id));
+		for (const estimate of analysis.estimates.values()) {
+			expect(estimate.netTokens).toBeGreaterThan(0);
+		}
+
+		const firstPass = projectUnloadedContext(messages, records, analysis);
+		const secondPass = projectUnloadedContext(messages, records, analyzeActiveContext(messages, records));
+		for (const [index, record] of records.entries()) {
+			const first = JSON.stringify(firstPass[index]);
+			const second = JSON.stringify(secondPass[index]);
+			expect(first).toContain(`context_recall {\\\"id\\\":\\\"${record.id}\\\"}`);
+			expect(second).toContain(`context_recall {\\\"id\\\":\\\"${record.id}\\\"}`);
+			expect(first).not.toContain(large);
+			expect(second).not.toContain(large);
+		}
 	});
 });
 

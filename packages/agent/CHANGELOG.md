@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+
+- Fixed `/shake` rewriting normal tool results when their placeholders could not save tokens, while retaining forced cleanup for non-error useless results.
 
 ## [16.3.12] - 2026-07-08
 
