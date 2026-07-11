@@ -212,6 +212,7 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 			emit,
 			resolveAgent: this.#resolveAgent,
 			journal,
+			resolveSessionFile: transcriptDir ? agentId => path.join(transcriptDir, `${agentId}.jsonl`) : undefined,
 			runSubprocess: (options: ExecutorOptions) => {
 				const parentActiveModelPattern = this.session.getActiveModelString?.();
 				const modelOverride = resolveWorkflowAgentModelOverride({
@@ -265,6 +266,8 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 				return runWorkflowScript(sub.source, subGlobals as unknown as Record<string, unknown>, subArgs);
 			},
 		});
+		let message = "";
+		let doneFrame: Extract<WorkflowProgressFrame, { kind: "done" }> | undefined;
 		try {
 			const result = await runWorkflowScript(source, globals as unknown as Record<string, unknown>, args);
 			const text =
@@ -273,13 +276,17 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 					: result === undefined
 						? "(workflow completed)"
 						: JSON.stringify(result);
-			return `Workflow "${meta.name}" (${runId}) completed.\n${text}`;
+			message = `Workflow "${meta.name}" (${runId}) completed.\n${text}`;
+			doneFrame = { kind: "done", runId, ok: true };
 		} catch (error) {
-			const msg = error instanceof Error ? error.message : String(error);
-			return `Workflow "${meta.name}" (${runId}) failed: ${msg}`;
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			message = `Workflow "${meta.name}" (${runId}) failed: ${errorMessage}`;
+			doneFrame = { kind: "done", runId, ok: false, error: errorMessage };
 		} finally {
 			await run.waitForIdle();
+			if (doneFrame) emit(doneFrame);
 			await journal?.close();
 		}
+		return message;
 	}
 }

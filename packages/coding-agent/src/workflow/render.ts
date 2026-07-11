@@ -132,7 +132,7 @@ export function renderWorkflowTree(frames: WorkflowProgressFrame[], options: Wor
 			}
 		} else if (frame.kind === "log") {
 			logs.push(frame.message);
-		} else {
+		} else if (frame.kind === "agent") {
 			latestByIndex.set(agentKey(frame), frame);
 		}
 	}

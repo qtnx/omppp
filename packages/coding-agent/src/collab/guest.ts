@@ -49,6 +49,7 @@ export const COLLAB_GUEST_ALLOWED_COMMANDS: Record<string, true> = {
 	settings: true,
 	leave: true,
 	collab: true,
+	subagents: true,
 	exit: true,
 	quit: true,
 };
