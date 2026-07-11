@@ -341,9 +341,8 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 
 	// 4. Regenerate lockfiles
 	console.log("Regenerating lockfiles...");
-	await $`rm -f bun.lock`;
-	await $`bun install`;
-	await $`cargo generate-lockfile`;
+	await $`bun install --lockfile-only`;
+	await $`cargo update --workspace`;
 	console.log();
 
 	// 5. Update changelogs

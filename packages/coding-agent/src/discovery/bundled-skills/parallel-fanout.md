@@ -1,26 +1,26 @@
 ---
 name: parallel-fanout
-description: MANDATORY before any multi-file task, foundation phase, scout dispatch, or subagent wave planning. Contains the 7-phase fanout pipeline, the feature-slicing dimension table, the contract-vs-runtime (C/R) dependency test, the tier table, the wave-plan table every dispatch must fill first, a worked WRONG-vs-RIGHT example, the one-workflow rule (a whole wave plan executes as ONE workflow script), the one-wave scout fanout with a two-wave exploration budget, and the full-cycle rule — one subagent owns red test + implement + fix until green.
+description: MANDATORY before multi-file delegation, scout dispatch, or wave planning. Defines ready-horizon slicing, C/R dependency tests, exclusive ownership, one-wave scouting, iterative adversarial plan convergence, and the production-owner invariant after lock.
 ---
 
 # Parallel Fanout
 
-Wall-clock on the dependency-DAG critical path is THE metric. Two failure modes burn most sessions: a "foundation" phase executed as a serial chain of subagents, and TDD phases split across agents ping-ponging forever. This is the mechanical process that prevents both. Follow it phase by phase; the wave-plan table in Phase 4 is a REQUIRED artifact before any dispatch.
+Wall-clock on the dependency-DAG critical path is THE metric. Prevent two session killers: expanding Foundation and test/implement/fix ping-pong. Plan only the current ready horizon, then dispatch production.
 
 ## The pipeline — seven phases, one pass
 
 | # | Phase | Action | Output artifact | Exit criteria | Budget |
 |---|---|---|---|---|---|
-| 0 | Scout | Unknown territory only: dispatch 3–5 `explore` scouts in ONE parallel batch (aspects below) | facts with file:line | every SHARED contract shape known, or assumption stated | ≤2 waves, hard cap |
-| 1 | Inventory | List deliverables as concrete nouns: files/module/endpoint/screen + its tests | deliverable list | zero "foundation/core/setup" entries — every entry names files | minutes |
-| 2 | Dependency matrix | For each edge, name the exact symbol B needs from A; label C (contract) or R (runtime) via the C/R test | labeled edge list | every edge labeled | minutes |
-| 3 | Contract prefix | Write ALL shared types/interfaces/schemas/signatures into their real files yourself (or one `plan` pass); typecheck | contract files, green typecheck | every C-edge satisfied; NO logic, NO tests written | one pass, minutes |
-| 4 | Wave plan | Fill the wave-plan table: package, owned files, deps, kind, tier, wave, acceptance | wave-plan table | exclusive file ownership; wave 1 = every package whose edges are all C | minutes |
-| 5 | Dispatch | Wave 1 as ONE parallel `task` batch; each package full-cycle (red test + implement + fix → green). Wave-2 package dispatches the moment ITS upstream lands | running subagents | all ready packages in flight simultaneously | immediate |
-| 6 | Integrate | Serial merge per landing; reject evidence-free claims; strip scope creep | merged diff | each package's OWN tests green | per landing |
-| 7 | Gates | Project-wide check/lint/affected tests ONCE; entry-point probe per skill://verify-before-done | evidence transcript | green + probe output | once, at the end |
+| 0 | Scout | Unknown territory only: ONE parallel `explore` batch | facts with file:line | next slice's shared contract known or assumption stated | ≤2 waves |
+| 1 | Inventory | Name user deliverables as executable vertical slices | slice list | no "foundation/core/setup" bucket | minutes |
+| 2 | Dependency matrix | Label C/R edges needed by CURRENT READY slices | ready-horizon edges | each current edge labeled | minutes |
+| 3 | Contract prefix | Lock only the minimum shared shape needed by the next slice | minimal contract | current C-edges satisfied | one pass |
+| 4 | Wave plan | Fill rows for CURRENT READY packages | ready-horizon table | exclusive ownership + acceptance | minutes |
+| 5 | Dispatch | Production owner + its tests/fixes in ONE package | runtime code in flight | every ready package dispatched | immediate |
+| 6 | Integrate | Merge landings; reject scope creep | executable diff | package acceptance green | per landing |
+| 7 | Gates | Run only failure-matched final gates + entry-point probe | evidence | selected gates green | once |
 
-Phases 1–4 are planning on paper — minutes total, no subagents except Phase 0 scouts. If you cannot fill the wave-plan table, the design is not settled; settle it, do not dispatch.
+Phases 1–4 are bounded preparation, not a Foundation program. A blank future row NEVER blocks a ready package. A local unknown belongs to its owner; state an assumption and dispatch. Only a concrete shared runtime blocker delays the dependent row, never the whole wave.
 
 ## How to slice a feature — pick the dimension that yields exclusive files
 
@@ -32,7 +32,7 @@ Phases 1–4 are planning on paper — minutes total, no subagents except Phase 
 | Mechanical perimeter | registrations, renames, config, wiring, docs | one `quick_task` batch package |
 | Cross-owner integration | a test must execute several owners' REAL code together | exactly ONE integration package, wave 2 |
 
-Correct dimension chosen = 5–10 packages, exclusive file ownership, every cross-package edge is C. If a cut produces shared files or R-edges everywhere, pick a different dimension — do not force it.
+Correct slicing yields only genuinely independent packages — one package is valid; 5–10 is a ceiling-shaped target, never a quota. Shared files or R-edges everywhere? Re-cut only the blocked row; do not redesign unrelated ready work.
 
 ## The C/R dependency test — apply to every edge
 
@@ -54,7 +54,7 @@ Default: assume C until proven R. Nearly every "foundation first" serialization 
 | `frontend_ui` (+ `designer`, `ui_ux_reviewer` bundle) | any UI slice | specialist routing overrides tiers |
 | `explore` / `plan` / `librarian` | facts / architecture / external APIs | never implementation |
 
-## Wave-plan table — fill before dispatch, verbatim shape
+## Ready-horizon wave-plan table — fill current rows only
 
 | Pkg | Owns (files) | Needs from others | C/R | Tier | Wave | Acceptance (runs itself) |
 |---|---|---|---|---|---|---|
@@ -78,9 +78,21 @@ RIGHT — prefix: parent writes `src/chat/contracts.ts` + `src/docs/contracts.ts
 
 Wave 1 = ONE `task` batch of P1–P6 (six agents in parallel). P7 dispatches when P1+P3+P4 land; P8 when P5 lands. Each assignment pastes in: owned files, forbidden files, the locked contract snippet, acceptance commands, and "done = your Acceptance passes".
 
+## Plan convergence, lock, then dispatch
+
+- New plans follow `skill://brainstorming`, then `skill://writing-plans`, then adversarial `super_review`.
+- Critique/revision MAY repeat without a fixed cap while each round resolves a named blocker or incorporates user feedback through a material plan change. Re-review the complete revised plan until no blocker remains.
+- Satisfaction requires requirement coverage, coherent interfaces/ownership/sequence, executable acceptance, no placeholders, no adversarial blocker, and any active approval gate satisfied. Ordinary implementation requests need no second approval.
+- No blockers + active gate satisfied = LOCKED. The NEXT work action dispatches production; mandatory dispatch-skill reads and todo updates MAY precede it in the same turn, but no plan/review/scout action intervenes.
+- Existing approved plan/brief + ownership + acceptance is already locked. During execution, only concrete compile/test/runtime/contract evidence permits a one-line amendment.
+- After lock, any plan/review/scout before production dispatch = STALL. First execution wave MUST contain a production/runtime-code owner.
+
 ## One workflow run = the whole wave plan
 
 When the `workflow` tool is available and the wave-plan table has 4+ packages or any wave-2 row, execute the ENTIRE plan as ONE `workflow` script. NEVER drip per-package one-off dispatches for a plan a script can run, and NEVER split one wave plan across several workflow runs — design the script so that when it returns, only your integration check remains.
+
+`workflow` runs IMPLEMENTATION phases only — never scouting or planning (scout = ONE parallel `task` batch of `explore` agents; planning happens before scripting). The whole job closes in 1–2 workflow runs total; review/QA/repair phases belong to the final integration phase, not inside intermediate-task runs.
+Every workflow implementation wave MUST contain a production-code package. NEVER script a wave of only RED tests, seam maps, contracts, reviewers, or QA.
 
 ```js
 export const meta = { name: "chat-fanout", description: "wave plan P1-P8", phases: ["wave1", "wave2", "gates"] };
@@ -132,10 +144,10 @@ Tier comes from blast radius, never file extension — a FE slice carrying auth/
 | Test posture | harness, run commands, sibling test locations |
 | Blast radius | callsites/risk hotspots of symbols to change |
 
-Dispatch ALL applicable scouts in ONE parallel batch; skip aspects you already know. Scouts return compressed FACTS with file:line evidence — never designs. Budget: wave 1 + at most ONE follow-up wave for a NAMED contract gap ("exact shape of X?"), then run Phases 1–5 with stated assumptions. Unknowns INSIDE one package never hold dispatch — the owning subagent resolves them; only a SHARED-contract gap may hold Phase 3.
+Dispatch applicable scouts in ONE parallel batch; skip known aspects. Budget: one wave + at most one named follow-up, then dispatch the current production slice with assumptions. Unknowns inside one package belong to its owner; only a shared runtime blocker may delay that package.
 
-Stall signals — any one means lock contracts NOW and dispatch: scouts fired one at a time; re-reading files a scout covered; a foundation todo list that grew since the last wave; "let me also check…" with no package blocked on the answer. Every wave must end in an artifact (locked contract, dispatched packages, integrated diff); two waves of pure "understanding" = stall.
+Immediate stall signals: active Foundation grows; future table blanks delay ready code; an unchanged plan is re-reviewed; a locked plan reopens without new user/execution evidence; or all active workers lack a production owner. Exit: before lock, resolve the named blocker; after lock, dispatch production.
 
 ## Anti-patterns
 
-Serial-chained "foundation" subagents when only types flow between them; phase-split TDD agents (red → implement → fix ping-pong); dispatching without a filled wave-plan table; waterfall dispatch one agent at a time; holding a ready package to batch with future ones; exploring the whole repo before cutting packages; re-scouting what a scout already returned; blocking the fanout on a question no package needs answered; two agents sharing a file.
+Serial Foundation chains; planning every future row; “settle design” loops; RED-only/seam-map waves without production; phase-split TDD; sibling fixer churn; waterfall dispatch; holding one ready package for fake parallelism; whole-repo exploration; re-scouting; two agents sharing files.

@@ -1,6 +1,6 @@
 ---
 name: subagents-development
-description: MANDATORY when delegating implementation to subagents, orchestrating parallel work, splitting a feature into work packages, or dispatching task/quick_task/heavy_task agents. Contains the 5–10-package decomposition rules, exclusive file ownership, a fully-filled gold-standard assignment to copy, git-worktree isolation for parallel agents, serialize-vs-parallelize lists, and the integration protocol for returned work.
+description: MANDATORY for delegated implementation. Defines ready-horizon packages, exclusive production ownership, minimal contract prefixes, bounded correction, and the rule that tests/maps/reviews never occupy the critical path without a production-code owner.
 ---
 
 # Subagents Development
@@ -8,10 +8,10 @@ description: MANDATORY when delegating implementation to subagents, orchestratin
 Many small owners beat one big agent: a 5-package fan-out with tight scopes finishes faster and drifts less than one agent holding a giant context. But a bad decomposition (vague scopes, shared files) is worse than solo work.
 
 ## Decomposition rules
-- Target 5–10 packages for a typical multi-file feature — but only as many as have GENUINELY independent ownership. Padding to hit a number creates merge conflicts.
-- One package = ONE concern, exclusive ownership of its files (no two agents touch the same file), ≤~5 files, 1–2 acceptance checks the subagent can run ITSELF.
-- Interface-first: lock shared types/contracts/schemas SERIALLY yourself (or one plan pass), write them down, then fan out all independent slices in ONE parallel batch call.
-- A package's assignment is self-contained for a reader with ZERO conversation history: every path, symbol, contract, and decision named. If you can't write it that precisely, the design isn't settled — settle it first.
+- Use only as many packages as are ready and genuinely independent. One package is valid; 5–10 is a possible upper fanout, never a quota. Padding increases collisions and coordination cost.
+- One package = ONE executable concern, exclusive files, ≤~5 files, and 1–2 acceptance checks it runs itself.
+- Lock only the minimum shared type/schema required by the NEXT executable slice, then dispatch. NEVER pre-lock contracts for later phases.
+- Assignment uncertainty inside one package belongs to its owner. State assumptions and dispatch; only a contradictory/impossible shared contract blocks that package. Do not “settle design” indefinitely.
 
 ## Gold-standard assignment — copy this shape, filled to this density
 ```
@@ -50,19 +50,20 @@ git worktree add ../wt-pkg1 -b agent/pkg1   # one per package
 # integrate serially: merge/cherry-pick each branch, run gates between
 git worktree remove ../wt-pkg1 && git branch -d agent/pkg1
 ```
+Shared worktree? Generated files, lockfiles, registries, and formatters belong to one integration owner. NEVER create sibling agents on another owner's files; resume the owner, max two corrective iterations TOTAL per package.
 
 ## Route work to the right agent
-Scouting/facts → `explore` (read-only). Plans → `plan`. Library research → `librarian`. UI design/build/review/copy → `designer`/`frontend_ui`/`ui_ux_reviewer`/`ux_copywriter`. Review → `reviewer`. Verification → `qa`/`browser_qa`. Second opinion → `oracle`. `quick_task`/`task`/`heavy_task` = implementation ONLY: quick_task for mechanical locked-spec work you verify yourself; task for contained slices (self_review when you won't verify closely); heavy_task for load-bearing/risk-adjacent work with strict acceptance + self_review.
+Scouting/facts → `explore`; plans → `plan`; library research → `librarian`; UI → specialists; review → `reviewer`; verification → `qa` only when selected. Generic tiers implement production code. A locked execution wave MUST include a production owner; RED tests and seam maps belong inside that owner's package.
 
 ## Serialize vs parallelize
-SERIALIZE: architecture decisions, shared contracts, DB schema, state machines, money/auth logic, final integration, final review. PARALLELIZE: independent modules, frontend+backend after the contract locks, tests from a locked matrix, mechanical edits, adapters behind one interface, docs/config.
+SERIALIZE only the minimum current-path architecture/contract/schema/risk decision and final integration. PARALLELIZE independent production slices with their tests, adapters, wiring, and later cleanup. Independent future concerns NEVER enter current Foundation.
 
 ## Integration protocol (when packages return)
-1. Claims without evidence are re-run or rejected — never trusted.
-2. Check each report against its LOCKED contract; contradictions between packages resolved by you, not by whichever landed last.
-3. Strip scope creep: edits outside the package's Target are reverted unless obviously required and reviewed.
-4. Merge serially, run cross-cutting gates yourself (typecheck, affected tests), then the entry-point probe per skill://verify-before-done.
-5. Non-trivial integrations → background a `qa` agent with the full harness handoff (commands, ports, env, seed, what you ran + evidence).
+1. Claims without package acceptance evidence return to the SAME owner; max two corrections TOTAL per package across all failures.
+2. Check the locked current-slice contract; future hardening notes never reopen it.
+3. Reject scope creep without creating a new Foundation task.
+4. Merge landings and run only failure-matched cross-cutting gates.
+5. Dispatch independent QA only when the lane, external harness, or user requires it; QA never starts before production implementation exists.
 
 ## Anti-patterns
-One vague "build the feature" mega-task; two agents editing one file; implementers inventing behavior where the assignment was silent (that's your spec gap — fix the assignment); dispatching before contracts lock; merging without gates; trusting "done" without the Acceptance evidence.
+One vague mega-task; package quotas; planning future rows; RED-only/seam-map waves; sibling fixer churn; shared-file ownership; serial Foundation; dispatch blocked by local unknowns; unconditional QA/gates; trusting evidence-free completion.

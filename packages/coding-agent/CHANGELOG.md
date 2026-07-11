@@ -17,15 +17,14 @@
 ### Added
 
 - Added bundled `parallel-fanout` skill: 7-phase fanout pipeline, feature-slicing dimension table, contract-vs-runtime (C/R) dependency test, tier table, required wave-plan table with a worked example, a one-workflow rule with a script template (a whole wave plan executes as ONE `workflow` run), one-wave scout fanout with a two-wave exploration budget, and the full-cycle rule (one subagent owns red test + implement + fix until green).
+## [1.5.8] - 2026-07-11
 
 ### Changed
 
-- System prompt DELEGATION now gates exploration and dispatch: multi-aspect scout fanout in one batch, two-wave exploration budget, C/R dependency test, mandatory wave-plan table before dispatch, one `workflow` run per wave plan, and no TDD phase-splitting across subagents.
-- Orchestrator-mode prompt requires `skill://parallel-fanout` before scout/implementation waves and adds full-cycle package, scout-budget, C/R, and one-workflow-run rules to the parallel-execution contract; the orchestrate notice aligns subagent verification with package-local focused tests.
-- Duo advisor system prompt gained a loop-watch duty: detect retry/ping-pong/foundation-growth loops, remind the executor of the main objective with the concrete exit step, and call `request_takeover` purpose `recover` when the loop persists.
-- The heavy_task subagent prompt now instructs it to prefer decomposing and dispatching parallel task/quick_task/explore subagents (C/R test, full-cycle slices per skill://parallel-fanout), keeping only the indivisible load-bearing core for itself.
-- System prompt and orchestrator-mode prompt now require todo-ledger maintenance while waiting on subagents/workflows: reconcile the todo list on every delivered result and poll snapshot, mark todos done the moment their evidence lands, and keep in-progress items matching the agents actually running.
-- Test policy now scales test authoring with criticality (CRITICAL/STANDARD/RUNS-FIRST): only the render/wiring surface (screens, component shells, internal tools, demos) is runs-first — proven by a real entry-point run instead of coverage chasing — while frontend logic (state machines, stores, validation, transforms, guards) ranks by the same axes as backend and still earns targeted tests, and money/auth/data/contract slices gate on green focused suites; applied to the system prompt TESTS policy, full-cycle package rules in both orchestrator prompts and heavy_task, the parallel-fanout and writing-tests-that-matter skills, and a new advisor loop-watch signature for test-theater grind.
+- Planning now converges explicitly across normal, orchestrator, and duo flows: every new plan follows `skill://brainstorming` then `skill://writing-plans`, receives adversarial Super Review, and may take multiple blocker-driven revision rounds until requirements, interfaces, ownership, executable acceptance, and any active approval gate satisfy. The locked plan executes directly; ordinary implementation requests need no second approval.
+- Reading `skill://parallel-fanout` is now mandatory before spawning any work subagents (scouts or implementation) in both the system prompt and orchestrator prompts; `workflow` is scoped to multi-phase implementation only (1–2 runs close a job — never scout/plan runs); the duo advisor loop-watch gained plan-churn, review-theater, and skill-skip signatures.
+- Foundation execution now plans only the current ready horizon: active Foundation may contain only concrete runtime prerequisites for the next executable vertical slice, the first locked execution wave must include a production-code owner, tests/maps/contracts/reviews cannot substitute for implementation, review budget is per task objective with a next-action dispatch invariant, and correction is bounded to the same owner. The rule is enforced across normal/orchestrator prompts, advisor loop-watch, planner/heavy/designer agent prompts, and all bundled skills that previously encouraged broad recon, future-contract planning, RED-only waves, or design-system setup.
+- The shell installer now seeds and migrates the `reviewer` agent to `openai-codex/codex-auto-review`, adds the override when missing, and preserves custom reviewer routes.
 
 ## [16.3.15] - 2026-07-09
 
@@ -10873,6 +10872,21 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.7] - 2026-07-10
+
+### Added
+
+- Added bundled `parallel-fanout` skill: 7-phase fanout pipeline, feature-slicing dimension table, contract-vs-runtime (C/R) dependency test, tier table, required wave-plan table with a worked example, a one-workflow rule with a script template (a whole wave plan executes as ONE `workflow` run), one-wave scout fanout with a two-wave exploration budget, and the full-cycle rule (one subagent owns red test + implement + fix until green).
+
+### Changed
+
+- System prompt DELEGATION now gates exploration and dispatch: multi-aspect scout fanout in one batch, two-wave exploration budget, C/R dependency test, mandatory wave-plan table before dispatch, one `workflow` run per wave plan, and no TDD phase-splitting across subagents.
+- Orchestrator-mode prompt requires `skill://parallel-fanout` before scout/implementation waves and adds full-cycle package, scout-budget, C/R, and one-workflow-run rules to the parallel-execution contract; the orchestrate notice aligns subagent verification with package-local focused tests.
+- Duo advisor system prompt gained a loop-watch duty: detect retry/ping-pong/foundation-growth loops, remind the executor of the main objective with the concrete exit step, and call `request_takeover` purpose `recover` when the loop persists.
+- The heavy_task subagent prompt now instructs it to prefer decomposing and dispatching parallel task/quick_task/explore subagents (C/R test, full-cycle slices per skill://parallel-fanout), keeping only the indivisible load-bearing core for itself.
+- System prompt and orchestrator-mode prompt now require todo-ledger maintenance while waiting on subagents/workflows: reconcile the todo list on every delivered result and poll snapshot, mark todos done the moment their evidence lands, and keep in-progress items matching the agents actually running.
+- Test policy now scales test authoring with criticality (CRITICAL/STANDARD/RUNS-FIRST): only the render/wiring surface (screens, component shells, internal tools, demos) is runs-first — proven by a real entry-point run instead of coverage chasing — while frontend logic (state machines, stores, validation, transforms, guards) ranks by the same axes as backend and still earns targeted tests, and money/auth/data/contract slices gate on green focused suites; applied to the system prompt TESTS policy, full-cycle package rules in both orchestrator prompts and heavy_task, the parallel-fanout and writing-tests-that-matter skills, and a new advisor loop-watch signature for test-theater grind.
 
 ## [1.5.6] - 2026-07-10
 

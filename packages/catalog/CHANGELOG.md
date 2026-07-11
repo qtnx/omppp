@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.5.8] - 2026-07-11
+
+### Added
+
+- Added first-party Meta Model API support for `muse-spark-1.1` over OpenAI Responses with the documented 1,048,576-token context, 131,072-token output limit, and token pricing.
+
 ## [16.3.15] - 2026-07-09
 
 ### Added
