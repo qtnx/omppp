@@ -1096,14 +1096,11 @@ describe("ModelRegistry", () => {
 			});
 		});
 
-		test("custom models preserve explicit thinking and gain backfilled wire facts", () => {
+		test("custom models preserve explicit thinking verbatim", () => {
 			const model = getModelsForProvider(thinkingCustom, "anthropic").find(m => m.id === "claude-custom");
-			expect(model?.thinking).toEqual({
-				...customThinking,
-				// Versionless claude ids resolve to the 4-tier adaptive wire map,
-				// filtered to the declared efforts (no xhigh).
-				effortMap: { minimal: "low" },
-			});
+			// Adaptive effort ladders are wire-exact — explicit thinking passes
+			// through without a backfilled effortMap.
+			expect(model?.thinking).toEqual(customThinking);
 		});
 
 		test("model overrides can replace canonical thinking metadata", () => {
@@ -1513,11 +1510,6 @@ describe("ModelRegistry", () => {
 			expect(tnxSmol?.contextWindow).toBe(256_000);
 			expect(tnxSmol?.maxTokens).toBe(128_000);
 
-			const anthropicOpus = registry
-				.getAll()
-				.find(model => model.provider === "anthropic" && model.id === "claude-opus-4-8");
-			expect(anthropicOpus).toBeDefined();
-
 			const tnxDesigner = availableModels.find(model => model.provider === "tnx" && model.id === "designer");
 			expect(tnxDesigner).toMatchObject({
 				provider: "tnx",
@@ -1531,7 +1523,19 @@ describe("ModelRegistry", () => {
 				maxTokens: 128_000,
 			});
 			expect(tnxDesigner?.name).toBe("designer");
-			expect(tnxDesigner?.thinking).toEqual(anthropicOpus?.thinking);
+			expect(tnxDesigner?.thinking).toEqual({
+				mode: "anthropic-adaptive",
+				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+				effortMap: {
+					[Effort.Minimal]: Effort.Low,
+					[Effort.Low]: Effort.Medium,
+					[Effort.Medium]: Effort.High,
+					[Effort.High]: Effort.XHigh,
+					[Effort.XHigh]: Effort.Max,
+					[Effort.Max]: Effort.Max,
+				},
+				supportsDisplay: true,
+			});
 
 			const tnxSuper = availableModels.find(model => model.provider === "tnx" && model.id === "super");
 			expect(tnxSuper).toMatchObject({

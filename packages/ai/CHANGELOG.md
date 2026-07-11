@@ -8,6 +8,27 @@
 
 - Fixed auth-gateway to prefer and rotate stored OAuth credentials before using a `models.yml` config API key fallback, including Anthropic account-level `credit balance is too low` responses, persistent fallback after the OAuth pool is exhausted, and audit attribution to the credential actually used.
 - Redacted unsupported request `user` and `previous_response_id` values from auth-gateway debug logs while preserving boolean presence markers for diagnostics.
+## [16.4.0] - 2026-07-10
+
+### Added
+
+- Added "max" as a first-class reasoning effort option across providers (including Anthropic, Google, Bedrock, and OpenAI), supporting a maximum reasoning budget of 32,768 tokens.
+- Added and standardized the "Responses Lite" wire contract and transport, enabling automatic activation via model-level catalog flags, moving tools and instructions into developer input items, disabling parallel tool calls, and stripping image detail instead of falling back to the full transport.
+- Added support for concurrent reasoning summaries on Codex Responses using the sequential-cutoff streaming contract.
+- Added Novita API-key login with authenticated key validation and automatic NOVITA_API_KEY environment variable discovery.
+
+### Changed
+
+- Recognized Pro Lite as a paid plan tier for OpenAI Codex models.
+
+### Fixed
+
+- Fixed xAI SuperGrok multi-account rotation to correctly treat HTTP 403 credit exhaustion and spending limit errors as usage limits, triggering a credential rotation to a sibling account.
+- Fixed error classification for AWS credential-resolution failures (AwsCredentialsError) to correctly map them as authentication failures.
+- Fixed OpenAI-compatible chat-completions streams to preserve vLLM-style trailing cached-token usage chunks, ensuring accurate cacheRead and billable input session statistics.
+- Fixed xai-oauth/grok-4.5 Responses requests to omit the unsupported reasoning.summary field while preserving the reasoning.effort payload.
+- Fixed Codex OAuth credential selection to re-check blocked accounts during ranking and clear stale usage-limit blocks once live usage indicates recovery.
+- Fixed sequential-cutoff reasoning summaries duplicating section headers across Codex reasoning items by tracking the cumulative summary response-globally, so replayed sections and replay-only items no longer re-emit text earlier thinking blocks already streamed.
 
 ## [16.3.15] - 2026-07-09
 

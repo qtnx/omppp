@@ -20,6 +20,33 @@
 ### Fixed
 
 - Fixed advisor concern/blocker notes interrupting or skipping active tool/function calls; notes now deliver at a safe boundary, including stream-tail recovery.
+## [16.4.0] - 2026-07-10
+
+### Breaking Changes
+
+- Renamed the bundled agent explore to scout, including its configuration keys, prompt files, and task definitions. Any configurations, allowlists, or invocations referencing explore must now use scout.
+- Changed the public `selectLaunchAdapter()` result from `DapResolvedAdapter | null` to `LaunchAdapterSelection`; callers must handle `adapter`, `unavailable`, and `none` outcomes.
+
+### Added
+
+- Added a native, first-class max thinking tier for supported models, including a new thinkingBudgets.max configuration setting, support in CLI flags (--thinking, :max model suffixes), and terminal theme customization (thinkingMax border color and icons).
+
+### Fixed
+
+- Fixed Go debug launches falling back to native debuggers when Delve is unavailable; nested modules and `go.work` workspaces now resolve local Delve adapters before PATH, newly installed adapters are detected without restart, and missing adapter errors include install or configuration guidance. ([#5037](https://github.com/can1357/oh-my-pi/issues/5037))
+- Fixed a memory leak (large retained JavaScriptCore heaps) in the TUI during session transcript rebuilds and refreshes by properly handling snapcompact archive image frames.
+- Fixed a crash in interactive TUI sessions (Cannot set cwd while another same-realm JS runtime is running) when the JS evaluation worker falls back to the in-process inline path.
+- Fixed compaction aborting when Amazon Bedrock credential resolution fails, ensuring it now falls back to trying an authenticated model.
+- Improved OpenAI prompt cache hit rates for full-context forks by persisting inherited provider prompt-cache keys separately from session IDs, and added a --prompt-cache-key flag for explicit cache affinity.
+- Fixed Codex advisor requests incorrectly using local session labels as provider session IDs, switching to stable UUIDv7 provider identities.
+- Fixed macOS stdio MCP servers launching in detached sessions, allowing tools like xcrun mcpbridge to successfully trigger TCC Apple Events permission prompts.
+- Fixed the ask tool timeout behavior to automatically select the recommended option if the UI selector does not settle.
+- Fixed LSP workspace diagnostics for Go workspaces to correctly recognize go.work roots and include all specified modules in go build package patterns.
+- Fixed interactive OAuth login (/login xai-oauth) delaying success messages; credentials are now reported immediately while model metadata refreshes in the background.
+- Fixed a crash in the Windows bash tool when a timeout occurs while a piped command is streaming output.
+- Fixed subagent yield tool calls being discarded when a soft request budget aborts the assistant turn before the yield event completes.
+- Fixed --tools filtering in interactive sessions incorrectly disabling deferred MCP tools from configured servers.
+- Fixed kept-alive task subagents entering infinite provider-call loops after an IRC wake and terminal yield.
 
 ## [16.3.15] - 2026-07-09
 

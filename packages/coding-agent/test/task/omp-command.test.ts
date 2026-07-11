@@ -635,13 +635,15 @@ describe("sandboxOmpxCommand", () => {
 		}
 	});
 
-	it("preserves session-dir and ACP mode while converting relaunch allowlist dirs to sandbox-only flags", () => {
+	it("preserves session-dir, prompt cache key, and ACP mode while converting relaunch allowlist dirs to sandbox-only flags", () => {
 		const argv = buildMacOSSandboxRelaunchArgv(
 			[
 				"--model",
 				"claude-opus-4-1",
 				"--session-dir",
 				"/Users/alice/sessions",
+				"--prompt-cache-key",
+				"pinned-cache-key",
 				"--mode",
 				"acp",
 				"--sandbox-add-dir",
@@ -657,6 +659,8 @@ describe("sandboxOmpxCommand", () => {
 		expect(argv).toEqual([
 			"--session-dir",
 			"/Users/alice/sessions",
+			"--prompt-cache-key",
+			"pinned-cache-key",
 			"--mode",
 			"acp",
 			"--resume",

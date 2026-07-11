@@ -148,6 +148,7 @@ function snapcompactHistoryBlocksForContext(
 	options: BuildSessionContextOptions | undefined,
 ) {
 	if (!archive) return undefined;
+	if (options?.transcript && options.collapseCompactedHistory) return undefined;
 	return snapcompact.historyBlocks(archive, snapcompactHistoryBlockOptions(archive, options));
 }
 

@@ -277,7 +277,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		expect(session.thinkingLevel).toBe("off");
 	});
 
-	test("preserves max default thinking level from settings", async () => {
+	test("clamps a max default thinking level to the model's ladder ceiling", async () => {
 		const settings = Settings.isolated({ defaultThinkingLevel: "max" });
 
 		const { session } = await createAgentSession({
@@ -287,7 +287,9 @@ describe("createAgentSession deferred model pattern resolution", () => {
 
 		expect(session.model?.provider).toBe("runtime-provider");
 		expect(session.model?.id).toBe("runtime-reasoning-model");
-		expect(session.thinkingLevel).toBe(Effort.Max);
+		// The extension model has no explicit ladder; the inferred fallback tops
+		// out at xhigh, so the real max level clamps down.
+		expect(session.thinkingLevel).toBe(Effort.XHigh);
 	});
 
 	test("selects the settings default model without synchronously validating auth", async () => {
@@ -558,7 +560,6 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		try {
 			expect(session.model?.provider).toBe("openai-codex");
 			expect(session.model?.id).toBe(codexDefault.id);
-			expect(session.model?.id).toBe(openaiDefault.id);
 		} finally {
 			await session.dispose();
 		}

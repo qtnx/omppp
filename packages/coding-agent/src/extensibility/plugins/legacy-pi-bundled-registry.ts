@@ -49,6 +49,7 @@ import * as bundledPiAiOauth from "@oh-my-pi/pi-ai/oauth";
 import * as bundledPiAiOauthAnthropic from "@oh-my-pi/pi-ai/oauth/anthropic";
 import * as bundledPiAiOauthCallbackServer from "@oh-my-pi/pi-ai/oauth/callback-server";
 import * as bundledPiAiOauthCursor from "@oh-my-pi/pi-ai/oauth/cursor";
+import * as bundledPiAiOauthDeviceCode from "@oh-my-pi/pi-ai/oauth/device-code";
 import * as bundledPiAiOauthDevin from "@oh-my-pi/pi-ai/oauth/devin";
 import * as bundledPiAiOauthGithubCopilot from "@oh-my-pi/pi-ai/oauth/github-copilot";
 import * as bundledPiAiOauthGitlabDuo from "@oh-my-pi/pi-ai/oauth/gitlab-duo";
@@ -1323,6 +1324,7 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-ai/oauth/cursor": bundledPiAiOauthCursor as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-ai/oauth/device-code": bundledPiAiOauthDeviceCode as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-ai/oauth/devin": bundledPiAiOauthDevin as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-ai/oauth/github-copilot": bundledPiAiOauthGithubCopilot as unknown as Readonly<
 		Record<string, unknown>

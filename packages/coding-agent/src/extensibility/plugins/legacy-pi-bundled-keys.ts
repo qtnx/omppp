@@ -133,6 +133,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@oh-my-pi/pi-ai/oauth/anthropic",
 	"@oh-my-pi/pi-ai/oauth/callback-server",
 	"@oh-my-pi/pi-ai/oauth/cursor",
+	"@oh-my-pi/pi-ai/oauth/device-code",
 	"@oh-my-pi/pi-ai/oauth/devin",
 	"@oh-my-pi/pi-ai/oauth/github-copilot",
 	"@oh-my-pi/pi-ai/oauth/gitlab-duo-workflow",
