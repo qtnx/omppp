@@ -78,9 +78,19 @@ RIGHT — prefix: parent writes `src/chat/contracts.ts` + `src/docs/contracts.ts
 
 Wave 1 = ONE `task` batch of P1–P6 (six agents in parallel). P7 dispatches when P1+P3+P4 land; P8 when P5 lands. Each assignment pastes in: owned files, forbidden files, the locked contract snippet, acceptance commands, and "done = your Acceptance passes".
 
+## Plan lock — one critique round, then dispatch
+
+- The wave plan earns AT MOST ONE critique round (super_review/reviewer). Triage findings: BLOCKING = a reproducible defect in the planned path, a security violation on the requested path, a contradictory/impossible contract, or unguarded irreversible harm. Everything else (hypothetical hardening, future ops, coverage breadth, later-task edge cases) = a deferred NOTE — one line in the plan, never a redesign.
+- Apply blocking fixes once → LOCKED → dispatch in the SAME turn. Re-review only on new material EXECUTION evidence (failing gate, contract contradicted by code, changed requirement). Wording edits never reopen review.
+- Existing-plan fast path: an approved plan/brief with file ownership and acceptance commands already in the repo/session IS the locked plan — skip Phases 0–3, reuse/fill the wave-plan table, dispatch immediately.
+- Stall rule: 2 consecutive turns of plan/review artifacts with zero dispatch → the next turn dispatches with stated assumptions.
+- Locked = execute: reason about each step internally as you go; never write a per-step plan, mini-plan, or plan restatement between steps. The wave-plan table is the LAST planning artifact — after it, the only planning writes are a one-line amendment on a concrete contradiction and todo status updates.
+
 ## One workflow run = the whole wave plan
 
 When the `workflow` tool is available and the wave-plan table has 4+ packages or any wave-2 row, execute the ENTIRE plan as ONE `workflow` script. NEVER drip per-package one-off dispatches for a plan a script can run, and NEVER split one wave plan across several workflow runs — design the script so that when it returns, only your integration check remains.
+
+`workflow` runs IMPLEMENTATION phases only — never scouting or planning (scout = ONE parallel `task` batch of `explore` agents; planning happens before scripting). The whole job closes in 1–2 workflow runs total; review/QA/repair phases belong to the final integration phase, not inside intermediate-task runs.
 
 ```js
 export const meta = { name: "chat-fanout", description: "wave plan P1-P8", phases: ["wave1", "wave2", "gates"] };

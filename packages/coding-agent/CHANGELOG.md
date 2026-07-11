@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Planning now has a hard exit (plan-lock): one pre-implementation critique round with blocking-only triage (reproducible defect, security violation on the requested path, impossible contract, unguarded irreversible harm), same-turn dispatch after lock, re-review only on new material execution evidence, an existing-plan fast path that skips re-scouting/re-planning, locked-plan execution with internal per-step reasoning (no per-step plan documents), a 2-turn planning stall timebox, focused gates for intermediate tasks with broad review/QA deferred to the final phase, and a user slowdown override — applied to the system prompt, orchestrator-mode prompt, orchestrate notice, duo planner notice, and parallel-fanout skill.
+- Reading `skill://parallel-fanout` is now mandatory before spawning any work subagents (scouts or implementation) in both the system prompt and orchestrator prompts; `workflow` is scoped to multi-phase implementation only (1–2 runs close a job — never scout/plan runs); the duo advisor loop-watch gained plan-churn, review-theater, and skill-skip signatures.
+
 ## [1.5.7] - 2026-07-10
 
 ### Added
