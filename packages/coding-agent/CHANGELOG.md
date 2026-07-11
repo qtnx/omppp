@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Planning now converges explicitly across normal, orchestrator, and duo flows: every new plan follows `skill://brainstorming` then `skill://writing-plans`, receives adversarial Super Review, and may take multiple blocker-driven revision rounds until requirements, interfaces, ownership, executable acceptance, and any active approval gate satisfy. The locked plan executes directly; ordinary implementation requests need no second approval.
+- Reading `skill://parallel-fanout` is now mandatory before spawning any work subagents (scouts or implementation) in both the system prompt and orchestrator prompts; `workflow` is scoped to multi-phase implementation only (1–2 runs close a job — never scout/plan runs); the duo advisor loop-watch gained plan-churn, review-theater, and skill-skip signatures.
+- Foundation execution now plans only the current ready horizon: active Foundation may contain only concrete runtime prerequisites for the next executable vertical slice, the first locked execution wave must include a production-code owner, tests/maps/contracts/reviews cannot substitute for implementation, review budget is per task objective with a next-action dispatch invariant, and correction is bounded to the same owner. The rule is enforced across normal/orchestrator prompts, advisor loop-watch, planner/heavy/designer agent prompts, and all bundled skills that previously encouraged broad recon, future-contract planning, RED-only waves, or design-system setup.
+- The shell installer now seeds and migrates the `reviewer` agent to `openai-codex/codex-auto-review`, adds the override when missing, and preserves custom reviewer routes.
+
 ## [1.5.7] - 2026-07-10
 
 ### Added

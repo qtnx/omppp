@@ -504,6 +504,9 @@ migrate_gpt_5_6_model_config() {
             if (!have_qa) {
                 print override_indent "qa: openai-codex/gpt-5.6-sol:high"
             }
+            if (!have_reviewer) {
+                print override_indent "reviewer: openai-codex/codex-auto-review"
+            }
             if (!have_tester) {
                 print override_indent "tester: openai-codex/gpt-5.6-sol:medium"
             }
@@ -518,6 +521,7 @@ migrate_gpt_5_6_model_config() {
             override_indent = ""
             have_heavy_task = 0
             have_qa = 0
+            have_reviewer = 0
             have_tester = 0
         }
         {
@@ -561,12 +565,17 @@ migrate_gpt_5_6_model_config() {
                         } else if ($0 ~ /openai-codex\/gpt-5\.6-sol:high/) {
                             sub(/openai-codex\/gpt-5\.6-sol:high/, "openai-codex/gpt-5.6-terra:high")
                         }
-                    } else if ($0 ~ /^[[:space:]]*oracle:[[:space:]]*/ || $0 ~ /^[[:space:]]*qa:[[:space:]]*/ || $0 ~ /^[[:space:]]*reviewer:[[:space:]]*/) {
+                    } else if ($0 ~ /^[[:space:]]*oracle:[[:space:]]*/ || $0 ~ /^[[:space:]]*qa:[[:space:]]*/) {
                         if ($0 ~ /^[[:space:]]*qa:[[:space:]]*/) {
                             have_qa = 1
                         }
                         if ($0 ~ /openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/) {
                             sub(/openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/, "openai-codex/gpt-5.6-sol:high")
+                        }
+                    } else if ($0 ~ /^[[:space:]]*reviewer:[[:space:]]*/) {
+                        have_reviewer = 1
+                        if ($0 ~ /openai-codex\/gpt-5\.(5|6-sol)(:[[:alnum:]_.-]+)?/) {
+                            sub(/openai-codex\/gpt-5\.(5|6-sol)(:[[:alnum:]_.-]+)?/, "openai-codex/codex-auto-review")
                         }
                     } else if ($0 ~ /^[[:space:]]*quick_task:[[:space:]]*/) {
                         if ($0 ~ /openai-codex\/gpt-5\.5:[[:alnum:]_.-]+/) {
@@ -789,7 +798,7 @@ task:
     plan: anthropic/claude-fable-5:high
     qa: openai-codex/gpt-5.6-sol:high
     quick_task: openai-codex/gpt-5.6-luna:high
-    reviewer: openai-codex/gpt-5.6-sol:high
+    reviewer: openai-codex/codex-auto-review
     task: openai-codex/gpt-5.6-terra:medium
     tester: openai-codex/gpt-5.6-sol:medium
     ui_ux_reviewer: tnx/designer

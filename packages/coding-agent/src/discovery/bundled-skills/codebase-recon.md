@@ -1,13 +1,14 @@
 ---
 name: codebase-recon
-description: MANDATORY before non-trivial work in an unfamiliar repository or an unfamiliar area of a known repository — first session in a codebase, before any multi-file change, or whenever you are about to guess how a repo works instead of measuring. Contains the 10 measurable profile signals with the exact command for each, the four codebase buckets and the strategy each dictates, and the recon report format. Ends by persisting findings via skill://repo-runbook.
+description: MANDATORY for unfamiliar non-trivial areas, but bounded to signals that can change the current slice. Contains a recon menu, stop conditions, codebase buckets, and cleanup-time runbook persistence; recon never becomes a Foundation phase.
 ---
 
 # Codebase Recon
 
-Measured, not vibed. A profile is reconnaissance — a handful of targeted lookups scaled to the task (small solo change: only the signals your edit touches; multi-file: the touched area; risk work: touched area + blast radius). Never an exhaustive audit.
+Measured, not exhaustive. Recon only the touched area and only until route, current contract, production owner, and acceptance are known. Then implement; future-phase questions remain future work.
 
 ## The 10 signals — with the command to measure each
+This is a menu, NOT a checklist. L1 uses 0–1 signals, L2 normally ≤3, L3 normally ≤5; exceed only for ONE named blocker. A second lookup that cannot change the next production action is a stall.
 1. TEST POSTURE — `find <target-dir> -name "*test*" -o -name "*spec*" | head`; CI presence: `ls .github/workflows *.gitlab-ci.yml 2>/dev/null`. → covered / partial / none. None = no net: characterize before restructuring (skill://refactoring-safely).
 2. TYPE SAFETY — `cat tsconfig.json | grep -A5 compilerOptions` (strict?); `cat mypy.ini setup.cfg pyproject.toml 2>/dev/null | grep -i strict`; Go/Rust = strong by default. → strong types let you refactor by "break and follow errors"; weak types mean grep lies — verify at runtime.
 3. GATES — `cat package.json | jq .scripts`; `grep -E '^[a-z-]+:' Makefile`; CI steps. The repo's OWN definition of green — run THOSE, never invent parallel gates.
@@ -36,5 +37,5 @@ landmines: <anything surprising, with file:line>
 open questions: <docs-vs-code conflicts, fragmented patterns → interview items>
 ```
 
-## Then persist it
-First session in this repo → write the verified findings (run commands that actually worked, ports, seed users, landmines) into a per-repo runbook per skill://repo-runbook, so nobody pays for this archaeology twice.
+## Persist during cleanup
+After the first executable slice works, persist verified run/build/test facts via skill://repo-runbook. Runbook writing NEVER blocks production dispatch.
