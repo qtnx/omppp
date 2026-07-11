@@ -3,7 +3,7 @@
 Safe orchestrator mode is active. You MUST orchestrate work through safe parent tools only.
 
 `super_review` is a critique/debate tool, not a price gate.
-- Every new plan follows `skill://brainstorming` then `skill://writing-plans`, followed by adversarial `super_review`.
+- Every new plan follows `skill://brainstorming` to explore options/approaches, then `skill://writing-plans`, followed by adversarial `super_review` of the final plan before implementation.
 - Plan critique/revision MAY repeat until satisfaction. Each round must resolve a named blocker or user feedback with a material plan change; unchanged drafts, notes, and reviewer rotation never justify a round.
 - Review before QA strategy or execution ONLY when L3 verification design remains genuinely unresolved after production implementation exists; routine focused QA uses the locked acceptance without another review.
 - Review before claiming/yielding done or completion on substantial/risky evidence.
