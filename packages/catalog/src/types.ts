@@ -197,6 +197,12 @@ export interface OpenAICompat {
 	enableGeminiThinkingLoopGuard?: boolean;
 	/** Which field to use for max tokens. Default: auto-detected from URL. */
 	maxTokensField?: "max_completion_tokens" | "max_tokens";
+	/**
+	 * Provider-specific hard ceiling for OpenAI-family output-token request fields.
+	 * Overrides pi-ai's conservative 64K default only when the upstream documents a
+	 * larger supported limit.
+	 */
+	providerOutputClamp?: number;
 	/** Whether tool results require the `name` field. Default: auto-detected from URL. */
 	requiresToolResultName?: boolean;
 	/** Whether a user message after tool results requires an assistant message in between. Default: auto-detected from URL. */
@@ -495,6 +501,8 @@ export interface ResolvedOpenAISharedCompat {
 	isOpenRouterHost: boolean;
 	/** Whether this endpoint needs a max-token field even when caller did not set one. */
 	alwaysSendMaxTokens: boolean;
+	/** Provider-specific hard output-token ceiling; undefined keeps pi-ai's conservative default. */
+	providerOutputClamp?: number;
 	/** See {@link OpenAICompat.enableGeminiThinkingLoopGuard}. Set by the builder from the family classifier. */
 	enableGeminiThinkingLoopGuard?: boolean;
 	openRouterRouting?: OpenAICompat["openRouterRouting"];
@@ -548,6 +556,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "supportsStrictMode"
 			| "supportsLongPromptCacheRetention"
 			| "alwaysSendMaxTokens"
+			| "providerOutputClamp"
 			| "wireModelIdMode"
 			| "vercelGatewayRouting"
 			| "extraBody"

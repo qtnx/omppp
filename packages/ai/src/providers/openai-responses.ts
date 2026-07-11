@@ -850,9 +850,14 @@ export function buildParams(
 		omitMaxOutputTokens: model.omitMaxOutputTokens ?? false,
 		isOpenRouterHost: model.compat.isOpenRouterHost,
 		alwaysSendMaxTokens: model.compat.alwaysSendMaxTokens,
+		providerOutputClamp: model.compat.providerOutputClamp,
 	});
 
-	applyCommonResponsesSamplingParams(params, { ...options, maxTokens: outputToken?.value }, model);
+	applyCommonResponsesSamplingParams(
+		params,
+		{ ...options, maxTokens: outputToken?.value, providerOutputClamp: model.compat.providerOutputClamp },
+		model,
+	);
 	if (options?.textVerbosity && isOfficialOpenAIResponsesEndpoint(model)) {
 		params.text = { ...params.text, verbosity: options.textVerbosity };
 	}

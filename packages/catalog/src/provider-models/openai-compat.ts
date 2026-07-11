@@ -820,6 +820,76 @@ export function openaiModelManagerOptions(config?: OpenAIModelManagerConfig): Mo
 		}),
 	};
 }
+// ---------------------------------------------------------------------------
+// 1.5 Meta Model API
+// ---------------------------------------------------------------------------
+
+const META_MODEL_API_BASE_URL = "https://api.meta.ai/v1";
+const META_MUSE_SPARK_MODEL_ID = "muse-spark-1.1";
+const META_MUSE_SPARK_CONTEXT_WINDOW = 1_048_576;
+const META_MUSE_SPARK_MAX_TOKENS = 131_072;
+const META_MUSE_SPARK_COST = {
+	input: 1.25,
+	output: 4.25,
+	cacheRead: 0.15,
+	cacheWrite: 0,
+} as const;
+
+function applyMetaModelMetadata(model: ModelSpec<"openai-responses">): ModelSpec<"openai-responses"> {
+	const compat = {
+		...model.compat,
+		supportsDeveloperRole: true,
+	};
+	if (model.id !== META_MUSE_SPARK_MODEL_ID) {
+		return { ...model, compat };
+	}
+	return {
+		...model,
+		reasoning: true,
+		input: ["text", "image"],
+		cost: META_MUSE_SPARK_COST,
+		contextWindow: META_MUSE_SPARK_CONTEXT_WINDOW,
+		maxTokens: META_MUSE_SPARK_MAX_TOKENS,
+		compat: {
+			...compat,
+			providerOutputClamp: META_MUSE_SPARK_MAX_TOKENS,
+		},
+	};
+}
+
+export const META_MUSE_SPARK_STATIC_MODEL = applyMetaModelMetadata({
+	id: META_MUSE_SPARK_MODEL_ID,
+	name: "Muse Spark 1.1",
+	api: "openai-responses",
+	provider: "meta",
+	baseUrl: META_MODEL_API_BASE_URL,
+	reasoning: true,
+	input: ["text", "image"],
+	cost: META_MUSE_SPARK_COST,
+	contextWindow: META_MUSE_SPARK_CONTEXT_WINDOW,
+	maxTokens: META_MUSE_SPARK_MAX_TOKENS,
+});
+
+export interface MetaModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+}
+
+export function metaModelManagerOptions(config?: MetaModelManagerConfig): ModelManagerOptions<"openai-responses"> {
+	const options = createSimpleOpenAIResponsesOptions("meta", META_MODEL_API_BASE_URL, config);
+	const fetchDynamicModels = options.fetchDynamicModels;
+	if (!fetchDynamicModels) {
+		return options;
+	}
+	return {
+		...options,
+		fetchDynamicModels: async () => {
+			const models = await fetchDynamicModels();
+			return models?.map(applyMetaModelMetadata) ?? null;
+		},
+	};
+}
 
 /** First-party gpt-5.6 SKUs that accept `reasoning: { mode: "pro" }` on the Responses APIs. */
 const OPENAI_PRO_REASONING_BASE_IDS: Record<string, true> = {
@@ -4371,6 +4441,12 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_CORE: readonly ModelsDevProviderDescriptor
 	),
 	// --- OpenAI ---
 	simpleModelsDevDescriptor("openai", "openai", "openai-responses", "https://api.openai.com/v1"),
+	// --- Meta Model API ---
+	simpleModelsDevDescriptor("meta", "meta", "openai-responses", META_MODEL_API_BASE_URL, {
+		// Meta's first-party coding-agent guide is authoritative for limits; the
+		// initial models.dev row reported a 1,000,000 / 32,000 approximation.
+		transformModel: model => applyMetaModelMetadata(model as ModelSpec<"openai-responses">),
+	}),
 	// --- Groq ---
 	openAiCompletionsDescriptor("groq", "groq", "https://api.groq.com/openai/v1"),
 	// --- Cerebras ---

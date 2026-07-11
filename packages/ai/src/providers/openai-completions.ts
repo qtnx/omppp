@@ -1551,7 +1551,7 @@ function buildParams(
 		omitMaxOutputTokens: model.omitMaxOutputTokens ?? false,
 		isOpenRouterHost: compat.isOpenRouterHost,
 		alwaysSendMaxTokens: compat.alwaysSendMaxTokens,
-		providerOutputClamp: resolveZaiReasoningOutputClamp(model, compat),
+		providerOutputClamp: compat.providerOutputClamp ?? resolveZaiReasoningOutputClamp(model, compat),
 	});
 	if (outputToken) {
 		if (outputToken.field === "max_tokens") {
