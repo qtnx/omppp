@@ -2520,7 +2520,7 @@ type CommonResponsesParams = ResponseCreateParamsStreaming & ResponsesSamplingPa
 type CommonSamplingOptions = Pick<
 	StreamOptions,
 	"temperature" | "topP" | "topK" | "minP" | "presencePenalty" | "repetitionPenalty" | "maxTokens"
-> & { serviceTier?: ServiceTier };
+> & { serviceTier?: ServiceTier; providerOutputClamp?: number };
 
 /**
  * Apply the common `StreamOptions` → Responses sampling-parameter mapping (max output tokens,
@@ -2540,7 +2540,7 @@ export function applyCommonResponsesSamplingParams<P extends CommonResponsesPara
 		params.max_output_tokens = Math.min(
 			options.maxTokens,
 			model.maxTokens ?? Number.POSITIVE_INFINITY,
-			OPENAI_MAX_OUTPUT_TOKENS,
+			options.providerOutputClamp ?? OPENAI_MAX_OUTPUT_TOKENS,
 		);
 	}
 	if (options?.temperature !== undefined) params.temperature = options.temperature;
