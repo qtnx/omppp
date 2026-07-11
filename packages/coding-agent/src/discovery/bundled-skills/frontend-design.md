@@ -1,15 +1,15 @@
 ---
 name: frontend-design
-description: Foundation for all production frontend/UI/UX work — project-context discovery, design-token discipline, aesthetic direction, interface states, responsive behavior, anti-slop and anti-mockup rules. Use whenever a task designs, implements, restyles, or reviews any user interface, component, screen, page, or layout, even if the word "design" never appears in the request.
+description: Foundation for all production frontend/UI/UX work, bounded to the requested executable vertical slice. Covers project context, tokens, aesthetic direction, states, responsive behavior, and anti-slop; it never authorizes a general design-system Foundation phase before product UI ships.
 ---
 
-# Frontend Design (Foundation)
+# Frontend Design
 
 Precedence for every decision below: **project guidelines > this skill > model defaults.**
 
 ## 1. Project context first
 
-Before any design decision or UI code, discover what the project already defines:
+Before design decisions, inspect only enough project context to identify the current slice's existing system and newest pattern:
 
 - Docs: `DESIGN*.md`, `STYLEGUIDE*`, `docs/design*`, `docs/brand*`, `CONTRIBUTING*`, brand asset folders.
 - Tokens/themes: `tailwind.config.*`, `theme.*`, `tokens.*`, CSS custom properties, MUI/Chakra/styled-system theme files.
@@ -20,12 +20,12 @@ Anything found there overrides this skill. When project convention conflicts wit
 
 ## 2. Design-system discipline
 
-Work these phases in order:
+Work inside the current executable UI slice:
 
-1. **Token-first analysis (before any CSS/JSX/Svelte).** `grep`/`read` the design tokens (colors, spacing, typography, shadows, radii), theme files, and shared primitives (Button, Card, Input, Layout). Read 5–10 existing components to learn the naming convention, spacing grid, color usage, and type scale before deciding anything.
-2. **No coherent system? Build the minimal one first.** Extract what exists, then define a palette, type scale, spacing scale (4/8px base), radii/shadows/transitions, and primitive components — then implement the request on top of it.
-3. **Compose with the system, never around it.** Colors → tokens/CSS variables, never hardcoded hex. Spacing → scale steps, never arbitrary px. Type → scale steps. Components → extend or compose existing primitives, never one-off div soup. Need something the system lacks? Add the token/primitive to the system first, then use it — never a local override.
-4. **Verify before done.** Every color a token, every spacing on the scale, every component on an existing composition pattern, zero magic numbers. Any "no" → not done.
+1. **Bounded token scan.** Read token/theme sources plus 2–3 newest analogous components. Stop when naming, spacing, color, and type patterns agree.
+2. **Missing primitive? Add only what this slice uses.** Define the smallest token/primitive in the SAME implementation package; NEVER build a general palette/component Foundation first.
+3. **Compose with the system.** Reuse tokens/primitives; a new token must be used by the current slice now, not reserved for future screens.
+4. **Verify selected UI risks.** Check rendered states, responsive boundaries, accessibility, and theme modes that the changed slice actually supports; do not turn style consistency into an unbounded audit.
 
 Prefer **semantic tokens** over literal ones: `--color-surface`, `--text-muted` — not `gray-100` scattered through components.
 
@@ -33,7 +33,7 @@ If the project has theme modes, every change is verified in both; in dark mode p
 
 ## 3. Aesthetic direction
 
-Commit to one named direction before coding and state it in your plan (e.g. minimal/editorial, soft-depth, dense/technical, brutalist, warm/organic). Distinctive choices come from the product's own world — its domain, materials, vocabulary — not from a style grab-bag.
+Choose one aesthetic direction once in the package brief or internal reasoning, then code. NEVER create or re-review a separate design plan artifact after direction is locked.
 
 - **Typography.** At most two families (display + body; optional mono for data). Set a modular scale (ratio ~1.2–1.333) and use only its steps. Body line-height 1.4–1.6, tighter for display; measure 45–75ch. When the choice is free, pick faces with character over reflexive Inter/Roboto/Open Sans — but an existing project font is a convention: keep it.
 - **Color.** Tint neutrals toward the brand hue — never pure `#000`/`#fff`. One accent that does real work (primary actions), not decoration. Semantic colors (success/warning/danger) reserved for meaning only. On colored backgrounds, derive text/borders from shades of that background hue, not flat gray.
