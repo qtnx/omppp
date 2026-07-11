@@ -736,7 +736,10 @@ describe("IRC", () => {
 			expect(promptSpy).toHaveBeenCalledTimes(1);
 			// The idle wake routes through #wakeForIrc, which batches records into one prompt —
 			// even a lone incoming message is delivered as a one-element array.
-			const prompted = (promptSpy.mock.calls[0]?.[0] as unknown as CustomMessage[])[0];
+			const firstCall = promptSpy.mock.calls[0];
+			if (!firstCall) throw new Error("Expected one prompt call");
+			const prompted = (firstCall[0] as unknown as CustomMessage[])[0];
+			if (!prompted) throw new Error("Expected one prompted message");
 			expect(prompted).toMatchObject({ role: "custom", customType: "irc:incoming" });
 			expect(prompted.details).toMatchObject({ id: "msg-1", from: "0-Peer", message: "wake up" });
 

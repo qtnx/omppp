@@ -21,6 +21,7 @@ import gitCraft from "./bundled-skills/git-craft.md" with { type: "text" };
 import incidentResponse from "./bundled-skills/incident-response.md" with { type: "text" };
 import migrationUpgrade from "./bundled-skills/migration-upgrade.md" with { type: "text" };
 import observabilityInstrumentation from "./bundled-skills/observability-instrumentation.md" with { type: "text" };
+import parallelFanout from "./bundled-skills/parallel-fanout.md" with { type: "text" };
 import refactoringSafely from "./bundled-skills/refactoring-safely.md" with { type: "text" };
 import repoRunbook from "./bundled-skills/repo-runbook.md" with { type: "text" };
 import securityReview from "./bundled-skills/security-review.md" with { type: "text" };
@@ -115,6 +116,11 @@ const BUNDLED_SKILL_SOURCES: readonly BundledSkillSource[] = [
 		name: "observability-instrumentation",
 		content: observabilityInstrumentation,
 		filePath: `${import.meta.dir}/bundled-skills/observability-instrumentation.md`,
+	},
+	{
+		name: "parallel-fanout",
+		content: parallelFanout,
+		filePath: `${import.meta.dir}/bundled-skills/parallel-fanout.md`,
 	},
 	{
 		name: "refactoring-safely",

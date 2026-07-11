@@ -40,6 +40,7 @@ const ARCHIVE_ENGINEERING_SKILL_NAMES = [
 	"incident-response",
 	"migration-upgrade",
 	"observability-instrumentation",
+	"parallel-fanout",
 	"refactoring-safely",
 	"repo-runbook",
 	"security-review",

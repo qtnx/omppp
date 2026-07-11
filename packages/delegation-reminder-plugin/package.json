@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/delegation-reminder-plugin",
-	"version": "1.5.6",
+	"version": "1.5.8",
 	"description": "Mid-turn delegation/orchestrator-mode enforcement extension for omp",
 	"homepage": "https://omp.sh",
 	"author": "Can Boluk",

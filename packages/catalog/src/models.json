@@ -11490,10 +11490,10 @@
 				"image"
 			],
 			"cost": {
-				"input": 2,
-				"output": 10,
-				"cacheRead": 0.2,
-				"cacheWrite": 2.5
+				"input": 3,
+				"output": 15,
+				"cacheRead": 0.3,
+				"cacheWrite": 3.75
 			},
 			"contextWindow": 1000000,
 			"maxTokens": 128000,
@@ -13429,7 +13429,7 @@
 				"cacheRead": 0.3,
 				"cacheWrite": 3.75
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 200000,
 			"maxTokens": 64000,
 			"thinking": {
 				"mode": "budget",
@@ -38064,6 +38064,42 @@
 					"low",
 					"medium",
 					"high"
+				]
+			}
+		}
+	},
+	"meta": {
+		"muse-spark-1.1": {
+			"id": "muse-spark-1.1",
+			"name": "Muse Spark 1.1",
+			"api": "openai-responses",
+			"provider": "meta",
+			"baseUrl": "https://api.meta.ai/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 1.25,
+				"output": 4.25,
+				"cacheRead": 0.15,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 131072,
+			"compat": {
+				"supportsDeveloperRole": true,
+				"providerOutputClamp": 131072
+			},
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
 				]
 			}
 		}
@@ -65344,8 +65380,6 @@
 			},
 			"contextWindow": 1050000,
 			"maxTokens": 128000,
-			"requestModelId": "gpt-5.6-luna",
-			"reasoningMode": "pro",
 			"applyPatchToolType": "freeform",
 			"thinking": {
 				"mode": "effort",
@@ -65353,10 +65387,18 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh",
-					"max"
-				]
-			}
+					"xhigh"
+				],
+				"effortMap": {
+					"minimal": "low",
+					"low": "medium",
+					"medium": "high",
+					"high": "xhigh",
+					"xhigh": "max"
+				}
+			},
+			"requestModelId": "gpt-5.6-luna",
+			"reasoningMode": "pro"
 		},
 		"gpt-5.6-sol": {
 			"id": "gpt-5.6-sol",
@@ -65408,8 +65450,6 @@
 			},
 			"contextWindow": 1050000,
 			"maxTokens": 128000,
-			"requestModelId": "gpt-5.6-sol",
-			"reasoningMode": "pro",
 			"applyPatchToolType": "freeform",
 			"thinking": {
 				"mode": "effort",
@@ -65417,10 +65457,18 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh",
-					"max"
-				]
-			}
+					"xhigh"
+				],
+				"effortMap": {
+					"minimal": "low",
+					"low": "medium",
+					"medium": "high",
+					"high": "xhigh",
+					"xhigh": "max"
+				}
+			},
+			"requestModelId": "gpt-5.6-sol",
+			"reasoningMode": "pro"
 		},
 		"gpt-5.6-terra": {
 			"id": "gpt-5.6-terra",
@@ -65472,8 +65520,6 @@
 			},
 			"contextWindow": 1050000,
 			"maxTokens": 128000,
-			"requestModelId": "gpt-5.6-terra",
-			"reasoningMode": "pro",
 			"applyPatchToolType": "freeform",
 			"thinking": {
 				"mode": "effort",
@@ -65481,10 +65527,18 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh",
-					"max"
-				]
-			}
+					"xhigh"
+				],
+				"effortMap": {
+					"minimal": "low",
+					"low": "medium",
+					"medium": "high",
+					"high": "xhigh",
+					"xhigh": "max"
+				}
+			},
+			"requestModelId": "gpt-5.6-terra",
+			"reasoningMode": "pro"
 		},
 		"o1": {
 			"id": "o1",
@@ -66331,8 +66385,6 @@
 			"preferWebsockets": true,
 			"useResponsesLite": true,
 			"priority": 3,
-			"requestModelId": "gpt-5.6-luna",
-			"reasoningMode": "pro",
 			"applyPatchToolType": "freeform",
 			"thinking": {
 				"mode": "effort",
@@ -66340,10 +66392,18 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh",
-					"max"
-				]
-			}
+					"xhigh"
+				],
+				"effortMap": {
+					"minimal": "low",
+					"low": "medium",
+					"medium": "high",
+					"high": "xhigh",
+					"xhigh": "max"
+				}
+			},
+			"requestModelId": "gpt-5.6-luna",
+			"reasoningMode": "pro"
 		},
 		"gpt-5.6-sol": {
 			"id": "gpt-5.6-sol",
@@ -66411,8 +66471,6 @@
 			"preferWebsockets": true,
 			"useResponsesLite": true,
 			"priority": 1,
-			"requestModelId": "gpt-5.6-sol",
-			"reasoningMode": "pro",
 			"applyPatchToolType": "freeform",
 			"thinking": {
 				"mode": "effort",
@@ -66420,10 +66478,18 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh",
-					"max"
-				]
-			}
+					"xhigh"
+				],
+				"effortMap": {
+					"minimal": "low",
+					"low": "medium",
+					"medium": "high",
+					"high": "xhigh",
+					"xhigh": "max"
+				}
+			},
+			"requestModelId": "gpt-5.6-sol",
+			"reasoningMode": "pro"
 		},
 		"gpt-5.6-terra": {
 			"id": "gpt-5.6-terra",
@@ -66491,8 +66557,6 @@
 			"preferWebsockets": true,
 			"useResponsesLite": true,
 			"priority": 2,
-			"requestModelId": "gpt-5.6-terra",
-			"reasoningMode": "pro",
 			"applyPatchToolType": "freeform",
 			"thinking": {
 				"mode": "effort",
@@ -66500,10 +66564,18 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh",
-					"max"
-				]
-			}
+					"xhigh"
+				],
+				"effortMap": {
+					"minimal": "low",
+					"low": "medium",
+					"medium": "high",
+					"high": "xhigh",
+					"xhigh": "max"
+				}
+			},
+			"requestModelId": "gpt-5.6-terra",
+			"reasoningMode": "pro"
 		}
 	},
 	"opencode": {

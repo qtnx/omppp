@@ -2,9 +2,9 @@
 
 ## [Unreleased]
 
-## [1.5.6] - 2026-07-10
+## [1.5.8] - 2026-07-11
 
-### Fixed
+### Added
 
 - Fixed auth-gateway to prefer and rotate stored OAuth credentials before using a `models.yml` config API key fallback, including Anthropic account-level `credit balance is too low` responses, persistent fallback after the OAuth pool is exhausted, and audit attribution to the credential actually used.
 - Redacted unsupported request `user` and `previous_response_id` values from auth-gateway debug logs while preserving boolean presence markers for diagnostics.
@@ -29,6 +29,7 @@
 - Fixed xai-oauth/grok-4.5 Responses requests to omit the unsupported reasoning.summary field while preserving the reasoning.effort payload.
 - Fixed Codex OAuth credential selection to re-check blocked accounts during ranking and clear stale usage-limit blocks once live usage indicates recovery.
 - Fixed sequential-cutoff reasoning summaries duplicating section headers across Codex reasoning items by tracking the cumulative summary response-globally, so replayed sections and replay-only items no longer re-emit text earlier thinking blocks already streamed.
+- Added Meta Model API key login and provider-scoped 131,072-token OpenAI Responses output requests without raising the 64K safety limit for other providers.
 
 ## [16.3.15] - 2026-07-09
 
@@ -4107,6 +4108,13 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.6] - 2026-07-10
+
+### Fixed
+
+- Fixed auth-gateway to prefer and rotate stored OAuth credentials before using a `models.yml` config API key fallback, including Anthropic account-level `credit balance is too low` responses, persistent fallback after the OAuth pool is exhausted, and audit attribution to the credential actually used.
+- Redacted unsupported request `user` and `previous_response_id` values from auth-gateway debug logs while preserving boolean presence markers for diagnostics.
 
 ## [1.5.5] - 2026-07-09
 

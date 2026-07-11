@@ -422,6 +422,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		// every call since the family can otherwise emit very long reasoning traces
 		// before the final answer.
 		alwaysSendMaxTokens: isKimiModel,
+		providerOutputClamp: undefined,
 		disableReasoningOnForcedToolChoice: isKimiModel || isAnthropicModel,
 		disableReasoningOnToolChoice: isDeepseekFamily && Boolean(spec.reasoning) && !isOpenRouter,
 		supportsToolChoice: !isDirectDeepseekReasoning,
@@ -635,6 +636,7 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		isOpenRouterHost: isOpenRouter,
 		wireModelIdMode: isOpenRouter ? "openrouter" : "raw",
 		alwaysSendMaxTokens: spec.id ? isKimiModelId(spec.id) : false,
+		providerOutputClamp: undefined,
 		enableGeminiThinkingLoopGuard: modelFamilyToken(spec.id ?? "") === "gemini",
 		supportsObfuscationOptOut: isOpenAIUrl || spec.provider === "openai",
 		stripDeepseekSpecialTokens:

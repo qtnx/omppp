@@ -1277,7 +1277,7 @@ describe("compact() remote compaction failure handling", () => {
 		await compact(preparation, model, "test-key", undefined, undefined, { fetch: fetchMock });
 
 		expect(requestBody?.model).toBe("gpt-5.6-sol");
-		expect(requestBody?.reasoning).toEqual({ effort: "high", summary: "auto", mode: "pro" });
+		expect(requestBody?.reasoning).toEqual({ effort: "xhigh", summary: "auto", mode: "pro" });
 	});
 
 	test("sends pro reasoning mode when V2 compaction reasoning effort is disabled", async () => {

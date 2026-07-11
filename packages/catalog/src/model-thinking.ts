@@ -78,6 +78,12 @@ const FIVE_TIER_EFFORTS_LOW_TO_MAX: readonly Effort[] = [
 	Effort.XHigh,
 	Effort.Max,
 ];
+/**
+ * Pro aliases expose a four-tier selector but shift every selector tier up on
+ * the five-level Responses wire scale. Keep the minimal fallback in the map
+ * for persisted selections from before the alias surface was narrowed.
+ */
+const OPENAI_PRO_REASONING_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
 /** Legacy adaptive scale (Opus/Sonnet 4.6, every Bedrock adaptive model): four wire tiers, no xhigh. */
 const FOUR_TIER_EFFORTS_LOW_TO_MAX: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.Max];
 /** GLM-5.2 resellers that pass the default lower tiers verbatim and expose the genuine `max` top tier. */
@@ -105,6 +111,13 @@ const FIREWORKS_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
 const MIMO_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
 	[Effort.Minimal]: "low",
 	[Effort.XHigh]: "high",
+};
+const OPENAI_PRO_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
+	[Effort.Minimal]: "low",
+	[Effort.Low]: "medium",
+	[Effort.Medium]: "high",
+	[Effort.High]: "xhigh",
+	[Effort.XHigh]: "max",
 };
 
 const MINIMAX_ANTHROPIC_ADAPTIVE_EFFORT_MAP: Readonly<EffortMap> = {
@@ -247,6 +260,13 @@ function inferEffortMap<TApi extends Api>(
 	mode: ThinkingConfig["mode"],
 	efforts: readonly Effort[],
 ): EffortMap | undefined {
+	if (
+		spec.reasoningMode === "pro" &&
+		((spec.provider === "openai" && spec.api === "openai-responses") ||
+			(spec.provider === "openai-codex" && spec.api === "openai-codex-responses"))
+	) {
+		return OPENAI_PRO_REASONING_EFFORT_MAP;
+	}
 	const detected = inferDetectedEffortMap(spec, compat, mode);
 	const configured = readCompatEffortMap(compat);
 	const merged =
@@ -302,6 +322,13 @@ function getModelDefinedEfforts<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
 ): readonly Effort[] | undefined {
+	if (
+		spec.reasoningMode === "pro" &&
+		((spec.provider === "openai" && spec.api === "openai-responses") ||
+			(spec.provider === "openai-codex" && spec.api === "openai-codex-responses"))
+	) {
+		return OPENAI_PRO_REASONING_EFFORTS;
+	}
 	if (isGlm52ReasoningEffortModelId(spec.id)) {
 		// GLM-5.2's reasoning_effort dialect is host-specific (verified against
 		// live endpoints):

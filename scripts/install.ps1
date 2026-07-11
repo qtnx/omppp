@@ -232,7 +232,7 @@ task:
     plan: anthropic/claude-fable-5:high
     qa: openai-codex/gpt-5.6-sol:high
     quick_task: openai-codex/gpt-5.6-luna:high
-    reviewer: openai-codex/gpt-5.6-sol:high
+    reviewer: openai-codex/codex-auto-review
     task: openai-codex/gpt-5.6-terra:medium
     tester: openai-codex/gpt-5.6-sol:medium
     ui_ux_reviewer: tnx/designer

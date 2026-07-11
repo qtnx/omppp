@@ -536,7 +536,8 @@ task:
 
 			const firstResult = await runShellInstaller(root, installDir);
 			expect(firstResult.exitCode).toBe(0);
-			const firstConfig = YAML.parse(await Bun.file(configPath).text()) as {
+			const firstConfigText = await Bun.file(configPath).text();
+			const firstConfig = YAML.parse(firstConfigText) as {
 				modelRoles: Record<string, string>;
 				task: { agentModelOverrides: Record<string, string> };
 			};
@@ -554,7 +555,7 @@ task:
 				heavy_task: "openai-codex/gpt-5.6-terra:high",
 				oracle: "openai-codex/gpt-5.6-sol:high",
 				qa: "openai-codex/gpt-5.6-sol:high",
-				reviewer: "openai-codex/gpt-5.6-sol:high",
+				reviewer: "openai-codex/codex-auto-review",
 				quick_task: "openai-codex/gpt-5.6-luna:high",
 				task: "openai-codex/gpt-5.6-terra:medium",
 				tester: "openai-codex/gpt-5.6-sol:medium",
@@ -565,12 +566,54 @@ task:
 
 			const secondResult = await runShellInstaller(root, installDir);
 			expect(secondResult.exitCode).toBe(0);
-			const secondConfig = YAML.parse(await Bun.file(configPath).text());
+			const secondConfigText = await Bun.file(configPath).text();
+			const secondConfig = YAML.parse(secondConfigText);
 			expect(secondConfig).toEqual(firstConfig);
+			expect(secondConfigText).toBe(firstConfigText);
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
 	});
+
+	const reviewerMigrationCases = [
+		{
+			name: "migrates the previously shipped GPT-5.6 Sol reviewer override to auto-review",
+			input: "task:\n  agentModelOverrides:\n    reviewer: openai-codex/gpt-5.6-sol:high\n",
+			expectedReviewer: "openai-codex/codex-auto-review",
+		},
+		{
+			name: "adds the auto-review reviewer override when an existing override block omits it",
+			input: "task:\n  agentModelOverrides:\n    custom_agent: custom/provider\n",
+			expectedReviewer: "openai-codex/codex-auto-review",
+		},
+		{
+			name: "preserves a custom reviewer override",
+			input: "task:\n  agentModelOverrides:\n    reviewer: custom/provider\n",
+			expectedReviewer: "custom/provider",
+		},
+	] as const;
+
+	for (const { name, input, expectedReviewer } of reviewerMigrationCases) {
+		it(name, async () => {
+			const binaryContent = "safe release binary";
+			const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+			const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+			const configPath = shellConfigPath(root);
+			try {
+				await Bun.write(configPath, input);
+
+				const result = await runShellInstaller(root, installDir);
+				expect(result.exitCode).toBe(0);
+				const config = YAML.parse(await Bun.file(configPath).text()) as {
+					task: { agentModelOverrides: Record<string, string> };
+				};
+
+				expect(config.task.agentModelOverrides.reviewer).toBe(expectedReviewer);
+			} finally {
+				await fs.promises.rm(root, { recursive: true, force: true });
+			}
+		});
+	}
 
 	it("adds shell installer heavy_task fallback chain to existing retry chains idempotently", async () => {
 		const binaryContent = "safe release binary";

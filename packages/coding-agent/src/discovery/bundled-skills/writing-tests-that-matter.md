@@ -1,11 +1,19 @@
 ---
 name: writing-tests-that-matter
-description: MANDATORY when writing or adding tests, increasing coverage, testing a module, or creating a regression test. Contains the can-this-test-fail mutation check, table-driven patterns per stack, factory-over-fixture-copy-paste, target selection (branches, boundaries, invariants, error paths), and the anti-flaky rules (pin the clock, never sleep, isolate state).
+description: MANDATORY when authoring tests. Defines criticality-based test budgets, behavior assertions, mutation checks, and the execution rule that implementation tests stay with the production owner instead of forming a RED-only critical-path package.
 ---
 
 # Writing Tests That Matter
 
 Coverage % is not the goal; a test suite is a tripwire field. Every test must be able to fail on a plausible mistake — if you cannot name the code change that would fail it, it is decoration: fix or delete it.
+
+## Test budget — criticality sets the investment
+"Does it RUN?" is proven for every change (entry-point probe per skill://verify-before-done); how much test AUTHORING the change earns depends on what breaks if it breaks:
+- CRITICAL — money/payment/ledger, auth/permissions/tenant isolation, data integrity/migrations, published API contracts, load-bearing backend logic → full targeted coverage below; green focused suites are a completion gate.
+- STANDARD — ordinary backend, services, libraries other code calls, AND frontend logic (state machines, reducers/stores, form validation, data transforms, calculations, permission/routing guards) → targeted tests on the changed behavior (priority list below); stop there.
+- RUNS-FIRST — the render/wiring surface ONLY: screens, components, layout/styling, internal tools, admin dashboards, demos, one-off scripts → the real run is the primary evidence (browser/CLI probe: happy path + one failure path). Do NOT chase coverage or full-suite green here; a pre-existing unrelated red test is reported, not adopted.
+Frontend LOGIC is never runs-first: extract it from the component where practical (store/reducer/validation module) and test it at its tier; only the thin rendering shell stays probe-verified. Tier comes from blast radius, not file extension: a frontend change carrying auth or payment logic is CRITICAL.
+During an implementation task, RED tests + production code + fixes belong to ONE full-cycle owner. NEVER dispatch test-only work while no owner is changing production code. A separate test package is valid only for cross-owner integration after production owners are in flight or landed, or when the user's entire request is explicitly test-only.
 
 ## Target selection — what earns a test
 In priority order, for the code you changed:
