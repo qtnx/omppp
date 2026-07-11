@@ -61,8 +61,11 @@ describe("loadCustomTools per-session binding (#2190 review fix)", () => {
 		expect(parentResult.tools).toHaveLength(1);
 		expect(subagentResult.tools).toHaveLength(1);
 
-		const parentApi = (parentResult.tools[0]?.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
-		const subagentApi = (subagentResult.tools[0]?.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
+		const parentTool = parentResult.tools[0];
+		const subagentTool = subagentResult.tools[0];
+		if (!parentTool || !subagentTool) throw new Error("Expected one tool per result");
+		const parentApi = (parentTool.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
+		const subagentApi = (subagentTool.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
 
 		expect(parentApi.cwd).toBe("/tmp/parent-cwd");
 		expect(subagentApi.cwd).toBe("/tmp/subagent-cwd");
@@ -82,8 +85,11 @@ describe("loadCustomTools per-session binding (#2190 review fix)", () => {
 			subagentLog.push(`subagent:${action.label}`),
 		);
 
-		const parentApi = (parentResult.tools[0]?.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
-		const subagentApi = (subagentResult.tools[0]?.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
+		const parentTool = parentResult.tools[0];
+		const subagentTool = subagentResult.tools[0];
+		if (!parentTool || !subagentTool) throw new Error("Expected one tool per result");
+		const parentApi = (parentTool.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
+		const subagentApi = (subagentTool.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
 
 		// Cast: the test fixture exposes the runtime API verbatim.
 		parentApi.pushPendingAction({

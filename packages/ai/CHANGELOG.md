@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.8] - 2026-07-11
+
 ### Added
 
 - Added Meta Model API key login and provider-scoped 131,072-token OpenAI Responses output requests without raising the 64K safety limit for other providers.
