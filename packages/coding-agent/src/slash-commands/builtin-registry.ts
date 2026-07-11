@@ -1820,6 +1820,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "subagents",
+		description: "Open live subagent inspector",
+		handleTui: (_command, runtime) => {
+			runtime.ctx.showAgentHub();
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "branch",
 		description: "Create a new branch from a previous message",
 		handleTui: (_command, runtime) => {

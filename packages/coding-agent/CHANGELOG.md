@@ -6,6 +6,7 @@
 
 - `/workflows` is now an interactive Workflow Hub overlay (mirroring `/agents`): browse workflow runs → phases → agents with live state/model/token/duration stats, press Enter on an agent to open its transcript in the existing viewer; backed by a new `WorkflowRunRegistry` that folds progress frames into per-run records and a terminal `done` frame emitted when a run finishes.
 - Added a live workflow HUD under the composer: while any workflow run is active, its phases and agents render and refresh from progress frames (like the task-subagents tree) without opening `/workflows`, and clear when the run completes.
+- Added `/subagents` to open the live subagent inspector for running and parked task agents.
 
 ### Fixed
 

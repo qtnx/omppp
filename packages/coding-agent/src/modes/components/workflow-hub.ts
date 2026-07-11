@@ -32,6 +32,8 @@ export class WorkflowHubOverlayComponent extends Container {
 	#rows: WorkflowHubRow[] = [];
 	#selectedRow = 0;
 	#ageTimer: NodeJS.Timeout;
+	#selectedAgentId: string | undefined;
+	#disposed = false;
 
 	constructor(deps: WorkflowHubDeps) {
 		super();
@@ -46,7 +48,10 @@ export class WorkflowHubOverlayComponent extends Container {
 	}
 
 	dispose(): void {
+		if (this.#disposed) return;
+		this.#disposed = true;
 		clearInterval(this.#ageTimer);
+		super.dispose();
 	}
 
 	refresh(): void {
@@ -61,6 +66,7 @@ export class WorkflowHubOverlayComponent extends Container {
 	}
 
 	handleInput(keyData: string): void {
+		if (this.#disposed) return;
 		if (matchesKey(keyData, "escape")) {
 			this.#close();
 			return;
@@ -88,7 +94,7 @@ export class WorkflowHubOverlayComponent extends Container {
 	}
 
 	#refreshRows(): void {
-		const selectedAgentId = this.#rows[this.#selectedRow]?.agent?.id;
+		const selectedAgentId = this.#selectedAgentId ?? this.#rows[this.#selectedRow]?.agent?.id;
 		const rows: WorkflowHubRow[] = [];
 		for (const run of this.#registry.list()) {
 			rows.push({ kind: "run", run });
@@ -104,6 +110,8 @@ export class WorkflowHubOverlayComponent extends Container {
 						0,
 						this.#rows.findIndex(row => row.kind === "agent"),
 					);
+		const selectedAgent = this.#rows[this.#selectedRow]?.agent;
+		if (selectedAgent) this.#selectedAgentId = selectedAgent.id;
 	}
 
 	#moveSelection(direction: 1 | -1): void {
@@ -115,6 +123,7 @@ export class WorkflowHubOverlayComponent extends Container {
 			agentIndexes.length - 1,
 		);
 		this.#selectedRow = agentIndexes[nextIndex];
+		this.#selectedAgentId = this.#rows[this.#selectedRow]?.agent?.id;
 		this.#requestRender();
 	}
 
@@ -193,10 +202,12 @@ export class WorkflowHubOverlayComponent extends Container {
 
 	#agentStatus(state: string): string {
 		const safeState = this.#sanitize(state, TRUNCATE_LENGTHS.SHORT);
-		if (state === "running") return this.#coloredStatus("accent", `${this.#theme.status.running} ${safeState}`);
-		if (state === "done" || state === "completed")
+		if (state === "start" || state === "running")
+			return this.#coloredStatus("accent", `${this.#theme.status.running} ${safeState}`);
+		if (state === "done" || state === "cached" || state === "completed")
 			return this.#coloredStatus("success", `${this.#theme.status.done} ${safeState}`);
-		if (state === "failed") return this.#coloredStatus("error", `${this.#theme.status.error} ${safeState}`);
+		if (state === "error" || state === "failed")
+			return this.#coloredStatus("error", `${this.#theme.status.error} ${safeState}`);
 		return this.#coloredStatus("muted", `${this.#theme.status.shadowed} ${safeState}`);
 	}
 

@@ -1,3 +1,5 @@
+import { stripVTControlCharacters } from "node:util";
+
 import { Container } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { PREVIEW_LIMITS, replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
@@ -21,7 +23,7 @@ export class WorkflowHudComponent extends Container {
 	}
 
 	override render(width: number): readonly string[] {
-		const activeRuns = this.#registry.list().filter(run => run.status === "running");
+		const activeRuns = this.#registry.list().filter(run => run.status === "running" || run.status === "failed");
 		if (activeRuns.length === 0) return [];
 
 		const lines = ["", theme.bold(theme.fg("accent", "Workflows"))];
@@ -32,7 +34,7 @@ export class WorkflowHudComponent extends Container {
 			remaining--;
 			for (const agent of run.agents) {
 				if (remaining <= 0) break;
-				if (isTerminalAgentState(agent.state)) continue;
+				if (isTerminalAgentState(agent.state) && !isFailedAgent(agent)) continue;
 				lines.push(this.#line(`  ${this.#renderAgent(agent)}`, width));
 				remaining--;
 			}
@@ -46,16 +48,20 @@ export class WorkflowHudComponent extends Container {
 	#renderRun(run: WorkflowRunRecord): string {
 		const phase = run.phases.at(-1)?.title;
 		const label = this.#sanitize(run.name || shortRunId(run.runId), TRUNCATE_LENGTHS.SHORT);
+		const failed = run.status === "failed";
 		const details = [
-			theme.styledSymbol("status.running", "accent"),
-			theme.fg("accent", theme.bold(label)),
+			theme.styledSymbol(failed ? "status.error" : "status.running", failed ? "error" : "accent"),
+			theme.fg(failed ? "error" : "accent", theme.bold(label)),
 			phase ? theme.fg("muted", `phase: ${this.#sanitize(phase, TRUNCATE_LENGTHS.SHORT)}`) : undefined,
-			theme.fg("dim", formatDuration(Math.max(0, Date.now() - run.startedAt))),
+			theme.fg("dim", formatDuration(Math.max(0, (run.endedAt ?? Date.now()) - run.startedAt))),
 		].filter((part): part is string => part !== undefined);
 		return details.join(theme.sep.dot);
 	}
 
 	#renderAgent(agent: WorkflowRunAgentEntry): string {
+		const error = agent.error
+			? stripVTControlCharacters(agent.error).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, " ")
+			: undefined;
 		const details = [
 			this.#agentStatus(agent.state),
 			theme.bold(this.#sanitize(agent.label || agent.id, TRUNCATE_LENGTHS.SHORT)),
@@ -64,18 +70,22 @@ export class WorkflowHudComponent extends Container {
 				? undefined
 				: theme.fg("dim", `in ${formatNumber(agent.tokensIn ?? 0)} / out ${formatNumber(agent.tokensOut ?? 0)}`),
 			agent.durationMs === undefined ? undefined : theme.fg("dim", formatDuration(agent.durationMs)),
+			error ? theme.fg("error", `Error: ${this.#sanitize(error, TRUNCATE_LENGTHS.SHORT)}`) : undefined,
 		].filter((part): part is string => part !== undefined);
 		return details.join(theme.sep.dot);
 	}
 
 	#agentStatus(state: string): string {
-		return theme.fg("accent", `${theme.status.running} ${this.#sanitize(state, TRUNCATE_LENGTHS.SHORT)}`);
+		const safeState = this.#sanitize(state, TRUNCATE_LENGTHS.SHORT);
+		if (state === "error" || state === "failed") return theme.fg("error", `${theme.status.error} ${safeState}`);
+		if (state === "done" || state === "cached" || state === "completed")
+			return theme.fg("success", `${theme.status.done} ${safeState}`);
+		return theme.fg("accent", `${theme.status.running} ${safeState}`);
 	}
 
 	#line(text: string, width: number): string {
 		return truncateToWidth(replaceTabs(text).replace(/[\r\n]+/g, " "), Math.max(1, width - 1));
 	}
-
 	#sanitize(text: string, maxWidth: number): string {
 		return truncateToWidth(replaceTabs(text).replace(/[\r\n]+/g, " "), maxWidth);
 	}
@@ -89,9 +99,14 @@ function isTerminalAgentState(state: string): boolean {
 	return state === "done" || state === "error" || state === "cached" || state === "completed" || state === "failed";
 }
 
+function isFailedAgent(agent: WorkflowRunAgentEntry): boolean {
+	return agent.state === "error" || agent.state === "failed";
+}
+
 function countVisibleRows(runs: WorkflowRunRecord[]): number {
 	return runs.reduce(
-		(count, run) => count + 1 + run.agents.filter(agent => !isTerminalAgentState(agent.state)).length,
+		(count, run) =>
+			count + 1 + run.agents.filter(agent => !isTerminalAgentState(agent.state) || isFailedAgent(agent)).length,
 		0,
 	);
 }

@@ -1,7 +1,21 @@
-import { describe, expect, it, vi } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { WorkflowRunRecord } from "../../workflow/run-registry";
 import type { Theme } from "../theme/theme";
 import { WorkflowHubOverlayComponent } from "./workflow-hub";
+
+const originalRowsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+
+function setViewportRows(rows: number): void {
+	Object.defineProperty(process.stdout, "rows", { configurable: true, value: rows });
+}
+
+function restoreViewportRows(): void {
+	if (originalRowsDescriptor) {
+		Object.defineProperty(process.stdout, "rows", originalRowsDescriptor);
+		return;
+	}
+	Reflect.deleteProperty(process.stdout, "rows");
+}
 
 const theme = {
 	fg: (_color: string, text: string) => text,
@@ -60,6 +74,9 @@ function makeHarness(runs: WorkflowRunRecord[]) {
 	const component = new WorkflowHubOverlayComponent({ registry, openTranscript, close, theme, requestRender });
 	return { component, openTranscript, close, requestRender };
 }
+afterEach(() => {
+	restoreViewportRows();
+});
 
 describe("WorkflowHubOverlayComponent", () => {
 	it("renders run, phase, and agent rows from in-session registry records", () => {
@@ -99,6 +116,7 @@ describe("WorkflowHubOverlayComponent", () => {
 	});
 
 	it("keeps the selected agent within the long-list viewport", () => {
+		setViewportRows(12);
 		const agents = Array.from({ length: 40 }, (_, index) => ({
 			id: `agent-${index}`,
 			label: `Agent ${index}`,
@@ -112,6 +130,78 @@ describe("WorkflowHubOverlayComponent", () => {
 
 		expect(output).toContain("... ");
 		expect(output).toContain("Agent 35");
+	});
+
+	it("renders an emitted start state as active", () => {
+		const { component } = makeHarness([
+			makeRun({ agents: [{ id: "agent-start", label: "Runner", state: "start", updatedAt: Date.now() }] }),
+		]);
+
+		expect(component.render(120).join("\n")).toContain("> start");
+	});
+
+	it("renders an emitted error state as failed", () => {
+		const { component } = makeHarness([
+			makeRun({ agents: [{ id: "agent-error", label: "Runner", state: "error", updatedAt: Date.now() }] }),
+		]);
+
+		expect(component.render(120).join("\n")).toContain("! error");
+	});
+
+	it("does not route keys through a disposed hub after reopening", () => {
+		const opened: string[] = [];
+		const runs = [makeRun()];
+		const first = new WorkflowHubOverlayComponent({
+			registry: { list: () => runs, get: id => runs.find(run => run.runId === id) },
+			openTranscript: agentId => opened.push(agentId),
+			close: () => {},
+			theme,
+		});
+		first.dispose();
+		const second = new WorkflowHubOverlayComponent({
+			registry: { list: () => runs, get: id => runs.find(run => run.runId === id) },
+			openTranscript: agentId => opened.push(agentId),
+			close: () => {},
+			theme,
+		});
+
+		try {
+			first.handleInput("\r");
+			second.handleInput("\r");
+
+			expect(opened).toEqual(["agent-first"]);
+		} finally {
+			second.dispose();
+		}
+	});
+
+	it("restores the prior agent selection after an empty filtered result", () => {
+		const run = makeRun();
+		let visibleRuns: WorkflowRunRecord[] = [run];
+		const openTranscript = vi.fn();
+		const component = new WorkflowHubOverlayComponent({
+			registry: {
+				list: () => visibleRuns,
+				get: id => visibleRuns.find(candidate => candidate.runId === id),
+			},
+			openTranscript,
+			close: () => {},
+			theme,
+		});
+
+		try {
+			component.handleInput("j");
+			visibleRuns = [];
+			component.refresh();
+			component.handleInput("j");
+			visibleRuns = [run];
+			component.refresh();
+			component.handleInput("\r");
+
+			expect(openTranscript).toHaveBeenCalledWith("agent-second", "/t/run-active/agent-second.jsonl");
+		} finally {
+			component.dispose();
+		}
 	});
 
 	it("closes on Escape", () => {

@@ -93,6 +93,8 @@ function applyThinkingDisplay(agent: Agent, settingsInstance: Settings): void {
 
 export class SelectorController {
 	#workflowHub: WorkflowHubOverlayComponent | undefined;
+	/** Start-race placeholders remain read-only until the real ref is live or adopted. */
+	#provisionalWorkflowAgentIds = new Set<string>();
 	constructor(private ctx: InteractiveModeContext) {}
 
 	async #refreshOAuthProviderAuthState(): Promise<void> {
@@ -1477,6 +1479,7 @@ export class SelectorController {
 		let hub: WorkflowHubOverlayComponent | undefined;
 		let transcriptOverlay: OverlayHandle | undefined;
 		let transcriptViewer: AgentTranscriptViewer | undefined;
+		const provisionalWorkflowAgentIds = this.#provisionalWorkflowAgentIds;
 		const agentRegistry = this.ctx.collabGuest?.agentRegistry ?? AgentRegistry.global();
 		const hubKeys = [
 			...this.ctx.keybindings.getKeys("app.agents.hub"),
@@ -1507,7 +1510,9 @@ export class SelectorController {
 			// immediately; the later live registration clobbers it with the running
 			// session. Never register over an existing ref — register() overwrites in
 			// place and would detach a live session.
-			if (!this.ctx.collabGuest && sessionFile && !agentRegistry.get(agentId)) {
+			const existingRef = agentRegistry.get(agentId);
+			if (!this.ctx.collabGuest && sessionFile && !existingRef) {
+				provisionalWorkflowAgentIds.add(agentId);
 				agentRegistry.register({
 					id: agentId,
 					displayName: agentId,
@@ -1517,13 +1522,26 @@ export class SelectorController {
 					status: "parked",
 				});
 			}
-			closeTranscript();
+			const lifecycle = !this.ctx.collabGuest
+				? () => {
+						const lifecycleManager = AgentLifecycleManager.global();
+						const currentRef = agentRegistry.get(agentId);
+						if (currentRef?.session || lifecycleManager.has(agentId)) {
+							provisionalWorkflowAgentIds.delete(agentId);
+						}
+						return currentRef?.session ||
+							lifecycleManager.has(agentId) ||
+							(currentRef && !provisionalWorkflowAgentIds.has(agentId))
+							? lifecycleManager
+							: undefined;
+					}
+				: undefined;
 			const viewer = new AgentTranscriptViewer({
 				agentId,
 				registry: agentRegistry,
 				remote: this.ctx.collabGuest?.hubRemote,
 				observers,
-				lifecycle: this.ctx.collabGuest ? undefined : () => AgentLifecycleManager.global(),
+				lifecycle,
 				ui: this.ctx.ui,
 				getTool: name => this.ctx.session.getToolByName(name),
 				getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),

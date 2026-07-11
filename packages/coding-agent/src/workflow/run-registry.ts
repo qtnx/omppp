@@ -5,6 +5,7 @@ export interface WorkflowRunAgentEntry {
 	label?: string;
 	phase?: string;
 	state: string;
+	error?: string;
 	model?: string;
 	tokensIn?: number;
 	tokensOut?: number;
@@ -48,6 +49,10 @@ export class WorkflowRunRegistry {
 		const at = this.#nextTimestamp();
 		const record = this.#recordFor(frame.runId, at);
 		record.lastFrameAt = at;
+		if (frame.kind !== "done" && record.status !== "running") {
+			record.status = "running";
+			record.endedAt = undefined;
+		}
 
 		switch (frame.kind) {
 			case "phase":
@@ -109,7 +114,8 @@ export class WorkflowRunRegistry {
 			id: frame.agentId,
 			label: frame.label,
 			phase: frame.phaseTitle ?? record.phases.at(-1)?.title,
-			state: frame.state,
+			state: this.#hubAgentState(frame.state),
+			error: frame.state === "error" ? frame.error : undefined,
 			model: frame.model ?? current?.model,
 			tokensIn: progress?.inputTokens ?? current?.tokensIn,
 			tokensOut: progress?.outputTokens ?? frame.tokens ?? current?.tokensOut,
@@ -123,5 +129,17 @@ export class WorkflowRunRegistry {
 			return;
 		}
 		record.agents.push(entry);
+	}
+
+	#hubAgentState(state: Extract<WorkflowProgressFrame, { kind: "agent" }>["state"]): WorkflowRunAgentEntry["state"] {
+		switch (state) {
+			case "start":
+				return "running";
+			case "done":
+			case "cached":
+				return "completed";
+			case "error":
+				return "failed";
+		}
 	}
 }
