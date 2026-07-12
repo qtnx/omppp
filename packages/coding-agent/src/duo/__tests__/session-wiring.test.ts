@@ -428,11 +428,11 @@ describe("AgentSession duo wiring helpers", () => {
 					),
 			},
 			{
-				name: "preserves specialist routing and exclusive ownership",
+				name: "preserves specialist routing and clear ownership",
 				satisfied:
 					/(?:specialist|specializ[a-z]*)[\s\S]{0,180}(?:route|routing|prefer)|(?:route|routing|prefer)[\s\S]{0,180}(?:specialist|specializ[a-z]*)/i.test(
 						rendered,
-					) && /exclusive[\s-]+(?:file[\s-]+)?ownership/i.test(rendered),
+					) && /clear file ownership/i.test(rendered),
 			},
 			{
 				name: "makes sub-10-minute latency conditional on the DAG, never a risk downgrade",

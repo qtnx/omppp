@@ -9,6 +9,7 @@ import { type } from "arktype";
 import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
+import { withFileWriteLock } from "../../tools/file-write-lock";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { outputMeta } from "../../tools/output-meta";
 import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
@@ -1061,77 +1062,84 @@ export async function executeReplaceSingle(
 	}
 
 	const absolutePath = resolvePlanPath(session, path);
-	const rawContent = await readEditFileText(absolutePath, path);
-	const { bom, text: content } = stripBom(rawContent);
-	const originalEnding = detectLineEnding(content);
-	const normalizedContent = normalizeToLF(content);
-	const normalizedOldText = normalizeToLF(old_text);
-	const normalizedNewText = normalizeToLF(new_text);
+	return withFileWriteLock(absolutePath, signal, async () => {
+		const rawContent = await readEditFileText(absolutePath, path);
+		const { bom, text: content } = stripBom(rawContent);
+		const originalEnding = detectLineEnding(content);
+		const normalizedContent = normalizeToLF(content);
+		const normalizedOldText = normalizeToLF(old_text);
+		const normalizedNewText = normalizeToLF(new_text);
 
-	const result = replaceText(normalizedContent, normalizedOldText, normalizedNewText, {
-		fuzzy: allowFuzzy,
-		all: all ?? false,
-		threshold: fuzzyThreshold,
-	});
-
-	if (result.count === 0) {
-		const matchOutcome = findMatch(normalizedContent, normalizedOldText, {
-			allowFuzzy,
+		const result = replaceText(normalizedContent, normalizedOldText, normalizedNewText, {
+			fuzzy: allowFuzzy,
+			all: all ?? false,
 			threshold: fuzzyThreshold,
 		});
 
-		if (matchOutcome.occurrences && matchOutcome.occurrences > 1) {
-			throw new Error(formatOccurrenceError(path, matchOutcome));
+		if (result.count === 0) {
+			const matchOutcome = findMatch(normalizedContent, normalizedOldText, {
+				allowFuzzy,
+				threshold: fuzzyThreshold,
+			});
+
+			if (matchOutcome.occurrences && matchOutcome.occurrences > 1) {
+				throw new Error(formatOccurrenceError(path, matchOutcome));
+			}
+
+			throw new EditMatchError(path, normalizedOldText, matchOutcome.closest, {
+				allowFuzzy,
+				threshold: fuzzyThreshold,
+				fuzzyMatches: matchOutcome.fuzzyMatches,
+			});
 		}
 
-		throw new EditMatchError(path, normalizedOldText, matchOutcome.closest, {
-			allowFuzzy,
-			threshold: fuzzyThreshold,
-			fuzzyMatches: matchOutcome.fuzzyMatches,
-		});
-	}
+		if (normalizedContent === result.content) {
+			throw new Error(`Edits to ${path} resulted in no changes being made.`);
+		}
 
-	if (normalizedContent === result.content) {
-		throw new Error(`Edits to ${path} resulted in no changes being made.`);
-	}
-
-	const finalContent = await serializeEditFileText(
-		absolutePath,
-		path,
-		bom + restoreLineEndings(result.content, originalEnding),
-	);
-
-	// Route through ACP bridge when available; skips internal artifacts.
-	let diagnostics: FileDiagnosticsResult | undefined;
-	if (await routeWriteThroughBridge(session, path, absolutePath, finalContent, signal)) {
-		// bridge handled the write; diagnostics not available via writethrough
-	} else {
-		diagnostics = await writethrough(absolutePath, finalContent, signal, Bun.file(absolutePath), batchRequest, dst =>
-			dst === absolutePath ? beginDeferredDiagnosticsForPath(absolutePath) : undefined,
+		const finalContent = await serializeEditFileText(
+			absolutePath,
+			path,
+			bom + restoreLineEndings(result.content, originalEnding),
 		);
-		invalidateFsScanAfterWrite(absolutePath);
-	}
 
-	const diffResult = generateDiffString(normalizedContent, result.content, undefined, { path });
-	const resultText =
-		result.count > 1
-			? `Successfully replaced ${result.count} occurrences in ${path}.`
-			: `Successfully replaced text in ${path}.`;
+		// Route through ACP bridge when available; skips internal artifacts.
+		let diagnostics: FileDiagnosticsResult | undefined;
+		if (await routeWriteThroughBridge(session, path, absolutePath, finalContent, signal)) {
+			// bridge handled the write; diagnostics not available via writethrough
+		} else {
+			diagnostics = await writethrough(
+				absolutePath,
+				finalContent,
+				signal,
+				Bun.file(absolutePath),
+				batchRequest,
+				dst => (dst === absolutePath ? beginDeferredDiagnosticsForPath(absolutePath) : undefined),
+			);
+			invalidateFsScanAfterWrite(absolutePath);
+		}
 
-	const meta = outputMeta()
-		.diagnostics(diagnostics?.summary ?? "", diagnostics?.messages ?? [])
-		.get();
+		const diffResult = generateDiffString(normalizedContent, result.content, undefined, { path });
+		const resultText =
+			result.count > 1
+				? `Successfully replaced ${result.count} occurrences in ${path}.`
+				: `Successfully replaced text in ${path}.`;
 
-	return {
-		content: [{ type: "text", text: resultText }],
-		details: pruneOversizedEditSnapshots({
-			diff: diffResult.diff,
-			path: absolutePath,
-			firstChangedLine: diffResult.firstChangedLine,
-			diagnostics,
-			meta,
-			oldText: rawContent,
-			newText: finalContent,
-		}),
-	};
+		const meta = outputMeta()
+			.diagnostics(diagnostics?.summary ?? "", diagnostics?.messages ?? [])
+			.get();
+
+		return {
+			content: [{ type: "text", text: resultText }],
+			details: pruneOversizedEditSnapshots({
+				diff: diffResult.diff,
+				path: absolutePath,
+				firstChangedLine: diffResult.firstChangedLine,
+				diagnostics,
+				meta,
+				oldText: rawContent,
+				newText: finalContent,
+			}),
+		};
+	});
 }

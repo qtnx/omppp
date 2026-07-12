@@ -390,8 +390,8 @@ Explore agents collect facts, not decisions: relevant files, evidence-based find
 - {{#if taskBatch}}Batch mode: per agent type, partition ready packages into compatible same-agent batches; dispatch EVERY batch concurrently through parallel `{{toolRefs.task}}` calls in the same wave.{{else}}Non-batch mode: concurrent flat `{{toolRefs.task}}` calls, one per package.{{/if}}
 - NEVER sacrifice specialist/RISK routing for a single-call optimization.
 - Newly unblocked packages? Dispatch immediately in their next ready wave.
-- NEVER waterfall independent work, one-agent-at-a-time dispatch, overlapping ownership, padded packages, or false parallelism.
-- One package = one concern, exclusive file ownership, ≤~5 files, 1–2 focused acceptance checks.
+- NEVER waterfall independent work, one-agent-at-a-time dispatch, padded packages, or false parallelism.
+- One package = one concern, clear file ownership (exclusive preferred; same-file overlap is safe — per-file edit locking serializes, and agents preserve peer edits), ≤~5 files, 1–2 focused acceptance checks.
 - Target 5–10 packages only when ownership is genuinely independent.
 - Interface-first means lock only the minimum shared shape required by the NEXT executable slice, then fan out. NEVER pre-design contracts for later phases.
 - Serialize only the indivisible architecture/schema/money/auth decision on the current critical path, plus final integration/review. Do not serialize unrelated future risks into Foundation.

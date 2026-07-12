@@ -38,7 +38,7 @@ describe("subagent COOP irc guidance", () => {
 			ircSelfId: "Self",
 		});
 		expect(out).toContain("before you edit");
-		expect(out).toMatch(/overlapping edits collide/i);
+		expect(out).toContain("same-file edits serialize safely");
 	});
 });
 

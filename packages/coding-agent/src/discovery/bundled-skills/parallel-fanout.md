@@ -1,6 +1,6 @@
 ---
 name: parallel-fanout
-description: MANDATORY before multi-file delegation, scout dispatch, or wave planning. Defines ready-horizon slicing, C/R dependency tests, exclusive ownership, one-wave scouting, iterative adversarial plan convergence, and the production-owner invariant after lock.
+description: MANDATORY before multi-file delegation, scout dispatch, or wave planning. Defines ready-horizon slicing, C/R dependency tests, ownership and shared-file rules, one-wave scouting, iterative adversarial plan convergence, and the production-owner invariant after lock.
 ---
 
 # Parallel Fanout
@@ -15,7 +15,7 @@ Wall-clock on the dependency-DAG critical path is THE metric. Prevent two sessio
 | 1 | Inventory | Name user deliverables as executable vertical slices | slice list | no "foundation/core/setup" bucket | minutes |
 | 2 | Dependency matrix | Label C/R edges needed by CURRENT READY slices | ready-horizon edges | each current edge labeled | minutes |
 | 3 | Contract prefix | Lock only the minimum shared shape needed by the next slice | minimal contract | current C-edges satisfied | one pass |
-| 4 | Wave plan | Fill rows for CURRENT READY packages | ready-horizon table | exclusive ownership + acceptance | minutes |
+| 4 | Wave plan | Fill rows for CURRENT READY packages | ready-horizon table | clear ownership + acceptance | minutes |
 | 5 | Dispatch | Production owner + its tests/fixes in ONE package | runtime code in flight | every ready package dispatched | immediate |
 | 6 | Integrate | Merge landings; reject scope creep | executable diff | package acceptance green | per landing |
 | 7 | Gates | Run only failure-matched final gates + entry-point probe | evidence | selected gates green | once |
@@ -32,7 +32,7 @@ Phases 1–4 are bounded preparation, not a Foundation program. A blank future r
 | Mechanical perimeter | registrations, renames, config, wiring, docs | one `quick_task` batch package |
 | Cross-owner integration | a test must execute several owners' REAL code together | exactly ONE integration package, wave 2 |
 
-Correct slicing yields only genuinely independent packages — one package is valid; 5–10 is a ceiling-shaped target, never a quota. Shared files or R-edges everywhere? Re-cut only the blocked row; do not redesign unrelated ready work.
+Correct slicing yields only genuinely independent packages — one package is valid; 5–10 is a ceiling-shaped target, never a quota. R-edges everywhere? Re-cut only the blocked row; do not redesign unrelated ready work. Shared files alone never force a re-cut (see the same-file rows below).
 
 ## The C/R dependency test — apply to every edge
 
@@ -40,7 +40,8 @@ Correct slicing yields only genuinely independent packages — one package is va
 |---|---|---|---|
 | B imports A's types/interface/schema only | "Do B's tests execute A's code?" → NO | C | lock the shape in Phase 3; A and B run in PARALLEL |
 | B's tests must call A's working code | → YES | R | B goes to wave 2 behind A — or stub A behind the locked interface when a stub is cheap, then B joins wave 1 |
-| A and B edit the same file | — | conflict | re-cut ownership until files are exclusive; two agents NEVER share a file |
+| A and B edit the same file | "Do they rewrite the SAME code region?" → NO | C | run in PARALLEL — per-file locking serializes same-file edits; each agent preserves peer changes and merges. Prefer exclusive files when a clean cut is free |
+| A and B rewrite the same code region | → YES | conflict | re-cut ownership at that region, or serialize just those two packages |
 
 Default: assume C until proven R. Nearly every "foundation first" serialization is a C-edge wearing an R costume — types flow, not behavior.
 
@@ -150,4 +151,4 @@ Immediate stall signals: active Foundation grows; future table blanks delay read
 
 ## Anti-patterns
 
-Serial Foundation chains; planning every future row; “settle design” loops; RED-only/seam-map waves without production; phase-split TDD; sibling fixer churn; waterfall dispatch; holding one ready package for fake parallelism; whole-repo exploration; re-scouting; two agents sharing files.
+Serial Foundation chains; planning every future row; “settle design” loops; RED-only/seam-map waves without production; phase-split TDD; sibling fixer churn; waterfall dispatch; holding one ready package for fake parallelism; whole-repo exploration; re-scouting; reverting or clobbering a sibling's edits in a shared file.

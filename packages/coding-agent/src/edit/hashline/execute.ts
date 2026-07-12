@@ -22,6 +22,7 @@ import {
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
 import type { ToolSession } from "../../tools";
+import { withFileWriteLocks } from "../../tools/file-write-lock";
 import { outputMeta } from "../../tools/output-meta";
 import { ToolError } from "../../tools/tool-errors";
 import { generateDiffString } from "../diff";
@@ -215,18 +216,26 @@ export async function executeHashlineSingle(
 	// Single-section fast path: prepare, commit, render.
 	const inputHash = hashPatchInput(options.input);
 	if (patch.sections.length === 1) {
-		fs.setBatchRequest(narrowBatchRequest(options.batchRequest, true));
-		const prepared = await patcher.prepare(patch.sections[0]);
-		const sectionResult = await patcher.commit(prepared);
-		if (sectionResult.op === "noop") {
-			const { count, escalate } = recordNoopEdit(options.session, sectionResult.canonicalPath, inputHash);
-			if (escalate) {
-				throw new ToolError(noChangeLoopDiagnostic(sectionResult.path, count));
+		const preflight = await patcher.prepare(patch.sections[0]);
+		const lockPaths =
+			preflight.fileOp?.kind === "move"
+				? [preflight.canonicalPath, fs.resolveAbsolute(preflight.fileOp.dest)]
+				: [preflight.canonicalPath];
+		return withFileWriteLocks(lockPaths, options.signal, async () => {
+			fs.setBatchRequest(narrowBatchRequest(options.batchRequest, true));
+			const prepared = await patcher.prepare(patch.sections[0]);
+			const sectionResult = await patcher.commit(prepared);
+			if (sectionResult.op === "noop") {
+				const { count, escalate } = recordNoopEdit(options.session, sectionResult.canonicalPath, inputHash);
+				if (escalate) {
+					throw new ToolError(noChangeLoopDiagnostic(sectionResult.path, count));
+				}
+				return renderSection(sectionResult, undefined, prepared.section.path).toolResult;
 			}
-			return renderSection(sectionResult, undefined, prepared.section.path).toolResult;
-		}
-		resetNoopEdit(options.session, sectionResult.canonicalPath);
-		return renderSection(sectionResult, fs.consumeDiagnostics(sectionResult.path), prepared.section.path).toolResult;
+			resetNoopEdit(options.session, sectionResult.canonicalPath);
+			return renderSection(sectionResult, fs.consumeDiagnostics(sectionResult.path), prepared.section.path)
+				.toolResult;
+		});
 	}
 
 	// Multi-section: prepare every section up front so we fail fast before
@@ -248,8 +257,16 @@ export async function executeHashlineSingle(
 	const rendered: RenderedSection[] = [];
 	for (let i = 0; i < prepared.length; i++) {
 		const isLast = i === prepared.length - 1;
-		fs.setBatchRequest(narrowBatchRequest(options.batchRequest, isLast));
-		const sectionResult = await patcher.commit(prepared[i]);
+		const preflight = prepared[i]!;
+		const lockPaths =
+			preflight.fileOp?.kind === "move"
+				? [preflight.canonicalPath, fs.resolveAbsolute(preflight.fileOp.dest)]
+				: [preflight.canonicalPath];
+		const { sectionResult, sourcePath } = await withFileWriteLocks(lockPaths, options.signal, async () => {
+			fs.setBatchRequest(narrowBatchRequest(options.batchRequest, isLast));
+			const current = await patcher.prepare(preflight.section);
+			return { sectionResult: await patcher.commit(current), sourcePath: current.section.path };
+		});
 		if (sectionResult.op === "noop") {
 			const { count, escalate } = recordNoopEdit(options.session, sectionResult.canonicalPath, inputHash);
 			throw escalate
@@ -257,7 +274,7 @@ export async function executeHashlineSingle(
 				: new ToolError(noChangeDiagnostic(sectionResult.path));
 		}
 		resetNoopEdit(options.session, sectionResult.canonicalPath);
-		rendered.push(renderSection(sectionResult, fs.consumeDiagnostics(sectionResult.path), prepared[i].section.path));
+		rendered.push(renderSection(sectionResult, fs.consumeDiagnostics(sectionResult.path), sourcePath));
 	}
 
 	return {
