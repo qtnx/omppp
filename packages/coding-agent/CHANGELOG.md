@@ -11,10 +11,12 @@
 - Added a live workflow HUD under the composer: while any workflow run is active, its phases and agents render and refresh from progress frames (like the task-subagents tree) without opening `/workflows`, and clear when the run completes.
 - Added `/subagents` to open the live subagent inspector for running and parked task agents.
 - Per-file write locking across parallel agents: concurrent `edit`/`write` calls targeting the same file now wait their turn instead of racing (in-process, keyed by canonical path).
+- Added optional `focus` on the `compact` tool and `compactionFocus` on the `job` tool; both are threaded into compaction-summary instructions.
 
 ### Changed
 
 - Parallel subagents may now share files: the subagent prompt instructs peers to preserve each other's edits and merge carefully, and the parallel-fanout skill no longer forces re-cutting ownership for same-file overlap.
+- Agent-requested and subagent-wait compaction now use remote LLM-summary compaction, with a warned local-summary degradation, instead of snapcompact frames when `compaction.strategy` is `snapcompact`.
 - Added the `rate_learning` tool so the agent can rate injected learnings as useful or not useful.
 - Added background LLM learning consolidation with lease-guarded, multi-session-safe execution.
 - Added a live-learning prompt overhaul that extracts general principles with durability gating.

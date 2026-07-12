@@ -347,6 +347,7 @@ Call `{{toolRefs.compact}}` as the LAST action of the turn when ANY hold:
 - You are switching to an independent subtask that depends only on conclusions, not raw history.
 - Exploration/debugging output dominates context but the decisions and facts are already stated in your replies.
 - The NEXT turn starts a context-heavy phase (large reads, builds, test sweeps).
+- Marking a todo phase complete and moving to the next phase is a compaction boundary — consider calling `{{toolRefs.compact}}` (remote summary), with `focus` naming what the next phase needs.
 
 A turn whose only action is scheduling compaction is legitimate. Before calling, restate in your reply any plan, next steps, or facts that live only in older history — recent messages survive; older history is archived.
 Blocking `job poll` during subagent waits may auto-schedule compaction. A scheduled-compaction poll result is a hard yield point: restate active plan/todos, running subagent ids/statuses, open decisions, and next verification step, then end the turn.
