@@ -73,6 +73,7 @@ import { MemoryReflectTool } from "./memory-reflect";
 import { MemoryRetainTool } from "./memory-retain";
 import { OrchestratorModeTool } from "./orchestrator-mode";
 import { wrapToolWithMetaNotice } from "./output-meta";
+import { RateLearningTool } from "./rate-learning";
 import { ReadTool } from "./read";
 import { createReportToolIssueTool, isAutoQaEnabled } from "./report-tool-issue";
 import { ResolveTool } from "./resolve";
@@ -117,6 +118,7 @@ export * from "./memory-recall";
 export * from "./memory-reflect";
 export * from "./memory-retain";
 export * from "./orchestrator-mode";
+export * from "./rate-learning";
 export * from "./read";
 export * from "./report-tool-issue";
 export * from "./resolve";
@@ -555,7 +557,7 @@ export function filterInitialToolsForDiscoveryAll(
  * Public callable factory map. External callers may invoke `BUILTIN_TOOLS.read(session)` or
  * `BUILTIN_TOOLS[name](session)` to construct a tool directly.
  */
-export const BUILTIN_TOOLS: Record<BuiltinToolName | "sandbox", ToolFactory> = {
+export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox", ToolFactory> = {
 	orchestrator_mode: s => new OrchestratorModeTool(s),
 	duo_handoff: s =>
 		new DuoHandoffTool(async (resolution, scope) => {
@@ -595,6 +597,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "sandbox", ToolFactory> = {
 	recall: MemoryRecallTool.createIf,
 	reflect: MemoryReflectTool.createIf,
 	learn: LearnTool.createIf,
+	rate_learning: RateLearningTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
 	consult: s => new ConsultTool(s),
 	super_review: s => new SuperReviewTool(s),
@@ -731,6 +734,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				requestedTools.push("learn");
 			}
 		}
+		if (session.settings.get("learning.enabled") && (session.taskDepth ?? 0) === 0) {
+			if (!requestedTools.includes("rate_learning")) requestedTools.push("rate_learning");
+		}
 	}
 	const effectiveDiscoveryMode = resolveEffectiveToolDiscoveryMode(
 		session.settings,
@@ -771,6 +777,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				(session.taskDepth ?? 0) === 0 &&
 				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "")
 			);
+		}
+		if (name === "rate_learning") {
+			return session.settings.get("learning.enabled") && (session.taskDepth ?? 0) === 0;
 		}
 		if (name === "task") {
 			return canSpawnAtDepth(session.settings.get("task.maxRecursionDepth") ?? 2, session.taskDepth ?? 0);

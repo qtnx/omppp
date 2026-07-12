@@ -29,6 +29,7 @@ const allToolsSettings = Settings.isolated({
 	"todo.enabled": true,
 	"memory.backend": "mnemopi",
 	"autolearn.enabled": true,
+	"learning.enabled": true,
 	"tools.discoveryMode": "all",
 });
 

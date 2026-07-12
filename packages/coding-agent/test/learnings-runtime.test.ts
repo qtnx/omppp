@@ -12,10 +12,12 @@ import {
 	clearLearningData,
 	startLearningStartupTask,
 } from "@oh-my-pi/pi-coding-agent/learnings";
+import * as consolidation from "@oh-my-pi/pi-coding-agent/learnings/consolidate";
+import { openLearningDb, recordLearningFeedback, upsertLearning } from "@oh-my-pi/pi-coding-agent/learnings/storage";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SingleResult } from "@oh-my-pi/pi-coding-agent/task";
 import * as taskExecutor from "@oh-my-pi/pi-coding-agent/task/executor";
-import { getAgentDbPath, logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
 
 interface LearningFixture {
 	agentDir: string;
@@ -30,8 +32,7 @@ interface LearningFixture {
 const createdDirs = new Set<string>();
 
 async function makeTempDir(prefix: string): Promise<string> {
-	const dir = path.join(os.tmpdir(), `${prefix}-${Snowflake.next()}`);
-	await fs.mkdir(dir, { recursive: true });
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), `${prefix}-`));
 	createdDirs.add(dir);
 	return dir;
 }
@@ -167,6 +168,23 @@ function agentWriterResult(content: string): SingleResult {
 		task: "learning writer",
 		exitCode: 0,
 		output: JSON.stringify({ action: "store", content, source: "latest_user_message", evidence: "user message" }),
+		stderr: "",
+		truncated: false,
+		durationMs: 0,
+		tokens: 0,
+		requests: 0,
+	};
+}
+
+function agentWriterReinforceResult(target: string): SingleResult {
+	return {
+		index: 0,
+		id: "learning-writer",
+		agent: "learning-writer",
+		agentSource: "bundled",
+		task: "learning writer",
+		exitCode: 0,
+		output: JSON.stringify({ action: "reinforce", target }),
 		stderr: "",
 		truncated: false,
 		durationMs: 0,
@@ -322,12 +340,11 @@ describe("live learnings runtime", () => {
 		expect(writerOptions?.agent.tools).toEqual(["read"]);
 		expect(writerOptions?.modelOverride).toEqual(["pi/plan", "pi/default"]);
 		expect(writerOptions?.contextFiles?.[0]?.path).toBe(path.join(fx.agentDir, "sessions", "session-1.jsonl"));
-		expect(writerOptions?.task).toContain("Preserve only facts that are explicitly present in the user message.");
-		expect(writerOptions?.task).toContain("Do not add details, causes, scope, or examples the user did not state.");
-		expect(writerOptions?.task).toContain("When the user blames, claims, or is upset about agent behavior");
+		expect(writerOptions?.task).toContain("Extract the GENERAL principle the user is teaching.");
 		expect(writerOptions?.task).toContain(
-			"write the entry as a clear lesson so the agent does not repeat that behavior",
+			"Strip incidental task specifics such as file names and one-off values unless the specific is the preference.",
 		);
+		expect(writerOptions?.task).toContain('{"action":"reinforce","target":"<alias>"}');
 		const classifierMessage = completeSpy.mock.calls[0]?.[1].messages[0]?.content;
 		expect(String(classifierMessage)).not.toContain("assistant text must not be sent");
 		expect(completeSpy.mock.calls[0]?.[1].systemPrompt?.[0]).toContain(
@@ -574,7 +591,7 @@ describe("live learnings runtime", () => {
 		expect(writerOptions?.outputSchema).toMatchObject({
 			required: ["action"],
 			properties: {
-				action: { type: "string", enum: ["store", "skip"] },
+				action: { type: "string", enum: ["store", "skip", "reinforce"] },
 			},
 		});
 		expect(debugSpy).toHaveBeenCalledWith(
@@ -923,5 +940,269 @@ describe("live learnings runtime", () => {
 		);
 		await clearLearningData(fx.agentDir, fx.cwd, "global");
 		expect(await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd)).toBeUndefined();
+	});
+
+	test("reinforces an existing aliased learning without creating another row", async () => {
+		const fx = await createFixture();
+		vi.spyOn(logger, "debug").mockImplementation(() => {});
+		const db = openLearningDb(getAgentDbPath(fx.agentDir));
+		try {
+			expect(
+				upsertLearning(db, {
+					scope: "repo",
+					cwd: fx.cwd,
+					repoKey: fx.cwd,
+					content: "Run real verification before claiming a task is complete.",
+					sourceMessageHash: "seed",
+					trigger: "guideline",
+					confidence: 0.9,
+					nowSec: 1,
+				}),
+			).toBe(true);
+		} finally {
+			db.close();
+		}
+		const seededDb = new Database(getAgentDbPath(fx.agentDir));
+		const seeded = seededDb
+			.prepare("SELECT id, content_hash, strength FROM live_learnings WHERE content = ?")
+			.get("Run real verification before claiming a task is complete.") as {
+			id: string;
+			content_hash: string;
+			strength: number;
+		} | null;
+		seededDb.close();
+		expect(seeded).not.toBeNull();
+		if (!seeded) throw new Error("Seeded learning was not found");
+		const alias = seeded.content_hash.slice(0, 12);
+		vi.spyOn(ai, "completeSimple").mockResolvedValueOnce(
+			toolUseMessage([
+				{
+					type: "toolCall",
+					id: "reinforce-decision",
+					name: "record_learning_decision",
+					arguments: {
+						store: true,
+						scope: "repo",
+						trigger: "guideline",
+						confidence: 0.9,
+						reason: "The existing verification guideline applies.",
+					},
+				},
+			]),
+		);
+		const writerSpy = vi
+			.spyOn(taskExecutor, "runSubprocess")
+			.mockResolvedValueOnce(agentWriterReinforceResult(alias));
+
+		startLearningStartupTask({
+			session: fx.session,
+			settings: fx.settings,
+			modelRegistry: fx.modelRegistry,
+			agentDir: fx.agentDir,
+			taskDepth: 0,
+		});
+		fx.emit({
+			type: "agent_end",
+			messages: [
+				{
+					role: "user",
+					content: "Nhớ phải verify thật trước khi claim xong.",
+					attribution: "user",
+					timestamp: Date.now(),
+				},
+			],
+		});
+
+		await waitFor(() => {
+			const resultDb = new Database(getAgentDbPath(fx.agentDir));
+			try {
+				const row = resultDb.prepare("SELECT strength FROM live_learnings WHERE id = ?").get(seeded.id) as {
+					strength: number;
+				} | null;
+				expect(row?.strength).toBe(2);
+				expect(resultDb.prepare("SELECT COUNT(*) AS count FROM live_learnings").get()).toEqual({ count: 1 });
+			} finally {
+				resultDb.close();
+			}
+		});
+		expect(writerSpy.mock.calls[0]?.[0]?.task).toContain(`[l:${alias}]`);
+		expect(fx.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+	});
+
+	test("skips an unknown reinforce alias", async () => {
+		const fx = await createFixture();
+		const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
+		vi.spyOn(ai, "completeSimple").mockResolvedValueOnce(
+			toolUseMessage([
+				{
+					type: "toolCall",
+					id: "unknown-reinforce-decision",
+					name: "record_learning_decision",
+					arguments: {
+						store: true,
+						scope: "repo",
+						trigger: "guideline",
+						confidence: 0.9,
+						reason: "The existing guideline applies.",
+					},
+				},
+			]),
+		);
+		vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValueOnce(agentWriterReinforceResult("abcdef123456"));
+
+		startLearningStartupTask({
+			session: fx.session,
+			settings: fx.settings,
+			modelRegistry: fx.modelRegistry,
+			agentDir: fx.agentDir,
+			taskDepth: 0,
+		});
+		fx.emit({
+			type: "agent_end",
+			messages: [
+				{
+					role: "user",
+					content: "Nhớ phải verify thật trước khi claim xong.",
+					attribution: "user",
+					timestamp: Date.now(),
+				},
+			],
+		});
+
+		await waitFor(() => {
+			expect(taskExecutor.runSubprocess).toHaveBeenCalledTimes(1);
+			expect(debugSpy).toHaveBeenCalledWith(
+				"live-learning: writer reinforce target unresolved",
+				expect.objectContaining({ target: "abcdef123456" }),
+			);
+		});
+		expect(await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd)).toBeUndefined();
+		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
+	});
+
+	test("renders ranked aliases, hides not-useful entries, and uses the repository keyspace", async () => {
+		const fx = await createFixture();
+		const repoRoot = await makeTempDir("learnings-runtime-git");
+		const nestedCwd = path.join(repoRoot, "nested");
+		await fs.mkdir(nestedCwd);
+		const git = Bun.spawn(["git", "init", "-q", repoRoot]);
+		expect(await git.exited).toBe(0);
+		const nowSec = Math.floor(Date.now() / 1000);
+		const db = openLearningDb(getAgentDbPath(fx.agentDir));
+		try {
+			upsertLearning(db, {
+				scope: "repo",
+				cwd: nestedCwd,
+				repoKey: repoRoot,
+				content: "High-ranked repository learning.",
+				sourceMessageHash: "high",
+				trigger: "guideline",
+				confidence: 0.9,
+				nowSec,
+			});
+			upsertLearning(db, {
+				scope: "repo",
+				cwd: nestedCwd,
+				repoKey: repoRoot,
+				content: "Lower-ranked repository learning.",
+				sourceMessageHash: "low",
+				trigger: "guideline",
+				confidence: 0.9,
+				nowSec,
+			});
+			upsertLearning(db, {
+				scope: "repo",
+				cwd: nestedCwd,
+				repoKey: repoRoot,
+				content: "Hidden repository learning.",
+				sourceMessageHash: "hidden",
+				trigger: "guideline",
+				confidence: 0.9,
+				nowSec,
+			});
+			const hidden = db
+				.prepare("SELECT id FROM live_learnings WHERE content = ?")
+				.get("Hidden repository learning.") as { id: string };
+			const high = db
+				.prepare("SELECT id FROM live_learnings WHERE content = ?")
+				.get("High-ranked repository learning.") as { id: string };
+			recordLearningFeedback(db, {
+				learningId: high.id,
+				sessionId: "high-rank-session",
+				verdict: "useful",
+				nowSec: nowSec + 1,
+			});
+			for (let i = 0; i < 3; i++) {
+				recordLearningFeedback(db, {
+					learningId: hidden.id,
+					sessionId: `session-${i}`,
+					verdict: "not_useful",
+					nowSec: nowSec + i + 1,
+				});
+			}
+		} finally {
+			db.close();
+		}
+
+		const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, nestedCwd);
+		if (!payload) throw new Error("Expected repository learning payload");
+		expect(payload).toContain("- [l:");
+		expect(payload).toContain("High-ranked repository learning.");
+		expect(payload).not.toContain("Hidden repository learning.");
+		expect(payload).toContain("Lower-ranked repository learning.");
+		expect(payload.indexOf("High-ranked repository learning.")).toBeLessThan(
+			payload.indexOf("Lower-ranked repository learning."),
+		);
+		expect(payload).toContain("Call `rate_learning` with an entry's id");
+	});
+
+	test("uses learning and consolidation defaults and starts consolidation once", async () => {
+		const fx = await createFixture();
+		const consolidationSpy = vi.spyOn(consolidation, "maybeRunLearningConsolidation").mockResolvedValueOnce([]);
+
+		expect(fx.settings.get("learning.halfLifeDays")).toBe(45);
+		expect(fx.settings.get("learning.consolidation.enabled")).toBe(true);
+		expect(fx.settings.get("learning.consolidation.intervalDays")).toBe(7);
+		expect(fx.settings.get("learning.consolidation.minEntries")).toBe(15);
+		expect(fx.settings.get("learning.consolidation.timeoutMs")).toBe(240_000);
+		expect(fx.settings.get("learning.consolidation.models")).toEqual([]);
+
+		startLearningStartupTask({
+			session: fx.session,
+			settings: fx.settings,
+			modelRegistry: fx.modelRegistry,
+			agentDir: fx.agentDir,
+			taskDepth: 0,
+		});
+
+		await waitFor(() => {
+			expect(consolidationSpy).toHaveBeenCalledTimes(1);
+		});
+		expect(consolidationSpy).toHaveBeenCalledWith({
+			session: fx.session,
+			settings: fx.settings,
+			modelRegistry: fx.modelRegistry,
+			agentDir: fx.agentDir,
+		});
+		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
+	});
+
+	test("refreshes the prompt after startup consolidation applies operations", async () => {
+		const fx = await createFixture();
+		vi.spyOn(consolidation, "maybeRunLearningConsolidation").mockResolvedValueOnce([
+			{ target: "global", outcome: "applied", opsApplied: 1, opsSkippedStale: 0 },
+		]);
+
+		startLearningStartupTask({
+			session: fx.session,
+			settings: fx.settings,
+			modelRegistry: fx.modelRegistry,
+			agentDir: fx.agentDir,
+			taskDepth: 0,
+		});
+
+		await waitFor(() => {
+			expect(fx.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+		});
 	});
 });

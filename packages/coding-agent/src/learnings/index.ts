@@ -28,15 +28,21 @@ import {
 	recordLearningWriterResult,
 	toLearningAuditInsert,
 } from "./audit";
+import * as consolidation from "./consolidate";
+import { resolveRepoKey } from "./repo-key";
 import {
 	clearLearningData as clearLearningDataInDb,
 	closeLearningDb,
+	healCurrentCwdRows,
 	insertLearningAudit,
 	type LearningEntry,
 	type LearningScope,
 	learningMessageHash,
-	listLearningEntries,
+	listActiveLearnings,
 	openLearningDb,
+	type RankedLearningEntry,
+	reinforceLearning,
+	sweepTombstoneTouches,
 	upsertLearning,
 } from "./storage";
 
@@ -49,6 +55,12 @@ interface LearningRuntimeConfig {
 	writerTimeoutMs: number;
 	maxUserMessageChars: number;
 	maxEntriesPerScope: number;
+	halfLifeDays: number;
+	consolidationEnabled: boolean;
+	consolidationIntervalDays: number;
+	consolidationMinEntries: number;
+	consolidationTimeoutMs: number;
+	consolidationModels: string[];
 }
 
 interface LearningDecision {
@@ -67,11 +79,19 @@ type WriterAgentDecision =
 	| {
 			action: "skip";
 			reason?: string;
+	  }
+	| {
+			action: "reinforce";
+			target: string;
 	  };
 type LearningWriteResult =
 	| {
 			status: "store";
 			content: string;
+	  }
+	| {
+			status: "reinforce";
+			target: string;
 	  }
 	| {
 			status: "skip" | "failed";
@@ -86,6 +106,12 @@ const DEFAULTS: LearningRuntimeConfig = {
 	writerTimeoutMs: 60_000,
 	maxUserMessageChars: 4_000,
 	maxEntriesPerScope: 40,
+	halfLifeDays: 45,
+	consolidationEnabled: true,
+	consolidationIntervalDays: 7,
+	consolidationMinEntries: 15,
+	consolidationTimeoutMs: 240_000,
+	consolidationModels: [],
 };
 
 const DECISION_TOOL_NAME = "record_learning_decision";
@@ -103,6 +129,7 @@ const LEARNING_LOG_TAIL_BYTES = 512 * 1024;
 const LEARNING_LOG_MARKER = "live-learning:";
 const LEARNING_LOG_FILE_LIMIT = 3;
 const LEARNING_LOG_FILE_PATTERN = new RegExp(`^${escapeRegExp(APP_NAME)}\\.\\d{4}-\\d{2}-\\d{2}\\.log$`);
+const preparedLearningRepoKeys = new Set<string>();
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -129,8 +156,9 @@ const LEARNING_WRITER_OUTPUT_SCHEMA = {
 	type: "object",
 	additionalProperties: false,
 	properties: {
-		action: { type: "string", enum: ["store", "skip"] },
+		action: { type: "string", enum: ["store", "skip", "reinforce"] },
 		content: { type: "string" },
+		target: { type: "string" },
 		reason: { type: "string" },
 		source: { type: "string", enum: ["latest_user_message", "session_history"] },
 		evidence: { type: "string" },
@@ -203,6 +231,23 @@ export function startLearningStartupTask(options: {
 				});
 			});
 	});
+
+	if (settings.get("learning.consolidation.enabled") !== false) {
+		void consolidation
+			.maybeRunLearningConsolidation({ session, settings, modelRegistry, agentDir })
+			.then(async reports => {
+				if (reports.some(report => (report.opsApplied ?? 0) > 0)) {
+					await session.refreshBaseSystemPrompt?.();
+				}
+			})
+			.catch(error => {
+				logger.debug("live-learning: consolidation failed", {
+					cwd,
+					sessionId: session.sessionId,
+					error: String(error),
+				});
+			});
+	}
 }
 
 export async function buildLearningDeveloperInstructions(
@@ -212,13 +257,24 @@ export async function buildLearningDeveloperInstructions(
 ): Promise<string | undefined> {
 	const config = loadLearningConfig(settings);
 	if (!config.enabled) return undefined;
+	const repoKey = await resolveRepoKey(cwd);
 	const db = openLearningDb(getAgentDbPath(agentDir));
 	try {
-		const entries = listLearningEntries(db, cwd, config.maxEntriesPerScope);
+		if (!preparedLearningRepoKeys.has(repoKey)) {
+			const nowSec = unixNow();
+			sweepTombstoneTouches(db, { repoKey, nowSec });
+			healCurrentCwdRows(db, { cwd, repoKey, nowSec });
+			preparedLearningRepoKeys.add(repoKey);
+		}
+		const entries = listActiveLearnings(db, {
+			repoKey,
+			limitPerScope: config.maxEntriesPerScope,
+			halfLifeDays: config.halfLifeDays,
+			nowSec: unixNow(),
+		});
 		if (entries.length === 0) return undefined;
 		const global = entries.filter(entry => entry.scope === "global");
 		const repo = entries.filter(entry => entry.scope === "repo");
-		if (global.length === 0 && repo.length === 0) return undefined;
 		return prompt
 			.render(injectionTemplate, {
 				global_section: renderLearningSection("Global learnings", global),
@@ -354,11 +410,15 @@ async function processLearningFromUserMessage(options: {
 		return false;
 	}
 
+	const repoKey = await resolveRepoKey(cwd);
 	const db = openLearningDb(getAgentDbPath(agentDir));
 	try {
-		const existing = listLearningEntries(db, cwd, config.maxEntriesPerScope).filter(
-			entry => entry.scope === decision.scope,
-		);
+		const existing = listActiveLearnings(db, {
+			repoKey,
+			limitPerScope: config.maxEntriesPerScope,
+			halfLifeDays: config.halfLifeDays,
+			nowSec: unixNow(),
+		}).filter(entry => entry.scope === decision.scope);
 		const writeResult = await writeLearning({
 			userText: boundedUserText,
 			decision,
@@ -369,7 +429,7 @@ async function processLearningFromUserMessage(options: {
 			config,
 			audit,
 		});
-		if (writeResult.status !== "store") {
+		if (writeResult.status === "skip" || writeResult.status === "failed") {
 			await persistLearningAuditInDb(
 				db,
 				audit,
@@ -379,9 +439,36 @@ async function processLearningFromUserMessage(options: {
 			);
 			return false;
 		}
+		if (writeResult.status === "reinforce") {
+			const target = resolveExistingLearningAlias(existing, writeResult.target);
+			if (!target) {
+				logger.debug("live-learning: writer reinforce target unresolved", {
+					...decisionLogContext,
+					target: writeResult.target,
+				});
+				await persistLearningAuditInDb(db, audit, "writer_skipped", false, decisionSnapshot);
+				return false;
+			}
+			const reinforced = reinforceLearning(db, {
+				id: target.id,
+				confidence: decision.confidence,
+				nowSec: unixNow(),
+			});
+			logger.debug(reinforced ? "live-learning: reinforced" : "live-learning: reinforce no-op", decisionLogContext);
+			await persistLearningAuditInDb(
+				db,
+				audit,
+				reinforced ? "reinforced" : "reinforce_noop",
+				reinforced,
+				decisionSnapshot,
+			);
+			return reinforced;
+		}
+		if (writeResult.status !== "store") return false;
 		const stored = upsertLearning(db, {
 			scope: decision.scope,
 			cwd,
+			repoKey,
 			content: writeResult.content,
 			sourceMessageHash,
 			trigger: decision.trigger,
@@ -642,6 +729,10 @@ async function writeLearning(options: {
 		});
 		return { status: "skip" };
 	}
+	if (writerDecision.action === "reinforce") {
+		await recordLearningWriterResult(audit, result, writerDecision, "store");
+		return { status: "reinforce", target: writerDecision.target };
+	}
 	await recordLearningWriterResult(audit, result, writerDecision, "store");
 	return { status: "store", content: truncateChars(writerDecision.content, 800) };
 }
@@ -661,10 +752,15 @@ function parseWriterAgentDecision(output: string): WriterAgentDecision | undefin
 	try {
 		const parsed: unknown = JSON.parse(output);
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-		const writerOutput = parsed as { action?: unknown; content?: unknown; reason?: unknown };
+		const writerOutput = parsed as { action?: unknown; content?: unknown; reason?: unknown; target?: unknown };
 		if (writerOutput.action === "skip") {
 			const reason = typeof writerOutput.reason === "string" ? redactSecrets(writerOutput.reason).trim() : "";
 			return reason ? { action: "skip", reason } : { action: "skip" };
+		}
+		if (writerOutput.action === "reinforce") {
+			if (typeof writerOutput.target !== "string") return undefined;
+			const target = redactSecrets(writerOutput.target).trim().toLowerCase();
+			return target ? { action: "reinforce", target } : undefined;
 		}
 		if (writerOutput.action !== "store") return undefined;
 		if (typeof writerOutput.content !== "string") return undefined;
@@ -810,15 +906,20 @@ function parseLearningDecision(args: Record<string, unknown> | undefined): Learn
 	};
 }
 
-function renderLearningSection(title: string, entries: LearningEntry[]): string {
+function renderLearningSection(title: string, entries: RankedLearningEntry[]): string {
 	if (entries.length === 0) return `## ${title}\nNo live learnings stored.`;
-	const lines = entries.map(entry => `- ${entry.content.trim()}`).filter(line => line.length > 2);
+	const lines = entries.map(entry => `- [l:${entry.alias}] ${entry.content.trim()}`).filter(line => line.length > 2);
 	return `## ${title}\n${lines.join("\n")}`;
 }
 
 function renderExistingLearnings(entries: LearningEntry[]): string {
 	if (entries.length === 0) return "No existing live learnings for this scope.";
-	return entries.map(entry => `- ${entry.content.trim()}`).join("\n");
+	return entries.map(entry => `- [l:${entry.contentHash.slice(0, 12)}] ${entry.content.trim()}`).join("\n");
+}
+
+function resolveExistingLearningAlias(entries: LearningEntry[], target: string): LearningEntry | undefined {
+	const matches = entries.filter(entry => entry.contentHash.slice(0, 12) === target);
+	return matches.length === 1 ? matches[0] : undefined;
 }
 
 function truncateChars(text: string, maxChars: number): string {
@@ -845,6 +946,13 @@ function loadLearningConfig(settings: Settings): LearningRuntimeConfig {
 		writerTimeoutMs: settings.get("learning.writerTimeoutMs") ?? DEFAULTS.writerTimeoutMs,
 		maxUserMessageChars: settings.get("learning.maxUserMessageChars") ?? DEFAULTS.maxUserMessageChars,
 		maxEntriesPerScope: settings.get("learning.maxEntriesPerScope") ?? DEFAULTS.maxEntriesPerScope,
+		halfLifeDays: settings.get("learning.halfLifeDays") ?? DEFAULTS.halfLifeDays,
+		consolidationEnabled: settings.get("learning.consolidation.enabled") ?? DEFAULTS.consolidationEnabled,
+		consolidationIntervalDays:
+			settings.get("learning.consolidation.intervalDays") ?? DEFAULTS.consolidationIntervalDays,
+		consolidationMinEntries: settings.get("learning.consolidation.minEntries") ?? DEFAULTS.consolidationMinEntries,
+		consolidationTimeoutMs: settings.get("learning.consolidation.timeoutMs") ?? DEFAULTS.consolidationTimeoutMs,
+		consolidationModels: settings.get("learning.consolidation.models") ?? DEFAULTS.consolidationModels,
 	};
 }
 

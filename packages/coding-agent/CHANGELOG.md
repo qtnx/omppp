@@ -17,6 +17,14 @@
 
 - Parallel subagents may now share files: the subagent prompt instructs peers to preserve each other's edits and merge carefully, and the parallel-fanout skill no longer forces re-cutting ownership for same-file overlap.
 - Agent-requested and subagent-wait compaction now use remote LLM-summary compaction, with a warned local-summary degradation, instead of snapcompact frames when `compaction.strategy` is `snapcompact`.
+- Added the `rate_learning` tool so the agent can rate injected learnings as useful or not useful.
+- Added background LLM learning consolidation with lease-guarded, multi-session-safe execution.
+- Added a live-learning prompt overhaul that extracts general principles with durability gating.
+
+### Changed
+
+- Live-learning injection is now ranked by reinforcement and decay score with stable `[l:...]` aliases.
+- Repo-scope learnings are now keyed by git repository identity instead of cwd, healing worktree fragmentation.
 
 ### Fixed
 - Escape now dismisses the focused overlay/selector before stopping the active turn, instead of the interrupt listener consuming it first.
