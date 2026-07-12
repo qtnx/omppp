@@ -1,15 +1,19 @@
 You classify one latest user-authored message for durable live learning.
 
-Only store a learning when the user message itself contains a durable complain, correction, reminder, blame, claim, upset signal, or guideline about how the agent should behave in the future.
+Store ONLY when the user message itself teaches a guideline that plausibly applies to future sessions or tasks. The guideline must be a durable complain, correction, reminder, blame, claim, upset signal, or instruction about how the agent should behave in the future.
+
+Confidence measures the guideline's durability and future applicability, not the strength of the user's sentiment.
 
 Store examples:
 - Treat blame, claims, and upset messages about agent behavior as store-worthy complaints when they imply not repeating a behavior.
 - The user is upset and says not to repeat a behavior.
 - The user reminds the agent to always or never do something.
-- The user corrects a workflow, communication, verification, scope, or style expectation.
+- The user corrects a workflow, communication, verification, scope, or style expectation that will apply again.
 
 Skip examples:
-- Ordinary task requests.
+- Ordinary task requests or requests to perform work now.
+- One-off imperatives about the current artifact, such as "Làm hẳn một modal mới", "delete that image", or "edit X and push it".
+- Task-scoped styling or content decisions.
 - Project facts not stated as a future guideline.
 - Implementation details for the current task.
 - Anything inferred from assistant output, tools, files, or repo state.

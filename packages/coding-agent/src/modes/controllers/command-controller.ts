@@ -11,7 +11,7 @@ import {
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
 import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatDuration, getAgentDbPath, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
 import { shareSession } from "../../export/share";
@@ -27,6 +27,9 @@ import {
 	summarizeMentalModel,
 } from "../../hindsight";
 import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../../learnings";
+import * as learningConsolidation from "../../learnings/consolidate";
+import { resolveRepoKey } from "../../learnings/repo-key";
+import * as learningStorage from "../../learnings/storage";
 import { resolveMemoryBackend } from "../../memory-backend";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
@@ -667,11 +670,30 @@ export class CommandController {
 
 		if (action === "view") {
 			const payload = await buildLearningDeveloperInstructions(agentDir, this.ctx.settings, cwd);
-			if (!payload) {
-				this.ctx.showWarning("Live learning payload is empty (learning disabled or no learning available).");
-				return;
+			const repoKey = await resolveRepoKey(cwd);
+			const db = learningStorage.openLearningDb(getAgentDbPath(agentDir));
+			try {
+				const entries = learningStorage.listActiveLearnings(db, {
+					repoKey,
+					limitPerScope: this.ctx.settings.get("learning.maxEntriesPerScope"),
+					halfLifeDays: this.ctx.settings.get("learning.halfLifeDays"),
+					nowSec: Math.floor(Date.now() / 1_000),
+				});
+				const details = entries
+					.map(
+						entry =>
+							`[l:${entry.alias}] score ${entry.score.toFixed(2)} · strength ${entry.strength} · useful ${entry.usefulCount} · not_useful ${entry.notUsefulCount}\n${entry.content}`,
+					)
+					.join("\n\n");
+				const view = [payload, details].filter(Boolean).join("\n\n");
+				if (!view) {
+					this.ctx.showWarning("Live learning payload is empty (learning disabled or no learning available).");
+					return;
+				}
+				showMarkdownPanel(this.ctx, "Live Learning Injection Payload", view);
+			} finally {
+				learningStorage.closeLearningDb(db);
 			}
-			showMarkdownPanel(this.ctx, "Live Learning Injection Payload", payload);
 			return;
 		}
 
@@ -682,6 +704,68 @@ export class CommandController {
 				return;
 			}
 			showMarkdownPanel(this.ctx, "Live Learning Logs", ["```", logText, "```"].join("\n"));
+			return;
+		}
+
+		if (action === "consolidate") {
+			const reports = await learningConsolidation.maybeRunLearningConsolidation({
+				session: this.ctx.session,
+				settings: this.ctx.settings,
+				modelRegistry: this.ctx.session.modelRegistry,
+				agentDir,
+				force: true,
+			});
+			const reportText =
+				reports.length === 0
+					? "No live-learning consolidation targets."
+					: reports
+							.map(
+								report =>
+									`${report.target}: ${report.outcome} (ops applied: ${report.opsApplied ?? 0}, ops skipped stale: ${report.opsSkippedStale ?? 0})`,
+							)
+							.join("\n");
+			if (reports.some(report => (report.opsApplied ?? 0) > 0)) {
+				await this.ctx.session.refreshBaseSystemPrompt();
+			}
+			showMarkdownPanel(this.ctx, "Live Learning Consolidation", reportText);
+			return;
+		}
+
+		if (action === "drop") {
+			const aliasPrefix = (parts[1] ?? "").replace(/^\[?l:/i, "").replace(/\]$/, "");
+			if (!aliasPrefix) {
+				this.ctx.showError("Usage: /learning drop <alias>");
+				return;
+			}
+			const repoKey = await resolveRepoKey(cwd);
+			const db = learningStorage.openLearningDb(getAgentDbPath(agentDir));
+			let archived = false;
+			try {
+				const matches = learningStorage.findActiveByAliasPrefix(db, { aliasPrefix, repoKey });
+				if (matches.length === 0) {
+					this.ctx.showWarning(`Unknown live learning alias: ${aliasPrefix}.`);
+					return;
+				}
+				if (matches.length > 1) {
+					this.ctx.showWarning(`Live learning alias is ambiguous: ${aliasPrefix}.`);
+					return;
+				}
+				const learning = matches[0];
+				if (!learning) return;
+				archived = learningStorage.archiveLearning(db, {
+					id: learning.id,
+					guardUpdatedAt: null,
+					nowSec: Math.floor(Date.now() / 1_000),
+				});
+				if (archived) {
+					this.ctx.showStatus(`Archived live learning [l:${learning.contentHash.slice(0, 12)}].`);
+				} else {
+					this.ctx.showWarning(`Live learning is no longer active: ${aliasPrefix}.`);
+				}
+			} finally {
+				learningStorage.closeLearningDb(db);
+			}
+			if (archived) await this.ctx.session.refreshBaseSystemPrompt();
 			return;
 		}
 
@@ -709,7 +793,7 @@ export class CommandController {
 			}
 		}
 
-		this.ctx.showError("Usage: /learning <view|logs|clear|reset> [repo|global|all]");
+		this.ctx.showError("Usage: /learning <view|logs|consolidate|drop|clear|reset> [repo|global|all]");
 	}
 
 	async #handleMentalModelsSubcommand(argumentText: string): Promise<void> {

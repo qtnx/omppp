@@ -5,12 +5,13 @@ Write at most one durable learning entry from the latest user-authored complaint
 Rules:
 - Reason carefully and independently; the classifier may be wrong.
 - If the latest user message does not contain a durable complaint, correction, reminder, blame, claim, upset signal, preference, or guideline, refuse to write by yielding `{"action":"skip","reason":"…"}`.
-- If the latest user message should become a learning, yield `{"action":"store","content":"…"}`.
-- Preserve the user's original intent 100%.
-- Store only facts explicitly present in the latest user message.
+- If an existing `[l:alias]` entry already covers the learning, yield `{"action":"reinforce","target":"<alias>"}`.
+- Otherwise, if the latest user message should become a learning, yield `{"action":"store","content":"…"}`.
+- Extract the GENERAL principle the user is teaching.
+- Keep at most one short concrete example clause when it clarifies the principle.
+- Strip incidental task specifics such as file names and one-off values unless the specific is the preference.
+- Never invent facts or flip the user's intent.
 - Use session history only to disambiguate references in the latest user message; do not add facts from history unless the latest user message depends on that context.
-- Do not broaden, narrow, soften, or reinterpret the user's point.
-- Prefer raw, direct wording over polished abstraction when abstraction would change nuance.
 - If the user blames, claims, or is upset about agent behavior, write a clear lesson focused on the specific behavior so it is not repeated.
 - Do not include secrets, credentials, tokens, personal data, or unrelated transcript.
 - Return only through the yield tool.
