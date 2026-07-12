@@ -416,12 +416,26 @@ Explore agents collect facts, not decisions: relevant files, evidence-based find
 - Aim for sub-10-minute wall-clock ONLY when the DAG permits. NEVER down-tier RISK/load-bearing work to hit it.
 
 # Work package contract
-Every assignment is self-contained for a reader with ZERO conversation history — every path, symbol, contract, and decision named. Follow the task tool's assignment-fmt:
-- Target: owned files/symbols; forbidden files; explicit non-goals.
-- Change: concrete steps; exact APIs, types, and patterns; locked contracts it must not alter.
-- Acceptance: checks the subagent can run or observe itself (focused tests, command output, observable behavior) — never project-wide gates.
-- Done: required report contents (files changed, evidence per acceptance item, deviations, unresolved risks) plus the conditions to stop and escalate instead of guessing.
-Subagents stay in scope, avoid drive-by refactors, state assumptions, and report ambiguity instead of guessing.
+Every assignment MUST be executable by a reader with ZERO conversation history.
+
+Before dispatch, shared batch context MUST name:
+- Goal: observable outcome, repo/worktree, cwd, current state, and exact bootstrap/run commands.
+- Constraints: repo rules, batch non-goals, safe assumptions, shared-file ownership, and parent-only broad gates.
+- Contract: literal shared signatures/types/schemas/error shapes, ownership map, dependencies, and explicitly OPEN local choices. Paste the contract or give an exact readable `file:symbol`; NEVER make the owner reconstruct it from prose.
+Every named path, symbol, caller count, contract, and command MUST be grounded in repo/tool evidence before dispatch. Unknown? Read it first or mark the package `BLOCKED`; NEVER synthesize a signature, CLI shape, test name, or bootstrap command.
+
+Follow the task tool's assignment-fmt:
+- Target: role; exact write-owned files/symbols marked create/modify/delete; read-only references; forbidden files; task non-goals. Read access NEVER grants write ownership.
+- Change: current → desired observable behavior; ordered requirements; quoted locked contract; reference pattern; edge/error cases; invariants; owned wiring; safe assumptions.
+- Acceptance: 1–2 copy-pasteable focused checks with cwd/setup, expected output/state, and one failure path for behavior. NEVER assign project-wide gates.
+- Done: deliverable form; files + symbols changed; `command/check → decisive output` per Acceptance item; deviations, assumptions, unresolved risks; named stop conditions.
+
+Tier-specific scope MUST refine, never replace, this contract:
+- `quick_task`: one locked mechanical concern; exact bounded files/symbols or an enumerable identical pattern; no architecture or contract decisions; one cheapest decisive check. Keep each assignment section compact and NEVER repeat shared context. Unexpected cross-module design work → `BLOCKED`, not exploration.
+- `task`: one contained senior slice; exact local/public contract, edge/error behavior, owned wiring, and 1–2 focused checks.
+- `heavy_task`: one indivisible load-bearing objective after mechanical/perimeter slices are removed; exact blast radius/callsite denominator, interfaces, invariants, failure modes, integration boundaries, and staged Acceptance including the required execution-harness rung. Add rollback/observability when the risk model requires them. “Large” NEVER means a vague mega-task or several independent concerns.
+
+Every assignment MUST name stop conditions: on-disk contract mismatch, correctness requiring a forbidden edit, an unusable Acceptance command after documented setup, or ambiguity that changes public behavior. The owner returns `BLOCKED` with condition, evidence, attempts, and decision needed; it NEVER silently redesigns a locked contract or broadens scope. Implementation packages complete only with production code and Acceptance evidence. Read-only packages complete only with the requested evidence.
 
 # Integration
 - Assign one verification/integration owner per wave.

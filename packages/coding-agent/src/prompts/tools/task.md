@@ -50,38 +50,113 @@ Subagents start blank. They have no access to your conversation history.
 
 # Format Contracts
 {{#if batchEnabled}}
-The `context` field MUST follow this format:
-# Goal         ← what the batch accomplishes
-# Constraints  ← rules and session decisions
-# Contract     ← shared interfaces
+The `context` field MUST contain shared facts once, not repeated per task:
+```md
+# Goal
+- Outcome: observable batch result and why it matters.
+- Workspace: repo/worktree, package, and command cwd.
+- Current state: relevant landed code, fixtures, services, or dependencies.
+- Bootstrap: exact repo-provided install/build/run commands with cwd, or `N/A`; NEVER invent commands.
+
+# Constraints
+- Repository rules and forbidden techniques.
+- Batch non-goals and safe assumptions.
+- Parallel ownership/shared-file rules.
+- Parent-only gates: subagents skip project-wide formatters, linters, typechecks, builds, and suites.
+
+# Contract
+- LOCKED: literal source-grounded signatures, types, schemas, wire/error shapes, and invariants; paste them or cite an exact readable `file:symbol`. NEVER synthesize an unknown contract.
+- Ownership: which task owns each contract side, shared/generated file, and integration step.
+- Dependencies: what is already available and any real runtime ordering.
+- OPEN: local choices each owner may make without coordination.
+```
 {{/if}}
 
 The `assignment` field MUST follow this format:
 <assignment-fmt>
-# Target       ← files + symbols the agent owns; forbidden files; explicit non-goals
-# Change       ← step-by-step add/remove/rename; exact APIs, types, patterns; locked contracts it must not alter
-# Acceptance   ← per-item checks the subagent can run or observe itself (focused tests, command output, behavior); no project-wide commands
-# Done         ← required report contents: files changed, evidence per Acceptance item, deviations/assumptions, blockers; conditions to stop and escalate instead of guessing
+# Target
+- Role/objective: match the task's `role`; implementation tasks deliver production behavior, not a plan.
+- Owns: exact write-owned files and symbols, each marked create/modify/delete.
+- May read: exact reference files/patterns; direct dependencies may be inspected read-only.
+- Forbidden: other owners' files, generated files, lockfiles, and unrelated cleanup.
+- Non-goals: task-specific exclusions; batch exclusions stay in `context`.
+
+# Change
+1. State current behavior/problem and desired observable result.
+2. Give ordered implementation requirements with exact inputs, outputs, errors, and state transitions.
+3. Quote the LOCKED contract used here; NEVER make the owner infer field names or signatures.
+4. Name the existing `file:symbol` pattern/helper to mirror instead of creating a second convention.
+5. Enumerate required edge/error cases and invariants.
+6. Name wiring/callsites this task owns versus another task or the parent.
+7. State safe assumptions; local uncertainty stays with the owner unless it contradicts a locked contract.
+
+# Acceptance
+- Give 1–2 focused, copy-pasteable checks with exact cwd and required setup, verified against the repo's manifest, harness, or existing focused tests.
+- For each check, state expected exit/result and decisive output/state.
+- Behavior changes MUST exercise the changed path plus one designed failure path.
+- Tests name observable branches/invariants, never implementation details.
+- NEVER assign project-wide gates; the parent runs integration gates once.
+
+# Done
+- Deliverable form: default is uncommitted working-tree edits; name any different requirement explicitly.
+- Report files + symbols changed; each Acceptance item as `command/check → decisive output`.
+- Report deviations, assumptions used, unresolved risks, and blockers.
+- Name task-specific stop conditions in addition to the defaults below.
+- Completion requires production implementation plus Acceptance evidence; read-only tasks require the requested evidence.
+- On a stop condition, return `BLOCKED` with: condition, evidence, attempts, and decision needed. NEVER partially redesign a locked contract or broaden scope.
 </assignment-fmt>
 
-<assignment-quality>
-An assignment is a contract for a reader with ZERO conversation history. Before sending, check:
-- Self-contained: every file path, symbol, contract, and decision named. "As discussed" and bare pronouns are dead references.
-- Scoped: owned files listed; out-of-bounds named explicitly.
-- Verifiable: each Acceptance item is a check the subagent can run or observe itself.
-- Bounded: names the conditions to stop and report instead of guessing.
+Default stop conditions: on-disk contract differs from LOCKED; correctness requires a forbidden edit; an Acceptance command remains unusable after its documented setup; or ambiguity materially changes public behavior. Add domain-specific stops where relevant.
 
-WRONG — forces the subagent to guess intent, scope, and done-ness:
-  "Fix the spinner bug in the event controller and make sure tests pass"
+## Tier-specific assignment profiles
+
+Apply exactly one profile; it tightens `<assignment-fmt>` and NEVER replaces a section:
+
+### `quick_task`
+- Target: one locked mechanical concern. List every file/symbol, or give an exact enumerable pattern plus expected match count.
+- Change: prescribe the transformation completely; leave no architecture, API, edge-case, or product decision open.
+- Acceptance: one cheapest decisive check, exact command/check + expected result. Add a behavior probe only when runtime behavior changes.
+- Done: minimal report. Keep each section compact (normally 1–3 bullets) and NEVER repeat shared context. Contract mismatch, unexpected cross-module work, or an unbounded match set → `BLOCKED`; NEVER widen the task to “investigate.”
+
+### `task`
+- Target: one contained senior slice across a few files with explicit write ownership and integration boundary.
+- Change: lock local/public contracts, edge/error behavior, reference pattern, callsites, and owned wiring.
+- Acceptance: 1–2 focused checks covering changed behavior and one failure path where applicable.
+- Done: production slice + evidence; broader architecture or a newly discovered RISK boundary → `BLOCKED`.
+
+### `heavy_task`
+- Target: one indivisible load-bearing objective after all independent mechanical/perimeter work is split off. Name primary files, affected modules, forbidden siblings, and the callsite/blast-radius denominator.
+- Change: lock interfaces and state transitions; enumerate invariants, failure modes, concurrency/data-integrity concerns when relevant, integration order, and explicit non-goals. Large scope NEVER permits vague steps or multiple independent concerns.
+- Acceptance: staged focused gates plus the required execution-harness rung; name realistic success input, failure input, expected output/state/side effects, and rollback/observability checks when risk requires them.
+- Done: production result, caller-migration count, evidence per stage, residual risk, rollback/observability status. A contract/risk contradiction → `BLOCKED`; NEVER ship a partial core or compatibility fallback.
+
+<assignment-quality>
+Before sending, verify:
+- Self-contained: no “as discussed,” bare pronouns, hidden decisions, or unstated setup.
+- Source-grounded: every named path, symbol, count, contract, and command exists in repo/tool evidence; NEVER invent missing setup or APIs.
+- Scoped: one executable concern; exact write ownership; explicit boundaries and non-goals.
+- Contract-locked: literal shared shapes, ownership, and OPEN choices agree across tasks.
+- Verifiable: commands are runnable as written and expected evidence is concrete.
+- Bounded: stop conditions produce a decisive `BLOCKED` report instead of guesses.
+
+WRONG — forces the subagent to discover scope and done-ness:
+  “Fix the spinner bug in the event controller and make sure tests pass.”
+
 RIGHT:
   # Target
-  src/modes/controllers/event-controller.ts `#handleAutoCompactionStart` only; do NOT touch the retry handlers.
+  Owns: `src/modes/controllers/event-controller.ts` — modify `#handleAutoCompactionStart`;
+  `test/modes/controllers/event-controller-compaction-spinner.test.ts` — modify regression coverage.
+  Forbidden: retry handlers and other controller files. Non-goal: no animation redesign.
   # Change
-  Stop and null `ctx.loadingAnimation` before `statusContainer.clear()`, mirroring `#handleAgentEnd`.
+  Stop and null `ctx.loadingAnimation` before `statusContainer.clear()`, mirroring
+  `event-controller.ts:#handleAgentEnd`. Preserve all other compaction transitions.
   # Acceptance
-  `bun test test/modes/controllers/event-controller-compaction-spinner.test.ts` green; new test proves the spinner handle is released on `auto_compaction_start`.
+  From `packages/coding-agent`: `bun test test/modes/controllers/event-controller-compaction-spinner.test.ts`
+  → exit 0; proves the spinner handle is released on `auto_compaction_start` and the
+  no-active-animation path remains a no-op.
   # Done
-  Report files changed + test output; flag any behavior that deviates from this spec as an explicit deviation, not silently.
+  Leave edits uncommitted. Report files/symbols + exact test output. Return `BLOCKED`
+  if the named lifecycle fields differ on disk; do not redesign the animation lifecycle.
 </assignment-quality>
 
 # Available Agents
