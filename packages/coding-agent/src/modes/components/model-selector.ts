@@ -1225,18 +1225,27 @@ export class ModelSelectorComponent extends Container {
 			return;
 		}
 
-		if (getKeybindings().matches(keyData, "tui.select.cancel")) {
-			if (this.#menuStep === "thinking" && this.#menuSelectedRole !== null) {
-				this.#menuStep = "role";
-				const roleIndex = this.#menuRoleActions.findIndex(action => action.role === this.#menuSelectedRole);
-				this.#menuSelectedRole = null;
-				this.#menuSelectedIndex = roleIndex >= 0 ? roleIndex : 0;
-				this.#updateMenu();
-				return;
-			}
-			this.#closeMenu();
+		// Left mirrors Escape as "back one level" within the menu; the list
+		// level keeps Left for provider-tab navigation (menu is closed there).
+		if (matchesKey(keyData, "left") || getKeybindings().matches(keyData, "tui.select.cancel")) {
+			this.#menuStepBack();
 			return;
 		}
+	}
+
+	#menuStepBack(): void {
+		// Back one level: from the thinking step return to role selection,
+		// otherwise close the menu (returning to the model list). Shared by
+		// Escape (tui.select.cancel) and Left so the two can never drift.
+		if (this.#menuStep === "thinking" && this.#menuSelectedRole !== null) {
+			this.#menuStep = "role";
+			const roleIndex = this.#menuRoleActions.findIndex(action => action.role === this.#menuSelectedRole);
+			this.#menuSelectedRole = null;
+			this.#menuSelectedIndex = roleIndex >= 0 ? roleIndex : 0;
+			this.#updateMenu();
+			return;
+		}
+		this.#closeMenu();
 	}
 
 	#handleSelect(

@@ -9,6 +9,7 @@
 - Added `/subagents` to open the live subagent inspector for running and parked task agents.
 
 ### Fixed
+- Escape now dismisses the focused overlay/selector (agents dashboard, model selector, settings, session pickers) before stopping the active turn; Left arrow steps back one level inside the model selector action menu.
 
 - Workflow Hub transcript drill-through now streams live: the workflow agent progress frame carries the subagent's transcript `sessionFile`, so opening an agent (Enter) registers a parked placeholder ref pointing at the real transcript and the viewer tails it immediately — even during the start-race window before the live agent session registers. Previously the open silently no-opped when the ref was not yet in the registry.
 - Workflow Hub navigation gained arrow keys (↑/↓ alongside j/k) and `←` to go back (transcript → hub, hub → editor).

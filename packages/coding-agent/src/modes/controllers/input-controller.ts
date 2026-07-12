@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
+import { type AutocompleteProvider, getKeybindings, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
 import { $env, isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
@@ -479,7 +479,22 @@ export class InputController {
 			this.#globalInterruptListenerInstalled = true;
 			this.ctx.ui.addInputListener(data => {
 				if (!this.#matchesInterruptKey(data)) return undefined;
+				// A focused surface that can handle input (selector/overlay/hub/cancellable
+				// loader) owns its dismiss key: when the interrupt key is also that surface's
+				// cancel key (tui.select.cancel), let it dismiss/step back instead of stopping
+				// the turn — TUI routes the key there when we don't consume. The editor and
+				// passive display loaders (no handleInput) are NOT dismissible surfaces: Esc
+				// there stops the turn via the global handler. A custom interrupt key the
+				// overlay does not treat as cancel still stops the turn globally.
 				const focused = this.ctx.ui.getFocused();
+				if (
+					focused &&
+					focused !== this.ctx.editor &&
+					typeof focused.handleInput === "function" &&
+					getKeybindings().matches(data, "tui.select.cancel")
+				) {
+					return undefined;
+				}
 				if (focused === this.ctx.editor && this.ctx.editor.isShowingAutocomplete()) return undefined;
 				if (!this.#hasGlobalInterruptWork() && !vocalizer.isSpeaking()) return undefined;
 				this.#handleEscape();
