@@ -1362,8 +1362,7 @@ describe("wave 5 — adapters and polish", () => {
 			expect(result).toEqual({ consumed: true });
 			const text = output[0] ?? "";
 			expect(text).toContain("Context GC stats");
-			expect(text).toContain("Estimated active tokens saved");
-			expect(text).toContain("120");
+			expect(text).toContain("Active projected net savings: unavailable");
 			const aliasResult = await executeAcpBuiltinSlashCommand("/gc stats", runtime);
 			expect(aliasResult).toEqual({ consumed: true });
 			expect(output[1]).toContain("Context GC stats");
@@ -1379,7 +1378,7 @@ describe("wave 5 — adapters and polish", () => {
 			expect(text).toContain("Context GC global stats");
 			expect(text).toContain("Global sessions: 2");
 			expect(text).toContain("Global records: 3");
-			expect(text).toContain("Estimated global tokens saved: 300 unloaded token(s)");
+			expect(text).toContain("Durable unloaded source estimate: 300 (1 record(s))");
 			const aliasResult = await executeAcpBuiltinSlashCommand("/context-gc global-stats", runtime);
 			expect(aliasResult).toEqual({ consumed: true });
 			expect(output[1]).toContain("Context GC global stats");

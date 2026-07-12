@@ -2,8 +2,8 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import { payloadForMessage } from "./extract";
 import type { ContextRecord } from "./schema";
-import { estimateTokens as estimateTextTokens } from "./summary";
 import type { ContextGcSessionState } from "./session-state";
+import { estimateTokens as estimateTextTokens } from "./summary";
 
 const MAX_ISSUE_COUNT = 1_000;
 
@@ -153,7 +153,6 @@ function estimateActiveMessageTokens(message: AgentMessage): number {
 	return Math.max(estimateTokens(message), estimateTextTokens(payloadForMessage(message).text));
 }
 
-
 export function analyzeActiveContext(
 	messages: readonly AgentMessage[],
 	records: readonly ContextRecord[],
@@ -212,10 +211,7 @@ export function analyzeActiveContext(
 	return { matches, activeRecordIds: [...matches.keys()], estimates, issueCounts: issues };
 }
 
-export function createActiveSnapshot(
-	state: ContextGcSessionState,
-	analysis: ActiveContextAnalysis,
-): ActiveSnapshot {
+export function createActiveSnapshot(state: ContextGcSessionState, analysis: ActiveContextAnalysis): ActiveSnapshot {
 	return {
 		sessionId: state.sessionId,
 		branchEntryIds: state.messageEntries.map(entry => entry.id),

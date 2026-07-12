@@ -545,7 +545,13 @@ describe("contextGcExtension", () => {
 			{
 				type: "context",
 				messages: [
-					{ role: "custom", entryId: "reminder-entry", customType: "large-custom", content: largeText, display: false },
+					{
+						role: "custom",
+						entryId: "reminder-entry",
+						customType: "large-custom",
+						content: largeText,
+						display: false,
+					},
 				],
 			},
 			createFakeContext(),
@@ -654,7 +660,13 @@ describe("contextGcExtension", () => {
 			{
 				type: "context",
 				messages: [
-					{ role: "custom", entryId: "usage-entry", customType: "large-custom", content: largeText, display: false },
+					{
+						role: "custom",
+						entryId: "usage-entry",
+						customType: "large-custom",
+						content: largeText,
+						display: false,
+					},
 				],
 			},
 			createFakeContext(),

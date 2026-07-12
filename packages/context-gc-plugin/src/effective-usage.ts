@@ -13,7 +13,6 @@ export interface ContextGcEffectiveTokenOptions {
 	recordIds?: readonly string[];
 }
 
-
 function filterRecordsById<T extends { id: string }>(records: readonly T[], ids: readonly string[] | undefined): T[] {
 	if (ids === undefined) return [...records];
 	const allowed = new Set(ids);

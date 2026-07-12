@@ -1,10 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import {
-	analyzeActiveContext,
-	buildContextGcPlaceholder,
-	type ActiveContextAnalysis,
-} from "./active-context";
+import { type ActiveContextAnalysis, analyzeActiveContext, buildContextGcPlaceholder } from "./active-context";
 import { CONTEXT_GC_PROJECTED_TYPE, type ContextRecord } from "./schema";
 
 type ToolResultSurface = ToolResultMessage<unknown>;

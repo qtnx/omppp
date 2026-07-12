@@ -607,7 +607,9 @@ describe("projectUnloadedContext", () => {
 
 		expect(replaced.role).toBe("custom");
 		expect(replaced.customType).toBe("context-gc-projected");
-		expect(replaced.content).toEqual([{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_file"}') }]);
+		expect(replaced.content).toEqual([
+			{ type: "text", text: expect.stringContaining('context_recall {"id":"ctx_file"}') },
+		]);
 		expect(String((replaced.content as Array<{ text: string }>)[0].text)).not.toContain(fileContent);
 		expect(projected[1]).toBe(messages[1]);
 	});
@@ -906,8 +908,8 @@ describe("projectUnloadedContext", () => {
 		for (const [index, record] of records.entries()) {
 			const first = JSON.stringify(firstPass[index]);
 			const second = JSON.stringify(secondPass[index]);
-			expect(first).toContain(`context_recall {\\\"id\\\":\\\"${record.id}\\\"}`);
-			expect(second).toContain(`context_recall {\\\"id\\\":\\\"${record.id}\\\"}`);
+			expect(first).toContain(`context_recall {\\"id\\":\\"${record.id}\\"}`);
+			expect(second).toContain(`context_recall {\\"id\\":\\"${record.id}\\"}`);
 			expect(first).not.toContain(large);
 			expect(second).not.toContain(large);
 		}

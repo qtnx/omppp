@@ -1,5 +1,5 @@
 import * as os from "node:os";
-import { activeSnapshotEstimate, isActiveSnapshotValid, type ActiveSnapshot } from "./active-context";
+import { type ActiveSnapshot, activeSnapshotEstimate, isActiveSnapshotValid } from "./active-context";
 import type {
 	ContextGcDelta,
 	ContextGcReportGroupBy,

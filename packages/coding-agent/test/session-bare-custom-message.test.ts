@@ -30,7 +30,7 @@ describe("bare custom_message recovery", () => {
 		);
 
 		const message = buildSessionContext(entries).messages[0];
-		if (!message || message.role !== "custom") throw new Error("Expected rebuilt custom message");
+		if (message?.role !== "custom") throw new Error("Expected rebuilt custom message");
 		expect("entryId" in message ? message.entryId : undefined).toBe("custom-entry");
 	});
 

@@ -7,13 +7,13 @@ import type {
 	ToolResultEvent,
 } from "@oh-my-pi/pi-coding-agent";
 import { logger } from "@oh-my-pi/pi-utils";
-import contextGcSystemPrompt from "./context-gc-system-prompt.md" with { type: "text" };
 import {
+	type ActiveSnapshot,
 	analyzeActiveContext,
 	createActiveSnapshot,
 	isActiveSnapshotValid,
-	type ActiveSnapshot,
 } from "./active-context";
+import contextGcSystemPrompt from "./context-gc-system-prompt.md" with { type: "text" };
 import { isContextGcInspectionTool, projectUnloadedContext } from "./context-transform";
 import { extractMessagePayload, payloadForMessage, payloadFromContent } from "./extract";
 import { buildContextGcReminder } from "./reminder";
@@ -489,9 +489,7 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 		const state = readContextGcSessionState(ctx);
 		const snapshot = getActiveSnapshot(ctx);
 		const records = branchRecords(store, state);
-		const activeRecords = snapshot
-			? records.filter(record => snapshot.activeRecordIds.includes(record.id))
-			: records;
+		const activeRecords = snapshot ? records.filter(record => snapshot.activeRecordIds.includes(record.id)) : records;
 		const reminder = buildContextGcReminder(activeRecords, {
 			thresholdTokens: REMINDER_THRESHOLD_TOKENS,
 			contextUsage: ctx.getContextUsage(),

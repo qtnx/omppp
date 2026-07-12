@@ -4,7 +4,7 @@ import type {
 	ExtensionContext,
 	ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
-import { isActiveSnapshotValid, type ActiveSnapshot } from "../active-context";
+import { type ActiveSnapshot, isActiveSnapshotValid } from "../active-context";
 import { type ContextRecord, type ContextStatus, inventoryInputSchema } from "../schema";
 import { branchRecords, readContextGcSessionState } from "../session-state";
 import type { ContextGcStore } from "../storage";
@@ -89,9 +89,10 @@ export function createContextInventoryTool(
 			const session = readContextGcSessionState(ctx);
 			const branchScoped = branchRecords(store, session);
 			const snapshot = getActiveSnapshot?.(ctx);
-			const records = snapshot && isActiveSnapshotValid(snapshot, session)
-				? branchScoped.filter(record => snapshot.activeRecordIds.includes(record.id))
-				: branchScoped;
+			const records =
+				snapshot && isActiveSnapshotValid(snapshot, session)
+					? branchScoped.filter(record => snapshot.activeRecordIds.includes(record.id))
+					: branchScoped;
 			const result = await runContextInventory(store, session.sessionId, params, records);
 			return { content: [{ type: "text", text: formatContextInventory(result) }], details: result };
 		},

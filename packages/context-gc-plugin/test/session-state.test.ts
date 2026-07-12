@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { type ActiveSnapshot, isActiveSnapshotValid } from "../src/active-context";
 import type { ContextGcDelta, ContextStatus } from "../src/schema";
 import {
 	branchRecords,
@@ -12,7 +13,6 @@ import {
 	readContextGcSessionStateFromSessionManager,
 } from "../src/session-state";
 import { type ContextGcStore, openContextGcStore } from "../src/storage";
-import { isActiveSnapshotValid, type ActiveSnapshot } from "../src/active-context";
 
 let tempDir: string | undefined;
 let store: ContextGcStore | undefined;
@@ -54,7 +54,7 @@ function makeState(deltas: ContextGcDelta[]): ContextGcSessionState {
 	return { sessionId: "session-a", sessionFile: undefined, cwd: ".", deltas, messageEntries: [] };
 }
 
-import { SessionManager, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { type ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { extractMessagePayload, payloadForMessage } from "../src/extract";
 
 interface FakeSessionEntry {
@@ -189,12 +189,7 @@ describe("readContextGcSessionState", () => {
 		const liveMessage = manager
 			.buildSessionContext()
 			.messages.find(message => message.role === "custom" && message.customType === "tool-output");
-		if (
-			!liveMessage ||
-			liveMessage.role !== "custom" ||
-			!("entryId" in liveMessage) ||
-			typeof liveMessage.entryId !== "string"
-		) {
+		if (liveMessage?.role !== "custom" || !("entryId" in liveMessage) || typeof liveMessage.entryId !== "string") {
 			throw new Error("Expected an entry-id-stamped custom session message");
 		}
 		expect(liveMessage.entryId).toBe(entryId);
@@ -206,7 +201,6 @@ describe("readContextGcSessionState", () => {
 		expect(payloadForMessage(persisted.message).stored).toBe(payload);
 	});
 });
-
 
 describe("active snapshot lineage", () => {
 	const snapshot: ActiveSnapshot = {
