@@ -261,7 +261,7 @@ Search **external references** (docs, OSS, web). Fire proactively when unfamilia
 - **Routing priority.** NEVER sacrifice specialist/RISK routing for one call.
 - **Unblocked work.** MUST dispatch newly unblocked packages immediately.
 - **No waterfall.** NEVER serialize independent packages or dispatch one agent at a time.
-- **Ownership.** Every package MUST have exclusive file ownership; NEVER use padded or false parallelism.
+- **Ownership.** Every package MUST have clear file ownership; same-file overlap is safe (per-file edit locking serializes, agents preserve peer edits) — NEVER phase-split just to avoid a shared file. NEVER use padded or false parallelism.
 - **Specialist routing.** Rendered frontend/UI behavior uses the hard visual bundle; copy-only text uses `ux_copywriter`; generic tiers never replace specialists.
 - **Heavy gate.** Before EVERY `heavy_task`, MUST split off ANY independently ownable pre-locked `task`/`quick_task` slice.
 - **RISK core.** MUST keep ONLY indivisible RISK/load-bearing core on `heavy_task`; NEVER down-tier RISK/load-bearing work.
