@@ -51,11 +51,6 @@
 - Enabled reasoning effort controls for Grok 4.5 and updated support flags for additional Grok variants
 - Standardized reasoning effort levels to use a wire-exact max tier across all model providers, including Devin routing and Ollama configurations.
 - Updated costs and context windows for various models in the catalog.
-## [1.5.8] - 2026-07-11
-
-### Added
-
-- Added first-party Meta Model API support for `muse-spark-1.1` over OpenAI Responses with the documented 1,048,576-token context, 131,072-token output limit, and token pricing.
 
 ## [16.3.15] - 2026-07-09
 
@@ -697,6 +692,12 @@
 ### Removed
 
 - Removed the runtime enrichment layer: `enrichModelThinking` (and its non-enumerable memo-slot cache), `refreshModelThinking`, `modelOmitsReasoningEffort`, and the `model-thinking` re-exports of generator-only policies. Thinking metadata is resolved exactly once inside `buildModel`; runtime helpers (`getSupportedEfforts`, `clampThinkingLevelForModel`, `requireSupportedEffort`, the effort mappers) are pure field reads.
+
+## [1.5.8] - 2026-07-11
+
+### Added
+
+- Added first-party Meta Model API support for `muse-spark-1.1` over OpenAI Responses with the documented 1,048,576-token context, 131,072-token output limit, and token pricing.
 
 ## [1.4.1] - 2026-06-28
 

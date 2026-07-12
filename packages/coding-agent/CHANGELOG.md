@@ -1,9 +1,8 @@
 # Changelog
 
 ## [Unreleased]
-### Fixed
 
-- Fixed rebuilt persisted custom messages losing their originating entry ID; rebuilt messages now retain it so Context GC can match them reliably after context reconstruction.
+## [1.6.0] - 2026-07-12
 
 ### Added
 
@@ -20,32 +19,21 @@
 - Added the `rate_learning` tool so the agent can rate injected learnings as useful or not useful.
 - Added background LLM learning consolidation with lease-guarded, multi-session-safe execution.
 - Added a live-learning prompt overhaul that extracts general principles with durability gating.
-
-### Changed
-
 - Live-learning injection is now ranked by reinforcement and decay score with stable `[l:...]` aliases.
 - Repo-scope learnings are now keyed by git repository identity instead of cwd, healing worktree fragmentation.
 
 ### Fixed
-- Escape now dismisses the focused overlay/selector before stopping the active turn, instead of the interrupt listener consuming it first.
 
+- Fixed rebuilt persisted custom messages losing their originating entry ID; rebuilt messages now retain it so Context GC can match them reliably after context reconstruction.
+- Escape now dismisses the focused overlay/selector before stopping the active turn, instead of the interrupt listener consuming it first.
 - Workflow Hub transcript drill-through now streams live: the workflow agent progress frame carries the subagent's transcript `sessionFile`, so opening an agent (Enter) registers a parked placeholder ref pointing at the real transcript and the viewer tails it immediately — even during the start-race window before the live agent session registers. Previously the open silently no-opped when the ref was not yet in the registry.
 - Workflow Hub navigation gained arrow keys (↑/↓ alongside j/k) and `←` to go back (transcript → hub, hub → editor).
-
-## [1.5.7] - 2026-07-10
-
-### Added
-
-- Added bundled `parallel-fanout` skill: 7-phase fanout pipeline, feature-slicing dimension table, contract-vs-runtime (C/R) dependency test, tier table, required wave-plan table with a worked example, a one-workflow rule with a script template (a whole wave plan executes as ONE `workflow` run), one-wave scout fanout with a two-wave exploration budget, and the full-cycle rule (one subagent owns red test + implement + fix until green).
-## [1.5.8] - 2026-07-11
-
-### Changed
-
-- The continuous duo advisor now defaults to `gpt-5.6-sol` (was `gpt-5.5`): updated the `duo.advisorModel` schema default and the resolver's unset-fallback so the advisor no longer routes to GPT-5.5.
-
-### Fixed
-
 - Fixed advisor concern/blocker notes interrupting or skipping active tool/function calls; notes now deliver at a safe boundary, including stream-tail recovery.
+- Planning now converges explicitly across normal, orchestrator, and duo flows: every new plan follows `skill://brainstorming` then `skill://writing-plans`, receives adversarial Super Review, and may take multiple blocker-driven revision rounds until requirements, interfaces, ownership, executable acceptance, and any active approval gate satisfy. The locked plan executes directly; ordinary implementation requests need no second approval.
+- Reading `skill://parallel-fanout` is now mandatory before spawning any work subagents (scouts or implementation) in both the system prompt and orchestrator prompts; `workflow` is scoped to multi-phase implementation only (1–2 runs close a job — never scout/plan runs); the duo advisor loop-watch gained plan-churn, review-theater, and skill-skip signatures.
+- Foundation execution now plans only the current ready horizon: active Foundation may contain only concrete runtime prerequisites for the next executable vertical slice, the first locked execution wave must include a production-code owner, tests/maps/contracts/reviews cannot substitute for implementation, review budget is per task objective with a next-action dispatch invariant, and correction is bounded to the same owner. The rule is enforced across normal/orchestrator prompts, advisor loop-watch, planner/heavy/designer agent prompts, and all bundled skills that previously encouraged broad recon, future-contract planning, RED-only waves, or design-system setup.
+- The shell installer now seeds and migrates the `reviewer` agent to `openai-codex/codex-auto-review`, adds the override when missing, and preserves custom reviewer routes.
+
 ## [16.4.5] - 2026-07-11
 
 ### Breaking Changes
@@ -180,10 +168,6 @@
 - Fixed subagent yield tool calls being discarded when a soft request budget aborts the assistant turn before the yield event completes.
 - Fixed --tools filtering in interactive sessions incorrectly disabling deferred MCP tools from configured servers.
 - Fixed kept-alive task subagents entering infinite provider-call loops after an IRC wake and terminal yield.
-- Planning now converges explicitly across normal, orchestrator, and duo flows: every new plan follows `skill://brainstorming` then `skill://writing-plans`, receives adversarial Super Review, and may take multiple blocker-driven revision rounds until requirements, interfaces, ownership, executable acceptance, and any active approval gate satisfy. The locked plan executes directly; ordinary implementation requests need no second approval.
-- Reading `skill://parallel-fanout` is now mandatory before spawning any work subagents (scouts or implementation) in both the system prompt and orchestrator prompts; `workflow` is scoped to multi-phase implementation only (1–2 runs close a job — never scout/plan runs); the duo advisor loop-watch gained plan-churn, review-theater, and skill-skip signatures.
-- Foundation execution now plans only the current ready horizon: active Foundation may contain only concrete runtime prerequisites for the next executable vertical slice, the first locked execution wave must include a production-code owner, tests/maps/contracts/reviews cannot substitute for implementation, review budget is per task objective with a next-action dispatch invariant, and correction is bounded to the same owner. The rule is enforced across normal/orchestrator prompts, advisor loop-watch, planner/heavy/designer agent prompts, and all bundled skills that previously encouraged broad recon, future-contract planning, RED-only waves, or design-system setup.
-- The shell installer now seeds and migrates the `reviewer` agent to `openai-codex/codex-auto-review`, adds the override when missing, and preserves custom reviewer routes.
 
 ## [16.3.15] - 2026-07-09
 
@@ -11031,6 +11015,18 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.5.8] - 2026-07-11
+
+### Changed
+
+- The continuous duo advisor now defaults to `gpt-5.6-sol` (was `gpt-5.5`): updated the `duo.advisorModel` schema default and the resolver's unset-fallback so the advisor no longer routes to GPT-5.5.
+
+## [1.5.7] - 2026-07-10
+
+### Added
+
+- Added bundled `parallel-fanout` skill: 7-phase fanout pipeline, feature-slicing dimension table, contract-vs-runtime (C/R) dependency test, tier table, required wave-plan table with a worked example, a one-workflow rule with a script template (a whole wave plan executes as ONE `workflow` run), one-wave scout fanout with a two-wave exploration budget, and the full-cycle rule (one subagent owns red test + implement + fix until green).
 
 ## [1.5.7] - 2026-07-10
 
