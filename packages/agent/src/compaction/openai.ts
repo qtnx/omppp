@@ -46,7 +46,7 @@ import {
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
-import { $env, logger } from "@oh-my-pi/pi-utils";
+import { $env, logger, stringifyJson } from "@oh-my-pi/pi-utils";
 
 export * from "./compaction-v2-streaming";
 
@@ -91,6 +91,11 @@ export interface OpenAiRemoteCompactionRequest {
 	model: string;
 	input: Array<Record<string, unknown>>;
 	instructions: string;
+	reasoning?: {
+		context?: string;
+		[key: string]: unknown;
+	};
+	include?: string[];
 }
 
 export interface OpenAiRemoteCompactionResponse extends OpenAiRemoteCompactionPreserveData {}
@@ -422,7 +427,7 @@ export function buildOpenAiNativeHistory(
 						id: itemId,
 						call_id: normalized.callId,
 						name: block.name,
-						arguments: JSON.stringify(block.arguments),
+						arguments: stringifyJson(block.arguments) ?? "null",
 					});
 				}
 			}
@@ -542,13 +547,18 @@ export async function requestOpenAiRemoteCompaction(
 		if (model.useResponsesLite) {
 			applyCodexResponsesLiteShape(request);
 			headers[OPENAI_HEADERS.RESPONSES_LITE] = "true";
+			request.reasoning = {
+				...request.reasoning,
+				context: "all_turns",
+			};
+			request.include = Array.from(new Set([...(request.include ?? []), "reasoning.encrypted_content"]));
 		}
 	}
 
 	const response = await (opts?.fetch ?? fetch)(endpoint, {
 		method: "POST",
 		headers,
-		body: JSON.stringify(request),
+		body: stringifyJson(request),
 		signal: withRequestTimeout(signal, opts?.timeoutMs ?? REMOTE_COMPACTION_TIMEOUT_MS),
 	});
 
@@ -645,7 +655,7 @@ export async function requestRemoteCompaction(
 	const response = await (opts?.fetch ?? fetch)(endpoint, {
 		method: "POST",
 		headers,
-		body: JSON.stringify(body),
+		body: stringifyJson(body),
 		signal: withRequestTimeout(signal, opts?.timeoutMs ?? REMOTE_COMPACTION_TIMEOUT_MS),
 	});
 

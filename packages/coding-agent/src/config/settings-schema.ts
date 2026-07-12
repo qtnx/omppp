@@ -4154,6 +4154,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"ask.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Ask",
+			description: "Enable the ask tool for interactive user questions",
+		},
+	},
+
 	"browser.enabled": {
 		type: "boolean",
 		default: true,
@@ -4924,31 +4935,31 @@ export const SETTINGS_SCHEMA = {
 
 	"task.softRequestBudget": {
 		type: "number",
-		default: 90,
+		default: 200,
 		ui: {
 			tab: "tasks",
 			group: "Subagents",
 			label: "Soft Subagent Request Budget",
 			description:
-				"Soft per-subagent request budget (assistant requests per run). Crossing it can inject a steering notice when task.softRequestBudgetNotice is enabled; at 1.5x the budget the run is aborted gracefully, salvaging partial output. 0 disables the guard. Bundled explore/quick_task agents use a lower built-in budget.",
+				"Soft per-subagent request budget (assistant requests per run). Crossing it can inject a wrap-up steering notice when task.softRequestBudgetNotice is enabled; at 1.5x the budget the run is force-stopped and must yield partial findings. 0 disables the guard. Bundled explore/quick_task agents use a lower built-in budget.",
 			options: [
 				{ value: "0", label: "Disabled" },
-				{ value: "40", label: "40 requests" },
-				{ value: "90", label: "90 requests", description: "Default" },
+				{ value: "90", label: "90 requests" },
 				{ value: "150", label: "150 requests" },
+				{ value: "200", label: "200 requests", description: "Default" },
 			],
 		},
 	},
 
 	"task.softRequestBudgetNotice": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "tasks",
 			group: "Subagents",
 			label: "Soft Request Budget Notice",
 			description:
-				"Inject one steering notice when a subagent crosses its soft request budget. Off by default; enabling it asks the child to wrap up before the 1.5x graceful abort guard.",
+				"Inject one steering notice when a subagent crosses its soft request budget, asking it to wrap up before the 1.5x forced-yield stop.",
 		},
 	},
 

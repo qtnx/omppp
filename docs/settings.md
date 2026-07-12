@@ -431,7 +431,6 @@ Individual built-in tools are toggled by their own keys, e.g. `bash.enabled`, `e
 ```yaml
 bash:
   enabled: true
-  stripTrailingHeadTail: true
   autoBackground:
     enabled: false
     thresholdMs: 60000
@@ -455,7 +454,6 @@ lsp:
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `bash.enabled` | boolean | `true` | Enable the bash tool. |
-| `bash.stripTrailingHeadTail` | boolean | `true` | Strip trailing head/tail noise from output. |
 | `bash.autoBackground.enabled` | boolean | `false` | Auto-background long-running commands. |
 | `bash.autoBackground.thresholdMs` | number | `60000` | Threshold before auto-backgrounding. |
 | `eval.py` | boolean | `true` | Python eval backend. `PI_PY=0` disables for the process. |
@@ -504,7 +502,7 @@ read:
 
 ```yaml
 contextPromotion:
-  enabled: true
+  enabled: false
 
 compaction:
   enabled: true
@@ -520,7 +518,7 @@ memory:
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `contextPromotion.enabled` | boolean | `true` | Promote relevant earlier context. |
+| `contextPromotion.enabled` | boolean | `false` | Promote to the active model's explicit `contextPromotionTarget` on context overflow. |
 | `compaction.enabled` | boolean | `true` | Automatic conversation compaction. |
 | `compaction.midTurnEnabled` | boolean | `true` | Check thresholds at safe mid-turn tool-loop boundaries before the next provider request. |
 | `compaction.strategy` | enum | `snapcompact` | `context-full`, `handoff`, `shake`, `snapcompact`, `off`. |

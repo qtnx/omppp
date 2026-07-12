@@ -28,6 +28,7 @@ import {
 import type { Skill } from "../extensibility/skills";
 import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../learnings";
 import { resolveMemoryBackend } from "../memory-backend";
+import { runPauseScreen } from "../modes/components/pause-screen";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
@@ -54,7 +55,12 @@ import {
 import { expandTilde, resolveToCwd } from "../tools/path-utils";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { urlHyperlinkAlways } from "../tui";
-import { getChangelogPath, parseChangelog } from "../utils/changelog";
+import {
+	getChangelogPath,
+	parseChangelog,
+	RECENT_CHANGELOG_ENTRY_LIMIT,
+	renderChangelogEntries,
+} from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
 import { type DumpTarget, writeSessionTranscriptDump } from "../utils/session-dump";
 import { resolveWorkspaceRootReference } from "../workspace-roots";
@@ -583,6 +589,22 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			runtime.ctx.planModeEnabled ? "Plan review: available" : "Plan review: plan mode inactive",
 		handleTui: async (_command, runtime) => {
 			await runtime.ctx.openPlanReview();
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "vibe",
+		description: "Toggle vibe mode (direct persistent fast/good worker sessions; read-only toolset)",
+		inlineHint: "[prompt]",
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			if (runtime.ctx.vibeModeEnabled) return "Vibe: on";
+			if (runtime.ctx.planModeEnabled) return "Vibe: blocked by plan mode";
+			if (runtime.ctx.goalModeEnabled) return "Vibe: blocked by goal mode";
+			return "Vibe: off";
+		},
+		handleTui: async (command, runtime) => {
+			await runtime.ctx.handleVibeModeCommand(command.args || undefined);
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -1679,17 +1701,12 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			const changelogPath = getChangelogPath();
 			const allEntries = await parseChangelog(changelogPath);
 			const showFull = command.args.trim().toLowerCase() === "full";
-			const entriesToShow = showFull ? allEntries : allEntries.slice(0, 3);
+			const entriesToShow = showFull ? allEntries : allEntries.slice(0, RECENT_CHANGELOG_ENTRY_LIMIT);
 			if (entriesToShow.length === 0) {
 				await runtime.output("No changelog entries found.");
 				return commandConsumed();
 			}
-			await runtime.output(
-				[...entriesToShow]
-					.reverse()
-					.map(entry => entry.content)
-					.join("\n\n"),
-			);
+			await runtime.output(renderChangelogEntries(entriesToShow).markdown);
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
@@ -3005,6 +3022,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 
 			// If a prompt was provided, pass it through as input
 			if (prompt) return { prompt };
+		},
+	},
+	{
+		name: "pause",
+		description: "Freeze all agents (main, subagents, advisor) until resumed",
+		handleTui: async (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			await runPauseScreen(runtime.ctx);
 		},
 	},
 	{

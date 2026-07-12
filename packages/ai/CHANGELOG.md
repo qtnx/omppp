@@ -8,6 +8,35 @@
 
 - Fixed auth-gateway to prefer and rotate stored OAuth credentials before using a `models.yml` config API key fallback, including Anthropic account-level `credit balance is too low` responses, persistent fallback after the OAuth pool is exhausted, and audit attribution to the credential actually used.
 - Redacted unsupported request `user` and `previous_response_id` values from auth-gateway debug logs while preserving boolean presence markers for diagnostics.
+## [16.4.5] - 2026-07-11
+
+### Fixed
+
+- Fixed an issue in GLM tool calling where missing or malformed argument closers (such as `<arg_value>` mistyped as `</arg_key>`) caused subsequent arguments to be swallowed or merged into a single field, affecting both in-band and native tool calling.
+
+## [16.4.3] - 2026-07-11
+
+### Fixed
+
+- Fixed auth database upgrades from schema v5 by creating the OAuth credential refresh-lease table before lease statements are prepared.
+- Fixed an issue in the Responses API where empty tool results were incorrectly serialized with a "(see attached image)" placeholder, causing models to look for non-existent attachments.
+- Fixed OpenAI Responses server non-streaming envelopes to always include the required "incomplete_details" field, using null for completed responses.
+- Preserved Cloud Code Assist tool schemas when mixed-type unions carry branch-local validation descriptions.
+
+## [16.4.2] - 2026-07-10
+
+### Fixed
+
+- Fixed compatibility with xAI by automatically downgrading OpenAI-specific tool calls and image detail settings during message history replays.
+- Fixed a race condition in shared SQLite OAuth token refreshes by implementing durable credential ownership and compare-and-set persistence to prevent stale refresh failures.
+- Fixed OpenAI Codex requests to include the required version header for newly gated models.
+
+## [16.4.1] - 2026-07-10
+
+### Changed
+
+- Enforced `all_turns` reasoning context for all Responses Lite requests
+
 ## [16.4.0] - 2026-07-10
 
 ### Added

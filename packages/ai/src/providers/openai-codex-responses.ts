@@ -3,6 +3,7 @@ import { scheduler } from "node:timers/promises";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import {
 	CODEX_BASE_URL,
+	CODEX_CLIENT_VERSION,
 	getCodexAccountId,
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
@@ -694,6 +695,7 @@ interface CodexRequestContext {
 	baseUrl: string;
 	url: string;
 	requestHeaders: Record<string, string>;
+	codexClientVersion: string;
 	transportSessionId?: string;
 	providerSessionState?: CodexProviderSessionState;
 	isolatedTransportState?: CodexProviderSessionState;
@@ -1395,6 +1397,7 @@ async function buildCodexRequestContext(
 	const url = resolveCodexResponsesUrl(baseUrl);
 	const promptCacheKey = normalizeOpenAIPromptCacheKey(options?.promptCacheKey ?? options?.sessionId);
 	const transportSessionId = normalizeOpenAIPromptCacheKey(options?.sessionId);
+	const codexClientVersion = CODEX_CLIENT_VERSION;
 	const transformedBody = await buildTransformedCodexRequestBody(model, context, options, promptCacheKey);
 
 	const requestHeaders = { ...(model.headers ?? {}), ...(options?.headers ?? {}) };
@@ -1470,6 +1473,7 @@ async function buildCodexRequestContext(
 		websocketState,
 		responsesLite,
 		requestMetadata,
+		codexClientVersion,
 		transformedBody,
 		rawRequestDump,
 	};
@@ -1669,6 +1673,7 @@ async function openCodexWebSocketTransport(
 		requestContext.requestHeaders,
 		requestContext.accountId,
 		requestContext.apiKey,
+		requestContext.codexClientVersion,
 		requestContext.transportSessionId,
 		"websocket",
 		websocketState,
@@ -1806,6 +1811,7 @@ async function openCodexSseTransport(
 				wireBody,
 				state,
 				requestContext.responsesLite,
+				requestContext.codexClientVersion,
 				requestContext.requestMetadata,
 				requestSetup.requestSignal,
 				requestSetup.firstEventTimeoutMs,
@@ -1934,10 +1940,12 @@ function scheduleCodexWebSocketBackgroundReconnect(
 				requestContext.requestHeaders,
 				requestContext.accountId,
 				requestContext.apiKey,
+				requestContext.codexClientVersion,
 				requestContext.transportSessionId,
 				"websocket",
 				state,
 				requestContext.responsesLite,
+				requestContext.requestMetadata,
 			);
 			await getOrCreateCodexWebSocketConnection(state, url, websocketHeaders, {
 				connectTimeoutMs: getCodexWebSocketReconnectTimeoutMs(),
@@ -2919,6 +2927,7 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 						baseUrl: model.baseUrl || CODEX_BASE_URL,
 						url: "",
 						requestHeaders: {},
+						codexClientVersion: CODEX_CLIENT_VERSION,
 						responsesLite: options?.responsesLite === true,
 						transformedBody: { model: model.id },
 						rawRequestDump: {
@@ -2986,6 +2995,7 @@ export async function prewarmOpenAICodexResponses(
 		transportSessionId ?? crypto.randomUUID(),
 		providerSessionState,
 	);
+	const codexClientVersion = CODEX_CLIENT_VERSION;
 	const requestIdentity = createCodexCompatibilityIdentity(metadataSession);
 	const headers = logger.time(
 		"prewarmCodex:createHeaders",
@@ -2993,6 +3003,7 @@ export async function prewarmOpenAICodexResponses(
 		{ ...(model.headers ?? {}), ...(options?.headers ?? {}) },
 		accountId,
 		apiKey,
+		codexClientVersion,
 		promptCacheKey,
 		"websocket",
 		state,
@@ -4554,6 +4565,7 @@ async function openCodexSseEventStream(
 	body: RequestBody,
 	state: CodexWebSocketSessionState | undefined,
 	responsesLite: boolean,
+	codexClientVersion: string,
 	requestMetadata: CodexRequestMetadata | undefined,
 	signal: AbortSignal | undefined,
 	firstEventTimeoutMs: number | undefined,
@@ -4564,6 +4576,7 @@ async function openCodexSseEventStream(
 		requestHeaders,
 		accountId,
 		apiKey,
+		codexClientVersion,
 		sessionId,
 		"sse",
 		state,
@@ -4696,6 +4709,7 @@ function createCodexHeaders(
 	initHeaders: Record<string, string> | undefined,
 	accountId: string | undefined,
 	accessToken: string,
+	codexClientVersion: string,
 	sessionId?: string,
 	transport: CodexTransport = "sse",
 	state?: CodexWebSocketSessionState,
@@ -4714,6 +4728,7 @@ function createCodexHeaders(
 	headers.delete("openai-beta");
 	headers.set(OPENAI_HEADERS.BETA, betaHeader);
 	headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
+	headers.set(OPENAI_HEADERS.VERSION, codexClientVersion);
 	headers.set("User-Agent", `pi/${packageJson.version} (${os.platform()} ${os.release()}; ${os.arch()})`);
 	if (sessionId) {
 		headers.set(OPENAI_HEADERS.CONVERSATION_ID, sessionId);

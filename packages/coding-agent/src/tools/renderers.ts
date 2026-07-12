@@ -31,6 +31,7 @@ import { resolveToolRenderer } from "./resolve";
 import { searchToolBm25Renderer } from "./search-tool-bm25";
 import { sshToolRenderer } from "./ssh";
 import { todoToolRenderer } from "./todo";
+import { createVibeToolRenderer } from "./vibe";
 import { writeToolRenderer } from "./write";
 
 /**
@@ -116,5 +117,10 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	create_goal: goalToolRenderer as ToolRenderer,
 	update_goal: goalToolRenderer as ToolRenderer,
 	web_search: webSearchToolRenderer as ToolRenderer,
+	vibe_spawn: createVibeToolRenderer("spawn") as ToolRenderer,
+	vibe_send: createVibeToolRenderer("send") as ToolRenderer,
+	vibe_wait: createVibeToolRenderer("wait") as ToolRenderer,
+	vibe_kill: createVibeToolRenderer("kill") as ToolRenderer,
+	vibe_list: createVibeToolRenderer("list") as ToolRenderer,
 	write: writeToolRenderer as ToolRenderer,
 };

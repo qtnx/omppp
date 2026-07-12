@@ -1,5 +1,6 @@
 {{#if asyncEnabled}}{{#if batchEnabled}}Delegate work to background subagents by passing multiple items in a single `tasks[]` batch.{{else}}Delegate work to ONE background subagent per call.{{/if}}
-Execution does not block your turn: you receive agent and job IDs immediately, and the final results deliver themselves when the subagents finish.{{else}}{{#if batchEnabled}}Run subagents synchronously by passing items in a `tasks[]` batch.{{else}}Run ONE subagent synchronously per call.{{/if}}
+Execution does not block your turn: you receive agent and job IDs immediately, and the final results deliver themselves when the subagents finish.{{#if hasBlockingAgents}}
+Exception: agents marked BLOCKING below run inline — their results return in this call, while non-blocking items in the same batch still spawn as background jobs.{{/if}}{{else}}{{#if batchEnabled}}Run subagents synchronously by passing items in a `tasks[]` batch.{{else}}Run ONE subagent synchronously per call.{{/if}}
 Execution blocks your turn: the call only returns once the work is completely finished.{{/if}}
 
 # Delegation Strategy
@@ -7,14 +8,15 @@ Execution blocks your turn: the call only returns once the work is completely fi
 {{#when MAX_CONCURRENCY ">" 0}}
 - **Concurrency cap:** At most {{pluralize MAX_CONCURRENCY "subagent" "subagents"}} run at once in this session — anything beyond that just queues, so a {{#if batchEnabled}}`tasks[]` batch{{else}}set of parallel `task` calls{{/if}} larger than {{MAX_CONCURRENCY}} only delays results. Keep the fan-out at or under the cap.
 {{/when}}
+- **Agent typing:** Choose each item's `agent` type first. Read-only research MUST use `scout`, which is optimized for rapid discovery. Use `explore` for broader codebase research and the default worker only when no listed specialist fits.
 - **Sequence only when necessary:** The only reason to run A before B is if B strictly requires A's output to function (e.g., a core API contract or schema migration). {{#if ircEnabled}}If the missing piece is small, run them in parallel and have B ask A via `irc`!{{/if}}
 {{#if ircEnabled}}- **Steering delivery:** Parent-to-subagent IRC is delivered immediately as steering; subagents blocked in `job poll` / `irc wait` do not need to poll separately for it.{{/if}}
 - **Role matching:** Assign each subagent a specific `role` (e.g. "Security Reviewer", "DB Migrator"). Do not spawn generic workers.
 - **No overhead:** Each assignment MUST instruct its agent to skip formatters, linters, and project-wide test suites. You will run those once at the end.
-- **One-pass agents:** Prefer agents that investigate **and** edit in a single pass; only spin a read-only discovery step (e.g. `explore`) when the affected files are genuinely unknown.
+- **One-pass agents:** Prefer agents that investigate **and** edit in a single pass; only spin a read-only discovery step (e.g. `scout`) when the affected files are genuinely unknown.
 
 # Inputs
-- `agent` (optional): The base agent type to use (e.g., `explore`, `reviewer`). Defaults to `{{defaultAgent}}`{{#if defaultAgentIsGeneric}} (the general-purpose worker){{/if}} — omit it for the default worker instead of passing `agent: "{{defaultAgent}}"`.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
+- `agent` (optional): The base agent type to use (e.g., `scout`, `plan`, `reviewer`). Defaults to `{{defaultAgent}}`{{#if defaultAgentIsGeneric}} (the general-purpose worker){{/if}} — omit it for the default worker instead of passing `agent: "{{defaultAgent}}"`.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
 {{#if batchEnabled}}
 - `context`: Shared project state, constraints, and contracts. Applies to the entire batch; do not duplicate this background into individual tasks. REQUIRED, session-specific only.
 - `tasks[]`: Array of subagents to spawn.
@@ -39,10 +41,11 @@ Execution blocks your turn: the call only returns once the work is completely fi
 
 # Context and Communication
 Subagents start blank. They have no access to your conversation history.
+{{#if ircEnabled}}- **Steering delivery:** Parent-to-subagent IRC is delivered immediately as steering; subagents blocked in `job poll` / `irc wait` do not need to poll separately for it.{{/if}}
 {{#if batchEnabled}}
-- Pass large payloads using `local://<path>` URIs, never inline text.
+- Pass large payloads using `local://<path>` URIs, NEVER inline text.
 {{else}}
-- Write shared project state ONCE to a `local://` file (e.g., `local://ctx.md`) and reference that URL in your assignments.
+- Write shared project state ONCE to a `local://` file (e.g., `local://ctx.md`) and reference that URL in each `task`.
 {{/if}}
 
 # Format Contracts
@@ -86,6 +89,8 @@ RIGHT:
 Agent spawning is currently disabled.
 {{else}}
 Prefer delegating implementation here. Decompose the work into the smallest independent units, dispatch each to the most fitting agent, and run disjoint units in parallel. Specialist routing comes before generic implementer tiers:
+- Read-only scouting / fast codebase discovery → `scout`; broader exploratory research → `explore`.
+- Architecture / work breakdown → `plan`.
 - UI/UX/frontend/design/visual tasks → `designer` as the stable default design lead.
 - Frontend/UI implementation or build tasks → `frontend_ui`.
 - UI/UX/design review, audit, critique, or quality feedback → `ui_ux_reviewer`.
@@ -97,9 +102,8 @@ Pick the implementer tier per unit by speed/model/review depth when no specialis
 - `task` — routine medium-complexity work: a contained feature slice or a well-scoped change across a few files. Moderate review depth when `self_review: true`.
 - `quick_task` — light mechanical work or a small contained feature with a locked spec: rename, move, boilerplate, localized edits, data collection. Fastest and safe to fan out widely.
 Review is opt-in per spawn: leave `self_review` false (default) for faster mechanical/boilerplate/parallel/low-risk work you will verify yourself; set `self_review: true` for an automatic reviewer+fixer pass on load-bearing, cross-module, correctness/security-critical work, or work you will not verify yourself. This works on any tier.
-
 {{#list agents join="\n"}}
-### {{name}}{{#if readOnly}} (READ-ONLY: no edit/write/command tools){{/if}}
+### {{name}}{{#if readOnly}} (READ-ONLY: no edit/write/command tools){{/if}}{{#if blocking}} (BLOCKING: runs inline; its result returns in this call){{/if}}
 {{description}}
 {{#if readOnly}}Use ONLY for investigation and reporting; do the edits yourself or assign them to a writing agent.{{/if}}
 {{/list}}
