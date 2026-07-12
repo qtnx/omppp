@@ -54,8 +54,9 @@ export async function runContextUnload(
 ): Promise<ContextUnloadResult> {
 	const skipped: Array<{ id: string; reason: string }> = [];
 	const unloaded: string[] = [];
+	const ids = [...new Set(input.ids)];
 
-	for (const id of input.ids) {
+	for (const id of ids) {
 		const record = store.getRecord(id);
 		if (!record) {
 			skipped.push({ id, reason: "missing" });
@@ -82,9 +83,13 @@ export async function runContextUnload(
 
 export function formatContextUnload(result: ContextUnloadResult): string {
 	const lines = [`Context GC unloaded ${result.unloaded.length} record(s).`];
-	if (result.unloaded.length > 0) lines.push(`Records: ${result.unloaded.join(", ")}`);
-	if (result.skipped.length > 0)
-		lines.push(`Skipped: ${result.skipped.map(item => `${item.id} (${item.reason})`).join(", ")}`);
+	if (result.skipped.length > 0) {
+		const byReason = new Map<string, number>();
+		for (const skipped of result.skipped) {
+			byReason.set(skipped.reason, (byReason.get(skipped.reason) ?? 0) + 1);
+		}
+		lines.push(`Skipped: ${[...byReason.entries()].map(([reason, count]) => `${reason}=${count}`).join(", ")}`);
+	}
 	return lines.join("\n");
 }
 
@@ -106,7 +111,12 @@ export function createContextUnloadTool(
 			ctx: ExtensionContext,
 		): Promise<AgentToolResult> {
 			const session = readContextGcSessionState(ctx);
-			const result = await runContextUnload(store, session.sessionId, params, deriveBranchStatuses(session.deltas));
+			const result = await runContextUnload(
+				store,
+				session.sessionId,
+				params,
+				deriveBranchStatuses(session.deltas.filter(delta => delta.sessionId === session.sessionId)),
+			);
 			for (const id of result.unloaded) {
 				const record = store.getRecord(id);
 				if (record)
