@@ -31,6 +31,7 @@ function createTtsrRule(name: string): Rule {
 }
 
 const SECRET_ENV_PATTERNS = /(?:KEY|SECRET|TOKEN|PASSWORD|PASS|AUTH|CREDENTIAL|PRIVATE|OAUTH)(?:_|$)/i;
+const CONTEXT_GC_HEADING = "## Context GC\n\n";
 
 async function withClearedSecretEnv<T>(run: () => Promise<T>): Promise<T> {
 	const removed: Array<[string, string]> = [];
@@ -185,10 +186,10 @@ describe("createAgentSession session storage isolation", () => {
 				.getEntries()
 				.find((entry): entry is SessionInitEntry => entry.type === "session_init");
 			const systemPromptText = session.systemPrompt.join("\n\n");
-			expect(systemPromptText).toContain("## Context GC Discipline");
-			expect(init?.systemPrompt).toContain("## Context GC Discipline");
+			expect(systemPromptText).toContain(CONTEXT_GC_HEADING);
+			expect(init?.systemPrompt).toContain(CONTEXT_GC_HEADING);
 			expect(init?.systemPrompt).toContain("context_unload");
-			expect(countOccurrences(systemPromptText, "## Context GC Discipline")).toBe(1);
+			expect(countOccurrences(systemPromptText, CONTEXT_GC_HEADING)).toBe(1);
 
 			const beforeResult = await session.extensionRunner?.emitBeforeAgentStart(
 				"continue",
@@ -349,8 +350,8 @@ describe("createAgentSession session storage isolation", () => {
 		try {
 			const callbackPromptText = callbackPrompt?.join("\n\n") ?? "";
 			const systemPromptText = session.systemPrompt.join("\n\n");
-			expect(countOccurrences(callbackPromptText, "## Context GC Discipline")).toBe(1);
-			expect(countOccurrences(systemPromptText, "## Context GC Discipline")).toBe(1);
+			expect(countOccurrences(callbackPromptText, CONTEXT_GC_HEADING)).toBe(1);
+			expect(countOccurrences(systemPromptText, CONTEXT_GC_HEADING)).toBe(1);
 			expect(systemPromptText).toContain("context_unload");
 			expect(countOccurrences(callbackPromptText, "## System Context Reminder")).toBe(1);
 			expect(countOccurrences(systemPromptText, "## System Context Reminder")).toBe(1);
@@ -387,8 +388,8 @@ describe("createAgentSession session storage isolation", () => {
 				.getEntries()
 				.find((entry): entry is SessionInitEntry => entry.type === "session_init");
 			expect(session.getActiveToolNames()).not.toContain("context_unload");
-			expect(session.systemPrompt.join("\n\n")).not.toContain("## Context GC Discipline");
-			expect(init?.systemPrompt).not.toContain("## Context GC Discipline");
+			expect(session.systemPrompt.join("\n\n")).not.toContain(CONTEXT_GC_HEADING);
+			expect(init?.systemPrompt).not.toContain(CONTEXT_GC_HEADING);
 		} finally {
 			await session.dispose();
 		}
@@ -418,7 +419,7 @@ describe("createAgentSession session storage isolation", () => {
 
 		try {
 			expect(session.getActiveToolNames()).not.toContain("context_unload");
-			expect(session.systemPrompt.join("\n\n")).not.toContain("## Context GC Discipline");
+			expect(session.systemPrompt.join("\n\n")).not.toContain(CONTEXT_GC_HEADING);
 		} finally {
 			await session.dispose();
 		}
