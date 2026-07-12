@@ -446,9 +446,9 @@ export interface ToolSession {
 	/** Queue a hidden message to be injected at the next agent turn. */
 	queueDeferredMessage?(message: CustomMessage): void;
 	/** Request a compaction at the next turn boundary. Returns scheduling status. */
-	requestCompaction?(reason: string): ToolCompactionRequest;
+	requestCompaction?(reason: string, options?: { focus?: string }): ToolCompactionRequest;
 	/** Check whether blocking waits should schedule compaction at the next turn boundary. */
-	considerCompactionWhileWaiting?(reason: string): ToolWaitingCompactionCheck;
+	considerCompactionWhileWaiting?(reason: string, options?: { focus?: string }): ToolWaitingCompactionCheck;
 	/** Request a context shake at the next turn boundary. Returns scheduling status. */
 	requestShake?(mode: ShakeMode): ToolShakeRequest;
 	/** Request the macOS sandbox supervisor to relaunch this session with extra sandbox allowlist roots. */

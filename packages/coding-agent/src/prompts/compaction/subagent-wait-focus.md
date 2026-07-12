@@ -1,0 +1,1 @@
+Preserve the active plan and todo phases, running subagent ids, roles, and statuses, the contracts and file ownership handed to them, pending acceptance checks, and the next verification steps.

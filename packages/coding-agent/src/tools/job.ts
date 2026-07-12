@@ -28,6 +28,9 @@ const jobSchema = type({
 	"poll?": type("string[]").describe("job ids to wait for; omit to wait on all running jobs"),
 	"cancel?": type("string[]").describe("job ids to cancel"),
 	"list?": type("boolean").describe("snapshot all jobs"),
+	"compactionFocus?": type("string >= 1 & string <= 2000").describe(
+		"what a wait-triggered compaction summary must preserve beyond its default subagent focus",
+	),
 });
 
 type JobParams = typeof jobSchema.infer;
@@ -289,7 +292,9 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		let yieldForCompactionBoundary = false;
 		const considerWaitingCompaction = (): void => {
 			if (waitingCompactionChecked) return;
-			const result = this.session.considerCompactionWhileWaiting?.("context heavy while waiting on subagents");
+			const result = this.session.considerCompactionWhileWaiting?.("context heavy while waiting on subagents", {
+				focus: params.compactionFocus,
+			});
 			if (result?.status === "scheduled" || result?.status === "already-scheduled") {
 				waitingCompactionChecked = true;
 				showCompactionScheduledNote = true;

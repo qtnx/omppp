@@ -298,6 +298,7 @@ import delegationStatsPrompt from "../prompts/advisor/delegation-stats.md" with 
 import doneReviewMd from "../prompts/advisor/done-review.md" with { type: "text" };
 import advisorStateContextPrompt from "../prompts/advisor/state-context.md" with { type: "text" };
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
+import subagentWaitFocusPrompt from "../prompts/compaction/subagent-wait-focus.md" with { type: "text" };
 import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
 import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
@@ -407,7 +408,7 @@ import {
 	shouldEvaluateCodexAutoRedeem,
 	shouldPromptCodexAutoRedeem,
 } from "./codex-auto-reset";
-import { findCompactMode } from "./compact-modes";
+import { type CompactMode, type CompactModeDef, findCompactMode } from "./compact-modes";
 import { buildDollarMentionContextMessages } from "./dollar-mentions";
 import {
 	collectPendingToolCalls,
@@ -1928,7 +1929,7 @@ export class AgentSession {
 
 	// Compaction state
 	#compactionAbortController: AbortController | undefined = undefined;
-	#pendingAgentCompactionRequest?: { reason: string };
+	#pendingAgentCompactionRequest?: { reason: string; focus?: string; mode?: CompactMode };
 	#pendingAgentShakeRequest?: { mode: ShakeMode };
 	/** Monotonic count of performed compactions (any reason/strategy — handoff and shake included). */
 	#compactionsPerformed = 0;
@@ -11848,12 +11849,16 @@ export class AgentSession {
 		}
 	}
 
-	requestCompactionFromAgent(reason: string): ToolCompactionRequest {
+	requestCompactionFromAgent(reason: string, options?: { focus?: string }): ToolCompactionRequest {
 		const compactionSettings = this.settings.getGroup("compaction");
 		if (compactionSettings.strategy === "off") {
 			return { status: "unavailable", detail: "compaction strategy is set to off" };
 		}
 		if (this.#pendingAgentCompactionRequest) {
+			if (options?.focus !== undefined) {
+				this.#pendingAgentCompactionRequest.focus = options.focus;
+			}
+			this.#pendingAgentCompactionRequest.mode = "remote";
 			return { status: "already-scheduled" };
 		}
 		if (this.#compactionAbortController || this.#autoCompactionAbortController) {
@@ -11862,12 +11867,12 @@ export class AgentSession {
 		if (!prepareCompaction(this.sessionManager.getBranch(), compactionSettings)) {
 			return { status: "unavailable", detail: "nothing to compact yet (session too small or already compacted)" };
 		}
-		this.#pendingAgentCompactionRequest = { reason };
+		this.#pendingAgentCompactionRequest = { reason, focus: options?.focus, mode: "remote" };
 		logger.debug("Agent requested compaction", { reason });
 		return { status: "scheduled" };
 	}
 
-	considerCompactionWhileWaiting(reason: string): ToolWaitingCompactionCheck {
+	considerCompactionWhileWaiting(reason: string, options?: { focus?: string }): ToolWaitingCompactionCheck {
 		const compactionSettings = this.settings.getGroup("compaction");
 		if (compactionSettings.strategy === "off") {
 			return { status: "unavailable", detail: "compaction strategy is set to off" };
@@ -11876,7 +11881,13 @@ export class AgentSession {
 			return { status: "unavailable", detail: "a compaction is already in progress" };
 		}
 		if (this.#pendingAgentCompactionRequest) {
-			return { status: "already-scheduled" };
+			// Route through requestCompactionFromAgent so a caller-supplied wait
+			// focus merges into the pending request (overwrite-when-provided rule)
+			// instead of being silently dropped by an early already-scheduled return.
+			return this.requestCompactionFromAgent(
+				reason,
+				options?.focus ? { focus: `${subagentWaitFocusPrompt}\n${options.focus}` } : undefined,
+			);
 		}
 		if (!prepareCompaction(this.sessionManager.getBranch(), compactionSettings)) {
 			return { status: "unavailable", detail: "nothing to compact yet (session too small or already compacted)" };
@@ -11891,7 +11902,8 @@ export class AgentSession {
 		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) {
 			return { status: "not-needed" };
 		}
-		return this.requestCompactionFromAgent(reason);
+		const focus = options?.focus ? `${subagentWaitFocusPrompt}\n${options.focus}` : subagentWaitFocusPrompt;
+		return this.requestCompactionFromAgent(reason, { focus });
 	}
 
 	requestShakeFromAgent(mode: ShakeMode): ToolShakeRequest {
@@ -11941,29 +11953,12 @@ export class AgentSession {
 			// strategy/remote flags for this one invocation. Merged before
 			// prepareCompaction so the remote gating (preparation.settings.
 			// remoteEnabled/endpoint) and the snapcompact decision below both see it.
-			const effectiveSettings = compactMode
-				? { ...compactionSettings, ...compactMode.overrides }
-				: compactionSettings;
-			// /compact remote demands provider-native compaction. When no remote
-			// endpoint is configured (one would override per-model gating in
-			// compact()), drop fallback candidates that aren't remote-capable so the
-			// engine never silently runs a local summary on a configured-but-non-
-			// remote compactionModel. If filtering empties the chain, warn and fall
-			// back to the full chain so the operation still completes.
 			const availableModels = this.#modelRegistry.getAvailable();
-			const requireProviderRemote = Boolean(compactMode?.requiresRemote && !effectiveSettings.remoteEndpoint);
-			let compactionCandidates = this.#getCompactionModelCandidates(
+			const { effectiveSettings, candidates: compactionCandidates } = this.#resolveEffectiveCompaction(
+				compactionSettings,
+				compactMode,
 				availableModels,
-				requireProviderRemote ? shouldUseOpenAiRemoteCompaction : undefined,
 			);
-			if (requireProviderRemote && compactionCandidates.length === 0) {
-				this.emitNotice(
-					"warning",
-					`remote compaction is unavailable for ${this.model.id} (no remote endpoint configured and no provider-native remote-capable model in the fallback chain) — using a local summary instead`,
-					"compaction",
-				);
-				compactionCandidates = this.#getCompactionModelCandidates(availableModels);
-			}
 			const pathEntries = this.sessionManager.getBranch();
 			const preparation = prepareCompaction(
 				pathEntries,
@@ -12802,6 +12797,8 @@ export class AgentSession {
 			suppressHandoff: true,
 			triggerContextTokens: contextTokens,
 			phase: "mid_turn",
+			focus: agentRequested?.focus,
+			requestedMode: agentRequested?.mode,
 		});
 
 		if (signal?.aborted) return;
@@ -13019,7 +13016,11 @@ export class AgentSession {
 		const supersedeResult = await this.#pruneStaleToolResults();
 
 		if (agentRequested && assistantMessage.stopReason !== "error" && assistantMessage.stopReason !== "aborted") {
-			const outcome = await this.#runAutoCompaction("requested", false, false, allowDefer, { autoContinue });
+			const outcome = await this.#runAutoCompaction("requested", false, false, allowDefer, {
+				autoContinue,
+				focus: agentRequested.focus,
+				requestedMode: agentRequested.mode,
+			});
 			if (outcome.deferredHandoff || outcome.continuationScheduled) {
 				return outcome;
 			}
@@ -14454,6 +14455,31 @@ export class AgentSession {
 		return this.#resolveCompactionModelCandidates(this.model, availableModels, filter);
 	}
 
+	#resolveEffectiveCompaction(
+		compactionSettings: CompactionSettings,
+		modeDef: CompactModeDef | undefined,
+		availableModels: Model[],
+	): { effectiveSettings: CompactionSettings; candidates: Model[] } {
+		const effectiveSettings = modeDef ? { ...compactionSettings, ...modeDef.overrides } : compactionSettings;
+		const requireProviderRemote = Boolean(modeDef?.requiresRemote && !effectiveSettings.remoteEndpoint);
+		let candidates = this.#getCompactionModelCandidates(
+			availableModels,
+			requireProviderRemote ? shouldUseOpenAiRemoteCompaction : undefined,
+		);
+		if (requireProviderRemote && candidates.length === 0) {
+			// Null-safe: the auto path may resolve candidates before its own
+			// no-model guard; never dereference a missing active model here.
+			const modelLabel = this.model ? this.model.id : "this session";
+			this.emitNotice(
+				"warning",
+				`remote compaction is unavailable for ${modelLabel} (no remote endpoint configured and no provider-native remote-capable model in the fallback chain) — using a local summary instead`,
+				"compaction",
+			);
+			candidates = this.#getCompactionModelCandidates(availableModels);
+		}
+		return { effectiveSettings, candidates };
+	}
+
 	/**
 	 * Compaction candidates that can actually run — those with a resolvable API
 	 * key, matching the per-candidate getApiKey gate the execution loop applies.
@@ -14891,6 +14917,8 @@ export class AgentSession {
 			suppressContinuation?: boolean;
 			suppressHandoff?: boolean;
 			phase?: CodexCompactionContext["phase"];
+			focus?: string;
+			requestedMode?: CompactMode;
 		} = {},
 	): Promise<CompactionCheckResult> {
 		const compactionSettings = this.settings.getGroup("compaction");
@@ -14898,16 +14926,26 @@ export class AgentSession {
 		if (reason !== "idle" && reason !== "topic-switch" && reason !== "requested" && !compactionSettings.enabled) {
 			return COMPACTION_CHECK_NONE;
 		}
+		const modeDef =
+			options.requestedMode && compactionSettings.strategy === "snapcompact"
+				? findCompactMode(options.requestedMode)
+				: undefined;
+		const availableModels = this.#modelRegistry.getAvailable();
+		const { effectiveSettings, candidates } = this.#resolveEffectiveCompaction(
+			compactionSettings,
+			modeDef,
+			availableModels,
+		);
 		const generation = this.#promptGeneration;
 		const suppressContinuation = options.suppressContinuation === true;
 		const shouldAutoContinue =
-			!suppressContinuation && options.autoContinue !== false && compactionSettings.autoContinue !== false;
+			!suppressContinuation && options.autoContinue !== false && effectiveSettings.autoContinue !== false;
 		const suppressHandoff = options.suppressHandoff === true;
 		let fallbackFromShake = false;
 		// Shake runs inline (cheap, no remote LLM). On overflow recovery, if shake
 		// reclaims nothing we fall through to the summary-compaction body below so
 		// the oversized input still gets resolved.
-		if (compactionSettings.strategy === "shake") {
+		if (effectiveSettings.strategy === "shake") {
 			const outcome = await this.#runAutoShake(
 				reason,
 				willRetry,
@@ -14930,7 +14968,7 @@ export class AgentSession {
 			reason !== "incomplete" &&
 			reason !== "idle" &&
 			reason !== "topic-switch" &&
-			compactionSettings.strategy === "handoff"
+			effectiveSettings.strategy === "handoff"
 		) {
 			this.#schedulePostPromptTask(
 				async signal => {
@@ -14947,9 +14985,9 @@ export class AgentSession {
 		// LLM call would hit the same overflow. "incomplete" is an output-side problem,
 		// so a handoff request on the existing context is still viable.
 		let action: "context-full" | "handoff" | "snapcompact" =
-			compactionSettings.strategy === "snapcompact"
+			effectiveSettings.strategy === "snapcompact"
 				? "snapcompact"
-				: compactionSettings.strategy === "handoff" && reason !== "overflow" && !suppressHandoff
+				: effectiveSettings.strategy === "handoff" && reason !== "overflow" && !suppressHandoff
 					? "handoff"
 					: "context-full";
 		if (action === "snapcompact" && this.model && !this.model.input.includes("image")) {
@@ -15035,7 +15073,6 @@ export class AgentSession {
 				return COMPACTION_CHECK_NONE;
 			}
 
-			const availableModels = this.#modelRegistry.getAvailable();
 			if (availableModels.length === 0) {
 				await this.#emitSessionEvent({
 					type: "auto_compaction_end",
@@ -15050,11 +15087,8 @@ export class AgentSession {
 
 			const pathEntries = this.sessionManager.getBranch();
 
-			const autoCompactionCandidates = await this.#runnableCompactionCandidates(
-				this.#getCompactionModelCandidates(availableModels),
-				this.sessionId,
-			);
-			const preparation = prepareCompaction(pathEntries, compactionSettings, autoCompactionCandidates);
+			const autoCompactionCandidates = await this.#runnableCompactionCandidates(candidates, this.sessionId);
+			const preparation = prepareCompaction(pathEntries, effectiveSettings, autoCompactionCandidates);
 			if (!preparation) {
 				await this.#emitSessionEvent({
 					type: "auto_compaction_end",
@@ -15095,7 +15129,7 @@ export class AgentSession {
 					type: "session_before_compact",
 					preparation,
 					branchEntries: pathEntries,
-					customInstructions: undefined,
+					customInstructions: options.focus,
 					signal: autoCompactionSignal,
 				})) as SessionBeforeCompactResult | undefined;
 
@@ -15222,7 +15256,7 @@ export class AgentSession {
 				details = snapcompactResult.details;
 				preserveData = { ...(compactionPrep.preserveData ?? {}), ...(snapcompactResult.preserveData ?? {}) };
 			} else {
-				const candidates = this.#getCompactionModelCandidates(availableModels);
+				const candidates = autoCompactionCandidates;
 				const retrySettings = this.settings.getGroup("retry");
 				const telemetry = resolveTelemetry(this.agent.telemetry, this.sessionId);
 				let compactResult: CompactionResult | undefined;
@@ -15248,7 +15282,7 @@ export class AgentSession {
 								this.#obfuscatePreparationForProvider(preparation),
 								candidate,
 								this.#modelRegistry.resolver?.(candidate, this.sessionId) ?? apiKey,
-								undefined,
+								this.#obfuscateTextForProvider(options.focus),
 								autoCompactionSignal,
 								{
 									promptOverride: this.#obfuscateTextForProvider(compactionPrep.hookPrompt),

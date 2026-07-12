@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { Agent, AgentMessage, AgentTurnEndContext, SessionEntry } from "@oh-my-pi/pi-agent-core";
 import * as compaction from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import * as snapcompact from "@oh-my-pi/snapcompact";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
 import { disableAnnotateHttp, enableAnnotateHttp } from "../../tools/browser/annotate-http";
@@ -20,6 +21,11 @@ const model = buildModel({
 	cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 100_000,
 	maxTokens: 8192,
+});
+
+const visionModel = buildModel({
+	...model,
+	input: ["text", "image"],
 });
 
 const enabledCompactionSettings: compaction.CompactionSettings = {
@@ -100,6 +106,7 @@ type TurnEndCallback = (
 interface AgentSessionHarness {
 	session: AgentSession;
 	runTurnEnd(messages: AgentMessage[], context: AgentTurnEndContext): Promise<void>;
+	runPostTurn(message: AssistantMessage): Promise<void>;
 	events: AgentSessionEvent[];
 	appendedCompactions: compaction.CompactionResult[];
 	replacedMessages: AgentMessage[] | undefined;
@@ -125,17 +132,21 @@ function createAssistantMessage(): AssistantMessage {
 	};
 }
 
-function createAgentSessionHarness(compactionSettings: compaction.CompactionSettings): AgentSessionHarness {
+function createAgentSessionHarness(
+	compactionSettings: compaction.CompactionSettings,
+	options: { model?: Model | null; models?: Model[]; useHook?: boolean } = {},
+): AgentSessionHarness {
 	const events: AgentSessionEvent[] = [];
 	const appendedCompactions: compaction.CompactionResult[] = [];
 	let replacedMessages: AgentMessage[] | undefined;
 	let turnEnd: TurnEndCallback | undefined;
+	const agentEventHandlers = new Set<(event: { type: string; message?: AssistantMessage }) => Promise<void> | void>();
 	let entryCounter = 0;
 	const branchEntries: SessionEntry[] = [];
 	const agentState = {
 		messages: [{ role: "user", content: "hello".repeat(100), timestamp: Date.now() } as AgentMessage],
 		systemPrompt: [],
-		model,
+		model: options.model === null ? undefined : (options.model ?? model),
 		tools: [],
 	};
 	const hookCompaction: compaction.CompactionResult = {
@@ -145,7 +156,7 @@ function createAgentSessionHarness(compactionSettings: compaction.CompactionSett
 		tokensBefore: 100_000,
 	};
 	const extensionRunner = createNoopProxy<NonNullable<AgentSessionConfig["extensionRunner"]>>({
-		hasHandlers: (eventType: string) => eventType === "session_before_compact",
+		hasHandlers: (eventType: string) => options.useHook !== false && eventType === "session_before_compact",
 		emit: (event: { type: string }) => {
 			if (event.type === "session_before_compact") return { compaction: hookCompaction };
 			return undefined;
@@ -153,7 +164,10 @@ function createAgentSessionHarness(compactionSettings: compaction.CompactionSett
 	});
 	const agent = createNoopProxy({
 		state: agentState,
-		subscribe: () => () => undefined,
+		subscribe: (handler: (event: { type: string; message?: AssistantMessage }) => Promise<void> | void) => {
+			agentEventHandlers.add(handler);
+			return () => agentEventHandlers.delete(handler);
+		},
 		peekSteeringQueue: () => [],
 		peekFollowUpQueue: () => [],
 		setOnTurnEnd: (fn: TurnEndCallback | undefined) => {
@@ -223,7 +237,8 @@ function createAgentSessionHarness(compactionSettings: compaction.CompactionSett
 		sessionManager,
 		settings: createSettings(compactionSettings),
 		modelRegistry: createNoopProxy<ModelRegistry>({
-			getAvailable: () => [model],
+			getAvailable: () => options.models ?? (options.model ? [options.model] : [model]),
+			getApiKey: async () => "test-api-key",
 		}),
 		extensionRunner,
 		persistInitialMCPToolSelection: false,
@@ -239,6 +254,18 @@ function createAgentSessionHarness(compactionSettings: compaction.CompactionSett
 		async runTurnEnd(messages: AgentMessage[], context: AgentTurnEndContext): Promise<void> {
 			if (!turnEnd) throw new Error("AgentSession did not register an onTurnEnd callback");
 			await turnEnd(messages, undefined, context);
+		},
+		async runPostTurn(message: AssistantMessage): Promise<void> {
+			agentState.messages = [
+				{ role: "user", content: "poll the running job", timestamp: message.timestamp - 1 } as AgentMessage,
+				message,
+			];
+			for (const handler of agentEventHandlers) {
+				await handler({ type: "message_end", message });
+			}
+			for (const handler of agentEventHandlers) {
+				await handler({ type: "agent_end" });
+			}
 		},
 	};
 }
@@ -288,6 +315,255 @@ describe("AgentSession mid-run waiting compaction", () => {
 		expect(harness.appendedCompactions).toHaveLength(1);
 		expect(harness.replacedMessages).toBeDefined();
 		expect(harness.session.considerCompactionWhileWaiting("after boundary").status).toBe("not-needed");
+	});
+
+	test("uses remote summary compaction with built-in and caller wait focus under snapcompact", async () => {
+		const settings = { ...enabledCompactionSettings, strategy: "snapcompact" as const };
+		const harness = createAgentSessionHarness(settings, { model: visionModel, useHook: false });
+		track(spyOn(compaction, "prepareCompaction").mockReturnValue(createPreparedCompaction(settings)));
+		track(spyOn(compaction, "shouldCompact").mockReturnValueOnce(true).mockReturnValue(false));
+		const summarySpy = track(
+			spyOn(compaction, "compact").mockImplementation(async preparation => ({
+				summary: "summary",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			})),
+		);
+		const snapcompactSpy = track(
+			spyOn(snapcompact, "compact").mockImplementation(async () => {
+				throw new Error("snapcompact should not run");
+			}),
+		);
+
+		expect(
+			harness.session.considerCompactionWhileWaiting("blocked wait", { focus: "keep subagent ids" }).status,
+		).toBe("scheduled");
+		const assistant = createAssistantMessage();
+		await harness.runTurnEnd(
+			[
+				{ role: "user", content: "poll the running job", timestamp: assistant.timestamp - 1 } as AgentMessage,
+				assistant,
+			],
+			{ message: assistant, toolResults: [], willContinue: true },
+		);
+
+		expect(harness.events).toContainEqual({
+			type: "auto_compaction_start",
+			reason: "requested",
+			action: "context-full",
+		});
+		expect(snapcompactSpy).not.toHaveBeenCalled();
+		expect(summarySpy).toHaveBeenCalled();
+		const customInstructions = summarySpy.mock.calls[0]?.[3];
+		expect(customInstructions).toContain("active plan and todo phases");
+		expect(customInstructions).toContain("keep subagent ids");
+	});
+
+	test("merges caller wait focus into an already-scheduled compaction request", async () => {
+		const settings = { ...enabledCompactionSettings, strategy: "snapcompact" as const };
+		const harness = createAgentSessionHarness(settings, { model: visionModel, useHook: false });
+		track(spyOn(compaction, "prepareCompaction").mockReturnValue(createPreparedCompaction(settings)));
+		track(spyOn(compaction, "shouldCompact").mockReturnValueOnce(true).mockReturnValue(false));
+		const summarySpy = track(
+			spyOn(compaction, "compact").mockImplementation(async preparation => ({
+				summary: "summary",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			})),
+		);
+		const snapcompactSpy = track(
+			spyOn(snapcompact, "compact").mockImplementation(async () => {
+				throw new Error("snapcompact should not run");
+			}),
+		);
+
+		expect(harness.session.considerCompactionWhileWaiting("first wait").status).toBe("scheduled");
+		expect(harness.session.considerCompactionWhileWaiting("second wait", { focus: "watch P3" }).status).toBe(
+			"already-scheduled",
+		);
+		const assistant = createAssistantMessage();
+		await harness.runTurnEnd(
+			[
+				{ role: "user", content: "poll the running job", timestamp: assistant.timestamp - 1 } as AgentMessage,
+				assistant,
+			],
+			{ message: assistant, toolResults: [], willContinue: true },
+		);
+
+		expect(snapcompactSpy).not.toHaveBeenCalled();
+		expect(summarySpy).toHaveBeenCalled();
+		const customInstructions = summarySpy.mock.calls[0]?.[3];
+		expect(customInstructions).toContain("active plan and todo phases");
+		expect(customInstructions).toContain("watch P3");
+	});
+
+	test("keeps remote mode and focus when a requested compaction is consumed post-turn", async () => {
+		const settings = { ...enabledCompactionSettings, strategy: "snapcompact" as const };
+		const harness = createAgentSessionHarness(settings, { model: visionModel, useHook: false });
+		track(spyOn(compaction, "prepareCompaction").mockReturnValue(createPreparedCompaction(settings)));
+		const summarySpy = track(
+			spyOn(compaction, "compact").mockImplementation(async preparation => ({
+				summary: "summary",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			})),
+		);
+
+		expect(harness.session.requestCompactionFromAgent("phase boundary", { focus: "keep P3" }).status).toBe(
+			"scheduled",
+		);
+		await harness.runPostTurn(createAssistantMessage());
+
+		expect(harness.events).toContainEqual({
+			type: "auto_compaction_start",
+			reason: "requested",
+			action: "context-full",
+		});
+		expect(summarySpy.mock.calls[0]?.[3]).toContain("keep P3");
+	});
+
+	test("keeps threshold-triggered snapcompact unchanged without an agent request", async () => {
+		const settings = { ...enabledCompactionSettings, strategy: "snapcompact" as const };
+		const harness = createAgentSessionHarness(settings, { model: visionModel, useHook: false });
+		track(spyOn(compaction, "prepareCompaction").mockReturnValue(createPreparedCompaction(settings)));
+		track(spyOn(compaction, "shouldCompact").mockReturnValue(true));
+		const snapcompactSpy = track(spyOn(snapcompact, "compact"));
+		const assistant = createAssistantMessage();
+
+		await harness.runTurnEnd(
+			[
+				{ role: "user", content: "poll the running job", timestamp: assistant.timestamp - 1 } as AgentMessage,
+				assistant,
+			],
+			{ message: assistant, toolResults: [], willContinue: true },
+		);
+
+		expect(harness.events).toContainEqual({
+			type: "auto_compaction_start",
+			reason: "threshold",
+			action: "snapcompact",
+		});
+		expect(snapcompactSpy).toHaveBeenCalled();
+	});
+
+	test("filters agent-requested remote compaction to a remote-capable fallback candidate", async () => {
+		const nonRemoteModel = buildModel({
+			...visionModel,
+			id: "test-nonremote",
+			provider: "anthropic",
+			api: "anthropic-messages",
+		});
+		const remoteModel = buildModel({
+			...visionModel,
+			id: "test-remote",
+			compactionModel: `${nonRemoteModel.provider}/${nonRemoteModel.id}`,
+		});
+		const settings = { ...enabledCompactionSettings, strategy: "snapcompact" as const };
+		const harness = createAgentSessionHarness(settings, {
+			model: remoteModel,
+			models: [nonRemoteModel, remoteModel],
+			useHook: false,
+		});
+		track(spyOn(compaction, "prepareCompaction").mockReturnValue(createPreparedCompaction(settings)));
+		track(spyOn(compaction, "shouldCompact").mockReturnValue(true));
+		const summarySpy = track(
+			spyOn(compaction, "compact").mockImplementation(async preparation => ({
+				summary: "summary",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			})),
+		);
+
+		expect(harness.session.considerCompactionWhileWaiting("blocked wait").status).toBe("scheduled");
+		const assistant = createAssistantMessage();
+		await harness.runTurnEnd(
+			[
+				{ role: "user", content: "poll the running job", timestamp: assistant.timestamp - 1 } as AgentMessage,
+				assistant,
+			],
+			{ message: assistant, toolResults: [], willContinue: true },
+		);
+
+		const candidate = summarySpy.mock.calls[0]?.[1];
+		expect(`${candidate?.provider}/${candidate?.id}`).toBe(`${remoteModel.provider}/${remoteModel.id}`);
+	});
+
+	test("warns and uses a local summary when no remote-capable fallback candidate exists", async () => {
+		const nonRemoteModel = buildModel({
+			...visionModel,
+			id: "test-local-only",
+			provider: "anthropic",
+			api: "anthropic-messages",
+		});
+		const settings = { ...enabledCompactionSettings, strategy: "snapcompact" as const };
+		const harness = createAgentSessionHarness(settings, {
+			model: nonRemoteModel,
+			models: [nonRemoteModel],
+			useHook: false,
+		});
+		track(spyOn(compaction, "prepareCompaction").mockReturnValue(createPreparedCompaction(settings)));
+		track(spyOn(compaction, "shouldCompact").mockReturnValue(true));
+		const summarySpy = track(
+			spyOn(compaction, "compact").mockImplementation(async preparation => ({
+				summary: "summary",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			})),
+		);
+		const snapcompactSpy = track(spyOn(snapcompact, "compact"));
+
+		expect(harness.session.considerCompactionWhileWaiting("blocked wait").status).toBe("scheduled");
+		const assistant = createAssistantMessage();
+		await harness.runTurnEnd(
+			[
+				{ role: "user", content: "poll the running job", timestamp: assistant.timestamp - 1 } as AgentMessage,
+				assistant,
+			],
+			{ message: assistant, toolResults: [], willContinue: true },
+		);
+
+		const warning = harness.events.find(
+			(event): event is AgentSessionEvent & { type: "notice"; level: "warning"; message: string } =>
+				event.type === "notice" && event.level === "warning",
+		);
+		expect(warning?.message).toContain("using a local summary instead");
+		expect(summarySpy.mock.calls[0]?.[1]).toBe(nonRemoteModel);
+		expect(snapcompactSpy).not.toHaveBeenCalled();
+	});
+
+	test("requested remote compaction without an active model warns instead of crashing", async () => {
+		const nonRemoteModel = buildModel({
+			...visionModel,
+			id: "test-no-active-model",
+			provider: "anthropic",
+			api: "anthropic-messages",
+		});
+		const settings = { ...enabledCompactionSettings, strategy: "snapcompact" as const };
+		const harness = createAgentSessionHarness(settings, {
+			model: null,
+			models: [nonRemoteModel],
+			useHook: false,
+		});
+		track(spyOn(compaction, "prepareCompaction").mockReturnValue(createPreparedCompaction(settings)));
+		const summarySpy = track(spyOn(compaction, "compact"));
+		const snapcompactSpy = track(spyOn(snapcompact, "compact"));
+
+		expect(harness.session.requestCompactionFromAgent("phase boundary").status).toBe("scheduled");
+		await harness.runPostTurn(createAssistantMessage());
+
+		const warning = harness.events.find(
+			(event): event is AgentSessionEvent & { type: "notice"; level: "warning"; message: string } =>
+				event.type === "notice" && event.level === "warning",
+		);
+		expect(warning?.message).toContain("using a local summary instead");
+		expect(warning?.message).toContain("this session");
+		expect(summarySpy).not.toHaveBeenCalled();
+		expect(snapcompactSpy).not.toHaveBeenCalled();
 	});
 
 	test("does not compact mid-run below threshold without a pending waiting request", async () => {

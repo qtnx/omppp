@@ -1941,13 +1941,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				session?.yieldQueue.enqueue(BROWSER_ANNOTATION_MESSAGE_TYPE, entry, {
 					maxEntries: MAX_BACKGROUND_BROWSER_ANNOTATIONS,
 				}),
-			requestCompaction: reason =>
-				session?.requestCompactionFromAgent(reason) ?? {
+			requestCompaction: (reason, options) =>
+				session?.requestCompactionFromAgent(reason, options) ?? {
 					status: "unavailable",
 					detail: "session is not ready yet",
 				},
-			considerCompactionWhileWaiting: reason =>
-				session?.considerCompactionWhileWaiting(reason) ?? {
+			considerCompactionWhileWaiting: (reason, options) =>
+				session?.considerCompactionWhileWaiting(reason, options) ?? {
 					status: "unavailable",
 					detail: "session is not ready yet",
 				},

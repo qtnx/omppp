@@ -144,7 +144,8 @@ function createToolSession(session: AgentSession, manager: AsyncJobManager): Too
 		getSessionSpawns: () => null,
 		settings: session.settings,
 		asyncJobManager: manager,
-		considerCompactionWhileWaiting: (reason: string) => session.considerCompactionWhileWaiting(reason),
+		considerCompactionWhileWaiting: (reason: string, options?: { focus?: string }) =>
+			session.considerCompactionWhileWaiting(reason, options),
 	}) as unknown as ToolSession;
 }
 
@@ -252,5 +253,19 @@ describe("JobTool wait compaction scheduling", () => {
 		expect(result.useless).toBe(true);
 		expect(result.text).toContain("[compaction scheduled while waiting — running at next boundary]");
 		expect(result.text).toContain("## Still Running (1)");
+	});
+	test("forwards compactionFocus to waiting compaction", async () => {
+		const manager = new AsyncJobManager({ onJobComplete: () => undefined });
+		const session = createAgentSession(manager);
+		const finish = Promise.withResolvers<string>();
+		manager.register("task", "waited job", async () => finish.promise, { id: "job-1" });
+		const checkSpy = spyOn(session, "considerCompactionWhileWaiting").mockReturnValue({ status: "not-needed" });
+		const tool = new JobTool(createToolSession(session, manager));
+
+		const resultPromise = tool.execute("call-1", { poll: ["job-1"], compactionFocus: "watch P3" });
+		finish.resolve("done");
+		await resultPromise;
+
+		expect(checkSpy).toHaveBeenCalledWith("context heavy while waiting on subagents", { focus: "watch P3" });
 	});
 });
