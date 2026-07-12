@@ -290,10 +290,9 @@ describe("LiteLLM provider discovery", () => {
 			reasoning: true,
 			thinking: {
 				mode: "effort",
-				efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+				efforts: ["minimal", "low", "medium", "high", "max"],
 				effortMap: {
 					minimal: "none",
-					xhigh: "max",
 				},
 			},
 		});
@@ -731,10 +730,9 @@ describe("LiteLLM provider discovery", () => {
 			reasoning: true,
 			thinking: {
 				mode: "effort",
-				efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+				efforts: ["minimal", "low", "medium", "high", "max"],
 				effortMap: {
 					minimal: "none",
-					xhigh: "max",
 				},
 			},
 		});

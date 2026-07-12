@@ -22,6 +22,38 @@
 
 ### Changed
 
+- The continuous duo advisor now defaults to `gpt-5.6-sol` (was `gpt-5.5`): updated the `duo.advisorModel` schema default and the resolver's unset-fallback so the advisor no longer routes to GPT-5.5.
+
+### Fixed
+
+- Fixed advisor concern/blocker notes interrupting or skipping active tool/function calls; notes now deliver at a safe boundary, including stream-tail recovery.
+## [16.4.0] - 2026-07-10
+
+### Breaking Changes
+
+- Renamed the bundled agent explore to scout, including its configuration keys, prompt files, and task definitions. Any configurations, allowlists, or invocations referencing explore must now use scout.
+- Changed the public `selectLaunchAdapter()` result from `DapResolvedAdapter | null` to `LaunchAdapterSelection`; callers must handle `adapter`, `unavailable`, and `none` outcomes.
+
+### Added
+
+- Added a native, first-class max thinking tier for supported models, including a new thinkingBudgets.max configuration setting, support in CLI flags (--thinking, :max model suffixes), and terminal theme customization (thinkingMax border color and icons).
+
+### Fixed
+
+- Fixed Go debug launches falling back to native debuggers when Delve is unavailable; nested modules and `go.work` workspaces now resolve local Delve adapters before PATH, newly installed adapters are detected without restart, and missing adapter errors include install or configuration guidance. ([#5037](https://github.com/can1357/oh-my-pi/issues/5037))
+- Fixed a memory leak (large retained JavaScriptCore heaps) in the TUI during session transcript rebuilds and refreshes by properly handling snapcompact archive image frames.
+- Fixed a crash in interactive TUI sessions (Cannot set cwd while another same-realm JS runtime is running) when the JS evaluation worker falls back to the in-process inline path.
+- Fixed compaction aborting when Amazon Bedrock credential resolution fails, ensuring it now falls back to trying an authenticated model.
+- Improved OpenAI prompt cache hit rates for full-context forks by persisting inherited provider prompt-cache keys separately from session IDs, and added a --prompt-cache-key flag for explicit cache affinity.
+- Fixed Codex advisor requests incorrectly using local session labels as provider session IDs, switching to stable UUIDv7 provider identities.
+- Fixed macOS stdio MCP servers launching in detached sessions, allowing tools like xcrun mcpbridge to successfully trigger TCC Apple Events permission prompts.
+- Fixed the ask tool timeout behavior to automatically select the recommended option if the UI selector does not settle.
+- Fixed LSP workspace diagnostics for Go workspaces to correctly recognize go.work roots and include all specified modules in go build package patterns.
+- Fixed interactive OAuth login (/login xai-oauth) delaying success messages; credentials are now reported immediately while model metadata refreshes in the background.
+- Fixed a crash in the Windows bash tool when a timeout occurs while a piped command is streaming output.
+- Fixed subagent yield tool calls being discarded when a soft request budget aborts the assistant turn before the yield event completes.
+- Fixed --tools filtering in interactive sessions incorrectly disabling deferred MCP tools from configured servers.
+- Fixed kept-alive task subagents entering infinite provider-call loops after an IRC wake and terminal yield.
 - Planning now converges explicitly across normal, orchestrator, and duo flows: every new plan follows `skill://brainstorming` then `skill://writing-plans`, receives adversarial Super Review, and may take multiple blocker-driven revision rounds until requirements, interfaces, ownership, executable acceptance, and any active approval gate satisfy. The locked plan executes directly; ordinary implementation requests need no second approval.
 - Reading `skill://parallel-fanout` is now mandatory before spawning any work subagents (scouts or implementation) in both the system prompt and orchestrator prompts; `workflow` is scoped to multi-phase implementation only (1–2 runs close a job — never scout/plan runs); the duo advisor loop-watch gained plan-churn, review-theater, and skill-skip signatures.
 - Foundation execution now plans only the current ready horizon: active Foundation may contain only concrete runtime prerequisites for the next executable vertical slice, the first locked execution wave must include a production-code owner, tests/maps/contracts/reviews cannot substitute for implementation, review budget is per task objective with a next-action dispatch invariant, and correction is bounded to the same owner. The rule is enforced across normal/orchestrator prompts, advisor loop-watch, planner/heavy/designer agent prompts, and all bundled skills that previously encouraged broad recon, future-contract planning, RED-only waves, or design-system setup.

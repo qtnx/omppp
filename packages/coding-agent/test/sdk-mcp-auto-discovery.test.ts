@@ -127,6 +127,88 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 		}
 	}, 40_000);
 
+	it("flips auto discovery when MCP tools finish after the startup timeout", async () => {
+		writeMcpConfig(["--delay", "750"]);
+		const { session } = await createAgentSession({ ...baseOptions(), toolNames: ["read"] });
+		try {
+			// The manager returns from startup after 250 ms while this fixture is
+			// still connecting. Its eventual tools arrive through onToolsChanged,
+			// so wait for that observable registry update rather than a fixed delay.
+			const deadline = Date.now() + 30_000;
+			while (
+				session.getAllToolNames().filter(name => name.startsWith("mcp__")).length < MANY_TOOL_COUNT &&
+				Date.now() < deadline
+			) {
+				await Bun.sleep(50);
+			}
+
+			expect(session.isMCPDiscoveryEnabled()).toBe(true);
+			const activeNames = session.getActiveToolNames();
+			expect(activeNames).toContain("read");
+			expect(activeNames).toContain("search_tool_bm25");
+			expect(activeNames.filter(name => name.startsWith("mcp__"))).toEqual([]);
+			expect(session.getDiscoverableTools({ source: "mcp" })).toHaveLength(MANY_TOOL_COUNT);
+		} finally {
+			await session.dispose();
+		}
+	}, 40_000);
+
+	it("keeps deferred MCP activation pinned to the explicit allowlist when discovery is off", async () => {
+		writeMcpConfig();
+		const { session, mcpManager } = await createAgentSession({
+			...baseOptions(),
+			settings: Settings.isolated({ "tools.discoveryMode": "off" }),
+			toolNames: ["read", "mcp__many_tool_aa"],
+		});
+		expect(mcpManager).toBeDefined();
+		if (!mcpManager) throw new Error("expected deferred session to own an MCPManager");
+		try {
+			// Deferred MCP discovery is fire-and-forget and exposes no promise or
+			// event; poll until the real fixture subprocess has registered every
+			// advertised tool before asserting the final active capability set.
+			const deadline = Date.now() + 30_000;
+			while (
+				session.getAllToolNames().filter(name => name.startsWith("mcp__")).length < MANY_TOOL_COUNT &&
+				Date.now() < deadline
+			) {
+				await Bun.sleep(50);
+			}
+
+			const activeNames = session.getActiveToolNames();
+			expect(activeNames).toContain("read");
+			expect(activeNames).toContain("mcp__many_tool_aa");
+			expect(activeNames.filter(name => name.startsWith("mcp__")).sort()).toEqual(["mcp__many_tool_aa"]);
+			expect(activeNames).not.toContain("mcp__many_tool_ab");
+			expect(session.isMCPDiscoveryEnabled()).toBe(false);
+			expect(session.isToolDiscoveryEnabled()).toBe(false);
+			expect(activeNames).not.toContain("search_tool_bm25");
+
+			const originalRefreshMCPTools = session.refreshMCPTools.bind(session);
+			const refreshCompleted = Promise.withResolvers<void>();
+			spyOn(session, "refreshMCPTools").mockImplementation(async (tools, options) => {
+				try {
+					await originalRefreshMCPTools(tools, options);
+					refreshCompleted.resolve();
+				} catch (error) {
+					refreshCompleted.reject(error);
+					throw error;
+				}
+			});
+
+			await mcpManager.refreshServerTools("many");
+			await refreshCompleted.promise;
+
+			const refreshedActiveNames = session.getActiveToolNames();
+			expect(refreshedActiveNames.filter(name => name.startsWith("mcp__")).sort()).toEqual(["mcp__many_tool_aa"]);
+			expect(refreshedActiveNames).not.toContain("mcp__many_tool_ab");
+			expect(session.isMCPDiscoveryEnabled()).toBe(false);
+			expect(session.isToolDiscoveryEnabled()).toBe(false);
+			expect(refreshedActiveNames).not.toContain("search_tool_bm25");
+		} finally {
+			await session.dispose();
+		}
+	}, 40_000);
+
 	it("disposing mid-connect disconnects the manager and never resurrects tools", async () => {
 		// Stall `initialize` in the real fixture subprocess so the connect is
 		// guaranteed to still be in flight when dispose() runs. Deterministic
