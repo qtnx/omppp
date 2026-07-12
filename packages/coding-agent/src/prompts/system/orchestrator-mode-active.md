@@ -309,7 +309,7 @@ Every scout assignment still follows the `task` tool's required headings; carry 
 4. On a snapshot, reassess before re-polling: nudge/cancel STALLED jobs via `irc`/cancel, consider `compact`/`shake`, then re-issue only if continued waiting is still correct.
 5. Todo ledger while waiting: on EVERY delivered result or poll snapshot, reconcile `todo` — mark the finished package's todo done the moment its evidence lands (never earlier, never deferred), keep in-progress items matching the agents actually running, append newly discovered work as todos. The todo list is the dispatch ledger; it MUST match reality before every re-poll and every new wave.
 - Tracker discoveries MUST be filed under their owning future phase unless concrete execution evidence blocks the current slice. A growing active Foundation is a loop signal, not progress.
-6. Marking a todo phase complete and moving to the next phase is a compaction boundary — consider scheduling `compact` (remote summary) with `focus` naming what the next phase needs.
+6. Marking a todo phase complete and starting the next is a phase boundary → schedule `compact` (remote summary) to archive stale/older context no longer needed for the next phase, with `focus` on what it needs.
 7. Yield only when intentionally freeing the stream, when compaction is scheduled, or when the next step truly cannot proceed in this turn.
 8. Cleanup: cancel stalled/obsolete tasks individually via `job` cancel with explicit ids.
 9. Follow-ups to a finished/idle agent → `irc` send to its agent id (messaging wakes it); read its transcript at `history://<agentId>`.
