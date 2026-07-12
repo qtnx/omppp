@@ -363,9 +363,13 @@ function stripImagePayloads(value: unknown): void {
 	if (Array.isArray(value)) {
 		for (let i = 0; i < value.length; i++) {
 			const item: unknown = value[i];
-			if (isRecord(item) && item.type === "image" && typeof item.data === "string" && item.data.length > 1024) {
-				value[i] = { type: "text", text: IMAGE_OMITTED_TEXT };
-				continue;
+			if (isRecord(item) && item.type === "image" && typeof item.data === "string") {
+				// Large inline base64 OR leftover blob refs (should already be resolved by
+				// buildSessionData; defensive for any caller that skips that path).
+				if (item.data.length > 1024 || item.data.startsWith("blob:sha256:")) {
+					value[i] = { type: "text", text: IMAGE_OMITTED_TEXT };
+					continue;
+				}
 			}
 			stripImagePayloads(item);
 		}

@@ -1,6 +1,13 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { logger } from "@oh-my-pi/pi-utils";
-import { type BlobPutResult, blobExtensionForImageMimeType } from "../session/blob-store";
+import { getBlobsDir, logger } from "@oh-my-pi/pi-utils";
+import {
+	type BlobPutResult,
+	BlobStore,
+	blobExtensionForImageMimeType,
+	isBlobRef,
+	resolveImageData,
+	resolveImageDataSync,
+} from "../session/blob-store";
 import { fileHyperlink } from "../tui/hyperlink";
 
 /** Matches `[Image #N]`/`[Image #N, WxH]` and `[Paste #N, +X lines]`/`[Paste #N, Y chars]` tokens.
@@ -82,7 +89,14 @@ async function materializeImageReferenceLinkAsync(
 	putBlob: ImageBlobWriter,
 ): Promise<string | undefined> {
 	try {
-		const result = await putBlob(Buffer.from(image.data, "base64"), {
+		let base64Data = image.data;
+		if (isBlobRef(base64Data)) {
+			const resolved = await resolveImageData(new BlobStore(getBlobsDir()), base64Data);
+			// Missing blob → "" (async resolver). Never put a raw ref as base64.
+			if (!resolved || isBlobRef(resolved)) return undefined;
+			base64Data = resolved;
+		}
+		const result = await putBlob(Buffer.from(base64Data, "base64"), {
 			extension: blobExtensionForImageMimeType(image.mimeType),
 		});
 		return result.displayPath;
@@ -102,7 +116,14 @@ function materializeImageReferenceLink(
 	putBlob: ImageBlobWriterSync,
 ): string | undefined {
 	try {
-		const result = putBlob(Buffer.from(image.data, "base64"), {
+		let base64Data = image.data;
+		if (isBlobRef(base64Data)) {
+			const resolved = resolveImageDataSync(new BlobStore(getBlobsDir()), base64Data);
+			// Sync missing-blob path returns the raw ref — treat as unavailable.
+			if (!resolved || isBlobRef(resolved)) return undefined;
+			base64Data = resolved;
+		}
+		const result = putBlob(Buffer.from(base64Data, "base64"), {
 			extension: blobExtensionForImageMimeType(image.mimeType),
 		});
 		return result.displayPath;

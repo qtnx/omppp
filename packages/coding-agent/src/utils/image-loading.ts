@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { formatBytes, readImageMetadata, SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils";
+import { isBlobRef } from "../session/blob-store";
 import { resolveReadPath } from "../tools/path-utils";
 import { formatDimensionNote, type ImageResizeOptions, resizeImage } from "./image-resize";
 
@@ -81,6 +82,7 @@ export class ImageInputTooLargeError extends Error {
 }
 
 export async function ensureSupportedImageInput(image: ImageContent): Promise<ImageContent | null> {
+	if (isBlobRef(image.data)) return null;
 	if (SUPPORTED_INPUT_IMAGE_MIME_TYPES.has(image.mimeType)) {
 		return image;
 	}
