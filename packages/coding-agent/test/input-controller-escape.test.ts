@@ -771,6 +771,92 @@ describe("InputController escape behavior", () => {
 	});
 });
 
+describe("InputController global interrupt listener focus ownership", () => {
+	function interruptContext(interruptKey = "escape") {
+		const created = createContext();
+		created.ctx.keybindings = {
+			getKeys: vi.fn((action: string) => (action === "app.interrupt" ? [interruptKey] : [])),
+		} as unknown as InteractiveModeContext["keybindings"];
+		return created;
+	}
+
+	it("yields Esc to a focused overlay that owns its cancel key", () => {
+		const { ctx, spies, inputListeners } = interruptContext();
+		Object.defineProperty(ctx.session, "isStreaming", { value: true, configurable: true });
+		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
+		(ctx.ui.getFocused as unknown as Spy).mockReturnValue({ handleInput: vi.fn() });
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		const result = inputListeners.map(listener => listener("\x1b")).find(value => value?.consume);
+
+		expect(result).toBeUndefined();
+		expect(spies.abort).not.toHaveBeenCalled();
+		expect(spies.showStatus).not.toHaveBeenCalled();
+	});
+
+	it("still cancels when the focused surface has no input handler (loader)", () => {
+		const { ctx, spies, inputListeners } = interruptContext();
+		Object.defineProperty(ctx.session, "isStreaming", { value: true, configurable: true });
+		const loader = {};
+		ctx.loadingAnimation = loader as InteractiveModeContext["loadingAnimation"];
+		(ctx.ui.getFocused as unknown as Spy).mockReturnValue(loader);
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		inputListeners.map(listener => listener("\x1b")).find(value => value?.consume);
+		inputListeners.map(listener => listener("\x1b")).find(value => value?.consume);
+
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+	});
+
+	it("a custom non-cancel interrupt key still stops the turn over an overlay", () => {
+		const { ctx, spies, inputListeners } = interruptContext("x");
+		Object.defineProperty(ctx.session, "isStreaming", { value: true, configurable: true });
+		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
+		(ctx.ui.getFocused as unknown as Spy).mockReturnValue({ handleInput: vi.fn() });
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		inputListeners.map(listener => listener("x")).find(value => value?.consume);
+		inputListeners.map(listener => listener("x")).find(value => value?.consume);
+
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+	});
+
+	it("editor focused: streaming still arms then aborts through the listener", () => {
+		const now = vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(1_500);
+		const { ctx, spies, inputListeners } = interruptContext();
+		Object.defineProperty(ctx.session, "isStreaming", { value: true, configurable: true });
+		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		const first = inputListeners.map(listener => listener("\x1b")).find(value => value?.consume);
+		expect(first).toEqual({ consume: true });
+		expect(spies.showStatus).toHaveBeenCalledWith("Press Esc again within 2s to cancel streaming.");
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		const second = inputListeners.map(listener => listener("\x1b")).find(value => value?.consume);
+		expect(second).toEqual({ consume: true });
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+	});
+
+	it("yields Esc to the editor autocomplete popup before stopping the turn", () => {
+		const { ctx, editor, spies, inputListeners } = interruptContext();
+		Object.defineProperty(ctx.session, "isStreaming", { value: true, configurable: true });
+		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
+		(editor.isShowingAutocomplete as unknown as Spy).mockReturnValue(true);
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		const result = inputListeners.map(listener => listener("\x1b")).find(value => value?.consume);
+
+		expect(result).toBeUndefined();
+		expect(spies.abort).not.toHaveBeenCalled();
+	});
+});
+
 describe("InputController Ctrl+C behavior", () => {
 	it("sync-flushes the session JSONL on first Ctrl+C (editor clear)", () => {
 		const { ctx, editor, spies } = createContext();

@@ -17,6 +17,7 @@
 - Parallel subagents may now share files: the subagent prompt instructs peers to preserve each other's edits and merge carefully, and the parallel-fanout skill no longer forces re-cutting ownership for same-file overlap.
 
 ### Fixed
+- Escape now dismisses the focused overlay/selector before stopping the active turn, instead of the interrupt listener consuming it first.
 
 - Workflow Hub transcript drill-through now streams live: the workflow agent progress frame carries the subagent's transcript `sessionFile`, so opening an agent (Enter) registers a parked placeholder ref pointing at the real transcript and the viewer tails it immediately — even during the start-race window before the live agent session registers. Previously the open silently no-opped when the ref was not yet in the registry.
 - Workflow Hub navigation gained arrow keys (↑/↓ alongside j/k) and `←` to go back (transcript → hub, hub → editor).
