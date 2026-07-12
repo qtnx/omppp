@@ -2768,6 +2768,36 @@ export const SETTINGS_SCHEMA = {
 
 	"learning.maxEntriesPerScope": { type: "number", default: 40 },
 
+	"learning.halfLifeDays": { type: "number", default: 45 },
+
+	"learning.consolidation.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Agent",
+			label: "Live Learning Consolidation",
+			description: "Run background consolidation to merge, generalize, and clean up live learnings",
+		},
+	},
+
+	"learning.consolidation.intervalDays": { type: "number", default: 7 },
+
+	"learning.consolidation.minEntries": { type: "number", default: 15 },
+
+	"learning.consolidation.timeoutMs": { type: "number", default: 240000 },
+
+	"learning.consolidation.models": {
+		type: "array",
+		default: EMPTY_STRING_ARRAY,
+		ui: {
+			tab: "interaction",
+			group: "Agent",
+			label: "Live Learning Consolidation Chain",
+			description: "Ordered model/role fallback chain for the live-learning consolidation agent",
+		},
+	},
+
 	// Memories
 	// Legacy local-memory enable flag kept only for back-compat migration.
 	// Hidden from UI — users should use `memory.backend` instead.

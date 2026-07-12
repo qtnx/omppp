@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { renderContextGcReport } from "@oh-my-pi/context-gc-plugin";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { type AutocompleteItem, Spacer } from "@oh-my-pi/pi-tui";
-import { APP_NAME, getProjectDir, logger, sanitizeText, setProjectDir } from "@oh-my-pi/pi-utils";
+import { APP_NAME, getAgentDbPath, getProjectDir, logger, sanitizeText, setProjectDir } from "@oh-my-pi/pi-utils";
 import { COLLAB_GUEST_ALLOWED_COMMANDS, CollabGuestLink } from "../collab/guest";
 import { CollabHost } from "../collab/host";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
@@ -27,6 +27,9 @@ import {
 } from "../extensibility/plugins/marketplace";
 import type { Skill } from "../extensibility/skills";
 import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../learnings";
+import * as learningConsolidation from "../learnings/consolidate";
+import { resolveRepoKey } from "../learnings/repo-key";
+import * as learningStorage from "../learnings/storage";
 import { resolveMemoryBackend } from "../memory-backend";
 import { runPauseScreen } from "../modes/components/pause-screen";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
@@ -2286,8 +2289,10 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Manage live learning",
 		acpInputHint: "<subcommand>",
 		subcommands: [
-			{ name: "view", description: "Show current live-learning injection payload" },
+			{ name: "view", description: "Show active live learnings with scores and votes" },
 			{ name: "logs", description: "Show recent live-learning log entries" },
+			{ name: "consolidate", description: "Force a live-learning consolidation run" },
+			{ name: "drop <alias>", description: "Archive an active live learning by alias" },
 			{ name: "clear repo", description: "Clear repository-scoped live learnings" },
 			{ name: "clear global", description: "Clear global live learnings" },
 			{ name: "clear all", description: "Clear repository and global live learnings" },
@@ -2299,17 +2304,90 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			const verb = parts[0]?.toLowerCase() || "view";
 			switch (verb) {
 				case "view": {
-					const payload = await buildLearningDeveloperInstructions(
-						runtime.settings.getAgentDir(),
-						runtime.settings,
-						runtime.cwd,
-					);
-					await runtime.output(payload || "Live learning payload is empty.");
-					return commandConsumed();
+					const agentDir = runtime.settings.getAgentDir();
+					const payload = await buildLearningDeveloperInstructions(agentDir, runtime.settings, runtime.cwd);
+					const repoKey = await resolveRepoKey(runtime.cwd);
+					const db = learningStorage.openLearningDb(getAgentDbPath(agentDir));
+					try {
+						const entries = learningStorage.listActiveLearnings(db, {
+							repoKey,
+							limitPerScope: runtime.settings.get("learning.maxEntriesPerScope"),
+							halfLifeDays: runtime.settings.get("learning.halfLifeDays"),
+							nowSec: Math.floor(Date.now() / 1_000),
+						});
+						const details = entries
+							.map(
+								entry =>
+									`[l:${entry.alias}] score ${entry.score.toFixed(2)} · strength ${entry.strength} · useful ${entry.usefulCount} · not_useful ${entry.notUsefulCount}\n${entry.content}`,
+							)
+							.join("\n\n");
+						const view = [payload, details].filter(Boolean).join("\n\n");
+						await runtime.output(view || "Live learning payload is empty.");
+						return commandConsumed();
+					} finally {
+						learningStorage.closeLearningDb(db);
+					}
 				}
 				case "logs": {
 					const logText = await getLearningLogText();
 					await runtime.output(logText || "No recent live-learning log entries found.");
+					return commandConsumed();
+				}
+				case "consolidate": {
+					const reports = await learningConsolidation.maybeRunLearningConsolidation({
+						session: runtime.session,
+						settings: runtime.settings,
+						modelRegistry: runtime.session.modelRegistry,
+						agentDir: runtime.settings.getAgentDir(),
+						force: true,
+					});
+					const reportText =
+						reports.length === 0
+							? "No live-learning consolidation targets."
+							: reports
+									.map(
+										report =>
+											`${report.target}: ${report.outcome} (ops applied: ${report.opsApplied ?? 0}, ops skipped stale: ${report.opsSkippedStale ?? 0})`,
+									)
+									.join("\n");
+					if (reports.some(report => (report.opsApplied ?? 0) > 0)) {
+						await runtime.session.refreshBaseSystemPrompt();
+					}
+					await runtime.output(reportText);
+					return commandConsumed();
+				}
+				case "drop": {
+					const aliasPrefix = (parts[1] ?? "").replace(/^\[?l:/i, "").replace(/\]$/, "");
+					if (!aliasPrefix) return usage("Usage: /learning drop <alias>", runtime);
+					const repoKey = await resolveRepoKey(runtime.cwd);
+					const db = learningStorage.openLearningDb(getAgentDbPath(runtime.settings.getAgentDir()));
+					let archived = false;
+					try {
+						const matches = learningStorage.findActiveByAliasPrefix(db, { aliasPrefix, repoKey });
+						if (matches.length === 0) {
+							await runtime.output(`Unknown live learning alias: ${aliasPrefix}.`);
+							return commandConsumed();
+						}
+						if (matches.length > 1) {
+							await runtime.output(`Live learning alias is ambiguous: ${aliasPrefix}.`);
+							return commandConsumed();
+						}
+						const learning = matches[0];
+						if (!learning) return commandConsumed();
+						archived = learningStorage.archiveLearning(db, {
+							id: learning.id,
+							guardUpdatedAt: null,
+							nowSec: Math.floor(Date.now() / 1_000),
+						});
+						await runtime.output(
+							archived
+								? `Archived live learning [l:${learning.contentHash.slice(0, 12)}].`
+								: `Live learning is no longer active: ${aliasPrefix}.`,
+						);
+					} finally {
+						learningStorage.closeLearningDb(db);
+					}
+					if (archived) await runtime.session.refreshBaseSystemPrompt();
 					return commandConsumed();
 				}
 				case "clear":
@@ -2328,7 +2406,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 					}
 				}
 				default:
-					return usage("Usage: /learning <view|logs|clear|reset> [repo|global|all]", runtime);
+					return usage("Usage: /learning <view|logs|consolidate|drop|clear|reset> [repo|global|all]", runtime);
 			}
 		},
 		handleTui: async (command, runtime) => {

@@ -3,17 +3,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import {
-	closeLearningDb,
-	type LearningScope,
-	openLearningDb,
-	upsertLearning,
-} from "@oh-my-pi/pi-coding-agent/learnings/storage";
+import * as consolidation from "@oh-my-pi/pi-coding-agent/learnings/consolidate";
+import * as learningStorage from "@oh-my-pi/pi-coding-agent/learnings/storage";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
-import { getAgentDbPath, Snowflake } from "@oh-my-pi/pi-utils";
+import { getAgentDbPath } from "@oh-my-pi/pi-utils";
 
 interface RuntimeFixture {
 	agentDir: string;
@@ -29,8 +25,7 @@ const GLOBAL_LEARNING = "Keep answers concise when direct execution is requested
 const createdDirs = new Set<string>();
 
 async function makeTempDir(prefix: string): Promise<string> {
-	const dir = path.join(os.tmpdir(), `${prefix}-${Snowflake.next()}`);
-	await fs.mkdir(dir, { recursive: true });
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), `${prefix}-`));
 	createdDirs.add(dir);
 	return dir;
 }
@@ -50,6 +45,7 @@ async function createRuntime(): Promise<RuntimeFixture> {
 	});
 	const session = {
 		sessionId: "learning-command-session",
+		modelRegistry: {},
 		refreshBaseSystemPrompt,
 	} as unknown as AgentSession;
 	const sessionManager = {
@@ -80,10 +76,10 @@ async function createRuntime(): Promise<RuntimeFixture> {
 	};
 }
 
-function seedLearning(fixture: RuntimeFixture, scope: LearningScope, content: string): void {
-	const db = openLearningDb(getAgentDbPath(fixture.agentDir));
+function seedLearning(fixture: RuntimeFixture, scope: learningStorage.LearningScope, content: string): void {
+	const db = learningStorage.openLearningDb(getAgentDbPath(fixture.agentDir));
 	try {
-		upsertLearning(db, {
+		learningStorage.upsertLearning(db, {
 			scope,
 			cwd: fixture.cwd,
 			content,
@@ -93,7 +89,21 @@ function seedLearning(fixture: RuntimeFixture, scope: LearningScope, content: st
 			nowSec: 1_800_000_000 + (scope === "repo" ? 1 : 0),
 		});
 	} finally {
-		closeLearningDb(db);
+		learningStorage.closeLearningDb(db);
+	}
+}
+
+function listRankedEntries(fixture: RuntimeFixture): learningStorage.RankedLearningEntry[] {
+	const db = learningStorage.openLearningDb(getAgentDbPath(fixture.agentDir));
+	try {
+		return learningStorage.listActiveLearnings(db, {
+			repoKey: fixture.cwd,
+			limitPerScope: 40,
+			halfLifeDays: 45,
+			nowSec: 1_800_000_001,
+		});
+	} finally {
+		learningStorage.closeLearningDb(db);
 	}
 }
 
@@ -106,15 +116,21 @@ describe("/learning slash command", () => {
 		createdDirs.clear();
 	});
 
-	test("view shows the current live-learning injection payload", async () => {
+	test("view displays each active learning alias, score, strength, and vote totals", async () => {
 		const fixture = await createRuntime();
 		seedLearning(fixture, "repo", REPO_LEARNING);
+		const [entry] = listRankedEntries(fixture);
+		if (!entry) throw new Error("seeded learning missing");
 
 		const result = await executeAcpBuiltinSlashCommand("/learning", fixture.runtime);
 
 		expect(result).toEqual({ consumed: true });
 		expect(fixture.output).toHaveLength(1);
-		expect(fixture.output[0]).toContain("Repository-specific learnings");
+		expect(fixture.output[0]).toContain(`[l:${entry.alias}]`);
+		expect(fixture.output[0]).toMatch(/score \d+\.\d{2}/);
+		expect(fixture.output[0]).toContain("strength 1");
+		expect(fixture.output[0]).toContain("useful 0");
+		expect(fixture.output[0]).toContain("not_useful 0");
 		expect(fixture.output[0]).toContain(REPO_LEARNING);
 	});
 
@@ -133,5 +149,78 @@ describe("/learning slash command", () => {
 		expect(fixture.output[1]).toContain(GLOBAL_LEARNING);
 		expect(fixture.output[1]).not.toContain(REPO_LEARNING);
 		expect(fixture.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+	});
+
+	test("consolidate forces a run and reports every target outcome", async () => {
+		const fixture = await createRuntime();
+		const runSpy = vi.spyOn(consolidation, "maybeRunLearningConsolidation").mockResolvedValue([
+			{ target: "global", outcome: "applied", opsApplied: 2, opsSkippedStale: 1 },
+			{ target: `repo:${fixture.cwd}`, outcome: "skipped_not_dirty", opsApplied: 0, opsSkippedStale: 0 },
+		]);
+
+		const result = await executeAcpBuiltinSlashCommand("/learning consolidate", fixture.runtime);
+
+		expect(result).toEqual({ consumed: true });
+		expect(runSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				session: fixture.runtime.session,
+				settings: fixture.runtime.settings,
+				modelRegistry: fixture.runtime.session.modelRegistry,
+				agentDir: fixture.agentDir,
+				force: true,
+			}),
+		);
+		expect(fixture.output[0]).toContain("global: applied");
+		expect(fixture.output[0]).toContain("ops applied: 2");
+		expect(fixture.output[0]).toContain("ops skipped stale: 1");
+		expect(fixture.output[0]).toContain(`repo:${fixture.cwd}: skipped_not_dirty`);
+		expect(fixture.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+	});
+
+	test("consolidate does not refresh the prompt when no operations apply", async () => {
+		const fixture = await createRuntime();
+		vi.spyOn(consolidation, "maybeRunLearningConsolidation").mockResolvedValue([
+			{ target: "global", outcome: "skipped_not_dirty", opsApplied: 0, opsSkippedStale: 0 },
+		]);
+
+		await executeAcpBuiltinSlashCommand("/learning consolidate", fixture.runtime);
+
+		expect(fixture.refreshBaseSystemPrompt).not.toHaveBeenCalled();
+	});
+
+	test("drop refreshes only after archiving a matched alias", async () => {
+		const fixture = await createRuntime();
+		seedLearning(fixture, "repo", REPO_LEARNING);
+		const [entry] = listRankedEntries(fixture);
+		if (!entry) throw new Error("seeded learning missing");
+
+		await executeAcpBuiltinSlashCommand(`/learning drop ${entry.alias}`, fixture.runtime);
+		await executeAcpBuiltinSlashCommand("/learning drop deadbeef", fixture.runtime);
+		const ambiguousSpy = vi.spyOn(learningStorage, "findActiveByAliasPrefix").mockReturnValue([entry, entry]);
+		await executeAcpBuiltinSlashCommand(`/learning drop ${entry.alias}`, fixture.runtime);
+
+		expect(fixture.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+		expect(ambiguousSpy).toHaveBeenCalledWith(expect.anything(), { aliasPrefix: entry.alias, repoKey: fixture.cwd });
+	});
+
+	test("drop archives a matched alias and reports unknown or ambiguous aliases", async () => {
+		const fixture = await createRuntime();
+		seedLearning(fixture, "repo", REPO_LEARNING);
+		const [entry] = listRankedEntries(fixture);
+		if (!entry) throw new Error("seeded learning missing");
+
+		const archived = await executeAcpBuiltinSlashCommand(`/learning drop ${entry.alias}`, fixture.runtime);
+		const unknown = await executeAcpBuiltinSlashCommand("/learning drop deadbeef", fixture.runtime);
+		const ambiguousSpy = vi.spyOn(learningStorage, "findActiveByAliasPrefix").mockReturnValue([entry, entry]);
+		const ambiguous = await executeAcpBuiltinSlashCommand(`/learning drop ${entry.alias}`, fixture.runtime);
+
+		expect(archived).toEqual({ consumed: true });
+		expect(unknown).toEqual({ consumed: true });
+		expect(ambiguous).toEqual({ consumed: true });
+		expect(listRankedEntries(fixture)).toEqual([]);
+		expect(fixture.output[0]).toContain(`[l:${entry.alias}]`);
+		expect(fixture.output[1]).toBe("Unknown live learning alias: deadbeef.");
+		expect(fixture.output[2]).toBe(`Live learning alias is ambiguous: ${entry.alias}.`);
+		expect(ambiguousSpy).toHaveBeenCalledWith(expect.anything(), { aliasPrefix: entry.alias, repoKey: fixture.cwd });
 	});
 });
