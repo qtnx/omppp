@@ -417,17 +417,6 @@ export interface AstReplaceResult {
   parseErrors?: Array<string>
 }
 
-/**
- * Result of [`apply_bash_fixups`]: a possibly-rewritten command plus the
- * substrings that were removed (in source order).
- */
-export interface BashFixupResult {
-  /** Possibly-rewritten command. Equal to the input when no fixup fired. */
-  command: string
-  /** Substrings removed, in source order — suitable for a user-facing notice. */
-  stripped: Array<string>
-}
-
 export interface BlockRange {
   /** 1-indexed inclusive first line of the resolved block. */
   startLine: number

@@ -7,8 +7,14 @@
  * compaction item as replacement history.
  */
 
-import type { Api, FetchImpl, Model } from "@oh-my-pi/pi-ai";
+import type { Api, CodexCompactionContext, FetchImpl, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
 import { isTransientStatus, ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { applyCodexResponsesLiteShape } from "@oh-my-pi/pi-ai/providers/openai-codex/request-transformer";
+import {
+	createOpenAICodexCompactionRequestContext,
+	createOpenAICodexCompatibilityMetadata,
+	type OpenAICodexCompatibilityMetadata,
+} from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import {
 	getOpenAIPromptCacheKey,
 	getOpenAIResponsesRoutingSessionId,
@@ -21,7 +27,7 @@ import {
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
-import { $env, logger } from "@oh-my-pi/pi-utils";
+import { $env, logger, stringifyJson } from "@oh-my-pi/pi-utils";
 
 // ============================================================================
 // Types & Configuration
@@ -237,6 +243,8 @@ export async function requestCompactionV2Streaming(
 		retryWait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
 		// Live SSE progress sink for an indeterminate compaction indicator.
 		onProgress?: (u: CompactionProgressUpdate) => void;
+		providerSessionState?: Map<string, ProviderSessionState>;
+		codexCompaction?: CodexCompactionContext;
 	},
 ): Promise<CompactionV2Response> {
 	const endpoint = getCompactionV2Endpoint(model);
@@ -246,6 +254,18 @@ export async function requestCompactionV2Streaming(
 
 	const fetchImpl = options?.fetch ?? globalThis.fetch;
 	const retryWait = options?.retryWait ?? ((delayMs: number) => Bun.sleep(delayMs));
+	const isCodexResponses = compactionV2Api(model) === "openai-codex-responses" || model.provider === "openai-codex";
+	const codexMetadata = isCodexResponses
+		? createOpenAICodexCompatibilityMetadata({
+				sessionId: request.sessionId,
+				providerSessionState: options?.providerSessionState,
+				requestKind: "compaction",
+				compaction: createOpenAICodexCompactionRequestContext({
+					context: options?.codexCompaction,
+					implementation: "responses_compaction_v2",
+				}),
+			})
+		: undefined;
 	let lastError: Error | undefined;
 
 	for (let attempt = 0; attempt <= V2_COMPACTION_MAX_RETRIES; attempt++) {
@@ -258,6 +278,7 @@ export async function requestCompactionV2Streaming(
 				request,
 				fetchImpl,
 				timeoutSignal,
+				codexMetadata,
 				options?.onProgress,
 			);
 		} catch (err) {
@@ -290,6 +311,7 @@ async function attemptCompactionV2Streaming(
 	request: CompactionV2Request,
 	fetchImpl: FetchImpl,
 	signal?: AbortSignal,
+	codexMetadata?: OpenAICodexCompatibilityMetadata,
 	// Forwarded to the SSE read-loop so each dispatched event reports progress.
 	onProgress?: (u: CompactionProgressUpdate) => void,
 ): Promise<CompactionV2Response> {
@@ -304,14 +326,31 @@ async function attemptCompactionV2Streaming(
 		instructions: request.instructions,
 		stream: true,
 		store: false,
-		...(request.reasoning ? { reasoning: request.reasoning, include: ["reasoning.encrypted_content"] } : {}),
+		...(request.reasoning || model.useResponsesLite
+			? {
+					// Lite implies gpt-5.4+, where codex-rs sends `all_turns` replay.
+					reasoning: model.useResponsesLite
+						? { ...(request.reasoning ?? {}), context: "all_turns" }
+						: request.reasoning,
+					include: ["reasoning.encrypted_content"],
+				}
+			: {}),
 		...(promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
 		...(request.tools && request.tools.length > 0 ? { tools: request.tools, tool_choice: "auto" } : {}),
 	};
+	if (codexMetadata) {
+		body.client_metadata = codexMetadata.clientMetadata;
+	}
+	// Responses Lite models take the same rewrite on the compaction stream:
+	// instructions/tools ride as input items (codex-rs `compact_remote_v2`
+	// builds through `build_responses_request`).
+	if (model.useResponsesLite) {
+		applyCodexResponsesLiteShape(body);
+	}
 	const response = await fetchImpl(endpoint, {
 		method: "POST",
-		headers: buildCompactionV2Headers(model, apiKey, request),
-		body: JSON.stringify(body),
+		headers: buildCompactionV2Headers(model, apiKey, request, codexMetadata),
+		body: stringifyJson(body),
 		signal,
 	});
 
@@ -335,7 +374,12 @@ async function attemptCompactionV2Streaming(
 	return collectCompactionV2Output(response, request, onProgress);
 }
 
-function buildCompactionV2Headers(model: Model, apiKey: string, request: CompactionV2Request): Record<string, string> {
+function buildCompactionV2Headers(
+	model: Model,
+	apiKey: string,
+	request: CompactionV2Request,
+	codexMetadata?: OpenAICodexCompatibilityMetadata,
+): Record<string, string> {
 	const api = compactionV2Api(model);
 	const cacheOptions = { sessionId: request.sessionId, promptCacheKey: request.promptCacheKey };
 	const routingSessionId = getOpenAIResponsesRoutingSessionId(cacheOptions);
@@ -366,7 +410,11 @@ function buildCompactionV2Headers(model: Model, apiKey: string, request: Compact
 		}
 		headers[OPENAI_HEADERS.BETA] = OPENAI_HEADER_VALUES.BETA_RESPONSES;
 		headers[OPENAI_HEADERS.ORIGINATOR] = OPENAI_HEADER_VALUES.ORIGINATOR_CODEX;
+		if (model.useResponsesLite) {
+			headers[OPENAI_HEADERS.RESPONSES_LITE] = "true";
+		}
 	}
+	if (codexMetadata) Object.assign(headers, codexMetadata.headers);
 
 	return headers;
 }

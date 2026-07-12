@@ -48,7 +48,7 @@ describe("job renderer task-result preview", () => {
 
 	it("previews the envelope body, not the wrapper markup", () => {
 		const summary = prompt.render(taskSummaryTemplate, {
-			agentName: "sonic",
+			agentName: "quick_task",
 			id: "SpawnProbe",
 			status: "completed",
 			duration: "8.7s",
@@ -83,7 +83,7 @@ describe("job renderer task-result preview", () => {
 
 	it("flattens a pretty-printed JSON body instead of previewing a lone brace", () => {
 		const summary = prompt.render(taskSummaryTemplate, {
-			agentName: "sonic",
+			agentName: "quick_task",
 			id: "EchoAlpha",
 			status: "completed",
 			duration: "11.6s",
@@ -231,6 +231,41 @@ describe("job renderer task-result preview", () => {
 			expect(output).toContain("Job2 completed");
 			expect(output).toContain("Job3 running");
 			expect(output).toContain("waiting on 2 of 3 jobs");
+		});
+
+		it("renders agent rows for running agents outside job control", () => {
+			const result = {
+				content: [{ type: "text" as const, text: "" }],
+				details: {
+					jobs: [],
+					agents: [{ id: "Worker", parentId: "Main", activity: "grepping the tree", ageMs: 65_000 }],
+				},
+			};
+			const component = jobToolRenderer.renderResult(
+				result,
+				{ expanded: true, isPartial: false } as Parameters<typeof jobToolRenderer.renderResult>[1],
+				theme,
+				{ list: true },
+			);
+			const output = Bun.stripANSI((component.render(120) as readonly string[]).join("\n"));
+			expect(output).toContain("1 running agent — no jobs");
+			expect(output).toContain("Worker");
+			expect(output).toContain("grepping the tree");
+		});
+
+		it("keeps a sealed bare-poll result visible when it carries an agent roster", () => {
+			const result = {
+				content: [{ type: "text" as const, text: "No running background jobs to wait for." }],
+				details: { jobs: [], agents: [{ id: "Worker", ageMs: 1_000 }] },
+			};
+			const component = jobToolRenderer.renderResult(
+				result,
+				{ expanded: true, isPartial: false } as Parameters<typeof jobToolRenderer.renderResult>[1],
+				theme,
+				{ poll: [] },
+			);
+			const output = Bun.stripANSI((component.render(120) as readonly string[]).join("\n"));
+			expect(output).toContain("Worker");
 		});
 	});
 });

@@ -19,11 +19,13 @@ import planMd from "../prompts/agents/plan.md" with { type: "text" };
 import qaMd from "../prompts/agents/qa.md" with { type: "text" };
 import quickTaskMd from "../prompts/agents/quick_task.md" with { type: "text" };
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
+import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
 import testerMd from "../prompts/agents/tester.md" with { type: "text" };
 import uiUxReviewerMd from "../prompts/agents/ui_ux_reviewer.md" with { type: "text" };
 import uxCopywriterMd from "../prompts/agents/ux_copywriter.md" with { type: "text" };
 import workflowSubagentMd from "../prompts/agents/workflow-subagent.md" with { type: "text" };
+import { AUTO_THINKING } from "../thinking";
 
 import type { AgentDefinition, AgentReviewGatePolicy, AgentSource } from "./types";
 
@@ -53,6 +55,7 @@ function buildAgentContent(def: EmbeddedAgentDef): string {
 
 const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "explore.md", template: exploreMd },
+	{ fileName: "scout.md", template: scoutMd },
 	{ fileName: "plan.md", template: planMd },
 	{ fileName: "designer.md", template: designerMd },
 	{ fileName: "frontend_ui.md", template: frontendUiMd },
@@ -94,7 +97,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 				"Medium-complexity implementer for routine feature work; opt-in reviewer+fixer pass via self_review",
 			spawns: "*",
 			model: "pi/task",
-			thinkingLevel: Effort.Medium,
+			thinkingLevel: AUTO_THINKING,
 			reviewGate: {
 				enabled: true,
 				reviewerAgent: "reviewer",

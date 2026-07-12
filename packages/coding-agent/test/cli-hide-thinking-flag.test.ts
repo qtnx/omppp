@@ -52,7 +52,7 @@ describe("parseArgs — --thinking flag", () => {
 		expect(parseArgs(["--thinking=off"]).thinking).toBe(ThinkingLevel.Off);
 	});
 
-	it("accepts auto and concrete efforts", () => {
+	it("accepts auto and every concrete effort including max", () => {
 		expect(parseArgs(["--thinking", "auto"]).thinking).toBe(AUTO_THINKING);
 		expect(parseArgs(["--thinking", "medium"]).thinking).toBe(Effort.Medium);
 		expect(parseArgs(["--thinking", "max"]).thinking).toBe(ThinkingLevel.Max);

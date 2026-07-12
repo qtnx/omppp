@@ -35,7 +35,7 @@ Parsing comes from frontmatter via `parseAgentFields()` (`src/discovery/helpers.
 - `spawns` accepts `*`, CSV, or array
 - backward-compat behavior: if `spawns` missing but `tools` includes `task`, `spawns` becomes `*`
 - `output` is passed through as opaque schema data
-- `read-summarize: false` (parsed as `readSummarize`) forces the subagent's `read` tool to return verbatim file content instead of structural summaries — `runSubprocess` applies it as a `read.summarize.enabled: false` override on the subagent's isolated settings (`src/task/executor.ts`). `explore` and `librarian` ship with it disabled. Defaults to enabled when the field is absent.
+- `read-summarize: false` (parsed as `readSummarize`) forces the subagent's `read` tool to return verbatim file content instead of structural summaries — `runSubprocess` applies it as a `read.summarize.enabled: false` override on the subagent's isolated settings (`src/task/executor.ts`). `explore`, `scout`, and `librarian` ship with it disabled. Defaults to enabled when the field is absent.
 
 ## Bundled agents
 
@@ -43,7 +43,7 @@ Bundled agents are embedded at build time (`src/task/agents.ts`) using text impo
 
 `EMBEDDED_AGENT_DEFS` defines:
 
-- `explore`, `plan`, `designer`, `reviewer`, `librarian`, `oracle` from prompt files
+- `explore`, `scout`, `plan`, `designer`, `reviewer`, `librarian`, `oracle` from prompt files
 - `heavy_task`, `task`, and `quick_task` from injected frontmatter plus dedicated worker prompt bodies
 - `tester` from the bundled tester prompt, adopted additively from upstream
 
@@ -131,7 +131,7 @@ Runtime output schema precedence in `TaskTool.#runSpawn`:
 
 (`effectiveOutputSchema = effectiveAgent.output ?? this.session.outputSchema` — the task call itself never carries a schema; ad-hoc structured workflows go through the eval bridge's `agent(prompt, schema)`.)
 
-The model-facing prompt (`src/prompts/tools/task.md`) no longer carries the old structured-output mismatch warning; it tags read-only agents and warns against offloading reasoning to `explore`/`quick_task` instead.
+The model-facing prompt (`src/prompts/tools/task.md`) no longer carries the old structured-output mismatch warning; it tags read-only agents and warns against offloading reasoning to `scout`, `explore`, or `quick_task` instead.
 
 ## Command discovery interaction
 

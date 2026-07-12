@@ -395,10 +395,10 @@ describe("openai-responses stateful chaining", () => {
 		).result();
 
 		expect(sentRequests).toHaveLength(2);
-		expect(sentRequests[0]!.store).toBe(false);
+		expect(sentRequests[0]?.store).toBe(false);
+		expect(sentRequests[1]).toBeDefined();
 		expect(sentRequests[1]!.store).toBe(false);
 		expect(sentRequests[1]!.previous_response_id).toBeUndefined();
-		const input = sentRequests[1]!.input as unknown[];
-		expect(input.length).toBeGreaterThan(1);
+		expect((sentRequests[1]!.input as unknown[]).length).toBeGreaterThan(1);
 	});
 });

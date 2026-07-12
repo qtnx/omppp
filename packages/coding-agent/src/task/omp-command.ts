@@ -243,6 +243,7 @@ const CLI_VALUE_FLAGS = new Set([
 	"--plugin-dir",
 	"--provider",
 	"--provider-session-id",
+	"--prompt-cache-key",
 	"--session-dir",
 	"--skills",
 	"--slow",
@@ -1545,6 +1546,10 @@ function buildMacOSSandboxProfile(paths: SandboxPathSets): string {
 
 	return `${rules.join("\n")}\n`;
 }
+function extractPromptCacheKeyArgs(argv: readonly string[]): string[] {
+	const promptCacheKey = extractCliFlagValues(argv, "--prompt-cache-key")[0];
+	return promptCacheKey ? ["--prompt-cache-key", promptCacheKey] : [];
+}
 
 function extractSessionDirArgs(argv: readonly string[]): string[] {
 	const sessionDir = extractCliFlagValues(argv, "--session-dir")[0];
@@ -1672,6 +1677,7 @@ export function buildMacOSSandboxRelaunchArgv(
 ): string[] {
 	const argv = [
 		...extractSessionDirArgs(previousArgv),
+		...extractPromptCacheKeyArgs(previousArgv),
 		...extractRelaunchModeArgs(previousArgv),
 		"--resume",
 		sessionId,

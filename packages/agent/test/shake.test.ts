@@ -118,6 +118,24 @@ describe("collectShakeRegions — tool results", () => {
 	});
 });
 
+describe("collectShakeRegions — positive savings", () => {
+	test("aggressive shake skips a normal tool result no larger than its placeholder", () => {
+		const entry = messageEntry(toolResultMessage("bash", "ok"));
+		expect(estimateTokens(entry.message)).toBeLessThanOrEqual(16);
+
+		expect(collectShakeRegions([entry], AGGRESSIVE_SHAKE_CONFIG)).toHaveLength(0);
+	});
+
+	test("keeps only positive-saving normal tool results in a mixed aggressive batch", () => {
+		const tiny = messageEntry(toolResultMessage("bash", "ok"));
+		const large = messageEntry(toolResultMessage("bash", "x".repeat(400)));
+
+		const regions = collectShakeRegions([tiny, large], AGGRESSIVE_SHAKE_CONFIG);
+		expect(regions).toHaveLength(1);
+		expect(regions[0].entry).toBe(large);
+	});
+});
+
 describe("collectShakeRegions — fenced / XML blocks", () => {
 	test("detects a large fenced block and applyShakeRegion splices it out", () => {
 		const fence = fencedBlock(120);
@@ -221,18 +239,18 @@ describe("shake config presets", () => {
 });
 
 describe("collectShakeRegions — useless results", () => {
-	test("useless tool result inside the protect window yields a region; identical plain result does not", () => {
-		const text = "No matches found in any scanned file.\n".repeat(20);
-		const flagged = messageEntry(toolResultMessage("search", text, { useless: true }));
-		const plain = messageEntry(toolResultMessage("search", text));
+	test("a tiny useless tool result inside the protect window yields a region; identical plain result does not", () => {
+		const flagged = messageEntry(toolResultMessage("search", "ok", { useless: true }));
+		const plain = messageEntry(toolResultMessage("search", "ok"));
+		expect(estimateTokens(flagged.message)).toBeLessThanOrEqual(16);
 		// Window far larger than the whole branch: only the flagged result bypasses it.
 		const regions = collectShakeRegions([flagged, plain], cfg({ protectTokens: 1_000_000 }));
 		expect(regions).toHaveLength(1);
 		expect(regions[0].entry).toBe(flagged);
 	});
 
-	test("an error result never bypasses the window even when flagged", () => {
-		const entry = messageEntry(toolResultMessage("search", "boom\n".repeat(50), { useless: true, isError: true }));
+	test("a tiny error result never bypasses the window even when flagged", () => {
+		const entry = messageEntry(toolResultMessage("search", "ok", { useless: true, isError: true }));
 		expect(collectShakeRegions([entry], cfg({ protectTokens: 1_000_000 }))).toHaveLength(0);
 	});
 });

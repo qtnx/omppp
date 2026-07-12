@@ -1279,7 +1279,7 @@ export const ANTHROPIC_THINKING: Record<Effort, number> = {
 	medium: 8192,
 	high: 16384,
 	xhigh: 32768,
-	max: 65536,
+	max: 32768,
 };
 
 const GOOGLE_THINKING: Record<Effort, number> = {
@@ -1677,6 +1677,7 @@ function mapOptionsForApi<TApi extends Api>(
 				toolChoice: mapOpenAiToolChoice(options?.toolChoice),
 				serviceTier: options?.serviceTier,
 				preferWebsockets: options?.preferWebsockets,
+				codexCompaction: options?.codexCompaction,
 				reasoningSummary: options?.hideThinkingSummary ? null : "detailed",
 				textVerbosity: options?.textVerbosity,
 			});
@@ -1883,7 +1884,9 @@ function getGoogleBudget(
 				return 2048;
 			case "medium":
 				return 8192;
-			default:
+			case "high":
+			case "xhigh":
+			case "max":
 				return model.id.includes("2.5-flash") ? 24576 : 32768;
 		}
 	}

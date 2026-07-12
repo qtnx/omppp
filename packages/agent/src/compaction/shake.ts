@@ -308,6 +308,7 @@ export function collectShakeRegions(entries: SessionEntry[], config: ShakeConfig
 				);
 
 	const regions: ShakeRegion[] = [];
+	let hasForcedUselessRegion = false;
 	for (let i = 0; i < n; i++) {
 		const entry = entries[i];
 		if (i < boundaryIndex) continue;
@@ -322,13 +323,16 @@ export function collectShakeRegions(entries: SessionEntry[], config: ShakeConfig
 				continue;
 			const text = toolResultText(toolResult);
 			if (text.length === 0) continue;
+			const tokens = estimateTokens(toolResult as AgentMessage);
+			if (!uselessResult && tokens <= PLACEHOLDER_TOKEN_ESTIMATE) continue;
 			regions.push({
 				kind: "toolResult",
 				entry: entry as SessionMessageEntry,
-				tokens: estimateTokens(toolResult as AgentMessage),
+				tokens,
 				originalText: text,
 				label: toolResult.toolName,
 			});
+			hasForcedUselessRegion ||= uselessResult;
 			continue;
 		}
 
@@ -339,6 +343,7 @@ export function collectShakeRegions(entries: SessionEntry[], config: ShakeConfig
 
 	let savings = 0;
 	for (const region of regions) savings += Math.max(0, region.tokens - PLACEHOLDER_TOKEN_ESTIMATE);
+	if (savings === 0 && !hasForcedUselessRegion) return [];
 	if (savings < config.minSavings) return [];
 
 	return regions;

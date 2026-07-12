@@ -72,8 +72,8 @@ export class SkillProtocolHandler implements ProtocolHandler {
 				throw new Error("Path traversal is not allowed");
 			}
 		} else {
-			targetPath = skill.filePath;
-			if (skill.content !== undefined) {
+			targetPath = context?.pathOnly === true ? skill.baseDir : skill.filePath;
+			if (context?.pathOnly !== true && skill.content !== undefined) {
 				return {
 					url: url.href,
 					content: skill.content,

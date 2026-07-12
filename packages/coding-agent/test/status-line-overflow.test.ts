@@ -51,6 +51,7 @@ function createCtx(overrides?: {
 		planMode: null,
 		loopMode: null,
 		goalMode: null,
+		vibeMode: null,
 		collab: null,
 		usageStats: {
 			input: 0,
