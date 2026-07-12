@@ -40,7 +40,7 @@ export interface AgentTranscriptViewerDeps {
 	/** Progress/cost snapshot source for the stats line. */
 	observers?: SessionObserverRegistry;
 	/** Revive+prompt path for messageable local agents. Lazy to avoid touching the global. */
-	lifecycle?: () => AgentLifecycleManager;
+	lifecycle?: () => AgentLifecycleManager | undefined;
 	ui: TUI;
 	getTool?: (name: string) => AgentTool | undefined;
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
@@ -172,11 +172,7 @@ export class AgentTranscriptViewer implements Component {
 			scrollbar: "auto",
 			theme: { track: t => theme.fg("dim", t), thumb: t => theme.fg("accent", t) },
 		});
-		if (this.#sendable) {
-			this.#editor = new Editor(getEditorTheme());
-			this.#editor.setMaxHeight(4);
-			this.#editor.onSubmit = text => this.#submit(text);
-		}
+		this.#syncEditor();
 		this.#refresh();
 		this.#pollTimer = setInterval(() => this.#refresh(), POLL_MS);
 		this.#pollTimer.unref?.();
@@ -186,7 +182,18 @@ export class AgentTranscriptViewer implements Component {
 	get #sendable(): boolean {
 		const ref = this.deps.registry.get(this.deps.agentId);
 		if (!ref || ref.kind === "advisor") return false;
-		return Boolean(this.deps.remote || this.deps.lifecycle);
+		return Boolean(this.deps.remote || this.deps.lifecycle?.());
+	}
+
+	#syncEditor(): void {
+		if (this.#sendable) {
+			if (this.#editor) return;
+			this.#editor = new Editor(getEditorTheme());
+			this.#editor.setMaxHeight(4);
+			this.#editor.onSubmit = text => this.#submit(text);
+			return;
+		}
+		this.#editor = undefined;
 	}
 
 	dispose(): void {
@@ -209,6 +216,7 @@ export class AgentTranscriptViewer implements Component {
 	/** Refresh the transcript from a local file or remote host. */
 	#refresh(): void {
 		if (this.#disposed) return;
+		this.#syncEditor();
 		if (this.deps.remote) {
 			this.#fetchRemote();
 			return;
@@ -469,6 +477,11 @@ export class AgentTranscriptViewer implements Component {
 			this.deps.onClose();
 			return;
 		}
+		if (matchesKey(data, "left") && (!this.#editor || this.#editor.getText().trim() === "")) {
+			// Left = go back one level (to the hub), unless composing a message (then it moves the cursor).
+			this.deps.onClose();
+			return;
+		}
 
 		for (const key of this.deps.expandKeys) {
 			if (matchesKey(data, key)) {
@@ -527,12 +540,12 @@ export class AgentTranscriptViewer implements Component {
 			this.deps.requestRender();
 			return;
 		}
-		const lifecycle = this.deps.lifecycle;
+		const lifecycle = this.deps.lifecycle?.();
 		if (!lifecycle) return;
 		void (async () => {
 			try {
 				// Revives a parked agent; returns the live session for running/idle.
-				const session = await lifecycle().ensureLive(id);
+				const session = await lifecycle.ensureLive(id);
 				// Steers a mid-turn agent; sends a normal prompt to an idle one.
 				await session.prompt(trimmed, { streamingBehavior: "steer" });
 			} catch (error) {
@@ -557,6 +570,7 @@ export class AgentTranscriptViewer implements Component {
 		// one column right of the title.
 		const innerWidth = Math.max(20, width - 2);
 		const contentWidth = Math.max(1, width - 1);
+		this.#syncEditor();
 		const ref = this.deps.registry.get(this.deps.agentId);
 
 		const headerLines = this.#headerLines(ref?.status, ref?.kind, ref?.parentId);

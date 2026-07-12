@@ -35,6 +35,8 @@ import {
 	theme,
 } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
+import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
+import { AgentRegistry } from "../../registry/agent-registry";
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
 import type { SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
@@ -58,9 +60,11 @@ import { shortenPath } from "../../tools/render-utils";
 import { copyToClipboard } from "../../utils/clipboard";
 import { repo } from "../../utils/git";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
+import type { WorkflowRunRegistry } from "../../workflow/run-registry";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../components/advisor-config";
 import { AgentDashboard } from "../components/agent-dashboard";
 import { AgentHubOverlayComponent } from "../components/agent-hub";
+import { AgentTranscriptViewer } from "../components/agent-transcript-viewer";
 import { AssistantMessageComponent } from "../components/assistant-message";
 import { CopySelectorComponent } from "../components/copy-selector";
 import { ExtensionDashboard } from "../components/extensions";
@@ -77,6 +81,7 @@ import { ToolExecutionComponent } from "../components/tool-execution";
 import { TranscriptBlock } from "../components/transcript-container";
 import { TreeSelectorComponent } from "../components/tree-selector";
 import { UserMessageSelectorComponent } from "../components/user-message-selector";
+import { WorkflowHubOverlayComponent } from "../components/workflow-hub";
 import type { SessionObserverRegistry } from "../session-observer-registry";
 import { buildCopyTargets } from "../utils/copy-targets";
 
@@ -88,6 +93,9 @@ function applyThinkingDisplay(agent: Agent, settingsInstance: Settings): void {
 }
 
 export class SelectorController {
+	#workflowHub: WorkflowHubOverlayComponent | undefined;
+	/** Start-race placeholders remain read-only until the real ref is live or adopted. */
+	#provisionalWorkflowAgentIds = new Set<string>();
 	constructor(private ctx: InteractiveModeContext) {}
 
 	async #refreshOAuthProviderAuthState(): Promise<void> {
@@ -1521,5 +1529,111 @@ export class SelectorController {
 		}
 
 		showReadyHub();
+	}
+
+	showWorkflowHub(registry: WorkflowRunRegistry, observers: SessionObserverRegistry): void {
+		let hub: WorkflowHubOverlayComponent | undefined;
+		let transcriptOverlay: OverlayHandle | undefined;
+		let transcriptViewer: AgentTranscriptViewer | undefined;
+		const provisionalWorkflowAgentIds = this.#provisionalWorkflowAgentIds;
+		const agentRegistry = this.ctx.collabGuest?.agentRegistry ?? AgentRegistry.global();
+		const hubKeys = [
+			...this.ctx.keybindings.getKeys("app.agents.hub"),
+			...this.ctx.keybindings.getKeys("app.session.observe"),
+		];
+		const closeTranscript = () => {
+			transcriptOverlay?.hide();
+			transcriptOverlay = undefined;
+			transcriptViewer?.dispose();
+			transcriptViewer = undefined;
+			if (hub) this.ctx.ui.setFocus(hub);
+			this.ctx.ui.requestRender();
+		};
+		const done = () => {
+			closeTranscript();
+			hub?.dispose();
+			if (this.#workflowHub === hub) this.#workflowHub = undefined;
+			this.ctx.editorContainer.clear();
+			this.ctx.editorContainer.addChild(this.ctx.editor);
+			this.ctx.ui.setFocus(this.ctx.editor);
+			this.ctx.ui.requestRender();
+		};
+		const openTranscript = (agentId: string, sessionFile?: string) => {
+			// Start-race: a workflow "start" frame surfaces the hub row before
+			// runSubprocess async-registers the live ref, so a plain get() gate would
+			// silently drop the open. Register a parked placeholder (guarded, non-collab)
+			// pointing at the deterministic transcript path so the viewer can tail it
+			// immediately; the later live registration clobbers it with the running
+			// session. Never register over an existing ref — register() overwrites in
+			// place and would detach a live session.
+			const existingRef = agentRegistry.get(agentId);
+			if (!this.ctx.collabGuest && sessionFile && !existingRef) {
+				provisionalWorkflowAgentIds.add(agentId);
+				agentRegistry.register({
+					id: agentId,
+					displayName: agentId,
+					kind: "sub",
+					session: null,
+					sessionFile,
+					status: "parked",
+				});
+			}
+			const lifecycle = !this.ctx.collabGuest
+				? () => {
+						const lifecycleManager = AgentLifecycleManager.global();
+						const currentRef = agentRegistry.get(agentId);
+						if (currentRef?.session || lifecycleManager.has(agentId)) {
+							provisionalWorkflowAgentIds.delete(agentId);
+						}
+						return currentRef?.session ||
+							lifecycleManager.has(agentId) ||
+							(currentRef && !provisionalWorkflowAgentIds.has(agentId))
+							? lifecycleManager
+							: undefined;
+					}
+				: undefined;
+			const viewer = new AgentTranscriptViewer({
+				agentId,
+				registry: agentRegistry,
+				remote: this.ctx.collabGuest?.hubRemote,
+				observers,
+				lifecycle,
+				ui: this.ctx.ui,
+				getTool: name => this.ctx.session.getToolByName(name),
+				getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),
+				cwd: this.ctx.sessionManager.getCwd(),
+				hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
+				proseOnlyThinking: () => this.ctx.proseOnlyThinking,
+				expandKeys: this.ctx.keybindings.getKeys("app.tools.expand"),
+				hubKeys,
+				requestRender: () => this.ctx.ui.requestRender(),
+				onClose: closeTranscript,
+				onHubClose: () => {
+					closeTranscript();
+					done();
+				},
+			});
+			transcriptViewer = viewer;
+			transcriptOverlay = this.ctx.ui.showOverlay(viewer, { width: "100%", margin: 0, fullscreen: true });
+			this.ctx.ui.setFocus(viewer);
+			this.ctx.ui.requestRender();
+		};
+
+		hub = new WorkflowHubOverlayComponent({
+			registry,
+			openTranscript,
+			close: done,
+			theme,
+			requestRender: () => this.ctx.ui.requestRender(),
+		});
+		this.#workflowHub = hub;
+		this.ctx.editorContainer.clear();
+		this.ctx.editorContainer.addChild(hub);
+		this.ctx.ui.setFocus(hub);
+		this.ctx.ui.requestRender();
+	}
+
+	refreshWorkflowHub(): void {
+		this.#workflowHub?.refresh();
 	}
 }

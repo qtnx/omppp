@@ -44,6 +44,7 @@ export type WorkflowAgentState = "start" | "done" | "error" | "cached";
 export type WorkflowProgressFrame =
 	| { kind: "phase"; runId: string; index: number; title: string }
 	| { kind: "log"; runId: string; message: string }
+	| { kind: "done"; runId: string; ok: boolean; error?: string }
 	| {
 			kind: "agent";
 			runId: string;
@@ -52,6 +53,8 @@ export type WorkflowProgressFrame =
 			phaseTitle?: string;
 			state: WorkflowAgentState;
 			agentId?: string;
+			/** Deterministic transcript path for this spawn, so the hub can tail it before the live registry ref exists. */
+			sessionFile?: string;
 			model?: string;
 			error?: string;
 			tokens?: number;
