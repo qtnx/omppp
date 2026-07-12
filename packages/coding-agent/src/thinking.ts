@@ -33,12 +33,12 @@ const THINKING_LEVEL_METADATA: Record<ThinkingLevel, ThinkingLevelMetadata> = {
 	[ThinkingLevel.XHigh]: {
 		value: ThinkingLevel.XHigh,
 		label: "xhigh",
-		description: "Extra-high reasoning (~32k tokens)",
+		description: "Extended reasoning (~32k tokens)",
 	},
 	[ThinkingLevel.Max]: {
 		value: ThinkingLevel.Max,
 		label: "max",
-		description: "Maximum supported reasoning",
+		description: "Maximum reasoning the model supports",
 	},
 };
 
@@ -165,7 +165,7 @@ export function getConfiguredThinkingLevelMetadata(level: ConfiguredThinkingLeve
 
 /**
  * Thinking selectors accepted by the `--thinking` CLI flag, in display order:
- * `off`, every concrete effort (`minimal`..`xhigh`), then `auto`. Single source
+ * `off`, every concrete effort (`minimal`..`max`), then `auto`. Single source
  * for the flag's `options` list, shell completions, and the "invalid level"
  * warning so all three stay in sync.
  */
@@ -173,7 +173,7 @@ export const CLI_THINKING_LEVELS: readonly string[] = [ThinkingLevel.Off, ...THI
 
 /**
  * Parses a `--thinking` CLI value. Accepts every {@link parseConfiguredThinkingLevel}
- * selector (`off`, `auto`, `minimal`..`xhigh`, plus the `max` alias) but rejects
+ * selector (`off`, `auto`, `minimal`..`max`) but rejects
  * `inherit`: an explicit `inherit` on the command line would suppress the
  * settings/scoped-model fallback during startup resolution only to resolve back
  * to the provider default, which is never what the user means.
@@ -216,9 +216,13 @@ export function clampAutoThinkingEffort(model: Model | undefined, effort: Effort
 /**
  * The provisional concrete level shown while `auto` is configured but before a
  * turn has been classified. Prefers the model's `defaultLevel`, otherwise High,
- * clamped into the auto range. Returns `undefined` for non-reasoning models.
+ * clamped into the auto range. Auto never provisions {@link Effort.Max} (the
+ * classifier ceiling is XHigh; only an explicit user request reaches Max), so a
+ * `defaultLevel` of `max` is capped at XHigh before clamping. Returns
+ * `undefined` for non-reasoning models.
  */
 export function resolveProvisionalAutoLevel(model: Model | undefined): Effort | undefined {
 	if (!model?.reasoning) return undefined;
-	return clampAutoThinkingEffort(model, model.thinking?.defaultLevel ?? Effort.High);
+	const preferred = model.thinking?.defaultLevel ?? Effort.High;
+	return clampAutoThinkingEffort(model, preferred === Effort.Max ? Effort.XHigh : preferred);
 }

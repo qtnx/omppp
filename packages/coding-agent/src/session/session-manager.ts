@@ -16,6 +16,7 @@ import {
 	hasFsCode,
 	isEnoent,
 	logger,
+	stringifyJson,
 	toError,
 } from "@oh-my-pi/pi-utils";
 import {
@@ -546,7 +547,7 @@ export class SessionManager {
 	}
 
 	#lineFor(entry: FileEntry): string {
-		return `${JSON.stringify(prepareEntryForPersistence(entry, this.#blobs))}\n`;
+		return `${stringifyJson(prepareEntryForPersistence(entry, this.#blobs)) ?? "null"}\n`;
 	}
 
 	#titleSlotLine(): string {
@@ -810,6 +811,7 @@ export class SessionManager {
 			timestamp,
 			cwd: this.#cwd,
 			parentSession: options?.parentSession,
+			providerPromptCacheKey: options?.providerPromptCacheKey,
 		};
 		this.#titleUpdatedAt = timestamp;
 
@@ -1077,6 +1079,7 @@ export class SessionManager {
 			timestamp,
 			cwd: this.#cwd,
 			parentSession: parentSessionId,
+			providerPromptCacheKey: this.#header.providerPromptCacheKey ?? parentSessionId,
 		};
 		this.#sessionName = this.#header.title;
 		this.#titleSource = this.#header.titleSource;
@@ -1948,7 +1951,13 @@ export class SessionManager {
 
 		const sourceHeader = sourceEntries.find(entry => entry.type === "session") as SessionHeader | undefined;
 		const history = sourceEntries.filter(entry => entry.type !== "session") as SessionEntry[];
-		manager.#resetToNewSession({ parentSession: sourceHeader?.id }, options?.sessionFile);
+		manager.#resetToNewSession(
+			{
+				parentSession: sourceHeader?.id,
+				providerPromptCacheKey: sourceHeader?.providerPromptCacheKey ?? sourceHeader?.id,
+			},
+			options?.sessionFile,
+		);
 		manager.#header.title = sourceHeader?.title;
 		manager.#header.titleSource = sourceHeader?.titleSource;
 		manager.#sessionName = manager.#header.title;

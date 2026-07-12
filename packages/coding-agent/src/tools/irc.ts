@@ -432,30 +432,36 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		}
 		const timeoutMs = this.#resolveTimeoutMs(params);
 		this.session.enterSubagentWait?.();
-		let waited: IrcMessage | null;
 		try {
-			waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal);
+			const waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal, {
+				liveness: { registry, senderId },
+			});
+			if (!waited) {
+				const filterNote = from ? ` from ${from}` : "";
+				return {
+					content: [
+						{
+							type: "text",
+							text: `No message${filterNote} within ${formatDuration(timeoutMs)}; re-issue \`irc wait\` to keep waiting.`,
+						},
+					],
+					details: { op: "wait", from: senderId, waited: null },
+					// A clean wait timeout carries no information once consumed.
+					useless: true,
+				};
+			}
+			return {
+				content: [{ type: "text", text: formatIncoming(waited) }],
+				details: { op: "wait", from: senderId, waited },
+			};
+		} catch (error) {
+			if (signal?.aborted) {
+				throw error;
+			}
+			return errorResult(error instanceof Error ? error.message : String(error), { op: "wait", from: senderId });
 		} finally {
 			this.session.exitSubagentWait?.();
 		}
-		if (!waited) {
-			const filterNote = from ? ` from ${from}` : "";
-			return {
-				content: [
-					{
-						type: "text",
-						text: `No message${filterNote} within ${formatDuration(timeoutMs)}; re-issue \`irc wait\` to keep waiting.`,
-					},
-				],
-				details: { op: "wait", from: senderId, waited: null },
-				// A clean wait timeout carries no information once consumed.
-				useless: true,
-			};
-		}
-		return {
-			content: [{ type: "text", text: formatIncoming(waited) }],
-			details: { op: "wait", from: senderId, waited },
-		};
 	}
 
 	#executeInbox(registry: AgentRegistry, senderId: string, params: IrcParams): AgentToolResult<IrcDetails> {

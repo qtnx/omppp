@@ -1,6 +1,6 @@
 ---
 name: parallel-fanout
-description: MANDATORY before multi-file delegation, scout dispatch, or wave planning. Defines ready-horizon slicing, C/R dependency tests, exclusive ownership, one-wave scouting, iterative adversarial plan convergence, and the production-owner invariant after lock.
+description: MANDATORY before multi-file delegation, scout dispatch, or wave planning. Defines ready-horizon slicing, C/R dependency tests, ownership and shared-file rules, one-wave scouting, iterative adversarial plan convergence, and the production-owner invariant after lock.
 ---
 
 # Parallel Fanout
@@ -15,14 +15,14 @@ Wall-clock on the dependency-DAG critical path is THE metric. Prevent two sessio
 | 1 | Inventory | Name user deliverables as executable vertical slices | slice list | no "foundation/core/setup" bucket | minutes |
 | 2 | Dependency matrix | Label C/R edges needed by CURRENT READY slices | ready-horizon edges | each current edge labeled | minutes |
 | 3 | Contract prefix | Lock only the minimum shared shape needed by the next slice | minimal contract | current C-edges satisfied | one pass |
-| 4 | Wave plan | Fill rows for CURRENT READY packages | ready-horizon table | exclusive ownership + acceptance | minutes |
+| 4 | Wave plan | Fill rows for CURRENT READY packages | ready-horizon table | clear ownership + acceptance | minutes |
 | 5 | Dispatch | Production owner + its tests/fixes in ONE package | runtime code in flight | every ready package dispatched | immediate |
 | 6 | Integrate | Merge landings; reject scope creep | executable diff | package acceptance green | per landing |
 | 7 | Gates | Run only failure-matched final gates + entry-point probe | evidence | selected gates green | once |
 
 Phases 1–4 are bounded preparation, not a Foundation program. A blank future row NEVER blocks a ready package. A local unknown belongs to its owner; state an assumption and dispatch. Only a concrete shared runtime blocker delays the dependent row, never the whole wave.
 
-## How to slice a feature — pick the dimension that yields exclusive files
+## How to slice a feature — pick the dimension that yields the most independent packages
 
 | Dimension | Cut here when | Package examples |
 |---|---|---|
@@ -32,7 +32,7 @@ Phases 1–4 are bounded preparation, not a Foundation program. A blank future r
 | Mechanical perimeter | registrations, renames, config, wiring, docs | one `quick_task` batch package |
 | Cross-owner integration | a test must execute several owners' REAL code together | exactly ONE integration package, wave 2 |
 
-Correct slicing yields only genuinely independent packages — one package is valid; 5–10 is a ceiling-shaped target, never a quota. Shared files or R-edges everywhere? Re-cut only the blocked row; do not redesign unrelated ready work.
+Maximize parallel packages: dispatch every genuinely independent slice at once — one package is valid; 5–10 is a ceiling-shaped target, never a quota. Only a real R-edge (B's tests must run A's working code) serializes work. Two packages touching the same file is NOT a dependency and NEVER forces a phase split or ownership re-cut — the per-file write lock serializes their edits and each agent preserves the other's changes (see the same-file row below).
 
 ## The C/R dependency test — apply to every edge
 
@@ -40,7 +40,7 @@ Correct slicing yields only genuinely independent packages — one package is va
 |---|---|---|---|
 | B imports A's types/interface/schema only | "Do B's tests execute A's code?" → NO | C | lock the shape in Phase 3; A and B run in PARALLEL |
 | B's tests must call A's working code | → YES | R | B goes to wave 2 behind A — or stub A behind the locked interface when a stub is cheap, then B joins wave 1 |
-| A and B edit the same file | — | conflict | re-cut ownership until files are exclusive; two agents NEVER share a file |
+| A and B edit the same file (even the same region) | — | C | run in PARALLEL — the per-file write lock serializes their edits; each agent re-reads, preserves peer changes, and merges. NEVER phase-split or re-cut ownership just to avoid a shared file |
 
 Default: assume C until proven R. Nearly every "foundation first" serialization is a C-edge wearing an R costume — types flow, not behavior.
 
@@ -76,7 +76,7 @@ RIGHT — prefix: parent writes `src/chat/contracts.ts` + `src/docs/contracts.ts
 | P7 WireAndIntegrate | src/chat/index.ts + integration test | P1+P3+P4 working code | R | task | 2 | integration test through the real entry point |
 | P8 MigrateLegacyEvents | scripts/migrate-events.ts + test | P5 working code | R | task | 2 | idempotent dry-run + count verification |
 
-Wave 1 = ONE `task` batch of P1–P6 (six agents in parallel). P7 dispatches when P1+P3+P4 land; P8 when P5 lands. Each assignment pastes in: owned files, forbidden files, the locked contract snippet, acceptance commands, and "done = your Acceptance passes".
+Wave 1 = ONE `task` batch of P1–P6 (six agents in parallel). P7 dispatches when P1+P3+P4 land; P8 when P5 lands. Each assignment pastes in: its primary files, shared-file discipline (re-read and preserve peer edits, NEVER clobber), the locked contract snippet, acceptance commands, and "done = your Acceptance passes".
 
 ## Plan convergence, lock, then dispatch
 
@@ -97,11 +97,11 @@ Every workflow implementation wave MUST contain a production-code package. NEVER
 ```js
 export const meta = { name: "chat-fanout", description: "wave plan P1-P8", phases: ["wave1", "wave2", "gates"] };
 // Contracts (Phase 3) are already locked BEFORE scripting. Each agent prompt below is a
-// complete work-package assignment: owned files, forbidden files, pasted contract snippet,
+// complete work-package assignment: primary files, shared-file discipline, pasted contract snippet,
 // acceptance commands, "done = your tests pass".
 phase("wave1");
 const w1 = await parallel([
-  () => agent("P1 SqliteChatRepository — full-cycle: red test + implement + fix until green. Owns src/chat/repo-sqlite.ts + test. Forbidden: everything else. Contract: <paste ChatRepository>. Done = your tests pass; report files + test output.", { agentType: "task", label: "P1" }),
+  () => agent("P1 SqliteChatRepository — full-cycle: red test + implement + fix until green. Primary: src/chat/repo-sqlite.ts + test; shared files OK — re-read and preserve peer edits. Contract: <paste ChatRepository>. Done = your tests pass; report files + test output.", { agentType: "task", label: "P1" }),
   // … P2–P5 same shape, tier per the wave-plan table …
   () => agent("P6 ChatPanel UI — owns ui/ChatPanel.tsx + story; states: loading/empty/error/filled. Contract: <paste ChatDocument>.", { agentType: "frontend_ui", label: "P6" }),
 ]);
@@ -150,4 +150,4 @@ Immediate stall signals: active Foundation grows; future table blanks delay read
 
 ## Anti-patterns
 
-Serial Foundation chains; planning every future row; “settle design” loops; RED-only/seam-map waves without production; phase-split TDD; sibling fixer churn; waterfall dispatch; holding one ready package for fake parallelism; whole-repo exploration; re-scouting; two agents sharing files.
+Serial Foundation chains; planning every future row; “settle design” loops; RED-only/seam-map waves without production; phase-split TDD; sibling fixer churn; waterfall dispatch; holding one ready package for fake parallelism; whole-repo exploration; re-scouting; reverting or clobbering a sibling's edits in a shared file.

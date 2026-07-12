@@ -68,6 +68,7 @@ function stalledBody(bytes: Uint8Array[] = []): ReadableStream<Uint8Array> {
 }
 
 function delayedBody(chunks: Array<{ atMs: number; bytes: Uint8Array }>): ReadableStream<Uint8Array> {
+	let active = true;
 	return new ReadableStream<Uint8Array>({
 		start(controller) {
 			// Guard every scheduled enqueue/close: if the stream aborts early (e.g. a
@@ -79,23 +80,29 @@ function delayedBody(chunks: Array<{ atMs: number; bytes: Uint8Array }>): Readab
 			// post-close throw keeps a timeout contained to its own test.
 			for (const chunk of chunks) {
 				setTimeout(() => {
+					if (!active) return;
 					try {
 						controller.enqueue(chunk.bytes);
 					} catch {
-						// stream already cancelled/closed — nothing to deliver
+						// Stream already cancelled/closed — nothing to deliver.
 					}
 				}, chunk.atMs);
 			}
 			setTimeout(
 				() => {
+					if (!active) return;
+					active = false;
 					try {
 						controller.close();
 					} catch {
-						// already closed
+						// Stream already closed.
 					}
 				},
 				Math.max(...chunks.map(chunk => chunk.atMs)) + 1,
 			);
+		},
+		cancel() {
+			active = false;
 		},
 	});
 }

@@ -20,6 +20,7 @@ import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFile } from "../../tools/auto-generated-guard";
+import { withFileWriteLocks } from "../../tools/file-write-lock";
 import {
 	invalidateFsScanAfterDelete,
 	invalidateFsScanAfterRename,
@@ -1816,27 +1817,6 @@ export async function executePatchSingle(
 	const resolvedPath = resolvePlanPath(session, path);
 	const resolvedRename = rename ? resolvePlanPath(session, rename) : undefined;
 
-	await assertEditableFile(resolvedPath, path);
-
-	// Capture pre-edit content so we can verify the write actually hit disk.
-	// `LspFileSystem.writeFile` delegates to a writethrough callback that, in
-	// some host integrations, has been observed to report success without
-	// persisting bytes — leaving the tool to claim "Updated <path>" while the
-	// file on disk is byte-identical to before. After the write we re-read
-	// the file and assert the bytes match the expected newContent; relying
-	// on stat (mtime/size) is unreliable because filesystems with coarse
-	// timestamp resolution can record an unchanged mtime even when the
-	// content was rewritten, and same-length rewrites leave size unchanged.
-	let preEditContent: Uint8Array | undefined;
-	if (op === "update") {
-		try {
-			preEditContent = await fs.promises.readFile(resolvedPath);
-		} catch (err) {
-			if (!isEnoent(err)) throw err;
-		}
-	}
-
-	const input: PatchInput = { path: resolvedPath, op, rename: resolvedRename, diff };
 	const patchFileSystem = new LspFileSystem(
 		session,
 		path, // original user-provided path for bridge guard (may be local://, vault://, etc.)
@@ -1845,48 +1825,76 @@ export async function executePatchSingle(
 		batchRequest,
 		beginDeferredDiagnosticsForPath,
 	);
-	const result = await applyPatch(input, {
-		cwd: session.cwd,
-		fs: patchFileSystem,
-		fuzzyThreshold,
-		allowFuzzy,
-		allowCreateOverwrite,
-	});
+	const { result, diagnostics: lockDiagnostics } = await withFileWriteLocks(
+		resolvedRename ? [resolvedPath, resolvedRename] : [resolvedPath],
+		signal,
+		async () => {
+			await assertEditableFile(resolvedPath, path);
 
-	// Post-write verification: only meaningful for in-place updates where the
-	// patch actually changes content and the file is not being renamed away.
-	if (
-		result.change.type === "update" &&
-		!result.change.newPath &&
-		preEditContent !== undefined &&
-		result.change.oldContent !== undefined &&
-		result.change.newContent !== undefined &&
-		result.change.oldContent !== result.change.newContent
-	) {
-		let postEditContent: Uint8Array | undefined;
-		try {
-			postEditContent = await fs.promises.readFile(resolvedPath);
-		} catch (err) {
-			if (!isEnoent(err)) throw err;
-		}
-		const unchanged =
-			postEditContent !== undefined &&
-			postEditContent.length === preEditContent.length &&
-			postEditContent.every((b, i) => b === preEditContent[i]);
-		if (unchanged) {
-			throw new ToolError(`edit appeared successful but file content did not change on disk: ${path}`, {
-				path: resolvedPath,
+			// Capture pre-edit content so we can verify the write actually hit disk.
+			// `LspFileSystem.writeFile` delegates to a writethrough callback that, in
+			// some host integrations, has been observed to report success without
+			// persisting bytes — leaving the tool to claim "Updated <path>" while the
+			// file on disk is byte-identical to before. After the write we re-read
+			// the file and assert the bytes match the expected newContent; relying
+			// on stat (mtime/size) is unreliable because filesystems with coarse
+			// timestamp resolution can record an unchanged mtime even when the
+			// content was rewritten, and same-length rewrites leave size unchanged.
+			let preEditContent: Uint8Array | undefined;
+			if (op === "update") {
+				try {
+					preEditContent = await fs.promises.readFile(resolvedPath);
+				} catch (err) {
+					if (!isEnoent(err)) throw err;
+				}
+			}
+
+			const input: PatchInput = { path: resolvedPath, op, rename: resolvedRename, diff };
+			const result = await applyPatch(input, {
+				cwd: session.cwd,
+				fs: patchFileSystem,
+				fuzzyThreshold,
+				allowFuzzy,
+				allowCreateOverwrite,
 			});
-		}
-	}
 
-	if (resolvedRename) {
-		invalidateFsScanAfterRename(resolvedPath, resolvedRename);
-	} else if (result.change.type === "delete") {
-		invalidateFsScanAfterDelete(resolvedPath);
-	} else {
-		invalidateFsScanAfterWrite(resolvedPath);
-	}
+			// Post-write verification: only meaningful for in-place updates where the
+			// patch actually changes content and the file is not being renamed away.
+			if (
+				result.change.type === "update" &&
+				!result.change.newPath &&
+				preEditContent !== undefined &&
+				result.change.oldContent !== undefined &&
+				result.change.newContent !== undefined &&
+				result.change.oldContent !== result.change.newContent
+			) {
+				let postEditContent: Uint8Array | undefined;
+				try {
+					postEditContent = await fs.promises.readFile(resolvedPath);
+				} catch (err) {
+					if (!isEnoent(err)) throw err;
+				}
+				const unchanged =
+					postEditContent !== undefined &&
+					postEditContent.length === preEditContent.length &&
+					postEditContent.every((b, i) => b === preEditContent[i]);
+				if (unchanged) {
+					throw new ToolError(`edit appeared successful but file content did not change on disk: ${path}`, {
+						path: resolvedPath,
+					});
+				}
+			}
+
+			if (resolvedRename) {
+				invalidateFsScanAfterRename(resolvedPath, resolvedRename);
+			} else if (result.change.type === "delete") {
+				invalidateFsScanAfterDelete(resolvedPath);
+			} else {
+				invalidateFsScanAfterWrite(resolvedPath);
+			}
+			return { result, diagnostics: patchFileSystem.getDiagnostics() };
+		},
+	);
 	const effectiveRename = result.change.newPath ? rename : undefined;
 
 	let diffResult: { diff: string; firstChangedLine: number | undefined } = {
@@ -1923,7 +1931,7 @@ export async function executePatchSingle(
 			break;
 	}
 
-	let diagnostics = patchFileSystem.getDiagnostics();
+	let diagnostics = lockDiagnostics;
 	if (op === "delete" && batchRequest?.flush) {
 		const flushedDiagnostics = await flushLspWritethroughBatch(batchRequest.id, session.cwd, signal);
 		diagnostics ??= flushedDiagnostics;

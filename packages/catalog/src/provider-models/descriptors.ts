@@ -30,6 +30,7 @@ import {
 	mistralModelManagerOptions,
 	moonshotModelManagerOptions,
 	nanoGptModelManagerOptions,
+	novitaModelManagerOptions,
 	nvidiaModelManagerOptions,
 	ollamaModelManagerOptions,
 	openaiModelManagerOptions,
@@ -280,6 +281,14 @@ export const CATALOG_PROVIDERS = [
 		envVars: ["NVIDIA_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => nvidiaModelManagerOptions(config),
 		catalogDiscovery: { label: "NVIDIA" },
+	},
+	{
+		id: "novita",
+		defaultModel: "moonshotai/kimi-k2.7-code",
+		envVars: ["NOVITA_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => novitaModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Novita", allowUnauthenticated: true },
 	},
 	{
 		id: "ollama",

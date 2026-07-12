@@ -20,6 +20,7 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import { parseInternalUrl } from "../internal-urls/parse";
 import { createLspWritethrough, type FileDiagnosticsResult, type WritethroughCallback, writethroughNoop } from "../lsp";
+import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 import { getLanguageFromPath, highlightCode, type Theme } from "../modes/theme/theme";
 import writeDescription from "../prompts/tools/write.md" with { type: "text" };
@@ -45,6 +46,7 @@ import {
 	parseConflictUri,
 	spliceConflict,
 } from "./conflict-detect";
+import { withFileWriteLock } from "./file-write-lock";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
 import { formatPathRelativeToCwd, isInternalUrlPath, pathTargetsSsh, peelWriteUrlSelector } from "./path-utils";
@@ -80,6 +82,30 @@ import { toolResult } from "./tool-result";
 
 const LOOSE_HASHLINE_HEADER_RE = /^\s*\[[^#\r\n]+#[^ \t\r\n]*\]\s*$/;
 const EXECUTABLE_NOTICE = "[Notice: Made executable via chmod +x]";
+
+const BULK_DIRECTIVE_RE = /^#?(\d+)\s*[:=]\s*(@ours|@theirs|@base|@both)$/;
+
+/**
+ * Parse `conflict://*` per-id directive content: every non-empty line must be
+ * `<id>: @side` (also accepted: `#<id> = @side`). Returns `null` when the
+ * content is not directive-shaped (→ uniform bulk mode); throws on duplicate
+ * ids so a typo never silently drops a resolution.
+ */
+function parseBulkDirectives(content: string): Map<number, string> | null {
+	const map = new Map<number, string>();
+	for (const raw of content.split("\n")) {
+		const line = raw.trim();
+		if (line.length === 0) continue;
+		const match = line.match(BULK_DIRECTIVE_RE);
+		if (!match) return null;
+		const id = Number.parseInt(match[1], 10);
+		if (map.has(id)) {
+			throw new ToolError(`Bulk directive lists conflict #${id} twice — each id may appear once.`);
+		}
+		map.set(id, match[2]);
+	}
+	return map.size > 0 ? map : null;
+}
 
 const writeSchema = type({
 	path: type("string").describe("file path"),
@@ -323,12 +349,15 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 	}
 
 	readonly #writethrough: WritethroughCallback;
+	readonly #deferredDiagnostics: DeferredDiagnostics | undefined;
 
 	constructor(private readonly session: ToolSession) {
 		const enableLsp = session.enableLsp ?? true;
 		const enableFormat = enableLsp && session.settings.get("lsp.formatOnWrite");
 		const enableDiagnostics = enableLsp && session.settings.get("lsp.diagnosticsOnWrite");
 		const dedup = enableDiagnostics && session.settings.get("lsp.diagnosticsDeduplicate");
+		this.#deferredDiagnostics =
+			enableDiagnostics && session.queueDeferredDiagnostics ? new DeferredDiagnostics(session, dedup) : undefined;
 		this.#writethrough = enableLsp
 			? createLspWritethrough(session.cwd, {
 					enableFormat,
@@ -383,12 +412,25 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		content: string,
 		resolvedArchivePath: ResolvedArchiveWritePath,
 	): Promise<AgentToolResult<WriteToolDetails>> {
-		// Resolve symlinks before the tmp+rename swap: renaming over a symlink
-		// replaces the link itself with a regular file instead of writing
-		// through to its target.
-		const finalPath = resolvedArchivePath.exists
-			? await fs.realpath(resolvedArchivePath.absolutePath).catch(() => resolvedArchivePath.absolutePath)
-			: resolvedArchivePath.absolutePath;
+		// Re-stat inside the archive lock. `#resolveArchiveWritePath` runs before
+		// lock acquisition to parse a target, so its existence result can be stale
+		// by the time a queued writer enters this read-modify-write window.
+		let archiveExists = false;
+		let finalPath = resolvedArchivePath.absolutePath;
+		try {
+			const stat = await Bun.file(resolvedArchivePath.absolutePath).stat();
+			if (!stat.isDirectory()) {
+				archiveExists = true;
+				// Resolve symlinks before the tmp+rename swap: renaming over a
+				// symlink replaces the link itself with a regular file instead of
+				// writing through to its target.
+				finalPath = await fs
+					.realpath(resolvedArchivePath.absolutePath)
+					.catch(() => resolvedArchivePath.absolutePath);
+			}
+		} catch (error) {
+			if (!isArchivePathNotFound(error)) throw error;
+		}
 		// A realpath swap can land on a name without an archive extension; a
 		// whole-archive rewrite then defaults to an uncompressed tar, matching the
 		// previous `isZip`/`isGzip`/else fallthrough.
@@ -403,7 +445,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		}
 
 		const entries = new Map<string, ArchiveMemberContent>();
-		if (resolvedArchivePath.exists) {
+		if (archiveExists) {
 			try {
 				const existing = await readArchiveEntries({ bytes: await Bun.file(finalPath).bytes(), format });
 				for (const [entryPath, data] of existing) {
@@ -584,52 +626,59 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		// Route conflict resolution through the shared mutation seam so orchestrator
 		// .md-only and plan-mode read-only enforcement both apply to the real target file.
 		enforcePlanModeWrite(this.session, absolutePath, { op: "update" });
-		if (!(await fs.exists(absolutePath))) {
-			throw new ToolError(`Conflict #${entry.id} target '${entry.displayPath}' no longer exists.`);
-		}
+		return withFileWriteLock(absolutePath, signal, async () => {
+			if (!(await fs.exists(absolutePath))) {
+				throw new ToolError(`Conflict #${entry.id} target '${entry.displayPath}' no longer exists.`);
+			}
 
-		const expanded = expandContentTokens(replacementContent, entry);
-		const originalText = await Bun.file(absolutePath).text();
-		const newContent = spliceConflict(originalText, entry, expanded);
+			const expanded = expandContentTokens(replacementContent, entry);
+			const originalText = await Bun.file(absolutePath).text();
+			const splice = spliceConflict(originalText, entry, expanded);
+			const newContent = splice.text;
 
-		await writethroughNoop(absolutePath, newContent, signal);
-		invalidateFsScanAfterWrite(absolutePath);
-		this.session.bumpFileMutationVersion?.(absolutePath);
-		this.session.fileSnapshotStore?.invalidate(absolutePath);
-		const history = this.session.conflictHistory;
-		history?.invalidate(entry.id);
-		if (history) {
-			// Drop stale duplicate registrations of the same region: a re-read
-			// after an out-of-band shift registers a fresh id at the new
-			// startLine while the stale twin persists at the old one. A DISTINCT
-			// conflict block that is merely byte-identical still occurs in the
-			// post-splice content and must stay addressable.
-			for (const other of history.entries()) {
-				if (
-					other.absolutePath === absolutePath &&
-					conflictRegionsEqual(other, entry) &&
-					!conflictRegionPresent(newContent, other)
-				) {
-					history.invalidate(other.id);
+			await writethroughNoop(absolutePath, newContent, signal);
+			invalidateFsScanAfterWrite(absolutePath);
+			this.session.bumpFileMutationVersion?.(absolutePath);
+			this.session.fileSnapshotStore?.invalidate(absolutePath);
+			const history = this.session.conflictHistory;
+			history?.invalidate(entry.id);
+			if (history) {
+				// Drop stale duplicate registrations of the same region: a re-read
+				// after an out-of-band shift registers a fresh id at the new
+				// startLine while the stale twin persists at the old one. A DISTINCT
+				// conflict block that is merely byte-identical still occurs in the
+				// post-splice content and must stay addressable.
+				for (const other of history.entries()) {
+					if (
+						other.absolutePath === absolutePath &&
+						conflictRegionsEqual(other, entry) &&
+						!conflictRegionPresent(newContent, other)
+					) {
+						history.invalidate(other.id);
+					}
 				}
 			}
-		}
 
-		const header = maybeWriteSnapshotHeader(this.session, absolutePath, newContent);
-		const range =
-			entry.startLine === entry.endLine
-				? `line ${entry.startLine}`
-				: `lines ${entry.startLine}\u2013${entry.endLine}`;
-		const summary = `Resolved conflict #${entry.id} at ${range} in ${entry.displayPath}.`;
-		let resultText = header ? `${header}\n${summary}` : summary;
-		if (stripped) {
-			resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
-		}
+			const header = maybeWriteSnapshotHeader(this.session, absolutePath, newContent);
+			const range =
+				entry.startLine === entry.endLine
+					? `line ${entry.startLine}`
+					: `lines ${entry.startLine}\u2013${entry.endLine}`;
+			const summary = `Resolved conflict #${entry.id} at ${range} in ${entry.displayPath}.`;
+			let resultText = header ? `${header}\n${summary}` : summary;
+			if (stripped) {
+				resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
+			}
+			const echoTrimmed = splice.trimmedLeading + splice.trimmedTrailing;
+			if (echoTrimmed > 0) {
+				resultText += `\nNote: dropped ${echoTrimmed} content line(s) that duplicated the code adjacent to the conflict region — writes replace only the marker block; surrounding lines stay in place.`;
+			}
 
-		return {
-			content: [{ type: "text", text: resultText }],
-			details: { resolvedPath: absolutePath },
-		};
+			return {
+				content: [{ type: "text", text: resultText }],
+				details: { resolvedPath: absolutePath },
+			};
+		});
 	}
 
 	/**
@@ -670,6 +719,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		replacementContent: string,
 		stripped: boolean,
 		signal: AbortSignal | undefined,
+		rawContent: string = replacementContent,
 	): Promise<AgentToolResult<WriteToolDetails>> {
 		const history = getConflictHistory(this.session);
 		const allEntries = history.entries();
@@ -679,8 +729,28 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			);
 		}
 
+		// Per-id directive mode: content made solely of `<id>: @side` lines
+		// resolves each listed conflict with that side in one call. Ideal for
+		// merge-hell files where dozens of pick-one blocks each need their own
+		// winner — one call instead of one write per conflict. Parsed from the
+		// PRE-strip content: hashline prefix stripping would otherwise eat the
+		// `<id>: ` heads as echoed line numbers.
+		const directives = parseBulkDirectives(rawContent) ?? parseBulkDirectives(replacementContent);
+		if (directives) {
+			const known = new Set(allEntries.map(entry => entry.id));
+			const unknown = [...directives.keys()].filter(id => !known.has(id));
+			if (unknown.length > 0) {
+				throw new ToolError(
+					`Bulk directive references unknown conflict id(s) ${unknown.map(id => `#${id}`).join(", ")}. Currently registered: ${allEntries.map(e => `#${e.id}`).join(", ")}.`,
+				);
+			}
+		}
+		const selectedEntries = directives ? allEntries.filter(entry => directives.has(entry.id)) : allEntries;
+		const contentFor = (entry: ConflictEntry): string =>
+			directives ? (directives.get(entry.id) as string) : replacementContent;
+
 		const byFile = new Map<string, ConflictEntry[]>();
-		for (const entry of allEntries) {
+		for (const entry of selectedEntries) {
 			const bucket = byFile.get(entry.absolutePath) ?? [];
 			bucket.push(entry);
 			byFile.set(entry.absolutePath, bucket);
@@ -696,69 +766,74 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const succeededFiles: { displayPath: string; count: number; header?: string }[] = [];
 		const failedFiles: { displayPath: string; count: number; error: string }[] = [];
 		let totalResolvedIds = 0;
+		let totalEchoTrimmed = 0;
 
 		for (const [absolutePath, fileEntries] of byFile) {
-			const sample = fileEntries[0]!;
-			if (!(await fs.exists(absolutePath))) {
-				failedFiles.push({
-					displayPath: sample.displayPath,
-					count: fileEntries.length,
-					error: "file no longer exists",
-				});
-				continue;
-			}
-
-			fileEntries.sort((a, b) => b.startLine - a.startLine);
-
-			let text: string;
-			const resolvedEntries: ConflictEntry[] = [];
-			const staleEntries: ConflictEntry[] = [];
-			let failure: string | undefined;
-			try {
-				text = await Bun.file(absolutePath).text();
-			} catch (error) {
-				failedFiles.push({
-					displayPath: sample.displayPath,
-					count: fileEntries.length,
-					error: error instanceof Error ? error.message : String(error),
-				});
-				continue;
-			}
-			for (const entry of fileEntries) {
-				try {
-					const expanded = expandContentTokens(replacementContent, entry);
-					text = spliceConflict(text, entry, expanded);
-					resolvedEntries.push(entry);
-				} catch (error) {
-					// A locate-miss for a region an earlier entry already spliced
-					// in this pass is a stale duplicate registration (re-read after
-					// an out-of-band shift) — treat it as already resolved.
-					if (resolvedEntries.some(done => conflictRegionsEqual(done, entry))) {
-						staleEntries.push(entry);
-						continue;
-					}
-					failure = error instanceof Error ? error.message : String(error);
-					break;
+			await withFileWriteLock(absolutePath, signal, async () => {
+				const sample = fileEntries[0]!;
+				if (!(await fs.exists(absolutePath))) {
+					failedFiles.push({
+						displayPath: sample.displayPath,
+						count: fileEntries.length,
+						error: "file no longer exists",
+					});
+					return;
 				}
-			}
-			if (failure !== undefined) {
-				failedFiles.push({
-					displayPath: sample.displayPath,
-					count: fileEntries.length,
-					error: failure,
-				});
-				continue;
-			}
 
-			await writethroughNoop(absolutePath, text, signal);
-			invalidateFsScanAfterWrite(absolutePath);
-			this.session.bumpFileMutationVersion?.(absolutePath);
-			this.session.fileSnapshotStore?.invalidate(absolutePath);
-			for (const entry of resolvedEntries) history.invalidate(entry.id);
-			for (const entry of staleEntries) history.invalidate(entry.id);
-			const header = maybeWriteSnapshotHeader(this.session, absolutePath, text);
-			succeededFiles.push({ displayPath: sample.displayPath, count: resolvedEntries.length, header });
-			totalResolvedIds += resolvedEntries.length;
+				fileEntries.sort((a, b) => b.startLine - a.startLine);
+
+				let text: string;
+				const resolvedEntries: ConflictEntry[] = [];
+				const staleEntries: ConflictEntry[] = [];
+				let failure: string | undefined;
+				try {
+					text = await Bun.file(absolutePath).text();
+				} catch (error) {
+					failedFiles.push({
+						displayPath: sample.displayPath,
+						count: fileEntries.length,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return;
+				}
+				for (const entry of fileEntries) {
+					try {
+						const expanded = expandContentTokens(contentFor(entry), entry);
+						const splice = spliceConflict(text, entry, expanded);
+						text = splice.text;
+						totalEchoTrimmed += splice.trimmedLeading + splice.trimmedTrailing;
+						resolvedEntries.push(entry);
+					} catch (error) {
+						// A locate-miss for a region an earlier entry already spliced
+						// in this pass is a stale duplicate registration (re-read after
+						// an out-of-band shift) — treat it as already resolved.
+						if (resolvedEntries.some(done => conflictRegionsEqual(done, entry))) {
+							staleEntries.push(entry);
+							continue;
+						}
+						failure = error instanceof Error ? error.message : String(error);
+						break;
+					}
+				}
+				if (failure !== undefined) {
+					failedFiles.push({
+						displayPath: sample.displayPath,
+						count: fileEntries.length,
+						error: failure,
+					});
+					return;
+				}
+
+				await writethroughNoop(absolutePath, text, signal);
+				invalidateFsScanAfterWrite(absolutePath);
+				this.session.bumpFileMutationVersion?.(absolutePath);
+				this.session.fileSnapshotStore?.invalidate(absolutePath);
+				for (const entry of resolvedEntries) history.invalidate(entry.id);
+				for (const entry of staleEntries) history.invalidate(entry.id);
+				const header = maybeWriteSnapshotHeader(this.session, absolutePath, text);
+				succeededFiles.push({ displayPath: sample.displayPath, count: resolvedEntries.length, header });
+				totalResolvedIds += resolvedEntries.length;
+			});
 		}
 
 		const summaryLines: string[] = [];
@@ -771,6 +846,17 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			for (const file of succeededFiles) {
 				summaryLines.push(`  ${file.displayPath}: ${file.count} ${conflictWord(file.count)}`);
 			}
+		}
+		if (directives && selectedEntries.length < allEntries.length) {
+			const remaining = allEntries.filter(entry => !directives.has(entry.id)).map(entry => `#${entry.id}`);
+			summaryLines.push(
+				`Directive mode: ${remaining.length} unlisted ${conflictWord(remaining.length)} still registered (${remaining.join(", ")}).`,
+			);
+		}
+		if (totalEchoTrimmed > 0) {
+			summaryLines.push(
+				`Note: dropped ${totalEchoTrimmed} content line(s) that duplicated code adjacent to conflict regions — writes replace only the marker block; surrounding lines stay in place.`,
+			);
 		}
 		if (failedFiles.length > 0) {
 			summaryLines.push(
@@ -787,7 +873,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			summaryLines.push("Snapshots:");
 			for (const header of headerLines) summaryLines.push(`  ${header}`);
 		}
-		if (stripped) {
+		if (stripped && !directives) {
 			summaryLines.push("Note: auto-stripped hashline display prefixes from content before writing.");
 		}
 		const resultText = summaryLines.join("\n");
@@ -833,7 +919,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					// data outside the local sandbox — plan mode must reject them.
 					enforcePlanModeWrite(this.session, path, { op: "update" });
 					emitWriteProgress(onUpdate, cleanContent, path);
-					await handler.write(parsed, cleanContent, { cwd: this.session.cwd, signal });
+					await withFileWriteLock(path, signal, () =>
+						handler.write!(parsed, cleanContent, { cwd: this.session.cwd, signal }),
+					);
 					let resultText = `Successfully wrote ${cleanContent.length} bytes to ${path}`;
 					if (stripped) {
 						resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
@@ -855,7 +943,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				emitWriteProgress(onUpdate, cleanContent, path);
 				const result =
 					conflictUri.id === "*"
-						? await this.#resolveAllConflicts(cleanContent, stripped, signal)
+						? await this.#resolveAllConflicts(cleanContent, stripped, signal, content)
 						: await this.#resolveSingleConflictById(conflictUri.id, cleanContent, stripped, signal);
 				if (conflictUri.recoveredPrefix !== undefined) {
 					appendNoteToResult(
@@ -879,7 +967,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					}`,
 					resolvedArchivePath.absolutePath,
 				);
-				const archiveResult = await this.#writeArchiveEntry(cleanContent, resolvedArchivePath);
+				const archiveResult = await withFileWriteLock(resolvedArchivePath.absolutePath, signal, () =>
+					this.#writeArchiveEntry(cleanContent, resolvedArchivePath),
+				);
 				if (stripped) {
 					const firstText = archiveResult.content.find(
 						(block): block is { type: "text"; text: string } =>
@@ -897,7 +987,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				enforcePlanModeWrite(this.session, resolvedSqlitePath.sqlitePath, { op: "update" });
 
 				emitWriteProgress(onUpdate, cleanContent, path, resolvedSqlitePath.absolutePath);
-				const sqliteResult = await this.#writeSqliteRow(path, cleanContent, resolvedSqlitePath);
+				const sqliteResult = await withFileWriteLock(resolvedSqlitePath.absolutePath, signal, () =>
+					this.#writeSqliteRow(path, cleanContent, resolvedSqlitePath),
+				);
 				if (stripped) {
 					const firstText = sqliteResult.content.find(
 						(block): block is { type: "text"; text: string } =>
@@ -912,20 +1004,50 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			enforcePlanModeWrite(this.session, path, { op: "create" });
 			const absolutePath = resolvePlanPath(this.session, path);
-			const batchRequest = getLspBatchRequest(context?.toolCall);
+			return withFileWriteLock(absolutePath, signal, async () => {
+				const batchRequest = getLspBatchRequest(context?.toolCall);
 
-			// Check if file exists and is auto-generated before overwriting
-			if (await fs.exists(absolutePath)) {
-				await assertEditableFile(absolutePath, path);
-			}
+				// Check if file exists and is auto-generated before overwriting
+				if (await fs.exists(absolutePath)) {
+					await assertEditableFile(absolutePath, path);
+				}
 
-			const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
-			emitWriteProgress(onUpdate, cleanContent, displayPath, absolutePath);
+				const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
+				emitWriteProgress(onUpdate, cleanContent, displayPath, absolutePath);
 
-			// Try ACP bridge first for editor-visible filesystem paths. Internal
-			// artifacts such as local:// plans are owned by OMP, not the editor.
-			if (await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent, signal)) {
+				// Try ACP bridge first for editor-visible filesystem paths. Internal
+				// artifacts such as local:// plans are owned by OMP, not the editor.
+				if (await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent, signal)) {
+					const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
+					const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
+					const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
+					let resultText = header ? `${header}\n${writeLine}` : writeLine;
+					if (stripped) {
+						resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
+					}
+					if (madeExecutable) {
+						resultText += `\n${EXECUTABLE_NOTICE}`;
+					}
+					return {
+						content: [{ type: "text", text: resultText }],
+						details: { resolvedPath: absolutePath, madeExecutable: madeExecutable || undefined },
+					};
+				}
+
+				const diagnostics = await this.#writethrough(
+					absolutePath,
+					cleanContent,
+					signal,
+					undefined,
+					batchRequest,
+					dst => this.#deferredDiagnostics?.begin(dst),
+				);
+				invalidateFsScanAfterWrite(absolutePath);
+				if (!this.#deferredDiagnostics || batchRequest?.flush === false) {
+					this.session.bumpFileMutationVersion?.(absolutePath);
+				}
 				const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
+
 				const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
 				const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
 				let resultText = header ? `${header}\n${writeLine}` : writeLine;
@@ -935,44 +1057,25 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				if (madeExecutable) {
 					resultText += `\n${EXECUTABLE_NOTICE}`;
 				}
+				if (!diagnostics) {
+					return {
+						content: [{ type: "text", text: resultText }],
+						details: { resolvedPath: absolutePath, madeExecutable: madeExecutable || undefined },
+					};
+				}
+
 				return {
 					content: [{ type: "text", text: resultText }],
-					details: { resolvedPath: absolutePath, madeExecutable: madeExecutable || undefined },
+					details: {
+						resolvedPath: absolutePath,
+						diagnostics,
+						madeExecutable: madeExecutable || undefined,
+						meta: outputMeta()
+							.diagnostics(diagnostics.summary, diagnostics.messages ?? [])
+							.get(),
+					},
 				};
-			}
-
-			const diagnostics = await this.#writethrough(absolutePath, cleanContent, signal, undefined, batchRequest);
-			invalidateFsScanAfterWrite(absolutePath);
-			this.session.bumpFileMutationVersion?.(absolutePath);
-			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
-
-			const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
-			const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
-			let resultText = header ? `${header}\n${writeLine}` : writeLine;
-			if (stripped) {
-				resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
-			}
-			if (madeExecutable) {
-				resultText += `\n${EXECUTABLE_NOTICE}`;
-			}
-			if (!diagnostics) {
-				return {
-					content: [{ type: "text", text: resultText }],
-					details: { resolvedPath: absolutePath, madeExecutable: madeExecutable || undefined },
-				};
-			}
-
-			return {
-				content: [{ type: "text", text: resultText }],
-				details: {
-					resolvedPath: absolutePath,
-					diagnostics,
-					madeExecutable: madeExecutable || undefined,
-					meta: outputMeta()
-						.diagnostics(diagnostics.summary, diagnostics.messages ?? [])
-						.get(),
-				},
-			};
+			});
 		});
 	}
 }

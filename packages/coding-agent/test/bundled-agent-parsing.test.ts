@@ -4,6 +4,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resolveAgentModelPatterns, resolveModelOverride } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
+import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 
 // The fork pins plan/reviewer reasoning instead of upstream's role-inheritance
 // contract (#4761): frontmatter locks `thinking-level: high` and plan's
@@ -31,6 +32,14 @@ describe("bundled agent parsing", () => {
 		expect(plan?.thinkingLevel).toBe(Effort.High);
 	});
 
+	it("defaults the task agent to the auto thinking selector", () => {
+		const task = getBundledAgent("task");
+
+		expect(task).toBeDefined();
+		expect(task?.model).toEqual(["pi/task"]);
+		expect(task?.thinkingLevel).toBe(AUTO_THINKING);
+	});
+
 	// Issue #4761 machinery still holds under the fork's pinned frontmatter: an
 	// explicit effort suffix survives agent-pattern expansion and model
 	// resolution. Reviewer reaches the configured slow role (`:xhigh`); plan's
@@ -52,7 +61,7 @@ describe("bundled agent parsing", () => {
 			maxTokens: 128000,
 		});
 		const settings = Settings.isolated({
-			modelRoles: { slow: "openai-codex/gpt-5.5:xhigh", plan: "openai-codex/gpt-5.5:xhigh" },
+			modelRoles: { slow: "openai-codex/gpt-5.5:xhigh" },
 		});
 		const registry = { getAvailable: () => [gpt55] } as Parameters<typeof resolveModelOverride>[1];
 

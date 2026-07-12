@@ -196,7 +196,7 @@ describe("model thinking derivation", () => {
 			api: "openai-completions",
 			provider: "deepseek",
 			baseUrl: "https://api.deepseek.com/v1",
-			compat: { reasoningEffortMap: { xhigh: "max-plus" } },
+			compat: { reasoningEffortMap: { max: "max-plus" } },
 		});
 		const openRouterAnthropic = createModel({
 			id: "anthropic/claude-opus-4.7",
@@ -212,20 +212,43 @@ describe("model thinking derivation", () => {
 			medium: "default",
 			high: "default",
 		});
-		expect(deepseek.thinking?.effortMap).toMatchObject({
-			minimal: "high",
-			low: "high",
-			medium: "high",
-			high: "high",
-			xhigh: "max-plus",
+		// DeepSeek's ladder is the wire-exact high/max pair; explicit compat
+		// overrides still win over the identity wire values.
+		expect(getSupportedEfforts(deepseek)).toEqual([Effort.High, Effort.Max]);
+		expect(deepseek.thinking?.effortMap).toEqual({ max: "max-plus" });
+		// OpenRouter-hosted Anthropic adaptive models carry the wire-exact
+		// five-tier ladder with no remapping.
+		expect(getSupportedEfforts(openRouterAnthropic)).toEqual([
+			Effort.Low,
+			Effort.Medium,
+			Effort.High,
+			Effort.XHigh,
+			Effort.Max,
+		]);
+		expect(openRouterAnthropic.thinking?.effortMap).toBeUndefined();
+	});
+
+	it("derives Anthropic adaptive thinking for SAP hai-proxy version-first Claude ids", () => {
+		const opus48 = createModel({
+			id: "anthropic--claude-4.8-opus",
+			api: "anthropic-messages",
+			provider: "custom",
 		});
-		expect(openRouterAnthropic.thinking?.effortMap).toEqual({
-			minimal: "low",
-			low: "medium",
-			medium: "high",
-			high: "xhigh",
-			xhigh: "max",
-			max: "max",
+		const opus46 = createModel({
+			id: "anthropic--claude-4.6-opus",
+			api: "anthropic-messages",
+			provider: "custom",
+		});
+
+		expect(opus48.thinking).toEqual({
+			mode: "anthropic-adaptive",
+			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+			supportsDisplay: true,
+		});
+		expect(getSupportedEfforts(opus48)).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max]);
+		expect(opus46.thinking).toEqual({
+			mode: "anthropic-adaptive",
+			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.Max],
 		});
 	});
 
@@ -249,19 +272,20 @@ describe("model thinking derivation", () => {
 			baseUrl: "https://openrouter.ai/api/v1",
 		});
 
-		// Z.ai dialect: the model only does none/high/max, so the lower tiers
-		// collapse and the top `xhigh` tier reaches `max`.
-		expect(zai.thinking?.effortMap).toEqual({
-			minimal: "none",
-			low: "high",
-			medium: "high",
-			high: "high",
-			xhigh: "max",
-		});
-		// Fireworks keeps its distinct lower tiers and the `minimal -> none` quirk;
-		// only the top `xhigh` UI tier remaps onto the genuine `max` budget.
-		expect(getSupportedEfforts(fireworks)).toContain(Effort.XHigh);
-		expect(fireworks.thinking?.effortMap).toEqual({ minimal: "none", xhigh: "max" });
+		// Z.ai dialect: the model only does none/high/max on the wire, so the
+		// ladder is the honest high/max pair (none = thinking off).
+		expect(getSupportedEfforts(zai)).toEqual([Effort.High, Effort.Max]);
+		expect(zai.thinking?.effortMap).toBeUndefined();
+		// Fireworks keeps its distinct lower tiers and the `minimal -> none`
+		// quirk; the genuine `max` tier sits above `high`.
+		expect(getSupportedEfforts(fireworks)).toEqual([
+			Effort.Minimal,
+			Effort.Low,
+			Effort.Medium,
+			Effort.High,
+			Effort.Max,
+		]);
+		expect(fireworks.thinking?.effortMap).toEqual({ minimal: "none" });
 		// OpenRouter rejects `max` and treats `xhigh` as its max tier: expose the
 		// `xhigh` tier and pass it through unmapped.
 		expect(getSupportedEfforts(openRouter)).toContain(Effort.XHigh);
@@ -283,6 +307,7 @@ describe("model thinking derivation", () => {
 		expect(mapEffortToGoogleThinkingLevel(Effort.Low)).toBe("LOW");
 		expect(mapEffortToGoogleThinkingLevel(Effort.High)).toBe("HIGH");
 		expect(mapEffortToGoogleThinkingLevel(Effort.XHigh)).toBe("HIGH");
+		expect(mapEffortToGoogleThinkingLevel(Effort.Max)).toBe("HIGH");
 		expect(() => requireSupportedEffort(model, Effort.Medium)).toThrow(/not supported/);
 	});
 
@@ -429,35 +454,34 @@ describe("model thinking derivation", () => {
 			},
 		});
 		expect(mapEffortToAnthropicAdaptiveEffort(minimaxM3, Effort.High)).toBe("adaptive");
-		// Opus 4.6 has no real xhigh level — the baked 4-tier map aliases XHigh to "max".
-		expect(opus46.thinking?.effortMap).toEqual({ minimal: "low", xhigh: "max", max: "max" });
-		expect(mapEffortToAnthropicAdaptiveEffort(opus46, Effort.XHigh)).toBe("max");
-		// Opus 4.7+ on the Messages API exposes the full five-tier scale: the baked
-		// map shifts each user-facing effort up one notch so the top tier reaches "max".
-		expect(opus47.thinking?.effortMap).toEqual({
-			minimal: "low",
-			low: "medium",
-			medium: "high",
-			high: "xhigh",
-			xhigh: "max",
-			max: "max",
-		});
-		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Minimal)).toBe("low");
-		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.High)).toBe("xhigh");
-		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.XHigh)).toBe("max");
+		// Opus 4.6 has no real xhigh tier — the honest ladder is the four-tier
+		// low/medium/high/max wire scale, mapped 1:1.
+		expect(getSupportedEfforts(opus46)).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.Max]);
+		expect(opus46.thinking?.effortMap).toBeUndefined();
+		expect(mapEffortToAnthropicAdaptiveEffort(opus46, Effort.Max)).toBe("max");
+		expect(() => mapEffortToAnthropicAdaptiveEffort(opus46, Effort.XHigh)).toThrow(/not supported/);
+		// Opus 4.7+ on the Messages API exposes the full five-tier wire scale
+		// low..max with no remapping.
+		expect(getSupportedEfforts(opus47)).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max]);
+		expect(opus47.thinking?.effortMap).toBeUndefined();
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Low)).toBe("low");
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.High)).toBe("high");
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.XHigh)).toBe("xhigh");
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Max)).toBe("max");
-		expect(() => mapEffortToAnthropicAdaptiveEffort(sonnet46, Effort.Max)).toThrow(/not supported/);
-		expect(mapEffortToAnthropicAdaptiveEffort(mythos, Effort.High)).toBe("xhigh");
-		expect(mapEffortToAnthropicAdaptiveEffort(mythosBedrock, Effort.XHigh)).toBe("max");
-		expect(mapEffortToAnthropicAdaptiveEffort(sonnet5, Effort.High)).toBe("xhigh");
-		expect(mapEffortToAnthropicAdaptiveEffort(sonnet5Bedrock, Effort.XHigh)).toBe("max");
-		// Bedrock Converse keeps the four-tier legacy mapping; xhigh aliases to "max" for callers that support it.
-		expect(opus47Bedrock.thinking?.efforts).not.toContain(Effort.Max);
-		expect(() => mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.Max)).toThrow(/not supported/);
-		expect(opus47Bedrock.thinking?.effortMap).toEqual({ minimal: "low", xhigh: "max" });
+		expect(() => mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Minimal)).toThrow(/not supported/);
+		expect(mapEffortToAnthropicAdaptiveEffort(mythos, Effort.XHigh)).toBe("xhigh");
+		expect(mapEffortToAnthropicAdaptiveEffort(sonnet5, Effort.Max)).toBe("max");
+		// Bedrock Converse stays on the four-tier scale regardless of version.
+		expect(getSupportedEfforts(opus47Bedrock)).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.Max]);
+		expect(opus47Bedrock.thinking?.effortMap).toBeUndefined();
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.High)).toBe("high");
-		expect(mapEffortToAnthropicAdaptiveEffort(sonnet5Bedrock, Effort.High)).toBe("high");
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.Max)).toBe("max");
+		expect(mapEffortToAnthropicAdaptiveEffort(sonnet5Bedrock, Effort.Max)).toBe("max");
+		expect(() => mapEffortToAnthropicAdaptiveEffort(sonnet5Bedrock, Effort.XHigh)).toThrow(/not supported/);
+		// Sonnet 4.6 runs adaptive mode on the three-tier low/medium/high scale.
+		expect(getSupportedEfforts(sonnet46)).toEqual([Effort.Low, Effort.Medium, Effort.High]);
 		expect(() => mapEffortToAnthropicAdaptiveEffort(sonnet46, Effort.XHigh)).toThrow(/not supported/);
+		expect(() => mapEffortToAnthropicAdaptiveEffort(sonnet46, Effort.Max)).toThrow(/not supported/);
 	});
 
 	it("bakes adaptive display support for Opus 4.7+, Sonnet 5+, and Fable/Mythos 5", () => {
@@ -494,8 +518,9 @@ describe("model thinking derivation", () => {
 	});
 
 	it("backfills wire facts onto explicit thinking, explicit values winning", () => {
-		// Authored capability surface (mode/efforts) keeps identity-derived wire
-		// facts: configs never need to know Anthropic's tier tables.
+		// Authored partial ladders on wire-exact models normalize to the
+		// model-defined ladder, and the wire map is re-derived alongside:
+		// stale cached surfaces cannot pin retired wire facts.
 		const filled = createModel({
 			id: "claude-opus-4-8",
 			api: "anthropic-messages",
@@ -504,24 +529,24 @@ describe("model thinking derivation", () => {
 		});
 		expect(filled.thinking).toEqual({
 			mode: "anthropic-adaptive",
-			efforts: [Effort.Low, Effort.High],
-			effortMap: { low: "medium", high: "xhigh" },
+			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
 			supportsDisplay: true,
 		});
 
-		// Explicit wire facts are authoritative — including `false`.
+		// Explicit wire facts are authoritative — including `false` — when the
+		// authored ladder matches the wire truth.
 		const pinned = createModel({
 			id: "claude-opus-4-8",
 			api: "anthropic-messages",
 			provider: "anthropic",
 			thinking: {
 				mode: "anthropic-adaptive",
-				efforts: [Effort.Low, Effort.High],
-				effortMap: { xhigh: "max" },
+				efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+				effortMap: { max: "ultra" },
 				supportsDisplay: false,
 			},
 		});
-		expect(pinned.thinking?.effortMap).toEqual({ xhigh: "max" });
+		expect(pinned.thinking?.effortMap).toEqual({ max: "ultra" });
 		expect(pinned.thinking?.supportsDisplay).toBe(false);
 	});
 
@@ -574,141 +599,81 @@ describe("model thinking derivation", () => {
 		expect(clampThinkingLevelForModel(model, Effort.High)).toBeUndefined();
 	});
 
-	type InferenceContractCase = readonly [
-		name: string,
-		mutation: string,
-		resolve: () => {
-			efforts: readonly Effort[] | undefined;
-			effortMap: Partial<Record<Effort, string>> | undefined;
-		},
-		expectedEfforts: readonly Effort[],
-		expectedEffortMap: Partial<Record<Effort, string>> | undefined,
-	];
+	it("bakes the wire-exact five-tier low..max ladder on GPT-5.6 wire-effort APIs", () => {
+		const codex = createModel({
+			id: "gpt-5.6-sol",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+		});
 
-	const shiftedFiveTierMap = {
-		minimal: "low",
-		low: "medium",
-		medium: "high",
-		high: "xhigh",
-		xhigh: "max",
-	};
-	const shiftedFiveTierMapWithMax = { ...shiftedFiveTierMap, max: "max" };
-	const fiveUserEfforts = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
-	const sixUserEfforts = [...fiveUserEfforts, Effort.Max];
+		expect(codex.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+		});
 
-	it.each([
-		[
-			"GPT-5.6 wire-effort model exposes five shifted user tiers without user Max",
-			"removing the GPT-5.6 wire-effort branch or leaking Effort.Max into its user surface",
-			() => {
-				const model = createModel({
-					id: "gpt-5.6-sol",
-					api: "openai-codex-responses",
-					provider: "openai-codex",
-				});
-				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
+		// Stale baked metadata (caches/discovery) — including shifted-era maps —
+		// normalizes to the wire-exact ladder with the map re-derived away, and
+		// namespaced OpenRouter ids parse.
+		const staleOpenRouter = createModel({
+			id: "openai/gpt-5.6-terra",
+			api: "openrouter",
+			provider: "openrouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+			thinking: {
+				mode: "effort",
+				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+				effortMap: {
+					minimal: "low",
+					low: "medium",
+					medium: "high",
+					high: "xhigh",
+					xhigh: "max",
+				},
 			},
-			fiveUserEfforts,
-			shiftedFiveTierMap,
-		],
-		[
-			"GPT-5.6 stale OpenRouter metadata normalizes through the same inference path",
-			"skipping model-defined effort normalization for explicit cached metadata",
-			() => {
-				const model = createModel({
-					id: "openai/gpt-5.6-terra",
-					api: "openrouter",
-					provider: "openrouter",
-					baseUrl: "https://openrouter.ai/api/v1",
-					thinking: {
-						mode: "effort",
-						efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
-					},
-				});
-				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
+		});
+
+		expect(staleOpenRouter.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+		});
+	});
+
+	it("keeps pre-5.6 and Devin-routed GPT models on their own effort surfaces", () => {
+		const gpt55 = createModel({
+			id: "gpt-5.5",
+			api: "openai-responses",
+			provider: "openai",
+		});
+
+		expect(gpt55.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+		});
+		expect(gpt55.thinking?.effortMap).toBeUndefined();
+
+		// Devin selects effort by routing to per-tier sibling model ids, never
+		// via a wire reasoning.effort field — no effort map may attach.
+		const devin = createModel({
+			id: "gpt-5-6-sol",
+			api: "devin-agent",
+			provider: "devin",
+			baseUrl: "https://server.codeium.com",
+			thinking: {
+				mode: "effort",
+				efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+				effortRouting: {
+					off: "gpt-5-6-sol-none",
+					low: "gpt-5-6-sol-low",
+					medium: "gpt-5-6-sol-medium",
+					high: "gpt-5-6-sol-high",
+					xhigh: "gpt-5-6-sol-xhigh",
+					max: "gpt-5-6-sol-max",
+				},
 			},
-			fiveUserEfforts,
-			shiftedFiveTierMap,
-		],
-		[
-			"pre-5.6 GPT boundary keeps its unshifted four-tier surface",
-			"changing the GPT-5.6 threshold from >=5.6 to >=5.5",
-			() => {
-				const model = createModel({ id: "gpt-5.5", api: "openai-responses", provider: "openai" });
-				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
-			},
-			[Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
-			undefined,
-		],
-		[
-			"Devin tier-routed GPT remains unmapped",
-			"treating devin-agent model routing as a wire reasoning-effort API",
-			() => {
-				const model = createModel({
-					id: "gpt-5-6-sol",
-					api: "devin-agent",
-					provider: "devin",
-					baseUrl: "https://server.codeium.com",
-					thinking: {
-						mode: "effort",
-						efforts: fiveUserEfforts,
-						effortRouting: {
-							off: "gpt-5-6-sol-none",
-							minimal: "gpt-5-6-sol-low",
-							low: "gpt-5-6-sol-medium",
-							medium: "gpt-5-6-sol-high",
-							high: "gpt-5-6-sol-xhigh",
-							xhigh: "gpt-5-6-sol-max",
-						},
-					},
-				});
-				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
-			},
-			fiveUserEfforts,
-			undefined,
-		],
-		[
-			"Fable adaptive inference preserves the fork Max selector",
-			"narrowing Fable to the upstream five-tier user surface or dropping the Max alias",
-			() => {
-				const model = createModel({ id: "claude-fable-5", api: "anthropic-messages", provider: "anthropic" });
-				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
-			},
-			sixUserEfforts,
-			shiftedFiveTierMapWithMax,
-		],
-		[
-			"Mythos OpenRouter inference preserves the fork Max selector",
-			"removing Mythos from fork Max inference on OpenRouter",
-			() => {
-				const model = createModel({
-					id: "anthropic/claude-mythos-5",
-					api: "openrouter",
-					provider: "openrouter",
-					baseUrl: "https://openrouter.ai/api/v1",
-				});
-				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
-			},
-			sixUserEfforts,
-			shiftedFiveTierMapWithMax,
-		],
-		[
-			"GLM-5.2 semantic inference preserves Max",
-			'deleting the parsed-model case "glm" or its 5.2 Max boundary',
-			() => {
-				const model = createModel({
-					id: "glm-5.2",
-					api: "openai-completions",
-					provider: "zai",
-					compat: { thinkingFormat: "openai", supportsReasoningEffort: true },
-				});
-				return { efforts: model.thinking?.efforts, effortMap: model.thinking?.effortMap };
-			},
-			sixUserEfforts,
-			{ xhigh: "max" },
-		],
-	] satisfies readonly InferenceContractCase[])("%s (mutation caught: %s)", (_name, _mutation, resolve, efforts, map) => {
-		expect(resolve()).toEqual({ efforts, effortMap: map });
+		});
+
+		expect(devin.thinking?.effortMap).toBeUndefined();
+		expect(devin.thinking?.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max]);
 	});
 });
 
@@ -771,7 +736,7 @@ describe("model thinking runtime helpers", () => {
 		);
 	});
 
-	it("maps GLM-5.2 xhigh to Z.AI provider-native max", () => {
+	it("exposes the Z.AI GLM-5.2 high/max wire pair directly", () => {
 		const model = createModel({
 			id: "glm-5.2",
 			api: "openai-completions",
@@ -782,19 +747,15 @@ describe("model thinking runtime helpers", () => {
 
 		expect(model.thinking).toEqual({
 			mode: "effort",
-			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
-			effortMap: {
-				minimal: "none",
-				low: "high",
-				medium: "high",
-				high: "high",
-				xhigh: "max",
-			},
+			efforts: [Effort.High, Effort.Max],
 		});
-		expect(requireSupportedEffort(model, Effort.XHigh)).toBe(Effort.XHigh);
+		expect(requireSupportedEffort(model, Effort.Max)).toBe(Effort.Max);
+		expect(() => requireSupportedEffort(model, Effort.XHigh)).toThrow(/Supported efforts: high, max/);
+		// Selecting a retired tier clamps down instead of erroring in UI flows.
+		expect(clampThinkingLevelForModel(model, Effort.XHigh)).toBe(Effort.High);
 	});
 
-	it("maps Ollama Cloud GLM-5.2 xhigh to max and hides unsupported lower efforts", () => {
+	it("exposes Ollama Cloud GLM-5.2 high/max and hides unsupported lower efforts", () => {
 		const model = createModel({
 			id: "glm-5.2",
 			api: "ollama-chat",
@@ -804,14 +765,11 @@ describe("model thinking runtime helpers", () => {
 
 		expect(model.thinking).toEqual({
 			mode: "effort",
-			efforts: [Effort.High, Effort.XHigh],
-			effortMap: {
-				xhigh: "max",
-			},
+			efforts: [Effort.High, Effort.Max],
 		});
 		expect(requireSupportedEffort(model, Effort.High)).toBe(Effort.High);
-		expect(requireSupportedEffort(model, Effort.XHigh)).toBe(Effort.XHigh);
-		expect(() => requireSupportedEffort(model, Effort.Medium)).toThrow(/Supported efforts: high, xhigh/);
+		expect(requireSupportedEffort(model, Effort.Max)).toBe(Effort.Max);
+		expect(() => requireSupportedEffort(model, Effort.Medium)).toThrow(/Supported efforts: high, max/);
 	});
 
 	it("derives binary-thinking fallback from resolved compat when catalog compat is partial", () => {
@@ -833,7 +791,7 @@ describe("model thinking runtime helpers", () => {
 		);
 	});
 
-	it("exposes max for OpenRouter-hosted Anthropic adaptive models", () => {
+	it("exposes wire-exact adaptive ladders for OpenRouter-hosted Anthropic models", () => {
 		const fable = createModel({
 			id: "anthropic/claude-fable-5",
 			api: "openai-completions",
@@ -854,14 +812,13 @@ describe("model thinking runtime helpers", () => {
 			api: "openai-completions",
 			provider: "openrouter",
 		});
-
-		expect(fable.thinking?.efforts.at(-1)).toBe(Effort.Max);
-		expect(opus46.thinking?.efforts.at(-1)).toBe(Effort.Max);
+		expect(fable.thinking?.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max]);
+		expect(opus46.thinking?.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.Max]);
 		expect(sonnet46.thinking?.efforts.at(-1)).toBe(Effort.High);
-		expect(sonnet5.thinking?.efforts.at(-1)).toBe(Effort.XHigh);
+		expect(sonnet5.thinking?.efforts.at(-1)).toBe(Effort.Max);
 		expect(requireSupportedEffort(fable, Effort.Max)).toBe(Effort.Max);
-		expect(requireSupportedEffort(opus46, Effort.Max)).toBe(Effort.Max);
 		expect(requireSupportedEffort(sonnet5, Effort.XHigh)).toBe(Effort.XHigh);
+		expect(() => requireSupportedEffort(opus46, Effort.XHigh)).toThrow(/not supported/);
 	});
 
 	it("exposes max for GLM 5.2 without widening older or binary GLM models", () => {
@@ -886,10 +843,10 @@ describe("model thinking runtime helpers", () => {
 
 		expect(glm51.thinking?.efforts.at(-1)).toBe(Effort.XHigh);
 		expect(glm52.thinking?.efforts.at(-1)).toBe(Effort.Max);
-		expect(glm52Qwen.thinking?.efforts.at(-1)).toBe(Effort.High);
+		expect(glm52Qwen.thinking?.efforts.at(-1)).toBe(Effort.Max);
 		expect(requireSupportedEffort(glm52, Effort.Max)).toBe(Effort.Max);
 		expect(() => requireSupportedEffort(glm51, Effort.Max)).toThrow(/not supported/);
-		expect(() => requireSupportedEffort(glm52Qwen, Effort.Max)).toThrow(/not supported/);
+		expect(requireSupportedEffort(glm52Qwen, Effort.Max)).toBe(Effort.Max);
 	});
 	it("enables xhigh for openai-responses and openai-codex-responses APIs", () => {
 		const responsesModel = createModel({ id: "custom-responses", api: "openai-responses", provider: "custom" });
