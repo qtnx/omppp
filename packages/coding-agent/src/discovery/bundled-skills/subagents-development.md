@@ -9,7 +9,7 @@ Many small owners beat one big agent: a 5-package fan-out with tight scopes fini
 
 ## Decomposition rules
 - Use only as many packages as are ready and genuinely independent. One package is valid; 5–10 is a possible upper fanout, never a quota. Padding increases collisions and coordination cost.
-- One package = ONE executable concern, clear file ownership (exclusive preferred; same-file overlap is safe — per-file edit locking serializes, agents preserve peer edits), ≤~5 files, and 1–2 acceptance checks it runs itself.
+- One package = ONE executable concern, clear file ownership (same-file overlap is safe — per-file edit locking serializes, agents preserve peer edits), ≤~5 files, and 1–2 acceptance checks it runs itself.
 - Lock only the minimum shared type/schema required by the NEXT executable slice, then dispatch. NEVER pre-lock contracts for later phases.
 - Assignment uncertainty inside one package belongs to its owner. State assumptions and dispatch; only a contradictory/impossible shared contract blocks that package. Do not “settle design” indefinitely.
 
