@@ -126,6 +126,7 @@ describe("SqliteAuthCredentialStore.open SQLITE_BUSY handling", () => {
 	test("fresh database schema init is deterministic under parallel opens", async () => {
 		const expectedTables = [
 			"auth_credential_blocks",
+			"auth_credential_refresh_leases",
 			"auth_credentials",
 			"auth_schema_version",
 			"cache",

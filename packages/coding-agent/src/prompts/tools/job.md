@@ -4,7 +4,7 @@ Background tasks deliver their results automatically the moment they finish. You
 
 # Interventions
 
-- **Snapshot:** Pass `list: true` to inspect what's running without waiting.
+- **Snapshot:** Pass `list: true` to inspect all jobs without waiting. The listing also names running subagents that have no job entry (e.g. agents woken via `irc`, or spawns owned by another agent) — coordinate with them through `irc`, not this tool.
 - **Block and wait:** Pass `poll` with specific job IDs when you are completely blocked and cannot do any other work. A poll sleeps up to the current scheduled window (5m first poll, 10m on consecutive re-polls), returns EARLY when a watched job finishes or IRC/steering arrives, and on expiry returns a still-running snapshot with per-job live stats (elapsed, model, tools, tokens, last activity, STALLED flag) plus the next window size; re-issue `job poll` to keep waiting (sanctioned wait, NOT busy-polling).
   - During blocking subagent waits, this tool automatically considers context compaction before/while it waits. If the result says `[compaction scheduled while waiting — running at next boundary]`, STOP: end/yield this turn so the scheduled remote/local compaction can run before any re-poll. Do not call `compact` yourself after that note.
   - `async.pollWaitDuration: "block"` restores indefinite blocking; fixed `5s`..`5m` values use one fixed window then snapshot.

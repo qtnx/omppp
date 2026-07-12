@@ -33,7 +33,7 @@ The wire schema is shape-swapped by `task.batch` (default on). One unit of work 
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `agent` | `string` | Yes | Agent type to spawn (both shapes). |
+| `agent` | `string` | Yes | Agent type to spawn (for example `scout`, `plan`, `task`, `quick_task`, or `heavy_task`; both shapes). |
 | `context` | `string` | Yes (batch) | Shared background prepended to every spawn of the call via the subagent system prompt. Rejected when `task.batch` is off. |
 | `tasks` | `array` | Yes (batch) | One task item per subagent. Provided ids must be unique within the call (case-insensitive). Rejected when `task.batch` is off. |
 | `id` | `string` | No | Stable agent id, schema max length 48. Defaults to a generated AdjectiveNoun name. Uniquified per session by `AgentOutputManager`. Item field in batch shape, top-level in flat shape. |
@@ -51,7 +51,7 @@ There is no per-call `schema` parameter. Structured output comes from the agent 
 The tool returns one text block plus `details: TaskToolDetails`.
 
 Background response (`async.enabled=true`):
-- `content`: `` Spawned agent `<id>` (job `<jobId>`). The result will be delivered when it yields. ... `` plus a coordination hint (`irc` DM when enabled, otherwise `job`). A batch call instead returns `` Spawned N background agents using <agent>. ... `` with a per-agent `- `<id>` (job `<jobId>`)` listing.
+- `content`: `` Spawned agent `<id>` (job `<jobId>`). The result will be delivered when it yields. ... `` plus a coordination hint (`irc` DM when enabled, otherwise `job`). A batch call returns `` Spawned N background agents. ... `` with a per-agent `- `<id>` (job `<jobId>`)` listing.
 - `details`: `{ projectAgentsDir: null, results: [], totalDurationMs: 0, progress: [<seeded AgentProgress per spawn>], async: { state: "running", jobId, type: "task" } }`. A batch call keeps one shared `progress[]` snapshot; `async.jobId` is the first started job and `async.state` aggregates ("running" until every job settles, "failed" if any spawn failed).
 - Live progress keeps streaming into the same tool block via `onUpdate(...)`; each final result arrives later as an async-result injection into the parent conversation. The delivery text appends a follow-up hint: `` <id> is now idle — message it via `irc` to follow up; transcript at history://<id> `` (aborted variant points at the transcript only).
 
@@ -112,7 +112,8 @@ Artifacts and side channels:
   - User custom agents — user config/plugin agent directories after project dirs of the same source family.
   - Bundled agents — appended last from `packages/coding-agent/src/task/agents.ts`.
 - Bundled agent types:
-  - `explore` — read-only scout with structured handoff output.
+  - `explore` — broad read-only codebase scout with structured handoff output.
+  - `scout` — fast read-only codebase scout for focused discovery.
   - `plan` — architecture/planning agent; may spawn `explore`.
   - `designer` — UI/UX specialist.
   - `reviewer` — review agent with `report_finding` extraction.
@@ -159,10 +160,9 @@ Artifacts and side channels:
 - Parameter validation failures are returned as normal tool text with empty `results`:
   - `schema` (never accepted)
   - `tasks` / `context` while `task.batch` is disabled
-  - missing/empty `agent`
   - batch calls: missing/empty `tasks`, an item without `assignment`, duplicate provided ids, missing shared `context`, top-level `assignment` alongside `tasks`
   - flat calls: missing/empty `assignment`
-  - unknown or settings-disabled agent, spawn-policy denial, requesting `isolated` while isolation mode is `none`
+  - unknown or settings-disabled agent type, spawn-policy denial, requesting `isolated` while isolation mode is `none`
 - Isolated execution without a git repo returns `Isolated task execution requires a git repository. ...`; unavailable backends fall back through the PAL candidate list (reported via `fellBack`/`fallbackReason`), other backend errors rethrow, and exhausting every candidate errors with the fallback reason.
 - Job registration failure returns `Failed to start background task job(s): ...`; a batch that schedules only some jobs reports the failed ids in the immediate text and keeps the started ones running.
 - Child failures surface as `SingleResult.exitCode = 1` with `stderr`/`error` populated; the async job is marked failed but the delivery text still carries the output plus a follow-up/transcript hint.

@@ -398,7 +398,7 @@ describe("eager task runtime reminder", () => {
 		// Semantic clauses survive harmless wording changes but reject one-batch-per-type and flat fallbacks.
 		expectCompatibleSameAgentBatchWave(rendered);
 		expect(rendered).toContain(
-			"Work alone only for: a single-file edit under ~30 lines, a direct answer requiring no code changes, or a command the user explicitly asked you to run.",
+			"Work alone for: a single-file edit under ~30 lines, a direct answer requiring no code changes, a command the user explicitly asked you to run, or when only ONE runnable slice exists — a lone subagent is a lossy handoff, not parallelism.",
 		);
 	});
 
@@ -413,7 +413,7 @@ describe("eager task runtime reminder", () => {
 		);
 		expect(rendered).not.toContain("batch ONLY compatible same-agent slices per `task` call");
 		expect(rendered).toContain(
-			"Work alone only for: a single-file edit under ~30 lines, a direct answer requiring no code changes, or a command the user explicitly asked you to run.",
+			"Work alone for: a single-file edit under ~30 lines, a direct answer requiring no code changes, a command the user explicitly asked you to run, or when only ONE runnable slice exists — a lone subagent is a lossy handoff, not parallelism.",
 		);
 	});
 });

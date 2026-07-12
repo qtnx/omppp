@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,6 +7,7 @@ import { streamSimple } from "@oh-my-pi/pi-ai/stream";
 import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@oh-my-pi/pi-ai/types";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { logger } from "@oh-my-pi/pi-utils";
 import { type AuthCredentialStore, AuthStorage, SqliteAuthCredentialStore } from "../src/auth-storage";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -178,6 +179,33 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 		if (stored[0]?.credential.type === "oauth") {
 			expect(stored[0].credential.access).toBe("codex-stale-access");
 			expect(stored[0].credential.refresh).toBe("dead-refresh");
+		}
+	});
+
+	test("does not log raw OAuth refresh failures", async () => {
+		if (!store) throw new Error("test setup failed");
+		const sensitiveFailure = "refresh-token=secret-refresh-token";
+		const debugSpy = spyOn(logger, "debug").mockImplementation(() => undefined);
+		try {
+			authStorage = new AuthStorage(store, {
+				refreshOAuthCredential: async () => {
+					throw new Error(`HTTP 400 invalid_grant ${sensitiveFailure}`);
+				},
+			});
+			await authStorage.set("openai-codex", [
+				{
+					type: "oauth",
+					access: "codex-stale-access",
+					refresh: "dead-refresh",
+					expires: Date.now() + HOUR_MS,
+					accountId: "acct-a",
+				},
+			]);
+
+			expect(await authStorage.refreshCredentialMatching("openai-codex", "codex-stale-access")).toBeUndefined();
+			expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(sensitiveFailure);
+		} finally {
+			debugSpy.mockRestore();
 		}
 	});
 

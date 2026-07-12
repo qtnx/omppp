@@ -122,8 +122,8 @@ describe("streamSimple resolver auth retry", () => {
 			{ lastChance: false, hasError: false },
 			{ lastChance: false, hasError: true },
 		]);
-		const firstRetryError = contexts[1]!.error as { status?: number };
-		expect(firstRetryError.status).toBe(401);
+		expect(contexts[1]).toBeDefined();
+		expect((contexts[1]!.error as { status?: number }).status).toBe(401);
 	});
 
 	it("buffers the start event and retries on a 401 error event before content", async () => {
