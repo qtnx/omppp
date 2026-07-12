@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+
+- Fixed rebuilt persisted custom messages losing their originating entry ID; rebuilt messages now retain it so Context GC can match them reliably after context reconstruction.
 
 ### Added
 

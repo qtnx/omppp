@@ -5,6 +5,7 @@ import type {
 	ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
 import * as z from "zod/v4";
+import type { ActiveSnapshot } from "../active-context";
 import { renderContextGcReportForStore } from "../report";
 import { type ContextGcReportGroupBy, type ContextStatus, contextStatusSchema } from "../schema";
 import type { ContextGcStore } from "../storage";
@@ -40,7 +41,12 @@ interface ContextDebugInput {
 	includeRecords?: boolean;
 }
 
-export function createContextStatsTool(store: ContextGcStore): ToolDefinition<typeof contextStatsInputSchema> {
+type GetActiveSnapshot = (ctx: ExtensionContext) => ActiveSnapshot | undefined;
+
+export function createContextStatsTool(
+	store: ContextGcStore,
+	getActiveSnapshot?: GetActiveSnapshot,
+): ToolDefinition<typeof contextStatsInputSchema> {
 	return {
 		name: "context_stats",
 		label: "Context stats",
@@ -60,6 +66,7 @@ export function createContextStatsTool(store: ContextGcStore): ToolDefinition<ty
 					sessionManager: ctx.sessionManager,
 					action: "stats",
 					contextUsage: ctx.getContextUsage(),
+					activeSnapshot: getActiveSnapshot?.(ctx),
 				},
 				store,
 			);
@@ -97,7 +104,10 @@ export function createContextGlobalStatsTool(
 	};
 }
 
-export function createContextTreeTool(store: ContextGcStore): ToolDefinition<typeof contextTreeInputSchema> {
+export function createContextTreeTool(
+	store: ContextGcStore,
+	getActiveSnapshot?: GetActiveSnapshot,
+): ToolDefinition<typeof contextTreeInputSchema> {
 	return {
 		name: "context_tree",
 		label: "Context tree",
@@ -119,6 +129,7 @@ export function createContextTreeTool(store: ContextGcStore): ToolDefinition<typ
 					status: params.status,
 					groupBy: params.groupBy,
 					limit: params.limit,
+					activeSnapshot: getActiveSnapshot?.(ctx),
 				},
 				store,
 			);
@@ -127,7 +138,10 @@ export function createContextTreeTool(store: ContextGcStore): ToolDefinition<typ
 	};
 }
 
-export function createContextDebugTool(store: ContextGcStore): ToolDefinition<typeof contextDebugInputSchema> {
+export function createContextDebugTool(
+	store: ContextGcStore,
+	getActiveSnapshot?: GetActiveSnapshot,
+): ToolDefinition<typeof contextDebugInputSchema> {
 	return {
 		name: "context_debug",
 		label: "Context debug",
@@ -149,6 +163,7 @@ export function createContextDebugTool(store: ContextGcStore): ToolDefinition<ty
 					status: params.status,
 					limit: params.limit,
 					includeRecords: params.includeRecords,
+					activeSnapshot: getActiveSnapshot?.(ctx),
 				},
 				store,
 			);

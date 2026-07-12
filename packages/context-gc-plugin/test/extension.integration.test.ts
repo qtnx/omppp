@@ -346,7 +346,14 @@ describe("contextGcExtension", () => {
 		if (!contextHandler) return;
 
 		const output = "python output\n".repeat(3_000);
-		const pythonMessage = { role: "pythonExecution", code: "print('hi')", output, exitCode: 0, timestamp: 1 };
+		const pythonMessage = {
+			role: "pythonExecution",
+			entryId: "python-live-entry",
+			code: "print('hi')",
+			output,
+			exitCode: 0,
+			timestamp: 1,
+		};
 
 		await contextHandler({ type: "context", messages: [pythonMessage] }, createFakeContext());
 
@@ -364,7 +371,7 @@ describe("contextGcExtension", () => {
 		};
 		expect(first?.role).toBe("custom");
 		expect(first?.customType).toBe("context-gc-projected");
-		expect(first?.content?.[0]?.text).toContain("Context unloaded:");
+		expect(first?.content?.[0]?.text).toContain('context_recall {"id":"python:session-a:python-live-entry');
 		expect(first?.content?.[0]?.text).not.toContain(output);
 		shutdown(fakePi);
 	});
@@ -537,7 +544,15 @@ describe("contextGcExtension", () => {
 		await contextHandler(
 			{
 				type: "context",
-				messages: [{ role: "custom", customType: "large-custom", content: largeText, display: false }],
+				messages: [
+					{
+						role: "custom",
+						entryId: "reminder-entry",
+						customType: "large-custom",
+						content: largeText,
+						display: false,
+					},
+				],
 			},
 			createFakeContext(),
 		);
@@ -585,10 +600,10 @@ describe("contextGcExtension", () => {
 		const content = reminderContent(result) ?? "";
 		expect(content).toContain("Context GC:");
 		expect(content).toContain("estimated tokens are eligible to unload");
-		expect(content).toContain("context_inventory");
-		expect(content).toContain("context_unload");
-		expect(content).toContain("tool calls, file reads, searches");
+		expect(content).toContain("batch all ready IDs into one `context_unload`");
+		expect(content).toContain("Pre-unload inspection output auto-compacts");
 		expect(content).toContain("context_pin");
+		expect(content).toContain("discoverable `shake`");
 		expect(content).not.toContain("call-reminder-1");
 		expect(content).not.toContain("tool:session-a:");
 		expect(content).not.toContain("large reminder tool payload");
@@ -644,7 +659,15 @@ describe("contextGcExtension", () => {
 		await contextHandler(
 			{
 				type: "context",
-				messages: [{ role: "custom", customType: "large-custom", content: largeText, display: false }],
+				messages: [
+					{
+						role: "custom",
+						entryId: "usage-entry",
+						customType: "large-custom",
+						content: largeText,
+						display: false,
+					},
+				],
 			},
 			createFakeContext(),
 		);
@@ -805,7 +828,7 @@ describe("contextGcExtension", () => {
 		});
 		const projected = await contextHandler({ type: "context", messages: [liveMessage] }, createFakeContext());
 		const projectedMessage = projected?.messages?.[0] as { content?: Array<{ text?: string }> };
-		expect(projectedMessage?.content?.[0]?.text).toContain(`Context unloaded: ${recordId}`);
+		expect(projectedMessage?.content?.[0]?.text).toContain(`context_recall {"id":"${recordId}"}`);
 		expect(projectedMessage?.content?.[0]?.text).not.toContain(shared);
 		shutdown(fakePi);
 	});
