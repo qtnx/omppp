@@ -4,6 +4,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"duo_escalate",
 	"read",
 	"bash",
+	"launch",
 	"edit",
 	"ast_grep",
 	"ast_edit",

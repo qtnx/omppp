@@ -11,6 +11,7 @@ import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensio
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import type { CompactionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
@@ -415,6 +416,66 @@ describe("AgentSession auto-compaction progress guard", () => {
 		expect(promptSpy).toHaveBeenCalledTimes(1);
 		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
 		expect(noProgress.length).toBe(0);
+	});
+
+	it("keeps a still-active oversized prompt in the no-headroom guard after compaction", async () => {
+		// Merge-specific: context-gc live-turn pre-persistence retains this mock
+		// payload in the branch, while upstream's standalone path continues after
+		// rebasing it. Here it is live context, not a stale usage anchor.
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		// Hold the first prompt through compaction. A second `agent.prompt` call
+		// would prove the guard incorrectly treated the active payload as freed.
+		const gate = Promise.withResolvers<void>();
+		const firstPromptCall = Promise.withResolvers<void>();
+		let promptCalls = 0;
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockImplementation(() => {
+			promptCalls++;
+			if (promptCalls === 1) firstPromptCall.resolve();
+			return gate.promise as never;
+		});
+
+		const notices = collectNotices();
+		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") onCompactionDone();
+		});
+		const activePrompt = "x".repeat(600_000);
+		// ~150k tokens: below the initial threshold but above the recovery band.
+		// It must remain part of the compacted context because this is the active
+		// prompt, not historical context the summary can remove.
+		const inFlightPrompt = session.prompt(activePrompt);
+		// The snapshot is written immediately before agent.prompt; awaiting the
+		// first (gated) call guarantees it is in place before the threshold turn
+		// lands — emitting earlier would race the submission pipeline and let
+		// compaction run against an unset snapshot.
+		await firstPromptCall.promise;
+
+		// Mid-run, billed usage crosses the threshold and compaction fires. The
+		// active prompt remains above the recovery band, so the guard must pause.
+		const assistantMsg = highUsageAssistant();
+		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
+		await compactionDone;
+
+		gate.resolve();
+		await inFlightPrompt;
+		await session.waitForIdle();
+		expect(
+			session.agent.state.messages.some(
+				message =>
+					message.role === "user" &&
+					(typeof message.content === "string"
+						? message.content === activePrompt
+						: message.content.some(block => block.type === "text" && block.text === activePrompt)),
+			),
+		).toBe(true);
+
+		// The still-active prompt was preserved by pre-persistence, so automatic
+		// maintenance pauses instead of treating it as compaction headroom.
+		expect(promptSpy).toHaveBeenCalledTimes(1);
+		expect(continueSpy).not.toHaveBeenCalled();
+		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
+		expect(noProgress.length).toBe(1);
 	});
 	/**
 	 * Seed several large prior turns into the session branch so `prepareCompaction`
@@ -1161,5 +1222,68 @@ describe("AgentSession auto-compaction progress guard", () => {
 		expect(noProgress[0].level).toBe("warning");
 		const recovery = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes("dead-end recovery"));
 		expect(recovery.length).toBe(0);
+		// The dead-end is also stamped on the compaction entry so the transcript
+		// divider badges the pause and carries the warning across rebuilds/resume.
+		const compactionEntry = sessionManager
+			.getEntries()
+			.filter((e): e is CompactionEntry => e.type === "compaction")
+			.at(-1);
+		expect(compactionEntry?.warning).toContain(NO_PROGRESS_FRAGMENT);
+	});
+
+	it("auto-continues (no warning) when the image-drop tier frees an image-only tail", async () => {
+		// Elide cannot touch image content (collectShakeRegions skips image-only
+		// tool results and user-message images), so the rescue's second tier drops
+		// attached images — the automated `/shake images` remedy — and re-tests
+		// the recovery band before the guard is allowed to pause.
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
+		vi.spyOn(session.agent, "continue").mockResolvedValue();
+		let imagesDropped = false;
+		vi.spyOn(session, "getContextUsage").mockImplementation(() =>
+			imagesDropped
+				? { tokens: 1000, contextWindow: 200000, percent: 0.5 }
+				: { tokens: 190000, contextWindow: 200000, percent: 95 },
+		);
+		// Nothing elide-eligible in the oversized tail.
+		vi.spyOn(session, "shake").mockResolvedValue({
+			mode: "elide",
+			toolResultsDropped: 0,
+			blocksDropped: 0,
+			tokensFreed: 0,
+		});
+		const dropSpy = vi.spyOn(session, "dropImages").mockImplementation(async () => {
+			imagesDropped = true;
+			return { removed: 2 };
+		});
+
+		const notices = collectNotices();
+
+		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") onCompactionDone();
+		});
+
+		const assistantMsg = highUsageAssistant();
+		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
+
+		await compactionDone;
+		await session.waitForIdle();
+
+		expect(dropSpy).toHaveBeenCalledTimes(1);
+		expect(promptSpy).toHaveBeenCalledTimes(1);
+		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
+		expect(noProgress.length).toBe(0);
+		const recovery = notices.filter(
+			n => n.source === NOTICE_SOURCE && n.message.includes("dropped 2 attached images"),
+		);
+		expect(recovery.length).toBe(1);
+		expect(recovery[0].level).toBe("info");
+		// A rescued pass must not stamp the dead-end warning on the entry.
+		const compactionEntry = sessionManager
+			.getEntries()
+			.filter((e): e is CompactionEntry => e.type === "compaction")
+			.at(-1);
+		expect(compactionEntry?.warning).toBeUndefined();
 	});
 });
