@@ -10,6 +10,7 @@ import apiDesign from "./bundled-skills/api-design.md" with { type: "text" };
 import bugHunting from "./bundled-skills/bug-hunting.md" with { type: "text" };
 import codeReviewLens from "./bundled-skills/code-review-lens.md" with { type: "text" };
 import codebaseRecon from "./bundled-skills/codebase-recon.md" with { type: "text" };
+import competitiveRecon from "./bundled-skills/competitive-recon.md" with { type: "text" };
 import concurrencyCorrectness from "./bundled-skills/concurrency-correctness.md" with { type: "text" };
 import databaseCraft from "./bundled-skills/database-craft.md" with { type: "text" };
 import dependencyDoctor from "./bundled-skills/dependency-doctor.md" with { type: "text" };
@@ -22,6 +23,12 @@ import incidentResponse from "./bundled-skills/incident-response.md" with { type
 import migrationUpgrade from "./bundled-skills/migration-upgrade.md" with { type: "text" };
 import observabilityInstrumentation from "./bundled-skills/observability-instrumentation.md" with { type: "text" };
 import parallelFanout from "./bundled-skills/parallel-fanout.md" with { type: "text" };
+import previewTemplates from "./bundled-skills/preview-templates.md" with { type: "text" };
+import productArchitecture from "./bundled-skills/product-architecture.md" with { type: "text" };
+import productDesign from "./bundled-skills/product-design.md" with { type: "text" };
+import productDiscovery from "./bundled-skills/product-discovery.md" with { type: "text" };
+import productIdeation from "./bundled-skills/product-ideation.md" with { type: "text" };
+import productSpec from "./bundled-skills/product-spec.md" with { type: "text" };
 import refactoringSafely from "./bundled-skills/refactoring-safely.md" with { type: "text" };
 import repoRunbook from "./bundled-skills/repo-runbook.md" with { type: "text" };
 import securityReview from "./bundled-skills/security-review.md" with { type: "text" };
@@ -61,6 +68,11 @@ const BUNDLED_SKILL_SOURCES: readonly BundledSkillSource[] = [
 		name: "codebase-recon",
 		content: codebaseRecon,
 		filePath: `${import.meta.dir}/bundled-skills/codebase-recon.md`,
+	},
+	{
+		name: "competitive-recon",
+		content: competitiveRecon,
+		filePath: `${import.meta.dir}/bundled-skills/competitive-recon.md`,
 	},
 	{
 		name: "concurrency-correctness",
@@ -121,6 +133,36 @@ const BUNDLED_SKILL_SOURCES: readonly BundledSkillSource[] = [
 		name: "parallel-fanout",
 		content: parallelFanout,
 		filePath: `${import.meta.dir}/bundled-skills/parallel-fanout.md`,
+	},
+	{
+		name: "preview-templates",
+		content: previewTemplates,
+		filePath: `${import.meta.dir}/bundled-skills/preview-templates.md`,
+	},
+	{
+		name: "product-architecture",
+		content: productArchitecture,
+		filePath: `${import.meta.dir}/bundled-skills/product-architecture.md`,
+	},
+	{
+		name: "product-design",
+		content: productDesign,
+		filePath: `${import.meta.dir}/bundled-skills/product-design.md`,
+	},
+	{
+		name: "product-discovery",
+		content: productDiscovery,
+		filePath: `${import.meta.dir}/bundled-skills/product-discovery.md`,
+	},
+	{
+		name: "product-ideation",
+		content: productIdeation,
+		filePath: `${import.meta.dir}/bundled-skills/product-ideation.md`,
+	},
+	{
+		name: "product-spec",
+		content: productSpec,
+		filePath: `${import.meta.dir}/bundled-skills/product-spec.md`,
 	},
 	{
 		name: "refactoring-safely",

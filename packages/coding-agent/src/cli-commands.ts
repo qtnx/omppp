@@ -31,6 +31,12 @@ export const commands: CommandEntry[] = [
 	{ name: "join", load: () => import("./commands/join").then(m => m.default) },
 	{ name: "models", load: () => import("./commands/models").then(m => m.default) },
 	{ name: "plugin", load: () => import("./commands/plugin").then(m => m.default) },
+	{
+		name: "product-preview",
+		// cli-commands is imported by profile-bootstrap before profile selection;
+		// keep product/env imports behind the command loader.
+		load: () => import("./commands/product").then(module => module.standaloneProductPreviewCommand.command),
+	},
 	{ name: "say", load: () => import("./commands/say").then(m => m.default) },
 	{ name: "setup", load: () => import("./commands/setup").then(m => m.default) },
 	{ name: "shell", load: () => import("./commands/shell").then(m => m.default) },

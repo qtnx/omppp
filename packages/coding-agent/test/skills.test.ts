@@ -11,6 +11,7 @@ import {
 	parseSkillInvocation,
 	type Skill,
 } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
+import { parseCanvasDocument } from "@oh-my-pi/pi-coding-agent/product-preview/canvas-schema";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 
@@ -32,6 +33,7 @@ const ARCHIVE_ENGINEERING_SKILL_NAMES = [
 	"bug-hunting",
 	"code-review-lens",
 	"codebase-recon",
+	"competitive-recon",
 	"concurrency-correctness",
 	"database-craft",
 	"dependency-doctor",
@@ -41,6 +43,12 @@ const ARCHIVE_ENGINEERING_SKILL_NAMES = [
 	"migration-upgrade",
 	"observability-instrumentation",
 	"parallel-fanout",
+	"preview-templates",
+	"product-architecture",
+	"product-design",
+	"product-discovery",
+	"product-ideation",
+	"product-spec",
 	"refactoring-safely",
 	"repo-runbook",
 	"security-review",
@@ -495,7 +503,8 @@ description: Skill loaded from a tilde-expanded custom directory.
 					expect(details.name).toBe(name);
 					expect(message.trim()).not.toBe("");
 					expectNoReviewerComments(message);
-					expect(message).not.toMatch(/<!--|-->/);
+					// HTML comments always open with `<!--`; a bare `-->` is legitimate content (mermaid arrows).
+					expect(message).not.toContain("<!--");
 				}
 			} finally {
 				await fixture.cleanup();
@@ -707,6 +716,145 @@ description: Skill loaded from a tilde-expanded custom directory.
 				expect(message).toMatch(/microservices/i);
 				expect(message).toMatch(/Evidence block/i);
 				expectNoReviewerComments(message);
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+
+		it("loads preview-templates with canvas schema and five artifact recipes", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-preview-templates-home-");
+
+			try {
+				const { skills } = await loadSkills({ cwd: fixture.tempCwd });
+				const skill = skills.find(entry => entry.name === "preview-templates");
+				if (!skill) throw new Error("preview-templates bundled skill did not load");
+
+				expect(skill.source).toBe("bundled:native");
+				expect(skill.description).toMatch(/canvas\.json|canvas/i);
+
+				const { message, details } = await buildSkillPromptMessage(skill, "", "autoload");
+				const contracts: Array<[string, RegExp]> = [
+					["version-1 root", /version:\s*1/i],
+					["canvas path", /docs\/product\/canvases\/.*\.canvas\.json/i],
+					["story-map recipe", /artifactType[\s\S]{0,40}story-map|story-map/i],
+					["journey-map recipe", /journey-map/],
+					["plan recipe", /artifactType[\s\S]{0,80}plan|"plan"/],
+					["spec recipe", /artifactType[\s\S]{0,80}spec|\bspec\b/],
+					["architecture recipe", /architecture/],
+					["all-or-none positions", /all-or-none/i],
+					["safe relative refs", /no scheme|relative[\s\S]{0,40}path|no `?\.\.`?/i],
+					["no HTML/styles/URLs/React props", /NEVER[\s\S]{0,120}(HTML|style|URL|React Flow)/i],
+					["review-only canvas", /review-only/i],
+					["HTML remains mockup-only", /kind=mockup|custom UI|HTML mockups/i],
+					["node type enum", /card[\s\S]{0,40}lane[\s\S]{0,40}group|milestone[\s\S]{0,40}decision/i],
+					["edge type enum", /sequence[\s\S]{0,40}dependency[\s\S]{0,40}association/i],
+				];
+				const missing = contracts.filter(([, pattern]) => !pattern.test(message)).map(([name]) => name);
+
+				expect(details.name).toBe("preview-templates");
+				expect(missing).toEqual([]);
+				expectNoReviewerComments(message);
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+
+		it("keeps product skills optional about canvas companions for spatial review", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-product-canvas-home-");
+
+			try {
+				const { skills } = await loadSkills({ cwd: fixture.tempCwd });
+				const names = ["product-spec", "product-design", "product-architecture"] as const;
+
+				for (const name of names) {
+					const skill = skills.find(entry => entry.name === name);
+					if (!skill) throw new Error(`${name} bundled skill did not load`);
+
+					const { message, details } = await buildSkillPromptMessage(skill, "", "autoload");
+					expect(details.name).toBe(name);
+					expect(message).toMatch(/canvas companion|Canvas companion/i);
+					expect(message).toMatch(/docs\/product\/canvases\/.*\.canvas\.json/i);
+					expect(message).toMatch(/SKIP|optional|NEVER[\s\S]{0,80}mandatory|NEVER invent a mandatory/i);
+					expect(message).toMatch(/preview-templates|presenter/i);
+					expectNoReviewerComments(message);
+				}
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+
+		it("validates the preview-templates story-map recipe through the real canvas parser", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-story-map-recipe-home-");
+
+			try {
+				const { skills } = await loadSkills({ cwd: fixture.tempCwd });
+				const skill = skills.find(entry => entry.name === "preview-templates");
+				if (!skill) throw new Error("preview-templates bundled skill did not load");
+
+				const { message } = await buildSkillPromptMessage(skill, "", "autoload");
+				expect(message).toContain('"artifactType": "story-map"');
+
+				// Recipe the presenter is taught — must parse under the live schema.
+				const storyMap = {
+					version: 1 as const,
+					title: "Checkout — story map",
+					artifactType: "story-map" as const,
+					description: "Activities across the top; stories beneath.",
+					nodes: [
+						{ id: "act-browse", type: "step" as const, title: "Browse", role: "primary" as const },
+						{ id: "act-pay", type: "step" as const, title: "Pay", role: "primary" as const },
+						{
+							id: "s-search",
+							type: "card" as const,
+							parentId: "act-browse",
+							title: "Search catalog",
+							status: "ready" as const,
+							refs: [
+								{
+									label: "Spec S1",
+									path: "docs/product/specs/2026-07-13-checkout.md",
+									anchor: "s1",
+								},
+							],
+						},
+						{
+							id: "s-checkout",
+							type: "card" as const,
+							parentId: "act-pay",
+							title: "One-click pay",
+							status: "draft" as const,
+							role: "risk" as const,
+						},
+					],
+					edges: [{ id: "e1", source: "act-browse", target: "act-pay", type: "sequence" as const }],
+				};
+
+				const parsed = parseCanvasDocument(JSON.stringify(storyMap));
+				expect(parsed.ok).toBe(true);
+				if (!parsed.ok) throw new Error(parsed.error.message);
+				expect(parsed.layout).toBe("deterministic");
+				expect(parsed.canvas.artifactType).toBe("story-map");
+				expect(parsed.canvas.nodes).toHaveLength(4);
+				expect(parsed.canvas.edges).toHaveLength(1);
+				expect(parsed.canvas.nodes[2]?.refs?.[0]?.path).toBe("docs/product/specs/2026-07-13-checkout.md");
+
+				const unsafe = parseCanvasDocument(
+					JSON.stringify({
+						...storyMap,
+						nodes: [
+							...storyMap.nodes,
+							{
+								id: "bad-ref",
+								type: "card",
+								title: "Bad",
+								refs: [{ label: "x", path: "../etc/passwd" }],
+							},
+						],
+					}),
+				);
+				expect(unsafe.ok).toBe(false);
+				if (unsafe.ok) throw new Error("expected invalid ref path");
+				expect(unsafe.error.code).toBe("invalid_canvas");
 			} finally {
 				await fixture.cleanup();
 			}

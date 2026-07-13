@@ -17,6 +17,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { COLLAB_GUEST_ALLOWED_COMMANDS, CollabGuestLink } from "../collab/guest";
 import { CollabHost } from "../collab/host";
+import { createProductPreviewCommand } from "../commands/product";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
@@ -46,6 +47,7 @@ import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
 import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
+import { makeShareController, startPreviewServer } from "../product-preview";
 import type { AgentSession, FreshSessionResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { BROWSER_ANNOTATION_MESSAGE_TYPE, MAX_BACKGROUND_BROWSER_ANNOTATIONS } from "../session/messages";
@@ -525,6 +527,10 @@ function parseContextGcArgs(args: string): ParsedContextGcArgs {
 function annotateHttpKey(session: AgentSession): object {
 	return session;
 }
+const productPreviewSlashCommand = createProductPreviewCommand({
+	startServer: startPreviewServer,
+	makeShareController,
+}).slashCommand;
 
 const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
@@ -534,6 +540,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		handle: handleAddDirCommand,
 	},
+	productPreviewSlashCommand,
 	{
 		name: "settings",
 		description: "Open settings menu",

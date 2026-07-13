@@ -140,6 +140,8 @@ import {
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import type { MnemopiSessionState } from "./mnemopi/state";
+import { formatPreviewFeedback } from "./product-preview/feedback";
+import type { PreviewFeedback } from "./product-preview/types";
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
 import browserAnnotationTemplate from "./prompts/tools/browser-annotation.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
@@ -166,6 +168,7 @@ import {
 	convertToLlm,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	MAX_BACKGROUND_BROWSER_ANNOTATIONS,
+	PREVIEW_FEEDBACK_MESSAGE_TYPE,
 	stripOversizedCompactionSummaryImagesForCodex,
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
@@ -357,6 +360,29 @@ function buildBrowserAnnotationBatchMessage(
 		display: true,
 		attribution: "user",
 		details: { annotations },
+		timestamp: Date.now(),
+	};
+}
+
+/** Build a visible custom steering message for product-preview feedback. */
+function buildPreviewFeedbackBatchMessage(
+	entries: PreviewFeedback[],
+): CustomMessage<{ feedbacks: PreviewFeedback[] }> | null {
+	if (entries.length === 0) return null;
+	// One text block per event so multiple rapid comments/answers stay ordered
+	// and each retains its full markdown body for the model.
+	const content = entries.map(entry => ({
+		type: "text" as const,
+		text: formatPreviewFeedback(entry),
+	}));
+	return {
+		role: "custom",
+		customType: PREVIEW_FEEDBACK_MESSAGE_TYPE,
+		content,
+		display: true,
+		// User-attribution marks this as steering-class human feedback, not agent.
+		attribution: "user",
+		details: { feedbacks: entries },
 		timestamp: Date.now(),
 	};
 }
@@ -1953,6 +1979,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				session?.yieldQueue.enqueue(BROWSER_ANNOTATION_MESSAGE_TYPE, entry, {
 					maxEntries: MAX_BACKGROUND_BROWSER_ANNOTATIONS,
 				}),
+			// Mirror browser-annotation: enqueue into yieldQueue so idle agents wake
+			// and streaming turns pick it up as steering (not followUp).
+			queuePreviewFeedback: feedback => session?.yieldQueue.enqueue(PREVIEW_FEEDBACK_MESSAGE_TYPE, feedback),
 			requestCompaction: (reason, options) =>
 				session?.requestCompactionFromAgent(reason, options) ?? {
 					status: "unavailable",
@@ -3624,6 +3653,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		});
 		session.yieldQueue.register<BrowserAnnotationEntry>(BROWSER_ANNOTATION_MESSAGE_TYPE, {
 			build: buildBrowserAnnotationBatchMessage,
+		});
+		// Product-preview side-ask/comment/answer delivery — steering, not followUp.
+		session.yieldQueue.register<PreviewFeedback>(PREVIEW_FEEDBACK_MESSAGE_TYPE, {
+			build: buildPreviewFeedbackBatchMessage,
 		});
 
 		// Attach the live session to the pre-registered ref so peers can route IRC

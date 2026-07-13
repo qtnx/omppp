@@ -33,6 +33,8 @@ export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
 export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
 export const BROWSER_ANNOTATION_MESSAGE_TYPE = "browser-annotation";
 export const MAX_BACKGROUND_BROWSER_ANNOTATIONS = 20;
+export const PREVIEW_FEEDBACK_MESSAGE_TYPE = "preview-feedback";
+
 const COMPACTION_SUMMARY_CONTEXT_SENTINEL = "__omp_compaction_summary_context__";
 const COMPACTION_SUMMARY_CONTEXT_PREFIX =
 	renderCompactionSummaryContext(COMPACTION_SUMMARY_CONTEXT_SENTINEL).split(COMPACTION_SUMMARY_CONTEXT_SENTINEL)[0] ??

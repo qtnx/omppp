@@ -4,5 +4,6 @@
 		"src",
 		"test",
 		"scripts"
-	]
+	],
+	"exclude": ["src/product-preview/client/canvas-app.tsx"]
 }

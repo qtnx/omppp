@@ -80,3 +80,6 @@ python/robomp/.env
 
 # Local, machine-specific boot perf baseline (see packages/coding-agent/scripts/bench-guard.ts)
 packages/coding-agent/bench/boot-baseline.json
+
+# product-preview runtime state
+docs/product/.ompx-preview/

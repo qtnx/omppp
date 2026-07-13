@@ -8,12 +8,33 @@
 
 ### Added
 
+- Added six bundled product-engineering skills for upstream-of-code work: `product-discovery` (gatekeeper problem framing with evidence-graded problem brief, runs before feature-anatomy when the problem is unvalidated), `product-ideation` (divergent direction generation with distinctness litmus, honest scorecard convergence, and built-in premortem/kill-criteria), `product-spec` (PRD-lite contract with journey/state enumeration, cut-lines, metrics-to-event mapping, and a self-check rubric; artifact saved to `docs/product/specs/`), `product-design` (post-spec UI design: screen inventory/IA, mermaid flow maps with failure branches, state-complete ASCII wireframes with hierarchy/copy/accessibility/data annotations, a fidelity ladder up to browser-verified HTML mockups, and a user veto gate before implementation; artifact saved to `docs/product/design/`), `product-architecture` (CTO-mode system design after spec/design: C4 context/container diagrams, critical-flow sequence diagrams with failure branches, data ownership and migration path, numeric NFR envelope with evidence grades, build-vs-buy, a 12-row common-mistakes gate, contract-first API edges per api-design, and ADR-lite records; artifact saved to `docs/product/architecture/`), and `competitive-recon` (decision-first competitor teardown with evidence grading and a no-web degraded mode).
 - `/workflows` is now an interactive Workflow Hub overlay (mirroring `/agents`): browse workflow runs → phases → agents with live state/model/token/duration stats, press Enter on an agent to open its transcript in the existing viewer; backed by a new `WorkflowRunRegistry` that folds progress frames into per-run records and a terminal `done` frame emitted when a run finishes.
 - Added a live workflow HUD under the composer: while any workflow run is active, its phases and agents render and refresh from progress frames (like the task-subagents tree) without opening `/workflows`, and clear when the run completes.
 - Added `/subagents` to open the live subagent inspector for running and parked task agents.
 - Per-file write locking across parallel agents: concurrent `edit`/`write` calls targeting the same file now wait their turn instead of racing (in-process, keyed by canonical path).
 - Added optional `focus` on the `compact` tool and `compactionFocus` on the `job` tool; both are threaded into compaction-summary instructions.
 - Added crash-report recovery in the interactive CLI: unread crash artifacts are pinned at startup, `/crash` shows the newest report, and `/crash dismiss` clears the banner; unexpected tool-render and extension-load failures now persist a local soft crash report without changing existing failure behavior.
+- Added the local Product Preview WebUI with artifact rendering, live reload, side-asks, human-gated Tailscale sharing, export handoff, and `present`/`product-preview` command surfaces.
+- Added anchored per-section comments with threaded replies, resolve controls, and session-owned deletion to Product Preview.
+- Added persisted interactive option-question cards for `ompx-question` document blocks.
+- Added custom HTML template previews with the injected `window.OmpxPreview` bridge and bundled `presenter` agent.
+- Added focused modal review controls with zoom, pan, and fit-to-content for documents, diagrams, and custom HTML previews.
+- Added shared-preview commenter identity chips and share-viewer UX.
+- Added delivery of preview comments, answers, and template feedback into the owning agent session.
+- Added strict, agent-generated `.canvas.json` review canvases for specs, story maps, journey maps, plans, and architecture, with deterministic layout, search, minimap, detail dialogs, safe manifest references, and canvas-node feedback delivery.
+
+### Fixed
+
+- Workflow Hub transcript drill-through now streams live: the workflow agent progress frame carries the subagent's transcript `sessionFile`, so opening an agent (Enter) registers a parked placeholder ref pointing at the real transcript and the viewer tails it immediately — even during the start-race window before the live agent session registers. Previously the open silently no-opped when the ref was not yet in the registry.
+- Workflow Hub navigation gained arrow keys (↑/↓ alongside j/k) and `←` to go back (transcript → hub, hub → editor).
+
+## [1.5.7] - 2026-07-10
+
+### Added
+
+- Added bundled `parallel-fanout` skill: 7-phase fanout pipeline, feature-slicing dimension table, contract-vs-runtime (C/R) dependency test, tier table, required wave-plan table with a worked example, a one-workflow rule with a script template (a whole wave plan executes as ONE `workflow` run), one-wave scout fanout with a two-wave exploration budget, and the full-cycle rule (one subagent owns red test + implement + fix until green).
+## [1.5.8] - 2026-07-11
 
 ### Changed
 

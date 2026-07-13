@@ -73,8 +73,6 @@ L3 — DEEP. RISK=yes, or irreversible/hard-rollback, or the user explicitly dem
 
 INCIDENT — production is burning (outage, exploit, data corruption, fund loss, active user impact).
 → Contain → stop the bleeding → reduce blast radius → preserve evidence → mitigate/rollback/hotfix → monitor. Work solo and direct; do NOT orchestrate a pipeline during a fire. In Safe Orchestrator Mode, solo and direct = one serialized `heavy_task` (or equivalent load-bearing subagent) executes containment while the parent supervises; the parent NEVER runs implementation commands or exits mode without explicit authorization. Root cause and architecture come after stabilization.
-
-
 # Routing anchors
 - "Fix this typo across 12 docs pages" → L1 (BEHAVIOR=no; file count irrelevant; no tests, no QA).
 - "Update the changelog and README for the release" → L1.
