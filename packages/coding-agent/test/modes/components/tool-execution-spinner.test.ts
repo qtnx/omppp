@@ -235,6 +235,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				},
 				false,
 			);
+			component.seal();
 			const sealedText = stripVTControlCharacters(component.render(80).join("\n"));
 			expect(sealedText).toContain("[Image:");
 			expect(sealedText).not.toContain("1x1");
@@ -275,6 +276,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				},
 				false,
 			);
+			component.seal();
 			const sealedText = stripVTControlCharacters(component.render(80).join("\n"));
 			expect(sealedText).toContain("[Image:");
 			expect(sealedText).not.toContain(imageData);

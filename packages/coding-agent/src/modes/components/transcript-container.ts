@@ -52,6 +52,8 @@ interface FinalizableBlock {
 	isDisplaceableBlock?(): boolean;
 	/** Finalize a displaceable snapshot in place (settle animation, freeze bytes). */
 	seal?(): void;
+	/** Release heavyweight backing payloads after every row of the block has entered native scrollback. */
+	releaseCommittedPayloads?(): void;
 }
 
 function isBlockFinalized(child: Component): boolean {
@@ -76,6 +78,11 @@ function getBlockSettledRows(child: Component): number {
 function sealCommittedSnapshot(child: Component): void {
 	const block = child as Component & FinalizableBlock;
 	if (block.isDisplaceableBlock?.()) block.seal?.();
+}
+
+/** Release heavyweight backing payloads once the block's rendered rows are immutable native history. */
+function releaseCommittedPayloads(child: Component): void {
+	(child as Component & FinalizableBlock).releaseCommittedPayloads?.();
 }
 
 // A "plain blank" row is empty or whitespace-only with no ANSI bytes. It marks
@@ -306,6 +313,12 @@ export class TranscriptContainer
 			if (previous.startRow >= this.#committedRows) break;
 			if (previous.rowCount === 0 || previous.component !== this.children[i]) continue;
 			sealCommittedSnapshot(previous.component);
+		}
+		for (const previous of this.#segments) {
+			if (previous.startRow + previous.rowCount > this.#committedRows) break;
+			if (previous.rowCount > 0 && previous.finalized) {
+				releaseCommittedPayloads(previous.component);
+			}
 		}
 
 		// The commit boundary stops at the earliest still-mutating block. A

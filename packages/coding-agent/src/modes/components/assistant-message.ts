@@ -180,6 +180,7 @@ export class AssistantMessageComponent extends Container {
 	#toolImagesByCallId = new Map<string, ImageContent[]>();
 	#convertedKittyImages = new Map<string, ImageContent>();
 	#kittyConversionsInFlight = new Set<string>();
+	#toolImagePayloadsSealed = false;
 	#transcriptBlockFinalized: boolean;
 	/**
 	 * True while any rendered item carries a ` ```mermaid ` fence. Mermaid's
@@ -488,6 +489,11 @@ export class AssistantMessageComponent extends Container {
 		return this.#blockVersion;
 	}
 
+	releaseCommittedPayloads(): void {
+		if (this.#toolImagePayloadsSealed) return;
+		this.#sealToolResultImagePayloads();
+	}
+
 	markTranscriptBlockFinalized(): void {
 		// Finalize can fire twice on the real tool-call path: once when the first
 		// toolCall appears mid-stream (event-controller message_update) and again at
@@ -506,7 +512,6 @@ export class AssistantMessageComponent extends Container {
 			this.#finalThinkingMarkerSeconds = undefined;
 		}
 		this.#stopThinkingAnimation();
-		this.#sealToolResultImagePayloads();
 		const finalMarker = this.#finalThinkingMarkerLabel();
 		if (this.#thinkingDots && finalMarker) {
 			if (this.#thinkingDots.setText(finalMarker)) {
@@ -564,6 +569,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	#sealToolResultImagePayloads(): void {
+		this.#toolImagePayloadsSealed = true;
 		for (const [toolCallId, images] of this.#toolImagesByCallId.entries()) {
 			const sealedImages = images.map(image =>
 				image.type === "image" && image.mimeType && image.data && !isSealedToolImageData(image.data)
@@ -572,11 +578,8 @@ export class AssistantMessageComponent extends Container {
 			);
 			this.#toolImagesByCallId.set(toolCallId, sealedImages);
 		}
-		this.#convertedKittyImages.clear();
 		this.#kittyConversionsInFlight.clear();
-		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
-		}
+		this.#convertedKittyImages.clear();
 	}
 
 	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
@@ -596,11 +599,11 @@ export class AssistantMessageComponent extends Container {
 			this.#toolImagesByCallId.delete(toolCallId);
 		} else {
 			this.#toolImagesByCallId.set(toolCallId, validImages);
-			if (!this.#transcriptBlockFinalized) {
+			if (!this.#toolImagePayloadsSealed) {
 				this.#convertToolImagesForKitty(toolCallId, validImages);
 			}
 		}
-		if (this.#transcriptBlockFinalized) {
+		if (this.#toolImagePayloadsSealed) {
 			this.#sealToolResultImagePayloads();
 		} else if (this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
@@ -608,7 +611,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	#convertToolImagesForKitty(toolCallId: string, images: ImageContent[]): void {
-		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty || this.#transcriptBlockFinalized) return;
+		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty || this.#toolImagePayloadsSealed) return;
 		for (let index = 0; index < images.length; index++) {
 			const image = images[index];
 			if (
@@ -626,7 +629,7 @@ export class AssistantMessageComponent extends Container {
 				.toBase64()
 				.then(data => {
 					this.#kittyConversionsInFlight.delete(key);
-					if (this.#transcriptBlockFinalized) return;
+					if (this.#toolImagePayloadsSealed) return;
 					this.#convertedKittyImages.set(key, {
 						type: "image",
 						data,
