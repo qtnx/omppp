@@ -107,6 +107,8 @@ function createContext(overrides?: {
 		model: overrides?.model ?? model,
 		asyncJobManager: { register },
 		sessionId: "parent-session",
+		// Production always has `session.agent`; `promptCacheKey` falls back to sessionId.
+		agent: { promptCacheKey: undefined as string | undefined },
 		configuredThinkingLevel: vi.fn(() => undefined),
 		systemPrompt: ["system prompt"],
 		getActiveToolNames: vi.fn(() => ["read", "bash"]),

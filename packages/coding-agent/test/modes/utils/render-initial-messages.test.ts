@@ -11,7 +11,7 @@
  * scrollback-clearing repaint (`clearTerminalHistory`).
  */
 
-import { afterEach, beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
@@ -182,6 +182,10 @@ function makeRenderCtx(transcript: SessionContext): { ctx: InteractiveModeContex
 }
 
 describe("UiHelpers.renderInitialMessages — transcript source", () => {
+	beforeEach(async () => {
+		await Settings.init({ inMemory: true });
+	});
+
 	it("renders the collapsed live display transcript, never the LLM context", () => {
 		const { ctx, transcriptSpy, llmContextSpy, renderSessionContextSpy } = makeCtx();
 		const transcript = makeEmptyContext();
@@ -199,6 +203,10 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 });
 
 describe("UiHelpers.renderInitialMessages — clearTerminalHistory", () => {
+	beforeEach(async () => {
+		await Settings.init({ inMemory: true });
+	});
+
 	it("requests a scrollback-clearing repaint when clearTerminalHistory is set", () => {
 		const { ctx } = makeCtx();
 		new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });

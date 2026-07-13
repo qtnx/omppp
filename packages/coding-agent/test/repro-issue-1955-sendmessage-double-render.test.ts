@@ -1,6 +1,7 @@
-import { afterEach, beforeAll, describe, expect, test, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type {
 	ExtensionActions,
 	ExtensionCommandContextActions,
@@ -31,7 +32,13 @@ import { Container } from "@oh-my-pi/pi-tui";
  *   leaving two identical custom-message components in the chat.
  */
 beforeAll(async () => {
+	resetSettingsForTest();
+	await Settings.init({ inMemory: true });
 	await initTheme();
+});
+
+afterAll(() => {
+	resetSettingsForTest();
 });
 
 afterEach(() => {
