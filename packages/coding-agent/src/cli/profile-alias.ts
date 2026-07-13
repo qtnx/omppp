@@ -1,6 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { normalizeProfileName } from "@oh-my-pi/pi-utils/dirs";
+import { APP_NAME, normalizeProfileName } from "@oh-my-pi/pi-utils/dirs";
+import { isBundledCliEntryArg } from "./process-argv";
 
 export type ProfileAliasShell = "bash" | "zsh" | "fish" | "powershell" | "pwsh";
 
@@ -20,10 +21,10 @@ export interface ProfileAliasCommand {
 }
 
 const DEFAULT_ALIAS_COMMAND: ProfileAliasCommand = {
-	display: "omp",
-	posix: "omp",
-	fish: "omp",
-	powerShell: "omp",
+	display: APP_NAME,
+	posix: APP_NAME,
+	fish: APP_NAME,
+	powerShell: APP_NAME,
 };
 
 export interface ProfileAliasInstallOptions {
@@ -147,8 +148,8 @@ function validateAliasName(aliasName: string, shell: ProfileAliasShell): string 
 	if (!ALIAS_NAME_RE.test(normalized)) {
 		throw new Error(`Invalid alias "${aliasName}". Alias names must match ${ALIAS_NAME_RE.source}.`);
 	}
-	if (normalized.toLowerCase() === "omp") {
-		throw new Error('Invalid alias "omp". Refusing to shadow the base omp command.');
+	if (normalized.toLowerCase() === "omp" || normalized.toLowerCase() === APP_NAME.toLowerCase()) {
+		throw new Error(`Invalid alias "${aliasName}". Refusing to shadow the base ${APP_NAME} command.`);
 	}
 	if (getReservedAliasNames(shell).has(normalized.toLowerCase())) {
 		throw new Error(`Invalid alias "${aliasName}". Refusing to create a ${shell} reserved word.`);
@@ -195,6 +196,7 @@ export function resolveProfileAliasCommandFromProcess(
 ): ProfileAliasCommand {
 	const runtime = argv[0];
 	const script = argv[1];
+	if (isBundledCliEntryArg(script)) return DEFAULT_ALIAS_COMMAND;
 	if (!runtime || !script || !/\.[cm]?[jt]s$/.test(script)) return DEFAULT_ALIAS_COMMAND;
 
 	const scriptPath = path.resolve(cwd, script);
@@ -278,7 +280,7 @@ function renderAliasBlock(
 	switch (shell) {
 		case "fish":
 			body = [
-				`function ${aliasName} --wraps omp --description 'OMP profile ${profile}'`,
+				`function ${aliasName} --wraps ${APP_NAME} --description '${APP_NAME} profile ${profile}'`,
 				`    command ${command.fish} --profile=${profile} $argv`,
 				"end",
 			].join("\n");

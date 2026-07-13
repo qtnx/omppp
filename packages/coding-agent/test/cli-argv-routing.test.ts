@@ -38,6 +38,13 @@ describe("resolveCliArgv routes subcommands hidden behind leading global flags",
 		});
 	});
 
+	test("drops a leaked compiled entrypoint instead of sending it as a prompt", () => {
+		const compiledEntry = "/$bunfs/root/packages/coding-agent/src/cli.js";
+
+		expect(resolveCliArgv([compiledEntry])).toEqual({ argv: ["launch"] });
+		expect(resolveCliArgv([compiledEntry, "update"])).toEqual({ argv: ["update"] });
+	});
+
 	test("`--` ends option scanning so a following subcommand stays a launch prompt", () => {
 		expect(resolveCliArgv(["--", "acp"])).toEqual({
 			argv: ["launch", "--", "acp"],

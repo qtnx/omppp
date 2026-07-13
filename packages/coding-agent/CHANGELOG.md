@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed compiled CLI entry paths leaking into the initial prompt and swallowing subcommands such as `ompx update`; profile aliases now ignore Bun virtual entrypoints and target the OMPx executable.
+
 ## [1.6.1] - 2026-07-13
 
 - Fixed unbounded session memory growth in long-lived sessions: heavy payloads (images, large text and thinking signatures, string message content, snapcompact frames, custom-entry image data URLs) of entries behind the latest compaction are now archived in RAM to content-addressed blob refs (reversibly, rehydrated on rollback/branch switch/fork/resume), session resume no longer eagerly re-inflates all persisted blob refs (only the live tail), sealed TUI transcript blocks release image payload and Kitty-conversion copies, and export/share/dump/render surfaces resolve or placeholder archived refs.

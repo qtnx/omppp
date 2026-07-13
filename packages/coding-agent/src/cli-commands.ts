@@ -10,6 +10,7 @@
  */
 import type { CommandEntry } from "@oh-my-pi/pi-utils/cli";
 import { flagConsumesValue } from "./cli/flag-tables";
+import { isBundledCliEntryArg } from "./cli/process-argv";
 
 export const commands: CommandEntry[] = [
 	{ name: "launch", load: () => import("./commands/launch").then(m => m.default) },
@@ -116,7 +117,8 @@ function leadingSubcommandIndex(argv: string[]): number {
  * that command with the flags preserved, and forward everything else to
  * `launch` (#2970).
  */
-export function resolveCliArgv(argv: string[]): ResolvedCliArgv {
+export function resolveCliArgv(rawArgv: string[]): ResolvedCliArgv {
+	const argv = isBundledCliEntryArg(rawArgv[0]) ? rawArgv.slice(1) : rawArgv;
 	const first = argv[0];
 	const reservedMessage = reservedTopLevelWordMessage(first, argv.length);
 	if (reservedMessage) return { error: reservedMessage };
