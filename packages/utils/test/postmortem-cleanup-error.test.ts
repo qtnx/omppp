@@ -1,24 +1,35 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { postmortem } from "@oh-my-pi/pi-utils";
 
-const postmortemModuleUrl = pathToFileURL(join(import.meta.dir, "../src/index.ts")).href;
+const postmortemModuleUrl = pathToFileURL(path.join(import.meta.dir, "../src/index.ts")).href;
 
 async function runPostmortemProbe(
 	source: string,
-): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
-	const root = await mkdtemp(join(tmpdir(), "omp-postmortem-probe-"));
-	const probePath = join(root, "probe.ts");
+	inheritedEnv: Record<string, string | undefined> = {},
+): Promise<{ exitCode: number | null; stdout: string; stderr: string; stateHome: string }> {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-postmortem-probe-"));
+	const stateHome = path.join(root, "state");
+	const probePath = path.join(root, "probe.ts");
 	try {
 		await Bun.write(probePath, source);
+		await fs.mkdir(path.join(stateHome, "omp"), { recursive: true });
+		const env: Record<string, string | undefined> = {
+			...process.env,
+			...inheritedEnv,
+			XDG_STATE_HOME: stateHome,
+		};
+		delete env.PI_CODING_AGENT_DIR;
+		delete env.OMP_PROFILE;
+		delete env.PI_PROFILE;
 		const proc = Bun.spawn([process.execPath, probePath], {
 			cwd: process.cwd(),
 			stdout: "pipe",
 			stderr: "pipe",
-			env: { ...process.env, OMP_AGENT_DIR: join(root, "agent") },
+			env,
 		});
 		// Process-level regressions can hang the child; the watchdog bounds the fixture without slowing green runs.
 		const watchdog = Bun.sleep(2000).then(() => {
@@ -30,9 +41,9 @@ async function runPostmortemProbe(
 			new Response(proc.stderr).text(),
 			Promise.race([proc.exited, watchdog]),
 		]);
-		return { exitCode, stdout, stderr };
+		return { exitCode, stdout, stderr, stateHome };
 	} finally {
-		await rm(root, { recursive: true, force: true });
+		await fs.rm(root, { recursive: true, force: true });
 	}
 }
 
@@ -110,15 +121,23 @@ describe("postmortem expected cleanup errors", () => {
 	});
 
 	it("keeps unmarked unhandled rejections fatal", async () => {
-		const result = await runPostmortemProbe(`
+		const result = await runPostmortemProbe(
+			`
 			import "${postmortemModuleUrl}";
 
 			Promise.reject(new Error("unexpected cleanup rejection"));
 			await Promise.resolve();
-		`);
+		`,
+			{
+				PI_CODING_AGENT_DIR: path.join(os.tmpdir(), "inherited-agent"),
+				OMP_PROFILE: "inherited-profile",
+				PI_PROFILE: "legacy-profile",
+			},
+		);
 
 		expect(result.exitCode).toBe(1);
 		expect(result.stderr).toContain("[Unhandled Rejection] Error: unexpected cleanup rejection");
+		expect(result.stderr).toContain(path.join(result.stateHome, "omp", "logs", "crash-unhandled_rejection-"));
 	});
 
 	it("releases manual cleanup at the deadline even when a callback never settles", async () => {
