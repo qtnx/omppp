@@ -2,96 +2,17 @@
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-07-13
+
 - Fixed unbounded session memory growth in long-lived sessions: heavy payloads (images, large text and thinking signatures, string message content, snapcompact frames, custom-entry image data URLs) of entries behind the latest compaction are now archived in RAM to content-addressed blob refs (reversibly, rehydrated on rollback/branch switch/fork/resume), session resume no longer eagerly re-inflates all persisted blob refs (only the live tail), sealed TUI transcript blocks release image payload and Kitty-conversion copies, and export/share/dump/render surfaces resolve or placeholder archived refs.
 - Fixed rebuilt persisted custom messages losing their originating entry ID; rebuilt messages now retain it so Context GC can match them reliably after context reconstruction.
-## [1.6.0] - 2026-07-12
 
 ### Added
 
 - Added six bundled product-engineering skills for upstream-of-code work: `product-discovery` (gatekeeper problem framing with evidence-graded problem brief, runs before feature-anatomy when the problem is unvalidated), `product-ideation` (divergent direction generation with distinctness litmus, honest scorecard convergence, and built-in premortem/kill-criteria), `product-spec` (PRD-lite contract with journey/state enumeration, cut-lines, metrics-to-event mapping, and a self-check rubric; artifact saved to `docs/product/specs/`), `product-design` (post-spec UI design: screen inventory/IA, mermaid flow maps with failure branches, state-complete ASCII wireframes with hierarchy/copy/accessibility/data annotations, a fidelity ladder up to browser-verified HTML mockups, and a user veto gate before implementation; artifact saved to `docs/product/design/`), `product-architecture` (CTO-mode system design after spec/design: C4 context/container diagrams, critical-flow sequence diagrams with failure branches, data ownership and migration path, numeric NFR envelope with evidence grades, build-vs-buy, a 12-row common-mistakes gate, contract-first API edges per api-design, and ADR-lite records; artifact saved to `docs/product/architecture/`), and `competitive-recon` (decision-first competitor teardown with evidence grading and a no-web degraded mode).
-- `/workflows` is now an interactive Workflow Hub overlay (mirroring `/agents`): browse workflow runs → phases → agents with live state/model/token/duration stats, press Enter on an agent to open its transcript in the existing viewer; backed by a new `WorkflowRunRegistry` that folds progress frames into per-run records and a terminal `done` frame emitted when a run finishes.
-- Added a live workflow HUD under the composer: while any workflow run is active, its phases and agents render and refresh from progress frames (like the task-subagents tree) without opening `/workflows`, and clear when the run completes.
-- Added `/subagents` to open the live subagent inspector for running and parked task agents.
-- Per-file write locking across parallel agents: concurrent `edit`/`write` calls targeting the same file now wait their turn instead of racing (in-process, keyed by canonical path).
-- Added optional `focus` on the `compact` tool and `compactionFocus` on the `job` tool; both are threaded into compaction-summary instructions.
-- Added crash-report recovery in the interactive CLI: unread crash artifacts are pinned at startup, `/crash` shows the newest report, and `/crash dismiss` clears the banner; unexpected tool-render and extension-load failures now persist a local soft crash report without changing existing failure behavior.
-- Added the local Product Preview WebUI with artifact rendering, live reload, side-asks, human-gated Tailscale sharing, export handoff, and `present`/`product-preview` command surfaces.
-- Added anchored per-section comments with threaded replies, resolve controls, and session-owned deletion to Product Preview.
-- Added persisted interactive option-question cards for `ompx-question` document blocks.
-- Added custom HTML template previews with the injected `window.OmpxPreview` bridge and bundled `presenter` agent.
-- Added focused modal review controls with zoom, pan, and fit-to-content for documents, diagrams, and custom HTML previews.
-- Added shared-preview commenter identity chips and share-viewer UX.
-- Added delivery of preview comments, answers, and template feedback into the owning agent session.
-- Added strict, agent-generated `.canvas.json` review canvases for specs, story maps, journey maps, plans, and architecture, with deterministic layout, search, minimap, detail dialogs, safe manifest references, and canvas-node feedback delivery.
-
-### Fixed
-
-- Workflow Hub transcript drill-through now streams live: the workflow agent progress frame carries the subagent's transcript `sessionFile`, so opening an agent (Enter) registers a parked placeholder ref pointing at the real transcript and the viewer tails it immediately — even during the start-race window before the live agent session registers. Previously the open silently no-opped when the ref was not yet in the registry.
-- Workflow Hub navigation gained arrow keys (↑/↓ alongside j/k) and `←` to go back (transcript → hub, hub → editor).
-
-## [1.5.7] - 2026-07-10
-
-### Added
-
-- Added bundled `parallel-fanout` skill: 7-phase fanout pipeline, feature-slicing dimension table, contract-vs-runtime (C/R) dependency test, tier table, required wave-plan table with a worked example, a one-workflow rule with a script template (a whole wave plan executes as ONE `workflow` run), one-wave scout fanout with a two-wave exploration budget, and the full-cycle rule (one subagent owns red test + implement + fix until green).
-## [1.5.8] - 2026-07-11
-
-### Changed
-
-- Parallel subagents may now share files: the subagent prompt instructs peers to preserve each other's edits and merge carefully, and the parallel-fanout skill no longer forces re-cutting ownership for same-file overlap.
-- Agent-requested and subagent-wait compaction now use remote LLM-summary compaction, with a warned local-summary degradation, instead of snapcompact frames when `compaction.strategy` is `snapcompact`.
-- Added the `rate_learning` tool so the agent can rate injected learnings as useful or not useful.
-- Added background LLM learning consolidation with lease-guarded, multi-session-safe execution.
-- Added a live-learning prompt overhaul that extracts general principles with durability gating.
-- Live-learning injection is now ranked by reinforcement and decay score with stable `[l:...]` aliases.
-- Repo-scope learnings are now keyed by git repository identity instead of cwd, healing worktree fragmentation.
-
-### Fixed
-
-- Fixed rebuilt persisted custom messages losing their originating entry ID; rebuilt messages now retain it so Context GC can match them reliably after context reconstruction.
-- Escape now dismisses the focused overlay/selector before stopping the active turn, instead of the interrupt listener consuming it first.
-- Workflow Hub transcript drill-through now streams live: the workflow agent progress frame carries the subagent's transcript `sessionFile`, so opening an agent (Enter) registers a parked placeholder ref pointing at the real transcript and the viewer tails it immediately — even during the start-race window before the live agent session registers. Previously the open silently no-opped when the ref was not yet in the registry.
-- Workflow Hub navigation gained arrow keys (↑/↓ alongside j/k) and `←` to go back (transcript → hub, hub → editor).
-- Fixed advisor concern/blocker notes interrupting or skipping active tool/function calls; notes now deliver at a safe boundary, including stream-tail recovery.
-- Planning now converges explicitly across normal, orchestrator, and duo flows: every new plan follows `skill://brainstorming` then `skill://writing-plans`, receives adversarial Super Review, and may take multiple blocker-driven revision rounds until requirements, interfaces, ownership, executable acceptance, and any active approval gate satisfy. The locked plan executes directly; ordinary implementation requests need no second approval.
-- Reading `skill://parallel-fanout` is now mandatory before spawning any work subagents (scouts or implementation) in both the system prompt and orchestrator prompts; `workflow` is scoped to multi-phase implementation only (1–2 runs close a job — never scout/plan runs); the duo advisor loop-watch gained plan-churn, review-theater, and skill-skip signatures.
-- Foundation execution now plans only the current ready horizon: active Foundation may contain only concrete runtime prerequisites for the next executable vertical slice, the first locked execution wave must include a production-code owner, tests/maps/contracts/reviews cannot substitute for implementation, review budget is per task objective with a next-action dispatch invariant, and correction is bounded to the same owner. The rule is enforced across normal/orchestrator prompts, advisor loop-watch, planner/heavy/designer agent prompts, and all bundled skills that previously encouraged broad recon, future-contract planning, RED-only waves, or design-system setup.
-- The shell installer now seeds and migrates the `reviewer` agent to `openai-codex/codex-auto-review`, adds the override when missing, and preserves custom reviewer routes.
-### Added
-
-- Added display setting to toggle between collapsing or keeping compacted history inline, now applied to live session displays
-- Added a compact session-only model picker (Alt+P) for quick model switching without changing roles
-- Added `@` search to the Alt+P / `/switch` picker: it lists configured Ctrl+P quick roles in matching segment colors and applies the selected role's model and thinking for the current session.
-- Redesigned Agent Hub entries as two-line cards: identity (status glyph, name, agent type, parent when nested) on the left, active model + reasoning level and age right-aligned, with the task description on its own line; dropped the redundant `sub · of Main` noise
-- Added a project-scoped `launch` tool for shared long-running services and debuggers, with readiness probes, bounded logs, PTY input, restart policies, and automatic teardown after the last omp instance exits. Gated behind the `launch.enabled` setting (default on); when disabled the tool is withdrawn and the bash prompt drops its "use launch" guidance.
-- Added `detached` `launch` starts for standalone services that survive every omp instance and broker shutdown, then reconnect to the next broker for logs and explicit stop.
-
-### Changed
-
-- Updated tangential agent forks to ignore parent session history and focus exclusively on the new request
-- Hardened `/tan` fork isolation: the clone's inherited todo list is cleared at fork (parent todo reminders no longer drag the tan back onto the parent's task), the fork notice warns that the parent is concurrently editing the same working directory, and the notice is re-injected after each compaction so the fork boundary survives summarization
-- Added visual markers in the transcript for elided tool calls that have no corresponding result
-- Updated status event log to prioritize the most recent entries in the display window
-- Updated the snapcompact shape preview transcript to use the compact scope format shown to models during compaction.
-
-### Removed
-
-- Removed the unreliable Bing and Yahoo HTML-scraping web search providers
-
-### Fixed
-
-- Fixed inconsistent history rendering when toggling the display setting for compacted items
-- Fixed configured `retry.fallbackChains` never engaging on non-retryable provider errors (e.g. "Cloud Code Assist API returned an empty response"): a hard error on a model covered by a fallback chain now switches to the next candidate instead of failing the turn, while still never backoff-retrying the failing model itself
-- Fixed transcript rebuilds (compaction, `/compact`, and toggling history display) repainting content below stale scrollback when collapsing history; rebuilds now correctly clear the scrollback buffer when history is collapsed
-- Improved auto-compaction to automatically drop images and elide content when context is tight, and added persistent warning badges to the compaction divider when manual intervention is required
-- Fixed backgrounded Bash blocks continuing to repaint with live and final job output; they now freeze with a compact job notice while completion is delivered separately
-- Fixed `--reasoning-slide-plan` silently ending the run with no code written when the model answered the plan nudge with a text-only reply (no tool call): the agent loop treats a tool-call-free turn as a natural stop and never prompts again, which the nudge's own "write the plan in your next reply" instruction makes common. The nudge now explicitly tells the model this is a checkpoint, not a final answer, and the session forces one more turn whenever a post-nudge reply lands with zero tool calls
-- Fixed launch tool rendering stacking a stale pending header over a bare `✓ Launch` line and raw text: the tool now uses a merged registry renderer with one per-op status header (op, target, `state · pid · uptime` meta), stripped log cursor suffixes, capped collapsed log/list previews, and a launch tool glyph
-- Fixed confusing launch start/wait results when readiness timed out with the log pattern already matched (readiness needs log AND port): the result printed a contradictory `Ready: <match>` next to `Readiness timed out` without naming the failing condition. Daemon snapshots now carry the unmet conditions (`readyPending`), and start/wait results state exactly what never happened (e.g. `port 3100 on 127.0.0.1 never accepted connections`); the TUI shows a `waiting on port` badge on starting daemons
-- Fixed the in-process `stat` builtin mangling BSD-style invocations like `stat -f "%Sm %N" file` (macOS muscle memory): GNU `-f` means `--file-system`, so the format string was treated as a file operand — printing filesystem info for the real operands and erroring with `cannot read file system information for '%Sm %N'`. A `-f` whose format value contains `%` is now detected as BSD syntax and translated to the GNU equivalent (`%Sm`→`%y`, `%N`→`%n`, `%z`→`%s`, epoch/`S`-form times, owner/group/permission and `H`/`L` sub-field directives, `-L`/`-n`/`-q`/`-F` flag clusters, with `%n`/`%t` as literal newline/tab); directives with no GNU counterpart fail with a clear `unsupported BSD format directive` error
-- Fixed the remaining GNU-flavored shell builtins that broke under macOS/BSD muscle memory, using the same unambiguous-detection approach as the `stat` fix (only invocations that are invalid or nonsensical under GNU semantics are reinterpreted; unsupported BSD forms fail loudly instead of producing wrong output): `date -r <epoch>` formats the epoch when no such file exists (GNU `-r FILE` mtime preserved), signed `date -v±N<unit>` adjustments translate to `-d` relative dates and `-j` is accepted (`-j -f` strptime parse mode and field-set `-v` error clearly); `sed -i '' 's/…/…/' file` drops the BSD empty backup-suffix token instead of treating it as the script; `mktemp -t prefix` without X's creates `$TMPDIR/prefix.XXXXXXXXXX` (the GNU `too few X's` error path); `tail -r` reverses input by delegating to `tac` (with `-n`/`-c`/`-f` combinations erroring clearly); `find -E` maps to `-regextype posix-extended` ahead of the expression; `base64 -D` decodes as an alias of `-d`; and `ln -sfh` works via a `-h` alias of `--no-dereference` (clap's `-h` help short is dropped to match real GNU/BSD ln; `--help` unchanged)
 
 ## [16.4.8] - 2026-07-12
+
 ### Added
 
 - Added a predicate form to the browser run's `wait()` helper: `wait(fn, { timeout?, interval? })` polls the function (sync or async) until truthy and resolves with that value, failing with a named timeout error (deadline clamped under the cell budget so it always beats the opaque whole-cell timeout) instead of Bun's `sleep expects a number` or a whole-cell stall from in-page polling Promises; both `wait` forms now register in the stall diagnosis of cell timeouts
@@ -11146,11 +11067,93 @@
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
 
+## [1.6.0] - 2026-07-12
+
+### Added
+
+- `/workflows` is now an interactive Workflow Hub overlay (mirroring `/agents`): browse workflow runs → phases → agents with live state/model/token/duration stats, press Enter on an agent to open its transcript in the existing viewer; backed by a new `WorkflowRunRegistry` that folds progress frames into per-run records and a terminal `done` frame emitted when a run finishes.
+- Added a live workflow HUD under the composer: while any workflow run is active, its phases and agents render and refresh from progress frames (like the task-subagents tree) without opening `/workflows`, and clear when the run completes.
+- Added `/subagents` to open the live subagent inspector for running and parked task agents.
+- Per-file write locking across parallel agents: concurrent `edit`/`write` calls targeting the same file now wait their turn instead of racing (in-process, keyed by canonical path).
+- Added optional `focus` on the `compact` tool and `compactionFocus` on the `job` tool; both are threaded into compaction-summary instructions.
+- Added crash-report recovery in the interactive CLI: unread crash artifacts are pinned at startup, `/crash` shows the newest report, and `/crash dismiss` clears the banner; unexpected tool-render and extension-load failures now persist a local soft crash report without changing existing failure behavior.
+- Added the local Product Preview WebUI with artifact rendering, live reload, side-asks, human-gated Tailscale sharing, export handoff, and `present`/`product-preview` command surfaces.
+- Added anchored per-section comments with threaded replies, resolve controls, and session-owned deletion to Product Preview.
+- Added persisted interactive option-question cards for `ompx-question` document blocks.
+- Added custom HTML template previews with the injected `window.OmpxPreview` bridge and bundled `presenter` agent.
+- Added focused modal review controls with zoom, pan, and fit-to-content for documents, diagrams, and custom HTML previews.
+- Added shared-preview commenter identity chips and share-viewer UX.
+- Added delivery of preview comments, answers, and template feedback into the owning agent session.
+- Added strict, agent-generated `.canvas.json` review canvases for specs, story maps, journey maps, plans, and architecture, with deterministic layout, search, minimap, detail dialogs, safe manifest references, and canvas-node feedback delivery.
+
+### Fixed
+
+- Workflow Hub transcript drill-through now streams live: the workflow agent progress frame carries the subagent's transcript `sessionFile`, so opening an agent (Enter) registers a parked placeholder ref pointing at the real transcript and the viewer tails it immediately — even during the start-race window before the live agent session registers. Previously the open silently no-opped when the ref was not yet in the registry.
+- Workflow Hub navigation gained arrow keys (↑/↓ alongside j/k) and `←` to go back (transcript → hub, hub → editor).
+
+## [1.5.8] - 2026-07-11
+
+### Changed
+
+- Parallel subagents may now share files: the subagent prompt instructs peers to preserve each other's edits and merge carefully, and the parallel-fanout skill no longer forces re-cutting ownership for same-file overlap.
+- Agent-requested and subagent-wait compaction now use remote LLM-summary compaction, with a warned local-summary degradation, instead of snapcompact frames when `compaction.strategy` is `snapcompact`.
+- Added the `rate_learning` tool so the agent can rate injected learnings as useful or not useful.
+- Added background LLM learning consolidation with lease-guarded, multi-session-safe execution.
+- Added a live-learning prompt overhaul that extracts general principles with durability gating.
+- Live-learning injection is now ranked by reinforcement and decay score with stable `[l:...]` aliases.
+- Repo-scope learnings are now keyed by git repository identity instead of cwd, healing worktree fragmentation.
+- Updated tangential agent forks to ignore parent session history and focus exclusively on the new request
+- Hardened `/tan` fork isolation: the clone's inherited todo list is cleared at fork (parent todo reminders no longer drag the tan back onto the parent's task), the fork notice warns that the parent is concurrently editing the same working directory, and the notice is re-injected after each compaction so the fork boundary survives summarization
+- Added visual markers in the transcript for elided tool calls that have no corresponding result
+- Updated status event log to prioritize the most recent entries in the display window
+- Updated the snapcompact shape preview transcript to use the compact scope format shown to models during compaction.
+
+### Fixed
+
+- Fixed rebuilt persisted custom messages losing their originating entry ID; rebuilt messages now retain it so Context GC can match them reliably after context reconstruction.
+- Escape now dismisses the focused overlay/selector before stopping the active turn, instead of the interrupt listener consuming it first.
+- Workflow Hub transcript drill-through now streams live: the workflow agent progress frame carries the subagent's transcript `sessionFile`, so opening an agent (Enter) registers a parked placeholder ref pointing at the real transcript and the viewer tails it immediately — even during the start-race window before the live agent session registers. Previously the open silently no-opped when the ref was not yet in the registry.
+- Workflow Hub navigation gained arrow keys (↑/↓ alongside j/k) and `←` to go back (transcript → hub, hub → editor).
+- Fixed advisor concern/blocker notes interrupting or skipping active tool/function calls; notes now deliver at a safe boundary, including stream-tail recovery.
+- Planning now converges explicitly across normal, orchestrator, and duo flows: every new plan follows `skill://brainstorming` then `skill://writing-plans`, receives adversarial Super Review, and may take multiple blocker-driven revision rounds until requirements, interfaces, ownership, executable acceptance, and any active approval gate satisfy. The locked plan executes directly; ordinary implementation requests need no second approval.
+- Reading `skill://parallel-fanout` is now mandatory before spawning any work subagents (scouts or implementation) in both the system prompt and orchestrator prompts; `workflow` is scoped to multi-phase implementation only (1–2 runs close a job — never scout/plan runs); the duo advisor loop-watch gained plan-churn, review-theater, and skill-skip signatures.
+- Foundation execution now plans only the current ready horizon: active Foundation may contain only concrete runtime prerequisites for the next executable vertical slice, the first locked execution wave must include a production-code owner, tests/maps/contracts/reviews cannot substitute for implementation, review budget is per task objective with a next-action dispatch invariant, and correction is bounded to the same owner. The rule is enforced across normal/orchestrator prompts, advisor loop-watch, planner/heavy/designer agent prompts, and all bundled skills that previously encouraged broad recon, future-contract planning, RED-only waves, or design-system setup.
+- The shell installer now seeds and migrates the `reviewer` agent to `openai-codex/codex-auto-review`, adds the override when missing, and preserves custom reviewer routes.
+- Fixed inconsistent history rendering when toggling the display setting for compacted items
+- Fixed configured `retry.fallbackChains` never engaging on non-retryable provider errors (e.g. "Cloud Code Assist API returned an empty response"): a hard error on a model covered by a fallback chain now switches to the next candidate instead of failing the turn, while still never backoff-retrying the failing model itself
+- Fixed transcript rebuilds (compaction, `/compact`, and toggling history display) repainting content below stale scrollback when collapsing history; rebuilds now correctly clear the scrollback buffer when history is collapsed
+- Improved auto-compaction to automatically drop images and elide content when context is tight, and added persistent warning badges to the compaction divider when manual intervention is required
+- Fixed backgrounded Bash blocks continuing to repaint with live and final job output; they now freeze with a compact job notice while completion is delivered separately
+- Fixed `--reasoning-slide-plan` silently ending the run with no code written when the model answered the plan nudge with a text-only reply (no tool call): the agent loop treats a tool-call-free turn as a natural stop and never prompts again, which the nudge's own "write the plan in your next reply" instruction makes common. The nudge now explicitly tells the model this is a checkpoint, not a final answer, and the session forces one more turn whenever a post-nudge reply lands with zero tool calls
+- Fixed launch tool rendering stacking a stale pending header over a bare `✓ Launch` line and raw text: the tool now uses a merged registry renderer with one per-op status header (op, target, `state · pid · uptime` meta), stripped log cursor suffixes, capped collapsed log/list previews, and a launch tool glyph
+- Fixed confusing launch start/wait results when readiness timed out with the log pattern already matched (readiness needs log AND port): the result printed a contradictory `Ready: <match>` next to `Readiness timed out` without naming the failing condition. Daemon snapshots now carry the unmet conditions (`readyPending`), and start/wait results state exactly what never happened (e.g. `port 3100 on 127.0.0.1 never accepted connections`); the TUI shows a `waiting on port` badge on starting daemons
+- Fixed the in-process `stat` builtin mangling BSD-style invocations like `stat -f "%Sm %N" file` (macOS muscle memory): GNU `-f` means `--file-system`, so the format string was treated as a file operand — printing filesystem info for the real operands and erroring with `cannot read file system information for '%Sm %N'`. A `-f` whose format value contains `%` is now detected as BSD syntax and translated to the GNU equivalent (`%Sm`→`%y`, `%N`→`%n`, `%z`→`%s`, epoch/`S`-form times, owner/group/permission and `H`/`L` sub-field directives, `-L`/`-n`/`-q`/`-F` flag clusters, with `%n`/`%t` as literal newline/tab); directives with no GNU counterpart fail with a clear `unsupported BSD format directive` error
+- Fixed the remaining GNU-flavored shell builtins that broke under macOS/BSD muscle memory, using the same unambiguous-detection approach as the `stat` fix (only invocations that are invalid or nonsensical under GNU semantics are reinterpreted; unsupported BSD forms fail loudly instead of producing wrong output): `date -r <epoch>` formats the epoch when no such file exists (GNU `-r FILE` mtime preserved), signed `date -v±N<unit>` adjustments translate to `-d` relative dates and `-j` is accepted (`-j -f` strptime parse mode and field-set `-v` error clearly); `sed -i '' 's/…/…/' file` drops the BSD empty backup-suffix token instead of treating it as the script; `mktemp -t prefix` without X's creates `$TMPDIR/prefix.XXXXXXXXXX` (the GNU `too few X's` error path); `tail -r` reverses input by delegating to `tac` (with `-n`/`-c`/`-f` combinations erroring clearly); `find -E` maps to `-regextype posix-extended` ahead of the expression; `base64 -D` decodes as an alias of `-d`; and `ln -sfh` works via a `-h` alias of `--no-dereference` (clap's `-h` help short is dropped to match real GNU/BSD ln; `--help` unchanged)
+
+### Added
+
+- Added display setting to toggle between collapsing or keeping compacted history inline, now applied to live session displays
+- Added a compact session-only model picker (Alt+P) for quick model switching without changing roles
+- Added `@` search to the Alt+P / `/switch` picker: it lists configured Ctrl+P quick roles in matching segment colors and applies the selected role's model and thinking for the current session.
+- Redesigned Agent Hub entries as two-line cards: identity (status glyph, name, agent type, parent when nested) on the left, active model + reasoning level and age right-aligned, with the task description on its own line; dropped the redundant `sub · of Main` noise
+- Added a project-scoped `launch` tool for shared long-running services and debuggers, with readiness probes, bounded logs, PTY input, restart policies, and automatic teardown after the last omp instance exits. Gated behind the `launch.enabled` setting (default on); when disabled the tool is withdrawn and the bash prompt drops its "use launch" guidance.
+- Added `detached` `launch` starts for standalone services that survive every omp instance and broker shutdown, then reconnect to the next broker for logs and explicit stop.
+
+### Removed
+
+- Removed the unreliable Bing and Yahoo HTML-scraping web search providers
+
 ## [1.5.8] - 2026-07-11
 
 ### Changed
 
 - The continuous duo advisor now defaults to `gpt-5.6-sol` (was `gpt-5.5`): updated the `duo.advisorModel` schema default and the resolver's unset-fallback so the advisor no longer routes to GPT-5.5.
+
+## [1.5.7] - 2026-07-10
+
+### Added
+
+- Added bundled `parallel-fanout` skill: 7-phase fanout pipeline, feature-slicing dimension table, contract-vs-runtime (C/R) dependency test, tier table, required wave-plan table with a worked example, a one-workflow rule with a script template (a whole wave plan executes as ONE `workflow` run), one-wave scout fanout with a two-wave exploration budget, and the full-cycle rule (one subagent owns red test + implement + fix until green).
 
 ## [1.5.7] - 2026-07-10
 

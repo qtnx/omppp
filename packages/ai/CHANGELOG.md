@@ -2,15 +2,6 @@
 
 ## [Unreleased]
 
-## [1.6.0] - 2026-07-12
-
-### Fixed
-
-- Added Meta Model API key login and provider-scoped 131,072-token OpenAI Responses output requests without raising the 64K safety limit for other providers.
-### Fixed
-
-- Fixed empty provider responses (e.g. "Cloud Code Assist API returned an empty response") being classified as non-retryable: `ProviderResponseError` with kind `empty-body` now carries the transient flag, so session retry and configured model-fallback chains engage instead of hard-failing the turn
-
 ## [16.4.6] - 2026-07-12
 
 ### Added
@@ -4150,6 +4141,13 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.6.0] - 2026-07-12
+
+### Fixed
+
+- Added Meta Model API key login and provider-scoped 131,072-token OpenAI Responses output requests without raising the 64K safety limit for other providers.
+- Fixed empty provider responses (e.g. "Cloud Code Assist API returned an empty response") being classified as non-retryable: `ProviderResponseError` with kind `empty-body` now carries the transient flag, so session retry and configured model-fallback chains engage instead of hard-failing the turn
 
 ## [1.5.8] - 2026-07-11
 

@@ -2,15 +2,8 @@
 
 ## [Unreleased]
 
-## [1.6.0] - 2026-07-12
+## [1.6.1] - 2026-07-13
 
-### Added
-
-- Added optional non-interrupting boundary steering via `Agent.steer(message, { interruptToolExecution: false })` and `Agent.hasInterruptingSteeringMessages()`, delivering at the next tool boundary without skipping remaining calls while default steering remains interrupting.
-
-### Fixed
-
-- Fixed `/shake` rewriting normal tool results when their placeholders could not save tokens, while retaining forced cleanup for non-error useless results.
 ### Added
 
 - Added automated image-dropping rescue tier to compaction dead-end recovery
@@ -1029,6 +1022,16 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.6.0] - 2026-07-12
+
+### Added
+
+- Added optional non-interrupting boundary steering via `Agent.steer(message, { interruptToolExecution: false })` and `Agent.hasInterruptingSteeringMessages()`, delivering at the next tool boundary without skipping remaining calls while default steering remains interrupting.
+
+### Fixed
+
+- Fixed `/shake` rewriting normal tool results when their placeholders could not save tokens, while retaining forced cleanup for non-error useless results.
 
 ## [1.5.6] - 2026-07-10
 
