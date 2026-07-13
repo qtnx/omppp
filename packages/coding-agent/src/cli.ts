@@ -30,6 +30,7 @@ import {
 	TINY_WORKER_ARG,
 	TINY_WORKER_ARGS,
 } from "./cli/worker-selectors";
+import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
 
 const MACOS_SANDBOX_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_INHERITED";
 const LINUX_SANDBOX_INHERITED_ENV = "PI_OMPX_LINUX_SANDBOX_INHERITED";
@@ -91,6 +92,8 @@ async function runSmokeTest(): Promise<void> {
 	const { smokeTestTtsWorker } = await import("./tts/tts-client");
 	const { smokeTestMnemopiEmbedWorker } = await import("./mnemopi/embed-client");
 	const { smokeTestJsEvalWorker } = await import("./eval/js/context-manager");
+	// Smoke dependencies stay lazy so normal CLI startup does not load worker clients.
+	const { smokeTestDaemonBroker } = await import("./launch/client");
 	await smokeTestSyncWorker();
 
 	const statsServer = await startServer(0);
@@ -110,6 +113,7 @@ async function runSmokeTest(): Promise<void> {
 	await smokeTestJsEvalWorker();
 	await smokeTestTtsWorker();
 	await smokeTestMnemopiEmbedWorker();
+	await smokeTestDaemonBroker();
 	process.stdout.write("smoke-test: ok\n");
 }
 
@@ -177,6 +181,12 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === MNEMOPI_EMBED_WORKER_ARG) {
 		const { startMnemopiEmbedWorker } = await import("./mnemopi/embed-worker");
 		await runIpcSubprocessWorker(startMnemopiEmbedWorker);
+		return true;
+	}
+	if (arg === DAEMON_BROKER_WORKER_ARG) {
+		// Worker selectors must dispatch before the normal command graph loads.
+		const { startDaemonBrokerFromEnvironment } = await import("./launch/broker");
+		await startDaemonBrokerFromEnvironment();
 		return true;
 	}
 	return false;

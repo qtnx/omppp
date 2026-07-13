@@ -173,15 +173,6 @@ export declare function __ompInstallTokioRuntime(): void
 export declare function __piNativesV1_6_0(): void
 
 /**
- * Apply conservative pre-execution rewrites to a bash command.
- *
- * Strips trailing `| head|tail [safe-args]` and redundant trailing `2>&1`
- * from each top-level pipeline. The full rules and bail conditions live in
- * `pi_shell::fixup`. Synchronous and cheap (one parse pass over the input).
- */
-export declare function applyBashFixups(command: string): BashFixupResult
-
-/**
  * Apply ast-grep rewrite rules to matching files; honors `dryRun` and returns
  * a promise.
  */

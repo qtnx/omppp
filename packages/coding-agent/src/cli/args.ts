@@ -30,6 +30,12 @@ export interface Args {
 	smol?: string;
 	slow?: string;
 	plan?: string;
+	reasoningSlideModel?: string;
+	reasoningSlideTurns?: string;
+	reasoningSlideOnAction?: boolean;
+	reasoningSlidePlan?: boolean;
+	reasoningSlidePlanAt?: string;
+	reasoningSlideChecklist?: boolean;
 	maxTime?: number;
 	apiKey?: string;
 	systemPrompt?: string;
@@ -244,6 +250,12 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.hideThinking = true;
 		} else if (arg === "--advisor") {
 			result.advisor = true;
+		} else if (arg === "--reasoning-slide-plan") {
+			result.reasoningSlidePlan = true;
+		} else if (arg === "--reasoning-slide-on-action") {
+			result.reasoningSlideOnAction = true;
+		} else if (arg === "--reasoning-slide-checklist") {
+			result.reasoningSlideChecklist = true;
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
 		} else if (arg === "--print-thoughts") {

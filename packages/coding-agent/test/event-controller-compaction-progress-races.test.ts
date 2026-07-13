@@ -22,7 +22,8 @@
  * private handlers are exercised end-to-end rather than reimplemented. Fake
  * timers make the component's 1s `setInterval` observable via `getTimerCount()`.
  */
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { CompactionProgressComponent } from "@oh-my-pi/pi-coding-agent/modes/components/compaction-progress";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -137,8 +138,16 @@ function untrackedToolUpdateEvent(): Extract<AgentSessionEvent, { type: "tool_ex
 
 describe("EventController auto-compaction progress lifecycle/races", () => {
 	beforeAll(async () => {
+		// `#handleAutoCompactionEnd` reads the process-global config used by the
+		// running application, not the harness-local `ctx.settings`.
+		resetSettingsForTest();
+		await Settings.init({ inMemory: true });
 		// Overlay pulls spinner frames + colors from the active theme.
 		await initTheme(false);
+	});
+
+	afterAll(() => {
+		resetSettingsForTest();
 	});
 
 	afterEach(() => {

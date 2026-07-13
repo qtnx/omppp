@@ -25,6 +25,7 @@ import { grepToolRenderer } from "./grep";
 import { inspectImageToolRenderer } from "./inspect-image-renderer";
 import { ircToolRenderer } from "./irc";
 import { jobToolRenderer } from "./job";
+import { launchToolRenderer } from "./launch";
 import { recallToolRenderer, reflectToolRenderer, retainToolRenderer } from "./memory-render";
 import { readToolRenderer } from "./read";
 import { resolveToolRenderer } from "./resolve";
@@ -95,6 +96,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	lsp: lspToolRenderer as ToolRenderer,
 	inspect_image: inspectImageToolRenderer as ToolRenderer,
 	irc: ircToolRenderer as ToolRenderer,
+	launch: launchToolRenderer as ToolRenderer,
 	read: readToolRenderer as ToolRenderer,
 	job: jobToolRenderer as ToolRenderer,
 	resolve: resolveToolRenderer as ToolRenderer,

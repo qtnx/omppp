@@ -144,7 +144,7 @@ import {
 	obfuscateProviderContext,
 	SecretObfuscator,
 } from "./secrets";
-import { AgentSession } from "./session/agent-session";
+import { AgentSession, type ReasoningSlide } from "./session/agent-session";
 import {
 	type DiscoverAuthStorageOptions,
 	discoverAuthStorage as discoverAuthStorageFromConfig,
@@ -596,6 +596,8 @@ export interface CreateAgentSessionOptions {
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
+	/** One-way model switch after a fixed number of completed assistant turns. */
+	reasoningSlide?: ReasoningSlide;
 
 	/** System prompt blocks. Array replaces default, function receives default blocks and returns final blocks. */
 	systemPrompt?: string | string[] | ((defaultPrompt: string[]) => string | string[] | Promise<string | string[]>);
@@ -3491,7 +3493,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			advisorConfigs: discoveredAdvisors.advisors,
 			agent,
 			pruneToolDescriptions: inlineToolDescriptors,
-			thinkingLevel: autoThinking ? thinkingLevel : effectiveThinkingLevel,
+			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
+			reasoningSlide: options.reasoningSlide,
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
 			settings,
