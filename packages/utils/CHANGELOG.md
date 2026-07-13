@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added durable local crash reports under `getLogsDir()`, a deduplicated soft-crash reporting API, and postmortem crash persistence before process exit.
+
 ## [16.4.2] - 2026-07-10
 
 ### Added

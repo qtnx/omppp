@@ -522,6 +522,11 @@ export function getLogsDir(): string {
 	return dirs.rootSubdir("logs", "state");
 }
 
+/** Directory containing JS and native crash artifacts (alias of {@link getLogsDir}). */
+export function getCrashReportsDir(): string {
+	return getLogsDir();
+}
+
 /** Get the path to a dated log file (~/.omp/logs/omp.YYYY-MM-DD.log). */
 export function getLogPath(date = new Date()): string {
 	return path.join(getLogsDir(), `${APP_STORAGE_NAME}.${date.toISOString().slice(0, 10)}.log`);
@@ -809,9 +814,21 @@ export function getTerminalSessionsDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, "terminal-sessions", "state");
 }
 
-/** Get the crash log path (~/.omp/agent/omp-crash.log). */
-export function getCrashLogPath(agentDir?: string): string {
-	return dirs.agentSubdir(agentDir, "omp-crash.log", "state");
+/**
+ * Best-effort path of the newest JS crash report, or a sentinel path before
+ * any reports have been written. Writers always create per-event files.
+ */
+export function getCrashLogPath(): string {
+	const logsDir = getLogsDir();
+	try {
+		const newest = fs
+			.readdirSync(logsDir)
+			.map(name => ({ name, match: /^crash-[a-z_]+-\d+-(\d+)\.jsonl$/.exec(name) }))
+			.filter((entry): entry is { name: string; match: RegExpExecArray } => entry.match !== null)
+			.sort((left, right) => Number(right.match[1]) - Number(left.match[1]))[0];
+		if (newest) return path.join(logsDir, newest.name);
+	} catch {}
+	return path.join(logsDir, "crash-latest.jsonl");
 }
 
 /** Get the debug log path (~/.omp/agent/omp-debug.log). */

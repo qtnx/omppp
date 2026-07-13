@@ -43,13 +43,16 @@ import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilit
 import {
 	APP_NAME,
 	adjustHsv,
+	formatCrashReportPathLine,
 	formatNumber,
 	getProjectDir,
 	hsvToRgb,
 	isEnoent,
+	listUnreadCrashArtifacts,
 	logger,
 	postmortem,
 	prompt,
+	sanitizeText,
 	setProjectDir,
 } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
@@ -120,7 +123,7 @@ import type { ConfiguredThinkingLevel } from "../thinking";
 import type { LspStartupServerInfo } from "../tools";
 import { setJobLiveStatsProvider } from "../tools/job";
 import { normalizeLocalScheme } from "../tools/path-utils";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
+import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import { type ResolveToolDetails, runResolveInvocation } from "../tools/resolve";
 import { formatPhaseDisplayName, todoMatchesAnyDescription } from "../tools/todo";
@@ -455,6 +458,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	btwContainer: Container;
 	omfgContainer: Container;
 	errorBannerContainer: Container;
+	#crashReportBannerVisible = false;
 	modelCycleContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
@@ -1002,6 +1006,25 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.addChild(this.omfgContainer);
 		this.ui.addChild(this.errorBannerContainer);
 		this.ui.addChild(this.modelCycleContainer);
+		void Promise.resolve().then(() => {
+			try {
+				const latest = listUnreadCrashArtifacts()[0];
+				if (!latest) return;
+				const summary = truncateToWidth(
+					sanitizeText(latest.summary).replace(/\s+/g, " ").trim(),
+					TRUNCATE_LENGTHS.CONTENT,
+				);
+				const reportPath = truncateToWidth(
+					sanitizeText(shortenPath(latest.path)).replace(/\s+/g, " "),
+					TRUNCATE_LENGTHS.CONTENT,
+				);
+				this.#showCrashReportBanner(
+					`${summary}\n${formatCrashReportPathLine(reportPath)}\nUse /crash to inspect or /crash dismiss to clear.`,
+				);
+			} catch (error) {
+				logger.warn("Failed to load unread crash reports", { error: String(error) });
+			}
+		});
 		// Working loader / transient status sits below the sticky todo + subagent
 		// HUDs, just above the editor's hook-widget top margin — so it reads next to
 		// the prompt while keeping the one-line gap above the editor.
@@ -4358,16 +4381,30 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#uiHelpers.showError(message);
 	}
 
+	#showCrashReportBanner(message: string): void {
+		this.#crashReportBannerVisible = true;
+		this.errorBannerContainer.clear();
+		this.errorBannerContainer.addChild(new ErrorBannerComponent(message));
+		this.ui.requestRender();
+	}
+
 	showPinnedError(message: string): void {
+		this.#crashReportBannerVisible = false;
 		this.errorBannerContainer.clear();
 		this.errorBannerContainer.addChild(new ErrorBannerComponent(message));
 		this.ui.requestRender();
 	}
 
 	clearPinnedError(): void {
+		this.#crashReportBannerVisible = false;
 		if (this.errorBannerContainer.children.length === 0) return;
 		this.errorBannerContainer.clear();
 		this.ui.requestRender();
+	}
+
+	clearCrashReportBanner(): void {
+		if (!this.#crashReportBannerVisible) return;
+		this.clearPinnedError();
 	}
 
 	showWarning(message: string): void {
