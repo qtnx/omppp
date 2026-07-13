@@ -31,8 +31,10 @@
     "ompx": "src/cli.ts"
   },
   "scripts": {
-    "build": "bun scripts/build-binary.ts",
-    "check": "biome check . && bun run check:types",
+    "build": "bun run check:canvas && bun scripts/build-binary.ts",
+    "check": "biome check . && bun run check:docs && bun run check:canvas && bun run check:types",
+    "check:canvas": "bun scripts/bundle-canvas.ts --check",
+    "check:docs": "bun scripts/generate-docs-index.ts --check",
     "check:types": "tsgo -p tsconfig.json --noEmit",
     "lint": "biome lint .",
     "test": "bun ../../scripts/ci-test-ts.ts coding-agent-heavy --full",
@@ -41,6 +43,7 @@
     "format-prompts": "bun scripts/format-prompts.ts",
     "gen:tool-views": "bun --cwd=../collab-web run gen:tool-views",
     "gen:bundle": "bun scripts/bundle-dist.ts",
+    "gen:canvas": "bun scripts/bundle-canvas.ts",
     "gen:mupdf": "bun scripts/embed-mupdf-wasm.ts --generate",
     "gen:mupdf:reset": "bun scripts/embed-mupdf-wasm.ts --reset",
     "gen:native": "bun --cwd=../natives run gen:native",
@@ -54,7 +57,6 @@
     "@mozilla/readability": "catalog:",
     "@oh-my-pi/context-gc-plugin": "catalog:",
     "@oh-my-pi/delegation-reminder-plugin": "catalog:",
-    "@oh-my-pi/system-context-reminder-plugin": "catalog:",
     "@oh-my-pi/hashline": "catalog:",
     "@oh-my-pi/omp-stats": "catalog:",
     "@oh-my-pi/pi-agent-core": "catalog:",
@@ -66,6 +68,7 @@
     "@oh-my-pi/pi-utils": "catalog:",
     "@oh-my-pi/pi-wire": "catalog:",
     "@oh-my-pi/snapcompact": "catalog:",
+    "@oh-my-pi/system-context-reminder-plugin": "catalog:",
     "@opentelemetry/api": "catalog:",
     "@opentelemetry/context-async-hooks": "catalog:",
     "@opentelemetry/exporter-trace-otlp-proto": "catalog:",
@@ -73,20 +76,26 @@
     "@opentelemetry/sdk-trace-base": "catalog:",
     "@opentelemetry/sdk-trace-node": "catalog:",
     "@puppeteer/browsers": "catalog:",
-    "@types/turndown": "catalog:",
+    "@floating-ui/dom": "1.7.6",
     "@xterm/headless": "catalog:",
+    "@xyflow/react": "12.11.2",
     "arktype": "catalog:",
     "chalk": "catalog:",
     "diff": "catalog:",
-    "fflate": "catalog:",
+    "dompurify": "3.4.11",
     "fast-xml-parser": "catalog:",
+    "fflate": "catalog:",
     "handlebars": "catalog:",
     "header-generator": "catalog:",
     "linkedom": "catalog:",
     "lru-cache": "catalog:",
     "mammoth": "catalog:",
+    "marked": "18.0.5",
+    "mermaid": "11.16.0",
     "mupdf": "catalog:",
     "puppeteer-core": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
     "turndown": "catalog:",
     "turndown-plugin-gfm": "catalog:",
     "zod": "catalog:"
@@ -96,7 +105,9 @@
     "sherpa-onnx-node": "1.13.2"
   },
   "devDependencies": {
-    "@types/bun": "catalog:"
+    "@types/bun": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:"
   },
   "engines": {
     "bun": ">=1.3.14"

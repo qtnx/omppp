@@ -123,6 +123,36 @@ describe("bundled task agents", () => {
 		expect(uxCopywriter?.systemPrompt).not.toMatch(REVIEW_COMMENT_PATTERN);
 	});
 
+	test("registers presenter with preview-templates autoload", () => {
+		const presenter = getBundledAgent("presenter");
+
+		expect(presenter).toBeDefined();
+		expect(presenter?.source).toBe("bundled");
+		expect(presenter?.name).toBe("presenter");
+		expect(presenter?.model).toEqual(["tnx/designer"]);
+		expect(presenter?.autoloadSkills).toEqual(["preview-templates"]);
+		expect(presenter?.tools ?? []).toEqual(
+			expect.arrayContaining(["read", "grep", "glob", "bash", "edit", "write", "browser", "irc", "yield"]),
+		);
+		expect(presenter?.tools ?? []).not.toContain("task");
+		expect(presenter?.description).toMatch(/\.canvas\.json|canvas/i);
+		expect(presenter?.description).toMatch(/product[- ]preview/i);
+		expect(presenter?.description).toMatch(/html|mockup/i);
+		expect(presenter?.systemPrompt).toMatch(/docs\/product\/canvases\/.*\.canvas\.json/i);
+		expect(presenter?.systemPrompt).toMatch(/version:\s*1|version":\s*1/i);
+		expect(presenter?.systemPrompt).toMatch(/story-map/);
+		expect(presenter?.systemPrompt).toMatch(/journey-map/);
+		expect(presenter?.systemPrompt).toMatch(/architecture/);
+		expect(presenter?.systemPrompt).toMatch(/all-or-none/i);
+		expect(presenter?.systemPrompt).toMatch(/review-only/i);
+		expect(presenter?.systemPrompt).toMatch(/NEVER[\s\S]{0,80}(HTML|style|URL|React Flow)/i);
+		expect(presenter?.systemPrompt).toMatch(/kind=mockup|self-contained \.html/i);
+		expect(presenter?.systemPrompt).not.toMatch(REVIEW_COMMENT_PATTERN);
+
+		const names = loadBundledAgents().map(agent => agent.name);
+		expect(names.filter(name => name === "presenter")).toHaveLength(1);
+	});
+
 	test("registers browser_qa as a browser-driven QA specialist", () => {
 		expect(() => loadBundledAgents()).not.toThrow();
 

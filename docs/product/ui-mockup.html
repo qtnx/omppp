@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Product Preview v2 — Dashboard mockup</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg-0: #0f1115;
+      --bg-1: #161922;
+      --bg-2: #1d212c;
+      --bg-3: #242938;
+      --border: #2e3445;
+      --border-strong: #3b4259;
+      --text: #d8dee9;
+      --text-muted: #98a1b5;
+      --text-dim: #717b90;
+      --accent: #7aa2f7;
+      --accent-soft: rgba(122, 162, 247, 0.14);
+      --ok: #9ece6a;
+      --warn: #e0af68;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      --font-mono: "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+      --space-1: 0.375rem;
+      --space-2: 0.625rem;
+      --space-3: 0.875rem;
+      --space-4: 1.25rem;
+      --space-5: 1.75rem;
+      --r-sm: 4px;
+      --r-md: 8px;
+      --r-lg: 12px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg-0); color: var(--text); }
+    body { font-family: var(--font-sans); line-height: 1.45; }
+    button { font: inherit; }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 15rem minmax(0, 1fr);
+      grid-template-rows: auto 1fr auto;
+    }
+
+    .topbar {
+      grid-column: 1 / -1;
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-4);
+      padding: var(--space-3) var(--space-4);
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-1);
+    }
+
+    .brand { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+    .mark { width: 2rem; height: 2rem; display: grid; place-items: center; border-radius: var(--r-md); background: var(--accent); color: #101521; font: 900 0.9rem var(--font-mono); }
+    .brand strong { display: block; }
+    .brand span { display: block; color: var(--text-muted); font-size: 0.78rem; }
+    .live { display: flex; align-items: center; gap: var(--space-2); color: var(--text-muted); font-size: 0.82rem; white-space: nowrap; }
+    .live::before { content: ""; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px rgba(158, 206, 106, 0.12); }
+
+    nav {
+      min-width: 0;
+      padding: var(--space-4) var(--space-3);
+      border-right: 1px solid var(--border);
+      background: var(--bg-1);
+    }
+
+    nav h2 { margin: 0 var(--space-2) var(--space-2); color: var(--text-dim); font: 700 0.72rem var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+    nav ul { list-style: none; margin: 0 0 var(--space-4); padding: 0; }
+    nav li { margin: var(--space-1) 0; }
+    .nav-item {
+      width: 100%;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-2);
+      padding: 0.65rem var(--space-2);
+      border: 1px solid transparent;
+      border-radius: var(--r-md);
+      background: transparent;
+      color: var(--text-muted);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .nav-item:hover { color: var(--text); background: var(--bg-2); }
+    .nav-item[aria-current="page"] { color: var(--text); border-color: var(--border-strong); background: var(--accent-soft); }
+    .count { color: var(--text-dim); font: 700 0.75rem var(--font-mono); }
+
+    main { min-width: 0; padding: var(--space-5); }
+    .page-head { display: flex; align-items: end; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-5); }
+    .eyebrow { margin: 0 0 var(--space-1); color: var(--accent); font: 700 0.74rem var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; }
+    h1 { margin: 0 0 var(--space-2); font-size: clamp(1.65rem, 4vw, 2.6rem); letter-spacing: -0.035em; }
+    .subtitle { margin: 0; color: var(--text-muted); max-width: 62ch; }
+    .version { padding: var(--space-2) var(--space-3); border: 1px solid var(--border-strong); border-radius: var(--r-sm); color: var(--text-muted); font: 700 0.78rem var(--font-mono); }
+
+    .overview { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(16rem, 0.7fr); gap: var(--space-4); }
+    .panel { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--bg-1); }
+    .panel-head { display: flex; justify-content: space-between; gap: var(--space-3); align-items: center; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
+    .panel-head h2 { margin: 0; font-size: 1rem; }
+    .panel-head span { color: var(--text-muted); font: 600 0.75rem var(--font-mono); }
+
+    .artifact-list { list-style: none; margin: 0; padding: 0; }
+    .artifact {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      align-items: center;
+      min-height: 68px;
+      padding: var(--space-3) var(--space-4);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .artifact:last-child { border-bottom: 0; }
+    .kind { min-width: 3.1rem; padding: 0.22rem 0.4rem; border-radius: var(--r-sm); background: var(--bg-3); color: var(--text-muted); text-align: center; font: 700 0.7rem var(--font-mono); }
+    .artifact strong, .artifact small { display: block; overflow-wrap: anywhere; }
+    .artifact small { color: var(--text-muted); margin-top: 0.15rem; }
+    .state { color: var(--ok); font: 700 0.74rem var(--font-mono); }
+    .state.review { color: var(--warn); }
+
+    .activity { padding: var(--space-4); }
+    .activity ol { margin: 0; padding: 0; list-style: none; }
+    .activity li { position: relative; padding: 0 0 var(--space-4) 1.35rem; color: var(--text-muted); font-size: 0.88rem; }
+    .activity li:last-child { padding-bottom: 0; }
+    .activity li::before { content: ""; position: absolute; left: 0; top: 0.4rem; width: 0.48rem; height: 0.48rem; border-radius: 50%; background: var(--accent); }
+    .activity li::after { content: ""; position: absolute; left: 0.215rem; top: 1rem; bottom: 0.2rem; width: 1px; background: var(--border-strong); }
+    .activity li:last-child::after { display: none; }
+    .activity strong { display: block; color: var(--text); font-weight: 650; }
+    .activity time { color: var(--text-dim); font: 0.72rem var(--font-mono); }
+
+    .feedback {
+      grid-column: 1 / -1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: var(--space-4);
+      min-height: 72px;
+      padding: var(--space-3) var(--space-4);
+      border-top: 1px solid var(--border);
+      background: var(--bg-1);
+    }
+
+    .feedback strong, .feedback span { display: block; }
+    .feedback span { color: var(--text-muted); font-size: 0.82rem; }
+    .feedback-action {
+      min-height: 44px;
+      padding: 0.7rem 1rem;
+      border: 1px solid var(--accent);
+      border-radius: var(--r-md);
+      background: var(--accent);
+      color: #101521;
+      font-weight: 800;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: background 150ms ease-out, transform 150ms ease-out;
+    }
+
+    .feedback-action:hover { background: #8aafff; }
+    .feedback-action:active { transform: translateY(1px); }
+    button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+    #feedback-status { min-height: 1.2rem; margin-top: var(--space-1); color: var(--ok); font-size: 0.78rem; }
+
+    @media (max-width: 800px) {
+      .app { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr auto; }
+      nav { border-right: 0; border-bottom: 1px solid var(--border); padding: var(--space-2) var(--space-3); overflow-x: auto; }
+      nav h2, nav ul:last-child { display: none; }
+      nav ul { display: flex; gap: var(--space-2); margin: 0; min-width: max-content; }
+      .nav-item { width: auto; padding-inline: var(--space-3); }
+      main { padding: var(--space-4); }
+      .overview { grid-template-columns: 1fr; }
+      .page-head { align-items: start; }
+    }
+
+    @media (max-width: 480px) {
+      .topbar, main, .feedback { padding-inline: var(--space-3); }
+      .brand span, .version { display: none; }
+      .page-head, .feedback { align-items: stretch; flex-direction: column; }
+      .artifact { grid-template-columns: auto minmax(0, 1fr); }
+      .artifact .state { grid-column: 2; }
+      .feedback-action { width: 100%; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">PX</div>
+        <div><strong>Product Preview</strong><span>Artifact review workspace</span></div>
+      </div>
+      <div class="live" role="status">Live — connected</div>
+    </header>
+
+    <nav aria-label="Preview sections">
+      <h2>Workspace</h2>
+      <ul>
+        <li><button class="nav-item" type="button" aria-current="page">Overview <span class="count">8</span></button></li>
+        <li><button class="nav-item" type="button">Story map <span class="count">5</span></button></li>
+        <li><button class="nav-item" type="button">Comments <span class="count">3</span></button></li>
+      </ul>
+      <h2>Artifacts</h2>
+      <ul>
+        <li><button class="nav-item" type="button">Specifications <span class="count">1</span></button></li>
+        <li><button class="nav-item" type="button">Design <span class="count">1</span></button></li>
+        <li><button class="nav-item" type="button">Architecture <span class="count">1</span></button></li>
+        <li><button class="nav-item" type="button">Mockups <span class="count">2</span></button></li>
+      </ul>
+    </nav>
+
+    <main>
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Current bundle</p>
+          <h1>Product Preview WebUI</h1>
+          <p class="subtitle">Review the full product picture, anchor feedback to source material, and send decisions back to the owning agent.</p>
+        </div>
+        <div class="version">v2 review</div>
+      </div>
+
+      <div class="overview">
+        <section class="panel" aria-labelledby="artifacts-title">
+          <div class="panel-head"><h2 id="artifacts-title">Review queue</h2><span>Sample data</span></div>
+          <ul class="artifact-list">
+            <li class="artifact">
+              <span class="kind">SPEC</span>
+              <div><strong>Product Preview WebUI</strong><small>Five v2 stories · 14 acceptance criteria</small></div>
+              <span class="state review">Review</span>
+            </li>
+            <li class="artifact">
+              <span class="kind">MAP</span>
+              <div><strong>Interactive v2 story map</strong><small>Comments · questions · templates · focus</small></div>
+              <span class="state">Ready</span>
+            </li>
+            <li class="artifact">
+              <span class="kind">ARCH</span>
+              <div><strong>Feedback state and bridge delivery</strong><small>Durable comments, answers, and sandbox boundary</small></div>
+              <span class="state">Ready</span>
+            </li>
+            <li class="artifact">
+              <span class="kind">UI</span>
+              <div><strong>Review workspace mockup</strong><small>Desktop and narrow-screen states</small></div>
+              <span class="state review">Review</span>
+            </li>
+          </ul>
+        </section>
+
+        <section class="panel" aria-labelledby="activity-title">
+          <div class="panel-head"><h2 id="activity-title">Recent activity</h2><span>Sample data</span></div>
+          <div class="activity">
+            <ol>
+              <li><strong>Question answered</strong>S11 moved to Prioritize<br><time>just now</time></li>
+              <li><strong>Comment resolved</strong>Sandbox boundary wording<br><time>8 minutes ago</time></li>
+              <li><strong>Mockup updated</strong>Focused review controls<br><time>21 minutes ago</time></li>
+            </ol>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="feedback">
+      <div>
+        <strong>Review this dashboard direction</strong>
+        <span>Send a fixed template-feedback signal to the owning agent.</span>
+        <div id="feedback-status" role="status" aria-live="polite"></div>
+      </div>
+      <button class="feedback-action" id="send-feedback" type="button">Send template feedback</button>
+    </footer>
+  </div>
+
+  <script>
+    document.getElementById("send-feedback").addEventListener("click", () => {
+      window.OmpxPreview.sendPrompt('feedback from template');
+      document.getElementById("feedback-status").textContent = "Feedback sent to the agent.";
+    });
+  </script>
+</body>
+</html>

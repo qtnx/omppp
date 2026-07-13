@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="color-scheme" content="dark light" />
+		<meta name="referrer" content="no-referrer" />
+		<title>Product Preview</title>
+		<link rel="stylesheet" href="/styles.css" />
+		<link rel="stylesheet" href="/generated/canvas-app.css" />
+	</head>
+	<body>
+		<a class="skip-link" href="#content">Skip to content</a>
+		<div class="app" id="app">
+			<!-- Top bar -->
+			<header class="topbar" role="banner">
+				<button
+					type="button"
+					class="iconbtn menu-toggle"
+					id="menuToggle"
+					aria-label="Toggle navigation"
+					aria-expanded="false"
+					aria-controls="nav"
+					hidden
+				>
+					<span aria-hidden="true">&#9776;</span>
+				</button>
+				<h1 class="bundle-title" id="bundleTitle">Product Preview</h1>
+				<div class="topbar-actions">
+					<button type="button" class="btn" id="askBtn" aria-expanded="false" aria-controls="askPanel">Ask the agent</button>
+					<button type="button" class="btn" id="shareBtn" aria-expanded="false" aria-controls="sharePanel" hidden>Share</button>
+					<span class="shared-badge" id="sharedBadge" hidden>Shared preview</span>
+					<span class="name-chip" id="nameChip" hidden></span>
+					<span class="live-dot" id="liveDot" role="status" aria-live="polite" data-state="connecting" title="Connecting…">
+						<span class="sr-only" id="liveLabel">Connecting…</span>
+					</span>
+				</div>
+			</header>
+
+			<!-- Main grid -->
+			<div class="grid">
+				<!-- Navigation tree -->
+				<nav class="nav" id="nav" aria-label="Documents">
+					<div class="nav-scroll" id="navScroll">
+						<ul class="view-tabs" role="tablist" aria-label="Views" id="viewTabs" hidden>
+							<li role="none"><button type="button" role="tab" class="view-tab" id="tab-overview" aria-selected="true" data-view="overview">Overview</button></li>
+							<li role="none"><button type="button" role="tab" class="view-tab" id="tab-storymap" data-view="storymap" hidden>Story map</button></li>
+							<li role="none"><button type="button" role="tab" class="view-tab" id="tab-phases" data-view="phases" hidden>Phases</button></li>
+						</ul>
+						<div class="tree" id="tree" aria-busy="true">
+							<p class="skeleton-row" aria-hidden="true"></p>
+							<p class="skeleton-row" aria-hidden="true"></p>
+							<p class="skeleton-row" aria-hidden="true"></p>
+						</div>
+					</div>
+				</nav>
+
+				<!-- Content pane -->
+				<main class="content" id="content" tabindex="-1" aria-live="polite" aria-busy="false">
+					<div class="content-skeleton" id="contentSkeleton" aria-hidden="true">
+						<p class="skeleton-row"></p><p class="skeleton-row"></p><p class="skeleton-row"></p>
+					</div>
+				</main>
+			</div>
+
+			<!-- Status strip -->
+			<div class="status-strip" id="statusStrip" role="status" aria-live="polite">
+				<span id="statusText"></span>
+			</div>
+
+			<!-- Side-ask panel -->
+			<aside class="panel" id="askPanel" role="region" aria-label="Ask the agent" hidden>
+				<div class="panel-head">
+					<h2 class="panel-title">Ask the agent</h2>
+					<button type="button" class="iconbtn panel-close" data-close="askPanel" aria-label="Close ask panel">×</button>
+				</div>
+				<p class="panel-hint" id="askContext" hidden></p>
+				<form id="askForm" class="ask-form" novalidate>
+					<label class="sr-only" for="askInput">Your question or feedback</label>
+					<textarea
+						id="askInput"
+						class="ask-input"
+						placeholder="How should auth handle expired invites?"
+						maxlength="10000"
+						rows="4"
+						required
+					></textarea>
+					<div class="ask-foot">
+						<span class="ask-rate" id="askRate" aria-live="polite"></span>
+						<button type="submit" class="btn btn-primary" id="askSubmit">Send</button>
+					</div>
+					<p class="ask-toast" id="askToast" role="status" aria-live="polite" hidden></p>
+					<p class="ask-error" id="askError" role="alert" aria-live="assertive" hidden></p>
+				</form>
+			</aside>
+
+			<!-- Share panel -->
+			<aside class="panel" id="sharePanel" role="region" aria-label="Share preview" hidden>
+				<div class="panel-head">
+					<h2 class="panel-title">Share</h2>
+					<button type="button" class="iconbtn panel-close" data-close="sharePanel" aria-label="Close share panel">×</button>
+				</div>
+				<div class="share-body" id="shareBody">
+					<p class="share-state" id="shareState">Status: OFF</p>
+					<p class="share-gate" id="shareGateOff">Enabling share requires a command in your terminal so only a human can expose the preview.</p>
+					<div class="share-cmd" id="shareCmdOff" hidden>
+						<code>/product-preview share on</code>
+					</div>
+					<div id="shareOn" hidden>
+						<p class="share-state on">Status: ON</p>
+						<div class="copy-block">
+							<label class="copy-label" for="shareUrl">Share URL</label>
+							<div class="copy-row">
+								<output id="shareUrl" class="copyable"></output>
+								<button type="button" class="btn btn-sm" data-copy="shareUrl">Copy URL</button>
+							</div>
+						</div>
+						<div class="copy-block">
+							<label class="copy-label" for="sharePrompt">Teammate pull-prompt</label>
+							<div class="copy-row">
+								<output id="sharePrompt" class="copyable"></output>
+								<button type="button" class="btn btn-sm" data-copy="sharePrompt">Copy pull-prompt</button>
+							</div>
+						</div>
+						<div class="share-cmd">
+							<code>/product-preview share off</code>
+						</div>
+					</div>
+				</div>
+			</aside>
+
+			<!-- Review rail -->
+			<aside class="panel comment-panel review-rail" id="commentPanel" role="region" aria-label="Review rail" hidden data-ompx-ui="">
+				<div class="panel-head">
+					<h2 class="panel-title">Review rail</h2>
+					<button type="button" class="iconbtn panel-close" data-close="commentPanel" aria-label="Close review rail">×</button>
+				</div>
+				<p class="panel-hint" id="commentCapability">Feedback is delivered to the owning agent session.</p>
+				<div class="review-tabs" id="commentTabs" aria-label="Filter review items">
+					<button type="button" class="review-tab is-active" aria-pressed="true" data-review-filter="open">Open <span id="commentOpenCount">0</span></button>
+					<button type="button" class="review-tab" aria-pressed="false" data-review-filter="sent">Sent to agent <span id="commentSentCount">0</span></button>
+					<button type="button" class="review-tab" aria-pressed="false" data-review-filter="resolved">Resolved <span id="commentResolvedCount">0</span></button>
+				</div>
+				<div class="comment-identity">
+					<label for="commentAuthor">Display name</label>
+					<input id="commentAuthor" class="comment-input" maxlength="64" autocomplete="name" aria-label="Your display name" />
+				</div>
+				<div id="commentThreads" class="comment-threads" aria-live="polite"></div>
+				<p id="commentContext" class="comment-context" hidden></p>
+				<section class="comment-composer" aria-label="Send feedback to agent">
+					<label for="commentInput">Feedback</label>
+					<textarea id="commentInput" class="ask-input" maxlength="2000" rows="3" aria-label="Feedback for the agent"></textarea>
+					<button type="button" class="btn btn-primary" id="commentSubmit" aria-label="Send feedback to agent">Send to agent</button>
+					<p id="commentDelivery" class="comment-delivery" role="status" aria-live="polite"></p>
+				</section>
+			</aside>
+		</div>
+
+		<!-- Sharing-ended overlay -->
+		<div class="ended-overlay" id="endedOverlay" role="alertdialog" aria-modal="true" aria-labelledby="endedTitle" hidden>
+			<div class="ended-card">
+				<h2 id="endedTitle">Sharing has ended</h2>
+				<p>The owner turned off sharing. Ask them for a new link if you still need access.</p>
+			</div>
+		</div>
+
+		<!-- Vendor libraries: same-origin, CSP script-src 'self' safe (no CDN, no inline) -->
+		<script src="/vendor/marked.js"></script>
+		<script src="/vendor/dompurify.js"></script>
+		<script src="/vendor/mermaid.js"></script>
+		<script src="/generated/canvas-app.js"></script>
+		<script src="/client.js"></script>
+	</body>
+</html>

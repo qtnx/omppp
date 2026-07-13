@@ -277,6 +277,7 @@ import * as bundledPiCodingAgentCommandsJoin from "@oh-my-pi/pi-coding-agent/com
 import * as bundledPiCodingAgentCommandsLaunch from "@oh-my-pi/pi-coding-agent/commands/launch";
 import * as bundledPiCodingAgentCommandsModels from "@oh-my-pi/pi-coding-agent/commands/models";
 import * as bundledPiCodingAgentCommandsPlugin from "@oh-my-pi/pi-coding-agent/commands/plugin";
+import * as bundledPiCodingAgentCommandsProduct from "@oh-my-pi/pi-coding-agent/commands/product";
 import * as bundledPiCodingAgentCommandsRead from "@oh-my-pi/pi-coding-agent/commands/read";
 import * as bundledPiCodingAgentCommandsSay from "@oh-my-pi/pi-coding-agent/commands/say";
 import * as bundledPiCodingAgentCommandsSetup from "@oh-my-pi/pi-coding-agent/commands/setup";
@@ -652,6 +653,8 @@ import * as bundledPiCodingAgentModesComponentsUserMessage from "@oh-my-pi/pi-co
 import * as bundledPiCodingAgentModesComponentsUserMessageSelector from "@oh-my-pi/pi-coding-agent/modes/components/user-message-selector";
 import * as bundledPiCodingAgentModesComponentsVisualTruncate from "@oh-my-pi/pi-coding-agent/modes/components/visual-truncate";
 import * as bundledPiCodingAgentModesComponentsWelcome from "@oh-my-pi/pi-coding-agent/modes/components/welcome";
+import * as bundledPiCodingAgentModesComponentsWorkflowHub from "@oh-my-pi/pi-coding-agent/modes/components/workflow-hub";
+import * as bundledPiCodingAgentModesComponentsWorkflowHud from "@oh-my-pi/pi-coding-agent/modes/components/workflow-hud";
 import * as bundledPiCodingAgentModesControllersBtwController from "@oh-my-pi/pi-coding-agent/modes/controllers/btw-controller";
 import * as bundledPiCodingAgentModesControllersCommandController from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import * as bundledPiCodingAgentModesControllersCommandControllerShared from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller-shared";
@@ -869,6 +872,7 @@ import * as bundledPiCodingAgentToolsOutputMeta from "@oh-my-pi/pi-coding-agent/
 import * as bundledPiCodingAgentToolsOutputSchemaValidator from "@oh-my-pi/pi-coding-agent/tools/output-schema-validator";
 import * as bundledPiCodingAgentToolsPathUtils from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import * as bundledPiCodingAgentToolsPlanModeGuard from "@oh-my-pi/pi-coding-agent/tools/plan-mode-guard";
+import * as bundledPiCodingAgentToolsPresent from "@oh-my-pi/pi-coding-agent/tools/present";
 import * as bundledPiCodingAgentToolsRead from "@oh-my-pi/pi-coding-agent/tools/read";
 import * as bundledPiCodingAgentToolsRenderUtils from "@oh-my-pi/pi-coding-agent/tools/render-utils";
 import * as bundledPiCodingAgentToolsRenderers from "@oh-my-pi/pi-coding-agent/tools/renderers";
@@ -1756,6 +1760,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/commands/plugin": bundledPiCodingAgentCommandsPlugin as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/commands/product": bundledPiCodingAgentCommandsProduct as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/commands/read": bundledPiCodingAgentCommandsRead as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -2612,6 +2619,10 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		bundledPiCodingAgentModesComponentsVisualTruncate as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/welcome":
 		bundledPiCodingAgentModesComponentsWelcome as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/modes/components/workflow-hub":
+		bundledPiCodingAgentModesComponentsWorkflowHub as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/modes/components/workflow-hud":
+		bundledPiCodingAgentModesComponentsWorkflowHud as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/extensions/extension-dashboard":
 		bundledPiCodingAgentModesComponentsExtensionsExtensionDashboard as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/extensions/extension-list":
@@ -3111,6 +3122,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/plan-mode-guard": bundledPiCodingAgentToolsPlanModeGuard as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/tools/present": bundledPiCodingAgentToolsPresent as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/read": bundledPiCodingAgentToolsRead as unknown as Readonly<

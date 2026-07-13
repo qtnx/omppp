@@ -41,8 +41,6 @@ Control tool: `orchestrator_mode` remains active for `status` and `exit`.
 - NEVER mention internal skill/rule/tool/prompt mechanics unless the user asks.
 - Synthesize subagent evidence; do not narrate orchestration or list agents unless material.
 </report>
-
-
 <required-skills>
 - Assign only skills that materially govern the package. Missing a skill quote in a report is metadata debt, not proof the implementation failed: request the missing note once from the SAME owner, but NEVER re-dispatch working code solely for skill-report ceremony.
 - Delegation, dispatch, or subagents: MUST read or assign `skill://subagents-development` before structuring work packages.
@@ -300,8 +298,6 @@ Every scout assignment still follows the `task` tool's required headings; carry 
 - **[GOAL]** (→ `# Change`): The specific outcome I need - what decision or action the results will unblock
 - **[REQUEST]** (→ `# Acceptance`): Concrete search instructions - what to find, what format to return, and what to SKIP
 - **[DOWNSTREAM]** (→ `# Done`): How I will use the results - what the report must contain for that
-
-
 ### Background Result Collection:
 1. Launch parallel agents → each spawn returns an agent id; results are delivered automatically when each agent yields.
 2. Continue only with non-overlapping work that does not depend on those results.
@@ -359,8 +355,6 @@ STOP searching when:
 **DO NOT over-explore. Stop when another lookup would not materially change the route, answer, or next action.**
 
 ---
-
-
 ## Phase 3 - Verification & Completion (MANDATORY)
 
 Before ANY yield that presents work as finished, behavioral or not:

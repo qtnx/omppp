@@ -23,6 +23,8 @@ import type { MCPManager } from "../mcp";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { OrchestratorModeState } from "../orchestrator-mode/state";
 import type { PlanModeState } from "../plan-mode/state";
+import { startPreviewServer } from "../product-preview";
+import type { PreviewFeedback } from "../product-preview/types";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
 import type { ClientBridge } from "../session/client-bridge";
@@ -74,6 +76,7 @@ import { MemoryReflectTool } from "./memory-reflect";
 import { MemoryRetainTool } from "./memory-retain";
 import { OrchestratorModeTool } from "./orchestrator-mode";
 import { wrapToolWithMetaNotice } from "./output-meta";
+import { createPresentTool } from "./present";
 import { RateLearningTool } from "./rate-learning";
 import { ReadTool } from "./read";
 import { createReportToolIssueTool, isAutoQaEnabled } from "./report-tool-issue";
@@ -120,6 +123,7 @@ export * from "./memory-recall";
 export * from "./memory-reflect";
 export * from "./memory-retain";
 export * from "./orchestrator-mode";
+export * from "./present";
 export * from "./rate-learning";
 export * from "./read";
 export * from "./report-tool-issue";
@@ -463,6 +467,9 @@ export interface ToolSession {
 	queueDeferredDiagnostics?(entry: DeferredDiagnosticsEntry): void;
 	/** Queue browser annotation feedback from the visible overlay; wakes idle agents like async job results. */
 	queueBrowserAnnotation?(entry: BrowserAnnotationEntry): void;
+	/** Queue product-preview side-ask/comment/answer feedback into the owner session. */
+	queuePreviewFeedback?(feedback: PreviewFeedback): void;
+
 	/** Bump and return the session-global mutation counter for `path`. Edit/write
 	 *  tools call this on every file mutation so stale late-diagnostics can be dropped. */
 	bumpFileMutationVersion?(path: string): number;
@@ -605,6 +612,12 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	manage_skill: ManageSkillTool.createIf,
 	consult: s => new ConsultTool(s),
 	super_review: s => new SuperReviewTool(s),
+	// Session-receiving factory: enqueue preview feedback into the owner yieldQueue.
+	present: s =>
+		createPresentTool({
+			startServer: startPreviewServer,
+			deliverFeedback: s.queuePreviewFeedback ? feedback => s.queuePreviewFeedback?.(feedback) : undefined,
+		}),
 };
 
 export const HIDDEN_TOOLS: Record<string, ToolFactory> = {
