@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+
+## [1.6.0] - 2026-07-12
+
 ### Changed
 
 - Context GC inventory and reporting now account for active messages and report truthful projected net savings; batch unload output is compact and duplicate-safe with placeholders, and prompt guidance batches stale active IDs before using `shake` for broad phase-boundary cleanup.

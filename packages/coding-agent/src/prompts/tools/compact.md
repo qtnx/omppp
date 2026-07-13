@@ -1,6 +1,6 @@
 Archives older conversation history (same pipeline as automatic context maintenance), freeing context space while keeping recent messages intact.
 
-Calling this tool only SCHEDULES compaction: it runs automatically right after the current turn ends. It is NOT immediate. The request is dropped if the turn is aborted. It does not cancel in-flight work — but NEVER call while subagents, workflows, background jobs, or other async results are still pending delivery; their outputs would arrive after the archive and lose their surrounding context. The configured strategy decides the archive form: LLM summary or snapcompact image frames.
+Calling this tool only SCHEDULES compaction: it runs automatically right after the current turn ends. It is NOT immediate. The request is dropped if the turn is aborted. It does not cancel in-flight work — but NEVER call while subagents, workflows, background jobs, or other async results are still pending delivery; their outputs would arrive after the archive and lose their surrounding context. Under the `snapcompact` strategy, agent-requested compaction uses a remote LLM summary (remote endpoint / provider-native) instead of snapcompact frames; when no remote-capable model exists it warns and uses a local summary, never snapcompact frames.
 
 Scope: compact is coarse, turn-boundary archival of the whole older history. If `context_unload`/`context_pin`/`context_recall` are available and you only need to drop specific stale tool results while continuing the same task, use those instead; reach for compact at a real boundary where broad older history can be archived wholesale.
 
@@ -12,6 +12,7 @@ Call when ANY hold:
 - A long session has accumulated many stale tool results.
 - The NEXT turn will start a context-heavy phase (large reads, builds, test sweeps). Call only as the last action of this turn, right before yielding — never call and then continue heavy work in the same turn, since compaction has not run yet.
 - The PREVIOUS turn already completed its work and any condition above holds — call immediately; a turn whose only action is scheduling compaction is legitimate.
+- Marking a todo phase complete and moving to the next phase is a compaction boundary — consider calling this tool with `focus` naming what the next phase needs.
 </when>
 
 <when_not>
@@ -24,3 +25,4 @@ Call when ANY hold:
 </when_not>
 
 `reason` is shown to the user — name the boundary just reached (example: "auth refactor verified; exploration logs no longer needed").
+Use optional `focus` to name what the summary must preserve or emphasize for the next phase.

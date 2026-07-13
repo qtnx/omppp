@@ -15,6 +15,7 @@ import { toolResult } from "./tool-result";
 
 const compactSchema = z.object({
 	reason: z.string().min(1).max(500).describe("why compaction is appropriate now — the boundary just reached"),
+	focus: z.string().min(1).max(2000).optional().describe("what the compaction summary must preserve or emphasize"),
 });
 
 type CompactParams = z.infer<typeof compactSchema>;
@@ -58,7 +59,7 @@ export class CompactTool implements AgentTool<typeof compactSchema, CompactToolD
 			throw new ToolError("Compaction is not available in this session.");
 		}
 
-		const result: ToolCompactionRequest = requestCompaction(params.reason);
+		const result: ToolCompactionRequest = requestCompaction(params.reason, { focus: params.focus });
 		if (result.status === "unavailable") {
 			throw new ToolError(`Cannot compact: ${result.detail}`);
 		}

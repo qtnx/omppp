@@ -130,13 +130,15 @@ The automatic paths are intentionally different:
   - Trigger: `runIdleCompaction()` when not streaming or already compacting.
   - Uses `reason: "idle"` and does not auto-continue afterward.
 
-### Agent-requested compaction (`compact` tool)
+### Agent-requested compaction (`compact` tool and subagent waits)
 
-The `compact` tool lets the model request context compaction itself when it judges older history is no longer needed. The request schedules the auto-maintenance pipeline (`#runAutoCompaction` with `reason: "requested"`) rather than the manual `/compact` path, so it never aborts the in-flight turn, and the configured `compaction.strategy` still decides whether the run is context-full, handoff, shake, or snapcompact.
+The `compact` tool and blocking subagent waits can request context compaction without aborting the in-flight turn. Both schedule the auto-maintenance pipeline (`#runAutoCompaction` with `reason: "requested"`) and run only at a safe boundary; if the turn aborts before that boundary, the pending request is dropped.
 
-Agent-requested compaction never runs mid-turn. A successful tool call records one pending request for the current turn, and the compaction runs only after that turn reaches the normal boundary. At most one request is kept per turn; if the turn aborts before the boundary, the pending request is dropped. The tool does not accept custom compaction instructions, so `compaction.strategy: "snapcompact"` remains eligible.
+When the configured `compaction.strategy` is `snapcompact`, these agent-requested paths use the `remote` compact mode instead: a remote LLM summary via the configured remote endpoint or a provider-native remote-capable model. They never create snapcompact image frames. If no remote-capable fallback candidate exists and no remote endpoint is configured, the session emits a warning and uses the unfiltered candidate chain for a local LLM summary. Other configured strategies (`handoff`, `context-full`, `shake`, and `off`) retain their current behavior.
 
-The tool is hidden when `compaction.strategy: "off"`. It still works when `compaction.enabled: false` because it is an explicit request, in the same class as idle compaction rather than threshold auto-maintenance. While the request is running, the TUI loader says `Agent requested, …`; the reason string supplied in the tool call is shown on the tool's own transcript row, not in the loader.
+The `compact` tool accepts optional `focus` instructions for what the summary must preserve. The `job` tool accepts optional `compactionFocus` for a blocking wait; the wait path always adds its built-in subagent focus (active plan and todo phases, subagent ownership/status, pending checks, and next verification steps) before any caller focus.
+
+At most one agent-requested compaction is kept per turn. The tool is hidden when `compaction.strategy: "off"` and explicit requests still work when `compaction.enabled: false`. While a request is running, the TUI loader says `Agent requested, …`; its reason appears on the tool transcript row.
 
 ### Snapcompact strategy
 

@@ -1,15 +1,17 @@
 # Changelog
 
 ## [Unreleased]
-### Fixed
 
-- Fixed `/shake` rewriting normal tool results when their placeholders could not save tokens, while retaining forced cleanup for non-error useless results.
-
-## [1.5.6] - 2026-07-10
+## [1.6.0] - 2026-07-12
 
 ### Added
 
 - Added optional non-interrupting boundary steering via `Agent.steer(message, { interruptToolExecution: false })` and `Agent.hasInterruptingSteeringMessages()`, delivering at the next tool boundary without skipping remaining calls while default steering remains interrupting.
+
+### Fixed
+
+- Fixed `/shake` rewriting normal tool results when their placeholders could not save tokens, while retaining forced cleanup for non-error useless results.
+
 ## [16.4.5] - 2026-07-11
 
 ### Added
