@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { setTerminalImageProtocol, TERMINAL, type TUI } from "@oh-my-pi/pi-tui";
 
 // Contract under test: live tool previews that render a pending/running status
 // must keep the spinner glyph tied to the shared tool-frame ticker. This covers
@@ -202,6 +202,87 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			expect(requestComponentRender).not.toHaveBeenCalled();
 		} finally {
 			component.stopAnimation();
+		}
+	});
+	it("replaces finalized tool-result image payloads with safe placeholders", () => {
+		const requestRender = vi.fn();
+		const originalImageProtocol = TERMINAL.imageProtocol;
+		// Force non-image rendering so output is plain text where payload retention is observable.
+		setTerminalImageProtocol(null);
+		const component = new ToolExecutionComponent(
+			"generate_image",
+			{ prompt: "hello" },
+			{},
+			undefined,
+			{ requestRender } as unknown as TUI,
+			process.cwd(),
+		);
+		try {
+			const imageData =
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/f7oAAAAASUVORK5CYII=";
+			component.updateResult(
+				{
+					content: [{ type: "image", mimeType: "image/png", data: imageData }],
+				},
+				true,
+			);
+			const partialText = stripVTControlCharacters(component.render(80).join("\n"));
+			expect(partialText).toContain("1x1");
+
+			component.updateResult(
+				{
+					content: [{ type: "image", mimeType: "image/png", data: imageData }],
+				},
+				false,
+			);
+			component.seal();
+			const sealedText = stripVTControlCharacters(component.render(80).join("\n"));
+			expect(sealedText).toContain("[Image:");
+			expect(sealedText).not.toContain("1x1");
+			expect(sealedText).not.toContain(imageData);
+		} finally {
+			component.stopAnimation();
+			setTerminalImageProtocol(originalImageProtocol);
+		}
+	});
+	it("seals detail-bucket tool images on finalization", () => {
+		const originalImageProtocol = TERMINAL.imageProtocol;
+		setTerminalImageProtocol(null);
+		const component = new ToolExecutionComponent(
+			"eval",
+			{ language: "py", code: "1+1" },
+			{},
+			undefined,
+			{ requestRender: vi.fn() } as unknown as TUI,
+			process.cwd(),
+		);
+		try {
+			const imageData =
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/f7oAAAAASUVORK5CYII=";
+			component.updateResult(
+				{
+					content: [],
+					details: { images: [{ type: "image", mimeType: "image/png", data: imageData }] },
+				},
+				true,
+			);
+			const partialText = stripVTControlCharacters(component.render(80).join("\n"));
+			expect(partialText).toContain("1x1");
+
+			component.updateResult(
+				{
+					content: [],
+					details: { images: [{ type: "image", mimeType: "image/png", data: imageData }] },
+				},
+				false,
+			);
+			component.seal();
+			const sealedText = stripVTControlCharacters(component.render(80).join("\n"));
+			expect(sealedText).toContain("[Image:");
+			expect(sealedText).not.toContain(imageData);
+		} finally {
+			component.stopAnimation();
+			setTerminalImageProtocol(originalImageProtocol);
 		}
 	});
 });

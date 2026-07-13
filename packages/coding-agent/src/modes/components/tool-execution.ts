@@ -18,6 +18,7 @@ import { getProjectDir, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { EDIT_MODE_STRATEGIES, type EditMode, type PerFileDiffPreview } from "../../edit";
 import type { Theme } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
+import { isBlobRef } from "../../session/blob-store";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
 import { isWaitingPollDetails } from "../../tools/job";
@@ -111,6 +112,15 @@ function stabilizeStreamingPreviews(previews: PerFileDiffPreview[]): PerFileDiff
 
 function isEditLikeToolName(toolName: string): boolean {
 	return toolName === "edit" || toolName === "apply_patch";
+}
+/**
+ * Placeholder data marker used for finalizing tool-result images while keeping
+ * image metadata for width/shape restoration and safe text fallbacks.
+ */
+const SEALED_TOOL_IMAGE_DATA = "[ompx-sealed-tool-result-image]";
+
+function isSealedToolImageData(data: string | undefined): boolean {
+	return data === SEALED_TOOL_IMAGE_DATA;
 }
 
 function resolveEditModeForTool(toolName: string, tool: AgentTool | undefined): EditMode | undefined {
@@ -260,6 +270,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#editDiffDirty = false;
 	// Cached converted images for Kitty protocol (which requires PNG), keyed by index
 	#convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
+	#toolImagePayloadsReleased = false;
 	// Spinner animation for partial task results
 	#spinnerFrame?: number;
 	#spinnerInterval?: NodeJS.Timeout;
@@ -506,6 +517,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#partialResultShapePainted = false;
 		this.#result = result;
 		this.#resultVersion++;
+		this.#toolImagePayloadsReleased = false;
 		this.#isPartial = isPartial;
 		this.#displaceableByToolName = displaceableToolName(this.#toolName, result, isPartial);
 		// When tool is complete, ensure args are marked complete so spinner stops
@@ -525,6 +537,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		);
 		// Convert non-PNG images to PNG for Kitty protocol (async)
 		this.#maybeConvertImagesForKitty();
+		if (!isPartial && this.#sealed) {
+			this.#sealToolResultImagePayloads();
+			this.#updateDisplay();
+		}
 	}
 
 	/**
@@ -551,17 +567,21 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 		for (let i = 0; i < imageBlocks.length; i++) {
 			const img = imageBlocks[i];
-			if (!img.data || !img.mimeType) continue;
-			// Skip if already PNG or already converted
-			if (img.mimeType === "image/png") continue;
-			if (this.#convertedImages.has(i)) continue;
-
+			if (
+				!img.data ||
+				!img.mimeType ||
+				isBlobRef(img.data) ||
+				img.mimeType === "image/png" ||
+				this.#convertedImages.has(i)
+			)
+				continue;
 			// Convert async - catch errors from processing
 			const index = i;
 			new Bun.Image(Buffer.from(img.data, "base64"))
 				.png()
 				.toBase64()
 				.then(data => {
+					if (this.#toolImagePayloadsReleased) return;
 					this.#convertedImages.set(index, { data, mimeType: "image/png" });
 					this.#displayInputVersion++;
 					this.#updateDisplay();
@@ -784,9 +804,15 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// A sealed detached task is abandoned history: settle its progress rows
 		// on static gray.
 		this.#backgroundTaskFrozen = true;
+		this.#sealToolResultImagePayloads();
 		this.stopAnimation();
 		this.#updateDisplay();
 		this.#ui.requestRender();
+	}
+
+	releaseCommittedPayloads(): void {
+		if (this.#toolImagePayloadsReleased) return;
+		this.#sealToolResultImagePayloads(true);
 	}
 
 	/**
@@ -849,6 +875,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 		this.#rebuildDisplay();
 		this.#displayBuilt = true;
+	}
+	#updateDisplayKey(): void {
+		this.#lastDisplayKey = undefined;
+		this.#displayBuilt = false;
 	}
 
 	#rendererFlag(name: "forceResultViewportRepaintOnSettle"): boolean {
@@ -1133,11 +1163,13 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 			for (let i = 0; i < imageBlocks.length; i++) {
 				const img = imageBlocks[i];
-				if (TERMINAL.imageProtocol && this.#showImages && img.data && img.mimeType) {
+				if (!img.data || !img.mimeType || isSealedToolImageData(img.data)) continue;
+				if (TERMINAL.imageProtocol && this.#showImages) {
 					// Use converted PNG for Kitty protocol if available
 					const converted = this.#convertedImages.get(i);
 					const imageData = converted?.data ?? img.data;
 					const imageMimeType = converted?.mimeType ?? img.mimeType;
+					if (isSealedToolImageData(imageData)) continue;
 
 					// For Kitty, skip non-PNG images that haven't been converted yet
 					if (TERMINAL.imageProtocol === ImageProtocol.Kitty && imageMimeType !== "image/png") {
@@ -1239,6 +1271,43 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		return context;
 	}
 
+	#sealToolResultImagePayloads(preserveDisplay = false): void {
+		if (this.#result === undefined) return;
+		this.#toolImagePayloadsReleased = true;
+		const sealImageBlocks = (blocks: Array<{ type: string; data?: string; mimeType?: string }> | undefined) =>
+			blocks?.map(block =>
+				block.type === "image" && block.mimeType && block.data && !isSealedToolImageData(block.data)
+					? { ...block, data: SEALED_TOOL_IMAGE_DATA }
+					: block,
+			);
+		const sealedContent = sealImageBlocks(this.#result.content);
+		if (sealedContent) {
+			this.#result = {
+				...this.#result,
+				content: sealedContent,
+			};
+		}
+		const details =
+			(this.#result.details as { images?: Array<{ type: string; data?: string; mimeType?: string }> } | undefined) ??
+			{};
+		if (Array.isArray(details.images)) {
+			this.#result = {
+				...this.#result,
+				details: {
+					...details,
+					images: sealImageBlocks(details.images) ?? [],
+				},
+			};
+		}
+		this.#convertedImages.clear();
+		if (!preserveDisplay) {
+			this.#imageComponents = [];
+			this.#imageSpacers = [];
+			this.#renderedImageCount = 0;
+			this.#updateDisplayKey();
+		}
+	}
+
 	#getTextOutput(): string {
 		if (!this.#result) return "";
 
@@ -1254,7 +1323,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		if (imageBlocks.length > 0 && (!TERMINAL.imageProtocol || !this.#showImages)) {
 			const imageIndicators = imageBlocks
 				.map((img: any) => {
-					const dims = img.data ? (getImageDimensions(img.data, img.mimeType) ?? undefined) : undefined;
+					const isSealedImage = isSealedToolImageData(img.data);
+					const dims =
+						!isSealedImage && img.data ? (getImageDimensions(img.data, img.mimeType) ?? undefined) : undefined;
 					return imageFallback(img.mimeType, dims);
 				})
 				.join("\n");

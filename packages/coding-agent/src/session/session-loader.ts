@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { getBlobsDir, isEnoent, parseJsonlLenient } from "@oh-my-pi/pi-utils";
 import { BlobStore, isBlobRef, resolveImageData, resolveImageDataUrl } from "./blob-store";
+import { rehydrateEntries } from "./entry-archival";
 import { buildSessionContext } from "./session-context";
 import {
 	type CompactionEntry,
@@ -74,24 +75,25 @@ function elideCompactionSummary(entry: CompactionEntry | undefined): boolean {
 	return true;
 }
 
-function collectActiveBranchIds(entries: FileEntry[]): Set<string> {
+function getActiveBranchPath(entries: FileEntry[]): SessionEntry[] {
 	const byId = new Map<string, SessionEntry>();
-	for (const entry of entries) {
-		const id = (entry as SessionEntry).id;
-		if (typeof id === "string") byId.set(id, entry as SessionEntry);
+	const sessionEntries = entries.filter((entry): entry is SessionEntry => entry.type !== "session");
+	for (const entry of sessionEntries) {
+		byId.set(entry.id, entry);
 	}
-	const branchIds = new Set<string>();
-	let cursor = entries[entries.length - 1] as SessionEntry | undefined;
-	while (cursor && typeof cursor.id === "string" && !branchIds.has(cursor.id)) {
-		branchIds.add(cursor.id);
-		const parentId = cursor.parentId;
-		cursor = parentId ? byId.get(parentId) : undefined;
+	const path: SessionEntry[] = [];
+	const seen = new Set<string>();
+	let cursor = sessionEntries.at(-1);
+	while (cursor && !seen.has(cursor.id)) {
+		path.push(cursor);
+		seen.add(cursor.id);
+		cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
 	}
-	return branchIds;
+	return path.reverse();
 }
 
 function elideSupersededCompactionEntries(entries: FileEntry[]): void {
-	const branchIds = collectActiveBranchIds(entries);
+	const branchIds = new Set(getActiveBranchPath(entries).map(entry => entry.id));
 	let previousCompaction: CompactionEntry | undefined;
 	for (const entry of entries) {
 		if (entry.type !== "compaction") continue;
@@ -228,8 +230,9 @@ export async function loadEntriesFromFile(
 }
 
 /**
- * Resolve blob references in loaded entries, restoring both session image blocks and persisted
- * provider image URLs back to the inline data expected by downstream transports. Mutates entries in place.
+ * Resolve only the entries the current branch can send or render immediately.
+ * Cold history remains in its persisted blob-ref shape until a boundary
+ * transition makes it live again.
  */
 function hasImageUrl(value: unknown): value is { image_url: string } {
 	return typeof value === "object" && value !== null && "image_url" in value && typeof value.image_url === "string";
@@ -279,10 +282,33 @@ async function resolvePersistedBlobRefs(value: unknown, blobStore: BlobStore, ke
 	);
 }
 
+function entriesRequiringResolution(entries: FileEntry[]): SessionEntry[] {
+	const sessionEntries = entries.filter((entry): entry is SessionEntry => entry.type !== "session");
+	const activePath = getActiveBranchPath(entries);
+	let latestCompactionIndex = -1;
+	for (let index = activePath.length - 1; index >= 0; index--) {
+		if (activePath[index]?.type === "compaction") {
+			latestCompactionIndex = index;
+			break;
+		}
+	}
+
+	// Preserve legacy behavior for sessions that were never compacted: every
+	// persisted entry remains eagerly usable, including inactive branches.
+	if (latestCompactionIndex < 0) return sessionEntries;
+
+	const latestCompaction = activePath[latestCompactionIndex] as CompactionEntry;
+	const firstKeptIndex = activePath.findIndex(entry => entry.id === latestCompaction.firstKeptEntryId);
+	return activePath.slice(firstKeptIndex >= 0 ? firstKeptIndex : latestCompactionIndex);
+}
+
 export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobStore): Promise<void> {
-	await Promise.all(
-		entries.filter(entry => entry.type !== "session").map(entry => resolvePersistedBlobRefs(entry, blobStore)),
-	);
+	const liveEntries = entriesRequiringResolution(entries);
+	await Promise.all(liveEntries.map(entry => resolvePersistedBlobRefs(entry, blobStore)));
+	// Archived RAM shapes additionally contain text refs, which the persisted
+	// image/url resolver intentionally does not recognize. Rehydrate all heavy
+	// leaves in the selected live range after restoring persisted image URLs.
+	rehydrateEntries(liveEntries, blobStore);
 }
 
 /**

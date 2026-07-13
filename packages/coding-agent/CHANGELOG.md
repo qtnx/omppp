@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed unbounded session memory growth in long-lived sessions: heavy payloads (images, large text and thinking signatures, string message content, snapcompact frames, custom-entry image data URLs) of entries behind the latest compaction are now archived in RAM to content-addressed blob refs (reversibly, rehydrated on rollback/branch switch/fork/resume), session resume no longer eagerly re-inflates all persisted blob refs (only the live tail), sealed TUI transcript blocks release image payload and Kitty-conversion copies, and export/share/dump/render surfaces resolve or placeholder archived refs.
+- Fixed rebuilt persisted custom messages losing their originating entry ID; rebuilt messages now retain it so Context GC can match them reliably after context reconstruction.
 ## [1.6.0] - 2026-07-12
 
 ### Added

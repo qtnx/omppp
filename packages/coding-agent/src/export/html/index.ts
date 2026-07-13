@@ -1,8 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentState } from "@oh-my-pi/pi-agent-core";
-import { APP_NAME, isEnoent } from "@oh-my-pi/pi-utils";
+import { APP_NAME, getBlobsDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/theme/theme";
+import { BlobStore, isBlobRef, parseBlobRef, resolveImageDataSync } from "../../session/blob-store";
 import type { SessionEntry, SessionHeader } from "../../session/session-entries";
 import { loadEntriesFromFile } from "../../session/session-loader";
 import { SessionManager } from "../../session/session-manager";
@@ -180,11 +181,63 @@ export interface SessionData {
 	subSessions?: Record<string, SubSession>;
 }
 
+const IMAGE_UNAVAILABLE = "[image unavailable]";
+const CONTENT_ARCHIVED = "[content archived]";
+
+/** Resolve blob refs in a deep-cloned export snapshot so the viewer never sees raw refs. */
+function resolveArchivedPayloadsForExport(value: unknown, blobs: BlobStore): unknown {
+	if (Array.isArray(value)) {
+		return value.map(item => resolveArchivedPayloadsForExport(item, blobs));
+	}
+	if (typeof value !== "object" || value === null) return value;
+
+	const record = value as Record<string, unknown>;
+	// Image block: resolve data or replace with placeholder text block.
+	if (record.type === "image" && typeof record.data === "string") {
+		if (!isBlobRef(record.data)) {
+			const out: Record<string, unknown> = {};
+			for (const key in record) out[key] = resolveArchivedPayloadsForExport(record[key], blobs);
+			return out;
+		}
+		const resolved = resolveImageDataSync(blobs, record.data);
+		if (!resolved || isBlobRef(resolved)) {
+			return { type: "text", text: IMAGE_UNAVAILABLE };
+		}
+		return { ...record, data: resolved };
+	}
+
+	const out: Record<string, unknown> = {};
+	for (const key in record) {
+		const child = record[key];
+		// Text block whose entire string is a blob ref → resolve or placeholder.
+		if (key === "text" && typeof child === "string" && isBlobRef(child)) {
+			const hash = parseBlobRef(child);
+			if (!hash) {
+				out[key] = CONTENT_ARCHIVED;
+				continue;
+			}
+			const buf = blobs.getSync(hash);
+			out[key] = buf ? buf.toString("utf8") : CONTENT_ARCHIVED;
+			continue;
+		}
+		// details.images[].data (image payload without type:"image")
+		if (key === "data" && typeof child === "string" && isBlobRef(child)) {
+			const resolved = resolveImageDataSync(blobs, child);
+			out[key] = !resolved || isBlobRef(resolved) ? "" : resolved;
+			continue;
+		}
+		out[key] = resolveArchivedPayloadsForExport(child, blobs);
+	}
+	return out;
+}
+
 /** Snapshot the session (plus optional agent state) into the JSON shape the viewer renders. */
 export function buildSessionData(sm: SessionManager, state?: AgentState): SessionData {
+	const blobs = new BlobStore(getBlobsDir());
+	const entries = resolveArchivedPayloadsForExport(sm.getEntries(), blobs) as SessionEntry[];
 	return {
 		header: sm.getHeader(),
-		entries: sm.getEntries(),
+		entries,
 		leafId: sm.getLeafId(),
 		systemPrompt: state?.systemPrompt.join("\n\n"),
 		tools: state?.tools?.map(t => ({ name: t.name, description: t.description })),
@@ -226,7 +279,8 @@ async function collectSubSessionsFromDir(
 		// Empty/corrupt files (no valid session header) load as [] — skip silently.
 		if (fileEntries.length > 0) {
 			const header = (fileEntries.find(e => e.type === "session") as SessionHeader | undefined) ?? null;
-			const entries = fileEntries.filter((e): e is SessionEntry => e.type !== "session");
+			const rawEntries = fileEntries.filter((e): e is SessionEntry => e.type !== "session");
+			const entries = resolveArchivedPayloadsForExport(rawEntries, new BlobStore(getBlobsDir())) as SessionEntry[];
 			out[key] = {
 				agentId,
 				parent: parentKey,
@@ -289,11 +343,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		throw err;
 	}
 
-	const sessionData: SessionData = {
-		header: sm.getHeader(),
-		entries: sm.getEntries(),
-		leafId: sm.getLeafId(),
-	};
+	const sessionData = buildSessionData(sm);
 	if (opts.includeSubSessions !== false) {
 		const subSessions = await collectSubSessions(inputPath);
 		if (Object.keys(subSessions).length > 0) sessionData.subSessions = subSessions;

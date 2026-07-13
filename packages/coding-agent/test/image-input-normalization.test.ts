@@ -43,6 +43,15 @@ describe("ensureSupportedImageInput", () => {
 		expect(bytes[3]).toBe(0x47);
 	});
 
+	test("returns null for blob ref image data", async () => {
+		const result = await ensureSupportedImageInput({
+			type: "image",
+			data: "blob:sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			mimeType: "image/bmp",
+		});
+		expect(result).toBeNull();
+	});
+
 	test("returns null when input bytes are not a decodable image", async () => {
 		const result = await ensureSupportedImageInput({
 			type: "image",

@@ -825,7 +825,7 @@ describe("InputController global interrupt listener focus ownership", () => {
 	});
 
 	it("editor focused: streaming still arms then aborts through the listener", () => {
-		const now = vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(1_500);
+		vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(1_500);
 		const { ctx, spies, inputListeners } = interruptContext();
 		Object.defineProperty(ctx.session, "isStreaming", { value: true, configurable: true });
 		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];

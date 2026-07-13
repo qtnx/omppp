@@ -1,9 +1,11 @@
+import { logger } from "@oh-my-pi/pi-utils";
 import {
 	type BlobStore,
 	externalizeImageDataSync,
 	externalizeImageDataUrlSync,
 	isBlobRef,
 	isImageDataUrl,
+	parseBlobRef,
 } from "./blob-store";
 import type { FileEntry } from "./session-entries";
 
@@ -103,8 +105,38 @@ function externalizeSnapcompactFrameForPersistenceSync(
 	return { ...frame, data: externalizeImageDataSync(blobStore, frame.data, frame.mimeType) };
 }
 
+function resolveArchivedTextForPersistence(value: string, blobStore: BlobStore): string {
+	const hash = parseBlobRef(value);
+	if (!hash) return value;
+	const data = blobStore.getSync(hash);
+	if (!data) {
+		logger.warn("Blob not found for archived session text during persistence", { hash });
+		return "[content archived]";
+	}
+	return data.toString("utf8");
+}
+
+function isArchivedTextBlock(value: unknown): value is { type: "text"; text: string } {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"type" in value &&
+		value.type === "text" &&
+		"text" in value &&
+		typeof value.text === "string" &&
+		isBlobRef(value.text)
+	);
+}
+
 function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string): unknown {
 	if (obj === null || obj === undefined) return obj;
+	if (
+		isImageDataPayload(obj) &&
+		isBlobRef(obj.data) &&
+		((key === TEXT_CONTENT_KEY && isImageBlock(obj)) || key === "images")
+	) {
+		return obj;
+	}
 	if (shouldExternalizeImagePayload(obj, key)) {
 		return { ...obj, data: externalizeImageDataSync(blobStore, obj.data, obj.mimeType) };
 	}
@@ -117,6 +149,13 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 	// Persist signed blocks verbatim — never truncate, externalize, or descend.
 	// Unsigned blocks (e.g. an interrupted stream) have no such binding and stay
 	// truncatable for size control.
+	if (isArchivedTextBlock(obj)) {
+		return truncateForPersistence(
+			{ ...obj, text: resolveArchivedTextForPersistence(obj.text, blobStore) },
+			blobStore,
+			key,
+		);
+	}
 	if (typeof obj === "object" && "type" in obj) {
 		const signed =
 			(obj.type === "thinking" && "thinkingSignature" in obj && isNonEmptyString(obj.thinkingSignature)) ||
@@ -127,12 +166,31 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 		// `encrypted_content`, server-validated on replay — atomic like signed blocks.
 		const encryptedReasoning =
 			obj.type === "reasoning" && "encrypted_content" in obj && isNonEmptyString(obj.encrypted_content);
-		if (signed || redacted || encryptedReasoning) return obj;
+		if (signed || redacted || encryptedReasoning) {
+			// A RAM-archived signed thinking block carries blob refs; resolve them
+			// back to the exact signed bytes before the verbatim persist.
+			if (obj.type === "thinking" && "thinking" in obj && typeof obj.thinking === "string") {
+				const thinking = resolveArchivedTextForPersistence(obj.thinking, blobStore);
+				const signature =
+					"thinkingSignature" in obj && typeof obj.thinkingSignature === "string"
+						? resolveArchivedTextForPersistence(obj.thinkingSignature, blobStore)
+						: undefined;
+				if (thinking !== obj.thinking || ("thinkingSignature" in obj && signature !== obj.thinkingSignature)) {
+					return signature === undefined
+						? { ...obj, thinking }
+						: { ...obj, thinking, thinkingSignature: signature };
+				}
+			}
+			return obj;
+		}
 	}
 
 	if (typeof obj === "string") {
 		if (key === "image_url" && isImageDataUrl(obj)) {
 			return externalizeImageDataUrlSync(blobStore, obj);
+		}
+		if (isBlobRef(obj) && (key === TEXT_CONTENT_KEY || key === "thinking" || key === "thinkingSignature")) {
+			return truncateForPersistence(resolveArchivedTextForPersistence(obj, blobStore), blobStore, key);
 		}
 		if (obj.length > MAX_PERSIST_CHARS) {
 			// Defensive: signature keys normally sit on blocks the guard above returns

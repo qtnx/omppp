@@ -26,7 +26,8 @@ import {
 	type WorkspaceRoot,
 } from "../workspace-roots";
 import { ArtifactManager } from "./artifacts";
-import { type BlobPutOptions, type BlobPutResult, BlobStore } from "./blob-store";
+import { type BlobPutOptions, type BlobPutResult, BlobStore, parseBlobRef } from "./blob-store";
+import { archiveEntries, rehydrateEntries } from "./entry-archival";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -188,7 +189,28 @@ function isDraftOnlyMetadataEntry(entry: SessionEntry): boolean {
 			return false;
 	}
 }
+function rehydratePersistedImageUrlsForReplication(value: unknown, blobs: BlobStore): void {
+	if (Array.isArray(value)) {
+		for (const item of value) rehydratePersistedImageUrlsForReplication(item, blobs);
+		return;
+	}
+	if (typeof value !== "object" || value === null) return;
 
+	const record = value as Record<string, unknown>;
+	if (typeof record.image_url === "string") {
+		const hash = parseBlobRef(record.image_url);
+		if (hash) {
+			const data = blobs.getSync(hash);
+			if (!data) {
+				logger.warn("Blob not found for replicated persisted image URL", { hash });
+				record.image_url = "";
+			} else {
+				record.image_url = data.toString("utf8");
+			}
+		}
+	}
+	for (const child of Object.values(record)) rehydratePersistedImageUrlsForReplication(child, blobs);
+}
 function orderedByTimestamp(a: SessionTreeNode, b: SessionTreeNode): number {
 	return new Date(a.entry.timestamp).getTime() - new Date(b.entry.timestamp).getTime();
 }
@@ -868,6 +890,22 @@ export class SessionManager {
 		this.#notifyEntryAppended(entry);
 	}
 
+	/**
+	 * Archive only the cold prefix behind a newly persisted compaction. The
+	 * compaction's kept prefix remains inline because context construction emits
+	 * it before the summary.
+	 */
+	#archiveColdEntriesBefore(compaction: CompactionEntry): boolean {
+		const path = this.#index.pathTo(compaction.id);
+		const compactionIndex = path.findIndex(entry => entry.id === compaction.id);
+		if (compactionIndex < 1) return false;
+		const keptIndex = path.findIndex(entry => entry.id === compaction.firstKeptEntryId);
+		const coldEnd = keptIndex >= 0 ? keptIndex : compactionIndex;
+		if (coldEnd < 1) return false;
+		archiveEntries(path.slice(0, coldEnd), this.#blobs);
+		return true;
+	}
+
 	#draftPath(): string | null {
 		const artifactsDir = this.getArtifactsDir();
 		return artifactsDir ? path.join(artifactsDir, "draft.txt") : null;
@@ -984,6 +1022,7 @@ export class SessionManager {
 		this.#artifactManagerSessionFile = null;
 		this.#adoptedArtifactManager = null;
 
+		this.rehydrateActivePath();
 		if (this.#sessionFile) this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
 	}
 
@@ -1028,6 +1067,7 @@ export class SessionManager {
 		}
 
 		this.#applyEntries(header, fileEntries.slice(1) as SessionEntry[]);
+		this.rehydrateActivePath();
 		this.#titleUpdatedAt = titleSlot?.updatedAt ?? header.timestamp;
 		this.#hasTitleSlot = titleSlot !== undefined;
 		this.#fileIsCurrent = true;
@@ -1476,7 +1516,13 @@ export class SessionManager {
 	 * guests must not share references).
 	 */
 	snapshotForReplication(): { header: SessionHeader; entries: SessionEntry[] } {
-		return { header: structuredClone(this.#header), entries: structuredClone(this.#entries) as SessionEntry[] };
+		const entries = structuredClone(this.#entries) as SessionEntry[];
+		// Guests receive snapshots through a relay and therefore cannot read this
+		// host-local blob store. Keep the host's cold entries cold, but ship the
+		// clone with every archived heavy leaf restored.
+		rehydrateEntries(entries, this.#blobs);
+		rehydratePersistedImageUrlsForReplication(entries, this.#blobs);
+		return { header: structuredClone(this.#header), entries };
 	}
 
 	/**
@@ -1555,7 +1601,6 @@ export class SessionManager {
 		fromExtension?: boolean,
 		preserveData?: Record<string, unknown>,
 	): string {
-		const elidedSupersededCompactions = this.#elideSupersededCompactionsOnBranch(this.#index.leafId());
 		const entry: CompactionEntry<T> = {
 			type: "compaction",
 			...this.#freshEntryFields(),
@@ -1568,7 +1613,9 @@ export class SessionManager {
 			preserveData,
 		};
 		this.#recordEntry(entry);
-		if (elidedSupersededCompactions) {
+		const archivedColdEntries = this.#archiveColdEntriesBefore(entry);
+		const elidedSupersededCompactions = this.#elideSupersededCompactionsOnBranch(entry.parentId);
+		if (archivedColdEntries || elidedSupersededCompactions) {
 			void this.#rewriteAtomically().catch(err => this.#noteDiskFailure(err));
 		}
 		return entry.id;
@@ -1707,6 +1754,30 @@ export class SessionManager {
 	}
 
 	/**
+	 * Rehydrate the active context tail before an entry path becomes readable by
+	 * provider or renderer code. Cold history remains blob-backed.
+	 */
+	rehydrateActivePath(): void {
+		const path = this.getBranch();
+		if (path.length === 0) return;
+		let latestCompactionIndex = -1;
+		for (let index = path.length - 1; index >= 0; index--) {
+			if (path[index]?.type === "compaction") {
+				latestCompactionIndex = index;
+				break;
+			}
+		}
+		if (latestCompactionIndex < 0) {
+			rehydrateEntries(path, this.#blobs);
+			return;
+		}
+		const compaction = path[latestCompactionIndex];
+		if (compaction?.type !== "compaction") return;
+		const keptIndex = path.findIndex(entry => entry.id === compaction.firstKeptEntryId);
+		rehydrateEntries(path.slice(keptIndex >= 0 ? keptIndex : latestCompactionIndex), this.#blobs);
+	}
+
+	/**
 	 * Build the session context (LLM messages), or — with `{ transcript: true }` —
 	 * the full-history display transcript, from the current leaf path.
 	 */
@@ -1787,6 +1858,7 @@ export class SessionManager {
 	branch(branchFromId: string): void {
 		if (!this.#index.has(branchFromId)) throw new Error(`Entry ${branchFromId} not found`);
 		this.#index.setLeaf(branchFromId);
+		this.rehydrateActivePath();
 	}
 
 	/** Reset the leaf to null so the next append creates a new root entry. */
@@ -1799,6 +1871,7 @@ export class SessionManager {
 		if (branchFromId !== null && !this.#index.has(branchFromId)) throw new Error(`Entry ${branchFromId} not found`);
 
 		this.#index.setLeaf(branchFromId);
+		this.rehydrateActivePath();
 		const entry: BranchSummaryEntry = {
 			type: "branch_summary",
 			id: generateId(this.#index),
@@ -1865,6 +1938,7 @@ export class SessionManager {
 		this.#titleUpdatedAt = timestamp;
 		this.#hasTitleSlot = true;
 		this.#index.rebuild(this.#entries);
+		this.rehydrateActivePath();
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
 		this.#forceFileCreation = this.#persist;
@@ -1966,6 +2040,7 @@ export class SessionManager {
 		manager.#hasTitleSlot = true;
 		manager.#entries = history;
 		manager.#index.rebuild(history);
+		manager.rehydrateActivePath();
 		manager.sanitizeLoadedOpenAIResponsesReplayMetadata();
 		manager.#forceFileCreation = true;
 		await manager.#rewriteAtomically();
