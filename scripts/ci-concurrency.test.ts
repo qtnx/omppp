@@ -7,7 +7,10 @@
 // flag for every event shape we care about.
 
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
+import { YAML } from "bun";
 
 const WORKFLOW_PATH = path.resolve(import.meta.dir, "..", ".github", "workflows", "ci.yml");
 
@@ -25,21 +28,26 @@ interface GhaCtx {
 	};
 }
 
-// Single-purpose, hand-rolled evaluator for the operators / functions the
-// workflow's `concurrency` block uses: `startsWith`, `format`, `!`, `==`,
-// `&&`, `||`, parens, single-quoted strings, dotted property access. Matches
-// short-circuit semantics: `&&`/`||` return the underlying value (not a coerced
-// bool), missing identifiers resolve to `null`, and `startsWith(null, …)` is
-// false because the searchString coerces to `""`.
+interface GhaWorkflowCtx {
+	github: GhaCtx;
+	needs?: Record<string, { outputs?: Record<string, string>; result?: string }>;
+}
+
+// Single-purpose evaluator for the GitHub expression subset used by workflow
+// scheduling: concurrency templates, release-companion metadata, and job gates.
+// It supports `startsWith`, `format`, `cancelled`, `!`, equality, `&&`, `||`,
+// parens, single-quoted strings, and dotted property access. It follows GHA
+// short-circuit semantics: `&&`/`||` return underlying values, missing paths are
+// `null`, and `startsWith(null, …)` is false because the search string is `""`.
 class GhaEval {
 	#pos = 0;
 
 	private constructor(
 		private readonly src: string,
-		private readonly ctx: { github: GhaCtx },
+		private readonly ctx: GhaWorkflowCtx,
 	) {}
 
-	static run(expr: string, ctx: { github: GhaCtx }): Value {
+	static run(expr: string, ctx: GhaWorkflowCtx): Value {
 		const ev = new GhaEval(expr.trim(), ctx);
 		const value = ev.#or();
 		ev.#skipWs();
@@ -50,7 +58,7 @@ class GhaEval {
 	}
 
 	// Substitute every `${{ … }}` placeholder in a workflow template string.
-	static template(template: string, ctx: { github: GhaCtx }): string {
+	static template(template: string, ctx: GhaWorkflowCtx): string {
 		let out = "";
 		let i = 0;
 		while (i < template.length) {
@@ -160,7 +168,7 @@ class GhaEval {
 
 	#identifier(): string {
 		const start = this.#pos;
-		while (this.#pos < this.src.length && /[A-Za-z0-9_.]/.test(this.src[this.#pos]!)) {
+		while (this.#pos < this.src.length && /[A-Za-z0-9_.-]/.test(this.src[this.#pos]!)) {
 			this.#pos++;
 		}
 		if (start === this.#pos) throw new Error(`expected identifier at ${this.#pos}`);
@@ -186,6 +194,9 @@ class GhaEval {
 		if (this.src[this.#pos] !== ")") throw new Error("expected `)` closing call");
 		this.#pos++;
 		switch (name) {
+			case "cancelled":
+				if (args.length !== 0) throw new Error("cancelled expects no arguments");
+				return false;
 			case "startsWith": {
 				const hay = args[0] === null || args[0] === false ? "" : String(args[0]);
 				const needle = args[1] === null || args[1] === false ? "" : String(args[1]);
@@ -229,6 +240,8 @@ class GhaEval {
 }
 
 const workflowYaml = await Bun.file(WORKFLOW_PATH).text();
+const sourceHashPlaceholder = "$" + "{{ steps.compute.outputs.source-hash }}";
+const repositoryPlaceholder = "$" + "{{ github.repository }}";
 // The block sits at indent 0 immediately under the top-level `concurrency:`
 // key and uses single-line values, so a flat-line extract is unambiguous.
 // Values are double-quoted in YAML (the GitHub expression contains `: ` from
@@ -245,7 +258,7 @@ if (!groupTemplate || !cancelTemplate) {
 
 const RELEASE_SUBJECT = "chore: bump version to 15.12.6";
 
-const baseCtx = (overrides: Partial<GhaCtx> = {}): { github: GhaCtx } => ({
+const baseCtx = (overrides: Partial<GhaCtx> = {}): GhaWorkflowCtx => ({
 	github: {
 		workflow: "CI",
 		ref: "refs/heads/main",
@@ -256,23 +269,167 @@ const baseCtx = (overrides: Partial<GhaCtx> = {}): { github: GhaCtx } => ({
 	},
 });
 
-describe("ci.yml concurrency", () => {
-	it("auto release push: per-sha group, no cancellation (#2564 root cause)", () => {
-		const ctx = baseCtx({ event: { head_commit: { message: `${RELEASE_SUBJECT}\n\nbody` } } });
-		expect(GhaEval.template(groupTemplate, ctx)).toBe("CI-release-deadbeefcafebabe");
-		expect(GhaEval.template(cancelTemplate, ctx)).toBe("false");
-	});
+function workflowJobSection(name: string): string {
+	const marker = `\n   ${name}:\n`;
+	const start = workflowYaml.indexOf(marker);
+	if (start === -1) throw new Error(`could not locate ${name} job in ci.yml`);
+	const rest = workflowYaml.slice(start + 1);
+	const next = /\n {3}[A-Za-z0-9_-]+:\n/.exec(rest);
+	return next ? rest.slice(0, next.index) : rest;
+}
 
-	it("retry release push (release subject preserved): same per-sha behavior", () => {
-		const ctx = baseCtx({
-			sha: "feedfacedeadbeef",
-			event: { head_commit: { message: `${RELEASE_SUBJECT}\n\nretry: fix sccache 100 exit` } },
+function workflowJobIf(name: string): string | undefined {
+	const section = workflowJobSection(name);
+	const jobFields = section.slice(0, section.search(/\n {6}(?:steps|uses):/));
+	return /^\s*if:\s*\$\{\{([\s\S]*?)\}\}\s*$/m.exec(jobFields)?.[1];
+}
+
+function evaluateJobIf(name: string, ctx: GhaWorkflowCtx): Value | undefined {
+	const expression = workflowJobIf(name);
+	return expression ? GhaEval.run(expression, ctx) : undefined;
+}
+
+function workflowOutputTemplate(name: string, output: string): string | undefined {
+	const section = workflowJobSection(name);
+	const raw = new RegExp(`^\\s*${output}:\\s*(\\S.*?)\\s*$`, "m").exec(section)?.[1];
+	return raw?.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+}
+
+function completedNeeds(isCompanion: boolean, isRelease: boolean): GhaWorkflowCtx["needs"] {
+	const outputs = {
+		"is-companion": String(isCompanion),
+		"is-release": String(isRelease),
+		"linux-x64-run-id": "",
+		"cross-platform-run-id": "",
+	};
+	const result = { result: "success" };
+	return {
+		release_metadata: { outputs, ...result },
+		native_artifact_lookup: { outputs, ...result },
+		native_linux_x64: result,
+		check: result,
+		native_cross_platform_kata: result,
+		native_cross_platform_macos: result,
+		test_workspace: result,
+		test_coding_agent_singleton: result,
+		test_ts_native: result,
+		test_coding_agent_ui: result,
+		test_coding_agent_runtime: result,
+		test_coding_agent_native: result,
+		test_smoke: result,
+		install_methods: result,
+		security: result,
+	};
+}
+
+function nativeArtifactLookupScript(): string {
+	const parsed = YAML.parse(workflowYaml);
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("ci.yml root is not a mapping");
+	}
+	const jobs = (parsed as Record<string, unknown>).jobs;
+	if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) {
+		throw new Error("ci.yml jobs is not a mapping");
+	}
+	const lookup = (jobs as Record<string, unknown>).native_artifact_lookup;
+	if (!lookup || typeof lookup !== "object" || Array.isArray(lookup)) {
+		throw new Error("native_artifact_lookup is not a mapping");
+	}
+	const steps = (lookup as Record<string, unknown>).steps;
+	if (!Array.isArray(steps)) throw new Error("native_artifact_lookup.steps is not an array");
+	const findStep = steps.find(step => {
+		if (!step || typeof step !== "object" || Array.isArray(step)) return false;
+		return (step as Record<string, unknown>).id === "find";
+	});
+	if (!findStep || typeof findStep !== "object" || Array.isArray(findStep)) {
+		throw new Error("could not find native artifact lookup step");
+	}
+	const run = (findStep as Record<string, unknown>).run;
+	if (typeof run !== "string") throw new Error("native artifact lookup run script is not a string");
+	return run;
+}
+
+async function nativeLookupRunListArgs(): Promise<string> {
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omppp-ci-lookup-"));
+	try {
+		const gh = path.join(tempDir, "gh");
+		const argsPath = path.join(tempDir, "gh-run-args");
+		const outputPath = path.join(tempDir, "github-output");
+		await Bun.write(
+			gh,
+			`#!/usr/bin/env bash
+if [ "$1" = "run" ]; then
+\tprintf '%s\\n' "$@" > "$GH_ARGS"
+\techo 123
+\texit 0
+fi
+if [ "$1" = "api" ]; then
+\texit 0
+fi
+exit 1
+`,
+		);
+		await fs.chmod(gh, 0o755);
+		const script = nativeArtifactLookupScript()
+			.replace(sourceHashPlaceholder, "testhash")
+			.replace(repositoryPlaceholder, "owner/repo");
+		const proc = Bun.spawn(["bash", "-c", script], {
+			env: {
+				...Bun.env,
+				GH_ARGS: argsPath,
+				GITHUB_OUTPUT: outputPath,
+				PATH: `${tempDir}:${Bun.env.PATH ?? ""}`,
+			},
 		});
-		expect(GhaEval.template(groupTemplate, ctx)).toBe("CI-release-feedfacedeadbeef");
-		expect(GhaEval.template(cancelTemplate, ctx)).toBe("false");
+		const exitCode = await proc.exited;
+		if (exitCode !== 0) throw new Error(`native lookup script exited ${exitCode}`);
+		return Bun.file(argsPath).text();
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+}
+
+describe("ci.yml workflow scheduling", () => {
+	it("release companion main push skips duplicated workload and keeps normal branch cancellation", () => {
+		const ctx = baseCtx({ event: { head_commit: { message: `${RELEASE_SUBJECT}\n\nbody` } } });
+		const companionOutput = workflowOutputTemplate("release_metadata", "is-companion") ?? "";
+		expect(GhaEval.template(companionOutput, ctx)).toBe("true");
+		expect(GhaEval.template(groupTemplate, ctx)).toBe("CI-refs/heads/main");
+		expect(GhaEval.template(cancelTemplate, ctx)).toBe("true");
+
+		const companionCtx = { ...ctx, needs: completedNeeds(true, false) };
+		for (const job of [
+			"native_artifact_lookup",
+			"check",
+			"native_linux_x64",
+			"native_cross_platform_kata",
+			"native_cross_platform_macos",
+			"test_workspace",
+			"test_coding_agent_singleton",
+			"test_ts_native",
+			"test_coding_agent_ui",
+			"test_coding_agent_runtime",
+			"test_coding_agent_native",
+			"test_smoke",
+			"install_methods",
+			"security",
+		]) {
+			expect(evaluateJobIf(job, companionCtx)).toBe(false);
+		}
 	});
 
-	it("workflow_dispatch from a `v*` tag ref: per-sha group, no cancellation", () => {
+	it("valid tag release remains per-sha non-cancellable and can run the full release graph", () => {
+		const ctx = baseCtx({
+			ref: "refs/tags/v15.12.6",
+			sha: "abc123",
+			event: {},
+		});
+		expect(GhaEval.template(groupTemplate, ctx)).toBe("CI-release-abc123");
+		expect(GhaEval.template(cancelTemplate, ctx)).toBe("false");
+		expect(evaluateJobIf("release_binary", { ...ctx, needs: completedNeeds(false, true) })).toBe(true);
+	});
+
+	it("workflow_dispatch from a version tag ref remains per-sha and non-cancellable", () => {
 		const ctx = baseCtx({
 			ref: "refs/tags/v15.12.6",
 			event_name: "workflow_dispatch",
@@ -293,10 +450,32 @@ describe("ci.yml concurrency", () => {
 		expect(GhaEval.template(cancelTemplate, ctx)).toBe("false");
 	});
 
-	it("regular main push: branch-wide group, cancel-in-progress enabled", () => {
+	it("ordinary main push executes every CI workload gate", () => {
 		const ctx = baseCtx({ event: { head_commit: { message: "fix(ux): theme tweak" } } });
+		const companionOutput = workflowOutputTemplate("release_metadata", "is-companion") ?? "";
+		expect(GhaEval.template(companionOutput, ctx)).toBe("false");
 		expect(GhaEval.template(groupTemplate, ctx)).toBe("CI-refs/heads/main");
 		expect(GhaEval.template(cancelTemplate, ctx)).toBe("true");
+
+		const mainCtx = { ...ctx, needs: completedNeeds(false, false) };
+		for (const job of [
+			"native_artifact_lookup",
+			"check",
+			"native_linux_x64",
+			"native_cross_platform_kata",
+			"native_cross_platform_macos",
+			"test_workspace",
+			"test_coding_agent_singleton",
+			"test_ts_native",
+			"test_coding_agent_ui",
+			"test_coding_agent_runtime",
+			"test_coding_agent_native",
+			"test_smoke",
+			"install_methods",
+			"security",
+		]) {
+			expect(evaluateJobIf(job, mainCtx)).toBe(true);
+		}
 	});
 
 	it("pull_request (no head_commit): branch-wide group, cancel enabled", () => {
@@ -305,20 +484,26 @@ describe("ci.yml concurrency", () => {
 		expect(GhaEval.template(cancelTemplate, ctx)).toBe("true");
 	});
 
-	it("two release commits with distinct shas land in disjoint groups", () => {
-		const a = baseCtx({ sha: "aaaa1111", event: { head_commit: { message: RELEASE_SUBJECT } } });
-		const b = baseCtx({ sha: "bbbb2222", event: { head_commit: { message: RELEASE_SUBJECT } } });
+	it("distinct tag release SHAs land in disjoint protected groups", () => {
+		const a = baseCtx({ ref: "refs/tags/v15.12.6", sha: "aaaa1111", event: {} });
+		const b = baseCtx({ ref: "refs/tags/v15.12.7", sha: "bbbb2222", event: {} });
 		expect(GhaEval.template(groupTemplate, a)).not.toBe(GhaEval.template(groupTemplate, b));
 	});
 
-	it("benign commit subject that merely contains the release prefix is not a release", () => {
-		// startsWith is anchored, so `revert: chore: bump version to 15.12.6` (a
-		// follow-up commit) keeps the cancel-on-newer-push behavior — it has no
-		// tag to publish.
-		const ctx = baseCtx({
-			event: { head_commit: { message: `revert: ${RELEASE_SUBJECT}` } },
+	it("non-release main text and rejected non-semver tags never enter the release graph", () => {
+		const mainCtx = baseCtx({
+			event: { head_commit: { message: `fix: notes mention ${RELEASE_SUBJECT}` } },
 		});
-		expect(GhaEval.template(groupTemplate, ctx)).toBe("CI-refs/heads/main");
-		expect(GhaEval.template(cancelTemplate, ctx)).toBe("true");
+		const invalidTagCtx = baseCtx({ ref: "refs/tags/vnext", event: {} });
+		const companionOutput = workflowOutputTemplate("release_metadata", "is-companion") ?? "";
+		expect(GhaEval.template(companionOutput, mainCtx)).toBe("false");
+		expect(evaluateJobIf("release_binary", { ...mainCtx, needs: completedNeeds(false, false) })).toBe(false);
+		expect(evaluateJobIf("release_binary", { ...invalidTagCtx, needs: completedNeeds(false, false) })).toBe(false);
+	});
+
+	it("searches successful trusted push runs across main and release tags for native reuse", async () => {
+		const args = await nativeLookupRunListArgs();
+		expect(args).toContain("--event=push");
+		expect(args).not.toContain("--branch=main");
 	});
 });

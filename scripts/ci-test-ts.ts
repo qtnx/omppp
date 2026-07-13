@@ -94,6 +94,9 @@ const fastWorkspacePackages = [
 	"packages/ai",
 	"packages/snapcompact",
 	"packages/agent",
+	"packages/system-context-reminder-plugin",
+	"packages/delegation-reminder-plugin",
+	"packages/context-gc-plugin",
 ];
 
 // These suites cover the native package, TUI/browser-ish behavior, local servers,
