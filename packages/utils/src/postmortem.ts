@@ -8,6 +8,7 @@
 import inspector from "node:inspector";
 import { isMainThread } from "node:worker_threads";
 import { logger } from ".";
+import { formatCrashReportPathLine, writeCrashReportSync } from "./crash-report";
 
 // Cleanup reasons, in order of priority/meaning.
 export enum Reason {
@@ -166,6 +167,14 @@ if (isMainThread) {
 				logger.warn("Ignoring expected cleanup exception", { err });
 				return;
 			}
+			const crashReportPath = writeCrashReportSync({
+				kind: "uncaught_exception",
+				label: "Uncaught Exception",
+				error: err,
+			});
+			if (crashReportPath) {
+				process.stderr.write(`${formatCrashReportPathLine(crashReportPath)}\n`);
+			}
 			process.stderr.write(formatFatalError("Uncaught Exception", err));
 			logger.error("Uncaught exception", { err });
 			await runCleanup(Reason.UNCAUGHT_EXCEPTION);
@@ -198,6 +207,14 @@ if (isMainThread) {
 						err: interceptorErr,
 					});
 				}
+			}
+			const crashReportPath = writeCrashReportSync({
+				kind: "unhandled_rejection",
+				label: "Unhandled Rejection",
+				error: err,
+			});
+			if (crashReportPath) {
+				process.stderr.write(`${formatCrashReportPathLine(crashReportPath)}\n`);
 			}
 			process.stderr.write(formatFatalError("Unhandled Rejection", err));
 			logger.error("Unhandled rejection", { err });

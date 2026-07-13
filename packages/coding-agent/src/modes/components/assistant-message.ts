@@ -4,6 +4,7 @@ import { formatNumber } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
+import { isBlobRef } from "../../session/blob-store";
 import { getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { canonicalizeMessage, formatThinkingForDisplay, hasDisplayableThinking } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
@@ -160,6 +161,16 @@ export function resetThinkingSpeedTracker(): void {
 }
 
 /**
+ * Placeholder data marker used for finalizing tool-result images while keeping
+ * image metadata for width/shape restoration and safe text fallbacks.
+ */
+const SEALED_TOOL_IMAGE_DATA = "[ompx-sealed-tool-result-image]";
+
+function isSealedToolImageData(data: string | undefined): boolean {
+	return data === SEALED_TOOL_IMAGE_DATA;
+}
+
+/**
  * Component that renders a complete assistant message
  */
 export class AssistantMessageComponent extends Container {
@@ -169,6 +180,7 @@ export class AssistantMessageComponent extends Container {
 	#toolImagesByCallId = new Map<string, ImageContent[]>();
 	#convertedKittyImages = new Map<string, ImageContent>();
 	#kittyConversionsInFlight = new Set<string>();
+	#toolImagePayloadsSealed = false;
 	#transcriptBlockFinalized: boolean;
 	/**
 	 * True while any rendered item carries a ` ```mermaid ` fence. Mermaid's
@@ -477,6 +489,11 @@ export class AssistantMessageComponent extends Container {
 		return this.#blockVersion;
 	}
 
+	releaseCommittedPayloads(): void {
+		if (this.#toolImagePayloadsSealed) return;
+		this.#sealToolResultImagePayloads();
+	}
+
 	markTranscriptBlockFinalized(): void {
 		// Finalize can fire twice on the real tool-call path: once when the first
 		// toolCall appears mid-stream (event-controller message_update) and again at
@@ -551,6 +568,20 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	#sealToolResultImagePayloads(): void {
+		this.#toolImagePayloadsSealed = true;
+		for (const [toolCallId, images] of this.#toolImagesByCallId.entries()) {
+			const sealedImages = images.map(image =>
+				image.type === "image" && image.mimeType && image.data && !isSealedToolImageData(image.data)
+					? { ...image, data: SEALED_TOOL_IMAGE_DATA }
+					: image,
+			);
+			this.#toolImagesByCallId.set(toolCallId, sealedImages);
+		}
+		this.#kittyConversionsInFlight.clear();
+		this.#convertedKittyImages.clear();
+	}
+
 	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
 		if (!toolCallId) return;
 		const validImages = images.filter(img => img.type === "image" && img.data && img.mimeType);
@@ -568,18 +599,28 @@ export class AssistantMessageComponent extends Container {
 			this.#toolImagesByCallId.delete(toolCallId);
 		} else {
 			this.#toolImagesByCallId.set(toolCallId, validImages);
-			this.#convertToolImagesForKitty(toolCallId, validImages);
+			if (!this.#toolImagePayloadsSealed) {
+				this.#convertToolImagesForKitty(toolCallId, validImages);
+			}
 		}
-		if (this.#lastMessage) {
+		if (this.#toolImagePayloadsSealed) {
+			this.#sealToolResultImagePayloads();
+		} else if (this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
 	}
 
 	#convertToolImagesForKitty(toolCallId: string, images: ImageContent[]): void {
-		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return;
+		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty || this.#toolImagePayloadsSealed) return;
 		for (let index = 0; index < images.length; index++) {
 			const image = images[index];
-			if (!image || image.mimeType === "image/png") continue;
+			if (
+				!image?.data ||
+				isBlobRef(image.data) ||
+				isSealedToolImageData(image.data) ||
+				image.mimeType === "image/png"
+			)
+				continue;
 			const key = `${toolCallId}:${index}`;
 			if (this.#convertedKittyImages.has(key) || this.#kittyConversionsInFlight.has(key)) continue;
 			this.#kittyConversionsInFlight.add(key);
@@ -588,6 +629,7 @@ export class AssistantMessageComponent extends Container {
 				.toBase64()
 				.then(data => {
 					this.#kittyConversionsInFlight.delete(key);
+					if (this.#toolImagePayloadsSealed) return;
 					this.#convertedKittyImages.set(key, {
 						type: "image",
 						data,
@@ -616,7 +658,8 @@ export class AssistantMessageComponent extends Container {
 				TERMINAL.imageProtocol === ImageProtocol.Kitty && image.mimeType !== "image/png"
 					? this.#convertedKittyImages.get(key)
 					: image;
-			if (TERMINAL.imageProtocol && displayImage) {
+			const hasRenderableData = Boolean(displayImage?.data && !isSealedToolImageData(displayImage.data));
+			if (TERMINAL.imageProtocol && hasRenderableData && displayImage) {
 				this.#contentContainer.addChild(
 					new Image(
 						displayImage.data,

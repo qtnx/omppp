@@ -38,7 +38,17 @@ import {
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { $env, $flag, getAgentDir, getProjectDir, logger, postmortem, prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	$flag,
+	getAgentDir,
+	getProjectDir,
+	logger,
+	postmortem,
+	prompt,
+	reportSoftCrash,
+	Snowflake,
+} from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import {
 	appendSystemContextReminderPrompt,
@@ -2251,125 +2261,145 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// the flag and pre-resolved the result already reflects that choice.
 		let extensionPaths: string[] = [];
 		let extensionsResult: LoadExtensionsResult;
-		if (minimalExtensionRuntime) {
-			extensionsResult = await logger.time("loadExtensions", loadExtensions, [], cwd, eventBus);
-		} else if (options.preloadedExtensions) {
-			const preloadedExtensions = isHerdrSubagentSession
-				? options.preloadedExtensions.extensions.filter(
-						extension =>
-							!isHerdrAgentStateExtensionPath(extension.path) &&
-							!isHerdrAgentStateExtensionPath(extension.resolvedPath),
-					)
-				: options.preloadedExtensions.extensions;
-			extensionsResult = {
-				...options.preloadedExtensions,
-				extensions: [...preloadedExtensions],
-			};
-			// Capture paths for downstream forwarding; filter inline-factory
-			// entries plus Herdr state reporters — those are per-session, not
-			// subagent source paths.
-			extensionPaths = filterSubagentExtensionPaths(
-				extensionsResult.extensions.map(ext => ext.resolvedPath).filter(p => !p.startsWith("<inline")),
-				true,
-			);
-		} else if (options.preloadedExtensionPaths) {
-			extensionPaths = filterSubagentExtensionPaths(options.preloadedExtensionPaths, isHerdrSubagentSession);
-			extensionsResult = await withContextGcDbPath(contextGcDbPath, async () =>
-				logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus),
-			);
-			for (const { path, error } of extensionsResult.errors) {
-				logger.error("Failed to load extension", { path, error });
+		try {
+			if (minimalExtensionRuntime) {
+				extensionsResult = await logger.time("loadExtensions", loadExtensions, [], cwd, eventBus);
+			} else if (options.preloadedExtensions) {
+				const preloadedExtensions = isHerdrSubagentSession
+					? options.preloadedExtensions.extensions.filter(
+							extension =>
+								!isHerdrAgentStateExtensionPath(extension.path) &&
+								!isHerdrAgentStateExtensionPath(extension.resolvedPath),
+						)
+					: options.preloadedExtensions.extensions;
+				extensionsResult = {
+					...options.preloadedExtensions,
+					extensions: [...preloadedExtensions],
+				};
+				// Capture paths for downstream forwarding; filter inline-factory
+				// entries plus Herdr state reporters — those are per-session, not
+				// subagent source paths.
+				extensionPaths = filterSubagentExtensionPaths(
+					extensionsResult.extensions.map(ext => ext.resolvedPath).filter(p => !p.startsWith("<inline")),
+					true,
+				);
+			} else if (options.preloadedExtensionPaths) {
+				extensionPaths = filterSubagentExtensionPaths(options.preloadedExtensionPaths, isHerdrSubagentSession);
+				extensionsResult = await withContextGcDbPath(contextGcDbPath, async () =>
+					logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus),
+				);
+				for (const { path, error } of extensionsResult.errors) {
+					logger.error("Failed to load extension", { path, error });
+				}
+			} else {
+				const discoveredExtensionPaths = await logger.time("discoverSessionExtensionPaths", () =>
+					discoverSessionExtensionPaths(options, cwd, settings),
+				);
+				extensionPaths = filterSubagentExtensionPaths(discoveredExtensionPaths, isHerdrSubagentSession);
+				extensionsResult = await withContextGcDbPath(contextGcDbPath, async () =>
+					logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus),
+				);
+				for (const { path, error } of extensionsResult.errors) {
+					logger.error("Failed to load extension", { path, error });
+				}
 			}
-		} else {
-			const discoveredExtensionPaths = await logger.time("discoverSessionExtensionPaths", () =>
-				discoverSessionExtensionPaths(options, cwd, settings),
-			);
-			extensionPaths = filterSubagentExtensionPaths(discoveredExtensionPaths, isHerdrSubagentSession);
-			extensionsResult = await withContextGcDbPath(contextGcDbPath, async () =>
-				logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus),
-			);
-			for (const { path, error } of extensionsResult.errors) {
-				logger.error("Failed to load extension", { path, error });
-			}
+		} catch (error) {
+			reportSoftCrash({
+				label: "extension-load",
+				error,
+				context: { phase: "session-startup" },
+			});
+			throw error;
 		}
 		// Forward the source-path list (NOT the loaded instances) so subagents
 		// rebuild their own session-scoped extensions.
 		toolSession.extensionPaths = extensionPaths;
 
 		let shouldAppendNativeSystemContextReminderPrompt = false;
-		await withContextGcDbPath(contextGcDbPath, async () => {
-			// Load inline extensions from factories
-			if (inlineExtensions.length > 0) {
-				for (let i = 0; i < inlineExtensions.length; i++) {
-					const factory = inlineExtensions[i];
-					const loaded = await loadExtensionFromFactory(
-						factory,
-						cwd,
-						eventBus,
-						extensionsResult.runtime,
-						`<inline-${i}>`,
-					);
-					extensionsResult.extensions.push(loaded);
+		try {
+			await withContextGcDbPath(contextGcDbPath, async () => {
+				// Load inline extensions from factories
+				if (inlineExtensions.length > 0) {
+					for (let i = 0; i < inlineExtensions.length; i++) {
+						const factory = inlineExtensions[i];
+						const loaded = await loadExtensionFromFactory(
+							factory,
+							cwd,
+							eventBus,
+							extensionsResult.runtime,
+							`<inline-${i}>`,
+						);
+						extensionsResult.extensions.push(loaded);
+					}
 				}
-			}
 
-			if (nativeHerdrAgentStateEnabled) {
+				if (nativeHerdrAgentStateEnabled) {
+					if (
+						extensionsResult.extensions.some(
+							extension => extension.path === HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH,
+						)
+					) {
+						logger.debug("herdr-agent-state: native append skipped (already present)");
+					} else {
+						const loaded = await loadExtensionFromFactory(
+							createHerdrAgentStateExtension(),
+							cwd,
+							eventBus,
+							extensionsResult.runtime,
+							HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH,
+						);
+						extensionsResult.extensions.push(loaded);
+						logger.debug("herdr-agent-state: native reporter appended");
+					}
+				} else if (process.env.HERDR_ENV === "1") {
+					logger.warn("herdr-agent-state: reporter NOT enabled in a herdr pane", {
+						minimalExtensionRuntime,
+						isHerdrSubagentSession,
+						marker: process.env.OMP_NATIVE_HERDR_AGENT_STATE,
+					});
+				}
+				// Context GC is shipped as a plugin package for external reuse, but loaded natively in
+				// bundled OMPx so users get durable unload/recall without `ompx plugin install`. This runs
+				// after user inline factories so wrappers that set the same label are deduped too.
 				if (
-					extensionsResult.extensions.some(extension => extension.path === HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH)
+					!minimalExtensionRuntime &&
+					!extensionsResult.extensions.some(extension => extension.label === "Context GC")
 				) {
-					logger.debug("herdr-agent-state: native append skipped (already present)");
-				} else {
 					const loaded = await loadExtensionFromFactory(
-						createHerdrAgentStateExtension(),
+						createContextGcExtension({ dbPath: contextGcDbPath }),
 						cwd,
 						eventBus,
 						extensionsResult.runtime,
-						HERDR_NATIVE_AGENT_STATE_EXTENSION_PATH,
+						"<native-context-gc>",
 					);
 					extensionsResult.extensions.push(loaded);
-					logger.debug("herdr-agent-state: native reporter appended");
 				}
-			} else if (process.env.HERDR_ENV === "1") {
-				logger.warn("herdr-agent-state: reporter NOT enabled in a herdr pane", {
-					minimalExtensionRuntime,
-					isHerdrSubagentSession,
-					marker: process.env.OMP_NATIVE_HERDR_AGENT_STATE,
-				});
-			}
-			// Context GC is shipped as a plugin package for external reuse, but loaded natively in
-			// bundled OMPx so users get durable unload/recall without `ompx plugin install`. This runs
-			// after user inline factories so wrappers that set the same label are deduped too.
-			if (
-				!minimalExtensionRuntime &&
-				!extensionsResult.extensions.some(extension => extension.label === "Context GC")
-			) {
-				const loaded = await loadExtensionFromFactory(
-					createContextGcExtension({ dbPath: contextGcDbPath }),
-					cwd,
-					eventBus,
-					extensionsResult.runtime,
-					"<native-context-gc>",
-				);
-				extensionsResult.extensions.push(loaded);
-			}
 
-			// The system-context reminder is also shipped as a plugin package, but loaded natively so
-			// bundled omp can remind the agent when its final prose drops high-priority persona context.
-			if (
-				!minimalExtensionRuntime &&
-				!extensionsResult.extensions.some(extension => extension.label === SYSTEM_CONTEXT_REMINDER_LABEL)
-			) {
-				const loaded = await loadExtensionFromFactory(
-					createSystemContextReminderExtension({ injectPromptOnBeforeAgentStart: false }),
-					cwd,
-					eventBus,
-					extensionsResult.runtime,
-					"<native-system-context-reminder>",
-				);
-				extensionsResult.extensions.push(loaded);
-				shouldAppendNativeSystemContextReminderPrompt = true;
-			}
-		});
+				// The system-context reminder is also shipped as a plugin package, but loaded natively so
+				// bundled omp can remind the agent when its final prose drops high-priority persona context.
+				if (
+					!minimalExtensionRuntime &&
+					!extensionsResult.extensions.some(extension => extension.label === SYSTEM_CONTEXT_REMINDER_LABEL)
+				) {
+					const loaded = await loadExtensionFromFactory(
+						createSystemContextReminderExtension({ injectPromptOnBeforeAgentStart: false }),
+						cwd,
+						eventBus,
+						extensionsResult.runtime,
+						"<native-system-context-reminder>",
+					);
+					extensionsResult.extensions.push(loaded);
+					shouldAppendNativeSystemContextReminderPrompt = true;
+				}
+			});
+		} catch (error) {
+			reportSoftCrash({
+				label: "extension-load",
+				error,
+				context: { phase: "inline-factory" },
+			});
+			throw error;
+		}
 
 		// Process provider registrations queued during extension loading.
 		// This must happen before the runner is created so that models registered by
@@ -3109,14 +3139,23 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			initialToolNames.includes("task") &&
 			!extensionsResult.extensions.some(extension => extension.label === DELEGATION_REMINDER_LABEL)
 		) {
-			const loaded = await loadExtensionFromFactory(
-				createDelegationReminderExtension({ threshold: settings.get("delegation.reminder.threshold") }),
-				cwd,
-				eventBus,
-				extensionsResult.runtime,
-				"<native-delegation-reminder>",
-			);
-			extensionsResult.extensions.push(loaded);
+			try {
+				const loaded = await loadExtensionFromFactory(
+					createDelegationReminderExtension({ threshold: settings.get("delegation.reminder.threshold") }),
+					cwd,
+					eventBus,
+					extensionsResult.runtime,
+					"<native-delegation-reminder>",
+				);
+				extensionsResult.extensions.push(loaded);
+			} catch (error) {
+				reportSoftCrash({
+					label: "extension-load",
+					error,
+					context: { phase: "native-delegation-reminder" },
+				});
+				throw error;
+			}
 		}
 
 		// Pre-register in the global agent registry BEFORE building the system prompt,

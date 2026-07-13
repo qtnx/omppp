@@ -90,6 +90,12 @@ class CountingFinalizedBlock implements Component {
 		this.renderCount++;
 		return [...this.#lines];
 	}
+
+	releaseCount = 0;
+
+	releaseCommittedPayloads(): void {
+		this.releaseCount++;
+	}
 }
 
 // A finalized block that can still mutate afterwards (an assistant message whose
@@ -415,6 +421,26 @@ describe("TranscriptContainer", () => {
 		const rendersAfterTransition = block.renderCount;
 		expect(container.render(40)).toEqual(["streaming", "done", "", "tail"]);
 		expect(block.renderCount).toBe(rendersAfterTransition);
+	});
+	it("releases finalized payloads only after their full rendered segment commits", () => {
+		const container = new TranscriptContainer();
+		const block = new CountingFinalizedBlock(["payload row 1", "payload row 2"]);
+		container.addChild(block);
+
+		const initial = ["payload row 1", "payload row 2"];
+		expect(container.render(40)).toEqual(initial);
+		expect(block.releaseCount).toBe(0);
+
+		// One committed row leaves the second row retractable.
+		container.setNativeScrollbackCommittedRows(1);
+		expect(container.render(40)).toEqual(initial);
+		expect(block.releaseCount).toBe(0);
+
+		// The full prior segment is now immutable native history; the following
+		// render may release backing payloads without changing visible content.
+		container.setNativeScrollbackCommittedRows(2);
+		expect(container.render(40)).toEqual(initial);
+		expect(block.releaseCount).toBe(1);
 	});
 	it("reports a new assistant block version after post-finalize error unpinning", () => {
 		const message: AssistantMessage = {

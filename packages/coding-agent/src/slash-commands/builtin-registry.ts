@@ -4,7 +4,17 @@ import * as path from "node:path";
 import { renderContextGcReport } from "@oh-my-pi/context-gc-plugin";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { type AutocompleteItem, Spacer } from "@oh-my-pi/pi-tui";
-import { APP_NAME, getAgentDbPath, getProjectDir, logger, sanitizeText, setProjectDir } from "@oh-my-pi/pi-utils";
+import {
+	APP_NAME,
+	formatCrashReportPathLine,
+	getAgentDbPath,
+	getProjectDir,
+	listUnreadCrashArtifacts,
+	logger,
+	markCrashArtifactsSeen,
+	sanitizeText,
+	setProjectDir,
+} from "@oh-my-pi/pi-utils";
 import { COLLAB_GUEST_ALLOWED_COMMANDS, CollabGuestLink } from "../collab/guest";
 import { CollabHost } from "../collab/host";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
@@ -1680,6 +1690,77 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				return;
 			}
 			runtime.ctx.showStatus("Usage: /usage [show|reset [account|active]]");
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "crash",
+		description: "Show unread crash reports",
+		acpDescription: "Show unread crash reports",
+		acpInputHint: "[dismiss]",
+		inlineHint: "[dismiss]",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (arg !== "" && arg !== "dismiss") {
+				return usage("Usage: /crash [dismiss]", runtime);
+			}
+
+			const unread = listUnreadCrashArtifacts();
+			if (arg === "dismiss") {
+				markCrashArtifactsSeen();
+				await runtime.output(unread.length > 0 ? "Unread crash reports dismissed." : "No unread crash reports.");
+				return commandConsumed();
+			}
+
+			const latest = unread[0];
+			if (!latest) {
+				await runtime.output("No unread crash reports.");
+				return commandConsumed();
+			}
+
+			const summary = shortDetail(sanitizeText(latest.summary), TRUNCATE_LENGTHS.CONTENT);
+			const reportPath = truncateToWidth(
+				sanitizeText(shortenPath(latest.path)).replace(/\s+/g, " "),
+				TRUNCATE_LENGTHS.CONTENT,
+			);
+			await runtime.output(
+				`${summary}\n${formatCrashReportPathLine(reportPath)}\nUse /crash dismiss to dismiss unread reports.`,
+			);
+			return commandConsumed();
+		},
+		handleTui: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (arg !== "" && arg !== "dismiss") {
+				runtime.ctx.showStatus("Usage: /crash [dismiss]");
+				runtime.ctx.editor.setText("");
+				return;
+			}
+
+			const unread = listUnreadCrashArtifacts();
+			if (arg === "dismiss") {
+				markCrashArtifactsSeen();
+				runtime.ctx.clearCrashReportBanner();
+				runtime.ctx.showStatus(unread.length > 0 ? "Unread crash reports dismissed." : "No unread crash reports.");
+				runtime.ctx.editor.setText("");
+				return;
+			}
+
+			const latest = unread[0];
+			if (!latest) {
+				runtime.ctx.showStatus("No unread crash reports.");
+				runtime.ctx.editor.setText("");
+				return;
+			}
+
+			const summary = shortDetail(sanitizeText(latest.summary), TRUNCATE_LENGTHS.CONTENT);
+			const reportPath = truncateToWidth(
+				sanitizeText(shortenPath(latest.path)).replace(/\s+/g, " "),
+				TRUNCATE_LENGTHS.CONTENT,
+			);
+			runtime.ctx.showStatus(
+				`${summary}\n${formatCrashReportPathLine(reportPath)}\nUse /crash dismiss to dismiss unread reports.`,
+			);
 			runtime.ctx.editor.setText("");
 		},
 	},

@@ -20,17 +20,14 @@ on:
             type: boolean
             default: false
 
-# Release runs publish a `v*` tag pushed atomically with main HEAD; sharing
-# the cheap branch-wide `CI-refs/heads/main` group meant a later main push
-# silently cancelled the in-flight release and left the tag without a GitHub
-# Release or npm publish (#2564). Detect release runs at workflow-scheduling
-# time via the release-script commit subject (`chore: bump version to vX.Y.Z`),
-# via `v*` tag-ref dispatches, and via manual dispatches whose tag-on-HEAD
-# status is only known after checkout; scope them to a per-sha group with no
-# cancellation. Every other event keeps branch-wide cancellation for PR/main churn.
+# Tag and manual release runs need a per-SHA, non-cancellable group: a later
+# main push must not cancel an in-flight release and leave the tag unpublished
+# (#2564). The main push paired atomically with a release tag is only a
+# metadata-only companion, so it keeps the normal branch-wide cancellation
+# behavior and does not serialize the authoritative tag run.
 concurrency:
-   group: "${{ github.workflow }}-${{ (startsWith(github.event.head_commit.message, 'chore: bump version to ') || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && format('release-{0}', github.sha) || github.ref }}"
-   cancel-in-progress: "${{ !(startsWith(github.event.head_commit.message, 'chore: bump version to ') || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}"
+   group: "${{ github.workflow }}-${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && format('release-{0}', github.sha) || github.ref }}"
+   cancel-in-progress: "${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}"
 
 env:
    FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -48,15 +45,15 @@ permissions:
 jobs:
    # Release jobs are driven by version tag refs (`vX.Y.Z`). The release script
    # pushes the version-bump commit and tag atomically, which creates both a main
-   # branch push run and a tag push run. The tag run is authoritative for
-   # release artifacts; the companion main run remains normal CI so the two runs
-   # cannot race to publish the same GitHub Release.
+   # branch push run and a tag push run. The tag run is authoritative; the
+   # companion main run resolves this metadata, then skips duplicate workload.
    release_metadata:
       name: Resolve release metadata
       runs-on: ubuntu-22.04
       outputs:
          is-release: ${{ steps.detect.outputs.is-release }}
          release-tag: ${{ steps.detect.outputs.release-tag }}
+         is-companion: "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore: bump version to ') }}"
       steps:
          # Tag refs are the only automatic release trigger. A manual
          # workflow_dispatch also publishes only when dispatched from a valid
@@ -89,20 +86,23 @@ jobs:
               } >> "$GITHUB_OUTPUT"
 
    # Compute a stable hash of every input that affects the native cdylib output,
-   # then look for any prior successful main run that already uploaded the
-   # native artifacts for this hash. Two independent outputs:
+   # then look for successful trusted push runs that already uploaded matching
+   # artifacts. CI only receives push events for main and `v*` tags, so retaining
+   # `--event=push` excludes PR artifacts while allowing a release-tag build to
+   # warm the next main run. Two independent outputs:
    #   * `linux-x64-run-id` — set when the linux x64 canary
-   #     (`pi-natives-linux-x64-modern-h<hash>`) is present on a prior main run,
+   #     (`pi-natives-linux-x64-modern-h<hash>`) is present on a prior push run,
    #     so native-dependent TS test jobs and `native_linux_x64` can reuse it.
    #   * `cross-platform-run-id` — set when ALL cross-platform native artifacts
-   #     also have non-expired artifacts on that same prior run, so
-   #     `native_cross_platform` can skip the cold rebuild on main pushes after
-   #     dep changes have already warmed sccache there.
+   #     also have non-expired artifacts on that same run, so
+   #     `native_cross_platform` can skip a cold rebuild on main after a release.
    # Non-release native jobs are skipped when their canary hits; the canary
    # retention window (see build-native action) is the effective TTL.
    native_artifact_lookup:
       name: Look up cached native artifacts
       runs-on: ubuntu-22.04
+      needs: [release_metadata]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' }}
       outputs:
          source-hash: ${{ steps.compute.outputs.source-hash }}
          linux-x64-run-id: ${{ steps.find.outputs.linux-x64-run-id }}
@@ -123,7 +123,7 @@ jobs:
                     | cut -c1-16)
               echo "source-hash=$source_hash" >> "$GITHUB_OUTPUT"
               echo "Native source hash: $source_hash"
-         - name: Find prior main build with matching native artifacts
+         - name: Find prior trusted push build with matching native artifacts
            id: find
            env:
               GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -145,7 +145,7 @@ jobs:
               linux_x64_run_id=""
               cross_platform_run_id=""
               for candidate in $(gh run list \
-                  --workflow=ci.yml --branch=main --status=success --event=push \
+                  --workflow=ci.yml --status=success --event=push \
                   --limit=20 --json databaseId --jq='.[].databaseId'); do
                 names=$(gh api "/repos/${{ github.repository }}/actions/runs/$candidate/artifacts?per_page=100" \
                     --jq '.artifacts[] | select(.expired == false) | .name')
@@ -194,6 +194,8 @@ jobs:
    check:
       name: Lint, type check & web build
       runs-on: ubuntu-22.04
+      needs: [release_metadata]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' }}
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
@@ -208,7 +210,7 @@ jobs:
    native_linux_x64:
       name: "Native: Linux x64 (${{ matrix.variant }})"
       needs: [release_metadata, native_artifact_lookup]
-      if: ${{ needs.release_metadata.outputs.is-release == 'true' || needs.native_artifact_lookup.outputs.linux-x64-run-id == '' }}
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || needs.native_artifact_lookup.outputs.linux-x64-run-id == '') }}
       runs-on: ubuntu-22.04
       strategy:
          fail-fast: false
@@ -234,7 +236,7 @@ jobs:
    native_cross_platform_kata:
       name: "Native: ${{ matrix.platform }} ${{ matrix.arch }}"
       needs: [release_metadata, native_artifact_lookup]
-      if: ${{ needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '') }}
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '')) }}
       strategy:
          fail-fast: false
          matrix:
@@ -257,7 +259,7 @@ jobs:
    native_cross_platform_macos:
       name: "Native: ${{ matrix.platform }} ${{ matrix.arch }}"
       needs: [release_metadata, native_artifact_lookup]
-      if: ${{ needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '') }}
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '')) }}
       strategy:
          fail-fast: false
          matrix:
@@ -278,8 +280,8 @@ jobs:
    test_workspace:
       name: Test TS workspace fast
       runs-on: ubuntu-22.04
-      needs: [native_linux_x64, native_artifact_lookup]
-      if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 60
       steps:
          - uses: actions/checkout@v4
@@ -308,8 +310,8 @@ jobs:
    test_coding_agent_singleton:
       name: Test coding-agent singleton/global-state (TS)
       runs-on: ubuntu-22.04
-      needs: [native_linux_x64, native_artifact_lookup]
-      if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 20
       steps:
          - uses: actions/checkout@v4
@@ -340,8 +342,8 @@ jobs:
    test_ts_native:
       name: Test TS native/integration packages
       runs-on: ubuntu-22.04
-      needs: [native_linux_x64, native_artifact_lookup]
-      if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 25
       steps:
          - uses: actions/checkout@v4
@@ -371,8 +373,8 @@ jobs:
    test_coding_agent_ui:
       name: Test coding-agent UI/TUI (TS)
       runs-on: ubuntu-22.04
-      needs: [native_linux_x64, native_artifact_lookup]
-      if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 25
       steps:
          - uses: actions/checkout@v4
@@ -402,8 +404,8 @@ jobs:
    test_coding_agent_runtime:
       name: Test coding-agent runtime/session (TS)
       runs-on: ubuntu-22.04
-      needs: [native_linux_x64, native_artifact_lookup]
-      if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 25
       steps:
          - uses: actions/checkout@v4
@@ -434,8 +436,8 @@ jobs:
    test_coding_agent_native:
       name: Test coding-agent native/unit (TS)
       runs-on: ubuntu-22.04
-      needs: [native_linux_x64, native_artifact_lookup]
-      if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 25
       steps:
          - uses: actions/checkout@v4
@@ -465,8 +467,8 @@ jobs:
    test_smoke:
       name: Test CLI smoke (TS)
       runs-on: ubuntu-22.04
-      needs: [native_linux_x64, native_artifact_lookup]
-      if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 25
       steps:
          - uses: actions/checkout@v4
@@ -490,18 +492,14 @@ jobs:
               merge-multiple: true
               run-id: ${{ steps.source.outputs.artifact-run-id }}
               github-token: ${{ secrets.GITHUB_TOKEN }}
-         - name: Test workspace (TS)
-           # Run the shell driver directly instead of through `bun run`: when a
-           # package test hangs or the job is cancelled, the extra Bun script
-           # wrapper can hide the per-package progress that identifies the
-           # stalled package in the Actions log.
-           run: bash scripts/ci-test-ts.sh
          - name: CLI smoke test
            run: bun run ci:test:smoke
 
    install_methods:
       name: Install method smoke tests
       runs-on: ubuntu-22.04
+      needs: [release_metadata]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' }}
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/ensure-rust-toolchain
@@ -555,7 +553,7 @@ jobs:
 
    security:
       needs: [release_metadata]
-      if: ${{ needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
       uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2" # v2.3.8
       permissions:
          actions: read

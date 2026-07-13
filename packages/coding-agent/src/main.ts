@@ -19,6 +19,7 @@ import {
 	logger,
 	normalizePathForComparison,
 	postmortem,
+	reportSoftCrash,
 	setProjectDir,
 	VERSION,
 } from "@oh-my-pi/pi-utils";
@@ -50,7 +51,7 @@ import {
 } from "./discovery/helpers";
 import { injectOmpExtensionCliRoots } from "./discovery/omp-extension-roots";
 import { ExtensionRunner } from "./extensibility/extensions/runner";
-import type { ExtensionUIContext } from "./extensibility/extensions/types";
+import type { ExtensionUIContext, LoadExtensionsResult } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import type { MCPManager } from "./mcp";
@@ -1436,7 +1437,17 @@ export async function runRootCommand(
 		// file — and the same result is handed to createAgentSession via
 		// `preloadedExtensions` so the discovery work is not repeated.
 		const eventBus = new EventBus();
-		const extensionsResult = await loadSessionExtensions(sessionOptions, cwd, settingsInstance, eventBus);
+		let extensionsResult: LoadExtensionsResult;
+		try {
+			extensionsResult = await loadSessionExtensions(sessionOptions, cwd, settingsInstance, eventBus);
+		} catch (error) {
+			reportSoftCrash({
+				label: "extension-load",
+				error,
+				context: { phase: "cli-startup" },
+			});
+			throw error;
+		}
 		const extensionFlagSink: ExtensionFlagSink = {
 			getFlags: () => ExtensionRunner.aggregateFlags(extensionsResult.extensions),
 			setFlagValue: (name, value) => {

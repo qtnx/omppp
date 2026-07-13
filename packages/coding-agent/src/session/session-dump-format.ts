@@ -9,9 +9,11 @@
 import type { AgentMessage, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model, ToolExample, TSchema } from "@oh-my-pi/pi-ai";
 import { renderDelimitedThinking, renderToolInventory } from "@oh-my-pi/pi-ai/dialect";
+import { getBlobsDir } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { YAML } from "bun";
 import { canonicalizeMessage } from "../utils/thinking-display";
+import { BlobStore, isBlobRef, parseBlobRef } from "./blob-store";
 import {
 	type BashExecutionMessage,
 	type BranchSummaryMessage,
@@ -89,17 +91,28 @@ function renderDumpHeader(options: FormatSessionDumpTextOptions, inventoryTools:
 	return lines;
 }
 
+const CONTENT_ARCHIVED = "[content archived]";
+
+/** Resolve a text block that is entirely a blob ref; no-op for inline text. */
+function resolveDumpText(text: string): string {
+	if (!isBlobRef(text)) return text;
+	const hash = parseBlobRef(text);
+	if (!hash) return CONTENT_ARCHIVED;
+	const buf = new BlobStore(getBlobsDir()).getSync(hash);
+	return buf ? buf.toString("utf8") : CONTENT_ARCHIVED;
+}
+
 /** Append the legacy per-message markdown-heading transcript (the pre-16.x `/dump` body). */
 function appendMarkdownTranscript(lines: string[], messages: readonly AgentMessage[]): void {
 	for (const msg of messages) {
 		if (msg.role === "user" || msg.role === "developer") {
 			lines.push(msg.role === "developer" ? "## Developer\n" : "## User\n");
 			if (typeof msg.content === "string") {
-				lines.push(msg.content);
+				lines.push(resolveDumpText(msg.content));
 			} else {
 				for (const c of msg.content) {
-					if (c.type === "text") lines.push(c.text);
-					else if (c.type === "image") lines.push("[Image]");
+					if (c.type === "text") lines.push(resolveDumpText(c.text));
+					else if (c.type === "image") lines.push(isBlobRef(c.data) ? "[image unavailable]" : "[Image]");
 				}
 			}
 			lines.push("\n");
@@ -108,7 +121,7 @@ function appendMarkdownTranscript(lines: string[], messages: readonly AgentMessa
 			lines.push("## Assistant\n");
 			for (const c of assistantMsg.content) {
 				if (c.type === "text") {
-					lines.push(c.text);
+					lines.push(resolveDumpText(c.text));
 				} else if (c.type === "thinking") {
 					const thinking = canonicalizeMessage(c.thinking);
 					if (thinking.length === 0) continue;
@@ -145,7 +158,7 @@ function appendMarkdownTranscript(lines: string[], messages: readonly AgentMessa
 			for (const c of msg.content) {
 				if (c.type === "text") {
 					lines.push("```");
-					lines.push(c.text);
+					lines.push(resolveDumpText(c.text));
 					lines.push("```");
 				} else if (c.type === "image") {
 					lines.push("[Image output]");
@@ -170,11 +183,11 @@ function appendMarkdownTranscript(lines: string[], messages: readonly AgentMessa
 			const customMsg = msg as CustomMessage | HookMessage;
 			lines.push(`## ${customMsg.customType}\n`);
 			if (typeof customMsg.content === "string") {
-				lines.push(customMsg.content);
+				lines.push(resolveDumpText(customMsg.content));
 			} else {
 				for (const c of customMsg.content) {
-					if (c.type === "text") lines.push(c.text);
-					else if (c.type === "image") lines.push("[Image]");
+					if (c.type === "text") lines.push(resolveDumpText(c.text));
+					else if (c.type === "image") lines.push(isBlobRef(c.data) ? "[image unavailable]" : "[Image]");
 				}
 			}
 			lines.push("\n");
