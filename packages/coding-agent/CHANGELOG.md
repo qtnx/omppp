@@ -13,6 +13,7 @@
 - Added `/subagents` to open the live subagent inspector for running and parked task agents.
 - Per-file write locking across parallel agents: concurrent `edit`/`write` calls targeting the same file now wait their turn instead of racing (in-process, keyed by canonical path).
 - Added optional `focus` on the `compact` tool and `compactionFocus` on the `job` tool; both are threaded into compaction-summary instructions.
+- Added crash-report recovery in the interactive CLI: unread crash artifacts are pinned at startup, `/crash` shows the newest report, and `/crash dismiss` clears the banner; unexpected tool-render and extension-load failures now persist a local soft crash report without changing existing failure behavior.
 
 ### Changed
 

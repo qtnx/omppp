@@ -260,6 +260,7 @@ export interface InteractiveModeContext {
 	showError(message: string): void;
 	showPinnedError(message: string): void;
 	clearPinnedError(): void;
+	clearCrashReportBanner(): void;
 	showWarning(message: string): void;
 	showNewVersionNotification(newVersion: string): void;
 	clearEditor(): void;

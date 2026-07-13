@@ -14,7 +14,7 @@ import {
 	Text,
 	type TUI,
 } from "@oh-my-pi/pi-tui";
-import { getProjectDir, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { getProjectDir, logger, reportSoftCrash, sanitizeText } from "@oh-my-pi/pi-utils";
 import { EDIT_MODE_STRATEGIES, type EditMode, type PerFileDiffPreview } from "../../edit";
 import type { Theme } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
@@ -918,14 +918,26 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	}
 
 	override render(width: number): readonly string[] {
-		const lines = super.render(width);
-		// Update the paint-tracking flags after `super.render(width)` — the
-		// override runs on every compose the parent Container performs, so a
-		// frame that never gets composed leaves the flags false and prevents a
-		// spurious `resetDisplay()`.
-		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
-		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
-		return lines;
+		try {
+			const lines = super.render(width);
+			// Update the paint-tracking flags after `super.render(width)` — the
+			// override runs on every compose the parent Container performs, so a
+			// frame that never gets composed leaves the flags false and prevents a
+			// spurious `resetDisplay()`.
+			this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
+			this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
+			return lines;
+		} catch (error) {
+			reportSoftCrash({
+				label: "tool-render",
+				error,
+				context: { tool: this.#toolName, label: this.#toolLabel },
+			});
+			logger.warn("Tool component render failed", { tool: this.#toolName, error: String(error) });
+			return [
+				truncateToWidth(sanitizeText(`Tool display failed: ${this.#toolLabel}`).replace(/\s+/g, " ").trim(), width),
+			];
+		}
 	}
 
 	// Viewport-/settings-dependent image sizing folded into the memo key only when
