@@ -11,8 +11,8 @@
       },
       "devDependencies": {
         "@biomejs/biome": "catalog:",
-        "@oh-my-pi/pi-catalog": "1.6.1",
-        "@oh-my-pi/snapcompact": "1.6.1",
+        "@oh-my-pi/pi-catalog": "1.6.2",
+        "@oh-my-pi/snapcompact": "1.6.2",
         "@types/bun": "catalog:",
         "@typescript/native-preview": "catalog:",
         "lint-staged": "catalog:",
@@ -23,7 +23,7 @@
     },
     "packages/agent": {
       "name": "@oh-my-pi/pi-agent-core",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "dependencies": {
         "@oh-my-pi/pi-ai": "catalog:",
         "@oh-my-pi/pi-catalog": "catalog:",
@@ -41,7 +41,7 @@
     },
     "packages/ai": {
       "name": "@oh-my-pi/pi-ai",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "dependencies": {
         "@bufbuild/protobuf": "catalog:",
         "@oh-my-pi/pi-catalog": "catalog:",
@@ -57,7 +57,7 @@
     },
     "packages/catalog": {
       "name": "@oh-my-pi/pi-catalog",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "dependencies": {
         "@bufbuild/protobuf": "catalog:",
         "@oh-my-pi/pi-utils": "catalog:",
@@ -79,7 +79,7 @@
     },
     "packages/coding-agent": {
       "name": "@oh-my-pi/pi-coding-agent",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "bin": {
         "ompx": "src/cli.ts",
       },
@@ -161,7 +161,7 @@
     },
     "packages/context-gc-plugin": {
       "name": "@oh-my-pi/context-gc-plugin",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "dependencies": {
         "@oh-my-pi/pi-agent-core": "workspace:*",
         "@oh-my-pi/pi-ai": "workspace:*",
@@ -178,7 +178,7 @@
     },
     "packages/delegation-reminder-plugin": {
       "name": "@oh-my-pi/delegation-reminder-plugin",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "devDependencies": {
         "@oh-my-pi/pi-coding-agent": "workspace:*",
         "@types/bun": "catalog:",
@@ -221,7 +221,7 @@
     },
     "packages/hashline": {
       "name": "@oh-my-pi/hashline",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "dependencies": {
         "diff": "catalog:",
         "lru-cache": "catalog:",
@@ -232,7 +232,7 @@
     },
     "packages/mnemopi": {
       "name": "@oh-my-pi/pi-mnemopi",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "bin": {
         "mnemopi": "src/cli.ts",
       },
@@ -258,7 +258,7 @@
     },
     "packages/natives": {
       "name": "@oh-my-pi/pi-natives",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "devDependencies": {
         "@napi-rs/cli": "catalog:",
         "@types/bun": "catalog:",
@@ -266,7 +266,7 @@
     },
     "packages/snapcompact": {
       "name": "@oh-my-pi/snapcompact",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "dependencies": {
         "@oh-my-pi/pi-ai": "catalog:",
         "@oh-my-pi/pi-natives": "catalog:",
@@ -279,7 +279,7 @@
     },
     "packages/stats": {
       "name": "@oh-my-pi/omp-stats",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "bin": {
         "omp-stats": "./src/index.ts",
       },
@@ -305,7 +305,7 @@
     },
     "packages/swarm-extension": {
       "name": "@oh-my-pi/swarm-extension",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "bin": {
         "omp-swarm": "src/cli.ts",
       },
@@ -321,7 +321,7 @@
     },
     "packages/system-context-reminder-plugin": {
       "name": "@oh-my-pi/system-context-reminder-plugin",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "devDependencies": {
         "@oh-my-pi/pi-coding-agent": "workspace:*",
         "@types/bun": "catalog:",
@@ -332,7 +332,7 @@
     },
     "packages/tui": {
       "name": "@oh-my-pi/pi-tui",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "dependencies": {
         "@oh-my-pi/pi-natives": "catalog:",
         "@oh-my-pi/pi-utils": "catalog:",
@@ -370,7 +370,7 @@
     },
     "packages/utils": {
       "name": "@oh-my-pi/pi-utils",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "dependencies": {
         "@oh-my-pi/pi-natives": "catalog:",
         "handlebars": "catalog:",
@@ -383,7 +383,7 @@
     },
     "packages/wire": {
       "name": "@oh-my-pi/pi-wire",
-      "version": "1.6.1",
+      "version": "1.6.2",
       "devDependencies": {
         "@types/bun": "catalog:",
       },
@@ -425,21 +425,21 @@
     "@huggingface/transformers": "^4.2.0",
     "@mozilla/readability": "^0.6.0",
     "@napi-rs/cli": "3.7.0",
-    "@oh-my-pi/context-gc-plugin": "1.6.1",
-    "@oh-my-pi/delegation-reminder-plugin": "1.6.1",
-    "@oh-my-pi/hashline": "1.6.1",
-    "@oh-my-pi/omp-stats": "1.6.1",
-    "@oh-my-pi/pi-agent-core": "1.6.1",
-    "@oh-my-pi/pi-ai": "1.6.1",
-    "@oh-my-pi/pi-catalog": "1.6.1",
-    "@oh-my-pi/pi-coding-agent": "1.6.1",
-    "@oh-my-pi/pi-mnemopi": "1.6.1",
-    "@oh-my-pi/pi-natives": "1.6.1",
-    "@oh-my-pi/pi-tui": "1.6.1",
-    "@oh-my-pi/pi-utils": "1.6.1",
-    "@oh-my-pi/pi-wire": "1.6.1",
-    "@oh-my-pi/snapcompact": "1.6.1",
-    "@oh-my-pi/system-context-reminder-plugin": "1.6.1",
+    "@oh-my-pi/context-gc-plugin": "1.6.2",
+    "@oh-my-pi/delegation-reminder-plugin": "1.6.2",
+    "@oh-my-pi/hashline": "1.6.2",
+    "@oh-my-pi/omp-stats": "1.6.2",
+    "@oh-my-pi/pi-agent-core": "1.6.2",
+    "@oh-my-pi/pi-ai": "1.6.2",
+    "@oh-my-pi/pi-catalog": "1.6.2",
+    "@oh-my-pi/pi-coding-agent": "1.6.2",
+    "@oh-my-pi/pi-mnemopi": "1.6.2",
+    "@oh-my-pi/pi-natives": "1.6.2",
+    "@oh-my-pi/pi-tui": "1.6.2",
+    "@oh-my-pi/pi-utils": "1.6.2",
+    "@oh-my-pi/pi-wire": "1.6.2",
+    "@oh-my-pi/snapcompact": "1.6.2",
+    "@oh-my-pi/system-context-reminder-plugin": "1.6.2",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/context-async-hooks": "^2.7.1",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.219.0",

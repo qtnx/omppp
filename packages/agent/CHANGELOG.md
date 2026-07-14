@@ -2,17 +2,6 @@
 
 ## [Unreleased]
 
-## [1.6.1] - 2026-07-13
-
-### Added
-
-- Added automated image-dropping rescue tier to compaction dead-end recovery
-- Added visual warnings to the session timeline when compaction fails to free sufficient space
-
-### Changed
-
-- Improved compaction dead-end notifications with specific recovery instructions
-
 ## [16.4.5] - 2026-07-11
 
 ### Added
@@ -1022,6 +1011,17 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.6.1] - 2026-07-13
+
+### Added
+
+- Added automated image-dropping rescue tier to compaction dead-end recovery
+- Added visual warnings to the session timeline when compaction fails to free sufficient space
+
+### Changed
+
+- Improved compaction dead-end notifications with specific recovery instructions
 
 ## [1.6.0] - 2026-07-12
 

@@ -2,18 +2,11 @@
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-07-14
+
 ### Fixed
 
 - Fixed compiled CLI entry paths leaking into the initial prompt and swallowing subcommands such as `ompx update`; profile aliases now ignore Bun virtual entrypoints and target the OMPx executable.
-
-## [1.6.1] - 2026-07-13
-
-- Fixed unbounded session memory growth in long-lived sessions: heavy payloads (images, large text and thinking signatures, string message content, snapcompact frames, custom-entry image data URLs) of entries behind the latest compaction are now archived in RAM to content-addressed blob refs (reversibly, rehydrated on rollback/branch switch/fork/resume), session resume no longer eagerly re-inflates all persisted blob refs (only the live tail), sealed TUI transcript blocks release image payload and Kitty-conversion copies, and export/share/dump/render surfaces resolve or placeholder archived refs.
-- Fixed rebuilt persisted custom messages losing their originating entry ID; rebuilt messages now retain it so Context GC can match them reliably after context reconstruction.
-
-### Added
-
-- Added six bundled product-engineering skills for upstream-of-code work: `product-discovery` (gatekeeper problem framing with evidence-graded problem brief, runs before feature-anatomy when the problem is unvalidated), `product-ideation` (divergent direction generation with distinctness litmus, honest scorecard convergence, and built-in premortem/kill-criteria), `product-spec` (PRD-lite contract with journey/state enumeration, cut-lines, metrics-to-event mapping, and a self-check rubric; artifact saved to `docs/product/specs/`), `product-design` (post-spec UI design: screen inventory/IA, mermaid flow maps with failure branches, state-complete ASCII wireframes with hierarchy/copy/accessibility/data annotations, a fidelity ladder up to browser-verified HTML mockups, and a user veto gate before implementation; artifact saved to `docs/product/design/`), `product-architecture` (CTO-mode system design after spec/design: C4 context/container diagrams, critical-flow sequence diagrams with failure branches, data ownership and migration path, numeric NFR envelope with evidence grades, build-vs-buy, a 12-row common-mistakes gate, contract-first API edges per api-design, and ADR-lite records; artifact saved to `docs/product/architecture/`), and `competitive-recon` (decision-first competitor teardown with evidence grading and a no-web degraded mode).
 
 ## [16.4.8] - 2026-07-12
 
@@ -11070,6 +11063,15 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.6.1] - 2026-07-13
+
+- Fixed unbounded session memory growth in long-lived sessions: heavy payloads (images, large text and thinking signatures, string message content, snapcompact frames, custom-entry image data URLs) of entries behind the latest compaction are now archived in RAM to content-addressed blob refs (reversibly, rehydrated on rollback/branch switch/fork/resume), session resume no longer eagerly re-inflates all persisted blob refs (only the live tail), sealed TUI transcript blocks release image payload and Kitty-conversion copies, and export/share/dump/render surfaces resolve or placeholder archived refs.
+- Fixed rebuilt persisted custom messages losing their originating entry ID; rebuilt messages now retain it so Context GC can match them reliably after context reconstruction.
+
+### Added
+
+- Added six bundled product-engineering skills for upstream-of-code work: `product-discovery` (gatekeeper problem framing with evidence-graded problem brief, runs before feature-anatomy when the problem is unvalidated), `product-ideation` (divergent direction generation with distinctness litmus, honest scorecard convergence, and built-in premortem/kill-criteria), `product-spec` (PRD-lite contract with journey/state enumeration, cut-lines, metrics-to-event mapping, and a self-check rubric; artifact saved to `docs/product/specs/`), `product-design` (post-spec UI design: screen inventory/IA, mermaid flow maps with failure branches, state-complete ASCII wireframes with hierarchy/copy/accessibility/data annotations, a fidelity ladder up to browser-verified HTML mockups, and a user veto gate before implementation; artifact saved to `docs/product/design/`), `product-architecture` (CTO-mode system design after spec/design: C4 context/container diagrams, critical-flow sequence diagrams with failure branches, data ownership and migration path, numeric NFR envelope with evidence grades, build-vs-buy, a 12-row common-mistakes gate, contract-first API edges per api-design, and ADR-lite records; artifact saved to `docs/product/architecture/`), and `competitive-recon` (decision-first competitor teardown with evidence grading and a no-web degraded mode).
 
 ## [1.6.0] - 2026-07-12
 

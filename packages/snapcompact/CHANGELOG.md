@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.6.1] - 2026-07-13
-
-### Changed
-
-- Changed archived transcript rendering to compact `¶user:`, `¶think:`, `¶ai:`, and `¶call:` scopes; repeated adjacent scopes now continue as plain lines, tool-call intents trail calls as `//` comments, and the compaction prompt documents the format.
-
 ## [16.3.7] - 2026-07-05
 
 ### Fixed
@@ -182,6 +176,12 @@
 
 - Fixed frame rendering at archive chunk boundaries to reopen dim spans when a chunk ends inside a dimmed tool-result segment
 - Fixed message serialization to strip user- and assistant-provided dim markers so only renderer-generated dim spans can be applied
+
+## [1.6.1] - 2026-07-13
+
+### Changed
+
+- Changed archived transcript rendering to compact `¶user:`, `¶think:`, `¶ai:`, and `¶call:` scopes; repeated adjacent scopes now continue as plain lines, tool-call intents trail calls as `//` comments, and the compaction prompt documents the format.
 
 ## [1.5.3] - 2026-07-07
 
