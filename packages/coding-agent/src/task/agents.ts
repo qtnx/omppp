@@ -98,7 +98,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 			description:
 				"Medium-complexity implementer for routine feature work; opt-in reviewer+fixer pass via self_review",
 			spawns: "*",
-			model: "pi/task",
+			model: "@task",
 			thinkingLevel: AUTO_THINKING,
 			reviewGate: {
 				enabled: true,

@@ -156,12 +156,13 @@ import {
 	obfuscateProviderContext,
 	SecretObfuscator,
 } from "./secrets";
-import { AgentSession, type ReasoningSlide } from "./session/agent-session";
+import { AgentSession, type PlanYolo, type Prewalk, type ReasoningSlide } from "./session/agent-session";
 import {
 	type DiscoverAuthStorageOptions,
 	discoverAuthStorage as discoverAuthStorageFromConfig,
 } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
+import { createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
 import {
 	BROWSER_ANNOTATION_MESSAGE_TYPE,
 	type CustomMessage,
@@ -632,6 +633,10 @@ export interface CreateAgentSessionOptions {
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
+	/** Prewalk from the starting model to a fast/cheap target at the first edit/write once the todo list exists. */
+	prewalk?: Prewalk;
+	/** Force read-only plan mode at start, auto-approve on the model's first resolve call, then switch to execute. */
+	planYolo?: PlanYolo;
 	/** One-way model switch after a fixed number of completed assistant turns. */
 	reasoningSlide?: ReasoningSlide;
 
@@ -1177,6 +1182,7 @@ function createCustomToolContext(ctx: ExtensionContext): CustomToolContext {
 		isIdle: ctx.isIdle,
 		hasQueuedMessages: ctx.hasPendingMessages,
 		abort: ctx.abort,
+		localProtocolOptions: ctx.localProtocolOptions,
 	};
 }
 
@@ -1623,10 +1629,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const secretsEnabled = obfuscator?.hasSecrets() === true;
 
 		// Check if session has existing data to restore
-		const existingSession = logger.time("loadSessionContext", () =>
+		let existingSession = logger.time("loadSessionContext", () =>
 			deobfuscateSessionContext(sessionManager.buildSessionContext(), obfuscator),
 		);
-		const existingBranch = logger.time("getSessionBranch", () => sessionManager.getBranch());
+		let existingBranch = logger.time("getSessionBranch", () => sessionManager.getBranch());
 		const hasExistingSession = existingBranch.length > 0;
 		const hasThinkingEntry = existingBranch.some(entry => entry.type === "thinking_level_change");
 		const hasServiceTierEntry = existingBranch.some(entry => entry.type === "service_tier_change");
@@ -2498,7 +2504,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 		}
 		// Resolve deferred --model/subagent patterns now that extension models are
-		// registered. Expand role aliases (`pi/smol`) and comma chains to concrete
+		// registered. Expand role aliases (`@smol`) and comma chains to concrete
 		// selectors first so deferred resolution accepts everything the immediate
 		// path (resolveModelOverride → resolveModelRoleValue) accepts.
 		if (!model && deferredModelPatterns.length > 0) {
@@ -2677,6 +2683,24 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 		}
 
+		// A first-turn user tail has no assistant metadata to copy. Once startup
+		// has selected its final model, use that model to terminate the
+		// interrupted turn before the live agent consumes the restored context.
+		if (model) {
+			const selectedModelAbort = createInterruptedTurnAbortMessage(existingBranch, {
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+			});
+			if (selectedModelAbort) {
+				sessionManager.appendMessage(selectedModelAbort);
+				existingBranch = logger.time("getRecoveredUserTailBranch", () => sessionManager.getBranch());
+				existingSession = logger.time("loadRecoveredUserTailContext", () =>
+					deobfuscateSessionContext(sessionManager.buildSessionContext(), obfuscator),
+				);
+			}
+		}
+
 		// Discover custom commands (TypeScript slash commands)
 		const customCommandsResult: CustomCommandsLoadResult =
 			options.disableExtensionDiscovery || minimalExtensionRuntime
@@ -2703,6 +2727,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			modelRegistry,
 			() => (hasSession ? createSessionMemoryRuntimeContext(session, agentDir, cwd) : undefined),
 			settings,
+			localProtocolOptions,
 		);
 
 		credentialDisabledTarget = extensionRunner;
@@ -2721,6 +2746,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				session.abort({ reason: USER_INTERRUPT_LABEL });
 			},
 			settings,
+			localProtocolOptions,
 			autoApprove: options.autoApprove ?? false,
 		});
 		const toolContextStore = new ToolContextStore(getSessionContext);
@@ -3562,6 +3588,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			agent,
 			pruneToolDescriptions: inlineToolDescriptors,
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
+			prewalk: options.prewalk,
+			planYolo: options.planYolo,
 			reasoningSlide: options.reasoningSlide,
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,

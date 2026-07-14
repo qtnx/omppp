@@ -1,6 +1,7 @@
 import { prompt } from "@oh-my-pi/pi-utils";
 import workflowNoticeTemplate from "../prompts/system/workflow-notice.md" with { type: "text" };
 import { createGradientHighlighter, type KeywordHighlighter } from "./gradient-highlight";
+import { magicKeywordRegex } from "./magic-keyword-boundary";
 import { keywordInProse } from "./markdown-prose";
 
 /**
@@ -18,6 +19,11 @@ import { keywordInProse } from "./markdown-prose";
 // as a notice trigger (for example, "workflowz") while code/XML masking stays in
 // `keywordInProse`. Highlighting remains standalone-word only for editor display.
 const WORKFLOW_NOTICE_WORD = /(?<![/.])workflow(?!\.[A-Za-z0-9])/;
+
+const WORKFLOW_HIGHLIGHT_WORD = new RegExp(
+	["workflow", "workflows", "workflowz"].map(keyword => magicKeywordRegex(keyword).source).join("|"),
+	"gu",
+);
 
 /** WORKFLOW_NOTICE is the default hidden notice for workflow-tool fan-out. */
 export const WORKFLOW_NOTICE: string = renderWorkflowNotice({ taskBatch: true });
@@ -43,7 +49,7 @@ export function containsWorkflow(text: string): boolean {
  */
 export const highlightWorkflow: KeywordHighlighter = createGradientHighlighter({
 	probe: /workflow/,
-	highlight: /(?<!\S)workflows?(?!\S)/g,
+	highlight: WORKFLOW_HIGHLIGHT_WORD,
 	stops: 14,
 	hue: t => 30 + t * 120,
 });

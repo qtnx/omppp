@@ -32,6 +32,7 @@ import { Container } from "@oh-my-pi/pi-tui";
  *   leaving two identical custom-message components in the chat.
  */
 beforeAll(async () => {
+	// renderInitialMessages reads the global Settings (display.collapseCompacted).
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme();

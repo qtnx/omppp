@@ -16,9 +16,9 @@ export const TINY_WORKER_ARGS: Record<string, true> = {
 	"--tiny-worker": true,
 	__tiny_worker: true,
 };
-export const STATS_SYNC_WORKER_ARG = "__omp_stats_sync_worker";
-export const TAB_WORKER_ARG = "__omp_tab_worker";
-export const JS_EVAL_WORKER_ARG = "__omp_js_eval_worker";
+export const STATS_SYNC_WORKER_ARG = "__omp_worker_stats_sync";
+export const TAB_WORKER_ARG = "__omp_worker_tab";
+export const JS_EVAL_WORKER_ARG = "__omp_worker_js_eval";
 
 /** Every internal worker re-entry selector (thread and subprocess forms). */
 export const INTERNAL_WORKER_ENTRY_ARGS: Record<string, true> = {

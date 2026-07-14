@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [16.5.1] - 2026-07-14
+
+### Fixed
+
+- Fixed reasoning effort mapping for Z.ai GLM-5.2 on the Anthropic messages endpoint to correctly use the two-tier scale (high, max) and emit output_config.effort.
+- Fixed an issue where stale cached model limits would override updated static catalog limits after a catalog fingerprint mismatch.
+- Fixed Cursor discovery to correctly preserve GetUsableModels max-mode metadata for premium models and invalidate stale cache entries.
+
 ## [16.4.3] - 2026-07-11
 
 ### Fixed

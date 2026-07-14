@@ -107,11 +107,6 @@ export const streamGoogleVertex: StreamFunction<"google-vertex"> = (
 			},
 		});
 
-	// Default Gemini 3+ onto Interactions whenever a bearer credential source exists (ADC file,
-	// `GOOGLE_APPLICATION_CREDENTIALS`, or an explicit access-token env). Interactions needs bearer
-	// auth, so express API-key-only setups stay on generateContent — and an express key, when
-	// present, still serves the generateContent fallback. Interactions always targets the official
-	// global `aiplatform` host; the fallback also recovers ids the endpoint rejects.
 	const { useInteractions, auto, anchor, state } = resolveInteractionDispatch({
 		context,
 		options,

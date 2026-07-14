@@ -1,3 +1,4 @@
+import { magicKeywordRegex } from "./magic-keyword-boundary";
 import { keywordInProse } from "./markdown-prose";
 import { containsOrchestrate, highlightOrchestrate } from "./orchestrate";
 import { containsUltrathink, highlightUltrathink } from "./ultrathink";
@@ -32,7 +33,7 @@ export function highlightMagicKeywords(text: string, resetTo?: string, phase?: n
 // `hasMagicKeyword` gates editor animation for the fork's `workflowz` keyword.
 // Keep this stricter than `containsWorkflow`, which intentionally preserves the
 // broader OMPx notice trigger for other message-processing paths.
-const WORKFLOWZ_WORD = /(?<!\S)workflowz(?!\S)/;
+const WORKFLOWZ_WORD = magicKeywordRegex("workflowz");
 
 /**
  * Cheap test for "does this text contain any magic keyword as standalone prose?".

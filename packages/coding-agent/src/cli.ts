@@ -117,9 +117,7 @@ async function runSmokeTest(): Promise<void> {
 	process.stdout.write("smoke-test: ok\n");
 }
 
-const UPSTREAM_STATS_SYNC_WORKER_ARG = "__omp_worker_stats_sync";
-const UPSTREAM_TAB_WORKER_ARG = "__omp_worker_tab";
-const UPSTREAM_JS_EVAL_WORKER_ARG = "__omp_worker_js_eval";
+const JS_EVAL_PROCESS_ARG = "__omp_worker_js_eval_process";
 const STT_WORKER_ARG = "__omp_worker_stt";
 const TTS_WORKER_ARG = "__omp_worker_tts";
 const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
@@ -129,7 +127,7 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		await runTinyWorker();
 		return true;
 	}
-	if (arg === STATS_SYNC_WORKER_ARG || arg === UPSTREAM_STATS_SYNC_WORKER_ARG) {
+	if (arg === STATS_SYNC_WORKER_ARG) {
 		// The sync worker handles messages via `self.onmessage`, assigned during
 		// this *async* dynamic import. Bun flushes the worker's initial message
 		// buffer when the entry module's top-level evaluation finishes — before
@@ -158,14 +156,22 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	// synchronous `init` is dropped. Install a buffering inbox synchronously here
 	// (still inside the entry's sync prefix) so the handshake survives; the worker
 	// module binds the real handler once loaded.
-	if (arg === TAB_WORKER_ARG || arg === UPSTREAM_TAB_WORKER_ARG) {
+	if (arg === TAB_WORKER_ARG) {
 		if (parentPort) installWorkerInbox(parentPort);
 		await import("./tools/browser/tab-worker-entry");
 		return true;
 	}
-	if (arg === JS_EVAL_WORKER_ARG || arg === UPSTREAM_JS_EVAL_WORKER_ARG) {
+	if (arg === JS_EVAL_WORKER_ARG) {
 		if (parentPort) installWorkerInbox(parentPort);
 		await import("./eval/js/worker-entry");
+		return true;
+	}
+	if (arg === JS_EVAL_PROCESS_ARG) {
+		const { startJsEvalProcess } = await import("./eval/js/process-entry");
+		// The JS evaluator forwards user-controlled payloads (tool-call args,
+		// display outputs); a non-serializable one must fail that cell, not
+		// SIGKILL the kernel and erase the eval session's state.
+		await runIpcSubprocessWorker(startJsEvalProcess, { rethrowConnectedSendErrors: true });
 		return true;
 	}
 	if (arg === STT_WORKER_ARG) {
@@ -208,6 +214,18 @@ async function runIpcSubprocessWorker<In, Out>(
 		sendAndFlush(message: Out): Promise<void>;
 		onMessage(handler: (message: In) => void): () => void;
 	}) => void,
+	options?: {
+		/**
+		 * Rethrow send failures while the IPC channel is still connected instead
+		 * of shutting down. A connected-channel failure means this particular
+		 * message could not be serialized (e.g. a JS eval cell passed a function
+		 * into tool args, a DataCloneError under advanced serialization) — the
+		 * caller must see that error, exactly as Worker `postMessage` would
+		 * deliver it, rather than losing the whole worker and its state.
+		 * Channel-gone failures still shut down.
+		 */
+		rethrowConnectedSendErrors?: boolean;
+	},
 ): Promise<void> {
 	const { promise: shuttingDown, resolve: shutdown } = Promise.withResolvers<void>();
 	type IpcSend = (this: NodeJS.Process, message: unknown, callback?: (error: Error | null) => void) => boolean;
@@ -223,7 +241,8 @@ async function runIpcSubprocessWorker<In, Out>(
 		}
 		try {
 			sender.call(process, message);
-		} catch {
+		} catch (error) {
+			if (options?.rethrowConnectedSendErrors && process.connected) throw error;
 			shutdown();
 		}
 	};

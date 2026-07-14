@@ -3,6 +3,7 @@ import {
 	Container,
 	type NativeScrollbackCommittedRows,
 	type NativeScrollbackLiveRegion,
+	type NativeScrollbackReplay,
 	type RenderStablePrefix,
 	type ViewportTailProvider,
 } from "@oh-my-pi/pi-tui";
@@ -81,8 +82,11 @@ function sealCommittedSnapshot(child: Component): void {
 }
 
 /** Release heavyweight backing payloads once the block's rendered rows are immutable native history. */
-function releaseCommittedPayloads(child: Component): void {
-	(child as Component & FinalizableBlock).releaseCommittedPayloads?.();
+function releaseCommittedPayloads(child: Component): boolean {
+	const release = (child as Component & FinalizableBlock).releaseCommittedPayloads;
+	if (!release) return false;
+	release.call(child);
+	return true;
 }
 
 // A "plain blank" row is empty or whitespace-only with no ANSI bytes. It marks
@@ -126,6 +130,8 @@ interface BlockSegment {
 	sep: number;
 	/** Whether the block reported finalized when this segment was rendered. */
 	finalized: boolean;
+	/** Safe to drop after commit: produced while finalized, without post-finalize version tracking. */
+	compactable: boolean;
 	/** Block version observed when this segment was rendered (see {@link FinalizableBlock}). */
 	version: number | undefined;
 }
@@ -161,7 +167,12 @@ const EMPTY_TAIL: readonly string[] = [];
  */
 export class TranscriptContainer
 	extends Container
-	implements NativeScrollbackLiveRegion, NativeScrollbackCommittedRows, RenderStablePrefix, ViewportTailProvider
+	implements
+		NativeScrollbackLiveRegion,
+		NativeScrollbackCommittedRows,
+		NativeScrollbackReplay,
+		RenderStablePrefix,
+		ViewportTailProvider
 {
 	// Bumped to retire every block segment at once (theme change / clear); a
 	// segment is only reused when its stored generation matches.
@@ -174,11 +185,20 @@ export class TranscriptContainer
 	// byte-identical to the previous render; rows at/after it were re-pushed.
 	#lines: string[] = [];
 	#segments: BlockSegment[] = EMPTY_SEGMENTS;
+	#releasedPayloadVersions = new WeakMap<Component, number | null>();
 	#renderWidth = -1;
 	// Local rows already committed to native scrollback by the previous frame.
 	// Finalized blocks wholly before this boundary are immutable on-screen history;
 	// their previous contribution can be replayed without calling render().
 	#committedRows = 0;
+	// Leading children whose rows were handed to native scrollback and dropped
+	// from the local frame. Children remain owned by the session and can be
+	// re-rendered when the TUI prepares a destructive full replay.
+	#compactedChildStart = 0;
+	// Suppresses re-compaction for the rehydrating render. The TUI feeds its old
+	// committed-row count immediately before render, so resetting that count
+	// alone cannot distinguish a replay from an ordinary update.
+	#replayPending = false;
 	// Stable-prefix floor accumulated across renders since the last
 	// getRenderStablePrefixRows() read (see RenderStablePrefix: reading
 	// consumes the report and re-bases the baseline). Out-of-band renders
@@ -194,10 +214,22 @@ export class TranscriptContainer
 	override clear(): void {
 		this.#generation++;
 		super.clear();
+		this.#compactedChildStart = 0;
+		this.#committedRows = 0;
+		this.#replayPending = false;
 	}
 
 	setNativeScrollbackCommittedRows(rows: number): void {
 		this.#committedRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
+	}
+
+	prepareNativeScrollbackReplay(): void {
+		if (this.#compactedChildStart === 0) return;
+		this.#compactedChildStart = 0;
+		this.#replayPending = true;
+		this.#generation++;
+		this.#lines.length = 0;
+		this.#stableRowsFloor = 0;
 	}
 
 	getRenderStablePrefixRows(): number {
@@ -220,8 +252,14 @@ export class TranscriptContainer
 	 * committed rows and is safely removable.
 	 */
 	isBlockUncommitted(component: Component): boolean {
+		const index = this.children.indexOf(component);
+		// Compacted prefix is already committed native history and must not be
+		// retracted. Compacted slots may be sparse holes after a later re-render
+		// (render only fills from #compactedChildStart), so the loop below must
+		// skip undefined entries.
+		if (index >= 0 && index < this.#compactedChildStart) return false;
 		for (const segment of this.#segments) {
-			if (segment.component !== component) continue;
+			if (segment === undefined || segment.component !== component) continue;
 			return segment.rowCount === 0 || segment.startRow >= this.#committedRows;
 		}
 		return true;
@@ -275,7 +313,7 @@ export class TranscriptContainer
 		if (maxRows <= 0) return EMPTY_TAIL;
 		const collected: (readonly string[])[] = [];
 		let total = 0;
-		for (let i = this.children.length - 1; i >= 0 && total < maxRows; i--) {
+		for (let i = this.children.length - 1; i >= this.#compactedChildStart && total < maxRows; i--) {
 			const contribution = stripPlainBlankEdges(this.children[i]!.render(width));
 			if (contribution.length === 0) continue;
 			// One blank separator sits between this block and the (already
@@ -299,6 +337,7 @@ export class TranscriptContainer
 		this.#nativeScrollbackLiveRegionStart = undefined;
 
 		const count = this.children.length;
+		if (this.#compactedChildStart > count) this.#compactedChildStart = count;
 
 		// Seal displaceable snapshots whose rows are already on the tape (per the
 		// previous frame's segments — the geometry the committed count was
@@ -308,17 +347,12 @@ export class TranscriptContainer
 		// frame, and every frame so a block that BECAME displaceable after its
 		// pending-preview rows committed (late result on a scrolled-off call) is
 		// caught too.
-		for (let i = 0; i < count && i < this.#segments.length; i++) {
-			const previous = this.#segments[i]!;
+		for (let i = this.#compactedChildStart; i < count && i < this.#segments.length; i++) {
+			const previous = this.#segments[i];
+			if (previous === undefined) continue;
 			if (previous.startRow >= this.#committedRows) break;
 			if (previous.rowCount === 0 || previous.component !== this.children[i]) continue;
 			sealCommittedSnapshot(previous.component);
-		}
-		for (const previous of this.#segments) {
-			if (previous.startRow + previous.rowCount > this.#committedRows) break;
-			if (previous.rowCount > 0 && previous.finalized) {
-				releaseCommittedPayloads(previous.component);
-			}
 		}
 
 		// The commit boundary stops at the earliest still-mutating block. A
@@ -329,7 +363,7 @@ export class TranscriptContainer
 		// reaches.
 		let liveStartIndex = -1;
 		let hasLiveBlock = false;
-		for (let i = 0; i < count; i++) {
+		for (let i = this.#compactedChildStart; i < count; i++) {
 			if (!isBlockFinalized(this.children[i]!)) {
 				liveStartIndex = i;
 				hasLiveBlock = true;
@@ -361,7 +395,7 @@ export class TranscriptContainer
 		// Frame row cursor: rows emitted (reused or pushed) so far.
 		let row = 0;
 		let stableRows = 0;
-		for (let i = 0; i < count; i++) {
+		for (let i = this.#compactedChildStart; i < count; i++) {
 			const child = this.children[i]!;
 
 			// This child's contribution: its current render with plain-blank
@@ -402,6 +436,7 @@ export class TranscriptContainer
 					previous.width === width &&
 					previous.generation === this.#generation);
 			const contribution = reusable ? previous.contribution : stripPlainBlankEdges(raw);
+			const compactable = finalized && version === undefined && previous?.finalized !== false;
 
 			// Empty (or stripped-to-nothing) children contribute nothing and never
 			// affect spacing. An empty still-live child still gates the commit
@@ -426,6 +461,7 @@ export class TranscriptContainer
 					rowCount: 0,
 					sep: 0,
 					finalized,
+					compactable,
 					version,
 				};
 				continue;
@@ -477,6 +513,7 @@ export class TranscriptContainer
 				rowCount,
 				sep,
 				finalized,
+				compactable,
 				version,
 			};
 			row += rowCount;
@@ -485,8 +522,87 @@ export class TranscriptContainer
 		// when every surviving segment was reused.
 		if (lines.length !== row) lines.length = row;
 		this.#segments = segments;
+		for (const segment of segments) {
+			if (segment === undefined) continue;
+			if (segment.startRow + segment.rowCount > this.#committedRows) break;
+			if (segment.rowCount > 0 && segment.finalized) {
+				const releasedVersion = segment.version ?? null;
+				if (this.#releasedPayloadVersions.get(segment.component) !== releasedVersion) {
+					if (releaseCommittedPayloads(segment.component)) {
+						this.#releasedPayloadVersions.set(segment.component, releasedVersion);
+					}
+				}
+			}
+		}
 		this.#stableRowsFloor = Math.min(stableFloorBefore, stableRows, row);
+		if (this.#replayPending) {
+			this.#replayPending = false;
+		} else {
+			this.#compactCommittedPrefix();
+		}
 		return lines;
+	}
+
+	#compactCommittedPrefix(): void {
+		if (this.#committedRows <= 0 || this.#compactedChildStart >= this.children.length) return;
+		const lines = this.#lines;
+		const segments = this.#segments;
+		let dropRows = 0;
+		let dropUntil = this.#compactedChildStart;
+		for (let i = this.#compactedChildStart; i < segments.length; i++) {
+			const segment = segments[i];
+			if (segment === undefined || !segment.compactable) break;
+			const segmentEnd = segment.startRow + segment.rowCount;
+			if (segmentEnd > this.#committedRows) break;
+			dropRows = segmentEnd;
+			dropUntil = i + 1;
+		}
+		// Keep the current frame when the whole transcript has moved to native
+		// history; payload release above already sheds heavyweight backing data.
+		if (dropUntil >= this.children.length) return;
+		const retained = segments[dropUntil];
+		if (retained !== undefined && retained.sep > 0) {
+			const committedSeparatorRows = this.#committedRows - retained.startRow;
+			if (committedSeparatorRows <= 0) {
+				dropRows = 0;
+				dropUntil = this.#compactedChildStart;
+			} else {
+				const trim = Math.min(retained.sep, committedSeparatorRows);
+				dropRows += trim;
+				retained.sep -= trim;
+				retained.rowCount -= trim;
+			}
+		}
+		if (dropRows === 0) return;
+
+		lines.splice(0, dropRows);
+		for (let i = this.#compactedChildStart; i < dropUntil; i++) {
+			const segment = segments[i];
+			if (segment === undefined) continue;
+			segments[i] = {
+				component: segment.component,
+				rawRef: EMPTY_TAIL,
+				contribution: EMPTY_TAIL,
+				width: segment.width,
+				generation: segment.generation,
+				startRow: 0,
+				rowCount: 0,
+				sep: 0,
+				finalized: true,
+				compactable: false,
+				version: segment.version,
+			};
+		}
+		for (let i = dropUntil; i < segments.length; i++) {
+			const segment = segments[i];
+			if (segment !== undefined) segment.startRow -= dropRows;
+		}
+		this.#compactedChildStart = dropUntil;
+		this.#committedRows = Math.max(0, this.#committedRows - dropRows);
+		this.#stableRowsFloor = 0;
+		if (this.#nativeScrollbackLiveRegionStart !== undefined) {
+			this.#nativeScrollbackLiveRegionStart = Math.max(0, this.#nativeScrollbackLiveRegionStart - dropRows);
+		}
 	}
 }
 

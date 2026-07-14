@@ -4,7 +4,7 @@
 
 import { APP_NAME } from "@oh-my-pi/pi-utils";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
-import { parseArgs } from "../cli/args";
+import { type Args as ParsedArgs, parseArgs, reportCliUsageError } from "../cli/args";
 import { runRootCommand } from "../main";
 import { prepareAcpTerminalAuthArgs } from "../modes/acp/terminal-auth";
 import { CLI_THINKING_LEVELS } from "../thinking";
@@ -34,23 +34,22 @@ export default class Index extends Command {
 		plan: Flags.string({
 			description: "Plan model for architectural planning (or PI_PLAN_MODEL env)",
 		}),
-		"reasoning-slide-model": Flags.string({
-			description: "Switch to this model after --reasoning-slide-turns completed assistant turns",
+		prewalk: Flags.boolean({
+			description:
+				"Switch from the active model to a fast/cheap model at the first edit/write after the plan's todo list exists (default off; see prewalk.enabled)",
 		}),
-		"reasoning-slide-turns": Flags.string({
-			description: "Positive number of completed assistant turns before the reasoning slide",
+		"no-prewalk": Flags.boolean({
+			description: "Disable prewalk even if prewalk.enabled is set",
 		}),
-		"reasoning-slide-on-action": Flags.boolean({
-			description: "Trigger the reasoning slide at the first completed turn that ran edit/write",
+		"prewalk-into": Flags.string({
+			description: 'Target model for prewalk (default the "smol" role)',
 		}),
-		"reasoning-slide-plan": Flags.boolean({
-			description: "Inject a hidden deep-plan nudge before the reasoning slide, scrubbed at the switch",
+		"plan-yolo": Flags.boolean({
+			description:
+				"Force read-only plan mode at start, auto-approve the plan on the model's first resolve call, then switch to --plan-yolo-into to implement it",
 		}),
-		"reasoning-slide-plan-at": Flags.string({
-			description: "Completed assistant turns before the plan nudge is injected (default 1)",
-		}),
-		"reasoning-slide-checklist": Flags.boolean({
-			description: "Steer a hidden verify-before-finishing checklist into the run at the switch",
+		"plan-yolo-into": Flags.string({
+			description: 'Target model for plan-yolo execution (default the "smol" role)',
 		}),
 		provider: Flags.string({
 			description: "Provider to use (legacy; prefer --model)",
@@ -182,7 +181,7 @@ export default class Index extends Command {
 			description: "Include thinking blocks in print mode text output",
 		}),
 		"max-time": Flags.string({
-			description: "Stop the session after this many seconds",
+			description: "Stop the session after this duration (e.g., 600, 10m, 1h)",
 		}),
 		// `--auto-approve` / `--yolo`: declared here so oclif's auto-generated `--help` lists it.
 		// Runtime parsing happens in `cli/args.ts parseArgs` (line 176 in that file) — `runRootCommand`
@@ -218,7 +217,16 @@ export default class Index extends Command {
 
 	async run(): Promise<void> {
 		const { args } = prepareAcpTerminalAuthArgs(this.argv);
-		const parsed = parseArgs(args);
+		let parsed: ParsedArgs;
+		try {
+			parsed = parseArgs(args);
+		} catch (error) {
+			if (reportCliUsageError(error)) {
+				process.exitCode = 2;
+				return;
+			}
+			throw error;
+		}
 		await runRootCommand(parsed, args);
 	}
 }

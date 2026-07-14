@@ -4,10 +4,9 @@
  * Thin wrapper around the launch flow that forces `mode: "acp"` unless the
  * ACP terminal-auth flag asks the same command to open the interactive TUI.
  */
-
 import { APP_DISPLAY_NAME } from "@oh-my-pi/pi-utils";
 import { Command, Flags } from "@oh-my-pi/pi-utils/cli";
-import { parseArgs } from "../cli/args";
+import { type Args as ParsedArgs, parseArgs, reportCliUsageError } from "../cli/args";
 import { runRootCommand } from "../main";
 import { prepareAcpTerminalAuthArgs } from "../modes/acp/terminal-auth";
 
@@ -22,7 +21,16 @@ export default class Acp extends Command {
 
 	async run(): Promise<void> {
 		const { args, terminalAuth } = prepareAcpTerminalAuthArgs(this.argv);
-		const parsed = parseArgs(args);
+		let parsed: ParsedArgs;
+		try {
+			parsed = parseArgs(args);
+		} catch (error) {
+			if (reportCliUsageError(error)) {
+				process.exitCode = 2;
+				return;
+			}
+			throw error;
+		}
 		if (!terminalAuth) {
 			parsed.mode = "acp";
 		}

@@ -346,7 +346,7 @@ function getModelDefinedEfforts<TApi extends Api>(
 		}
 		if (
 			isZaiThinkingFormat(compat) ||
-			isUmansGlm52ReasoningEffortModel(spec) ||
+			isAnthropicMessagesGlm52ReasoningEffortModel(spec) ||
 			isOllamaCloudGlm52ReasoningEffortModel(spec) ||
 			spec.provider === "baseten"
 		) {
@@ -422,8 +422,12 @@ function isOllamaCloudGlm52ReasoningEffortModel<TApi extends Api>(spec: ModelSpe
 	return spec.api === "ollama-chat" && spec.provider === "ollama-cloud" && isGlm52ReasoningEffortModelId(spec.id);
 }
 
-function isUmansGlm52ReasoningEffortModel<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
-	return spec.api === "anthropic-messages" && spec.provider === "umans" && isGlm52ReasoningEffortModelId(spec.id);
+function isAnthropicMessagesGlm52ReasoningEffortModel<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
+	return (
+		spec.api === "anthropic-messages" &&
+		(spec.provider === "umans" || spec.provider === "zai") &&
+		isGlm52ReasoningEffortModelId(spec.id)
+	);
 }
 
 function isMinimaxReasoningModelOnAnthropicEndpoint<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
@@ -666,7 +670,7 @@ function inferThinkingControlMode<TApi extends Api>(
 			if (isMinimaxReasoningModelOnAnthropicEndpoint(spec)) {
 				return "anthropic-adaptive";
 			}
-			if (isUmansGlm52ReasoningEffortModel(spec)) {
+			if (isAnthropicMessagesGlm52ReasoningEffortModel(spec)) {
 				return "anthropic-budget-effort";
 			}
 			if (parsedModel.family === "anthropic") {

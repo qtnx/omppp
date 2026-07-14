@@ -7,6 +7,74 @@
 ### Fixed
 
 - Fixed compiled CLI entry paths leaking into the initial prompt and swallowing subcommands such as `ompx update`; profile aliases now ignore Bun virtual entrypoints and target the OMPx executable.
+## [16.5.1] - 2026-07-14
+
+### Changed
+
+- Enhanced Anthropic credential and usage management to support organization-scoped accounts, including displaying organization names in /usage, /logout, omp token --list, and OAuth login success messages, resolving active-account matching for shared organizations, and deduplicating identities during migration.
+
+### Fixed
+
+- Fixed compatibility of GNU-flavored shell builtins (such as stat, date, sed, mktemp, tail, find, base64, and ln) when invoked with macOS/BSD-style arguments.
+- Fixed subagent model and thinking level resolution to correctly respect the configured modelRoles.task selector instead of intermittently falling back to the parent session's model.
+- Fixed TUI rendering issues, including preventing macOS runtime diagnostics from painting into the viewport, bounding transcript retention in long sessions, and fixing scrollback repainting when collapsing history.
+- Fixed /tan and /fork clones failing to inherit or persist the parent session's prompt cache keys.
+- Fixed Python and JavaScript evaluation kernels suspending the CLI on subprocess foregrounding, deadlocking on non-serializable values, or losing in-flight subagent work during external aborts.
+- Fixed configured retry.fallbackChains failing to engage when encountering non-retryable provider errors.
+- Improved auto-compaction to automatically drop images and elide content when context is tight, and added persistent warning badges to the compaction divider when manual intervention is required.
+- Fixed the downshift plan nudge silently ending runs with no code written when the model answered with a text-only reply.
+- Fixed launch tool rendering and status reporting, including resolving contradictory readiness timeout messages and preventing backgrounded Bash blocks from continuing to repaint.
+- Fixed Advisor containment and timing issues, preventing hallucinated tool calls from contaminating later advice and ensuring late-arriving transcript deltas are coalesced before advisor calls.
+- Fixed omp update on npm-managed Windows installations to prevent downloaded release binaries from overwriting npm launchers.
+- Fixed --max-time duration values (e.g., 5s, 10m, 1h) being ignored instead of setting a session deadline.
+- Fixed omp plugin install --force failing with a dependency loop when replacing an existing pinned Git plugin source.
+- Fixed MCP tools receiving session image attachments as raw local:// URIs instead of resolving them to local filesystem paths.
+- Fixed Pyright LSP semantic requests hanging during startup.
+- Fixed Codex web search requests for GPT-5.6 Responses-Lite models.
+- Fixed custom model/provider configuration discovery to correctly load ~/.omp/agent/models.yaml when models.yml is absent.
+
+## [16.5.0] - 2026-07-13
+
+### Breaking Changes
+
+- Replaced the `--reasoning-slide-*` flag family with a unified `--prewalk` mechanism (`--prewalk`, `--prewalk-into <model>`, and `--no-prewalk`) to manage model handoffs during execution.
+
+### Added
+
+- Added a new `--prewalk` execution flow (with `--prewalk-into <model>` and `--no-prewalk` overrides) that starts tasks on a strong model for planning and todo initialization before handing off to a faster, cheaper model for implementation.
+ - Added a status line annotation for the active prewalk phase (armed or active).
+ - Added the `tui.scrollbackRebuild` setting to gate the erase-and-replay native scrollback rebuild mechanism (defaults to off).
+- Added a display setting to toggle between collapsing or keeping compacted history inline in live session displays.
+- Added a compact session-only model picker (Alt+P) for quick model switching, featuring `@` search to quickly list and apply configured quick roles.
+- Redesigned Agent Hub entries into a cleaner two-line card layout showing identity, active model, reasoning level, age, and task description.
+- Added a project-scoped `launch` tool (gated by `launch.enabled`) for managing shared long-running services and debuggers, featuring readiness probes, bounded logs, PTY input, restart policies, and automatic teardown.
+- Added support for `detached` launches, allowing standalone services to survive broker shutdowns and reconnect to subsequent sessions.
+
+### Changed
+
+- Updated JSON logs (`--mode json`) to include provider payloads in auto-compaction events.
+- Updated tangential agent forks (`/tan`) to ignore parent session history and focus exclusively on the new request, hardening isolation with cleared todo lists and concurrent editing warnings.
+- Added visual markers in the transcript for elided tool calls that have no corresponding result.
+- Updated the status event log to prioritize the most recent entries in the display window.
+- Upgraded `@agentclientprotocol/sdk` to version 1.2.1.
+
+### Fixed
+
+- Fixed terminal scrollback duplication issues with expanded streaming edit previews (Ctrl+O) by using a viewport-sized tail window.
+- Fixed custom model role resolution and alias parsing, ensuring canonical role selectors (`@role`) and thinking suffixes resolve correctly across all configuration surfaces.
+- Fixed quadratic growth in JSON logs by eliding redundant message snapshots and payloads.
+- Fixed prompt cache misses and incorrect cache key pinning for `/tan` and `/fork` clones.
+- Fixed inconsistent history rendering and scrollback repainting when toggling the display setting for compacted items.
+- Fixed `retry.fallbackChains` failing to engage on non-retryable provider errors, ensuring the agent correctly falls back to the next candidate model.
+- Improved auto-compaction to automatically drop images and elide content when context is tight, and added persistent warning badges when manual intervention is required.
+- Fixed backgrounded Bash blocks continuing to repaint with live output; they now freeze with a compact job notice while completion is delivered separately.
+- Fixed rendering, status display, and PTY control sequence formatting issues in the `launch` tool.
+- Fixed in-process shell builtins (including `stat`, `date`, `sed`, `mktemp`, `tail`, `find`, `base64`, and `ln`) to correctly detect and translate macOS/BSD-style arguments and flags, preventing failures caused by GNU-only assumptions.
+
+### Removed
+
+- Removed the `--prewalk-boomerang` feature and its associated configuration setting.
+- Removed the unreliable Bing and Yahoo HTML-scraping web search providers.
 
 ## [16.4.8] - 2026-07-12
 

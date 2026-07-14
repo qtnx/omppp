@@ -32,6 +32,7 @@
 
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { Args } from "./args";
+import { CliUsageError } from "./usage-error";
 
 /**
  * Runtime dependencies injected into setters that need to validate input or
@@ -85,6 +86,24 @@ const setResume: OptionalSetter = (result, value) => {
 	result.resume = value !== undefined ? value : true;
 };
 
+const MAX_TIME_DURATION_RE = /^(\d+(?:\.\d+)?)([smh])$/;
+
+function maxTimeMultiplier(unit: string | undefined): number {
+	if (unit === "h") return 3600;
+	if (unit === "m") return 60;
+	return 1;
+}
+
+function parseMaxTimeSeconds(value: string): number {
+	const trimmed = value.trim();
+	const duration = MAX_TIME_DURATION_RE.exec(trimmed);
+	const seconds = duration ? Number(duration[1]) * maxTimeMultiplier(duration[2]) : Number(trimmed);
+	if (Number.isFinite(seconds) && seconds > 0) return seconds;
+	throw new CliUsageError(
+		`Invalid --max-time value: ${JSON.stringify(value)}. Expected a positive number of seconds or duration like "5s", "10m", "1h".`,
+	);
+}
+
 /**
  * Setters for flags with string values. Most built-ins consume the next argv
  * token even when it starts with `-`; flags listed in
@@ -121,22 +140,14 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	"--plan": (result, value) => {
 		result.plan = value;
 	},
-	"--reasoning-slide-model": (result, value) => {
-		result.reasoningSlideModel = value;
+	"--prewalk-into": (result, value) => {
+		result.prewalkInto = value;
 	},
-	"--reasoning-slide-turns": (result, value) => {
-		result.reasoningSlideTurns = value;
+	"--plan-yolo-into": (result, value) => {
+		result.planYoloInto = value;
 	},
-	"--reasoning-slide-plan-at": (result, value) => {
-		result.reasoningSlidePlanAt = value;
-	},
-	"--max-time": (result, value, deps) => {
-		const seconds = Number(value);
-		if (Number.isFinite(seconds) && seconds > 0) {
-			result.maxTime = seconds;
-		} else {
-			deps.logger.warn("Invalid seconds passed to --max-time", { value });
-		}
+	"--max-time": (result, value) => {
+		result.maxTime = parseMaxTimeSeconds(value);
 	},
 	"--api-key": (result, value) => {
 		result.apiKey = value;
@@ -285,9 +296,9 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--no-pty",
 	"--hide-thinking",
 	"--advisor",
-	"--reasoning-slide-plan",
-	"--reasoning-slide-on-action",
-	"--reasoning-slide-checklist",
+	"--prewalk",
+	"--no-prewalk",
+	"--plan-yolo",
 	"--print",
 	"--print-thoughts",
 	"--no-extensions",

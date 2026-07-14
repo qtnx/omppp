@@ -36,7 +36,7 @@ describe("bundled agent parsing", () => {
 		const task = getBundledAgent("task");
 
 		expect(task).toBeDefined();
-		expect(task?.model).toEqual(["pi/task"]);
+		expect(task?.model).toEqual(["@task"]);
 		expect(task?.thinkingLevel).toBe(AUTO_THINKING);
 	});
 
