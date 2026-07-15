@@ -275,10 +275,12 @@ describe("AuthStorage.getCredentialOrigin", () => {
 			expect(await auth.listOAuthAccounts("anthropic")).toEqual([
 				expect.objectContaining({ accountId: "acct-oauth" }),
 			]);
-			expect(await auth.getOAuthAccess("anthropic")).toEqual({
-				accessToken: "sk-ant-oat-oauth",
-				accountId: "acct-oauth",
-			});
+			expect(await auth.getOAuthAccess("anthropic")).toEqual(
+				expect.objectContaining({
+					accessToken: "sk-ant-oat-oauth",
+					accountId: "acct-oauth",
+				}),
+			);
 
 			auth.setConfigApiKey("anthropic", "gateway-key");
 

@@ -40,12 +40,13 @@ function textAt(message: AssistantMessage, index: number): string {
 class RecordingComponent {
 	messages: AssistantMessage[] = [];
 
-	updateContent(message: AssistantMessage): void {
-		this.messages.push(message);
+	render(_width: number): readonly string[] {
+		return [];
 	}
 
-	render(): string[] {
-		return [];
+	updateContent(message: AssistantMessage, opts?: { transient?: boolean }): void {
+		this.messages.push(message);
+		void opts;
 	}
 }
 

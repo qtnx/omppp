@@ -120,12 +120,13 @@ function isPathInDirectory(filePath: string, directoryPath: string): boolean {
 	return isPathInDirectoryLexical(resolvedFile, dirReal);
 }
 
-type UpdateMethod = "brew" | "mise" | "bun" | "binary";
+type UpdateMethod = "brew" | "mise" | "bun" | "npm" | "binary";
 
 interface UpdateMethodResolutionOptions {
 	homebrewPrefix?: string;
 	miseBinDirs?: readonly string[];
 	miseDataDir?: string;
+	npmBinDir?: string;
 }
 
 function resolveUpdateMethod(
@@ -133,11 +134,15 @@ function resolveUpdateMethod(
 	bunBinDir: string | undefined,
 	options: UpdateMethodResolutionOptions = {},
 ): UpdateMethod {
-	const { homebrewPrefix, miseBinDirs = [], miseDataDir } = options;
+	const { homebrewPrefix, miseBinDirs = [], miseDataDir, npmBinDir } = options;
+	const launcherExtension = path.extname(ompPath).toLowerCase();
+	const isWindowsScriptLauncher =
+		launcherExtension === ".cmd" || launcherExtension === ".ps1" || launcherExtension === ".bat";
 	if (homebrewPrefix && isPathInDirectory(ompPath, path.join(homebrewPrefix, "bin"))) return "brew";
 	if (miseBinDirs.some(dir => isPathInDirectory(ompPath, dir))) return "mise";
 	if (miseDataDir && isPathInDirectory(ompPath, path.join(miseDataDir, "shims"))) return "mise";
 	if (bunBinDir && isPathInDirectory(ompPath, bunBinDir)) return "bun";
+	if ((npmBinDir && isPathInDirectory(ompPath, npmBinDir)) || isWindowsScriptLauncher) return "npm";
 	return "binary";
 }
 
@@ -542,6 +547,14 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 	}
 }
 
+function buildVersionedPackageInstallArgs(expectedVersion: string, nativeTag: string): string[] {
+	const args = [`${PACKAGE}@${expectedVersion}`, `${NATIVES_PACKAGE}@${expectedVersion}`];
+	if (SUPPORTED_NATIVE_TAGS.has(nativeTag)) {
+		args.push(`${NATIVES_PACKAGE}-${nativeTag}@${expectedVersion}`);
+	}
+	return args;
+}
+
 /**
  * Build the bun argv used to globally install a specific omp version.
  *
@@ -549,17 +562,23 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
  * updater itself uses the qtnx/omppp release and pinned install script path.
  */
 export function buildBunInstallArgs(expectedVersion: string, nativeTag: string = currentNativeTag()): string[] {
-	const args = [
+	return [
 		"install",
 		"-g",
 		"--no-cache",
 		`--registry=${NPM_REGISTRY}`,
-		`${PACKAGE}@${expectedVersion}`,
-		`${NATIVES_PACKAGE}@${expectedVersion}`,
+		...buildVersionedPackageInstallArgs(expectedVersion, nativeTag),
 	];
-	if (SUPPORTED_NATIVE_TAGS.has(nativeTag)) {
-		args.push(`${NATIVES_PACKAGE}-${nativeTag}@${expectedVersion}`);
-	}
+}
+
+/** Build the npm argv used to update npm-managed global installs. */
+export function buildNpmInstallArgs(expectedVersion: string, nativeTag: string = currentNativeTag()): string[] {
+	const args = [
+		"install",
+		"-g",
+		`--registry=${NPM_REGISTRY}`,
+		...buildVersionedPackageInstallArgs(expectedVersion, nativeTag),
+	];
 	return args;
 }
 

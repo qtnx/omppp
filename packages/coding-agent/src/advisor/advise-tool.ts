@@ -75,6 +75,17 @@ export function isInterruptingSeverity(severity: AdvisorSeverity | undefined): b
 	return severity === "concern" || severity === "blocker";
 }
 
+/**
+ * Append a staleness caveat to an advisor note when newer primary turns arrived
+ * after the reviewed transcript window (i.e. `hasFreshBacklog` is true on the
+ * advisor runtime at delivery time). Pure function — no session coupling — so it
+ * can be unit-tested in isolation and called from `AgentSession#routeAdvice`.
+ */
+export function annotateForStaleness(note: string, hasFreshBacklog: boolean): string {
+	if (!hasFreshBacklog) return note;
+	return `${note}\n\n_(Note: newer primary turns arrived after this reviewed window — verify this still applies.)_`;
+}
+
 /** How an advisor note is routed to the primary. */
 export type AdvisorDeliveryChannel = "aside" | "boundary" | "steer" | "preserve";
 /** Half-open turn-count fence for the post-interrupt cooldown. */
@@ -91,6 +102,9 @@ export function isAdvisorInterruptImmuneTurnActive(opts: {
  * Decide how one advisor note reaches the primary agent.
  *
  * - A non-interrupting `nit` always rides the passive aside queue.
+ * - A late interrupting note is retained as a visible card when the primary has
+ *   already ended with a terminal text answer and no queued work remains, so it
+ *   cannot wake the primary merely to restate completion.
  * - After a deliberate user interrupt (`autoResumeSuppressed`), an interrupting
  *   note is preserved as a visible card while the agent is idle or tearing the
  *   interrupted turn down (`aborting`), so it cannot auto-resume the stopped run.
@@ -107,10 +121,12 @@ export function resolveAdvisorDeliveryChannel(opts: {
 	autoResumeSuppressed: boolean;
 	streaming: boolean;
 	aborting: boolean;
+	terminalAnswerNoQueuedWork?: boolean;
 	interruptImmuneTurnActive?: boolean;
 }): AdvisorDeliveryChannel {
 	if (!isInterruptingSeverity(opts.severity)) return "aside";
 	if (opts.autoResumeSuppressed && (opts.aborting || !opts.streaming)) return "preserve";
+	if (opts.terminalAnswerNoQueuedWork && !opts.streaming && !opts.aborting) return "preserve";
 	if (opts.interruptImmuneTurnActive) return "aside";
 	if (opts.streaming) return "boundary";
 	return "steer";

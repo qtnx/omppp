@@ -28,6 +28,13 @@ beforeAll(() => {
 	initTheme();
 });
 
+beforeEach(async () => {
+	// afterEach resets Settings, but renderInitialMessages reads the global
+	// Settings (display.collapseCompacted) — re-init before every test.
+	resetSettingsForTest();
+	await Settings.init({ inMemory: true });
+});
+
 const originalImageProtocol = TERMINAL.imageProtocol;
 
 afterEach(() => {

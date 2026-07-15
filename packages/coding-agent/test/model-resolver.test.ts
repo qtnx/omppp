@@ -20,6 +20,7 @@ import {
 	resolveModelScope,
 	selectHeadroomAwareModelPatterns,
 } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { DEFAULT_MODEL_ROLE_ALIAS, LEGACY_MODEL_ROLE_ALIAS_PREFIX } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 
 // Mock models for testing
@@ -736,12 +737,12 @@ describe("parseModelPattern", () => {
 });
 
 describe("resolveModelRoleValue", () => {
-	test("resolves pi/<role>:<thinking> by expanding role alias before parsing thinking", () => {
+	test("resolves @role:<thinking> by expanding role alias before parsing thinking", () => {
 		const settings = {
 			getModelRole: (role: string) => (role === "smol" ? "openrouter/qwen/qwen3-coder:exacto" : undefined),
 		} as NonNullable<Parameters<typeof resolveModelRoleValue>[2]>["settings"];
 
-		const result = resolveModelRoleValue("pi/smol:high", allModels, { settings });
+		const result = resolveModelRoleValue("@smol:high", allModels, { settings });
 
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("qwen/qwen3-coder:exacto");
@@ -749,12 +750,12 @@ describe("resolveModelRoleValue", () => {
 		expect(result.explicitThinkingLevel).toBe(true);
 	});
 
-	test("resolves pi/<role>:max by expanding role alias before parsing thinking", () => {
+	test("resolves @role:max by expanding role alias before parsing thinking", () => {
 		const settings = {
 			getModelRole: (role: string) => (role === "smol" ? "openai-codex/gpt-5.3-codex" : undefined),
 		} as NonNullable<Parameters<typeof resolveModelRoleValue>[2]>["settings"];
 
-		const result = resolveModelRoleValue("pi/smol:max", allModels, { settings });
+		const result = resolveModelRoleValue("@smol:max", allModels, { settings });
 
 		expect(result.model?.provider).toBe("openai-codex");
 		expect(result.model?.id).toBe("gpt-5.3-codex");
@@ -763,12 +764,12 @@ describe("resolveModelRoleValue", () => {
 		expect(result.explicitThinkingLevel).toBe(true);
 	});
 
-	test("resolves pi/default through configured default role alias", () => {
+	test("resolves @default through configured default role alias", () => {
 		const settings = {
 			getModelRole: (role: string) => (role === "default" ? "openrouter/qwen/qwen3-coder:exacto" : undefined),
 		} as NonNullable<Parameters<typeof resolveModelRoleValue>[2]>["settings"];
 
-		const result = resolveModelRoleValue("pi/default", allModels, { settings });
+		const result = resolveModelRoleValue("@default", allModels, { settings });
 
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("qwen/qwen3-coder:exacto");
@@ -859,13 +860,13 @@ describe("resolveModelRoleValue", () => {
 });
 
 describe("resolveAgentModelPatterns", () => {
-	test("falls back to the active session model when pi/task is unset", () => {
+	test("falls back to the active session model when @task is unset", () => {
 		const settings = Settings.isolated({
 			modelRoles: { default: "anthropic/claude-sonnet-4-5" },
 		});
 
 		const result = resolveAgentModelPatterns({
-			agentModel: "pi/task",
+			agentModel: "@task",
 			settings,
 			activeModelPattern: "openai/gpt-4o",
 		});
@@ -882,7 +883,7 @@ describe("resolveAgentModelPatterns", () => {
 		});
 
 		const result = resolveAgentModelPatterns({
-			agentModel: "pi/task",
+			agentModel: "@task",
 			settings,
 			activeModelPattern: "openai/gpt-4o",
 		});
@@ -898,7 +899,7 @@ describe("resolveAgentModelPatterns", () => {
 		});
 
 		const result = resolveAgentModelPatterns({
-			agentModel: "pi/task",
+			agentModel: "@task",
 			settings,
 		});
 
@@ -910,17 +911,17 @@ describe("resolveAgentModelPatterns", () => {
 			modelRoles: { default: "local/llama" },
 		});
 
-		expect(resolveAgentModelPatterns({ agentModel: "pi/smol", settings })).toEqual(["local/llama"]);
-		expect(resolveAgentModelPatterns({ agentModel: "pi/slow", settings })).toEqual(["local/llama"]);
-		expect(resolveAgentModelPatterns({ agentModel: "pi/designer", settings })).toEqual(["local/llama"]);
+		expect(resolveAgentModelPatterns({ agentModel: "@smol", settings })).toEqual(["local/llama"]);
+		expect(resolveAgentModelPatterns({ agentModel: "@slow", settings })).toEqual(["local/llama"]);
+		expect(resolveAgentModelPatterns({ agentModel: "@designer", settings })).toEqual(["local/llama"]);
 	});
 
 	test("expands cross-role default aliases when inheriting for an unset role", () => {
 		const settings = Settings.isolated({
-			modelRoles: { default: "pi/slow", slow: "anthropic/claude-sonnet-4-5" },
+			modelRoles: { default: "@slow", slow: "anthropic/claude-sonnet-4-5" },
 		});
 
-		expect(resolveAgentModelPatterns({ agentModel: "pi/smol", settings })).toEqual(["anthropic/claude-sonnet-4-5"]);
+		expect(resolveAgentModelPatterns({ agentModel: "@smol", settings })).toEqual(["anthropic/claude-sonnet-4-5"]);
 	});
 
 	test("prefers configured designer role override over priority defaults", () => {
@@ -932,7 +933,7 @@ describe("resolveAgentModelPatterns", () => {
 		});
 
 		const result = resolveAgentModelPatterns({
-			agentModel: "pi/designer",
+			agentModel: "@designer",
 			settings,
 		});
 
@@ -941,7 +942,7 @@ describe("resolveAgentModelPatterns", () => {
 
 	test("slow priority falls forward to Opus 4.8 before older Opus aliases", () => {
 		const settings = Settings.isolated();
-		const patterns = resolveAgentModelPatterns({ agentModel: "pi/slow", settings });
+		const patterns = resolveAgentModelPatterns({ agentModel: "@slow", settings });
 
 		const dottedRegistry = {
 			getAvailable: () => [
@@ -1019,6 +1020,70 @@ describe("resolveCliModel", () => {
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openai");
 		expect(result.model?.id).toBe("gpt-4o");
+	});
+
+	test("resolves configured custom, legacy, and default role aliases from --model", () => {
+		const registry = {
+			getAll: () => allModels,
+		};
+		const settings = Settings.isolated({
+			modelRoles: {
+				default: "openai/gpt-4o",
+				fable: "anthropic/claude-sonnet-4-5:high",
+			},
+		});
+
+		const canonical = resolveCliModel({
+			cliModel: "@fable",
+			modelRegistry: registry,
+			settings,
+		});
+		const legacy = resolveCliModel({
+			cliModel: `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}fable`,
+			modelRegistry: registry,
+			settings,
+		});
+		const defaultRole = resolveCliModel({
+			cliModel: DEFAULT_MODEL_ROLE_ALIAS,
+			modelRegistry: registry,
+			settings,
+		});
+
+		expect(canonical.error).toBeUndefined();
+		expect(canonical.model?.provider).toBe("anthropic");
+		expect(canonical.model?.id).toBe("claude-sonnet-4-5");
+		expect(canonical.thinkingLevel).toBe(Effort.High);
+		expect(legacy).toEqual(canonical);
+		expect(defaultRole.model?.provider).toBe("openai");
+		expect(defaultRole.model?.id).toBe("gpt-4o");
+	});
+
+	test("splits thinking suffixes and abbreviations off the * default alias", () => {
+		const registry = {
+			getAll: () => allModels,
+		};
+		const settings = Settings.isolated({
+			modelRoles: { default: "anthropic/claude-sonnet-4-5" },
+		});
+
+		const explicit = resolveCliModel({
+			cliModel: `${DEFAULT_MODEL_ROLE_ALIAS}:high`,
+			modelRegistry: registry,
+			settings,
+		});
+		const abbreviated = resolveCliModel({
+			cliModel: `${DEFAULT_MODEL_ROLE_ALIAS}:xhi`,
+			modelRegistry: registry,
+			settings,
+		});
+
+		expect(explicit.error).toBeUndefined();
+		expect(explicit.model?.id).toBe("claude-sonnet-4-5");
+		expect(explicit.thinkingLevel).toBe(Effort.High);
+		// `xhi` → xhigh via unique-prefix parsing, then clamped to the model ladder.
+		expect(abbreviated.error).toBeUndefined();
+		expect(abbreviated.model?.id).toBe("claude-sonnet-4-5");
+		expect(abbreviated.thinkingLevel).toBe(Effort.High);
 	});
 
 	test("resolves fuzzy patterns within an explicit provider", () => {
@@ -1247,6 +1312,25 @@ describe("resolveModelScope", () => {
 		expect(scoped.every(entry => entry.explicitThinkingLevel)).toBe(true);
 	});
 
+	test("resolves role aliases in --models scope to the role's model with its thinking level", async () => {
+		const settings = Settings.isolated({
+			modelRoles: { fable: "anthropic/claude-sonnet-4-5:high" },
+		});
+
+		const scoped = await resolveModelScope(
+			["@fable", "openai/gpt-4o"],
+			{ getAvailable: () => allModels },
+			undefined,
+			settings,
+		);
+
+		expect(scoped).toHaveLength(2);
+		expect(scoped[0].model.id).toBe("claude-sonnet-4-5");
+		expect(scoped[0].thinkingLevel).toBe(Effort.High);
+		expect(scoped[0].explicitThinkingLevel).toBe(true);
+		expect(scoped[1].model.id).toBe("gpt-4o");
+	});
+
 	test("applies max thinking selectors to glob scopes when no literal max ids match", async () => {
 		const registry = {
 			getAvailable: () => mockCodexOverlapModels,
@@ -1411,18 +1495,18 @@ describe("resolveModelFromString", () => {
 });
 
 describe("expandRoleAlias", () => {
-	test("expands pi/vision to configured vision role", () => {
+	test("expands @vision to configured vision role", () => {
 		const settings = Settings.isolated();
 		settings.setModelRole("vision", "openai/gpt-4o");
 
-		expect(expandRoleAlias("pi/vision", settings)).toBe("openai/gpt-4o");
+		expect(expandRoleAlias("@vision", settings)).toBe("openai/gpt-4o");
 	});
 
-	test("keeps pi/vision alias when vision role is unset", () => {
+	test("keeps @vision alias when vision role is unset", () => {
 		const settings = Settings.isolated();
 		settings.setModelRole("default", "anthropic/claude-sonnet-4-5");
 
-		expect(expandRoleAlias("pi/vision", settings)).toBe("pi/vision");
+		expect(expandRoleAlias("@vision", settings)).toBe("@vision");
 	});
 });
 
@@ -1444,7 +1528,7 @@ describe("extractExplicitThinkingSelector", () => {
 	test("treats max on pi role aliases as an explicit selector before expansion", () => {
 		const settings = Settings.isolated();
 		settings.setModelRole("smol", "nanogpt/coding-router:max");
-		const result = extractExplicitThinkingSelector("pi/smol:max", settings, {
+		const result = extractExplicitThinkingSelector("@smol:max", settings, {
 			isLiteralModelId: (provider, id) => provider === "nanogpt" && id === "coding-router:max",
 		});
 		expect(result).toBe(Effort.Max);
@@ -1582,6 +1666,15 @@ describe("filterAvailableModelsByEnabledPatterns", () => {
 	} satisfies CanonicalModelRegistry;
 	test("returns all models when patterns is empty", () => {
 		expect(filterAvailableModelsByEnabledPatterns(models, [])).toEqual(models);
+	});
+
+	test("resolves role aliases to the role's model when settings are provided", () => {
+		const settings = Settings.isolated({
+			modelRoles: { fable: "anthropic/claude-sonnet-4-5:high" },
+		});
+		const result = filterAvailableModelsByEnabledPatterns(models, ["@fable"], settings);
+		expect(result).toHaveLength(1);
+		expect(result[0].id).toBe("claude-sonnet-4-5");
 	});
 
 	test("filters by exact provider/modelId", () => {

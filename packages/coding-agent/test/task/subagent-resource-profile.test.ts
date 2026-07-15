@@ -11,6 +11,7 @@ import { MCPManager } from "../../src/mcp/manager";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "../../src/sdk";
 import * as sdkModule from "../../src/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "../../src/session/agent-session";
+import type { CustomMessage } from "../../src/session/messages";
 import { TaskTool } from "../../src/task";
 import { getBundledAgent } from "../../src/task/agents";
 import * as discoveryModule from "../../src/task/discovery";
@@ -20,9 +21,10 @@ import type { AgentDefinition, SingleResult, TaskParams } from "../../src/task/t
 import type { ToolSession } from "../../src/tools";
 import { EventBus } from "../../src/utils/event-bus";
 
-type CapturedCustomMessage = Parameters<AgentSession["sendCustomMessage"]>[0];
-
-type StructuredCustomMessagePayload = Extract<CapturedCustomMessage, { content?: unknown; details?: unknown }>;
+type StructuredCustomMessagePayload<T = unknown> = Partial<
+	Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">
+>;
+type CapturedCustomMessage = string | StructuredCustomMessagePayload;
 
 function isStructuredCustomMessagePayload(message: CapturedCustomMessage): message is StructuredCustomMessagePayload {
 	return typeof message === "object" && message !== null;

@@ -32,7 +32,7 @@ describe("bundled task agents", () => {
 	test("keeps task as the medium worker with a lighter review gate", () => {
 		const taskAgent = getBundledAgent("task");
 		expect(taskAgent?.description).toContain("Medium");
-		expect(taskAgent?.model).toEqual(["pi/task"]);
+		expect(taskAgent?.model).toEqual(["@task"]);
 		expect(taskAgent?.reviewGate).toEqual({
 			enabled: true,
 			reviewerAgent: "reviewer",

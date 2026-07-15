@@ -42,6 +42,7 @@ import type { BashResult } from "../../exec/bash-executor";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type { GoalModeState } from "../../goals/state";
 import type * as PiCodingAgent from "../../index";
+import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import type { CustomEditor } from "../../modes/components/custom-editor";
 import type { Theme } from "../../modes/theme/theme";
@@ -403,7 +404,7 @@ export interface ExtensionModelQuery {
 	/** The current session model, if one is set. */
 	current(): Model | undefined;
 	/**
-	 * Resolve a model string (`provider/id`, bare id) or role alias (`pi/slow`, a
+	 * Resolve a model string (`provider/id`, bare id) or role alias (`@slow`, a
 	 * configured role) to a Model, using the same settings-backed aliases and match
 	 * preferences as core selection. Thinking/routing suffixes are accepted and resolved
 	 * to the base model (pass effort separately). Returns undefined when nothing matches.
@@ -432,6 +433,8 @@ export interface ExtensionContext {
 	sessionManager: ReadonlySessionManager;
 	/** Model registry for API key resolution */
 	modelRegistry: ModelRegistry;
+	/** Calling session's `local://` root mapping for external tool bridges. */
+	localProtocolOptions?: LocalProtocolOptions;
 	/** Current model (may be undefined) */
 	model: Model | undefined;
 	/** Read-only model query facade: list / current / resolve / family. */

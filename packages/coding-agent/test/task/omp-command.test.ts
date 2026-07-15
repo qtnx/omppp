@@ -625,9 +625,9 @@ describe("sandboxOmpxCommand", () => {
 		};
 
 		for (const selector of [
-			"__omp_stats_sync_worker",
-			"__omp_tab_worker",
-			"__omp_js_eval_worker",
+			"__omp_worker_stats_sync",
+			"__omp_worker_tab",
+			"__omp_worker_js_eval",
 			"--tiny-worker",
 			"__tiny_worker",
 		]) {

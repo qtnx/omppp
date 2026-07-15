@@ -76,7 +76,7 @@ describe("Google service tier wire encoding", () => {
 	it("Gemini API sends the tier in the request body, not a header", async () => {
 		const { fetch, captured } = capturingFetch();
 		await drain(
-			streamGoogle(geminiModel, context, { apiKey: "k", serviceTier: "priority", fetch, useInteractionsApi: false }),
+			streamGoogle(geminiModel, context, { apiKey: "k", serviceTier: "priority", useInteractionsApi: false, fetch }),
 		);
 		const { headers, body } = captured();
 		expect(body.serviceTier).toBe("priority");
@@ -88,8 +88,8 @@ describe("Google service tier wire encoding", () => {
 		await drain(
 			streamGoogle(geminiModel, context, {
 				apiKey: "k",
-				fetch,
 				useInteractionsApi: false,
+				fetch,
 				thinking: { enabled: true, level: "HIGH" },
 				hideThinkingSummary: true,
 			}),
@@ -119,7 +119,7 @@ describe("Google service tier wire encoding", () => {
 
 	it("omits the tier entirely when unset", async () => {
 		const { fetch, captured } = capturingFetch();
-		await drain(streamGoogle(geminiModel, context, { apiKey: "k", fetch, useInteractionsApi: false }));
+		await drain(streamGoogle(geminiModel, context, { apiKey: "k", useInteractionsApi: false, fetch }));
 		expect(captured().body.serviceTier).toBeUndefined();
 	});
 });

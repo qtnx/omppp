@@ -47,8 +47,6 @@ export const streamGoogle: StreamFunction<"google-generative-ai"> = (
 			},
 		});
 
-	// Default Gemini 3+ on the official endpoint onto Interactions (custom proxy base URLs keep
-	// generateContent, which serves the full catalog). The fallback recovers ids the endpoint rejects.
 	const trimmedBase = model.baseUrl?.trim();
 	let officialEndpoint = !trimmedBase;
 	if (trimmedBase) {

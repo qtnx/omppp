@@ -34,6 +34,7 @@ import {
 	type AgentMessage,
 	type AgentState,
 	type AgentTool,
+	type AgentToolResult,
 	type AgentTurnEndContext,
 	AppendOnlyContextManager,
 	type AsideMessage,
@@ -160,10 +161,13 @@ import {
 	AdvisorEmissionGuard,
 	type AdvisorMessageDetails,
 	type AdvisorNote,
+	AdvisorOutputQuarantinedError,
 	AdvisorRuntime,
 	type AdvisorSeverity,
 	AdvisorTranscriptRecorder,
 	advisorTranscriptFilename,
+	annotateForStaleness,
+	buildAdvisorQuarantineSourceText,
 	createSmolGistFn,
 	type DoneVerdict,
 	DoneVerdictTool,
@@ -171,6 +175,7 @@ import {
 	getOrCreateAdvisorProviderSessionId,
 	isAdvisorInterruptImmuneTurnActive,
 	isInterruptingSeverity,
+	quarantineAdvisorUnsafeOutput,
 	ReadAdvisorStateTool,
 	resolveAdvisorDeliveryChannel,
 	SetTodosTool,
@@ -200,7 +205,7 @@ import {
 	resolveModelOverride,
 	resolveModelRoleValue,
 } from "../config/model-resolver";
-import { MODEL_ROLE_IDS, MODEL_ROLES } from "../config/model-roles";
+import { getKnownRoleIds, MODEL_ROLE_IDS, MODEL_ROLES } from "../config/model-roles";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily, serviceTierForAllFamilies, serviceTierSettingToTier } from "../config/service-tier";
 import type { Settings, SkillsSettings } from "../config/settings";
@@ -291,6 +296,7 @@ import { containsUltrathink, ULTRATHINK_NOTICE } from "../modes/ultrathink";
 import { computeNonMessageBreakdown, computeNonMessageTokens } from "../modes/utils/context-usage";
 import { containsWorkflow, renderWorkflowNotice } from "../modes/workflow";
 import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES, type OrchestratorModeState } from "../orchestrator-mode/state";
+import { resolveApprovedPlan } from "../plan-mode/approved-plan";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import type { PlanModeState } from "../plan-mode/state";
 import advisorBriefContextPrompt from "../prompts/advisor/brief-context.md" with { type: "text" };
@@ -319,9 +325,10 @@ import planModeReferencePrompt from "../prompts/system/plan-mode-reference.md" w
 import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool-decision-reminder.md" with {
 	type: "text",
 };
-import reasoningSlideChecklistPrompt from "../prompts/system/reasoning-slide-checklist.md" with { type: "text" };
-import reasoningSlideContinuePrompt from "../prompts/system/reasoning-slide-continue.md" with { type: "text" };
-import reasoningSlidePlanPrompt from "../prompts/system/reasoning-slide-plan.md" with { type: "text" };
+import planYoloHandoffPrompt from "../prompts/system/plan-yolo-handoff.md" with { type: "text" };
+import prewalkChecklistPrompt from "../prompts/system/prewalk-checklist.md" with { type: "text" };
+import prewalkContinuePrompt from "../prompts/system/prewalk-continue.md" with { type: "text" };
+import prewalkPlanPrompt from "../prompts/system/prewalk-plan.md" with { type: "text" };
 import rewindReportTemplate from "../prompts/system/rewind-report.md" with { type: "text" };
 
 import sandboxRelaunchContinuePrompt from "../prompts/system/sandbox-relaunch-continue.md" with { type: "text" };
@@ -386,7 +393,7 @@ import { ConsultTool } from "../tools/consult";
 import { outputMeta, wrapToolWithMetaNotice } from "../tools/output-meta";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
 import { isAutoQaEnabled } from "../tools/report-tool-issue";
-import { buildResolveReminderMessage } from "../tools/resolve";
+import { buildResolveReminderMessage, type ResolveToolDetails, runResolveInvocation } from "../tools/resolve";
 import { getLatestTodoPhasesFromEntries, type TodoItem, type TodoPhase } from "../tools/todo";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
 import { clampTimeout } from "../tools/tool-timeouts";
@@ -415,6 +422,7 @@ import { type CompactMode, type CompactModeDef, findCompactMode } from "./compac
 import { buildDollarMentionContextMessages } from "./dollar-mentions";
 import {
 	collectPendingToolCalls,
+	createInterruptedTurnAbortMessage,
 	SESSION_EXIT_CUSTOM_TYPE,
 	type SessionExitData,
 	summarizeToolArguments,
@@ -515,33 +523,105 @@ const MID_RUN_TODO_NUDGE_MUTATING_TOOLS: Record<string, true> = {
 	write: true,
 	ast_edit: true,
 };
-/** `customType` for the hidden mid-run todo nudge; `display: false`, so it reaches
- *  the model but never renders in the TUI or transcript. */
-const MID_RUN_TODO_NUDGE_MESSAGE_TYPE = "mid-run-todo-nudge";
 /** Hidden plan-burst nudge injected by the reasoning slide; scrubbed from the
- *  LLM context when the slide switches models. */
+ * LLM context when the slide switches models. */
 const REASONING_SLIDE_PLAN_MESSAGE_TYPE = "reasoning-slide-plan";
 /** Hidden safety-net nudge forcing one more turn after a text-only reply to
- *  the plan nudge, which would otherwise end the run with no code written. */
+ * the plan nudge, which would otherwise end the run with no code written. */
 const REASONING_SLIDE_CONTINUE_MESSAGE_TYPE = "reasoning-slide-continue";
-/** Hidden "verify before finishing" checklist steered into the run at the
- *  switch, aimed at the fast model's specific failure patterns: partial
- *  multi-site fixes, unnecessarily broad rewrites, and reported-test-only
- *  verification. */
+/** Hidden verification checklist steered into the run at the switch. */
 const REASONING_SLIDE_CHECKLIST_MESSAGE_TYPE = "reasoning-slide-checklist";
-/** Minimum visible text length for a post-nudge assistant turn to count as the
- *  delivered plan; exploration turns emit short connective text and stay under. */
+/** Minimum visible text length for a post-nudge assistant turn to count as the delivered plan. */
 const REASONING_SLIDE_PLAN_MIN_CHARS = 400;
 /** Extra turns past `afterTurns` the slide waits for the plan before switching anyway. */
 const REASONING_SLIDE_PLAN_GRACE_TURNS = 4;
-/** Tools whose first successful call marks the execution phase for
- *  {@link ReasoningSlide.onFirstAction}-triggered switches. Bash is
- *  deliberately excluded: it doubles as exploration (ls/cat) and fired
- *  turn-1 switches in practice. */
+/** Tools whose first successful call marks the execution phase. Bash is
+ * excluded because it is also commonly used for exploration. */
 const REASONING_SLIDE_ACTION_TOOLS: Record<string, true> = {
 	edit: true,
 	write: true,
 };
+const MARKDOWN_PROMPT_PREFIX_RE = /^(?:>\s*)?(?:(?:[-*+]|\d+[.)])\s+)*/;
+const PROMPT_LABEL_RE = /^(?:q(?:uestion)?|ask)\s*\d*\s*[:.)-]\s*/i;
+const QUESTION_PROMPT_RE =
+	/^(?:what|which|when|where|why|how|who|whom|whose|do|does|did|can|could|would|will|should|is|are|am|may|shall)\b/i;
+const USER_DIRECTED_PROMPT_RE = /\b(?:you|your|we|our)\b/i;
+const USER_RESPONSE_CUE_RE =
+	/^(?:please\s+)?(?:confirm|reply|choose|pick|decide|advise)\b|^(?:please\s+)?answer\b|^(?:please\s+)?(?:let\s+me\s+know|tell\s+me)\b/i;
+
+function assistantText(message: AssistantMessage): string {
+	return message.content
+		.filter((content): content is TextContent => content.type === "text")
+		.map(content => content.text)
+		.join("\n")
+		.trim();
+}
+
+interface PromptLine {
+	text: string;
+	hadPromptLabel: boolean;
+}
+
+function promptLine(line: string): PromptLine {
+	const withoutMarkdownPrefix = line.trim().replace(MARKDOWN_PROMPT_PREFIX_RE, "").trim();
+	const withoutPromptLabel = withoutMarkdownPrefix.replace(PROMPT_LABEL_RE, "").trim();
+	return {
+		text: withoutPromptLabel,
+		hadPromptLabel: withoutPromptLabel !== withoutMarkdownPrefix,
+	};
+}
+
+function isQuestionPromptLine(line: string): boolean {
+	const candidate = promptLine(line);
+	if (!/[?？]\s*$/.test(candidate.text)) return false;
+	return (
+		candidate.hadPromptLabel ||
+		QUESTION_PROMPT_RE.test(candidate.text) ||
+		USER_DIRECTED_PROMPT_RE.test(candidate.text)
+	);
+}
+
+function isResponseCueLine(line: string): boolean {
+	const candidate = promptLine(line)
+		.text.replace(/[.!?。！？]+$/, "")
+		.trim();
+	return USER_RESPONSE_CUE_RE.test(candidate);
+}
+
+function isAwaitingUserAnswer(message: AssistantMessage): boolean {
+	const text = assistantText(message);
+	if (!text) return false;
+	const lastLine = text.split(/\r?\n/).at(-1)?.trim();
+	return lastLine !== undefined && (isQuestionPromptLine(lastLine) || isResponseCueLine(lastLine));
+}
+/** `customType` for the hidden mid-run todo nudge; `display: false`, so it reaches
+ *  the model but never renders in the TUI or transcript. */
+const MID_RUN_TODO_NUDGE_MESSAGE_TYPE = "mid-run-todo-nudge";
+/** Hidden plan nudge injected by prewalk; scrubbed from the LLM context
+ *  when the switch happens. */
+const PREWALK_PLAN_MESSAGE_TYPE = "prewalk-plan";
+/** Hidden safety-net nudge forcing one more turn after a text-only reply to
+ *  the plan nudge, which would otherwise end the run with no code written. */
+const PREWALK_CONTINUE_MESSAGE_TYPE = "prewalk-continue";
+/** Hidden "verify before finishing" checklist steered into the run at the
+ *  switch, aimed at the fast model's specific failure patterns: partial
+ *  multi-site fixes, unnecessarily broad rewrites, and reported-test-only
+ *  verification. */
+const PREWALK_CHECKLIST_MESSAGE_TYPE = "prewalk-checklist";
+/** Tools whose first successful call triggers the switch — once the todo
+ *  gate is open (see {@link AgentSession.#prewalkTodoSeen}). Bash is
+ *  deliberately excluded: it doubles as exploration (ls/cat) and fired
+ *  turn-1 switches in practice. `todo` is deliberately NOT a trigger: firing
+ *  at the todo init handed the fast model 100% of the implementation with
+ *  zero started work and measurably regressed pass rates. */
+const PREWALK_ACTION_TOOLS: Record<string, true> = {
+	edit: true,
+	write: true,
+};
+/** `customType` for the hidden hand-off message steered to the target model
+ *  once PlanYolo auto-approves the plan. Unlike prewalk's plan nudge this
+ *  is never scrubbed — it IS the instruction the target model acts on. */
+const PLAN_YOLO_HANDOFF_MESSAGE_TYPE = "plan-yolo-handoff";
 /** Abort reason for the Gemini reasoning-header runaway interrupt. Surfaced on the
  *  discarded assistant turn only; never reaches the model. */
 const GEMINI_HEADER_INTERRUPT_REASON = "Interrupted: emit a tool call instead of more planning";
@@ -854,33 +934,45 @@ function toAsyncJobSnapshotItem(job: AsyncJob): AsyncJobSnapshotItem {
 export type { ShakeMode, ShakeResult };
 /**
  * Switches an active session from its initial model one-way at a completed
- * assistant-turn boundary. Trigger is either a fixed turn count
- * ({@link afterTurns}) or the first turn that ran an action tool
- * ({@link onFirstAction}); exactly one must be set.
+ * assistant-turn boundary. Exactly one trigger must be configured.
  */
 export interface ReasoningSlide {
 	target: Model;
-	/** Switch after this many completed assistant turns. */
 	afterTurns?: number;
-	/** Switch at the first completed turn that ran an edit/write tool. */
 	onFirstAction?: boolean;
 	thinkingLevel?: ConfiguredThinkingLevel;
-	/**
-	 * Plan burst: after {@link planAtTurn} completed turns, steer a hidden
-	 * "lay out the complete plan" nudge into the run so the primary model
-	 * spends its remaining turns producing a comprehensive plan. The nudge is
-	 * removed from the LLM context at the switch; the plan itself stays.
-	 */
 	plan?: boolean;
-	/** Completed assistant turns before the plan nudge is injected (default 1). */
 	planAtTurn?: number;
-	/**
-	 * Steer a hidden "before you finish, verify..." checklist into the run at
-	 * the moment of the switch — consistency across matching call sites,
-	 * diff scope vs. the reported issue, running the full test module rather
-	 * than only the reported test. Independent of {@link plan}.
-	 */
 	checklist?: boolean;
+}
+
+/**
+ * Prewalk: switches an active session one-way from its starting model to
+ * a fast/cheap `target` at the first completed turn that runs an edit/write
+ * tool once the todo list exists. A hidden plan nudge asks the starting
+ * model to write a plan, initialize its todo list from it, and start; the
+ * todo call opens the trigger gate (it never fires the switch itself), so
+ * the starting model always begins the implementation. A hidden
+ * checklist nudge asks the target model to verify its work before
+ * finishing. Both are always on — this is the one mechanism that won out
+ * over turn-count and ungated variants in testing.
+ */
+export interface Prewalk {
+	target: Model;
+	thinkingLevel?: ConfiguredThinkingLevel;
+}
+
+/**
+ * PlanYolo: forces the session into read-only plan mode at start, then
+ * auto-approves the plan the instant the model calls `resolve({ action:
+ * "apply" })` for it — no interactive review — and switches to a fast/cheap
+ * `target` model to implement it. The headless counterpart to interactive
+ * plan mode's "Approve and execute", for print/non-interactive runs where
+ * there is no one to click Approve.
+ */
+export interface PlanYolo {
+	target: Model;
+	thinkingLevel?: ConfiguredThinkingLevel;
 }
 
 // ============================================================================
@@ -897,8 +989,13 @@ export interface AgentSessionConfig {
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	/** Initial session thinking selector. */
 	thinkingLevel?: ConfiguredThinkingLevel;
-	/** Switch model after this many completed assistant turns. */
+	/** Legacy one-way model downshift retained for existing SDK callers. */
 	reasoningSlide?: ReasoningSlide;
+	/** Prewalk from the starting model to a fast/cheap target at the first edit/write once the todo list exists. */
+	prewalk?: Prewalk;
+	/** Force read-only plan mode at start, auto-approve on the model's first
+	 *  `resolve` call, then switch to the target to implement. */
+	planYolo?: PlanYolo;
 
 	/** Initial per-family service tiers (OpenAI / Anthropic / Google) for the live session. */
 	serviceTierByFamily?: ServiceTierByFamily;
@@ -1678,6 +1775,21 @@ function isAdvisorCard(message: AgentMessage): message is CustomMessage {
 	return message.role === "custom" && message.customType === "advisor";
 }
 
+function isTerminalTextAssistantAnswer(message: AgentMessage | undefined): message is AssistantMessage {
+	if (message?.role !== "assistant" || message.stopReason !== "stop") return false;
+	let hasText = false;
+	for (const part of message.content) {
+		if (part.type === "toolCall") return false;
+		if (part.type === "text") {
+			if (part.text.trim().length > 0) hasText = true;
+			continue;
+		}
+		if (part.type === "thinking" || part.type === "redactedThinking" || part.type === "fallback") continue;
+		return false;
+	}
+	return hasText;
+}
+
 /**
  * A queued message the user can restore to the editor / pull back as a draft.
  * Only genuinely user-authored messages qualify: plain user turns, or custom
@@ -1937,10 +2049,18 @@ export class AgentSession {
 	#autoResolvedLevel: Effort | undefined;
 	#reasoningSlide: ReasoningSlide | undefined;
 	#reasoningSlideTurnCount = 0;
-	/** True once the plan-burst nudge has been queued; scrubbed from context at the switch. */
 	#reasoningSlidePlanInjected = false;
-	/** True once a post-nudge assistant turn delivered a substantial written plan. */
 	#reasoningSlidePlanDelivered = false;
+	#prewalk: Prewalk | undefined;
+	/** True once the plan nudge has been queued; scrubbed from context at the switch. */
+	#prewalkPlanInjected = false;
+	/** True once any successful `todo` call landed — opens the prewalk
+	 *  trigger gate: the switch fires at the first edit/write AFTER the todo
+	 *  list exists (sessions without a todo tool skip the gate). */
+	#prewalkTodoSeen = false;
+	#planYolo: PlanYolo | undefined;
+	#planYoloPreviousTools: string[] | undefined;
+	#planYoloArmed = false;
 
 	#promptTemplates: PromptTemplate[];
 	#slashCommands: FileSlashCommand[];
@@ -2282,6 +2402,7 @@ export class AgentSession {
 	// on `agent_end` can fire its next `prompt` before #promptWithMessage's finally
 	#emptyStopRetryCount = 0;
 	#unexpectedStopRetryCount = 0;
+	#acceptTerminalEmptyStopForPrompt = false;
 	#promptGeneration = 0;
 	#pendingAgentEndEmit: AgentSessionEvent | undefined;
 	#pendingContextSnapshot:
@@ -2322,6 +2443,7 @@ export class AgentSession {
 		this.#emptyStopRetryCount = 0;
 		this.#unexpectedStopRetryCount = 0;
 		this.#yieldTerminationPending = false;
+		this.#acceptTerminalEmptyStopForPrompt = false;
 	}
 	async #completeSideRequestResult(
 		requestModel: Model,
@@ -2588,21 +2710,11 @@ export class AgentSession {
 		if (!reasoningSlide || context?.message.role !== "assistant") return;
 
 		this.#reasoningSlideTurnCount++;
-		// Structural safety net, scoped to the plan nudge specifically: every
-		// branch below assumes the agent loop will run another turn. It won't
-		// if THIS turn had no tool calls — the loop treats a text-only turn as
-		// "the agent is done" and ends the session with no further prompting.
-		// A bare fixed-turn/action slide never provokes that (a genuine
-		// text-only stop there is normal agent behavior and must be honored),
-		// but the plan nudge explicitly asks for a prose reply, which makes a
-		// text-only turn common right after it — observed silently killing
-		// production SWE-bench runs before any code was ever written. Force
-		// one more turn only in that specific, self-created hazard window.
 		if (reasoningSlide.plan && this.#reasoningSlidePlanInjected && context.toolResults.length === 0) {
 			this.agent.steer({
 				role: "custom",
 				customType: REASONING_SLIDE_CONTINUE_MESSAGE_TYPE,
-				content: reasoningSlideContinuePrompt,
+				content: prewalkContinuePrompt,
 				attribution: "agent",
 				display: false,
 				timestamp: Date.now(),
@@ -2611,8 +2723,6 @@ export class AgentSession {
 		this.#noteReasoningSlidePlanDelivery(reasoningSlide, context.message);
 		let trigger: string;
 		if (reasoningSlide.onFirstAction) {
-			// Action trigger: the first turn that mutates the world (edit/write/
-			// bash) marks the start of the execution phase — switch right there.
 			const action = context.toolResults.find(result => REASONING_SLIDE_ACTION_TOOLS[result.toolName]);
 			if (!action) {
 				this.#maybeInjectReasoningSlidePlanNudge(reasoningSlide);
@@ -2625,10 +2735,6 @@ export class AgentSession {
 				this.#maybeInjectReasoningSlidePlanNudge(reasoningSlide);
 				return;
 			}
-			// Hold the switch until the nudged plan actually lands: sliding mid-
-			// exploration hands the fast model a transcript with an unfulfilled
-			// promise to plan (observed as test-doctoring drift on SWE-bench).
-			// Bounded so a model that refuses to plan still slides eventually.
 			if (
 				reasoningSlide.plan &&
 				this.#reasoningSlidePlanInjected &&
@@ -2662,7 +2768,7 @@ export class AgentSession {
 			this.agent.steer({
 				role: "custom",
 				customType: REASONING_SLIDE_CHECKLIST_MESSAGE_TYPE,
-				content: reasoningSlideChecklistPrompt,
+				content: prewalkChecklistPrompt,
 				attribution: "agent",
 				display: false,
 				timestamp: Date.now(),
@@ -2670,12 +2776,6 @@ export class AgentSession {
 		}
 	}
 
-	/**
-	 * Plan-delivery detector: a post-nudge assistant turn whose visible text is
-	 * substantial ({@link REASONING_SLIDE_PLAN_MIN_CHARS}+) is taken as the
-	 * written plan. Exploration turns emit short connective text ("Let me read
-	 * X first") and never trip this.
-	 */
 	#noteReasoningSlidePlanDelivery(reasoningSlide: ReasoningSlide, message: AgentTurnEndContext["message"]): void {
 		if (!reasoningSlide.plan || !this.#reasoningSlidePlanInjected || this.#reasoningSlidePlanDelivered) return;
 		if (message.role !== "assistant") return;
@@ -2689,12 +2789,6 @@ export class AgentSession {
 		}
 	}
 
-	/**
-	 * Plan burst: once {@link ReasoningSlide.planAtTurn} turns have completed,
-	 * steer a hidden deep-planning nudge into the run so the primary model's
-	 * remaining pre-slide turns produce a comprehensive plan for the fast model
-	 * to execute. Injected at most once per slide.
-	 */
 	#maybeInjectReasoningSlidePlanNudge(reasoningSlide: ReasoningSlide): void {
 		if (!reasoningSlide.plan || this.#reasoningSlidePlanInjected) return;
 		if (this.#reasoningSlideTurnCount < (reasoningSlide.planAtTurn ?? 1)) return;
@@ -2702,7 +2796,7 @@ export class AgentSession {
 		this.agent.steer({
 			role: "custom",
 			customType: REASONING_SLIDE_PLAN_MESSAGE_TYPE,
-			content: reasoningSlidePlanPrompt,
+			content: prewalkPlanPrompt,
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
@@ -2710,25 +2804,263 @@ export class AgentSession {
 		this.emitNotice("info", "Reasoning slide: injected deep-plan nudge.", "reasoning-slide");
 	}
 
-	/**
-	 * Remove the plan-burst nudge from the LLM context before the model
-	 * switch: the fast model inherits the plan the nudge produced, not the
-	 * nudge itself. Splices the loop's live context array in place (the run
-	 * streams from it) and mirrors the removal into agent state. The persisted
-	 * transcript keeps the message for audit; a session reload re-materializes
-	 * it, which is acceptable for the benchmark-oriented single-run lifecycle
-	 * this feature targets.
-	 */
 	#scrubReasoningSlidePlanNudge(liveMessages: AgentMessage[]): void {
 		if (!this.#reasoningSlidePlanInjected) return;
+		const isPlanNudge = (message: AgentMessage): boolean =>
+			message.role === "custom" && message.customType === REASONING_SLIDE_PLAN_MESSAGE_TYPE;
+		for (let i = liveMessages.length - 1; i >= 0; i--) {
+			if (isPlanNudge(liveMessages[i])) liveMessages.splice(i, 1);
+		}
+		const stateMessages = this.agent.state.messages;
+		const filtered = stateMessages.filter(message => !isPlanNudge(message));
+		if (filtered.length !== stateMessages.length) this.agent.replaceMessages(filtered);
+	}
+
+	/** Advance the one-way prewalk switch at a completed assistant-turn boundary. */
+	async #advancePrewalk(liveMessages: AgentMessage[], context: AgentTurnEndContext | undefined): Promise<void> {
+		const prewalk = this.#prewalk;
+		if (!prewalk || context?.message.role !== "assistant") return;
+
+		// Structural safety net: every branch below assumes the agent loop will
+		// run another turn. It won't if THIS turn had no tool calls — the loop
+		// treats a text-only turn as "the agent is done" and ends the session
+		// with no further prompting. The plan nudge explicitly asks for a prose
+		// reply, which makes a text-only turn common right after it — observed
+		// silently killing production SWE-bench runs before any code was ever
+		// written. Force one more turn only in that specific, self-created
+		// hazard window.
+		if (this.#prewalkPlanInjected && context.toolResults.length === 0 && !isAwaitingUserAnswer(context.message)) {
+			this.agent.steer({
+				role: "custom",
+				customType: PREWALK_CONTINUE_MESSAGE_TYPE,
+				content: prewalkContinuePrompt,
+				attribution: "agent",
+				display: false,
+				timestamp: Date.now(),
+			});
+		}
+
+		// Todo gate: the plan nudge instructs "finish the plan, then init the
+		// todo list from it and start" — so the switch waits until a todo list
+		// exists AND the model has actually started implementing (first
+		// edit/write). The todo call itself never triggers: firing there handed
+		// the fast model the whole implementation cold. Sessions without a todo
+		// tool skip the gate.
+		if (context.toolResults.some(result => result.toolName === "todo")) {
+			this.#prewalkTodoSeen = true;
+		}
+		const todoGateOpen = this.#prewalkTodoSeen || !this.#toolRegistry.has("todo");
+		const action = todoGateOpen
+			? context.toolResults.find(result => PREWALK_ACTION_TOOLS[result.toolName])
+			: undefined;
+		if (!action) {
+			if (!this.#prewalkPlanInjected) {
+				this.#prewalkPlanInjected = true;
+				this.agent.steer({
+					role: "custom",
+					customType: PREWALK_PLAN_MESSAGE_TYPE,
+					content: prewalkPlanPrompt,
+					display: false,
+					attribution: "agent",
+					timestamp: Date.now(),
+				});
+				this.emitNotice("info", "Prewalk: injected deep-plan nudge.", "prewalk");
+			}
+			return;
+		}
+
+		await this.#waitForSessionMessagePersistence(context.message);
+		for (const toolResult of context.toolResults) {
+			await this.#waitForSessionMessagePersistence(toolResult);
+		}
+
+		this.#scrubPrewalkPlanNudge(liveMessages);
+		const target = prewalk.target;
+		if (this.model && modelsAreEqual(this.model, target)) {
+			this.#prewalk = undefined;
+			return;
+		}
+
+		await this.setModelTemporary(target, prewalk.thinkingLevel, { ephemeral: true });
+		this.#prewalk = undefined;
+		this.emitNotice(
+			"info",
+			`Prewalk: switched to ${target.provider}/${target.id} after first ${action.toolName} call.`,
+			"prewalk",
+		);
+		this.agent.steer({
+			role: "custom",
+			customType: PREWALK_CHECKLIST_MESSAGE_TYPE,
+			content: prewalkChecklistPrompt,
+			attribution: "agent",
+			display: false,
+			timestamp: Date.now(),
+		});
+	}
+
+	/**
+	 * Arm prewalk outside the normal startup path (the `/prewalk` slash
+	 * command): sets the target and immediately steers the plan nudge rather
+	 * than waiting for the next turn boundary, since an explicit manual
+	 * invocation means "start this now." A no-op with a notice if a prewalk
+	 * is already armed and waiting.
+	 */
+	armPrewalk(target: Model, thinkingLevel?: ConfiguredThinkingLevel): void {
+		if (this.#prewalk) {
+			this.emitNotice(
+				"info",
+				`Prewalk: already armed for ${this.#prewalk.target.provider}/${this.#prewalk.target.id}, waiting for the first edit/write.`,
+				"prewalk",
+			);
+			return;
+		}
+		this.#prewalk = { target, thinkingLevel };
+		this.#prewalkPlanInjected = true;
+		this.agent.steer({
+			role: "custom",
+			customType: PREWALK_PLAN_MESSAGE_TYPE,
+			content: prewalkPlanPrompt,
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		this.emitNotice(
+			"info",
+			`Prewalk: armed for ${target.provider}/${target.id} — will switch at the first edit/write once the todo list exists.`,
+			"prewalk",
+		);
+	}
+
+	/**
+	 * Remove the plan nudge from the LLM context before the model switch: the
+	 * fast model inherits the plan the nudge produced, not the nudge itself.
+	 * Splices the loop's live context array in place (the run streams from
+	 * it) and mirrors the removal into agent state. The persisted transcript
+	 * keeps the message for audit; a session reload re-materializes it,
+	 * which is acceptable for prewalk's single-run lifecycle.
+	 */
+	#scrubPrewalkPlanNudge(liveMessages: AgentMessage[]): void {
+		if (!this.#prewalkPlanInjected) return;
 		const isPlanNudge = (m: AgentMessage): boolean =>
-			m.role === "custom" && m.customType === REASONING_SLIDE_PLAN_MESSAGE_TYPE;
+			m.role === "custom" && m.customType === PREWALK_PLAN_MESSAGE_TYPE;
 		for (let i = liveMessages.length - 1; i >= 0; i--) {
 			if (isPlanNudge(liveMessages[i])) liveMessages.splice(i, 1);
 		}
 		const stateMessages = this.agent.state.messages;
 		const filtered = stateMessages.filter(m => !isPlanNudge(m));
 		if (filtered.length !== stateMessages.length) this.agent.replaceMessages(filtered);
+	}
+
+	/**
+	 * Lazily arm PlanYolo before the first prompt is built: restricts tools to
+	 * the plan-mode read-only set (plus `resolve`/`write`, both normally
+	 * discovery-hidden), marks plan-mode state so `#buildPlanModeMessage`
+	 * injects the standard plan-mode-active instructions on this and every
+	 * following prompt, and registers the auto-approve resolve handler.
+	 * Idempotent — a no-op once armed or when PlanYolo is not configured.
+	 */
+	async #armPlanYoloIfNeeded(): Promise<void> {
+		if (!this.#planYolo || this.#planYoloArmed) return;
+		this.#planYoloArmed = true;
+		const previousTools = this.getActiveToolNames();
+		const augmentations = ["resolve"];
+		if (this.hasBuiltInTool("write")) augmentations.push("write");
+		await this.setActiveToolsByName([...new Set([...previousTools, ...augmentations])]);
+		this.#planYoloPreviousTools = previousTools;
+		this.setPlanModeState({
+			enabled: true,
+			planFilePath: this.getPlanReferencePath() || "local://PLAN.md",
+			workflow: "parallel",
+		});
+		this.setStandingResolveHandler(input => this.#runPlanYoloApprovalResolve(input));
+	}
+
+	/**
+	 * Standing resolve handler while PlanYolo's plan phase is active. Auto-
+	 * approves the instant the model calls `resolve { action: "apply" }` for
+	 * the plan — no interactive review, the headless counterpart to plan
+	 * mode's "Approve and execute" — then restores tools, exits plan-mode
+	 * state, switches to the configured `target`, and hands off the approved
+	 * plan for it to implement.
+	 */
+	#runPlanYoloApprovalResolve(input: unknown): Promise<AgentToolResult<ResolveToolDetails>> {
+		return runResolveInvocation(input as Parameters<typeof runResolveInvocation>[0], {
+			sourceToolName: "plan_approval",
+			label: "Plan ready for approval",
+			apply: async (_reason, extra) => {
+				const planYolo = this.#planYolo;
+				const state = this.getPlanModeState();
+				if (!planYolo || !state?.enabled) {
+					throw new ToolError("Plan mode is not active.");
+				}
+				const { planFilePath, title } = await resolveApprovedPlan({
+					suppliedTitle: extra?.title,
+					statePlanFilePath: state.planFilePath,
+					readPlan: url => this.#readPlanYoloFile(url),
+					listPlanFiles: () => this.#listPlanYoloFiles(),
+				});
+				const previousTools = this.#planYoloPreviousTools;
+				if (previousTools) {
+					await this.setActiveToolsByName(previousTools);
+				}
+				this.setStandingResolveHandler(null);
+				this.setPlanModeState(undefined);
+				this.#planYolo = undefined;
+				this.#planYoloPreviousTools = undefined;
+				await this.setModelTemporary(planYolo.target, planYolo.thinkingLevel, { ephemeral: true });
+				this.emitNotice(
+					"info",
+					`Plan-yolo: plan approved, switched to ${planYolo.target.provider}/${planYolo.target.id} to implement "${title}".`,
+					"plan-yolo",
+				);
+				this.agent.steer({
+					role: "custom",
+					customType: PLAN_YOLO_HANDOFF_MESSAGE_TYPE,
+					content: prompt.render(planYoloHandoffPrompt, { planFilePath, title }),
+					attribution: "agent",
+					display: false,
+					timestamp: Date.now(),
+				});
+				return {
+					content: [
+						{ type: "text" as const, text: `Plan approved. Implementing now with ${planYolo.target.id}.` },
+					],
+					details: { planFilePath, title, planExists: true },
+				};
+			},
+		});
+	}
+
+	async #readPlanYoloFile(planFilePath: string): Promise<string | null> {
+		const resolvedPath = planFilePath.startsWith("local:")
+			? resolveLocalUrlToPath(normalizeLocalScheme(planFilePath), this.#localProtocolOptions())
+			: resolveToCwd(planFilePath, this.sessionManager.getCwd());
+		try {
+			return await Bun.file(resolvedPath).text();
+		} catch (error) {
+			if (isEnoent(error)) return null;
+			throw error;
+		}
+	}
+
+	/** `local://` URLs of plan files in the session-local root, newest first —
+	 *  a fallback for `resolveApprovedPlan` when the agent dropped `extra.title`. */
+	async #listPlanYoloFiles(): Promise<string[]> {
+		const localRoot = resolveLocalUrlToPath("local://", this.#localProtocolOptions());
+		try {
+			const entries = await fs.promises.readdir(localRoot, { withFileTypes: true });
+			const plans = await Promise.all(
+				entries
+					.filter(entry => entry.isFile() && /plan\.md$/i.test(entry.name))
+					.map(async entry => {
+						const stat = await fs.promises.stat(path.join(localRoot, entry.name)).catch(() => null);
+						return { url: `local://${entry.name}`, mtime: stat?.mtimeMs ?? 0 };
+					}),
+			);
+			return plans.sort((a, b) => b.mtime - a.mtime).map(plan => plan.url);
+		} catch {
+			return [];
+		}
 	}
 
 	constructor(config: AgentSessionConfig) {
@@ -2760,6 +3092,12 @@ export class AgentSession {
 				throw new Error("reasoningSlide.afterTurns must be a positive integer");
 			}
 			this.#reasoningSlide = config.reasoningSlide;
+		}
+		if (config.prewalk) {
+			this.#prewalk = config.prewalk;
+		}
+		if (config.planYolo) {
+			this.#planYolo = config.planYolo;
 		}
 		this.#applyThinkingLevelToAgent(this.#thinkingLevel);
 
@@ -2841,10 +3179,11 @@ export class AgentSession {
 				if (detection) this.#maybeInjectToolCallLoopRedirect(messages, detection);
 			}
 			await this.#advanceReasoningSlide(messages, context);
+			await this.#advancePrewalk(messages, context);
 			this.#advisorPrimaryTurnsCompleted++;
 			if (this.#advisors.length > 0) {
 				for (const a of this.#advisors) {
-					if (!a.runtime.disposed) a.runtime.onTurnEnd(messages);
+					if (!a.runtime.disposed) a.runtime.onTurnEnd(messages, { willContinue: context?.willContinue });
 				}
 				const syncBacklog = this.settings.get("advisor.syncBacklog");
 				if (syncBacklog !== "off") {
@@ -3728,6 +4067,14 @@ export class AgentSession {
 
 			const names = config.tools === undefined ? ADVISOR_DEFAULT_TOOL_NAMES : new Set(config.tools);
 			const tools = (this.#advisorTools ?? []).filter(t => names.has(t.name));
+			const availableAdvisorToolNames = new Set<string>();
+			availableAdvisorToolNames.add(adviseTool.name);
+			for (const tool of tools) {
+				availableAdvisorToolNames.add(tool.name);
+				if (tool.customWireName !== undefined) availableAdvisorToolNames.add(tool.customWireName);
+			}
+			let quarantinedAdvisorOutput: string | undefined;
+			let currentAdvisorInput = "";
 
 			const primaryProviderSessionId = this.sessionId;
 			const advisorSessionLabel = slug
@@ -3783,6 +4130,13 @@ export class AgentSession {
 				onSseEvent: this.#onSseEvent,
 				transformProviderContext: this.#transformProviderContext,
 				intentTracing: false,
+				transformAssistantMessage: message => {
+					quarantinedAdvisorOutput = quarantineAdvisorUnsafeOutput(
+						message,
+						availableAdvisorToolNames,
+						buildAdvisorQuarantineSourceText(currentAdvisorInput, advisorAgent.state.messages),
+					);
+				},
 				telemetry: advisorTelemetry,
 				serviceTier: undefined,
 				serviceTierResolver: advisorServiceTierResolver,
@@ -3790,7 +4144,19 @@ export class AgentSession {
 			advisorAgent.setDisableReasoning(shouldDisableReasoning(advisorThinkingLevel));
 
 			const advisorAgentFacade: AdvisorAgent = {
-				prompt: (input, images) => advisorAgent.prompt(input, images),
+				prompt: async (input, images) => {
+					let quarantined: string | undefined;
+					try {
+						quarantinedAdvisorOutput = undefined;
+						currentAdvisorInput = input;
+						await advisorAgent.prompt(input, images);
+						quarantined = quarantinedAdvisorOutput;
+					} finally {
+						quarantinedAdvisorOutput = undefined;
+						currentAdvisorInput = "";
+					}
+					if (quarantined) throw new AdvisorOutputQuarantinedError(quarantined);
+				},
 				abort: reason => advisorAgent.abort(reason),
 				reset: () => {
 					advisorAgent.reset();
@@ -3984,11 +4350,23 @@ export class AgentSession {
 	 * emission guard drops the note silently — the model still saw `Recorded.`, so
 	 * it isn't tempted to rephrase the same note past the dedupe.
 	 */
+	#hasTerminalTextAnswerWithoutQueuedWork(): boolean {
+		if (this.agent.hasQueuedMessages() || this.#pendingNextTurnMessages.length > 0) return false;
+		const messages = this.agent.state.messages;
+		let tail = messages.length - 1;
+		while (tail >= 0 && isAdvisorCard(messages[tail])) tail--;
+		return isTerminalTextAssistantAnswer(messages[tail]);
+	}
+
 	#routeAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity): void {
 		if (!advisor.emissionGuard.accept(note)) {
 			logger.debug("advisor advice suppressed by emission guard", { severity, advisor: advisor.name });
 			return;
 		}
+		// When newer primary turns already arrived while the advisor model was
+		// processing this batch, the advice was generated without seeing them.
+		// Append a lightweight staleness caveat so the primary can weigh recency.
+		const deliveredNote = annotateForStaleness(note, advisor.runtime.hasFreshBacklog);
 		// The implicit single ("default") advisor stamps no source name, so its
 		// agent-facing `<advisory>` bytes stay identical to the pre-multi-advisor path.
 		const source = advisor.slug ? advisor.name : undefined;
@@ -4001,6 +4379,7 @@ export class AgentSession {
 			// loop consumes a steer at its next boundary.
 			streaming: this.agent.state.isStreaming,
 			aborting: this.#abortInProgress,
+			terminalAnswerNoQueuedWork: this.#hasTerminalTextAnswerWithoutQueuedWork(),
 			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
 		});
 		// While a consult or done-review is blocked awaiting the advisor, an immediate
@@ -4010,10 +4389,10 @@ export class AgentSession {
 			channel = "aside";
 		}
 		if (channel === "aside") {
-			this.yieldQueue.enqueue("advisor", { note, severity, advisor: source });
+			this.yieldQueue.enqueue("advisor", { note: deliveredNote, severity, advisor: source });
 			return;
 		}
-		const notes: AdvisorNote[] = [{ note, severity, advisor: source }];
+		const notes: AdvisorNote[] = [{ note: deliveredNote, severity, advisor: source }];
 		const content = formatAdvisorBatchContent(notes);
 		const details = { notes } satisfies AdvisorMessageDetails;
 		if (channel === "preserve") {
@@ -5686,7 +6065,7 @@ export class AgentSession {
 					await emitAgentEndNotification();
 					return;
 				}
-				const todoContinuationScheduled = await this.#checkTodoCompletion();
+				const todoContinuationScheduled = await this.#checkTodoCompletion(msg);
 				if (todoContinuationScheduled) {
 					await emitAgentEndNotification();
 					return;
@@ -8626,6 +9005,8 @@ export class AgentSession {
 			abort: () => {
 				this.agent.abort();
 			},
+			settings: this.settings,
+			localProtocolOptions: this.#localProtocolOptions(),
 		});
 
 		for (const customTool of mcpTools) {
@@ -8999,6 +9380,11 @@ export class AgentSession {
 		return this.#planModeState;
 	}
 
+	/** Prewalk state, if armed and active */
+	getPrewalkState(): Prewalk | undefined {
+		return this.#prewalk;
+	}
+
 	setPlanModeState(state: PlanModeState | undefined): void {
 		const previous = this.#planModeState;
 		if (state?.enabled) {
@@ -9292,6 +9678,30 @@ export class AgentSession {
 	 */
 	resolveRoleModelWithThinking(role: string): ResolvedModelRoleValue {
 		return this.#resolveRoleModelFull(role, this.#modelRegistry.getAvailable(), this.model);
+	}
+
+	/**
+	 * Resolve the explicit thinking suffix that should apply when a temporary
+	 * picker selects a model already assigned to a configured role.
+	 */
+	resolveTemporaryModelThinkingLevel(model: Model): ConfiguredThinkingLevel | undefined {
+		const availableModels = this.#modelRegistry.getAvailable();
+		if (availableModels.length === 0) return undefined;
+
+		const matchPreferences = getModelMatchPreferences(this.settings);
+		for (const role of getKnownRoleIds(this.settings)) {
+			const roleValue = this.settings.getModelRole(role);
+			if (!roleValue) continue;
+
+			const resolved = resolveModelRoleValue(roleValue, availableModels, {
+				settings: this.settings,
+				matchPreferences,
+			});
+			if (!resolved.explicitThinkingLevel || resolved.thinkingLevel === undefined || !resolved.model) continue;
+			if (modelsAreEqual(resolved.model, model)) return resolved.thinkingLevel;
+		}
+
+		return undefined;
 	}
 
 	get promptTemplates(): ReadonlyArray<PromptTemplate> {
@@ -9953,6 +10363,7 @@ export class AgentSession {
 		options?: Pick<PromptOptions, "toolChoice" | "images" | "skipCompactionCheck"> & {
 			prependMessages?: AgentMessage[];
 			skipPostPromptRecoveryWait?: boolean;
+			acceptTerminalEmptyStop?: boolean;
 		},
 	): Promise<void> {
 		this.#beginInFlight();
@@ -9972,6 +10383,7 @@ export class AgentSession {
 			this.#mutationsSinceLastTodoTouch = 0;
 			this.#midRunNudgeCount = 0;
 			this.#resetPromptMaintenanceState();
+			this.#acceptTerminalEmptyStopForPrompt = options?.acceptTerminalEmptyStop === true;
 
 			await this.#maybeRestoreRetryFallbackPrimary();
 
@@ -10029,6 +10441,7 @@ export class AgentSession {
 					}
 				}
 			}
+			await this.#armPlanYoloIfNeeded();
 
 			// Build messages array (session context, eager todo prelude, then active prompt message)
 			const messages: AgentMessage[] = [];
@@ -10626,13 +11039,22 @@ export class AgentSession {
 		}
 	}
 
-	async #promptAgentInitiatedMessage(message: CustomMessage): Promise<void> {
+	async #promptAgentInitiatedMessage(
+		message: CustomMessage,
+		options?: { acceptTerminalEmptyStop?: boolean },
+	): Promise<void> {
 		this.#beginInFlight();
 		try {
 			this.#prePersistPromptMessages([message]);
+			const acceptTerminalEmptyStop = options?.acceptTerminalEmptyStop === true;
+			if (acceptTerminalEmptyStop) {
+				this.#resetPromptMaintenanceState();
+			}
+			this.#acceptTerminalEmptyStopForPrompt = acceptTerminalEmptyStop;
 			await this.agent.prompt(message);
 			await this.#waitForPostPromptRecovery();
 		} finally {
+			this.#acceptTerminalEmptyStopForPrompt = false;
 			this.#endInFlight();
 		}
 	}
@@ -10692,6 +11114,7 @@ export class AgentSession {
 			deliverAs?: "steer" | "followUp" | "nextTurn";
 			queueChipText?: string;
 			interruptToolExecution?: boolean;
+			acceptTerminalEmptyStop?: boolean;
 		},
 	): Promise<boolean> {
 		const normalizedPayload = normalizeCustomMessagePayload<T>(message);
@@ -10735,7 +11158,9 @@ export class AgentSession {
 					this.#queueHiddenNextTurnMessage(normalizedAppMessage, false);
 					return false;
 				}
-				await this.#promptAgentInitiatedMessage(normalizedAppMessage);
+				await this.#promptAgentInitiatedMessage(normalizedAppMessage, {
+					acceptTerminalEmptyStop: options.acceptTerminalEmptyStop === true,
+				});
 				return true;
 			}
 			this.agent.appendMessage(normalizedAppMessage);
@@ -11607,7 +12032,7 @@ export class AgentSession {
 		const all = this.#modelRegistry.getAvailable();
 		const patterns = this.settings.get("enabledModels");
 		if (!patterns || patterns.length === 0) return all;
-		return filterAvailableModelsByEnabledPatterns(all, patterns);
+		return filterAvailableModelsByEnabledPatterns(all, patterns, this.settings);
 	}
 
 	// =========================================================================
@@ -13545,6 +13970,13 @@ export class AgentSession {
 			return false;
 		}
 
+		if (this.#acceptTerminalEmptyStopForPrompt && assistantMessage.stopReason === "stop") {
+			this.#acceptTerminalEmptyStopForPrompt = false;
+			this.#discardAcceptedTerminalEmptyStop(assistantMessage);
+			this.#emptyStopRetryCount = 0;
+			return false;
+		}
+
 		this.#emptyStopRetryCount++;
 		if (this.#emptyStopRetryCount > EMPTY_STOP_MAX_RETRIES) {
 			const attempts = this.#emptyStopRetryCount - 1;
@@ -13760,6 +14192,38 @@ export class AgentSession {
 			return;
 		}
 		this.agent.appendMessage(assistantMessage);
+	}
+
+	#discardAcceptedTerminalEmptyStop(assistantMessage: AssistantMessage): void {
+		const branch = this.sessionManager.getBranch();
+		const branchEntry = branch
+			.slice()
+			.reverse()
+			.find(
+				entry =>
+					entry.type === "message" &&
+					entry.message.role === "assistant" &&
+					this.#isSameAssistantMessage(entry.message, assistantMessage),
+			);
+		const parentEntry =
+			branchEntry?.parentId === null || branchEntry?.parentId === undefined
+				? undefined
+				: branch.find(entry => entry.id === branchEntry.parentId);
+		const prunePrompt = parentEntry?.type === "custom_message";
+
+		this.#removeAssistantMessageFromActiveContext(assistantMessage, "accepted-terminal-empty-stop");
+		if (prunePrompt && this.agent.state.messages.at(-1)?.role === "custom") {
+			this.agent.replaceMessages(this.agent.state.messages.slice(0, -1));
+		}
+
+		if (!branchEntry) return;
+		const targetParentId = prunePrompt ? parentEntry.parentId : branchEntry.parentId;
+		if (targetParentId === null) {
+			this.sessionManager.resetLeaf();
+		} else {
+			this.sessionManager.branch(targetParentId);
+		}
+		this.sessionManager.appendCustomEntry("accepted-terminal-empty-stop");
 	}
 
 	/**
@@ -14131,7 +14595,7 @@ export class AgentSession {
 	/**
 	 * Check if agent stopped with incomplete todos and prompt to continue.
 	 */
-	async #checkTodoCompletion(): Promise<boolean> {
+	async #checkTodoCompletion(message: AssistantMessage): Promise<boolean> {
 		// Skip todo reminders when the most recent turn was driven by an explicit user force —
 		// the user wanted exactly that tool, not a follow-up nag about incomplete todos.
 		const lastServedLabel = this.#toolChoiceQueue.consumeLastServedLabel();
@@ -14193,6 +14657,13 @@ export class AgentSession {
 		if (incomplete.length === 0) {
 			this.#todoReminderCount = 0;
 			this.#todoReminderAwaitingProgress = false;
+			return false;
+		}
+
+		if (isAwaitingUserAnswer(message)) {
+			logger.debug("Todo completion: assistant is waiting for user input; skipping reminder", {
+				incomplete: incomplete.length,
+			});
 			return false;
 		}
 
@@ -17927,7 +18398,7 @@ export class AgentSession {
 			this.#rekeyHindsightMemoryForCurrentSessionId();
 			this.#rekeyMnemopiMemoryForCurrentSessionId();
 
-			const sessionContext = this.buildDisplaySessionContext();
+			let sessionContext = this.buildDisplaySessionContext();
 			const didReloadConversationChange =
 				previousSessionContext !== undefined &&
 				this.#didSessionMessagesChange(previousSessionContext.messages, sessionContext.messages);
@@ -17982,6 +18453,20 @@ export class AgentSession {
 					} else {
 						this.agent.setModel(match);
 					}
+				}
+			}
+
+			const model = this.model;
+			if (model) {
+				const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.getBranch(), {
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+				});
+				if (interruptedTurnAbort) {
+					this.sessionManager.appendMessage(interruptedTurnAbort);
+					sessionContext = this.buildDisplaySessionContext();
+					this.agent.replaceMessages(sessionContext.messages);
 				}
 			}
 

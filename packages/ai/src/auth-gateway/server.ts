@@ -23,6 +23,7 @@ import { isAnthropicOAuthToken } from "@oh-my-pi/pi-catalog/utils";
 import { extractHttpStatusFromError, extractRetryHint, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "../auth-retry";
 import type { AuthApiKeyResolution, AuthStorage } from "../auth-storage";
+import * as AIError from "../error";
 import { classifyGatewayError } from "../error/gateway";
 import { isUsageLimitOutcome } from "../error/rate-limit";
 import * as anthropicMessages from "../providers/anthropic-messages-server";
@@ -42,7 +43,15 @@ import type {
 import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { parseBind } from "../utils/parse-bind";
-import { captureRequestHeaders, corsHeaders, isAuthorized, json, resolvePeer, withCors } from "./http";
+import {
+	captureRequestHeaders,
+	corsHeaders,
+	gatewayResponseHeaders,
+	isAuthorized,
+	json,
+	resolvePeer,
+	withCors,
+} from "./http";
 import type {
 	AuthGatewayServerHandle,
 	AuthGatewayServerOptions,
@@ -237,7 +246,8 @@ async function refreshGatewayApiKeyAfterAuthError(
 	peer: string,
 ): Promise<AuthApiKeyResolution | undefined> {
 	const message = error instanceof Error ? error.message : String(error);
-	if (isUsageLimitOutcome(extractHttpStatusFromError(error), message)) {
+	const status = extractHttpStatusFromError(error);
+	if (AIError.isUsageLimit(error) || isUsageLimitOutcome(status, message)) {
 		const retryAfterMs = extractRetryHint(undefined, message);
 		const { switched, retryAtMs } = await storage.markUsageLimitReached(provider, sessionId, {
 			retryAfterMs,
@@ -498,6 +508,8 @@ async function handleFormatEndpoint(
 	req: Request,
 	peer: string,
 ): Promise<Response> {
+	const startedAt = performance.now();
+	const requestId = crypto.randomUUID();
 	const controller = mirrorRequestAbort(req);
 	if (controller.signal.aborted) return clientClosedResponse(route);
 
@@ -635,7 +647,11 @@ async function handleFormatEndpoint(
 				const classified = classifyGatewayError(errorMessage);
 				return route.module.formatError(classified.status, classified.type, errorMessage);
 			}
-			return json(200, route.module.encodeResponse(message, parsed.modelId));
+			return json(
+				200,
+				route.module.encodeResponse(message, parsed.modelId),
+				gatewayResponseHeaders(model, { requestId, message, startedAt }),
+			);
 		} catch (error) {
 			if (controller.signal.aborted) {
 				logCompletionAudit(audit, { status: 499, reason: "aborted" });
@@ -688,6 +704,7 @@ async function handleFormatEndpoint(
 	return new Response(auditedStream, {
 		status: 200,
 		headers: {
+			...gatewayResponseHeaders(model, { requestId }),
 			"Content-Type": "text/event-stream; charset=utf-8",
 			"Cache-Control": "no-cache",
 			Connection: "keep-alive",
@@ -714,6 +731,8 @@ async function handleFormatEndpoint(
  * path.
  */
 async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, peer: string): Promise<Response> {
+	const startedAt = performance.now();
+	const requestId = crypto.randomUUID();
 	const controller = mirrorRequestAbort(req);
 	const aborted = (): Response => piNative.formatError(499, "request_aborted", "client closed request");
 	if (controller.signal.aborted) return aborted();
@@ -842,7 +861,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 				const classified = classifyGatewayError(errorMessage);
 				return piNative.formatError(classified.status, classified.type, errorMessage);
 			}
-			return json(200, { message });
+			return json(200, { message }, gatewayResponseHeaders(model, { requestId, message, startedAt }));
 		} catch (error) {
 			if (controller.signal.aborted) {
 				logCompletionAudit(audit, { status: 499, reason: "aborted" });
@@ -886,6 +905,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	return new Response(auditedStream, {
 		status: 200,
 		headers: {
+			...gatewayResponseHeaders(model, { requestId }),
 			"Content-Type": "text/event-stream; charset=utf-8",
 			"Cache-Control": "no-cache",
 			Connection: "keep-alive",

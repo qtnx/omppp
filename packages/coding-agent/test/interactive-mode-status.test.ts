@@ -65,10 +65,10 @@ function createInitialRenderHarness(): { ctx: InteractiveModeContext; helpers: U
 
 describe("InteractiveMode.showStatus", () => {
 	beforeAll(async () => {
-		// renderInitialMessages reads process-global settings.display.collapseCompacted.
+		// showStatus uses the global theme instance; renderInitialMessages reads
+		// the global Settings (display.collapseCompacted).
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
-		// showStatus uses the global theme instance
 		await initTheme();
 	});
 

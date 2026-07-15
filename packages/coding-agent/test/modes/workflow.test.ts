@@ -42,6 +42,16 @@ describe("workflow keyword highlighting", () => {
 		expect(Bun.stripANSI(decorated)).toBe(input);
 	});
 
+	it("decorates standalone workflow forms beside prose punctuation", () => {
+		const input = 'say "workflow," then workflows. Finally workflowz!';
+		const decorated = highlightWorkflow(input);
+		expect(decorated).not.toBe(input);
+		expect(Bun.stripANSI(decorated)).toBe(input);
+		for (const keyword of ["workflow", "workflows", "workflowz"]) {
+			expect(decorated).not.toContain(keyword);
+		}
+	});
+
 	it("leaves text without the standalone keyword untouched", () => {
 		// Probe hits the substring but the whitespace boundary fails — no decoration.
 		expect(highlightWorkflow("workflowed builds")).toBe("workflowed builds");

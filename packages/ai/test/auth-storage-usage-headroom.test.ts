@@ -241,7 +241,7 @@ async function warmUsageCache(storage: AuthStorage, syntheticReport: UsageReport
 }
 function oauthUsageCacheKey(credential: AuthCredential): string {
 	if (credential.type !== "oauth") throw new Error("expected OAuth credential");
-	return `usage_cache:report:anthropic:default:oauth|account:${credential.accountId}|email:${credential.email?.toLowerCase()}`;
+	return `usage_cache:report:2:anthropic:default:oauth|account:${credential.accountId}|email:${credential.email?.toLowerCase()}`;
 }
 
 function seedUsageCache(store: ObservableStore, credential: AuthCredential, syntheticReport: UsageReport): void {

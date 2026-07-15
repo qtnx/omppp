@@ -664,6 +664,27 @@ async function getChangelogForDisplay(parsed: Args): Promise<string | undefined>
 	return undefined;
 }
 
+const SESSION_ID_ARG_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function normalizeContinueSessionArgs(parsed: Args, rawArgs?: readonly string[]): void {
+	if (!parsed.continue || parsed.resume || parsed.fork) return;
+
+	let message: string | undefined;
+	if (parsed.unrecognizedFlags.length === 0 && parsed.messages.length === 1) {
+		message = parsed.messages[0]?.trim();
+	} else if (rawArgs) {
+		const continueIndex = rawArgs.findIndex(arg => arg === "--continue" || arg === "-c");
+		message = rawArgs[continueIndex + 1]?.trim();
+	}
+	if (!message || !SESSION_ID_ARG_RE.test(message)) return;
+
+	const messageIndex = parsed.messages.indexOf(message);
+	if (messageIndex === -1) return;
+	parsed.resume = message;
+	parsed.continue = false;
+	parsed.messages.splice(messageIndex, 1);
+}
+
 /** Resolves CLI session flags into an existing, forked, in-memory, or cancelled session manager. */
 export async function createSessionManager(
 	parsed: Args,
@@ -693,6 +714,8 @@ export async function createSessionManager(
 	if (parsed.noSession) {
 		return SessionManager.inMemory();
 	}
+	normalizeContinueSessionArgs(parsed);
+
 	if (typeof parsed.resume === "string") {
 		const sessionArg = parsed.resume;
 		if (sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl")) {
@@ -837,6 +860,7 @@ export async function buildSessionOptions(
 			cliProvider: parsed.provider,
 			cliModel: parsed.model,
 			modelRegistry,
+			settings: activeSettings,
 			preferences: modelMatchPreferences,
 		});
 		if (resolved.warning) {
@@ -890,62 +914,59 @@ export async function buildSessionOptions(
 		if (!options.model) options.model = scopedModels[0].model;
 	}
 
-	const hasReasoningSlideModel = parsed.reasoningSlideModel !== undefined;
-	const hasReasoningSlideTurns = parsed.reasoningSlideTurns !== undefined;
-	const hasReasoningSlideOnAction = parsed.reasoningSlideOnAction === true;
-	if (hasReasoningSlideModel && hasReasoningSlideTurns === hasReasoningSlideOnAction) {
-		throw new Error(
-			"--reasoning-slide-model requires exactly one trigger: --reasoning-slide-turns or --reasoning-slide-on-action",
+	const resolveStartupRoleTarget = (target: string) => {
+		const availableModels = modelRegistry.getAll();
+		const resolutionOptions = {
+			settings: activeSettings,
+			matchPreferences: modelMatchPreferences,
+		};
+		const resolved = resolveModelRoleValue(
+			target,
+			availableModels.filter(model => modelRegistry.hasConfiguredAuth(model)),
+			resolutionOptions,
 		);
-	}
-	if ((hasReasoningSlideTurns || hasReasoningSlideOnAction) && !hasReasoningSlideModel) {
-		throw new Error("--reasoning-slide-turns/--reasoning-slide-on-action require --reasoning-slide-model");
-	}
-	if (parsed.reasoningSlidePlan && !hasReasoningSlideModel) {
-		throw new Error("--reasoning-slide-plan requires a reasoning slide (--reasoning-slide-model + trigger)");
-	}
-	if (parsed.reasoningSlidePlanAt !== undefined && !parsed.reasoningSlidePlan) {
-		throw new Error("--reasoning-slide-plan-at requires --reasoning-slide-plan");
-	}
-	if (hasReasoningSlideModel) {
-		let afterTurns: number | undefined;
-		if (hasReasoningSlideTurns) {
-			afterTurns = Number(parsed.reasoningSlideTurns);
-			if (!Number.isSafeInteger(afterTurns) || afterTurns < 1) {
-				throw new Error("--reasoning-slide-turns must be a positive integer");
-			}
+		if (resolved.model) return resolved;
+
+		const unauthenticated = resolveModelRoleValue(target, availableModels, resolutionOptions);
+		if (unauthenticated.model) {
+			throw new Error(`No API key for ${unauthenticated.model.provider}/${unauthenticated.model.id}`);
 		}
-		let planAtTurn: number | undefined;
-		if (parsed.reasoningSlidePlanAt !== undefined) {
-			planAtTurn = Number(parsed.reasoningSlidePlanAt);
-			const belowTurns = afterTurns === undefined || planAtTurn < afterTurns;
-			if (!Number.isSafeInteger(planAtTurn) || planAtTurn < 1 || !belowTurns) {
-				throw new Error("--reasoning-slide-plan-at must be a positive integer below --reasoning-slide-turns");
-			}
-		}
-		const resolved = resolveCliModel({
-			cliModel: parsed.reasoningSlideModel,
-			modelRegistry,
-			preferences: modelMatchPreferences,
-		});
+		throw new Error(`Model "${target}" not found`);
+	};
+
+	if (parsed.noPrewalk && (parsed.prewalk || parsed.prewalkInto !== undefined)) {
+		throw new Error("--no-prewalk cannot be combined with --prewalk or --prewalk-into");
+	}
+	const prewalkEnabled = parsed.noPrewalk
+		? false
+		: parsed.prewalk === true || parsed.prewalkInto !== undefined
+			? true
+			: activeSettings.get("prewalk.enabled");
+	if (prewalkEnabled) {
+		const target = parsed.prewalkInto ?? "@smol";
+		const resolved = resolveStartupRoleTarget(target);
 		if (resolved.warning) {
 			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
 		}
-		if (resolved.error || !resolved.model) {
-			throw new Error(resolved.error ?? `Model "${parsed.reasoningSlideModel}" not found`);
+		if (!resolved.model) {
+			throw new Error(`Model "${target}" not found`);
 		}
-		if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
-			throw new Error(`No API key for ${resolved.model.provider}/${resolved.model.id}`);
+		options.prewalk = { target: resolved.model, thinkingLevel: resolved.thinkingLevel };
+	}
+
+	if (parsed.planYoloInto !== undefined && !parsed.planYolo) {
+		throw new Error("--plan-yolo-into requires --plan-yolo");
+	}
+	if (parsed.planYolo) {
+		const target = parsed.planYoloInto ?? "@smol";
+		const resolved = resolveStartupRoleTarget(target);
+		if (resolved.warning) {
+			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
 		}
-		options.reasoningSlide = {
-			target: resolved.model,
-			afterTurns,
-			onFirstAction: hasReasoningSlideOnAction || undefined,
-			thinkingLevel: resolved.thinkingLevel,
-			plan: parsed.reasoningSlidePlan === true,
-			planAtTurn,
-			checklist: parsed.reasoningSlideChecklist === true,
-		};
+		if (!resolved.model) {
+			throw new Error(`Model "${target}" not found`);
+		}
+		options.planYolo = { target: resolved.model, thinkingLevel: resolved.thinkingLevel };
 	}
 
 	// Thinking level
@@ -1241,8 +1262,14 @@ export async function runRootCommand(
 			modelPatterns,
 			modelRegistry,
 			modelMatchPreferences,
+			settingsInstance,
 		);
 	}
+
+	// Resolve an explicit `--continue <id>` before extension flags are loaded.
+	// Reading the token immediately after `--continue` distinguishes the session
+	// id from UUID-shaped values owned by later extension flags.
+	normalizeContinueSessionArgs(parsedArgs, rawArgs);
 
 	// Create session manager based on CLI flags. SessionResolutionError signals a
 	// user-facing failure (unknown --resume/--fork id, non-interactive fork
@@ -1455,6 +1482,7 @@ export async function runRootCommand(
 			},
 		};
 		const initialArgs = applyExtensionFlags(extensionFlagSink, rawArgs) ?? parsedArgs;
+		normalizeContinueSessionArgs(initialArgs, rawArgs);
 		// Fail fast on stale/typo flags (e.g. `omp --list-models`) now that we
 		// know the real extension flag set. Without this check the unrecognized
 		// token gets silently consumed and any following positional leaks as the
