@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-07-15
+
+### Added
+
+- Added durable local crash reports under `getLogsDir()`, a deduplicated soft-crash reporting API, and postmortem crash persistence before process exit.
+
 ## [16.5.1] - 2026-07-14
 
 ### Added
@@ -17,7 +23,6 @@
 ### Added
 
 - Added `AsyncDrain`, the deferred write-batching helper previously private to the coding-agent's prompt-history storage; now shared with model-perf recording.
-- Added durable local crash reports under `getLogsDir()`, a deduplicated soft-crash reporting API, and postmortem crash persistence before process exit.
 
 ## [16.4.2] - 2026-07-10
 

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-07-15
+
 ### Added
 
 - Added subagent run telemetry with unique run IDs, phase timings, outcomes, and stats aggregation for diagnosing slow delegated work.
@@ -14,13 +16,6 @@
 
 - Fixed subagent provider-rate-limit failures that bypass the auto-retry lifecycle from being treated as ordinary failures; terminal quota errors now pause further task delegation and surface the provider's retry delay.
 
-## [1.6.2] - 2026-07-14
-
-## [1.6.1] - 2026-07-13
-
-### Fixed
-
-- Fixed compiled CLI entry paths leaking into the initial prompt and swallowing subcommands such as `ompx update`; profile aliases now ignore Bun virtual entrypoints and target the OMPx executable.
 ## [16.5.1] - 2026-07-14
 
 ### Changed
@@ -11145,6 +11140,12 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.6.1] - 2026-07-13
+
+### Fixed
+
+- Fixed compiled CLI entry paths leaking into the initial prompt and swallowing subcommands such as `ompx update`; profile aliases now ignore Bun virtual entrypoints and target the OMPx executable.
 
 ## [1.6.1] - 2026-07-13
 
