@@ -1,0 +1,1 @@
+Runtime limit is approaching. If every assignment Acceptance item already passes and no assigned work remains, call terminal `yield` immediately. NEVER infer success, skip required verification, abandon work, or run optional exploration or broad gates after completion.

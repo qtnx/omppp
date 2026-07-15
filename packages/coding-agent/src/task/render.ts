@@ -959,7 +959,7 @@ export function renderAgentProgress(
 	// the operationally meaningful state.
 	if (progress.retryState && progress.status === "running") {
 		statusLine += ` ${formatBadge("retrying", "warning", theme)}`;
-	} else if (progress.retryFailure && (progress.status === "failed" || progress.status === "aborted")) {
+	} else if (progress.retryFailure?.rateLimited && (progress.status === "failed" || progress.status === "aborted")) {
 		statusLine += ` ${formatBadge("rate-limited", "error", theme)}`;
 	} else if (progress.status === "failed" || progress.status === "aborted") {
 		const statusLabel = progress.status === "failed" ? "failed" : "aborted";

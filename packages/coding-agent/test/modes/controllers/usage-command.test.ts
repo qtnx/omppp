@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -25,6 +25,10 @@ describe("CommandController /usage", () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("Expected dark theme");
 		setThemeInstance(theme);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
 	});
 
 	it("renders bars and free percentage for limits that only report remainingFraction", async () => {
@@ -76,7 +80,8 @@ describe("CommandController /usage", () => {
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;
 		const controller = new CommandController(ctx);
-		const now = Date.now();
+		const now = 1_700_000_000_000;
+		vi.spyOn(Date, "now").mockReturnValue(now);
 		const reports: UsageReport[] = [
 			{
 				provider: "cursor",

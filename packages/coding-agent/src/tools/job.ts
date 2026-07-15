@@ -1,13 +1,14 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { formatNumber, prompt } from "@oh-my-pi/pi-utils";
+import { formatNumber, isRecord, prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import type { AsyncJob, AsyncJobManager } from "../async";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../modes/theme/shimmer";
 import type { Theme } from "../modes/theme/theme";
 import jobDescription from "../prompts/tools/job.md" with { type: "text" };
+import taskRateLimitNoticeTemplate from "../prompts/tools/task-rate-limit-notice.md" with { type: "text" };
 import type { AgentProgress } from "../task/types";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import type { ToolSession } from "./index";
@@ -59,8 +60,112 @@ interface JobSnapshot {
 	outputTokens?: number;
 	lastActivityAt?: number;
 	stalled?: boolean;
+	retryState?: AgentProgress["retryState"];
+	retryFailure?: AgentProgress["retryFailure"];
 	resultText?: string;
 	errorText?: string;
+}
+
+type JobRecord = Pick<
+	AsyncJob,
+	| "id"
+	| "type"
+	| "status"
+	| "label"
+	| "startTime"
+	| "resultText"
+	| "errorText"
+	| "agentId"
+	| "progressDetails"
+	| "lastActivityAt"
+>;
+
+interface JobProgressSnapshot {
+	id: string;
+	resolvedModel?: string;
+	modelOverride?: string | string[];
+	toolCount?: number;
+	inputTokens?: number;
+	outputTokens?: number;
+	retryState?: AgentProgress["retryState"];
+	retryFailure?: AgentProgress["retryFailure"];
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every(item => typeof item === "string");
+}
+
+function readRetryState(value: unknown): AgentProgress["retryState"] | undefined {
+	if (
+		!isRecord(value) ||
+		typeof value.attempt !== "number" ||
+		typeof value.maxAttempts !== "number" ||
+		typeof value.delayMs !== "number" ||
+		typeof value.errorMessage !== "string" ||
+		typeof value.startedAtMs !== "number" ||
+		typeof value.rateLimited !== "boolean"
+	) {
+		return undefined;
+	}
+	return {
+		attempt: value.attempt,
+		maxAttempts: value.maxAttempts,
+		delayMs: value.delayMs,
+		errorMessage: value.errorMessage,
+		startedAtMs: value.startedAtMs,
+		rateLimited: value.rateLimited,
+	};
+}
+
+function readRetryFailure(value: unknown): AgentProgress["retryFailure"] | undefined {
+	if (
+		!isRecord(value) ||
+		typeof value.attempt !== "number" ||
+		typeof value.errorMessage !== "string" ||
+		typeof value.rateLimited !== "boolean"
+	) {
+		return undefined;
+	}
+	return {
+		attempt: value.attempt,
+		errorMessage: value.errorMessage,
+		rateLimited: value.rateLimited,
+		...(typeof value.retryAfterMs === "number" ? { retryAfterMs: value.retryAfterMs } : {}),
+	};
+}
+
+function readJobProgress(
+	details: Record<string, unknown> | undefined,
+	agentId: string,
+): JobProgressSnapshot | undefined {
+	const values = details?.progress;
+	if (!Array.isArray(values)) return undefined;
+	for (const value of values) {
+		if (!isRecord(value) || value.id !== agentId) continue;
+		const modelOverride =
+			typeof value.modelOverride === "string"
+				? value.modelOverride
+				: isStringArray(value.modelOverride)
+					? value.modelOverride
+					: undefined;
+		const retryState = readRetryState(value.retryState);
+		const retryFailure = readRetryFailure(value.retryFailure);
+		return {
+			id: agentId,
+			...(typeof value.resolvedModel === "string" ? { resolvedModel: value.resolvedModel } : {}),
+			...(modelOverride !== undefined ? { modelOverride } : {}),
+			...(typeof value.toolCount === "number" ? { toolCount: value.toolCount } : {}),
+			...(typeof value.inputTokens === "number" ? { inputTokens: value.inputTokens } : {}),
+			...(typeof value.outputTokens === "number" ? { outputTokens: value.outputTokens } : {}),
+			...(retryState ? { retryState } : {}),
+			...(retryFailure ? { retryFailure } : {}),
+		};
+	}
+	return undefined;
+}
+
+function isRateLimitedJob(job: JobSnapshot): boolean {
+	return job.retryState?.rateLimited === true || job.retryFailure?.rateLimited === true;
 }
 
 type CancelStatus = "cancelled" | "not_found" | "already_completed";
@@ -117,7 +222,7 @@ export function isWaitingPollDetails(details: unknown): boolean {
 	const d = details as JobToolDetails | undefined;
 	if (!d || !Array.isArray(d.jobs) || d.jobs.length === 0) return false;
 	if (d.cancelled?.length) return false;
-	return d.jobs.every(job => job?.status === "running");
+	return d.jobs.every(job => job?.status === "running" && !isRateLimitedJob(job));
 }
 
 export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
@@ -309,6 +414,26 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 			return this.#buildResult(manager, allTrackedJobs, cancelOutcomes, showCompactionScheduledNote);
 		}
 
+		const watchedJobIdSet = new Set(watchedJobIds);
+		const { promise: rateLimitWake, resolve: rateLimitWakeResolve } = Promise.withResolvers<void>();
+		let rateLimitWoke = false;
+		const wakeOnRateLimit = (job: Readonly<AsyncJob>): void => {
+			if (!watchedJobIdSet.has(job.id) || job.status !== "running") return;
+			const snapshot = this.#snapshotJobs([job])[0];
+			if (!snapshot || !isRateLimitedJob(snapshot)) return;
+			rateLimitWoke = true;
+			rateLimitWakeResolve();
+		};
+		const unsubscribeProgress = manager.subscribeProgress(wakeOnRateLimit);
+		for (const job of runningJobs) {
+			wakeOnRateLimit(manager.getJob(job.id) ?? job);
+		}
+		if (rateLimitWoke) {
+			unsubscribeProgress();
+			manager.unwatchJobs(watchedJobIds);
+			return this.#buildResult(manager, allTrackedJobs, cancelOutcomes);
+		}
+
 		const PROGRESS_INTERVAL_MS = 500;
 		const emitProgress = () => {
 			if (!onUpdate) return;
@@ -351,6 +476,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 					.map(id => manager.getJob(id)?.promise)
 					.filter(promise => promise !== undefined);
 				racePromises.push(asideWake);
+				racePromises.push(rateLimitWake);
 				if (signal) racePromises.push(abortPromise);
 
 				const timeoutMs = isBlockMode ? watchdogMs : waitMs;
@@ -371,6 +497,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 
 				if (signal?.aborted) break;
 				if (asideWoke || this.session.hasPendingAgentAsides?.()) break;
+				if (rateLimitWoke) break;
 				if (watchedJobIds.some(id => manager.getJob(id)?.status !== "running")) break;
 				if (!isBlockMode) break;
 				considerWaitingCompaction();
@@ -382,6 +509,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 			}
 		} finally {
 			this.session.exitSubagentWait?.();
+			unsubscribeProgress();
 			manager.unwatchJobs(watchedJobIds);
 			if (isScheduled) manager.recordPollWaitEnd(ownerId);
 			clearTimeout(timeoutHandle);
@@ -394,6 +522,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 			isScheduled &&
 			!signal?.aborted &&
 			!asideWoke &&
+			!rateLimitWoke &&
 			!yieldForCompactionBoundary &&
 			!this.session.hasPendingAgentAsides?.() &&
 			watchedJobIds.every(id => manager.getJob(id)?.status === "running");
@@ -473,41 +602,38 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		return lines;
 	}
 
-	#snapshotJobs(
-		jobs: {
-			id: string;
-			type: "bash" | "task" | "workflow";
-			status: string;
-			label: string;
-			startTime: number;
-			resultText?: string;
-			errorText?: string;
-		}[],
-	): JobSnapshot[] {
+	#snapshotJobs(jobs: JobRecord[]): JobSnapshot[] {
 		const now = Date.now();
 		const stallThresholdMs = this.#resolveStallThresholdMs();
 		return jobs.map(j => {
 			const current = this.session.asyncJobManager?.getJob(j.id);
 			const latest = current ?? j;
-			// Running task jobs can expose live subagent telemetry for wait snapshots.
+			// Prefer manager-retained progress so headless and print sessions get
+			// the same state as the interactive observer fallback.
+			const managedProgress =
+				latest.status === "running"
+					? readJobProgress(latest.progressDetails, latest.agentId ?? latest.id)
+					: undefined;
 			const stats = latest.status === "running" ? jobLiveStatsProvider?.(latest.id) : undefined;
-			const progress = stats?.progress;
-			const lastActivityAt = stats?.lastUpdate;
+			const progress = managedProgress ?? stats?.progress;
+			const lastActivityAt = latest.lastActivityAt ?? stats?.lastUpdate;
 			const model = progress ? formatProgressModel(progress) : undefined;
 			const inactiveMs = lastActivityAt === undefined ? undefined : now - lastActivityAt;
 			const stalled = stallThresholdMs > 0 && inactiveMs !== undefined && inactiveMs >= stallThresholdMs;
 			return {
 				id: latest.id,
 				type: latest.type,
-				status: latest.status as JobSnapshot["status"],
+				status: latest.status,
 				label: latest.label,
 				durationMs: Math.max(0, now - latest.startTime),
 				...(model !== undefined ? { model } : {}),
-				...(progress ? { toolCount: progress.toolCount } : {}),
-				...(progress ? { inputTokens: progress.inputTokens } : {}),
-				...(progress ? { outputTokens: progress.outputTokens } : {}),
+				...(progress?.toolCount !== undefined ? { toolCount: progress.toolCount } : {}),
+				...(progress?.inputTokens !== undefined ? { inputTokens: progress.inputTokens } : {}),
+				...(progress?.outputTokens !== undefined ? { outputTokens: progress.outputTokens } : {}),
 				...(lastActivityAt !== undefined ? { lastActivityAt } : {}),
 				...(stalled ? { stalled } : {}),
+				...(progress?.retryState ? { retryState: progress.retryState } : {}),
+				...(progress?.retryFailure ? { retryFailure: progress.retryFailure } : {}),
 				...(latest.resultText ? { resultText: latest.resultText } : {}),
 				...(latest.errorText ? { errorText: latest.errorText } : {}),
 			};
@@ -516,15 +642,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 
 	#buildResult(
 		manager: AsyncJobManager,
-		jobs: {
-			id: string;
-			type: "bash" | "task" | "workflow";
-			status: string;
-			label: string;
-			startTime: number;
-			resultText?: string;
-			errorText?: string;
-		}[],
+		jobs: JobRecord[],
 		cancelOutcomes: CancelOutcome[],
 		compactionScheduled = false,
 		waitInfo?: { windowMs: number; nextWindowMs: number },
@@ -543,6 +661,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 
 		const completed = jobResults.filter(j => j.status !== "running");
 		const running = jobResults.filter(j => j.status === "running");
+		const rateLimited = running.filter(isRateLimitedJob);
 
 		const lines: string[] = [];
 		if (compactionScheduled) {
@@ -585,11 +704,33 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 				if (j.lastActivityAt !== undefined) {
 					details.push(`last activity ${formatDuration(Math.max(0, now - j.lastActivityAt))} ago`);
 				}
+				if (j.retryState?.rateLimited) {
+					const retryInMs = Math.max(0, j.retryState.startedAtMs + j.retryState.delayMs - now);
+					details.push(
+						`RATE LIMITED: retry ${j.retryState.attempt}/${j.retryState.maxAttempts} in ${formatDuration(retryInMs)}`,
+					);
+				} else if (j.retryFailure?.rateLimited) {
+					details.push(`RATE LIMITED: retries exhausted after ${j.retryFailure.attempt} attempts`);
+				}
 				const stalledText =
 					j.stalled && j.lastActivityAt !== undefined
 						? ` — STALLED: no activity for ${formatDuration(Math.max(0, now - j.lastActivityAt))}; consider \`irc\` ping or \`cancel\``
 						: "";
 				lines.push(`- \`${j.id}\` [${j.type}] — ${j.label} · ${details.join(" · ")}${stalledText}`);
+			}
+			const rateLimit = rateLimited[0];
+			if (rateLimit) {
+				const retryInMs = rateLimit.retryState?.rateLimited
+					? Math.max(0, rateLimit.retryState.startedAtMs + rateLimit.retryState.delayMs - now)
+					: rateLimit.retryFailure?.retryAfterMs;
+				lines.push(
+					"",
+					prompt.render(taskRateLimitNoticeTemplate, {
+						agentId: rateLimit.id,
+						retrying: rateLimit.retryState?.rateLimited === true,
+						retryIn: retryInMs !== undefined ? formatDuration(retryInMs) : undefined,
+					}),
+				);
 			}
 			if (waitInfo) {
 				lines.push(
@@ -626,7 +767,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 	}
 }
 
-function formatProgressModel(progress: AgentProgress): string | undefined {
+function formatProgressModel(progress: JobProgressSnapshot): string | undefined {
 	if (progress.resolvedModel) return progress.resolvedModel;
 	const override = progress.modelOverride;
 	if (Array.isArray(override)) return override.join(", ");

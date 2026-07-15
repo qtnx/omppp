@@ -130,6 +130,24 @@ export interface CostTimeSeriesPoint {
 	requests: number;
 }
 
+/** Runtime and outcome telemetry grouped by task agent definition. */
+export interface SubagentPerformanceStats {
+	agent: string;
+	runs: number;
+	completed: number;
+	failed: number;
+	aborted: number;
+	timeouts: number;
+	earlyYieldNotices: number;
+	avgTotalMs: number;
+	p50TotalMs: number;
+	p90TotalMs: number;
+	avgQueueMs: number | null;
+	avgSetupMs: number | null;
+	avgModelMs: number;
+	avgToolMs: number;
+}
+
 /**
  * Overall dashboard stats.
  */
@@ -142,6 +160,7 @@ export interface DashboardStats {
 	modelSeries: ModelTimeSeriesPoint[];
 	modelPerformanceSeries: ModelPerformancePoint[];
 	costSeries: CostTimeSeriesPoint[];
+	subagentPerformance: SubagentPerformanceStats[];
 }
 
 /**

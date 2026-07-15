@@ -21,6 +21,10 @@ import type {
 	SessionEntry,
 	SessionMessageEntry,
 	SessionServiceTierChangeEntry,
+	SubagentAbortReason,
+	SubagentRunPhase,
+	SubagentRunStats,
+	SubagentRunStatus,
 	ToolCallStats,
 	ToolResultLink,
 	UserMessageLink,
@@ -108,6 +112,129 @@ function isCustomEntry(entry: SessionEntry): entry is SessionCustomEntry {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
+}
+
+const SUBAGENT_RUN_PHASES: Record<SubagentRunPhase, true> = { work: true, review: true, fix: true };
+const SUBAGENT_RUN_STATUSES: Record<SubagentRunStatus, true> = { completed: true, failed: true, aborted: true };
+const SUBAGENT_ABORT_REASONS: Record<SubagentAbortReason, true> = {
+	signal: true,
+	terminate: true,
+	timeout: true,
+	budget: true,
+};
+
+function nonEmptyString(value: unknown): string | null {
+	return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function nonnegativeFinite(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function optionalNonnegativeFinite(record: Record<string, unknown>, key: string): number | null | undefined {
+	if (!(key in record)) return undefined;
+	return nonnegativeFinite(record[key]);
+}
+
+function extractSubagentRunStats(sessionFile: string, entry: SessionCustomEntry): SubagentRunStats | null {
+	if (entry.customType !== "subagent_run" || !isRecord(entry.data)) return null;
+	const data = entry.data;
+	if (data.version !== 1) return null;
+
+	const runId = nonEmptyString(data.runId);
+	const agent = nonEmptyString(data.agent);
+	const phase = nonEmptyString(data.phase);
+	const status = nonEmptyString(data.status);
+	const startedAt = nonnegativeFinite(data.startedAt);
+	const completedAt = nonnegativeFinite(data.completedAt);
+	const requests = nonnegativeFinite(data.requests);
+	const toolCalls = nonnegativeFinite(data.toolCalls);
+	const maxRuntimeMs = nonnegativeFinite(data.maxRuntimeMs);
+	if (
+		!runId ||
+		!agent ||
+		!phase ||
+		!SUBAGENT_RUN_PHASES[phase as SubagentRunPhase] ||
+		!status ||
+		!SUBAGENT_RUN_STATUSES[status as SubagentRunStatus] ||
+		startedAt === null ||
+		completedAt === null ||
+		completedAt < startedAt ||
+		requests === null ||
+		!Number.isInteger(requests) ||
+		toolCalls === null ||
+		!Number.isInteger(toolCalls) ||
+		maxRuntimeMs === null ||
+		!Number.isInteger(maxRuntimeMs) ||
+		typeof data.earlyYieldNoticeSent !== "boolean" ||
+		!isRecord(data.timings)
+	) {
+		return null;
+	}
+
+	const timings = data.timings;
+	const queueMs = optionalNonnegativeFinite(timings, "queueMs");
+	const preRunMs = optionalNonnegativeFinite(timings, "preRunMs");
+	const setupMs = optionalNonnegativeFinite(timings, "setupMs");
+	const promptToFirstChatMs = optionalNonnegativeFinite(timings, "promptToFirstChatMs");
+	const activeMs = optionalNonnegativeFinite(timings, "activeMs");
+	const totalMs = nonnegativeFinite(timings.totalMs);
+	const modelMs = nonnegativeFinite(timings.modelMs);
+	const toolMs = nonnegativeFinite(timings.toolMs);
+	if (
+		queueMs === null ||
+		preRunMs === null ||
+		setupMs === null ||
+		promptToFirstChatMs === null ||
+		activeMs === null ||
+		totalMs === null ||
+		modelMs === null ||
+		toolMs === null
+	) {
+		return null;
+	}
+
+	const parentAgentId = data.parentAgentId === undefined ? undefined : nonEmptyString(data.parentAgentId);
+	const parentToolCallId = data.parentToolCallId === undefined ? undefined : nonEmptyString(data.parentToolCallId);
+	const model = data.model === undefined ? undefined : nonEmptyString(data.model);
+	const abortReason = data.abortReason === undefined ? undefined : nonEmptyString(data.abortReason);
+	if (
+		parentAgentId === null ||
+		parentToolCallId === null ||
+		model === null ||
+		abortReason === null ||
+		(abortReason !== undefined && !SUBAGENT_ABORT_REASONS[abortReason as SubagentAbortReason]) ||
+		(abortReason !== undefined && status !== "aborted")
+	) {
+		return null;
+	}
+
+	return {
+		sessionFile,
+		entryId: entry.id,
+		runId,
+		agent,
+		phase: phase as SubagentRunPhase,
+		...(parentAgentId === undefined ? {} : { parentAgentId }),
+		...(parentToolCallId === undefined ? {} : { parentToolCallId }),
+		startedAt,
+		completedAt,
+		status: status as SubagentRunStatus,
+		...(abortReason === undefined ? {} : { abortReason: abortReason as SubagentAbortReason }),
+		...(model === undefined ? {} : { model }),
+		requests,
+		toolCalls,
+		maxRuntimeMs,
+		earlyYieldNoticeSent: data.earlyYieldNoticeSent,
+		...(queueMs === undefined ? {} : { queueMs }),
+		...(preRunMs === undefined ? {} : { preRunMs }),
+		...(setupMs === undefined ? {} : { setupMs }),
+		...(promptToFirstChatMs === undefined ? {} : { promptToFirstChatMs }),
+		...(activeMs === undefined ? {} : { activeMs }),
+		totalMs,
+		modelMs,
+		toolMs,
+	};
 }
 
 function extractReminderBase(
@@ -450,6 +577,7 @@ export interface ParseSessionResult {
 	delegationReminderStats: DelegationReminderStats[];
 	toolCalls: ToolCallStats[];
 	toolResults: ToolResultLink[];
+	subagentRuns: SubagentRunStats[];
 	newOffset: number;
 }
 export async function parseSessionFile(sessionPath: string, fromOffset = 0): Promise<ParseSessionResult> {
@@ -466,6 +594,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 				delegationReminderStats: [],
 				toolCalls: [],
 				toolResults: [],
+				subagentRuns: [],
 				newOffset: fromOffset,
 			};
 		}
@@ -481,6 +610,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	const delegationReminderStats: DelegationReminderStats[] = [];
 	const toolCalls: ToolCallStats[] = [];
 	const toolResults: ToolResultLink[] = [];
+	const subagentRuns: SubagentRunStats[] = [];
 	const userByEntryId = new Map<string, UserMessageStats>();
 	const start = Math.max(0, Math.min(fromOffset, bytes.length));
 	const unprocessed = bytes.subarray(start);
@@ -514,6 +644,8 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 			continue;
 		}
 		if (isCustomEntry(entry)) {
+			const subagentRun = extractSubagentRunStats(sessionPath, entry);
+			if (subagentRun) subagentRuns.push(subagentRun);
 			const delegationReminder = extractDelegationReminderStats(sessionPath, folder, entry, assistantByEntryId);
 			if (delegationReminder) delegationReminderStats.push(delegationReminder);
 			continue;
@@ -557,6 +689,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 		delegationReminderStats,
 		toolCalls,
 		toolResults,
+		subagentRuns,
 		newOffset: start + read,
 	};
 }

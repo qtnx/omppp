@@ -43,6 +43,10 @@ export interface AsyncJob {
 	promise: Promise<void>;
 	resultText?: string;
 	errorText?: string;
+	/** Latest progress payload, retained for model-facing job snapshots. */
+	progressText?: string;
+	progressDetails?: Record<string, unknown>;
+	lastActivityAt?: number;
 	/**
 	 * Registry id of the agent that registered the job (e.g. "Main",
 	 * "AuthLoader"). Used by scoped cancel/list APIs so a subagent's teardown
@@ -77,6 +81,8 @@ export interface AsyncJobProgressPayload extends AsyncJobLifecyclePayload {
 	text: string;
 	details?: Record<string, unknown>;
 }
+
+export type AsyncJobProgressListener = (job: Readonly<AsyncJob>) => void;
 
 export interface AsyncJobManagerOptions {
 	onJobComplete: (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
@@ -147,6 +153,7 @@ export class AsyncJobManager {
 	readonly #watchedJobs = new Set<string>();
 	readonly #evictionTimers = new Map<string, NodeJS.Timeout>();
 	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
+	readonly #progressListeners = new Set<AsyncJobProgressListener>();
 	#pollLadderMs: readonly number[] = POLL_WAIT_LADDER_MS;
 	#pollResetMs = POLL_ESCALATION_RESET_MS;
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
@@ -181,6 +188,27 @@ export class AsyncJobManager {
 	configurePollSchedule(schedule: { ladderMs: readonly number[]; resetMs: number }): void {
 		this.#pollLadderMs = schedule.ladderMs.length > 0 ? schedule.ladderMs : POLL_WAIT_LADDER_MS;
 		this.#pollResetMs = schedule.resetMs;
+	}
+
+	/** Subscribe to live job progress. Returns an idempotent unsubscribe function. */
+	subscribeProgress(listener: AsyncJobProgressListener): () => void {
+		this.#progressListeners.add(listener);
+		return () => {
+			this.#progressListeners.delete(listener);
+		};
+	}
+
+	#notifyProgress(job: AsyncJob): void {
+		for (const listener of this.#progressListeners) {
+			try {
+				listener(job);
+			} catch (error) {
+				logger.warn("Async job progress listener failed", {
+					jobId: job.id,
+					error: toErrorMessage(error),
+				});
+			}
+		}
 	}
 
 	#lifecyclePayload(job: AsyncJob): AsyncJobLifecyclePayload {
@@ -268,7 +296,11 @@ export class AsyncJobManager {
 		this.#emitLifecycle(job);
 
 		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
+			job.progressText = text;
+			job.progressDetails = details;
+			job.lastActivityAt = Date.now();
 			this.#emitProgress(job, text, details);
+			this.#notifyProgress(job);
 			if (!options?.onProgress) return;
 			try {
 				await options.onProgress(text, details);
@@ -562,6 +594,7 @@ export class AsyncJobManager {
 		this.#suppressedDeliveries.clear();
 		this.#watchedJobs.clear();
 		this.#pollEscalation.clear();
+		this.#progressListeners.clear();
 		return jobsSettled && drained;
 	}
 

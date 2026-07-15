@@ -23,8 +23,14 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition, SingleResult, TaskParams } from "@oh-my-pi/pi-coding-agent/task/types";
+import {
+	type AgentDefinition,
+	getTaskSchema,
+	type SingleResult,
+	type TaskParams,
+} from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { type } from "arktype";
 
 const taskAgent: AgentDefinition = {
 	name: "task",
@@ -133,6 +139,26 @@ describe("task.batch schema gating", () => {
 			expect(getSchemaProperties(tool).schema).toBeUndefined();
 		}
 	});
+	it("accepts only nonnegative integer max_runtime_seconds values on every batch item", () => {
+		const schema = getTaskSchema({ isolationEnabled: false, batchEnabled: true });
+
+		for (const value of [undefined, 0, 1, 2700]) {
+			const item = value === undefined ? { task: "Work." } : { task: "Work.", max_runtime_seconds: value };
+			const parsed = schema({ context: "Shared.", tasks: [item] });
+			expect(parsed instanceof type.errors).toBe(false);
+			if (!(parsed instanceof type.errors) && value !== undefined) {
+				expect("tasks" in parsed).toBe(true);
+				if ("tasks" in parsed) {
+					expect(parsed.tasks[0]?.max_runtime_seconds).toBe(value);
+				}
+			}
+		}
+
+		for (const value of [-1, 1.25, Number.POSITIVE_INFINITY]) {
+			const parsed = schema({ context: "Shared.", tasks: [{ task: "Work.", max_runtime_seconds: value }] });
+			expect(parsed instanceof type.errors).toBe(true);
+		}
+	});
 });
 
 describe("task.batch validation", () => {
@@ -234,29 +260,40 @@ describe("task.batch spawning", () => {
 		AgentRegistry.resetGlobalForTests();
 	});
 
-	it("spawns one background job per task item and forwards the shared context", async () => {
+	it("spawns one background job per task item and forwards context plus item runtime caps", async () => {
 		mockDiscovery();
-		const seen: Array<{ id?: string; context?: string; assignment?: string; parentAgentId?: string }> = [];
+		const seen: Array<{
+			id?: string;
+			context?: string;
+			assignment?: string;
+			parentAgentId?: string;
+			maxRuntimeMs?: number;
+		}> = [];
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 			seen.push({
 				id: options.id,
 				context: options.context,
 				assignment: options.assignment,
 				parentAgentId: options.parentAgentId,
+				maxRuntimeMs: options.maxRuntimeMs,
 			});
 			return makeResult(options.id ?? "?");
 		});
 
 		const manager = createManager();
 		const tool = await TaskTool.create(
-			createSession({ manager, agentId: "ParentA", settings: { "async.enabled": true, "task.batch": true } }),
+			createSession({
+				manager,
+				agentId: "ParentA",
+				settings: { "async.enabled": true, "task.batch": true, "task.maxRuntimeMs": 90_000 },
+			}),
 		);
 
 		const result = await tool.execute("tc-batch", {
 			context: "# Goal\nShared background.",
 			tasks: [
-				{ name: "Alpha", task: "Do A." },
-				{ name: "Beta", task: "Do B." },
+				{ name: "Alpha", task: "Do A.", max_runtime_seconds: 6 },
+				{ name: "Beta", task: "Do B.", max_runtime_seconds: 0 },
 			],
 		} as TaskParams);
 
@@ -284,6 +321,14 @@ describe("task.batch spawning", () => {
 			expect(spawn.context).toBe("# Goal\nShared background.");
 		}
 		expect(seen.map(spawn => spawn.assignment).sort()).toEqual(["Do A.", "Do B."]);
+		expect(
+			seen
+				.map(spawn => [spawn.id, spawn.maxRuntimeMs] as const)
+				.sort(([left], [right]) => (left ?? "").localeCompare(right ?? "")),
+		).toEqual([
+			["Alpha", 6_000],
+			["Beta", 0],
+		]);
 		// Every spawn is parented to the spawning agent (not to itself): the
 		// registry "of <parent>" link must be the caller, never the child's id.
 		for (const spawn of seen) expect(spawn.parentAgentId).toBe("ParentA");
@@ -337,23 +382,32 @@ describe("task.batch spawning", () => {
 		expect(job.status).toBe("completed");
 	});
 
-	it("blocks batch execution when async.enabled is false even with a job manager", async () => {
+	it("blocks batch execution when async.enabled is false and applies item caps before a legacy top-level cap", async () => {
 		mockDiscovery();
-		const seen: Array<{ id?: string; context?: string; assignment?: string }> = [];
+		const seen: Array<{ id?: string; context?: string; assignment?: string; maxRuntimeMs?: number }> = [];
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
-			seen.push({ id: options.id, context: options.context, assignment: options.assignment });
+			seen.push({
+				id: options.id,
+				context: options.context,
+				assignment: options.assignment,
+				maxRuntimeMs: options.maxRuntimeMs,
+			});
 			return makeResult(options.id ?? "?");
 		});
 
 		const manager = createManager();
 		const tool = await TaskTool.create(
-			createSession({ manager, settings: { "async.enabled": false, "task.batch": true } }),
+			createSession({
+				manager,
+				settings: { "async.enabled": false, "task.batch": true, "task.maxRuntimeMs": 90_000 },
+			}),
 		);
 
 		const result = await tool.execute("tc-sync-batch", {
 			context: "# Goal\nShared synchronous context.",
+			max_runtime_seconds: 9,
 			tasks: [
-				{ name: "Alpha", task: "Do A." },
+				{ name: "Alpha", task: "Do A.", max_runtime_seconds: 3 },
 				{ name: "Beta", task: "Do B." },
 			],
 		} as TaskParams);
@@ -366,6 +420,14 @@ describe("task.batch spawning", () => {
 		expect(seen.map(spawn => spawn.context)).toEqual([
 			"# Goal\nShared synchronous context.",
 			"# Goal\nShared synchronous context.",
+		]);
+		expect(
+			seen
+				.map(spawn => [spawn.id, spawn.maxRuntimeMs] as const)
+				.sort(([left], [right]) => (left ?? "").localeCompare(right ?? "")),
+		).toEqual([
+			["Alpha", 3_000],
+			["Beta", 9_000],
 		]);
 	});
 

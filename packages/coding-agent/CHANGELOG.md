@@ -2,7 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added subagent run telemetry with unique run IDs, phase timings, outcomes, and stats aggregation for diagnosing slow delegated work.
+
+### Changed
+
+- Changed frontend/design delegation so small normal-mode UI edits stay with the main agent, larger work uses one fitting specialist and one final UX review, and frontend specialists prefer Claude Opus 4.8 before `tnx/designer`.
+
+### Fixed
+
+- Fixed subagent provider-rate-limit failures that bypass the auto-retry lifecycle from being treated as ordinary failures; terminal quota errors now pause further task delegation and surface the provider's retry delay.
+
 ## [1.6.2] - 2026-07-14
+
+## [1.6.1] - 2026-07-13
 
 ### Fixed
 

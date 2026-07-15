@@ -16,6 +16,7 @@ import {
 	getStatsByAgentType,
 	getStatsByFolder,
 	getStatsByModel,
+	getSubagentPerformance,
 	getTimeSeries,
 	getToolStats,
 	getToolStatsByModel,
@@ -24,8 +25,10 @@ import {
 	insertDelegationReminderStats,
 	insertMessageStats,
 	insertReminderStats,
+	insertSubagentRuns,
 	insertToolCalls,
 	insertUserMessageStats,
+	markSubagentRunsBackfillComplete,
 	setFileOffset,
 	updateToolResults,
 	updateUserMessageLinks,
@@ -50,12 +53,14 @@ function applyParseResult(sessionFile: string, lastModified: number, result: Par
 	if (result.userLinks.length > 0) updateUserMessageLinks(result.userLinks);
 	if (result.toolCalls.length > 0) insertToolCalls(result.toolCalls);
 	if (result.toolResults.length > 0) updateToolResults(result.toolResults);
+	if (result.subagentRuns.length > 0) insertSubagentRuns(result.subagentRuns);
 	setFileOffset(sessionFile, result.newOffset, lastModified);
 	return (
 		result.stats.length +
 		result.userStats.length +
 		result.reminderStats.length +
-		result.delegationReminderStats.length
+		result.delegationReminderStats.length +
+		result.subagentRuns.length
 	);
 }
 
@@ -218,7 +223,10 @@ export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: 
 	await initDb();
 
 	const files = await listAllSessionFiles();
-	if (files.length === 0) return { processed: 0, files: 0 };
+	if (files.length === 0) {
+		markSubagentRunsBackfillComplete();
+		return { processed: 0, files: 0 };
+	}
 
 	let totalProcessed = 0;
 	let filesProcessed = 0;
@@ -268,6 +276,7 @@ export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: 
 		for (const sessionFile of files) {
 			await processFile(sessionFile, parseSessionFile);
 		}
+		markSubagentRunsBackfillComplete();
 		return { processed: totalProcessed, files: filesProcessed };
 	}
 
@@ -291,6 +300,7 @@ export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: 
 		for (const handle of handles) handle.worker.terminate();
 	}
 
+	markSubagentRunsBackfillComplete();
 	return { processed: totalProcessed, files: filesProcessed };
 }
 
@@ -410,6 +420,7 @@ export async function getDashboardStats(range?: string | null): Promise<Dashboar
 		modelSeries: getModelTimeSeries(modelSeriesDays, cutoff, modelSeriesBucketMs),
 		modelPerformanceSeries: getModelPerformanceSeries(modelPerformanceDays, cutoff, modelPerformanceBucketMs),
 		costSeries: getCostTimeSeries(costSeriesDays, cutoff),
+		subagentPerformance: getSubagentPerformance(cutoff ?? undefined),
 	};
 }
 

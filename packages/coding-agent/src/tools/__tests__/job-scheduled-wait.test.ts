@@ -108,7 +108,7 @@ function expectSingleJob(
 	return job;
 }
 
-function createProgress(): AgentProgress {
+function createProgress(overrides: Partial<AgentProgress> = {}): AgentProgress {
 	return {
 		index: 0,
 		id: "scheduled-stalled-job",
@@ -126,6 +126,7 @@ function createProgress(): AgentProgress {
 		cost: 0,
 		durationMs: 1_000,
 		resolvedModel: "test/model",
+		...overrides,
 	};
 }
 
@@ -193,6 +194,104 @@ describe("JobTool scheduled poll windows", () => {
 		expect(textOf(result)).toContain("## Completed (1)");
 		expect(textOf(result)).toContain("completed inside window");
 		expect(textOf(result)).not.toContain("Wait window elapsed");
+	});
+
+	test("returns immediately when a running task reports a provider rate limit", async () => {
+		vi.useFakeTimers();
+		const manager = new AsyncJobManager({ onJobComplete: () => undefined });
+		manager.configurePollSchedule({ ladderMs: [30_000, 60_000], resetMs: 5_000 });
+		const finish = Promise.withResolvers<string>();
+		const progressReporter =
+			Promise.withResolvers<(text: string, details?: Record<string, unknown>) => Promise<void>>();
+		manager.register(
+			"task",
+			"rate-limited task",
+			async ({ reportProgress }) => {
+				progressReporter.resolve(reportProgress);
+				return finish.promise;
+			},
+			{ id: "job-rate-limited", agentId: "job-rate-limited" },
+		);
+		const tool = new JobTool(createToolSession(manager, createSettings()));
+		const resultPromise = tool.execute("call-rate-limited", { poll: ["job-rate-limited"] });
+		const outcome = trackOutcome(resultPromise);
+		await flushMicrotasks();
+
+		try {
+			const reportProgress = await progressReporter.promise;
+			await reportProgress("provider backoff", {
+				progress: [
+					createProgress({
+						id: "job-rate-limited",
+						retryState: {
+							attempt: 1,
+							maxAttempts: 3,
+							delayMs: 60_000,
+							errorMessage: "429 Too Many Requests retry-after-ms=60000",
+							startedAtMs: Date.now(),
+							rateLimited: true,
+						},
+					}),
+				],
+			});
+			await flushMicrotasks();
+
+			const result = expectFulfilled(outcome(), "rate-limit progress did not wake the scheduled job poll");
+			expectSingleJob(result, "job-rate-limited", "running");
+			expect(textOf(result)).toContain("<system-notification>");
+			expect(textOf(result)).toContain("NEVER wait on or spawn more subagents");
+			expect(textOf(result)).not.toContain("Wait window elapsed");
+		} finally {
+			finish.resolve("done");
+			await manager.getJob("job-rate-limited")!.promise;
+		}
+	});
+
+	test("returns immediately when rate-limit progress predates the poll", async () => {
+		vi.useFakeTimers();
+		const manager = new AsyncJobManager({ onJobComplete: () => undefined });
+		manager.configurePollSchedule({ ladderMs: [30_000, 60_000], resetMs: 5_000 });
+		const finish = Promise.withResolvers<string>();
+		const progressReporter =
+			Promise.withResolvers<(text: string, details?: Record<string, unknown>) => Promise<void>>();
+		manager.register(
+			"task",
+			"already rate-limited task",
+			async ({ reportProgress }) => {
+				progressReporter.resolve(reportProgress);
+				return finish.promise;
+			},
+			{ id: "job-rate-limited-before-poll", agentId: "job-rate-limited-before-poll" },
+		);
+		const reportProgress = await progressReporter.promise;
+		await reportProgress("provider backoff", {
+			progress: [
+				createProgress({
+					id: "job-rate-limited-before-poll",
+					retryState: {
+						attempt: 1,
+						maxAttempts: 3,
+						delayMs: 60_000,
+						errorMessage: "429 Too Many Requests retry-after-ms=60000",
+						startedAtMs: Date.now(),
+						rateLimited: true,
+					},
+				}),
+			],
+		});
+		const tool = new JobTool(createToolSession(manager, createSettings()));
+
+		try {
+			const result = await tool.execute("call-rate-limited-before-poll", {
+				poll: ["job-rate-limited-before-poll"],
+			});
+			expectSingleJob(result, "job-rate-limited-before-poll", "running");
+			expect(textOf(result)).toContain("Task delegation is paused");
+			expect(textOf(result)).not.toContain("Wait window elapsed");
+		} finally {
+			finish.resolve("done");
+			await manager.getJob("job-rate-limited-before-poll")!.promise;
+		}
 	});
 
 	test("marks stale live stats as stalled in scheduled wait snapshots", async () => {

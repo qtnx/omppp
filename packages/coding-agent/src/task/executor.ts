@@ -8,6 +8,7 @@ import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import { recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
+import { extractRotationRetryAfterMs, parseRateLimitReason } from "@oh-my-pi/pi-ai";
 import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../capability/rule";
 import { ModelRegistry } from "../config/model-registry";
@@ -31,6 +32,7 @@ import type { LocalProtocolOptions } from "../internal-urls";
 import { callTool } from "../mcp/client";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
+import earlyYieldNoticeTemplate from "../prompts/system/subagent-early-yield-notice.md" with { type: "text" };
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
@@ -69,6 +71,11 @@ import {
 	type ReviewFinding,
 	resolveSubagentDisplayName,
 	type SingleResult,
+	SUBAGENT_RUN_CUSTOM_TYPE,
+	type SubagentAbortReason,
+	type SubagentRunPhase,
+	type SubagentRunTelemetry,
+	type SubagentRunTimings,
 	TASK_SUBAGENT_EVENT_CHANNEL,
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
@@ -78,6 +85,11 @@ import {
 import { arrayValuedLabels, assembleYieldResult } from "./yield-assembly";
 
 export type { YieldItem } from "./types";
+
+function isProviderRateLimit(message: string): boolean {
+	const reason = parseRateLimitReason(message);
+	return reason === "QUOTA_EXHAUSTED" || reason === "RATE_LIMIT_EXCEEDED";
+}
 
 const MCP_CALL_TIMEOUT_MS = 60_000;
 const MINIMAL_EXTENSION_RUNTIME_TOOL_NAMES = new Set([
@@ -313,6 +325,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !Array.isArray(value);
 }
 
+function getAppendCustomEntry(
+	session: AgentSession | undefined,
+): ((customType: string, data: unknown) => string) | undefined {
+	const sessionManager = session?.sessionManager as
+		| { appendCustomEntry?: (customType: string, data?: unknown) => string }
+		| undefined;
+	if (!sessionManager?.appendCustomEntry) return undefined;
+	return sessionManager.appendCustomEntry.bind(sessionManager);
+}
+
 function getReportFindingKey(value: unknown): string | null {
 	if (!isRecord(value)) return null;
 	const title = typeof value.title === "string" ? value.title : null;
@@ -348,6 +370,8 @@ export interface ExecutorOptions {
 	index: number;
 	id: string;
 	parentToolCallId?: string;
+	/** Runtime telemetry phase. Defaults to work. */
+	runPhase?: SubagentRunPhase;
 	/**
 	 * Spawn runs as a detached background job (parent turn not blocked on it).
 	 * Rides the subagent lifecycle/progress payloads so HUD-style surfaces can
@@ -861,7 +885,7 @@ export function createSubagentSettings(
 	});
 }
 
-export type AbortReason = "signal" | "terminate" | "timeout" | "budget";
+export type AbortReason = SubagentAbortReason;
 
 /** Inputs for the run monitor driving one subagent assignment. */
 interface RunMonitorArgs {
@@ -903,6 +927,10 @@ interface SubagentRunMonitor {
 	hasUsage(): boolean;
 	yieldCalled(): boolean;
 	runtimeLimitExceeded(): boolean;
+	earlyYieldNoticeSent(): boolean;
+	timingSnapshot(): { modelMs: number; toolMs: number; toolCalls: number };
+	/** Record an exhausted retry or direct terminal provider failure for parent propagation. */
+	recordRetryFailure(errorMessage: string, attempt?: number): void;
 	/** True once the soft-budget stop fired: the free-running turn was aborted and the run is being driven to a forced final yield. */
 	budgetStopRequested(): boolean;
 	/** Resolves when the budget-stop session abort has settled (immediately when no stop fired). */
@@ -918,6 +946,7 @@ interface SubagentRunMonitor {
 	waitForActiveSessionAbort(): Promise<void>;
 	resolveSignalAbortReason(): string;
 	resolveAbortReasonText(): string;
+	markEarlyYieldNoticeBoundary(): void;
 	setActiveSession(session: AgentSession | null): void;
 	/** Return and clear the active session reference. */
 	takeActiveSession(): AgentSession | null;
@@ -986,6 +1015,13 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	let activeSession: AgentSession | null = null;
 	let yieldCalled = false;
 	let yieldCallPending = false;
+	const toolCallStartedAt = new Map<string, number>();
+	let completedToolCalls = 0;
+	let modelMs = 0;
+	let toolMs = 0;
+	let earlyYieldNoticeDue = false;
+	let earlyYieldNoticeSent = false;
+	let earlyYieldNoticeSendPending = false;
 
 	// Accumulate usage incrementally from message_end events (no memory for streaming events)
 	const accumulatedUsage: Usage = {
@@ -1069,6 +1105,18 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		);
 	}
 
+	let earlyYieldNoticeTimeoutId: NodeJS.Timeout | undefined;
+	if (maxRuntimeMs > 0) {
+		earlyYieldNoticeTimeoutId = setTimeout(
+			() => {
+				if (!resolved) {
+					earlyYieldNoticeDue = true;
+				}
+			},
+			Math.ceil(maxRuntimeMs * 0.8),
+		);
+	}
+
 	// Wall-clock hard limit. Defense-in-depth for the case where a provider stream
 	// hang escapes the inference-layer watchdog (see openai-completions
 	// `isOpenAICompletionsProgressChunk`). Disabled by default; set
@@ -1109,6 +1157,29 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			return `Soft request budget exceeded (${progress.requests} requests; budget ${softRequestBudget})`;
 		}
 		return resolveSignalAbortReason();
+	};
+
+	const markEarlyYieldNoticeBoundary = (): void => {
+		if (!earlyYieldNoticeDue || earlyYieldNoticeSent || earlyYieldNoticeSendPending) return;
+		if (resolved || abortSent || yieldCalled || yieldCallPending) return;
+		const session = activeSession;
+		if (!session || session.hasPendingAgentWork()) return;
+		earlyYieldNoticeSendPending = true;
+		void Promise.resolve()
+			.then(() => {
+				if (resolved || abortSent || yieldCalled || yieldCallPending) return;
+				if (activeSession !== session || session.hasPendingAgentWork()) return;
+				earlyYieldNoticeSent = true;
+				return session.sendUserMessage(earlyYieldNoticeTemplate, { deliverAs: "steer" });
+			})
+			.catch(err => {
+				logger.warn("Subagent early-yield notice failed", {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			})
+			.finally(() => {
+				earlyYieldNoticeSendPending = false;
+			});
 	};
 	const PROGRESS_COALESCE_MS = 150;
 	let lastProgressEmitMs = 0;
@@ -1285,6 +1356,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		if (resolved) return;
 		const now = Date.now();
 		let flushProgress = false;
+		let earlyYieldNoticeBoundary = false;
 
 		switch (event.type) {
 			case "message_start":
@@ -1304,6 +1376,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				}
 				progress.currentToolArgs = extractToolArgsPreview(startArgs);
 				progress.currentToolStartMs = now;
+				toolCallStartedAt.set(event.toolCallId, now);
 				const intent = event.intent?.trim();
 				if (intent) {
 					progress.lastIntent = intent;
@@ -1331,6 +1404,13 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						progress.recentTools.pop();
 					}
 				}
+				completedToolCalls++;
+				const startedAt = toolCallStartedAt.get(event.toolCallId);
+				if (startedAt !== undefined) {
+					toolMs += Math.max(0, now - startedAt);
+					toolCallStartedAt.delete(event.toolCallId);
+				}
+
 				progress.currentTool = undefined;
 				progress.currentToolArgs = undefined;
 				progress.currentToolStartMs = undefined;
@@ -1378,6 +1458,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					}
 				}
 				flushProgress = true;
+				earlyYieldNoticeBoundary = true;
 				break;
 			}
 
@@ -1425,6 +1506,12 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				const role = event.message?.role;
 				if (role === "assistant") {
 					progress.requests += 1;
+					const messageDurationMs = isRecord(event.message)
+						? getNumberField(event.message, "duration")
+						: undefined;
+					if (messageDurationMs !== undefined && messageDurationMs > 0) {
+						modelMs += messageDurationMs;
+					}
 					const eventContent = isRecord(event) && "content" in event ? event.content : undefined;
 					const messageContent = getMessageContent(event.message) || eventContent;
 					if (messageContent && Array.isArray(messageContent)) {
@@ -1506,6 +1593,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						}
 					}
 				}
+				earlyYieldNoticeBoundary = true;
 				break;
 			}
 
@@ -1525,10 +1613,26 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					}
 				}
 				flushProgress = true;
+				earlyYieldNoticeBoundary = true;
 				break;
 		}
 
+		if (earlyYieldNoticeBoundary) {
+			markEarlyYieldNoticeBoundary();
+		}
+
 		scheduleProgress(flushProgress);
+	};
+
+	const recordRetryFailure = (errorMessage: string, attempt = 1): void => {
+		const rateLimited = isProviderRateLimit(errorMessage);
+		const retryAfterMs = rateLimited ? extractRotationRetryAfterMs(undefined, errorMessage) : undefined;
+		progress.retryFailure = {
+			attempt,
+			errorMessage,
+			rateLimited,
+			...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+		};
 	};
 
 	const attach = (session: AgentSession): (() => void) =>
@@ -1541,6 +1645,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					delayMs: event.delayMs,
 					errorMessage: event.errorMessage,
 					startedAtMs: Date.now(),
+					rateLimited: isProviderRateLimit(event.errorMessage),
 				};
 				progress.retryFailure = undefined;
 				scheduleProgress(true);
@@ -1550,10 +1655,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				const attempt = progress.retryState?.attempt ?? event.attempt;
 				progress.retryState = undefined;
 				if (!event.success) {
-					progress.retryFailure = {
-						attempt,
-						errorMessage: event.finalError ?? "Auto-retry failed",
-					};
+					recordRetryFailure(event.finalError ?? "Auto-retry failed", attempt);
 				}
 				scheduleProgress(true);
 				return;
@@ -1612,6 +1714,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		hasUsage: () => hasUsage,
 		yieldCalled: () => yieldCalled,
 		runtimeLimitExceeded: () => runtimeLimitExceeded,
+		earlyYieldNoticeSent: () => earlyYieldNoticeSent,
+		timingSnapshot: () => ({ modelMs, toolMs, toolCalls: completedToolCalls }),
+		recordRetryFailure,
 		hasExplicitAbortReason: () =>
 			abortReason === "signal" || runtimeLimitExceeded || budgetLimitExceeded || budgetStopRequested,
 		budgetStopRequested: () => budgetStopRequested,
@@ -1626,6 +1731,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		waitForActiveSessionAbort,
 		resolveSignalAbortReason,
 		resolveAbortReasonText,
+		markEarlyYieldNoticeBoundary,
 		setActiveSession: session => {
 			activeSession = session;
 		},
@@ -1645,6 +1751,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			if (runtimeTimeoutId !== undefined) {
 				clearTimeout(runtimeTimeoutId);
 				runtimeTimeoutId = undefined;
+			}
+			if (earlyYieldNoticeTimeoutId !== undefined) {
+				clearTimeout(earlyYieldNoticeTimeoutId);
+				earlyYieldNoticeTimeoutId = undefined;
 			}
 			if (progressTimeoutId) {
 				clearTimeout(progressTimeoutId);
@@ -1796,7 +1906,14 @@ async function driveSessionToYield(
 				}
 			} else if (lastAssistant.stopReason === "error") {
 				exitCode = 1;
-				error ??= lastAssistant.errorMessage || "Subagent failed";
+				const errorMessage = lastAssistant.errorMessage || "Subagent failed";
+				error ??= errorMessage;
+				// Terminal quota failures can bypass the auto-retry lifecycle entirely
+				// (for example when the provider advertises a wait beyond maxDelayMs).
+				// Preserve them so the parent task tool can open its delegation circuit.
+				if (monitor.progress.retryFailure === undefined && isProviderRateLimit(errorMessage)) {
+					monitor.recordRetryFailure(errorMessage);
+				}
 			}
 		}
 
@@ -1829,6 +1946,13 @@ async function driveSessionToYield(
 	return { exitCode, error, aborted, abortReasonText };
 }
 
+interface LaunchTimingSnapshot {
+	queueMs?: number;
+	preRunMs?: number;
+	setupMs?: number;
+	promptToFirstChatMs?: number;
+}
+
 interface FinalizeRunArgs {
 	monitor: SubagentRunMonitor;
 	done: { exitCode: number; error?: string; aborted?: boolean; abortReason?: string; durationMs: number };
@@ -1846,6 +1970,11 @@ interface FinalizeRunArgs {
 	detached?: boolean;
 	sessionFile?: string;
 	startTime: number;
+	runPhase: SubagentRunPhase;
+	parentAgentId?: string;
+	maxRuntimeMs: number;
+	launchTimings: LaunchTimingSnapshot;
+	appendCustomEntry?: (customType: string, data: unknown) => string;
 }
 
 /**
@@ -1942,7 +2071,44 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 				: (done.abortReason ??
 					(signal?.aborted ? monitor.resolveSignalAbortReason() : monitor.resolveAbortReasonText()))
 		: undefined;
-	progress.status = wasAborted ? "aborted" : exitCode === 0 ? "completed" : "failed";
+	const completedAt = Date.now();
+	const durationMs = completedAt - args.startTime;
+	const terminalStatus = wasAborted ? "aborted" : exitCode === 0 ? "completed" : "failed";
+	progress.status = terminalStatus;
+	const runTiming = monitor.timingSnapshot();
+	const setupMs = args.launchTimings.setupMs;
+	const telemetryTimings: SubagentRunTimings = {
+		...(args.launchTimings.queueMs !== undefined ? { queueMs: args.launchTimings.queueMs } : {}),
+		...(args.launchTimings.preRunMs !== undefined ? { preRunMs: args.launchTimings.preRunMs } : {}),
+		...(setupMs !== undefined ? { setupMs } : {}),
+		...(args.launchTimings.promptToFirstChatMs !== undefined
+			? { promptToFirstChatMs: args.launchTimings.promptToFirstChatMs }
+			: {}),
+		...(setupMs !== undefined ? { activeMs: Math.max(0, durationMs - setupMs) } : {}),
+		totalMs: durationMs,
+		modelMs: Math.round(runTiming.modelMs),
+		toolMs: Math.round(runTiming.toolMs),
+	};
+	const monitorAbortReason = monitor.abortKind();
+	const telemetry: SubagentRunTelemetry = {
+		version: 1,
+		runId: Bun.randomUUIDv7(),
+		agent: agent.name,
+		phase: args.runPhase,
+		...(args.parentAgentId ? { parentAgentId: args.parentAgentId } : {}),
+		...(args.parentToolCallId ? { parentToolCallId: args.parentToolCallId } : {}),
+		startedAt: args.startTime,
+		completedAt,
+		status: terminalStatus,
+		...(wasAborted && monitorAbortReason ? { abortReason: monitorAbortReason } : {}),
+		...(progress.resolvedModel ? { model: progress.resolvedModel } : {}),
+		requests: progress.requests,
+		toolCalls: runTiming.toolCalls,
+		maxRuntimeMs: args.maxRuntimeMs,
+		earlyYieldNoticeSent: monitor.earlyYieldNoticeSent(),
+		timings: telemetryTimings,
+	};
+	args.appendCustomEntry?.(SUBAGENT_RUN_CUSTOM_TYPE, telemetry);
 	monitor.scheduleProgress(true);
 
 	// Emit lifecycle end event after finalization so yield status is reflected
@@ -1954,9 +2120,10 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 			detached: args.detached,
 			agentSource: agent.source,
 			description: progress.description,
-			status: progress.status as "completed" | "failed" | "aborted",
+			status: terminalStatus,
 			sessionFile: args.sessionFile,
 			index,
+			telemetry,
 		});
 	}
 
@@ -1973,7 +2140,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		output: truncatedOutput,
 		stderr,
 		truncated: Boolean(truncated),
-		durationMs: Date.now() - args.startTime,
+		durationMs,
 		tokens: progress.tokens,
 		requests: progress.requests,
 		contextTokens: progress.contextTokens,
@@ -1988,6 +2155,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		extractedToolData: progress.extractedToolData,
 		retryFailure: progress.retryFailure,
 		outputMeta,
+		telemetry,
 	};
 }
 
@@ -2130,6 +2298,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	monitor.setActiveSession(session);
 	const unsubscribe = monitor.attach(session);
 	let outcome: DriveOutcome;
+	let activeSessionForFinalize: AgentSession | undefined;
 	try {
 		outcome = await driveSessionToYield(session, monitor, message);
 	} finally {
@@ -2139,8 +2308,8 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 			// Ignore abort cleanup timeouts; the session stays adopted either way.
 		}
 		unsubscribe();
-		const active = monitor.takeActiveSession();
-		if (active) monitor.captureSalvage(active);
+		activeSessionForFinalize = monitor.takeActiveSession() ?? undefined;
+		if (activeSessionForFinalize) monitor.captureSalvage(activeSessionForFinalize);
 		monitor.finish();
 	}
 
@@ -2158,6 +2327,10 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		detached: true,
 		sessionFile,
 		startTime,
+		runPhase: "work",
+		maxRuntimeMs: options.maxRuntimeMs ?? 0,
+		launchTimings: {},
+		appendCustomEntry: getAppendCustomEntry(activeSessionForFinalize),
 	});
 }
 
@@ -2184,6 +2357,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	// Set by the session's onFirstChatDispatch hook the first time the agent
 	// loop dispatches a chat request to the provider — the launch-complete boundary.
 	let firstChatDispatchAt: number | undefined;
+	const runPhase = options.runPhase ?? "work";
+	let activeSessionForFinalize: AgentSession | undefined;
+	let launchTimings: LaunchTimingSnapshot = {};
 
 	// Check if already aborted
 	if (signal?.aborted) {
@@ -2761,19 +2937,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				}
 				unsubscribe = null;
 			}
-			const session = monitor.takeActiveSession();
-			if (session) {
-				monitor.captureSalvage(session);
-				await finalizeSubagentLifecycle({
-					id,
-					session,
-					aborted,
-					abortKind: monitor.abortKind(),
-					keepAlive: options.keepAlive !== false,
-					isolated: worktree !== undefined,
-					agentIdleTtlMs,
-					reviveSession,
-				});
+			activeSessionForFinalize = monitor.takeActiveSession() ?? undefined;
+			if (activeSessionForFinalize) {
+				monitor.captureSalvage(activeSessionForFinalize);
 			}
 		}
 
@@ -2794,6 +2960,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			options.invokedAt !== undefined && setupToFirstChatMs !== undefined
 				? Math.round(startTime - options.invokedAt) + setupToFirstChatMs
 				: undefined;
+		launchTimings = {
+			...(queueMs !== undefined ? { queueMs } : {}),
+			...(preRunMs !== undefined ? { preRunMs } : {}),
+			...(readyAt !== undefined ? { setupMs: span(perfStart, readyAt) ?? 0 } : {}),
+			...(span(readyAt, firstChatDispatchAt) !== undefined
+				? { promptToFirstChatMs: span(readyAt, firstChatDispatchAt) ?? 0 }
+				: {}),
+		};
 		logger.debug("subagent launch timing", {
 			id,
 			agent: agent.name,
@@ -2819,7 +2993,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const done = await runSubagent();
 	monitor.finish();
 
-	return finalizeRunResult({
+	const result = await finalizeRunResult({
 		monitor,
 		done,
 		index,
@@ -2836,5 +3010,25 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		detached: options.detached,
 		sessionFile: subtaskSessionFile,
 		startTime,
+		runPhase,
+		parentAgentId: options.parentAgentId,
+		maxRuntimeMs,
+		launchTimings,
+		appendCustomEntry: getAppendCustomEntry(activeSessionForFinalize),
 	});
+
+	if (activeSessionForFinalize) {
+		await finalizeSubagentLifecycle({
+			id,
+			session: activeSessionForFinalize,
+			aborted: Boolean(result.aborted),
+			abortKind: monitor.abortKind(),
+			keepAlive: options.keepAlive !== false,
+			isolated: worktree !== undefined,
+			agentIdleTtlMs,
+			reviveSession,
+		});
+	}
+
+	return result;
 }

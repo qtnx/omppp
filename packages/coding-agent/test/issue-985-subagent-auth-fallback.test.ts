@@ -59,6 +59,31 @@ const sharedModel: Model<Api> = buildModel({
 	contextWindow: 128000,
 	maxTokens: 8192,
 });
+const claudeModel: Model<Api> = buildModel({
+	id: "claude-opus-4-8",
+	name: "Claude Opus 4.8",
+	api: "anthropic-messages",
+	provider: "anthropic",
+	baseUrl: "https://api.anthropic.com",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200000,
+	maxTokens: 8192,
+});
+
+const designerModel: Model<Api> = buildModel({
+	id: "designer",
+	name: "Designer",
+	api: "openai-completions",
+	provider: "tnx",
+	baseUrl: "http://codemc:20128/v1",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 128000,
+	maxTokens: 8192,
+});
 
 interface MockRegistryOptions {
 	models: Model<Api>[];
@@ -91,6 +116,39 @@ describe("issue #985: subagent dispatch auth fallback", () => {
 		expect(result.authFallbackUsed).toBe(true);
 		expect(result.model?.provider).toBe("deepseek");
 		expect(result.model?.id).toBe("deepseek-v4-pro");
+	});
+	test("selects the next ordered candidate with auth before falling back to the parent", async () => {
+		const registry = createMockRegistry({
+			models: [parentModel, claudeModel, designerModel],
+			authedProviders: new Set(["deepseek", "tnx"]),
+		});
+
+		const result = await resolveModelOverrideWithAuthFallback(
+			["anthropic/claude-opus-4-8", "tnx/designer"],
+			"deepseek/deepseek-v4-pro",
+			registry,
+		);
+
+		expect(result.model?.provider).toBe("tnx");
+		expect(result.model?.id).toBe("designer");
+		expect(result.authFallbackUsed).toBe(false);
+	});
+
+	test("keeps Claude ahead of tnx when both ordered candidates have auth", async () => {
+		const registry = createMockRegistry({
+			models: [parentModel, claudeModel, designerModel],
+			authedProviders: new Set(["deepseek", "anthropic", "tnx"]),
+		});
+
+		const result = await resolveModelOverrideWithAuthFallback(
+			["anthropic/claude-opus-4-8", "tnx/designer"],
+			"deepseek/deepseek-v4-pro",
+			registry,
+		);
+
+		expect(result.model?.provider).toBe("anthropic");
+		expect(result.model?.id).toBe("claude-opus-4-8");
+		expect(result.authFallbackUsed).toBe(false);
 	});
 
 	test("does not fall back when resolved subagent model has working auth", async () => {
