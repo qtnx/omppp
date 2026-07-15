@@ -20,8 +20,15 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition, SingleResult, TaskParams } from "@oh-my-pi/pi-coding-agent/task/types";
+import {
+	type AgentDefinition,
+	type AgentProgress,
+	getTaskSchema,
+	type SingleResult,
+	type TaskParams,
+} from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { type } from "arktype";
 
 const taskAgent: AgentDefinition = {
 	name: "task",
@@ -80,6 +87,28 @@ function makeResult(id: string, overrides: Partial<SingleResult> = {}): SingleRe
 	};
 }
 
+function makeProgress(id: string, overrides: Partial<AgentProgress> = {}): AgentProgress {
+	return {
+		index: 0,
+		id,
+		agent: "task",
+		agentSource: "bundled",
+		status: "running",
+		task: "task prompt",
+		assignment: "Do the thing.",
+		recentTools: [],
+		recentOutput: [],
+		toolCount: 0,
+		requests: 1,
+		tokens: 0,
+		inputTokens: 0,
+		outputTokens: 0,
+		cost: 0,
+		durationMs: 5,
+		...overrides,
+	};
+}
+
 interface Deferred {
 	promise: Promise<void>;
 	resolve: () => void;
@@ -121,6 +150,63 @@ describe("task spawn routing", () => {
 		AgentRegistry.resetGlobalForTests();
 	});
 
+	it("accepts only nonnegative integer max_runtime_seconds values in the flat schema", () => {
+		const schema = getTaskSchema({ isolationEnabled: false, batchEnabled: false });
+
+		for (const value of [undefined, 0, 1, 600]) {
+			const input = value === undefined ? { task: "Work." } : { task: "Work.", max_runtime_seconds: value };
+			const parsed = schema(input);
+			expect(parsed instanceof type.errors).toBe(false);
+			if (!(parsed instanceof type.errors) && value !== undefined) {
+				expect("max_runtime_seconds" in parsed).toBe(true);
+				if ("max_runtime_seconds" in parsed) {
+					expect(parsed.max_runtime_seconds).toBe(value);
+				}
+			}
+		}
+
+		for (const value of [-1, 0.5, Number.POSITIVE_INFINITY]) {
+			expect(schema({ task: "Work.", max_runtime_seconds: value }) instanceof type.errors).toBe(true);
+		}
+	});
+
+	it("forwards a flat runtime cap in milliseconds and preserves an explicit zero override", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [taskAgent],
+			projectAgentsDir: null,
+		});
+		const seen: number[] = [];
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			seen.push(options.maxRuntimeMs ?? -1);
+			return makeResult(options.id ?? "?");
+		});
+
+		const tool = await TaskTool.create(
+			createSession({
+				settings: {
+					"async.enabled": false,
+					"task.batch": false,
+					"task.maxRuntimeMs": 90_000,
+				},
+			}),
+		);
+
+		await tool.execute("tc-runtime-positive", {
+			agent: "task",
+			name: "Positive",
+			task: "Work.",
+			max_runtime_seconds: 12,
+		} as TaskParams);
+		await tool.execute("tc-runtime-zero", {
+			agent: "task",
+			name: "Unlimited",
+			task: "Work.",
+			max_runtime_seconds: 0,
+		} as TaskParams);
+
+		expect(seen).toEqual([12_000, 0]);
+	});
+
 	it("returns immediately on spawn and delivers the follow-up hint when the job completes", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 			agents: [taskAgent],
@@ -159,6 +245,167 @@ describe("task spawn routing", () => {
 		expect(job!.resultText).toContain("message it via `irc` to follow up");
 		expect(job!.resultText).toContain("history://Spawnling");
 		expect(runSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("surfaces terminal rate limits and blocks subsequent delegation", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [taskAgent],
+			projectAgentsDir: null,
+		});
+		const rateLimitError =
+			'429 {"type":"error","error":{"type":"rate_limit_error","message":"account rate limit"}} retry-after-ms=11180000';
+		const runSpy = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options =>
+			makeResult(options.id ?? "?", {
+				exitCode: 1,
+				output: "",
+				stderr: rateLimitError,
+				error: rateLimitError,
+				retryFailure: {
+					attempt: 1,
+					errorMessage: rateLimitError,
+					rateLimited: true,
+					retryAfterMs: 11_180_000,
+				},
+			}),
+		);
+		const manager = createManager();
+		const tool = await TaskTool.create(createSession({ manager }));
+
+		const first = await tool.execute("tc-rate-limit", {
+			agent: "task",
+			name: "RateLimited",
+			task: "Hit the provider.",
+		} as TaskParams);
+		const firstJob = manager.getJob(first.details!.async!.jobId)!;
+		await firstJob.promise;
+
+		expect(firstJob.status).toBe("failed");
+		expect(firstJob.errorText).toContain("<system-notification>");
+		expect(firstJob.errorText).toContain("Task delegation is paused");
+		expect(firstJob.errorText).toContain("NEVER wait on or spawn more subagents");
+
+		const blocked = await tool.execute("tc-rate-limit-follow-up", {
+			agent: "task",
+			name: "ShouldNotSpawn",
+			task: "Do not start.",
+		} as TaskParams);
+		expect(getFirstText(blocked)).toContain("Task delegation is paused");
+		expect(runSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("allows subsequent delegation after terminal rate limits without a usable retry delay", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [taskAgent],
+			projectAgentsDir: null,
+		});
+		const rateLimitError = "429 Too Many Requests";
+		const retryAfterValues: Array<number | undefined> = [undefined, 0];
+		let runCount = 0;
+		const runSpy = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			const currentRun = runCount++;
+			if (currentRun % 2 === 0) {
+				const retryAfterMs = retryAfterValues[currentRun / 2];
+				return makeResult(options.id ?? "?", {
+					exitCode: 1,
+					output: "",
+					stderr: rateLimitError,
+					error: rateLimitError,
+					retryFailure: {
+						attempt: 1,
+						errorMessage: rateLimitError,
+						rateLimited: true,
+						...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+					},
+				});
+			}
+			return makeResult(options.id ?? "?");
+		});
+		const manager = createManager();
+		const tool = await TaskTool.create(createSession({ manager }));
+
+		for (const [index, retryAfterMs] of retryAfterValues.entries()) {
+			const label = retryAfterMs === undefined ? "absent" : "zero";
+			const first = await tool.execute(`tc-rate-limit-${label}`, {
+				agent: "task",
+				name: `RateLimited-${label}`,
+				task: "Hit the provider.",
+			} as TaskParams);
+			const firstJob = manager.getJob(first.details!.async!.jobId)!;
+			await firstJob.promise;
+
+			expect(firstJob.status).toBe("failed");
+			expect(firstJob.errorText).toContain(rateLimitError);
+			expect(firstJob.errorText).not.toContain("Task delegation is paused");
+
+			const followUp = await tool.execute(`tc-rate-limit-${label}-follow-up`, {
+				agent: "task",
+				name: `AllowedSpawn-${label}`,
+				task: "Start the next task.",
+			} as TaskParams);
+			expect(getFirstText(followUp)).toContain(`Spawned agent \`AllowedSpawn-${label}\``);
+			await manager.getJob(followUp.details!.async!.jobId)!.promise;
+			expect(runSpy).toHaveBeenCalledTimes((index + 1) * 2);
+		}
+	});
+
+	it("blocks new delegation while a child is backing off on a rate limit", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [taskAgent],
+			projectAgentsDir: null,
+		});
+		const release = deferred();
+		const retryReported = Promise.withResolvers<void>();
+		const rateLimitError = "429 Too Many Requests retry-after-ms=60000";
+		const runSpy = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			const id = options.id ?? "?";
+			options.onProgress?.(
+				makeProgress(id, {
+					retryState: {
+						attempt: 1,
+						maxAttempts: 3,
+						delayMs: 60_000,
+						errorMessage: rateLimitError,
+						startedAtMs: Date.now(),
+						rateLimited: true,
+					},
+				}),
+			);
+			retryReported.resolve();
+			await release.promise;
+			options.onProgress?.(makeProgress(id));
+			return makeResult(id);
+		});
+		const manager = createManager();
+		const tool = await TaskTool.create(createSession({ manager }));
+
+		const first = await tool.execute("tc-live-rate-limit", {
+			agent: "task",
+			name: "BackingOff",
+			task: "Wait on the provider.",
+		} as TaskParams);
+		const firstJob = manager.getJob(first.details!.async!.jobId)!;
+		await retryReported.promise;
+
+		try {
+			const blocked = await tool.execute("tc-live-rate-limit-follow-up", {
+				agent: "task",
+				name: "ShouldNotSpawnLive",
+				task: "Do not start.",
+			} as TaskParams);
+			expect(getFirstText(blocked)).toContain("Task delegation is paused");
+			expect(runSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			release.resolve();
+			await firstJob.promise;
+		}
+		const resumed = await tool.execute("tc-live-rate-limit-recovered", {
+			agent: "task",
+			name: "RecoveredSpawn",
+			task: "Start after recovery.",
+		} as TaskParams);
+		expect(getFirstText(resumed)).toContain("Spawned agent `RecoveredSpawn`");
+		await manager.getJob(resumed.details!.async!.jobId)!.promise;
+		expect(runSpy).toHaveBeenCalledTimes(2);
 	});
 
 	it("autoloads bundled frontend skills plus matching repo skills for design agents", async () => {

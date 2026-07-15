@@ -25,6 +25,7 @@ Execution blocks your turn: the call only returns once the work is completely fi
   - `description`: A UI label only; the subagent NEVER sees it.
   - `role`: The specialist this subagent embodies. Tailor per spawn; do not clone a generic worker.
   - `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
+  - `max_runtime_seconds`: You MUST choose an appropriate cap for each implementation/research spawn. Recommended: `explore`/`quick_task` 600, `task` 1200, `heavy_task` 2700. Omit to use configured fallback; `0` means unlimited.
 {{#if isolationEnabled}}
   - `isolated`: Run in a dedicated worktree and return patches. Isolated agents are destroyed upon completion and cannot be addressed afterward.
 {{/if}}
@@ -34,6 +35,7 @@ Execution blocks your turn: the call only returns once the work is completely fi
 - `description`: A UI label only; the subagent NEVER sees it.
 - `role`: The specialist this subagent embodies. Tailor per spawn; do not clone a generic worker.
 - `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
+- `max_runtime_seconds`: You MUST choose an appropriate cap for implementation/research work. Recommended: `explore`/`quick_task` 600, `task` 1200, `heavy_task` 2700. Omit to use configured fallback; `0` means unlimited.
 {{#if isolationEnabled}}
 - `isolated`: Run in a dedicated worktree and return patches. Isolated agents are destroyed upon completion and cannot be addressed afterward.
 {{/if}}

@@ -11,6 +11,7 @@ import * as sdkModule from "../../src/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "../../src/session/agent-session";
 import { TaskTool } from "../../src/task";
 import * as discoveryModule from "../../src/task/discovery";
+import * as executorModule from "../../src/task/executor";
 import type { AgentDefinition, SingleResult, TaskParams } from "../../src/task/types";
 import type { DeltaPatchResult, IsolationHandle, WorktreeBaseline } from "../../src/task/worktree";
 import * as worktreeModule from "../../src/task/worktree";
@@ -418,6 +419,7 @@ describe("task review gate", () => {
 			{ role: "fixer" },
 			{ role: "reviewer", verdict: correctVerdict() },
 		]);
+		const runSpy = vi.spyOn(executorModule, "runSubprocess");
 
 		const tool = await TaskTool.create(createSession(reviewGateSettings({ "task.reviewGate.maxFixIterations": 3 })));
 		const result = await tool.execute("call-one-fix", { ...TASK_PARAMS, isolated: true });
@@ -425,6 +427,18 @@ describe("task review gate", () => {
 		expect(trace.map(t => t.role)).toEqual(["implementer", "reviewer", "fixer", "reviewer"]);
 		expect(trace[2]?.agentName).toBe(FIXER_AGENT);
 		expect(trace[3]?.agentName).toBe(REVIEWER_AGENT);
+		expect(runSpy.mock.calls.map(([options]) => options.runPhase)).toEqual([undefined, "review", "fix", "review"]);
+		expect(runSpy.mock.calls.slice(1).map(([options]) => options.parentAgentId)).toEqual([
+			"FixBug",
+			"FixBug",
+			"FixBug",
+		]);
+		expect(runSpy.mock.calls.map(([options]) => options.parentToolCallId)).toEqual([
+			"call-one-fix",
+			"call-one-fix",
+			"call-one-fix",
+			"call-one-fix",
+		]);
 		// Each reviewer pass captures the current isolated delta; the accepted
 		// second pass is reused for final patch output.
 		expect(isolation.captureDeltaPatch).toHaveBeenCalledTimes(2);
@@ -720,16 +734,33 @@ describe("task review gate", () => {
 		expect(firstResult(result).exitCode).toBe(0);
 	});
 
-	it("does not run the review gate when self_review is omitted", async () => {
+	it("does not run the review gate when self_review is omitted from a flat spawn", async () => {
 		mockAgents();
-		mockIsolation();
 		const { trace } = mockSessionQueue([{ role: "implementer" }]);
 
-		const tool = await TaskTool.create(createSession(reviewGateSettings()));
-		const result = await tool.execute("call-no-self-review", {
+		const tool = await TaskTool.create(
+			createSession({ ...reviewGateSettings(), "task.batch": false, "task.isolation.mode": "none" }),
+		);
+		const result = await tool.execute("call-no-flat-self-review", {
 			agent: "task",
-			tasks: [{ id: "FixBug", description: "Fix the bug", assignment: "Implement the fix end-to-end." }],
-			isolated: true,
+			name: "FixBug",
+			task: "Implement the fix end-to-end.",
+		});
+
+		expect(trace.map(t => t.role)).toEqual(["implementer"]);
+		expect(firstResult(result).reviewGate).toBeUndefined();
+	});
+
+	it("does not run the review gate when self_review is omitted from a batch item", async () => {
+		mockAgents();
+		const { trace } = mockSessionQueue([{ role: "implementer" }]);
+
+		const tool = await TaskTool.create(
+			createSession({ ...reviewGateSettings(), "task.batch": true, "task.isolation.mode": "none" }),
+		);
+		const result = await tool.execute("call-no-batch-self-review", {
+			context: "Shared context.",
+			tasks: [{ name: "FixBug", task: "Implement the fix end-to-end." }],
 		});
 
 		expect(trace.map(t => t.role)).toEqual(["implementer"]);

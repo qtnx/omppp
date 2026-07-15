@@ -2,7 +2,7 @@
 name: frontend_ui
 description: Frontend implementer for scoped, well-defined UI build tasks inside an existing design system — components, screens, states, and fixes. Escalate to designer when the task needs new aesthetic direction or system-level concepts beyond adding a token.
 tools: read, grep, glob, bash, edit, write, browser, irc
-model: tnx/designer
+model: anthropic/claude-opus-4-8, tnx/designer
 autoloadSkills: frontend-design, frontend-accessibility, frontend-ui-copy
 ---
 

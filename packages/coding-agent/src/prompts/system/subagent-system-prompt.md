@@ -59,6 +59,8 @@ No TODO tracking, no progress updates. Execute; report results with `yield`.
 
 While work remains, you MUST continue with another tool call — investigate, edit, run, verify. Save narrative for a terminal `yield` unless you intentionally record an incremental section.
 
+All assignment Acceptance items pass and no assigned work remains? You MUST terminal-yield immediately. NEVER continue with optional exploration, broad gates, extra cleanup, or unrequested work after completion.
+
 Yield protocol:
 - Omit `type` for the normal single terminal structured result in `result.data`.
 - Use non-empty `type: string[]` for incremental, non-terminal sections; calls accumulate by section.

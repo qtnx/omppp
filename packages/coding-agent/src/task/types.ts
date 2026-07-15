@@ -35,6 +35,47 @@ export const TASK_SUBAGENT_PROGRESS_CHANNEL = "task:subagent:progress";
 /** EventBus channel for subagent lifecycle (start/end) */
 export const TASK_SUBAGENT_LIFECYCLE_CHANNEL = "task:subagent:lifecycle";
 
+/** Session custom-entry discriminator for persisted subagent runtime telemetry. */
+export const SUBAGENT_RUN_CUSTOM_TYPE = "subagent_run";
+
+export type SubagentRunPhase = "work" | "review" | "fix";
+export type SubagentAbortReason = "signal" | "terminate" | "timeout" | "budget";
+export type SubagentRunStatus = "completed" | "failed" | "aborted";
+
+/** Cumulative timings for one subagent run, in milliseconds. */
+export interface SubagentRunTimings {
+	queueMs?: number;
+	preRunMs?: number;
+	setupMs?: number;
+	promptToFirstChatMs?: number;
+	activeMs?: number;
+	totalMs: number;
+	/** Sum of provider-reported assistant request durations. */
+	modelMs: number;
+	/** Sum of completed tool-call durations, paired by tool call id. */
+	toolMs: number;
+}
+
+/** Versioned payload persisted once for every settled subagent run. */
+export interface SubagentRunTelemetry {
+	version: 1;
+	runId: string;
+	agent: string;
+	phase: SubagentRunPhase;
+	parentAgentId?: string;
+	parentToolCallId?: string;
+	startedAt: number;
+	completedAt: number;
+	status: SubagentRunStatus;
+	abortReason?: SubagentAbortReason;
+	model?: string;
+	requests: number;
+	toolCalls: number;
+	maxRuntimeMs: number;
+	earlyYieldNoticeSent: boolean;
+	timings: SubagentRunTimings;
+}
+
 /** Payload emitted on TASK_SUBAGENT_PROGRESS_CHANNEL */
 export interface SubagentProgressPayload {
 	index: number;
@@ -65,6 +106,8 @@ export interface SubagentLifecyclePayload {
 	sessionFile?: string;
 	parentToolCallId?: string;
 	index: number;
+	/** Present only on terminal lifecycle events. */
+	telemetry?: SubagentRunTelemetry;
 	/**
 	 * Spawn runs as a detached background job: the parent turn keeps working
 	 * while this agent runs. Sync task spawns (parent blocked on the call) and
@@ -81,6 +124,7 @@ export const taskItemSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	"max_runtime_seconds?": "number.integer >= 0",
 	"self_review?": "boolean",
 	"+": "delete",
 });
@@ -89,6 +133,7 @@ const taskItemSchemaIsolated = type({
 	agent: "string = 'task'",
 	task: "string",
 	"isolated?": "boolean",
+	"max_runtime_seconds?": "number.integer >= 0",
 	"self_review?": "boolean",
 	"+": "delete",
 });
@@ -103,6 +148,8 @@ export interface TaskItem {
 	task?: string;
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
 	isolated?: boolean;
+	/** Per-spawn wall-clock cap in seconds. 0 means unlimited; omission uses the configured fallback. */
+	max_runtime_seconds?: number;
 	/** Opt into the review-and-fix gate for this spawn. Default false (no review, faster). */
 	self_review?: boolean;
 	/**
@@ -119,6 +166,7 @@ export const taskSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	"max_runtime_seconds?": "number.integer >= 0",
 	"isolated?": "boolean",
 	"self_review?": "boolean",
 	"+": "delete",
@@ -127,6 +175,7 @@ const taskSchemaNoIsolation = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	"max_runtime_seconds?": "number.integer >= 0",
 	"self_review?": "boolean",
 	"+": "delete",
 });
@@ -171,6 +220,7 @@ function createTaskSchema(options: {
 				agent,
 				task: "string",
 				"isolated?": "boolean",
+				"max_runtime_seconds?": "number.integer >= 0",
 				"self_review?": "boolean",
 				"+": "delete",
 			});
@@ -184,6 +234,7 @@ function createTaskSchema(options: {
 			"name?": "string",
 			agent,
 			task: "string",
+			"max_runtime_seconds?": "number.integer >= 0",
 			"self_review?": "boolean",
 			"+": "delete",
 		});
@@ -198,6 +249,7 @@ function createTaskSchema(options: {
 			"name?": "string",
 			agent,
 			task: "string",
+			"max_runtime_seconds?": "number.integer >= 0",
 			"isolated?": "boolean",
 			"self_review?": "boolean",
 			"+": "delete",
@@ -207,6 +259,7 @@ function createTaskSchema(options: {
 		"name?": "string",
 		agent,
 		task: "string",
+		"max_runtime_seconds?": "number.integer >= 0",
 		"self_review?": "boolean",
 		"+": "delete",
 	});
@@ -249,6 +302,8 @@ export interface TaskParams {
 	agent?: string;
 	/** The work (flat form). */
 	task?: string;
+	/** Per-spawn wall-clock cap in seconds. 0 means unlimited; omission uses the configured fallback. */
+	max_runtime_seconds?: number;
 	/** Batch form (`task.batch`): one subagent per item. */
 	tasks?: TaskItem[];
 	/** Batch form: shared background prepended to every assignment; required by the batch schema. */
@@ -490,6 +545,8 @@ export interface AgentProgress {
 		delayMs: number;
 		errorMessage: string;
 		startedAtMs: number;
+		/** True only for provider quota/throttle failures; false for other retryable errors. */
+		rateLimited: boolean;
 	};
 	/**
 	 * Terminal retry failure surfaced once the subagent gave up retrying
@@ -500,6 +557,10 @@ export interface AgentProgress {
 	retryFailure?: {
 		attempt: number;
 		errorMessage: string;
+		/** True only when the terminal retry failure is a provider rate limit. */
+		rateLimited: boolean;
+		/** Provider-advertised delay before delegation may be retried, when known. */
+		retryAfterMs?: number;
 	};
 	/**
 	 * Snapshot of the most recent `task` tool call's in-flight `TaskToolDetails`,
@@ -542,6 +603,8 @@ export interface SingleResult {
 	error?: string;
 	aborted?: boolean;
 	abortReason?: string;
+	/** Versioned runtime telemetry for this settled run. */
+	telemetry?: SubagentRunTelemetry;
 	/** Aggregated usage from the subprocess, accumulated incrementally from message_end events. */
 	usage?: Usage;
 	/** Output path for the task result */
@@ -569,6 +632,10 @@ export interface SingleResult {
 	retryFailure?: {
 		attempt: number;
 		errorMessage: string;
+		/** True only when the terminal retry failure is a provider rate limit. */
+		rateLimited: boolean;
+		/** Provider-advertised delay before delegation may be retried, when known. */
+		retryAfterMs?: number;
 	};
 	/** Output metadata for agent:// URL integration */
 	outputMeta?: { lineCount: number; charCount: number };

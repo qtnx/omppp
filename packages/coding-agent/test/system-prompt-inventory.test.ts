@@ -788,6 +788,21 @@ describe("system prompt tool inventory", () => {
 		expect(selection).toMatch(/(UX|UI)[\s\S]{0,80}(copy|copywriting|microcopy)[\s\S]{0,120}`ux_copywriter`/i);
 		expect(selection).toMatch(/UI\/UX design[\s\S]{0,120}`designer`/i);
 
+		expect(selection).toMatch(
+			/small[\s\S]{0,80}normal[- ]mode[\s\S]{0,80}L1[\s\S]{0,80}(?:frontend|UI)[\s\S]{0,160}(?:main[\s\S]{0,60}direct|direct[\s\S]{0,60}main)/i,
+		);
+		expect(selection).toMatch(
+			/larger[\s\S]{0,120}(?:frontend|UI)[\s\S]{0,160}exactly one[\s\S]{0,120}`(?:designer|frontend_ui)`[\s\S]{0,200}(?:direction|scoped implementation)/i,
+		);
+		expect(selection).toMatch(
+			/(?:design direction[\s\S]{0,120}`designer`[\s\S]{0,160}scoped implementation[\s\S]{0,120}`frontend_ui`|scoped implementation[\s\S]{0,120}`frontend_ui`[\s\S]{0,160}design direction[\s\S]{0,120}`designer`)/i,
+		);
+		expect(selection).toMatch(
+			/(?:one|single)[\s\S]{0,100}`ui_ux_reviewer`[\s\S]{0,160}(?:final integration|integration final)|(?:final integration|integration final)[\s\S]{0,160}(?:one|single)[\s\S]{0,100}`ui_ux_reviewer`/i,
+		);
+		expect(selection).not.toMatch(/`designer`\s*\+\s*`frontend_ui`/);
+		expect(selection).not.toMatch(/two independent\s+`ui_ux_reviewer`\s+passes/i);
+
 		const genericTierIndexes = ["`quick_task`", "`task`", "`heavy_task`"]
 			.map(name => selection.indexOf(name))
 			.filter(index => index >= 0);

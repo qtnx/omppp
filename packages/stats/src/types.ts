@@ -169,6 +169,38 @@ export interface DelegationReminderStats extends ReminderStats {
 	threshold: number;
 }
 
+export type SubagentRunPhase = "work" | "review" | "fix";
+export type SubagentRunStatus = "completed" | "failed" | "aborted";
+export type SubagentAbortReason = "signal" | "terminate" | "timeout" | "budget";
+
+/** Validated v1 telemetry extracted from a `subagent_run` custom entry. */
+export interface SubagentRunStats {
+	sessionFile: string;
+	entryId: string;
+	runId: string;
+	agent: string;
+	phase: SubagentRunPhase;
+	parentAgentId?: string;
+	parentToolCallId?: string;
+	startedAt: number;
+	completedAt: number;
+	status: SubagentRunStatus;
+	abortReason?: SubagentAbortReason;
+	model?: string;
+	requests: number;
+	toolCalls: number;
+	maxRuntimeMs: number;
+	earlyYieldNoticeSent: boolean;
+	queueMs?: number;
+	preRunMs?: number;
+	setupMs?: number;
+	promptToFirstChatMs?: number;
+	activeMs?: number;
+	totalMs: number;
+	modelMs: number;
+	toolMs: number;
+}
+
 /**
  * One tool call extracted from an assistant message's `toolCall` content
  * blocks. `callsInTurn` records how many calls that assistant turn contained

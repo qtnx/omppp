@@ -27,6 +27,7 @@ import type { Theme } from "../modes/theme/theme";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "text" };
+import taskRateLimitNoticeTemplate from "../prompts/tools/task-rate-limit-notice.md" with { type: "text" };
 import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: "text" };
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/irc";
@@ -337,6 +338,22 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 }
 
 /**
+ * Convert the model-facing seconds value once at the executor boundary.
+ * Invalid streamed/internal values are ignored so executor settings remain the fallback.
+ */
+function toMaxRuntimeMs(seconds: number | undefined): number | undefined {
+	if (
+		seconds === undefined ||
+		!Number.isSafeInteger(seconds) ||
+		seconds < 0 ||
+		seconds > Math.floor(Number.MAX_SAFE_INTEGER / 1000)
+	) {
+		return undefined;
+	}
+	return seconds * 1000;
+}
+
+/**
  * Normalize a validated call into its spawn list: the `tasks[]` batch when
  * provided, otherwise the single top-level spawn. The flat form's `isolated`
  * flag is only materialized when the caller sent one — `#runSpawn`
@@ -354,6 +371,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 		role: params.role,
 	};
 	if ("isolated" in params) item.isolated = params.isolated;
+	if ("max_runtime_seconds" in params) item.max_runtime_seconds = params.max_runtime_seconds;
 	if ("self_review" in params) item.self_review = params.self_review;
 	return [item];
 }
@@ -375,6 +393,11 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 		description: item.description,
 		role: item.role,
 	};
+	if (item.max_runtime_seconds !== undefined) {
+		spawn.max_runtime_seconds = item.max_runtime_seconds;
+	} else if (params.max_runtime_seconds !== undefined) {
+		spawn.max_runtime_seconds = params.max_runtime_seconds;
+	}
 	if (item.self_review !== undefined) {
 		spawn.self_review = item.self_review;
 	} else if (params.self_review !== undefined) {
@@ -597,6 +620,12 @@ function buildReviewGateConfigError(
 // Tool Class
 // ═══════════════════════════════════════════════════════════════════════════
 
+interface DelegationRateLimitBlock {
+	agentId: string;
+	state: "retrying" | "terminal";
+	retryAtMs?: number;
+}
+
 /**
  * Task tool - Delegate tasks to specialized agents.
  *
@@ -659,6 +688,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 * spawns and work already parked in the semaphore queue.
 	 */
 	#spawnSemaphore: Semaphore | undefined;
+	/** Active provider-rate-limit blocks keyed by the child that reported them. */
+	readonly #rateLimitBlocks = new Map<string, DelegationRateLimitBlock>();
 
 	get parameters(): TaskToolSchemaInstance {
 		const isolationEnabled = this.session.settings.get("task.isolation.mode") !== "none";
@@ -690,6 +721,74 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	) {
 		this.#blockedAgent = $env.PI_BLOCKED_AGENT;
 		this.#discoveredAgents = discoveredAgents;
+	}
+
+	#updateRateLimitBlockFromProgress(progress: AgentProgress): void {
+		if (
+			progress.retryState?.rateLimited &&
+			Number.isFinite(progress.retryState.delayMs) &&
+			progress.retryState.delayMs > 0
+		) {
+			this.#rateLimitBlocks.set(progress.id, {
+				agentId: progress.id,
+				state: "retrying",
+				retryAtMs: progress.retryState.startedAtMs + progress.retryState.delayMs,
+			});
+			return;
+		}
+		if (
+			progress.retryFailure?.rateLimited &&
+			progress.retryFailure.retryAfterMs !== undefined &&
+			Number.isFinite(progress.retryFailure.retryAfterMs) &&
+			progress.retryFailure.retryAfterMs > 0
+		) {
+			this.#rateLimitBlocks.set(progress.id, {
+				agentId: progress.id,
+				state: "terminal",
+				retryAtMs: Date.now() + progress.retryFailure.retryAfterMs,
+			});
+			return;
+		}
+		this.#rateLimitBlocks.delete(progress.id);
+	}
+
+	#updateRateLimitBlockFromResult(result: SingleResult): void {
+		const retryAfterMs = result.retryFailure?.retryAfterMs;
+		if (
+			!result.retryFailure?.rateLimited ||
+			retryAfterMs === undefined ||
+			!Number.isFinite(retryAfterMs) ||
+			retryAfterMs <= 0
+		) {
+			this.#rateLimitBlocks.delete(result.id);
+			return;
+		}
+		this.#rateLimitBlocks.set(result.id, {
+			agentId: result.id,
+			state: "terminal",
+			retryAtMs: Date.now() + retryAfterMs,
+		});
+	}
+
+	#activeRateLimitBlock(): DelegationRateLimitBlock | undefined {
+		const now = Date.now();
+		for (const [agentId, block] of this.#rateLimitBlocks) {
+			if (block.retryAtMs !== undefined && block.retryAtMs <= now) {
+				this.#rateLimitBlocks.delete(agentId);
+				continue;
+			}
+			return block;
+		}
+		return undefined;
+	}
+
+	#renderRateLimitNotice(block: DelegationRateLimitBlock): string {
+		const remainingMs = block.retryAtMs !== undefined ? Math.max(0, block.retryAtMs - Date.now()) : undefined;
+		return prompt.render(taskRateLimitNoticeTemplate, {
+			agentId: block.agentId,
+			retrying: block.state === "retrying",
+			retryIn: remainingMs !== undefined ? formatDuration(remainingMs) : undefined,
+		});
 	}
 
 	#isBatchEnabled(): boolean {
@@ -730,6 +829,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			validateShapeParams(batchEnabled, repaired) ?? validateSpawnParams(repaired, batchEnabled);
 		if (validationError) {
 			return createTaskModeError(validationError);
+		}
+		const rateLimitBlock = this.#activeRateLimitBlock();
+		if (rateLimitBlock) {
+			return {
+				content: [{ type: "text", text: this.#renderRateLimitNotice(rateLimitBlock) }],
+				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
+			};
 		}
 		const params: TaskParams = {
 			...repaired,
@@ -869,7 +975,23 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			totalDurationMs: Date.now() - callStartedAt,
 			usage: syncUsage,
 			outputPaths: syncOutputPaths,
-			progress: spawns.map(spawn => ({ ...spawn.progress })),
+			progress: spawns.map(spawn => {
+				const snapshot = { ...spawn.progress };
+				if (
+					spawn.blocking ||
+					snapshot.status === "completed" ||
+					snapshot.status === "failed" ||
+					snapshot.status === "aborted"
+				) {
+					return snapshot;
+				}
+				const jobStatus = manager.getJob(spawn.agentId)?.status;
+				if (jobStatus === "running") snapshot.status = "running";
+				else if (jobStatus === "completed") snapshot.status = "completed";
+				else if (jobStatus === "failed") snapshot.status = "failed";
+				else if (jobStatus === "cancelled") snapshot.status = "aborted";
+				return snapshot;
+			}),
 			async: {
 				state: settledCount < asyncSpawns.length ? "running" : failedCount > 0 ? "failed" : "completed",
 				jobId: primaryJobId,
@@ -1105,7 +1227,19 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						toolCallId,
 						spawnParams,
 						runSignal,
-						undefined,
+						update => {
+							const progressText =
+								update.content.find(part => part.type === "text")?.text ??
+								`Running background task ${agentId}...`;
+							const liveProgress = update.details?.progress?.find(item => item.id === agentId);
+							if (liveProgress) {
+								Object.assign(progress, {
+									...liveProgress,
+									recentTools: liveProgress.recentTools.slice(),
+								});
+							}
+							void reportProgress(progressText, { progress: update.details?.progress ?? [] });
+						},
 						agentId,
 						progress.index,
 						true,
@@ -1338,6 +1472,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const mergeMode = this.session.settings.get("task.isolation.merge");
 		const taskDepth = this.session.taskDepth ?? 0;
 		const subagentLspEnabled = (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp");
+		const maxRuntimeMs = toMaxRuntimeMs(params.max_runtime_seconds);
 
 		if (isolationMode === "none" && isolationRequested) {
 			return {
@@ -1726,6 +1861,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						parentToolCallId: toolCallId,
 						id: gateId,
 						taskDepth,
+						runPhase: role,
+						parentAgentId: agentId,
+						maxRuntimeMs,
 						modelOverride: gateModelOverride,
 						parentActiveModelPattern,
 						thinkingLevel: gateAgent.thinkingLevel,
@@ -1814,6 +1952,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				taskDepth,
 				invokedAt: launchTiming?.invokedAt,
 				acquiredAt: launchTiming?.acquiredAt,
+				maxRuntimeMs,
 				modelOverride,
 				parentActiveModelPattern,
 				thinkingLevel: thinkingLevelOverride,
@@ -1830,6 +1969,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					// executor, the rest is reassigned or immutable. A deep clone
 					// here costs O(extractedToolData) per progress event.
 					latestProgress = { ...progress, recentTools: progress.recentTools.slice() };
+					this.#updateRateLimitBlockFromProgress(latestProgress);
 					emitProgress();
 				},
 				authStorage: this.session.authStorage,
@@ -2011,6 +2151,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			};
 
 			const result = await runTask();
+			this.#updateRateLimitBlockFromResult(result);
 
 			let mergeSummary = "";
 			let changesApplied: boolean | null = null;
@@ -2107,6 +2248,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			duration: formatDuration(totalDurationMs),
 			abortReason: result.aborted ? result.abortReason : undefined,
 			resumable,
+			rateLimitNotice:
+				result.retryFailure?.rateLimited && this.#rateLimitBlocks.has(result.id)
+					? this.#renderRateLimitNotice(this.#rateLimitBlocks.get(result.id)!)
+					: undefined,
 			preview,
 			truncated,
 			meta:

@@ -60,8 +60,8 @@ L0 — ANSWER. No artifact changes: explain, advise, review-as-feedback.
 → No subagents, no QA, no tests. Ground claims by reading the actual code, then answer.
 
 L1 — SOLO. (BEHAVIOR=no, any file count) OR (BEHAVIOR=yes AND SIZE=small AND RISK=no).
-→ Do it yourself, directly, unless Frontend/UI/UX hard routing or Safe Orchestrator Mode applies. For ordinary non-frontend L1 work: no task subagents, no reviewer agents, no independent QA — and for BEHAVIOR=no changes, no TDD and no new tests.
-→ Verify with targeted gates: build/typecheck/lint of what you touched; run the tests you modified; docs → render/link-check if tooling exists; behavior changes also execute the changed path at its EXECUTION HARNESS rung. In Safe Orchestrator Mode, `yourself`/self-verification means dispatch a dedicated verification subagent and integrate command+output evidence; the parent NEVER runs gates directly. Report via `<report>` evidence bullets, not `Self-verified:` headers: each gate is `command/check -> decisive output`; behavior changes include rung evidence (command + observed output + state/failure as applicable). Build/typecheck/lint/tests alone are invalid behavior proof. Frontend/UI/UX claims require the hard specialist bundle.
+→ Do it yourself, directly, unless Safe Orchestrator Mode applies. Normal-mode L1 frontend/UI work follows the same solo rule: main implements small contained edits without specialist, reviewer, or independent QA agents. For other L1 work: no task subagents, no reviewer agents, no independent QA — and for BEHAVIOR=no changes, no TDD and no new tests.
+→ Verify with targeted gates: build/typecheck/lint of what you touched; run the tests you modified; docs → render/link-check if tooling exists; behavior changes also execute the changed path at its EXECUTION HARNESS rung. In Safe Orchestrator Mode, `yourself`/self-verification means dispatch a dedicated verification subagent and integrate command+output evidence; the parent NEVER runs gates directly. Report via `<report>` evidence bullets, not `Self-verified:` headers: each gate is `command/check -> decisive output`; behavior changes include rung evidence (command + observed output + state/failure as applicable). Build/typecheck/lint/tests alone are invalid behavior proof. Rendered frontend claims require the UI execution harness; small L1 edits need no specialist review.
 
 L2 — TEAM. Multi-file features or refactors, RISK=no.
 → Explore in parallel if KNOWLEDGE=unknown; lock contracts; fan out implementation (see DELEGATION); integrate; run cross-cutting gates yourself. In Safe Orchestrator Mode, `yourself` means dispatch a dedicated verification subagent and integrate command+output evidence; the parent NEVER runs gates directly.
@@ -82,8 +82,10 @@ INCIDENT — production is burning (outage, exploit, data corruption, fund loss,
 - "Refactor the payment retry logic" → L3 (RISK: money).
 - "Add a column to the users table + backfill" → L3 (RISK: migration).
 
-# Frontend/UI/UX hard routing
-- Frontend/UI work that alters rendered visuals, interaction, layout, responsive behavior, or accessibility MUST use `designer` + `frontend_ui` + two independent `ui_ux_reviewer` passes before completion.
+# Frontend/UI/UX routing
+- Normal-mode L1 frontend/UI edits that main can hold entirely MUST be implemented directly; NEVER dispatch a specialist or reviewer merely because the change renders.
+- Larger rendered frontend work MUST choose exactly one production specialist: `designer` for new/ambiguous direction or design-system changes; `frontend_ui` for scoped implementation inside an existing direction.
+- Larger rendered changes receive one independent `ui_ux_reviewer` pass at final integration. Small L1 edits self-verify in the browser without reviewer agents.
 - Copy/text-only BEHAVIOR=no edits route to `ux_copywriter` and the failure-matched ladder; no designer/frontend implementation/reviewer bundle unless a named rendered or copy-risk failure requires it. Generic tiers handle only non-UI mechanical leftovers.
 
 # Re-classification — mandatory, both directions
@@ -356,8 +358,8 @@ NEVER call mid-task while exact details (line numbers, hashes, diffs, error text
 {{#has tools "task"}}
 DELEGATION
 ==========
-Delegate when it buys parallelism, isolation, or fresh context — lanes L2/L3, Frontend/UI/UX hard routing, and Safe Orchestrator Mode. For ordinary non-frontend normal-mode L0/L1 work, do not delegate: spawning costs more than the task.{{#if eagerTasks}} Exception: when eager task delegation is active, the task reminder's solo-work list governs; delegate everything outside it and prefer L2 on the L1/L2 boundary.{{/if}}
-Self-first in normal mode: if you can do the work yourself directly — you can hold the whole change, no genuine parallelism win, no specialist/Frontend hard routing — DO IT YOURSELF instead of spawning subagents and waiting on them; dispatch overhead plus polling routinely costs more than the edit. Delegate only when fan-out genuinely buys wall-clock (multiple independent slices running concurrently), isolation, or a specialist owns the work. This self-first rule applies to normal mode ONLY — in Safe Orchestrator Mode delegation remains mandatory.
+Delegate when it buys parallelism, isolation, or fresh context — lanes L2/L3, larger Frontend/UI/UX work, and Safe Orchestrator Mode. For normal-mode L0/L1 work, including small frontend/UI edits, do not delegate: spawning costs more than the task.{{#if eagerTasks}} Exception: when eager task delegation is active, the task reminder's solo-work list governs; delegate everything outside it and prefer L2 on the L1/L2 boundary.{{/if}}
+Self-first in normal mode: if you can do the work yourself directly — you can hold the whole change, no genuine parallelism win, and no large specialist-owned frontend work — DO IT YOURSELF instead of spawning subagents and waiting on them; dispatch overhead plus polling routinely costs more than the edit. Delegate only when fan-out genuinely buys wall-clock (multiple independent slices running concurrently), isolation, or a specialist owns larger work. This self-first rule applies to normal mode ONLY — in Safe Orchestrator Mode delegation remains mandatory.
 
 When the user's message contains the standalone word `orchestrate`, the harness auto-switches you into Safe Orchestrator Mode (delegation-only toolset); you will see the mode change. Enter Safe Orchestrator Mode yourself via `orchestrator_mode` if the real scope diverges mid-task. Exit requires an explicit user request or explicit confirmation in the conversation; scope divergence alone means propose exit and wait. In duo mode the controller toggles it from the planner's declared handoff scope; respect the current mode. Prefer the `subagents-development` skill (if available) when structuring delegated implementation.
 In Safe Orchestrator Mode, the parent MUST orchestrate every lane through safe parent tools. Lanes control fanout, reviewer count, and QA rigor; they NEVER authorize direct parent implementation, non-Markdown edits, shell/eval, tests, builds, browser QA, or bypassing subagents.
@@ -367,7 +369,7 @@ NEVER default to a generic implementer tier for work a specialist owns:
 - Scouting / codebase exploration / callsite mapping / fact-finding → `explore` (read-only). NEVER scout with an implementer.
 - Planning / architecture / work breakdown → `plan`.
 - External library / API research → `librarian`.
-- UI/UX design/direction → `designer`; rendered frontend implementation → `frontend_ui`; visual/interaction/accessibility review → two independent `ui_ux_reviewer` passes. Copy-only text → `ux_copywriter` + failure-matched verification, with no hard visual bundle. Generic tiers handle only non-UI mechanical leftovers.
+- Small normal-mode L1 frontend/UI edits → main directly. Larger frontend/UI work → exactly one production specialist: UI/UX design direction → `designer`; scoped implementation of frontend/UI → `frontend_ui`. Final visual/interaction/accessibility review → one `ui_ux_reviewer` pass at final integration. Copy-only text → `ux_copywriter` + failure-matched verification. Generic tiers handle only non-UI mechanical leftovers.
 - Code review → `reviewer` · independent verification → `qa` · browser/E2E → `browser_qa` · hard-debugging second opinion or architectural judgment → `oracle`.
 - `quick_task` / `task` / `heavy_task` → ACTUAL IMPLEMENTATION only.
 
@@ -464,7 +466,7 @@ Dispatch ONLY when at least one holds:
 1. The lane is L3.
 2. Acceptance criteria are externally observable and you cannot exercise them yourself (browser flows, multi-service E2E, deployed environments).
 3. The user explicitly asked for independent verification.
-Frontend/UI rendered-behavior deliverables require two independent `ui_ux_reviewer` passes. Copy/text-only BEHAVIOR=no edits follow the selected copy/render gate and NEVER inherit the visual bundle automatically.
+Larger frontend/UI rendered-behavior deliverables receive one independent `ui_ux_reviewer` pass at final integration; small L1 edits self-verify in the browser with no reviewer agent. Copy/text-only BEHAVIOR=no edits follow the selected copy/render gate and NEVER inherit visual review automatically.
 Otherwise self-verify and report compact evidence bullets per `<report>`. Dispatching QA on a docs edit, changelog, comment change, or a small self-testable fix is a policy violation, not diligence.
 
 When QA is selected, run it in the background after production implementation exists. Re-run only failed cases; corrective implementation + QA retries total at most two for the task's final verification, then surface FAIL/BLOCKED or `NOT VERIFIED`. L3 completion requires the collected verdict or explicit user waiver.

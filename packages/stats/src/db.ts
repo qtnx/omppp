@@ -21,6 +21,8 @@ import type {
 	ModelTimeSeriesPoint,
 	ReminderStats,
 	SessionStatsAggregate,
+	SubagentPerformanceStats,
+	SubagentRunStats,
 	TimeSeriesPoint,
 	ToolCallStats,
 	ToolModelStats,
@@ -64,6 +66,8 @@ const SYSTEM_CONTEXT_REMINDERS_BACKFILL_KEY = "system_context_reminders_v1";
 const DELEGATION_REMINDERS_BACKFILL_KEY = "delegation_reminders_v1";
 const AGENT_TYPE_BACKFILL_KEY = "agent_type_v1";
 const FORK_DEDUPE_KEY = "fork_dedupe_v2";
+const SUBAGENT_RUNS_FORK_DEDUPE_KEY = "subagent_runs_fork_dedupe_v1";
+const SUBAGENT_RUNS_BACKFILL_KEY = "subagent_runs_v1";
 const TOOL_CALLS_BACKFILL_KEY = "tool_calls_v1";
 function shouldResetBackfill(value: string | undefined): boolean {
 	return value !== BACKFILL_COMPLETE && value !== BACKFILL_PENDING;
@@ -87,6 +91,8 @@ export async function initDb(): Promise<Database> {
 	// backfill below, so it must be sampled before CREATE TABLE adds the table.
 	const messagesTableExisted =
 		db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get() !== undefined;
+	const fileOffsetsTableExisted =
+		db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'file_offsets'").get() !== undefined;
 
 	// Create tables
 	db.run(`
@@ -210,6 +216,37 @@ export async function initDb(): Promise<Database> {
 		CREATE INDEX IF NOT EXISTS idx_tool_calls_timestamp ON tool_calls(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_timestamp ON tool_calls(tool_name, timestamp);
 
+		CREATE TABLE IF NOT EXISTS subagent_runs (
+			session_file TEXT NOT NULL,
+			entry_id TEXT NOT NULL,
+			run_id TEXT NOT NULL,
+			agent TEXT NOT NULL,
+			phase TEXT NOT NULL,
+			parent_agent_id TEXT,
+			parent_tool_call_id TEXT,
+			started_at INTEGER NOT NULL,
+			completed_at INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			abort_reason TEXT,
+			model TEXT,
+			requests INTEGER NOT NULL,
+			tool_calls INTEGER NOT NULL,
+			max_runtime_ms INTEGER NOT NULL,
+			early_yield_notice_sent INTEGER NOT NULL,
+			queue_ms REAL,
+			pre_run_ms REAL,
+			setup_ms REAL,
+			prompt_to_first_chat_ms REAL,
+			active_ms REAL,
+			total_ms REAL NOT NULL,
+			model_ms REAL NOT NULL,
+			tool_ms REAL NOT NULL,
+			PRIMARY KEY(session_file, entry_id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_subagent_runs_started_at ON subagent_runs(started_at);
+		CREATE INDEX IF NOT EXISTS idx_subagent_runs_agent_started_at ON subagent_runs(agent, started_at);
+
 		CREATE TABLE IF NOT EXISTS meta (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
@@ -296,15 +333,21 @@ export async function initDb(): Promise<Database> {
 			CREATE INDEX IF NOT EXISTS idx_user_messages_timestamp_model ON user_messages(timestamp, model, provider);
 		`);
 	}
+	const hadTrackedSessionOffsets =
+		fileOffsetsTableExisted && db.prepare("SELECT 1 FROM file_offsets LIMIT 1").get() !== undefined;
 	backfillUserMessages(db);
 	backfillToolCalls(db);
 	repairUserMessageLinks(db);
 	backfillPriorityPremiumRequests(db);
 	backfillSystemContextReminders(db);
 	backfillDelegationReminders(db);
+	enrollSubagentRunsBackfill(db, hadTrackedSessionOffsets);
+	backfillSubagentRuns(db);
 	backfillAgentType(db);
 	backfillMissingCatalogCosts(db);
 	backfillForkDuplicates(db);
+	db.run("DROP INDEX IF EXISTS idx_subagent_runs_run_id");
+	db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_subagent_runs_lineage ON subagent_runs(entry_id, started_at)");
 	return db;
 }
 
@@ -577,6 +620,139 @@ export function insertDelegationReminderStats(stats: DelegationReminderStats[]):
 
 	insert();
 	return inserted;
+}
+
+export function insertSubagentRuns(runs: SubagentRunStats[]): number {
+	if (!db || runs.length === 0) return 0;
+	const stmt = db.prepare(`
+		INSERT INTO subagent_runs (
+			session_file, entry_id, run_id, agent, phase, parent_agent_id, parent_tool_call_id,
+			started_at, completed_at, status, abort_reason, model, requests, tool_calls,
+			max_runtime_ms, early_yield_notice_sent, queue_ms, pre_run_ms, setup_ms,
+			prompt_to_first_chat_ms, active_ms, total_ms, model_ms, tool_ms
+		)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM subagent_runs
+			WHERE entry_id = ? AND started_at = ? AND session_file <> ?
+		)
+		ON CONFLICT DO NOTHING
+	`);
+	let inserted = 0;
+	const insert = db.transaction(() => {
+		for (const run of runs) {
+			const result = stmt.run(
+				run.sessionFile,
+				run.entryId,
+				run.runId,
+				run.agent,
+				run.phase,
+				run.parentAgentId ?? null,
+				run.parentToolCallId ?? null,
+				run.startedAt,
+				run.completedAt,
+				run.status,
+				run.abortReason ?? null,
+				run.model ?? null,
+				run.requests,
+				run.toolCalls,
+				run.maxRuntimeMs,
+				run.earlyYieldNoticeSent ? 1 : 0,
+				run.queueMs ?? null,
+				run.preRunMs ?? null,
+				run.setupMs ?? null,
+				run.promptToFirstChatMs ?? null,
+				run.activeMs ?? null,
+				run.totalMs,
+				run.modelMs,
+				run.toolMs,
+				// Forked transcripts preserve both the custom entry ID and its
+				// start time. Legacy producers could reuse `runId` for resumed
+				// turns, so it is telemetry data rather than lineage identity.
+				run.entryId,
+				run.startedAt,
+				run.sessionFile,
+			);
+			if (result.changes > 0) inserted++;
+		}
+	});
+	insert();
+	return inserted;
+}
+
+interface SubagentPerformanceRow {
+	agent: string;
+	runs: number;
+	completed: number;
+	failed: number;
+	aborted: number;
+	timeouts: number;
+	early_yield_notices: number;
+	avg_total_ms: number;
+	p50_total_ms: number;
+	p90_total_ms: number;
+	avg_queue_ms: number | null;
+	avg_setup_ms: number | null;
+	avg_model_ms: number;
+	avg_tool_ms: number;
+}
+
+export function getSubagentPerformance(cutoff?: number): SubagentPerformanceStats[] {
+	if (!db) return [];
+	const hasCutoff = cutoff !== undefined && cutoff > 0;
+	const stmt = db.prepare(`
+		WITH ranked AS (
+			SELECT
+				agent,
+				status,
+				abort_reason,
+				early_yield_notice_sent,
+				queue_ms,
+				setup_ms,
+				total_ms,
+				model_ms,
+				tool_ms,
+				ROW_NUMBER() OVER (PARTITION BY agent ORDER BY total_ms) AS total_rank,
+				COUNT(*) OVER (PARTITION BY agent) AS run_count
+			FROM subagent_runs
+			${hasCutoff ? "WHERE started_at >= ?" : ""}
+		)
+		SELECT
+			agent,
+			COUNT(*) AS runs,
+			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+			SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+			SUM(CASE WHEN status = 'aborted' THEN 1 ELSE 0 END) AS aborted,
+			SUM(CASE WHEN status = 'aborted' AND abort_reason = 'timeout' THEN 1 ELSE 0 END) AS timeouts,
+			SUM(early_yield_notice_sent) AS early_yield_notices,
+			AVG(total_ms) AS avg_total_ms,
+			MAX(CASE WHEN total_rank = (run_count + 1) / 2 THEN total_ms END) AS p50_total_ms,
+			MAX(CASE WHEN total_rank = (9 * run_count + 9) / 10 THEN total_ms END) AS p90_total_ms,
+			AVG(queue_ms) AS avg_queue_ms,
+			AVG(setup_ms) AS avg_setup_ms,
+			AVG(model_ms) AS avg_model_ms,
+			AVG(tool_ms) AS avg_tool_ms
+		FROM ranked
+		GROUP BY agent
+		ORDER BY agent
+	`);
+	const rows = (hasCutoff ? stmt.all(cutoff) : stmt.all()) as SubagentPerformanceRow[];
+	return rows.map(row => ({
+		agent: row.agent,
+		runs: row.runs,
+		completed: row.completed,
+		failed: row.failed,
+		aborted: row.aborted,
+		timeouts: row.timeouts,
+		earlyYieldNotices: row.early_yield_notices,
+		avgTotalMs: row.avg_total_ms,
+		p50TotalMs: row.p50_total_ms,
+		p90TotalMs: row.p90_total_ms,
+		avgQueueMs: row.avg_queue_ms,
+		avgSetupMs: row.avg_setup_ms,
+		avgModelMs: row.avg_model_ms,
+		avgToolMs: row.avg_tool_ms,
+	}));
 }
 
 /**
@@ -1125,6 +1301,40 @@ export function getCostTimeSeries(days = 90, cutoff?: number | null): CostTimeSe
 }
 
 /**
+ * Enroll only databases that had already advanced session offsets before
+ * subagent telemetry existed. New databases have no historical JSONL to
+ * recover, so they settle immediately without forcing their first sync to
+ * parse every file twice.
+ */
+function enrollSubagentRunsBackfill(database: Database, hasTrackedSessions: boolean): void {
+	if (!hasTrackedSessions) {
+		database
+			.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)")
+			.run(SUBAGENT_RUNS_BACKFILL_KEY, BACKFILL_COMPLETE);
+	}
+}
+
+/**
+ * Force one replay of offset-tracked transcripts so old databases ingest
+ * `subagent_run` telemetry. The reset and PENDING marker are one transaction:
+ * an interrupted migration leaves either the old offsets or a resumable
+ * pending marker, never a falsely-complete backfill.
+ */
+function backfillSubagentRuns(database: Database): void {
+	const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(SUBAGENT_RUNS_BACKFILL_KEY) as
+		| { value: string }
+		| undefined;
+	if (!shouldResetBackfill(row?.value)) return;
+
+	const markPending = database.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
+	const reset = database.transaction(() => {
+		database.run("DELETE FROM file_offsets");
+		markPending.run(SUBAGENT_RUNS_BACKFILL_KEY, BACKFILL_PENDING);
+	});
+	reset();
+}
+
+/**
  * Reset `file_offsets` (and any existing `user_messages` rows) so the next
  * successful sync re-parses every session and re-derives behavioral metrics.
  * Run once per metric-definition bump; the meta sentinel is only marked
@@ -1220,7 +1430,6 @@ function backfillAgentType(database: Database): void {
 	const apply = database.transaction(() => {
 		for (const { session_file } of sessionFiles) {
 			const agentType = classifyAgentType(session_file);
-			// Rows already default to 'main'; only the nested transcripts move.
 			if (agentType !== "main") update.run(agentType, session_file);
 		}
 		markComplete.run(AGENT_TYPE_BACKFILL_KEY, BACKFILL_COMPLETE);
@@ -1232,57 +1441,68 @@ function backfillAgentType(database: Database): void {
  * One-shot collapse of forked-session duplicates that landed under the old
  * `UNIQUE(session_file, entry_id)`-only invariant. `SessionManager.fork()`
  * and `createBranchedSession()` deep-copy a parent's entries into the new
- * JSONL — same `entry_id`, `timestamp`, `model`, `responseId`, token counts,
- * cost — and the previous insert path counted both files toward request /
- * token / cost totals. The migration keeps the lowest-`id` row per
- * `(entry_id, timestamp)` group (almost always the parent — sessions are
- * filename-timestamped and sync processes them in name order, so the
- * originating file lands first) and drops every other copy. Same fix on
- * `user_messages`, `system_context_reminders`, and `delegation_reminders`
- * since forks copy user/custom entries too. Idempotent and
- * crash-safe: enrolled at module-load via the `meta` sentinel, marked
- * COMPLETE inside the same transaction so an aborted run rolls back and
- * retries on the next init.
+ * JSONL. The legacy cleanup keeps the lowest-`id` row per copied entry shape;
+ * subagent telemetry uses copied `(entry_id, started_at)` lineage instead of
+ * `run_id`, because legacy producers could reuse a stable agent run ID across
+ * legitimate resumed turns. Both sentinels are completed inside this
+ * transaction, allowing an interrupted upgrade to retry without losing the
+ * surviving first-write row.
  */
 function backfillForkDuplicates(database: Database): void {
-	const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(FORK_DEDUPE_KEY) as
+	const legacyRow = database.prepare("SELECT value FROM meta WHERE key = ?").get(FORK_DEDUPE_KEY) as
 		| { value: string }
 		| undefined;
-	if (row?.value === BACKFILL_COMPLETE) return;
+	const subagentRow = database.prepare("SELECT value FROM meta WHERE key = ?").get(SUBAGENT_RUNS_FORK_DEDUPE_KEY) as
+		| { value: string }
+		| undefined;
+	const needsLegacyCleanup = legacyRow?.value !== BACKFILL_COMPLETE;
+	const needsSubagentCleanup = subagentRow?.value !== BACKFILL_COMPLETE;
+	if (!needsLegacyCleanup && !needsSubagentCleanup) return;
 
 	const markComplete = database.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
 	const apply = database.transaction(() => {
-		database.run(`
-			DELETE FROM messages
-			WHERE id NOT IN (
-				SELECT MIN(id) FROM messages GROUP BY entry_id, timestamp
-			)
-		`);
-		database.run(`
-			DELETE FROM user_messages
-			WHERE id NOT IN (
-				SELECT MIN(id) FROM user_messages GROUP BY entry_id, timestamp
-			)
-		`);
-		database.run(`
-			DELETE FROM system_context_reminders
-			WHERE id NOT IN (
-				SELECT MIN(id) FROM system_context_reminders GROUP BY entry_id, timestamp
-			)
-		`);
-		database.run(`
-			DELETE FROM delegation_reminders
-			WHERE id NOT IN (
-				SELECT MIN(id) FROM delegation_reminders GROUP BY entry_id, timestamp
-			)
-		`);
-		database.run(`
-			DELETE FROM tool_calls
-			WHERE id NOT IN (
-				SELECT MIN(id) FROM tool_calls GROUP BY entry_id, timestamp, tool_call_id
-			)
-		`);
-		markComplete.run(FORK_DEDUPE_KEY, BACKFILL_COMPLETE);
+		if (needsLegacyCleanup) {
+			database.run(`
+				DELETE FROM messages
+				WHERE id NOT IN (
+					SELECT MIN(id) FROM messages GROUP BY entry_id, timestamp
+				)
+			`);
+			database.run(`
+				DELETE FROM user_messages
+				WHERE id NOT IN (
+					SELECT MIN(id) FROM user_messages GROUP BY entry_id, timestamp
+				)
+			`);
+			database.run(`
+				DELETE FROM system_context_reminders
+				WHERE id NOT IN (
+					SELECT MIN(id) FROM system_context_reminders GROUP BY entry_id, timestamp
+				)
+			`);
+			database.run(`
+				DELETE FROM delegation_reminders
+				WHERE id NOT IN (
+					SELECT MIN(id) FROM delegation_reminders GROUP BY entry_id, timestamp
+				)
+			`);
+			database.run(`
+				DELETE FROM tool_calls
+				WHERE id NOT IN (
+					SELECT MIN(id) FROM tool_calls GROUP BY entry_id, timestamp, tool_call_id
+				)
+			`);
+			markComplete.run(FORK_DEDUPE_KEY, BACKFILL_COMPLETE);
+		}
+		if (needsSubagentCleanup) {
+			database.run(`
+				DELETE FROM subagent_runs
+				WHERE rowid NOT IN (
+					SELECT MIN(rowid) FROM subagent_runs GROUP BY entry_id, started_at
+				)
+			`);
+			markComplete.run(SUBAGENT_RUNS_FORK_DEDUPE_KEY, BACKFILL_COMPLETE);
+		}
 	});
 	apply();
 }
@@ -1383,6 +1603,14 @@ export function markUserMessageLinksRepairComplete(): void {
 	if (!db) return;
 	db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(
 		USER_MESSAGE_LINKS_REPAIR_KEY,
+		BACKFILL_COMPLETE,
+	);
+}
+
+export function markSubagentRunsBackfillComplete(): void {
+	if (!db) return;
+	db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(
+		SUBAGENT_RUNS_BACKFILL_KEY,
 		BACKFILL_COMPLETE,
 	);
 }
