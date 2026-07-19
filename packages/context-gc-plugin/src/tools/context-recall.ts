@@ -115,6 +115,7 @@ export function createContextRecallTool(
 ): ToolDefinition<typeof recallInputSchema> {
 	return {
 		name: "context_recall",
+		loadMode: "essential",
 		label: "Recall context",
 		description:
 			"Recall durable Context GC payloads from SQLite by record id. Supports summary, raw, range, and search recall with maxBytes bounds.",

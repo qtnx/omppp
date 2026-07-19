@@ -78,6 +78,7 @@ import type { AuthStorage, OAuthCredential } from "../session/auth-storage";
 import { type ApiKeyResolverModel, type ApiKeyResolverOptions, createApiKeyResolver } from "./api-key-resolver";
 import type { ConfigError, ConfigFile } from "./config-file";
 import {
+	applyLlamaCppQwenThinking,
 	DISCOVERY_DEFAULT_MAX_TOKENS,
 	type DiscoveryContext,
 	type DiscoveryProviderConfig,
@@ -1076,7 +1077,7 @@ export class ModelRegistry {
 		// Custom/config providers bypass the model-manager merge point —
 		// collapse effort-tier variants here so X/X-thinking twins fold.
 		const withModelOverrides = this.#applyModelOverrides(collapseBuiltModelVariants(combined), this.#modelOverrides);
-		this.#models = this.#applyRuntimeProviderOverrides(withModelOverrides);
+		this.#models = this.#applyLlamaCppQwenThinkingToModels(this.#applyRuntimeProviderOverrides(withModelOverrides));
 		this.#lastStaticLoadMtime = this.#modelsConfigFile.getMtimeMs();
 	}
 
@@ -1574,7 +1575,7 @@ export class ModelRegistry {
 		// Merge runtime extension models so they survive online discovery completion
 		const combined = this.#mergeCustomModels(withConfigModels, this.#runtimeModelOverlays);
 		const withModelOverrides = this.#applyModelOverrides(collapseBuiltModelVariants(combined), this.#modelOverrides);
-		this.#models = this.#applyRuntimeProviderOverrides(withModelOverrides);
+		this.#models = this.#applyLlamaCppQwenThinkingToModels(this.#applyRuntimeProviderOverrides(withModelOverrides));
 	}
 
 	#configuredDiscoveryCacheProviderId(providerConfig: DiscoveryProviderConfig): string {
@@ -1936,6 +1937,22 @@ export class ModelRegistry {
 		});
 	}
 
+	// #applyLlamaCppQwenThinkingToModels re-runs applyLlamaCppQwenThinking as the
+	// outermost transform for llama.cpp-provider models, after discovery merges,
+	// cache fallbacks, and provider/transport overrides have run. It is
+	// idempotent, so it restores the routed Qwen model's chat-completions api,
+	// `/v1` runtime base URL, and disable dialect even when a configured `baseUrl`
+	// override (which wins in mergeDiscoveredModel) or a fallback to a pre-fix
+	// cached row would otherwise leave the old spec in place.
+	#applyLlamaCppQwenThinkingToModels(models: Model<Api>[]): Model<Api>[] {
+		const llamaCppProviders = new Set<string>();
+		for (const provider of this.#discoverableProviders) {
+			if (provider.discovery.type === "llama.cpp") llamaCppProviders.add(provider.provider);
+		}
+		if (llamaCppProviders.size === 0) return models;
+		return models.map(model => (llamaCppProviders.has(model.provider) ? applyLlamaCppQwenThinking(model) : model));
+	}
+
 	#mergeProviderOverride(baseOverride: ProviderOverride | undefined, override: ProviderOverride): ProviderOverride {
 		return {
 			baseUrl: override.baseUrl ?? baseOverride?.baseUrl,
@@ -2153,6 +2170,15 @@ export class ModelRegistry {
 	 */
 	getProviderBaseUrl(provider: string): string | undefined {
 		return this.#models.find(m => m.provider === provider && m.baseUrl)?.baseUrl;
+	}
+	/**
+	 * Get provider-level headers without including per-model overrides.
+	 */
+	getProviderHeaders(provider: string): Record<string, string> | undefined {
+		return createLiveConfigHeaders([
+			this.#providerOverrides.get(provider)?.headers,
+			this.#runtimeProviderOverrides.get(provider)?.headers,
+		]);
 	}
 
 	/**
@@ -2464,10 +2490,12 @@ export class ModelRegistry {
 				transportOverride,
 			);
 			this.#runtimeProviderOverrides.set(providerName, nextRuntimeOverride);
-			this.#models = this.#models.map(m => {
-				if (m.provider !== providerName) return m;
-				return this.#applyProviderTransportOverride(m, transportOverride);
-			});
+			this.#models = this.#applyLlamaCppQwenThinkingToModels(
+				this.#models.map(m => {
+					if (m.provider !== providerName) return m;
+					return this.#applyProviderTransportOverride(m, transportOverride);
+				}),
+			);
 		}
 	}
 

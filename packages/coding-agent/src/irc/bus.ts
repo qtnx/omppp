@@ -35,7 +35,7 @@ export interface IrcMessage {
 export interface IrcDeliveryReceipt {
 	to: string;
 	outcome: "injected" | "woken" | "failed";
-	/** True when a parked recipient was revived before the real delivery outcome was reported. */
+	/** True when the recipient was revived before the message was delivered. */
 	revived?: boolean;
 	error?: string;
 }
@@ -77,10 +77,10 @@ export class IrcBus {
 	}
 
 	/**
-	 * Fire-and-forget delivery. Never blocks on the recipient generating
-	 * anything: the receipt reports how the message reached the recipient
-	 * (waiter/aside = "injected", idle wake = "woken") while `revived`
-	 * separately records whether a parked recipient had to be revived first.
+	 * The receipt reports how the message reached the live recipient
+	 * (`wait`/aside = "injected", idle wake = "woken"). If a parked agent
+	 * had to be revived first, `revived` is set independently so revival does
+	 * not erase the actual delivery outcome.
 	 *
 	 * Mailbox semantics: a successfully delivered message never lingers in
 	 * the recipient's mailbox — injection/wake puts the full body into their
@@ -129,12 +129,31 @@ export class IrcBus {
 			};
 		}
 
+		// A `parked` recipient always needs the lifecycle to revive it — this is
+		// read from *this* bus's registry, so it holds for any registry. The
+		// mid-park / adopted checks below query the lifecycle's own state, which
+		// only describes the registry it manages: consult them only when the
+		// lifecycle owns this bus's registry, otherwise a custom-registry bus
+		// (fallen back to the global manager) would gate a live recipient on
+		// unrelated global park state. Main/non-adopted live peers skip the gate,
+		// and pending waiters still win without a session.
+		const lifecycle = this.#lifecycle();
+		const lifecycleOwnsRegistry = lifecycle.manages(this.#registry);
+		const needsLifecycleGate =
+			ref.status === "parked" ||
+			(lifecycleOwnsRegistry && (lifecycle.isParking(message.to) || lifecycle.has(message.to)));
+
+		const priorSession = ref.session;
 		let revived = false;
-		if (ref.status === "parked") {
+		if (needsLifecycleGate) {
 			try {
-				await this.#lifecycle().ensureLive(message.to);
-				revived = true;
+				const liveSession = await lifecycle.ensureLive(message.to);
+				// Revival = we did not keep the same live instance (parked start, or
+				// park completed and a fresh session was rebuilt).
+				revived = !priorSession || liveSession !== priorSession;
 			} catch (error) {
+				// Not revivable / released / revive failed. Do not buffer: a permanent
+				// failure must not inflate unread counts or pretend delivery is pending.
 				return {
 					to: message.to,
 					outcome: "failed",

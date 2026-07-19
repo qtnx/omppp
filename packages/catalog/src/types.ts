@@ -148,7 +148,7 @@ export interface Usage {
 	};
 }
 
-export type OpenAIReasoningFormat = "openai" | "openrouter" | "zai" | "qwen" | "qwen-chat-template";
+export type OpenAIReasoningFormat = "openai" | "openrouter" | "zai" | "kimi" | "qwen" | "qwen-chat-template";
 
 export type OpenAIReasoningDisableMode =
 	| "omit"
@@ -211,8 +211,10 @@ export interface OpenAICompat {
 	requiresThinkingAsText?: boolean;
 	/** Whether tool call IDs must be normalized to Mistral format (exactly 9 alphanumeric chars). Default: auto-detected from URL. */
 	requiresMistralToolIds?: boolean;
-	/** Format for reasoning/thinking parameter. "openai" uses reasoning_effort, "openrouter" uses reasoning: { effort }, "zai" uses thinking: { type: "enabled" | "disabled" } (also used by Moonshot Kimi), "qwen" uses top-level enable_thinking, and "qwen-chat-template" uses chat_template_kwargs.enable_thinking. Default: "openai". */
+	/** Format for reasoning/thinking parameter. `"kimi"` uses `thinking: { type, effort }`; other values select their provider-native reasoning fields. Default: `"openai"`. */
 	thinkingFormat?: OpenAIReasoningFormat;
+	/** Kimi Code transport selected by live per-model protocol metadata. User settings take precedence. */
+	kimiApiFormat?: "openai" | "anthropic";
 	/** Request-time disable encoding for the selected reasoning/thinking format. Default: derived from `thinkingFormat`. */
 	reasoningDisableMode?: OpenAIReasoningDisableMode;
 	/** Whether the provider rejects `reasoning.effort`/`reasoning_effort` even when the model reasons natively. Default: false unless reasoning effort is unsupported. */
@@ -318,8 +320,10 @@ export interface OpenAICompat {
 	 * normalization (collapse `const`→`enum`, infer `type` on bare enums, strip
 	 * unsupported validators/`prefixItems`) because Moonshot/Kimi native hosts
 	 * reject standard JSON Schema constructs with HTTP 400. Default:
-	 * auto-detected (`"moonshot-mfjs"` on api.moonshot.ai / api.kimi.com). Set
-	 * `"none"` to opt a custom Moonshot-compatible host out.
+	 * auto-detected — Moonshot native hosts (api.moonshot.ai / api.kimi.com)
+	 * and Kimi-family model ids on any host, since proxies (OpenRouter, custom
+	 * gateways) forward schemas to Moonshot verbatim. Set `"none"` to opt a
+	 * host out.
 	 */
 	toolSchemaFlavor?: "moonshot-mfjs" | "none";
 	/**
@@ -333,6 +337,15 @@ export interface OpenAICompat {
 	toolStrictMode?: "all_strict" | "none";
 	/** Whether request shaping may send reasoning params at all. Default: auto-detected (disabled for GitHub Copilot chat-completions). */
 	supportsReasoningParams?: boolean;
+	/**
+	 * Whether the endpoint accepts explicit sampling parameters (`temperature`,
+	 * `top_p`, `top_k`, `min_p`, penalties). OpenAI proprietary reasoning models
+	 * (o-series, gpt-5+) reject them with `400 Unsupported parameter:
+	 * 'temperature' is not supported with this model` on every serving host
+	 * (official, Azure, GitHub Copilot). When unset, auto-detected from the
+	 * model id. Default: true. Issue #5606.
+	 */
+	supportsSamplingParams?: boolean;
 	/** Always send a max-token field when the caller did not provide one. Default: auto-detected (Kimi-family models derive TPM limits from max_tokens). */
 	alwaysSendMaxTokens?: boolean;
 	/** Whether Responses-API tool-call/result history must be strictly paired. Default: auto-detected (Azure OpenAI, GitHub Copilot). */
@@ -378,7 +391,7 @@ export interface AnthropicCompat {
 	 * tags: 'disabled', 'enabled'`.
 	 */
 	disableAdaptiveThinking?: boolean;
-	/** Whether tools may include Anthropic's per-tool eager_input_streaming flag. Default: true. */
+	/** Whether tools may include Anthropic's per-tool eager_input_streaming flag. Default: true for the canonical Anthropic API. */
 	supportsEagerToolInputStreaming?: boolean;
 	/** Whether long prompt-cache retention (`ttl: "1h"`) is supported. Default: true for canonical Anthropic API. */
 	supportsLongCacheRetention?: boolean;
@@ -470,7 +483,10 @@ export interface ResolvedOpenAISharedCompat {
 	supportsReasoningEffort: boolean;
 	reasoningEffortMap: Partial<Record<Effort, string>>;
 	supportsReasoningParams: boolean;
+	supportsSamplingParams: boolean;
 	thinkingFormat: OpenAIReasoningFormat;
+	/** Kimi Code transport selected by live per-model protocol metadata. */
+	kimiApiFormat?: OpenAICompat["kimiApiFormat"];
 	reasoningDisableMode: OpenAIReasoningDisableMode;
 	omitReasoningEffort: boolean;
 	includeEncryptedReasoning: boolean;
@@ -508,6 +524,8 @@ export interface ResolvedOpenAISharedCompat {
 	openRouterRouting?: OpenAICompat["openRouterRouting"];
 	/** Provider-specific wire model-id transform applied to the base id. */
 	wireModelIdMode: "raw" | "firepass" | "fireworks" | "openrouter";
+	/** See {@link OpenAICompat.toolSchemaFlavor}. Read by both wire paths when converting tools. */
+	toolSchemaFlavor?: OpenAICompat["toolSchemaFlavor"];
 }
 
 /**
@@ -524,7 +542,9 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "supportsReasoningEffort"
 			| "reasoningEffortMap"
 			| "supportsReasoningParams"
+			| "supportsSamplingParams"
 			| "thinkingFormat"
+			| "kimiApiFormat"
 			| "reasoningDisableMode"
 			| "omitReasoningEffort"
 			| "includeEncryptedReasoning"
@@ -577,7 +597,6 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 		thinkingKeep?: OpenAICompat["thinkingKeep"];
 		streamIdleTimeoutMs?: number;
 		toolStrictMode: ResolvedToolStrictMode;
-		toolSchemaFlavor?: OpenAICompat["toolSchemaFlavor"];
 		/** The model sits behind Vercel AI Gateway. */
 		isVercelGatewayHost: boolean;
 		dropThinkingWhenReasoningEffort: boolean;

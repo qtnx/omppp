@@ -140,6 +140,24 @@ describe("postmortem expected cleanup errors", () => {
 		expect(result.stderr).toContain(path.join(result.stateHome, "omp", "logs", "crash-unhandled_rejection-"));
 	});
 
+	it("exits after an uncaught exception when terminal stderr is revoked", async () => {
+		const result = await runPostmortemProbe(`
+			import { spyOn } from "bun:test";
+			import "${postmortemModuleUrl}";
+
+			spyOn(process.stderr, "write").mockImplementation(() => {
+				throw Object.assign(new Error("terminal revoked"), { code: "EIO" });
+			});
+			queueMicrotask(() => {
+				throw new Error("fatal after disconnect");
+			});
+			await Promise.withResolvers<void>().promise;
+		`);
+
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain("[Uncaught Exception] Error: fatal after disconnect");
+	});
+
 	it("releases manual cleanup at the deadline even when a callback never settles", async () => {
 		const result = await runPostmortemProbe(`
 			import { vi } from "bun:test";

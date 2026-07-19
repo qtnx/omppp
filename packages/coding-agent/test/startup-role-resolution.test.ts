@@ -48,4 +48,24 @@ describe("startup role target resolution", () => {
 			authStorage.close();
 		}
 	});
+
+	it("reports the first @smol candidate when none are authenticated for prewalk", async () => {
+		using tempDir = TempDir.createSync("@omp-startup-role-resolution-");
+		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		try {
+			const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+			const settings = Settings.isolated({
+				modelRoles: {
+					smol: [`${unavailable.provider}/${unavailable.id}`, `${authenticated.provider}/${authenticated.id}`],
+				},
+			});
+			const parsed = parseArgs(["--cwd", tempDir.path(), "--prewalk-into", "@smol"]);
+
+			await expect(buildSessionOptions(parsed, [], undefined, modelRegistry, settings)).rejects.toThrow(
+				`No API key for ${unavailable.provider}/${unavailable.id}`,
+			);
+		} finally {
+			authStorage.close();
+		}
+	});
 });

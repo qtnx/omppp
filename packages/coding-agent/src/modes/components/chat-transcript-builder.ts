@@ -51,7 +51,7 @@ import {
 import { CustomMessageComponent } from "./custom-message";
 import { EvalExecutionComponent } from "./eval-execution";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
-import { ReadToolGroupComponent, readArgsHaveTarget, readArgsTargetInternalUrl } from "./read-tool-group";
+import { ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
 import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
@@ -150,12 +150,12 @@ export class ChatTranscriptBuilder {
 		this.#expandables.push(component);
 	}
 
-	/** A `job` poll showing all-running is displaced by the next `job` call. */
+	/** A `hub` wait showing all-running is displaced by the next `hub` call. */
 	#resolveWaitingPoll(nextToolName?: string): void {
 		const previous = this.#waitingPoll;
 		if (!previous) return;
 		this.#waitingPoll = null;
-		if (nextToolName === "job" && previous.isDisplaceableBlock() && this.container.isBlockUncommitted(previous)) {
+		if (nextToolName === "hub" && previous.isDisplaceableBlock() && this.container.isBlockUncommitted(previous)) {
 			this.container.removeChild(previous);
 		}
 		previous.seal();
@@ -280,9 +280,10 @@ export class ChatTranscriptBuilder {
 			hideThinkingBlock,
 			() => this.deps.requestRender(),
 			this.deps.getMessageRenderer ? undefined : [], // placeholder for thinkingRenderers
-			undefined, // placeholder for imageBudget
+			this.deps.ui.imageBudget,
 			proseOnlyThinking,
 		);
+		assistantComponent.setImagesVisible(settings.get("terminal.showImages"));
 		this.container.addChild(assistantComponent);
 
 		if (settings.get("display.cacheMissMarker")) {
@@ -313,6 +314,7 @@ export class ChatTranscriptBuilder {
 				undefined,
 				proseOnlyThinking,
 			);
+			component.setImagesVisible(settings.get("terminal.showImages"));
 			this.container.addChild(component);
 		};
 
@@ -321,11 +323,7 @@ export class ChatTranscriptBuilder {
 			this.#resolveWaitingPoll(content.name);
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
-			if (
-				content.name === "read" &&
-				readArgsHaveTarget(content.arguments) &&
-				!readArgsTargetInternalUrl(content.arguments)
-			) {
+			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
 					group.updateArgs(content.arguments, content.id);
@@ -352,8 +350,9 @@ export class ChatTranscriptBuilder {
 				content.name,
 				content.arguments,
 				{
-					// Images can't be sliced through the scroll viewport; keep them off.
-					showImages: false,
+					// Stable ids and Kitty placeholder cells keep images anchored
+					// while the transcript viewport scrolls and reflows.
+					showImages: settings.get("terminal.showImages"),
 					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 					liveRegion: this.container,
@@ -403,7 +402,7 @@ export class ChatTranscriptBuilder {
 		if (!pending) return;
 		pending.updateResult(message, false, message.toolCallId);
 		this.#pendingTools.delete(message.toolCallId);
-		if (message.toolName === "job" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
+		if (message.toolName === "hub" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
 			this.#waitingPoll = pending;
 		} else if (
 			message.toolName === "todo" &&

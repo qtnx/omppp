@@ -24,7 +24,7 @@ It covers runtime behavior as implemented today, including precedence, invalid-d
 Task agents normalize into `AgentDefinition` (`src/task/types.ts`):
 
 - `name`, `description`, `systemPrompt` (required for a valid loaded agent)
-- optional `tools`, `spawns`, `model`, `thinkingLevel`, `output`, `blocking`, `autoloadSkills`, `readSummarize`
+- optional `tools`, `spawns`, `model`, `thinkingLevel`, `output`, `blocking`, `autoloadSkills`, `readSummarize`, `prewalk`
 - `source`: `"bundled" | "user" | "project"`
 - optional `filePath`
 
@@ -36,6 +36,7 @@ Parsing comes from frontmatter via `parseAgentFields()` (`src/discovery/helpers.
 - backward-compat behavior: if `spawns` missing but `tools` includes `task`, `spawns` becomes `*`
 - `output` is passed through as opaque schema data
 - `read-summarize: false` (parsed as `readSummarize`) forces the subagent's `read` tool to return verbatim file content instead of structural summaries — `runSubprocess` applies it as a `read.summarize.enabled: false` override on the subagent's isolated settings (`src/task/executor.ts`). `explore`, `scout`, and `librarian` ship with it disabled. Defaults to enabled when the field is absent.
+- `prewalk: true` starts the subagent on its resolved model and hands off to the default prewalk target (the `smol` role) at its first edit/write, exactly like the session-level `--prewalk`; a string value (e.g. `prewalk: "@smol"` or `prewalk: "openai/gpt-5-mini"`) picks a custom target. The `task.agentPrewalk` settings record (agent name → `"on"` / `"off"` / pattern, toggled per agent from `/agents` with `P`) overrides the frontmatter. Resolution happens in `runSubprocess` (`src/task/executor.ts`); an unresolvable target or a target equal to the starting model skips the hand-off instead of failing the spawn.
 
 ## Bundled agents
 
@@ -44,7 +45,7 @@ Bundled agents are embedded at build time (`src/task/agents.ts`) using text impo
 `EMBEDDED_AGENT_DEFS` defines:
 
 - `explore`, `scout`, `plan`, `designer`, `reviewer`, `librarian`, `oracle` from prompt files
-- `heavy_task`, `task`, and `quick_task` from injected frontmatter plus dedicated worker prompt bodies
+- `heavy_task`, `task`, and `quick_task` from injected frontmatter plus dedicated worker prompt bodies; no bundled agent sets `prewalk` — hand-off is armed by `task.prewalk` (default off), per-agent `/agents` / `task.agentPrewalk` settings, or user agent frontmatter
 - `tester` from the bundled tester prompt, adopted additively from upstream
 
 Loading path:
@@ -126,12 +127,13 @@ In spawn execution (`TaskTool.#executeSync` → `#runSpawn`):
 
 Runtime output schema precedence in `TaskTool.#runSpawn`:
 
-1. agent frontmatter `output`
-2. parent session `outputSchema`
+1. task item or flat-call `outputSchema`
+2. agent frontmatter `output`
+3. parent session `outputSchema`
 
-(`effectiveOutputSchema = effectiveAgent.output ?? this.session.outputSchema` — the task call itself never carries a schema; ad-hoc structured workflows go through the eval bridge's `agent(prompt, schema)`.)
+`schemaMode` controls validation for a caller-provided or inherited schema. The stale `schema` field remains rejected; ad-hoc structured workflows can use the eval bridge's `agent(prompt, schema)`.
 
-The model-facing prompt (`src/prompts/tools/task.md`) no longer carries the old structured-output mismatch warning; it tags read-only agents and warns against offloading reasoning to `scout`, `explore`, or `quick_task` instead.
+The model-facing prompt (`src/prompts/tools/task.md`) tags read-only agents and warns against offloading reasoning to `scout`, `explore`, or `quick_task`.
 
 ## Command discovery interaction
 
@@ -185,5 +187,6 @@ When parent plan mode is enabled, `TaskTool.#runSpawn` builds an `effectiveAgent
 - prepends the plan-mode subagent system prompt
 - restricts tools to `read`, `search`, `find`, `lsp`, and `web_search`, plus `ast_grep`/`report_finding` when the agent's own tool list declares them (`PLAN_MODE_AGENT_TOOL_ALLOWLIST`)
 - clears child spawns
+- clears `prewalk` (read-only exploration must not receive the prewalk plan/implement nudges)
 
 The same `effectiveAgent` is used for subprocess launch, model/thinking overrides, and output-schema selection.

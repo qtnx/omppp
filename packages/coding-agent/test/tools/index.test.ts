@@ -40,32 +40,15 @@ function createActiveGoalState() {
 	};
 }
 
-function createDiscoverySessionHooks(): Partial<ToolSession> {
-	const selected: string[] = [];
-	return {
-		isMCPDiscoveryEnabled: () => true,
-		getDiscoverableTools: () => [],
-		getSelectedMCPToolNames: () => [...selected],
-		activateDiscoveredMCPTools: async toolNames => {
-			const activated: string[] = [];
-			for (const name of toolNames) {
-				if (!selected.includes(name)) {
-					selected.push(name);
-					activated.push(name);
-				}
-			}
-			return activated;
-		},
-	};
-}
-
 describe("createTools", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
 
 	it("creates all builtin tools by default", async () => {
-		const session = createTestSession();
+		// xdev mounting (default-on) would unmount discoverables like lsp and
+		// web_search into xd://; disable it to assert the full builtin set.
+		const session = createTestSession({ settings: createSettingsWithOverrides({ "tools.xdev": false }) });
 		const tools = await createTools(session);
 		const names = tools.map(t => t.name);
 
@@ -98,7 +81,6 @@ describe("createTools", () => {
 
 		expect(names.filter(name => name === "grep")).toHaveLength(1);
 		expect(names).toContain("glob");
-		expect(names).toContain("resolve");
 		expect(names).not.toContain("search");
 		expect(names).not.toContain("find");
 	});
@@ -144,7 +126,6 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).toContain("eval");
-		expect(names).toContain("resolve");
 	});
 
 	it("excludes lsp tool when session disables LSP", async () => {
@@ -171,6 +152,15 @@ describe("createTools", () => {
 		expect(names).toEqual(["read", "write", "resolve"]);
 	});
 
+	it("creates an xd:// registry without remounting explicitly requested built-ins", async () => {
+		const session = createTestSession();
+		const tools = await createTools(session, ["read", "lsp"]);
+
+		expect(session.xdevRegistry).toBeDefined();
+		expect(session.xdevRegistry?.entries()).toEqual([]);
+		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp", "resolve"]);
+	});
+
 	it("lowercases requested tool subset", async () => {
 		const session = createTestSession();
 		const tools = await createTools(session, ["Read", "Write"]);
@@ -181,10 +171,10 @@ describe("createTools", () => {
 
 	it("includes hidden tools when explicitly requested", async () => {
 		const session = createTestSession();
-		const tools = await createTools(session, ["report_finding"]);
+		const tools = await createTools(session, ["yield"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["report_finding", "resolve"]);
+		expect(names).toEqual(["yield", "resolve"]);
 	});
 
 	it("includes yield tool when required", async () => {
@@ -193,6 +183,16 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).toContain("yield");
+	});
+	it("excludes todo from yield sessions unless prewalk is armed", async () => {
+		// Subagents (requireYieldTool) never get todo — except when the spawn is
+		// prewalk-armed: the prewalk plan nudge + todo gate need the child to
+		// commit its own todo list before the model hand-off.
+		const subagent = await createTools(createTestSession({ requireYieldTool: true }));
+		expect(subagent.map(t => t.name)).not.toContain("todo");
+
+		const prewalkSubagent = await createTools(createTestSession({ requireYieldTool: true, prewalkArmed: true }));
+		expect(prewalkSubagent.map(t => t.name)).toContain("todo");
 	});
 
 	it("excludes ask tool when hasUI is false", async () => {
@@ -219,7 +219,13 @@ describe("createTools", () => {
 		const tools = await createTools(session);
 		expect(tools.map(t => t.name)).not.toContain("ask");
 
-		const requested = await createTools(session, ["ask", "read"]);
+		const requested = await createTools(
+			createTestSession({
+				hasUI: true,
+				settings: createSettingsWithOverrides({ "ask.enabled": false }),
+			}),
+			["ask", "read"],
+		);
 		expect(requested.map(t => t.name)).toEqual(["read", "resolve"]);
 	});
 
@@ -259,24 +265,10 @@ describe("createTools", () => {
 		expect(names).not.toContain("browser");
 		expect(names).not.toContain("inspect_image");
 
-		const requestedTools = await createTools(session, ["bash", "read"]);
+		const requestedTools = await createTools(createTestSession({ settings: session.settings }), ["bash", "read"]);
 		expect(requestedTools.map(t => t.name)).toEqual(["read", "resolve"]);
 	});
 
-	it("always includes resolve regardless of plan-mode setting", async () => {
-		const session = createTestSession({
-			settings: createSettingsWithOverrides({
-				"plan.enabled": false,
-			}),
-		});
-
-		const defaultTools = await createTools(session);
-		expect(defaultTools.map(t => t.name)).toContain("resolve");
-		expect(defaultTools.map(t => t.name)).not.toContain("exit_plan_mode");
-
-		const requestedTools = await createTools(session, ["read"]);
-		expect(requestedTools.map(t => t.name)).toEqual(["read", "resolve"]);
-	});
 	it("auto-includes goal when goal mode is active", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({
@@ -314,9 +306,9 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["bash", "grep", "read", "glob"]);
 		const bash = tools.find(tool => tool.name === "bash");
 
-		expect(bash?.description).toContain("`grep` tool");
+		expect(bash?.description).toContain("built-in `grep`");
 		session.setActiveToolNames?.(["bash"]);
-		expect(bash?.description).not.toContain("`grep` tool");
+		expect(bash?.description).not.toContain("built-in `grep`");
 		expect(bash?.description).not.toContain("`ls` → `read`");
 		expect(bash?.description).not.toContain("`find` → the `glob` tool");
 	});
@@ -326,7 +318,9 @@ describe("createTools", () => {
 			settings: createSettingsWithOverrides({
 				"mcp.discoveryMode": true,
 			}),
-			...createDiscoverySessionHooks(),
+			isMCPDiscoveryEnabled: () => true,
+			getSelectedMCPToolNames: () => [],
+			activateDiscoveredMCPTools: async names => names,
 		});
 		const tools = await createTools(session);
 		const names = tools.map(t => t.name);

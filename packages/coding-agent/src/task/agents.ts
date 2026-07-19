@@ -40,6 +40,7 @@ interface AgentFrontmatter {
 	blocking?: boolean;
 	resourceProfile?: "minimal";
 	reviewGate?: AgentReviewGatePolicy;
+	prewalk?: boolean | string;
 }
 
 interface EmbeddedAgentDef {
@@ -109,6 +110,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 				failOnPriorities: [0, 1],
 				requireCorrectVerdict: true,
 			},
+			// Generic task prewalk is controlled by `task.prewalk` or per-agent `prewalk` overrides.
 		},
 		template: taskMd,
 	},

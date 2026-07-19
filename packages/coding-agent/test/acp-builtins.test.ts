@@ -51,7 +51,6 @@ interface FakeAcpBuiltinSession {
 	getTodoPhases(): Array<{ name: string; tasks: Array<{ content: string; status: string }> }>;
 	setTodoPhases(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>): void;
 	refreshBaseSystemPrompt(): Promise<void>;
-	refreshSshTool(options?: { activateIfAvailable?: boolean }): Promise<void>;
 	getToolByName(name: string): unknown;
 	compact(args?: string): Promise<void>;
 	requestMacOSSandboxRelaunch?: (paths: string[]) => MacOSSandboxRelaunchResult;
@@ -172,7 +171,6 @@ function createRuntime() {
 		getContextUsage: () => undefined,
 		getAvailableModels: () => [] as Array<{ provider: string; id: string; contextWindow?: number }>,
 		async setModel(_model: unknown) {},
-		async refreshSshTool(_options?: { activateIfAvailable?: boolean }) {},
 	};
 	const typedSession = session as unknown as AgentSession & FakeAcpBuiltinSession;
 	fakeSessionManager = {
@@ -1449,6 +1447,46 @@ describe("wave 5 — adapters and polish", () => {
 			expect(output[0]).toContain("hello@1.0.0");
 		} finally {
 			discoverSpy.mockRestore();
+		}
+	});
+});
+
+describe("/move preflight flush", () => {
+	it("aborts text-mode /move when pending settings flush fails", async () => {
+		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-move-"));
+		try {
+			const { output, fakeSessionManager, runtime } = createRuntime();
+			spyOn(runtime.settings, "flush").mockRejectedValue(new Error("disk full"));
+
+			const result = await executeAcpBuiltinSlashCommand(`/move ${targetDir}`, runtime);
+
+			expect(result).toEqual({ consumed: true });
+			expect(output[0]).toContain("disk full");
+			expect(fakeSessionManager!._movedTo).toBeUndefined();
+		} finally {
+			await fs.rm(targetDir, { recursive: true, force: true });
+		}
+	});
+
+	it("completes text-mode /move when flush succeeds", async () => {
+		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-move-ok-"));
+		const originalProjectDir = process.cwd();
+		try {
+			const { output, fakeSessionManager, runtime } = createRuntime();
+			let flushed = false;
+			spyOn(runtime.settings, "flush").mockImplementation(async () => {
+				flushed = true;
+			});
+
+			const result = await executeAcpBuiltinSlashCommand(`/move ${targetDir}`, runtime);
+
+			expect(result).toEqual({ consumed: true });
+			expect(flushed).toBe(true);
+			expect(fakeSessionManager!._movedTo).toBe(targetDir);
+			expect(output[0]).toContain("Moved to");
+		} finally {
+			setProjectDir(originalProjectDir);
+			await fs.rm(targetDir, { recursive: true, force: true });
 		}
 	});
 });

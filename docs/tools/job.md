@@ -133,6 +133,7 @@ Lifecycle and exact state names:
 - Combining `list` with `poll` or `cancel` throws a `ToolError`: `` `list` cannot be combined with `poll` or `cancel`. ``
 
 ## Notes
+- `job` remains the standalone legacy background-job surface for compatibility. The additive `hub` tool exposes equivalent job-control operations without removing this wire contract.
 - `job` waits for the first watched running job to settle, not for all watched jobs. If others remain `running`, they are reported under `## Still Running`; the caller must invoke `job` again to continue waiting.
 - Delivery suppression is the key difference between snapshot and automatic delivery:
   - snapshots (`job` calls with `poll` or `list: true`) read current manager state;

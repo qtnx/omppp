@@ -29,17 +29,14 @@ function expectInvalid(value: unknown, field: string): void {
 }
 
 describe("parseCanvasDocument", () => {
-	it.each([
-		"spec",
-		"story-map",
-		"journey-map",
-		"plan",
-		"architecture",
-	] as const)("accepts a bounded %s artifact", artifactType => {
-		const result = parseCanvasDocument(JSON.stringify(validCanvas(artifactType)));
+	it.each(["spec", "story-map", "journey-map", "plan", "architecture"] as const)(
+		"accepts a bounded %s artifact",
+		artifactType => {
+			const result = parseCanvasDocument(JSON.stringify(validCanvas(artifactType)));
 
-		expect(result).toMatchObject({ ok: true, layout: "deterministic", canvas: { version: 1, artifactType } });
-	});
+			expect(result).toMatchObject({ ok: true, layout: "deterministic", canvas: { version: 1, artifactType } });
+		},
+	);
 
 	it("preserves fully authored positions and reports authored layout without computing positions", () => {
 		const canvas = validCanvas();

@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, MessageAttribution, ServiceTierByFamily, TextContent } from "@oh-my-pi/pi-ai";
+import type { StructuredSubagentSchemaMode } from "../task/types";
 import type { PersistedWorkspaceRoot } from "../workspace-roots";
 
 export const CURRENT_SESSION_VERSION = 3;
@@ -82,6 +83,12 @@ export interface ServiceTierChangeEntry extends SessionEntryBase {
 	serviceTier: ServiceTierByFamily | null;
 }
 
+/** Persisted selection of MCP tools when discovery is active. An empty list is intentional. */
+export interface MCPToolSelectionEntry extends SessionEntryBase {
+	type: "mcp_tool_selection";
+	toolNames: string[];
+}
+
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -147,6 +154,7 @@ export interface TitleChangeEntry extends SessionEntryBase {
 declare module "@oh-my-pi/pi-agent-core/compaction/entries" {
 	interface CustomCompactionSessionEntries {
 		titleChange: TitleChangeEntry;
+		mcpToolSelection: MCPToolSelectionEntry;
 	}
 }
 
@@ -155,13 +163,6 @@ export interface TtsrInjectionEntry extends SessionEntryBase {
 	type: "ttsr_injection";
 	/** Names of rules that were injected */
 	injectedRules: string[];
-}
-
-/** Persisted MCP discovery selection state for a session branch. */
-export interface MCPToolSelectionEntry extends SessionEntryBase {
-	type: "mcp_tool_selection";
-	/** MCP tool names selected for visibility in discovery mode. */
-	selectedToolNames: string[];
 }
 
 /** Session init entry - captures initial context for subagent sessions (debugging/replay). */
@@ -173,8 +174,12 @@ export interface SessionInitEntry extends SessionEntryBase {
 	task: string;
 	/** Tools available to the agent */
 	tools: string[];
-	/** Output schema if structured output was requested */
+	/** Output schema if structured output was requested. */
 	outputSchema?: unknown;
+	/** Enforcement policy recorded with the output schema for faithful revival. */
+	outputSchemaMode?: StructuredSubagentSchemaMode;
+	/** Whether revival must retain only the explicitly persisted tool names. */
+	restrictToolNames?: boolean;
 	/** Spawn allowlist the subagent ran with ("" = none, "*" = any, else CSV); absent on pre-spawns files. */
 	spawns?: string;
 	/** The agent's `readSummarize` setting (`false` = read summarization disabled); absent uses the session default. */
@@ -218,6 +223,7 @@ export type SessionEntry =
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
 	| ServiceTierChangeEntry
+	| MCPToolSelectionEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| CustomEntry
@@ -225,7 +231,6 @@ export type SessionEntry =
 	| LabelEntry
 	| TitleChangeEntry
 	| TtsrInjectionEntry
-	| MCPToolSelectionEntry
 	| SessionInitEntry
 	| ModeChangeEntry;
 

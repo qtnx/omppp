@@ -287,7 +287,7 @@ describe("InteractiveMode resume mode restoration", () => {
 		await created.mode.init({ suppressWelcomeIntro: true });
 		expect(created.mode.planModeEnabled).toBe(true);
 		expect(created.session.getActiveToolNames()).toEqual(["read", "resolve"]);
-		expect(created.session.peekStandingResolveHandler()).toBeDefined();
+		expect(created.session.peekPlanProposalHandler()).toBeDefined();
 
 		await expect(created.session.switchSession(targetSessionFile)).resolves.toBe(true);
 
@@ -295,7 +295,7 @@ describe("InteractiveMode resume mode restoration", () => {
 		expect(created.mode.planModePaused).toBe(false);
 		expect(created.session.getPlanModeState()).toBeUndefined();
 		expect(created.session.getActiveToolNames()).toEqual(["read"]);
-		expect(created.session.peekStandingResolveHandler()).toBeUndefined();
+		expect(created.session.peekPlanProposalHandler()).toBeUndefined();
 	});
 
 	it("restores temporary model and plan mode together on session switch", async () => {

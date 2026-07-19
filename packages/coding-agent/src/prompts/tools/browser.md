@@ -35,10 +35,7 @@ Drives real Chromium tab; full puppeteer access via JS.
 </instruction>
 
 <critical>
-- MUST `open` before `run` — `run` never creates a tab.
-- Default to `tab.observe()` for page state — structured data, actionable ids. Screenshot ONLY when appearance matters.
-- Navigation invalidates element ids — re-observe before use.
-- `code` runs with full Node access. Treat as your code, not sandboxed.
+- MUST `open` before `run`. Default to `tab.observe()`; screenshot only for appearance. `code` runs with full Node access — not sandboxed.
 </critical>
 
 <examples>

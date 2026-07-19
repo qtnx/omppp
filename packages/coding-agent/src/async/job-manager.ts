@@ -8,9 +8,10 @@ const DEFAULT_RETENTION_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RUNNING_JOBS = 15;
 
 /**
- * Scheduled `job` poll wait ladder (ms). Each `job poll` waits one bounded
- * window; consecutive re-polls climb the ladder, while a gap of at least
- * POLL_ESCALATION_RESET_MS resets to the 5 minute floor.
+ * Adaptive poll-wait ladder (ms) for blocking `job` and `hub` polls. A tight
+ * loop climbs the ladder so repeated "still running" frames back off; fixed
+ * durations wait verbatim. A sufficiently long reassessment gap resets to the
+ * floor.
  */
 const POLL_WAIT_LADDER_MS = [300_000, 600_000] as const;
 /**
@@ -427,9 +428,10 @@ export class AsyncJobManager {
 	}
 
 	/**
-	 * Compute and record the next scheduled wait (ms) for a `job` poll by owner.
-	 * Consecutive re-polls climb the configured ladder; reassessment gaps reset
-	 * to the floor. Pair each call with `recordPollWaitEnd()` once the wait ends.
+	 * Compute and record the next adaptive wait (ms) for a blocking `job` or
+	 * `hub` poll by owner. Consecutive polls climb the configured ladder; a
+	 * reassessment gap resets to the floor. Pair each call with
+	 * `recordPollWaitEnd()` once the wait returns.
 	 */
 	nextPollWaitMs(ownerId: string | undefined, now: number = Date.now()): number {
 		const prev = this.#pollEscalation.get(ownerId);

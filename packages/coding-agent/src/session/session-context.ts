@@ -64,14 +64,14 @@ export interface SessionContext {
 	models: Record<string, string>;
 	/** Names of TTSR rules that have been injected this session */
 	injectedTtsrRules: string[];
-	/** MCP tool names selected through discovery for this session branch. */
-	selectedMCPToolNames: string[];
-	/** Whether this branch contains an explicit persisted MCP selection entry. */
-	hasPersistedMCPToolSelection: boolean;
 	/** Active mode (e.g. "plan") or "none" if no special mode is active */
 	mode: string;
 	/** Mode-specific data from the last mode_change entry */
 	modeData?: Record<string, unknown>;
+	/** Last persisted selection of MCP tools on the resolved branch. */
+	selectedMCPToolNames: string[];
+	/** Whether this branch explicitly persisted an MCP selection, including an empty one. */
+	hasPersistedMCPToolSelection: boolean;
 	/**
 	 * Array parallel to messages, indicating which assistant turns should
 	 * have their prompt-cache misses suppressed/explained (because a model,
@@ -192,11 +192,11 @@ export function buildSessionContext(
 		return {
 			messages: [],
 			thinkingLevel: "off",
+			selectedMCPToolNames: [],
+			hasPersistedMCPToolSelection: false,
 			serviceTier: undefined,
 			models: {},
 			injectedTtsrRules: [],
-			selectedMCPToolNames: [],
-			hasPersistedMCPToolSelection: false,
 			mode: "none",
 		};
 	}
@@ -210,13 +210,13 @@ export function buildSessionContext(
 
 	if (!leaf) {
 		return {
+			selectedMCPToolNames: [],
+			hasPersistedMCPToolSelection: false,
 			messages: [],
 			thinkingLevel: "off",
 			serviceTier: undefined,
 			models: {},
 			injectedTtsrRules: [],
-			selectedMCPToolNames: [],
-			hasPersistedMCPToolSelection: false,
 			mode: "none",
 		};
 	}
@@ -232,13 +232,13 @@ export function buildSessionContext(
 
 	// Extract settings and find compaction
 	let thinkingLevel: string | undefined = "off";
+	let selectedMCPToolNames: string[] = [];
+	let hasPersistedMCPToolSelection = false;
 	let configuredThinkingLevel: string | undefined;
 	let serviceTier: ServiceTierByFamily | undefined;
 	const models: Record<string, string> = {};
 	let compaction: CompactionEntry | null = null;
 	const injectedTtsrRulesSet = new Set<string>();
-	let selectedMCPToolNames: string[] = [];
-	let hasPersistedMCPToolSelection = false;
 	let mode = "none";
 	let modeData: Record<string, unknown> | undefined;
 	// Track whether an explicit `model_change` with role="default" has been
@@ -265,6 +265,9 @@ export function buildSessionContext(
 			}
 		} else if (entry.type === "service_tier_change") {
 			serviceTier = coerceServiceTierByFamily(entry.serviceTier);
+		} else if (entry.type === "mcp_tool_selection") {
+			selectedMCPToolNames = [...entry.toolNames];
+			hasPersistedMCPToolSelection = true;
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			// Legacy fallback: infer default model from assistant messages only
 			// when no explicit `model_change` (role=default) entry has been
@@ -281,9 +284,6 @@ export function buildSessionContext(
 			for (const ruleName of entry.injectedRules) {
 				injectedTtsrRulesSet.add(ruleName);
 			}
-		} else if (entry.type === "mcp_tool_selection") {
-			selectedMCPToolNames = [...entry.selectedToolNames];
-			hasPersistedMCPToolSelection = true;
 		} else if (entry.type === "mode_change") {
 			mode = entry.mode;
 			modeData = entry.data;
@@ -541,9 +541,9 @@ export function buildSessionContext(
 		serviceTier,
 		models,
 		injectedTtsrRules,
-		selectedMCPToolNames,
-		hasPersistedMCPToolSelection,
 		mode,
 		modeData,
+		selectedMCPToolNames,
+		hasPersistedMCPToolSelection,
 	};
 }

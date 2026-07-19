@@ -62,6 +62,15 @@ describe("--tools legacy aliases", () => {
 
 		expect((result as typeof result & { tools?: string[] }).tools).toEqual(["grep", "glob"]);
 	});
+
+	it("rejects unknown tool names instead of silently narrowing the toolset", () => {
+		// Unknown tool typos must fail rather than being silently dropped, which
+		// would narrow `--tools bash,definitely_not_a_tool` to just bash.
+		expect(() => parseArgs(["--tools", "bash,definitely_not_a_tool"])).toThrow(CliUsageError);
+		expect(() => parseArgs(["--tools", "bash,definitely_not_a_tool"])).toThrow(
+			/Unknown tool in --tools: definitely_not_a_tool/,
+		);
+	});
 });
 
 describe("OPTIONAL_FLAGS per-flag quirks", () => {

@@ -19,6 +19,7 @@ import {
 	stringifyJson,
 	toError,
 } from "@oh-my-pi/pi-utils";
+import type { StructuredSubagentSchemaMode } from "../task/types";
 import {
 	normalizePersistedWorkspaceRoots,
 	type PersistedWorkspaceRoot,
@@ -1001,6 +1002,26 @@ export class SessionManager {
 		};
 	}
 
+	/**
+	 * Create an independent manager for the current logical session and branch.
+	 * The clone shares the storage backend but owns its entry index and writer, so
+	 * callers can finish session-owned work after this manager switches elsewhere.
+	 * Set `persist` false when the original session is intentionally being dropped.
+	 */
+	cloneCurrentSession(options?: { persist?: boolean }): SessionManager {
+		const persist = options?.persist ?? this.#persist;
+		const clone = new SessionManager(this.#cwd, this.#sessionDir, persist, this.#storage);
+		clone.#suppressBreadcrumb = true;
+		clone.restoreState(this.captureState());
+		if (!persist) {
+			clone.#sessionFile = undefined;
+			clone.#fileIsCurrent = false;
+			clone.#rewriteRequired = false;
+			clone.#forceFileCreation = false;
+		}
+		return clone;
+	}
+
 	restoreState(snapshot: SessionManagerStateSnapshot): void {
 		this.#closeWriterEventually();
 		this.#diskTail = Promise.resolve();
@@ -1544,6 +1565,34 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	/**
+	 * Append to a non-active branch without changing the current leaf.
+	 * Used by work that retains ownership of a branch across tree navigation.
+	 */
+	appendMessageToBranch(
+		message:
+			| Message
+			| CustomMessage
+			| HookMessage
+			| BashExecutionMessage
+			| PythonExecutionMessage
+			| FileMentionMessage,
+		parentId: string | null,
+	): string {
+		if (parentId !== null && !this.#index.has(parentId)) throw new Error(`Entry ${parentId} not found`);
+		const activeLeafId = this.#index.leafId();
+		const entry: SessionMessageEntry = {
+			type: "message",
+			id: generateId(this.#index),
+			parentId,
+			timestamp: nowIso(),
+			message,
+		};
+		this.#recordEntry(entry);
+		this.#index.setLeaf(activeLeafId);
+		return entry.id;
+	}
+
 	/** Append a thinking level change as child of current leaf, then advance leaf. Returns entry id. */
 	appendThinkingLevelChange(thinkingLevel?: string, configured?: string): string {
 		const entry: ThinkingLevelChangeEntry = {
@@ -1558,6 +1607,16 @@ export class SessionManager {
 
 	appendServiceTierChange(serviceTier: ServiceTierByFamily | null): string {
 		const entry: ServiceTierChangeEntry = { type: "service_tier_change", ...this.#freshEntryFields(), serviceTier };
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
+	appendMCPToolSelection(toolNames: Iterable<string>): string {
+		const entry: MCPToolSelectionEntry = {
+			type: "mcp_tool_selection",
+			...this.#freshEntryFields(),
+			toolNames: [...new Set(toolNames)].sort(),
+		};
 		this.#recordEntry(entry);
 		return entry.id;
 	}
@@ -1584,6 +1643,8 @@ export class SessionManager {
 		task: string;
 		tools: string[];
 		outputSchema?: unknown;
+		outputSchemaMode?: StructuredSubagentSchemaMode;
+		restrictToolNames?: boolean;
 		spawns?: string;
 		readSummarize?: boolean;
 	}): string {
@@ -1661,19 +1722,6 @@ export class SessionManager {
 			details: stripInternalDetailsFields(normalized.details),
 			attribution: normalized.attribution,
 			...this.#freshEntryFields(),
-		};
-		this.#recordEntry(entry);
-		return entry.id;
-	}
-
-	/**
-	 * Append an MCP tool selection entry recording the discovery-selected MCP tools.
-	 */
-	appendMCPToolSelection(selectedToolNames: string[]): string {
-		const entry: MCPToolSelectionEntry = {
-			type: "mcp_tool_selection",
-			...this.#freshEntryFields(),
-			selectedToolNames: [...selectedToolNames],
 		};
 		this.#recordEntry(entry);
 		return entry.id;
@@ -2097,6 +2145,8 @@ export class SessionManager {
 			task: string;
 			tools: string[];
 			outputSchema?: unknown;
+			outputSchemaMode?: StructuredSubagentSchemaMode;
+			restrictToolNames?: boolean;
 			spawns?: string;
 			readSummarize?: boolean;
 		} | null;
@@ -2115,6 +2165,8 @@ export class SessionManager {
 			task: string;
 			tools: string[];
 			outputSchema?: unknown;
+			outputSchemaMode?: StructuredSubagentSchemaMode;
+			restrictToolNames?: boolean;
 			spawns?: string;
 			readSummarize?: boolean;
 		} | null = null;
@@ -2126,6 +2178,8 @@ export class SessionManager {
 					task: entry.task,
 					tools: entry.tools,
 					outputSchema: entry.outputSchema,
+					outputSchemaMode: entry.outputSchemaMode,
+					restrictToolNames: entry.restrictToolNames,
 					readSummarize: entry.readSummarize,
 					spawns: entry.spawns,
 				};

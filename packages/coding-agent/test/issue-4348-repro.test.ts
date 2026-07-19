@@ -44,11 +44,11 @@ function transcriptWith(messages: AgentMessage[]): SessionContext {
 	return {
 		messages,
 		thinkingLevel: "off",
+		selectedMCPToolNames: [],
+		hasPersistedMCPToolSelection: false,
 		serviceTier: undefined,
 		models: {},
 		injectedTtsrRules: [],
-		selectedMCPToolNames: [],
-		hasPersistedMCPToolSelection: false,
 		mode: "none",
 	};
 }

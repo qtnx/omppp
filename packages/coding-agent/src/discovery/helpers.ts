@@ -276,6 +276,8 @@ export interface ParsedAgentFields {
 	readSummarize?: boolean;
 	blocking?: boolean;
 	reviewGate?: AgentReviewGatePolicy;
+	/** `true` = prewalk into the default target; string = prewalk into that model pattern. */
+	prewalk?: boolean | string;
 }
 
 /**
@@ -337,6 +339,12 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		typeof frontmatter.resourceProfile === "string" ? frontmatter.resourceProfile.trim().toLowerCase() : undefined;
 	const resourceProfile = rawResourceProfile === "minimal" ? "minimal" : undefined;
 	const readSummarize = parseBoolean(frontmatter.readSummarize);
+	// prewalk: true → hand off to the default prewalk target; "<pattern>" → custom target.
+	let prewalk: boolean | string | undefined = parseBoolean(frontmatter.prewalk);
+	if (prewalk === undefined && typeof frontmatter.prewalk === "string") {
+		const trimmed = frontmatter.prewalk.trim();
+		if (trimmed) prewalk = trimmed;
+	}
 	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
 		?.map(s => s.trim())
 		.filter(Boolean);
@@ -354,6 +362,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		autoloadSkills,
 		reviewGate,
 		readSummarize,
+		prewalk,
 	};
 }
 
@@ -786,13 +795,16 @@ export function buildExtensionModuleItems(
  * Entry for an installed Claude Code plugin.
  */
 export interface ClaudePluginEntry {
-	scope: "user" | "project";
+	/** Claude registry scope; local entries are restricted to their project path. */
+	scope?: "user" | "project" | "local";
 	installPath: string;
 	version: string;
 	installedAt: string;
 	lastUpdated: string;
 	gitCommitSha?: string;
 	enabled?: boolean;
+	/** Project root recorded by Claude for a local installation. */
+	projectPath?: string;
 }
 
 /**
@@ -905,6 +917,14 @@ export async function resolveOrDefaultProjectRegistryPath(cwd: string): Promise<
 	// as both user and project registry and producing duplicates / disambiguation errors.
 	if (path.resolve(cwd) === os.homedir()) return undefined;
 	return path.join(cwd, getConfigDirName(), "plugins", "installed_plugins.json");
+}
+
+async function canonicalClaudeProjectPath(projectPath: string): Promise<string | null> {
+	try {
+		return await fs.promises.realpath(path.resolve(projectPath));
+	} catch {
+		return null;
+	}
 }
 
 const pluginRootsCache = new Map<string, { roots: ClaudePluginRoot[]; warnings: string[] }>();
@@ -1027,7 +1047,7 @@ function addClaudePluginRoot(
 		plugin: pluginId.slice(0, atIndex),
 		version: entry.version || "unknown",
 		path: entry.installPath,
-		scope: scopeOverride ?? entry.scope ?? "user",
+		scope: scopeOverride ?? (entry.scope === "local" ? "project" : (entry.scope ?? "user")),
 	});
 }
 
@@ -1043,7 +1063,8 @@ export function registerPluginCacheInvalidator(invalidator: () => void): void {
  * Reads ~/.claude/plugins/installed_plugins.json and ~/.omp/plugins/installed_plugins.json,
  * and optionally the nearest project-scoped registry resolved from `cwd`.
  * Results are cached by source-file content signature so external Claude Code
- * plugin enable/disable changes are reflected on the next discovery call.
+ * plugin enable/disable changes are reflected on the next discovery call, and
+ * include the canonical active project so local plugins remain project-scoped.
  */
 export async function listClaudePluginRoots(
 	home: string,
@@ -1051,6 +1072,7 @@ export async function listClaudePluginRoots(
 ): Promise<{ roots: ClaudePluginRoot[]; warnings: string[] }> {
 	const resolvedProjectPath = cwd ? await resolveActiveProjectRegistryPath(cwd) : null;
 	const projectRoot = getProjectRootFromRegistryPath(resolvedProjectPath);
+	const activeClaudeProjectPath = projectRoot ? await canonicalClaudeProjectPath(projectRoot) : null;
 	const settingsSnapshot = await loadClaudePluginSettings(home, cwd, projectRoot);
 	const registryPath = path.join(home, ".claude", "plugins", "installed_plugins.json");
 	const ompRegistryPath = path.join(getPluginsDir(home), "installed_plugins.json");
@@ -1061,7 +1083,7 @@ export async function listClaudePluginRoots(
 	]);
 	const cacheKey = pluginRootsSignature(
 		[
-			`${home}:${resolvedProjectPath ?? ""}`,
+			`${home}:${resolvedProjectPath ?? ""}:${activeClaudeProjectPath ?? ""}`,
 			fileSignature(registryPath, content),
 			fileSignature(ompRegistryPath, ompContent),
 			resolvedProjectPath ? fileSignature(resolvedProjectPath, projectContent) : "project:missing",
@@ -1075,6 +1097,7 @@ export async function listClaudePluginRoots(
 	const roots: ClaudePluginRoot[] = [];
 	const warnings: string[] = [];
 	const projectRoots: ClaudePluginRoot[] = [];
+	const canonicalClaudeProjectPaths = new Map<string, string | null>();
 
 	// ── Claude Code registry ──────────────────────────────────────────────────
 	if (content) {
@@ -1088,6 +1111,15 @@ export async function listClaudePluginRoots(
 				// Process all valid entries, not just the first one.
 				// This handles plugins with multiple installs (different scopes/versions).
 				for (const entry of entries) {
+					if (entry.scope === "local") {
+						if (!entry.projectPath || !activeClaudeProjectPath) continue;
+						let entryProjectPath = canonicalClaudeProjectPaths.get(entry.projectPath);
+						if (entryProjectPath === undefined) {
+							entryProjectPath = await canonicalClaudeProjectPath(entry.projectPath);
+							canonicalClaudeProjectPaths.set(entry.projectPath, entryProjectPath);
+						}
+						if (entryProjectPath !== activeClaudeProjectPath) continue;
+					}
 					addClaudePluginRoot(roots, warnings, pluginId, entry, settingsSnapshot);
 				}
 			}

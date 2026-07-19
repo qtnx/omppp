@@ -1,29 +1,18 @@
-Read files, directories, archives, SQLite, images, documents, internal resources, and web URLs via `path` plus optional `selector`.
+Read files, directories, archives, SQLite, images, documents, internal resources, and web URLs via `path`.
 
 <instruction>
 - SHOULD parallelize independent reads.
-- SHOULD use `read` (not a browser tool) for web content; browser only when `read` can't deliver.
+- SHOULD use `read` (not browser) for web content; browser only when `read` can't deliver.
 </instruction>
 
-## Parameters
+## Selectors — append `:<sel>` to `path` (e.g. `src/foo.ts:50-200`, `src/foo.ts:raw`, `db.sqlite:users:42`)
+- `:50` / `:50-` — from line 50 | `:50-200` — inclusive | `:50+150` — 150 lines from 50 | `:5-16,960-973` — multiple ranges
+- `:raw` — verbatim, no anchors/prefixes | `:2-4:raw` / `:raw:2-4` — range + verbatim
+- `:conflicts` — one line per unresolved git merge conflict block
 
-- `path` — required. Local path, internal URI (`skill://`, `agent://`, `artifact://`, `memory://`, `rule://`, `local://`, `vault://`, `mcp://`, `omp://`, `issue://`, `pr://`, `ssh://`), or URL. Inline `:<sel>` still works for ranges/modes (e.g. `src/foo.ts:50-200`, `src/foo.ts:raw`, `db.sqlite:users:42`).
-- `selector` — optional selector without leading `:` (e.g. `"50-200"`, `"raw"`, `"raw:50-100"`, `"conflicts"`). Use when `path` contains literal colons: `{"path":"test:1-2","selector":"1-2"}`.
-
-## Selectors
-
-- _(none)_ — parseable code → structural summary; other files → from start (up to {{DEFAULT_LIMIT}} lines).
-- `:50` / `:50-` — from line 50 onward.
-- `:50-200` — lines 50–200 inclusive.
-- `:50+150` — 150 lines from 50.
-- `:20+1` — anchor line 20.
-- `:5-16,960-973` — multiple ranges in one call.
-- `:raw` — verbatim; no anchors/summary/line prefixes.
-- `:2-4:raw` / `:raw:2-4` — range AND verbatim; either order.
-- `:conflicts` — one line per unresolved git merge conflict block.
-
-# Files
-
+## Source kinds
+- Parseable code, no selector → structural summary (declarations only, body elided). Footer names recovery selector — re-issue ONLY those ranges.
+- {{#if IS_HL_MODE}}File + selector → `[foo.ts#1A2B]` snapshot header + numbered lines. Copy `[FILENAME#TAG]` for anchored edits; NEVER fabricate the tag.{{/if}}
 - Directory → depth-limited dirent listing.
 {{#if IS_HL_MODE}}
 - File + selector → filename-only snapshot header + numbered lines: `[foo.ts#1A2B]` then `41:def alpha():`. Copy `[FILENAME#TAG]` for anchored edits; ops use bare line numbers. NEVER fabricate the tag.
@@ -73,6 +62,5 @@ All URI schemes take the same line selectors. `artifact://<id>` recovers spilled
 `ssh://host/<absolute-path>` reads a remote text file (UTF-8, ≤1 MiB) or lists a directory one level deep, on a pre-configured SSH host or `~/.ssh/config` alias; `ssh://host/` lists the remote root and bare `ssh://` lists the configured hosts. Files are also writable via `write` and searchable via `grep`; a directory only lists (`write` refuses to overwrite one). A literal `:`, `?`, or `#` in the remote path must be percent-encoded (`%3A`/`%3F`/`%23`) — a trailing `:sel` is read as a line selector, and `?`/`#` start a URL query/fragment. Requires a POSIX login shell (`sh`/`bash`/`zsh`); a Windows host or a non-POSIX shell (fish, csh/tcsh) is rejected — use the `ssh` tool there.
 
 <critical>
-- Literal colon filename + selector? Use `selector`, not recursive `path:"file:sel:sel"`.
-- Summary footer names elided ranges? Re-issue ONLY those ranges. NEVER guess `..`/`…` content.
+Summary footer names elided ranges? Re-issue ONLY those ranges. NEVER guess `..`/`…` content.
 </critical>
