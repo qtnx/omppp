@@ -50,6 +50,23 @@ function compactionSummary(messages: AgentMessage[]): CompactionSummaryMessage {
 	return summary;
 }
 
+describe("buildSessionContext persisted MCP selection", () => {
+	it.each([undefined, null])("treats %s toolNames as an explicit empty selection", toolNames => {
+		const malformedEntry = {
+			type: "mcp_tool_selection",
+			id: "mcp-selection",
+			parentId: null,
+			timestamp,
+			toolNames,
+		} as unknown as SessionEntry;
+
+		const context = buildSessionContext([malformedEntry]);
+
+		expect(context.selectedMCPToolNames).toEqual([]);
+		expect(context.hasPersistedMCPToolSelection).toBe(true);
+	});
+});
+
 describe("buildSessionContext snapcompact archives", () => {
 	it("omits snapcompact archive blocks from collapsed transcript summaries", () => {
 		const context = buildSessionContext(compactedEntries, undefined, undefined, {
