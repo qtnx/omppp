@@ -18,6 +18,11 @@ const LEGACY_SNAPCOMPACT_FRAME_COUNT_GUARD = 16;
 const LEGACY_SNAPCOMPACT_ARCHIVE_TEXT_GUARD = 250_000;
 const LEGACY_SNAPCOMPACT_TRUNCATED_CHARS_GUARD = 1_000_000;
 
+function normalizePersistedMCPToolNames(toolNames: unknown): string[] {
+	if (!Array.isArray(toolNames)) return [];
+	return toolNames.filter((toolName): toolName is string => typeof toolName === "string");
+}
+
 function hasLegacySnapcompactFrames(archive: snapcompact.Archive): boolean {
 	return archive.frames.some(frame => frame.font === undefined && frame.variant === undefined);
 }
@@ -266,7 +271,7 @@ export function buildSessionContext(
 		} else if (entry.type === "service_tier_change") {
 			serviceTier = coerceServiceTierByFamily(entry.serviceTier);
 		} else if (entry.type === "mcp_tool_selection") {
-			selectedMCPToolNames = [...entry.toolNames];
+			selectedMCPToolNames = normalizePersistedMCPToolNames(entry.toolNames);
 			hasPersistedMCPToolSelection = true;
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			// Legacy fallback: infer default model from assistant messages only

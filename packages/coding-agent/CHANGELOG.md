@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed session resume crashing when a persisted MCP tool selection had missing or null `toolNames`; malformed selections now restore as an explicit empty selection.
+
 ## [1.6.4] - 2026-07-19
 
 ### Breaking Changes
