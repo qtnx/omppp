@@ -25,6 +25,19 @@ function countSpawns(spawnLog: string): number {
 	return text.split("\n").filter(line => line.trim().length > 0).length;
 }
 
+function waitForServerTools(manager: MCPManager, serverName: string): Promise<void> {
+	const toolPrefix = `mcp__${serverName}_`;
+	if (manager.getTools().some(tool => tool.name.startsWith(toolPrefix))) return Promise.resolve();
+
+	const { promise, resolve } = Promise.withResolvers<void>();
+	manager.setOnToolsChanged(tools => {
+		if (!tools.some(tool => tool.name.startsWith(toolPrefix))) return;
+		manager.setOnToolsChanged(() => {});
+		resolve();
+	});
+	return promise;
+}
+
 describe("MCPManager.sleepAll", () => {
 	let workDir: string;
 	let spawnLog: string;
@@ -54,8 +67,10 @@ describe("MCPManager.sleepAll", () => {
 	}
 
 	it("closes transports, keeps tools/config, and reports sleeping", async () => {
+		const toolsReady = waitForServerTools(manager, "sleeper");
 		const config = stdioConfig();
 		const result = await manager.connectServers({ sleeper: config }, {});
+		await toolsReady;
 		expect(result.errors.has("sleeper")).toBe(false);
 		expect(manager.getConnectionStatus("sleeper")).toBe("connected");
 		expect(countSpawns(spawnLog)).toBe(1);
@@ -79,10 +94,12 @@ describe("MCPManager.sleepAll", () => {
 	}, 20_000);
 
 	it("wakes on tool execute with exactly one respawn and no crash-storm", async () => {
+		const toolsReady = waitForServerTools(manager, "sleeper");
 		const config = stdioConfig();
 		const result = await manager.connectServers({ sleeper: config }, {});
 		expect(result.errors.has("sleeper")).toBe(false);
 		expect(countSpawns(spawnLog)).toBe(1);
+		await toolsReady;
 
 		const tool = manager.getTools().find(t => t.name === `mcp__sleeper_${TOOL_NAME}`);
 		expect(tool).toBeDefined();
