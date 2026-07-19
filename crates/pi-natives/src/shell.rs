@@ -558,5 +558,4 @@ mod tests {
 			.expect("shell run should return");
 		assert!(result.cancelled);
 	}
-
 }

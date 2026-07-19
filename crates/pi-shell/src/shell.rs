@@ -897,7 +897,8 @@ async fn run_shell_command_single(
 		cancel_token,
 		spawn_registry,
 		capture_mode,
-		Default::default(),
+		#[cfg(test)]
+		None,
 	)
 	.await?;
 
@@ -1023,7 +1024,8 @@ async fn run_shell_command_segmented_chain(
 			cancel_token.clone(),
 			spawn_registry.clone(),
 			capture_mode,
-			Default::default(),
+			#[cfg(test)]
+			None,
 		)
 		.await?;
 
@@ -1104,12 +1106,10 @@ struct CancelReaderGraceProbe {
 	hold_release:   Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
-#[cfg(test)]
-type CancelReaderGraceProbeArg = Option<CancelReaderGraceProbe>;
-#[cfg(not(test))]
-type CancelReaderGraceProbeArg = ();
-
-async fn cancel_reader_grace_wait(grace: Duration, probe: CancelReaderGraceProbeArg) {
+async fn cancel_reader_grace_wait(
+	grace: Duration,
+	#[cfg(test)] probe: Option<CancelReaderGraceProbe>,
+) {
 	#[cfg(test)]
 	if let Some(probe) = probe {
 		if let Some(tx) = probe.observed_grace {
@@ -1120,18 +1120,21 @@ async fn cancel_reader_grace_wait(grace: Duration, probe: CancelReaderGraceProbe
 		}
 		return;
 	}
-	#[cfg(not(test))]
-	let _ = probe;
 	time::sleep(grace).await;
 }
 
 async fn cancel_reader_after_grace(
 	cancel_token: CancellationToken,
 	reader_cancel: CancellationToken,
-	probe: CancelReaderGraceProbeArg,
+	#[cfg(test)] probe: Option<CancelReaderGraceProbe>,
 ) {
 	cancel_token.cancelled().await;
-	cancel_reader_grace_wait(CANCEL_READER_GRACE, probe).await;
+	cancel_reader_grace_wait(
+		CANCEL_READER_GRACE,
+		#[cfg(test)]
+		probe,
+	)
+	.await;
 	reader_cancel.cancel();
 }
 
@@ -1143,7 +1146,7 @@ async fn run_shell_command_once(
 	cancel_token: CancellationToken,
 	spawn_registry: Arc<process::SpawnRegistry>,
 	capture_mode: CommandCaptureMode,
-	grace_probe: CancelReaderGraceProbeArg,
+	#[cfg(test)] grace_probe: Option<CancelReaderGraceProbe>,
 ) -> Result<CommandRunOutput> {
 	let (reader_file, writer_file) = pipe_to_files("output")?;
 
@@ -1189,6 +1192,7 @@ async fn run_shell_command_once(
 	let cancel_bridge = tokio::spawn(cancel_reader_after_grace(
 		cancel_token.clone(),
 		reader_cancel.clone(),
+		#[cfg(test)]
 		grace_probe,
 	));
 	ensure_trailing_newline_for_heredoc(&mut command);
