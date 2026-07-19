@@ -897,6 +897,7 @@ async fn run_shell_command_single(
 		cancel_token,
 		spawn_registry,
 		capture_mode,
+		Default::default(),
 	)
 	.await?;
 
@@ -1022,6 +1023,7 @@ async fn run_shell_command_segmented_chain(
 			cancel_token.clone(),
 			spawn_registry.clone(),
 			capture_mode,
+			Default::default(),
 		)
 		.await?;
 
@@ -1091,6 +1093,48 @@ async fn run_shell_command_segmented_chain(
 	Ok((result, minimized_out))
 }
 
+// Let pipeline consumers flush output after cancellation kills their producers.
+// The outer run cancellation remains bounded, and this delayed fallback still
+// releases readers whose writers never close.
+const CANCEL_READER_GRACE: Duration = Duration::from_millis(500);
+
+#[cfg(test)]
+struct CancelReaderGraceProbe {
+	observed_grace: Option<tokio::sync::oneshot::Sender<Duration>>,
+	hold_release:   Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+#[cfg(test)]
+type CancelReaderGraceProbeArg = Option<CancelReaderGraceProbe>;
+#[cfg(not(test))]
+type CancelReaderGraceProbeArg = ();
+
+async fn cancel_reader_grace_wait(grace: Duration, probe: CancelReaderGraceProbeArg) {
+	#[cfg(test)]
+	if let Some(probe) = probe {
+		if let Some(tx) = probe.observed_grace {
+			let _ = tx.send(grace);
+		}
+		if let Some(rx) = probe.hold_release {
+			let _ = rx.await;
+		}
+		return;
+	}
+	#[cfg(not(test))]
+	let _ = probe;
+	time::sleep(grace).await;
+}
+
+async fn cancel_reader_after_grace(
+	cancel_token: CancellationToken,
+	reader_cancel: CancellationToken,
+	probe: CancelReaderGraceProbeArg,
+) {
+	cancel_token.cancelled().await;
+	cancel_reader_grace_wait(CANCEL_READER_GRACE, probe).await;
+	reader_cancel.cancel();
+}
+
 async fn run_shell_command_once(
 	session: &mut ShellSessionCore,
 	mut command: String,
@@ -1099,6 +1143,7 @@ async fn run_shell_command_once(
 	cancel_token: CancellationToken,
 	spawn_registry: Arc<process::SpawnRegistry>,
 	capture_mode: CommandCaptureMode,
+	grace_probe: CancelReaderGraceProbeArg,
 ) -> Result<CommandRunOutput> {
 	let (reader_file, writer_file) = pipe_to_files("output")?;
 
@@ -1141,14 +1186,11 @@ async fn run_shell_command_once(
 			}
 		}
 	});
-	let cancel_bridge = tokio::spawn({
-		let cancel_token = cancel_token.clone();
-		let reader_cancel = reader_cancel.clone();
-		async move {
-			cancel_token.cancelled().await;
-			reader_cancel.cancel();
-		}
-	});
+	let cancel_bridge = tokio::spawn(cancel_reader_after_grace(
+		cancel_token.clone(),
+		reader_cancel.clone(),
+		grace_probe,
+	));
 	ensure_trailing_newline_for_heredoc(&mut command);
 	let source_info = SourceInfo::from("pi-natives:command");
 	let result = session
@@ -2205,6 +2247,50 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&tmp);
 	}
 
+	/// Regression test for issue #5819: `mkdir -p ~/proj/{a,b}` must create both
+	/// `a` and `b` under `$HOME/proj`. Brace expansion runs before tilde
+	/// expansion and previously left every element after the first with a
+	/// literal `~`, so `b` was created as `./~/proj/b` in the shell cwd instead.
+	#[tokio::test(flavor = "multi_thread")]
+	async fn uutils_mkdir_expands_tilde_for_every_brace_element() {
+		let base = std::env::temp_dir().join(format!("pi-mkdir-brace-{}", std::process::id()));
+		let home = base.join("home");
+		let cwd = base.join("cwd");
+		let _ = std::fs::remove_dir_all(&base);
+		std::fs::create_dir_all(&home).expect("home dir");
+		std::fs::create_dir_all(&cwd).expect("cwd dir");
+		let cwd_str = cwd.to_str().expect("utf8 cwd path");
+
+		let mut env = HashMap::new();
+		env.insert("HOME".to_string(), home.to_string_lossy().to_string());
+		let config =
+			ShellConfig { session_env: Some(env), snapshot_path: None, minimizer: None };
+		let mut session = create_session(&config).await.expect("create_session");
+		session.shell.set_working_dir(cwd_str).expect("set cwd");
+
+		let mut params = session.shell.default_exec_params();
+		params.set_fd(OpenFiles::STDIN_FD, null_file().expect("null"));
+		params.set_fd(OpenFiles::STDOUT_FD, null_file().expect("null"));
+		params.set_fd(OpenFiles::STDERR_FD, null_file().expect("null"));
+
+		let source_info = SourceInfo::from("pi-natives:test");
+		let exec = session
+			.shell
+			.run_string("mkdir -p ~/proj/{a,b}", &source_info, &params)
+			.await
+			.expect("run_string");
+		assert!(matches!(exec.exit_code, ExecutionExitCode::Success), "exit {}", exit_code(&exec));
+
+		// Both elements' tildes expanded: dirs land under $HOME/proj.
+		assert!(home.join("proj/a").is_dir(), "~/proj/a not created under HOME");
+		assert!(home.join("proj/b").is_dir(), "~/proj/b not created under HOME");
+		// The buggy path created a literal `~` tree in the shell cwd.
+		assert!(!cwd.join("~").exists(), "literal ~ tree leaked into cwd");
+		assert!(!cwd.join("a").exists(), "unexpanded element leaked into cwd");
+
+		let _ = std::fs::remove_dir_all(&base);
+	}
+
 	/// `mkdir --help` and an invalid flag must be handled in-process: rendered
 	/// to the command streams and returned as an exit code. The upstream
 	/// `uumain` parser calls `std::process::exit`, which would terminate the
@@ -3135,6 +3221,20 @@ mod tests {
 	}
 
 	#[cfg(unix)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn uutils_diff_reads_process_substitution_fds() {
+		let (result, output) = time::timeout(
+			Duration::from_secs(5),
+			run_command_capture("diff <(echo a) <(echo b)", None, None, CancelToken::default()),
+		)
+		.await
+		.expect("process substitution should not hang");
+
+		assert_eq!(result.exit_code, Some(1));
+		assert!(output.contains("-a\n+b\n"), "diff output missing changed lines: {output:?}");
+	}
+
+	#[cfg(unix)]
 	fn printf_minimizer(
 		settings_path: &std::path::Path,
 		max_capture_bytes: Option<u32>,
@@ -3987,6 +4087,94 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 			.await
 			.expect("reader task should stop after cancellation")
 			.expect("reader task should not panic");
+	}
+
+	#[tokio::test]
+	async fn reader_cancel_follows_grace_wait() {
+		let cancel_token = CancellationToken::new();
+		let reader_cancel = CancellationToken::new();
+		let (grace_tx, grace_rx) = tokio::sync::oneshot::channel();
+		let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+		let bridge = tokio::spawn(cancel_reader_after_grace(
+			cancel_token.clone(),
+			reader_cancel.clone(),
+			Some(CancelReaderGraceProbe {
+				observed_grace: Some(grace_tx),
+				hold_release:   Some(release_rx),
+			}),
+		));
+
+		cancel_token.cancel();
+		let grace = grace_rx.await.expect("grace wait should be observed");
+		assert_eq!(grace, CANCEL_READER_GRACE);
+		assert!(!reader_cancel.is_cancelled(), "reader cancelled before grace wait completed");
+
+		release_tx
+			.send(())
+			.expect("grace wait should still be held");
+		bridge.await.expect("cancel bridge should not panic");
+		assert!(reader_cancel.is_cancelled(), "reader remained live after grace wait completed");
+	}
+	/// Exercises the production `run_shell_command_once` cancel-bridge wiring:
+	/// cancellation must invoke the configured reader-grace wait before the
+	/// bridge stops the pipe reader. A test-only probe records the grace value
+	/// and holds the wait open so the check is deterministic and fails if
+	/// `CANCEL_READER_GRACE` is mutated or the production bridge is bypassed.
+	#[cfg(unix)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn cancellation_waits_for_configured_reader_grace() {
+		let _guard = shell_test_lock().lock().await;
+
+		let (grace_tx, grace_rx) = tokio::sync::oneshot::channel();
+		let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+
+		let config = ShellConfig { session_env: None, snapshot_path: None, minimizer: None };
+		let mut session = create_session(&config).await.expect("create_session");
+		let cancel_token = CancellationToken::new();
+		let spawn_registry = Arc::new(process::SpawnRegistry::new());
+		let params = session.shell.default_exec_params();
+		let run_cancel = cancel_token.clone();
+
+		// Long-running command keeps `run_shell_command_once` live long enough
+		// for the cancel bridge to observe cancellation.
+		let command = "while true; do sleep 0.05; done".to_string();
+		let run_handle = tokio::spawn(async move {
+			run_shell_command_once(
+				&mut session,
+				command,
+				params,
+				None,
+				run_cancel,
+				spawn_registry,
+				CommandCaptureMode::Streaming,
+				Some(CancelReaderGraceProbe {
+					observed_grace: Some(grace_tx),
+					hold_release:   Some(release_rx),
+				}),
+			)
+			.await
+		});
+
+		time::sleep(Duration::from_millis(50)).await;
+		cancel_token.cancel();
+
+		let grace = time::timeout(Duration::from_secs(2), grace_rx)
+			.await
+			.expect("production cancel bridge should schedule reader grace")
+			.expect("grace observation channel should not drop");
+		assert_eq!(
+			grace,
+			Duration::from_millis(500),
+			"run_shell_command_once must wait CANCEL_READER_GRACE before stopping the reader"
+		);
+
+		// Release the held grace wait (best-effort if the bridge was already
+		// aborted by post-exit shutdown) and join the production run.
+		let _ = release_tx.send(());
+		let _ = time::timeout(Duration::from_secs(3), run_handle)
+			.await
+			.expect("run_shell_command_once should finish after cancellation")
+			.expect("run task should not panic");
 	}
 
 	#[cfg(unix)]

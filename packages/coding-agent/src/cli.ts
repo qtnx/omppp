@@ -355,7 +355,14 @@ export async function runCli(argv: string[]): Promise<void> {
 		await runSmokeTest();
 		return;
 	}
-	if (await runWorkerEntrypoint(resolvedArgv[0])) {
+	// Worker-thread entry dispatch must run before the first later import:
+	// the stats sync worker installs its buffering handler synchronously.
+	if (resolvedArgv[0]?.startsWith("__omp_worker_")) {
+		const dispatched = await runWorkerEntrypoint(resolvedArgv[0]);
+		if (!dispatched) {
+			process.stderr.write(`Error: unknown worker selector: ${resolvedArgv[0]}\n`);
+			process.exitCode = 1;
+		}
 		return;
 	}
 

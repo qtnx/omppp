@@ -1400,10 +1400,8 @@ export class StatusLineComponent implements Component {
 			return [];
 		}
 
-		const sortedStatuses = Array.from(this.#hookStatuses.entries())
+		return Array.from(this.#hookStatuses.entries())
 			.sort(([a], [b]) => a.localeCompare(b))
-			.map(([, text]) => sanitizeStatusText(text));
-		const hookLine = sortedStatuses.join(" ");
-		return [truncateToWidth(hookLine, width)];
+			.map(([, text]) => truncateToWidth(sanitizeStatusText(text), width));
 	}
 }

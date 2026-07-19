@@ -2,162 +2,92 @@
 
 ## [Unreleased]
 
-## [1.6.3] - 2026-07-15
-
 ### Added
 
-- Added durable local crash reports under `getLogsDir()`, a deduplicated soft-crash reporting API, and postmortem crash persistence before process exit.
-
-## [16.5.1] - 2026-07-14
-
-### Added
+- Added a structured log sink API (`registerLogSink`, `LogEvent`, `LogLevel`) to the centralized logger, enabling out-of-band consumers (such as OpenTelemetry) to receive log events without affecting local file or console logging.
 
 - Added terminal stderr guard utilities (suppressTerminalStderr and restoreTerminalStderr) to prevent macOS runtime diagnostics from corrupting TUI viewports while ensuring crash reports remain visible.
 
-### Fixed
-
-- Fixed an issue in Mermaid ASCII routing where unreachable edge attachment points caused unbounded pathfinder searches.
-
-## [16.4.6] - 2026-07-12
-
-### Added
-
 - Added `AsyncDrain`, the deferred write-batching helper previously private to the coding-agent's prompt-history storage; now shared with model-perf recording.
-
-## [16.4.2] - 2026-07-10
-
-### Added
 
 - Added `stringifyJson` utility with support for BigInt serialization.
 
-## [16.3.12] - 2026-07-08
-
-### Added
-
 - Added `postmortem.interceptUnhandledRejections()` to register interceptors consulted before an unhandled rejection tears the process down; a consuming interceptor (e.g. the JS eval runtime claiming rejections floated by user cell code) keeps the process alive and owns reporting.
-
-### Fixed
-
-- Fixed child shell environment filtering to drop launch-directory `.env.local` values that Bun auto-loaded before OMP starts command shells. ([#4723](https://github.com/can1357/oh-my-pi/issues/4723))
-
-## [16.3.10] - 2026-07-06
-
-### Added
 
 - Added `postmortem.markExpectedCleanupError()` / `postmortem.isExpectedCleanupError()` to tag errors thrown by routine resource teardown; the global `uncaughtException`/`unhandledRejection` handlers downgrade marked errors (walking the `cause` chain) to warnings instead of exiting the process.
 
-### Fixed
-
-- Bounded postmortem cleanup with a 10s deadline so a hanging cleanup callback can no longer wedge the process indefinitely after a fatal error or signal; the process now always reaches `process.exit`.
-
-## [16.3.7] - 2026-07-05
-
-### Added
-
 - Added `classifyJsonPrefix`, a strict RFC 8259 streaming-buffer classifier (`"complete" | "prefix" | "invalid"`). Providers use it to disambiguate identifierless streaming tool-call deltas: a `{`-prefixed chunk only advances to a sibling call when the current argument buffer cannot absorb it.
-
-## [16.3.1] - 2026-07-02
-
-### Fixed
-
-- Fixed `parseJsonWithRepair` failing tool calls whose streamed arguments contain an unquoted string value (e.g. `{"paths": packages/foo/*, "i": "…"}`). Final parsing now recovers such barewords in object/array value position as strings, terminating at `,` / `}` / `]` / newline. Recovery deliberately refuses anything that could mask real structure or bad data — truncated values, tokens containing `"` / `{` / `[` or a key-like `:` (URL `://` and Windows `:\` colons stay literal), and non-finite atoms (`NaN`, `Infinity`, `undefined`) — and streaming partial parses still roll back unfinished barewords instead of committing them.
-
-## [16.3.0] - 2026-07-02
-
-### Added
 
 - Added `wrapFetchForExtraCa` and `withExtraCaFetch` utility functions to apply `NODE_EXTRA_CA_CERTS` to Bun's `RequestInit.tls.ca` configuration.
 
-## [16.2.9] - 2026-06-30
-
-### Added
-
 - Improved resilience in `fetchWithRetry()` by adding a response-body retry gate to handle deterministic provider failures that return retryable HTTP statuses.
-
-### Fixed
-
-- Fixed YAML frontmatter parsing for skill descriptions containing unquoted colons (`: `), ensuring typed fields are correctly preserved without triggering unnecessary warnings.
-
-## [16.2.7] - 2026-06-30
-
-### Added
 
 - Added a utility to detect binary files based on content sniffing.
 
-## [16.2.6] - 2026-06-29
-
-### Added
-
 - Added `stripWindowsExtendedLengthPathPrefix()` utility to normalize `\\?\` and native Win32 path prefixes before Bun import or spawn calls.
 
-## [16.2.3] - 2026-06-28
-
-### Added
-
 - Added `escapeXmlAttribute` utility function for safe XML attribute value encoding.
-
-### Fixed
-
-- Fixed a crash in `ptree.ChildProcess.bytes()` and the `ssh://` read path when handling large subprocess outputs (over 128 KB) under Bun by ensuring it consistently returns a `Uint8Array`.
-
-## [16.2.0] - 2026-06-27
-
-### Added
 
 - Added a relaxed JSON parser supporting single-quoted strings, unquoted keys, and comments.
 - Added `parseStreamingJson` and `parseStreamingJsonThrottled` for robust, efficient parsing of truncated or incremental streaming JSON.
 - Added an XDG-aware document conversion cache directory helper.
 - Exported `removeWithRetries()` as a standalone asynchronous function to handle retry-on-EBUSY cleanup logic.
 
-## [16.1.8] - 2026-06-20
-
-### Added
-
 - Exported `removeSyncWithRetries()` as a standalone function so tests that manage their own temp dirs can use the same retry-on-EBUSY cleanup logic as `TempDir.removeSync()`.
 
-## [16.1.3] - 2026-06-19
+- Added `directoryExists(dir)` to `dirs`: resolves whether a path is an existing directory, returning `false` on any stat failure (ENOENT, permission, non-directory). Lets callers check a directory is safe to `chdir` into before `setProjectDir` throws.
+
+- Added `escapeXmlText` utility to escape XML-significant characters `&`, `<`, and `>` in element body text
+- Added `isTerminalHeadless()` / `setTerminalHeadless()` to centrally suppress real-terminal side effects (stdout escape/frame writes, stdin raw mode, CSI/OSC capability probes, SIGWINCH, window-title changes, emergency restore) under the test runtime. Defaults on when `bun test` sets `NODE_ENV=test`; terminal-contract tests opt out via `setTerminalHeadless(false)`
 
 ### Changed
 
+- Bounded default `ptree.ChildProcess` stderr retention to a 32 KiB tail to prevent memory leaks in long-lived subprocesses. Full stderr capture must now be explicitly requested at spawn time using `{ stderr: "full" }` on `spawn` or `exec`.
+
 - Expanded the `TempDir` Windows retry window from 4×10ms to 40×25ms (1s total) to accommodate SQLite WAL/SHM file handle release delays
+
+- Mermaid diagrams are now rendered to ASCII by a first-party vendored renderer (`src/vendor/mermaid-ascii`, derived from the MIT-licensed `beautiful-mermaid`, ASCII pipeline only) with terminal display width measured via `Bun.stringWidth` (grapheme-aware, correct for wide/East-Asian glyphs and emoji). Inline label formatting (HTML formatting tags and markdown emphasis) is now reduced to plain text instead of printed raw.
 
 ### Fixed
 
+- Fixed fatal cleanup failing to reach `process.exit()` when terminal stderr is revoked.
+- Isolated rotating log files and audit state per process to prevent concurrent instances from racing during compression and rotation.
+
+- Added scoped graceful handling for stdio-write EPIPE rejections so protocol servers can await postmortem cleanup when their peer disconnects ([#4788](https://github.com/can1357/oh-my-pi/issues/4788)).
+
+- Improved SSE streaming performance by batching complete lines into a single UTF-8 decode per chunk, reducing decoder overhead.
+- Fixed an issue in `parseFrontmatter` where a single malformed YAML line would corrupt sibling values by parsing each line independently.
+
+- Improved CLI argument and flag validation error output to display a concise error message and command usage instead of a minified code frame.
+- Corrected required variadic positionals to render as `MODELS...` instead of `[MODELS]` in usage help.
+
+- Fixed an issue in Mermaid ASCII routing where unreachable edge attachment points caused unbounded pathfinder searches.
+
+- Fixed child shell environment filtering to drop launch-directory `.env.local` values that Bun auto-loaded before OMP starts command shells. ([#4723](https://github.com/can1357/oh-my-pi/issues/4723))
+
+- Bounded postmortem cleanup with a 10s deadline so a hanging cleanup callback can no longer wedge the process indefinitely after a fatal error or signal; the process now always reaches `process.exit`.
+
+- Fixed `parseJsonWithRepair` failing tool calls whose streamed arguments contain an unquoted string value (e.g. `{"paths": packages/foo/*, "i": "…"}`). Final parsing now recovers such barewords in object/array value position as strings, terminating at `,` / `}` / `]` / newline. Recovery deliberately refuses anything that could mask real structure or bad data — truncated values, tokens containing `"` / `{` / `[` or a key-like `:` (URL `://` and Windows `:\` colons stay literal), and non-finite atoms (`NaN`, `Infinity`, `undefined`) — and streaming partial parses still roll back unfinished barewords instead of committing them.
+
+- Fixed YAML frontmatter parsing for skill descriptions containing unquoted colons (`: `), ensuring typed fields are correctly preserved without triggering unnecessary warnings.
+
+- Fixed a crash in `ptree.ChildProcess.bytes()` and the `ssh://` read path when handling large subprocess outputs (over 128 KB) under Bun by ensuring it consistently returns a `Uint8Array`.
+
 - Made EPIPE rejections from IPC `send()` to worker subprocesses (`syscall: "send"`) non-fatal: the global `unhandledRejection` handler now logs and continues instead of terminating the session when an optional subsystem's pipe breaks. A broken optional subsystem (TTS/STT/tiny-title/MCP) can no longer crash the whole agent session mid-task. ([#2997](https://github.com/can1357/oh-my-pi/issues/2997))
-
-## [16.1.2] - 2026-06-19
-
-### Added
-
-- Added `directoryExists(dir)` to `dirs`: resolves whether a path is an existing directory, returning `false` on any stat failure (ENOENT, permission, non-directory). Lets callers check a directory is safe to `chdir` into before `setProjectDir` throws.
 
 ### Removed
 
 - Removed the public `createAbortableStream` API from `@oh-my-pi/pi-utils`. Consumers should use the lighter, direct-reader `abortableSource` async generator inside `@oh-my-pi/pi-utils/stream` to avoid the extra ReadableStream wrapper layer and per-chunk enqueue overhead.
 
-## [16.0.11] - 2026-06-19
-
-### Removed
-
 - Removed `getIndentation`, `setDefaultTabWidth`, and `getDefaultTabWidth` helpers
-
-## [16.0.8] - 2026-06-18
-
-### Changed
-
-- Mermaid diagrams are now rendered to ASCII by a first-party vendored renderer (`src/vendor/mermaid-ascii`, derived from the MIT-licensed `beautiful-mermaid`, ASCII pipeline only) with terminal display width measured via `Bun.stringWidth` (grapheme-aware, correct for wide/East-Asian glyphs and emoji). Inline label formatting (HTML formatting tags and markdown emphasis) is now reduced to plain text instead of printed raw.
-
-### Removed
 
 - Removed the external `beautiful-mermaid` dependency (and its transitive `elkjs`, ~3.13MB) in favor of the vendored ASCII renderer.
 
-## [16.0.3] - 2026-06-16
+## [1.6.3] - 2026-07-15
 
 ### Added
 
-- Added `escapeXmlText` utility to escape XML-significant characters `&`, `<`, and `>` in element body text
-- Added `isTerminalHeadless()` / `setTerminalHeadless()` to centrally suppress real-terminal side effects (stdout escape/frame writes, stdin raw mode, CSI/OSC capability probes, SIGWINCH, window-title changes, emergency restore) under the test runtime. Defaults on when `bun test` sets `NODE_ENV=test`; terminal-contract tests opt out via `setTerminalHeadless(false)`
-
+- Added durable local crash reports under `getLogsDir()`, a deduplicated soft-crash reporting API, and postmortem crash persistence before process exit.
 ## [15.13.3] - 2026-06-15
 
 ### Added

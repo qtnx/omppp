@@ -61,6 +61,7 @@ import {
 	getOpenAIStreamIdleTimeoutMs,
 	iterateWithIdleTimeout,
 } from "../utils/idle-iterator";
+import { getProxyForProvider, shouldBypassProxy } from "../utils/proxy";
 import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
 import { adaptSchemaForStrict, NO_STRICT, sanitizeSchemaForOpenAIResponses, toolWireSchema } from "../utils/schema";
 import { notifyRawSseEvent } from "../utils/sse-debug";
@@ -112,7 +113,7 @@ import {
 	promoteResponsesToolUseStopReason,
 	type SequentialCutoffSummaryState,
 } from "./openai-shared";
-import { transformMessages } from "./transform-messages";
+import { redactSensitiveInObject, transformMessages } from "./transform-messages";
 
 export interface OpenAICodexResponsesOptions extends StreamOptions {
 	reasoning?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -1727,6 +1728,7 @@ async function openCodexWebSocketTransport(
 				toWebSocketUrl(requestContext.url),
 				websocketHeaders,
 				{
+					provider: model.provider,
 					signal: requestSetup.requestSignal,
 					telemetry: {
 						provider: "openai-codex",
@@ -1741,6 +1743,7 @@ async function openCodexWebSocketTransport(
 				toWebSocketUrl(requestContext.url),
 				websocketHeaders,
 				{
+					provider: model.provider,
 					signal: requestSetup.requestSignal,
 					telemetry: {
 						provider: "openai-codex",
@@ -1965,6 +1968,7 @@ function scheduleCodexWebSocketBackgroundReconnect(
 				requestContext.requestMetadata,
 			);
 			await getOrCreateCodexWebSocketConnection(state, url, websocketHeaders, {
+				provider: model.provider,
 				connectTimeoutMs: getCodexWebSocketReconnectTimeoutMs(),
 				telemetry,
 			});
@@ -3046,6 +3050,7 @@ export async function prewarmOpenAICodexResponses(
 			toWebSocketUrl(url),
 			headers,
 			{
+				provider: model.provider,
 				signal: options?.signal,
 				connectTimeoutMs: getCodexWebSocketPrewarmConnectTimeoutMs(),
 				telemetry: {
@@ -3784,11 +3789,13 @@ interface CodexWebSocketConnectionOptions {
 	connectTimeoutMs?: number;
 	onFirstEvent?: (details: { durationMs: number; eventType?: string }) => void;
 	onClose?: (details: { code?: number; reason?: string; beforeOpen: boolean }) => void;
+	proxy?: string;
 }
 
 class CodexWebSocketConnection {
 	#url: string;
 	#headers: Record<string, string>;
+	#proxy?: string;
 	#onHandshakeHeaders?: (headers: Headers) => void;
 	#onFirstEvent?: (details: { durationMs: number; eventType?: string }) => void;
 	#onClose?: (details: { code?: number; reason?: string; beforeOpen: boolean }) => void;
@@ -3822,6 +3829,7 @@ class CodexWebSocketConnection {
 	constructor(url: string, headers: Record<string, string>, options: CodexWebSocketConnectionOptions) {
 		this.#url = url;
 		this.#headers = headers;
+		this.#proxy = options.proxy;
 		this.#onHandshakeHeaders = options.onHandshakeHeaders;
 		this.#onFirstEvent = options.onFirstEvent;
 		this.#onClose = options.onClose;
@@ -3891,7 +3899,7 @@ class CodexWebSocketConnection {
 		try {
 			socket = new (WebSocket as unknown as new (url: string, opts: Bun.WebSocketOptions) => Bun.WebSocket)(
 				this.#url,
-				{ headers: this.#headers },
+				{ headers: this.#headers, proxy: this.#proxy },
 			);
 		} catch (error) {
 			throw createCodexWebSocketTransportError(
@@ -4392,11 +4400,25 @@ class CodexWebSocketConnection {
 	}
 }
 
+function resolveCodexWebSocketProxy(url: string, provider: string | undefined): string | undefined {
+	const targetUrl = new URL(url);
+	if (shouldBypassProxy(targetUrl)) return undefined;
+	return (
+		(provider ? getProxyForProvider(provider) : undefined) ??
+		(targetUrl.protocol === "wss:"
+			? Bun.env.HTTPS_PROXY || Bun.env.https_proxy
+			: Bun.env.HTTP_PROXY || Bun.env.http_proxy) ??
+		Bun.env.ALL_PROXY ??
+		Bun.env.all_proxy
+	);
+}
+
 function createCodexWebSocketConnectionForState(
 	state: CodexWebSocketSessionState,
 	url: string,
 	headerRecord: Record<string, string>,
 	options?: {
+		provider?: string;
 		connectTimeoutMs?: number;
 		telemetry?: CodexTransportTelemetryContext;
 	},
@@ -4432,6 +4454,7 @@ function createCodexWebSocketConnectionForState(
 			});
 		},
 		connectTimeoutMs: options?.connectTimeoutMs,
+		proxy: resolveCodexWebSocketProxy(url, options?.provider),
 	});
 }
 
@@ -4477,13 +4500,14 @@ async function getOrCreateCodexWebSocketConnection(
 	state: CodexWebSocketSessionState,
 	url: string,
 	headers: Headers,
-	options?: {
+	options: {
+		provider: string;
 		signal?: AbortSignal;
 		connectTimeoutMs?: number;
 		telemetry?: CodexTransportTelemetryContext;
 	},
 ): Promise<CodexWebSocketConnection> {
-	const signal = options?.signal;
+	const { signal } = options;
 	const headerRecord = headersToRecord(headers);
 	// Join an in-flight handshake instead of tearing it down: closing a
 	// CONNECTING socket rejects the concurrent caller (prewarm racing the first
@@ -4534,9 +4558,10 @@ async function getOrCreateCodexWebSocketConnection(
 		phase: reconnect ? "websocket_reconnect" : "websocket_handshake_start",
 		transport: "websocket",
 		attempt: state.stats.websocketHandshakeAttempts,
-		...options?.telemetry,
+		...options.telemetry,
 	});
 	state.connection = createCodexWebSocketConnectionForState(state, url, headerRecord, {
+		provider: options.provider,
 		connectTimeoutMs: options?.connectTimeoutMs,
 		telemetry: options?.telemetry,
 	});
@@ -4548,7 +4573,8 @@ async function createDedicatedCodexWebSocketConnection(
 	state: CodexWebSocketSessionState,
 	url: string,
 	headers: Headers,
-	options?: {
+	options: {
+		provider: string;
 		signal?: AbortSignal;
 		connectTimeoutMs?: number;
 		telemetry?: CodexTransportTelemetryContext;
@@ -4565,8 +4591,9 @@ async function createDedicatedCodexWebSocketConnection(
 		...options?.telemetry,
 	});
 	const connection = createCodexWebSocketConnectionForState(state, url, headerRecord, {
-		connectTimeoutMs: options?.connectTimeoutMs,
-		telemetry: options?.telemetry,
+		provider: options.provider,
+		connectTimeoutMs: options.connectTimeoutMs,
+		telemetry: options.telemetry,
 	});
 	await connectCodexWebSocketConnection(state, connection, options?.signal, options?.telemetry);
 	return connection;
@@ -4630,23 +4657,34 @@ async function openCodexSseEventStream(
 		sentModelsEtagHeader: headers.has(X_MODELS_ETAG_HEADER),
 	});
 	// `wrapCodexSseStream` arms the iterator-level idle watchdog only after this
-	// fetch resolves. A pre-response timer still bounds time-to-first-byte (a
-	// proxy that accepts the POST but never sends headers would otherwise hang
-	// forever, since `timeout: false` disables Bun's native ceiling — issue
-	// #2422). It MUST be cleared the instant headers arrive: an absolute
-	// `AbortSignal.timeout` would keep aborting the actively-streaming body.
-	const watchdog = armPreResponseTimeout(signal, firstEventTimeoutMs);
+	// fetch resolves. Each transport attempt needs its own pre-response timer:
+	// the retry loop's base signal remains reserved for caller cancellation, so
+	// an internal timeout stays retryable while an explicit abort fails fast.
+	let clearPreResponseTimeout: (() => void) | undefined;
+	const fetchAttempt: FetchImpl = async (input, init) => {
+		try {
+			return await (fetchOverride ?? fetch)(input, init);
+		} finally {
+			clearPreResponseTimeout?.();
+			clearPreResponseTimeout = undefined;
+		}
+	};
 	let response: Response;
 	try {
 		response = await fetchWithRetry(url, {
 			method: "POST",
 			headers,
 			body: JSON.stringify(body),
-			signal: watchdog.signal,
+			signal,
+			prepareInit: () => {
+				const watchdog = armPreResponseTimeout(signal, firstEventTimeoutMs);
+				clearPreResponseTimeout = watchdog.clear;
+				return { signal: watchdog.signal };
+			},
 			maxAttempts: CODEX_MAX_RETRIES + 1,
 			defaultDelayMs: attempt => CODEX_RETRY_DELAY_MS * (attempt + 1),
 			maxDelayMs: CODEX_RATE_LIMIT_BUDGET_MS,
-			fetch: fetchOverride,
+			fetch: fetchAttempt,
 			timeout: false,
 		});
 	} catch (error) {
@@ -4670,7 +4708,7 @@ async function openCodexSseEventStream(
 		});
 		throw error;
 	} finally {
-		watchdog.clear();
+		clearPreResponseTimeout?.();
 	}
 	const durationMs = Date.now() - startedAt;
 	if (state) {
@@ -4875,8 +4913,9 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 			const providerPayload = (msg as { providerPayload?: AssistantMessage["providerPayload"] }).providerPayload;
 			const historyItems = getOpenAIResponsesHistoryItems(providerPayload, model.provider);
 			if (historyItems) {
+				const redactedHistoryItems = redactSensitiveInObject(historyItems).result as Array<Record<string, unknown>>;
 				const sanitizedHistoryItems = sanitizeOpenAIResponsesHistoryImagesForReplay(
-					historyItems,
+					redactedHistoryItems,
 				) as unknown as Array<ResponseInput[number]>;
 				for (const item of sanitizedHistoryItems) {
 					const maybe = item as { type?: string; call_id?: string };

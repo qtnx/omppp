@@ -55,7 +55,7 @@ type ReviewerVerdict = {
 
 type RoleScript =
 	| { role: "implementer" }
-	| { role: "fixer" }
+	| { role: "fixer"; fail?: string }
 	| { role: "reviewer"; verdict?: ReviewerVerdict; yieldData?: unknown; findings?: ReviewerFinding[] };
 
 interface AgentCallTrace {
@@ -99,6 +99,7 @@ function createScriptedSession(script: RoleScript): AgentSession {
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => ["yield", "report_finding"],
+		getEnabledToolNames: () => ["yield", "report_finding"],
 		setActiveToolsByName: async () => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
@@ -109,6 +110,9 @@ function createScriptedSession(script: RoleScript): AgentSession {
 		},
 		prompt: async (_text: string, _options?: PromptOptions) => {
 			state.messages.push(createAssistantStopMessage(script.role));
+			if (script.role === "fixer" && script.fail) {
+				throw new Error(script.fail);
+			}
 
 			if (script.role === "reviewer") {
 				for (const finding of script.findings ?? []) {
@@ -929,12 +933,13 @@ describe("task review gate", () => {
 		expect(reviewProgress?.current?.status).toBe("running");
 	});
 
-	it("honors task max concurrency when non-isolated review gates are enabled", async () => {
+	it("serializes non-isolated self-review runs so a reviewer never sees a sibling task delta", async () => {
 		mockAgents();
 		mockIsolation();
 		const trace: RoleScript["role"][] = [];
-		const bothImplementersStarted = Promise.withResolvers<void>();
-		let implementerStarts = 0;
+		const firstReviewerStarted = Promise.withResolvers<void>();
+		const releaseFirstReviewer = Promise.withResolvers<void>();
+		let reviewerCount = 0;
 
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
 			const agentName = options.agentDisplayName ?? "unknown";
@@ -943,17 +948,9 @@ describe("task review gate", () => {
 			const originalPrompt = session.prompt.bind(session);
 			session.prompt = async (text: string, promptOptions?: PromptOptions) => {
 				trace.push(role);
-				if (role === "implementer") {
-					implementerStarts += 1;
-					if (implementerStarts === 2) {
-						bothImplementersStarted.resolve();
-					}
-					await Promise.race([
-						bothImplementersStarted.promise,
-						Bun.sleep(100).then(() => {
-							throw new Error("Second implementer did not start before the first review gate ran.");
-						}),
-					]);
+				if (role === "reviewer" && ++reviewerCount === 1) {
+					firstReviewerStarted.resolve();
+					await releaseFirstReviewer.promise;
 				}
 				return originalPrompt(text, promptOptions);
 			};
@@ -972,7 +969,7 @@ describe("task review gate", () => {
 				"task.maxConcurrency": 2,
 			}),
 		);
-		const result = await tool.execute("call-non-isolated-concurrent-gate", {
+		const execution = tool.execute("call-non-isolated-concurrent-gate", {
 			...TASK_PARAMS,
 			tasks: [
 				{ id: "FixBugOne", description: "Fix first bug", assignment: "Implement the first fix." },
@@ -980,7 +977,54 @@ describe("task review gate", () => {
 			],
 		});
 
-		expect(trace.slice(0, 2)).toEqual(["implementer", "implementer"]);
+		await firstReviewerStarted.promise;
+		const traceBeforeRelease = [...trace];
+		releaseFirstReviewer.resolve();
+
+		const result = await execution;
+		expect(traceBeforeRelease).toEqual(["implementer", "reviewer"]);
+		expect(trace).toEqual(["implementer", "reviewer", "implementer", "reviewer"]);
 		expect(result.details?.results.map(single => single.exitCode)).toEqual([0, 0]);
+	});
+
+	it("preserves an isolated recovery patch when a fixer fails after editing", async () => {
+		mockAgents();
+		const isolation = mockIsolation();
+		const { trace } = mockSessionQueue([
+			{ role: "implementer" },
+			{ role: "reviewer", verdict: incorrectVerdict(), findings: [p1Finding()] },
+			{ role: "fixer", fail: "fixer exploded after editing" },
+		]);
+
+		const tool = await TaskTool.create(createSession(reviewGateSettings()));
+		const result = await tool.execute("call-fixer-recovery", { ...TASK_PARAMS, isolated: true });
+		const single = firstResult(result);
+
+		expect(trace.map(item => item.role)).toEqual(["implementer", "reviewer", "fixer"]);
+		expect(isolation.captureDeltaPatch).toHaveBeenCalledTimes(2);
+		expect(single.exitCode).not.toBe(0);
+		expect(single.patchPath).toBeDefined();
+		expect(single.error ?? single.stderr).toMatch(/fixer agent failed/i);
+	});
+
+	it("preserves an isolated recovery patch when a successful fixer is followed by a malformed reviewer result", async () => {
+		mockAgents();
+		const isolation = mockIsolation();
+		const { trace } = mockSessionQueue([
+			{ role: "implementer" },
+			{ role: "reviewer", verdict: incorrectVerdict(), findings: [p1Finding()] },
+			{ role: "fixer" },
+			{ role: "reviewer" },
+		]);
+
+		const tool = await TaskTool.create(createSession(reviewGateSettings()));
+		const result = await tool.execute("call-fixer-reviewer-recovery", { ...TASK_PARAMS, isolated: true });
+		const single = firstResult(result);
+
+		expect(trace.map(item => item.role)).toEqual(["implementer", "reviewer", "fixer", "reviewer"]);
+		expect(isolation.captureDeltaPatch).toHaveBeenCalledTimes(3);
+		expect(single.exitCode).not.toBe(0);
+		expect(single.patchPath).toBeDefined();
+		expect(single.error ?? single.stderr).toMatch(/reviewer agent exited unsuccessfully|verdict|yield/i);
 	});
 });

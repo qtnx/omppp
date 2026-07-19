@@ -16,12 +16,13 @@ import { type } from "arktype";
 const ADVISOR_NOTE = "Both tools must settle before this concern is considered.";
 const SKIPPED_TOOL_RESULT = "Skipped due to queued user message";
 const TAIL_ADVISOR_NOTE = "Re-check the final answer before declaring the run complete.";
+type MessageBlock = Exclude<Message["content"], string>[number];
 
 function messageText(message: Message): string {
 	if (!("content" in message)) return "";
 	if (typeof message.content === "string") return message.content;
-	return message.content
-		.filter((part): part is Extract<(typeof message.content)[number], { type: "text" }> => part.type === "text")
+	return Array.from(message.content)
+		.filter((part): part is Extract<MessageBlock, { type: "text" }> => part.type === "text")
 		.map(part => part.text)
 		.join("\n");
 }

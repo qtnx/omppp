@@ -272,6 +272,15 @@ async function resolvePersistedBlobRefs(value: unknown, blobStore: BlobStore, ke
 	}
 
 	if (typeof value !== "object" || value === null) return;
+	if (
+		"type" in value &&
+		value.type === "image_generation_call" &&
+		"result" in value &&
+		typeof value.result === "string" &&
+		isBlobRef(value.result)
+	) {
+		value.result = await resolveImageData(blobStore, value.result);
+	}
 
 	if (hasImageUrl(value) && isBlobRef(value.image_url)) {
 		value.image_url = await resolveImageDataUrl(blobStore, value.image_url);
@@ -293,8 +302,6 @@ function entriesRequiringResolution(entries: FileEntry[]): SessionEntry[] {
 		}
 	}
 
-	// Preserve legacy behavior for sessions that were never compacted: every
-	// persisted entry remains eagerly usable, including inactive branches.
 	if (latestCompactionIndex < 0) return sessionEntries;
 
 	const latestCompaction = activePath[latestCompactionIndex] as CompactionEntry;
@@ -302,12 +309,33 @@ function entriesRequiringResolution(entries: FileEntry[]): SessionEntry[] {
 	return activePath.slice(firstKeptIndex >= 0 ? firstKeptIndex : latestCompactionIndex);
 }
 
+/**
+ * Cheap synchronous precheck for persisted blob references. It is conservative:
+ * false positives only add a no-op resolver walk.
+ */
+function containsBlobRef(value: unknown): boolean {
+	if (typeof value === "string") return isBlobRef(value);
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			if (containsBlobRef(item)) return true;
+		}
+		return false;
+	}
+	if (typeof value !== "object" || value === null) return false;
+	for (const key in value) {
+		if (containsBlobRef((value as Record<string, unknown>)[key])) return true;
+	}
+	return false;
+}
+
 export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobStore): Promise<void> {
 	const liveEntries = entriesRequiringResolution(entries);
-	await Promise.all(liveEntries.map(entry => resolvePersistedBlobRefs(entry, blobStore)));
-	// Archived RAM shapes additionally contain text refs, which the persisted
-	// image/url resolver intentionally does not recognize. Rehydrate all heavy
-	// leaves in the selected live range after restoring persisted image URLs.
+	const pending: Promise<void>[] = [];
+	for (const entry of liveEntries) {
+		if (!containsBlobRef(entry)) continue;
+		pending.push(resolvePersistedBlobRefs(entry, blobStore));
+	}
+	await Promise.all(pending);
 	rehydrateEntries(liveEntries, blobStore);
 }
 

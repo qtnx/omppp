@@ -810,6 +810,7 @@ export class RpcClient {
 			description: tool.description,
 			parameters: tool.parameters,
 			hidden: tool.hidden,
+			loadMode: tool.loadMode,
 		}));
 		const response = await this.#send({ type: "set_host_tools", tools: definitions });
 		return this.#getData<{ toolNames: string[] }>(response).toolNames;

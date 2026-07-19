@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { scheduler } from "node:timers/promises";
 import { streamSimple } from "@oh-my-pi/pi-ai";
 import {
 	cancelCodexWebSocketBackgroundReconnectsForTesting,
@@ -16,6 +17,7 @@ import type {
 	ModelSpec,
 	ProviderSessionState,
 } from "@oh-my-pi/pi-ai/types";
+import { __resetProxyCache } from "@oh-my-pi/pi-ai/utils/proxy";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import * as piUtils from "@oh-my-pi/pi-utils";
 
@@ -39,6 +41,16 @@ const originalCodexWebSocketRetryBudget = Bun.env.PI_CODEX_WEBSOCKET_RETRY_BUDGE
 const originalCodexWebSocketRetryDelayMs = Bun.env.PI_CODEX_WEBSOCKET_RETRY_DELAY_MS;
 const originalCodexWebSocketOversizedCooldownMs = Bun.env.PI_CODEX_WEBSOCKET_OVERSIZED_COOLDOWN_MS;
 const originalCodexWebSocketMaxRequestBytes = Bun.env.PI_CODEX_WEBSOCKET_MAX_REQUEST_BYTES;
+const originalProxyEnv: Record<string, string | undefined> = {
+	PI_PROXY: Bun.env.PI_PROXY,
+	PI_PROXY_CODEX_PROXY_TEST: Bun.env.PI_PROXY_CODEX_PROXY_TEST,
+	HTTPS_PROXY: Bun.env.HTTPS_PROXY,
+	https_proxy: Bun.env.https_proxy,
+	ALL_PROXY: Bun.env.ALL_PROXY,
+	all_proxy: Bun.env.all_proxy,
+	NO_PROXY: Bun.env.NO_PROXY,
+	no_proxy: Bun.env.no_proxy,
+};
 const TEST_INSTALLATION_ID = "00000000-0000-4000-8000-000000000001";
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -50,6 +62,8 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 beforeEach(() => {
+	for (const key in originalProxyEnv) delete Bun.env[key];
+	__resetProxyCache();
 	vi.spyOn(piUtils, "getInstallId").mockReturnValue(TEST_INSTALLATION_ID);
 });
 
@@ -76,6 +90,9 @@ afterEach(() => {
 	restoreEnv("PI_CODEX_WEBSOCKET_RETRY_DELAY_MS", originalCodexWebSocketRetryDelayMs);
 	restoreEnv("PI_CODEX_WEBSOCKET_OVERSIZED_COOLDOWN_MS", originalCodexWebSocketOversizedCooldownMs);
 	restoreEnv("PI_CODEX_WEBSOCKET_MAX_REQUEST_BYTES", originalCodexWebSocketMaxRequestBytes);
+	vi.useRealTimers();
+	for (const key in originalProxyEnv) restoreEnv(key, originalProxyEnv[key]);
+	__resetProxyCache();
 	vi.restoreAllMocks();
 });
 
@@ -204,6 +221,7 @@ function encodeWebSocketMessage(value: Record<string, unknown>): Uint8Array {
 }
 
 type WsHeaders = Record<string, string>;
+type WsOptions = { headers?: WsHeaders; proxy?: string };
 type WsEventType = "open" | "message" | "error" | "close";
 
 type CodexTestUsage = {
@@ -243,7 +261,7 @@ class MockWebSocket {
 
 	constructor(
 		public readonly url: string,
-		public readonly options?: { headers?: WsHeaders },
+		public readonly options?: WsOptions,
 	) {}
 
 	send(_data: string): void {}
@@ -1659,6 +1677,107 @@ describe.serial("openai-codex streaming", () => {
 		expect(Object.keys(capturedHeaders ?? {}).filter(key => key.toLowerCase() === "openai-beta")).toHaveLength(1);
 	});
 
+	it("passes the provider proxy to websocket handshakes", async () => {
+		const proxy = "socks5://127.0.0.1:7890";
+		Bun.env.PI_PROXY_CODEX_PROXY_TEST = proxy;
+		__resetProxyCache();
+		let capturedProxy: string | undefined;
+		class ProxyCaptureWebSocket extends MockWebSocket {
+			constructor(url: string, options?: WsOptions) {
+				super(url, options);
+				capturedProxy = options?.proxy;
+				this.scheduleOpen();
+			}
+		}
+		global.WebSocket = ProxyCaptureWebSocket as unknown as typeof WebSocket;
+		const model = {
+			...createCodexTestModel("https://chatgpt.com/backend-api"),
+			provider: "codex-proxy-test",
+		};
+		const providerSessionState = new Map<string, ProviderSessionState>();
+
+		try {
+			await prewarmOpenAICodexResponses(model, {
+				apiKey: createCodexTestToken(),
+				sessionId: "ws-proxy-session",
+				providerSessionState,
+			});
+			expect(capturedProxy).toBe(proxy);
+		} finally {
+			for (const state of providerSessionState.values()) state.close();
+			delete Bun.env.PI_PROXY_CODEX_PROXY_TEST;
+		}
+	});
+
+	it("falls back to standard proxy variables for websocket handshakes", async () => {
+		const cases: Array<{ env: string; proxy: string }> = [
+			{ env: "HTTPS_PROXY", proxy: "http://127.0.0.1:7890" },
+			{ env: "ALL_PROXY", proxy: "socks5://127.0.0.1:7891" },
+		];
+
+		for (const { env, proxy } of cases) {
+			delete Bun.env.HTTPS_PROXY;
+			delete Bun.env.ALL_PROXY;
+			Bun.env[env] = proxy;
+			let capturedProxy: string | undefined;
+			class StandardProxyWebSocket extends MockWebSocket {
+				constructor(url: string, options?: WsOptions) {
+					super(url, options);
+					capturedProxy = options?.proxy;
+					this.scheduleOpen();
+				}
+			}
+			global.WebSocket = StandardProxyWebSocket as unknown as typeof WebSocket;
+			const model = {
+				...createCodexTestModel("https://chatgpt.com/backend-api"),
+				provider: `codex-${env.toLowerCase()}-test`,
+			};
+			const providerSessionState = new Map<string, ProviderSessionState>();
+
+			try {
+				await prewarmOpenAICodexResponses(model, {
+					apiKey: createCodexTestToken(),
+					sessionId: `ws-${env.toLowerCase()}-proxy-session`,
+					providerSessionState,
+				});
+				expect(capturedProxy).toBe(proxy);
+			} finally {
+				for (const state of providerSessionState.values()) state.close();
+			}
+		}
+	});
+
+	it("bypasses configured proxies for NO_PROXY websocket targets", async () => {
+		Bun.env.PI_PROXY_CODEX_PROXY_TEST = "http://127.0.0.1:7890";
+		Bun.env.NO_PROXY = "chatgpt.com:443";
+		__resetProxyCache();
+		let capturedProxy: string | undefined;
+		class NoProxyWebSocket extends MockWebSocket {
+			constructor(url: string, options?: WsOptions) {
+				super(url, options);
+				capturedProxy = options?.proxy;
+				this.scheduleOpen();
+			}
+		}
+		global.WebSocket = NoProxyWebSocket as unknown as typeof WebSocket;
+		const model = {
+			...createCodexTestModel("https://chatgpt.com/backend-api"),
+			provider: "codex-proxy-test",
+		};
+		const providerSessionState = new Map<string, ProviderSessionState>();
+
+		try {
+			await prewarmOpenAICodexResponses(model, {
+				apiKey: createCodexTestToken(),
+				sessionId: "ws-no-proxy-session",
+				providerSessionState,
+			});
+			expect(capturedProxy).toBeUndefined();
+		} finally {
+			for (const state of providerSessionState.values()) state.close();
+		}
+	});
+
 	it("sends the Responses Lite marker on the upgrade and in response.create client_metadata", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");
 		setAgentDir(tempDir.path());
@@ -2268,6 +2387,92 @@ describe.serial("openai-codex streaming", () => {
 		const result = await streamOpenAICodexResponses(model, context, { apiKey: token }).result();
 		expect(result.stopReason).toBe("error");
 		expect(result.errorStatus).toBe(401);
+	});
+	it("retries a pre-response watchdog timeout with a fresh attempt signal", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const token = createCodexTestToken();
+		vi.useFakeTimers();
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { promise: firstAttemptStarted, resolve: markFirstAttemptStarted } = Promise.withResolvers<void>();
+		const signals: AbortSignal[] = [];
+		let requestCount = 0;
+		const fetchMock: FetchImpl = async (input, init) => {
+			requestCount += 1;
+			const requestSignal = getRequestSignal(input, init);
+			if (!requestSignal) throw new Error("expected Codex request signal");
+			signals.push(requestSignal);
+			if (requestCount === 1) {
+				const { promise, reject } = Promise.withResolvers<Response>();
+				if (requestSignal.aborted) {
+					reject(requestSignal.reason);
+				} else {
+					requestSignal.addEventListener("abort", () => reject(requestSignal.reason), { once: true });
+				}
+				markFirstAttemptStarted();
+				return promise;
+			}
+			return new Response(createStatefulCodexSse("Recovered after watchdog timeout", "resp_watchdog_retry"), {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		};
+		const model = { ...createCodexTestModel("https://chatgpt.com/backend-api"), preferWebsockets: false };
+
+		const resultPromise = streamOpenAICodexResponses(model, createCodexTestContext(), {
+			apiKey: token,
+			fetch: fetchMock,
+			streamFirstEventTimeoutMs: 10,
+		}).result();
+		await firstAttemptStarted;
+		vi.advanceTimersByTime(10);
+		const result = await resultPromise;
+
+		expect(requestCount).toBe(2);
+		expect(signals[0]).not.toBe(signals[1]);
+		expect(signals[0]?.aborted).toBe(true);
+		expect(signals[0]?.reason).toBeInstanceOf(DOMException);
+		expect(signals[0]?.reason).toHaveProperty("name", "TimeoutError");
+		expect(signals[1]?.aborted).toBe(false);
+		expect(result.stopReason).toBe("stop");
+		expect(result.content.find(block => block.type === "text")?.text).toBe("Recovered after watchdog timeout");
+	});
+
+	it("does not retry a caller abort before response headers", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const token = createCodexTestToken();
+		const controller = new AbortController();
+		const { promise: requestStarted, resolve: markRequestStarted } = Promise.withResolvers<void>();
+		let requestCount = 0;
+		const fetchMock: FetchImpl = async (input, init) => {
+			requestCount += 1;
+			const requestSignal = getRequestSignal(input, init);
+			if (!requestSignal) throw new Error("expected Codex request signal");
+			const { promise, reject } = Promise.withResolvers<Response>();
+			if (requestSignal.aborted) {
+				reject(requestSignal.reason);
+			} else {
+				requestSignal.addEventListener("abort", () => reject(requestSignal.reason), { once: true });
+			}
+			markRequestStarted();
+			return promise;
+		};
+		const model = { ...createCodexTestModel("https://chatgpt.com/backend-api"), preferWebsockets: false };
+
+		const resultPromise = streamOpenAICodexResponses(model, createCodexTestContext(), {
+			apiKey: token,
+			fetch: fetchMock,
+			signal: controller.signal,
+			streamFirstEventTimeoutMs: 60_000,
+		}).result();
+		await requestStarted;
+		controller.abort();
+		const result = await resultPromise;
+
+		expect(requestCount).toBe(1);
+		expect(result.stopReason).toBe("aborted");
+		expect(result.errorMessage).toBe("Request was aborted");
 	});
 
 	it("sets conversation_id/session_id headers and prompt_cache_key when sessionId is provided", async () => {

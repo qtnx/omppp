@@ -1,100 +1,53 @@
 # irc
 
-> Send and receive messages between agents over a process-global mailbox bus.
+> Send and receive short messages between agents in the current process.
 
 ## Source
 - Entry: `packages/coding-agent/src/tools/irc.ts`
-- Model-facing prompt: `packages/coding-agent/src/prompts/tools/irc.md`
-- Key collaborators:
-  - `packages/coding-agent/src/irc/bus.ts` — process-global `IrcBus`: per-agent mailboxes, delivery, waiter matching.
-  - `packages/coding-agent/src/registry/agent-registry.ts` — process-global agent directory and status.
-  - `packages/coding-agent/src/registry/agent-lifecycle.ts` — revival of parked recipients on direct send.
-  - `packages/coding-agent/src/session/agent-session.ts` — `deliverIrcMessage(...)`: recipient-side injection and wake turns.
-  - `packages/coding-agent/src/prompts/system/irc-incoming.md` — incoming-message rendering for the recipient.
-  - `packages/coding-agent/src/prompts/system/irc-autoreply.md` — prompt for the ephemeral auto-reply side turn (busy recipient, async disabled).
-  - `packages/coding-agent/src/config/settings-schema.ts` — `irc.timeoutMs`.
-  - `packages/coding-agent/src/modes/controllers/event-controller.ts` — renders IRC events into chat UI.
+- Prompt: `packages/coding-agent/src/prompts/tools/irc.md`
+- Mailbox bus: `packages/coding-agent/src/irc/bus.ts`
+- Agent directory: `packages/coding-agent/src/registry/agent-registry.ts`
 
 ## Inputs
 
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `op` | `"send" \| "wait" \| "inbox" \| "list"` | Yes | Operation. |
-| `to` | `string` | `send` | Recipient agent id, or `"all"` for broadcast. Whitespace trimmed; self-send rejected. |
-| `message` | `string` | `send` | Message body. Empty-after-trim is rejected. |
-| `replyTo` | `string` | No | `send`: message id being answered. |
-| `await` | `boolean` | No | `send`: after delivery, block until the next message from that peer arrives (round-trip sugar). Invalid with `to: "all"`. |
-| `from` | `string` | No | `wait`: only accept a message from this agent id. |
-| `timeoutMs` | `number` | No | `wait` / `send await:true`: timeout in milliseconds; `0` waits indefinitely. Defaults to `irc.timeoutMs`. |
-| `peek` | `boolean` | No | `inbox`: list messages without consuming them. |
+| Field | Required | Description |
+| --- | --- | --- |
+| `op` | Yes | `"send"`, `"wait"`, `"inbox"`, or `"list"`. |
+| `to` | `send` | Exact recipient agent id, or `"all"` for a broadcast. |
+| `message` | `send` | Non-empty message body. |
+| `replyTo` | No | Message id being answered. |
+| `await` | No | For direct `send`, wait for the recipient's reply. Invalid with `to: "all"`. |
+| `awaitReply` | No | Legacy alias for `await`. |
+| `from` | No | For `wait`, accept messages only from this agent id. |
+| `timeoutMs` | No | For `wait` and awaited sends. `0` means one maximum ten-minute window; re-issue to wait again. |
+| `peek` | No | For `inbox`, list messages without consuming them. |
 
-## Outputs
-- Single-shot `AgentToolResult`; no streaming updates.
-- `content` is one text block:
-  - `list`: `No other agents.` or `<n> peer(s):` bullets — `id [displayName · kind · status]` plus unread count, parent, and last-activity age; a footer notes that parked agents are revived automatically when messaged.
-  - `send`: per-recipient delivery receipts (`injected` / `woken` / `revived` / `failed — <error>`); with `await: true`, the reply body or a clean no-reply timeout note.
-  - `wait`: the consumed message as `[<msgId>] <from>: <body>` (with a reply-to tag), or `No message within <duration>.`
-  - `inbox`: `Inbox empty.` or `<n> message(s):` bullets.
-- `details: IrcDetails`: `{ op, from?, to?, receipts?, waited?, inbox?, peers? }`. `waited` is `null` when a wait timed out; `receipts` carry `{ to, outcome, error? }`.
+## Operations
 
-## Flow
-1. `IrcTool.createIf` constructs the tool only when `isIrcEnabled` passes and the session has both an `AgentRegistry` and `getAgentId`. There is no `irc.enabled` setting: availability is derived — true for every subagent (`taskDepth > 0`; a parent always exists) and for any session that can still spawn subagents through the task tool. Only a top-level session with task spawning unavailable has no peers, hence no irc.
-2. `execute` resolves the registry and sender id; missing either returns a text error result instead of throwing.
-3. `op: "list"`: `registry.list()` minus self and minus `aborted` agents — `parked` peers ARE listed. Each row includes the unread count from `IrcBus.unreadCount(...)` and last activity.
-4. `op: "send"` validates `to`/`message`, rejects self-sends, and rejects `await` with `to: "all"`.
-5. Target resolution: broadcasts fan out to `registry.listVisibleTo(senderId)` (live peers only — `running`/`idle`; reviving every parked agent on a broadcast would be a stampede). Direct sends go through the bus unfiltered, so a parked recipient is revived.
-6. `IrcBus.send(...)` is fire-and-forget — it never blocks on the recipient generating anything. Delivery by recipient status:
-   - `running` → message enqueued and injected as a non-interrupting aside at the recipient's next step boundary (`AgentSession.deliverIrcMessage`, rendered from `irc-incoming.md`, persisted as an `irc:incoming` custom message) — receipt `injected`. If the sender awaits a reply (`expectsReply` from `await: true`) and the recipient has `async.enabled` off, the recipient also generates an ephemeral no-tools auto-reply (`runEphemeralTurn`, the `/btw` pipeline) and sends it back over the bus with `replyTo` set, recording an `irc:autoreply` aside in its own history — a recipient blocked in a synchronous task spawn can never reach a step boundary before the sender's timeout otherwise;
-   - `idle` (live session) → enqueued and a real turn is started — the message wakes the agent — receipt `woken`;
-   - `parked` → `AgentLifecycleManager.global().ensureLive(to)` revives the session first, then the wake path — receipt `revived`;
-   - resolution/revival failure → receipt `failed` with the error; other recipients still complete.
-7. `send` with `await: true` then calls `IrcBus.wait(senderId, { from: to }, timeoutMs, signal)` and appends the reply (or a no-reply note suggesting `inbox`/`wait`) to the result. Awaited sends pass `{ expectsReply: true }` to `IrcBus.send` so a busy recipient can auto-reply (see step 6).
-8. `op: "wait"` blocks until a message for the caller (optionally filtered by `from`) arrives, consumes it, and returns it. Timeout returns a clean "no message" result, not an error.
-9. `op: "inbox"` drains pending messages (or peeks with `peek: true`) without blocking.
-10. Timeouts resolve as `params.timeoutMs ?? irc.timeoutMs`, normalized: `0` disables the timeout, negative/non-finite values fall back to the default `120_000`, positive values are truncated and clamped to ≥ 1 ms.
+### `list`
+Lists addressable peers with their ids, kind, status, unread count, and recent activity. The caller itself, aborted agents, and advisor agents are excluded.
 
-## Modes / Variants
-- `list`: enumerate peers with status (`running`/`idle`/`parked`), unread counts, and last activity.
-- `send` direct: one exact peer id; wakes idle peers, revives parked ones.
-- `send` broadcast: `to: "all"` to every live peer; parked peers are skipped.
-- `send` + `await: true`: round-trip convenience — send, then wait for the next message from that peer. Marks the send `expectsReply`, enabling the busy-recipient auto-reply path when async execution is disabled.
-- `wait`: block for an incoming message, optionally filtered by sender.
-- `inbox`: non-blocking drain or peek.
+### `send`
+Sends a direct message or broadcast and returns delivery receipts immediately. Direct sends wake idle peers and can revive parked peers. A broadcast reaches live peers only, avoiding a parked-agent stampede. Sending to oneself, omitting `to` or `message`, and combining `await` with `to: "all"` return errors.
 
-## Side Effects
-- Session state
-  - Reads the process-global `AgentRegistry`; direct sends to parked agents revive their sessions through the lifecycle manager.
-  - Persists `irc:incoming` custom messages into recipient history; replies are ordinary turns in the recipient's own session.
-  - Waking an idle/parked recipient starts a real agent turn (model requests, tool use) in that recipient.
-- User-visible prompts / interactive UI
-  - IRC events render as transcript cards in the TUI; the Agent Hub shows per-agent unread counts.
-- Background work / cancellation
-  - `send` itself never blocks on reply generation; only `wait` (and `await: true`) blocks, bounded by the resolved timeout and the caller's `AbortSignal`.
-- Network
-  - No IRC server connection. Woken recipients make their own model-provider calls as part of their turn.
-- Filesystem
-  - No direct filesystem writes in the tool itself; recipient turns persist to their session JSONL as usual.
+Use exact peer ids from `list`; do not infer names. To answer a message, send direct prose and set `replyTo` to the message id.
 
-## Limits & Caps
-- Availability gates: `isIrcEnabled` (running as a subagent, or task spawning available — there is no `irc.enabled` setting), an `AgentRegistry`, and a caller agent id.
-- Mailboxes are bounded at 100 messages per agent (`MAILBOX_CAP` in `packages/coding-agent/src/irc/bus.ts`); oldest messages are dropped beyond the cap.
-- `irc.timeoutMs` defaults to `120_000` and is the default `wait` / `send await:true` timeout; `0` disables the timeout, non-finite or negative values fall back to the default, positive values are truncated and clamped to at least `1` ms.
-- Broadcast scope: live peers only (`running`/`idle`) via `listVisibleTo`; direct sends address any non-aborted agent, including parked ones.
+### `wait`
+Blocks for the next matching incoming message, optionally filtered by `from`. It returns the consumed message or a normal timeout result. Waits are for an answer that blocks current work, not for polling task completion.
 
-## Errors
-- The tool returns text errors (with `isError: true`), not thrown exceptions, for:
-  - missing registry: `IRC is unavailable in this session.`
-  - missing sender id: `IRC is unavailable: caller has no agent id.`
-  - missing `to` / `message` on `send`
-  - self-send: `Cannot send an IRC message to yourself.`
-  - `await` with `to: "all"`
-  - unknown op
-- Per-recipient delivery failures surface as `failed` receipts with the error message; `send` is marked `isError` only when no recipient received the message.
-- `wait` timeout is a normal result (`waited: null`), not an error.
+### `inbox`
+Drains pending messages. With `peek: true`, it lists them without consuming them.
 
-## Notes
-- This is IRC-like naming only: no servers, sockets, channels, or join/part state. Addressing is by exact registry agent id.
-- Replies are real turns by the recipient, with one exception: an awaited send to a mid-turn recipient with `async.enabled` off triggers an ephemeral no-tools auto-reply (the old `respondAsBackground` path), because a recipient blocked in a synchronous task spawn whose batch includes the sender can never run a real turn before the sender's timeout. A recipient may otherwise keep working before answering; check `inbox` or `wait` again rather than re-sending.
-- Wake-on-message is the only resume primitive: messaging a parked agent revives it (same `ensureLive` path as the Agent Hub). The task tool has no `resume` parameter.
-- Message ids are Snowflakes; pass them as `replyTo` to thread an answer to a specific message.
-- Persistence is per recipient history: the sender gets receipts in the tool result; the recipient sees the injected `irc:incoming` message in its own transcript (visible via `history://<id>`).
+## Delivery and timing
+
+`send` is fire-and-forget: it does not wait for the recipient to respond. Set `await: true` only when work cannot continue without a reply; that operation sends first and then waits for a message from the direct recipient. The default IRC wait is configured by `irc.timeoutMs` (default `120000` milliseconds), and every wait is capped at ten minutes.
+
+Messages are plain prose. Direct recipients can be running, idle, or parked; a running recipient receives a non-interrupting aside at a safe turn boundary. Delivery failures are returned as receipts; a send is an error only when no recipient received it.
+
+## Availability and errors
+
+The tool is enabled when `irc.enabled` is true and the session has an agent registry and caller id. Subagents always have a peer path; a top-level session also needs task-spawn capacity. Missing session prerequisites, unknown operations, invalid send parameters, and invalid broadcast awaiting return text error results rather than thrown tool errors.
+
+## Compatibility
+
+`irc` remains a discoverable standalone built-in tool for existing callers. It is available alongside the newer `hub` and `xd` surfaces; neither replaces this messaging contract.

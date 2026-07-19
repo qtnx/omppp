@@ -2,19 +2,18 @@
 
 ## [Unreleased]
 
-## [16.4.7] - 2026-07-12
+### Added
 
-### Fixed
+- Added a Tools tab to the `omp stats` dashboard (`/#/tools`): per-tool call counts, error rates, result/argument payload sizes, per-model breakdown, and a stacked calls-over-time chart. Token and cost columns attribute each invoking turn's real provider usage evenly across that turn's tool calls. Existing databases re-parse sessions once on the next sync to backfill historical tool calls.
 
-- Fixed a `SQLITE_CONSTRAINT_NOTNULL` crash (`messages.stop_reason`) aborting the entire session sync when a persisted assistant message lacks a `stopReason`. Malformed entries — missing stop reason, token counts, or message timestamp — are now coerced at the parser boundary, and entries with no usage or model attribution are skipped instead of failing the batch insert.
+- Support for parsing named advisor transcripts using the `__advisor.<slug>.jsonl` naming convention.
 
-## [16.4.2] - 2026-07-10
+- Added a Gain tab to the `omp stats` dashboard (`/#/gain`) to display snapcompact token-savings with project scoping from synced session folders.
 
-### Fixed
+- Added token usage breakdown by agent type (Main, Subagents, Advisor) to the overview dashboard
 
-- Fixed a crash during stats synchronization on legacy session entries that lack a cost breakdown by falling back to catalog pricing when available.
-
-## [16.3.9] - 2026-07-06
+- New Projects view summarizing usage, cost, and reliability per project folder (backed by the existing `/api/stats/folders` endpoint).
+- System-aware light/dark theme toggle — follows the OS by default, and an explicit choice persists across reloads.
 
 ### Changed
 
@@ -24,76 +23,27 @@
 - Added sad emoticons as a signal for anguish while excluding code-like patterns.
 - Triggered a one-time automatic re-ingestion of sessions on the next database sync to apply the updated metrics.
 
-## [16.3.7] - 2026-07-05
-
-### Changed
-
 - Optimized session-entry lookup and file reading performance by caching file metadata to avoid repeated full-file scans.
 
-## [16.3.1] - 2026-07-02
-
-### Added
-
-- Added a Tools tab to the `omp stats` dashboard (`/#/tools`): per-tool call counts, error rates, result/argument payload sizes, per-model breakdown, and a stacked calls-over-time chart. Token and cost columns attribute each invoking turn's real provider usage evenly across that turn's tool calls. Existing databases re-parse sessions once on the next sync to backfill historical tool calls.
-
-## [16.2.7] - 2026-06-30
-
-### Fixed
-
-- Improved premium request calculation accuracy by correctly accounting for specific model families.
-
-## [16.2.6] - 2026-06-29
-
-### Fixed
-
-- Fixed application crashes and Bun aborts on macOS and when parsing large stats session files, including during `omp --smoke-test` runs, by utilizing a more resilient serial parser and lenient line scanner.
-
-## [16.2.3] - 2026-06-28
-
-### Added
-
-- Support for parsing named advisor transcripts using the `__advisor.<slug>.jsonl` naming convention.
-
-## [16.2.0] - 2026-06-27
-
-### Added
-
-- Added a Gain tab to the `omp stats` dashboard (`/#/gain`) to display snapcompact token-savings with project scoping from synced session folders.
-
-## [16.1.17] - 2026-06-24
-
-### Fixed
-
-- Stats sync counted the same provider request multiple times when a forked or branched session file copied the parent's entries verbatim. Inserts now skip rows whose `(entry_id, timestamp)` already exists under a different `session_file`, and a one-shot migration on the next `omp stats` run collapses any pre-existing duplicates ([#3370](https://github.com/can1357/oh-my-pi/issues/3370)).
-
-## [16.1.15] - 2026-06-22
-
-### Added
-
-- Added token usage breakdown by agent type (Main, Subagents, Advisor) to the overview dashboard
-
-## [16.0.10] - 2026-06-18
-
-### Changed
-
 - Updated description of moderated content categories to use more inclusive terminology
-
-### Fixed
-
-- Wide data tables (Requests, Errors, Overview, Projects) overflowed the page horizontally at narrow-desktop widths (768-1023px): the `.stats-table-desktop-only` wrapper used for mobile-card tables lacked the `overflow-x: auto` containment that `.stats-table-container` already has. They now scroll within their own bounds instead of spilling the page body.
-
-## [16.0.5] - 2026-06-17
-
-### Added
-
-- New Projects view summarizing usage, cost, and reliability per project folder (backed by the existing `/api/stats/folders` endpoint).
-- System-aware light/dark theme toggle — follows the OS by default, and an explicit choice persists across reloads.
-
-### Changed
 
 - Redesigned the local stats dashboard with an OMP-themed product shell, dedicated per-section views, accessible loading/empty/error states, and flicker-free navigation between screens and time ranges.
 
 ### Fixed
+
+- Fixed the Recent Errors list to honor the selected dashboard time range before returning the newest 50 failures.
+
+- Fixed a `SQLITE_CONSTRAINT_NOTNULL` crash (`messages.stop_reason`) aborting the entire session sync when a persisted assistant message lacks a `stopReason`. Malformed entries — missing stop reason, token counts, or message timestamp — are now coerced at the parser boundary, and entries with no usage or model attribution are skipped instead of failing the batch insert.
+
+- Fixed a crash during stats synchronization on legacy session entries that lack a cost breakdown by falling back to catalog pricing when available.
+
+- Improved premium request calculation accuracy by correctly accounting for specific model families.
+
+- Fixed application crashes and Bun aborts on macOS and when parsing large stats session files, including during `omp --smoke-test` runs, by utilizing a more resilient serial parser and lenient line scanner.
+
+- Stats sync counted the same provider request multiple times when a forked or branched session file copied the parent's entries verbatim. Inserts now skip rows whose `(entry_id, timestamp)` already exists under a different `session_file`, and a one-shot migration on the next `omp stats` run collapses any pre-existing duplicates ([#3370](https://github.com/can1357/oh-my-pi/issues/3370)).
+
+- Wide data tables (Requests, Errors, Overview, Projects) overflowed the page horizontally at narrow-desktop widths (768-1023px): the `.stats-table-desktop-only` wrapper used for mobile-card tables lacked the `overflow-x: auto` containment that `.stats-table-container` already has. They now scroll within their own bounds instead of spilling the page body.
 
 - The 1h time-range chart rendered an empty/single-point line; it now buckets at 5-minute granularity for a real trend.
 
