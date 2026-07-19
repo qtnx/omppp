@@ -1601,6 +1601,9 @@ export async function runRootCommand(
 
 			stopStartupWatchdog();
 			logger.endTiming();
+			// Idle low-memory trim is constructed inside InteractiveMode (EventController
+			// path) — ACP/SDK/print modes are intentionally NOT wired (no EventController,
+			// and idle-trim is a TUI status-line concern).
 			await runInteractiveMode(
 				session,
 				VERSION,

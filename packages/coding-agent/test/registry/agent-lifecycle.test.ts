@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { logger } from "@oh-my-pi/pi-utils";
 
 interface SessionStub {
 	session: AgentSession;
@@ -464,5 +465,110 @@ describe("AgentLifecycleManager", () => {
 		expect(ref?.session).toBe(stub.session);
 		expect(stub.disposeCalls()).toBe(0);
 		expect(lifecycle.has("8-Sub")).toBe(true);
+	});
+
+	describe("parkAll", () => {
+		it("parks only live idle adopted agents; leaves parked and running untouched", async () => {
+			const idleA = makeSessionStub();
+			const idleB = makeSessionStub();
+			const running = makeSessionStub();
+			const alreadyParked = makeSessionStub();
+
+			registerIdleSub("pa-idle-a", idleA.session);
+			registerIdleSub("pa-idle-b", idleB.session);
+			registerIdleSub("pa-running", running.session);
+			registry.register({
+				id: "pa-parked",
+				displayName: "task",
+				kind: "sub",
+				session: null,
+				sessionFile: "/tmp/pa-parked.jsonl",
+				status: "parked",
+			});
+
+			lifecycle.adopt("pa-idle-a", { idleTtlMs: 0 });
+			lifecycle.adopt("pa-idle-b", { idleTtlMs: 0 });
+			lifecycle.adopt("pa-running", { idleTtlMs: 0 });
+			lifecycle.adopt("pa-parked", { idleTtlMs: 0, revive: async () => alreadyParked.session });
+			registry.setStatus("pa-running", "running");
+
+			await lifecycle.parkAll();
+
+			expect(registry.get("pa-idle-a")?.status).toBe("parked");
+			expect(registry.get("pa-idle-a")?.session).toBeNull();
+			expect(idleA.disposeCalls()).toBe(1);
+
+			expect(registry.get("pa-idle-b")?.status).toBe("parked");
+			expect(registry.get("pa-idle-b")?.session).toBeNull();
+			expect(idleB.disposeCalls()).toBe(1);
+
+			expect(registry.get("pa-running")?.status).toBe("running");
+			expect(registry.get("pa-running")?.session).toBe(running.session);
+			expect(running.disposeCalls()).toBe(0);
+
+			expect(registry.get("pa-parked")?.status).toBe("parked");
+			expect(registry.get("pa-parked")?.session).toBeNull();
+			expect(alreadyParked.disposeCalls()).toBe(0);
+		});
+
+		it("logs and continues when one park fails so later agents still park", async () => {
+			const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+			const boom = makeSessionStub(async () => {
+				throw new Error("dispose boom");
+			});
+			// Force park() itself to reject after dispose by detaching the registry mid-flight
+			// is not possible; instead spy park on the second agent path via a throwing dispose
+			// that park swallows — so make the first park throw by replacing park for one id.
+			const okLater = makeSessionStub();
+			registerIdleSub("pa-fail", boom.session);
+			registerIdleSub("pa-ok-later", okLater.session);
+			lifecycle.adopt("pa-fail", { idleTtlMs: 0 });
+			lifecycle.adopt("pa-ok-later", { idleTtlMs: 0 });
+
+			const originalPark = lifecycle.park.bind(lifecycle);
+			const parkSpy = vi.spyOn(lifecycle, "park").mockImplementation(async (id: string) => {
+				if (id === "pa-fail") throw new Error("park boom");
+				return originalPark(id);
+			});
+
+			await lifecycle.parkAll();
+
+			expect(parkSpy).toHaveBeenCalled();
+			expect(warnSpy).toHaveBeenCalledWith(
+				"AgentLifecycleManager.parkAll: park failed",
+				expect.objectContaining({ id: "pa-fail" }),
+			);
+			expect(registry.get("pa-ok-later")?.status).toBe("parked");
+			expect(registry.get("pa-ok-later")?.session).toBeNull();
+			expect(okLater.disposeCalls()).toBe(1);
+			// Failing id was skipped — still live idle.
+			expect(registry.get("pa-fail")?.status).toBe("idle");
+			expect(registry.get("pa-fail")?.session).toBe(boom.session);
+		});
+
+		it("ensureLive revives an agent after parkAll (wake path)", async () => {
+			const live = makeSessionStub();
+			const revived = makeSessionStub();
+			registerIdleSub("pa-wake", live.session, "/tmp/pa-wake.jsonl");
+			lifecycle.adopt("pa-wake", {
+				idleTtlMs: 0,
+				revive: async () => revived.session,
+			});
+
+			await lifecycle.parkAll();
+			expect(registry.get("pa-wake")?.status).toBe("parked");
+			expect(registry.get("pa-wake")?.session).toBeNull();
+			expect(live.disposeCalls()).toBe(1);
+
+			const session = await lifecycle.ensureLive("pa-wake");
+			expect(session).toBe(revived.session);
+			expect(registry.get("pa-wake")?.status).toBe("idle");
+			expect(registry.get("pa-wake")?.session).toBe(revived.session);
+			expect(registry.get("pa-wake")?.sessionFile).toBe("/tmp/pa-wake.jsonl");
+		});
+
+		it("is a no-op when nothing is adopted", async () => {
+			await expect(lifecycle.parkAll()).resolves.toBeUndefined();
+		});
 	});
 });
