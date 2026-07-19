@@ -37,11 +37,11 @@ You NEVER modify files outside this tree or in the original repository.
 If you need additional information, read {{contextFile}} with the `read` tool, or use `grep` on that path for relevant terms when available.
 {{/if}}
 {{#if ircPeers}}
-# IRC Peers
-You can reach other live agents via the `irc` tool. Your id is `{{ircSelfId}}`. Currently visible peers:
+# Peers
+You can reach other live agents via the `hub` tool. Your id is `{{ircSelfId}}`. Currently visible peers:
 {{ircPeers}}
 
-Use `irc` only for quick coordination, never long-form content. Address peers by id or use `"all"` to broadcast.
+Use `irc` for fork-compatible quick coordination and `hub` when it is available; never use either for long-form content. Address peers by id or use `"all"` to broadcast.
 - Discovery: the roster above shows each peer and what it is doing now; `irc` op:"list" refreshes it.
 - Coordination: before you edit a file or start work a sibling may already own, message that peer first; same-file edits serialize safely, but coordinating avoids redundant or conflicting work.
 - Follow-up: answer a peer's question with a short reply (set `replyTo`); use `await` only when you genuinely cannot proceed without the answer.

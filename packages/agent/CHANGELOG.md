@@ -2,90 +2,103 @@
 
 ## [Unreleased]
 
-## [16.5.1] - 2026-07-14
+### Breaking Changes
 
-### Fixed
+- Changed `transformProviderContext` and `buildSideRequestContext` to return a Promise
 
-- Fixed compatibility with Copilot gpt-5.6 models by correcting token escaping in compaction summaries.
+- Changed `AgentOptions.getApiKey` and `AgentLoopConfig.getApiKey` to receive the active `Model` and return an API key or `ApiKeyResolver`, so credential routing stays model-scoped and retry context is no longer exposed through the agent-core API
 
-## [16.5.0] - 2026-07-13
+- Renamed owned tool-calling options from `toolCallSyntax`/`exampleSyntax` to `dialect`/`exampleDialect`.
+- Changed compaction conversation serialization to use the target model's native dialect turn, thinking, tool-call, and tool-result envelopes when a dialect is selected.
+- Renamed the owned dialect environment variable from `PI_OWNED_TOOLS` to `PI_DIALECT`.
 
 ### Added
+
+- Added the `hub` and `xd://` surfaces alongside the retained `irc`, `job`, `launch`, `resolve`, and tool-discovery APIs.
+- Introduced the xd:// virtual device protocol for mounting tools as URLs readable/writable via read/write tools, configurable via the new tools.xdev setting (defaults to true).
+- Added the hub tool, consolidating agent peer messaging, background job control, and supervised long-running processes.
+- Added the edit.enforceSeenLines configuration setting (defaults to false) to optionally reject edits on lines that have not been fully displayed.
+- Added the ToolLoadMode type and an optional satisfies predicate to SoftToolRequirement to support compliance checks against specific invocation shapes (such as writing to a virtual device path).
 
 - Added an automated image-dropping rescue tier to compaction dead-end recovery.
 - Added visual warnings and detailed recovery instructions to the session timeline when compaction fails to free sufficient space.
 
-## [16.4.5] - 2026-07-11
-
-### Added
-
 - Added a process-global pause gate (`agentPauseGate`) to safely pause agent loops before model calls or tool executions, allowing them to be resumed later or aborted cleanly.
-
-## [16.4.3] - 2026-07-11
-
-### Fixed
-
-- Fixed an issue where skipped sibling tool results incorrectly reported that a queued user message caused the skip.
-
-## [16.4.2] - 2026-07-10
-
-### Fixed
-
-- Fixed serialization of BigInt tool arguments to prevent data loss during remote compaction.
-
-## [16.4.1] - 2026-07-10
-
-### Fixed
-
-- Enabled reasoning encryption content for all Responses Lite compaction requests
-
-## [16.4.0] - 2026-07-10
-
-### Added
 
 - Added the `ThinkingLevel.Max` ("max") configuration option, mapping to the `Effort.Max` tier for supported models.
 
-### Fixed
-
-- Fixed remote compaction behavior for Codex Responses Lite (GPT-5.6 family) models across both V1 and V2 endpoints to ensure correct formatting and routing.
-- Fixed an issue where aborted tool-result hooks could trigger subsequent provider calls before the abort signal fully settled.
-
-## [16.3.12] - 2026-07-08
-
-### Added
-
 - Added per-tool abort metadata so stream-wide aborts can label matching tool-call placeholders separately from unaffected sibling calls ([#2783](https://github.com/can1357/oh-my-pi/issues/2783)).
 
-### Fixed
+- Added support for Anthropic fallback content blocks in agent-loop assistant messages, ensuring they are preserved across session persistence and event fanout.
 
-- Fixed handoff generation retrying with `toolChoice: "auto"` when custom OpenAI-compatible providers reject `toolChoice: "none"` with an auto-only 400. ([#4715](https://github.com/can1357/oh-my-pi/issues/4715))
-- Fixed generic remote compaction against OpenAI-compatible `/chat/completions` endpoints (for example llama.cpp `openai-completions`) by sending chat messages instead of the custom `{ systemPrompt, prompt }` summarizer payload. ([#4630](https://github.com/can1357/oh-my-pi/issues/4630))
+- Added optional AgentTool.matcherPaths(args) and AgentTool.matcherEntries(args) hooks to allow tools to surface target file paths and isolate file evaluations for path-scoped stream matchers (e.g., when handling multi-file payloads or embedded paths in streamed arguments).
 
-## [16.3.7] - 2026-07-05
+- Added an optional `cwdResolver` to `Agent` and `getCwd` to `AgentLoopConfig` to dynamically resolve the working directory per LLM call, allowing workspace-scoped provider discovery (such as GitLab Duo Agent) to follow live directory changes without reconstructing the agent.
 
-### Fixed
+- Added `generateHandoffFromContext(context, model, options)` to `@oh-my-pi/pi-agent-core/compaction`: runs the handoff oneshot against a fully-built provider `Context` (system prompt, normalized tools, transformed history, trailing handoff prompt) with `streamOptions` mirroring the live turn's cache routing, so a host that owns the transform pipeline can make the handoff request share the prompt cache the main turn populated. `generateHandoff(messages, …)` is unchanged and now delegates to it.
+- Added an optional `systemPrompt` argument to `Agent.buildSideRequestContext(llmMessages, systemPrompt?)`, defaulting to the live agent prompt; callers can pin a different prompt (e.g. handoff generation, which uses the base prompt rather than a per-turn `before_agent_start` hook override).
 
-- Fixed an issue where provider orchestration tokens were incorrectly included in context token calculations, which could trigger premature context auto-compaction and promotion.
+- Added `buildSideRequestContext` to the `Agent` class to build prompt-cache-friendly provider Contexts for side-channels or ephemeral requests.
+- Added `compactionContextTokens(providerContextTokens, storedConversationEstimate)`: floors the provider-reported context tokens by a local estimate of the stored conversation for the compaction decision, so a `before_provider_request` payload transform (a compression extension, obfuscator, or inline snapcompact) that shrinks the request can no longer deflate provider usage below the true history size and suppress auto-compaction.
 
-## [16.3.3] - 2026-07-02
+- Added `SoftToolRequirement` support to `getToolChoice`: a host can require a tool by returning a soft requirement instead of a hard `ToolChoice`. The loop injects the supplied reminder once (leaving `tool_choice` on auto), and escalates to a one-turn forced choice — skipping any detour tool batch — only if the model fails to call the required tool, avoiding the provider message-cache invalidation of forcing every turn.
+- Added `pruneToolDescriptions` option to reduce token usage by stripping tool descriptions from provider-bound specs
+
+- Added `transformAssistantMessage` hook to `AgentOptions` and `Agent` to allow mutating the finalized assistant message before UI emission, context appending, or tool dispatch
+
+- Added agent-loop deadline support for graceful wall-clock session stops.
+
+- Added `onTurnEnd` hook support (`setOnTurnEnd`/`onTurnEnd`) to run awaited per-turn bookkeeping with current messages before the next model request and skip callback execution for aborted or error turns
 
 ### Changed
 
 - Enabled dynamic model resolution to support seamless mid-run model switching.
 
+- Improved the reliability of remote compaction by introducing transient error retries, configurable timeouts, and immediate termination upon user-initiated aborts.
+
+- Enabled V2 streaming remote compaction by default for compatible AI and OpenAI-compatible models, which forwards full conversation history to the provider and supports session routing, prompt caching, provider-native tool history replay, transient error retries, and configurable timeouts.
+
+- Changed `AgentLoopConfig.onTurnEnd` and `Agent.setOnTurnEnd` callbacks to receive whether the loop will continue with another provider request.
+
+- Updated `buildSideRequestContext` to allow pinning custom system prompts
+
+- Exported helper functions `normalizeMessagesForProvider` and `resolveOwnedDialectFromEnv` from `packages/agent/src/agent-loop.ts`.
+
+- Updated the display format for truncated file operation summaries
+
+- Changed Gemini repetition-loop detection to live in the pi-ai stream layer instead of the agent loop. The agent no longer runs its own Gemini-gated verbatim repetition check (`detectRepetition`/`truncateRepetition`); loops now surface as a retryable transient stream error that the standard auto-retry path discards and re-samples, rather than a committed contentful error message.
+
+- Renamed `toolCallSyntax` option to `dialect` in AgentOptions and AgentLoopConfig
+- Updated conversation serialization to use dialect's native transcript rendering when a dialect is selected
+- Changed internal references from `ToolCallSyntax` type to `Dialect` type across agent loop and compaction modules
+
 ### Fixed
+
+- Improved error visibility in interactive clients by surfacing provider stream failures through the assistant message lifecycle, preventing silent loading spinners.
+- Fixed an issue where Cursor provider contexts omitted host-supplied MCP tools from main and side-channel requests.
+
+- Improved session deadline abort signals to carry structured cancellation reasons, enabling timeout-aware tools to correctly classify deadline cancellations.
+- Fixed an issue where completed tool executions were incorrectly marked as skipped (clobbering their actual results) if a user message was queued while the tool was in flight.
+
+- Fixed compatibility with Copilot gpt-5.6 models by correcting token escaping in compaction summaries.
+
+- Fixed an issue where skipped sibling tool results incorrectly reported that a queued user message caused the skip.
+
+- Fixed serialization of BigInt tool arguments to prevent data loss during remote compaction.
+
+- Enabled reasoning encryption content for all Responses Lite compaction requests
+
+- Fixed remote compaction behavior for Codex Responses Lite (GPT-5.6 family) models across both V1 and V2 endpoints to ensure correct formatting and routing.
+- Fixed an issue where aborted tool-result hooks could trigger subsequent provider calls before the abort signal fully settled.
+
+- Fixed handoff generation retrying with `toolChoice: "auto"` when custom OpenAI-compatible providers reject `toolChoice: "none"` with an auto-only 400. ([#4715](https://github.com/can1357/oh-my-pi/issues/4715))
+- Fixed generic remote compaction against OpenAI-compatible `/chat/completions` endpoints (for example llama.cpp `openai-completions`) by sending chat messages instead of the custom `{ systemPrompt, prompt }` summarizer payload. ([#4630](https://github.com/can1357/oh-my-pi/issues/4630))
+
+- Fixed an issue where provider orchestration tokens were incorrectly included in context token calculations, which could trigger premature context auto-compaction and promotion.
 
 - Fixed an issue in the Cursor agent where assistant messages containing native tool calls could duplicate text blocks on replay.
 - Fixed a bug where Cursor agent exec-channel tools (such as bash, write, and delete) were executed a second time after server-side execution.
 - Improved error handling for tool calls interrupted by upstream provider stream errors, distinguishing transport/provider failures from local tool execution failures in the CLI, events, and messages.
-
-## [16.3.0] - 2026-07-02
-
-### Added
-
-- Added support for Anthropic fallback content blocks in agent-loop assistant messages, ensuring they are preserved across session persistence and event fanout.
-
-### Fixed
 
 - Fixed an issue where legacy steering messages were prematurely consumed and dropped during in-flight tool execution polls.
 - Fixed an issue where skipped tool results in queued messages were incorrectly treated as completed, preventing necessary retries.
@@ -94,185 +107,40 @@
 - Fixed schema validation errors for closed union tools by correctly injecting intent tracing into each variant.
 - Fixed token compaction reserve-budget logic to honor explicit reserveTokens values equal to the built-in default, and clamped the fallback reserve to at least one token for very small context windows.
 
-## [16.2.4] - 2026-06-28
-
-### Changed
-
-- Improved the reliability of remote compaction by introducing transient error retries, configurable timeouts, and immediate termination upon user-initiated aborts.
-
-### Fixed
-
 - Fixed an issue where assistant responses and encrypted reasoning could be lost during local history trimming prior to remote compaction.
 - Fixed type compatibility for hosts with title audit entries by adding support for `title_change` session metadata.
 - Fixed an issue where transient stream read failures after a completed tool call were treated as terminal errors, allowing the agent to successfully execute the tool and continue the turn.
 
-## [16.2.3] - 2026-06-28
-
-### Changed
-
-- Enabled V2 streaming remote compaction by default for compatible AI and OpenAI-compatible models, which forwards full conversation history to the provider and supports session routing, prompt caching, provider-native tool history replay, transient error retries, and configurable timeouts.
-
-### Fixed
-
 - Fixed an issue where assistant responses and encrypted reasoning could be lost during local history trimming.
 - Added `title_change` session metadata to the compaction entry type union to maintain type compatibility for hosts with title audit entries.
 
-## [16.2.2] - 2026-06-27
-
-### Added
-
-- Added optional AgentTool.matcherPaths(args) and AgentTool.matcherEntries(args) hooks to allow tools to surface target file paths and isolate file evaluations for path-scoped stream matchers (e.g., when handling multi-file payloads or embedded paths in streamed arguments).
-
-### Removed
-
-- Removed support for Pi dialect integration.
-
-## [16.2.0] - 2026-06-27
-
-### Added
-
-- Added an optional `cwdResolver` to `Agent` and `getCwd` to `AgentLoopConfig` to dynamically resolve the working directory per LLM call, allowing workspace-scoped provider discovery (such as GitLab Duo Agent) to follow live directory changes without reconstructing the agent.
-
-## [16.1.23] - 2026-06-26
-
-### Changed
-
-- Changed `AgentLoopConfig.onTurnEnd` and `Agent.setOnTurnEnd` callbacks to receive whether the loop will continue with another provider request.
-
-### Fixed
-
 - Fixed stale snapcompact archive frames leaking into context-full compaction after `compaction.strategy` was switched from `snapcompact` to `context-full`. Switching strategy left the latest compaction entry's `preserveData.snapcompact` in place, so context-full kept rebuilding context with old image frames attached — inflating context/token usage and making sessions appear to compact early (around ~60% apparent window use). The first context-full compaction after the switch now folds the prior archive's plaintext into the LLM summary input and strips `preserveData.snapcompact` from the new entry; legacy frame-only archives (no plaintext to migrate) are stripped outright. ([#3561](https://github.com/can1357/oh-my-pi/pull/3561) by [@serverinspector](https://github.com/serverinspector))
-
-## [16.1.18] - 2026-06-25
-
-### Fixed
 
 - Fixed `AppendOnlyContextManager.syncMessages` clearing the entire log on any in-place rewrite of an already-synced message. Per-turn tool-output pruning, image stripping, or any `transformContext` re-render that touched a single message used to drop every prior turn out of the append-only log and re-send the conversation from scratch, forcing local backends (llama.cpp / Ollama / LM Studio) to re-prefill tens of thousands of tokens every few turns. `syncMessages` now finds the longest byte-stable prefix between the previously-synced messages and the new ones, truncates the log to that prefix, and only re-appends the diverged tail — so the provider's KV cache stays warm up to the divergence point. ([#3406](https://github.com/can1357/oh-my-pi/issues/3406))
 
-## [16.1.17] - 2026-06-24
-
-### Fixed
-
 - Hardened the agent-loop cooperative yield against backward wall-clock jumps. A stale future timestamp left in the shared yield gate (NTP step, or a fake-timer test mocking `Date.now`) could make `yieldIfDue()` gate forever and stop yielding to the event loop; the gate now treats a backward clock delta as due and re-anchors. The gate is exposed as an injectable `YieldGate` (with `yieldIfDue()` retained as the shared singleton) so it can be exercised without mocking process-global timers.
-
-## [16.1.16] - 2026-06-23
-
-### Added
-
-- Added `generateHandoffFromContext(context, model, options)` to `@oh-my-pi/pi-agent-core/compaction`: runs the handoff oneshot against a fully-built provider `Context` (system prompt, normalized tools, transformed history, trailing handoff prompt) with `streamOptions` mirroring the live turn's cache routing, so a host that owns the transform pipeline can make the handoff request share the prompt cache the main turn populated. `generateHandoff(messages, …)` is unchanged and now delegates to it.
-- Added an optional `systemPrompt` argument to `Agent.buildSideRequestContext(llmMessages, systemPrompt?)`, defaulting to the live agent prompt; callers can pin a different prompt (e.g. handoff generation, which uses the base prompt rather than a per-turn `before_agent_start` hook override).
-
-### Changed
-
-- Updated `buildSideRequestContext` to allow pinning custom system prompts
-
-## [16.1.10] - 2026-06-21
-
-### Fixed
 
 - Fixed labeled user interrupts retaining incomplete streamed tool calls before `toolcall_end`, which could persist malformed tool-call IDs into replay.
 
-## [16.1.8] - 2026-06-20
-
-### Breaking Changes
-
-- Changed `transformProviderContext` and `buildSideRequestContext` to return a Promise
-
-### Added
-
-- Added `buildSideRequestContext` to the `Agent` class to build prompt-cache-friendly provider Contexts for side-channels or ephemeral requests.
-- Added `compactionContextTokens(providerContextTokens, storedConversationEstimate)`: floors the provider-reported context tokens by a local estimate of the stored conversation for the compaction decision, so a `before_provider_request` payload transform (a compression extension, obfuscator, or inline snapcompact) that shrinks the request can no longer deflate provider usage below the true history size and suppress auto-compaction.
-
-### Changed
-
-- Exported helper functions `normalizeMessagesForProvider` and `resolveOwnedDialectFromEnv` from `packages/agent/src/agent-loop.ts`.
-
-## [16.1.5] - 2026-06-19
-
-### Fixed
-
 - Wire-encoded `normalizeTools` parameters unconditionally so tools whose `intent` resolves to `"omit"` (function intent or `intent: "omit"`, e.g. builtin `eval` / `resolve`) no longer leak raw arktype/zod schema objects in `parameters` ([#3074](https://github.com/can1357/oh-my-pi/issues/3074))
-
-## [16.1.2] - 2026-06-19
-
-### Fixed
 
 - Prevented sensitive raw JSON payloads from leaking into agent events during tool validation
 - Ensured tool validation errors are handled correctly for malformed JSON parse inputs
 - Ensure deep-cloning of tool-call arguments respects own enumerable properties
 - Prevent direct object references between agent message snapshots and streaming events
 
-## [16.1.0] - 2026-06-19
-
-### Added
-
-- Added `SoftToolRequirement` support to `getToolChoice`: a host can require a tool by returning a soft requirement instead of a hard `ToolChoice`. The loop injects the supplied reminder once (leaving `tool_choice` on auto), and escalates to a one-turn forced choice — skipping any detour tool batch — only if the model fails to call the required tool, avoiding the provider message-cache invalidation of forcing every turn.
-- Added `pruneToolDescriptions` option to reduce token usage by stripping tool descriptions from provider-bound specs
-
-### Fixed
-
 - Improved token estimation accuracy for compaction summaries containing multi-block content
-
-## [16.0.11] - 2026-06-19
-
-### Changed
-
-- Updated the display format for truncated file operation summaries
-
-## [16.0.8] - 2026-06-18
-
-### Fixed
 
 - Stopped the compaction `<files>` summary from tracking `scheme://` URLs — internal URIs (`conflict://`, `artifact://`, `local://`, `history://`, …) and web URLs are no longer recorded as files, and legacy entries rehydrated from older compaction summaries are dropped.
 
-## [16.0.6] - 2026-06-18
-
-### Added
-
-- Added `transformAssistantMessage` hook to `AgentOptions` and `Agent` to allow mutating the finalized assistant message before UI emission, context appending, or tool dispatch
-
-## [16.0.5] - 2026-06-17
-
-### Breaking Changes
-
-- Changed `AgentOptions.getApiKey` and `AgentLoopConfig.getApiKey` to receive the active `Model` and return an API key or `ApiKeyResolver`, so credential routing stays model-scoped and retry context is no longer exposed through the agent-core API
-
-### Added
-
-- Added agent-loop deadline support for graceful wall-clock session stops.
-
-### Changed
-
-- Changed Gemini repetition-loop detection to live in the pi-ai stream layer instead of the agent loop. The agent no longer runs its own Gemini-gated verbatim repetition check (`detectRepetition`/`truncateRepetition`); loops now surface as a retryable transient stream error that the standard auto-retry path discards and re-samples, rather than a committed contentful error message.
-
-### Fixed
-
 - Fixed `PI_DIALECT=minimax` being ignored by the owned tool-calling env selector. ([#2759](https://github.com/can1357/oh-my-pi/issues/2759))
-
-## [16.0.1] - 2026-06-15
-
-### Fixed
 
 - Fixed transient provider errors after streamed tool-call arguments so incomplete tool calls are marked as interrupted output instead of eligible for automatic retry ([#2683](https://github.com/can1357/oh-my-pi/issues/2683)).
 - Fixed `@oh-my-pi/pi-agent-core` telemetry content capture crashing every chat turn with `TypeError: systemPrompt.map is not a function` when `captureMessageContent` is enabled (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`). `ChatRequestSnapshot.systemPrompt` now accepts `string | readonly string[]` and the telemetry serializers normalize a bare string to a single-element array — previously the full-system serializer called `.map` on a string (the `.length` guard passed, so it threw) and the request-message serializer iterated the string into one `system` message per character.
 
-## [16.0.0] - 2026-06-15
+### Removed
 
-### Breaking Changes
-
-- Renamed owned tool-calling options from `toolCallSyntax`/`exampleSyntax` to `dialect`/`exampleDialect`.
-- Changed compaction conversation serialization to use the target model's native dialect turn, thinking, tool-call, and tool-result envelopes when a dialect is selected.
-- Renamed the owned dialect environment variable from `PI_OWNED_TOOLS` to `PI_DIALECT`.
-
-### Added
-
-- Added `onTurnEnd` hook support (`setOnTurnEnd`/`onTurnEnd`) to run awaited per-turn bookkeeping with current messages before the next model request and skip callback execution for aborted or error turns
-
-### Changed
-
-- Renamed `toolCallSyntax` option to `dialect` in AgentOptions and AgentLoopConfig
-- Updated conversation serialization to use dialect's native transcript rendering when a dialect is selected
-- Changed internal references from `ToolCallSyntax` type to `Dialect` type across agent loop and compaction modules
+- Removed support for Pi dialect integration.
 
 ## [15.13.3] - 2026-06-15
 

@@ -237,7 +237,7 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 					settings: this.session.settings,
 					mcpManager: MCPManager.instance(),
 					contextFiles: this.session.contextFiles,
-					skills: this.session.skills,
+					skills: this.session.skills ? [...this.session.skills] : undefined,
 					workspaceTree: this.session.workspaceTree,
 					workspaceRoots: this.session.workspaceRoots,
 					promptTemplates: this.session.promptTemplates,

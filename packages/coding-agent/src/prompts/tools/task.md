@@ -1,7 +1,7 @@
-{{#if asyncEnabled}}{{#if batchEnabled}}Delegate work to background subagents by passing multiple items in a single `tasks[]` batch.{{else}}Delegate work to ONE background subagent per call.{{/if}}
-Execution does not block your turn: you receive agent and job IDs immediately, and the final results deliver themselves when the subagents finish.{{#if hasBlockingAgents}}
-Exception: agents marked BLOCKING below run inline — their results return in this call, while non-blocking items in the same batch still spawn as background jobs.{{/if}}{{else}}{{#if batchEnabled}}Run subagents synchronously by passing items in a `tasks[]` batch.{{else}}Run ONE subagent synchronously per call.{{/if}}
-Execution blocks your turn: the call only returns once the work is completely finished.{{/if}}
+{{#if asyncEnabled}}{{#if batchEnabled}}Delegate work to background subagents by passing multiple items in a single `tasks[]` batch.
+Execution does not block — you receive IDs immediately; results deliver when subagents finish.{{else}}Delegate work to ONE background subagent per call.
+Execution does not block — you receive an ID immediately; the result delivers when the subagent finishes.{{/if}}{{#if hasBlockingAgents}}
+Agents marked BLOCKING run inline — results return in this call; non-blocking items in the same batch still spawn as background jobs.{{/if}}{{else}}{{#if batchEnabled}}Run subagents synchronously by passing items in a `tasks[]` batch. Execution blocks until all work finishes.{{else}}Run ONE subagent synchronously. Execution blocks until work finishes.{{/if}}{{/if}}
 
 # Delegation Strategy
 - **Maximize parallelism:** Break work into the widest possible {{#if batchEnabled}}array of `tasks[]`{{else}}set of parallel `task` calls{{/if}}. NEVER serialize work that can run concurrently. Tasks touching different files or independent refactors should run in parallel; agents resolve their own file collisions live.
@@ -20,35 +20,34 @@ Execution blocks your turn: the call only returns once the work is completely fi
 {{#if batchEnabled}}
 - `context`: Shared project state, constraints, and contracts. Applies to the entire batch; do not duplicate this background into individual tasks. REQUIRED, session-specific only.
 - `tasks[]`: Array of subagents to spawn.
-  - `assignment`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
-  - `id`: A stable CamelCase identifier (≤32 chars). Generated automatically if omitted.
-  - `description`: A UI label only; the subagent NEVER sees it.
-  - `role`: The specialist this subagent embodies. Tailor per spawn; do not clone a generic worker.
-  - `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
+  - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
+  - `agent`: The agent type running this item (e.g. `scout`, `reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
+  - `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
+  - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
+  - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
   - `max_runtime_seconds`: You MUST choose an appropriate cap for each implementation/research spawn. Recommended: `explore`/`quick_task` 600, `task` 1200, `heavy_task` 2700. Omit to use configured fallback; `0` means unlimited.
+  - `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
+  - Legacy runtime aliases: `assignment`, `id`, `description`, and `role` remain accepted for compatibility.
 {{#if isolationEnabled}}
-  - `isolated`: Run in a dedicated worktree and return patches. Isolated agents are destroyed upon completion and cannot be addressed afterward.
+  - `isolated`: Run in dedicated worktree, return patches. Destroyed on completion, cannot be addressed afterward.
 {{/if}}
 {{else}}
-- `assignment`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
-- `id`: A stable CamelCase identifier (≤32 chars). Generated automatically if omitted.
-- `description`: A UI label only; the subagent NEVER sees it.
-- `role`: The specialist this subagent embodies. Tailor per spawn; do not clone a generic worker.
-- `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
+- `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
+- `agent`: The agent type to spawn (e.g. `scout`, `reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
+- `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
+- `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
+- `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
 - `max_runtime_seconds`: You MUST choose an appropriate cap for implementation/research work. Recommended: `explore`/`quick_task` 600, `task` 1200, `heavy_task` 2700. Omit to use configured fallback; `0` means unlimited.
+- `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
+- Legacy runtime aliases: `assignment`, `id`, `description`, and `role` remain accepted for compatibility.
 {{#if isolationEnabled}}
-- `isolated`: Run in a dedicated worktree and return patches. Isolated agents are destroyed upon completion and cannot be addressed afterward.
+- `isolated`: Run in dedicated worktree, return patches.
 {{/if}}
 {{/if}}
 
-# Context and Communication
-Subagents start blank. They have no access to your conversation history.
-{{#if ircEnabled}}- **Steering delivery:** Parent-to-subagent IRC is delivered immediately as steering; subagents blocked in `job poll` / `irc wait` do not need to poll separately for it.{{/if}}
-{{#if batchEnabled}}
-- Pass large payloads using `local://<path>` URIs, NEVER inline text.
-{{else}}
-- Write shared project state ONCE to a `local://` file (e.g., `local://ctx.md`) and reference that URL in each `task`.
-{{/if}}
+# Communication
+Subagents start blank — no conversation history.{{#if ircEnabled}} Parent-to-subagent IRC delivered immediately as steering.{{/if}}
+Pass large payloads via `local://<path>` URIs, NEVER inline text.
 
 # Format Contracts
 {{#if batchEnabled}}
@@ -180,8 +179,8 @@ Pick the implementer tier per unit by speed/model/review depth when no specialis
 - `quick_task` — light mechanical work or a small contained feature with a locked spec: rename, move, boilerplate, localized edits, data collection. Fastest and safe to fan out widely.
 Review is opt-in per spawn: leave `self_review` false (default) for faster mechanical/boilerplate/parallel/low-risk work you will verify yourself; set `self_review: true` for an automatic reviewer+fixer pass on load-bearing, cross-module, correctness/security-critical work, or work you will not verify yourself. This works on any tier.
 {{#list agents join="\n"}}
-### {{name}}{{#if readOnly}} (READ-ONLY: no edit/write/command tools){{/if}}{{#if blocking}} (BLOCKING: runs inline; its result returns in this call){{/if}}
+### {{name}}{{#if readOnly}} (READ-ONLY){{/if}}{{#if blocking}} (BLOCKING: inline result){{/if}}
 {{description}}
-{{#if readOnly}}Use ONLY for investigation and reporting; do the edits yourself or assign them to a writing agent.{{/if}}
+{{#if readOnly}}Use ONLY for investigation; do edits yourself or assign to a writing agent.{{/if}}
 {{/list}}
 {{/if}}

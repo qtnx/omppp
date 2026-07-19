@@ -20,6 +20,7 @@ function createContext() {
 		settings: { get: () => false },
 		statusLine,
 		updateEditorTopBorder,
+		flushPendingCommandOutput: vi.fn(),
 		pendingTools: new Map<string, unknown>(),
 		chatContainer: { addChild: vi.fn(), removeChild: vi.fn() },
 		hideThinkingBlock: false,

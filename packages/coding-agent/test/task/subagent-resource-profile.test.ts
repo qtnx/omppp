@@ -64,6 +64,7 @@ function createYieldingSession(onCustomMessage?: (message: CapturedCustomMessage
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => ["read", "yield"],
+		getEnabledToolNames: () => ["read", "yield"],
 		setActiveToolsByName: async () => {},
 		sendCustomMessage: async (message: CapturedCustomMessage) => {
 			onCustomMessage?.(message);
@@ -712,7 +713,7 @@ describe("subagent resource profile", () => {
 		});
 
 		const options = capturedOptions[0];
-		expect(options?.enableMCP).toBe(false);
+		expect(options?.enableMCP).toBe(true);
 		expect(options?.mcpManager).toBe(mcpManager);
 		expect(
 			options?.customTools?.map(tool => ({ name: tool.name, server: tool.mcpServerName, tool: tool.mcpToolName })),

@@ -392,7 +392,7 @@ export async function handleStatsApiRequest(req: Request, options: StatsApiOptio
 
 	if (path === "/api/stats/errors") {
 		const limit = url.searchParams.get("limit");
-		const stats = await getRecentErrors(limit ? parseInt(limit, 10) : undefined);
+		const stats = await getRecentErrors(range, limit ? parseInt(limit, 10) : undefined);
 		return Response.json(stats);
 	}
 

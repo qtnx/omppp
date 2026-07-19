@@ -49,6 +49,7 @@ export function createContextStatsTool(
 ): ToolDefinition<typeof contextStatsInputSchema> {
 	return {
 		name: "context_stats",
+		loadMode: "essential",
 		label: "Context stats",
 		description: "Show Context GC current-branch stats and token savings.",
 		parameters: contextStatsInputSchema,
@@ -80,6 +81,7 @@ export function createContextGlobalStatsTool(
 ): ToolDefinition<typeof contextGlobalStatsInputSchema> {
 	return {
 		name: "context_global_stats",
+		loadMode: "essential",
 		label: "Context global stats",
 		description: "Show Context GC global database stats and total token savings.",
 		parameters: contextGlobalStatsInputSchema,
@@ -110,6 +112,7 @@ export function createContextTreeTool(
 ): ToolDefinition<typeof contextTreeInputSchema> {
 	return {
 		name: "context_tree",
+		loadMode: "essential",
 		label: "Context tree",
 		description: "Show Context GC current-branch records grouped by status, kind, or source.",
 		parameters: contextTreeInputSchema,
@@ -144,6 +147,7 @@ export function createContextDebugTool(
 ): ToolDefinition<typeof contextDebugInputSchema> {
 	return {
 		name: "context_debug",
+		loadMode: "essential",
 		label: "Context debug",
 		description: "Show Context GC branch deltas and database aggregates for debugging.",
 		parameters: contextDebugInputSchema,

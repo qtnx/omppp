@@ -1,41 +1,28 @@
 # launch
 
-> Launch and control long-running project processes shared by every omp instance in the same directory.
+> Start and supervise project-scoped long-running processes shared by OMPx sessions in the same directory.
 
 ## Source
-- Tool: `packages/coding-agent/src/tools/launch.ts`
-- Broker client: `packages/coding-agent/src/daemon/client.ts`
-- Broker runtime: `packages/coding-agent/src/daemon/broker.ts`
-- Omp process presence: `packages/coding-agent/src/daemon/presence.ts`
-- Protocol: `packages/coding-agent/src/daemon/protocol.ts`
-- Model-facing prompt: `packages/coding-agent/src/prompts/tools/launch.md`
-
-## When to use it
-Use `launch` for processes that stay alive after one tool call or need later interaction:
-- web development servers and file watchers
-- debuggers such as lldb and gdb
-- REPLs and interactive application consoles
-- local services whose logs or readiness must be observed
-
-Use `bash` for commands that finish. Async bash remains appropriate for finite commands that need no later stdin; it is not a process supervisor.
+- Entry: `packages/coding-agent/src/tools/launch.ts`
+- Prompt: `packages/coding-agent/src/prompts/tools/launch.md`
+- Broker protocol: `packages/coding-agent/src/launch/protocol.ts`
 
 ## Operations
 
-| Operation | Purpose | Main fields |
+| `op` | Required fields | Behavior |
 | --- | --- | --- |
-| `start` | Launch a named process. | `name`, `application`, `args`, `env`, `cwd`, `pty`, `ready`, `restart`, `persist`, `detached` |
-| `list` | Snapshot every managed process in the current project scope. | none |
-| `logs` | Read, filter, or follow captured combined output. | `name`, `lines`, `head`, `grep`, `follow`, `cursor`, `timeout` |
-| `wait` | Wait for readiness, exit, or an output regex. | `name`, `for`, `pattern`, `timeout` |
-| `send` | Write stdin, terminal keys, or a process signal. | `name`, `text`, `enter`, `keys`, `signal` |
-| `stop` | Gracefully terminate the managed process tree, then hard-kill if needed. | `name`, `timeout` |
-| `restart` | Stop and relaunch using the retained launch specification. | `name` |
-| `describe` | Show the retained launch specification and live state. | `name` |
+| `start` | `name`, `application` | Starts `application` with `args`; records a reusable launch specification. |
+| `list` | — | Lists managed processes in the current project scope. |
+| `logs` | `name` | Returns captured output. |
+| `wait` | `name` | Waits for lifecycle state or an output pattern. |
+| `send` | `name` | Writes terminal input and/or sends a process-tree signal. |
+| `stop` | `name` | Gracefully stops the process tree, then hard-kills if necessary. |
+| `restart` | `name` | Restarts using the retained specification. |
+| `describe` | `name` | Returns the retained specification and live state. |
 
-Names are stable and unique within one project directory. A live name must be stopped or restarted; starting a completed name creates a new launch and rotates its prior output log.
+Names are unique within a project directory. A completed name may be started again; a live name must be stopped or restarted.
 
-## Starting and readiness
-`application` and `args` are separate fields, so callers do not need shell quoting:
+## Start parameters
 
 ```json
 {
@@ -43,80 +30,41 @@ Names are stable and unique within one project directory. A live name must be st
   "name": "web",
   "application": "bun",
   "args": ["run", "dev"],
-  "ready": {
-    "log": "Local:.*http",
-    "port": 5173,
-    "timeout": 30
-  }
+  "ready": { "log": "Local:.*http", "port": 5173, "timeout": 30 }
 }
 ```
 
-Defaults:
-- `cwd`: current coding-agent session directory
-- `args`: `[]`
-- `env`: `{}` over the broker's inherited environment
-- `pty`: `true`
-- `restart`: `no`
-- `persist`: `false`
-- `detached`: `false`
-- readiness timeout: 30 seconds
+| Field | Description |
+| --- | --- |
+| `application`, `args` | Executable path and direct argv; no shell parsing occurs. |
+| `env` | Extra environment variables. |
+| `cwd` | Working directory; defaults to the session directory. |
+| `pty` | Allocates a PTY; defaults to `true`. |
+| `ready.log` | Output regular expression. |
+| `ready.port` | TCP port to probe; must be an integer from `1` through `65535`. |
+| `ready.host` | Probe host; defaults to `127.0.0.1`. |
+| `ready.timeout` | Readiness deadline in seconds; defaults to `30`. |
+| `restart` | `"no"` (default), `"on-failure"`, or `"always"`. |
+| `persist` | Keeps the process after the last OMPx client exits; defaults to `false`. |
+| `detached` | Survives broker shutdown and all OMPx exits; implies `persist` and disables PTY input. |
 
-`detached: true` implies `persist: true`, forces `pty: false`, and disables stdin. Its process survives broker shutdown and every omp exit; a later broker reconnects to its records for logs and explicit `stop`.
+A `ready` object requires `log` or `port`. When both are supplied, both must pass. A readiness timeout leaves the process running so callers can inspect logs or stop it.
 
-`ready.log` is a regular expression matched against captured output. `ready.port` probes TCP at `ready.host` (default `127.0.0.1`). When both are present, both must pass. A readiness timeout leaves the process running and returns its current state so the caller can inspect logs or stop it.
+## Logs, waiting, and input
 
-Without a readiness condition, a successfully created process enters `running`. With readiness configured, it moves `starting` → `ready`; launch or nonzero-exit failures move to `failed`.
+- `logs` defaults to the last `100` lines; `lines` is capped at `1000`. Set `head: true` to read from the beginning and `grep` to filter with a regular expression.
+- `logs` with `follow: true` waits for output newer than `cursor`; reuse the returned cursor for the next call. `timeout` is seconds and defaults to `30`.
+- `wait.for` is `"exit"` by default or `"ready"`; `pattern` is an output regular expression and takes precedence. `timeout` defaults to `30` seconds.
+- `send.text` appends Enter unless `enter: false`. `keys` accepts `ENTER`, `TAB`, `ESCAPE`, `CTRL_C`, `CTRL_D`, `UP`, `DOWN`, `LEFT`, and `RIGHT`.
+- `send.signal` accepts `SIGINT`, `SIGTERM`, `SIGHUP`, `SIGQUIT`, or `SIGKILL`.
+- `stop.timeout` defaults to `5` seconds; log and wait timeouts default to `30` seconds. All are bounded to one hour.
 
-## Logs and following
-stdout and stderr are captured into one ordered stream when possible. PTY output is naturally combined.
+## Lifecycle and errors
 
-```json
-{"op":"logs","name":"web","lines":100}
-{"op":"logs","name":"web","grep":"error|warn","lines":50}
-{"op":"logs","name":"web","follow":true,"cursor":1842,"timeout":30}
-```
+`restart` reuses the retained specification. `on-failure` and `always` use bounded backoff; an explicit stop prevents automatic restart. Process creation is not readiness: use `ready` or `wait` before depending on a service.
 
-Each logs result returns a byte cursor. `follow: true` waits until output advances beyond the supplied cursor, the process exits, or the timeout elapses, then returns a fresh window. `head: true` reads from the beginning; the default reads the tail.
+The tool rejects a missing name for name-based operations, a missing `application` for `start`, invalid readiness ports, a `ready` object without `log` or `port`, and unsupported terminal key names.
 
-The broker keeps a 25 MiB current log and one 25 MiB rotated log while it owns a process's output stream. A detached process writes directly to its disk log so it survives broker exit; output is not rotated while no broker is running.
+## Compatibility
 
-## Input and signals
-
-```json
-{"op":"send","name":"debugger","text":"breakpoint set --name main"}
-{"op":"send","name":"debugger","text":"run"}
-{"op":"send","name":"debugger","keys":["CTRL_C"]}
-```
-
-`enter` defaults to true when `text` is present. Supported keys are `ENTER`, `TAB`, `ESCAPE`, `CTRL_C`, `CTRL_D`, `UP`, `DOWN`, `LEFT`, and `RIGHT`. Supported signals are `SIGINT`, `SIGTERM`, `SIGHUP`, `SIGQUIT`, and `SIGKILL`.
-
-All project clients may observe the same managed process. Input is one shared stream: each send operation is serialized, but two clients writing independently still address the same process stdin.
-
-## Cross-instance lifecycle
-Every omp session registers its process in the canonical project scope. The first `launch` call starts a detached broker over a private socket; later `launch` calls from any registered omp process connect to the same broker and see the same names, logs, and state.
-
-Runtime data lives under `~/.omp/run/daemons/<project-hash>/`:
-- `broker.sock` (or a Windows named pipe)
-- a mode-0600 authentication token
-- broker PID metadata
-- per-managed-process launch metadata and logs
-- live omp process-presence records
-
-After the last tool socket disconnects, the broker checks the project-presence records. Live omp PIDs keep non-persistent managed processes running even when those omp instances have not called `launch`; dead PIDs are removed. Once no omp process remains, the broker waits three seconds, stops every non-persistent managed process, and exits. This PID check still works when an omp process is killed without JavaScript cleanup.
-
-`persist: true` explicitly opts a managed process out of last-client teardown. A broker with a live persistent process remains available without clients until another omp reconnects and stops it. Broker recovery terminates stale recorded children and preserves their records as exited instead of adopting an unknown process state.
-
-## Restart policies
-- `no`: never restart automatically (default)
-- `on-failure`: restart after a nonzero exit or runtime failure
-- `always`: restart after any unexpected exit
-
-Automatic restarts use bounded exponential backoff up to 30 seconds. Explicit `stop` suppresses restart. `restart` always reuses the retained application, arguments, environment, working directory, PTY, readiness, persistence, and detached settings.
-
-## Errors and limits
-- Names must be 1-48 letters, numbers, dots, underscores, or hyphens.
-- `ready.port` must be an integer from 1 through 65535.
-- Invalid readiness, wait, or log regular expressions are rejected before use.
-- Sending to a stopped managed process or to unavailable stdin is an error.
-- `logs`, `wait`, and `stop` timeouts are capped at one hour by the tool.
-- PTY process-group signaling is POSIX-native. Windows ConPTY accepts input and Ctrl-C; other POSIX signals become hard termination because Windows has no equivalent signal model.
+`launch` remains a standalone built-in tool for existing callers. It is available alongside the newer `hub` and `xd` surfaces; neither replaces this wire contract.

@@ -66,6 +66,7 @@ export function createContextPinTool(
 ): ToolDefinition<typeof pinInputSchema> {
 	return {
 		name: "context_pin",
+		loadMode: "essential",
 		label: "Pin context",
 		description: "Pin or unpin Context GC records. Pinned records are not automatically unloaded.",
 		parameters: pinInputSchema,

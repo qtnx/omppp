@@ -21,6 +21,8 @@ export const ROTATION_RETRY_AFTER_THRESHOLD_MS = 5 * 60_000;
 
 const ACCOUNT_RATE_LIMIT_PATTERN =
 	/\baccount(?:'s)?\b[^\n]{0,80}\brate.?limit\b|\brate.?limit\b[^\n]{0,80}\baccount\b/i;
+const SPEND_LIMIT_PATTERN = /spend.?limit/i;
+const OPENROUTER_DAILY_FREE_LIMIT_PATTERN = /\bfree[-_ ]models[-_ ]per[-_ ]day\b/i;
 
 /**
  * Classify a rate-limit error message into a reason category.
@@ -53,6 +55,14 @@ export function parseRateLimitReason(errorMessage: string): RateLimitReason {
 	}
 
 	if (ACCOUNT_RATE_LIMIT_PATTERN.test(errorMessage)) {
+		return "QUOTA_EXHAUSTED";
+	}
+
+	if (SPEND_LIMIT_PATTERN.test(errorMessage)) {
+		return "QUOTA_EXHAUSTED";
+	}
+
+	if (OPENROUTER_DAILY_FREE_LIMIT_PATTERN.test(errorMessage)) {
 		return "QUOTA_EXHAUSTED";
 	}
 
@@ -105,7 +115,7 @@ export function calculateRateLimitBackoffMs(reason: RateLimitReason): number {
 // account-cap phrases are intentionally provider-agnostic outcome signals so callers
 // rotate an exhausted sibling instead of treating the response as a bad credential.
 const USAGE_LIMIT_PATTERN =
-	/usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?(?:exceeded|reached|insufficient)|额度不足|额度耗尽|resource.?exhausted|exhausted your capacity|quota will reset|insufficient.?(?:balance|quota)|\bcredit[\W_]*balance[\W_]*is[\W_]*too[\W_]*low[\W_]*to[\W_]*access[\W_]*the[\W_]*anthropic[\W_]*api\b|run out of credits|out of credits|spending[- _]?limit|personal-team-blocked/i;
+	/usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?(?:exceeded|reached|insufficient)|额度不足|额度耗尽|resource.?exhausted|exhausted your capacity|quota will reset|insufficient.?(?:balance|quota)|balance.?exhausted|\bcredit[\W_]*balance[\W_]*is[\W_]*too[\W_]*low[\W_]*to[\W_]*access[\W_]*the[\W_]*anthropic[\W_]*api\b|run out of credits|out of credits|spending[- _]?limit|personal-team-blocked/i;
 const RETRY_AFTER_MS_HINT_PATTERN = /\bretry-after-ms\s*[:=]\s*(\d+(?:\.\d+)?)/i;
 
 function parseRetryAfterMsValue(value: string | undefined | null): number | undefined {
@@ -126,11 +136,14 @@ function getRetryAfterMsHeader(headers: HeadersLike): number | undefined {
 /**
  * HTTP status codes that, absent richer body classification, represent an
  * account-local usage cap rather than a bad credential or a transient blip.
+ * HTTP 402 Payment Required is categorically an account-billing cap (xAI
+ * Grok Build "usage balance exhausted", DeepSeek "Insufficient Balance",
+ * OpenRouter credit exhaustion) — never a transient blip or bad credential.
  * Always combine with {@link isUsageLimitOutcome} when a message is available
  * — a 429 carrying transient rate-limit wording is NOT a usage cap.
  */
 export function isUsageLimitStatus(status: number | undefined): boolean {
-	return status === 429;
+	return status === 429 || status === 402;
 }
 
 export function extractRotationRetryAfterMs(error: unknown, message?: string): number | undefined {
@@ -153,7 +166,7 @@ export function extractRotationRetryAfterMs(error: unknown, message?: string): n
  *  1. Body matches {@link isUsageLimitError} (Codex `usage_limit_reached`,
  *     Anthropic account rate-limit, Google `resource_exhausted`, OpenAI
  *     `insufficient_quota`, …) → rotate.
- *  2. Status is not 429 → backoff (caller's domain).
+ *  2. Status is not a usage-limit status (429/402) → backoff (caller's domain).
  *  3. Body is absent or {@link isOpaqueStatusBody opaque} (just the status,
  *     empty JSON, HTTP framing only) → rotate conservatively: the server
  *     gave us nothing else to go on.
@@ -182,14 +195,15 @@ export function isUsageLimitOutcome(
 }
 
 /**
- * A 429 body is opaque when it carries no signal beyond the status itself —
- * empty, whitespace-only, the status digits with HTTP/JSON framing, or
- * generic punctuation. Anything else (retry hints, capacity wording, error
- * descriptions) is informative enough to defer to the classifier.
+ * A usage-limit status body is opaque when it carries no signal beyond the
+ * status itself — empty, whitespace-only, the status digits with HTTP/JSON
+ * framing, or generic punctuation. Anything else (retry hints, capacity
+ * wording, error descriptions) is informative enough to defer to the
+ * classifier.
  */
 export function isOpaqueStatusBody(message: string): boolean {
 	const cleaned = message
-		.replace(/\b429\b/g, "")
+		.replace(/\b(?:429|402)\b/g, "")
 		.replace(/\b(?:http|https|status|error|code|response|message)\b/gi, "");
 	return !/[a-z\d]{3,}/i.test(cleaned);
 }
@@ -201,5 +215,10 @@ export function isOpaqueStatusBody(message: string): boolean {
  * {@link isUsageLimitOutcome} uses it for the account-rotation decision.
  */
 export function matchesUsageLimitText(errorMessage: string): boolean {
-	return USAGE_LIMIT_PATTERN.test(errorMessage) || ACCOUNT_RATE_LIMIT_PATTERN.test(errorMessage);
+	return (
+		USAGE_LIMIT_PATTERN.test(errorMessage) ||
+		SPEND_LIMIT_PATTERN.test(errorMessage) ||
+		ACCOUNT_RATE_LIMIT_PATTERN.test(errorMessage) ||
+		OPENROUTER_DAILY_FREE_LIMIT_PATTERN.test(errorMessage)
+	);
 }

@@ -70,14 +70,15 @@ describe("title generator", () => {
 		expect(options?.disableReasoning).toBe(true);
 	});
 
-	it("uses the resolved title API key directly instead of resolving it again inside completeSimple", async () => {
+	it("passes the session-scoped resolver to completeSimple after credential preflight", async () => {
 		const model = getModelOrThrow("claude-sonnet-4-5");
 		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
 			stopReason: "stop",
 			content: [{ type: "text", text: "<title>Single Resolve</title>" }],
 		} as never);
 		const getApiKey = vi.fn(async () => "resolved-title-key");
-		const resolver = vi.fn(() => async () => "second-resolve-key");
+		const requestApiKeyResolver = vi.fn(async () => "second-resolve-key");
+		const resolver = vi.fn(() => requestApiKeyResolver);
 
 		const title = await generateSessionTitle(
 			"Investigate the resolver",
@@ -92,9 +93,9 @@ describe("title generator", () => {
 
 		expect(title).toBe("Single Resolve");
 		expect(getApiKey).toHaveBeenCalledTimes(1);
-		expect(resolver).not.toHaveBeenCalled();
+		expect(resolver).toHaveBeenCalledWith(model, "session-1");
 		expect(completeSimpleMock.mock.calls[0]?.[2]).toMatchObject({
-			apiKey: "resolved-title-key",
+			apiKey: requestApiKeyResolver,
 		});
 	});
 	it.each([
@@ -445,6 +446,25 @@ describe("title generator", () => {
 
 		expect(title).toBe("Fix login button on mobile");
 	});
+
+	it.each(["Here's a thinking process:", "Thinking process:", "Reasoning process:"])(
+		"rejects a markerless prose thinking preamble: %s",
+		async responseText => {
+			const model = getModelFor("deepseek", "deepseek-v4-pro");
+			vi.spyOn(ai, "completeSimple").mockResolvedValue({
+				stopReason: "stop",
+				content: [{ type: "text", text: responseText }],
+			} as never);
+
+			const title = await generateSessionTitle(
+				"the login button is broken on mobile",
+				createRegistry(model),
+				createSettings(model),
+			);
+
+			expect(title).toBeNull();
+		},
+	);
 
 	it("preserves a markerless title that mentions a <think> tag", async () => {
 		const model = getModelFor("deepseek", "deepseek-v4-pro");

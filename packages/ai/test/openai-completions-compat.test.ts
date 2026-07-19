@@ -116,7 +116,7 @@ function kimiZaiModel(): Model<"openai-completions"> {
 async function captureOpenAICompletionsPayload(
 	model: Model<"openai-completions">,
 	context: Context = baseContext(),
-	options?: { reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" },
+	options?: { reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max"; temperature?: number },
 ): Promise<unknown> {
 	const { promise, resolve } = Promise.withResolvers<unknown>();
 	const fetchMock = createMockFetch(["[DONE]"]);
@@ -157,6 +157,19 @@ function getLastTextPart(content: unknown): Record<string, unknown> | undefined 
 }
 
 describe("openai-completions compatibility", () => {
+	it("omits sampling params for OpenAI reasoning models", async () => {
+		const model = buildModel({
+			...gpt4oMiniSpec,
+			id: "gpt-5.6-luna",
+			provider: "github-copilot",
+			api: "openai-completions",
+		} as ModelSpec<"openai-completions">);
+		expect(model.compat.supportsSamplingParams).toBe(false);
+
+		const payload = await captureOpenAICompletionsPayload(model, undefined, { temperature: 0 });
+		expect(toObject(payload)?.temperature).toBeUndefined();
+	});
+
 	it("serializes assistant text content as a plain string", () => {
 		const model: Model<"openai-completions"> = buildModel({
 			...gpt4oMiniSpec,
@@ -197,6 +210,7 @@ describe("openai-completions compatibility", () => {
 			supportsStrictMode: true,
 			toolStrictMode: "none",
 			supportsReasoningParams: true,
+			supportsSamplingParams: true,
 			alwaysSendMaxTokens: false,
 			isOpenRouterHost: false,
 			isVercelGatewayHost: false,
@@ -2420,6 +2434,22 @@ describe("Moonshot Flavored JSON Schema tool normalization", () => {
 				additionalProperties: false,
 			},
 		},
+		{
+			name: "task",
+			description: "spawn task",
+			parameters: {
+				type: "object",
+				properties: {
+					tasks: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: { outputSchema: true },
+						},
+					},
+				},
+			},
+		},
 	];
 
 	function toolParameters(payload: unknown, toolName: string): Record<string, unknown> {
@@ -2472,6 +2502,10 @@ describe("Moonshot Flavored JSON Schema tool normalization", () => {
 		const paths = probeProperty(payload, "find", "paths");
 		expect(paths.minItems).toBeUndefined();
 		expect(paths.type).toBe("array");
+		const taskProperties = toObject(
+			toObject(toObject(probeProperty(payload, "task", "tasks").items)?.properties)?.outputSchema,
+		);
+		expect(taskProperties).toEqual({});
 	});
 
 	it("leaves raw JSON Schema untouched on non-Moonshot hosts (flag-gated)", async () => {
@@ -2484,5 +2518,8 @@ describe("Moonshot Flavored JSON Schema tool normalization", () => {
 		expect(op).toEqual({ type: "string", enum: ["pr_checkout", "pr_create"], description: "github operation" });
 		const paths = probeProperty(payload, "find", "paths");
 		expect(paths.minItems).toBe(1);
+		const taskItems = toObject(probeProperty(payload, "task", "tasks").items);
+		const taskProperties = toObject(taskItems?.properties);
+		expect(taskProperties?.outputSchema).toBe(true);
 	});
 });

@@ -11,7 +11,7 @@
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { ANTHROPIC_THINKING, mapAnthropicToolChoice } from "../stream";
-import type { Context, Model, ModelSpec, SimpleStreamOptions } from "../types";
+import type { Context, Model, ModelSpec, SimpleStreamOptions, ThinkingControlMode } from "../types";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { createProviderErrorMessage } from "./error-message";
 import { streamAnthropic, streamOpenAICompletions } from "./register-builtins";
@@ -30,6 +30,8 @@ export interface OpenAIAnthropicShimConfig {
 	openaiBaseUrl?: string;
 	/** Default API format when caller does not specify one. */
 	defaultFormat: OpenAIAnthropicApiFormat;
+	/** Thinking transport used when this provider's Anthropic endpoint differs from generic budget semantics. */
+	anthropicThinkingMode?: ThinkingControlMode;
 	/** Provider-specific headers (e.g. auth/session) merged ahead of user-supplied headers. */
 	extraHeaders?: () => Record<string, string>;
 }
@@ -68,6 +70,9 @@ export function streamOpenAIAnthropicShim(
 					contextWindow: model.contextWindow,
 					maxTokens: model.maxTokens,
 					reasoning: model.reasoning,
+					...(config.anthropicThinkingMode && model.thinking
+						? { thinking: { ...model.thinking, mode: config.anthropicThinkingMode } }
+						: {}),
 					input: model.input,
 					cost: model.cost,
 				} as ModelSpec<"anthropic-messages">);
@@ -100,6 +105,7 @@ export function streamOpenAIAnthropicShim(
 					fetch: options?.fetch,
 					thinkingEnabled,
 					thinkingBudgetTokens: thinkingBudget,
+					reasoning: config.anthropicThinkingMode ? reasoningEffort : undefined,
 					toolChoice: mapAnthropicToolChoice(options?.toolChoice),
 					serviceTier: options?.serviceTier,
 				});

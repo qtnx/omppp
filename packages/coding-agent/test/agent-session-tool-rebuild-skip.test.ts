@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { Model } from "@oh-my-pi/pi-ai";
+import type { Message, Model } from "@oh-my-pi/pi-ai";
+import { createMockModel, type MockResponseSource } from "@oh-my-pi/pi-ai/providers/mock";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { XdevRegistry } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { type } from "arktype";
 
 // Cache-stability invariant: when MCP servers reconnect with byte-identical tool
@@ -56,19 +62,38 @@ function createMcpCustomTool(name: string, serverName: string, mcpToolName: stri
 	} as CustomTool;
 }
 
+/** Rendered xd:// mount notices within one provider call's messages. */
+function mountNoticesIn(messages: Message[]): string[] {
+	return messages.flatMap(message => {
+		const { content } = message;
+		const text =
+			typeof content === "string"
+				? content
+				: content.flatMap(part => (part.type === "text" ? [part.text] : [])).join("");
+		return text.includes("The xd:// device inventory changed.") ? [text] : [];
+	});
+}
+
 describe("AgentSession refreshMCPTools rebuild skipping", () => {
 	const sessions: AgentSession[] = [];
+	const tempDirs: string[] = [];
 
 	afterEach(async () => {
 		for (const session of sessions.splice(0)) {
 			await session.dispose();
 		}
+		for (const tempDir of tempDirs.splice(0)) {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	interface NewSessionOptions {
-		mcpDiscoveryEnabled?: boolean;
 		getMcpServerInstructions?: () => Map<string, string> | undefined;
 		getLocalCalendarDate?: () => string;
+		xdevRegistry?: XdevRegistry;
+		lazyWrite?: boolean;
+		/** Scripted mock model responses; enables driving `session.prompt()`. */
+		responses?: MockResponseSource;
 	}
 
 	function newSession(
@@ -76,36 +101,60 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		options: NewSessionOptions = {},
 	): {
 		session: AgentSession;
+		/** Provider-call message snapshots (LLM-converted), one per model request. */
+		contexts: Message[][];
 	} {
 		const readTool = createBasicTool("read", "Read");
 		const initialMcp = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const writeTool = createBasicTool("write", "Write");
 		const toolRegistry = new Map<string, AgentTool>([
 			[readTool.name, readTool],
 			[initialMcp.name, initialMcp as unknown as AgentTool],
 		]);
+		if (options.xdevRegistry && !options.lazyWrite) toolRegistry.set(writeTool.name, writeTool);
+		const mock = options.responses ? createMockModel({ responses: options.responses }) : undefined;
+		const contexts: Message[][] = [];
 		const agent = new Agent({
+			getApiKey: () => "test-key",
 			initialState: {
 				model: createModel(),
 				systemPrompt: ["initial"],
-				tools: [readTool, initialMcp as unknown as AgentTool],
+				tools: options.xdevRegistry
+					? options.lazyWrite
+						? [readTool, initialMcp as unknown as AgentTool]
+						: [readTool, writeTool, initialMcp as unknown as AgentTool]
+					: [readTool, initialMcp as unknown as AgentTool],
 				messages: [],
 			},
+			convertToLlm,
+			streamFn: mock
+				? (model, context, streamOptions) => {
+						contexts.push([...context.messages]);
+						return mock.stream(model, context, streamOptions);
+					}
+				: undefined,
 		});
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
 			settings: Settings.isolated({ "compaction.enabled": false }),
-			modelRegistry: {} as never,
+			modelRegistry: { getApiKey: async () => "test-key" } as never,
 			toolRegistry,
+			builtInToolNames: options.xdevRegistry && !options.lazyWrite ? ["read", "write"] : ["read"],
+			ensureWriteRegistered: async () => {
+				if (!options.xdevRegistry) return false;
+				if (!toolRegistry.has("write")) toolRegistry.set("write", writeTool);
+				return true;
+			},
 			rebuildSystemPrompt: async (toolNames, _tools) => ({
 				systemPrompt: [await rebuildSystemPrompt(toolNames)],
 			}),
-			mcpDiscoveryEnabled: options.mcpDiscoveryEnabled,
 			getMcpServerInstructions: options.getMcpServerInstructions,
 			getLocalCalendarDate: options.getLocalCalendarDate,
+			xdevRegistry: options.xdevRegistry,
 		});
 		sessions.push(session);
-		return { session };
+		return { session, contexts };
 	}
 
 	it("skips rebuild when an MCP refresh produces an identical tool set", async () => {
@@ -158,36 +207,29 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		const a = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search");
 		const b = createMcpCustomTool("mcp__nucleus_explain", "nucleus", "explain", "Explain");
 
-		// Bring both into the registry; only `mcp__nucleus_search` becomes active per
-		// the agent's initial tool set.
+		// Connected MCP tools are all enabled after refresh.
 		await session.refreshMCPTools([a, b]);
 		const baseline = rebuildCount;
 		expect(baseline).toBeGreaterThanOrEqual(1);
 
-		// Activate the previously-inactive tool: the active list grew, signature must
-		// change, rebuild must fire.
-		await session.setActiveToolsByName(["read", "mcp__nucleus_search", "mcp__nucleus_explain"]);
+		// Remove one active tool: the active list shrinks, so rebuild must fire.
+		await session.setActiveToolsByName(["read", "mcp__nucleus_search"]);
 		expect(rebuildCount).toBe(baseline + 1);
 
 		// Same list again: skip.
-		await session.setActiveToolsByName(["read", "mcp__nucleus_search", "mcp__nucleus_explain"]);
+		await session.setActiveToolsByName(["read", "mcp__nucleus_search"]);
 		expect(rebuildCount).toBe(baseline + 1);
 
-		// Drop one: rebuild fires again.
-		await session.setActiveToolsByName(["read", "mcp__nucleus_search"]);
+		// Restore it: rebuild fires again.
+		await session.setActiveToolsByName(["read", "mcp__nucleus_search", "mcp__nucleus_explain"]);
 		expect(rebuildCount).toBe(baseline + 2);
 	});
 
-	it("updates live active-tool predicates before rebuilding the prompt", async () => {
-		const activeToolNames = new Set(["read", "bash", "grep"]);
+	it("publishes active tools atomically after a delayed prompt rebuild", async () => {
+		const liveActiveToolNames = new Set(["read", "bash", "grep"]);
 		const readTool = createBasicTool("read", "Read");
 		const bashTool = createBasicTool("bash", "Bash");
 		const grepTool = createBasicTool("grep", "Grep");
-		Object.defineProperty(bashTool, "description", {
-			get: () => (activeToolNames.has("grep") ? "bash sees grep" : "bash hides grep"),
-			enumerable: true,
-			configurable: true,
-		});
 		const toolRegistry = new Map<string, AgentTool>([
 			[readTool.name, readTool],
 			[bashTool.name, bashTool],
@@ -201,6 +243,8 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 				messages: [],
 			},
 		});
+		const { promise: rebuildStarted, resolve: resolveRebuildStarted } = Promise.withResolvers<void>();
+		const { promise: releaseRebuild, resolve: resolveReleaseRebuild } = Promise.withResolvers<void>();
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
@@ -208,20 +252,79 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 			modelRegistry: {} as never,
 			toolRegistry,
 			setActiveToolNames: names => {
-				activeToolNames.clear();
+				liveActiveToolNames.clear();
 				for (const name of names) {
-					activeToolNames.add(name);
+					liveActiveToolNames.add(name);
 				}
 			},
-			rebuildSystemPrompt: async (_toolNames, tools) => ({
-				systemPrompt: [tools.get("bash")?.description ?? "missing bash"],
-			}),
+			rebuildSystemPrompt: async toolNames => {
+				resolveRebuildStarted();
+				await releaseRebuild;
+				return { systemPrompt: [`tools:${toolNames.join(",")}`] };
+			},
 		});
 		sessions.push(session);
 
-		await session.setActiveToolsByName(["read", "bash"]);
+		const change = session.setActiveToolsByName(["read", "bash"]);
+		await rebuildStarted;
 
-		expect(agent.state.systemPrompt).toEqual(["bash hides grep"]);
+		expect(session.getActiveToolNames()).toEqual(["read", "bash", "grep"]);
+		expect([...liveActiveToolNames]).toEqual(["read", "bash", "grep"]);
+		expect(agent.state.systemPrompt).toEqual(["initial"]);
+
+		resolveReleaseRebuild();
+		await change;
+
+		expect(session.getActiveToolNames()).toEqual(["read", "bash"]);
+		expect([...liveActiveToolNames]).toEqual(["read", "bash"]);
+		expect(agent.state.systemPrompt).toEqual(["tools:read,bash"]);
+	});
+
+	it("keeps discovery search exposure committed while enabling rebuild is pending", async () => {
+		const readTool = createBasicTool("read", "Read");
+		const discoverySearchTool = createBasicTool("search_tool_bm25", "Search tools");
+		const toolRegistry = new Map<string, AgentTool>([
+			[readTool.name, readTool],
+			[discoverySearchTool.name, discoverySearchTool],
+		]);
+		const agent = new Agent({
+			initialState: {
+				model: createModel(),
+				systemPrompt: ["initial"],
+				tools: [readTool],
+				messages: [],
+			},
+		});
+		const { promise: rebuildStarted, resolve: resolveRebuildStarted } = Promise.withResolvers<void>();
+		const { promise: releaseRebuild, reject: rejectRebuild } = Promise.withResolvers<void>();
+		const session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+			toolRegistry,
+			rebuildSystemPrompt: async () => {
+				resolveRebuildStarted();
+				await releaseRebuild;
+				return { systemPrompt: ["unreachable"] };
+			},
+		});
+		sessions.push(session);
+
+		const enableDiscovery = session.enableMCPDiscoveryWithSearchTool();
+		await rebuildStarted;
+
+		// Flipping the transient enabling bit must not publish search before commit.
+		expect({
+			discoveryEnabled: session.isToolDiscoveryEnabled(),
+			toolNames: session.getAllToolNames(),
+		}).toEqual({
+			discoveryEnabled: false,
+			toolNames: ["read"],
+		});
+
+		rejectRebuild(new Error("rebuild failed"));
+		await expect(enableDiscovery).rejects.toThrow("rebuild failed");
 	});
 
 	it("does not skip when refreshBaseSystemPrompt is called explicitly", async () => {
@@ -246,7 +349,7 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		expect(rebuildCount).toBe(2);
 	});
 
-	it("ignores incidental insertion order in the refresh argument", async () => {
+	it("rebuilds when the refresh argument tool order changes", async () => {
 		let rebuildCount = 0;
 		const { session } = newSession(async toolNames => {
 			rebuildCount++;
@@ -256,14 +359,13 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		const a = createMcpCustomTool("mcp__nucleus_a", "nucleus", "a", "A");
 		const b = createMcpCustomTool("mcp__nucleus_b", "nucleus", "b", "B");
 
-		// `refreshMCPTools` re-derives the active tool set from the registry using the
-		// session's existing ordering, so passing the same content in a different order
-		// must not mutate the signature.
+		// All connected MCP tools are active, so their ordering contributes to the
+		// rendered prompt and changing it must rebuild.
 		await session.refreshMCPTools([a, b]);
 		expect(rebuildCount).toBe(1);
 
 		await session.refreshMCPTools([b, a]);
-		expect(rebuildCount).toBe(1);
+		expect(rebuildCount).toBe(2);
 	});
 
 	it("rebuilds when an MCP tool's label changes", async () => {
@@ -320,35 +422,30 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		expect(rebuildCount).toBe(3);
 	});
 
-	it("rebuilds when a discoverable (inactive) registry tool's metadata changes", async () => {
-		// With MCP discovery on, the rebuilt prompt summarizes ALL discoverable MCP
-		// tools — including ones not in the active set. The signature must capture the
-		// full registry; otherwise a description change to a discoverable-but-inactive
-		// tool would silently leave a stale summary in the cached prompt.
+	it("rebuilds when an MCP registry tool's metadata changes", async () => {
+		// All connected MCP tools are enabled. The signature must capture the full
+		// registry so a description change cannot leave stale prompt metadata cached.
 		let rebuildCount = 0;
-		const { session } = newSession(
-			async toolNames => {
-				rebuildCount++;
-				return `tools:${toolNames.join(",")}`;
-			},
-			{ mcpDiscoveryEnabled: true },
-		);
+		const { session } = newSession(async toolNames => {
+			rebuildCount++;
+			return `tools:${toolNames.join(",")}`;
+		}, {});
 
 		const active = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search");
-		const discoverable = createMcpCustomTool("mcp__nucleus_explain", "nucleus", "explain", "Explain v1");
+		const secondary = createMcpCustomTool("mcp__nucleus_explain", "nucleus", "explain", "Explain v1");
 
-		await session.refreshMCPTools([active, discoverable]);
+		await session.refreshMCPTools([active, secondary]);
 		const baseline = rebuildCount;
 		expect(baseline).toBeGreaterThanOrEqual(1);
 
 		// Same registry: skip.
-		await session.refreshMCPTools([active, discoverable]);
+		await session.refreshMCPTools([active, secondary]);
 		expect(rebuildCount).toBe(baseline);
 
-		// Mutate the discoverable (NOT active) tool's description: signature must
-		// differ via the registrySegment branch and force a rebuild.
-		const discoverableV2 = createMcpCustomTool("mcp__nucleus_explain", "nucleus", "explain", "Explain v2");
-		await session.refreshMCPTools([active, discoverableV2]);
+		// Mutate the secondary tool's description: the signature must differ and force
+		// a rebuild.
+		const secondaryV2 = createMcpCustomTool("mcp__nucleus_explain", "nucleus", "explain", "Explain v2");
+		await session.refreshMCPTools([active, secondaryV2]);
 		expect(rebuildCount).toBe(baseline + 1);
 	});
 	it("rebuilds when an MCP tool's customWireName changes", async () => {
@@ -388,22 +485,20 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 	it("rebuilds when a tool's getter-based description reflects new settings state", async () => {
 		// Built-in tools whose prompt-rendered metadata depends on settings expose
 		// `description` via getters that re-evaluate on every access (TaskTool reads
-		// task.disabledAgents/maxConcurrency/isolation.mode/simple/async.enabled,
-		// SearchToolBm25Tool reads the discoverable MCP tool count, EditTool resolves
-		// through the current edit-mode definition). The signature reads `tool.description`
-		// live each call, so a settings flip that mutates the rendered string MUST differ
-		// the signature on the next `#applyActiveToolsByName`. Defending this contract
-		// against a future refactor that caches per-tool description strings.
+		// task.disabledAgents/maxConcurrency/isolation.mode/simple/async.enabled, and
+		// EditTool resolves through the current edit-mode definition). The signature
+		// reads `tool.description` live each call, so a settings flip that mutates the
+		// rendered string must change the signature on the next
+		// `#applyActiveToolsByName`.
 		let rebuildCount = 0;
 		const { session } = newSession(
 			async toolNames => {
 				rebuildCount++;
 				return `tools:${toolNames.join(",")}`;
 			},
-			// Discovery-on so the dynamic tool participates in the registry segment too,
-			// matching the production pattern where `TaskTool` and friends are always
-			// reachable via the registry.
-			{ mcpDiscoveryEnabled: true },
+			// The dynamic tool is active, so the signature reads its description via
+			// the active tool metadata segment.
+			{},
 		);
 
 		// Reuse the initially-active MCP name so the tool stays in the active list
@@ -508,5 +603,249 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		instructions.set("nucleus", `${"B".repeat(4000)}_tail_v2`);
 		await session.refreshMCPTools([tool]);
 		expect(rebuildCount).toBe(2);
+	});
+
+	it("waits for the next user prompt before delivering xd:// mount notices", async () => {
+		const firstCallStarted = Promise.withResolvers<void>();
+		const releaseFirstCall = Promise.withResolvers<void>();
+		let rebuildCount = 0;
+		const { session, contexts } = newSession(
+			async toolNames => {
+				rebuildCount++;
+				return `tools:${toolNames.join(",")}`;
+			},
+			{
+				xdevRegistry: new XdevRegistry([]),
+				responses: [
+					async () => {
+						firstCallStarted.resolve();
+						await releaseFirstCall.promise;
+						return { content: ["first answer"] };
+					},
+					{ content: ["second answer"] },
+					{ content: ["third answer"] },
+				],
+			},
+		);
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const fetch = createMcpCustomTool("mcp__nucleus_fetch", "nucleus", "fetch", "Fetch nucleus");
+
+		// Devices mount while the first request is in flight. The refresh must
+		// not turn the hidden notice into a second, unsolicited provider call.
+		const firstPrompt = session.prompt("hello");
+		await firstCallStarted.promise;
+		await session.refreshMCPTools([search]);
+		await session.refreshMCPTools([search, fetch]);
+		releaseFirstCall.resolve();
+		await firstPrompt;
+		expect(rebuildCount).toBe(1);
+		expect(contexts).toHaveLength(1);
+		expect(mountNoticesIn(contexts[0])).toHaveLength(0);
+
+		// The next user prompt carries one coalesced notice for both mounts.
+		await session.prompt("again");
+		expect(contexts).toHaveLength(2);
+		const mountNotices = mountNoticesIn(contexts[1]);
+		expect(mountNotices).toHaveLength(1);
+		expect(mountNotices[0]).toContain("became available");
+		expect(mountNotices[0]).toContain("xd://mcp__nucleus_search");
+		expect(mountNotices[0]).toContain("xd://mcp__nucleus_fetch");
+		expect(mountNotices[0]).not.toContain("No longer mounted");
+
+		// A later unmount is likewise held for the following user prompt.
+		await session.refreshMCPTools([search]);
+		expect(rebuildCount).toBe(1);
+		expect(contexts).toHaveLength(2);
+		await session.prompt("third");
+		const allNotices = mountNoticesIn(contexts[2]);
+		expect(allNotices).toHaveLength(2);
+		expect(allNotices[1]).toContain("No longer mounted");
+		expect(allNotices[1]).toContain("xd://mcp__nucleus_fetch");
+		expect(allNotices[1]).not.toContain("became available");
+	});
+
+	it("drops a mount delta that cancels out before the next prompt", async () => {
+		const { session, contexts } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
+			xdevRegistry: new XdevRegistry([]),
+			responses: [{ content: ["ok"] }],
+		});
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const fetch = createMcpCustomTool("mcp__nucleus_fetch", "nucleus", "fetch", "Fetch nucleus");
+
+		// fetch mounts and unmounts before the model ever hears about it → the
+		// coalesced notice must not mention it in either direction.
+		await session.refreshMCPTools([search]);
+		await session.refreshMCPTools([search, fetch]);
+		await session.refreshMCPTools([search]);
+
+		await session.prompt("hello");
+		const notices = mountNoticesIn(contexts[0]);
+		expect(notices).toHaveLength(1);
+		expect(notices[0]).toContain("xd://mcp__nucleus_search");
+		expect(notices[0]).not.toContain("mcp__nucleus_fetch");
+		expect(notices[0]).not.toContain("No longer mounted");
+	});
+
+	it("keeps xd:// mount deltas model-visible without rendering them during quiet startup", async () => {
+		const { session, contexts } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
+			xdevRegistry: new XdevRegistry([]),
+			responses: [{ content: ["ok"] }],
+		});
+		session.settings.set("startup.quiet", true);
+		const notices: string[] = [];
+		session.subscribe(event => {
+			if (event.type === "notice" && event.source === "xdev") notices.push(event.message);
+		});
+
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		await session.refreshMCPTools([search]);
+
+		expect(notices).toEqual([]);
+		await session.prompt("hello");
+		const delivered = mountNoticesIn(contexts[0]);
+		expect(delivered).toHaveLength(1);
+		expect(delivered[0]).toContain("xd://mcp__nucleus_search");
+	});
+
+	it("keeps lazy write registration while rolling back applied state on rebuild failure", async () => {
+		let failRebuild = true;
+		const xdevRegistry = new XdevRegistry([]);
+		const { session } = newSession(
+			async toolNames => {
+				if (failRebuild) throw new Error("rebuild failed");
+				return `tools:${toolNames.join(",")}`;
+			},
+			{ xdevRegistry, lazyWrite: true },
+		);
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const activeBefore = session.getActiveToolNames();
+		const mountedBefore = session.getMountedXdevToolNames();
+
+		await expect(session.refreshMCPTools([search])).rejects.toThrow("rebuild failed");
+
+		expect(session.getActiveToolNames()).toEqual(activeBefore);
+		expect(session.getMountedXdevToolNames()).toEqual(mountedBefore);
+		expect(session.getToolByName("write")).toBeDefined();
+		expect(session.hasBuiltInTool("write")).toBe(true);
+
+		failRebuild = false;
+		await session.refreshMCPTools([search]);
+		expect(session.getActiveToolNames()).toContain("write");
+		expect(session.getMountedXdevToolNames()).toContain(search.name);
+	});
+
+	it("rolls back MCP catalog replacement when prompt rebuild fails", async () => {
+		let failRebuild = false;
+		let date = "2026-07-16";
+		const xdevRegistry = new XdevRegistry([]);
+		const { session } = newSession(
+			async toolNames => {
+				if (failRebuild) throw new Error("rebuild failed");
+				return `tools:${toolNames.join(",")}`;
+			},
+			{ xdevRegistry, getLocalCalendarDate: () => date },
+		);
+		const oldTool = createMcpCustomTool("mcp__nucleus_old", "nucleus", "old", "Old tool");
+		const newTool = createMcpCustomTool("mcp__nucleus_new", "nucleus", "new", "New tool");
+		await session.refreshMCPTools([oldTool]);
+		date = "2026-07-17";
+		failRebuild = true;
+
+		await expect(session.refreshMCPTools([newTool])).rejects.toThrow("rebuild failed");
+		expect(session.getToolByName(oldTool.name)).toBeDefined();
+		expect(session.getToolByName(newTool.name)).toBeUndefined();
+		expect(session.getMountedXdevToolNames()).toContain(oldTool.name);
+
+		failRebuild = false;
+		await session.refreshMCPTools([newTool]);
+		expect(session.getToolByName(oldTool.name)).toBeUndefined();
+		expect(session.getToolByName(newTool.name)).toBeDefined();
+		expect(session.getMountedXdevToolNames()).toContain(newTool.name);
+	});
+
+	it("preserves committed MCP session defaults after a failed catalog refresh", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-agent-session-mcp-default-"));
+		tempDirs.push(tempDir);
+		const readTool = createBasicTool("read", "Read");
+		const oldTool = createMcpCustomTool("mcp__nucleus_old", "nucleus", "old", "Old tool");
+		const newTool = createMcpCustomTool("mcp__nucleus_new", "nucleus", "new", "New tool");
+		const sessionManager = SessionManager.create(tempDir, tempDir);
+		const originalSessionFile = sessionManager.getSessionFile();
+		expect(originalSessionFile).toBeString();
+		await sessionManager.flush();
+
+		const restoreSessionManager = SessionManager.create(tempDir, tempDir);
+		const restoreSessionFile = restoreSessionManager.getSessionFile();
+		expect(restoreSessionFile).toBeString();
+		await restoreSessionManager.flush();
+
+		let failRebuild = false;
+		const agent = new Agent({
+			initialState: {
+				model: createModel(),
+				systemPrompt: ["initial"],
+				tools: [readTool, oldTool as unknown as AgentTool],
+				messages: sessionManager.buildSessionContext().messages,
+			},
+		});
+		const session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+			toolRegistry: new Map<string, AgentTool>([
+				[readTool.name, readTool],
+				[oldTool.name, oldTool as unknown as AgentTool],
+			]),
+			mcpDiscoveryEnabled: true,
+			initialSelectedMCPToolNames: [oldTool.name],
+			defaultSelectedMCPToolNames: [oldTool.name],
+			persistInitialMCPToolSelection: false,
+			rebuildSystemPrompt: async toolNames => {
+				if (failRebuild) throw new Error("rebuild failed");
+				return { systemPrompt: [`tools:${toolNames.join(",")}`] };
+			},
+		});
+		sessions.push(session);
+
+		expect(session.getSelectedMCPToolNames()).toEqual([oldTool.name]);
+		failRebuild = true;
+		await expect(session.refreshMCPTools([newTool])).rejects.toThrow("rebuild failed");
+		failRebuild = false;
+
+		await session.switchSession(restoreSessionFile!);
+		await session.switchSession(originalSessionFile!);
+
+		// Replacing the pre-commit remember call with post-commit preservation keeps this selection.
+		expect(session.getSelectedMCPToolNames()).toEqual([oldTool.name]);
+	});
+
+	it("rolls back RPC catalog replacement when prompt rebuild fails", async () => {
+		let failRebuild = false;
+		let date = "2026-07-16";
+		const xdevRegistry = new XdevRegistry([]);
+		const { session } = newSession(
+			async toolNames => {
+				if (failRebuild) throw new Error("rebuild failed");
+				return `tools:${toolNames.join(",")}`;
+			},
+			{ xdevRegistry, getLocalCalendarDate: () => date },
+		);
+		const oldTool = { ...createBasicTool("rpc_old", "RPC Old"), loadMode: "discoverable" as const };
+		const newTool = { ...createBasicTool("rpc_new", "RPC New"), loadMode: "discoverable" as const };
+		await session.refreshRpcHostTools([oldTool]);
+		date = "2026-07-17";
+		failRebuild = true;
+
+		await expect(session.refreshRpcHostTools([newTool])).rejects.toThrow("rebuild failed");
+		expect(session.getToolByName(oldTool.name)).toBeDefined();
+		expect(session.getToolByName(newTool.name)).toBeUndefined();
+		expect(session.getMountedXdevToolNames()).toContain(oldTool.name);
+
+		failRebuild = false;
+		await session.refreshRpcHostTools([newTool]);
+		expect(session.getToolByName(oldTool.name)).toBeUndefined();
+		expect(session.getToolByName(newTool.name)).toBeDefined();
+		expect(session.getMountedXdevToolNames()).toContain(newTool.name);
 	});
 });

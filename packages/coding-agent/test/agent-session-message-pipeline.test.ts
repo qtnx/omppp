@@ -275,11 +275,15 @@ describe("AgentSession message pipeline", () => {
 		expect(result.retainedFrames).toBe(1);
 		const compactionContent = result.context.messages[0]?.content;
 		if (!Array.isArray(compactionContent)) throw new Error("Expected compaction content blocks");
-		const compactionImages = compactionContent.filter((part): part is ImageContent => part.type === "image");
+		const compactionImages = Array.from(compactionContent).filter(
+			(part): part is Extract<(typeof compactionContent)[number], { type: "image" }> => part.type === "image",
+		);
 		expect(compactionImages.map(image => image.data)).toEqual([recentFrame.data]);
 		const userContent = result.context.messages[1]?.content;
 		if (!Array.isArray(userContent)) throw new Error("Expected user content blocks");
-		expect(userContent.some(part => part.type === "image" && part.data === userImage.data)).toBe(true);
+		expect(userContent.some(part => part.type === "image" && "data" in part && part.data === userImage.data)).toBe(
+			true,
+		);
 	});
 
 	it("does not re-measure the full Codex provider context once per stripped snapcompact frame", () => {

@@ -72,6 +72,8 @@ import {
 // Schema Definition Types
 // ═══════════════════════════════════════════════════════════════════════════
 
+export type ModelRoleStorage = "global" | "project";
+
 export type SettingTab =
 	| "appearance"
 	| "model"
@@ -290,7 +292,7 @@ const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_STRING_RECORD: Record<string, string> = {};
 const EMPTY_NUMBER_RECORD: Record<string, number> = {};
 const DEFAULT_CYCLE_ORDER: string[] = ["smol", "default", "slow"];
-const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["job", "irc"];
+const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["hub"];
 const EMPTY_MODEL_TAGS_RECORD: ModelTagsSettings = {};
 const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
 export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
@@ -338,22 +340,22 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 	},
 	{
 		pattern: "^\\s*nohup\\s+|(?<!&)\\&\\s*$",
-		tool: "launch",
+		tool: "hub",
 		message:
-			"Use the `launch` tool instead of nohup or background shell syntax so the process stays observable and managed.",
+			'Use the `hub` tool (`op:"start"`) instead of nohup or background shell syntax so the process stays observable and managed.',
 	},
 	{
 		pattern:
 			"^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?(?:dev|start)(?:\\s|$)|(?:vite|next\\s+dev|nuxt\\s+dev|nodemon|lldb|gdb|tail\\s+-f)(?:\\s|$)|docker\\s+compose\\s+up(?!.*(?:\\s-d(?:\\s|$)|--detach))(?:\\s|$))",
-		tool: "launch",
+		tool: "hub",
 		message:
-			"Use the `launch` tool for services, watchers, and debuggers so other omp instances can observe and control them.",
+			'Use the `hub` tool (`op:"start"`) for services, watchers, and debuggers so other omp instances can observe and control them.',
 	},
 	{
 		pattern:
 			"^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?\\S+|cargo\\s+watch|watchexec|pytest|vitest|jest|tsc)(?:.|\\n)*(?:--watch|-w)(?:\\s|$)",
-		tool: "launch",
-		message: "Use the `launch` tool for watch mode so its output, input, and lifecycle stay managed.",
+		tool: "hub",
+		message: 'Use the `hub` tool (`op:"start"`) for watch mode so its output, input, and lifecycle stay managed.',
 	},
 ];
 
@@ -799,6 +801,30 @@ export const SETTINGS_SCHEMA = {
 
 	disabledExtensions: { type: "array", default: EMPTY_STRING_ARRAY },
 
+	modelRoleStorage: {
+		type: "enum",
+		values: ["global", "project"] as const,
+		default: "global",
+		ui: {
+			tab: "model",
+			group: "Prompt",
+			label: "Model Role Storage",
+			description: "Where model selector role assignments are saved",
+			options: [
+				{
+					value: "global",
+					label: "Global",
+					description: "Save role models in the active profile config (current behavior)",
+				},
+				{
+					value: "project",
+					label: "Per-project",
+					description: "Save project role models in .omp/config.yml; missing project roles use global defaults",
+				},
+			],
+		},
+	},
+
 	modelRoles: { type: "record", default: EMPTY_STRING_RECORD },
 
 	modelTags: { type: "record", default: EMPTY_MODEL_TAGS_RECORD },
@@ -1014,7 +1040,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Output Limits",
 			label: "Output Column Cap",
 			description:
-				"Per-line byte cap for streaming tool outputs (bash, ssh, python, js eval) and `read`. Lines wider than this are ellipsis-truncated; remaining bytes up to the next newline are dropped. 0 disables.",
+				"Per-line byte cap for streaming tool outputs (bash, python, js eval) and `read`. Lines wider than this are ellipsis-truncated; remaining bytes up to the next newline are dropped. 0 disables.",
 			options: [
 				{ value: "0", label: "Off", description: "No per-line cap" },
 				{ value: "256", label: "256", description: "Tight" },
@@ -1286,6 +1312,17 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Show Hardware Cursor",
 			description: "Show terminal cursor for IME support",
+		},
+	},
+
+	"tui.imeSafeCursor": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "IME-Safe Prompt Layout",
+			description: "Move the prompt's bottom border to a separate row so macOS IME preedit cannot displace it",
 		},
 	},
 
@@ -1762,7 +1799,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Retry & Fallback",
 			label: "Retry Fallback Chains",
 			description:
-				'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider.',
+				'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider. An id-prefixed wildcard ("openrouter/google/*") re-prefixes the failing model\'s bare id (google-antigravity/gemini-x -> openrouter/google/gemini-x) and, used as a key, matches only that provider\'s ids under the prefix.',
 		},
 	},
 	"retry.fallbackRevertPolicy": {
@@ -2937,7 +2974,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Auto-Learn",
 			label: "Auto-run capture at stop",
 			description:
-				"When on, auto-run one capture turn at stop (uses extra tokens). Off = passive reminder on your next turn.",
+				"When on, auto-run one private capture turn at stop (uses extra tokens). When off, only standing auto-learn guidance remains.",
 			condition: "autolearnActive",
 		},
 	},
@@ -3494,6 +3531,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"edit.enforceSeenLines": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "files",
+			group: "Editing",
+			label: "Enforce Seen-Line Guard",
+			description: "Reject edits anchored on lines a prior read/search never displayed in full",
+		},
+	},
+
 	readLineNumbers: {
 		type: "boolean",
 		default: false,
@@ -3885,7 +3933,7 @@ export const SETTINGS_SCHEMA = {
 					value: "write",
 					label: "Write",
 					description:
-						"Auto-approve read-only and write tools; require confirmation for exec tools such as bash, eval, browser, task, and ssh.",
+						"Auto-approve read-only and write tools; require confirmation for exec tools such as bash, eval, browser, and task.",
 				},
 				{
 					value: "yolo",
@@ -3979,7 +4027,7 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"todo.reminders.max": {
+	"todo.remindersMax": {
 		type: "number",
 		default: 3,
 		ui: {
@@ -4079,7 +4127,7 @@ export const SETTINGS_SCHEMA = {
 
 	"astGrep.enabled": {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "tools",
 			group: "Available Tools",
@@ -4141,6 +4189,17 @@ export const SETTINGS_SCHEMA = {
 			group: "Available Tools",
 			label: "Speech Generation",
 			description: "Enable the tts tool for on-device (Kokoro) or xAI Grok Voice speech-file synthesis",
+		},
+	},
+	"generate_image.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Generate Image",
+			description:
+				"Enable the generate_image tool (text-to-image generation and editing). Exposed as an xd:// device when tools.xdev is on.",
 		},
 	},
 
@@ -4408,7 +4467,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Execution",
 			label: "Poll Wait",
 			description:
-				"How long the poll tool waits for background job updates before returning the current state. `scheduled` uses bounded escalating windows (5m first, 10m on consecutive re-polls) and returns a live progress snapshot at each expiry. Fixed durations use one fixed window then snapshot. `block` waits indefinitely with a silent watchdog re-check.",
+				"How long the poll tool waits for legacy background job updates before returning the current state. `scheduled` uses bounded escalating windows (5m first, 10m on consecutive re-polls) and returns a live progress snapshot at each expiry. Hub waits use their own configured smart/fixed timeout behavior.",
 			options: [
 				{
 					value: "scheduled",
@@ -4476,7 +4535,7 @@ export const SETTINGS_SCHEMA = {
 			label: "IRC Timeout",
 			// IRC waits are bounded so timeout 0 means one maximum window, not forever.
 			description:
-				"Default timeout for irc wait (and send await:true) in milliseconds; 0 means one max window (10m)",
+				"Default timeout for irc wait (and send await:true) in milliseconds; 0 means one max window (10m). Hub wait settings remain independent.",
 			options: [
 				{ value: "0", label: "10-minute max window" },
 				{ value: "30000", label: "30 seconds" },
@@ -4492,17 +4551,15 @@ export const SETTINGS_SCHEMA = {
 		default: 60_000,
 	},
 
-	// Tool Discovery
-	"tools.discoveryMode": {
-		type: "enum",
-		values: ["auto", "off", "mcp-only", "all"] as const,
-		default: "auto",
+	"tools.xdev": {
+		type: "boolean",
+		default: true,
 		ui: {
 			tab: "tools",
 			group: "Discovery & MCP",
-			label: "Tool Discovery",
+			label: "xd:// Tools",
 			description:
-				"Hide tools behind a search tool to save tokens. 'auto' hides non-essential built-ins below 1M context tokens; at 1M+ it keeps built-ins visible and uses discovery for MCP tools.",
+				"Mount rarely-used (discoverable) tools under xd:// device URLs driven via read/write instead of shipping their schemas on every request. Disable to expose every enabled tool top-level.",
 		},
 	},
 
@@ -4518,7 +4575,29 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tools.discoveryMode": {
+		type: "enum",
+		values: ["auto", "off", "mcp-only", "all"] as const,
+		default: "auto",
+		ui: {
+			tab: "tools",
+			group: "Discovery & MCP",
+			label: "Tool Discovery",
+			description:
+				"Choose whether tools stay directly available or are activated on demand. Auto keeps large MCP catalogs lazy.",
+		},
+	},
+
 	// MCP
+	"mcp.discoveryMode": {
+		type: "boolean",
+		default: false,
+	},
+	"mcp.discoveryDefaultServers": {
+		type: "array",
+		default: EMPTY_STRING_ARRAY,
+	},
+
 	"mcp.enableProjectConfig": {
 		type: "boolean",
 		default: true,
@@ -4527,28 +4606,6 @@ export const SETTINGS_SCHEMA = {
 			group: "Discovery & MCP",
 			label: "MCP Project Config",
 			description: "Load .mcp.json/mcp.json from project root",
-		},
-	},
-
-	"mcp.discoveryMode": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "tools",
-			group: "Discovery & MCP",
-			label: "MCP Tool Discovery",
-			description: "Hide MCP tools by default and expose them through a tool discovery tool",
-		},
-	},
-
-	"mcp.discoveryDefaultServers": {
-		type: "array",
-		default: [] as string[],
-		ui: {
-			tab: "tools",
-			group: "Discovery & MCP",
-			label: "MCP Discovery Default Servers",
-			description: "Keep MCP tools from these servers visible while discovery mode hides other MCP tools",
 		},
 	},
 
@@ -5066,6 +5123,21 @@ export const SETTINGS_SCHEMA = {
 		type: "record",
 		default: {} as Record<string, string>,
 	},
+	"task.agentPrewalk": {
+		type: "record",
+		default: {} as Record<string, string>,
+	},
+	"task.prewalk": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Generic Task Prewalk",
+			description:
+				"Arm prewalk for the bundled generic `task` subagent: it starts on its resolved model, plans and begins the implementation, then hands off to the 'smol' role at its first edit/write. Per-agent overrides (task.agentPrewalk, toggled with P in /agents) and user agent `prewalk` frontmatter apply regardless of this toggle.",
+		},
+	},
 
 	"tasks.todoClearDelay": {
 		type: "number",
@@ -5328,9 +5400,20 @@ export const SETTINGS_SCHEMA = {
 				{
 					value: "auto",
 					label: "Auto",
-					description: "Priority: GPT model image tool > Antigravity > xAI > OpenRouter > Gemini",
+					description:
+						"Priority: per-request provider > configured provider > active session provider > GPT model image tool > Codex subscription > Antigravity > xAI > OpenRouter > Gemini",
 				},
-				{ value: "openai", label: "OpenAI", description: "Uses the active GPT Responses/Codex model" },
+				{
+					value: "openai",
+					label: "OpenAI",
+					description:
+						"OPENAI_API_KEY (gpt-image-2) or active GPT model; falls back to a connected Codex subscription",
+				},
+				{
+					value: "openai-codex",
+					label: "OpenAI Codex (ChatGPT)",
+					description: "Uses a connected Codex / ChatGPT subscription — no OPENAI_API_KEY needed",
+				},
 				{
 					value: "openai-codex",
 					label: "OpenAI Codex",
@@ -5565,14 +5648,15 @@ export const SETTINGS_SCHEMA = {
 
 	"providers.kimiApiFormat": {
 		type: "enum",
-		values: ["openai", "anthropic"] as const,
-		default: "anthropic",
+		values: ["auto", "openai", "anthropic"] as const,
+		default: "auto",
 		ui: {
 			tab: "providers",
 			group: "Protocol",
 			label: "Kimi API Format",
-			description: "API format for Kimi Code provider",
+			description: "API format for Kimi Code provider (auto follows live model metadata)",
 			options: [
+				{ value: "auto", label: "Auto", description: "Use the model's server-declared protocol" },
 				{ value: "openai", label: "OpenAI", description: "api.kimi.com" },
 				{ value: "anthropic", label: "Anthropic", description: "api.moonshot.ai" },
 			],
@@ -5878,8 +5962,10 @@ export const SETTINGS_SCHEMA = {
 	 *
 	 * Owned by `packages/coding-agent/src/tools/report-tool-issue.ts` via the
 	 * process-global consent handler registered by `InteractiveMode`.
+	 *
+	 * @default "unset"
 	 */
-	"dev.autoqa.consent": {
+	"dev.autoqaConsent": {
 		type: "enum",
 		values: ["unset", "granted", "denied"] as const,
 		default: "unset" as const,

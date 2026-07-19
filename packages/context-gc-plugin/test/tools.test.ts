@@ -276,7 +276,7 @@ describe("Context GC tools", () => {
 		expect(stats).toContain("Current branch records: 3");
 		expect(stats).toContain("Active projected net savings: unavailable");
 		expect(stats).toContain("- file_read: 1");
-		expect(stats).not.toContain("99");
+		expect(stats).not.toContain("browser_output");
 		expect(tree).toContain("file_read:");
 		expect(tree).toContain("unloaded [file_read/unloaded, 17 tok");
 		expect(tree).toContain("branch summary");

@@ -33,6 +33,7 @@ import {
 	cleanupIsolation,
 	cleanupTaskBranches,
 	commitToBranch,
+	type DeltaPatchResult,
 	ensureIsolation,
 	getRepoRoot,
 	type IsolationHandle,
@@ -85,6 +86,19 @@ export function makeIsolationCommitMessage(session: ToolSession): BuildCommitMes
 	};
 }
 
+export interface IsolatedPostRunResult {
+	/** Result after any worktree-local post-processing, such as a review gate. */
+	result: SingleResult;
+	/** Reuse an already-reviewed delta instead of recapturing mutable worktree state. */
+	acceptedDelta?: DeltaPatchResult;
+	/** Suppress patch/branch capture while retaining a successful-but-withheld result. */
+	skipCapture?: boolean;
+	/** An approval gate ran; a successful capture must have its accepted delta. */
+	requireAcceptedDelta?: boolean;
+	/** Preserve a recovery patch after a mutating post-run phase fails. */
+	preserveFailureDelta?: boolean;
+}
+
 export interface IsolatedRunOptions {
 	/**
 	 * Base run options handed to the subagent subprocess. This helper sets
@@ -108,6 +122,15 @@ export interface IsolatedRunOptions {
 	/** Build a commit-message callback (`task.isolation.commits === "ai"`). */
 	buildCommitMessage?: BuildCommitMessage;
 	/**
+	 * Runs in the isolated worktree after the implementer and before final
+	 * branch/patch capture. It may withhold capture or return an accepted delta.
+	 */
+	afterRun?: (
+		result: SingleResult,
+		isolationDir: string,
+		baseline: WorktreeBaseline,
+	) => Promise<IsolatedPostRunResult>;
+	/**
 	 * Construct a `SingleResult` when isolation setup throws — the caller has
 	 * the full metadata (index, agent, assignment, modelOverride) needed to
 	 * build a result shape consistent with their non-isolated path.
@@ -120,8 +143,9 @@ async function writeIsolationPatch(
 	baseline: WorktreeBaseline,
 	artifactsDir: string,
 	agentId: string,
+	acceptedDelta?: DeltaPatchResult,
 ): Promise<{ patchPath: string; nestedPatches: NestedRepoPatch[] }> {
-	const delta = await captureDeltaPatch(isolationDir, baseline);
+	const delta = acceptedDelta ?? (await captureDeltaPatch(isolationDir, baseline));
 	const patchPath = path.join(artifactsDir, `${agentId}.patch`);
 	await Bun.write(patchPath, delta.rootPatch);
 	return { patchPath, nestedPatches: delta.nestedPatches };
@@ -150,12 +174,59 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 		const taskBaseline = structuredClone(opts.context.baseline);
 		handle = await ensureIsolation(opts.context.repoRoot, opts.agentId, opts.preferredBackend);
 		const isolationDir = handle.mergedDir;
-		const result = await runSubprocess({
+		let result = await runSubprocess({
 			...opts.baseOptions,
 			worktree: isolationDir,
 			preloadedExtensionPaths: undefined,
 			preloadedCustomToolPaths: undefined,
 		});
+		const implementationSucceeded = result.exitCode === 0 && !result.error && !result.aborted;
+		let acceptedDelta: DeltaPatchResult | undefined;
+		let skipCapture = false;
+		let requireAcceptedDelta = false;
+		let preserveFailureDelta = false;
+		if (opts.afterRun) {
+			const postRun = await opts.afterRun(result, isolationDir, taskBaseline);
+			result = postRun.result;
+			acceptedDelta = postRun.acceptedDelta;
+			skipCapture = postRun.skipCapture === true;
+			requireAcceptedDelta = postRun.requireAcceptedDelta === true;
+			preserveFailureDelta = postRun.preserveFailureDelta === true;
+		}
+		if (skipCapture) return result;
+		if (requireAcceptedDelta && result.exitCode === 0 && !result.error && !result.aborted && !acceptedDelta) {
+			const reason = "Review gate passed without an accepted delta.";
+			return {
+				...result,
+				exitCode: 1,
+				error: reason,
+				stderr: result.stderr ? `${result.stderr}\n${reason}` : reason,
+			};
+		}
+		if (
+			preserveFailureDelta &&
+			implementationSucceeded &&
+			(result.exitCode !== 0 || result.error || result.aborted)
+		) {
+			try {
+				const patchResult = await writeIsolationPatch(isolationDir, taskBaseline, opts.artifactsDir, opts.agentId);
+				return {
+					...result,
+					patchPath: patchResult.patchPath,
+					nestedPatches: patchResult.nestedPatches,
+				};
+			} catch (patchErr) {
+				const patchMessage = patchErr instanceof Error ? patchErr.message : String(patchErr);
+				const error = result.error ?? "Review gate failed after implementation.";
+				return {
+					...result,
+					error: `${error}; recovery patch capture failed: ${patchMessage}`,
+					stderr: result.stderr
+						? `${result.stderr}\nRecovery patch capture failed: ${patchMessage}`
+						: patchMessage,
+				};
+			}
+		}
 		if (opts.mergeMode === "branch" && result.exitCode === 0) {
 			try {
 				const commitResult = await commitToBranch(
@@ -164,6 +235,7 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 					opts.agentId,
 					opts.description,
 					opts.buildCommitMessage?.(),
+					acceptedDelta,
 				);
 				return {
 					...result,
@@ -182,6 +254,7 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 						taskBaseline,
 						opts.artifactsDir,
 						opts.agentId,
+						acceptedDelta,
 					);
 					return {
 						...result,
@@ -197,7 +270,13 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 		}
 		if (result.exitCode === 0) {
 			try {
-				const patchResult = await writeIsolationPatch(isolationDir, taskBaseline, opts.artifactsDir, opts.agentId);
+				const patchResult = await writeIsolationPatch(
+					isolationDir,
+					taskBaseline,
+					opts.artifactsDir,
+					opts.agentId,
+					acceptedDelta,
+				);
 				return {
 					...result,
 					patchPath: patchResult.patchPath,

@@ -85,6 +85,7 @@ function createSessionHarness(lastAssistantMessage?: AssistantMessage): SessionH
 			},
 		} as never,
 		getActiveToolNames: () => ["read", "yield"],
+		getEnabledToolNames: () => ["read", "yield"],
 		setActiveToolsByName: async () => {},
 		subscribe: listener => {
 			listeners.push(listener);
