@@ -8,6 +8,7 @@ import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
+import type { IdleMemoryTrim } from "../../memory/idle-trim";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
 import { CompactionProgressComponent } from "../../modes/components/compaction-progress";
@@ -124,8 +125,17 @@ export class EventController {
 	#prevHideThinking = false;
 	#handlers: AgentSessionEventHandlers;
 	#terminalProgressActive = false;
+	// Optional inject for tests; production InteractiveMode always passes one.
+	// ACP/SDK/print never construct EventController, so idle trim stays TUI-only.
+	#idleMemoryTrim: IdleMemoryTrim | undefined;
 
-	constructor(private ctx: InteractiveModeContext) {
+	constructor(
+		private ctx: InteractiveModeContext,
+		options?: {
+			idleMemoryTrim?: IdleMemoryTrim;
+		},
+	) {
+		this.#idleMemoryTrim = options?.idleMemoryTrim;
 		// Enhanced speech (`speech.enhanced`) rewrites blocks through the
 		// tiny/smol role with this session's registry and credentials; the
 		// vocalizer falls back to mechanical cleanup when unset. Tolerates
@@ -210,6 +220,7 @@ export class EventController {
 		this.#cancelIdleCompaction();
 		this.#exitThinkingWait(false);
 		this.#cancelIdleRecap();
+		this.#idleMemoryTrim?.dispose();
 		this.#setTerminalProgress(false);
 		for (const timer of this.#ircExpiryTimers.values()) {
 			clearTimeout(timer);
@@ -481,6 +492,8 @@ export class EventController {
 		}
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
+		// Cancel idle memory trim the same way idle compaction cancels on activity.
+		this.#idleMemoryTrim?.notifyActivityStart();
 		this.ctx.statusLine.markActivityStart();
 		this.#setTerminalProgress(true);
 		this.ctx.ensureLoadingAnimation();
@@ -1259,6 +1272,11 @@ export class EventController {
 		this.ctx.ui.requestRender();
 		this.#scheduleIdleCompaction();
 		this.#scheduleIdleRecap();
+		// Arm idle low-memory trim independently of idle compaction.
+		// v1 limitation: timer arms only on main agent_end. A detached subagent
+		// that outlives the turn keeps isActive() true and suppresses fire; nothing
+		// re-arms until the next main activity end.
+		this.#idleMemoryTrim?.notifyActivityEnd();
 		this.sendCompletionNotification();
 		this.#emitTurnSummaryLine().catch(() => {});
 	}
