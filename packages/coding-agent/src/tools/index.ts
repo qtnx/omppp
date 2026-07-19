@@ -68,6 +68,7 @@ import { IrcTool, isIrcEnabled } from "./irc";
 import { JobTool } from "./job";
 import { LaunchTool } from "./launch";
 import { LearnTool } from "./learn";
+import { LoopTool } from "./loop";
 import { MacOSSandboxTool } from "./macos-sandbox";
 import { ManageSkillTool } from "./manage-skill";
 import { MemoryEditTool } from "./memory-edit";
@@ -116,6 +117,7 @@ export * from "./irc";
 export * from "./job";
 export * from "./launch";
 export * from "./learn";
+export * from "./loop";
 export * from "./macos-sandbox";
 export * from "./manage-skill";
 export * from "./memory-edit";
@@ -214,7 +216,14 @@ export interface BrowserAnnotationEntry {
 	timestamp: number;
 }
 
-/** Session context for tool factories */
+/** Structural loop scheduler surface for the `loop` tool. Session `LoopManager`
+ *  satisfies this without a tools↔session import cycle. */
+export interface ToolLoopManager {
+	schedule(options: { prompt: string; intervalMs: number; count: number }): { readonly id: string };
+	cancelAll(): void;
+	readonly activeCount: number;
+}
+
 export interface ToolSession {
 	/** Current working directory */
 	cwd: string;
@@ -495,6 +504,10 @@ export interface ToolSession {
 	duoHandoffToExecutor?: (resolution: string, scope?: DuoExecutionScope) => Promise<DuoHandoffResult>;
 	/** Escalate an executor turn back to the duo planner. */
 	duoEscalateToPlanner?: (reason: string) => Promise<"ok" | "unavailable">;
+	/** Session-scoped loop scheduler for the `loop` tool. Iterations are delivered as
+	 *  follow-up turns; all loops are cancelled on session dispose/reset. Undefined in
+	 *  sessions that cannot host loops (e.g. secondary in-process sessions). */
+	getLoopManager?: () => ToolLoopManager | undefined;
 }
 
 export type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool | null>;
@@ -598,6 +611,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	task: s => TaskTool.create(s),
 	workflow: s => WorkflowTool.create(s),
 	job: s => new JobTool(s),
+	loop: LoopTool.createIf,
 	irc: IrcTool.createIf,
 	todo: s => new TodoTool(s),
 	web_search: s => new WebSearchTool(s),
@@ -804,6 +818,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		}
 		if (name === "workflow") {
 			return session.settings.get("workflow.enabled") === true && (session.taskDepth ?? 0) === 0;
+		}
+		if (name === "loop") {
+			return (session.taskDepth ?? 0) === 0;
 		}
 		// Deliberate compound gate: `advisor.consult` defaults true, so gating on
 		// it alone would drop a dead `consult` tool into every non-advisor session.

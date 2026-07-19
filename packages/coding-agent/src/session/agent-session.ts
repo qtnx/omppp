@@ -429,6 +429,7 @@ import {
 	TOOL_EXECUTION_START_CUSTOM_TYPE,
 	type ToolExecutionStartData,
 } from "./exit-diagnostics";
+import { LoopManager } from "./loop-manager";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -2257,6 +2258,8 @@ export class AgentSession {
 	 * undefined to avoid reading the primary's jobs.
 	 */
 	readonly #asyncJobManager: AsyncJobManager | undefined;
+	/** Lazy session-scoped loop scheduler; cancelled on dispose/reset. */
+	#loopManager: LoopManager | undefined;
 	#pendingPythonMessages: PythonExecutionMessage[] = [];
 	#activeEvalExecutions = new Set<Promise<unknown>>();
 	#evalExecutionDisposing = false;
@@ -4834,6 +4837,15 @@ export class AgentSession {
 
 	get asyncJobManager(): AsyncJobManager | undefined {
 		return this.#asyncJobManager;
+	}
+
+	getLoopManager(): LoopManager | undefined {
+		// Refuse new schedules once dispose has begun (mirrors eval dispose gate).
+		if (this.#isDisposed) return undefined;
+		if (!this.#loopManager) {
+			this.#loopManager = new LoopManager(text => this.followUp(text));
+		}
+		return this.#loopManager;
 	}
 
 	getAgentId(): string | undefined {
@@ -7728,6 +7740,9 @@ export class AgentSession {
 	 * gap slips past the disposal guards.
 	 */
 	beginDispose(): void {
+		// Cancel loops before any await in dispose — a timer can otherwise fire
+		// into a session already tearing down and queue a followUp mid-dispose.
+		this.#loopManager?.cancelAll();
 		this.#clearAdvisorRetry();
 		this.#isDisposed = true;
 		this.#flushPendingIrcAsides();
@@ -11588,6 +11603,8 @@ export class AgentSession {
 			}
 		}
 
+		// Cancel loops before abort awaits so no tick fires into the dying session.
+		this.#loopManager?.cancelAll();
 		this.#disconnectFromAgent();
 		await this.abort();
 		this.#cancelOwnAsyncJobs();
@@ -13224,6 +13241,8 @@ export class AgentSession {
 					return undefined;
 				}
 			}
+			// Cancel loops before flush/newSession awaits.
+			this.#loopManager?.cancelAll();
 			await this.sessionManager.flush();
 			this.#cancelOwnAsyncJobs();
 			await this.sessionManager.newSession(previousSessionFile ? { parentSession: previousSessionFile } : undefined);
@@ -18624,6 +18643,8 @@ export class AgentSession {
 		this.#pendingNextTurnMessages = [];
 		this.#heldSteering = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
+		// Cancel loops before flush await so no tick queues into the old branch.
+		this.#loopManager?.cancelAll();
 
 		// Flush pending writes before branching
 		await this.sessionManager.flush();
@@ -18720,6 +18741,8 @@ export class AgentSession {
 			throw new Error("Cannot branch /btw while session maintenance or user work is still running");
 		}
 
+		// Cancel loops before any abort/flush awaits on the /btw branch path.
+		this.#loopManager?.cancelAll();
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 		this.agent.replaceQueues([], []);

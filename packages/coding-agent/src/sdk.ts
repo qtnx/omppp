@@ -2065,6 +2065,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// this undefined so tools and session job snapshots refuse async work
 			// instead of silently routing into the owning session (issue #1923).
 			asyncJobManager: scopedAsyncJobManager,
+			// Top-level / full AgentSession hosts loops. Secondary in-process sessions
+			// without a backing AgentSession leave this undefined so loop refuses work
+			// (mirrors asyncJobManager issue #1923).
+			getLoopManager: () => session?.getLoopManager(),
 		};
 
 		// Wire process-wide internal URL singletons owned by their real classes.

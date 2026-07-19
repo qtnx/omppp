@@ -25,6 +25,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"workflow",
 	"task",
 	"job",
+	"loop",
 	"irc",
 	"todo",
 	"web_search",

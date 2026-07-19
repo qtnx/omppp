@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a `loop` tool that schedules a prompt as recurring follow-up turns (`prompt` / `interval` / `count`; min interval 10s, max 100 iterations; cancelled on session end), plus a `# Loop Engineering` system-prompt section.
+
 ## [1.6.3] - 2026-07-15
 
 ### Added
