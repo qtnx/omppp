@@ -207,6 +207,11 @@ export class MCPManager {
 	#reconnectHistory = new Map<string, number[]>();
 	/** Monotonic epoch incremented on disconnectAll to invalidate stale reconnections. */
 	#epoch = 0;
+	/**
+	 * Server names put to sleep by {@link sleepAll}. Cleared per-server on
+	 * successful reconnect; cleared entirely by {@link disconnectAll}.
+	 */
+	#asleepNames = new Set<string>();
 
 	constructor(
 		private cwd: string,
@@ -798,6 +803,56 @@ export class MCPManager {
 		this.#tools = [];
 		this.#subscribedResources.clear();
 		this.#reconnectHistory.clear();
+		this.#asleepNames.clear();
+	}
+
+	/**
+	 * True while at least one server remains asleep from {@link sleepAll}
+	 * (per-server entries clear as they reconnect; disconnectAll clears the set).
+	 */
+	get sleeping(): boolean {
+		return this.#asleepNames.size > 0;
+	}
+
+	/**
+	 * Close all live transports WITHOUT clearing configs or registered tools:
+	 * servers sleep; the next tool call revives its server via the existing
+	 * reconnect-on-use path. No-op when already sleeping / no live connections.
+	 *
+	 * Unlike {@link disconnectAll}, this keeps `#serverConfigs`, `#tools`,
+	 * `#sources`, `#subscribedResources`, `#reconnectHistory`, and does not
+	 * bump `#epoch` (so future reconnects remain valid).
+	 */
+	async sleepAll(): Promise<void> {
+		// Settle in-flight first-connects, then close whatever landed.
+		const pendingConnects = Array.from(this.#pendingConnections.values());
+		if (pendingConnects.length > 0) {
+			await Promise.allSettled(pendingConnects);
+		}
+
+		// Await in-flight reconnections so we can close the fresh transport too.
+		const pendingReconnects = Array.from(this.#pendingReconnections.values());
+		if (pendingReconnects.length > 0) {
+			await Promise.allSettled(pendingReconnects);
+		}
+
+		// Drop tool-load bookkeeping so getConnectionStatus cannot stay "connecting"
+		// after the transport is deliberately closed. Does not touch registered #tools.
+		this.#pendingToolLoads.clear();
+
+		if (this.#connections.size === 0) {
+			return;
+		}
+
+		const closes: Promise<void>[] = [];
+		for (const [name, connection] of this.#connections) {
+			// Detach onClose first so deliberate close cannot arm auto-reconnect.
+			connection.transport.onClose = undefined;
+			this.#asleepNames.add(name);
+			closes.push(disconnectServer(connection));
+		}
+		this.#connections.clear();
+		await Promise.allSettled(closes);
 	}
 
 	/**
@@ -967,6 +1022,8 @@ export class MCPManager {
 		}
 
 		this.#connections.set(name, connection);
+		// Successful reconnect wakes this server out of sleepAll.
+		this.#asleepNames.delete(name);
 
 		// Wire auth refresh for HTTP-like transports, and reconnect for any transport.
 		// Same gate as connectServers: any resolvable managed credential.
