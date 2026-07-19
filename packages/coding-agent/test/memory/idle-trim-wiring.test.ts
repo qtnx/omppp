@@ -34,6 +34,7 @@ function createContext(): InteractiveModeContext {
 		streamingMessage: undefined,
 		pendingTools: new Map<string, unknown>(),
 		flushPendingModelSwitch: async () => {},
+		flushPendingCommandOutput: vi.fn(),
 		ui: { requestRender: vi.fn() },
 		chatContainer: { removeChild: vi.fn() },
 		statusContainer: { clear: vi.fn(), disposeChildren: vi.fn() },

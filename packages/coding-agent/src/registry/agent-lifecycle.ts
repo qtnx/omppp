@@ -235,7 +235,7 @@ export class AgentLifecycleManager {
 	async parkAll(): Promise<void> {
 		const ids = [...this.#adopted.keys()];
 		for (const id of ids) {
-			if (this.#parking.has(id)) continue;
+			if (this.isParking(id)) continue;
 			const ref = this.#registry.get(id);
 			if (!ref) continue;
 			if (ref.status === "parked" || ref.status === "running" || ref.status === "aborted") continue;
