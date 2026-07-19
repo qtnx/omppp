@@ -147,6 +147,27 @@ export class AgentLifecycleManager {
 	}
 
 	/**
+	 * Park every adopted agent that is currently live (status "idle");
+	 * skips parked/parking/running/aborted. A failing park is logged and
+	 * does not stop the rest.
+	 */
+	async parkAll(): Promise<void> {
+		const ids = [...this.#adopted.keys()];
+		for (const id of ids) {
+			if (this.#parking.has(id)) continue;
+			const ref = this.#registry.get(id);
+			if (!ref) continue;
+			if (ref.status === "parked" || ref.status === "running" || ref.status === "aborted") continue;
+			if (!ref.session) continue;
+			try {
+				await this.park(id);
+			} catch (error) {
+				logger.warn("AgentLifecycleManager.parkAll: park failed", { id, error: String(error) });
+			}
+		}
+	}
+
+	/**
 	 * Return the live session, reviving from the sessionFile if parked.
 	 * Throws a plain Error if the id is unknown or parked without a reviver.
 	 * Concurrent calls share one in-flight revive.
