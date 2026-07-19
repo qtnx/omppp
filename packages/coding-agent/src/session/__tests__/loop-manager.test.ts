@@ -114,4 +114,30 @@ describe("LoopManager", () => {
 		await flushMicrotasks();
 		expect(followUp).toHaveBeenCalledTimes(1);
 	});
+
+	test("cancelAll aborts an in-flight delivery before it can schedule another iteration", async () => {
+		vi.useFakeTimers();
+		const delivery = Promise.withResolvers<void>();
+		let deliverySignal: AbortSignal | undefined;
+		const followUp = vi.fn(async (_text: string, signal: AbortSignal) => {
+			deliverySignal = signal;
+			await delivery.promise;
+		});
+		const manager = new LoopManager(followUp);
+
+		manager.schedule({ prompt: "slow", intervalMs: 25, count: 3 });
+		await flushMicrotasks();
+		expect(followUp).toHaveBeenCalledTimes(1);
+		expect(deliverySignal).toBeInstanceOf(AbortSignal);
+
+		manager.cancelAll();
+		expect(deliverySignal?.aborted).toBe(true);
+		expect(manager.activeCount).toBe(0);
+
+		delivery.resolve();
+		await flushMicrotasks();
+		vi.advanceTimersByTime(25 * 10);
+		await flushMicrotasks();
+		expect(followUp).toHaveBeenCalledTimes(1);
+	});
 });

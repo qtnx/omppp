@@ -4,7 +4,7 @@ import * as z from "zod/v4";
 import loopDescription from "../prompts/tools/loop.md" with { type: "text" };
 import type { ToolSession } from ".";
 import type { OutputMeta } from "./output-meta";
-import { ToolError } from "./tool-errors";
+import { ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
 const INTERVAL_DURATION_RE = /^(\d+(?:\.\d+)?)([smh])$/;
@@ -74,16 +74,18 @@ export class LoopTool implements AgentTool<typeof loopSchema, LoopToolDetails> {
 
 	static createIf(session: ToolSession): LoopTool | null {
 		if ((session.taskDepth ?? 0) !== 0) return null;
+		if (typeof session.getLoopManager !== "function") return null;
 		return new LoopTool(session);
 	}
 
 	async execute(
 		_toolCallId: string,
 		params: LoopParams,
-		_signal?: AbortSignal,
+		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<LoopToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<LoopToolDetails>> {
+		throwIfAborted(signal);
 		const manager = this.session.getLoopManager?.();
 		if (!manager) {
 			throw new ToolError("Loops are unavailable in this session.");

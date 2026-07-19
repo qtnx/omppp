@@ -17,6 +17,7 @@ interface LoopEntry {
 	count: number;
 	iteration: number;
 	cancelled: boolean;
+	controller: AbortController;
 	timer: Timer | undefined;
 }
 
@@ -26,11 +27,11 @@ interface LoopEntry {
  * Iteration 1 fires immediately; subsequent ticks wait `intervalMs`.
  */
 export class LoopManager {
-	readonly #followUp: (text: string) => Promise<void>;
+	readonly #followUp: (text: string, signal: AbortSignal) => Promise<void>;
 	readonly #loops = new Map<string, LoopEntry>();
 	#seq = 0;
 
-	constructor(followUp: (text: string) => Promise<void>) {
+	constructor(followUp: (text: string, signal: AbortSignal) => Promise<void>) {
 		this.#followUp = followUp;
 	}
 
@@ -51,6 +52,7 @@ export class LoopManager {
 			count: options.count,
 			iteration: 0,
 			cancelled: false,
+			controller: new AbortController(),
 			timer: undefined,
 		};
 		this.#loops.set(id, entry);
@@ -70,6 +72,7 @@ export class LoopManager {
 
 	#cancelEntry(entry: LoopEntry): void {
 		entry.cancelled = true;
+		entry.controller.abort();
 		if (entry.timer !== undefined) {
 			clearTimeout(entry.timer);
 			entry.timer = undefined;
@@ -90,7 +93,7 @@ export class LoopManager {
 		const iteration = entry.iteration;
 		const count = entry.count;
 
-		void this.#followUp(text).then(
+		void this.#followUp(text, entry.controller.signal).then(
 			() => {
 				if (entry.cancelled) return;
 				if (iteration >= count) {

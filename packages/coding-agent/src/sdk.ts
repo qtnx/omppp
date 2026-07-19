@@ -2174,10 +2174,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// this undefined so tools and session job snapshots refuse async work
 			// instead of silently routing into the owning session (issue #1923).
 			asyncJobManager: scopedAsyncJobManager,
-			// Top-level / full AgentSession hosts loops. Secondary in-process sessions
-			// without a backing AgentSession leave this undefined so loop refuses work
-			// (mirrors asyncJobManager issue #1923).
-			getLoopManager: () => session?.getLoopManager(),
+			// Top-level / full AgentSession hosts loops. Secondary parentTaskPrefix
+			// sessions (e.g. /tan) omit this so loop is neither advertised nor
+			// executable (mirrors asyncJobManager issue #1923).
+			getLoopManager: options.parentTaskPrefix ? undefined : () => session?.getLoopManager(),
 		};
 		const reloadSshTool = async (): Promise<AgentTool | null> => {
 			const sshTool = await loadSshTool(toolSession);

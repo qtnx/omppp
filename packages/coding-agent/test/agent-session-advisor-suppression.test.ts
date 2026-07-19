@@ -17,7 +17,7 @@
  *     (which converts to `developer`) would send an invalid provider tail, so the
  *     follow-up stays queued for the next explicit resume rather than auto-running.
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolCall } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
@@ -29,6 +29,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import * as taskDiscovery from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { Snowflake, TempDir } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 
@@ -71,6 +72,7 @@ describe("AgentSession advisor auto-resume suppression", () => {
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		// dispose() aborts the agent, cancelling the parked first-turn stream.
 		try {
 			await session?.dispose();
@@ -502,6 +504,59 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		expect(userMessageText([...session.agent.peekFollowUpQueue()])).toContain("then add the test");
 		expect(userMessageText(session.agent.state.messages)).not.toContain("then add the test");
 		expect(mock.calls.length).toBe(1);
+	});
+
+	it("keeps advisor suppression latched when a pre-enqueue follow-up is cancelled", async () => {
+		const { session, mock, streamStarted } = await createParkedSession([
+			{ content: ["resumed after live follow-up"] },
+		]);
+		const running = session.prompt("do the thing");
+		await streamStarted;
+
+		// The user leaves a follow-up queued, then deliberately stops the run. That
+		// queued message must remain inert until an actual subsequent user follow-up.
+		await session.followUp("queued before interrupt");
+		await session.abort({ reason: USER_INTERRUPT_LABEL });
+		await session.waitForIdle();
+		await running.catch(() => {});
+		expect(userMessageText([...session.agent.peekFollowUpQueue()])).toContain("queued before interrupt");
+		expect(mock.calls.length).toBe(1);
+
+		// Hold `$agent:` discovery after the real user-interrupt path has latched
+		// suppression. Cancellation before discovery completes must not count as a
+		// user resume and must not enqueue its message.
+		const discoveryGate = Promise.withResolvers<{ agents: []; projectAgentsDir: null }>();
+		const discoveryEntered = Promise.withResolvers<void>();
+		const discoverySpy = vi.spyOn(taskDiscovery, "discoverAgents").mockImplementation(() => {
+			discoveryEntered.resolve();
+			return discoveryGate.promise;
+		});
+		const controller = new AbortController();
+		const cancelledFollowUp = session.followUp("$agent:cancelled-advisor-resume", undefined, {
+			signal: controller.signal,
+		});
+		await discoveryEntered.promise;
+		controller.abort();
+		discoveryGate.resolve({ agents: [], projectAgentsDir: null });
+		await cancelledFollowUp;
+
+		expect(userMessageText([...session.agent.peekFollowUpQueue()])).toEqual(["queued before interrupt"]);
+		expect(discoverySpy).toHaveBeenCalledTimes(1);
+
+		// An idle settle is the real seam that drains queued follow-ups. If cancellation
+		// incorrectly cleared suppression, this resumes the parked user turn.
+		await session.abort();
+		await session.waitForIdle();
+		expect(mock.calls.length).toBe(1);
+
+		// A delivered follow-up is the deliberate user action that clears suppression.
+		// One-at-a-time mode then resumes each valid queued message in its own provider turn.
+		await session.followUp("live user follow-up");
+		await session.waitForIdle();
+		expect(mock.calls.length).toBe(3);
+		expect(userMessageText(session.agent.state.messages)).toEqual(
+			expect.arrayContaining(["queued before interrupt", "live user follow-up"]),
+		);
 	});
 
 	it("wakes a turn for an IRC aside stranded across a user interrupt", async () => {

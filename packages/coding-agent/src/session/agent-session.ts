@@ -1327,6 +1327,8 @@ export interface FollowUpOptions {
 	expandPromptTemplates?: boolean;
 	/** Explicit billing/initiator attribution. Defaults to `agent` for synthetic follow-ups. */
 	attribution?: MessageAttribution;
+	/** Abort an in-flight follow-up before it reaches the agent queue. */
+	signal?: AbortSignal;
 }
 
 /** Result from a handoff operation. */
@@ -5321,7 +5323,7 @@ export class AgentSession {
 		// Refuse new schedules once dispose has begun (mirrors eval dispose gate).
 		if (this.#isDisposed) return undefined;
 		if (!this.#loopManager) {
-			this.#loopManager = new LoopManager(text => this.followUp(text));
+			this.#loopManager = new LoopManager((text, signal) => this.followUp(text, undefined, { signal }));
 		}
 		return this.#loopManager;
 	}
@@ -10824,6 +10826,7 @@ export class AgentSession {
 		normalizedImages: ImageContent[],
 		signal?: AbortSignal,
 	): Promise<CustomMessage | undefined> {
+		if (signal?.aborted) return undefined;
 		const model = this.model;
 		const shouldDescribe =
 			!!model &&
@@ -10849,11 +10852,13 @@ export class AgentSession {
 				signal,
 			);
 		} catch (err) {
+			if (signal?.aborted) return undefined;
 			logger.warn("image attachment vision fallback failed; image left undescribed", {
 				error: err instanceof Error ? err.message : String(err),
 			});
 			return undefined;
 		}
+		if (signal?.aborted) return undefined;
 		if (blocks.length === 0) {
 			return undefined;
 		}
@@ -11661,6 +11666,7 @@ export class AgentSession {
 	 * flipping advisor auto-resume.
 	 */
 	async followUp(text: string, images?: ImageContent[], options?: FollowUpOptions): Promise<void> {
+		if (options?.signal?.aborted) return;
 		if (text.startsWith("/")) {
 			this.#throwIfExtensionCommand(text);
 		}
@@ -11668,7 +11674,7 @@ export class AgentSession {
 		const expandedText =
 			options?.expandPromptTemplates === false ? text : expandPromptTemplate(text, [...this.#promptTemplates]);
 		if (!options?.synthetic) {
-			await this.#queueUserMessage(expandedText, images, "followUp");
+			await this.#queueUserMessage(expandedText, images, "followUp", options?.signal);
 			return;
 		}
 		// Synthetic branch: agent-initiated hidden developer message. Bypass
@@ -11676,13 +11682,15 @@ export class AgentSession {
 		// enqueues as a user-attributed message) and place the developer message
 		// directly on the follow-up queue.
 		const normalizedImages = await this.#normalizeImagesForModel(images);
+		if (options?.signal?.aborted) return;
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 		if (normalizedImages?.length) {
 			content.push(...normalizedImages);
 		}
 		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
+			? await this.#buildImageDescriptionNotice(normalizedImages, options?.signal)
 			: undefined;
+		if (options?.signal?.aborted) return;
 		if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);
 		this.agent.followUp({
 			role: "developer",
@@ -11697,13 +11705,13 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		mode: "steer" | "followUp",
+		signal?: AbortSignal,
 	): Promise<void> {
-		// A queued user message (RPC/SDK/collab steer or follow-up, or a typed message
-		// while streaming) is a deliberate resume; re-enable advisor auto-resume that
-		// a user interrupt suppressed.
-		this.#advisorAutoResumeSuppressed = false;
+		if (signal?.aborted) return;
 		const dollarMentionMessages = await this.#buildDollarMentionContextMessages(text);
+		if (signal?.aborted) return;
 		const normalizedImages = await this.#normalizeImagesForModel(images);
+		if (signal?.aborted) return;
 		const displayText = text || (images && images.length > 0 ? "[Image]" : "");
 		if (
 			mode === "steer" &&
@@ -11712,6 +11720,7 @@ export class AgentSession {
 		) {
 			this.#steeringMessages.push({ text: displayText });
 			this.#heldSteering.push(text);
+			this.#advisorAutoResumeSuppressed = false;
 			this.#scheduleIdleQueueDrain();
 			return;
 		}
@@ -11722,8 +11731,9 @@ export class AgentSession {
 		// Text-only model + image attachment: describe via a vision model and enqueue the
 		// description as a hidden companion immediately before the user message.
 		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
+			? await this.#buildImageDescriptionNotice(normalizedImages, signal)
 			: undefined;
+		if (signal?.aborted) return;
 		const message =
 			mode === "followUp"
 				? {
@@ -11739,8 +11749,8 @@ export class AgentSession {
 						attribution: "user" as const,
 						timestamp: Date.now(),
 					};
+		if (signal?.aborted) return;
 		// Queue order is provider-visible: image description notice first (when present),
-		// then dollar-mention context, then the user's prompt.
 		if (mode === "followUp") {
 			this.#followUpMessages.push({ text: displayText });
 			if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);
@@ -11757,6 +11767,7 @@ export class AgentSession {
 			for (const dollarMentionMessage of dollarMentionMessages) this.agent.steer(dollarMentionMessage);
 			this.agent.steer(message);
 		}
+		this.#advisorAutoResumeSuppressed = false;
 		this.#scheduleIdleQueueDrain();
 	}
 

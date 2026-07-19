@@ -46,7 +46,10 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 		AsyncJobManager.resetForTests();
 	});
 
-	async function spawnTopLevelSession(extraSettings?: Record<string, unknown>) {
+	async function spawnTopLevelSession(
+		extraSettings?: Record<string, unknown>,
+		options?: { parentTaskPrefix?: string; toolNames?: string[] },
+	) {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-async-singleton-${Snowflake.next()}-`));
 		tempDirs.push(tempDir);
 		const cwd = path.join(tempDir, `project-${Snowflake.next()}`);
@@ -64,6 +67,7 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			enableMCP: false,
 			enableLsp: false,
 			modelRegistry: sharedModelRegistry,
+			...options,
 		});
 		return session;
 	}
@@ -159,6 +163,27 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			// The secondary's failed async attempt must not have leaked a job into
 			// the primary's manager.
 			expect(primaryManager!.getAllJobs().length).toBe(primaryJobCountBefore);
+		} finally {
+			await primary.dispose();
+		}
+	}, 60000);
+
+	it("keeps loop unavailable to parent-prefix secondary sessions even when explicitly requested", async () => {
+		const primary = await spawnTopLevelSession(undefined, { toolNames: ["loop"] });
+		try {
+			expect(primary.getActiveToolNames()).toContain("loop");
+			expect(primary.getToolByName("loop")).toBeDefined();
+
+			const secondary = await spawnTopLevelSession(undefined, {
+				parentTaskPrefix: "Tan-secondary",
+				toolNames: ["loop"],
+			});
+			try {
+				expect(secondary.getActiveToolNames()).not.toContain("loop");
+				expect(secondary.getToolByName("loop")).toBeUndefined();
+			} finally {
+				await secondary.dispose();
+			}
 		} finally {
 			await primary.dispose();
 		}

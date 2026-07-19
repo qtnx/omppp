@@ -862,7 +862,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			return session.settings.get("workflow.enabled") === true && (session.taskDepth ?? 0) === 0;
 		}
 		if (name === "loop") {
-			return (session.taskDepth ?? 0) === 0;
+			return (session.taskDepth ?? 0) === 0 && typeof session.getLoopManager === "function";
 		}
 		// Deliberate compound gate: `advisor.consult` defaults true, so gating on
 		// it alone would drop a dead `consult` tool into every non-advisor session.

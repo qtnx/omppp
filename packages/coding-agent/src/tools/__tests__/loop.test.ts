@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test, vi } from "bun:test";
 import { LoopManager } from "../../session/loop-manager";
 import type { ToolSession } from "../index";
 import { LoopTool } from "../loop";
-import { ToolError } from "../tool-errors";
+import { ToolAbortError, ToolError } from "../tool-errors";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -22,7 +22,7 @@ function createNoopProxy<T extends object>(overrides: Record<string, unknown>): 
 	}) as T;
 }
 
-function createToolSession(getLoopManager?: () => LoopManager | undefined): ToolSession {
+function createToolSession(getLoopManager?: () => LoopManager | undefined, taskDepth = 0): ToolSession {
 	return createNoopProxy({
 		cwd: process.cwd(),
 		hasUI: false,
@@ -34,12 +34,23 @@ function createToolSession(getLoopManager?: () => LoopManager | undefined): Tool
 			},
 		}),
 		getLoopManager,
+		taskDepth,
 	}) as unknown as ToolSession;
 }
 
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
 	return result.content.find(part => part.type === "text")?.text ?? "";
 }
+
+describe("LoopTool factory", () => {
+	test("only creates a loop tool for a primary session with a loop manager", () => {
+		const manager = new LoopManager(async () => {});
+
+		expect(LoopTool.createIf(createToolSession())).toBeNull();
+		expect(LoopTool.createIf(createToolSession(() => manager))).toBeInstanceOf(LoopTool);
+		expect(LoopTool.createIf(createToolSession(() => manager, 1))).toBeNull();
+	});
+});
 
 describe("LoopTool interval parsing", () => {
 	test.each([
@@ -128,6 +139,33 @@ describe("LoopTool execute", () => {
 		expect(text).toMatch(/Loop \S+ scheduled: "recheck CI" every 10m, 5 iterations/);
 		expect(text).toContain("Iteration 1/5 queued");
 		expect(text).toContain("follow-up");
+	});
+
+	test("pre-aborted calls reject without scheduling a loop", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const schedule = vi.fn(() => ({ id: "loop-aborted" }));
+		const manager = { schedule } as unknown as LoopManager;
+		const tool = new LoopTool(createToolSession(() => manager));
+
+		let error: unknown;
+		try {
+			await tool.execute(
+				"call-pre-aborted",
+				{
+					prompt: "do not queue",
+					interval: "10s",
+					count: 1,
+				},
+				controller.signal,
+			);
+		} catch (caught) {
+			error = caught;
+		}
+
+		expect(schedule).not.toHaveBeenCalled();
+		expect(error).toBeInstanceOf(ToolAbortError);
+		expect(error).toMatchObject({ name: "ToolAbortError", message: ToolAbortError.MESSAGE });
 	});
 
 	test("missing getLoopManager reports loops unavailable", async () => {
