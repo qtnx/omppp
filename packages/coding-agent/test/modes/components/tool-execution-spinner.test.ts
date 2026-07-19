@@ -95,7 +95,6 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			component.stopAnimation();
 		}
 	});
-
 	it("does not tick headerless bash pending previews", () => {
 		vi.useFakeTimers();
 		const requestRender = vi.fn();

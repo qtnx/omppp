@@ -68,41 +68,50 @@ function stalledBody(bytes: Uint8Array[] = []): ReadableStream<Uint8Array> {
 }
 
 function delayedBody(chunks: Array<{ atMs: number; bytes: Uint8Array }>): ReadableStream<Uint8Array> {
-	let active = true;
+	let closed = false;
+	const timers: Timer[] = [];
+	const clearTimers = () => {
+		closed = true;
+		for (const timer of timers) clearTimeout(timer);
+		timers.length = 0;
+	};
 	return new ReadableStream<Uint8Array>({
 		start(controller) {
-			// Guard every scheduled enqueue/close: if the stream aborts early (e.g. a
-			// first-event/idle timeout cancels the reader), `closeIterator` closes this
-			// controller while later timers are still pending. An unguarded
-			// `controller.enqueue` then throws `ERR_INVALID_STATE` from inside a bare
-			// setTimeout — an UNCAUGHT exception Bun charges to whatever test is running
-			// when the timer fires, poisoning the *next* test. Swallowing the
-			// post-close throw keeps a timeout contained to its own test.
+			// A cancelled reader closes its controller while delayed timers can still
+			// fire. Track timers and guard enqueue/close so timeout tests cannot leak
+			// an asynchronous ERR_INVALID_STATE into the next test.
+			const enqueue = (bytes: Uint8Array) => {
+				if (closed) return;
+				try {
+					controller.enqueue(bytes);
+				} catch {
+					clearTimers();
+				}
+			};
 			for (const chunk of chunks) {
-				setTimeout(() => {
-					if (!active) return;
-					try {
-						controller.enqueue(chunk.bytes);
-					} catch {
-						// Stream already cancelled/closed — nothing to deliver.
-					}
-				}, chunk.atMs);
+				if (chunk.atMs <= 0) {
+					enqueue(chunk.bytes);
+				} else {
+					timers.push(setTimeout(() => enqueue(chunk.bytes), chunk.atMs));
+				}
 			}
-			setTimeout(
-				() => {
-					if (!active) return;
-					active = false;
-					try {
-						controller.close();
-					} catch {
-						// Stream already closed.
-					}
-				},
-				Math.max(...chunks.map(chunk => chunk.atMs)) + 1,
+			timers.push(
+				setTimeout(
+					() => {
+						if (closed) return;
+						clearTimers();
+						try {
+							controller.close();
+						} catch {
+							// Stream already cancelled/closed.
+						}
+					},
+					Math.max(...chunks.map(chunk => chunk.atMs)) + 1,
+				),
 			);
 		},
 		cancel() {
-			active = false;
+			clearTimers();
 		},
 	});
 }

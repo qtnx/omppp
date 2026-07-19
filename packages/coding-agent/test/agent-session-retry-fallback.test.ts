@@ -88,6 +88,8 @@ describe("AgentSession retry fallback", () => {
 		authStorage.setRuntimeApiKey("google", "google-test-key");
 		authStorage.setRuntimeApiKey("google-vertex", "google-vertex-test-key");
 		authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
+		authStorage.setRuntimeApiKey("devin", "devin-test-key");
+		authStorage.setRuntimeApiKey("openai-codex", "openai-codex-test-key");
 		sharedRegistry = new ModelRegistry(authStorage);
 	});
 
@@ -218,6 +220,124 @@ describe("AgentSession retry fallback", () => {
 				role: "default",
 			},
 		]);
+	});
+
+	it("applies a model-keyed fallback chain to advisor quota failures", async () => {
+		const mainModel = getBundledModel("openai", "gpt-4o-mini");
+		const advisorPrimary = getBundledModel("devin", "gpt-5-6-sol");
+		const advisorFallback = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!mainModel || !advisorPrimary || !advisorFallback) {
+			throw new Error("Expected bundled advisor fallback models to exist");
+		}
+
+		const mainMock = createMockModel({
+			responses: [{ content: ["Primary complete"] }, { content: ["Primary complete again"] }],
+		});
+		const advisorMock = createMockModel();
+		let advisorPrimaryAttempts = 0;
+		const requestedAdvisorModels: string[] = [];
+		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+		const fallbackSucceededEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_succeeded" }>> = [];
+		const fallbackSucceeded = Promise.withResolvers<void>();
+		const advisorFailures: string[] = [];
+		const advisorPrimarySelector = `${advisorPrimary.provider}/${advisorPrimary.id}`;
+		const advisorFallbackSelector = `${advisorFallback.provider}/${advisorFallback.id}`;
+
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: mainModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: mainMock.stream,
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": {
+				[advisorPrimarySelector]: [advisorFallbackSelector],
+			},
+			"advisor.syncBacklog": "1",
+		});
+		settings.setModelRole("advisor", advisorPrimarySelector);
+		vi.spyOn(modelRegistry.authStorage, "markUsageLimitReached").mockResolvedValue({ switched: false });
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			advisorTools: [],
+			advisorStreamFn: (model, context, options) => {
+				const selector = `${model.provider}/${model.id}`;
+				requestedAdvisorModels.push(selector);
+				if (selector === advisorPrimarySelector && advisorPrimaryAttempts++ === 0) {
+					advisorMock.push({
+						throw: "Devin stream error failed_precondition: Your daily usage quota has been exhausted. Your quota will reset after 1s.",
+					});
+				} else if (selector === advisorPrimarySelector) {
+					advisorMock.push({ content: ["Advisor primary restored"] });
+				} else if (selector === advisorFallbackSelector) {
+					advisorMock.push({ content: ["Advisor recovered"] });
+				} else {
+					throw new Error(`Unexpected advisor model requested: ${selector}`);
+				}
+				return advisorMock.stream(model, context, options);
+			},
+		});
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_applied") fallbackAppliedEvents.push(event);
+			if (event.type === "retry_fallback_succeeded") {
+				fallbackSucceededEvents.push(event);
+				fallbackSucceeded.resolve();
+			}
+			if (event.type === "notice" && event.source === "advisor" && event.message.includes("unavailable")) {
+				advisorFailures.push(event.message);
+			}
+		});
+
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		await session.prompt("Complete one primary turn");
+		await session.waitForIdle();
+		// The catch-up gate releases immediately while the advisor is mid-failure
+		// (a failing advisor must never park the primary), so waitForIdle can
+		// return before the fallback retry lands — await the success event.
+		await fallbackSucceeded.promise;
+
+		expect(requestedAdvisorModels).toEqual([advisorPrimarySelector, advisorFallbackSelector]);
+		expect(session.getAdvisorAgent()?.state.model).toMatchObject({
+			provider: advisorFallback.provider,
+			id: advisorFallback.id,
+		});
+		expect(fallbackAppliedEvents).toEqual([
+			{
+				type: "retry_fallback_applied",
+				from: `${advisorPrimarySelector}:medium`,
+				to: advisorFallbackSelector,
+				role: advisorPrimarySelector,
+			},
+		]);
+		expect(fallbackSucceededEvents).toEqual([
+			{
+				type: "retry_fallback_succeeded",
+				model: `${advisorFallbackSelector}:medium`,
+				role: advisorPrimarySelector,
+			},
+		]);
+		expect(advisorFailures).toEqual([]);
+
+		const afterCooldown = Date.now() + 2_000;
+		vi.spyOn(Date, "now").mockReturnValue(afterCooldown);
+		await session.prompt("Complete another primary turn after the advisor cooldown");
+		await session.waitForIdle();
+
+		expect(requestedAdvisorModels).toEqual([advisorPrimarySelector, advisorFallbackSelector, advisorPrimarySelector]);
+		expect(session.getAdvisorAgent()?.state.model).toMatchObject({
+			provider: advisorPrimary.provider,
+			id: advisorPrimary.id,
+		});
 	});
 
 	it("activates a model-keyed fallback chain without any role assignment", async () => {
@@ -628,6 +748,114 @@ describe("AgentSession retry fallback", () => {
 				from: `${primaryModel.provider}/${primaryModel.id}`,
 				to: `google-vertex/${primaryModel.id}`,
 				role: "google/*",
+			},
+		]);
+	});
+
+	it("re-prefixes the failing model's bare id for id-prefixed wildcard chain entries", async () => {
+		const primaryModel = getBundledModel("google", "gemini-2.5-flash");
+		const fallbackModel = getBundledModel("openrouter", "google/gemini-2.5-flash");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled test models to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels);
+
+		// `openrouter/google/*` splits into provider `openrouter` + id prefix
+		// `google`: the failing bare id is re-prefixed into the aggregator's
+		// namespace (google/gemini-2.5-flash -> openrouter/google/gemini-2.5-flash).
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.maxRetries": 1,
+			"retry.fallbackChains": {
+				"google/*": ["openrouter/google/*"],
+			},
+		});
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_applied") {
+				fallbackAppliedEvents.push(event);
+			}
+		});
+
+		await session.prompt("Recover via id-prefixed wildcard entry");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model?.provider).toBe("openrouter");
+		expect(session.model?.id).toBe(`google/${primaryModel.id}`);
+		expect(fallbackAppliedEvents).toEqual([
+			{
+				type: "retry_fallback_applied",
+				from: `${primaryModel.provider}/${primaryModel.id}`,
+				to: `openrouter/google/${primaryModel.id}`,
+				role: "google/*",
+			},
+		]);
+	});
+
+	it("matches id-prefixed wildcard keys and strips the vendor prefix for direct-provider targets", async () => {
+		const primaryModel = getBundledModel("openrouter", "google/gemini-2.5-flash");
+		const fallbackModel = getBundledModel("google-vertex", "gemini-2.5-flash");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled test models to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels);
+
+		// Key `openrouter/google/*` covers only openrouter's google-namespaced
+		// ids; the plain `google-vertex/*` target drops the aggregator's vendor
+		// prefix because vertex only knows the bare id.
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.maxRetries": 1,
+			"retry.fallbackChains": {
+				"openrouter/google/*": ["google-vertex/*"],
+			},
+		});
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_applied") {
+				fallbackAppliedEvents.push(event);
+			}
+		});
+
+		await session.prompt("Recover via id-prefixed wildcard key");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model?.provider).toBe("google-vertex");
+		expect(session.model?.id).toBe(fallbackModel.id);
+		expect(fallbackAppliedEvents).toEqual([
+			{
+				type: "retry_fallback_applied",
+				from: `${primaryModel.provider}/${primaryModel.id}`,
+				to: `google-vertex/${fallbackModel.id}`,
+				role: "openrouter/google/*",
 			},
 		]);
 	});
@@ -1684,14 +1912,18 @@ describe("AgentSession retry fallback", () => {
 		expect(lastAssistant.errorMessage).toBe(envelopeError);
 	});
 
-	it("does not auto-retry generic Request was aborted. errors", async () => {
+	it("auto-retries a bare Request was aborted error-stop turn (issue #5375)", async () => {
 		const model = getBundledModel("openai", "gpt-4o-mini");
 		if (!model) {
 			throw new Error("Expected bundled OpenAI test model to exist");
 		}
 
 		const requestedModels: string[] = [];
-		const mock = createMockModel({ handler: () => ({ throw: "Request was aborted." }) });
+		// A stalled/dropped stream that the provider surfaces as stopReason:"error"
+		// carrying the bare abort sentinel, then a clean recovery on the retry.
+		const mock = createMockModel({
+			responses: [{ throw: "Request was aborted." }, { content: ["recovered after bare abort error"] }],
+		});
 		const agent = new Agent({
 			getApiKey: model => `${model.provider}-test-key`,
 			initialState: {
@@ -1719,17 +1951,23 @@ describe("AgentSession retry fallback", () => {
 			settings,
 			modelRegistry,
 		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const { retryStartEvents, retryEndEvents } = trackRetryEvents(session);
 
-		await session.prompt("Do not retry generic abort text");
+		await session.prompt("Retry the bare abort error");
 		await session.waitForIdle();
 
-		expect(requestedModels).toEqual([`${model.provider}/${model.id}`]);
-		expect(retryStartEvents).toHaveLength(0);
-		expect(retryEndEvents).toHaveLength(0);
+		// Same model, retried once (no model fallback for a reason-less abort).
+		expect(requestedModels).toEqual([`${model.provider}/${model.id}`, `${model.provider}/${model.id}`]);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryEndEvents).toHaveLength(1);
+		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 1 });
 		const lastAssistant = getLastAssistantMessage(session);
-		expect(lastAssistant.stopReason).toBe("error");
-		expect(lastAssistant.errorMessage).toBe("Request was aborted.");
+		expect(lastAssistant.stopReason).toBe("stop");
+		expect(lastAssistant.content).toContainEqual({
+			type: "text",
+			text: "recovered after bare abort error",
+		});
 	});
 
 	it("matches plain fallback roles for compat-routed primary models", async () => {

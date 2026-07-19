@@ -186,6 +186,8 @@ export interface BashToolDetails {
 	wallTimeMs?: number;
 	/** Exit code of a command that ran to completion but failed (non-zero). */
 	exitCode?: number;
+	/** True when the command was killed by its timeout deadline (not a failure). */
+	timedOut?: boolean;
 	terminalId?: string;
 	async?: {
 		state: "running" | "completed" | "failed";
@@ -215,10 +217,6 @@ interface ManagedBashJobHandle {
 
 function normalizeResultOutput(result: BashResult | BashInteractiveResult): string {
 	return result.output || "";
-}
-
-function isInteractiveResult(result: BashResult | BashInteractiveResult): result is BashInteractiveResult {
-	return "timedOut" in result;
 }
 
 function normalizeBashEnv(env: Record<string, string> | undefined): Record<string, string> | undefined {
@@ -425,7 +423,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			hasGrep: isToolActive("grep", this.session.settings.get("grep.enabled")),
 			hasGlob: isToolActive("glob", this.session.settings.get("glob.enabled")),
 			hasRead: isToolActive("read", true),
-			hasLaunch: isToolActive("launch", this.session.settings.get("launch.enabled")),
+			hasLaunch: isToolActive("hub", this.session.settings.get("launch.enabled")),
 			hasEval: isToolActive(
 				"eval",
 				evalBackends.python || evalBackends.js || evalBackends.ruby || evalBackends.julia,
@@ -461,12 +459,15 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	}
 
 	/**
-	 * Throw for outcomes that are *not* a completed command: user/timeout
-	 * aborts and a missing exit status. The foreground and bridge callers plus
-	 * the async job manager rely on these throwing so cancellations surface as
-	 * aborts and jobs are recorded as failed. A definite non-zero exit is a
-	 * completed command that failed; #buildCompletedResult surfaces it as an
-	 * error *result* (carrying execution details) rather than a throw.
+	 * Throw for outcomes that are *not* a completed command: user aborts and a
+	 * missing exit status. Timeouts are handled separately by
+	 * #buildCompletedResult, which returns a non-throwing error result with
+	 * details.timedOut=true so the renderer can show a warning border. The
+	 * foreground and bridge callers plus the async job manager rely on these
+	 * throwing so cancellations surface as aborts and jobs are recorded as
+	 * failed. A definite non-zero exit is a completed command that failed;
+	 * #buildCompletedResult surfaces it as an error *result* (carrying
+	 * execution details) rather than a throw.
 	 */
 	#throwIfUnfinished(
 		result: BashResult | BashInteractiveResult,
@@ -474,13 +475,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		outputText: string,
 	): void {
 		if (result.cancelled) {
-			// executeBash output already carries a `[Command cancelled]` notice from
-			// the sink; PTY/bridge interactive output does not, so annotate it here.
+			// Local executor output already carries a leading `[Command cancelled]`
+			// notice from the sink; PTY/bridge output does not, so annotate only
+			// the latter.
 			const out = normalizeResultOutput(result);
-			const annotated = isInteractiveResult(result) && out ? `${out}\n\n[Command aborted]` : out;
+			const annotated = out.startsWith("[Command cancelled]") ? out : out ? `${out}\n\n[Command aborted]` : out;
 			throw new ToolError(annotated || "Command aborted");
 		}
-		if (isInteractiveResult(result) && result.timedOut) {
+		if (result.timedOut === true) {
 			const out = normalizeResultOutput(result);
 			const message =
 				timeoutSec === undefined ? "Command timed out" : `Command timed out after ${timeoutSec} seconds`;
@@ -524,8 +526,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		if (failedExit) outputLines.push("", formatExitCodeNotice(exitCode));
 		const outputText = outputLines.join("\n");
 
-		// Aborts / timeouts / missing-status still propagate as thrown errors.
-		this.#throwIfUnfinished(result, timeoutSec, outputText);
+		// Timeouts are not failures — the command ran its course. Return an error
+		// result (isError=true for the model) but flag timedOut so the renderer
+		// uses a warning border instead of error red. Both interactive and
+		// non-interactive results carry an explicit `timedOut` field from the
+		// executor/PTY layer.
+		const isTimeout = result.timedOut === true;
 
 		const details: BashToolDetails = {};
 		if (timeoutSec === undefined) {
@@ -545,6 +551,29 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		if (failedExit) {
 			details.exitCode = exitCode;
 		}
+
+		if (isTimeout) {
+			details.timedOut = true;
+			const message =
+				timeoutSec === undefined ? "Command timed out" : `Command timed out after ${timeoutSec} seconds`;
+			// executeBash has already emitted this leading sink notice. PTY output
+			// has not, so provide the LLM-facing annotation exactly once.
+			if (!normalizeResultOutput(result).startsWith(`[${message}]\n`)) {
+				outputLines.push("", `[${message}]`);
+			}
+			const timeoutOutputText = await enforceInlineByteCap(outputLines.join("\n"), {
+				saveArtifact: full => saveBashOriginalArtifact(this.session, full),
+			});
+			return toolResult(details)
+				.text(timeoutOutputText)
+				.truncationFromSummary(result, { direction: "tail" })
+				.error()
+				.done();
+		}
+
+		// Non-timeout cancellations and missing exit status still propagate as thrown errors.
+		this.#throwIfUnfinished(result, timeoutSec, outputText);
+
 		// Final defense at the tool-result boundary: no bash path (client bridge,
 		// head-retention spill, minimizer miss) may emit more than
 		// ~DEFAULT_MAX_BYTES inline. No-op for already-bounded output.
@@ -1165,20 +1194,27 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				});
 		const wallTimeMs = performance.now() - wallTimeStart;
 		if (result.cancelled) {
-			const out = normalizeResultOutput(result);
-			// PTY output carries no cancel/timeout notice of its own; annotate so
-			// the model can tell an abort from a plain failure.
-			const message = isInteractiveResult(result) && out ? `${out}\n\n[Command aborted]` : out || "Command aborted";
-			if (signal?.aborted) {
-				throw new ToolAbortError(message);
+			// A cancelled result is either a timeout (the command's deadline fired)
+			// or a user/system abort. Timeouts are handled by #buildCompletedResult
+			// which returns a non-throwing error result with details.timedOut=true
+			// so the renderer can show a warning border instead of error red.
+			// Both interactive and non-interactive results carry an explicit
+			// `timedOut` field from the executor/PTY layer.
+			const isTimeout = result.timedOut === true;
+			if (!isTimeout) {
+				const out = normalizeResultOutput(result);
+				// The local executor already prepends `[Command cancelled]`; PTY
+				// output does not, so preserve one cancellation notice in either case.
+				const message = out.startsWith("[Command cancelled]")
+					? out
+					: out
+						? `${out}\n\n[Command aborted]`
+						: "Command aborted";
+				if (signal?.aborted) {
+					throw new ToolAbortError(message);
+				}
+				throw new ToolError(message);
 			}
-			throw new ToolError(message);
-		}
-		if (isInteractiveResult(result) && result.timedOut) {
-			const out = normalizeResultOutput(result);
-			const message =
-				timeoutSec === undefined ? "Command timed out" : `Command timed out after ${timeoutSec} seconds`;
-			throw new ToolError(out ? `${out}\n\n[${message}]` : message);
 		}
 		return this.#buildCompletedResult(result, timeoutSec, {
 			requestedTimeoutSec,
@@ -1317,6 +1353,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const isError = result.isError === true;
 			const isPartial = options.isPartial === true;
 			const success = !isPartial && !isError;
+			const details = result.details;
+			const isTimeout = details?.timedOut === true;
 			const header =
 				config.showHeader === false
 					? undefined
@@ -1327,12 +1365,11 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 										title: config.resolveTitle(args, options),
 									}
 								: {
-										icon: isPartial ? "pending" : "error",
+										icon: isPartial ? "pending" : isTimeout ? "warning" : "error",
 										title: config.resolveTitle(args, options),
 									},
 							uiTheme,
 						);
-			const details = result.details;
 			const outputBlock = new CachedOutputBlock();
 
 			// Per-instance cache for the expensive inner lines computation. Mirrors
@@ -1472,7 +1509,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const framed = outputBlock.render(
 						{
 							header,
-							state: isPartial ? "pending" : isError ? "error" : "success",
+							state: isPartial ? "pending" : isError ? (isTimeout ? "warning" : "error") : "success",
 							sections: [
 								{
 									// Viewport-sized tail window in every state — streaming and final

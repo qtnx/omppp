@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { AuthStorage, Effort, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -455,6 +455,86 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(session.getSelectedMCPToolNames()).toEqual(["mcp__github_create_issue"]);
 	});
 
+	it("preserves explicit MCP selection while orchestrator mode temporarily replaces the tool surface", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "tools.discoveryMode": "mcp-only", "mcp.discoveryMode": true }),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: ["read", "search_tool_bm25", "mcp__github_create_issue"],
+			customTools: [
+				createMcpCustomTool("mcp__github_create_issue", "github", "create_issue"),
+				createMcpCustomTool("mcp__slack_post_message", "slack", "post_message"),
+			],
+		});
+
+		expect(session.getSelectedMCPToolNames()).toEqual(["mcp__github_create_issue"]);
+		expect(session.getActiveToolNames()).toContain("mcp__github_create_issue");
+		expect(session.getActiveToolNames()).not.toContain("mcp__slack_post_message");
+
+		await session.setOrchestratorModeState({ enabled: true });
+
+		expect(session.getSelectedMCPToolNames()).toEqual(["mcp__github_create_issue"]);
+
+		await session.setOrchestratorModeState(undefined);
+		expect(session.getSelectedMCPToolNames()).toEqual(["mcp__github_create_issue"]);
+
+		expect(session.getActiveToolNames()).toContain("mcp__github_create_issue");
+		expect(session.getActiveToolNames()).not.toContain("mcp__slack_post_message");
+	});
+
+	it("preserves explicit MCP selection while refreshing non-hidden RPC host tools", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "tools.discoveryMode": "mcp-only", "mcp.discoveryMode": true }),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: ["read", "search_tool_bm25", "mcp__github_create_issue"],
+			customTools: [
+				createMcpCustomTool("mcp__github_create_issue", "github", "create_issue"),
+				createMcpCustomTool("mcp__slack_post_message", "slack", "post_message"),
+			],
+		});
+		const rpcHostTool: AgentTool = {
+			name: "rpc_host_search",
+			label: "RPC Host Search",
+			description: "Search host-owned resources",
+			parameters: type({ query: "string" }),
+			async execute() {
+				return { content: [{ type: "text", text: "host search complete" }] };
+			},
+		};
+
+		expect(session.getSelectedMCPToolNames()).toEqual(["mcp__github_create_issue"]);
+		expect(session.getActiveToolNames()).toContain("mcp__github_create_issue");
+		expect(session.getActiveToolNames()).not.toContain("mcp__slack_post_message");
+
+		await session.refreshRpcHostTools([rpcHostTool]);
+
+		expect(session.getSelectedMCPToolNames()).toEqual(["mcp__github_create_issue"]);
+		expect(session.getEnabledToolNames()).toContain("rpc_host_search");
+		expect(session.getActiveToolNames()).toContain("mcp__github_create_issue");
+		expect(session.getActiveToolNames()).not.toContain("mcp__slack_post_message");
+	});
+
 	it("keeps configured discovery default servers visible in discovery mode", async () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
@@ -700,12 +780,14 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		});
 		await firstSession.setActiveToolsByName(["read", "search_tool_bm25"]);
 		expect(firstSession.getSelectedMCPToolNames()).toEqual([]);
+		expect(firstSession.sessionManager.buildSessionContext().hasPersistedMCPToolSelection).toBe(true);
 		const sessionFile = firstSession.sessionFile;
 		expect(sessionFile).toBeDefined();
 		await firstSession.sessionManager.rewriteEntries();
 		await firstSession.dispose();
 
 		const resumedManager = await SessionManager.open(sessionFile!, tempDir);
+		expect(resumedManager.buildSessionContext().hasPersistedMCPToolSelection).toBe(true);
 		const { session: resumedSession } = await createAgentSession({
 			cwd: tempDir,
 			agentDir: tempDir,

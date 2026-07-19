@@ -764,15 +764,114 @@ describe("Settings", () => {
 			expect(settings.get("grep.enabled")).toBe(true);
 		});
 
-		it("migrates legacy tool names in persisted essential overrides", async () => {
+		it("migrates nested dev.autoqa.consent and todo.reminders.max without enabling parents", async () => {
 			await writeSettings({
-				tools: { essentialOverride: ["read", "find", "search", "grep"] },
-				"tools.essentialOverride": ["find", "search", "read"],
+				dev: { autoqa: { consent: "granted" } },
+				todo: { reminders: { max: 5 } },
 			});
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-			expect(settings.get("tools.essentialOverride")).toEqual(["read", "glob", "grep"]);
+			expect(settings.get("dev.autoqaConsent")).toBe("granted");
+			expect(settings.get("dev.autoqa")).toBe(false);
+			expect(settings.isConfigured("dev.autoqa")).toBe(false);
+			expect(settings.get("todo.remindersMax")).toBe(5);
+			expect(settings.get("todo.reminders")).toBe(true);
+			expect(settings.isConfigured("todo.reminders")).toBe(false);
+		});
+
+		it("migrates quoted dotted legacy keys for consent and reminders max", async () => {
+			await Bun.write(getConfigPath(), `"dev.autoqa.consent": denied\n"todo.reminders.max": 2\n`);
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("dev.autoqaConsent")).toBe("denied");
+			expect(settings.get("dev.autoqa")).toBe(false);
+			expect(settings.get("todo.remindersMax")).toBe(2);
+			expect(settings.get("todo.reminders")).toBe(true);
+		});
+
+		it("lets explicit new keys win over legacy nested consent/max values", async () => {
+			await writeSettings({
+				dev: { autoqa: { consent: "denied" }, autoqaConsent: "granted" },
+				todo: { reminders: { max: 1 }, remindersMax: 9 },
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("dev.autoqaConsent")).toBe("granted");
+			expect(settings.get("dev.autoqa")).toBe(false);
+			expect(settings.get("todo.remindersMax")).toBe(9);
+			expect(settings.get("todo.reminders")).toBe(true);
+		});
+
+		it("preserves recoverable parent booleans alongside legacy leaf keys", async () => {
+			await Bun.write(
+				getConfigPath(),
+				`dev:\n  autoqa: true\n"dev.autoqa.consent": unset\ntodo:\n  reminders: false\n"todo.reminders.max": 4\n`,
+			);
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("dev.autoqa")).toBe(true);
+			expect(settings.get("dev.autoqaConsent")).toBe("unset");
+			expect(settings.get("todo.reminders")).toBe(false);
+			expect(settings.get("todo.remindersMax")).toBe(4);
+		});
+
+		it("migrates denied/granted/unset consent values through isolated overrides", () => {
+			for (const consent of ["denied", "granted", "unset"] as const) {
+				const settings = Settings.isolated({
+					"dev.autoqa.consent": consent,
+				} as Partial<Record<SettingPath, unknown>>);
+				expect(settings.get("dev.autoqaConsent")).toBe(consent);
+				expect(settings.get("dev.autoqa")).toBe(false);
+			}
+		});
+
+		it("persists migrated consent/max keys and drops legacy nested parents on save", async () => {
+			await writeSettings({
+				dev: { autoqa: { consent: "denied" } },
+				todo: { reminders: { max: 1 } },
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("dev.autoqaConsent")).toBe("denied");
+			expect(settings.get("todo.remindersMax")).toBe(1);
+
+			// Touch an unrelated key so the migrated tree is written back.
+			settings.set("display.showTokenUsage", true);
+			await settings.flush();
+
+			const onDisk = await readSettings();
+			const dev = onDisk.dev as Record<string, unknown>;
+			const todo = onDisk.todo as Record<string, unknown>;
+			expect(dev.autoqaConsent).toBe("denied");
+			expect(dev.autoqa).toBeUndefined();
+			expect(todo.remindersMax).toBe(1);
+			expect(todo.reminders).toBeUndefined();
+			expect(onDisk["dev.autoqa.consent"]).toBeUndefined();
+			expect(onDisk["todo.reminders.max"]).toBeUndefined();
+
+			const reloaded = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+			expect(reloaded.get("dev.autoqaConsent")).toBe("denied");
+			expect(reloaded.get("dev.autoqa")).toBe(false);
+			expect(reloaded.get("todo.remindersMax")).toBe(1);
+			expect(reloaded.get("todo.reminders")).toBe(true);
+		});
+
+		it("drops dead BM25-discovery keys and leaves tools.xdev at its default", async () => {
+			await writeSettings({
+				tools: { discoveryMode: "off", essentialOverride: ["read"] },
+				mcp: { discoveryMode: "auto", discoveryDefaultServers: ["gh"] },
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			// No migration mapping: legacy discovery intent is discarded, xdev
+			// keeps its own default. An explicit xdev value is untouched.
+			expect(settings.get("tools.xdev")).toBe(true);
+			expect(settings.isConfigured("tools.xdev")).toBe(false);
 		});
 
 		it("migrates from settings.json containing comments", async () => {
@@ -893,40 +992,40 @@ describe("Settings", () => {
 				input: { smol: "custom/smol", designer: "tnx/designer" },
 				expected: { smol: "custom/smol", designer: "tnx/designer" },
 			},
-		])("migrates model-role aliases while preserving canonical and custom values: $name", async ({
-			input,
-			expected,
-		}) => {
-			await writeSettings({ setupVersion: 2, modelRoles: input });
+		])(
+			"migrates model-role aliases while preserving canonical and custom values: $name",
+			async ({ input, expected }) => {
+				await writeSettings({ setupVersion: 2, modelRoles: input });
 
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			const expectedRoles = {
-				default: "openai-codex/gpt-5.6-sol:xhigh",
-				task: "openai-codex/gpt-5.6-terra:medium",
-				smol: expected.smol,
-				slow: "openai-codex/gpt-5.6-sol:high",
-				plan: "openai-codex/gpt-5.6-sol:xhigh",
-				designer: expected.designer,
-				commit: "openai-codex/gpt-5.6-luna:high",
-			};
-			const effective = settings.get("modelRoles");
+				const settings = await Settings.init({ cwd: projectDir, agentDir });
+				const expectedRoles = {
+					default: "openai-codex/gpt-5.6-sol:xhigh",
+					task: "openai-codex/gpt-5.6-terra:medium",
+					smol: expected.smol,
+					slow: "openai-codex/gpt-5.6-sol:high",
+					plan: "openai-codex/gpt-5.6-sol:xhigh",
+					designer: expected.designer,
+					commit: "openai-codex/gpt-5.6-luna:high",
+				};
+				const effective = settings.get("modelRoles");
 
-			await settings.flush();
-			const firstMigration = await readSettings();
+				await settings.flush();
+				const firstMigration = await readSettings();
 
-			resetSettingsForTest();
-			const rerunSettings = await Settings.init({ cwd: projectDir, agentDir });
-			const rerunEffective = rerunSettings.get("modelRoles");
-			await rerunSettings.flush();
-			const secondMigration = await readSettings();
+				resetSettingsForTest();
+				const rerunSettings = await Settings.init({ cwd: projectDir, agentDir });
+				const rerunEffective = rerunSettings.get("modelRoles");
+				await rerunSettings.flush();
+				const secondMigration = await readSettings();
 
-			expect({ effective, persisted: firstMigration.modelRoles, rerunEffective, secondMigration }).toEqual({
-				effective: expectedRoles,
-				persisted: expectedRoles,
-				rerunEffective: expectedRoles,
-				secondMigration: firstMigration,
-			});
-		});
+				expect({ effective, persisted: firstMigration.modelRoles, rerunEffective, secondMigration }).toEqual({
+					effective: expectedRoles,
+					persisted: expectedRoles,
+					rerunEffective: expectedRoles,
+					secondMigration: firstMigration,
+				});
+			},
+		);
 
 		it("applies setupVersion 4 config defaults without clobbering user values or persisting schema defaults", async () => {
 			await writeSettings({
@@ -981,7 +1080,7 @@ describe("Settings", () => {
 			expect(settings.get("memory.backend")).toBe("local");
 			expect(settings.get("theme.dark")).toBe("custom-dark");
 			expect(settings.get("display.syntaxHighlighting")).toBe("basic");
-			expect(settings.get("dev.autoqa.consent")).toBe("denied");
+			expect(settings.get("dev.autoqaConsent")).toBe("denied");
 			expect(settings.get("learning.enabled")).toBe(true);
 			expect(settings.get("learning.classifierModels")).toEqual([
 				"openai-codex/gpt-5.4-mini",

@@ -177,19 +177,16 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 				.map(s => s.trim())
 				.filter(Boolean),
 		);
+		// An unknown name silently narrowing the toolset is worse than a failed
+		// launch. Keep the fork-only sandbox tool valid while rejecting typos.
 		const validToolNames = new Set<string>([...deps.builtinToolNames, "sandbox"]);
-		const valid: string[] = [];
-		for (const name of names) {
-			if (validToolNames.has(name)) {
-				valid.push(name);
-			} else {
-				deps.logger.warn("Unknown tool passed to --tools", {
-					tool: name,
-					validTools: [...validToolNames],
-				});
-			}
+		const unknown = names.filter(name => !validToolNames.has(name));
+		if (unknown.length > 0) {
+			throw new CliUsageError(
+				`Unknown tool${unknown.length === 1 ? "" : "s"} in --tools: ${unknown.join(", ")}. Valid tools: ${[...validToolNames].join(", ")}.`,
+			);
 		}
-		(result as Args & { tools?: string[] }).tools = valid;
+		result.tools = names;
 	},
 	"--thinking": (result, value, deps) => {
 		const thinking = deps.parseThinking(value);

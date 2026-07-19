@@ -198,7 +198,7 @@ def _ensure_agent_run_dir() -> None:
         return
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
-        for root, dirs, files in os.walk(run_dir):
+        for root, _dirs, files in os.walk(run_dir):
             root_path = Path(root)
             os.chown(root_path, -1, gid)
             root_path.chmod(0o2770)
@@ -697,9 +697,7 @@ def _run_rpc_blocking(
                 stop_reason = turn.assistant_message.get("stopReason")
                 if stop_reason == "error":
                     error_msg = turn.assistant_message.get("errorMessage") or "model returned error"
-                    raise RuntimeError(
-                        f"omp agent error (stopReason=error): {error_msg}"
-                    )
+                    raise RuntimeError(f"omp agent error (stopReason=error): {error_msg}")
             log.info(
                 "rpc_done",
                 extra={

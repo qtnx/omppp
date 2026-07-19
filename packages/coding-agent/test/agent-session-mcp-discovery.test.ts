@@ -768,6 +768,7 @@ describe("AgentSession MCP discovery", () => {
 			thinking: { mode: "effort", efforts: [Effort.Medium] },
 		};
 
+		let failPromptRebuild = false;
 		const agent = new Agent({
 			initialState: {
 				model: reasoningModel,
@@ -789,9 +790,12 @@ describe("AgentSession MCP discovery", () => {
 			mcpDiscoveryEnabled: true,
 			initialSelectedMCPToolNames: ["mcp__docs_search"],
 			defaultSelectedMCPToolNames: ["mcp__docs_search"],
-			rebuildSystemPrompt: async toolNames => ({
-				systemPrompt: [`tools:${toolNames.join(",")}`],
-			}),
+			rebuildSystemPrompt: async toolNames => {
+				if (failPromptRebuild) throw new Error("prompt rebuild failed");
+				return {
+					systemPrompt: [`tools:${toolNames.join(",")}`],
+				};
+			},
 		});
 		sessions.push(session);
 
@@ -807,6 +811,14 @@ describe("AgentSession MCP discovery", () => {
 		const originalSessionBeforeSwitch = fs.readFileSync(originalSessionFile!, "utf8");
 		const originalSessionMtimeBeforeSwitch = fs.statSync(originalSessionFile!).mtimeMs;
 		await Bun.sleep(20);
+
+		failPromptRebuild = true;
+		await expect(session.switchSession(olderSessionFile!)).rejects.toThrow("prompt rebuild failed");
+		failPromptRebuild = false;
+		expect(session.sessionFile).toBe(originalSessionFile);
+		expect(session.getSelectedMCPToolNames()).toEqual(["mcp__docs_search"]);
+		expect(session.getActiveToolNames()).toEqual(["read", "mcp__docs_search"]);
+		expect(session.systemPrompt).toEqual(["initial"]);
 
 		await session.switchSession(olderSessionFile!);
 		expect(session.sessionFile).toBe(olderSessionFile);

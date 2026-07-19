@@ -76,6 +76,7 @@ export function createContextInventoryTool(
 ): ToolDefinition<typeof inventoryInputSchema> {
 	return {
 		name: "context_inventory",
+		loadMode: "essential",
 		label: "Context inventory",
 		description: "List Context GC records available for unload, recall, or pinning in the current session.",
 		parameters: inventoryInputSchema,

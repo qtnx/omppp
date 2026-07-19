@@ -12,7 +12,12 @@ import {
 	resolveAdvisorConfigEditPath,
 	saveWatchdogConfigFile,
 } from "../../advisor";
-import { formatModelSelectorValue, resolveAdvisorRoleSelection } from "../../config/model-resolver";
+import { reset as resetCapabilities } from "../../capability";
+import {
+	formatModelSelectorValue,
+	resolveAdvisorRoleSelection,
+	resolveModelRoleValue,
+} from "../../config/model-resolver";
 import { getRoleInfo } from "../../config/model-roles";
 import { resolveThinkingDisplay, type Settings, settings } from "../../config/settings";
 import { disableProvider, enableProvider } from "../../discovery";
@@ -47,7 +52,12 @@ import {
 	type ResetUsageAccount,
 	toResetUsageAccounts,
 } from "../../slash-commands/helpers/reset-usage";
-import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
+import {
+	AUTO_THINKING,
+	type ConfiguredThinkingLevel,
+	concreteThinkingLevel,
+	parseConfiguredThinkingLevel,
+} from "../../thinking";
 import {
 	isImageProviderPreference,
 	isSearchProviderId,
@@ -71,7 +81,7 @@ import { ExtensionDashboard } from "../components/extensions";
 import { HistorySearchComponent } from "../components/history-search";
 import { LoginDialogComponent } from "../components/login-dialog";
 import { LogoutAccountSelectorComponent } from "../components/logout-account-selector";
-import { ModelHubComponent } from "../components/model-hub";
+import { ModelHubComponent, type ModelRoleSelectionScope } from "../components/model-hub";
 import { ModelPickerComponent } from "../components/model-picker";
 import { OAuthSelectorComponent } from "../components/oauth-selector";
 import { PluginSelectorComponent } from "../components/plugin-selector";
@@ -87,7 +97,7 @@ import { WorkflowHubOverlayComponent } from "../components/workflow-hub";
 import type { SessionObserverRegistry } from "../session-observer-registry";
 import { buildCopyTargets } from "../utils/copy-targets";
 
-const MANUAL_LOGIN_TIP = "Tip: You can complete pairing with /login <redirect URL>.";
+const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
 
 function applyThinkingDisplay(agent: Agent, settingsInstance: Settings): void {
 	agent.thinkingDisplay = resolveThinkingDisplay(settingsInstance);
@@ -99,6 +109,15 @@ export class SelectorController {
 	/** Start-race placeholders remain read-only until the real ref is live or adopted. */
 	#provisionalWorkflowAgentIds = new Set<string>();
 	constructor(private ctx: InteractiveModeContext) {}
+	#defaultRoleMutationTail = Promise.resolve();
+
+	async #acquireDefaultRoleMutation(): Promise<() => void> {
+		const previous = this.#defaultRoleMutationTail;
+		const { promise, resolve } = Promise.withResolvers<void>();
+		this.#defaultRoleMutationTail = previous.then(() => promise);
+		await previous;
+		return resolve;
+	}
 
 	async #refreshOAuthProviderAuthState(): Promise<void> {
 		const oauthProviders = getOAuthProviders();
@@ -200,8 +219,9 @@ export class SelectorController {
 					onPluginsChanged: async () => {
 						const projectPath = await resolveActiveProjectRegistryPath(this.ctx.sessionManager.getCwd());
 						clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
+						await this.ctx.refreshSkillState();
 						await this.ctx.refreshSlashCommandState();
-						await this.ctx.session.refreshSshTool({ activateIfAvailable: true });
+						resetCapabilities();
 						this.ctx.ui.requestRender();
 					},
 					onCancel: () => {
@@ -291,6 +311,13 @@ export class SelectorController {
 				close: done,
 				requestRender: () => this.ctx.ui.requestRender(),
 				notify: message => this.ctx.showStatus(message),
+				getAdvisorStats: () => this.ctx.session.getAdvisorStats().advisors,
+				getUsageReports: async () => this.ctx.session.fetchUsageReports?.() ?? null,
+				resolveActiveAccount: (provider, sessionId) =>
+					this.ctx.session.modelRegistry.authStorage.getOAuthAccountIdentity(
+						provider,
+						sessionId ?? this.ctx.session.sessionId,
+					),
 			});
 			overlayHandle = this.ctx.ui.showOverlay(overlay, {
 				anchor: "bottom-center",
@@ -722,55 +749,173 @@ export class SelectorController {
 			this.ctx.session.modelRegistry,
 			this.ctx.session.scopedModels,
 			{
-				onAssign: async (model, role, thinkingLevel, selector) => {
+				onAssign: async (model, role, thinkingLevel, selector, scope?: ModelRoleSelectionScope) => {
+					const releaseDefaultMutation = role === "default" ? await this.#acquireDefaultRoleMutation() : undefined;
+					const configuredStorage = this.ctx.settings.get("modelRoleStorage");
+					const targetScope = configuredStorage === "project" ? (scope ?? "project") : "global";
 					// `auto` is session-global: never baked into a per-role model value
 					// (it can't round-trip through `model:<level>`). Apply it to the session
 					// separately and persist via `defaultThinkingLevel`.
 					const isAuto = thinkingLevel === AUTO_THINKING;
 					const concreteThinking = isAuto || thinkingLevel === undefined ? undefined : thinkingLevel;
 					const selectorValue = selector ?? `${model.provider}/${model.id}`;
+					const scopeLabel =
+						configuredStorage === "project" ? `${targetScope === "project" ? "Project" : "Global"} ` : "";
+					const defaultStatusLabel = configuredStorage === "project" ? `${scopeLabel}default` : "Default";
 					try {
 						if (role === "default") {
-							const { switched } = await this.ctx.session.setModel(model, role, {
-								selector,
-								thinkingLevel: concreteThinking,
-								persist: true,
-								currentContextTokens,
-							});
-							if (isAuto) {
-								if (switched) {
-									this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
-								} else {
+							const effectiveProvenance = this.ctx.settings.getModelRoleProvenance("default");
+							const shadowedGlobal =
+								configuredStorage === "project" &&
+								targetScope === "global" &&
+								(effectiveProvenance === "project" ||
+									effectiveProvenance === "overlay" ||
+									(effectiveProvenance === "runtime" &&
+										this.ctx.settings.isProjectModelRoleRuntimeOverrideActive("default")));
+							const shadowedProject =
+								configuredStorage === "project" &&
+								targetScope === "project" &&
+								effectiveProvenance === "overlay";
+							if (shadowedGlobal) {
+								this.ctx.settings.setModelRole(
+									"default",
+									formatModelSelectorValue(selectorValue, concreteThinking),
+								);
+								if (isAuto) {
 									this.ctx.settings.set("defaultThinkingLevel", AUTO_THINKING);
 								}
-							} else if (switched && concreteThinking && concreteThinking !== ThinkingLevel.Inherit) {
-								this.ctx.session.setThinkingLevel(concreteThinking);
-							}
-							if (switched) {
+							} else if (shadowedProject) {
+								this.ctx.settings.setProjectModelRole(
+									"default",
+									formatModelSelectorValue(selectorValue, concreteThinking),
+								);
+								if (isAuto) {
+									this.ctx.settings.set("defaultThinkingLevel", AUTO_THINKING);
+								}
+							} else {
+								const { switched } = await this.ctx.session.setModel(model, role, {
+									selector,
+									thinkingLevel: isAuto ? ThinkingLevel.Inherit : concreteThinking,
+									persist: targetScope === "global",
+									currentContextTokens,
+								});
+								if (!switched) return;
+								if (targetScope === "project") {
+									this.ctx.settings.setProjectModelRole(
+										"default",
+										formatModelSelectorValue(selectorValue, concreteThinking),
+									);
+								}
+								if (isAuto) {
+									this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
+								} else if (concreteThinking && concreteThinking !== ThinkingLevel.Inherit) {
+									this.ctx.session.setThinkingLevel(concreteThinking);
+								}
 								this.ctx.statusLine.invalidate();
 								this.ctx.updateEditorBorderColor();
 							}
-							this.ctx.showStatus(`Default model: ${selector ?? model.id}`);
+							this.ctx.showStatus(`${defaultStatusLabel} model: ${selector ?? model.id}`);
 						} else {
 							// Other roles (smol, slow, custom): update settings, not the current model.
-							this.ctx.settings.setModelRole(role, formatModelSelectorValue(selectorValue, concreteThinking));
+							const modelRoleValue = formatModelSelectorValue(selectorValue, concreteThinking);
+							if (targetScope === "project") {
+								this.ctx.settings.setProjectModelRole(role, modelRoleValue);
+							} else {
+								this.ctx.settings.setModelRole(role, modelRoleValue);
+							}
 							if (isAuto) {
 								this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
 							}
 							const roleInfo = getRoleInfo(role, settings);
-							this.ctx.showStatus(`${roleInfo?.name ?? role} model: ${selector ?? model.id}`);
+							this.ctx.showStatus(
+								`${scopeLabel}${roleInfo?.tag ?? roleInfo?.name ?? role} model: ${selector ?? model.id}`,
+							);
 						}
 					} catch (error) {
 						this.ctx.showError(error instanceof Error ? error.message : String(error));
+					} finally {
+						releaseDefaultMutation?.();
+						hub?.refreshAfterExternalMutation();
 					}
 				},
-				onUnassign: role => {
+				onUnassign: async (role, scope?: ModelRoleSelectionScope) => {
+					const releaseDefaultMutation = role === "default" ? await this.#acquireDefaultRoleMutation() : undefined;
+					const configuredStorage = this.ctx.settings.get("modelRoleStorage");
+					const targetScope = configuredStorage === "project" ? (scope ?? "project") : "global";
+					const scopeLabel =
+						configuredStorage === "project" ? `${targetScope === "project" ? "Project" : "Global"} ` : "";
 					try {
-						this.ctx.settings.setModelRole(role, undefined);
+						const previousEffectiveRoleValue =
+							role === "default" ? this.ctx.settings.getModelRole("default") : undefined;
+						if (targetScope === "project") {
+							this.ctx.settings.clearProjectModelRole(role);
+						} else {
+							this.ctx.settings.setModelRole(role, undefined);
+						}
 						const roleInfo = getRoleInfo(role, settings);
-						this.ctx.showStatus(`${roleInfo?.name ?? role} role cleared — auto-selection applies`);
+						this.ctx.showStatus(
+							`${scopeLabel}${roleInfo?.tag ?? roleInfo?.name ?? role} role cleared — auto-selection applies`,
+						);
+						// Clearing either persisted scope can also remove a captured
+						// runtime override. When that changes the effective default,
+						// resolve the newly exposed persisted layer and switch the live
+						// session without writing it back to global settings. Overlay
+						// and runtime provenance remain authoritative and session-neutral.
+						if (role === "default") {
+							const fallbackRoleValue = this.ctx.settings.getModelRole("default");
+							const fallbackProvenance = this.ctx.settings.getModelRoleProvenance("default");
+							const exposesPersistedFallback =
+								fallbackProvenance === "project" || fallbackProvenance === "global";
+							if (
+								fallbackRoleValue &&
+								fallbackRoleValue !== previousEffectiveRoleValue &&
+								exposesPersistedFallback
+							) {
+								const scopedModels = this.ctx.session.scopedModels.map(sm => sm.model);
+								const availableModels =
+									scopedModels.length > 0 ? scopedModels : this.ctx.session.getAvailableModels();
+								const resolved = resolveModelRoleValue(fallbackRoleValue, availableModels, {
+									settings: this.ctx.settings,
+								});
+								if (resolved.model) {
+									const fallbackModel = resolved.model;
+									const isAuto = resolved.thinkingLevel === AUTO_THINKING;
+									let concreteThinking = concreteThinkingLevel(resolved.thinkingLevel);
+									let isAutoFromDefault = false;
+									if (!resolved.explicitThinkingLevel && !concreteThinking) {
+										const defaultLevel = parseConfiguredThinkingLevel(
+											this.ctx.settings.get("defaultThinkingLevel"),
+										);
+										if (defaultLevel === AUTO_THINKING) {
+											isAutoFromDefault = true;
+										} else if (defaultLevel) {
+											concreteThinking = defaultLevel;
+										}
+									}
+									const effectiveIsAuto = isAuto || isAutoFromDefault;
+									const { switched } = await this.ctx.session.setModel(fallbackModel, "default", {
+										persist: false,
+										thinkingLevel: effectiveIsAuto
+											? ThinkingLevel.Inherit
+											: (concreteThinking ?? ThinkingLevel.Inherit),
+										currentContextTokens,
+									});
+									if (!switched) return;
+									if (effectiveIsAuto) {
+										this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
+									} else if (concreteThinking && concreteThinking !== ThinkingLevel.Inherit) {
+										this.ctx.session.setThinkingLevel(concreteThinking);
+									}
+									this.ctx.statusLine.invalidate();
+									this.ctx.updateEditorBorderColor();
+								}
+							}
+						}
 					} catch (error) {
 						this.ctx.showError(error instanceof Error ? error.message : String(error));
+					} finally {
+						releaseDefaultMutation?.();
+						hub?.refreshAfterExternalMutation();
 					}
 				},
 				onFallbackChainChange: (role, chain) => {
@@ -785,8 +930,8 @@ export class SelectorController {
 						const roleInfo = getRoleInfo(role, settings);
 						this.ctx.showStatus(
 							chain.length > 0
-								? `${roleInfo?.name ?? role} fallbacks: ${chain.join(" → ")}`
-								: `${roleInfo?.name ?? role} fallbacks cleared`,
+								? `${roleInfo?.tag ?? roleInfo?.name ?? role} fallbacks: ${chain.join(" → ")}`
+								: `${roleInfo?.tag ?? roleInfo?.name ?? role} fallbacks cleared`,
 						);
 					} catch (error) {
 						this.ctx.showError(error instanceof Error ? error.message : String(error));
@@ -1122,12 +1267,10 @@ export class SelectorController {
 		// every project's history when the cwd has nothing to resume. See #3099.
 		const historyStorage = this.ctx.historyStorage;
 		const historyMatcher = historyStorage ? (query: string) => historyStorage.matchingSessionIds(query) : undefined;
-		// Fullscreen session picker on the alternate screen (the /settings idiom):
-		// the overlay borrows the alt buffer and enables mouse tracking (wheel
-		// scroll + click-to-resume) for its lifetime, leaving the transcript
-		// untouched underneath. Anchored top-left at full size so a mouse row maps
-		// directly to a rendered line (the overlay paints from screen row 0), and
-		// `fillHeight` pads the body so the footer pins to the screen bottom.
+		// Keep the fullscreen picker on the alternate buffer while a selected
+		// session is loaded and its transcript is rebuilt. Closing it first exposes
+		// the stale normal buffer for the entire async switch on terminals without
+		// effective synchronized output.
 		let overlayHandle: OverlayHandle | undefined;
 		const done = () => {
 			overlayHandle?.hide();
@@ -1137,8 +1280,18 @@ export class SelectorController {
 		const selector = new SessionSelectorComponent(
 			sessions,
 			async (session: SessionInfo) => {
-				done();
-				await this.handleResumeSession(session.path);
+				selector.lockInput();
+				let keepOpen = false;
+				try {
+					const success = await this.handleResumeSession(session.path);
+					if (!success) {
+						keepOpen = true;
+						selector.unlockInput();
+						this.ctx.ui.requestRender();
+					}
+				} finally {
+					if (!keepOpen) done();
+				}
 			},
 			() => {
 				done();
@@ -1215,13 +1368,23 @@ export class SelectorController {
 		return true;
 	}
 
-	async handleResumeSession(sessionPath: string): Promise<void> {
-		this.ctx.clearTransientSessionUi();
-
+	async handleResumeSession(sessionPath: string, options?: { settingsFlushed?: boolean }): Promise<boolean> {
 		const previousCwd = this.ctx.sessionManager.getCwd();
+		// Flush pending settings writes before switching sessions so a save
+		// failure leaves the session, process project dir, and Settings in the
+		// source scope — the switch below mutates the SessionManager cwd.
+		if (!options?.settingsFlushed) {
+			try {
+				await this.ctx.settings.flush();
+			} catch (err) {
+				this.ctx.showError(`Failed to save pending settings: ${err instanceof Error ? err.message : String(err)}`);
+				return false;
+			}
+		}
 		// Switch session via AgentSession (emits hook and tool session events). The
 		// SessionManager adopts the resumed session's own cwd when it differs.
 		await this.ctx.session.switchSession(sessionPath);
+		this.ctx.clearTransientSessionUi();
 		const newCwd = this.ctx.sessionManager.getCwd();
 		const movedProject = normalizePathForComparison(newCwd) !== normalizePathForComparison(previousCwd);
 		if (movedProject) {
@@ -1236,6 +1399,7 @@ export class SelectorController {
 		this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 		await this.ctx.reloadTodos();
 		this.ctx.showStatus(movedProject ? `Resumed session in ${shortenPath(newCwd)}` : "Resumed session");
+		return true;
 	}
 
 	async handleSessionDeleteCommand(): Promise<void> {
@@ -1285,7 +1449,6 @@ export class SelectorController {
 	 */
 	async #handleOAuthLogin(providerId: string): Promise<boolean> {
 		this.ctx.showStatus(`Logging in to ${providerId}…`);
-		const manualInput = this.ctx.oauthManualInput;
 		const useManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(providerId);
 		let restored = false;
 		const restoreEditor = () => {
@@ -1313,16 +1476,19 @@ export class SelectorController {
 					// The dialog renders the full URL (SSH-safe copy target) and
 					// opens the browser best-effort.
 					dialog.showAuth(info.url, info.instructions, info.launchUrl);
-					if (useManualInput) {
-						dialog.showProgress(MANUAL_LOGIN_TIP);
-					}
 				},
 				onPrompt: (prompt: { message: string; placeholder?: string }) =>
 					dialog.showPrompt(prompt.message, prompt.placeholder),
 				onProgress: (message: string) => {
 					dialog.showProgress(message);
 				},
-				onManualCodeInput: useManualInput ? () => manualInput.waitForInput(providerId) : undefined,
+				// Paste-code providers (e.g. Codex) may need the user to paste the
+				// fallback redirect URL when the loopback callback can't complete
+				// (headless/remote/Windows). Mount a focused input in the dialog so
+				// the paste lands somewhere the OAuth flow consumes — the hidden
+				// editor's `/login <url>` path is unreachable while the dialog holds
+				// focus (#5339).
+				onManualCodeInput: useManualInput ? () => dialog.showManualInput(MANUAL_LOGIN_PROMPT) : undefined,
 			});
 			this.ctx.session.modelRegistry.refreshInBackground();
 			const block = new TranscriptBlock();
@@ -1351,9 +1517,6 @@ export class SelectorController {
 			this.ctx.showError(`Login failed: ${error instanceof Error ? error.message : String(error)}`);
 			return false;
 		} finally {
-			if (useManualInput) {
-				manualInput.clear(`Manual OAuth input cleared for ${providerId}`);
-			}
 			restoreEditor();
 		}
 	}
@@ -1558,7 +1721,10 @@ export class SelectorController {
 		});
 	}
 
-	showAgentHub(observers: SessionObserverRegistry, options?: { requireContent?: boolean }): void {
+	showAgentHub(
+		observers: SessionObserverRegistry,
+		options?: { requireContent?: boolean; armCloseTap?: boolean },
+	): void {
 		const hubKeys = [
 			...this.ctx.keybindings.getKeys("app.agents.hub"),
 			...this.ctx.keybindings.getKeys("app.session.observe"),
@@ -1613,6 +1779,10 @@ export class SelectorController {
 			this.ctx.editorContainer.clear();
 			this.ctx.editorContainer.addChild(hub);
 			this.ctx.ui.setFocus(hub);
+			// When the hub was raised by the editor's double-← gesture, prime its own
+			// close detector so the *next* single ← dismisses it — the two taps that
+			// opened it were consumed by the editor's detector (issue #4780).
+			if (options?.armCloseTap) hub.armCloseTap();
 			this.ctx.ui.requestRender();
 		};
 

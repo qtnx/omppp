@@ -225,9 +225,11 @@ describe("BashTool ACP terminal routing", () => {
 
 		const tool = new BashTool(makeSession(bridge));
 
-		await expect(tool.execute("call-timeout", { command: "sleep 60", timeout: 1 })).rejects.toThrow(
-			/Command timed out after 1 seconds/,
-		);
+		const result = await tool.execute("call-timeout", { command: "sleep 60", timeout: 1 });
+		expect(result.isError).toBe(true);
+		expect(result.details?.timedOut).toBe(true);
+		const text = result.content.find(content => content.type === "text")?.text ?? "";
+		expect(text).toContain("Command timed out after 1 seconds");
 
 		expect(killSpy).toHaveBeenCalledTimes(1);
 		expect(releaseSpy).toHaveBeenCalledTimes(1);

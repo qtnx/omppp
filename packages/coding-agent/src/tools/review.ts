@@ -1,14 +1,13 @@
 /**
- * Legacy hidden review-finding tool for agents that have not migrated to
- * incremental `yield` sections.
+ * Review-finding shapes and priority helpers.
  *
- * Hidden by default - only enabled when explicitly listed in an agent's tools.
- * Reviewers now finish via incremental `yield`; this tool remains for
- * compatibility with older or custom review agents.
+ * The `report_finding` tool was removed; reviewers now record findings through
+ * incremental `yield` sections (`type: ["findings"]`). These parsers and
+ * priority-display helpers back the reviewer render path in `task/render.ts`.
  */
 // ─────────────────────────────────────────────────────────────────────────────
 
-import path from "node:path";
+import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Container, Text } from "@oh-my-pi/pi-tui";
@@ -46,18 +45,11 @@ function getPriorityDisplay(
 	priority: FindingPriority,
 	theme: Theme,
 ): { label: string; icon: string; color: ThemeColor } {
-	const label = priority;
 	const meta = PRIORITY_INFO[priority] ?? { symbol: "status.info", color: "muted" as const };
-	return {
-		label,
-		icon: theme.styledSymbol(meta.symbol, meta.color),
-		color: meta.color,
-	};
+	return { label: priority, icon: theme.styledSymbol(meta.symbol, meta.color), color: meta.color };
 }
 
-// report_finding schema
-// report_finding schema
-const ReportFindingParams = type({
+const reportFindingParams = type({
 	title: type("string").describe("prefixed imperative title"),
 	body: type("string").describe("problem explanation"),
 	priority: type("'P0' | 'P1' | 'P2' | 'P3'").describe("priority 0-3"),
@@ -66,8 +58,7 @@ const ReportFindingParams = type({
 	line_start: type("number").describe("start line"),
 	line_end: type("number").describe("end line"),
 });
-
-interface ReportFindingDetails {
+export interface ReportFindingDetails {
 	title: string;
 	body: string;
 	priority: FindingPriority;
@@ -76,6 +67,8 @@ interface ReportFindingDetails {
 	line_start: number;
 	line_end: number;
 }
+
+export type FindingDetails = ReportFindingDetails;
 
 function normalizeFindingPriority(value: unknown): FindingPriority | undefined {
 	if (isFindingPriority(value)) return value;
@@ -86,7 +79,7 @@ function normalizeFindingPriority(value: unknown): FindingPriority | undefined {
 	return undefined;
 }
 
-export function parseReportFindingDetails(value: unknown): ReportFindingDetails | undefined {
+export function parseFindingDetails(value: unknown): ReportFindingDetails | undefined {
 	if (!isRecord(value)) return undefined;
 
 	const title = typeof value.title === "string" ? value.title : undefined;
@@ -126,67 +119,6 @@ export function parseReportFindingDetails(value: unknown): ReportFindingDetails 
 		line_end: lineEnd,
 	};
 }
-
-export const reportFindingTool: AgentTool<typeof ReportFindingParams, ReportFindingDetails, Theme> = {
-	name: "report_finding",
-	label: "Report Finding",
-	approval: "read",
-	description: "Report a code review finding. Use this for each issue found. Call yield when done.",
-	parameters: ReportFindingParams,
-	intent: "omit",
-	async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-		const { title, body, priority, confidence, file_path, line_start, line_end } = params;
-		const location = `${file_path}:${line_start}${line_end !== line_start ? `-${line_end}` : ""}`;
-
-		return {
-			content: [
-				{
-					type: "text",
-					text: `Finding recorded: ${priority} ${title}\nLocation: ${location}\nConfidence: ${(
-						confidence * 100
-					).toFixed(0)}%`,
-				},
-			],
-			details: { title, body, priority, confidence, file_path, line_start, line_end },
-		};
-	},
-
-	renderCall(args, _options, theme): Component {
-		const { label, icon, color } = getPriorityDisplay(args.priority, theme);
-		const titleText = String(args.title).replace(/^\[P\d\]\s*/, "");
-		return new Text(
-			`${theme.fg("toolTitle", theme.bold("report_finding "))}${icon} ${theme.fg(color, `[${label}]`)} ${theme.fg(
-				"dim",
-				titleText,
-			)}`,
-			0,
-			0,
-		);
-	},
-
-	renderResult(result, _options, theme): Component {
-		const { details } = result;
-		if (!details) {
-			const text = result.content[0];
-			return new Text(text?.type === "text" ? text.text : "", 0, 0);
-		}
-
-		const { label, icon, color } = getPriorityDisplay(details.priority, theme);
-		const location = `${details.file_path}:${details.line_start}${
-			details.line_end !== details.line_start ? `-${details.line_end}` : ""
-		}`;
-
-		return new Text(
-			`${theme.styledSymbol("tool.review", "accent")} ${icon} ${theme.fg(color, `[${label}]`)} ${theme.fg(
-				"dim",
-				location,
-			)}`,
-			0,
-			0,
-		);
-	},
-};
-
 /** SubmitReviewDetails - used for rendering review results from yield tool */
 export interface SubmitReviewDetails {
 	overall_correctness: "correct" | "incorrect";
@@ -194,19 +126,9 @@ export interface SubmitReviewDetails {
 	confidence: number;
 }
 
-// Re-export types for external use
-export type { ReportFindingDetails };
-/**
- * Coerce a tool-side `ReportFindingDetails` into the cross-boundary
- * `ReviewFinding` shape consumed by the reviewer agent's JTD output schema.
- *
- * The `report_finding` tool exposes `priority` as a string enum (`"P0".."P3"`)
- * for ergonomics, but the bundled reviewer schema (and every custom review
- * agent that mirrors it) declares `priority: number`. Without this coercion
- * the auto-populated `findings[]` fails JTD validation and every review run
- * that surfaces a finding is rejected with `findings.0.priority: expected
- * number, received string`.
- */
+/** Legacy parser name retained for the subprocess tool registry. */
+export const parseReportFindingDetails = parseFindingDetails;
+
 export function toReviewFinding(details: ReportFindingDetails): ReviewFinding {
 	return {
 		title: details.title,
@@ -219,43 +141,83 @@ export function toReviewFinding(details: ReportFindingDetails): ReviewFinding {
 	};
 }
 
-// Register report_finding handler
+export const reportFindingTool: AgentTool<typeof reportFindingParams, ReportFindingDetails, Theme> = {
+	name: "report_finding",
+	label: "Report Finding",
+	approval: "read",
+	description: "Report a code review finding. Use this for each issue found. Call yield when done.",
+	parameters: reportFindingParams,
+	intent: "omit",
+	async execute(_toolCallId, params) {
+		const { title, body, priority, confidence, file_path, line_start, line_end } = params;
+		const location = `${file_path}:${line_start}${line_end !== line_start ? `-${line_end}` : ""}`;
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Finding recorded: ${priority} ${title}\nLocation: ${location}\nConfidence: ${(confidence * 100).toFixed(0)}%`,
+				},
+			],
+			details: { title, body, priority, confidence, file_path, line_start, line_end },
+		};
+	},
+	renderCall(args, _options, theme): Component {
+		const { label, icon, color } = getPriorityDisplay(args.priority, theme);
+		const title = String(args.title).replace(/^\[P\d\]\s*/, "");
+		return new Text(
+			`${theme.fg("toolTitle", theme.bold("report_finding "))}${icon} ${theme.fg(color, `[${label}]`)} ${theme.fg("dim", title)}`,
+			0,
+			0,
+		);
+	},
+	renderResult(result, _options, theme): Component {
+		const details = result.details;
+		if (!details) {
+			const text = result.content[0];
+			return new Text(text?.type === "text" ? text.text : "", 0, 0);
+		}
+		const { label, icon, color } = getPriorityDisplay(details.priority, theme);
+		const location = `${details.file_path}:${details.line_start}${details.line_end !== details.line_start ? `-${details.line_end}` : ""}`;
+		return new Text(
+			`${theme.styledSymbol("tool.review", "accent")} ${icon} ${theme.fg(color, `[${label}]`)} ${theme.fg("dim", location)}`,
+			0,
+			0,
+		);
+	},
+};
+
 subprocessToolRegistry.register<ReportFindingDetails>("report_finding", {
 	extractData: event => {
 		if (event.isError) return undefined;
 		return parseReportFindingDetails(event.result?.details);
 	},
-
 	renderInline: (data, theme) => {
 		const { label, icon, color } = getPriorityDisplay(data.priority, theme);
-		const titleText = data.title.replace(/^\[P\d\]\s*/, "");
-		const loc = `${path.basename(data.file_path)}:${data.line_start}`;
-		return new Text(`${icon} ${theme.fg(color, `[${label}]`)} ${titleText} ${theme.fg("dim", loc)}`, 0, 0);
+		const title = data.title.replace(/^\[P\d\]\s*/, "");
+		return new Text(
+			`${icon} ${theme.fg(color, `[${label}]`)} ${title} ${theme.fg("dim", `${path.basename(data.file_path)}:${data.line_start}`)}`,
+			0,
+			0,
+		);
 	},
-
 	renderFinal: (allData, theme, expanded) => {
 		const container = new Container();
 		const displayCount = expanded ? allData.length : Math.min(3, allData.length);
-
-		for (let i = 0; i < displayCount; i++) {
-			const data = allData[i];
+		for (const data of allData.slice(0, displayCount)) {
 			const { label, icon, color } = getPriorityDisplay(data.priority, theme);
-			const titleText = data.title.replace(/^\[P\d\]\s*/, "");
-			const loc = `${path.basename(data.file_path)}:${data.line_start}`;
-
+			const title = data.title.replace(/^\[P\d\]\s*/, "");
 			container.addChild(
-				new Text(`  ${icon} ${theme.fg(color, `[${label}]`)} ${titleText} ${theme.fg("dim", loc)}`, 0, 0),
+				new Text(
+					`  ${icon} ${theme.fg(color, `[${label}]`)} ${title} ${theme.fg("dim", `${path.basename(data.file_path)}:${data.line_start}`)}`,
+					0,
+					0,
+				),
 			);
-
-			if (expanded && data.body) {
-				container.addChild(new Text(`    ${theme.fg("dim", data.body)}`, 0, 0));
-			}
+			if (expanded && data.body) container.addChild(new Text(`    ${theme.fg("dim", data.body)}`, 0, 0));
 		}
-
 		if (allData.length > displayCount) {
 			container.addChild(new Text(theme.fg("dim", `  … ${allData.length - displayCount} more findings`), 0, 0));
 		}
-
 		return container;
 	},
 });

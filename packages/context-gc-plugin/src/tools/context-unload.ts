@@ -99,6 +99,7 @@ export function createContextUnloadTool(
 ): ToolDefinition<typeof unloadInputSchema> {
 	return {
 		name: "context_unload",
+		loadMode: "essential",
 		label: "Unload context",
 		description:
 			"Unload selected Context GC records from the LLM-facing projection while keeping durable payloads in SQLite.",

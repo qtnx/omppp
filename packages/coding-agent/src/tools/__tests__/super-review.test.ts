@@ -143,18 +143,21 @@ function messageBlocks(context: Context, index = 0): NonNullable<Context["messag
 	if (!message) throw new Error(`missing context message ${index}`);
 	return message.content;
 }
+type MessageBlock = Exclude<NonNullable<Context["messages"][number]["content"]>, string>[number];
 
-function imageBlocks(context: Context): ImageContent[] {
+function imageBlocks(context: Context): Extract<MessageBlock, { type: "image" }>[] {
 	const blocks = messageBlocks(context);
 	if (!Array.isArray(blocks)) return [];
-	return blocks.filter((block): block is ImageContent => block.type === "image");
+	return Array.from(blocks).filter(
+		(block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image",
+	);
 }
 
 function textPayload(context: Context): string {
 	const blocks = messageBlocks(context);
 	if (typeof blocks === "string") return blocks;
-	return blocks
-		.filter(block => block.type === "text")
+	return Array.from(blocks)
+		.filter((block): block is Extract<MessageBlock, { type: "text" }> => block.type === "text")
 		.map(block => block.text)
 		.join("\n");
 }

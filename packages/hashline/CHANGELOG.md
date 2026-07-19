@@ -2,99 +2,43 @@
 
 ## [Unreleased]
 
-## [16.5.0] - 2026-07-13
-
-### Fixed
-
-- Fixed a critical issue where ambiguous swaps could silently delete range boundaries.
-- Prevented incorrect auto-repairing of structural closing lines when payload placement is ambiguous.
-- Fixed a bug in stale-hash recovery that could incorrectly relocate edits onto duplicated context after the original target changed.
-
-## [16.3.3] - 2026-07-02
+## [1.6.4] - 2026-07-19
 
 ### Breaking Changes
 
 - Removed SnapshotStore.byHashExact. Consumers should now use byHash, which resolves collisions by returning the most recently recorded version.
 
+### Added
+
+- Added `enforceSeenLines` option to `PatcherOptions` (defaulting to `true`) to control whether seen-line validation is enforced on anchored edits, allowing tags to validate on content hash alone when disabled.
+- Added `REM` (remove) and `MV` (move/rename) section operations to hashline patches, allowing files to be deleted or relocated (with snapshot history migration) directly within the edit tool.
+- Updated prompt documentation to include support for Markdown section operations
+
 ### Changed
 
 - Improved patch application robustness by resolving 16-bit snapshot tag collisions to the most recent version instead of rejecting them.
-
-### Fixed
-
-- Fixed frequent edit rejections after a structural-summary read (affecting parseable code over 100 lines) by automatically inlining unseen anchor lines and merging them into the snapshot's seen lines, allowing immediate retries to succeed without requiring a separate range re-read.
-
-## [16.3.0] - 2026-07-02
-
-### Changed
-
 - Significantly improved performance on large files by optimizing stale-anchor remap validation.
+- Refined documentation and prompt instructions for clarity and brevity
 
 ### Fixed
 
+- Rejected `DEL N:` headers with a trailing colon instead of silently tolerating the colon, so delete-with-body mistakes surface the corrective "has no colon" guidance.
+- Fixed a critical issue where ambiguous swaps could silently delete range boundaries.
+- Prevented incorrect auto-repairing of structural closing lines when payload placement is ambiguous.
+- Fixed a bug in stale-hash recovery that could incorrectly relocate edits onto duplicated context after the original target changed.
+- Fixed frequent edit rejections after a structural-summary read (affecting parseable code over 100 lines) by automatically inlining unseen anchor lines and merging them into the snapshot's seen lines, allowing immediate retries to succeed without requiring a separate range re-read.
 - Fixed an issue where snapshot tag collisions could cause line-anchored edits to be incorrectly applied to unrelated content, improving recovery and edit-preview safety.
 - Fixed tracking of edit anchors when earlier in-session insertions or deletions shift unchanged target lines.
 - Fixed hashline edit guidance and parsing errors for Markdown list rows.
-
-## [16.2.8] - 2026-06-30
-
-### Fixed
-
 - Fixed hashline writes preserving UTF-8 BOM bytes when the host text decoder hides the leading `U+FEFF`. ([#3867](https://github.com/can1357/oh-my-pi/issues/3867))
-
-## [16.2.6] - 2026-06-29
-
-### Fixed
-
 - Fixed a parser error ("payload line has no preceding hunk header") caused by stray dots before the trailing colon in hunk headers, improving compatibility with GLM 5.2 outputs.
-
-## [16.2.0] - 2026-06-27
-
-### Added
-
-- Added `REM` (remove) and `MV` (move/rename) section operations to hashline patches, allowing files to be deleted or relocated (with snapshot history migration) directly within the edit tool.
-
-## [16.1.23] - 2026-06-26
-
-### Added
-
-- Updated prompt documentation to include support for Markdown section operations
-
-### Fixed
-
 - Improved file path recovery to correctly handle read-only or incorrectly typed paths
-
-## [16.1.14] - 2026-06-22
-
-### Fixed
-
 - Improved delimiter-balance repair to correctly identify and spare deleted structural closers
 - Prevented premature deletion of structural closers when existing code below the range covers them
 - Accurate tracking of inserted lines to improve boundary repair logic for surrounding code blocks
 - Fixed delimiter-balance repair so deleted closer suffixes are kept only when the replacement prefix still has unmatched openers for them, avoiding duplicated trailing braces while preserving omitted outer closers.
-
-## [16.1.8] - 2026-06-20
-
-### Fixed
-
 - Fixed multi-hunk delimiter-balance repair so a `SWAP` that drops a structural closer no longer keeps it when another hunk already removed the matching opener (a deliberate wrapper removal); the missing-closer repair now weighs each group against the whole patch's residual delimiter balance — summed per hunk so quote/comment state never bleeds across non-contiguous hunks — and consumes that residual per repair so a genuine missing closer elsewhere still fires. ([#3142](https://github.com/can1357/oh-my-pi/issues/3142))
-
-## [16.1.2] - 2026-06-19
-
-### Changed
-
-- Refined documentation and prompt instructions for clarity and brevity
-
-## [16.0.2] - 2026-06-16
-
-### Fixed
-
 - Auto-repaired duplicated JSX/XML closing boundary lines at the end of single-line replacement expansions. ([#2705](https://github.com/can1357/oh-my-pi/issues/2705))
-
-## [16.0.1] - 2026-06-15
-
-### Fixed
-
 - Auto-repaired one-sided multi-line boundary echoes by dropping delimiter-neutral duplicated boundary lines and emitted a boundary-echo warning
 - Parser now treats a leading `\` on inline payload bodies as the payload delimiter, matching standalone payload rows.
 - Restored the warning emitted when escaped indented payload rows (`\\    TEXT`) are accepted as payload delimiters.

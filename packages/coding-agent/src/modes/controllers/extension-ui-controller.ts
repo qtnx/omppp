@@ -148,7 +148,7 @@ export class ExtensionUiController {
 			setLabel: (targetId, label) => {
 				this.ctx.sessionManager.appendLabelChange(targetId, label);
 			},
-			getActiveTools: () => this.ctx.session.getActiveToolNames(),
+			getActiveTools: () => this.ctx.session.getEnabledToolNames(),
 			getAllTools: () => this.ctx.session.getAllToolNames(),
 			setActiveTools: toolNames => this.ctx.session.setActiveToolsByName(toolNames),
 			setModel: async model => {
@@ -372,7 +372,7 @@ export class ExtensionUiController {
 			setLabel: (targetId, label) => {
 				this.ctx.sessionManager.appendLabelChange(targetId, label);
 			},
-			getActiveTools: () => this.ctx.session.getActiveToolNames(),
+			getActiveTools: () => this.ctx.session.getEnabledToolNames(),
 			getAllTools: () => this.ctx.session.getAllToolNames(),
 			setActiveTools: toolNames => this.ctx.session.setActiveToolsByName(toolNames),
 			setModel: async model => {
@@ -502,13 +502,13 @@ export class ExtensionUiController {
 		if (!uiContext) {
 			return;
 		}
-		for (const registeredTool of this.ctx.session.extensionRunner?.getAllRegisteredTools() ?? []) {
+		const runner = this.ctx.session.extensionRunner;
+		for (const registeredTool of runner?.getAllRegisteredTools() ?? []) {
 			if (registeredTool.definition.onSession) {
 				try {
 					await registeredTool.definition.onSession(event, {
+						...runner!.createContext(),
 						ui: uiContext,
-						getContextUsage: () => this.ctx.session.getContextUsage(),
-						compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 						hasUI: true,
 						cwd: this.ctx.sessionManager.getCwd(),
 						sessionManager: this.ctx.session.sessionManager,
@@ -531,6 +531,7 @@ export class ExtensionUiController {
 							// Signal shutdown request
 						},
 						getSystemPrompt: () => this.ctx.session.systemPrompt,
+						compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 					});
 				} catch (err) {
 					this.showToolError(registeredTool.definition.name, err instanceof Error ? err.message : String(err));

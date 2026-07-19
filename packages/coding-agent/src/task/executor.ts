@@ -15,6 +15,7 @@ import { ModelRegistry } from "../config/model-registry";
 import {
 	formatModelSelectorValue,
 	formatModelStringWithRouting,
+	resolveAgentPrewalkPattern,
 	resolveModelOverride,
 	resolveModelOverrideWithAuthFallback,
 } from "../config/model-resolver";
@@ -38,7 +39,7 @@ import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry } from "../registry/agent-registry";
 import { type CreateAgentSessionOptions, createAgentSession, discoverAuthStorage } from "../sdk";
-import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
+import type { AgentSession, AgentSessionEvent, Prewalk } from "../session/agent-session";
 import type { ArtifactManager } from "../session/artifacts";
 import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
@@ -47,14 +48,9 @@ import { truncateTail } from "../session/streaming-output";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { ContextFileEntry, ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
-import { isIrcEnabled } from "../tools/irc";
+import { isIrcEnabled } from "../tools/hub";
 import { normalizeSchema } from "../tools/jtd-to-json-schema";
-import {
-	buildOutputValidator,
-	type OutputValidator,
-	summarizeValidationFailure,
-} from "../tools/output-schema-validator";
-import { type ReportFindingDetails, toReviewFinding } from "../tools/review";
+import { buildOutputValidator, summarizeValidationFailure } from "../tools/output-schema-validator";
 import { ToolAbortError } from "../tools/tool-errors";
 import type { EventBus } from "../utils/event-bus";
 import { buildNamedToolChoice } from "../utils/tool-choice";
@@ -68,9 +64,11 @@ import {
 	MAX_OUTPUT_BYTES,
 	MAX_OUTPUT_LINES,
 	oneLineLabel,
-	type ReviewFinding,
 	resolveSubagentDisplayName,
 	type SingleResult,
+	type StructuredSubagentOutput,
+	type StructuredSubagentSchemaMode,
+	type StructuredSubagentSchemaSource,
 	SUBAGENT_RUN_CUSTOM_TYPE,
 	type SubagentAbortReason,
 	type SubagentRunPhase,
@@ -347,7 +345,6 @@ function getReportFindingKey(value: unknown): string | null {
 	}
 	return `${filePath}:${lineStart}:${lineEnd}:${priority ?? ""}:${title}`;
 }
-
 /** Options for subagent execution */
 export interface ExecutorOptions {
 	cwd: string;
@@ -386,7 +383,12 @@ export interface ExecutorOptions {
 	 */
 	parentActiveModelPattern?: string;
 	thinkingLevel?: ConfiguredThinkingLevel;
+	/** Schema used to validate the final structured completion. */
 	outputSchema?: unknown;
+	/** Enforcement policy for {@link outputSchema}; defaults to legacy permissive behavior. */
+	outputSchemaMode?: StructuredSubagentSchemaMode;
+	/** Origin of the selected schema, preserved in {@link SingleResult.structuredOutput}. */
+	outputSchemaSource?: StructuredSubagentSchemaSource;
 	/**
 	 * Caller supplied a schema that supersedes the agent's native output prompt.
 	 * Eval `agent(..., schema=...)` sets this so built-in agents ignore stale yield labels.
@@ -401,7 +403,20 @@ export interface ExecutorOptions {
 	 * watchdog is already suspended for the call's duration.
 	 */
 	maxRuntimeMs?: number;
+	/** Include IRC only when the invocation policy permits collaboration. */
+	enableIrc?: boolean;
 	enableLsp?: boolean;
+	/**
+	 * Enable MCP capabilities for this child. `false` suppresses both inherited
+	 * MCP proxy tools and session MCP discovery; it never consults the
+	 * process-global MCP manager. Defaults to `true`.
+	 */
+	enableMCP?: boolean;
+	/**
+	 * Limit the child to its explicit host tool names and the required yield
+	 * tool, suppressing discovered and always-included capabilities.
+	 */
+	restrictToolNames?: boolean;
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
 	/**
@@ -526,42 +541,6 @@ function extractCompletionData(parsed: unknown): unknown {
 	return parsed;
 }
 
-/**
- * Resolve the final yielded payload, optionally splicing collected
- * `report_finding` entries into a top-level `findings` array.
- *
- * Injection is suppressed when an active validator would reject the augmented
- * payload (e.g. a caller-supplied schema with `additionalProperties: false`
- * that does not declare `findings`). That keeps the in-tool yield validator
- * (which only sees the raw, pre-injection data) in lockstep with this
- * post-mortem validator — honoring the "accepted in-tool ⇒ accepted
- * post-mortem" guarantee documented in `output-schema-validator.ts`. The
- * dropped findings are still preserved verbatim in the agent's progress
- * stream and JSONL artifact, so no information is lost when injection is
- * suppressed.
- */
-function normalizeCompleteData(
-	data: unknown,
-	reportFindings: ReviewFinding[] | undefined,
-	validator: OutputValidator | undefined,
-): unknown {
-	const normalized = parseStringifiedJson(data ?? null);
-	if (
-		!Array.isArray(reportFindings) ||
-		reportFindings.length === 0 ||
-		!normalized ||
-		typeof normalized !== "object" ||
-		Array.isArray(normalized)
-	) {
-		return normalized;
-	}
-	const record = normalized as Record<string, unknown>;
-	if ("findings" in record) return normalized;
-	const injected = { ...record, findings: reportFindings };
-	if (validator && !validator.validate(injected).success) return normalized;
-	return injected;
-}
-
 function resolveFallbackCompletion(rawOutput: string, outputSchema: unknown): { data: unknown } | null {
 	const parsed = tryParseJsonOutput(rawOutput);
 	if (parsed === undefined) return null;
@@ -580,8 +559,9 @@ interface FinalizeSubprocessOutputArgs {
 	doneAborted: boolean;
 	signalAborted: boolean;
 	yieldItems?: YieldItem[];
-	reportFindings?: ReviewFinding[];
 	outputSchema: unknown;
+	outputSchemaMode?: StructuredSubagentSchemaMode;
+	outputSchemaSource?: StructuredSubagentSchemaSource;
 	lastAssistantText?: string;
 }
 
@@ -591,6 +571,7 @@ interface FinalizeSubprocessOutputResult {
 	stderr: string;
 	abortedViaYield: boolean;
 	hasYield: boolean;
+	structuredOutput?: StructuredSubagentOutput;
 }
 export const SUBAGENT_WARNING_SCHEMA_OVERRIDDEN =
 	"SYSTEM WARNING: Subagent exhausted schema-retry budget; result was accepted despite failing the output schema.";
@@ -625,7 +606,11 @@ function buildSchemaViolationOutcome(
 
 export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): FinalizeSubprocessOutputResult {
 	let { rawOutput, exitCode, stderr } = args;
-	const { yieldItems, reportFindings, doneAborted, signalAborted, outputSchema, lastAssistantText } = args;
+	const { yieldItems, doneAborted, signalAborted, outputSchema, lastAssistantText } = args;
+	const mode = args.outputSchemaMode ?? "permissive";
+	const source = args.outputSchemaSource ?? (outputSchema === undefined ? "none" : "session");
+	const includeStructuredOutput = source !== "none";
+	let structuredOutput: StructuredSubagentOutput | undefined;
 	let abortedViaYield = false;
 	const hasYield = Array.isArray(yieldItems) && yieldItems.length > 0;
 	const hadFailureBeforeYield = exitCode !== 0 && stderr.trim().length > 0;
@@ -646,17 +631,35 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 			if (!assembled || assembled.missingData) {
 				rawOutput = rawOutput ? `${SUBAGENT_WARNING_NULL_YIELD}\n\n${rawOutput}` : SUBAGENT_WARNING_NULL_YIELD;
 			} else {
-				const { validator, error: schemaError } = buildOutputValidator(outputSchema);
-				const completeData = assembled.rawText
-					? assembled.data
-					: normalizeCompleteData(assembled.data, reportFindings, validator);
-				const result =
-					schemaError || assembled.schemaOverridden
-						? { success: true as const }
-						: (validator?.validate(completeData) ?? { success: true as const });
-				if (!result.success) {
-					const summary = summarizeValidationFailure(result, completeData, validator?.requiredFields ?? []);
-					const outcome = buildSchemaViolationOutcome(summary, completeData);
+				const { validator, error: schemaError, normalized } = buildOutputValidator(outputSchema);
+				const completeData = assembled.rawText ? assembled.data : parseStringifiedJson(assembled.data ?? null);
+				const validation = validator?.validate(completeData);
+				const failure =
+					validation && !validation.success
+						? summarizeValidationFailure(validation, completeData, validator?.requiredFields ?? [])
+						: assembled.schemaOverridden
+							? { message: SUBAGENT_WARNING_SCHEMA_OVERRIDDEN, missingRequired: [] }
+							: schemaError
+								? { message: `invalid output schema: ${schemaError}`, missingRequired: [] }
+								: undefined;
+				if (includeStructuredOutput) {
+					structuredOutput =
+						schemaError || normalized === undefined
+							? {
+									source,
+									mode,
+									status: "unavailable",
+									data: completeData,
+									error: schemaError ? `invalid output schema: ${schemaError}` : undefined,
+								}
+							: failure
+								? { source, mode, status: "invalid", data: completeData, error: failure.message }
+								: { source, mode, status: "valid", data: completeData };
+				}
+				const mustReject =
+					failure !== undefined && (mode === "strict" || (!assembled.schemaOverridden && !schemaError));
+				if (mustReject && failure) {
+					const outcome = buildSchemaViolationOutcome(failure, completeData);
 					rawOutput = outcome.rawOutput;
 					stderr = outcome.stderr;
 					exitCode = outcome.exitCode;
@@ -674,9 +677,7 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 						exitCode = 0;
 						stderr = assembled.schemaOverridden
 							? SUBAGENT_WARNING_SCHEMA_OVERRIDDEN
-							: schemaError
-								? `invalid output schema: ${schemaError}`
-								: "";
+							: (structuredOutput?.error ?? "");
 					} else if (!stderr) {
 						stderr = "Subagent failed after yielding a result.";
 					}
@@ -690,15 +691,26 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 		const fallback = allowFallback ? resolveFallbackCompletion(rawOutput, outputSchema) : null;
 		if (fallback) {
 			const { validator } = buildOutputValidator(outputSchema);
-			const completeData = normalizeCompleteData(fallback.data, reportFindings, validator);
+			const completeData = parseStringifiedJson(fallback.data ?? null);
 			const result = validator?.validate(completeData) ?? { success: true as const };
 			if (!result.success) {
 				const summary = summarizeValidationFailure(result, completeData, validator?.requiredFields ?? []);
+				if (includeStructuredOutput) {
+					structuredOutput = { source, mode, status: "invalid", data: completeData, error: summary.message };
+				}
 				const outcome = buildSchemaViolationOutcome(summary, completeData);
 				rawOutput = outcome.rawOutput;
 				stderr = outcome.stderr;
 				exitCode = outcome.exitCode;
 			} else {
+				if (includeStructuredOutput) {
+					structuredOutput = {
+						source,
+						mode,
+						status: "valid",
+						data: completeData,
+					};
+				}
 				try {
 					rawOutput = JSON.stringify(completeData, null, 2) ?? "null";
 				} catch (err) {
@@ -721,7 +733,7 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 		}
 	}
 
-	return { rawOutput, exitCode, stderr, abortedViaYield, hasYield };
+	return { rawOutput, exitCode, stderr, abortedViaYield, hasYield, structuredOutput };
 }
 
 /**
@@ -1242,7 +1254,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	// failures just leave the label unset.
 	const labelSource = assignment?.trim();
 	if (!args.description && args.modelRegistry && args.settings && labelSource) {
-		generateTaskLabel(labelSource, args.modelRegistry, args.settings, id)
+		generateTaskLabel(labelSource, args.modelRegistry, args.settings, id, abortSignal)
 			.then(label => {
 				if (!label || abortSignal.aborted || progress.description) return;
 				progress.description = label;
@@ -1963,6 +1975,8 @@ interface FinalizeRunArgs {
 	assignment?: string;
 	modelOverride?: string | string[];
 	outputSchema?: unknown;
+	outputSchemaMode?: StructuredSubagentSchemaMode;
+	outputSchemaSource?: StructuredSubagentSchemaSource;
 	signal?: AbortSignal;
 	artifactsDir?: string;
 	eventBus?: EventBus;
@@ -1992,8 +2006,6 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	// Use final output if available, otherwise accumulated output
 	let rawOutput = monitor.rawOutput();
 	const yieldItems = progress.extractedToolData?.yield as YieldItem[] | undefined;
-	const reportFindingDetails = progress.extractedToolData?.report_finding as ReportFindingDetails[] | undefined;
-	const reportFindings: ReviewFinding[] | undefined = reportFindingDetails?.map(toReviewFinding);
 	// Breadcrumb the synchronous yield-payload shaping (O(rawOutput)) so a block
 	// here is attributed to this subagent rather than logged as "unknown".
 	pushLoopPhase(`subagent:${id}`);
@@ -2006,8 +2018,9 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 			doneAborted: Boolean(done.aborted),
 			signalAborted: Boolean(signal?.aborted),
 			yieldItems,
-			reportFindings,
 			outputSchema: args.outputSchema,
+			outputSchemaMode: args.outputSchemaMode,
+			outputSchemaSource: args.outputSchemaSource,
 			lastAssistantText: monitor.lastAssistantSalvageText(),
 		});
 	} finally {
@@ -2140,6 +2153,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		output: truncatedOutput,
 		stderr,
 		truncated: Boolean(truncated),
+		...(finalized.structuredOutput ? { structuredOutput: finalized.structuredOutput } : {}),
 		durationMs,
 		tokens: progress.tokens,
 		requests: progress.requests,
@@ -2235,6 +2249,10 @@ export interface FollowUpTurnOptions {
 	message: string;
 	index?: number;
 	description?: string;
+	/** Structured-output state retained from the original invocation. */
+	outputSchema?: unknown;
+	outputSchemaMode?: StructuredSubagentSchemaMode;
+	outputSchemaSource?: StructuredSubagentSchemaSource;
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
 	eventBus?: EventBus;
@@ -2320,6 +2338,9 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		id,
 		agent,
 		task: message,
+		outputSchema: options.outputSchema,
+		outputSchemaMode: options.outputSchemaMode,
+		outputSchemaSource: options.outputSchemaSource,
 		signal,
 		artifactsDir: options.artifactsDir,
 		eventBus: options.eventBus,
@@ -2453,7 +2474,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				: agent.spawns.join(",");
 
 	const lspEnabled = enableLsp ?? true;
-	const ircEnabled = isIrcEnabled(subagentSettings, childDepth) && ircAllowedByAgentTools;
+	const ircEnabled =
+		options.enableIrc !== false && isIrcEnabled(subagentSettings, childDepth) && ircAllowedByAgentTools;
 	const contextFileForPrompt = ircEnabled
 		? undefined
 		: options.contextFiles?.find(file => path.basename(file.path).startsWith("context-"))?.path;
@@ -2619,6 +2641,39 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				? resolvedThinkingLevel
 				: (thinkingLevel ?? resolvedThinkingLevel);
 			resolvedAt = performance.now();
+			// Per-agent prewalk: the agent definition's `prewalk` frontmatter or the
+			// `task.agentPrewalk` settings override hands the subagent off to a
+			// fast/cheap target at its first edit/write — the same mechanism as the
+			// session-level --prewalk. The bundled generic `task` agent has no
+			// frontmatter default; the `task.prewalk` toggle (default off) arms it.
+			// Resolution failures skip prewalk instead of failing the spawn.
+			let prewalk: Prewalk | undefined;
+			const genericTaskPrewalk =
+				agent.source === "bundled" && agent.name === "task" && settings.get("task.prewalk") ? true : undefined;
+			const prewalkPattern = resolveAgentPrewalkPattern({
+				settingsOverride: settings.get("task.agentPrewalk")[agent.name],
+				agentPrewalk: agent.prewalk ?? genericTaskPrewalk,
+			});
+			if (prewalkPattern) {
+				const resolvedPrewalk = resolveModelOverride([prewalkPattern], modelRegistry, settings);
+				const target = resolvedPrewalk.model;
+				if (!target || !modelRegistry.hasConfiguredAuth(target)) {
+					logger.warn("Subagent prewalk target unavailable; skipping prewalk", {
+						agent: agent.name,
+						pattern: prewalkPattern,
+						warning: resolvedPrewalk.warning,
+					});
+				} else if (model && target.provider === model.provider && target.id === model.id) {
+					// Switching to the starting model is a no-op that would still inject
+					// the plan/checklist nudges — skip.
+					logger.debug("Subagent prewalk target equals starting model; skipping prewalk", {
+						agent: agent.name,
+						pattern: prewalkPattern,
+					});
+				} else {
+					prewalk = { target, thinkingLevel: resolvedPrewalk.thinkingLevel };
+				}
+			}
 
 			const effectiveCwd = worktree ?? cwd;
 			const sessionManager = sessionFile
@@ -2634,10 +2689,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 			sessionOpenedAt = performance.now();
 
+			const restrictToolNames = options.restrictToolNames === true;
+			const mcpEnabled = !restrictToolNames && (options.enableMCP ?? true);
+			const mcpManager = mcpEnabled ? options.mcpManager : undefined;
 			const allowedToolNames = toolNames ? new Set(toolNames) : undefined;
-			const mcpProxyTools = options.mcpManager ? createMCPProxyTools(options.mcpManager, allowedToolNames) : [];
-			const subagentMcpManager = options.mcpManager && toolNames === undefined ? options.mcpManager : undefined;
-			const enableMCP = !options.mcpManager;
+			const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager, allowedToolNames) : [];
+			const subagentMcpManager = mcpManager && toolNames === undefined ? mcpManager : undefined;
+			const enableMCP = mcpEnabled && (mcpManager === undefined || subagentMcpManager !== undefined);
 
 			// Derive subagent-scoped telemetry from the parent's config so the
 			// child loop's spans nest under the parent's active execute_tool span
@@ -2693,6 +2751,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				thinkingLevel: effectiveThinkingLevel,
 				toolNames,
 				outputSchema,
+				outputSchemaMode: options.outputSchemaMode,
+				restrictToolNames: options.restrictToolNames,
 				requireYieldTool: true,
 				contextFiles: options.contextFiles,
 				skills: options.skills,
@@ -2700,8 +2760,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				workspaceTree: options.workspaceTree,
 				workspaceRoots: options.workspaceRoots,
 				rules: options.rules,
-				preloadedExtensionPaths: options.preloadedExtensionPaths,
-				preloadedCustomToolPaths: options.preloadedCustomToolPaths,
+				preloadedExtensionPaths: restrictToolNames ? [] : options.preloadedExtensionPaths,
+				preloadedCustomToolPaths: restrictToolNames ? [] : options.preloadedCustomToolPaths,
 				systemPrompt: defaultPrompt => {
 					const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
 						agent: agent.systemPrompt,
@@ -2722,6 +2782,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				},
 				sessionManager: sessionManagerForRun,
 				hasUI: false,
+				prewalk,
 				spawns: spawnsEnv,
 				taskDepth: childDepth,
 				parentHindsightSessionState: options.parentHindsightSessionState,
@@ -2731,6 +2792,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				agentId: id,
 				agentDisplayName: subagentDisplayName,
 				enableLsp: lspEnabled,
+				enableIrc: options.enableIrc,
 				skipPythonPreflight,
 				enableMCP,
 				mcpManager: subagentMcpManager,
@@ -2793,9 +2855,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				});
 			}
 
-			const subagentToolNames = session.getActiveToolNames();
-			const parentOwnedToolNames = new Set(["todo"]);
-			const filteredSubagentTools = subagentToolNames.filter(name => !parentOwnedToolNames.has(name));
+			// Todos are parent-owned bookkeeping and stripped from subagents —
+			// except under prewalk, whose plan nudge + todo gate require the
+			// subagent to commit its own todo list before the hand-off.
+			const isParentOwnedTool = (name: string): boolean => !prewalk && name === "todo";
+			const subagentToolNames = session.getEnabledToolNames();
+			const filteredSubagentTools = subagentToolNames.filter(name => !isParentOwnedTool(name));
 			if (filteredSubagentTools.length !== subagentToolNames.length) {
 				await awaitAbortable(session.setActiveToolsByName(filteredSubagentTools));
 			}
@@ -2807,6 +2872,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				spawns: spawnsEnv,
 				readSummarize: agent.readSummarize,
 				outputSchema,
+				outputSchemaMode: options.outputSchemaMode,
+				restrictToolNames: restrictToolNames || undefined,
 			});
 
 			abortSignal.addEventListener(
@@ -2850,10 +2917,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						setLabel: (targetId, label) => {
 							session.sessionManager.appendLabelChange(targetId, label);
 						},
-						getActiveTools: () => session.getActiveToolNames(),
+						getActiveTools: () => session.getEnabledToolNames(),
 						getAllTools: () => session.getAllToolNames(),
 						setActiveTools: (toolNames: string[]) =>
-							session.setActiveToolsByName(toolNames.filter(name => !parentOwnedToolNames.has(name))),
+							session.setActiveToolsByName(toolNames.filter(name => !isParentOwnedTool(name))),
 						getCommands: () => getSessionSlashCommands(session),
 						setModel: model => runExtensionSetModel(session, model),
 						getThinkingLevel: () => session.thinkingLevel,
@@ -3003,6 +3070,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		assignment,
 		modelOverride,
 		outputSchema,
+		outputSchemaMode: options.outputSchemaMode,
+		outputSchemaSource: options.outputSchemaSource,
 		signal,
 		artifactsDir: options.artifactsDir,
 		eventBus: options.eventBus,

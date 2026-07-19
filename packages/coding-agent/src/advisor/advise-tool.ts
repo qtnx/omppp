@@ -102,12 +102,14 @@ export function isAdvisorInterruptImmuneTurnActive(opts: {
  * Decide how one advisor note reaches the primary agent.
  *
  * - A non-interrupting `nit` always rides the passive aside queue.
- * - A late interrupting note is retained as a visible card when the primary has
- *   already ended with a terminal text answer and no queued work remains, so it
- *   cannot wake the primary merely to restate completion.
+ * - A late `concern` is retained as a visible card when the primary has already
+ *   ended with a terminal text answer and no queued work remains, so it cannot
+ *   wake the primary merely to restate completion. A `blocker` still steers a
+ *   corrective turn because it represents unexercised or broken work.
  * - After a deliberate user interrupt (`autoResumeSuppressed`), an interrupting
  *   note is preserved as a visible card while the agent is idle or tearing the
  *   interrupted turn down (`aborting`), so it cannot auto-resume the stopped run.
+ *   During an active user-driven resume, it is delivered live.
  * - During the post-interrupt immune-turn window, remaining `concern`/`blocker`
  *   notes are downgraded to passive asides, including while the primary streams.
  * - Otherwise, while the primary agent's core loop is streaming,
@@ -126,7 +128,8 @@ export function resolveAdvisorDeliveryChannel(opts: {
 }): AdvisorDeliveryChannel {
 	if (!isInterruptingSeverity(opts.severity)) return "aside";
 	if (opts.autoResumeSuppressed && (opts.aborting || !opts.streaming)) return "preserve";
-	if (opts.terminalAnswerNoQueuedWork && !opts.streaming && !opts.aborting) return "preserve";
+	if (opts.terminalAnswerNoQueuedWork && opts.severity !== "blocker" && !opts.streaming && !opts.aborting)
+		return "preserve";
 	if (opts.interruptImmuneTurnActive) return "aside";
 	if (opts.streaming) return "boundary";
 	return "steer";
