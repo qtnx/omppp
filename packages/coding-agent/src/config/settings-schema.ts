@@ -137,7 +137,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Agent",
 		"Git",
 	],
-	context: ["General", "Compaction", "Rules (TTSR)", "Experimental"],
+	context: ["General", "Compaction", "Memory", "Rules (TTSR)", "Experimental"],
 	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight"],
 	files: ["Editing", "Reading", "Read Summaries", "LSP"],
 	shell: ["Bash", "Eval & Runtimes"],
@@ -2949,6 +2949,50 @@ export const SETTINGS_SCHEMA = {
 					description: "Local SQLite recall/retain backend with optional embeddings",
 				},
 			],
+		},
+	},
+
+	// Idle low-memory trim (TUI interactive only): park subagents, sleep MCP,
+	// drop lazy workers/caches after a quiet period. Additive — no migration.
+	"memory.idleTrimEnabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: "Memory",
+			label: "Idle Memory Trim",
+			description:
+				"Enter low-memory mode after the session is idle (park subagents, sleep MCP, drop lazy workers/caches)",
+		},
+	},
+
+	"memory.idleTrimSeconds": {
+		type: "number",
+		default: 600,
+		ui: {
+			tab: "context",
+			group: "Memory",
+			label: "Seconds idle before trimming",
+			description: "Seconds to wait while idle before entering low-memory mode",
+			options: [
+				{ value: "60", label: "1 minute" },
+				{ value: "120", label: "2 minutes" },
+				{ value: "300", label: "5 minutes" },
+				{ value: "600", label: "10 minutes" },
+				{ value: "1800", label: "30 minutes" },
+				{ value: "3600", label: "1 hour" },
+			],
+		},
+	},
+
+	"memory.idleTrimMcp": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: "Memory",
+			label: "Trim MCP servers when idle",
+			description: "Close MCP transports while idle; the next tool call reconnects automatically",
 		},
 	},
 
@@ -6116,6 +6160,13 @@ export interface CompactionSettings {
 	dropUseless: boolean;
 }
 
+export interface MemorySettings {
+	backend: "off" | "local" | "hindsight" | "mnemopi";
+	idleTrimEnabled: boolean;
+	idleTrimSeconds: number;
+	idleTrimMcp: boolean;
+}
+
 export interface RecapSettings {
 	enabled: boolean;
 	idleSeconds: number;
@@ -6290,6 +6341,7 @@ export interface GcSettings {
 /** Map group prefix -> typed settings interface */
 export interface GroupTypeMap {
 	compaction: CompactionSettings;
+	memory: MemorySettings;
 	recap: RecapSettings;
 	title: TitleSettings;
 	contextPromotion: ContextPromotionSettings;

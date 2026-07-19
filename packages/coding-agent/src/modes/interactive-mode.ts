@@ -94,6 +94,8 @@ import {
 	MCP_CONNECTION_STATUS_EVENT_CHANNEL,
 	type McpConnectionStatusEvent,
 } from "../mcp/startup-events";
+import { hasRunningAgents, IdleMemoryTrim } from "../memory/idle-trim";
+import { buildCacheTrimTargets, buildWorkerTrimTargets } from "../memory/trim-targets";
 import {
 	humanizePlanTitle,
 	type PlanApprovalDetails,
@@ -106,7 +108,8 @@ import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" wit
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with {
 	type: "text",
 };
-import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { AgentLifecycleManager } from "../registry/agent-lifecycle";
+import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -837,7 +840,28 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#tanCommandController = new TanCommandController(this);
 		this.#omfgController = new OmfgController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
-		this.#eventController = new EventController(this);
+		// Idle low-memory trim is TUI interactive only: EventController lives here,
+		// and ACP/SDK/print never construct it. isActive reuses the same editor-empty
+		// accessor idle compaction uses (editor.getText().trim()).
+		const idleMemoryTrim = new IdleMemoryTrim({
+			config: {
+				enabled: () => this.settings.get("memory.idleTrimEnabled"),
+				idleSeconds: () => this.settings.get("memory.idleTrimSeconds"),
+				trimMcp: () => this.settings.get("memory.idleTrimMcp"),
+			},
+			lifecycle: AgentLifecycleManager.global(),
+			mcp: this.mcpManager ?? null,
+			workers: buildWorkerTrimTargets(),
+			caches: buildCacheTrimTargets(),
+			statusLine: this.statusLine,
+			isActive: () => {
+				const viewSession = this.viewSession ?? this.session;
+				if (viewSession.isStreaming || viewSession.isCompacting) return true;
+				if (this.editor.getText().trim()) return true;
+				return hasRunningAgents(AgentRegistry.global().list());
+			},
+		});
+		this.#eventController = new EventController(this, { idleMemoryTrim });
 		this.#commandController = new CommandController(this);
 		this.#todoCommandController = new TodoCommandController(this);
 		this.#selectorController = new SelectorController(this);
