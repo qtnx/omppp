@@ -11,6 +11,8 @@
 - Added the `/computer` slash command (`on`/`off`/`status`/toggle) to enable or disable the computer tool for the current session without persisting settings.
 - Exposed `computer` to models without native OpenAI computer-use support as a regular function tool with a typed GA action schema; the same native desktop backend and approval policy apply on both paths.
 - Hardened computer action ingress: action-specific fields, modifier/key arrays, coordinates, drag points, and scroll deltas fail closed before native input; numeric fields must be signed 32-bit integers and coordinates must be non-negative.
+- Added a `loop` tool that schedules a prompt as recurring follow-up turns (`prompt` / `interval` / `count`; min interval 10s, max 100 iterations; cancelled on session end), plus a `# Loop Engineering` system-prompt section.
+- Added idle low-memory mode: after 10 minutes idle (configurable via `memory.idleTrimSeconds`), an interactive session automatically parks live subagents, puts MCP servers to sleep (they reconnect lazily on the next tool call), terminates lazily-restartable background workers and eval kernels, clears process caches, and forces garbage collection — reducing idle memory pressure by releasing restartable resources without losing the session. Disable via `memory.idleTrimEnabled`; keep MCP servers connected via `memory.idleTrimMcp`. A `low-mem` status badge shows while trimmed.
 
 ### Changed
 

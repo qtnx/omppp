@@ -285,6 +285,8 @@ export interface FollowUpOptions {
 	expandPromptTemplates?: boolean;
 	/** Explicit billing/initiator attribution. */
 	attribution?: MessageAttribution;
+	/** Abort an in-flight follow-up before it reaches the agent queue. */
+	signal?: AbortSignal;
 }
 
 /** Result from a handoff operation. */

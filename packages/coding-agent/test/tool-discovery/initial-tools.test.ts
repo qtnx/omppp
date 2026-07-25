@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { BuiltinToolLoadMode, ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import type { BuiltinToolLoadMode, ToolLoopManager, ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	AskTool,
 	BUILTIN_TOOLS,
@@ -34,6 +34,12 @@ const allToolsSettings = Settings.isolated({
 	"tools.discoveryMode": "all",
 });
 
+const loopManager: ToolLoopManager = {
+	schedule: () => ({ id: "test-loop" }),
+	cancelAll: () => {},
+	activeCount: 0,
+};
+
 const toolSession: ToolSession = {
 	cwd: "/tmp/test",
 	hasUI: false,
@@ -46,6 +52,7 @@ const toolSession: ToolSession = {
 	requestCompaction: () => ({ status: "scheduled" }),
 	requestShake: () => ({ status: "scheduled" }),
 	isAdvisorActive: () => true,
+	getLoopManager: () => loopManager,
 };
 
 async function getToolMetadata(): Promise<Map<string, { loadMode?: string; summary?: string }>> {

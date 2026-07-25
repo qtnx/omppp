@@ -175,6 +175,7 @@ import {
 	obfuscateProviderContext,
 	type SecretObfuscator,
 } from "../secrets/obfuscator";
+import { discoverAgents } from "../task/discovery";
 import { type MacOSSandboxRelaunchResult, requestMacOSSandboxRelaunch } from "../task/omp-command";
 import {
 	AUTO_THINKING,
@@ -256,6 +257,7 @@ import {
 	shouldEvaluateCodexAutoRedeem,
 	shouldPromptCodexAutoRedeem,
 } from "./codex-auto-reset";
+import { buildDollarMentionContextMessages } from "./dollar-mentions";
 import { EvalRunner, type EvalRunnerHost } from "./eval-runner";
 import {
 	collectPendingToolCalls,
@@ -267,6 +269,7 @@ import {
 	type ToolExecutionStartData,
 } from "./exit-diagnostics";
 import { IrcBridge, type IrcBridgeHost, type IrcWakeFailureHandler } from "./irc-bridge";
+import { LoopManager } from "./loop-manager";
 import {
 	type BashExecutionMessage,
 	buildReplanTitleContext,
@@ -574,6 +577,8 @@ export class AgentSession {
 	 * undefined to avoid reading the primary's jobs.
 	 */
 	readonly #asyncJobManager: AsyncJobManager | undefined;
+	/** Lazy session-scoped loop scheduler; cancelled on dispose/reset. */
+	#loopManager: LoopManager | undefined;
 	/** Clears this session's owner delivery sink registration; set when a manager + agent id exist. */
 	#unregisterAsyncDeliverySink: (() => void) | undefined;
 
@@ -1658,6 +1663,15 @@ export class AgentSession {
 
 	get asyncJobManager(): AsyncJobManager | undefined {
 		return this.#asyncJobManager;
+	}
+
+	getLoopManager(): LoopManager | undefined {
+		// Refuse new schedules once dispose has begun (mirrors eval dispose gate).
+		if (this.#isDisposed) return undefined;
+		if (!this.#loopManager) {
+			this.#loopManager = new LoopManager((text, signal) => this.followUp(text, undefined, { signal }));
+		}
+		return this.#loopManager;
 	}
 
 	getAgentId(): string | undefined {
@@ -3717,6 +3731,9 @@ export class AgentSession {
 	 * gap slips past the disposal guards.
 	 */
 	beginDispose(): void {
+		// Cancel loops before any await in dispose — a timer can otherwise fire
+		// into a session already tearing down and queue a followUp mid-dispose.
+		this.#loopManager?.cancelAll();
 		this.#isDisposed = true;
 		this.#memory.cancelLocalMemoryStartup();
 		this.#titleGenerationAbortController.abort();
@@ -5064,6 +5081,17 @@ export class AgentSession {
 		return normalizeModelContextImages(images, { model: this.model });
 	}
 
+	/**
+	 * Expand `$skill:`/`$agent:` mentions into hidden context messages queued ahead
+	 * of the user's prompt. Agent discovery only runs when an `$agent:` mention is
+	 * actually present, so the common path stays allocation-free.
+	 */
+	async #buildDollarMentionContextMessages(text: string): Promise<CustomMessage[]> {
+		if (!text.includes("$")) return [];
+		const agents = text.includes("$agent:") ? (await discoverAgents(this.sessionManager.getCwd())).agents : [];
+		return buildDollarMentionContextMessages(text, { skills: this.skills, agents });
+	}
+
 	#buildImageDescriptionNotice(
 		normalizedImages: ImageContent[],
 		signal?: AbortSignal,
@@ -5234,6 +5262,10 @@ export class AgentSession {
 			!options?.synthetic && !hasPendingUserDirective ? this.#todo.createEagerTaskPrelude(expandedText) : undefined;
 		const normalizedImages = await this.#normalizeImagesForModel(options?.images);
 
+		const dollarMentionMessages = options?.synthetic
+			? []
+			: await this.#buildDollarMentionContextMessages(expandedText);
+
 		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 		if (normalizedImages?.length) {
 			userContent.push(...normalizedImages);
@@ -5267,8 +5299,16 @@ export class AgentSession {
 				...options,
 				images: normalizedImages,
 				prependMessages:
-					preludeMessages.length > 0 || keywordNotices.length > 0 || imageDescriptionNotice
-						? [...preludeMessages, ...keywordNotices, ...(imageDescriptionNotice ? [imageDescriptionNotice] : [])]
+					dollarMentionMessages.length > 0 ||
+					preludeMessages.length > 0 ||
+					keywordNotices.length > 0 ||
+					imageDescriptionNotice
+						? [
+								...dollarMentionMessages,
+								...preludeMessages,
+								...keywordNotices,
+								...(imageDescriptionNotice ? [imageDescriptionNotice] : []),
+							]
 						: undefined,
 			});
 		} finally {
@@ -5773,6 +5813,7 @@ export class AgentSession {
 		if (!(await this.#runUsageAwarePreflight())) return;
 		if (this.#subagentWaitDepth > 0) {
 			this.#heldSteering.push({ text: expandedText, images });
+			this.#advisors.autoResumeSuppressed = false;
 			return;
 		}
 		await this.#queueUserMessage(expandedText, images, "steer");
@@ -5786,6 +5827,7 @@ export class AgentSession {
 	 * flipping advisor auto-resume.
 	 */
 	async followUp(text: string, images?: ImageContent[], options?: FollowUpOptions): Promise<void> {
+		if (options?.signal?.aborted) return;
 		if (text.startsWith("/")) {
 			this.#throwIfExtensionCommand(text);
 		}
@@ -5794,7 +5836,7 @@ export class AgentSession {
 			options?.expandPromptTemplates === false ? text : expandPromptTemplate(text, [...this.#promptTemplates]);
 		if (!(await this.#runUsageAwarePreflight())) return;
 		if (!options?.synthetic) {
-			await this.#queueUserMessage(expandedText, images, "followUp");
+			await this.#queueUserMessage(expandedText, images, "followUp", options?.signal);
 			return;
 		}
 		// Synthetic branch: agent-initiated hidden developer message. Bypass
@@ -5802,13 +5844,15 @@ export class AgentSession {
 		// enqueues as a user-attributed message) and place the developer message
 		// directly on the follow-up queue.
 		const normalizedImages = await this.#normalizeImagesForModel(images);
+		if (options?.signal?.aborted) return;
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 		if (normalizedImages?.length) {
 			content.push(...normalizedImages);
 		}
 		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
+			? await this.#buildImageDescriptionNotice(normalizedImages, options?.signal)
 			: undefined;
+		if (options?.signal?.aborted) return;
 		if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);
 		this.agent.followUp({
 			role: "developer",
@@ -5823,12 +5867,13 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		mode: "steer" | "followUp",
+		signal?: AbortSignal,
 	): Promise<void> {
-		// A queued user message (RPC/SDK/collab steer or follow-up, or a typed message
-		// while streaming) is a deliberate resume; re-enable advisor auto-resume that
-		// a user interrupt suppressed.
-		this.#advisors.autoResumeSuppressed = false;
+		if (signal?.aborted) return;
+		const dollarMentionMessages = await this.#buildDollarMentionContextMessages(text);
+		if (signal?.aborted) return;
 		const normalizedImages = await this.#normalizeImagesForModel(images);
+		if (signal?.aborted) return;
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (normalizedImages?.length) {
 			content.push(...normalizedImages);
@@ -5836,10 +5881,14 @@ export class AgentSession {
 		// Text-only model + image attachment: describe via a vision model and enqueue the
 		// description as a hidden companion immediately before the user message.
 		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
+			? await this.#buildImageDescriptionNotice(normalizedImages, signal)
 			: undefined;
+		if (signal?.aborted) return;
+		// Queue order is provider-visible: image description notice first (when present),
+		// then dollar-mention context, then the user's prompt.
 		if (mode === "followUp") {
 			if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);
+			for (const dollarMentionMessage of dollarMentionMessages) this.agent.followUp(dollarMentionMessage);
 			this.agent.followUp({
 				role: "user",
 				content,
@@ -5848,6 +5897,7 @@ export class AgentSession {
 			});
 		} else {
 			if (imageDescriptionNotice) this.agent.steer(imageDescriptionNotice);
+			for (const dollarMentionMessage of dollarMentionMessages) this.agent.steer(dollarMentionMessage);
 			this.agent.steer({
 				role: "user",
 				content,
@@ -5856,6 +5906,11 @@ export class AgentSession {
 				timestamp: Date.now(),
 			});
 		}
+		// A queued user message (RPC/SDK/collab steer or follow-up, or a typed message
+		// while streaming) is a deliberate resume; re-enable advisor auto-resume that a
+		// user interrupt suppressed. Cleared only after the message is actually queued,
+		// so an aborted (signal) attempt leaves suppression intact.
+		this.#advisors.autoResumeSuppressed = false;
 		this.#scheduleIdleQueueDrain();
 	}
 
@@ -6486,6 +6541,8 @@ export class AgentSession {
 		await this.abort();
 		this.#cancelOwnAsyncJobs();
 		this.#closeAllProviderSessions("new session");
+		// Cancel loops before flush/newSession awaits.
+		this.#loopManager?.cancelAll();
 		await this.#bash.flushPending();
 		const bashTransition = this.#bash.beginSessionTransition({ persistDetached: options?.drop !== true });
 		let sessionTransitioned = false;
@@ -7777,6 +7834,8 @@ export class AgentSession {
 		// Clear pending messages (bound to old session state)
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
+		// Cancel loops before flush await so no tick queues into the old branch.
+		this.#loopManager?.cancelAll();
 
 		await this.#bash.flushPending();
 		// Flush pending writes before branching
@@ -7874,6 +7933,8 @@ export class AgentSession {
 			throw new Error("Cannot branch /btw while session maintenance or user work is still running");
 		}
 
+		// Cancel loops before any abort/flush awaits on the /btw branch path.
+		this.#loopManager?.cancelAll();
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 		this.agent.replaceQueues([], []);
