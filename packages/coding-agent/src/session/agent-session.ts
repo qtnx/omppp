@@ -5268,9 +5268,13 @@ export class AgentSession {
 			!options?.synthetic && !hasPendingUserDirective ? this.#todo.createEagerTaskPrelude(expandedText) : undefined;
 		const normalizedImages = await this.#normalizeImagesForModel(options?.images);
 
-		const dollarMentionMessages = options?.synthetic
-			? []
-			: await this.#buildDollarMentionContextMessages(expandedText);
+		// Guard hoisted to the callsite: awaiting the builder for mention-free text
+		// would add a microtask to every prompt, and callers that flush queued work
+		// within a single tick depend on the original await count.
+		const dollarMentionMessages =
+			options?.synthetic || !expandedText.includes("$")
+				? []
+				: await this.#buildDollarMentionContextMessages(expandedText);
 
 		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 		if (normalizedImages?.length) {
@@ -5876,7 +5880,7 @@ export class AgentSession {
 		signal?: AbortSignal,
 	): Promise<void> {
 		if (signal?.aborted) return;
-		const dollarMentionMessages = await this.#buildDollarMentionContextMessages(text);
+		const dollarMentionMessages = text.includes("$") ? await this.#buildDollarMentionContextMessages(text) : [];
 		if (signal?.aborted) return;
 		const normalizedImages = await this.#normalizeImagesForModel(images);
 		if (signal?.aborted) return;

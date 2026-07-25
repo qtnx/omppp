@@ -155,10 +155,16 @@ describe("selectStartupChangelog", () => {
 describe("parseChangelog", () => {
 	test("reads the embedded release history when no package path is available", async () => {
 		const entries = await parseChangelog(undefined);
-		const latest = entries[0];
 
-		expect(`${latest?.major}.${latest?.minor}.${latest?.patch}`).toBe(VERSION);
-		expect(latest?.content).toContain(`## [${VERSION}]`);
+		// Upstream ships a single release line, so its newest section is always first.
+		// OMPx keeps its 1.x sections alongside the upstream history it forked from,
+		// and section ordering is owned by `bun run release` (fix-changelogs) — so the
+		// shipped version is not necessarily entries[0]. The contract that matters here
+		// is that the embedded history parses and carries this release's section.
+		expect(entries.length).toBeGreaterThan(0);
+		const current = entries.find(entry => `${entry.major}.${entry.minor}.${entry.patch}` === VERSION);
+		expect(current).toBeDefined();
+		expect(current?.content).toContain(`## [${VERSION}]`);
 	});
 });
 
