@@ -686,7 +686,7 @@ migrate_heavy_task_fallback_chain() {
         function insert_heavy_task_fallback() {
             if (seen_child && !have_heavy_task) {
                 print key_indent "heavy_task:"
-                print key_indent "  - anthropic/claude-opus-4-8:high"
+                print key_indent "  - anthropic/claude-opus-5:high"
             }
         }
         BEGIN {
@@ -757,6 +757,34 @@ migrate_heavy_task_fallback_chain() {
     echo "✓ Ensured heavy_task fallback chain at ${config_file}"
 }
 
+migrate_opus_model_config() {
+    config_file="$1"
+
+    if [ ! -f "$config_file" ]; then
+        return
+    fi
+
+    if ! grep -q 'anthropic/claude-opus-4-8' "$config_file"; then
+        return
+    fi
+
+    tmp_config="$(mktemp "${config_file}.XXXXXX")"
+    awk '
+        {
+            # Retire the Opus 4.8 route wherever it is referenced - model roles,
+            # agent overrides, fallback chains - keeping any :effort suffix intact.
+            # Lines naming a claude-opus-4-8-<variant> id are left untouched.
+            if ($0 !~ /anthropic\/claude-opus-4-8-/) {
+                gsub(/anthropic\/claude-opus-4-8/, "anthropic/claude-opus-5")
+            }
+            print
+        }
+    ' "$config_file" > "$tmp_config"
+    mv "$tmp_config" "$config_file"
+    chmod 600 "$config_file" 2>/dev/null || true
+    echo "✓ Migrated Claude Opus 4.8 config models to Opus 5 at ${config_file}"
+}
+
 
 run_config_update() {
     config_update_command="$1"
@@ -812,12 +840,12 @@ install_standard_config() {
 # Copy to ~/.omp/agent/config.yml before first run, or let the installer seed it
 # when the target config file does not already exist.
 modelRoles:
-  default: anthropic/claude-opus-4-8
+  default: anthropic/claude-opus-5
   task: openai-codex/gpt-5.6-terra:medium
   smol: xai-oauth/grok-build
   slow: openai-codex/gpt-5.6-sol:high
   plan: openai-codex/gpt-5.6-sol:high
-  designer: anthropic/claude-opus-4-8
+  designer: anthropic/claude-opus-5
   commit: xai-oauth/grok-build
 task:
   showResolvedModelBadge: true
@@ -864,13 +892,13 @@ setupVersion: 4
 retry:
   fallbackChains:
     task:
-      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-5
       - openai-codex/gpt-5.5:low
     smol:
       - openai-codex/gpt-5.3-codex-spark
       - anthropic/claude-haiku-4-5
     heavy_task:
-      - anthropic/claude-opus-4-8:high
+      - anthropic/claude-opus-5:high
 EOF_CONFIG
     chmod 600 "$config_file" 2>/dev/null || true
     echo "✓ Seeded OMPx standard config at ${config_file}"
@@ -944,6 +972,7 @@ install_via_bun() {
     install_standard_config
     run_config_update "ompx"
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
+    migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
     echo ""
@@ -1022,6 +1051,7 @@ install_binary() {
     install_standard_config
     run_config_update "${INSTALL_DIR}/ompx"
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
+    migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
     echo ""

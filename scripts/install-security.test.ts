@@ -650,7 +650,7 @@ providers:
 				};
 			};
 
-			expect(firstConfig.retry.fallbackChains.heavy_task).toEqual(["anthropic/claude-opus-4-8:high"]);
+			expect(firstConfig.retry.fallbackChains.heavy_task).toEqual(["anthropic/claude-opus-5:high"]);
 			expect(firstConfig.retry.fallbackChains.task).toEqual(["openai-codex/gpt-5.6-terra:medium"]);
 			expect(firstConfig.retry.fallbackChains.smol).toEqual(["cerebras/gpt-oss-120b"]);
 			expect(firstConfig.retry.otherRetryKey).toBe("keepme");
@@ -720,6 +720,62 @@ providers:
 				qa: "openai-codex/gpt-5.6-sol:high",
 				tester: "openai-codex/gpt-5.6-sol:medium",
 			});
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("migrates existing Claude Opus 4.8 routes to Opus 5 while preserving effort suffixes", async () => {
+		const binaryContent = "safe release binary";
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(
+				configPath,
+				`modelRoles:
+  default: anthropic/claude-opus-4-8
+  slow: anthropic/claude-opus-4-8:high
+task:
+  agentModelOverrides:
+    designer: tnx/designer
+    oracle: anthropic/claude-opus-4-8:xhigh
+    quick_task: openai-codex/gpt-5.6-luna:high
+retry:
+  fallbackChains:
+    task:
+      - anthropic/claude-opus-4-8
+      - openai-codex/gpt-5.6-terra:medium
+    heavy_task:
+      - anthropic/claude-opus-4-8:high
+`,
+			);
+
+			const firstResult = await runShellInstaller(root, installDir);
+			expect(firstResult.exitCode).toBe(0);
+			const firstConfig = YAML.parse(await Bun.file(configPath).text()) as {
+				modelRoles: Record<string, string>;
+				task: { agentModelOverrides: Record<string, string> };
+				retry: { fallbackChains: Record<string, string[]> };
+			};
+
+			expect(firstConfig.modelRoles).toMatchObject({
+				default: "anthropic/claude-opus-5",
+				slow: "anthropic/claude-opus-5:high",
+			});
+			expect(firstConfig.task.agentModelOverrides).toMatchObject({
+				oracle: "anthropic/claude-opus-5:xhigh",
+				quick_task: "openai-codex/gpt-5.6-luna:high",
+			});
+			expect(firstConfig.retry.fallbackChains.task).toEqual([
+				"anthropic/claude-opus-5",
+				"openai-codex/gpt-5.6-terra:medium",
+			]);
+			expect(firstConfig.retry.fallbackChains.heavy_task).toEqual(["anthropic/claude-opus-5:high"]);
+
+			const secondResult = await runShellInstaller(root, installDir);
+			expect(secondResult.exitCode).toBe(0);
+			expect(YAML.parse(await Bun.file(configPath).text())).toEqual(firstConfig);
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
