@@ -87,7 +87,7 @@ describe("google-vertex model catalog", () => {
 
 		const result = await resolveProviderModels(options, "offline");
 		expect(result.stale).toBe(false);
-		expect(result.models.some(model => model.id === "deepseek-ai/deepseek-v3.2-maas")).toBe(true);
+		expect(result.models.some(model => model.id === "openai/gpt-oss-120b-maas")).toBe(true);
 		expect(result.models.some(model => model.id === "gemini-3.5-flash")).toBe(true);
 		expect(result.models.some(model => model.id === "gemini-1.5-pro")).toBe(false);
 	});

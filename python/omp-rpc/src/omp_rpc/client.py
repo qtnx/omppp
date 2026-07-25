@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import queue
@@ -7,16 +9,17 @@ import signal
 import subprocess
 import threading
 import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Generic, Mapping, Sequence, TypeVar, cast
+from typing import Any, Generic, Self, TypeVar, cast
 
 from .host_tools import HostTool, HostToolContext
 from .host_uris import HostUri, HostUriContext, normalize_read_result
 from .protocol import (
-    AgentStartEvent,
     AgentEndEvent,
     AgentMessage,
+    AgentStartEvent,
     AssistantMessage,
     AutoCompactionEndEvent,
     AutoCompactionStartEvent,
@@ -34,6 +37,7 @@ from .protocol import (
     JsonObject,
     JsonValue,
     MessageEndEvent,
+    MessagesPage,
     MessageStartEvent,
     MessageUpdateEvent,
     ModelCycleResult,
@@ -49,11 +53,11 @@ from .protocol import (
     StreamingBehavior,
     ThinkingLevel,
     ThinkingLevelCycleResult,
+    TodoAutoClearEvent,
     TodoItem,
     TodoPhase,
-    TodoStatus,
-    TodoAutoClearEvent,
     TodoReminderEvent,
+    TodoStatus,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
@@ -111,6 +115,104 @@ THistoryItem = TypeVar("THistoryItem")
 _ASYNC_COMMANDS = frozenset({"prompt", "abort_and_prompt"})
 _DEFAULT_ERROR_HISTORY_LIMIT = 128
 _TODO_STATUS_VALUES = frozenset({"pending", "in_progress", "completed", "abandoned"})
+_MAX_RPC_FRAME_BYTES = 1024 * 1024
+_MAX_RPC_REASSEMBLED_BYTES = 64 * 1024 * 1024
+_RPC_CHUNK_PAYLOAD_BYTES = 256 * 1024
+_RPC_MESSAGES_PAGE_BUSY_ERROR = "Cannot page messages while the session is changing"
+_RPC_MESSAGES_PAGE_STALE_ERROR = "RPC message cursor is stale"
+_RPC_MESSAGES_PAGE_FALLBACK_CODES = frozenset({"session_busy", "stale_cursor"})
+
+
+@dataclass(slots=True)
+class _PendingRpcChunks:
+    chunk_id: str
+    count: int
+    byte_length: int
+    next_index: int = 0
+    chunks: list[bytes] = field(default_factory=list)
+    received_bytes: int = 0
+
+
+class _RpcFrameDecoder:
+    def __init__(self) -> None:
+        self._pending: _PendingRpcChunks | None = None
+
+    def push(self, value: object) -> JsonObject | None:
+        if not isinstance(value, dict) or value.get("type") != "rpc_chunk":
+            if self._pending is not None:
+                raise RpcError("RPC chunk sequence was interrupted")
+            if not isinstance(value, dict):
+                raise RpcError("RPC frame must be a JSON object")
+            return cast(JsonObject, value)
+
+        chunk_id = value.get("chunkId")
+        index = value.get("index")
+        count = value.get("count")
+        byte_length = value.get("byteLength")
+        data = value.get("data")
+        max_chunk_count = (
+            _MAX_RPC_REASSEMBLED_BYTES + _RPC_CHUNK_PAYLOAD_BYTES - 1
+        ) // _RPC_CHUNK_PAYLOAD_BYTES
+        if (
+            not isinstance(chunk_id, str)
+            or not chunk_id
+            or len(chunk_id) > 128
+            or not isinstance(index, int)
+            or isinstance(index, bool)
+            or not isinstance(count, int)
+            or isinstance(count, bool)
+            or not isinstance(byte_length, int)
+            or isinstance(byte_length, bool)
+            or index < 0
+            or count < 2
+            or count > max_chunk_count
+            or index >= count
+            or byte_length < _MAX_RPC_FRAME_BYTES
+            or byte_length > _MAX_RPC_REASSEMBLED_BYTES
+            or not isinstance(data, str)
+            or not data
+        ):
+            raise RpcError("Invalid RPC chunk metadata")
+        try:
+            chunk = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RpcError("Invalid RPC chunk data") from exc
+        if base64.b64encode(chunk).decode("ascii") != data:
+            raise RpcError("Invalid RPC chunk data")
+        if len(chunk) > _RPC_CHUNK_PAYLOAD_BYTES:
+            raise RpcError("RPC chunk payload exceeds the transport limit")
+
+        if self._pending is None:
+            if index != 0:
+                raise RpcError("RPC chunk sequence must start at index 0")
+            self._pending = _PendingRpcChunks(chunk_id, count, byte_length)
+        pending = self._pending
+        if (
+            pending.chunk_id != chunk_id
+            or pending.count != count
+            or pending.byte_length != byte_length
+            or pending.next_index != index
+        ):
+            raise RpcError("RPC chunk sequence mismatch")
+        pending.chunks.append(chunk)
+        pending.received_bytes += len(chunk)
+        pending.next_index += 1
+        if pending.received_bytes > pending.byte_length:
+            raise RpcError("RPC chunk sequence exceeds its declared length")
+        if pending.next_index < pending.count:
+            return None
+        if pending.received_bytes != pending.byte_length:
+            raise RpcError("RPC chunk sequence length mismatch")
+
+        self._pending = None
+        try:
+            decoded = b"".join(pending.chunks).decode("utf-8")
+            frame = json.loads(decoded)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RpcError("Failed to decode reassembled RPC frame") from exc
+        if not isinstance(frame, dict):
+            raise RpcError("RPC frame must be a JSON object")
+        return cast(JsonObject, frame)
 
 
 def _process_group_id(process: subprocess.Popen[Any]) -> int | None:
@@ -214,12 +316,16 @@ class RpcConcurrencyError(RpcError):
 
 
 class RpcCommandError(RpcError):
-    """Raised when the RPC server returns `success: false`."""
+    """Raised when the RPC server returns `success: false`.
 
-    def __init__(self, command: str, error: str):
+    `code` carries the server's machine-readable error code when present.
+    """
+
+    def __init__(self, command: str, error: str, code: str | None = None):
         super().__init__(f"{command}: {error}")
         self.command = command
         self.error = error
+        self.code = code
 
 
 class RpcProtocolError(RpcError):
@@ -417,6 +523,10 @@ class RpcClient:
         self._closed_error: BaseException | None = None
         self._stopping = False
         self._ready_received = False
+        self._ready_event: ReadyEvent | None = None
+        self._protocol_version = 1
+        self._protocol_v2_enabled = False
+        self._frame_decoder = _RpcFrameDecoder()
         self._protocol_errors = _BoundedHistory[RpcProtocolError](
             _DEFAULT_ERROR_HISTORY_LIMIT
         )
@@ -435,7 +545,7 @@ class RpcClient:
         self._protocol_error_listeners: list[ProtocolErrorListener] = []
         self._listener_error_listeners: list[ListenerErrorListener] = []
 
-    def __enter__(self) -> RpcClient:
+    def __enter__(self) -> Self:
         return self.start()
 
     def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
@@ -468,6 +578,10 @@ class RpcClient:
         self._stopping = False
         self._closed_error = None
         self._ready_received = False
+        self._ready_event = None
+        self._protocol_version = 1
+        self._protocol_v2_enabled = False
+        self._frame_decoder = _RpcFrameDecoder()
         self._events.clear()
         self._async_errors.clear()
         self._scheduled_agent_runs = 0
@@ -528,6 +642,24 @@ class RpcClient:
             raise RpcTimeoutError(
                 f"Timed out waiting for RPC ready signal. Stderr: {stderr}"
             )
+
+        ready_event = self._ready_event
+        if (
+            ready_event is not None
+            and ready_event.supported_protocol_versions is not None
+            and 2 in ready_event.supported_protocol_versions
+            and ready_event.max_frame_bytes == _MAX_RPC_FRAME_BYTES
+            and ready_event.max_reassembled_frame_bytes == _MAX_RPC_REASSEMBLED_BYTES
+        ):
+            try:
+                self._protocol_v2_enabled = True
+                negotiation = self._request("negotiate_protocol", protocolVersion=2)
+                if negotiation.get("protocolVersion") != 2:
+                    raise RpcError("RPC protocol v2 negotiation failed")
+                self._protocol_version = 2
+            except BaseException:
+                self.stop()
+                raise
 
         if self._custom_tools:
             self.set_custom_tools(self._custom_tools)
@@ -716,7 +848,7 @@ class RpcClient:
             if on_request is not None:
                 try:
                     on_request(request)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     self._record_listener_error(
                         ListenerErrorEvent(
                             listener_kind="headless_ui_request",
@@ -882,8 +1014,68 @@ class RpcClient:
         return self.set_todos(())
 
     def get_messages(self) -> tuple[AgentMessage, ...]:
+        if self._protocol_version == 2:
+            try:
+                messages: list[AgentMessage] = []
+                seen_cursors: set[str] = set()
+                total_messages: int | None = None
+                cursor: str | None = None
+                while True:
+                    page = self.get_messages_page(cursor=cursor, limit=256)
+                    if (
+                        total_messages is not None
+                        and page.total_messages != total_messages
+                    ):
+                        raise RpcError(
+                            "RPC message pagination returned an inconsistent total"
+                        )
+                    total_messages = page.total_messages
+                    messages.extend(page.messages)
+                    cursor = page.next_cursor
+                    if cursor is None:
+                        break
+                    if cursor in seen_cursors:
+                        raise RpcError("RPC message pagination repeated a cursor")
+                    seen_cursors.add(cursor)
+                if len(messages) != total_messages:
+                    raise RpcError(
+                        "RPC message pagination ended before the advertised total"
+                    )
+                return tuple(messages)
+            except RpcCommandError as error:
+                if error.command != "get_messages_page" or not (
+                    error.code in _RPC_MESSAGES_PAGE_FALLBACK_CODES
+                    or error.error
+                    in (
+                        _RPC_MESSAGES_PAGE_BUSY_ERROR,
+                        _RPC_MESSAGES_PAGE_STALE_ERROR,
+                    )
+                ):
+                    raise
         payload = self._request("get_messages")
         return parse_agent_messages(cast(JsonValue | None, payload.get("messages")))
+
+    def get_messages_page(
+        self, *, cursor: str | None = None, limit: int | None = None
+    ) -> MessagesPage:
+        payload = self._request("get_messages_page", cursor=cursor, limit=limit)
+        raw_total = payload.get("totalMessages")
+        if (
+            not isinstance(raw_total, int)
+            or isinstance(raw_total, bool)
+            or raw_total < 0
+        ):
+            raise RpcError("get_messages_page response has an invalid totalMessages")
+        raw_cursor = payload.get("nextCursor")
+        if raw_cursor is not None and not isinstance(raw_cursor, str):
+            raise RpcError("get_messages_page response has an invalid nextCursor")
+        return MessagesPage(
+            messages=parse_agent_messages(
+                cast(JsonValue | None, payload.get("messages"))
+            ),
+            total_messages=raw_total,
+            next_cursor=raw_cursor,
+        )
 
     def set_custom_tools(self, tools: Sequence[HostTool[Any, Any]]) -> tuple[str, ...]:
         self._custom_tools = tuple(tools)
@@ -1065,9 +1257,12 @@ class RpcClient:
 
     def _build_prompt_turn(self, events: tuple[RpcAgentEvent, ...]) -> PromptTurn:
         final_messages: tuple[AgentMessage, ...] = ()
-        for event in reversed(events):
+        for event_index in range(len(events) - 1, -1, -1):
+            event = events[event_index]
             if isinstance(event, AgentEndEvent):
-                final_messages = event.messages
+                final_messages = self._complete_agent_end_messages(
+                    events[:event_index], event
+                )
                 break
 
         assistant_message: AssistantMessage | None = None
@@ -1092,6 +1287,35 @@ class RpcClient:
             if assistant_message is not None
             else None,
         )
+
+    @staticmethod
+    def _complete_agent_end_messages(
+        events: tuple[RpcAgentEvent, ...], terminal: AgentEndEvent
+    ) -> tuple[AgentMessage, ...]:
+        if terminal.message_count is None or terminal.message_count <= len(
+            terminal.messages
+        ):
+            return terminal.messages
+
+        run_start = 0
+        for event_index in range(len(events) - 1, -1, -1):
+            if isinstance(events[event_index], AgentStartEvent):
+                run_start = event_index + 1
+                break
+
+        streamed_messages = tuple(
+            event.message
+            for event in events[run_start:]
+            if isinstance(event, MessageEndEvent)
+        )
+        streamed_prefix_count = terminal.message_count - len(terminal.messages)
+        if streamed_prefix_count > len(streamed_messages):
+            raise RpcError(
+                "Compacted agent_end references "
+                f"{streamed_prefix_count} streamed messages, but only "
+                f"{len(streamed_messages)} were retained"
+            )
+        return streamed_messages[:streamed_prefix_count] + terminal.messages
 
     def _wait_for_agent_end(
         self,
@@ -1172,9 +1396,11 @@ class RpcClient:
             raise response
 
         if not bool(response.get("success", False)):
+            raw_code = response.get("code")
             raise RpcCommandError(
                 command=str(response.get("command", command_type)),
                 error=str(response.get("error", "")),
+                code=raw_code if isinstance(raw_code, str) else None,
             )
 
         data = response.get("data")
@@ -1277,7 +1503,7 @@ class RpcClient:
                         "result": self._normalize_host_tool_result(result),
                     }
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 if pending_call.cancel_event.is_set():
                     return
                 self._send_notification(
@@ -1389,7 +1615,7 @@ class RpcClient:
                     self._send_notification(
                         {"type": "host_uri_result", "id": request_id}
                     )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 if pending.cancel_event.is_set():
                     return
                 self._send_host_uri_error(request_id, str(exc))
@@ -1599,7 +1825,7 @@ class RpcClient:
                     continue
 
                 try:
-                    payload = cast(JsonObject, json.loads(stripped))
+                    raw_payload = json.loads(stripped)
                 except json.JSONDecodeError as exc:
                     snippet = stripped
                     if len(snippet) > 240:
@@ -1607,6 +1833,15 @@ class RpcClient:
                     raise RpcError(
                         f"Failed to decode RPC output on line {line_number}: {exc}. Frame: {snippet!r}"
                     ) from exc
+                if (
+                    isinstance(raw_payload, dict)
+                    and raw_payload.get("type") == "rpc_chunk"
+                    and not self._protocol_v2_enabled
+                ):
+                    raise RpcError("RPC chunk received before protocol negotiation")
+                payload = self._frame_decoder.push(raw_payload)
+                if payload is None:
+                    continue
                 if payload.get("type") == "response":
                     self._handle_response(payload)
                     continue
@@ -1633,6 +1868,7 @@ class RpcClient:
                 )
 
                 if isinstance(notification, ReadyEvent):
+                    self._ready_event = notification
                     self._ready_received = True
                     self._ready.set()
                     self._dispatch_listeners(
@@ -1684,7 +1920,7 @@ class RpcClient:
                     self._typed_event_listeners.get(listener_event.type, []),
                     listener_event,
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._mark_closed(exc)
         else:
             if not self._stopping:
@@ -1713,7 +1949,7 @@ class RpcClient:
             for chunk in process.stderr:
                 with self._state_lock:
                     self._stderr_chunks.append(chunk)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             if not self._stopping:
                 self._mark_closed(RpcError(f"Failed to read RPC stderr: {exc}"))
 
@@ -1819,7 +2055,7 @@ class RpcClient:
         for listener in list(self._listener_error_listeners):
             try:
                 listener(event)
-            except Exception:
+            except Exception:  # noqa: BLE001, S112
                 continue
 
     def _dispatch_listeners(
@@ -1832,7 +2068,7 @@ class RpcClient:
         for listener in list(listeners):
             try:
                 listener(payload)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._record_listener_error(
                     ListenerErrorEvent(
                         listener_kind=listener_kind,

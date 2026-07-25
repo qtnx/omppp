@@ -134,15 +134,10 @@ async function executeSearch(
 	const explicitProvider = params.provider;
 	let candidates: SearchProviderCandidate[];
 	if (explicitProvider && explicitProvider !== "auto") {
-		const provider = await getSearchProvider(explicitProvider);
-		candidates = (await provider.isExplicitlyAvailable(authStorage))
-			? [{ id: explicitProvider, explicit: true }]
-			: resolveProviderCandidates("auto");
-	} else if (explicitProvider === "auto") {
-		// Explicit `--provider auto` bypasses the configured preferred provider
-		// for this invocation; exclusions still apply.
-		candidates = resolveProviderCandidates("auto");
+		candidates = [{ id: explicitProvider, explicit: true }];
 	} else {
+		// `--provider auto` and the default both walk the configured chain;
+		// exclusions still apply.
 		candidates = resolveProviderCandidates();
 	}
 
@@ -175,7 +170,13 @@ async function executeSearch(
 			const available = candidate.explicit
 				? await provider.isExplicitlyAvailable(authStorage)
 				: await provider.isAvailable(authStorage);
-			if (!available) continue;
+			if (!available && !candidate.explicit) continue;
+			if (!available && candidate.explicit) {
+				throw new SearchProviderError(
+					provider.id,
+					`${provider.label} web search is unavailable. Configure its credentials or select the automatic provider chain.`,
+				);
+			}
 			availableProviderCount++;
 			lastProvider = provider;
 
@@ -347,6 +348,11 @@ export function getSearchTools(): CustomTool<any, any>[] {
 	return [webSearchCustomTool];
 }
 
-export { getSearchProvider, setExcludedSearchProviders, setPreferredSearchProvider } from "./provider";
+export {
+	getSearchProvider,
+	setExcludedSearchProviders,
+	setPreferredSearchProvider,
+	setSearchProviderOrder,
+} from "./provider";
 export type { SearchProviderId as SearchProvider, SearchResponse } from "./types";
 export { isSearchProviderId, isSearchProviderPreference } from "./types";

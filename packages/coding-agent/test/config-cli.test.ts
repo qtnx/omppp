@@ -24,6 +24,24 @@ const readSettings = async (): Promise<Record<string, unknown>> => {
 	return parsed as Record<string, unknown>;
 };
 
+interface CliProcessResult {
+	exitCode: number;
+	output: string;
+	error: string;
+}
+
+async function runCliProcess(args: string[], env: NodeJS.ProcessEnv): Promise<CliProcessResult> {
+	const proc = Bun.spawn([process.execPath, cliEntry, ...args], {
+		stdout: "pipe",
+		stderr: "pipe",
+		env: { ...process.env, NO_COLOR: "1", ...env },
+	});
+	const stdout = new Response(proc.stdout).text();
+	const stderr = new Response(proc.stderr).text();
+	const [exitCode, output, error] = await Promise.all([proc.exited, stdout, stderr]);
+	return { exitCode, output, error };
+}
+
 beforeEach(() => {
 	resetSettingsForTest();
 	testAgentDir = TempDir.createSync("@omp-config-cli-");
@@ -183,24 +201,36 @@ describe("config CLI schema coverage", () => {
 	});
 	it("fully flushes JSON larger than a pipe buffer", async () => {
 		if (!testAgentDir) throw new Error("Test agent directory was not initialized");
-		const proc = Bun.spawn([process.execPath, cliEntry, "config", "list", "--json"], {
-			stdout: "pipe",
-			stderr: "pipe",
-			env: {
-				...process.env,
-				NO_COLOR: "1",
-				PI_CODING_AGENT_DIR: testAgentDir.path(),
-			},
+		const { exitCode, output, error } = await runCliProcess(["config", "list", "--json"], {
+			PI_CODING_AGENT_DIR: testAgentDir.path(),
 		});
-		const stdout = new Response(proc.stdout).text();
-		const stderr = new Response(proc.stderr).text();
-		const [exitCode, output, error] = await Promise.all([proc.exited, stdout, stderr]);
 
 		expect(exitCode).toBe(0);
 		expect(error).toBe("");
 		expect(Buffer.byteLength(output)).toBeGreaterThan(65_536);
 		const parsed: unknown = JSON.parse(output);
 		expect(parsed).toMatchObject({ modelRoles: { type: "record" } });
+	});
+	it("loads PI_CONFIG_FILES overlays in path-list order", async () => {
+		if (!testAgentDir) throw new Error("Test agent directory was not initialized");
+		const baseOverlayPath = path.join(testAgentDir.path(), "base-overlay.yml");
+		const finalOverlayPath = path.join(testAgentDir.path(), "final-overlay.yml");
+		await Promise.all([
+			Bun.write(baseOverlayPath, "defaultThinkingLevel: high\n"),
+			Bun.write(finalOverlayPath, "defaultThinkingLevel: max\n"),
+		]);
+		const { exitCode, output, error } = await runCliProcess(["config", "get", "defaultThinkingLevel", "--json"], {
+			PI_CODING_AGENT_DIR: testAgentDir.path(),
+			PI_CONFIG_FILES: [baseOverlayPath, finalOverlayPath].join(path.delimiter),
+		});
+
+		expect(exitCode).toBe(0);
+		expect(error).toBe("");
+		expect(JSON.parse(output)).toMatchObject({
+			key: "defaultThinkingLevel",
+			value: "max",
+			type: "enum",
+		});
 	});
 });
 
@@ -352,7 +382,6 @@ describe("config update", () => {
 				"learning.enabled",
 				"memory.backend",
 				"modelRoles",
-				"providers.webSearch",
 				"retry.fallbackChains",
 				"setupVersion",
 				"task.agentModelOverrides",

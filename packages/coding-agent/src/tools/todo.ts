@@ -2,7 +2,7 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import chalk from "chalk";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -18,18 +18,35 @@ import { formatErrorDetail, formatMoreItems, PREVIEW_LIMITS, pluralize } from ".
 // Types
 // =============================================================================
 
-export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";
+export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 /** Operation names accepted by the todo tool and echoed in successful result details. */
-export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "append" | "view";
+export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view";
 
 export interface TodoItem {
 	content: string;
 	status: TodoStatus;
+	/** When `status === "blocked"`, an optional note on what the task is waiting for. */
+	blocker?: string;
 }
 
 export interface TodoPhase {
 	name: string;
 	tasks: TodoItem[];
+}
+
+/** Whether an unknown value is a persisted todo phase. */
+export function isTodoPhase(value: unknown): value is TodoPhase {
+	if (!isRecord(value) || typeof value.name !== "string" || !Array.isArray(value.tasks)) return false;
+	return value.tasks.every(
+		task =>
+			isRecord(task) &&
+			typeof task.content === "string" &&
+			(task.status === "pending" ||
+				task.status === "in_progress" ||
+				task.status === "completed" ||
+				task.status === "abandoned" ||
+				task.status === "blocked"),
+	);
 }
 
 export interface TodoCompletionTransition {
@@ -49,7 +66,9 @@ export interface TodoToolDetails {
 // Schema
 // =============================================================================
 
-const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "append" | "view"').describe("operation to apply");
+const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view"').describe(
+	"operation to apply",
+);
 
 const InitListEntry = type({
 	phase: type("string").describe("phase name"),
@@ -65,6 +84,7 @@ const todoSchema = type({
 	// and both enforce non-empty with op-specific errors. A stray `items: []` on
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
 	"items?": type("string").describe("task content").array().describe("tasks to append"),
+	"reason?": type("string").describe("blocker note (block op)"),
 }).describe("apply a single todo operation");
 
 type TodoParams = TodoSchema;
@@ -89,7 +109,9 @@ function findPhaseByName(phases: TodoPhase[], name: string): TodoPhase | undefin
 }
 
 function cloneTask(task: TodoItem): TodoItem {
-	return { content: task.content, status: task.status };
+	return task.blocker !== undefined
+		? { content: task.content, status: task.status, blocker: task.blocker }
+		: { content: task.content, status: task.status };
 }
 
 function clonePhases(phases: TodoPhase[]): TodoPhase[] {
@@ -256,7 +278,9 @@ export function selectCollapsedTodos<T extends { status: TodoStatus }>(
 	isMatched: (task: T) => boolean,
 	cap: number,
 ): CollapsedTodoSelection<T> {
-	const open = tasks.filter(task => task.status === "pending" || task.status === "in_progress");
+	const open = tasks.filter(
+		task => task.status === "pending" || task.status === "in_progress" || task.status === "blocked",
+	);
 	// No open work: fall back to the closed tasks so a settled phase still
 	// renders (HUD closed-todo persistence). Closed tasks are never active.
 	const base = open.length > 0 ? open : tasks;
@@ -456,6 +480,41 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			}
 			return phases;
 		}
+		case "block": {
+			if (!entry.task && !entry.phase) {
+				errors.push("block requires a task or phase target");
+				return phases;
+			}
+			// Collapse whitespace runs (incl. newlines) to single spaces: a blocker
+			// note rides on one Markdown checklist line (as a trailing HTML comment)
+			// and one HUD/summary line, so an embedded newline from a multi-line
+			// external error or user question would corrupt the round-trip parse and
+			// the rendered line. Normalizing here keeps every consumer one-line-safe.
+			const reason = entry.reason?.replace(/\s+/g, " ").trim() || undefined;
+			for (const task of getTaskTargets(phases, entry, errors)) {
+				// Only actionable open work can be blocked: blocking a phase must not
+				// reopen completed/abandoned tasks or erase finished progress. An
+				// already-blocked task stays eligible so a later block can refine its
+				// blocker note (e.g. first blocked without a reason, then with one).
+				if (task.status !== "pending" && task.status !== "in_progress" && task.status !== "blocked") continue;
+				task.status = "blocked";
+				task.blocker = reason;
+			}
+			return phases;
+		}
+		case "unblock": {
+			if (!entry.task && !entry.phase) {
+				errors.push("unblock requires a task or phase target");
+				return phases;
+			}
+			for (const task of getTaskTargets(phases, entry, errors)) {
+				if (task.status === "blocked") {
+					task.status = "pending";
+					task.blocker = undefined;
+				}
+			}
+			return phases;
+		}
 		case "rm":
 			return removeTasks(phases, entry, errors);
 		case "append":
@@ -495,6 +554,7 @@ const STATUS_TO_MARKER: Record<TodoStatus, string> = {
 	in_progress: "/",
 	completed: "x",
 	abandoned: "-",
+	blocked: "!",
 };
 
 export function resolveTodoMarkdownPath(input: string, cwd: string): string {
@@ -510,7 +570,12 @@ export function phasesToMarkdown(phases: TodoPhase[]): string {
 		if (i > 0) out.push("");
 		out.push(`# ${phases[i].name}`);
 		for (const task of phases[i].tasks) {
-			out.push(`- [${STATUS_TO_MARKER[task.status]}] ${task.content}`);
+			// A blocked task's reason rides in a trailing HTML comment: invisible in
+			// rendered markdown, unambiguous to parse back (task content can't
+			// contain the comment delimiters), so the note survives `/todo edit` and
+			// export/import round-trips.
+			const blockerNote = task.status === "blocked" && task.blocker ? ` <!-- blocker: ${task.blocker} -->` : "";
+			out.push(`- [${STATUS_TO_MARKER[task.status]}] ${task.content}${blockerNote}`);
 		}
 	}
 	return `${out.join("\n")}\n`;
@@ -525,6 +590,7 @@ const MARKER_TO_STATUS: Record<string, TodoStatus> = {
 	">": "in_progress",
 	"-": "abandoned",
 	"~": "abandoned",
+	"!": "blocked",
 };
 
 /** Parse a Markdown checklist back into todo phases. */
@@ -556,10 +622,18 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 			const marker = taskMatch[1];
 			const status = MARKER_TO_STATUS[marker];
 			if (!status) {
-				errors.push(`Line ${lineNum + 1}: unknown status marker "[${marker}]" (use [ ], [x], [/], [-])`);
+				errors.push(`Line ${lineNum + 1}: unknown status marker "[${marker}]" (use [ ], [x], [/], [-], [!])`);
 				continue;
 			}
-			currentPhase.tasks.push({ content: taskMatch[2].trim(), status });
+			// Recover a blocked task's reason from its trailing HTML comment (see
+			// phasesToMarkdown), then strip the comment from the visible content.
+			const rawContent = taskMatch[2].trim();
+			const blockerMatch = /^(.*?)\s*<!--\s*blocker:\s*(.*?)\s*-->$/.exec(rawContent);
+			if (status === "blocked" && blockerMatch) {
+				currentPhase.tasks.push({ content: blockerMatch[1].trim(), status, blocker: blockerMatch[2].trim() });
+			} else {
+				currentPhase.tasks.push({ content: rawContent, status });
+			}
 			continue;
 		}
 
@@ -604,6 +678,7 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 	}
 	// Closed = completed + abandoned, mirroring the per-phase `done` count.
 	const closedAll = tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+	const blockedAll = tasks.filter(task => task.status === "blocked").length;
 	// The active phase is the EARLIEST one still holding open work, so the
 	// in-progress pointer can sit in a phase whose successors already have
 	// completed tasks. Detect that "worked ahead" case to explain the
@@ -613,7 +688,9 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 		(phase, idx) =>
 			idx > currentIdx && phase.tasks.some(task => task.status === "completed" || task.status === "abandoned"),
 	);
-	lines.push(`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open.`);
+	lines.push(
+		`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open${blockedAll > 0 ? `, ${blockedAll} blocked` : ""}.`,
+	);
 	lines.push(
 		`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length})${
 			workedAhead
@@ -625,7 +702,16 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 		lines.push(`  ${phase.name}:`);
 		for (const task of phase.tasks) {
 			const checkbox = task.status === "completed" ? "[X]" : "[ ]";
-			const tag = task.status === "in_progress" ? " (in progress)" : task.status === "abandoned" ? " (dropped)" : "";
+			const tag =
+				task.status === "in_progress"
+					? " (in progress)"
+					: task.status === "abandoned"
+						? " (dropped)"
+						: task.status === "blocked"
+							? task.blocker
+								? ` (blocked: ${task.blocker})`
+								: " (blocked)"
+							: "";
 			lines.push(`    - ${checkbox} ${task.content}${tag}`);
 		}
 	}
@@ -845,6 +931,10 @@ function formatTodoLine(
 			return uiTheme.fg("accent", `${prefix}${checkbox.unchecked} ${item.content}`);
 		case "abandoned":
 			return uiTheme.fg("error", `${prefix}${checkbox.unchecked} ${strikethroughText(item.content)}`);
+		case "blocked": {
+			const note = item.blocker ? `blocked: ${item.blocker}` : "blocked";
+			return uiTheme.fg("warning", `${prefix}${checkbox.unchecked} ${item.content} (${note})`);
+		}
 		default:
 			// A pending todo lit by a live subagent match renders accent, matching
 			// the sticky HUD's convention (#5873).

@@ -62,7 +62,7 @@ describe("workflow keyword highlighting", () => {
 });
 
 describe("workflow notice", () => {
-	it("is a non-empty system notice carrying the task fan-out contract", () => {
+	it("is a non-empty system notice carrying the workflow-tool contract", () => {
 		expect(WORKFLOW_NOTICE.length).toBeGreaterThan(0);
 		expect(WORKFLOW_NOTICE).toContain("**workflow** keyword");
 		expect(WORKFLOW_NOTICE).toContain("`workflow` tool");

@@ -20,6 +20,7 @@ import { applyCodexResponsesLiteShape } from "@oh-my-pi/pi-ai/providers/openai-c
 import {
 	createOpenAICodexCompactionRequestContext,
 	createOpenAICodexCompatibilityMetadata,
+	getCodexAttestationHeader,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { parseAzureDeploymentNameMap, parseTextSignature } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { transformMessages } from "@oh-my-pi/pi-ai/providers/transform-messages";
@@ -46,7 +47,7 @@ import {
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
-import { $env, logger, stringifyJson } from "@oh-my-pi/pi-utils";
+import { $env, logger, stringifyJson, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 
 export * from "./compaction-v2-streaming";
 
@@ -257,6 +258,7 @@ function addOpenAiCallIds(
 	items: Array<Record<string, unknown>>,
 	knownCallIds: Set<string>,
 	customCallIds: Set<string>,
+	computerCallIds: Set<string>,
 ): void {
 	for (const item of items) {
 		if (typeof item.call_id !== "string") continue;
@@ -265,8 +267,55 @@ function addOpenAiCallIds(
 		} else if (item.type === "custom_tool_call") {
 			knownCallIds.add(item.call_id);
 			customCallIds.add(item.call_id);
+		} else if (item.type === "computer_call") {
+			knownCallIds.add(item.call_id);
+			computerCallIds.add(item.call_id);
 		}
 	}
+}
+
+function computerHistoryNote(item: Record<string, unknown>): Record<string, unknown> {
+	const serialized = stringifyJson(item) ?? "";
+	return {
+		type: "message",
+		id: `msg_${Bun.hash(`computer-history:${serialized}`).toString(36)}`,
+		role: "assistant",
+		content: [
+			{
+				type: "output_text",
+				text: `[Previous computer history unavailable to this model]: ${serialized}`,
+				annotations: [],
+			},
+		],
+		status: "completed",
+	};
+}
+
+function adaptComputerHistoryForCompaction(
+	items: Array<Record<string, unknown>>,
+	supportsComputerUse: boolean,
+): Array<Record<string, unknown>> {
+	if (supportsComputerUse) return items;
+	return items.map(item =>
+		item.type === "computer_call" || item.type === "computer_call_output" ? computerHistoryNote(item) : item,
+	);
+}
+
+function computerFailureNote(call: Record<string, unknown>, output: string): Record<string, unknown> {
+	const serialized = stringifyJson(call) ?? "";
+	return {
+		type: "message",
+		id: `msg_${Bun.hash(`computer-failure:${serialized}:${output}`).toString(36)}`,
+		role: "assistant",
+		content: [
+			{
+				type: "output_text",
+				text: `[Computer call failed before a screenshot was recorded]: ${serialized}${output ? `\n${output}` : ""}`,
+				annotations: [],
+			},
+		],
+		status: "completed",
+	};
 }
 
 // ============================================================================
@@ -291,22 +340,38 @@ export function buildOpenAiNativeHistory(
 	previousReplacementHistory?: Array<Record<string, unknown>>,
 ): Array<Record<string, unknown>> {
 	const input: Array<Record<string, unknown>> = previousReplacementHistory
-		? sanitizeOpenAIResponsesHistoryImagesForReplay(previousReplacementHistory)
+		? adaptComputerHistoryForCompaction(
+				sanitizeOpenAIResponsesHistoryImagesForReplay(previousReplacementHistory),
+				model.supportsComputerUse === true,
+			)
 		: [];
 	const transformedMessages = transformMessages(messages, model, id => normalizeOpenAiCompactionToolCallId(id));
 
 	let msgIndex = 0;
 	const knownCallIds = new Set<string>();
 	const customCallIds = new Set<string>();
-	addOpenAiCallIds(input, knownCallIds, customCallIds);
+	const computerCallIds = new Set<string>();
+	const demotedComputerCallIds = new Set<string>();
+	addOpenAiCallIds(input, knownCallIds, customCallIds, computerCallIds);
 	for (const message of transformedMessages) {
 		if (message.role === "user" || message.role === "developer") {
 			const providerPayload = (message as { providerPayload?: AssistantMessage["providerPayload"] }).providerPayload;
-			const historyItems = getOpenAIResponsesHistoryItems(providerPayload, model.provider);
-			if (historyItems) {
-				const sanitizedHistoryItems = sanitizeOpenAIResponsesHistoryImagesForReplay(historyItems);
-				input.push(...sanitizedHistoryItems);
-				addOpenAiCallIds(sanitizedHistoryItems, knownCallIds, customCallIds);
+			const rawHistoryItems = getOpenAIResponsesHistoryItems(providerPayload, model.provider);
+			if (rawHistoryItems) {
+				if (model.supportsComputerUse !== true) {
+					for (const item of rawHistoryItems) {
+						if (item.type === "computer_call" && typeof item.call_id === "string") {
+							demotedComputerCallIds.add(item.call_id);
+						}
+					}
+				}
+				const sanitizedHistoryItems = sanitizeOpenAIResponsesHistoryImagesForReplay(rawHistoryItems);
+				const historyItems = adaptComputerHistoryForCompaction(
+					sanitizedHistoryItems,
+					model.supportsComputerUse === true,
+				);
+				input.push(...historyItems);
+				addOpenAiCallIds(historyItems, knownCallIds, customCallIds, computerCallIds);
 				msgIndex++;
 				continue;
 			}
@@ -348,15 +413,28 @@ export function buildOpenAiNativeHistory(
 				assistant.provider,
 			);
 			if (providerPayload) {
+				if (!providerPayload.dt) demotedComputerCallIds.clear();
+				if (model.supportsComputerUse !== true) {
+					for (const item of providerPayload.items) {
+						if (item.type === "computer_call" && typeof item.call_id === "string") {
+							demotedComputerCallIds.add(item.call_id);
+						}
+					}
+				}
 				const sanitizedHistoryItems = sanitizeOpenAIResponsesHistoryImagesForReplay(providerPayload.items);
+				const historyItems = adaptComputerHistoryForCompaction(
+					sanitizedHistoryItems,
+					model.supportsComputerUse === true,
+				);
 				if (providerPayload.dt) {
-					input.push(...sanitizedHistoryItems);
-					addOpenAiCallIds(sanitizedHistoryItems, knownCallIds, customCallIds);
+					input.push(...historyItems);
+					addOpenAiCallIds(historyItems, knownCallIds, customCallIds, computerCallIds);
 				} else {
-					input.splice(0, input.length, ...sanitizedHistoryItems);
+					input.splice(0, input.length, ...historyItems);
 					knownCallIds.clear();
 					customCallIds.clear();
-					addOpenAiCallIds(input, knownCallIds, customCallIds);
+					computerCallIds.clear();
+					addOpenAiCallIds(input, knownCallIds, customCallIds, computerCallIds);
 				}
 				msgIndex++;
 				continue;
@@ -402,6 +480,25 @@ export function buildOpenAiNativeHistory(
 
 				if (block.type === "toolCall") {
 					const normalized = normalizeResponsesToolCallId(block.id, block.customWireName ? "ctc" : "fc");
+					if (block.providerMetadata?.type === "computer") {
+						const computerCall = {
+							type: "computer_call",
+							id: block.providerMetadata.providerItemId,
+							call_id: normalized.callId,
+							actions: structuredCloneJSON(block.providerMetadata.actions),
+							pending_safety_checks: structuredCloneJSON(block.providerMetadata.pendingSafetyChecks),
+							status: "completed",
+						};
+						if (model.supportsComputerUse !== true) {
+							input.push(computerHistoryNote(computerCall));
+							demotedComputerCallIds.add(normalized.callId);
+							continue;
+						}
+						knownCallIds.add(normalized.callId);
+						computerCallIds.add(normalized.callId);
+						input.push(computerCall);
+						continue;
+					}
 					let itemId: string | undefined = normalized.itemId;
 					if (
 						isDifferentModel &&
@@ -438,11 +535,6 @@ export function buildOpenAiNativeHistory(
 
 		if (message.role === "toolResult") {
 			const normalized = normalizeResponsesToolCallId(message.toolCallId);
-			if (!knownCallIds.has(normalized.callId)) {
-				msgIndex++;
-				continue;
-			}
-
 			const textOutput = message.content
 				.filter(block => block.type === "text")
 				.map(block => block.text)
@@ -451,6 +543,52 @@ export function buildOpenAiNativeHistory(
 			const availableImageContent = imageContent.filter(isImageContentAvailable);
 			const hasImages = availableImageContent.length > 0;
 			const outputText = textOutput.length > 0 ? textOutput : hasImages ? "(see attached image)" : "";
+			if (demotedComputerCallIds.has(normalized.callId)) {
+				const resultItem =
+					message.providerMetadata?.type === "computer"
+						? {
+								type: "computer_call_output",
+								call_id: normalized.callId,
+								output: structuredCloneJSON(message.providerMetadata.screenshot),
+								acknowledged_safety_checks: structuredCloneJSON(
+									message.providerMetadata.acknowledgedSafetyChecks,
+								),
+							}
+						: { type: "computer_call_output", call_id: normalized.callId, error: outputText };
+				input.push(computerHistoryNote(resultItem));
+				demotedComputerCallIds.delete(normalized.callId);
+				msgIndex++;
+				continue;
+			}
+			if (!knownCallIds.has(normalized.callId)) {
+				msgIndex++;
+				continue;
+			}
+			if (computerCallIds.has(normalized.callId)) {
+				if (message.providerMetadata?.type === "computer") {
+					input.push({
+						type: "computer_call_output",
+						call_id: normalized.callId,
+						output: structuredCloneJSON(message.providerMetadata.screenshot),
+						acknowledged_safety_checks: structuredCloneJSON(message.providerMetadata.acknowledgedSafetyChecks),
+					});
+					msgIndex++;
+					continue;
+				}
+
+				const callIndex = input.findLastIndex(
+					item => item.type === "computer_call" && item.call_id === normalized.callId,
+				);
+				if (callIndex >= 0) {
+					const [call] = input.splice(callIndex, 1);
+					if (call) input.splice(callIndex, 0, computerFailureNote(call, outputText));
+				}
+				knownCallIds.delete(normalized.callId);
+				computerCallIds.delete(normalized.callId);
+				msgIndex++;
+				continue;
+			}
+
 			input.push({
 				type: customCallIds.has(normalized.callId) ? "custom_tool_call_output" : "function_call_output",
 				call_id: normalized.callId,
@@ -525,6 +663,10 @@ export async function requestOpenAiRemoteCompaction(
 		const accountId = getCodexAccountId(apiKey);
 		if (accountId) {
 			headers[OPENAI_HEADERS.ACCOUNT_ID] = accountId;
+		}
+		const attestation = await getCodexAttestationHeader(accountId);
+		if (attestation) {
+			headers[OPENAI_HEADERS.ATTESTATION] = attestation;
 		}
 		headers[OPENAI_HEADERS.BETA] = OPENAI_HEADER_VALUES.BETA_RESPONSES;
 		headers[OPENAI_HEADERS.ORIGINATOR] = OPENAI_HEADER_VALUES.ORIGINATOR_CODEX;

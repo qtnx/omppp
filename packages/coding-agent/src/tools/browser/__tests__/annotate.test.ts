@@ -576,7 +576,8 @@ describe("BrowserTool annotate background delivery", () => {
 		const { tab, emit } = fakeAnnotationTab("review");
 		const unregister = registerTabForTest(tab);
 		try {
-			const session: Pick<ToolSession, "queueBrowserAnnotation"> = {
+			const session: Pick<ToolSession, "queueBrowserAnnotation" | "settings"> = {
+				settings: { get: () => undefined } as unknown as ToolSession["settings"],
 				queueBrowserAnnotation: entry => {
 					queued.push(entry);
 				},

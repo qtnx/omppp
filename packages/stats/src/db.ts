@@ -1586,36 +1586,27 @@ function backfillDelegationReminders(database: Database): void {
 		.run(DELEGATION_REMINDERS_BACKFILL_KEY, BACKFILL_PENDING);
 }
 
-export function markPriorityPremiumRequestsBackfillComplete(): void {
+/**
+ * Settle every full-session backfill after a successful sync pass.
+ * Includes upstream session migrations plus fork reminder/subagent backfills.
+ */
+export function markSessionBackfillsComplete(): void {
 	if (!db) return;
-	db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(
-		PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY,
-		BACKFILL_COMPLETE,
-	);
-}
-
-export function markUserMessagesBackfillComplete(): void {
-	if (!db) return;
-	db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(
-		USER_MESSAGES_BACKFILL_KEY,
-		BACKFILL_COMPLETE,
-	);
-}
-
-export function markUserMessageLinksRepairComplete(): void {
-	if (!db) return;
-	db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(
-		USER_MESSAGE_LINKS_REPAIR_KEY,
-		BACKFILL_COMPLETE,
-	);
-}
-
-export function markSubagentRunsBackfillComplete(): void {
-	if (!db) return;
-	db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(
-		SUBAGENT_RUNS_BACKFILL_KEY,
-		BACKFILL_COMPLETE,
-	);
+	const markComplete = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
+	const apply = db.transaction(() => {
+		for (const key of [
+			USER_MESSAGES_BACKFILL_KEY,
+			TOOL_CALLS_BACKFILL_KEY,
+			USER_MESSAGE_LINKS_REPAIR_KEY,
+			PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY,
+			SYSTEM_CONTEXT_REMINDERS_BACKFILL_KEY,
+			DELEGATION_REMINDERS_BACKFILL_KEY,
+			SUBAGENT_RUNS_BACKFILL_KEY,
+		]) {
+			markComplete.run(key, BACKFILL_COMPLETE);
+		}
+	});
+	apply();
 }
 
 /**

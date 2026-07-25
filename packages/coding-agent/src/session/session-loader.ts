@@ -23,8 +23,6 @@ import {
 } from "./session-title-slot";
 
 const STREAM_LOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
-const ELIDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided during session load]";
-const ELIDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
 
 function splitTitleSlot(content: string): { body: string; slot: SessionTitleUpdate | undefined } {
 	const slot = titleUpdateFromSlot(parseTitleSlotFromContent(content));
@@ -60,21 +58,6 @@ export function parseSessionContent(content: string): {
 	return { entries: foldTitleSlot(entries, slot), titleSlot: slot };
 }
 
-function elideCompactionSummary(entry: CompactionEntry | undefined): boolean {
-	if (!entry) return false;
-	if (
-		entry.summary === ELIDED_COMPACTION_SUMMARY &&
-		entry.shortSummary === ELIDED_COMPACTION_SHORT_SUMMARY &&
-		entry.preserveData === undefined
-	) {
-		return false;
-	}
-	entry.summary = ELIDED_COMPACTION_SUMMARY;
-	entry.shortSummary = ELIDED_COMPACTION_SHORT_SUMMARY;
-	entry.preserveData = undefined;
-	return true;
-}
-
 function getActiveBranchPath(entries: FileEntry[]): SessionEntry[] {
 	const byId = new Map<string, SessionEntry>();
 	const sessionEntries = entries.filter((entry): entry is SessionEntry => entry.type !== "session");
@@ -90,17 +73,6 @@ function getActiveBranchPath(entries: FileEntry[]): SessionEntry[] {
 		cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
 	}
 	return path.reverse();
-}
-
-function elideSupersededCompactionEntries(entries: FileEntry[]): void {
-	const branchIds = new Set(getActiveBranchPath(entries).map(entry => entry.id));
-	let previousCompaction: CompactionEntry | undefined;
-	for (const entry of entries) {
-		if (entry.type !== "compaction") continue;
-		if (!branchIds.has(entry.id)) continue;
-		elideCompactionSummary(previousCompaction);
-		previousCompaction = entry;
-	}
 }
 
 /** Exported for testing — the ≥8MiB streaming path (works on any file size). */
@@ -217,7 +189,6 @@ export async function loadEntriesFromFile(
 		throw err;
 	}
 	const { entries } = loaded;
-	elideSupersededCompactionEntries(entries);
 
 	// Validate session header
 	if (entries.length === 0) return entries;
@@ -340,10 +311,12 @@ export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: 
 }
 
 /**
- * Read-only message view of a session file: load entries, migrate to the
- * current version, resolve blob refs, and build the context along the
- * persisted leaf path (last entry). Does NOT create a writer or take the
- * session lock — safe to call against a file another session is writing.
+ * Read-only transcript view of a session file: load entries, migrate to the
+ * current version, resolve blob refs, and build the display transcript along
+ * the persisted leaf path (last entry). Uses transcript mode (collapsed to the
+ * latest compaction) so failed/aborted tail turns stay visible, unlike the
+ * provider-context builder which drops them. Does NOT create a writer or take
+ * the session lock — safe to call against a file another session is writing.
  */
 export async function loadSessionMessagesReadOnly(filePath: string): Promise<AgentMessage[]> {
 	const entries = await loadEntriesFromFile(filePath);
@@ -351,5 +324,8 @@ export async function loadSessionMessagesReadOnly(filePath: string): Promise<Age
 	migrateToCurrentVersion(entries);
 	await resolveBlobRefsInEntries(entries, new BlobStore(getBlobsDir()));
 	const sessionEntries = entries.filter((e): e is SessionEntry => e.type !== "session");
-	return buildSessionContext(sessionEntries).messages;
+	return buildSessionContext(sessionEntries, undefined, undefined, {
+		transcript: true,
+		collapseCompactedHistory: true,
+	}).messages;
 }

@@ -30,6 +30,7 @@ import type {
 import { createAbortSourceTracker } from "../utils/abort";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
+import { notifyProviderResponse } from "../utils/provider-response";
 
 /**
  * Fields that must not cross the wire — either non-serializable (functions,
@@ -193,6 +194,14 @@ export function streamPiNative<TApi extends Api>(
 				stream.fail(await decodeGatewayError(response));
 				return;
 			}
+			// Callers can truthfully inspect the gateway HTTP response, but its
+			// request body is opaque here; callbacks themselves never cross the wire.
+			await notifyProviderResponse(
+				options,
+				response,
+				model,
+				response.headers.get("x-request-id") ?? response.headers.get("request-id"),
+			);
 			if (!response.body) {
 				stream.fail(
 					new AIError.AuthGatewayError("auth-gateway returned empty body", response.status, response.headers),

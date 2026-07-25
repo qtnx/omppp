@@ -715,10 +715,12 @@ describe("buildSessionContext", () => {
 		});
 
 		it("strips dangling tool_use when the leaf lands on a mid-batch assistant turn", () => {
-			// Reproduces the rewind/restore loop: leaf = an assistant turn that emitted
-			// tool calls. Its results are off-path children, so without normalization the
-			// turn ends on unpaired tool_use and transformMessages fabricates phantom
-			// "aborted" results, re-injecting the failed batch.
+			// Reproduces the rewind/restore loop: leaf = a completed assistant turn that
+			// emitted tool calls. Its results are off-path children, so without
+			// normalization the turn ends on unpaired tool_use and transformMessages
+			// fabricates phantom "aborted" results, re-injecting the failed batch.
+			// (Aborted/error turns are dropped from context wholesale — covered in
+			// src/session/session-context.test.ts.)
 			const assistantWithCalls: SessionMessageEntry = {
 				type: "message",
 				id: "a1",
@@ -745,7 +747,7 @@ describe("buildSessionContext", () => {
 						totalTokens: 2,
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 					},
-					stopReason: "aborted",
+					stopReason: "toolUse",
 					timestamp: 1,
 				},
 			};

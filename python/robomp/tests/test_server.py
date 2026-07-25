@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from robomp.config import Settings, reset_settings_cache
 from robomp.dashboard import tail_jsonl
-from robomp.db import Database, close_database, get_database, issue_key
+from robomp.db import Database, EventState, close_database, get_database, issue_key
 from robomp.github_client import GitHubClient
 from robomp.manual_triage import InvalidIssueRef, ManualTriageTimeout, await_terminal_state, parse_issue_ref
 from robomp.sandbox import LocalGitTransport
@@ -423,16 +423,24 @@ def test_trigger_triage_conflicts_when_manual_delivery_is_active(
         return httpx.Response(500, json={"message": "should not fetch active manual event"})
 
     app = create_app(cfg)
-    with TestClient(app) as client:
-        db = get_database(cfg.sqlite_path)
+    db = get_database(cfg.sqlite_path)
+
+    def record_active_event(initial_state: EventState) -> None:
         db.record_event(
             delivery_id=delivery,
             event_type="issues",
             repo="octo/widget",
             issue_key=issue_key("octo/widget", 7),
             payload=original_payload,
-            state=state,
+            state=initial_state,
         )
+
+    if state == "queued":
+        record_active_event("running")
+        assert db.schedule_retry(delivery, delay_seconds=3600)
+    with TestClient(app) as client:
+        if state == "running":
+            record_active_event("running")
         _install_github_mock(app, httpx.MockTransport(handler))
         resp = client.post(
             "/api/trigger",
@@ -597,16 +605,27 @@ def test_trigger_retry_by_delivery_rejects_active_events(
     cfg = Settings()  # type: ignore[call-arg]
     cfg.ensure_paths()
     app = create_app(cfg)
-    with TestClient(app) as client:
-        db = get_database(cfg.sqlite_path)
+    db = get_database(cfg.sqlite_path)
+    if state == "queued":
         db.record_event(
             delivery_id=f"d-{state}",
             event_type="issues",
             repo="octo/widget",
             issue_key=issue_key("octo/widget", 5),
             payload={"action": "opened", "issue": {"number": 5}},
-            state=state,
+            state="running",
         )
+        assert db.schedule_retry(f"d-{state}", delay_seconds=3600)
+    with TestClient(app) as client:
+        if state == "running":
+            db.record_event(
+                delivery_id=f"d-{state}",
+                event_type="issues",
+                repo="octo/widget",
+                issue_key=issue_key("octo/widget", 5),
+                payload={"action": "opened", "issue": {"number": 5}},
+                state="running",
+            )
         resp = client.post(
             "/api/trigger",
             json={"mode": "retry", "delivery_id": f"d-{state}"},

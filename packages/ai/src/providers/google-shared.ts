@@ -92,6 +92,17 @@ export interface GoogleSharedStreamOptions extends StreamOptions {
 	useInteractionsApi?: boolean;
 	/** Overrides Interactions API request storage; default is the API default (`true`). */
 	storeInteraction?: boolean;
+	/**
+	 * Caller-owned Google context-cache resource name for GenerateContent.
+	 * Passed through opaquely as the wire `cachedContent` field on
+	 * `google-generative-ai` and `google-vertex` only. OMPx does not create,
+	 * refresh, validate model/project/location compatibility, or delete the
+	 * resource — callers own that lifecycle.
+	 *
+	 * @see https://ai.google.dev/api/generate-content
+	 * @see `@google/genai` `GenerateContentConfig.cachedContent`
+	 */
+	cachedContent?: string;
 }
 
 /**
@@ -886,6 +897,25 @@ export function buildGoogleGenerateContentParams<T extends "google-generative-ai
 			throw new AIError.AbortError("Request aborted");
 		}
 		config.abortSignal = options.signal;
+	}
+
+	if (options.cachedContent !== undefined) {
+		// Blank names are never valid resource references; anything else stays
+		// opaque so we do not invent format/model/project checks here.
+		if (options.cachedContent.trim().length === 0) {
+			throw new AIError.ValidationError("cachedContent must not be blank");
+		}
+		const incompatibleFields = [
+			config.systemInstruction !== undefined && "systemInstruction",
+			config.tools !== undefined && "tools",
+			config.toolConfig !== undefined && "toolConfig",
+		].filter((field): field is string => Boolean(field));
+		if (incompatibleFields.length > 0) {
+			throw new AIError.ValidationError(
+				`cachedContent cannot be combined with request-level ${incompatibleFields.join(", ")}`,
+			);
+		}
+		config.cachedContent = options.cachedContent;
 	}
 
 	return {

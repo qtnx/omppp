@@ -2,11 +2,12 @@
  * Tests for ExtensionRunner - conflict detection, error handling, tool wrapping.
  */
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { discoverAndLoadExtensions, ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import {
@@ -14,7 +15,7 @@ import {
 	ExtensionRunner,
 	testSetExtensionHandlerTimeoutMs,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
-import type { ExtensionError } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import type { ExtensionError, ExtensionServiceTier } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { Type } from "@oh-my-pi/pi-coding-agent/extensibility/typebox";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
@@ -483,6 +484,78 @@ describe("ExtensionRunner", () => {
 	});
 
 	describe("before_provider_request chaining", () => {
+		it("exposes the request model instead of the primary session model", async () => {
+			const primaryModel = getBundledModel("openai-codex", "gpt-5.6-sol");
+			const requestModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+			if (!primaryModel || !requestModel) throw new Error("Expected bundled cross-provider models to exist");
+
+			const extCode = `
+				export default function(pi) {
+					pi.on("before_provider_request", async (_event, ctx) => {
+						const current = ctx.models.current();
+						return {
+							model: ctx.model && {
+								provider: ctx.model.provider,
+								id: ctx.model.id,
+								api: ctx.model.api,
+							},
+							current: current && {
+								provider: current.provider,
+								id: current.id,
+								api: current.api,
+							},
+						};
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "request-model.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: () => {},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => primaryModel,
+					isIdle: () => true,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+				},
+			);
+
+			const payload = await runner.emitBeforeProviderRequest({}, requestModel);
+
+			const expected = {
+				provider: requestModel.provider,
+				id: requestModel.id,
+				api: requestModel.api,
+			};
+			expect(payload).toEqual({ model: expected, current: expected });
+		});
+
 		it("chains payload replacements across handlers in load order", async () => {
 			const extCode1 = `
 				export default function(pi) {
@@ -1158,6 +1231,98 @@ describe("ExtensionRunner", () => {
 				searchable: true,
 			});
 			delete globalState.__ompMemoryStatus;
+		});
+	});
+
+	describe("service tier API", () => {
+		it("restricts tiers to values supported by each provider family", () => {
+			expectTypeOf<"scale">().toExtend<ExtensionServiceTier<"openai">>();
+			expectTypeOf<"flex">().toExtend<ExtensionServiceTier<"google">>();
+			expectTypeOf<"priority">().toExtend<ExtensionServiceTier<"anthropic">>();
+			expectTypeOf<"scale">().not.toExtend<ExtensionServiceTier<"google">>();
+			expectTypeOf<"flex">().not.toExtend<ExtensionServiceTier<"anthropic">>();
+		});
+
+		it("returns a detached snapshot, forwards valid changes, and rejects invalid family tiers", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("session_start", () => {
+						const tiers = pi.getServiceTiers();
+						tiers.openai = "scale";
+						pi.appendEntry("service-tier-snapshot", tiers);
+						pi.setServiceTier("google", "flex");
+						pi.setServiceTier("openai", undefined);
+					});
+					pi.on("session_start", () => {
+						pi.setServiceTier("anthropic", "scale");
+					});
+					pi.on("session_start", () => {
+						pi.setServiceTier("bogus", "priority");
+					});
+				}
+			`;
+			const explicitExtensionPath = path.join(tempDir.path(), "service-tiers.ts");
+			await Bun.write(explicitExtensionPath, extCode);
+			const result = await loadTestExtensions([explicitExtensionPath]);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const serviceTiers = { openai: "priority" as const };
+			const snapshots: unknown[] = [];
+			const setCalls: Array<[string, unknown]> = [];
+			const errors: string[] = [];
+			runner.onError(error => {
+				errors.push(error.error);
+			});
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: (_customType, data) => {
+						snapshots.push(data);
+					},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getServiceTiers: () => serviceTiers,
+					setServiceTier: (family, tier) => {
+						setCalls.push([family, tier]);
+					},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+				},
+			);
+
+			await runner.emit({ type: "session_start" });
+
+			expect(serviceTiers).toEqual({ openai: "priority" });
+			expect(snapshots).toEqual([{ openai: "scale" }]);
+			expect(setCalls).toEqual([
+				["google", "flex"],
+				["openai", undefined],
+			]);
+			expect(errors).toHaveLength(2);
+			expect(errors[0]).toContain('Invalid service tier "scale" for family "anthropic"');
+			expect(errors[1]).toContain('Invalid service tier "priority" for family "bogus"');
 		});
 	});
 

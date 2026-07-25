@@ -140,6 +140,29 @@ describe("generated model policies", () => {
 		});
 	});
 
+	it("preserves QwenCloud's mandatory qwen3.8 effort ladder", () => {
+		const models: ModelSpec<Api>[] = [
+			createSpec({
+				id: "qwen3.8-max-preview",
+				api: "openai-completions",
+				provider: "alibaba-token-plan",
+				thinking: {
+					mode: "effort",
+					efforts: [Effort.Low, Effort.High, Effort.XHigh],
+					requiresEffort: true,
+				},
+			}),
+		];
+
+		applyGeneratedModelPolicies(models);
+
+		expect(models[0]?.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Low, Effort.High, Effort.XHigh],
+			requiresEffort: true,
+		});
+	});
+
 	it("pins zai glm-5.2 base id to 1M context", () => {
 		const models = [
 			createSpec({
@@ -258,6 +281,39 @@ describe("generated model policies", () => {
 
 		expect(models[0]?.omitMaxOutputTokens).toBe(true);
 		expect(models[1]?.omitMaxOutputTokens).toBeUndefined();
+	});
+
+	it("corrects credential-free K3 compat without rewriting other Kimi Code models", () => {
+		const k3 = createSpec({
+			id: "k3",
+			api: "openai-completions",
+			provider: "kimi-code",
+			reasoning: true,
+			thinking: {
+				mode: "effort",
+				efforts: [Effort.Low, Effort.High, Effort.Max],
+			},
+		});
+		k3.compat = { thinkingFormat: "zai" };
+		const legacyKimiCode = createSpec({
+			id: "kimi-for-coding",
+			api: "openai-completions",
+			provider: "kimi-code",
+			thinking: {
+				mode: "effort",
+				efforts: [Effort.Low, Effort.High],
+			},
+		});
+		legacyKimiCode.compat = { thinkingFormat: "zai" };
+
+		applyGeneratedModelPolicies([k3, legacyKimiCode]);
+
+		expect(k3.compat).toMatchObject({
+			thinkingFormat: "kimi",
+			reasoningContentField: "reasoning_content",
+			supportsDeveloperRole: false,
+		});
+		expect(legacyKimiCode.compat?.thinkingFormat).toBe("zai");
 	});
 
 	it("marks OpenCode Go MiMo models as not supporting tool_choice", () => {

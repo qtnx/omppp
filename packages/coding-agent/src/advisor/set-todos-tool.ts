@@ -9,6 +9,7 @@ const TODO_STATUSES: Record<TodoStatus, true> = {
 	pending: true,
 	in_progress: true,
 	completed: true,
+	blocked: true,
 	abandoned: true,
 };
 
@@ -17,7 +18,9 @@ const setTodosSchema = type({
 		phase: type("string").describe("Non-empty phase name."),
 		items: type({
 			content: type("string").describe("Non-empty todo item content."),
-			status: type("'pending' | 'in_progress' | 'completed' | 'abandoned'").describe("Todo item status."),
+			status: type("'pending' | 'in_progress' | 'completed' | 'blocked' | 'abandoned'").describe(
+				"Todo item status.",
+			),
 		}).array(),
 	}).array(),
 });
@@ -31,7 +34,7 @@ interface AdvisorTodoSession extends ToolSession {
 function assertTodoStatus(status: string, phaseIndex: number, itemIndex: number): asserts status is TodoStatus {
 	if (TODO_STATUSES[status as TodoStatus] !== true) {
 		throw new ToolError(
-			`phases[${phaseIndex}].items[${itemIndex}].status must be pending, in_progress, completed, or abandoned.`,
+			`phases[${phaseIndex}].items[${itemIndex}].status must be pending, in_progress, completed, blocked, or abandoned.`,
 		);
 	}
 }

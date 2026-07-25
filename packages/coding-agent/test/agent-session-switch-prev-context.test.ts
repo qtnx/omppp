@@ -127,9 +127,13 @@ describe("AgentSession.switchSession previous-context build", () => {
 			restore();
 		}
 
-		// The previous session's display context MUST NOT be materialized. Only
-		// the new target context (post-`setSessionFile`) should be built.
-		expect(calls).toEqual([{ sessionFile: targetSessionFile!, transcript: undefined }]);
+		// The previous session's display context MUST NOT be materialized. Both
+		// calls are on the new target: the first loads it, and the second reflects
+		// the synthetic abort appended for its interrupted user-only turn.
+		expect(calls).toEqual([
+			{ sessionFile: targetSessionFile!, transcript: undefined },
+			{ sessionFile: targetSessionFile!, transcript: undefined },
+		]);
 	});
 
 	it("builds the previous display context for same-session reloads", async () => {
@@ -151,9 +155,10 @@ describe("AgentSession.switchSession previous-context build", () => {
 			restore();
 		}
 
-		// Same-session reload must snapshot the pre-reload context so
-		// `#didSessionMessagesChange` can detect rollback edits.
+		// Same-session reload snapshots the pre-reload context, loads the target,
+		// then rebuilds once after repairing its interrupted user-only turn.
 		expect(calls).toEqual([
+			{ sessionFile: sessionFile!, transcript: undefined },
 			{ sessionFile: sessionFile!, transcript: undefined },
 			{ sessionFile: sessionFile!, transcript: undefined },
 		]);

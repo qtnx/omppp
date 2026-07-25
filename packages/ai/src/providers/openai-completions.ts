@@ -28,7 +28,7 @@ import type {
 	ToolChoice,
 	ToolResultMessage,
 } from "../types";
-import { normalizeSystemPrompts } from "../utils";
+import { normalizeSystemPrompts, resolveCacheRetention } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import { isDemotedThinking, kStreamingLastParseLen } from "../utils/block-symbols";
 import { hasVisibleAssistantContent, withEmptyCompletionRetry } from "../utils/empty-completion-retry";
@@ -43,7 +43,13 @@ import {
 import { OpenAIHttpError, postOpenAIStream } from "../utils/openai-http";
 import { notifyProviderResponse } from "../utils/provider-response";
 import { callWithCopilotModelRetry } from "../utils/retry";
-import { adaptSchemaForStrict, NO_STRICT, normalizeSchemaForMoonshot, toolWireSchema } from "../utils/schema";
+import {
+	adaptSchemaForStrict,
+	NO_STRICT,
+	normalizeSchemaForMoonshot,
+	sanitizeSchemaForGrammar,
+	toolWireSchema,
+} from "../utils/schema";
 import {
 	type HealedToolCall,
 	StreamMarkupHealing,
@@ -91,6 +97,7 @@ import {
 	isStrictToolsDisabledForScope,
 	type OpenAICompatPolicy,
 	type OpenAICompletionsParams,
+	type OpenAIPromptCacheOptions,
 	type OpenAIRequestSetup,
 	type OpenAIStrictToolsState,
 	parseAzureDeploymentNameMap,
@@ -478,6 +485,8 @@ export interface OpenAICompletionsOptions extends StreamOptions {
 	 * with the variant baked in).
 	 */
 	openrouterVariant?: string;
+	/** Opt-in GPT-5.6+ prompt-cache policy. Unsupported explicit mode fails locally. */
+	promptCache?: OpenAIPromptCacheOptions;
 }
 
 type AppliedToolStrictMode = "mixed" | "all_strict" | "none";
@@ -674,7 +683,7 @@ const streamOpenAICompletionsOnce = (
 				}
 				activeReasoningEffortFallbackKey = reasoningEffortFallbackKey;
 				activeRequestParams = params;
-				options?.onPayload?.(params);
+				options?.onPayload?.(params, model);
 				rawRequestDump = {
 					provider: model.provider,
 					api: output.api,
@@ -1434,6 +1443,83 @@ function dropOpenRouterKimiForcedToolReasoning(
 	}
 }
 
+function hasActiveNativeKimiK3Reasoning(
+	model: Model<"openai-completions">,
+	options: OpenAICompletionsOptions | undefined,
+): boolean {
+	if (model.provider !== "kimi-code" || model.id.toLowerCase() !== "k3" || !model.reasoning) return false;
+	if (options?.reasoning === undefined || options.disableReasoning) return false;
+	try {
+		const url = new URL(model.baseUrl);
+		return url.hostname === "api.kimi.com" && (url.pathname === "/coding" || url.pathname.startsWith("/coding/"));
+	} catch {
+		return false;
+	}
+}
+
+function isChatCompletionsPromptCacheableContentBlock(
+	block: unknown,
+): block is { type: "text" | "image_url" | "input_audio" | "file"; prompt_cache_breakpoint?: { mode: "explicit" } } {
+	if (typeof block !== "object" || block === null || !("type" in block)) return false;
+	return block.type === "text" || block.type === "image_url" || block.type === "input_audio" || block.type === "file";
+}
+
+function markLatestStableChatCompletionsCacheBreakpoint(messages: ChatCompletionMessageParam[]): boolean {
+	let latestInputMessage = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role === "user" || message.role === "developer") {
+			latestInputMessage = i;
+			break;
+		}
+	}
+	if (latestInputMessage <= 0) return false;
+
+	for (let i = latestInputMessage - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role !== "user" && message.role !== "developer" && message.role !== "system") continue;
+		if (typeof message.content === "string") {
+			messages[i] = {
+				...message,
+				content: [{ type: "text", text: message.content, prompt_cache_breakpoint: { mode: "explicit" } }],
+			};
+			return true;
+		}
+		for (let j = message.content.length - 1; j >= 0; j--) {
+			const block = message.content[j];
+			if (!isChatCompletionsPromptCacheableContentBlock(block)) continue;
+			Object.assign(block, { prompt_cache_breakpoint: { mode: "explicit" } });
+			return true;
+		}
+	}
+	return false;
+}
+
+function applyOpenAIChatCompletionsPromptCachePolicy(
+	params: OpenAICompletionsParams,
+	model: Model<"openai-completions">,
+	options: OpenAICompletionsOptions | undefined,
+): void {
+	const promptCache = options?.promptCache;
+	if (!promptCache || resolveCacheRetention(options?.cacheRetention) === "none") return;
+	if (!model.compat.supportsPromptCacheBreakpoints) {
+		if (promptCache.mode === "explicit") {
+			throw new AIError.ConfigurationError(
+				`OpenAI explicit prompt caching is unsupported for ${model.provider}/${model.id}; enable compat.supportsPromptCacheBreakpoints only for a compatible endpoint.`,
+			);
+		}
+		return;
+	}
+
+	params.prompt_cache_key = getOpenAIPromptCacheKey(options);
+	params.prompt_cache_options = {
+		mode: promptCache.mode,
+		ttl: promptCache.ttl ?? model.compat.promptCacheBreakpointTtl,
+	};
+	if (promptCache.mode === "explicit" && promptCache.breakpoint !== "none")
+		markLatestStableChatCompletionsCacheBreakpoint(params.messages);
+}
+
 function buildParams(
 	model: Model<"openai-completions">,
 	context: Context,
@@ -1446,6 +1532,7 @@ function buildParams(
 } {
 	const initialPolicy = resolveOpenAICompatForRequest(model, options);
 	const initialCompat = initialPolicy.compat as ResolvedOpenAICompat;
+	const cacheRetention = resolveCacheRetention(options?.cacheRetention);
 
 	const requestModelId = resolveOpenAICompletionsModelId(model, options);
 	const params: OpenAICompletionsParams = {
@@ -1521,6 +1608,20 @@ function buildParams(
 	) {
 		params.tool_choice = "required";
 	}
+	const forcedToolName =
+		typeof params.tool_choice === "object" && params.tool_choice !== null && "function" in params.tool_choice
+			? params.tool_choice.function.name
+			: undefined;
+	if (
+		forcedToolName !== undefined &&
+		Array.isArray(params.tools) &&
+		params.tools.some(tool => tool.type === "function" && tool.function.name === forcedToolName) &&
+		hasActiveNativeKimiK3Reasoning(model, options)
+	) {
+		// Native K3 reasoning is incompatible with selecting a specific function.
+		// Preserve the hard tool-use contract while letting K3 choose among tools.
+		params.tool_choice = "required";
+	}
 	if (isForcedToolChoice(params.tool_choice) && !initialCompat.supportsForcedToolChoice) {
 		// Some thinking-required OpenAI-compatible models reject forced
 		// `tool_choice` while still accepting tools with the default auto
@@ -1540,10 +1641,6 @@ function buildParams(
 		delete params.tool_choice;
 	}
 
-	const forcedToolName =
-		typeof params.tool_choice === "object" && params.tool_choice !== null && "function" in params.tool_choice
-			? params.tool_choice.function.name
-			: undefined;
 	if (
 		forcedToolName !== undefined &&
 		(!Array.isArray(params.tools) ||
@@ -1588,11 +1685,12 @@ function buildParams(
 	applyChatCompletionsCompatPolicy(params, finalPolicy);
 	dropOpenRouterKimiForcedToolReasoning(params, model, finalPolicy);
 
-	applyOpenAIGatewayRouting(params, compat);
+	applyOpenAIGatewayRouting(params, compat, cacheRetention !== "none");
 
 	applyOpenAIExtraBody(params, compat.extraBody, {
 		dropThinkingWhenReasoningEffort: compat.dropThinkingWhenReasoningEffort,
 	});
+	applyOpenAIChatCompletionsPromptCachePolicy(params, model, options);
 
 	return { params, toolStrictMode, strictToolsApplied };
 }
@@ -2224,10 +2322,16 @@ function convertTools(
 					description: tool.description || "",
 					// Moonshot/Kimi native hosts validate against the stricter MFJS subset
 					// (const→enum, typed enums, no validators) and 400 otherwise.
+					// Grammar-constrained local backends (llama.cpp, LM Studio, vLLM)
+					// build a GBNF grammar from the schema and 400 with
+					// `Unrecognized schema: true` on the bare boolean subschema
+					// `toolWireSchema` emits for open fields (issue #5914).
 					parameters:
 						compat.toolSchemaFlavor === "moonshot-mfjs"
 							? (normalizeSchemaForMoonshot(wireParameters) as Record<string, unknown>)
-							: wireParameters,
+							: compat.toolSchemaFlavor === "grammar"
+								? sanitizeSchemaForGrammar(wireParameters)
+								: wireParameters,
 					// Only include strict if provider supports it. Some reject unknown fields.
 					...(includeStrict ? { strict: true } : includeExplicitFalse ? { strict: false } : {}),
 				},

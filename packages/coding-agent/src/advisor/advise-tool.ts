@@ -101,6 +101,8 @@ export function isAdvisorInterruptImmuneTurnActive(opts: {
 /**
  * Decide how one advisor note reaches the primary agent.
  *
+ * - A `preserveOnly` caller records every note that arrives while the primary
+ *   is idle as a visible card and never starts a new primary turn.
  * - A non-interrupting `nit` always rides the passive aside queue.
  * - A late `concern` is retained as a visible card when the primary has already
  *   ended with a terminal text answer and no queued work remains, so it cannot
@@ -125,7 +127,9 @@ export function resolveAdvisorDeliveryChannel(opts: {
 	aborting: boolean;
 	terminalAnswerNoQueuedWork?: boolean;
 	interruptImmuneTurnActive?: boolean;
+	preserveOnly?: boolean;
 }): AdvisorDeliveryChannel {
+	if (opts.preserveOnly && !opts.streaming) return "preserve";
 	if (!isInterruptingSeverity(opts.severity)) return "aside";
 	if (opts.autoResumeSuppressed && (opts.aborting || !opts.streaming)) return "preserve";
 	if (opts.terminalAnswerNoQueuedWork && opts.severity !== "blocker" && !opts.streaming && !opts.aborting)

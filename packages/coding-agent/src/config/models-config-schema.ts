@@ -61,6 +61,7 @@ const OpenAICompatFields = {
 	"supportsImageDetailOriginal?": "boolean",
 	// anthropic-messages compat flags (same `compat` slot, per-api interpretation)
 	"supportsEagerToolInputStreaming?": "boolean",
+	"allowAnthropicHeaderOverrides?": "boolean",
 	"requiresToolResultId?": "boolean",
 	"replayUnsignedThinking?": "boolean",
 } as const;
@@ -72,8 +73,19 @@ export const OpenAICompatSchema = type({
 	"whenThinking?": OpenAICompatFieldsSchema,
 });
 
+const BedrockCompatSchema = type({
+	"promptCacheMode?": '"none" | "automatic" | "explicit"',
+	"supportsLongPromptCacheRetention?": "boolean",
+	"promptCacheMinimumTokens?": "number >= 0",
+	"promptCacheMaximumCheckpoints?": "number >= 0",
+});
+
+// Provider-level overrides can target bundled models whose API is not repeated
+// in models.yml, so preserve the sparse compat shape for each supported API.
+const ApiCompatSchema = OpenAICompatSchema.and(BedrockCompatSchema);
+
 const ApiSchema = type(
-	'"openai-completions" | "openai-responses" | "openai-codex-responses" | "azure-openai-responses" | "anthropic-messages" | "google-generative-ai" | "google-gemini-cli" | "google-vertex"',
+	'"openai-completions" | "openai-responses" | "openai-codex-responses" | "azure-openai-responses" | "anthropic-messages" | "bedrock-converse-stream" | "google-generative-ai" | "google-gemini-cli" | "google-vertex"',
 );
 
 const EffortSchema = type('"minimal" | "low" | "medium" | "high" | "xhigh" | "max"');
@@ -172,7 +184,7 @@ const ModelDefinitionSchema = type({
 	"maxTokens?": "number",
 	"omitMaxOutputTokens?": "boolean",
 	"headers?": { "[string]": "string" },
-	"compat?": OpenAICompatSchema,
+	"compat?": ApiCompatSchema,
 	"contextPromotionTarget?": "string",
 	"compactionModel?": "string",
 	"remoteCompaction?": RemoteCompactionSchema,
@@ -221,7 +233,7 @@ export const ModelOverrideSchema = type({
 	"maxTokens?": "number",
 	"omitMaxOutputTokens?": "boolean",
 	"headers?": { "[string]": "string" },
-	"compat?": OpenAICompatSchema,
+	"compat?": ApiCompatSchema,
 	"contextPromotionTarget?": "string",
 	"compactionModel?": "string",
 	"remoteCompaction?": RemoteCompactionSchema,
@@ -262,7 +274,7 @@ const ProviderConfigSchema = type({
 	"apiKey?": "string",
 	"api?": ApiSchema,
 	"headers?": { "[string]": "string" },
-	"compat?": OpenAICompatSchema,
+	"compat?": ApiCompatSchema,
 	"remoteCompaction?": RemoteCompactionSchema,
 	"authHeader?": "boolean",
 	"auth?": ProviderAuthSchema,

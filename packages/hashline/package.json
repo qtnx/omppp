@@ -33,7 +33,7 @@
     "fmt": "biome format --write ."
   },
   "dependencies": {
-    "diff": "catalog:",
+    "@oh-my-pi/pi-natives": "catalog:",
     "lru-cache": "catalog:"
   },
   "devDependencies": {

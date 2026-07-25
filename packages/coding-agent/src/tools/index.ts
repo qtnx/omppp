@@ -25,11 +25,13 @@ import type { OrchestratorModeState } from "../orchestrator-mode/state";
 import type { PlanModeState } from "../plan-mode/state";
 import { startPreviewServer } from "../product-preview";
 import type { PreviewFeedback } from "../product-preview/types";
+import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
 import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
 import type { UsageStatistics } from "../session/session-entries";
+import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import { TaskTool } from "../task";
@@ -56,6 +58,7 @@ import { BrowserTool } from "./browser";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { CompactTool } from "./compact";
+import { ComputerTool } from "./computer";
 import { ConsultTool } from "./consult";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
@@ -106,6 +109,8 @@ export * from "./bash";
 export * from "./browser";
 export * from "./checkpoint";
 export * from "./compact";
+export * from "./computer";
+export * from "./computer/supervisor";
 export * from "./debug";
 export * from "./essential-tools";
 export * from "./eval";
@@ -233,6 +238,8 @@ export interface BrowserAnnotationEntry {
 export interface ToolSession {
 	/** Current working directory */
 	cwd: string;
+	/** Additional workspace directories beyond cwd (multi-root), forwarded to subagents. */
+	additionalDirectories?: string[];
 	/** Whether UI is available */
 	hasUI: boolean;
 	/**
@@ -306,6 +313,8 @@ export interface ToolSession {
 	getEvalSessionId?: () => string | null;
 	/** Get session file */
 	getSessionFile: () => string | null;
+	/** Parent session journal used by tools that persist runtime lifecycle state. */
+	sessionManager?: Pick<SessionManager, "appendCustomEntry" | "ensureOnDisk" | "flush" | "getBranch" | "getEntries">;
 	/** Get eval kernel owner ID for session-scoped retained-kernel cleanup. */
 	getEvalKernelOwnerId?: () => string | null;
 	/** Reject new eval work once session disposal has started. */
@@ -338,6 +347,8 @@ export interface ToolSession {
 	xdevRegistry?: XdevRegistry;
 	/** Agent registry for IRC routing across live sessions. */
 	agentRegistry?: AgentRegistry;
+	/** Idle→parked→revive lifecycle owner; lets the hub kill a non-job-backed agent registration. Default: AgentLifecycleManager.global(). */
+	agentLifecycle?: () => AgentLifecycleManager;
 	/** Get artifacts directory for artifact:// URLs */
 	getArtifactsDir?: () => string | null;
 	/** Get the ArtifactManager backing this session (shared across parent + subagents). */
@@ -627,6 +638,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	lsp: LspTool.createIf,
 	inspect_image: s => new InspectImageTool(s),
 	browser: s => new BrowserTool(s),
+	computer: s => new ComputerTool(s),
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
 	compact: CompactTool.createIf,
@@ -778,6 +790,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				if (!requestedTools.includes(name)) requestedTools.push(name);
 			}
 		}
+		if (session.settings.get("memory.backend") === "mnemopi" && !requestedTools.includes("memory_edit")) {
+			requestedTools.push("memory_edit");
+		}
 		// Auto-learn tools are gated by `autolearn.enabled` but, like the memory
 		// tools above, must also be force-included into an explicit requestedTools
 		// list so a restricted top-level session whose controller/guidance is
@@ -824,12 +839,14 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "search_tool_bm25") return discoveryActive;
 		if (name === "ask") return session.settings.get("ask.enabled");
 		if (name === "browser") return session.settings.get("browser.enabled");
+		if (name === "computer") return session.settings.get("computer.enabled");
 		if (name === "checkpoint" || name === "rewind") return session.settings.get("checkpoint.enabled");
 		if (name === "compact") return session.settings.get("compaction.strategy") !== "off";
 		if (name === "irc") return isIrcEnabled(session.settings, session.taskDepth ?? 0);
 		if (name === "retain" || name === "recall" || name === "reflect") {
 			return ["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
 		}
+		if (name === "memory_edit") return session.settings.get("memory.backend") === "mnemopi";
 		if (name === "manage_skill") return session.settings.get("autolearn.enabled") && (session.taskDepth ?? 0) === 0;
 		if (name === "learn") {
 			return (

@@ -440,6 +440,40 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(capturedBeta).toContain("mid-conversation-system-2026-04-07");
 	});
 
+	it("adds the extended-cache-ttl beta to API-key requests that default to 1h caching", async () => {
+		const captureBeta = () => {
+			let captured: string | undefined;
+			const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
+				captured = (init?.headers as Record<string, string> | undefined)?.["anthropic-beta"];
+				return new Response(
+					JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "captured" } }),
+					{ status: 400, headers: { "Content-Type": "application/json" } },
+				);
+			}) as typeof fetch;
+			return { fetchMock, beta: () => captured ?? "" };
+		};
+		const cacheContext: Context = {
+			systemPrompt: ["Stay concise."],
+			messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+		};
+
+		const canonical = captureBeta();
+		await streamAnthropic(ANTHROPIC_MODEL, cacheContext, {
+			apiKey: "sk-ant-api-test",
+			fetch: canonical.fetchMock,
+		}).result();
+		expect(canonical.beta()).toContain("extended-cache-ttl-2025-04-11");
+
+		// Endpoints without long-cache support never send `ttl: "1h"`, so the
+		// companion beta must stay off the wire too.
+		const proxy = captureBeta();
+		await streamAnthropic(UMANS_ANTHROPIC_MODEL, cacheContext, {
+			apiKey: "sk-umans-test",
+			fetch: proxy.fetchMock,
+		}).result();
+		expect(proxy.beta()).not.toContain("extended-cache-ttl-2025-04-11");
+	});
+
 	it("gates the effort beta and field off google-vertex requests (#5614)", async () => {
 		let capturedBeta: string | undefined;
 		let capturedBody:
@@ -577,7 +611,8 @@ describe("Anthropic request fingerprint alignment", () => {
 
 		expect(payload.system).toEqual([
 			{ type: "text", text: "stable system" },
-			{ type: "text", text: "stable durable context", cache_control: { type: "ephemeral" } },
+			// Canonical Anthropic API-key requests default to the 1h breakpoint.
+			{ type: "text", text: "stable durable context", cache_control: { type: "ephemeral", ttl: "1h" } },
 		]);
 	});
 
@@ -653,6 +688,48 @@ describe("Anthropic request fingerprint alignment", () => {
 		});
 
 		expect(headers.Authorization).toBe("Bearer sk-ant-oat-test");
+	});
+
+	it("honors opted-in OAuth fingerprint headers on non-official endpoints (#5888)", () => {
+		const options = buildAnthropicClientOptions({
+			model: buildModel({
+				...ANTHROPIC_MODEL_SPEC,
+				provider: "custom-anthropic",
+				baseUrl: "https://proxy.example.com/anthropic",
+				headers: {
+					"anthropic-beta": "custom-beta-token",
+					"x-app": "custom-app-token",
+					"X-Stainless-Runtime-Version": "custom-runtime-token",
+					Authorization: "should-not-leak",
+				},
+				compat: { allowAnthropicHeaderOverrides: true },
+			}),
+			apiKey: "sk-ant-oat-test",
+			stream: true,
+		});
+
+		expect(options.defaultHeaders["anthropic-beta"]).toBe("custom-beta-token");
+		expect(options.defaultHeaders["x-app"]).toBe("custom-app-token");
+		expect(options.defaultHeaders["X-Stainless-Runtime-Version"]).toBe("custom-runtime-token");
+		expect(options.defaultHeaders.Authorization).toBe("Bearer sk-ant-oat-test");
+	});
+
+	it("keeps OAuth fingerprint defaults on official endpoints despite the compat opt-in", () => {
+		const headers = buildAnthropicHeaders({
+			apiKey: "sk-ant-oat-test",
+			baseUrl: "https://api.anthropic.com",
+			isOAuth: true,
+			allowAnthropicHeaderOverrides: true,
+			modelHeaders: {
+				"anthropic-beta": "custom-beta-token",
+				"x-app": "custom-app-token",
+				"X-Stainless-Runtime-Version": "custom-runtime-token",
+			},
+		});
+
+		expect(headers["anthropic-beta"]).not.toBe("custom-beta-token");
+		expect(headers["x-app"]).toBe("cli");
+		expect(headers["X-Stainless-Runtime-Version"]).toBe("v24.3.0");
 	});
 
 	it("suppresses the client-level X-Api-Key when model.headers carries a custom Authorization (#3391)", () => {

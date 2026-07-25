@@ -283,4 +283,24 @@ describe("InteractiveMode loop auto-submit", () => {
 		expect(input.text).toBe("reset survives");
 		expect(await Bun.file(resolveLocalPromptFile(mode)).text()).toBe("reset survives");
 	});
+
+	it("reports waiting, running, paused, resumed, and disabled loop states", async () => {
+		const setLoopModeStatus = vi.spyOn(mode.statusLine, "setLoopModeStatus");
+		const limit = expect.objectContaining({ initialIterations: 3, remainingIterations: 3 });
+
+		await mode.handleLoopCommand("1ms 3");
+		expect(setLoopModeStatus).toHaveBeenLastCalledWith({ state: "waiting", limit });
+
+		mode.setLoopPrompt("repeat this");
+		expect(setLoopModeStatus).toHaveBeenLastCalledWith({ state: "running", limit });
+
+		mode.pauseLoop();
+		expect(setLoopModeStatus).toHaveBeenLastCalledWith({ state: "paused", limit });
+
+		mode.setLoopPrompt("resume this");
+		expect(setLoopModeStatus).toHaveBeenLastCalledWith({ state: "running", limit });
+
+		mode.disableLoopMode();
+		expect(setLoopModeStatus).toHaveBeenLastCalledWith(undefined);
+	});
 });

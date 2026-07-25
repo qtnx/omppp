@@ -1,7 +1,14 @@
 {{#if asyncEnabled}}{{#if batchEnabled}}Delegate work to background subagents by passing multiple items in a single `tasks[]` batch.
-Execution does not block — you receive IDs immediately; results deliver when subagents finish.{{else}}Delegate work to ONE background subagent per call.
-Execution does not block — you receive an ID immediately; the result delivers when the subagent finishes.{{/if}}{{#if hasBlockingAgents}}
+Execution does not block — you receive IDs immediately.{{else}}Delegate work to ONE background subagent per call.
+Execution does not block — you receive an ID immediately.{{/if}}{{#if hasBlockingAgents}}
 Agents marked BLOCKING run inline — results return in this call; non-blocking items in the same batch still spawn as background jobs.{{/if}}{{else}}{{#if batchEnabled}}Run subagents synchronously by passing items in a `tasks[]` batch. Execution blocks until all work finishes.{{else}}Run ONE subagent synchronously. Execution blocks until work finishes.{{/if}}{{/if}}
+{{#if asyncEnabled}}
+
+# Async Job Contract
+- Results auto-deliver. A settled `hub jobs`/`hub wait` snapshot is the delivery; no duplicate `async-result` follows.
+- Job IDs are process-local and expire roughly five minutes after settlement. Afterward, use the agent ID with `hub send`, `agent://<id>`, or `history://<id>`.
+- `completed` means successful yield/job exit, not artifact acceptance. Verify claimed changes.
+{{/if}}
 
 # Delegation Strategy
 - **Maximize parallelism:** Break work into the widest possible {{#if batchEnabled}}array of `tasks[]`{{else}}set of parallel `task` calls{{/if}}. NEVER serialize work that can run concurrently. Tasks touching different files or independent refactors should run in parallel; agents resolve their own file collisions live.
@@ -23,25 +30,35 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
   - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
   - `agent`: The agent type running this item (e.g. `scout`, `reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
   - `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
+  - `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
   - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
   - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
   - `max_runtime_seconds`: You MUST choose an appropriate cap for each implementation/research spawn. Recommended: `explore`/`quick_task` 600, `task` 1200, `heavy_task` 2700. Omit to use configured fallback; `0` means unlimited.
   - `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
   - Legacy runtime aliases: `assignment`, `id`, `description`, and `role` remain accepted for compatibility.
 {{#if isolationEnabled}}
-  - `isolated`: Run in dedicated worktree, return patches. Destroyed on completion, cannot be addressed afterward.
+{{#if applyIsolatedChanges}}
+  - `isolated`: Run in a dedicated worktree; successful changes are automatically applied to the parent checkout.
+{{else}}
+  - `isolated`: Run in a dedicated worktree; changes are retained as patch or branch artifacts without modifying the parent checkout.
+{{/if}}
 {{/if}}
 {{else}}
 - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
 - `agent`: The agent type to spawn (e.g. `scout`, `reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
 - `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
+- `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
 - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
 - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
 - `max_runtime_seconds`: You MUST choose an appropriate cap for implementation/research work. Recommended: `explore`/`quick_task` 600, `task` 1200, `heavy_task` 2700. Omit to use configured fallback; `0` means unlimited.
 - `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
 - Legacy runtime aliases: `assignment`, `id`, `description`, and `role` remain accepted for compatibility.
 {{#if isolationEnabled}}
-- `isolated`: Run in dedicated worktree, return patches.
+{{#if applyIsolatedChanges}}
+- `isolated`: Run in a dedicated worktree; successful changes are automatically applied to the parent checkout.
+{{else}}
+- `isolated`: Run in a dedicated worktree; changes are retained as patch or branch artifacts without modifying the parent checkout.
+{{/if}}
 {{/if}}
 {{/if}}
 

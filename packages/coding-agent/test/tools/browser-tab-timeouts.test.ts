@@ -1,6 +1,7 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import { resolvePredicateTimeout } from "@oh-my-pi/pi-coding-agent/tools/browser/run-cancellation";
 import {
+	dispatchScroll,
 	normalizeSelector,
 	resolveOpTimeouts,
 	resolveWaitTimeout,
@@ -39,6 +40,33 @@ describe("browser per-op fail-fast ceilings", () => {
 		expect(actionOpMs).toBeGreaterThanOrEqual(1);
 		expect(quickOpMs).toBeGreaterThanOrEqual(1);
 		expect(actionOpMs).toBeLessThanOrEqual(budgetBound);
+	});
+});
+
+describe("browser scroll acknowledgement", () => {
+	it("returns after the acknowledgement deadline while the renderer remains stalled", async () => {
+		const acknowledgement = Promise.withResolvers<void>();
+
+		await expect(dispatchScroll(() => acknowledgement.promise, 1)).resolves.toBeUndefined();
+	});
+
+	it("preserves wheel dispatch failures received before the acknowledgement deadline", async () => {
+		await expect(dispatchScroll(() => Promise.reject(new Error("target closed")), 100)).rejects.toThrow(
+			"target closed",
+		);
+	});
+
+	it("cancels the acknowledgement deadline after a prompt dispatch", async () => {
+		vi.useFakeTimers();
+		try {
+			const timerCount = vi.getTimerCount();
+
+			await dispatchScroll(() => Promise.resolve());
+
+			expect(vi.getTimerCount()).toBe(timerCount);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
@@ -120,5 +148,18 @@ describe("browser selector guard", () => {
 
 	it("still rewrites legacy p- prefixes", () => {
 		expect(normalizeSelector("p-text/Continue")).toBe("text/Continue");
+	});
+
+	it("rejects non-string selectors (handle/number) instead of crashing on .startsWith", () => {
+		// Regression: passing the ElementHandle from tab.id()/tab.ref() reached
+		// `selector.startsWith(...)` and threw the opaque `A.trim is not a function`.
+		const handle = {
+			click: async () => {},
+			asElement() {
+				return this;
+			},
+		};
+		expect(() => normalizeSelector(handle as never)).toThrow(/must be a string; got an ElementHandle/);
+		expect(() => normalizeSelector(23 as never)).toThrow(/must be a string; got a number/);
 	});
 });

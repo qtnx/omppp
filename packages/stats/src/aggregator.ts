@@ -28,7 +28,7 @@ import {
 	insertSubagentRuns,
 	insertToolCalls,
 	insertUserMessageStats,
-	markSubagentRunsBackfillComplete,
+	markSessionBackfillsComplete,
 	setFileOffset,
 	updateToolResults,
 	updateUserMessageLinks,
@@ -223,15 +223,15 @@ export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: 
 	await initDb();
 
 	const files = await listAllSessionFiles();
-	if (files.length === 0) {
-		markSubagentRunsBackfillComplete();
-		return { processed: 0, files: 0 };
-	}
-
 	let totalProcessed = 0;
 	let filesProcessed = 0;
 	let completed = 0;
 	let cursor = 0;
+	const finish = () => {
+		markSessionBackfillsComplete();
+		return { processed: totalProcessed, files: filesProcessed };
+	};
+	if (files.length === 0) return finish();
 
 	const report = (sessionFile: string) => {
 		completed++;
@@ -276,8 +276,7 @@ export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: 
 		for (const sessionFile of files) {
 			await processFile(sessionFile, parseSessionFile);
 		}
-		markSubagentRunsBackfillComplete();
-		return { processed: totalProcessed, files: filesProcessed };
+		return finish();
 	}
 
 	const poolSize = Math.min(files.length, requestedWorkers);
@@ -300,8 +299,7 @@ export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: 
 		for (const handle of handles) handle.worker.terminate();
 	}
 
-	markSubagentRunsBackfillComplete();
-	return { processed: totalProcessed, files: filesProcessed };
+	return finish();
 }
 
 const HOUR_MS = 60 * 60 * 1000;

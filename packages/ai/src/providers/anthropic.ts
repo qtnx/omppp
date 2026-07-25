@@ -102,6 +102,8 @@ export type AnthropicHeaderOptions = {
 	isCloudflareAiGateway?: boolean;
 	claudeCodeSessionId?: string;
 	claudeCodeBetas?: readonly string[];
+	/** Allow explicit fingerprint headers to replace OAuth defaults on non-official endpoints. */
+	allowAnthropicHeaderOverrides?: boolean;
 };
 
 export function normalizeAnthropicBaseUrl(baseUrl?: string): string | undefined {
@@ -146,7 +148,8 @@ const claudeCodeAgentBetaDefaults = [
 	midConversationSystemBeta,
 	"advanced-tool-use-2025-11-20",
 ] as const;
-const claudeCodeAgentPostEffortBetas = ["extended-cache-ttl-2025-04-11"] as const;
+const extendedCacheTtlBeta = "extended-cache-ttl-2025-04-11";
+const claudeCodeAgentPostEffortBetas = [extendedCacheTtlBeta] as const;
 const fineGrainedToolStreamingBeta = "fine-grained-tool-streaming-2025-05-14";
 const interleavedThinkingBeta = "interleaved-thinking-2025-05-14";
 // Asks the API to redact thinking blocks from responses. Only sent when the
@@ -227,22 +230,36 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 	const acceptHeader = oauthToken ? "application/json" : stream ? "text/event-stream" : "application/json";
 	const isCloudflare = options.isCloudflareAiGateway ?? false;
 	const honorAuthorization = !oauthToken && !isCloudflare;
+	const allowAnthropicHeaderOverrides =
+		oauthToken &&
+		options.allowAnthropicHeaderOverrides === true &&
+		!isCloudflare &&
+		!isOfficialAnthropicApiUrl(options.baseUrl);
 	const honorApiKey = !isCloudflare;
 	const modelHeaders: Record<string, string> = {};
+	const anthropicHeaderOverrides: Record<string, string> = {};
 	const filteredEnforcedKeys: string[] = [];
-	for (const [key, value] of Object.entries(options.modelHeaders ?? {})) {
-		const lowerKey = key.toLowerCase();
-		if (enforcedHeaderKeys.has(lowerKey)) {
-			// user-agent is always re-applied explicitly. authorization / x-api-key
-			// are silently re-applied in honoring branches and dropped + logged
-			// where the branch enforces its own credential.
-			if (lowerKey === "user-agent") continue;
-			if (lowerKey === "authorization" && honorAuthorization) continue;
-			if (lowerKey === "x-api-key" && honorApiKey) continue;
-			filteredEnforcedKeys.push(key);
-			continue;
+	const headerSource = options.modelHeaders;
+	if (headerSource) {
+		for (const key in headerSource) {
+			const value = headerSource[key];
+			const lowerKey = key.toLowerCase();
+			if (enforcedHeaderKeys.has(lowerKey)) {
+				if (allowAnthropicHeaderOverrides && overridableAnthropicHeaderKeys.has(lowerKey)) {
+					anthropicHeaderOverrides[key] = value;
+					continue;
+				}
+				// user-agent is always re-applied explicitly. authorization / x-api-key
+				// are silently re-applied in honoring branches and dropped + logged
+				// where the branch enforces its own credential.
+				if (lowerKey === "user-agent") continue;
+				if (lowerKey === "authorization" && honorAuthorization) continue;
+				if (lowerKey === "x-api-key" && honorApiKey) continue;
+				filteredEnforcedKeys.push(key);
+				continue;
+			}
+			modelHeaders[key] = value;
 		}
-		modelHeaders[key] = value;
 	}
 	if (filteredEnforcedKeys.length > 0) {
 		// Caller/env-supplied values (options.headers, ANTHROPIC_CUSTOM_HEADERS)
@@ -268,7 +285,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 		const userAgent = isClaudeCodeClientUserAgent(incomingUserAgent)
 			? incomingUserAgent
 			: `claude-cli/${claudeCodeVersion} (external, local-agent, agent-sdk/${claudeAgentSdkVersion})`;
-		return {
+		const headers = {
 			...modelHeaders,
 			...claudeCodeHeaders,
 			Accept: acceptHeader,
@@ -280,6 +297,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 			"User-Agent": userAgent,
 			...(incomingApiKey ? { "X-Api-Key": incomingApiKey } : {}),
 		};
+		return allowAnthropicHeaderOverrides ? mergeHeaders(headers, anthropicHeaderOverrides) : headers;
 	} else if (!isOfficialAnthropicApiUrl(options.baseUrl)) {
 		return {
 			...modelHeaders,
@@ -426,7 +444,15 @@ function getCacheControl(
 	cacheRetention: CacheRetention | undefined,
 	isOAuthToken: boolean,
 ): { retention: CacheRetention; cacheControl?: AnthropicCacheControl } {
-	const retention = cacheRetention ?? (isOAuthToken ? "long" : resolveCacheRetention(undefined));
+	// OAuth mirrors Claude Code and always defaults to 1h retention. API-key
+	// requests also default to 1h where the endpoint supports it (canonical
+	// Anthropic API, `compat.supportsLongCacheRetention`): agent sessions
+	// routinely idle past 5 minutes waiting on background jobs, and a 5m
+	// breakpoint cold-misses the entire prefix on resume. PI_CACHE_RETENTION
+	// still overrides the API-key default in either direction.
+	const retention = isOAuthToken
+		? (cacheRetention ?? "long")
+		: resolveCacheRetention(cacheRetention, model.compat.supportsLongCacheRetention ? "long" : "short");
 	if (retention === "none") {
 		return { retention };
 	}
@@ -512,6 +538,10 @@ const enforcedHeaderKeys = new Set(
 		"x-client-request-id",
 		"cf-aig-authorization",
 	].map(key => key.toLowerCase()),
+);
+
+const overridableAnthropicHeaderKeys = new Set(
+	[...Object.keys(claudeCodeHeaders), "anthropic-beta", "User-Agent", "x-app"].map(key => key.toLowerCase()),
 );
 
 const CLAUDE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
@@ -1859,6 +1889,17 @@ const streamAnthropicOnce = (
 				) {
 					extraBetas.push(contextManagementBeta);
 				}
+				// `ttl: "1h"` requires the extended-cache-ttl beta on API-key
+				// requests. OAuth requests never add it here: agent requests
+				// already carry it in the Claude Code beta list, and utility
+				// requests must not deviate from CC's header fingerprint.
+				if (
+					!(options?.isOAuth ?? isAnthropicOAuthToken(apiKey)) &&
+					getCacheControl(model, options?.cacheRetention, false).cacheControl?.ttl === "1h" &&
+					!extraBetas.includes(extendedCacheTtlBeta)
+				) {
+					extraBetas.push(extendedCacheTtlBeta);
+				}
 				// Server-side fallback beta chain: opt-in via `options.fallbacks`.
 				// Nested overrides (`speed`, `output_config.effort`,
 				// `output_config.task_budget`) reuse the same top-level betas
@@ -2797,6 +2838,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			dynamicHeaders,
 		),
 		isCloudflareAiGateway: model.provider === "cloudflare-ai-gateway",
+		allowAnthropicHeaderOverrides: model.compat.allowAnthropicHeaderOverrides,
 		claudeCodeSessionId,
 		claudeCodeBetas: oauthToken
 			? buildClaudeCodeBetas(
