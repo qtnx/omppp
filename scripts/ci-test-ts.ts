@@ -84,9 +84,30 @@ const codingAgentBucketPlans: Record<CodingAgentBucket, { label: string; paralle
 	native: { label: "native/tooling/browser/unit bucket", parallel: 1, chunkSize: 10 },
 };
 
+// Chunk fan-out per bucket. Chunks are independent child processes, so a bucket
+// runs them through a bounded pool instead of strictly serially: the native
+// bucket alone is 66 chunks whose median runtime is ~10s, i.e. ~12min of pure
+// serial wall time on the CI critical path. A chunk peaks ~1.3GB RSS under
+// `--smol`, so the pool width is what keeps a memory-capped runner alive —
+// `groupConcurrency` additionally clamps to the host's core count, so a 2-core
+// runner never oversubscribes. Singleton stays at 1: its files accumulate
+// native/global state and are deliberately serialized.
 const commandGroupParallel: Record<string, number> = {
+	"coding-agent-singleton": 1,
+	"coding-agent-ui": 2,
 	"coding-agent-runtime": 2,
+	"coding-agent-native": 4,
 };
+
+// Effective pool width for a command group: the configured width, clamped to
+// available cores, overridable with OMP_TEST_CHUNK_CONCURRENCY (a positive
+// integer) when a runner needs it dialed down.
+function groupConcurrency(group: string): number {
+	const override = Number(Bun.env.OMP_TEST_CHUNK_CONCURRENCY?.trim());
+	const configured =
+		Number.isFinite(override) && override >= 1 ? Math.floor(override) : (commandGroupParallel[group] ?? 1);
+	return Math.max(1, Math.min(configured, os.availableParallelism()));
+}
 
 // Smaller workspace packages stay separate from native/TUI/integration suites so
 // their short TS suites can run together. CI still downloads the Linux x64 native
@@ -352,7 +373,7 @@ async function codingAgentTestCommands(bucket: CodingAgentBucket): Promise<TestC
 			label: `packages/coding-agent (${plan.label}; ${testFiles.length} files; parallel=${plan.parallel}${chunkLabel}; ${chunk.length} files)`,
 			cwd: "packages/coding-agent",
 			command: ["bun", "--smol", "test", `--parallel=${plan.parallel}`, ...onlyFailuresArgs, ...chunk],
-			group: bucket === "runtime" ? "coding-agent-runtime" : undefined,
+			group: `coding-agent-${bucket}`,
 			isolatedHome: true,
 		});
 	}
@@ -504,7 +525,7 @@ async function runTestCommand(testCommand: TestCommand): Promise<void> {
 async function runTestCommands(testCommands: TestCommand[]): Promise<void> {
 	for (let index = 0; index < testCommands.length; ) {
 		const group = testCommands[index]?.group;
-		const parallel = group ? (commandGroupParallel[group] ?? 1) : 1;
+		const parallel = group ? groupConcurrency(group) : 1;
 		if (!group || parallel <= 1) {
 			await runTestCommand(testCommands[index]);
 			index += 1;

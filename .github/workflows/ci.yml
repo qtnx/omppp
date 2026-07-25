@@ -811,7 +811,10 @@ jobs:
       needs: [release_metadata, release_github]
       runs-on: macos-14
       permissions:
-         contents: read
+         # Draft releases are invisible to a read-only GITHUB_TOKEN, so
+         # `gh release download` on the draft fails with "release not found".
+         # Reading a draft needs push access; the job still only downloads.
+         contents: write
       steps:
          - name: Download and verify draft release assets
            env:
