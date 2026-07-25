@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Reworded the delegation reminder to require anchored briefs (exact `file:line` plus pasted code) and to allow continued hands-on work when the remainder is a single contained edit, a shared prerequisite, or a live debug loop.
+
 ## [1.3.0] - 2026-06-11
 
 ### Added

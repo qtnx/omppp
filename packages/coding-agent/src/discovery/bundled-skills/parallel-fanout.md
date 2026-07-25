@@ -1,6 +1,6 @@
 ---
 name: parallel-fanout
-description: MANDATORY before multi-file delegation, scout dispatch, or wave planning. Defines ready-horizon slicing, C/R dependency tests, ownership and shared-file rules, one-wave scouting, iterative adversarial plan convergence, and the production-owner invariant after lock.
+description: MANDATORY before multi-file delegation, scout dispatch, or wave planning. Defines ready-horizon slicing, C/R dependency tests, ownership and shared-file rules, one-wave scouting, bounded adversarial plan convergence (1 review round by default), and the production-owner invariant after lock.
 ---
 
 # Parallel Fanout
@@ -80,8 +80,8 @@ Wave 1 = ONE `task` batch of P1–P6 (six agents in parallel). P7 dispatches whe
 
 ## Plan convergence, lock, then dispatch
 
-- New plans follow `skill://brainstorming`, then `skill://writing-plans`, then adversarial `super_review`.
-- Critique/revision MAY repeat without a fixed cap while each round resolves a named blocker or incorporates user feedback through a material plan change. Re-review the complete revised plan until no blocker remains.
+- New plans follow `skill://brainstorming`, then `skill://writing-plans`. Adversarial `super_review` is ONE round by default: skip it when the plan is confident and off the RISK list, keep it for L3/RISK/irreversible or contested designs.
+- Round cap: 1 by default, 2 only to confirm that named blocker fixes landed, more ONLY when the user explicitly asks for a deeper pass. Each round needs a named blocker or user feedback plus a material plan change. At the cap, fix, record residual risk, and lock.
 - Satisfaction requires requirement coverage, coherent interfaces/ownership/sequence, executable acceptance, no placeholders, no adversarial blocker, and any active approval gate satisfied. Ordinary implementation requests need no second approval.
 - No blockers + active gate satisfied = LOCKED. The NEXT work action dispatches production; mandatory dispatch-skill reads and todo updates MAY precede it in the same turn, but no plan/review/scout action intervenes.
 - Existing approved plan/brief + ownership + acceptance is already locked. During execution, only concrete compile/test/runtime/contract evidence permits a one-line amendment.

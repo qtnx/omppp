@@ -20,6 +20,8 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 {{#if ircEnabled}}- **Steering delivery:** Parent-to-subagent IRC is delivered immediately as steering; subagents blocked in `job poll` / `irc wait` do not need to poll separately for it.{{/if}}
 - **Role matching:** Assign each subagent a specific `role` (e.g. "Security Reviewer", "DB Migrator"). Do not spawn generic workers.
 - **No overhead:** Each assignment MUST instruct its agent to skip formatters, linters, and project-wide test suites. You will run those once at the end.
+- **Brief so they never re-scout:** Every assignment carries the exact `file:line`/`file:symbol` anchors and the decisive code pasted inline, so the owner's FIRST action is an edit, not a search. An owner rediscovering what you already know is a defect in your brief, not diligence.
+- **Fast exit:** State explicitly that the owner yields the moment Acceptance passes — no extra polish, no unrequested gates, no broadened scope.
 - **One-pass agents:** Prefer agents that investigate **and** edit in a single pass; only spin a read-only discovery step (e.g. `scout`) when the affected files are genuinely unknown.
 
 # Inputs
@@ -33,7 +35,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
   - `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
   - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
   - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
-  - `max_runtime_seconds`: You MUST choose an appropriate cap for each implementation/research spawn. Recommended: `explore`/`quick_task` 600, `task` 1200, `heavy_task` 2700. Omit to use configured fallback; `0` means unlimited.
+  - `max_runtime_seconds`: You MUST choose an appropriate cap for each implementation/research spawn. Recommended: `quick_task` 300, `explore`/`scout` 600, `task` 900, `heavy_task` 2400. The cap is a ceiling, not a target — a well-briefed owner finishes far inside it. Omit to use configured fallback; `0` means unlimited.
   - `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
   - Legacy runtime aliases: `assignment`, `id`, `description`, and `role` remain accepted for compatibility.
 {{#if isolationEnabled}}
@@ -50,7 +52,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 - `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
 - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
 - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
-- `max_runtime_seconds`: You MUST choose an appropriate cap for implementation/research work. Recommended: `explore`/`quick_task` 600, `task` 1200, `heavy_task` 2700. Omit to use configured fallback; `0` means unlimited.
+- `max_runtime_seconds`: You MUST choose an appropriate cap for implementation/research work. Recommended: `quick_task` 300, `explore`/`scout` 600, `task` 900, `heavy_task` 2400. The cap is a ceiling, not a target — a well-briefed owner finishes far inside it. Omit to use configured fallback; `0` means unlimited.
 - `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
 - Legacy runtime aliases: `assignment`, `id`, `description`, and `role` remain accepted for compatibility.
 {{#if isolationEnabled}}
@@ -99,6 +101,12 @@ The `assignment` field MUST follow this format:
 - Forbidden: other owners' files, generated files, lockfiles, and unrelated cleanup.
 - Non-goals: task-specific exclusions; batch exclusions stay in `context`.
 
+# Pointers (no re-scouting)
+- Exact anchors: `path:line` or `path:symbol` for every edit site, plus the `file:symbol` pattern to mirror.
+- Paste the decisive code inline — the current shape, and the intended shape when you already know it.
+- Name what NOT to read. The owner reads the listed files plus their direct dependencies, nothing else.
+- Every anchor MUST come from a read you actually did; NEVER invent a line number, symbol, or command.
+
 # Change
 1. State current behavior/problem and desired observable result.
 2. Give ordered implementation requirements with exact inputs, outputs, errors, and state transitions.
@@ -116,6 +124,7 @@ The `assignment` field MUST follow this format:
 - NEVER assign project-wide gates; the parent runs integration gates once.
 
 # Done
+- Exit condition: yield the moment every Acceptance item passes — no extra polish, no unrequested gates, no repo-wide suites, no formatter runs.
 - Deliverable form: default is uncommitted working-tree edits; name any different requirement explicitly.
 - Report files + symbols changed; each Acceptance item as `command/check → decisive output`.
 - Report deviations, assumptions used, unresolved risks, and blockers.
@@ -152,6 +161,7 @@ Apply exactly one profile; it tightens `<assignment-fmt>` and NEVER replaces a s
 Before sending, verify:
 - Self-contained: no “as discussed,” bare pronouns, hidden decisions, or unstated setup.
 - Source-grounded: every named path, symbol, count, contract, and command exists in repo/tool evidence; NEVER invent missing setup or APIs.
+- Anchored: exact `file:line`/`file:symbol` sites plus the decisive code pasted inline, so the owner starts at an edit instead of re-deriving your map.
 - Scoped: one executable concern; exact write ownership; explicit boundaries and non-goals.
 - Contract-locked: literal shared shapes, ownership, and OPEN choices agree across tasks.
 - Verifiable: commands are runnable as written and expected evidence is concrete.
@@ -165,6 +175,12 @@ RIGHT:
   Owns: `src/modes/controllers/event-controller.ts` — modify `#handleAutoCompactionStart`;
   `test/modes/controllers/event-controller-compaction-spinner.test.ts` — modify regression coverage.
   Forbidden: retry handlers and other controller files. Non-goal: no animation redesign.
+  # Pointers
+  `event-controller.ts:412` — `#handleAutoCompactionStart` clears the container first:
+      this.statusContainer.clear();
+  Mirror `event-controller.ts:388` — `#handleAgentEnd`:
+      ctx.loadingAnimation?.stop(); ctx.loadingAnimation = null;
+  Do not read other controllers, the retry stack, or the TUI renderer.
   # Change
   Stop and null `ctx.loadingAnimation` before `statusContainer.clear()`, mirroring
   `event-controller.ts:#handleAgentEnd`. Preserve all other compaction transitions.

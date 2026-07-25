@@ -28,7 +28,7 @@ Before planning, read and follow `skill://brainstorming` and `skill://writing-pl
 
 ## Phase 4: Produce and self-check
 
-Write the complete executable plan using the `skill://writing-plans` structure and self-review checklist. If the parent supplies adversarial blockers or user feedback, materially revise the affected sections and return a new complete draft for another review; there is no fixed revision cap before satisfaction. Never churn on notes, style, or an unchanged draft. Existing approved/locked plan? Return its current dispatch brief instead of replanning.
+Write the complete executable plan using the `skill://writing-plans` structure and self-review checklist. If the parent supplies adversarial blockers or user feedback, materially revise the affected sections and return a new complete draft; expect at most one such revision round unless the parent explicitly asks for more. Never churn on notes, style, or an unchanged draft. Existing approved/locked plan? Return its current dispatch brief instead of replanning.
 
 <structure>
 - **Summary**: What to build and why (one paragraph).
