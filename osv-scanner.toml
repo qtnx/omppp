@@ -27,3 +27,8 @@ reason = "quick-xml 0.39.4 is transitive via inferno + wayland-scanner (both pin
 id = "RUSTSEC-2026-0195"
 ignoreUntil = 2026-12-31
 reason = "quick-xml 0.39.4 is transitive via inferno + wayland-scanner (both pinned ^0.39); no upstream-reachable fix yet (fix is 0.41.0). Revisit when inferno/wayland-scanner bump quick-xml."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0150"
+ignoreUntil = 2026-12-31
+reason = "audiopus_sys 0.2.2 is unmaintained (transitive via maudio/audiopus); no fixed version exists. Revisit if audiopus publishes a maintained -sys crate."
