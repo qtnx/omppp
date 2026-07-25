@@ -210,6 +210,60 @@ function createTaskModeError(text: string): AgentToolResult<TaskToolDetails> {
 	};
 }
 
+function buildReviewGatePreflightResult(
+	agents: readonly AgentDefinition[],
+	params: TaskParams,
+	defaultAgent: string,
+	message: string,
+	startTime: number,
+	spawnIndex: number,
+	preAllocatedId?: string,
+): SingleResult {
+	const assignment = (params.task ?? "").trim();
+	const agentName = params.agent?.trim() || defaultAgent;
+	return {
+		index: spawnIndex,
+		id: preAllocatedId ?? params.name?.trim() ?? generateTaskName(),
+		agent: agentName,
+		agentSource: agents.find(agent => agent.name === agentName)?.source ?? "bundled",
+		task: renderSubagentUserPrompt(assignment),
+		assignment,
+		description: params.name?.trim(),
+		exitCode: 1,
+		output: "",
+		stderr: message,
+		truncated: false,
+		durationMs: Date.now() - startTime,
+		tokens: 0,
+		requests: 0,
+		error: message,
+	};
+}
+
+function createReviewGatePreflightFailure(
+	agents: readonly AgentDefinition[],
+	params: TaskParams,
+	defaultAgent: string,
+	message: string,
+	startTime = Date.now(),
+	spawnIndex = 0,
+	preAllocatedId?: string,
+): AgentToolResult<TaskToolDetails> {
+	const result = buildReviewGatePreflightResult(
+		agents,
+		params,
+		defaultAgent,
+		message,
+		startTime,
+		spawnIndex,
+		preAllocatedId,
+	);
+	return {
+		content: [{ type: "text", text: message }],
+		details: { projectAgentsDir: null, results: [result], totalDurationMs: Date.now() - startTime },
+	};
+}
+
 /**
  * Reject legacy fields and shape/configuration combinations the current tool
  * cannot accept. `outputSchema` is a first-class per-spawn field; stale
@@ -873,6 +927,31 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			.map((preflight, index) => ("error" in preflight ? { index, error: preflight.error } : undefined))
 			.filter((failure): failure is { index: number; error: string } => failure !== undefined);
 		if (preflightFailures.length > 0) {
+			const startedAt = Date.now();
+			if (preflightFailures.every(failure => failure.error.startsWith("Review gate"))) {
+				const results = preflightFailures.map(failure =>
+					buildReviewGatePreflightResult(
+						this.#discoveredAgents,
+						normalizedSpawnParams[failure.index]!,
+						defaultAgent,
+						failure.error,
+						startedAt,
+						failure.index,
+					),
+				);
+				const text = batchEnabled
+					? preflightFailures
+							.map(({ index, error }) => {
+								const item = spawnItems[index]!;
+								return `Task ${item.name?.trim() || `#${index + 1}`} failed preflight: ${error}`;
+							})
+							.join("\n")
+					: preflightFailures[0]!.error;
+				return {
+					content: [{ type: "text", text }],
+					details: { projectAgentsDir: null, results, totalDurationMs: Date.now() - startedAt },
+				};
+			}
 			if (!batchEnabled) {
 				return createTaskModeError(`Task execution failed: ${preflightFailures[0]!.error}`);
 			}
@@ -1637,29 +1716,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				error.kind === "preflight" &&
 				message.startsWith("Review gate")
 			) {
-				const agentName = params.agent?.trim() || resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent;
-				const agentSource = this.#discoveredAgents.find(agent => agent.name === agentName)?.source ?? "bundled";
-				const result: SingleResult = {
-					index: spawnIndex,
-					id: preAllocatedId ?? params.name?.trim() ?? generateTaskName(),
-					agent: agentName,
-					agentSource,
-					task: renderSubagentUserPrompt(assignment),
-					assignment,
-					description: params.name?.trim(),
-					exitCode: 1,
-					output: "",
-					stderr: message,
-					truncated: false,
-					durationMs: Date.now() - startTime,
-					tokens: 0,
-					requests: 0,
-					error: message,
-				};
-				return {
-					content: [{ type: "text", text: message }],
-					details: { projectAgentsDir: null, results: [result], totalDurationMs: Date.now() - startTime },
-				};
+				return createReviewGatePreflightFailure(
+					this.#discoveredAgents,
+					params,
+					resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent,
+					message,
+					startTime,
+					spawnIndex,
+					preAllocatedId,
+				);
 			}
 			return {
 				content: [

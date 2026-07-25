@@ -123,7 +123,8 @@ describe("large session memory guards", () => {
 		if (!sessionFile) throw new Error("Expected session file");
 		const persisted = await storage.readText(sessionFile);
 		expect(persisted).toContain(firstSummary);
-		expect(persisted).toContain(archivedFrame);
+		expect(persisted).toMatch(/blob:sha256:[a-f0-9]{64}/);
+		expect(persisted).not.toContain(archivedFrame);
 		expect(persisted).toContain(secondSummary);
 	});
 

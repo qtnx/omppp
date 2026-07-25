@@ -1034,7 +1034,8 @@ export class SessionTools {
 				this.#toolRegistry.has(name) &&
 				(this.#explicitlyRequestedToolNames === undefined ||
 					this.#builtInToolNames.has(name) ||
-					this.#explicitlyRequestedToolNames.has(name)) &&
+					this.#explicitlyRequestedToolNames.has(name) ||
+					this.#mountedXdevToolNames.has(name)) &&
 				(name !== "search_tool_bm25" ||
 					this.isToolDiscoveryEnabled() ||
 					this.#mcpDiscoveryEnabling ||

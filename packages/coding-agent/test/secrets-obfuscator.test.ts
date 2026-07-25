@@ -745,10 +745,16 @@ describe("SecretObfuscator friendlyName placeholders", () => {
 		expect(obfuscator.deobfuscate(obfuscated)).toBe("api_key=abcdefghXYZ");
 	});
 	it("obfuscates bounded regex remainders around prior placeholders", () => {
-		const obfuscator = new SecretObfuscator([
-			{ type: "plain", content: "abcdefgh" },
-			{ type: "regex", content: "api_key=[A-Za-z0-9]{11}", friendlyName: "api-key" },
-		]);
+		// Fixed key so the keyed placeholder base is deterministic; a random per-process
+		// key can mint a base that coincidentally contains the "XYZ" remainder substring
+		// and false-trip the not.toContain("XYZ") leak check below.
+		const obfuscator = new SecretObfuscator(
+			[
+				{ type: "plain", content: "abcdefgh" },
+				{ type: "regex", content: "api_key=[A-Za-z0-9]{11}", friendlyName: "api-key" },
+			],
+			"Q".repeat(43),
+		);
 		const token = obfuscator.obfuscate("abcdefgh");
 
 		const obfuscated = obfuscator.obfuscate(`api_key=${token}XYZ`);

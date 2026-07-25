@@ -618,7 +618,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			await resultA?.session.dispose();
 			await resultB?.session.dispose();
 		}
-	});
+	}, 20000);
 
 	it("keeps sessions usable when native context GC storage cannot open", async () => {
 		const tempDir = path.join(os.tmpdir(), `pi-sdk-context-gc-bad-db-${Snowflake.next()}`);

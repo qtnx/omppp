@@ -1426,7 +1426,7 @@ function b() {
 						testDir,
 						Settings.isolated({
 							"bash.autoBackground.enabled": true,
-							"bash.autoBackground.thresholdMs": 10,
+							"bash.autoBackground.thresholdMs": 150,
 						}),
 						{
 							getSessionId: () => "test-session",
@@ -1439,7 +1439,7 @@ function b() {
 			const result = await autoBackgroundBashTool.execute(
 				"test-call-9-auto-running",
 				{
-					command: "printf 'start\\n'; sleep 0.03; printf 'done\\n'",
+					command: "printf 'start\\n'; sleep 0.4; printf 'done\\n'",
 				},
 				undefined,
 				update => {

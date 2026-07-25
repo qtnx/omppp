@@ -1241,19 +1241,43 @@ async fn run_shell_command_once(
 		}
 	}
 
-	if !reader_finished {
-		reader_cancel.cancel();
-		match time::timeout(READER_SHUTDOWN_TIMEOUT, &mut reader_handle).await {
-			Ok(Ok(Ok(output))) => reader_output = Some(output),
-			Ok(_) => {},
-			Err(_) => {
-				reader_handle.abort();
-				let _ = reader_handle.await;
-			},
+	if cancel_token.is_cancelled() {
+		// Canceled run: `cancel_reader_after_grace` owns reader shutdown. Join it
+		// so it deterministically observes cancellation, runs the grace wait, and
+		// cancels the reader itself. Never abort the bridge or cancel the reader
+		// ahead of the grace window here — under scheduler load the bridge may not
+		// have been polled yet, and aborting it would drop the in-flight grace
+		// observation before it completes.
+		let _ = cancel_bridge.await;
+		if !reader_finished {
+			match time::timeout(READER_SHUTDOWN_TIMEOUT, &mut reader_handle).await {
+				Ok(Ok(Ok(output))) => reader_output = Some(output),
+				Ok(_) => {},
+				Err(_) => {
+					reader_handle.abort();
+					let _ = reader_handle.await;
+				},
+			}
 		}
+	} else {
+		// Normal completion: the cancel bridge is still dormant, parked on
+		// `cancel_token.cancelled()`. Cancel the still-live reader ourselves, then
+		// abort/reap the dormant bridge without waiting for a cancellation that
+		// will never arrive.
+		if !reader_finished {
+			reader_cancel.cancel();
+			match time::timeout(READER_SHUTDOWN_TIMEOUT, &mut reader_handle).await {
+				Ok(Ok(Ok(output))) => reader_output = Some(output),
+				Ok(_) => {},
+				Err(_) => {
+					reader_handle.abort();
+					let _ = reader_handle.await;
+				},
+			}
+		}
+		cancel_bridge.abort();
+		let _ = cancel_bridge.await;
 	}
-	cancel_bridge.abort();
-	let _ = cancel_bridge.await;
 
 	let result = result.map_err(|err| Error::msg(format!("Shell execution failed: {err}")))?;
 	let buffered = match reader_output {

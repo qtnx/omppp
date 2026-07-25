@@ -158,10 +158,14 @@ import {
 	collectEnvSecrets,
 	deobfuscateSessionContext,
 	deobfuscateToolArguments,
+	getExistingSecretPlaceholderKey,
+	getSecretPlaceholderKey,
 	loadSecrets,
 	obfuscateMessages,
 	obfuscateProviderContext,
+	type SecretEntry,
 	SecretObfuscator,
+	secretEntriesNeedPlaceholderKey,
 } from "./secrets";
 import {
 	AgentSession,
@@ -1719,8 +1723,30 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const fileEntries = await logger.time("loadSecrets", loadSecrets, cwd, agentDir);
 			const envEntries = collectEnvSecrets();
 			const allEntries = [...envEntries, ...fileEntries];
-			if (allEntries.length > 0) {
-				obfuscator = new SecretObfuscator(allEntries);
+			// The keyed placeholder digest must survive a process restart so persisted
+			// obfuscate-mode placeholders deobfuscate on resume. Only create/persist the
+			// per-install key when an active entry can actually mint a reversible
+			// placeholder (secretEntriesNeedPlaceholderKey); a replace-only / short /
+			// no-secret config must NOT write secret-placeholder.key (a readable file a
+			// prompt-injected tool could surface). When no key is needed we still LOAD an
+			// existing key without creating one and redact it as a one-way secret, so a
+			// tool read of the stale key file cannot leak it to the provider.
+			const redactableEntries: SecretEntry[] = [...allEntries];
+			let placeholderKey: string | undefined;
+			if (secretEntriesNeedPlaceholderKey(allEntries)) {
+				placeholderKey = await getSecretPlaceholderKey(agentDir);
+			} else {
+				const existingKey = await getExistingSecretPlaceholderKey(agentDir);
+				if (existingKey !== undefined) {
+					placeholderKey = existingKey;
+					redactableEntries.push({ type: "plain", content: existingKey, mode: "replace" });
+				}
+			}
+			if (redactableEntries.length > 0) {
+				obfuscator =
+					placeholderKey !== undefined
+						? new SecretObfuscator(redactableEntries, placeholderKey)
+						: new SecretObfuscator(redactableEntries);
 			}
 		}
 		const secretsEnabled = obfuscator?.hasSecrets() === true;

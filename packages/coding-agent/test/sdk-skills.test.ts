@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getActiveSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
-import type { Skill } from "@oh-my-pi/pi-coding-agent/sdk";
+import type { CreateAgentSessionOptions, CreateAgentSessionResult, Skill } from "@oh-my-pi/pi-coding-agent/sdk";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -37,6 +37,17 @@ describe("createAgentSession skills option", () => {
 	let sharedDir: string;
 	let sharedAuthStorage: AuthStorage;
 	let sharedModelRegistry: ModelRegistry;
+
+	// Sessions created here hold native handles (pcre2 regexes, context-gc). Leaving
+	// them undisposed lets their napi finalizers run at process teardown, after the
+	// owning realm's handle scope is gone — which segfaults Bun when a later test
+	// file in the same process also holds native handles. Track and dispose each.
+	const openSessions: CreateAgentSessionResult[] = [];
+	async function createTrackedSession(options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
+		const result = await createAgentSession(options);
+		openSessions.push(result);
+		return result;
+	}
 
 	beforeAll(async () => {
 		sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-sdk-skills-shared-"));
@@ -91,10 +102,15 @@ Loaded via symbolic link.
 		fs.symlinkSync(externalSkillDir, path.join(path.dirname(skillsDir), "symlinked-skill-link"), "dir");
 	});
 
+	afterEach(async () => {
+		for (const result of openSessions.splice(0)) {
+			await result.session.dispose().catch(() => {});
+		}
+	});
 	afterEach(cleanupTempHome(() => ({ tempDir, tempHomeDir, originalHome })));
 
 	it("should discover skills by default and expose them on session.skills", async () => {
-		const { session } = await createAgentSession({
+		const { session } = await createTrackedSession({
 			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: SessionManager.inMemory(),
@@ -108,7 +124,7 @@ Loaded via symbolic link.
 	});
 
 	it("refreshes the base system prompt from the updated session skill snapshot", async () => {
-		const { session } = await createAgentSession({
+		const { session } = await createTrackedSession({
 			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: SessionManager.inMemory(),
@@ -131,7 +147,7 @@ Loaded via symbolic link.
 	});
 
 	it("should discover skills when skill directory is a symlink", async () => {
-		const { session } = await createAgentSession({
+		const { session } = await createTrackedSession({
 			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: SessionManager.inMemory(),
@@ -147,7 +163,7 @@ Loaded via symbolic link.
 		removeSyncWithRetries(path.join(userAgentDir, "skills"));
 		fs.writeFileSync(path.join(userAgentDir, "placeholder.txt"), "placeholder");
 
-		const { session } = await createAgentSession({
+		const { session } = await createTrackedSession({
 			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: SessionManager.inMemory(),
@@ -159,7 +175,7 @@ Loaded via symbolic link.
 	});
 
 	it("refreshSkills reloads project skills on an existing session", async () => {
-		const { session } = await createAgentSession({
+		const { session } = await createTrackedSession({
 			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: SessionManager.inMemory(tempDir),
@@ -253,7 +269,7 @@ This skill is added after session creation.
 	});
 
 	it("should have empty skills when options.skills is empty array (--no-skills)", async () => {
-		const { session } = await createAgentSession({
+		const { session } = await createTrackedSession({
 			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: SessionManager.inMemory(),
@@ -277,7 +293,7 @@ This skill is added after session creation.
 			source: "custom" as const,
 		};
 
-		const { session } = await createAgentSession({
+		const { session } = await createTrackedSession({
 			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: SessionManager.inMemory(),
