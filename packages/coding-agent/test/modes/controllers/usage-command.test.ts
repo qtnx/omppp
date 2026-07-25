@@ -20,6 +20,10 @@ function renderPresentedBlocks(value: unknown): string {
 		.join("\n");
 }
 
+function createUsageSessionDouble() {
+	return { getUsageReportingModelSelectors: () => [] };
+}
+
 describe("CommandController /usage", () => {
 	beforeAll(async () => {
 		const theme = await getThemeByName("dark");
@@ -34,7 +38,7 @@ describe("CommandController /usage", () => {
 	it("renders bars and free percentage for limits that only report remainingFraction", async () => {
 		const present = vi.fn();
 		const ctx = {
-			session: {},
+			session: createUsageSessionDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
 			showWarning: vi.fn(),
@@ -73,7 +77,7 @@ describe("CommandController /usage", () => {
 	it("renders Cursor request quotas in the /usage view", async () => {
 		const present = vi.fn();
 		const ctx = {
-			session: {},
+			session: createUsageSessionDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
 			showWarning: vi.fn(),
@@ -91,7 +95,7 @@ describe("CommandController /usage", () => {
 						id: "cursor:requests:gpt-4",
 						label: "gpt-4 requests",
 						scope: { provider: "cursor", windowId: "monthly" },
-						window: { id: "monthly", label: "Monthly", resetsAt: now + 86_400_000 },
+						window: { id: "monthly", label: "Monthly", resetsAt: now + 90_000_000 },
 						amount: {
 							unit: "requests",
 							used: 150,
@@ -122,7 +126,7 @@ describe("CommandController /usage", () => {
 	it("renders saved reset expiry lines for future and expired credits", async () => {
 		const present = vi.fn();
 		const ctx = {
-			session: {},
+			session: createUsageSessionDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
 			showWarning: vi.fn(),
@@ -163,6 +167,7 @@ describe("CommandController /usage", () => {
 		const present = vi.fn();
 		const ctx = {
 			session: {
+				...createUsageSessionDouble(),
 				getAsyncJobSnapshot: () => ({ running: [], recent: [] }),
 			},
 			ui: { terminal: { columns: 100 } },
@@ -190,7 +195,7 @@ describe("CommandController /usage", () => {
 
 	it("clears live usage refresh eligibility when memory and learning commands run", async () => {
 		const ctx = {
-			session: {},
+			session: createUsageSessionDouble(),
 			sessionManager: { getCwd: () => "/tmp/project" },
 			settings: {
 				get: () => "off",

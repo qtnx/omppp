@@ -26,10 +26,10 @@
 
 ## Inputs
 
-The model-facing wire schema is shape-swapped by `task.batch` (default on). One unit of work is `{ name?, agent?, task, outputSchema?, schemaMode?, isolated?, max_runtime_seconds?, self_review? }`; `isolated` appears only when `task.isolation.mode` is not `none`.
+The model-facing wire schema is shape-swapped by `task.batch` (default on). One unit of work is `{ name?, agent?, task, model?, outputSchema?, schemaMode?, isolated?, max_runtime_seconds?, self_review? }`; `isolated` appears only when `task.isolation.mode` is not `none`.
 
-- **Batch shape** (`task.batch` on): `{ context, tasks: item[] }` — one subagent per item, with `agent`, `isolated`, and execution controls selected per item. `context` is required shared background rendered into every spawned subagent's system prompt (`CONTEXT` section).
-- **Flat shape** (`task.batch` off): one task item at the top level. Shared background goes into a `local://` file (for example `local://ctx.md`) that the spawn's `task` references; subagents share the parent's `local://` root.
+- **Batch shape** (`task.batch` on): `{ context, tasks: item[] }` — one subagent per item; there is no top-level agent field. `context` is required shared background rendered into every spawned subagent's system prompt (`CONTEXT` section). `agent`, `model`, `outputSchema`, `schemaMode`, `isolated`, `max_runtime_seconds`, and `self_review` are selected per item, so one call may mix agent types, models, output contracts, and execution controls.
+- **Flat shape** (`task.batch` off): `{ ...item }` — exactly one spawn per call. Shared background goes into a `local://` file (for example `local://ctx.md`) that the spawn's `task` references; subagents share the parent's `local://` root.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -38,15 +38,16 @@ The model-facing wire schema is shape-swapped by `task.batch` (default on). One 
 | `name` | `string` | No | Stable registry/IRC id. Defaults to a generated AdjectiveNoun name and is uniquified per session by `AgentOutputManager`. Item field in batch shape, top-level in flat shape. |
 | `agent` | `string` | No | Agent type to run (for example `scout`, `task`, `quick_task`, or `heavy_task`). Defaults to the spawn policy's default agent; batch items may mix agent types. |
 | `task` | `string` | Yes | Complete, self-contained work instructions. Empty-after-trim is rejected. |
-| `outputSchema` | object, boolean, string, or `null` | No | Caller-provided structured-output schema. When present, it overrides the selected agent's schema. |
-| `schemaMode` | `"permissive"` or `"strict"` | No | Validation behavior for the effective structured-output schema. |
-| `isolated` | `boolean` | No | Run in an isolated workspace and return patches. Isolated agents are torn down at completion and are not revivable. |
+| `model` | `string \| string[]` | No | Explicit non-empty model selector or non-empty fallback chain for this spawn. Optional `:reasoning` suffixes are preserved. Takes precedence over `task.agentModelOverrides` and agent frontmatter. |
+| `outputSchema` | object, boolean, string, or `null` | No | Invocation-specific structured-output contract. Takes precedence over agent frontmatter `output` and the inherited parent session schema. |
+| `schemaMode` | `"permissive" \| "strict"` | No | Validation mode for the effective output schema. Overrides the parent session mode; defaults to `permissive`. |
+| `isolated` | `boolean` | No | Run in an isolated workspace and return patches. Appears only when `task.isolation.mode` is not `none`; isolated agents are torn down at completion and are not revivable. |
 | `max_runtime_seconds` | non-negative integer | No | Per-spawn wall-clock cap; `0` means unlimited and omission uses the configured fallback. |
 | `self_review` | `boolean` | No | Opt into the review-and-fix gate for this spawn; defaults to false. |
 
-Runtime also accepts the fork's legacy `id`, `description`, `role`, and `assignment` aliases for internal callers and persisted transcripts; they are not emitted in the model-facing schema. The flat form remains accepted while batch mode is on for internal callers and stale transcripts.
+Runtime also accepts the fork's legacy `id`, `description`, `role`, and `assignment` aliases for internal callers and persisted transcripts; they are not emitted in the model-facing schema. The flat form remains accepted while batch mode is on for internal callers and stale transcripts, while the model sees only the active shape.
 
-The stale per-call `schema` field is rejected; callers use `outputSchema`. Without a caller schema, structured output falls back to the agent definition's `output` frontmatter and then the inherited parent session schema. Ad-hoc workflows can use the eval bridge's `agent(prompt, schema)`.
+The stale per-call `schema` field is rejected; callers use `outputSchema` and optional `schemaMode`. Without a caller schema, structured output falls back to the agent definition's `output` frontmatter and then the inherited parent session schema. Ad-hoc workflows can use the eval bridge's `agent(prompt, schema)`.
 
 ## Outputs
 
@@ -76,17 +77,17 @@ Artifacts and side channels:
 
 ## Flow
 1. `TaskTool.create(...)` discovers agents once per cwd through a process-level memo (`discoverAgentsForCreate`) to render the dynamic prompt description.
-2. `execute(...)` repairs raw params (`repairTaskParams`), then validates the active shape: `schema` is rejected in favor of `outputSchema`; `tasks`/`context` are rejected unless batch mode is on; batch calls require non-empty `tasks`, a `task` per item, unique provided names, shared `context`, and no top-level `task`; flat calls require `task`. The call is normalized into its spawn list (`resolveSpawnItems`), including legacy aliases for compatibility.
-3. Each item's agent definition determines whether it runs inline (`blocking: true`) or as a background job. The whole call runs synchronously when async is disabled, the session has no `AsyncJobManager`, or every item is blocking.
-4. For background items:
-   - agent ids are allocated up front via `AgentOutputManager.allocate(item.name || generateTaskName())`;
-   - one `type: "task"` job per spawn is registered with `session.asyncJobManager` (`id` = agent id, `queued: true`, `ownerId` = caller agent id);
-   - each job body acquires the session-scoped `Semaphore`, marks the job running, runs `#executeSync(...)`, and reports progress through the shared `buildAsyncDetails`/`onUpdate`;
+2. `execute(...)` repairs raw params (`repairTaskParams`), then validates the active shape: `schema` is rejected in favor of `outputSchema`; model selectors that normalize to no patterns are rejected; `tasks`/`context` are rejected unless `task.batch` is on; batch calls require non-empty `tasks`, a `task` per item, unique provided names, non-empty shared `context`, and no top-level `task`; flat calls require `task`. The call is normalized into its spawn list (`resolveSpawnItems`), including legacy aliases for compatibility.
+3. Per-item execution split: items whose agent type declares `blocking: true` run inline; the rest become background jobs. The whole call runs sync when `async.enabled=false`, the session has no `AsyncJobManager`, or every item is blocking; inline spawns run through `#executeSync(...)` under the session-scoped semaphore.
+4. Background execution (any non-blocking item with `async.enabled=true` and an `AsyncJobManager`):
+   - agent ids are allocated up front via `AgentOutputManager.allocate(...)` — each item's `name`, or a generated AdjectiveNoun name — one per spawn;
+   - one `type: "task"` job per spawn is registered with `session.asyncJobManager` (`id` = agent id, `queued: true`, `ownerId` = caller agent id) and the tool returns immediately;
+   - each job body acquires the session-scoped `Semaphore` (one per `TaskTool` instance, sized from `task.maxConcurrency` at first use), marks the job running, runs `#executeSync(...)` with that spawn's params, and reports progress through the shared `buildAsyncDetails`/`onUpdate`;
    - a failed or aborted run throws `TaskJobError` so the job lands `failed`, but the agent stays registered and interrogable;
-   - mixed calls register background jobs first, run blocking items inline, and return after the inline items settle while background progress continues in the same tool block.
+   - a mixed call registers background jobs first, runs blocking items inline, and returns after the inline items settle while background progress continues in the same tool block.
 5. `#executeSync(...)` runs the spawn path (`#runSpawn`), which rediscovers agents from disk, so runtime resolution can differ from the create-time description.
-6. It resolves the requested agent, rejects unknown or settings-disabled agents, and enforces parent spawn policy plus `PI_BLOCKED_AGENT` self-recursion prevention.
-7. Output schema priority: agent frontmatter `output` → inherited parent session schema (the call itself never carries one).
+6. It resolves each spawn's requested `agent` type, rejects unknown or settings-disabled agents, and enforces parent spawn policy plus `PI_BLOCKED_AGENT` self-recursion prevention.
+7. Model priority: per-call `model` → `task.agentModelOverrides` → agent frontmatter → configured task role/session fallback. Output schema priority: per-call `outputSchema` → agent frontmatter `output` → inherited parent session schema.
 8. Plan mode swaps in an `effectiveAgent` with a read-only tool subset and plan-mode prompt; `runSubprocess(...)` receives the effective agent.
 9. If `isolated`, it requires a git repo (`getRepoRoot(...)` / `captureBaseline(...)`), maps `task.isolation.mode` to a backend-kind hint (`parseIsolationMode`), and materializes the workspace via the natives PAL (`ensureIsolation` → `isoResolve`/`isoStart`), walking the candidate list when a backend is unavailable.
 10. Artifacts dir comes from the parent session file when available, otherwise a temp dir. When the session is executing an approved plan, the plan reference is handed to the subagent.
@@ -105,8 +106,8 @@ Artifacts and side channels:
   - Background job — `async.enabled=true`; non-blocking items go through `AsyncJobManager`.
   - Sync inline — async disabled, no job manager, or an item whose agent declares `blocking: true`; one batch may mix inline and background items.
 - Batch mode (`task.batch`, default on)
-  - on — `{ context, tasks[] }`: one independent spawn per item, required shared `context`, and per-item `agent`/`isolated`/execution controls.
-  - off — one flat task item; `tasks`/`context` are rejected and removed from the schema.
+  - on — `{ context, tasks[] }`: one independent spawn per item, required `context` shared across the call's spawns, with `agent`, `model`, `outputSchema`, `schemaMode`, `isolated`, `max_runtime_seconds`, and `self_review` per item. Lifecycle, revival, and concurrency semantics match N parallel single calls.
+  - off — single spawn per call; `tasks`/`context` are rejected and removed from the schema.
 - Isolation mode (`task.isolation.mode`): `none`, `auto`, `apfs`, `btrfs`, `zfs`, `reflink`, `overlayfs`, `projfs`, `block-clone`, `rcopy` (legacy `worktree`, `fuse-overlay`, `fuse-projfs` accepted for back-compat); the PAL resolves the actual backend with fallback.
 - Isolation merge strategy: patch mode (capture/apply root patches, keep patch artifacts when application fails) or branch mode (commit each task onto `omp/task/<id>`, cherry-pick into parent, preserve failed branches for manual resolution).
 - Agent source precedence: project custom agents, then user custom agents, then bundled agents.

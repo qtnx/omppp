@@ -74,7 +74,7 @@ describe("EventController status-line invalidation", () => {
 		const { ctx, statusLine } = createContext();
 		const controller = new EventController(ctx);
 
-		await controller.handleEvent({ type: "agent_end" } as unknown as AgentSessionEvent);
+		await controller.handleEvent({ type: "agent_end", messages: [] } as unknown as AgentSessionEvent);
 
 		expect(statusLine.invalidate).toHaveBeenCalledTimes(1);
 	});

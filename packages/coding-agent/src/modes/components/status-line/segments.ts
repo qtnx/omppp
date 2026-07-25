@@ -7,6 +7,7 @@ import { type ThemeColor, theme } from "../../../modes/theme/theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { findWorkspaceRootForPath } from "../../../workspace-roots";
+import { describeLoopLimitRuntime } from "../../loop-limit";
 import { sanitizeStatusText } from "../../shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./context-thresholds";
 import type { RenderedSegment, SegmentContext, StatusLineSegment, StatusLineSegmentId } from "./types";
@@ -297,6 +298,10 @@ function renderGoalMode(ctx: SegmentContext, mode: { enabled: boolean; paused: b
 	return { content: theme.fg(color, parts.join(" ")), visible: true };
 }
 
+function formatLoopLimit(limit: NonNullable<SegmentContext["loopMode"]>["limit"]): string | undefined {
+	return limit ? describeLoopLimitRuntime(limit) : undefined;
+}
+
 const modeSegment: StatusLineSegment = {
 	id: "mode",
 	render(ctx) {
@@ -334,9 +339,13 @@ const modeSegment: StatusLineSegment = {
 		}
 
 		const loop = ctx.loopMode;
-		if (loop?.enabled) {
-			const content = withIcon(theme.icon.loop, "Loop");
-			return { content: theme.fg("customMessageLabel", content), visible: true };
+		if (loop) {
+			const icon = loop.state === "paused" ? theme.icon.pause || theme.icon.loop : theme.icon.loop;
+			const color: ThemeColor = loop.state === "paused" ? "warning" : "customMessageLabel";
+			const parts = [withIcon(icon, `Loop ${loop.state}`)];
+			const limit = formatLoopLimit(loop.limit);
+			if (limit) parts.push(limit);
+			return { content: theme.fg(color, parts.join(" ")), visible: true };
 		}
 
 		return { content: "", visible: false };

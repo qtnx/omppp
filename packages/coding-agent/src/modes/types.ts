@@ -72,7 +72,7 @@ export type SubmittedUserInput = {
 	started: boolean;
 };
 
-export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";
+export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
 export type TodoItem = {
 	content: string;
@@ -162,6 +162,7 @@ export interface InteractiveModeContext {
 	goalModePaused: boolean;
 	orchestratorModeEnabled: boolean;
 	loopModeEnabled: boolean;
+	loopModePaused: boolean;
 	loopPrompt?: string;
 	loopPromptFilePath?: string;
 	loopRuntime?: LoopRuntime;
@@ -180,6 +181,8 @@ export interface InteractiveModeContext {
 	noteDisplayableThinkingContent(message: AgentMessage): boolean;
 	proseOnlyThinking: boolean;
 	compactionQueuedMessages: CompactionQueuedMessage[];
+	/** Settled user/assistant components reusable across post-compaction transcript rebuilds. */
+	transcriptMessageComponents: WeakMap<AgentMessage, Component>;
 	pendingTools: Map<string, ToolExecutionHandle>;
 	pendingBashComponents: BashExecutionComponent[];
 	bashComponent: BashExecutionComponent | undefined;
@@ -314,11 +317,15 @@ export interface InteractiveModeContext {
 	isKnownSlashCommand(text: string): boolean;
 	addMessageToChat(
 		message: AgentMessage,
-		options?: { populateHistory?: boolean; imageLinks?: readonly (string | undefined)[] },
+		options?: {
+			populateHistory?: boolean;
+			imageLinks?: readonly (string | undefined)[];
+			reuseSettledComponent?: boolean;
+		},
 	): Component[];
 	renderSessionContext(
 		sessionContext: SessionContext,
-		options?: { updateFooter?: boolean; populateHistory?: boolean },
+		options?: { updateFooter?: boolean; populateHistory?: boolean; reuseSettledComponents?: boolean },
 	): void;
 	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): void;
 	getUserMessageText(message: Message): string;
@@ -328,7 +335,7 @@ export interface InteractiveModeContext {
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
 	updateEditorTopBorder(): void;
-	rebuildChatFromMessages(): void;
+	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;
 	toggleTodoExpansion(): void;
@@ -364,6 +371,8 @@ export interface InteractiveModeContext {
 	handleMemoryCommand(text: string): Promise<void>;
 	handleLearningCommand(text: string): Promise<void>;
 	handleSTTToggle(): Promise<void>;
+	/** Start or stop the Codex-backed realtime voice session, locally or bridged to a remote client. */
+	handleLiveCommand(options?: { remote?: boolean; forwardCredentials?: boolean }): Promise<void>;
 	executeCompaction(
 		customInstructionsOrOptions?: string | CompactOptions,
 		isAuto?: boolean,
@@ -391,6 +400,7 @@ export interface InteractiveModeContext {
 	handleResumeSession(sessionPath: string): Promise<void>;
 	handleSessionDeleteCommand(): Promise<void>;
 	showOAuthSelector(mode: "login" | "logout", providerId?: string): Promise<void>;
+	showSessionPinSelector(): Promise<void>;
 	showResetUsageSelector(): Promise<void>;
 	showProviderSetup(): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;
@@ -431,6 +441,7 @@ export interface InteractiveModeContext {
 	handleGoalModeCommand(rest?: string): Promise<void>;
 	handleGuidedGoalCommand(rest?: string): Promise<void>;
 	handleLoopCommand(args?: string): Promise<string | undefined>;
+	setLoopPrompt(prompt: string): void;
 	disableLoopMode(): void;
 	pauseLoop(): void;
 	captureLoopPrompt(text: string): Promise<void>;
@@ -439,6 +450,13 @@ export interface InteractiveModeContext {
 
 	// Hook UI methods
 	initHooksAndCustomTools(): Promise<void>;
+	/**
+	 * The live `ExtensionUIContext` (picker/dialog primitives) used for tool
+	 * execution, `undefined` before hooks have initialized. `/tree` `ask`
+	 * re-answer (issue #5642) reuses it to drive a standalone
+	 * `AskTool.execute()` call.
+	 */
+	getToolUIContext(): ExtensionUIContext | undefined;
 	emitCustomToolSessionEvent(
 		reason: "start" | "switch" | "branch" | "tree" | "shutdown",
 		previousSessionFile?: string,

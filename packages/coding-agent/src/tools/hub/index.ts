@@ -159,7 +159,10 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 	readonly description: string;
 	readonly parameters = hubSchema;
 	readonly strict = true;
-	readonly interruptible = true;
+	readonly interruptible = (params: Partial<HubParams>): boolean => {
+		if (params.op === "wait") return true;
+		return params.op === "logs" && params.follow === true;
+	};
 	readonly loadMode = "essential";
 
 	readonly examples: readonly ToolExample<typeof hubSchema.infer>[] = [
@@ -280,7 +283,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 				if (!params.ids?.length) {
 					return hubErrorResult('`ids` is required for op="cancel".', { op: "cancel", jobs: [] });
 				}
-				return executeCancel(this.session, manager, this.#ownerId(), params.ids);
+				return await executeCancel(this.session, manager, this.#ownerId(), params.ids);
 			}
 			case "jobs": {
 				const manager = this.session.asyncJobManager;

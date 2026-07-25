@@ -54,6 +54,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "catalog:",
     "@babel/parser": "catalog:",
+    "@babel/traverse": "catalog:",
     "@mozilla/readability": "catalog:",
     "@oh-my-pi/context-gc-plugin": "catalog:",
     "@oh-my-pi/delegation-reminder-plugin": "catalog:",
@@ -86,7 +87,6 @@
     "@xyflow/react": "12.11.2",
     "arktype": "catalog:",
     "chalk": "catalog:",
-    "diff": "catalog:",
     "dompurify": "3.4.11",
     "fast-xml-parser": "catalog:",
     "fflate": "catalog:",

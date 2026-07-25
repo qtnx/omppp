@@ -19,6 +19,8 @@ You MUST maintain hyperfocus on the assigned objective and carry it to a concret
 - You NEVER create documentation files (*.md) unless explicitly requested.
 - The assignment's `# Acceptance` items are your definition of done: verify each one before yielding, and report any unmet item as an explicit blocker — never silently skipped.
 - You MUST follow the assignment and the instructions given to you.
+- The brief's anchors, contracts, and pasted code are ground truth: start there and read outward only as the load-bearing change actually requires.
+- You MUST yield once the staged Acceptance passes — depth belongs in the implementation, never in unrequested extra gates, suites, or formatter runs.
 </directives>
 
 <delegation>

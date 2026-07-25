@@ -17,6 +17,7 @@ import * as path from "node:path";
 import { removeWithRetries, VERSION } from "@oh-my-pi/pi-utils";
 import {
 	type ChangelogEntry,
+	parseChangelog,
 	RECENT_CHANGELOG_ENTRY_LIMIT,
 	readLastChangelogVersion,
 	renderChangelogEntries,
@@ -148,6 +149,22 @@ describe("selectStartupChangelog", () => {
 		expect(selection.markdown).toContain(STARTUP_CHANGELOG_FULL_HINT);
 		expect(selection.markdown).not.toContain("TAIL-THREE");
 		expect(Buffer.byteLength(selection.markdown ?? "")).toBeLessThanOrEqual(STARTUP_CHANGELOG_MAX_BYTES);
+	});
+});
+
+describe("parseChangelog", () => {
+	test("reads the embedded release history when no package path is available", async () => {
+		const entries = await parseChangelog(undefined);
+
+		// Upstream ships a single release line, so its newest section is always first.
+		// OMPx keeps its 1.x sections alongside the upstream history it forked from,
+		// and section ordering is owned by `bun run release` (fix-changelogs) — so the
+		// shipped version is not necessarily entries[0]. The contract that matters here
+		// is that the embedded history parses and carries this release's section.
+		expect(entries.length).toBeGreaterThan(0);
+		const current = entries.find(entry => `${entry.major}.${entry.minor}.${entry.patch}` === VERSION);
+		expect(current).toBeDefined();
+		expect(current?.content).toContain(`## [${VERSION}]`);
 	});
 });
 

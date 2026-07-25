@@ -49,7 +49,7 @@ describe("startup role target resolution", () => {
 		}
 	});
 
-	it("reports the first @smol candidate when none are authenticated for prewalk", async () => {
+	it("disables prewalk when no @smol candidate is authenticated", async () => {
 		using tempDir = TempDir.createSync("@omp-startup-role-resolution-");
 		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 		try {
@@ -61,9 +61,9 @@ describe("startup role target resolution", () => {
 			});
 			const parsed = parseArgs(["--cwd", tempDir.path(), "--prewalk-into", "@smol"]);
 
-			await expect(buildSessionOptions(parsed, [], undefined, modelRegistry, settings)).rejects.toThrow(
-				`No API key for ${unavailable.provider}/${unavailable.id}`,
-			);
+			const options = await buildSessionOptions(parsed, [], undefined, modelRegistry, settings);
+
+			expect(options.prewalk).toBeUndefined();
 		} finally {
 			authStorage.close();
 		}

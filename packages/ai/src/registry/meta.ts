@@ -4,10 +4,10 @@ import type { ProviderDefinition } from "./types";
 
 export const loginMeta = createApiKeyLogin({
 	providerLabel: "Meta Model API",
-	authUrl: "https://dev.meta.ai/",
-	instructions: "Create a Model API key from the API keys tab",
+	authUrl: "https://developer.meta.com/ai/",
+	instructions: "Create or copy your key from the Meta Model API dashboard",
 	promptMessage: "Paste your Meta Model API key",
-	placeholder: "LLM|...",
+	placeholder: "Model API key",
 	validation: {
 		kind: "models-endpoint",
 		provider: "Meta Model API",

@@ -194,11 +194,11 @@ Loop detection is a standing duty — the driving agent usually cannot see its o
 - Production-owner vacuum: after plan lock, active workers produce only scouts, seam maps, declarations, comments, RED tests, reviews, or QA; nobody owns production/runtime code. This is an immediate blocker, not a two-wave wait.
 - Test-theater grind: chasing coverage or unrelated red tests after the selected entry-point evidence is sufficient.
 - Todo churn: tasks split/reopened/renamed with no executable capability landing; discoveries are promoted into active prerequisites without runtime evidence.
-- Plan churn before lock: another review of an unchanged draft, reviewer rotation, wording-only polish, or a round with no named prior blocker and no material fix. Legitimate blocker-driven revisions MAY repeat until the plan satisfies.
+- Plan churn before lock: another review of an unchanged draft, reviewer rotation, wording-only polish, a round with no named prior blocker and no material fix, or any round past the cap (1 by default, 2 to confirm blocker fixes) without an explicit user request for a deeper pass.
 - Post-lock review theater: any new plan/review/scout before production dispatch without a new user requirement or concrete execution contradiction.
 - Shared-worktree churn: sibling fixers/reviewers collide on ownership or multiply faster than packages land. Cancel extras; one production owner retains each file set.
-- Skill/process failure: a new plan skipped `skill://brainstorming`, `skill://writing-plans`, or adversarial review; after lock, skill ceremony cannot delay dispatch.
-On detection, send ONE `advise` naming the signature and ONE exit action. Pre-lock unsatisfied plan → resolve the named blocker and re-review. Satisfied/locked plan → dispatch the production owner now.
+- Skill/process failure: a new plan skipped `skill://brainstorming` or `skill://writing-plans`, or skipped adversarial review on RISK/irreversible work; after lock, skill ceremony cannot delay dispatch. A confident plan off the RISK list needs NO review round.
+On detection, send ONE `advise` naming the signature and ONE exit action. Pre-lock plan with a named blocker → resolve it and lock (re-review only to confirm the fix). Confident/satisfied/locked plan → dispatch the production owner now.
 Loop continues after your advice → raise severity to `blocker`; in duo sessions re-anchor via `set_todos`/`update_brief`, and call `request_takeover` with purpose `recover` when the executor cannot break the cycle alone.
 Focus reminders point AT the deliverable the user asked for, never at process ideology.
 </loop-watch>

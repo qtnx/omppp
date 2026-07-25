@@ -214,12 +214,12 @@ function Install-StandardConfig {
 # Copy to ~/.omp/agent/config.yml before first run, or let the installer seed it
 # when the target config file does not already exist.
 modelRoles:
-  default: anthropic/claude-opus-4-8
+  default: anthropic/claude-opus-5
   task: openai-codex/gpt-5.6-terra:medium
   smol: xai-oauth/grok-build
   slow: openai-codex/gpt-5.6-sol:high
   plan: openai-codex/gpt-5.6-sol:high
-  designer: anthropic/claude-opus-4-8
+  designer: anthropic/claude-opus-5
   commit: xai-oauth/grok-build
 task:
   showResolvedModelBadge: true
@@ -266,13 +266,13 @@ setupVersion: 4
 retry:
   fallbackChains:
     task:
-      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-5
       - openai-codex/gpt-5.5:low
     smol:
       - openai-codex/gpt-5.3-codex-spark
       - anthropic/claude-haiku-4-5
     heavy_task:
-      - anthropic/claude-opus-4-8:high
+      - anthropic/claude-opus-5:high
 '@ | Set-Content -Path $ConfigFile -Encoding UTF8
     Write-Host "✓ Seeded OMPx standard config at $ConfigFile" -ForegroundColor Green
 }

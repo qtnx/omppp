@@ -209,7 +209,7 @@ describe("task spawn routing", () => {
 
 	it("returns immediately on spawn and delivers the follow-up hint when the job completes", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
-			agents: [taskAgent],
+			agents: [{ ...taskAgent, model: ["anthropic/claude-sonnet-4"] }],
 			projectAgentsDir: null,
 		});
 		const gate = deferred();
@@ -219,12 +219,15 @@ describe("task spawn routing", () => {
 		});
 
 		const manager = createManager();
-		const tool = await TaskTool.create(createSession({ manager }));
+		const tool = await TaskTool.create(
+			createSession({ manager, settings: { "task.agentModelOverrides": { task: "openai/gpt-4.1-mini" } } }),
+		);
 
 		const result = await tool.execute("tc-spawn", {
 			agent: "task",
 			name: "Spawnling",
 			task: "Do the thing.",
+			model: "openai-codex/gpt-5.6-sol:high",
 		} as TaskParams);
 
 		// Tool returned while the job body is still gated on the deferred.
@@ -245,6 +248,7 @@ describe("task spawn routing", () => {
 		expect(job!.resultText).toContain("message it via `hub` to follow up");
 		expect(job!.resultText).toContain("history://Spawnling");
 		expect(runSpy).toHaveBeenCalledTimes(1);
+		expect(runSpy.mock.calls[0]?.[0].modelOverride).toEqual(["openai-codex/gpt-5.6-sol:high"]);
 	});
 
 	it("surfaces terminal rate limits and blocks subsequent delegation", async () => {

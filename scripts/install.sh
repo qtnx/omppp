@@ -76,6 +76,38 @@ has_bun() {
     command -v bun >/dev/null 2>&1
 }
 
+# Normalized host architecture (x64|arm64). On macOS this uses
+# `sysctl hw.optional.arm64` so it stays correct inside a Rosetta session,
+# where `uname -m` reports the translated x86_64.
+host_arch() {
+    if [ "$(uname -s)" = "Darwin" ]; then
+        if [ "$(sysctl -in hw.optional.arm64 2>/dev/null || /usr/sbin/sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ]; then
+            echo "arm64"
+        else
+            echo "x64"
+        fi
+        return
+    fi
+    case "$(uname -m)" in
+        x86_64|amd64)  echo "x64" ;;
+        arm64|aarch64) echo "arm64" ;;
+        *)             uname -m ;;
+    esac
+}
+
+# Bun's own architecture (x64|arm64), or empty when it can't be determined.
+bun_arch() {
+    bun -e 'process.stdout.write(process.arch)' 2>/dev/null
+}
+
+# True when Bun's architecture matches the host. If Bun's arch can't be read,
+# assume a match rather than block the install.
+bun_arch_matches_host() {
+    ba="$(bun_arch)"
+    [ -z "$ba" ] && return 0
+    [ "$ba" = "$(host_arch)" ]
+}
+
 version_ge() {
     current="$1"
     minimum="$2"
@@ -654,7 +686,7 @@ migrate_heavy_task_fallback_chain() {
         function insert_heavy_task_fallback() {
             if (seen_child && !have_heavy_task) {
                 print key_indent "heavy_task:"
-                print key_indent "  - anthropic/claude-opus-4-8:high"
+                print key_indent "  - anthropic/claude-opus-5:high"
             }
         }
         BEGIN {
@@ -725,6 +757,34 @@ migrate_heavy_task_fallback_chain() {
     echo "✓ Ensured heavy_task fallback chain at ${config_file}"
 }
 
+migrate_opus_model_config() {
+    config_file="$1"
+
+    if [ ! -f "$config_file" ]; then
+        return
+    fi
+
+    if ! grep -q 'anthropic/claude-opus-4-8' "$config_file"; then
+        return
+    fi
+
+    tmp_config="$(mktemp "${config_file}.XXXXXX")"
+    awk '
+        {
+            # Retire the Opus 4.8 route wherever it is referenced - model roles,
+            # agent overrides, fallback chains - keeping any :effort suffix intact.
+            # Lines naming a claude-opus-4-8-<variant> id are left untouched.
+            if ($0 !~ /anthropic\/claude-opus-4-8-/) {
+                gsub(/anthropic\/claude-opus-4-8/, "anthropic/claude-opus-5")
+            }
+            print
+        }
+    ' "$config_file" > "$tmp_config"
+    mv "$tmp_config" "$config_file"
+    chmod 600 "$config_file" 2>/dev/null || true
+    echo "✓ Migrated Claude Opus 4.8 config models to Opus 5 at ${config_file}"
+}
+
 
 run_config_update() {
     config_update_command="$1"
@@ -780,12 +840,12 @@ install_standard_config() {
 # Copy to ~/.omp/agent/config.yml before first run, or let the installer seed it
 # when the target config file does not already exist.
 modelRoles:
-  default: anthropic/claude-opus-4-8
+  default: anthropic/claude-opus-5
   task: openai-codex/gpt-5.6-terra:medium
   smol: xai-oauth/grok-build
   slow: openai-codex/gpt-5.6-sol:high
   plan: openai-codex/gpt-5.6-sol:high
-  designer: anthropic/claude-opus-4-8
+  designer: anthropic/claude-opus-5
   commit: xai-oauth/grok-build
 task:
   showResolvedModelBadge: true
@@ -832,13 +892,13 @@ setupVersion: 4
 retry:
   fallbackChains:
     task:
-      - anthropic/claude-opus-4-8
+      - anthropic/claude-opus-5
       - openai-codex/gpt-5.5:low
     smol:
       - openai-codex/gpt-5.3-codex-spark
       - anthropic/claude-haiku-4-5
     heavy_task:
-      - anthropic/claude-opus-4-8:high
+      - anthropic/claude-opus-5:high
 EOF_CONFIG
     chmod 600 "$config_file" 2>/dev/null || true
     echo "✓ Seeded OMPx standard config at ${config_file}"
@@ -912,6 +972,7 @@ install_via_bun() {
     install_standard_config
     run_config_update "ompx"
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
+    migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
     echo ""
@@ -923,7 +984,7 @@ install_via_bun() {
 install_binary() {
     # Detect platform
     OS="$(uname -s)"
-    ARCH="$(uname -m)"
+    ARCH="$(host_arch)"
 
     case "$OS" in
         Linux)  PLATFORM="linux" ;;
@@ -932,10 +993,15 @@ install_binary() {
     esac
 
     case "$ARCH" in
-        x86_64|amd64)  ARCH="x64" ;;
-        arm64|aarch64) ARCH="arm64" ;;
-        *)             echo "Unsupported architecture: $ARCH"; exit 1 ;;
+        x64|arm64) ;;
+        *)         echo "Unsupported architecture: $ARCH"; exit 1 ;;
     esac
+
+    if [ "$PLATFORM" = "linux" ]; then
+        if [ -f /etc/alpine-release ] || { command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; }; then
+            PLATFORM="linux-musl"
+        fi
+    fi
 
     BINARY="ompx-${PLATFORM}-${ARCH}"
     # Get release tag
@@ -985,6 +1051,7 @@ install_binary() {
     install_standard_config
     run_config_update "${INSTALL_DIR}/ompx"
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
+    migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
     echo ""
@@ -1004,6 +1071,13 @@ case "$MODE" in
             install_bun
         fi
         require_bun_version
+        if ! bun_arch_matches_host; then
+            echo "Error: bun reports architecture '$(bun_arch)' but this host is '$(host_arch)'."
+            echo "Installing from source with this bun would produce a mismatched binary"
+            echo "(e.g. x86_64 under Rosetta on Apple Silicon), causing slow startup and AVX warnings."
+            echo "Install a native bun for your architecture, or re-run without --source to fetch the prebuilt $(host_arch) binary."
+            exit 1
+        fi
         install_via_bun
         ;;
     binary)

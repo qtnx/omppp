@@ -214,6 +214,13 @@ function expectCompatibleSameAgentBatchWave(rendered: string): void {
 	);
 }
 
+// The solo-work carve-out MUST survive in both batch modes: the reminder always names a
+// do-it-yourself escape hatch and the single-runnable-slice case that makes spawning pointless.
+function expectSoloWorkCarveOut(rendered: string): void {
+	expect(rendered).toMatch(/work\s+alone/i);
+	expect(rendered).toMatch(/one\s+runnable\s+slice/i);
+}
+
 describe("normal system prompt delegation contract", () => {
 	it("minimizes latency without down-tiering load-bearing work", async () => {
 		const { systemPrompt } = await buildSystemPrompt({
@@ -397,9 +404,7 @@ describe("eager task runtime reminder", () => {
 
 		// Semantic clauses survive harmless wording changes but reject one-batch-per-type and flat fallbacks.
 		expectCompatibleSameAgentBatchWave(rendered);
-		expect(rendered).toContain(
-			"Work alone for: a single-file edit under ~30 lines, a direct answer requiring no code changes, a command the user explicitly asked you to run, or when only ONE runnable slice exists — a lone subagent is a lossy handoff, not parallelism.",
-		);
+		expectSoloWorkCarveOut(rendered);
 	});
 
 	it("renders every ready slice as a concurrent flat call when batching is disabled", () => {
@@ -412,9 +417,7 @@ describe("eager task runtime reminder", () => {
 			"Dispatch EVERY independent ready slice concurrently as flat `task` calls; NEVER dispatch one at a time.",
 		);
 		expect(rendered).not.toContain("batch ONLY compatible same-agent slices per `task` call");
-		expect(rendered).toContain(
-			"Work alone for: a single-file edit under ~30 lines, a direct answer requiring no code changes, a command the user explicitly asked you to run, or when only ONE runnable slice exists — a lone subagent is a lossy handoff, not parallelism.",
-		);
+		expectSoloWorkCarveOut(rendered);
 	});
 });
 

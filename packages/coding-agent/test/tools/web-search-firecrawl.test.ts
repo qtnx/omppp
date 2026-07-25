@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
-import { searchFirecrawl } from "@oh-my-pi/pi-coding-agent/web/search/providers/firecrawl";
+import { FirecrawlProvider, searchFirecrawl } from "@oh-my-pi/pi-coding-agent/web/search/providers/firecrawl";
 import { SearchProviderError } from "@oh-my-pi/pi-coding-agent/web/search/types";
 
 const TEST_KEY = "test-firecrawl-key";
@@ -105,6 +105,73 @@ describe("Firecrawl web search provider", () => {
 		});
 	});
 
+	it("uses the initially resolved credential for the first authenticated request", async () => {
+		let resolutionCount = 0;
+		const authStorage = {
+			resolver(provider: string, options?: { sessionId?: string }) {
+				expect(provider).toBe("firecrawl");
+				expect(options?.sessionId).toBe("session-firecrawl-test");
+				return async () => {
+					resolutionCount += 1;
+					return resolutionCount === 1 ? "initial-firecrawl-key" : undefined;
+				};
+			},
+		} as unknown as AuthStorage;
+		const fetchMock: FetchImpl = async (_input, init) => {
+			expect(getHeader(init?.headers, "Authorization")).toBe("Bearer initial-firecrawl-key");
+			return new Response(JSON.stringify({ data: { web: [] } }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		const response = await searchFirecrawl({
+			...makeParams("credential reuse", authStorage),
+			fetch: fetchMock,
+		});
+
+		expect(response.authMode).toBe("api_key");
+		expect(resolutionCount).toBe(1);
+	});
+
+	it("retries with a rotated credential after the seeded key is rejected", async () => {
+		const resolvedKeys = ["initial-firecrawl-key", "rotated-firecrawl-key"] as const;
+		let resolutionCount = 0;
+		const authStorage = {
+			resolver(provider: string, options?: { sessionId?: string }) {
+				expect(provider).toBe("firecrawl");
+				expect(options?.sessionId).toBe("session-firecrawl-test");
+				return async () => resolvedKeys[resolutionCount++];
+			},
+		} as unknown as AuthStorage;
+		const authorizationHeaders: Array<string | null> = [];
+		const fetchMock: FetchImpl = async (_input, init) => {
+			authorizationHeaders.push(getHeader(init?.headers, "Authorization"));
+			if (authorizationHeaders.length === 1) {
+				return new Response("credential rejected", { status: 401 });
+			}
+			if (authorizationHeaders.length === 2) {
+				return new Response(JSON.stringify({ id: "rotated-firecrawl-request", data: { web: [] } }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error("unexpected Firecrawl request");
+		};
+
+		const response = await searchFirecrawl({
+			...makeParams("credential rotation", authStorage),
+			fetch: fetchMock,
+		});
+
+		expect(authorizationHeaders).toEqual(["Bearer initial-firecrawl-key", "Bearer rotated-firecrawl-key"]);
+		expect(resolutionCount).toBe(2);
+		expect(response).toMatchObject({
+			requestId: "rotated-firecrawl-request",
+			authMode: "api_key",
+		});
+	});
+
 	it.each([
 		[401, "firecrawl: 401 unauthorized"],
 		[402, "firecrawl: 402 credits exhausted"],
@@ -120,19 +187,65 @@ describe("Firecrawl web search provider", () => {
 		}
 	});
 
-	it("throws a clear error when Firecrawl credentials are missing", async () => {
-		const fetchMock: FetchImpl = async () => {
-			throw new Error("fetch should not be called without credentials");
+	it("keeps keyless Firecrawl out of auto selection while allowing explicit selection", () => {
+		const originalApiKey = process.env.FIRECRAWL_API_KEY;
+		delete process.env.FIRECRAWL_API_KEY;
+		try {
+			const provider = new FirecrawlProvider();
+			const authStorage = makeAuthStorage(undefined);
+
+			expect(provider.isAvailable(authStorage)).toBe(false);
+			expect(provider.isExplicitlyAvailable(authStorage)).toBe(true);
+		} finally {
+			if (originalApiKey === undefined) delete process.env.FIRECRAWL_API_KEY;
+			else process.env.FIRECRAWL_API_KEY = originalApiKey;
+		}
+	});
+
+	it("uses keyless mode when no API key is configured (no Authorization header)", async () => {
+		const captured: { url?: string; init?: RequestInit; body?: unknown } = {};
+
+		const fetchMock: FetchImpl = async (input, init) => {
+			captured.url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+			captured.init = init;
+			captured.body = JSON.parse(String(init?.body ?? "null")) as unknown;
+			return new Response(
+				JSON.stringify({
+					id: "keyless-request-456",
+					data: {
+						web: [
+							{
+								title: "Keyless result",
+								url: "https://example.com/keyless",
+								description: "Result from keyless Firecrawl",
+							},
+						],
+					},
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
 		};
 
-		try {
-			await searchFirecrawl({ ...makeParams("missing creds", makeAuthStorage(undefined)), fetch: fetchMock });
-			expect.unreachable("expected searchFirecrawl to throw");
-		} catch (error) {
-			expect(error).toBeInstanceOf(Error);
-			expect((error as Error).message).toBe(
-				'Firecrawl credentials not found. Set FIRECRAWL_API_KEY or configure an API key for provider "firecrawl".',
-			);
-		}
+		const response = await searchFirecrawl({
+			...makeParams("keyless query", makeAuthStorage(undefined)),
+			fetch: fetchMock,
+		});
+
+		expect(captured.url).toBe("https://api.firecrawl.dev/v2/search");
+		expect(captured.init?.method).toBe("POST");
+		expect(getHeader(captured.init?.headers, "Authorization")).toBeNull();
+		expect(getHeader(captured.init?.headers, "Content-Type")).toBe("application/json");
+		expect(response).toEqual({
+			provider: "firecrawl",
+			sources: [
+				{
+					title: "Keyless result",
+					url: "https://example.com/keyless",
+					snippet: "Result from keyless Firecrawl",
+				},
+			],
+			requestId: "keyless-request-456",
+			authMode: "keyless",
+		});
 	});
 });

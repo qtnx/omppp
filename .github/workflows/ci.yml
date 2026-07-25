@@ -37,6 +37,10 @@ env:
    # cargo-zigbuild against this floor keeps them portable. Bump to raise the
    # minimum supported glibc.
    GLIBC_FLOOR: "2.17"
+   # audiopus_sys bundles an opus tree whose CMakeLists declares a
+   # cmake_minimum_required below 3.5; CMake 4.x refuses to configure it
+   # without this override (macOS runner images ship CMake 4).
+   CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
 permissions:
    contents: read
@@ -138,6 +142,8 @@ jobs:
               # `actions/upload-artifact` `name:` template in build-native action.
               cross_platform_required=(
                 "pi-natives-linux-arm64-h${hash}"
+                "pi-natives-linux-musl-x64-baseline-h${hash}"
+                "pi-natives-linux-musl-arm64-h${hash}"
                 "pi-natives-darwin-x64-baseline-h${hash}"
                 "pi-natives-darwin-arm64-h${hash}"
                 "pi-natives-win32-x64-baseline-h${hash}"
@@ -234,7 +240,7 @@ jobs:
    # building the artifacts that ship in releases. Skipped on main when
    # native_artifact_lookup already found a recent run with all artifacts intact.
    native_cross_platform_kata:
-      name: "Native: ${{ matrix.platform }} ${{ matrix.arch }}"
+      name: "Native: ${{ matrix.platform }} ${{ matrix.libc || '' }} ${{ matrix.arch }}"
       needs: [release_metadata, native_artifact_lookup]
       if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '')) }}
       strategy:
@@ -242,6 +248,8 @@ jobs:
          matrix:
             include:
                - { os: ubuntu-22.04, platform: linux, arch: arm64, target: aarch64-unknown-linux-gnu }
+               - { os: ubuntu-22.04, platform: linux, libc: musl, arch: x64, target: x86_64-unknown-linux-musl, variant: baseline }
+               - { os: ubuntu-22.04, platform: linux, libc: musl, arch: arm64, target: aarch64-unknown-linux-musl }
                - { os: ubuntu-22.04, platform: win32, arch: x64, target: x86_64-pc-windows-msvc, variant: baseline }
       runs-on: ${{ matrix.os }}
       steps:
@@ -251,9 +259,10 @@ jobs:
               hash: ${{ needs.native_artifact_lookup.outputs.source-hash }}
               platform: ${{ matrix.platform }}
               arch: ${{ matrix.arch }}
+              libc: ${{ matrix.libc }}
               variant: ${{ matrix.variant }}
               target: ${{ matrix.target }}
-              glibc: ${{ matrix.platform == 'linux' && env.GLIBC_FLOOR || '' }}
+              glibc: ${{ matrix.platform == 'linux' && matrix.libc != 'musl' && env.GLIBC_FLOOR || '' }}
               save_cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
    native_cross_platform_macos:
@@ -505,6 +514,7 @@ jobs:
          - uses: ./.github/actions/ensure-rust-toolchain
            with:
               toolchain: nightly-2026-04-29
+         - uses: ./.github/actions/ensure-cmake
          - name: Detect runner environment
            id: detect
            shell: bash
@@ -591,6 +601,16 @@ jobs:
                     arch: x64,
                     target_id: linux-x64,
                     binary_path: packages/coding-agent/binaries/ompx-linux-x64,
+                    native_artifact_pattern: pi-natives-linux-x64-*,
+                 }
+               - {
+                    os: ubuntu-22.04,
+                    platform: linux,
+                    libc: musl,
+                    arch: x64,
+                    target_id: linux-musl-x64,
+                    binary_path: packages/coding-agent/binaries/ompx-linux-musl-x64,
+                    native_artifact_pattern: pi-natives-linux-musl-x64-*,
                  }
                - {
                     os: ubuntu-24.04-arm,
@@ -598,6 +618,16 @@ jobs:
                     arch: arm64,
                     target_id: linux-arm64,
                     binary_path: packages/coding-agent/binaries/ompx-linux-arm64,
+                    native_artifact_pattern: pi-natives-linux-arm64*,
+                 }
+               - {
+                    os: ubuntu-24.04-arm,
+                    platform: linux,
+                    libc: musl,
+                    arch: arm64,
+                    target_id: linux-musl-arm64,
+                    binary_path: packages/coding-agent/binaries/ompx-linux-musl-arm64,
+                    native_artifact_pattern: pi-natives-linux-musl-arm64*,
                  }
                - {
                     os: macos-15-intel,
@@ -605,6 +635,7 @@ jobs:
                     arch: x64,
                     target_id: darwin-x64,
                     binary_path: packages/coding-agent/binaries/ompx-darwin-x64,
+                    native_artifact_pattern: pi-natives-darwin-x64*,
                  }
                - {
                     os: macos-14,
@@ -612,6 +643,7 @@ jobs:
                     arch: arm64,
                     target_id: darwin-arm64,
                     binary_path: packages/coding-agent/binaries/ompx-darwin-arm64,
+                    native_artifact_pattern: pi-natives-darwin-arm64*,
                  }
                - {
                     os: ubuntu-22.04,
@@ -619,6 +651,7 @@ jobs:
                     arch: x64,
                     target_id: win32-x64,
                     binary_path: packages/coding-agent/binaries/ompx-windows-x64.exe,
+                    native_artifact_pattern: pi-natives-win32-x64*,
                  }
       runs-on: ${{ matrix.os }}
       permissions:
@@ -652,7 +685,7 @@ jobs:
          - name: Download native addon(s)
            uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
            with:
-              pattern: pi-natives-${{ matrix.platform }}-${{ matrix.arch }}*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              pattern: ${{ matrix.native_artifact_pattern }}-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
               merge-multiple: true
          - name: Build release binary
@@ -675,9 +708,11 @@ jobs:
          # Windows binary is cross-built on Linux, so we have no Windows runner
          # to smoke it on. Cross-build correctness is verified via the napi
          # entry-point exports (see build-native action) and the bun
-         # `--compile --target=bun-windows-x64-*` cross-compile.
+         # `--compile --target=bun-windows-x64-*` cross-compile. Musl binaries
+         # need the musl loader, which glibc runners lack — they are smoked in
+         # the Alpine container step below instead.
          - name: Smoke release binary
-           if: matrix.platform != 'win32'
+           if: matrix.platform != 'win32' && matrix.libc != 'musl'
            env:
               RELEASE_TAG: ${{ needs.release_metadata.outputs.release-tag }}
            run: |
@@ -696,6 +731,26 @@ jobs:
                 exit 1
               fi
               "${{ matrix.binary_path }}" --smoke-test
+         - name: Smoke musl release binary on Alpine
+           if: matrix.libc == 'musl'
+           run: |
+              binary="$(realpath "${{ matrix.binary_path }}")"
+              # Bun's musl-target binaries link libstdc++/libgcc dynamically;
+              # Alpine users install them alongside the binary (same as bun itself).
+              docker run --rm -v "$binary:/usr/local/bin/ompx:ro" alpine:3.22 sh -ec '
+                apk add --no-cache libstdc++ libgcc >/dev/null
+                runtime_dir="$(mktemp -d)"
+                HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ompx --version
+                HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ompx --smoke-test
+              '
+         - name: Publish native addon package
+           if: ${{ !inputs.skip_npm && matrix.libc != 'musl' }}
+           env:
+              # Fallback auth: setup-node wrote an .npmrc referencing
+              # NODE_AUTH_TOKEN; npm uses it only when OIDC has no trusted
+              # publisher for the package (or on a first publish).
+              NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+           run: bun run ci:release:publish-native-leaf ${{ matrix.target_id }}
          - name: Upload release binary artifact
            uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
            with:
@@ -752,7 +807,7 @@ jobs:
       needs: [release_metadata, release_github]
       runs-on: macos-14
       permissions:
-         contents: write
+         contents: read
       steps:
          - name: Download and verify draft release assets
            env:

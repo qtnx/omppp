@@ -291,6 +291,48 @@ describe("AuthStorage codex oauth ranking", () => {
 		expectWeightedPreference(counts, "api-acct-near", "api-acct-far");
 	});
 
+	test("keeps a Codex session pinned after >1h idle", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+		const storage = authStorage;
+
+		await storage.set("openai-codex", [
+			{ type: "oauth", ...createCredential("acct-pinned", "pinned@example.com") },
+			{ type: "oauth", ...createCredential("acct-sibling", "sibling@example.com") },
+		]);
+
+		const base = Date.now();
+		let clockOffset = 0;
+		vi.spyOn(Date, "now").mockImplementation(() => base + clockOffset);
+
+		const setUsage = (pinnedPrimary: number, siblingPrimary: number): void => {
+			usageByAccount.set(
+				"acct-pinned",
+				createCodexUsageReport({
+					accountId: "acct-pinned",
+					primary: { usedFraction: pinnedPrimary, resetInMs: HOUR_MS },
+					secondary: { usedFraction: 0.5, resetInMs: 5 * 24 * HOUR_MS },
+				}),
+			);
+			usageByAccount.set(
+				"acct-sibling",
+				createCodexUsageReport({
+					accountId: "acct-sibling",
+					primary: { usedFraction: siblingPrimary, resetInMs: HOUR_MS },
+					secondary: { usedFraction: 0.5, resetInMs: 5 * 24 * HOUR_MS },
+				}),
+			);
+		};
+
+		setUsage(0.2, 0.9);
+		expect(await storage.getApiKey("openai-codex", "codex-idle-boundary")).toBe("api-acct-pinned");
+
+		// Codex long retention can preserve a prompt cache for 24h, so the
+		// Anthropic-specific 1h gate must not re-rank this still-usable pin.
+		setUsage(0.9, 0.2);
+		clockOffset = 2 * HOUR_MS;
+		expect(await storage.getApiKey("openai-codex", "codex-idle-boundary")).toBe("api-acct-pinned");
+	});
+
 	test("prefers fresh 5h ticker account at 0% usage", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
@@ -1560,6 +1602,63 @@ describe("AuthStorage codex oauth ranking", () => {
 		},
 	);
 
+	test("keeps an eligible Codex session credential when usage headroom makes its sibling rank better", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		const modelId = "gpt-5.6-sol";
+		const sessionId = "codex-sticky-usage-rerank";
+		const accounts = [
+			{ id: "acct-sticky-usage-a", email: "sticky-usage-a@example.com" },
+			{ id: "acct-sticky-usage-b", email: "sticky-usage-b@example.com" },
+		];
+		const reportByAccount: Record<string, UsageReport> = {};
+		const setUsedFraction = (report: UsageReport, usedFraction: number): void => {
+			const used = usedFraction * 100;
+			for (const limit of report.limits) {
+				limit.amount.used = used;
+				limit.amount.remaining = 100 - used;
+				limit.amount.usedFraction = usedFraction;
+				limit.amount.remainingFraction = 1 - usedFraction;
+				limit.status = usedFraction >= 1 ? "exhausted" : usedFraction >= 0.9 ? "warning" : "ok";
+			}
+		};
+
+		const base = Date.now();
+		let clockOffset = 0;
+		vi.spyOn(Date, "now").mockImplementation(() => base + clockOffset);
+
+		await authStorage.set(
+			"openai-codex",
+			accounts.map(account => ({ type: "oauth", ...createCredential(account.id, account.email) })),
+		);
+		for (const account of accounts) {
+			const report = createCodexUsageReport({
+				accountId: account.id,
+				primary: { usedFraction: 0.25, resetInMs: 30 * 60 * 1000 },
+				secondary: { usedFraction: 0.25, resetInMs: 6 * 24 * 60 * 60 * 1000 },
+				metadata: { planType: "business", email: account.email },
+			});
+			reportByAccount[account.id] = report;
+			usageByAccount.set(account.id, report);
+		}
+
+		const firstApiKey = await authStorage.getApiKey("openai-codex", sessionId, { modelId });
+		if (!firstApiKey) throw new Error("expected initial Codex credential");
+		const stickyAccount = firstApiKey.replace(/^api-/, "");
+		const siblingAccount = stickyAccount === accounts[0]!.id ? accounts[1]!.id : accounts[0]!.id;
+		const stickyReport = reportByAccount[stickyAccount];
+		const siblingReport = reportByAccount[siblingAccount];
+		if (!stickyReport || !siblingReport) throw new Error("expected reports for both Codex accounts");
+
+		setUsedFraction(stickyReport, 0.85);
+		setUsedFraction(siblingReport, 0.01);
+		// Step past the usage-report TTL so the second resolve re-fetches the
+		// inverted headroom instead of ranking on the cached first-resolve reports
+		// (mirrors mid-session header ingest / TTL expiry in a real session).
+		clockOffset = 10 * 60 * 1000;
+		expect(await authStorage.getApiKey("openai-codex", sessionId, { modelId })).toBe(firstApiKey);
+	});
+
 	test("reranks a Terra session on a Go account when it switches to Sol", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
@@ -2312,7 +2411,7 @@ function createClaudeLimit(args: {
 	key: "5h" | "7d";
 	durationMs: number;
 	usedFraction: number;
-	resetInMs: number;
+	resetInMs?: number;
 	tier?: "fable";
 }): UsageLimit {
 	const clamped = Math.min(Math.max(args.usedFraction, 0), 1);
@@ -2330,7 +2429,7 @@ function createClaudeLimit(args: {
 			id: args.key,
 			label,
 			durationMs: args.durationMs,
-			resetsAt: Date.now() + args.resetInMs,
+			...(args.resetInMs === undefined ? {} : { resetsAt: Date.now() + args.resetInMs }),
 		},
 		amount: {
 			unit: "percent",
@@ -2346,9 +2445,9 @@ function createClaudeLimit(args: {
 
 function createClaudeUsageReport(args: {
 	accountId: string;
-	primary: { usedFraction: number; resetInMs: number };
-	secondary: { usedFraction: number; resetInMs: number };
-	fableSecondary?: { usedFraction: number; resetInMs: number };
+	primary: { usedFraction: number; resetInMs?: number };
+	secondary: { usedFraction: number; resetInMs?: number };
+	fableSecondary?: { usedFraction: number; resetInMs?: number };
 }): UsageReport {
 	const limits = [
 		createClaudeLimit({
@@ -2455,6 +2554,35 @@ describe("AuthStorage claude oauth ranking", () => {
 
 		const counts = await countApiKeySelections(authStorage, "anthropic", "weighted-claude-near");
 		expectWeightedPreference(counts, "api-acct-near", "api-acct-far");
+	});
+
+	test("assumes the full duration remains when ranking clockless windows", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("anthropic", [
+			{ type: "oauth", ...createCredential("acct-clockless", "clockless@example.com") },
+			{ type: "oauth", ...createCredential("acct-clocked", "clocked@example.com") },
+		]);
+
+		usageByAccount.set(
+			"acct-clockless",
+			createClaudeUsageReport({
+				accountId: "acct-clockless",
+				primary: { usedFraction: 0 },
+				secondary: { usedFraction: 0 },
+			}),
+		);
+		usageByAccount.set(
+			"acct-clocked",
+			createClaudeUsageReport({
+				accountId: "acct-clocked",
+				primary: { usedFraction: 0, resetInMs: 4 * HOUR_MS },
+				secondary: { usedFraction: 0.05, resetInMs: 22 * HOUR_MS },
+			}),
+		);
+
+		const apiKey = await authStorage.getApiKey("anthropic", "session-claude-clockless");
+		expect(apiKey).toBe("api-acct-clocked");
 	});
 
 	test("balances equal-priority accounts across sessions", async () => {
@@ -2697,5 +2825,89 @@ describe("AuthStorage claude oauth ranking", () => {
 
 		const apiKey = await authStorage.getApiKey("anthropic", "session-claude-single");
 		expect(apiKey).toBe("api-acct-solo");
+	});
+
+	test("re-ranks a session pinned to a now-worse account after >1h of Anthropic idle", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+		const storage = authStorage;
+
+		await storage.set("anthropic", [
+			{ type: "oauth", ...createCredential("acct-pinned", "pinned@example.com") },
+			{ type: "oauth", ...createCredential("acct-fresh", "fresh@example.com") },
+		]);
+
+		const base = Date.now();
+		let clockOffset = 0;
+		vi.spyOn(Date, "now").mockImplementation(() => base + clockOffset);
+
+		// t0: acct-pinned is healthy; acct-fresh's 5h window is hot (>=85%),
+		// so ranking picks acct-pinned and pins the session to it.
+		const setUsage = (pinnedPrimary: number, freshPrimary: number): void => {
+			usageByAccount.set(
+				"acct-pinned",
+				createClaudeUsageReport({
+					accountId: "acct-pinned",
+					primary: { usedFraction: pinnedPrimary, resetInMs: 4 * HOUR_MS },
+					secondary: { usedFraction: 0.5, resetInMs: 5 * 24 * HOUR_MS },
+				}),
+			);
+			usageByAccount.set(
+				"acct-fresh",
+				createClaudeUsageReport({
+					accountId: "acct-fresh",
+					primary: { usedFraction: freshPrimary, resetInMs: 4 * HOUR_MS },
+					secondary: { usedFraction: 0.5, resetInMs: 5 * 24 * HOUR_MS },
+				}),
+			);
+		};
+
+		setUsage(0.2, 0.9);
+		expect(await storage.getApiKey("anthropic", "claude-idle-gating")).toBe("api-acct-pinned");
+
+		// The tables turn: acct-pinned's 5h window is now hot, acct-fresh is cool.
+		setUsage(0.9, 0.2);
+
+		// Within 1h of the last resolve the conversation prefix is plausibly warm,
+		// so the pin must hold even though it is now the worse account.
+		clockOffset = 30 * 60 * 1000;
+		expect(await storage.getApiKey("anthropic", "claude-idle-gating")).toBe("api-acct-pinned");
+
+		// After >1h of Anthropic request inactivity the prompt cache is no longer
+		// guaranteed warm, so ranking must run again and rotate to the better sibling.
+		clockOffset = 30 * 60 * 1000 + 2 * HOUR_MS;
+		expect(await storage.getApiKey("anthropic", "claude-idle-gating")).toBe("api-acct-fresh");
+	});
+
+	test("keeps the pinned account after idle when siblings rank equal (tie-break)", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+		const storage = authStorage;
+
+		await storage.set("anthropic", [
+			{ type: "oauth", ...createCredential("acct-a", "a@example.com") },
+			{ type: "oauth", ...createCredential("acct-b", "b@example.com") },
+		]);
+
+		const base = Date.now();
+		let clockOffset = 0;
+		vi.spyOn(Date, "now").mockImplementation(() => base + clockOffset);
+
+		for (const accountId of ["acct-a", "acct-b"]) {
+			usageByAccount.set(
+				accountId,
+				createClaudeUsageReport({
+					accountId,
+					primary: { usedFraction: 0.25, resetInMs: 4 * HOUR_MS },
+					secondary: { usedFraction: 0.25, resetInMs: 4 * 24 * HOUR_MS },
+				}),
+			);
+		}
+
+		const first = await storage.getApiKey("anthropic", "claude-idle-tie");
+		expect(first).toBeDefined();
+
+		// Past the warm window ranking runs again, but both accounts score equal,
+		// so the pin must win the tie rather than churn to the sibling.
+		clockOffset = HOUR_MS + 1;
+		expect(await storage.getApiKey("anthropic", "claude-idle-tie")).toBe(first);
 	});
 });

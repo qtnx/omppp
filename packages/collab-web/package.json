@@ -40,6 +40,7 @@
     "@oh-my-pi/pi-wire": "catalog:",
     "lucide-react": "catalog:",
     "marked": "catalog:",
+    "mermaid": "11.16.0",
     "react": "catalog:",
     "react-dom": "catalog:"
   },

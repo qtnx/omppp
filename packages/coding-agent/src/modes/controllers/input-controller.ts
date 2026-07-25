@@ -174,6 +174,7 @@ export class InputController {
 
 	#enhancedPaste?: EnhancedPasteController;
 	#focusedLeftTapListenerInstalled = false;
+	#focusedPasteListenerInstalled = false;
 	#btwBranchListenerInstalled = false;
 	#btwCopyListenerInstalled = false;
 	#globalInterruptListenerInstalled = false;
@@ -348,6 +349,15 @@ export class InputController {
 			if (aborted) return;
 		}
 
+		if (vocalizer.isSpeaking()) {
+			// Playback from the completed response can overlap the next agent
+			// turn. Silence it before interrupting ongoing main-turn work.
+			vocalizer.clear();
+			this.ctx.lastEscapeTime = 0;
+			this.#clearStreamingEscapeArm();
+			return;
+		}
+
 		if (this.ctx.loopModeEnabled) {
 			this.ctx.pauseLoop();
 			if (this.ctx.session.isStreaming) {
@@ -378,11 +388,6 @@ export class InputController {
 			}
 			return;
 		}
-		if (!this.#hasGlobalInterruptWork() && vocalizer.isSpeaking()) {
-			vocalizer.clear();
-			this.ctx.lastEscapeTime = 0;
-			return;
-		}
 		if (this.ctx.loadingAnimation) {
 			if (this.ctx.session.isStreaming) {
 				this.#handleStreamingEscape(() => this.restoreQueuedMessagesToEditor({ abort: true }));
@@ -408,10 +413,6 @@ export class InputController {
 			this.#handleStreamingEscape();
 		} else if (this.ctx.editor.getText().trim()) {
 			// Esc must not destroy an in-progress draft; it only disarms a previous empty-editor Esc.
-			this.ctx.lastEscapeTime = 0;
-			this.#clearStreamingEscapeArm();
-		} else if (vocalizer.isSpeaking()) {
-			vocalizer.clear();
 			this.ctx.lastEscapeTime = 0;
 			this.#clearStreamingEscapeArm();
 		} else {
@@ -500,6 +501,16 @@ export class InputController {
 				if (focused === this.ctx.editor && this.ctx.editor.isShowingAutocomplete()) return undefined;
 				if (!this.#hasGlobalInterruptWork() && !vocalizer.isSpeaking()) return undefined;
 				this.#handleEscape();
+				return { consume: true };
+			});
+		}
+		if (!this.#focusedPasteListenerInstalled) {
+			this.#focusedPasteListenerInstalled = true;
+			this.ctx.ui.addInputListener(data => {
+				const focused = this.ctx.ui.getFocused();
+				if (!focused || focused === this.ctx.editor || !hasPasteText(focused)) return undefined;
+				if (!this.ctx.keybindings.matches(data, "app.clipboard.pasteImage")) return undefined;
+				void this.handleImagePaste();
 				return { consume: true };
 			});
 		}
@@ -944,32 +955,6 @@ export class InputController {
 			// First, move any pending bash components to chat
 			this.ctx.flushPendingBashComponents();
 
-			// Auto-generate a session title while the session is still unnamed.
-			// Greetings / acknowledgements / empty input carry no task, so they are
-			// skipped deterministically (no model invoked, no download-progress UI)
-			// and the session stays unnamed — the next user message gets a fresh
-			// chance, so titling defers past "hi" instead of latching onto it.
-			if (!this.ctx.sessionManager.getSessionName() && !$env.PI_NO_TITLE && !isLowSignalTitleInput(text)) {
-				this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
-				this.ctx.session
-					.generateTitle(text)
-					.then(async title => {
-						// Re-check: a concurrent attempt for an earlier message may have
-						// already named the session. Don't clobber it. Terminal title and
-						// accent updates fire from the onSessionNameChanged listener.
-						if (title && !this.ctx.sessionManager.getSessionName()) {
-							await this.ctx.sessionManager.setSessionName(title, "auto");
-						}
-					})
-					.catch(err => {
-						logger.warn("title-generator: uncaught auto-title error", {
-							sessionId: this.ctx.session.sessionId,
-							reason: "uncaught-auto-title-error",
-							error: err instanceof Error ? err.message : String(err),
-						});
-					});
-			}
-
 			if (this.ctx.onInputCallback) {
 				// Include any pending images from clipboard paste
 				this.ctx.editor.imageLinks = undefined;
@@ -989,6 +974,9 @@ export class InputController {
 					imageLinks: inputImageLinks,
 					streamingBehavior: "steer",
 				});
+				// Start titling only after the optimistic row painted, so the local
+				// tiny-title worker's subprocess spawn never blocks the first frame.
+				this.#maybeStartTitleGeneration(text);
 
 				this.ctx.onInputCallback(submission);
 			} else {
@@ -1003,6 +991,7 @@ export class InputController {
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 				this.ctx.editor.pendingImages = [];
 				this.ctx.editor.pendingImageLinks = [];
+				this.#maybeStartTitleGeneration(text);
 				try {
 					await this.ctx.withLocalSubmission(
 						text,
@@ -1030,6 +1019,49 @@ export class InputController {
 			}
 			this.ctx.editor.addToHistory(text);
 		};
+	}
+
+	/**
+	 * Kick off session-title generation while the session is still unnamed.
+	 * Invoked AFTER the optimistic user row is painted so the local tiny-title
+	 * worker's subprocess spawn never lands ahead of the first frame (issue #6462).
+	 * Skips slash extension commands (consumed locally by AgentSession.prompt()),
+	 * already-named sessions, PI_NO_TITLE, and low-signal greetings — no model or
+	 * download UI for those.
+	 */
+	#maybeStartTitleGeneration(text: string): void {
+		const runner = this.ctx.session.extensionRunner;
+		const extensionCommandSpace = text.indexOf(" ");
+		const isLocalExtensionCommand =
+			text.startsWith("/") &&
+			runner?.getCommand(extensionCommandSpace === -1 ? text.slice(1) : text.slice(1, extensionCommandSpace)) !==
+				undefined;
+		if (
+			isLocalExtensionCommand ||
+			this.ctx.sessionManager.getSessionName() ||
+			$env.PI_NO_TITLE ||
+			isLowSignalTitleInput(text)
+		) {
+			return;
+		}
+		this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
+		this.ctx.session
+			.generateTitle(text)
+			.then(async title => {
+				// Re-check: a concurrent attempt for an earlier message may have
+				// already named the session. Don't clobber it. Terminal title and
+				// accent updates fire from the onSessionNameChanged listener.
+				if (title && !this.ctx.sessionManager.getSessionName()) {
+					await this.ctx.sessionManager.setSessionName(title, "auto");
+				}
+			})
+			.catch(err => {
+				logger.warn("title-generator: uncaught auto-title error", {
+					sessionId: this.ctx.session.sessionId,
+					reason: "uncaught-auto-title-error",
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
 	}
 
 	/** Submit editor text to the focused subagent session (chat-only focus policy). */
@@ -1686,8 +1718,19 @@ export class InputController {
 
 	async handleImagePaste(): Promise<boolean> {
 		try {
+			// When a modal paste-capable prompt (login/API-key Input) owns focus,
+			// only clipboard text may land there. Image payloads must not mutate
+			// the hidden main editor — mirror the enhanced-paste `pasteImage`
+			// behavior and surface the unsupported-status instead (#6057).
+			const focusedNow = this.ctx.ui.getFocused();
+			const promptTarget =
+				focusedNow && focusedNow !== this.ctx.editor && hasPasteText(focusedNow) ? focusedNow : null;
 			const image = await this.clipboard.readImage();
 			if (image) {
+				if (promptTarget) {
+					this.ctx.showStatus("Image paste is not supported in this prompt");
+					return false;
+				}
 				return await this.#normalizeAndInsertPastedImage(
 					{
 						type: "image",
@@ -1709,7 +1752,7 @@ export class InputController {
 			// selections must not silently drop after the first attach.
 			// `readMacFileUrls` returns an empty list off Darwin, so the
 			// check is free on every other platform.
-			const fileUrls = (await this.clipboard.readMacFileUrls?.()) ?? [];
+			const fileUrls = promptTarget ? [] : ((await this.clipboard.readMacFileUrls?.()) ?? []);
 			let attachedFromFileUrls = false;
 			for (const url of fileUrls) {
 				const candidate = extractImagePathFromText(url);
@@ -1734,15 +1777,14 @@ export class InputController {
 			// text. Covers terminals that paste the Finder file path as
 			// plain text rather than as a `public.file-url` (most macOS
 			// terminals do this for image clipboards).
-			const imagePath = extractImagePathFromText(text);
+			const imagePath = promptTarget ? null : extractImagePathFromText(text);
 			if (imagePath) {
 				await this.handleImagePathPaste(imagePath);
 				return true;
 			}
 			// Route to the focused component when it accepts pastes (modal
 			// Input prompts), matching the enhanced-paste text path (#2127).
-			const focused = this.ctx.ui.getFocused();
-			const target = focused && focused !== this.ctx.editor && hasPasteText(focused) ? focused : this.ctx.editor;
+			const target = promptTarget ?? this.ctx.editor;
 			target.pasteText(text);
 			this.ctx.ui.requestRender();
 			return true;

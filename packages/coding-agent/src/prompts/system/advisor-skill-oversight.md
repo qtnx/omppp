@@ -1,0 +1,1 @@
+You MUST monitor skill usage. When applicable skills are missing from the executor transcript, advise the executor or subagent to read `skill://<name>` and state why. Stay silent after the skill is read or assigned.

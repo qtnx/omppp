@@ -96,7 +96,7 @@ describe("AgentSession magic keyword settings", () => {
 		created.settings.set("magicKeywords.enabled", false);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
-		await session.prompt("please workflowz this and ultrathink through it");
+		await session.prompt("please workflow this and ultrathink through it");
 
 		expect(customTypesFromPrompt(promptSpy)).toEqual([]);
 	});
@@ -109,7 +109,7 @@ describe("AgentSession magic keyword settings", () => {
 		created.settings.set("magicKeywords.workflow", false);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
-		await session.prompt("please orchestrate and workflowz this");
+		await session.prompt("please orchestrate and workflow this");
 
 		expect(customTypesFromPrompt(promptSpy)).toEqual([]);
 	});
@@ -120,19 +120,19 @@ describe("AgentSession magic keyword settings", () => {
 		authStorage = created.authStorage;
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
-		await session.prompt("please workflowz this");
+		await session.prompt("please workflow this");
 
 		expect(customTypesFromPrompt(promptSpy)).toEqual(["workflow-notice"]);
 	});
 
-	it("renders workflowz notice for the active task schema", async () => {
+	it("renders the workflow tool notice", async () => {
 		const created = await createMagicKeywordSession(root);
 		session = created.session;
 		authStorage = created.authStorage;
 		created.settings.set("task.batch", false);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
-		await session.prompt("please workflowz this");
+		await session.prompt("please workflow this");
 
 		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ content?: string; customType?: string }>;
 		const notice = promptMessages.find(message => message.customType === "workflow-notice")?.content ?? "";
@@ -141,13 +141,13 @@ describe("AgentSession magic keyword settings", () => {
 		expect(notice).toContain("NEVER use Python `eval`");
 	});
 
-	it("skips workflowz notice when the workflow tool is inactive", async () => {
+	it("skips workflow notice when the workflow tool is inactive", async () => {
 		const created = await createMagicKeywordSession(root, [mockTaskTool]);
 		session = created.session;
 		authStorage = created.authStorage;
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
-		await session.prompt("please workflowz this");
+		await session.prompt("please workflow this");
 
 		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
 		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([]);

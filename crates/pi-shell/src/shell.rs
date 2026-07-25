@@ -623,6 +623,7 @@ async fn create_session_for_run(
 		shell.register_builtin("cat", crate::coreutils::cat_builtin());
 		shell.register_builtin("uniq", crate::coreutils::uniq_builtin());
 		shell.register_builtin("base64", crate::coreutils::base64_builtin());
+		shell.register_builtin("cmp", crate::coreutils::cmp_builtin());
 		shell.register_builtin("md5sum", crate::coreutils::md5sum_builtin());
 		shell.register_builtin("sha1sum", crate::coreutils::sha1sum_builtin());
 		shell.register_builtin("sha224sum", crate::coreutils::sha224sum_builtin());
@@ -1240,19 +1241,43 @@ async fn run_shell_command_once(
 		}
 	}
 
-	if !reader_finished {
-		reader_cancel.cancel();
-		match time::timeout(READER_SHUTDOWN_TIMEOUT, &mut reader_handle).await {
-			Ok(Ok(Ok(output))) => reader_output = Some(output),
-			Ok(_) => {},
-			Err(_) => {
-				reader_handle.abort();
-				let _ = reader_handle.await;
-			},
+	if cancel_token.is_cancelled() {
+		// Canceled run: `cancel_reader_after_grace` owns reader shutdown. Join it
+		// so it deterministically observes cancellation, runs the grace wait, and
+		// cancels the reader itself. Never abort the bridge or cancel the reader
+		// ahead of the grace window here — under scheduler load the bridge may not
+		// have been polled yet, and aborting it would drop the in-flight grace
+		// observation before it completes.
+		let _ = cancel_bridge.await;
+		if !reader_finished {
+			match time::timeout(READER_SHUTDOWN_TIMEOUT, &mut reader_handle).await {
+				Ok(Ok(Ok(output))) => reader_output = Some(output),
+				Ok(_) => {},
+				Err(_) => {
+					reader_handle.abort();
+					let _ = reader_handle.await;
+				},
+			}
 		}
+	} else {
+		// Normal completion: the cancel bridge is still dormant, parked on
+		// `cancel_token.cancelled()`. Cancel the still-live reader ourselves, then
+		// abort/reap the dormant bridge without waiting for a cancellation that
+		// will never arrive.
+		if !reader_finished {
+			reader_cancel.cancel();
+			match time::timeout(READER_SHUTDOWN_TIMEOUT, &mut reader_handle).await {
+				Ok(Ok(Ok(output))) => reader_output = Some(output),
+				Ok(_) => {},
+				Err(_) => {
+					reader_handle.abort();
+					let _ = reader_handle.await;
+				},
+			}
+		}
+		cancel_bridge.abort();
+		let _ = cancel_bridge.await;
 	}
-	cancel_bridge.abort();
-	let _ = cancel_bridge.await;
 
 	let result = result.map_err(|err| Error::msg(format!("Shell execution failed: {err}")))?;
 	let buffered = match reader_output {
@@ -2207,6 +2232,43 @@ fn uutils_env_disabled(config: &ShellConfig, key: &str) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// `cmp` remains available with no executable search path, proving the shell
+	/// dispatches the in-process builtin rather than a platform binary.
+	#[tokio::test(flavor = "multi_thread")]
+	async fn cmp_is_registered_as_an_in_process_builtin() {
+		let dir = tempfile::tempdir().expect("temp dir");
+		let root = std::fs::canonicalize(dir.path()).expect("canonical temp dir");
+		std::fs::write(root.join("a"), b"same").expect("write a");
+		std::fs::write(root.join("b"), b"same").expect("write b");
+		std::fs::write(root.join("c"), b"different").expect("write c");
+
+		let config = ShellConfig { session_env: None, snapshot_path: None, minimizer: None };
+		let mut session = create_session(&config).await.expect("create_session");
+		session
+			.shell
+			.set_working_dir(root.to_str().expect("utf8 temp path"))
+			.expect("set cwd");
+		let mut params = session.shell.default_exec_params();
+		params.set_fd(OpenFiles::STDIN_FD, null_file().expect("null stdin"));
+		params.set_fd(OpenFiles::STDOUT_FD, null_file().expect("null stdout"));
+		params.set_fd(OpenFiles::STDERR_FD, null_file().expect("null stderr"));
+		let source_info = SourceInfo::from("pi-natives:test");
+
+		let equal = session
+			.shell
+			.run_string("PATH=/definitely-missing cmp -s a b", &source_info, &params)
+			.await
+			.expect("equal cmp");
+		assert_eq!(exit_code(&equal), 0);
+
+		let different = session
+			.shell
+			.run_string("PATH=/definitely-missing cmp -s a c", &source_info, &params)
+			.await
+			.expect("different cmp");
+		assert_eq!(exit_code(&different), 1);
+	}
 
 	/// The uutils-backed `mkdir` builtin must (1) create directories under the
 	/// shell's working directory rather than the host process cwd, (2) route

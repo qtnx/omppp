@@ -8,9 +8,11 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import type { AsyncJob, AsyncJobManager } from "../../async";
+import { settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
 import type { Theme } from "../../modes/theme/theme";
+import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
 import type { ToolSession } from "..";
 import {
@@ -134,6 +136,7 @@ interface TrackedJobLike {
 	status: string;
 	label: string;
 	startTime: number;
+	latestDetails?: Record<string, unknown>;
 	resultText?: string;
 	errorText?: string;
 }
@@ -143,12 +146,34 @@ export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobS
 	return jobs.map(j => {
 		const current = session.asyncJobManager?.getJob(j.id);
 		const latest = current ?? j;
+		let resolvedModel: string | undefined;
+		if (latest.type === "task") {
+			const progressValue = latest.latestDetails?.progress;
+			if (Array.isArray(progressValue)) {
+				let progressRecord: Record<string, unknown> | undefined;
+				for (const item of progressValue) {
+					if (!item || typeof item !== "object") continue;
+					const candidate = item as Record<string, unknown>;
+					if (!progressRecord) progressRecord = candidate;
+					if (candidate.id === latest.id) {
+						progressRecord = candidate;
+						break;
+					}
+				}
+				const modelValue = progressRecord?.resolvedModel;
+				if (typeof modelValue === "string") {
+					const trimmed = modelValue.trim();
+					if (trimmed) resolvedModel = trimmed;
+				}
+			}
+		}
 		return {
 			id: latest.id,
 			type: latest.type,
 			status: latest.status as JobSnapshot["status"],
 			label: latest.label,
 			durationMs: Math.max(0, now - latest.startTime),
+			...(resolvedModel ? { resolvedModel } : {}),
 			...(latest.resultText ? { resultText: latest.resultText } : {}),
 			...(latest.errorText ? { errorText: latest.errorText } : {}),
 		};
@@ -280,26 +305,38 @@ export function nothingToWaitForResult(session: ToolSession): AgentToolResult<Co
 }
 
 /** `cancel`: kill the named jobs; returns immediately with outcomes + snapshots. */
-export function executeCancel(
+export async function executeCancel(
 	session: ToolSession,
 	manager: AsyncJobManager,
 	ownerId: string | undefined,
 	ids: string[],
-): AgentToolResult<CoordinationDetails> {
+): Promise<AgentToolResult<CoordinationDetails>> {
 	const ownerFilter = ownerId ? { ownerId } : undefined;
 	const cancelOutcomes: CancelOutcome[] = [];
 	for (const id of ids) {
 		const existing = manager.getJob(id);
 		if (!existing || (ownerId && existing.ownerId !== ownerId)) {
-			cancelOutcomes.push({ id, status: "not_found", message: `Background job not found: ${id}` });
+			// No job by this id (or it belongs to another agent): a budget-aborted
+			// keep-alive subagent lives on as a jobless registration long after its
+			// job row is reaped, so let cancel reach the agent registration too.
+			cancelOutcomes.push(await cancelAgentRegistration(session, ownerId, id));
 			continue;
 		}
 		if (existing.status !== "running") {
-			cancelOutcomes.push({
-				id,
-				status: "already_completed",
-				message: `Background job ${id} is already ${existing.status}.`,
-			});
+			// The job row settled but may still be inside the retention window.
+			// The agent registration behind it (job id == agent id for task
+			// spawns) can outlive the row as an idle/parked zombie — try the
+			// registration kill before reporting the row as already done.
+			const regOutcome = await cancelAgentRegistration(session, ownerId, id);
+			cancelOutcomes.push(
+				regOutcome.status === "cancelled"
+					? regOutcome
+					: {
+							id,
+							status: "already_completed",
+							message: `Background job ${id} is already ${existing.status}.`,
+						},
+			);
 			continue;
 		}
 		const cancelled = manager.cancel(id, ownerFilter);
@@ -310,6 +347,52 @@ export function executeCancel(
 		);
 	}
 	return buildJobResult(session, manager, "cancel", visibleJobs(manager, ids, ownerId), cancelOutcomes);
+}
+
+/**
+ * Kill a non-job-backed agent registration named by `id`: abort any in-flight
+ * turn, then release it from the lifecycle (dispose session + unregister). This
+ * is the only kill path for a keep-alive subagent that was budget-aborted, went
+ * `idle`/`parked`, and outlived its job row — otherwise it is unstoppable short
+ * of a broker restart (issue #6315). Scoped to the caller's own descendants so
+ * cross-agent kills stay impossible; a bare test/SDK caller (no owner id) may
+ * target any sub. Never touches Main, the caller, or advisor transcripts.
+ */
+async function cancelAgentRegistration(
+	session: ToolSession,
+	ownerId: string | undefined,
+	id: string,
+): Promise<CancelOutcome> {
+	const registry = session.agentRegistry;
+	const ref = registry?.get(id);
+	if (ref?.kind !== "sub") {
+		return { id, status: "not_found", message: `Background job not found: ${id}` };
+	}
+	if (id === ownerId) {
+		return { id, status: "not_found", message: `Cannot cancel yourself (${id}).` };
+	}
+	if (ownerId && ref.parentId !== ownerId) {
+		return { id, status: "not_found", message: `Agent ${id} was not spawned by you and cannot be cancelled.` };
+	}
+	const lifecycle = session.agentLifecycle?.();
+	try {
+		if (ref.status === "running" && ref.session) {
+			await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
+		}
+		if (lifecycle) {
+			await lifecycle.release(id);
+		} else {
+			await ref.session?.dispose();
+			registry?.unregister(id);
+		}
+	} catch (error) {
+		return {
+			id,
+			status: "already_completed",
+			message: `Agent ${id} could not be fully cancelled: ${error instanceof Error ? error.message : String(error)}.`,
+		};
+	}
+	return { id, status: "cancelled", message: `Cancelled agent ${id} (killed session, dropped registration).` };
 }
 
 /** `jobs`: read-only snapshot of every job plus the jobless running-agent roster. */
@@ -354,6 +437,7 @@ const PREVIEW_LINES_EXPANDED = 4;
 const LABEL_LINES_COLLAPSED = 1;
 const LABEL_LINES_EXPANDED = 3;
 const PREVIEW_LINE_WIDTH = 80;
+const MODEL_BADGE_MAX_WIDTH = 48;
 
 function statusToIcon(status: JobSnapshot["status"]): ToolUIStatus {
 	switch (status) {
@@ -545,6 +629,20 @@ export function jobsRenderResult(
 							visibleLabelLines[visibleLabelLines.length - 1] = `${last} …`;
 						}
 						const durationText = uiTheme.fg("dim", formatDuration(job.durationMs));
+						const modelText =
+							job.type === "task" &&
+							typeof job.resolvedModel === "string" &&
+							job.resolvedModel.trim() &&
+							settings.get("task.showResolvedModelBadge")
+								? `${uiTheme.sep.dot}${uiTheme.fg(
+										"dim",
+										truncateToWidth(
+											replaceTabs(job.resolvedModel.trim()),
+											MODEL_BADGE_MAX_WIDTH,
+											Ellipsis.Unicode,
+										),
+									)}`
+								: "";
 						// Running rows in a live block shimmer their label; once the block
 						// stops animating (sealed, or a settled snapshot — spinnerFrame
 						// cleared) they render static so scrollback never keeps a mid-sweep
@@ -556,7 +654,9 @@ export function jobsRenderResult(
 								? shimmerText(headRaw, uiTheme)
 								: uiTheme.fg("accent", headRaw)
 							: uiTheme.fg("toolOutput", headRaw);
-						lines.push(`${icon}${idPart} ${typeBadge} ${headLabel} ${durationText}`);
+						lines.push(
+							`${icon}${idPart} ${typeBadge} ${headLabel}${modelText}${modelText ? uiTheme.sep.dot : " "}${durationText}`,
+						);
 						for (let i = 1; i < visibleLabelLines.length; i++) {
 							lines.push(`  ${uiTheme.fg("toolOutput", visibleLabelLines[i]!)}`);
 						}

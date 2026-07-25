@@ -12,7 +12,6 @@ import { Settings, settings } from "../config/settings";
 import { theme } from "../modes/theme/theme";
 import { downloadSttModel, isSttModelCached } from "../stt/downloader";
 import { isSttModelKey, STT_MODEL_OPTIONS } from "../stt/models";
-import { detectRecorder, ensureRecorder } from "../stt/recorder";
 import { resolveLinuxPodmanSandboxImage, validateLinuxPodmanSandboxImage } from "../task/omp-command";
 import { downloadTtsModel, isTtsLocalModelKey, isTtsModelCached, TTS_LOCAL_MODEL_OPTIONS } from "../tts";
 import { selectSetupModel } from "./setup-model-picker";
@@ -175,17 +174,6 @@ interface SpeechComponent {
 
 function buildSpeechComponents(): SpeechComponent[] {
 	return [
-		{
-			name: "Recorder",
-			isReady: async () => detectRecorder() !== null,
-			status: async () => {
-				const recorder = detectRecorder();
-				return recorder ? `${recorder.tool} (${recorder.bin})` : "none — ffmpeg will be downloaded";
-			},
-			ensure: async onProgress => {
-				await ensureRecorder(onProgress);
-			},
-		},
 		{
 			name: "Speech-to-Text model",
 			isReady: () => isSttModelCached(settings.get("stt.modelName")),
@@ -399,8 +387,9 @@ ${chalk.bold("Usage:")}
   ${APP_NAME} setup                     Run the onboarding wizard
   ${APP_NAME} setup <component> [options]
 
+${chalk.bold("Components:")}
   python    Verify a Python 3 interpreter is reachable for code execution
-  speech    Pick + download the speech-to-text and text-to-speech models and an audio recorder
+  speech    Pick and download speech-to-text and text-to-speech models
   podman    Check Linux Podman prerequisites for workspace sandboxing
 
 ${chalk.bold("Options:")}
@@ -410,7 +399,7 @@ ${chalk.bold("Options:")}
 ${chalk.bold("Examples:")}
   ${APP_NAME} setup                  Run the onboarding wizard
   ${APP_NAME} setup python           Check Python execution dependencies
-  ${APP_NAME} setup speech           Set up speech (pick STT + TTS models, install a recorder)
+  ${APP_NAME} setup speech           Pick and download the STT and TTS models
   ${APP_NAME} setup speech --check   Check if speech dependencies are available
   ${APP_NAME} setup podman --check   Check Linux Podman workspace sandbox prerequisites
   ${APP_NAME} setup python --check   Check if Python execution is available
