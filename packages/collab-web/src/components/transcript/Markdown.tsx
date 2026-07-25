@@ -1,6 +1,7 @@
-import { Marked } from "marked";
+import { Marked, type Token, type Tokens } from "marked";
 import type { ReactNode } from "react";
 import { memo, useMemo } from "react";
+import { MermaidDiagram } from "./Mermaid";
 
 function escapeHtml(s: string): string {
 	return s
@@ -74,13 +75,60 @@ const md = new Marked({
 	breaks: true,
 });
 
+/** One rendered piece of a message: pre-parsed markdown html, or a mermaid diagram. */
+type MarkdownSegment = { kind: "html"; html: string } | { kind: "mermaid"; code: string };
+
+/** True for a fenced block whose info string selects mermaid (```mermaid, ```mermaid title=x). */
+function isMermaidCode(token: Token): token is Tokens.Code {
+	return token.type === "code" && /^mermaid\b/i.test((token.lang ?? "").trim());
+}
+
+/**
+ * Split a message into markdown runs and mermaid blocks. Messages with no
+ * mermaid fence take the original single-parse path unchanged.
+ */
+function splitSegments(text: string): MarkdownSegment[] {
+	const tokens = md.lexer(text);
+	if (!tokens.some(isMermaidCode)) return [{ kind: "html", html: md.parser(tokens) }];
+	const segments: MarkdownSegment[] = [];
+	let run: Token[] = [];
+	const flush = (): void => {
+		if (run.length === 0) return;
+		segments.push({ kind: "html", html: md.parser(run) });
+		run = [];
+	};
+	for (const token of tokens) {
+		if (isMermaidCode(token)) {
+			flush();
+			segments.push({ kind: "mermaid", code: token.text });
+			continue;
+		}
+		run.push(token);
+	}
+	flush();
+	return segments;
+}
+
 export const Markdown = memo(function Markdown({ text }: { text: string }): ReactNode {
-	const html = useMemo(() => {
+	const segments = useMemo(() => {
 		try {
-			return md.parse(text, { async: false });
+			return splitSegments(text);
 		} catch {
-			return escapeHtml(text);
+			return [{ kind: "html", html: escapeHtml(text) } satisfies MarkdownSegment];
 		}
 	}, [text]);
-	return <div className="tr-md" dangerouslySetInnerHTML={{ __html: html }} />;
+	const only = segments.length === 1 ? segments[0] : undefined;
+	// No mermaid in this message: one container, exactly as before.
+	if (only?.kind === "html") return <div className="tr-md" dangerouslySetInnerHTML={{ __html: only.html }} />;
+	return (
+		<div className="tr-md">
+			{segments.map((segment, index) =>
+				segment.kind === "mermaid" ? (
+					<MermaidDiagram key={index} code={segment.code} />
+				) : (
+					<div key={index} dangerouslySetInnerHTML={{ __html: segment.html }} />
+				),
+			)}
+		</div>
+	);
 });

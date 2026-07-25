@@ -55,7 +55,18 @@ const link = formatCollabLink(relay.url, roomId, rawKey);
 
 // ── mutable session state ────────────────────────────────────────────────────
 
-const entries: SessionEntry[] = [...fixtureEntries];
+/**
+ * `MOCK_ENTRY_SCALE=30` repeats the fixture transcript N times so perf work can
+ * reproduce a long real session (id-suffixed so entries stay unique). Default 1.
+ */
+const entryScale = Math.max(1, Number(Bun.env.MOCK_ENTRY_SCALE ?? "1") || 1);
+const entries: SessionEntry[] = Array.from({ length: entryScale }, (_, copy) =>
+	fixtureEntries.map(entry => ({
+		...entry,
+		id: copy === 0 ? entry.id : `${entry.id}-c${copy}`,
+		parentId: entry.parentId === null || copy === 0 ? entry.parentId : `${entry.parentId}-c${copy}`,
+	})),
+).flat();
 const agents: AgentSnapshot[] = fixtureAgents.map(agent => ({ ...agent }));
 const peers = new Map<number, string>();
 const transcriptBytes = new TextEncoder().encode(subagentTranscriptJsonl);

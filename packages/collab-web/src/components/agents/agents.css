@@ -109,9 +109,24 @@
 	background: var(--fg-faint);
 }
 
+/* The running halo animates a pseudo-element's transform/opacity, never
+ * box-shadow: a box-shadow keyframe (with color-mix) is not compositable, so
+ * Chrome re-ran style recalc over the whole transcript every frame — ~20% CPU
+ * on a 360-row session, scaling with DOM size. */
 .ag-dot--running {
+	position: relative;
 	background: var(--ok);
+}
+
+.ag-dot--running::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	border-radius: 50%;
+	background: var(--ok);
+	opacity: 0.45;
 	animation: ag-pulse 1.6s ease-out infinite;
+	will-change: transform, opacity;
 }
 
 .ag-dot--parked {
@@ -124,11 +139,13 @@
 
 @keyframes ag-pulse {
 	0% {
-		box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 45%, transparent);
+		transform: scale(1);
+		opacity: 0.45;
 	}
 	70%,
 	100% {
-		box-shadow: 0 0 0 6px transparent;
+		transform: scale(2.7);
+		opacity: 0;
 	}
 }
 
@@ -409,8 +426,10 @@
 	.ag-drawer {
 		animation: none;
 	}
-	.ag-dot--running {
+	/* The halo now lives on ::after; keep the dot itself visible, drop the motion. */
+	.ag-dot--running::after {
 		animation: none;
+		opacity: 0;
 	}
 }
 

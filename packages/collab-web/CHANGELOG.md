@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a voice panel for write-capable guests: the browser captures the microphone, negotiates a WebRTC call whose SDP the host signs, plays the assistant's audio, and mirrors the host's call phase and transcript. Read-only guests do not see it, and an insecure page explains that HTTPS or localhost is required for microphone access.
+- Added mermaid rendering to transcript markdown: a ```mermaid fence renders as an SVG diagram (mermaid `securityLevel: "strict"`), falling back to the source as code while the browser renders and on any parse error.
+- Added a voice-only view at `?voice=1`: the same relay session with just the call controls, no transcript, tool cards, agent rail, or composer — 70 DOM nodes and ~0.1% idle CPU against ~3% for the full client on a 360-row session.
+
+### Fixed
+
+- Fixed the running-agent status dot burning CPU on long sessions: its pulse animated `box-shadow` with `color-mix()`, which Chrome cannot run on the compositor, so every frame re-ran style recalc across the whole transcript. On a 360-row session that cost ~21% CPU while completely idle (60 recalcs/sec); the halo now animates a pseudo-element's `transform`/`opacity`, measuring ~3% CPU and 5 recalcs/sec, and the reduced-motion path still drops the motion.
+
 ## [17.1.0] - 2026-07-24
 
 ### Fixed

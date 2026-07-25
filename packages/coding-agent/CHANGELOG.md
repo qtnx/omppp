@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added remote live voice: `/live remote` serves the session's agent plane on a `0600` unix socket at `~/.omp/run/live/<sessionId>.sock`, and `ompx live --attach <host>[:<sessionId>]` runs the microphone, speaker, WebRTC peer, and Codex signaling on your own machine over `ssh <host> ompx live-agent`. Only delegation text crosses SSH; no audio does. Optional `forward-credentials` hands the client a short-lived Codex token when it has none of its own.
+- Added browser-owned live voice for collab guests: a write-capable guest can start a voice call from the web client, with the microphone, speaker, and `RTCPeerConnection` in the browser while the host keeps the Codex credential, the signaling call, the realtime sideband, and the agent. The SDP handshake travels over the encrypted relay; audio flows directly between the browser and the realtime service.
+- Added `docs/live-remote.md` covering both workflows, the browser secure-context requirement, and troubleshooting.
+
+### Changed
+
+- Split the live-voice session into swappable `LiveMediaEndpoint` (microphone, WebRTC peer, echo gate) and `LiveAgentEndpoint` (delegated agent turns) seams behind an explicit `LiveAgentIdentity`, so the media plane and the agent plane can run on different machines. Local `/live` behaviour is unchanged; a missing input device now prints attach guidance instead of a raw device error.
+- Reworked the delegation guidance in the system prompt into an explicit spawn gate (delegate only for concurrent slices, specialist domains, context isolation, or Safe Orchestrator Mode; do the work yourself when one runnable slice exists or the brief costs as much as the change), and widened the eager-delegation solo-work list to cover contained edits, prerequisites, and live debug loops.
+- Added a `<speed>` contract to the system prompt: wall-clock is a deliverable, one named-failure gate per change, no re-verification of proven work, and no gate without a failure you can name — RISK-list work keeps its full gates.
+- Scoped the execution harness: full recipes now apply to RISK/L3/persistence work and locally invisible failures, while everything else earns one run of the changed path plus one named failure path, escalating rungs only on evidence.
+- Added a test-authoring skip rule (off the RISK list, behavior already covered or proven by the run, change reversible) so proven work no longer earns ceremonial tests.
+- Required every subagent brief to carry exact `file:line`/`file:symbol` anchors plus pasted code via a new `# Pointers` assignment section, and instructed owners to start at those anchors and yield the moment Acceptance passes; lowered the recommended `max_runtime_seconds` guidance to `quick_task` 300 / `explore` 600 / `task` 900 / `heavy_task` 2400.
+- Moved the seeded standard config (`scripts/install.sh`, `scripts/install.ps1`, `examples/standard-config.yml`) from `anthropic/claude-opus-4-8` to `anthropic/claude-opus-5` for the `default`/`designer` roles and the `task`/`heavy_task` fallback chains, and added a `migrate_opus_model_config` installer migration that rewrites existing `anthropic/claude-opus-4-8` routes to `anthropic/claude-opus-5` while preserving any `:effort` suffix.
+- Bounded adversarial plan review across the normal, orchestrator, orchestrate-notice, duo-planner, advisor, `plan` agent, and `parallel-fanout` prompts: a confident plan off the RISK list locks with no review round, the default is ONE `super_review` round (a second only to confirm named blocker fixes), and further rounds require an explicit user request; at the cap the agent fixes what remains, records residual risk, and locks instead of looping.
+- Defaulted the advisor off on Claude Opus 5, Claude Fable 5, and GPT-5.6 sessions. `advisor.enabled` still defaults to `true` everywhere else, and an explicit setting (config file, `--advisor`, `/advisor`) wins in both directions; the `consult` tool now follows the same resolved state instead of the raw setting, so it no longer appears in sessions with no advisor.
+
 ## [17.1.1] - 2026-07-24
 
 ### Added

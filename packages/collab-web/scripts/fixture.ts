@@ -60,6 +60,16 @@ const FATAL = new Set([4001, 4004, 4009, 4029]);
 const delay = Math.min(1000 * 2 ** attempt, 30_000);
 \`\`\`
 
+The reconnect path itself:
+
+\`\`\`mermaid
+flowchart TD
+  A[socket close] --> B{fatal code?}
+  B -- yes --> C[surface reason, stay down]
+  B -- no --> D[exponential backoff]
+  D --> E[hello] --> F[welcome resync]
+\`\`\`
+
 Checking the actual implementation now.`;
 
 export const fixtureEntries: SessionEntry[] = [

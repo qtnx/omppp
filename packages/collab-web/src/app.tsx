@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentDrawer } from "./components/agents/AgentDrawer";
 import { AgentsPanel } from "./components/agents/AgentsPanel";
+import { LivePanel } from "./components/live/LivePanel";
+import { VoiceSession } from "./components/live/VoiceSession";
 import { Banners } from "./components/shell/Banners";
 import { Composer } from "./components/shell/Composer";
 import { ConnectScreen } from "./components/shell/ConnectScreen";
@@ -34,6 +36,12 @@ function hashLink(): string | null {
 	const i = href.indexOf("#");
 	if (i < 0 || i + 1 >= href.length) return null;
 	return href.slice(i + 1);
+}
+
+/** `?voice=1` selects the voice-only view; the room link still travels in the fragment. */
+function voiceMode(): boolean {
+	const value = new URLSearchParams(window.location.search).get("voice");
+	return value !== null && value !== "0" && value !== "false";
 }
 
 export function App(): ReactNode {
@@ -110,6 +118,8 @@ export function App(): ReactNode {
 	if (!client) {
 		return <ConnectScreen defaultName={storedName()} error={connectError} onConnect={connect} />;
 	}
+	// `?voice=1` opens the same session with only the call controls mounted.
+	if (voiceMode()) return <VoiceSession client={client} onLeave={leave} onRejoin={rejoin} />;
 	return <Session client={client} onLeave={leave} onRejoin={rejoin} />;
 }
 
@@ -191,6 +201,7 @@ function Session({ client, onLeave, onRejoin }: SessionProps): ReactNode {
 					</>
 				)}
 			</main>
+			<LivePanel client={client} snapshot={snap} />
 			<Composer client={client} snapshot={snap} />
 			{drawerAgent && (
 				<>
