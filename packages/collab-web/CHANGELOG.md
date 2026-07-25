@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.6.6] - 2026-07-25
+
 ### Added
 
 - Added a voice panel for write-capable guests: the browser captures the microphone, negotiates a WebRTC call whose SDP the host signs, plays the assistant's audio, and mirrors the host's call phase and transcript. Read-only guests do not see it, and an insecure page explains that HTTPS or localhost is required for microphone access.

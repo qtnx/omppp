@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.6.6] - 2026-07-25
+
 ### Fixed
 
 - Fixed native addon builds with CMake 4.x (bundled opus policy floor) and stopped passing `-C target-cpu=native` on darwin arm64, which baked build-host CPU features into shipped addons and broke `ring` compilation.

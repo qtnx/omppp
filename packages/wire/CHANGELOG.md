@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.6.6] - 2026-07-25
+
 ### Added
 
 - Bumped `COLLAB_PROTO` to `4` and added the `live-*` collaboration frames for browser-owned live voice: guest frames `live-offer`, `live-mute`, `live-level`, `live-stop` and host frames `live-answer`, `live-phase`, `live-transcript`, `live-ended`, plus the local `LivePhase` union (mirrors `coding-agent/src/live/visualizer.ts`). Guests predating these frames are rejected at the handshake.
