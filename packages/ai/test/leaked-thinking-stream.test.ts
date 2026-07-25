@@ -224,6 +224,88 @@ describe("wrapLeakedThinkingStream", () => {
 		expect(calls[0]?.thoughtSignature).toBe("tsig");
 	});
 
+	it("captures a native thinking signature delivered at thinking_end, not on the delta", async () => {
+		// Anthropic sends thinking_delta first (no signature), then signature_delta,
+		// so the completed signature only appears on the thinking_end partial.
+		const signature = `SIG_${"x".repeat(400)}`;
+		const { result } = await runWrapper(inner => {
+			inner.push({ type: "start", partial: msg() });
+			inner.push({
+				type: "thinking_delta",
+				contentIndex: 0,
+				delta: "reason",
+				partial: msg({ content: [{ type: "thinking", thinking: "reason", thinkingSignature: "" }] }),
+			});
+			const signed = msg({ content: [{ type: "thinking", thinking: "reason", thinkingSignature: signature }] });
+			inner.push({ type: "thinking_end", contentIndex: 0, content: "reason", partial: signed });
+			inner.push({ type: "done", reason: "stop", message: signed });
+		});
+
+		expect(thinks(result).map(b => b.thinkingSignature)).toEqual([signature]);
+	});
+
+	it("emits a late native thinking signature by source index after later blocks start", async () => {
+		const firstSignature = "sig-first";
+		const secondSignature = "sig-second";
+		const call: ToolCall = {
+			type: "toolCall",
+			id: "call_between_thinking",
+			name: "read",
+			arguments: { path: "x" },
+		};
+		const first = { type: "thinking" as const, thinking: "first", thinkingSignature: "" };
+		const second = { type: "thinking" as const, thinking: "second", thinkingSignature: "" };
+		const { events, result } = await runWrapper(inner => {
+			inner.push({ type: "start", partial: msg() });
+			inner.push({
+				type: "thinking_delta",
+				contentIndex: 0,
+				delta: first.thinking,
+				partial: msg({ content: [first] }),
+			});
+			const withCall = msg({ content: [first, call] });
+			inner.push({ type: "toolcall_start", contentIndex: 1, partial: withCall });
+			inner.push({ type: "toolcall_end", contentIndex: 1, toolCall: call, partial: withCall });
+			inner.push({
+				type: "thinking_delta",
+				contentIndex: 2,
+				delta: second.thinking,
+				partial: msg({ content: [first, call, second] }),
+			});
+			const firstSigned = {
+				...first,
+				thinkingSignature: firstSignature,
+			};
+			const secondSigned = {
+				...second,
+				thinkingSignature: secondSignature,
+			};
+			inner.push({
+				type: "thinking_end",
+				contentIndex: 0,
+				content: first.thinking,
+				partial: msg({ content: [firstSigned, call, second] }),
+			});
+			const signed = msg({ content: [firstSigned, call, secondSigned] });
+			inner.push({ type: "thinking_end", contentIndex: 2, content: second.thinking, partial: signed });
+			inner.push({ type: "done", reason: "stop", message: signed });
+		});
+
+		const firstEnd = events.find(event => event.type === "thinking_end" && event.contentIndex === 0);
+		if (firstEnd?.type !== "thinking_end") throw new Error("Missing first projected thinking_end");
+		expect(firstEnd.partial.content[firstEnd.contentIndex]).toEqual({
+			type: "thinking",
+			thinking: first.thinking,
+			thinkingSignature: firstSignature,
+		});
+		expect(events.indexOf(firstEnd)).toBeGreaterThan(events.findIndex(event => event.type === "toolcall_start"));
+		expect(events.filter(event => event.type === "thinking_end" && event.contentIndex === 0)).toHaveLength(1);
+		expect(thinks(result).map(block => [block.thinking, block.thinkingSignature])).toEqual([
+			["first", firstSignature],
+			["second", secondSignature],
+		]);
+	});
+
 	it("preserves native tool-call ids and streamed partial JSON while healing", async () => {
 		const inner = new AssistantMessageEventStream();
 		const out = wrapLeakedThinkingStream(inner);

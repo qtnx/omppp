@@ -31,6 +31,7 @@ import {
 	TINY_WORKER_ARGS,
 } from "./cli/worker-selectors";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
+import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
 
 const MACOS_SANDBOX_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_INHERITED";
 const LINUX_SANDBOX_INHERITED_ENV = "PI_OMPX_LINUX_SANDBOX_INHERITED";
@@ -92,6 +93,7 @@ async function runSmokeTest(): Promise<void> {
 	const { smokeTestTtsWorker } = await import("./tts/tts-client");
 	const { smokeTestMnemopiEmbedWorker } = await import("./mnemopi/embed-client");
 	const { smokeTestJsEvalWorker } = await import("./eval/js/context-manager");
+	const { smokeTestComputerWorker } = await import("./tools/computer/supervisor");
 	// Smoke dependencies stay lazy so normal CLI startup does not load worker clients.
 	const { smokeTestDaemonBroker } = await import("./launch/client");
 	await smokeTestSyncWorker();
@@ -111,6 +113,7 @@ async function runSmokeTest(): Promise<void> {
 	await smokeTestTinyTitleWorker();
 	await smokeTestSttWorker();
 	await smokeTestJsEvalWorker();
+	await smokeTestComputerWorker();
 	await smokeTestTtsWorker();
 	await smokeTestMnemopiEmbedWorker();
 	await smokeTestDaemonBroker();
@@ -159,6 +162,11 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TAB_WORKER_ARG) {
 		if (parentPort) installWorkerInbox(parentPort);
 		await import("./tools/browser/tab-worker-entry");
+		return true;
+	}
+	if (arg === COMPUTER_WORKER_ARG) {
+		if (parentPort) installWorkerInbox(parentPort);
+		await import("./tools/computer/worker-entry");
 		return true;
 	}
 	if (arg === JS_EVAL_WORKER_ARG) {

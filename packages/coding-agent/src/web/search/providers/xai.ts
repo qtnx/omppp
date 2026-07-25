@@ -9,7 +9,12 @@ import { SearchProvider } from "./base";
 import { classifyProviderHttpError, withHardTimeout } from "./utils";
 
 const XAI_DEFAULT_BASE_URL = "https://api.x.ai/v1";
-const XAI_WEB_SEARCH_MODEL = "grok-4.3";
+const XAI_WEB_SEARCH_MODEL = "grok-4.5";
+// grok-4.5 defaults reasoning.effort to "high"; xAI documents "low" for
+// latency-sensitive agentic use and simple tool calling
+// (docs.x.ai/developers/model-capabilities/text/reasoning). Web search is
+// exactly that and runs under a 60s hard timeout, so pin the search calls low.
+const XAI_WEB_SEARCH_REASONING_EFFORT = "low";
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 30;
 
@@ -60,6 +65,7 @@ function buildRequestBody(params: SearchParams): Record<string, unknown> {
 			{ role: "user", content: params.query },
 		],
 		tools: [{ type: "web_search" }],
+		reasoning: { effort: XAI_WEB_SEARCH_REASONING_EFFORT },
 	};
 
 	if (params.maxOutputTokens !== undefined) {

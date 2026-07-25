@@ -585,8 +585,9 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		const configuredContextGcPath = path.resolve(import.meta.dir, "../../context-gc-plugin/src/extension.ts");
 		const previousContextGcDbPath = process.env.OMP_CONTEXT_GC_DB_PATH;
 
-		const create = async (cwd: string, agentDir: string): Promise<CreateAgentSessionResult> =>
+		const create = async (cwd: string, agentDir: string, agentId: string): Promise<CreateAgentSessionResult> =>
 			await createAgentSession({
+				agentId,
 				cwd,
 				agentDir,
 				sessionManager: SessionManager.inMemory(cwd),
@@ -605,7 +606,10 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		let resultA: CreateAgentSessionResult | undefined;
 		let resultB: CreateAgentSessionResult | undefined;
 		try {
-			[resultA, resultB] = await Promise.all([create(cwdA, agentDirA), create(cwdB, agentDirB)]);
+			[resultA, resultB] = await Promise.all([
+				create(cwdA, agentDirA, "context-gc-a"),
+				create(cwdB, agentDirB, "context-gc-b"),
+			]);
 
 			expect(fs.existsSync(path.join(agentDirA, "context-gc.sqlite"))).toBe(true);
 			expect(fs.existsSync(path.join(agentDirB, "context-gc.sqlite"))).toBe(true);
@@ -843,7 +847,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		const normalDir = makeTempDir();
 		const configuredSettings = () =>
 			Settings.isolated({
-				"providers.image": "openai",
+				"providers.imageOrder": ["openai"],
 				"generate_image.enabled": true,
 				"speechgen.enabled": true,
 				"memory.backend": "hindsight",

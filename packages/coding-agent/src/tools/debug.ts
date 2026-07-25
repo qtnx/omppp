@@ -504,12 +504,15 @@ const ADAPTER_UNAVAILABLE_MESSAGES: Readonly<Record<string, string>> = {
 	debugpy: "adapter 'debugpy' is not available: python not found in PATH",
 	dlv: "adapter 'dlv' is not available: install with 'go install github.com/go-delve/delve/cmd/dlv@latest'",
 	rdbg: "adapter 'rdbg' is not available: install with 'gem install debug'",
+	"js-debug-adapter":
+		"adapter 'js-debug-adapter' is not available: install vscode-js-debug with Mason or set JS_DEBUG_DAP_SERVER to dapDebugServer.js",
 };
 
 const ADAPTER_CANONICAL_COMMANDS: Readonly<Record<string, string>> = {
 	debugpy: "python",
 	dlv: "dlv",
 	rdbg: "rdbg",
+	"js-debug-adapter": "js-debug-adapter",
 };
 
 function formatAdapterUnavailable(adapterName: string, command: string, cwd: string): string {
@@ -726,7 +729,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 		_onUpdate?: AgentToolUpdateCallback<DebugToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<DebugToolDetails>> {
-		const timeoutSec = clampTimeout("debug", params.timeout);
+		const timeoutSec = clampTimeout("debug", params.timeout, this.session.settings.get("tools.maxTimeout"));
 		const timeoutSignal = AbortSignal.timeout(timeoutSec * 1000);
 		const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 		const details: DebugToolDetails = { action: params.action, success: true };

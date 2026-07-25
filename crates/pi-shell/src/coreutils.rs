@@ -270,6 +270,7 @@ uutil_builtin!(pub fn mv_builtin => uu_mv::run);
 uutil_builtin!(pub fn cat_builtin => uu_cat::run);
 uutil_builtin!(pub fn uniq_builtin => uu_uniq::run);
 uutil_builtin!(pub fn base64_builtin => uu_base64::run);
+uutil_builtin!(pub fn cmp_builtin => crate::cmp::run);
 uutil_builtin!(pub fn md5sum_builtin => uu_md5sum::run);
 uutil_builtin!(pub fn sha1sum_builtin => uu_sha1sum::run);
 uutil_builtin!(pub fn sha224sum_builtin => uu_sha224sum::run);

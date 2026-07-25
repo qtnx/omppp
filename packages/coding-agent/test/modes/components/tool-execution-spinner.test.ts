@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
+import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { setTerminalImageProtocol, TERMINAL, type TUI } from "@oh-my-pi/pi-tui";
 
@@ -282,6 +283,73 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		} finally {
 			component.stopAnimation();
 			setTerminalImageProtocol(originalImageProtocol);
+		}
+	});
+
+	it("pins the live vibe_wait wall and releases it after the final result", () => {
+		const component = new ToolExecutionComponent(
+			"vibe_wait",
+			{},
+			{},
+			undefined,
+			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+			process.cwd(),
+		);
+		const transcript = new TranscriptContainer();
+		transcript.addChild(component);
+
+		try {
+			transcript.render(80);
+			expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
+
+			component.updateResult(
+				{
+					content: [{ type: "text", text: "No turns in flight to wait for." }],
+					details: { op: "wait", screens: [] },
+				},
+				false,
+			);
+			transcript.render(80);
+			expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(false);
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
+	it("pins the displaceable hub waiting poll and releases it once jobs settle", () => {
+		const component = new ToolExecutionComponent(
+			"hub",
+			{ op: "wait" },
+			{},
+			undefined,
+			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+			process.cwd(),
+		);
+		const transcript = new TranscriptContainer();
+		transcript.addChild(component);
+		const runningJob = { id: "job_1", type: "task", status: "running", label: "Pr6450", durationMs: 12_600 };
+
+		try {
+			// Streaming waiting snapshot: every watched job still running.
+			component.updateResult(
+				{ content: [{ type: "text", text: "waiting" }], details: { jobs: [runningJob] } },
+				true,
+			);
+			transcript.render(80);
+			expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
+
+			// Final snapshot with a settled job is a real result, not a poll frame.
+			component.updateResult(
+				{
+					content: [{ type: "text", text: "1 job settled" }],
+					details: { jobs: [{ ...runningJob, status: "completed" }] },
+				},
+				false,
+			);
+			transcript.render(80);
+			expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(false);
+		} finally {
+			component.stopAnimation();
 		}
 	});
 });

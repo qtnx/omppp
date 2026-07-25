@@ -664,6 +664,41 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		expect(allNotices[1]).not.toContain("became available");
 	});
 
+	it("caps dynamic xd:// mount-notice summaries", async () => {
+		const { session, contexts } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
+			xdevRegistry: new XdevRegistry([]),
+			responses: [{ content: ["ok"] }],
+		});
+		const description = `Search ${"x".repeat(XdevRegistry.EXTERNAL_DESCRIPTION_CAP * 3)} TAIL`;
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", description);
+
+		await session.refreshMCPTools([search]);
+		await session.prompt("hello");
+
+		const notices = mountNoticesIn(contexts[0]);
+		expect(notices).toHaveLength(1);
+		expect(notices[0]).toContain("xd://mcp__nucleus_search");
+		expect(notices[0]).not.toContain("TAIL");
+	});
+
+	it("inlines configured late xd:// device docs in mount notices", async () => {
+		const { session, contexts } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
+			xdevRegistry: new XdevRegistry([]),
+			responses: [{ content: ["ok"] }],
+		});
+		session.settings.set("tools.xdevDocs", "builtins");
+		session.settings.set("tools.xdevInlineDevices", ["mcp__nucleus_*"]);
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+
+		await session.refreshMCPTools([search]);
+		await session.prompt("hello");
+
+		const notices = mountNoticesIn(contexts[0]);
+		expect(notices).toHaveLength(1);
+		expect(notices[0]).toContain("## mcp__nucleus_search");
+		expect(notices[0]).toContain("## Schema");
+	});
+
 	it("drops a mount delta that cancels out before the next prompt", async () => {
 		const { session, contexts } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
 			xdevRegistry: new XdevRegistry([]),
@@ -818,6 +853,81 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 
 		// Replacing the pre-commit remember call with post-commit preservation keeps this selection.
 		expect(session.getSelectedMCPToolNames()).toEqual([oldTool.name]);
+	});
+
+	it("restores the committed non-discovery selection after a successful refresh and session switch", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-agent-session-mcp-refresh-default-"));
+		tempDirs.push(tempDir);
+		const readTool = createBasicTool("read", "Read");
+		const mcpTool = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const sessionManager = SessionManager.create(tempDir, tempDir);
+		const originalSessionFile = sessionManager.getSessionFile();
+		expect(originalSessionFile).toBeString();
+		await sessionManager.flush();
+
+		const restoreSessionManager = SessionManager.create(tempDir, tempDir);
+		const restoreSessionFile = restoreSessionManager.getSessionFile();
+		expect(restoreSessionFile).toBeString();
+		await restoreSessionManager.flush();
+
+		const agent = new Agent({
+			initialState: {
+				model: createModel(),
+				systemPrompt: ["initial"],
+				tools: [readTool],
+				messages: sessionManager.buildSessionContext().messages,
+			},
+		});
+		const session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+			toolRegistry: new Map([[readTool.name, readTool]]),
+			rebuildSystemPrompt: async toolNames => ({
+				systemPrompt: [`tools:${toolNames.join(",")}`],
+			}),
+		});
+		sessions.push(session);
+
+		await session.refreshMCPTools([mcpTool]);
+		expect(session.getSelectedMCPToolNames()).toEqual([mcpTool.name]);
+
+		await session.switchSession(restoreSessionFile!);
+		await session.switchSession(originalSessionFile!);
+		expect(session.getSelectedMCPToolNames()).toEqual([mcpTool.name]);
+	});
+
+	it("keeps explicit MCP defaults supplied before the first catalog commit", async () => {
+		const readTool = createBasicTool("read", "Read");
+		const mcpTool = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const toolRegistry = new Map([[readTool.name, readTool]]);
+		const agent = new Agent({
+			initialState: {
+				model: createModel(),
+				systemPrompt: ["initial"],
+				tools: [readTool],
+				messages: [],
+			},
+		});
+		const session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+			toolRegistry,
+			mcpDiscoveryEnabled: true,
+			initialSelectedMCPToolNames: [mcpTool.name],
+			defaultSelectedMCPToolNames: [mcpTool.name],
+			rebuildSystemPrompt: async toolNames => ({
+				systemPrompt: [`tools:${toolNames.join(",")}`],
+			}),
+		});
+		sessions.push(session);
+
+		await session.refreshMCPTools([mcpTool]);
+		expect(session.getSelectedMCPToolNames()).toEqual([mcpTool.name]);
+		expect(session.getActiveToolNames()).toEqual([readTool.name, mcpTool.name]);
 	});
 
 	it("rolls back RPC catalog replacement when prompt rebuild fails", async () => {

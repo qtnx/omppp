@@ -28,7 +28,12 @@ import {
 	type Model,
 	type Provider,
 } from "@oh-my-pi/pi-ai";
-import { AuthBrokerClient, RemoteAuthCredentialStore, type SnapshotResponse } from "@oh-my-pi/pi-ai/auth-broker";
+import {
+	AuthBrokerClient,
+	loadAuthBrokerAccountPool,
+	RemoteAuthCredentialStore,
+	type SnapshotResponse,
+} from "@oh-my-pi/pi-ai/auth-broker";
 import { DEFAULT_AUTH_GATEWAY_BIND, startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
 import { type GeneratedProvider, getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { APP_NAME, getAgentDbPath, getConfigRootDir, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
@@ -246,9 +251,20 @@ type AuthGatewayCredentialSource =
 async function createBrokerCredentialSource(
 	brokerConfig: AuthBrokerClientConfig,
 ): Promise<AuthGatewayCredentialSource> {
+	// Build a broker-backed AuthStorage — same pattern as discoverAuthStorage()
+	// in sdk.ts. The gateway never touches local SQLite.
+	const accountPool = await loadAuthBrokerAccountPool();
 	const client = createBrokerClient(brokerConfig);
 	const initialSnapshot = await fetchBrokerSnapshot(client);
-	const store = new RemoteAuthCredentialStore({ client, initialSnapshot });
+	const store = new RemoteAuthCredentialStore({
+		client,
+		initialSnapshot,
+		accountPool,
+	});
+	// Refresh + usage both flow through the store's broker hooks automatically —
+	// `RemoteAuthCredentialStore.refreshOAuthCredential` and `.fetchUsageReports`.
+	// AuthStorage discovers them when no explicit option overrides them, so the
+	// gateway only needs to construct the store and pass it in.
 	const storage = new AuthStorage(store, {
 		sourceLabel: `broker ${brokerConfig.url}`,
 	});

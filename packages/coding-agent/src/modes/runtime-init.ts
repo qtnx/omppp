@@ -90,6 +90,8 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			setModel: model => runExtensionSetModel(session, model),
 			getThinkingLevel: () => session.thinkingLevel,
 			setThinkingLevel: level => session.setThinkingLevel(level),
+			getServiceTiers: () => session.serviceTierByFamily,
+			setServiceTier: (family, tier) => session.setServiceTierFamily(family, tier),
 			getSessionName: () => session.sessionManager.getSessionName(),
 			setSessionName: async name => {
 				await session.sessionManager.setSessionName(name, "user");
@@ -99,8 +101,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 		{
 			getModel: () => session.model,
 			isIdle: () => !session.isStreaming,
-			getAsyncJobSnapshot: options =>
-				session.getAsyncJobSnapshot({ recentLimit: options?.recentLimit, requireOwner: true }),
+			getAsyncJobSnapshot: options => session.getAsyncJobSnapshot({ recentLimit: options?.recentLimit }),
 			getGoalModeState: () => session.getGoalModeState(),
 			abort: () => session.abort({ reason: USER_INTERRUPT_LABEL }),
 			hasPendingMessages: () => session.queuedMessageCount > 0,

@@ -110,7 +110,7 @@ describe("AgentSession skill prompt keyword steering", () => {
 		const details: SkillPromptDetails = {
 			name: "deep-research",
 			path: skillPath,
-			args: "workflowz +500k! compare these approaches",
+			args: "workflow +500k! compare these approaches",
 			lineCount: 1,
 		};
 		await session.promptCustomMessage({

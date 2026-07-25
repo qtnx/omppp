@@ -39,7 +39,7 @@ describe("BlobStore image display paths", () => {
 	it("resolves missing image blob refs to empty data instead of leaking the ref", async () => {
 		using tempDir = TempDir.createSync("@omp-blob-store-missing-image-");
 		const store = new BlobStore(tempDir.path());
-		const missingRef = "blob:sha256:missing";
+		const missingRef = `blob:sha256:${"0".repeat(64)}`;
 
 		expect(await resolveImageData(store, missingRef)).toBe("");
 		expect(await resolveImageDataUrl(store, missingRef)).toBe("");

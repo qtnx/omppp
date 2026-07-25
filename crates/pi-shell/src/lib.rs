@@ -1,4 +1,5 @@
 pub mod cancel;
+mod cmp;
 mod coreutils;
 mod fd;
 pub mod minimizer;

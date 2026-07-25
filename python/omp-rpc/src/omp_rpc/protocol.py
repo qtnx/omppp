@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import base64
 import mimetypes
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final, Literal, NotRequired, TypedDict, TypeAlias, cast
+from typing import Any, Final, Literal, NotRequired, TypeAlias, TypedDict, cast
 
 JsonPrimitive: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
@@ -133,7 +133,7 @@ def _clone_json_value(value: object, *, field: str) -> JsonValue:
         cloned: JsonObject = {}
         for key, item in value.items():
             if not isinstance(key, str):
-                raise ValueError(f"{field} must contain string keys")
+                raise ValueError(f"{field} must contain string keys")  # noqa: TRY004
             cloned[key] = _clone_json_value(item, field=field)
         return cloned
     raise ValueError(f"{field} must be JSON-serializable")
@@ -141,7 +141,7 @@ def _clone_json_value(value: object, *, field: str) -> JsonValue:
 
 def _clone_json_object(value: object, *, field: str) -> JsonObject:
     if not isinstance(value, dict):
-        raise ValueError(f"{field} must be an object")
+        raise ValueError(f"{field} must be an object")  # noqa: TRY004
     return cast(JsonObject, _clone_json_value(value, field=field))
 
 
@@ -155,7 +155,7 @@ def _clone_json_objects(values: object, *, field: str) -> tuple[JsonObject, ...]
     if values is None:
         return ()
     if not isinstance(values, list):
-        raise ValueError(f"{field} must be a list")
+        raise ValueError(f"{field} must be a list")  # noqa: TRY004
     return tuple(_clone_json_object(item, field=f"{field}[]") for item in values)
 
 
@@ -177,7 +177,7 @@ def _optional_literal(
 def _require_str(payload: JsonObject, field: str) -> str:
     value = payload.get(field)
     if not isinstance(value, str):
-        raise ValueError(f"{field} must be a string")
+        raise ValueError(f"{field} must be a string")  # noqa: TRY004
     return value
 
 
@@ -186,7 +186,7 @@ def _optional_str(payload: JsonObject, field: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError(f"{field} must be a string")
+        raise ValueError(f"{field} must be a string")  # noqa: TRY004
     return value
 
 
@@ -207,7 +207,7 @@ def _optional_str_list(payload: JsonObject, field: str) -> tuple[str, ...]:
         items: list[str] = []
         for index, item in enumerate(value):
             if not isinstance(item, str):
-                raise ValueError(f"{field}[{index}] must be a string")
+                raise ValueError(f"{field}[{index}] must be a string")  # noqa: TRY004
             items.append(item)
         return tuple(items)
     raise ValueError(f"{field} must be a string or an array of strings")
@@ -218,7 +218,7 @@ def _optional_bool(payload: JsonObject, field: str) -> bool | None:
     if value is None:
         return None
     if not isinstance(value, bool):
-        raise ValueError(f"{field} must be a boolean")
+        raise ValueError(f"{field} must be a boolean")  # noqa: TRY004
     return value
 
 
@@ -227,7 +227,7 @@ def _optional_int(payload: JsonObject, field: str) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{field} must be an integer")
+        raise ValueError(f"{field} must be an integer")  # noqa: TRY004
     return value
 
 
@@ -235,12 +235,12 @@ def _tuple_of_strings(values: object, *, field: str) -> tuple[str, ...] | None:
     if values is None:
         return None
     if not isinstance(values, list):
-        raise ValueError(f"{field} must be a list")
+        raise ValueError(f"{field} must be a list")  # noqa: TRY004
 
     result: list[str] = []
     for item in values:
         if not isinstance(item, str):
-            raise ValueError(f"{field} must contain only strings")
+            raise ValueError(f"{field} must contain only strings")  # noqa: TRY004
         result.append(item)
     return tuple(result) or None
 
@@ -270,7 +270,7 @@ def parse_agent_messages(payload: JsonValue | None) -> tuple[AgentMessage, ...]:
     if payload is None:
         return ()
     if not isinstance(payload, list):
-        raise ValueError("messages must be a list")
+        raise ValueError("messages must be a list")  # noqa: TRY004
 
     messages: list[AgentMessage] = []
     for index, item in enumerate(payload):
@@ -851,7 +851,18 @@ class SessionStats:
 
 @dataclass(slots=True, frozen=True)
 class ReadyEvent:
+    protocol_version: int | None = None
+    supported_protocol_versions: tuple[int, ...] | None = None
+    max_frame_bytes: int | None = None
+    max_reassembled_frame_bytes: int | None = None
     type: Literal["ready"] = "ready"
+
+
+@dataclass(slots=True, frozen=True)
+class MessagesPage:
+    messages: tuple[AgentMessage, ...]
+    total_messages: int
+    next_cursor: str | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -905,6 +916,7 @@ class AgentStartEvent:
 class AgentEndEvent:
     messages: tuple[AgentMessage, ...]
     type: Literal["agent_end"] = "agent_end"
+    message_count: int | None = field(default=None, kw_only=True)
 
 
 @dataclass(slots=True, frozen=True)
@@ -1142,7 +1154,7 @@ def _parse_thinking_config(payload: object) -> ThinkingConfig | None:
         return None
     raw_efforts = payload.get("efforts")
     if not isinstance(raw_efforts, list):
-        raise ValueError("model.thinking.efforts must be a list")
+        raise ValueError("model.thinking.efforts must be a list")  # noqa: TRY004
     efforts: tuple[Effort, ...] = tuple(
         cast(
             Effort,
@@ -1395,7 +1407,7 @@ def parse_branch_result(payload: JsonObject | None) -> BranchResult:
 def parse_branch_messages(payload: JsonObject | None) -> tuple[BranchMessage, ...]:
     messages = (payload or {}).get("messages") or []
     if not isinstance(messages, list):
-        raise ValueError("messages must be a list")
+        raise ValueError("messages must be a list")  # noqa: TRY004
     return tuple(
         BranchMessage(
             entry_id=str(
@@ -1489,7 +1501,23 @@ def parse_extension_error(payload: JsonObject) -> ExtensionError:
 def parse_notification(payload: JsonObject) -> RpcNotification:
     event_type = payload.get("type")
     if event_type == "ready":
-        return ReadyEvent()
+        raw_versions = payload.get("supportedProtocolVersions")
+        supported_versions: tuple[int, ...] | None = None
+        if raw_versions is not None:
+            if not isinstance(raw_versions, list) or any(
+                not isinstance(version, int) or isinstance(version, bool)
+                for version in raw_versions
+            ):
+                raise ValueError("ready.supportedProtocolVersions must be integers")
+            supported_versions = tuple(raw_versions)
+        return ReadyEvent(
+            protocol_version=_optional_int(payload, "protocolVersion"),
+            supported_protocol_versions=supported_versions,
+            max_frame_bytes=_optional_int(payload, "maxFrameBytes"),
+            max_reassembled_frame_bytes=_optional_int(
+                payload, "maxReassembledFrameBytes"
+            ),
+        )
     if event_type == "extension_ui_request":
         return parse_extension_ui_request(payload)
     if event_type == "extension_error":
@@ -1500,7 +1528,8 @@ def parse_notification(payload: JsonObject) -> RpcNotification:
         return AgentEndEvent(
             messages=parse_agent_messages(
                 cast(JsonValue | None, payload.get("messages"))
-            )
+            ),
+            message_count=_optional_int(payload, "messageCount"),
         )
     if event_type == "turn_start":
         return TurnStartEvent()

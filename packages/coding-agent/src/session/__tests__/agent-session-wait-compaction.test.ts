@@ -140,7 +140,9 @@ function createAgentSessionHarness(
 	const appendedCompactions: compaction.CompactionResult[] = [];
 	let replacedMessages: AgentMessage[] | undefined;
 	let turnEnd: TurnEndCallback | undefined;
-	const agentEventHandlers = new Set<(event: { type: string; message?: AssistantMessage }) => Promise<void> | void>();
+	const agentEventHandlers = new Set<
+		(event: { type: string; message?: AssistantMessage; messages?: AgentMessage[] }) => Promise<void> | void
+	>();
 	let entryCounter = 0;
 	const branchEntries: SessionEntry[] = [];
 	const agentState = {
@@ -164,7 +166,13 @@ function createAgentSessionHarness(
 	});
 	const agent = createNoopProxy({
 		state: agentState,
-		subscribe: (handler: (event: { type: string; message?: AssistantMessage }) => Promise<void> | void) => {
+		subscribe: (
+			handler: (event: {
+				type: string;
+				message?: AssistantMessage;
+				messages?: AgentMessage[];
+			}) => Promise<void> | void,
+		) => {
 			agentEventHandlers.add(handler);
 			return () => agentEventHandlers.delete(handler);
 		},
@@ -264,7 +272,7 @@ function createAgentSessionHarness(
 				await handler({ type: "message_end", message });
 			}
 			for (const handler of agentEventHandlers) {
-				await handler({ type: "agent_end" });
+				await handler({ type: "agent_end", messages: agentState.messages });
 			}
 		},
 	};

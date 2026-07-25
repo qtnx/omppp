@@ -85,6 +85,7 @@ function createContext(): {
 	};
 	inputListeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined>;
 	sessionListeners: Array<(event: { type: string }) => void>;
+	sessionState: { isStreaming: boolean };
 } {
 	let editorText = "";
 	const abort = vi.fn();
@@ -130,6 +131,30 @@ function createContext(): {
 		pendingImageLinks: [],
 	};
 
+	const sessionState = {
+		isStreaming: false,
+		isCompacting: false,
+		isGeneratingHandoff: false,
+		isBashRunning: false,
+		isEvalRunning: false,
+		queuedMessageCount: 0,
+		messages: [],
+		extensionRunner: undefined,
+		abort,
+		abortBash,
+		abortEval,
+		clearQueue,
+		getQueuedMessages,
+		prompt,
+		subscribe: vi.fn((listener: (event: { type: string }) => void) => {
+			sessionListeners.push(listener);
+			return () => {
+				const index = sessionListeners.indexOf(listener);
+				if (index >= 0) sessionListeners.splice(index, 1);
+			};
+		}),
+	};
+
 	let ctx!: InteractiveModeContext;
 	const ensureLoadingAnimation = vi.fn(() => {
 		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
@@ -152,29 +177,7 @@ function createContext(): {
 		retryLoader: undefined,
 		autoCompactionEscapeHandler: undefined,
 		retryEscapeHandler: undefined,
-		session: {
-			isStreaming: false,
-			isCompacting: false,
-			isGeneratingHandoff: false,
-			isBashRunning: false,
-			isEvalRunning: false,
-			queuedMessageCount: 0,
-			messages: [],
-			extensionRunner: undefined,
-			abort,
-			abortBash,
-			abortEval,
-			clearQueue,
-			getQueuedMessages,
-			prompt,
-			subscribe: vi.fn((listener: (event: { type: string }) => void) => {
-				sessionListeners.push(listener);
-				return () => {
-					const index = sessionListeners.indexOf(listener);
-					if (index >= 0) sessionListeners.splice(index, 1);
-				};
-			}),
-		} as unknown as InteractiveModeContext["session"],
+		session: sessionState as unknown as InteractiveModeContext["session"],
 		viewSession: {
 			isCompacting: false,
 			isGeneratingHandoff: false,
@@ -226,6 +229,7 @@ function createContext(): {
 
 	return {
 		ctx,
+		sessionState,
 		editor,
 		spies: {
 			abort,
@@ -758,6 +762,24 @@ describe("InputController escape behavior", () => {
 
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
 		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
+	});
+
+	it("silences TTS before aborting an overlapping agent turn (#6118)", () => {
+		const clear = vi.spyOn(vocalizer, "clear").mockImplementation(() => {});
+		vi.spyOn(vocalizer, "isSpeaking").mockReturnValue(true);
+		const { ctx, editor, spies, sessionState } = createContext();
+		const pauseLoop = vi.fn();
+		ctx.loopModeEnabled = true;
+		ctx.pauseLoop = pauseLoop;
+		sessionState.isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(clear).toHaveBeenCalledTimes(1);
+		expect(pauseLoop).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
 	it("silences a still-audible vocalizer on Esc instead of opening the tree selector (#4521)", () => {

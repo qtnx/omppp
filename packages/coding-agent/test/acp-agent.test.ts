@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -28,7 +28,11 @@ import {
 } from "@oh-my-pi/pi-coding-agent/modes/acp/acp-agent";
 import type { OrchestratorModeState } from "@oh-my-pi/pi-coding-agent/orchestrator-mode/state";
 import type { PlanModeState } from "@oh-my-pi/pi-coding-agent/plan-mode/state";
-import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type {
+	AgentSession,
+	AgentSessionEvent,
+	UsageFallbackConfirmation,
+} from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS } from "@oh-my-pi/pi-coding-agent/stt/models";
@@ -40,6 +44,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/tts/models";
 import { getConfigRootDir, setAgentDir } from "@oh-my-pi/pi-utils";
 import type { z } from "zod/v4";
+import { TOOL_NAME as DELAYED_MCP_TOOL_NAME } from "./fixtures/delayed-tool-mcp";
 
 /**
  * Validate an ACP wire payload against the external `@agentclientprotocol/sdk`
@@ -145,6 +150,7 @@ class FakeAgentSession {
 	waitForIdleCalls = 0;
 	waitForIdleBlocker: (() => Promise<void>) | undefined;
 	asyncJobDrain: ((options?: { timeoutMs?: number }) => Promise<boolean>) | undefined;
+	usageFallbackConfirmer: ((confirmation: UsageFallbackConfirmation) => Promise<boolean>) | undefined;
 	#listeners = new Set<(event: AgentSessionEvent) => void>();
 
 	constructor(
@@ -195,6 +201,11 @@ class FakeAgentSession {
 
 	setSlashCommands(_commands: unknown[]): void {
 		// no-op for tests
+	}
+	setUsageFallbackConfirmer(
+		confirmer: ((confirmation: UsageFallbackConfirmation) => Promise<boolean>) | undefined,
+	): void {
+		this.usageFallbackConfirmer = confirmer;
 	}
 
 	async refreshSshTool(_options?: { activateIfAvailable?: boolean }): Promise<void> {}
@@ -552,11 +563,12 @@ describe("ACP agent", () => {
 		expectAcpStructure(zNewSessionResponse, first);
 		expectAcpStructure(zNewSessionResponse, second);
 
-		const modelOption = first.configOptions?.find(opt => opt.id === "model");
-		expect(modelOption?.type).toBe("select");
-		expect((modelOption as any).options?.map((opt: any) => opt.value)).toEqual(
-			TEST_MODELS.map(model => `${model.provider}/${model.id}`),
+		const modelOption = first.configOptions?.find(option => option.id === "model");
+		if (modelOption?.type !== "select") throw new Error("Expected model select option");
+		const modelValues = modelOption.options.flatMap(option =>
+			"value" in option ? [option.value] : option.options.map(groupOption => groupOption.value),
 		);
+		expect(modelValues).toEqual(TEST_MODELS.map(model => `${model.provider}/${model.id}`));
 
 		await harness.agent.setSessionConfigOption({
 			sessionId: first.sessionId,
@@ -2592,4 +2604,57 @@ describe("ACP agent", () => {
 			expect(third.sessionId).toBe("session-after-switch");
 		});
 	});
+});
+
+describe("ACP agent MCP server configuration (late-connecting servers)", () => {
+	const FIXTURE_PATH = path.join(import.meta.dir, "fixtures", "delayed-tool-mcp.ts");
+	const BUN_EXEC = process.execPath;
+
+	// Real polling, not fake timers: the fixture is a genuine child process
+	// racing MCPManager's own `Bun.sleep`-based 250ms startup window, and a
+	// subprocess's timers cannot be advanced from this test's fake-timer clock.
+	async function pollUntil(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (!predicate()) {
+			if (Date.now() >= deadline) throw new Error("pollUntil timed out");
+			await Bun.sleep(5);
+		}
+	}
+
+	/**
+	 * Regression test: an MCP server that finishes connecting after
+	 * `MCPManager`'s 250ms startup race window used to have its tools
+	 * silently discarded — `#configureMcpServers` only called
+	 * `session.refreshMCPTools` once, synchronously, with whatever
+	 * `connectServers` returned inside the race window. The background
+	 * `onToolsChanged` -> `refreshMCPTools` follow-up now runs through a
+	 * `refreshChain` queue so late connections still land in the session.
+	 */
+	it("delivers a late-connecting server's tools via a queued refreshMCPTools call", async () => {
+		const harness = await createHarness();
+		const refreshSpy = spyOn(FakeAgentSession.prototype, "refreshMCPTools");
+		const namesOf = (tools: unknown[]) => (tools as Array<{ name: string }>).map(tool => tool.name);
+
+		try {
+			const created = await harness.agent.newSession({
+				cwd: harness.cwdA,
+				mcpServers: [{ name: "delayed", command: BUN_EXEC, args: [FIXTURE_PATH], env: [] }],
+			});
+			expectAcpStructure(zNewSessionResponse, created);
+
+			// The fixture delays its `initialize` response past the 250ms startup
+			// race, so the first (synchronous) refresh inside `#configureMcpServers`
+			// must see no tools yet.
+			expect(refreshSpy.mock.calls).toHaveLength(1);
+			expect(namesOf(refreshSpy.mock.calls[0]?.[0] ?? [])).toEqual([]);
+
+			// Once the delayed `initialize` response lands, the background
+			// `onToolsChanged` -> queued `refreshMCPTools` call must deliver the
+			// server's tool. Before the fix, this late arrival was dropped.
+			await pollUntil(() => refreshSpy.mock.calls.length > 1);
+			expect(namesOf(refreshSpy.mock.calls.at(-1)?.[0] ?? [])).toEqual([`mcp__delayed_${DELAYED_MCP_TOOL_NAME}`]);
+		} finally {
+			refreshSpy.mockRestore();
+		}
+	}, 15_000);
 });

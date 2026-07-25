@@ -22,6 +22,8 @@ export type Mode = "text" | "json" | "rpc" | "acp" | "rpc-ui";
 
 export interface Args {
 	cwd?: string;
+	/** Workspace directories beyond cwd for this session (repeatable `--add-dir`). */
+	addDir?: string[];
 	profile?: string;
 	alias?: string;
 	allowHome?: boolean;
@@ -211,6 +213,9 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 				const consumed = consumeBuiltInStringValue(arg, args, i + 1);
 				i = consumed.index;
 				STRING_SETTERS[arg](result, consumed.value, PARSE_DEPS);
+				if (arg === "--add-dir") {
+					result.addDirs = [...(result.addDirs ?? []), consumed.value];
+				}
 			}
 		} else if (OPTIONAL_VALUE_FLAGS.has(arg)) {
 			const config = OPTIONAL_FLAGS[arg];
@@ -430,6 +435,7 @@ ${chalk.bold("Available Tools (default-enabled unless noted):")}
   notebook      - Edit Jupyter notebooks
   inspect_image - Analyze images with a vision model
   browser       - Browser automation (Puppeteer)
+  computer      - Native host desktop capture and input (disabled by default)
   task          - Launch sub-agents for parallel tasks
   todo          - Manage todo/task lists
   web_search    - Search the web

@@ -9,6 +9,7 @@ provides:
 - typed startup options for common `omp --mode rpc` flags such as thinking level,
   tool selection, prompt appends, provider session IDs, and headless session toggles
 - typed protocol models for state, bash results, compaction, and session stats
+- automatic protocol v2 negotiation, lossless chunk reassembly, and stable message pagination
 - a process-backed client that manages request correlation over stdio
 - typed per-event listeners plus a typed catch-all notification hook
 - helpers for collecting prompt runs and handling extension UI requests in manual or headless mode
@@ -51,12 +52,16 @@ way to seed todos before the first prompt:
 ```python
 from omp_rpc import MessageUpdateEvent, RpcClient
 
+
 def on_message_update(event: MessageUpdateEvent) -> None:
     assistant_event = event.assistant_message_event
     if assistant_event.get("type") == "text_delta":
         print(assistant_event["delta"], end="", flush=True)
 
-with RpcClient(model="openrouter/anthropic/claude-sonnet-4.6", no_session=True) as client:
+
+with RpcClient(
+    model="openrouter/anthropic/claude-sonnet-4.6", no_session=True
+) as client:
     client.on_message_update(on_message_update)
     client.set_todos(
         [
@@ -155,27 +160,27 @@ rows: dict[str, str] = {"42": "id=42\nname=Alice\n"}
 
 
 def read_row(url: str, _ctx) -> str:
-	row_id = url.removeprefix("db://users/")
-	return rows[row_id]
+    row_id = url.removeprefix("db://users/")
+    return rows[row_id]
 
 
 def write_row(url: str, content: str, _ctx) -> None:
-	row_id = url.removeprefix("db://users/")
-	rows[row_id] = content
+    row_id = url.removeprefix("db://users/")
+    rows[row_id] = content
 
 
 with RpcClient(
-	no_session=True,
-	host_uris=(
-		host_uri(
-			scheme="db",
-			description="Virtual db row files",
-			read=read_row,
-			write=write_row,
-		),
-	),
+    no_session=True,
+    host_uris=(
+        host_uri(
+            scheme="db",
+            description="Virtual db row files",
+            read=read_row,
+            write=write_row,
+        ),
+    ),
 ) as client:
-	client.prompt_and_wait("Read db://users/42 and rewrite it with name=Bob")
+    client.prompt_and_wait("Read db://users/42 and rewrite it with name=Bob")
 ```
 
 Schemes registered as read-only (no `write=`) reject `write` calls with a

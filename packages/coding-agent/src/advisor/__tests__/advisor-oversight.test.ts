@@ -205,7 +205,7 @@ describe("advisor oversight contracts", () => {
 				phases: [
 					{
 						phase: "QA",
-						items: [{ content: "Run verification", status: "blocked" as "pending" }],
+						items: [{ content: "Run verification", status: "bogus" as "pending" }],
 					},
 				],
 			}),

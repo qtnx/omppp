@@ -6,11 +6,13 @@
  * - `ompx --mode json "prompt"` - JSON event stream
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { resolvePlanModelTransition } from "../plan-mode/model-transition";
 import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_MS } from "../session/agent-session";
 import { isSilentAbort } from "../session/messages";
 import { flushTelemetryExport } from "../telemetry-export";
+import { PROPOSE_DEVICE_NAME, writeDeviceDispatch } from "../tools/resolve";
 import { initializeExtensions } from "./runtime-init";
 
 /**
@@ -28,6 +30,11 @@ export interface PrintModeOptions {
 	/** If true, include thinking blocks in text output */
 	printThoughts?: boolean;
 }
+
+/** Matches the longest built-in provider request deadline while bounding tool-loop stalls. */
+export const PRINT_MODE_ADVISOR_DRAIN_TIMEOUT_MS = 10 * 60_000;
+/** Error exits cannot hold automation for the full normal drain budget. */
+export const PRINT_MODE_ERROR_ADVISOR_DRAIN_TIMEOUT_MS = 30_000;
 
 /** Drop the provider-opaque replay payload (e.g. encrypted reasoning items) before printing. */
 function stripProviderPayload<T extends AgentMessage>(message: T): T {
@@ -103,8 +110,66 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		},
 	});
 
+	// InteractiveMode applies the same startup default during TUI initialization.
+	// Print mode has no TUI bootstrap, so arm the shared session directly before
+	// the first prompt; persisting the mode_change also lets a later interactive
+	// attachment restore and review the generated plan.
+	let abortAfterPlanProposal = false;
+	const planDefaultArmed =
+		session.settings.get("plan.defaultOnStartup") &&
+		session.settings.get("plan.enabled") &&
+		session.sessionManager.buildSessionContext().messages.length === 0 &&
+		!session.sessionManager.getEntries().some(entry => entry.type === "mode_change");
+	if (planDefaultArmed) {
+		const planFilePath = session.getPlanReferencePath() || "local://PLAN.md";
+		const previousTools = session.getEnabledToolNames();
+		const planTools = session.hasBuiltInTool("write") ? [...new Set([...previousTools, "write"])] : previousTools;
+		await session.setActiveToolsByNamePreservingMCPSelection(planTools);
+		session.setPlanModeState({
+			enabled: true,
+			planFilePath,
+			workflow: "parallel",
+		});
+		session.sessionManager.appendModeChange("plan", { planFilePath });
+		abortAfterPlanProposal = true;
+		session.setPlanProposalHandler(async title => {
+			const result = await session.preparePlanForReview(title);
+			const details = result.details;
+			if (details) {
+				const state = session.getPlanModeState();
+				if (state?.enabled) {
+					session.setPlanModeState({ ...state, planFilePath: details.planFilePath });
+				}
+				session.sessionManager.appendModeChange("plan", { planFilePath: details.planFilePath });
+			}
+			return result;
+		});
+
+		const resolved = session.resolveRoleModelWithThinking("plan");
+		const transition = resolvePlanModelTransition(session.model, resolved, false);
+		if (transition.kind === "thinking") {
+			session.setThinkingLevel(transition.thinkingLevel);
+		} else if (transition.kind === "apply") {
+			try {
+				await session.setModelTemporary(transition.model, transition.thinkingLevel);
+			} catch (error) {
+				logger.warn("Failed to switch to plan model for print mode", { error: String(error) });
+			}
+		}
+	}
+
 	// Always subscribe to enable session persistence via _handleAgentEvent
 	session.subscribe(event => {
+		if (abortAfterPlanProposal && event.type === "tool_execution_end" && !event.isError) {
+			const dispatch = writeDeviceDispatch(event.toolName, event.result);
+			if (dispatch?.tool === PROPOSE_DEVICE_NAME && dispatch.mode === "execute") {
+				abortAfterPlanProposal = false;
+				session.markPlanInternalAbortPending();
+				void session.abort().finally(() => {
+					session.clearPlanInternalAbortPending();
+				});
+			}
+		}
 		// In JSON mode, output all events
 		if (mode === "json") {
 			process.stdout.write(`${JSON.stringify(printableEvent(event))}\n`);
@@ -130,14 +195,19 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		await logger.time("print:prompt:next", () => session.prompt(message));
 	}
 
+	// From this point onward a late blocker must be recorded without starting a
+	// primary turn whose response print mode would never emit.
+	session.prepareForHeadlessAdvisorDrain();
+
 	// In text mode, output final response
 	if (mode === "text") {
-		const state = session.state;
-		const lastMessage = state.messages[state.messages.length - 1];
+		// Read via the session accessor, not the raw state tail: a classifier
+		// refusal is pruned from active context at settle, and an aborted turn
+		// can trail synthetic tool results — both would hide the terminal
+		// assistant message (and its error) from a last-element read.
+		const assistantMsg = session.getLastAssistantMessage();
 
-		if (lastMessage?.role === "assistant") {
-			const assistantMsg = lastMessage as AssistantMessage;
-
+		if (assistantMsg) {
 			// Check for error/aborted — skip silent-abort (plan-mode compaction transition)
 			if (
 				(assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") &&
@@ -151,6 +221,7 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 				// `dispose()` (releaseTabsForOwner) actually runs — otherwise an
 				// OMP-owned Chromium survives this exit (issue #5643). `dispose()`
 				// is idempotent, so the unreachable call below is a harmless no-op.
+				await session.waitForAdvisorCatchup(PRINT_MODE_ERROR_ADVISOR_DRAIN_TIMEOUT_MS);
 				await flushTelemetryExport();
 				await session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
 				const flushed = process.stderr.write(`${errorLine}\n`);
@@ -180,14 +251,15 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		}
 	}
 
-	// Ensure stdout is fully flushed before returning
-	// This prevents race conditions where the process exits before all output is written
+	await session.waitForAdvisorCatchup(PRINT_MODE_ADVISOR_DRAIN_TIMEOUT_MS);
+
+	// Ensure stdout, including late JSON advisor events, is fully flushed before returning.
+	// This prevents race conditions where the process exits before all output is written.
 	await new Promise<void>((resolve, reject) => {
 		process.stdout.write("", err => {
 			if (err) reject(err);
 			else resolve();
 		});
 	});
-
 	await session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
 }

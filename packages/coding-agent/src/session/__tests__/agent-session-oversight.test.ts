@@ -59,6 +59,7 @@ function createSessionHarness(): { session: AgentSession; steeringQueue: AgentMe
 	const followUpQueue: AgentMessage[] = [];
 	const agentState = {
 		messages: [] as AgentMessage[],
+		isStreaming: true,
 		systemPrompt: [],
 		model,
 		tools: [],
@@ -118,17 +119,19 @@ describe("AgentSession oversight contracts", () => {
 		expect(session.getQueuedMessages().steering).toEqual(["change scope after the current subagents finish"]);
 
 		session.exitSubagentWait();
+		await Promise.resolve();
 
 		expect(steeringQueue).toHaveLength(1);
 		const message = steeringQueue[0];
 		expect("content" in message).toBe(true);
 		if (!("content" in message)) throw new Error("Expected queued steering message to include content");
 		const content = message.content;
-		expect(typeof content).toBe("string");
-		if (typeof content === "string") {
-			expect(content).toContain("User steering received while you were blocked waiting on subagents");
-			expect(content).toContain("change scope after the current subagents finish");
-			expect(content).toContain("Subagent results in this wait batch are authoritative");
-		}
+		const text =
+			typeof content === "string"
+				? content
+				: content.find(part => part.type === "text" && typeof part.text === "string")?.text;
+		expect(text).toContain("User steering received while you were blocked waiting on subagents");
+		expect(text).toContain("change scope after the current subagents finish");
+		expect(text).toContain("Subagent results in this wait batch are authoritative");
 	});
 });

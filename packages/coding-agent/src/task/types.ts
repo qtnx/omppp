@@ -156,6 +156,7 @@ export const taskItemSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	"model?": "string | string[]",
 	"max_runtime_seconds?": "number.integer >= 0",
 	"self_review?": "boolean",
 	"outputSchema?": outputSchemaInputSchema,
@@ -166,6 +167,7 @@ const taskItemSchemaIsolated = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	"model?": "string | string[]",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"isolated?": "boolean",
@@ -182,6 +184,8 @@ export interface TaskItem {
 	agent?: string;
 	/** The work; required by the schema. */
 	task?: string;
+	/** Explicit model selector or fallback chain for this spawn, including optional reasoning suffixes. */
+	model?: string | string[];
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
@@ -206,6 +210,7 @@ export const taskSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	"model?": "string | string[]",
 	"max_runtime_seconds?": "number.integer >= 0",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
@@ -217,6 +222,7 @@ const taskSchemaNoIsolation = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	"model?": "string | string[]",
 	"max_runtime_seconds?": "number.integer >= 0",
 	"self_review?": "boolean",
 	"outputSchema?": outputSchemaInputSchema,
@@ -263,6 +269,7 @@ function createTaskSchema(options: {
 				"name?": "string",
 				agent,
 				task: "string",
+				"model?": "string | string[]",
 				"outputSchema?": outputSchemaInputSchema,
 				"schemaMode?": '"permissive" | "strict"',
 				"isolated?": "boolean",
@@ -280,6 +287,7 @@ function createTaskSchema(options: {
 			"name?": "string",
 			agent,
 			task: "string",
+			"model?": "string | string[]",
 			"max_runtime_seconds?": "number.integer >= 0",
 			"self_review?": "boolean",
 			"outputSchema?": outputSchemaInputSchema,
@@ -297,6 +305,7 @@ function createTaskSchema(options: {
 			"name?": "string",
 			agent,
 			task: "string",
+			"model?": "string | string[]",
 			"max_runtime_seconds?": "number.integer >= 0",
 			"outputSchema?": outputSchemaInputSchema,
 			"schemaMode?": '"permissive" | "strict"',
@@ -309,6 +318,7 @@ function createTaskSchema(options: {
 		"name?": "string",
 		agent,
 		task: "string",
+		"model?": "string | string[]",
 		"max_runtime_seconds?": "number.integer >= 0",
 		"self_review?": "boolean",
 		"outputSchema?": outputSchemaInputSchema,
@@ -354,6 +364,8 @@ export interface TaskParams {
 	agent?: string;
 	/** The work (flat form). */
 	task?: string;
+	/** Explicit model selector or fallback chain for the spawn, including optional reasoning suffixes. */
+	model?: string | string[];
 	/** Per-spawn wall-clock cap in seconds. 0 means unlimited; omission uses the configured fallback. */
 	max_runtime_seconds?: number;
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
@@ -588,6 +600,8 @@ export interface AgentProgress {
 	modelOverride?: string | string[];
 	/** Resolved model display string in the form `<provider>/<id>`, optionally suffixed with `:<thinkingLevel>` when the level was set explicitly. Undefined when the model could not be resolved. */
 	resolvedModel?: string;
+	/** True when {@link resolvedModel} is the target of an active retry fallback (not the originally configured model). Lets observer-only UIs (collab guests, Agent Hub rows with no live session) flag the fallback and keep the provider. */
+	resolvedModelIsFallback?: boolean;
 	/** Data extracted by registered subprocess tool handlers (keyed by tool name) */
 	extractedToolData?: Record<string, unknown[]>;
 	/**
@@ -663,6 +677,8 @@ export interface SingleResult {
 	modelOverride?: string | string[];
 	/** Resolved model display string in the form `<provider>/<id>`, optionally suffixed with `:<thinkingLevel>` when the level was set explicitly. Omitted from tool-result JSON when undefined to keep wire payloads small. */
 	resolvedModel?: string;
+	/** True when {@link resolvedModel} is the target of an active retry fallback. Mirrors {@link AgentProgress.resolvedModelIsFallback} onto the settled result. */
+	resolvedModelIsFallback?: boolean;
 	error?: string;
 	aborted?: boolean;
 	abortReason?: string;

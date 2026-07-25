@@ -6,11 +6,13 @@ import { AuthStorage, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from 
 import {
 	AuthBrokerClient,
 	type AuthBrokerServerHandle,
+	discoverAuthStorage,
 	RemoteAuthCredentialStore,
 	type SnapshotResponse,
 	startAuthBroker,
 } from "@oh-my-pi/pi-ai/auth-broker";
 import { removeWithRetries } from "../../utils/src/temp";
+import { withEnv } from "./helpers";
 
 const ANTHROPIC_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"] as const;
 const savedEnv: Partial<Record<(typeof ANTHROPIC_ENV)[number], string | undefined>> = {};
@@ -130,5 +132,135 @@ describe("RemoteAuthCredentialStore SSE integration", () => {
 		expect(callbacks).toHaveLength(1);
 		expect(callbacks[0].generation).toBe(refreshed.generation);
 		expect(callbacks[0].snapshot).toEqual(refreshed);
+	});
+
+	test("filters configured OAuth identities while preserving API keys and raw snapshot callbacks", async () => {
+		storage!.upsertCredential("anthropic", mintOAuthCredential("b", Date.now() + 120_000));
+		storage!.upsertCredential("anthropic", { type: "api_key", key: "visible-api-key" });
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await client.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected initial snapshot");
+		const allowed = initialResult.snapshot.credentials.find(entry => entry.identityKey?.includes("a@example.com"));
+		const excluded = initialResult.snapshot.credentials.find(entry => entry.identityKey?.includes("b@example.com"));
+		if (!allowed?.identityKey || !excluded?.identityKey) throw new Error("expected OAuth identity keys");
+		const identities = new Set([allowed.identityKey]);
+		const callbacks: SnapshotResponse[] = [];
+		remote = new RemoteAuthCredentialStore({
+			client,
+			initialSnapshot: initialResult.snapshot,
+			streamSnapshots: false,
+			accountPool: new Map([["anthropic", identities]]),
+			onSnapshot: snapshot => {
+				callbacks.push(snapshot);
+			},
+		});
+
+		identities.add(excluded.identityKey);
+		expect(
+			remote
+				.listAuthCredentials("anthropic")
+				.map(entry => entry.credential.type)
+				.sort(),
+		).toEqual(["api_key", "oauth"]);
+		const refreshed = await remote.refreshSnapshot();
+		expect(refreshed.credentials.filter(entry => entry.credential.type === "oauth")).toHaveLength(1);
+		expect(callbacks.at(-1)?.credentials).toHaveLength(3);
+	});
+
+	test("advances the SSE generation without exposing an excluded entry", async () => {
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await client.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected initial snapshot");
+		const allowed = initialResult.snapshot.credentials[0];
+		if (!allowed?.identityKey) throw new Error("expected OAuth identity key");
+		remote = new RemoteAuthCredentialStore({
+			client,
+			initialSnapshot: initialResult.snapshot,
+			accountPool: new Map([["anthropic", new Set([allowed.identityKey])]]),
+		});
+		const initialGeneration = remote.snapshot.generation;
+
+		storage!.upsertCredential("anthropic", mintOAuthCredential("b", Date.now() + 120_000));
+		await waitUntil(() => remote!.snapshot.generation > initialGeneration);
+
+		expect(remote.snapshot.credentials).toHaveLength(1);
+		expect(remote.snapshot.credentials[0]?.identityKey).toBe(allowed.identityKey);
+	});
+
+	test("treats a missing provider as unrestricted and an empty provider pool as OAuth-disabled", async () => {
+		storage!.upsertCredential("openai-codex", mintOAuthCredential("codex", Date.now() + 120_000));
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await client.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected initial snapshot");
+		remote = new RemoteAuthCredentialStore({
+			client,
+			initialSnapshot: initialResult.snapshot,
+			streamSnapshots: false,
+			accountPool: new Map([["anthropic", new Set()]]),
+		});
+
+		expect(remote.listAuthCredentials("anthropic")).toEqual([]);
+		expect(remote.listAuthCredentials("openai-codex")).toHaveLength(1);
+	});
+
+	test("loads the account pool once for broker-backed discovery", async () => {
+		storage!.upsertCredential("anthropic", mintOAuthCredential("b", Date.now() + 120_000));
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await client.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected initial snapshot");
+		const allowed = initialResult.snapshot.credentials.find(entry => entry.identityKey?.includes("a@example.com"));
+		const excluded = initialResult.snapshot.credentials.find(entry => entry.identityKey?.includes("b@example.com"));
+		if (!allowed?.identityKey || !excluded?.identityKey) throw new Error("expected OAuth identity keys");
+		const poolPath = path.join(tempDir, "account-pool.json");
+		await Bun.write(poolPath, JSON.stringify({ anthropic: [allowed.identityKey] }));
+
+		await withEnv(
+			{
+				OMP_AUTH_BROKER_URL: handle!.url,
+				OMP_AUTH_BROKER_TOKEN: token,
+				OMP_AUTH_BROKER_ACCOUNT_POOL_FILE: poolPath,
+			},
+			async () => {
+				const discovered = await discoverAuthStorage({
+					agentDir: tempDir,
+					cachePath: path.join(tempDir, "snapshot-cache.enc"),
+				});
+				try {
+					expect(discovered.listOAuthAccounts("anthropic").map(account => account.email)).toEqual([
+						"a@example.com",
+					]);
+
+					await Bun.write(poolPath, JSON.stringify({ anthropic: [allowed.identityKey, excluded.identityKey] }));
+					await discovered.reload();
+					expect(discovered.listOAuthAccounts("anthropic").map(account => account.email)).toEqual([
+						"a@example.com",
+					]);
+				} finally {
+					discovered.close();
+				}
+			},
+		);
+	});
+
+	test("prefers a programmatic SDK account pool over the environment file", async () => {
+		await withEnv(
+			{
+				OMP_AUTH_BROKER_URL: handle!.url,
+				OMP_AUTH_BROKER_TOKEN: token,
+				OMP_AUTH_BROKER_ACCOUNT_POOL_FILE: path.join(tempDir, "missing-account-pool.json"),
+			},
+			async () => {
+				const discovered = await discoverAuthStorage({
+					agentDir: tempDir,
+					cachePath: path.join(tempDir, "sdk-snapshot-cache.enc"),
+					accountPool: new Map([["anthropic", new Set()]]),
+				});
+				try {
+					expect(discovered.listOAuthAccounts("anthropic")).toEqual([]);
+				} finally {
+					discovered.close();
+				}
+			},
+		);
 	});
 });

@@ -16,13 +16,17 @@ import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
 import type { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { WebSearchTool } from "@oh-my-pi/pi-coding-agent/web/search";
+import { runSearchQuery, WebSearchTool } from "@oh-my-pi/pi-coding-agent/web/search";
 import * as provider from "@oh-my-pi/pi-coding-agent/web/search/provider";
 import { searchAnthropic } from "@oh-my-pi/pi-coding-agent/web/search/providers/anthropic";
 import type { SearchParams } from "@oh-my-pi/pi-coding-agent/web/search/providers/base";
 import { searchBrave } from "@oh-my-pi/pi-coding-agent/web/search/providers/brave";
 import { withHardTimeout } from "@oh-my-pi/pi-coding-agent/web/search/providers/utils";
-import type { SearchProviderId, SearchResponse } from "@oh-my-pi/pi-coding-agent/web/search/types";
+import {
+	SearchProviderError,
+	type SearchProviderId,
+	type SearchResponse,
+} from "@oh-my-pi/pi-coding-agent/web/search/types";
 
 const FAKE_SESSION = {} as ToolSession;
 const fakeStorage = {
@@ -173,9 +177,9 @@ describe("executeSearch abort propagation", () => {
 		};
 	}
 
-	function mockProviderChain(providers: provider.SearchProvider[]) {
+	function mockProviderChain(providers: provider.SearchProvider[], options?: { explicitFirst?: boolean }) {
 		vi.spyOn(provider, "resolveProviderCandidates").mockReturnValue(
-			providers.map(({ id }) => ({ id, explicit: false })),
+			providers.map(({ id }, index) => ({ id, explicit: options?.explicitFirst === true && index === 0 })),
 		);
 		return vi.spyOn(provider, "getSearchProvider").mockImplementation(async id => {
 			const match = providers.find(candidate => candidate.id === id);
@@ -265,6 +269,56 @@ describe("executeSearch abort propagation", () => {
 		expect(result.details?.response.provider).toBe("exa");
 		expect(getProvider).toHaveBeenCalledTimes(1);
 		expect(getProvider).toHaveBeenCalledWith("exa");
+		expect(fallbackSearch).not.toHaveBeenCalled();
+	});
+
+	it("falls through after the preferred provider fails", async () => {
+		const fallbackSearch = vi.fn(
+			async (): Promise<SearchResponse> => ({
+				provider: "brave",
+				sources: [{ title: "Fallback result", url: "https://example.com/fallback" }],
+			}),
+		);
+		const getProvider = mockProviderChain(
+			[
+				fakeProvider("exa", async () => {
+					throw new SearchProviderError("exa", "Preferred provider failed.", 500);
+				}),
+				fakeProvider("brave", fallbackSearch),
+			],
+			{ explicitFirst: true },
+		);
+
+		const tool = new WebSearchTool(FAKE_SESSION);
+		const result = await tool.execute("test-id", { query: "anything" });
+
+		expect(result.details?.response.provider).toBe("brave");
+		expect(getProvider).toHaveBeenCalledTimes(2);
+		expect(fallbackSearch).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not fall through after an explicitly selected provider fails", async () => {
+		const fallbackSearch = vi.fn(
+			async (): Promise<SearchResponse> => ({
+				provider: "brave",
+				sources: [{ title: "Hidden fallback", url: "https://example.com/fallback" }],
+			}),
+		);
+		const getProvider = mockProviderChain(
+			[
+				fakeProvider("codex", async () => {
+					throw new SearchProviderError("codex", "Configured Codex endpoint does not support web_search.", 400);
+				}),
+				fakeProvider("brave", fallbackSearch),
+			],
+			{ explicitFirst: true },
+		);
+
+		const result = await runSearchQuery({ query: "anything", provider: "codex" }, { authStorage: {} as AuthStorage });
+
+		expect(result.details?.error).toContain("Configured Codex endpoint does not support web_search.");
+		expect(result.details?.response.provider).toBe("codex");
+		expect(getProvider).toHaveBeenCalledTimes(1);
 		expect(fallbackSearch).not.toHaveBeenCalled();
 	});
 });

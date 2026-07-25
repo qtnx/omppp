@@ -36,6 +36,11 @@ beforeAll(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme();
+	await Settings.init({ inMemory: true });
+});
+
+afterAll(() => {
+	resetSettingsForTest();
 });
 
 afterAll(() => {
@@ -113,6 +118,7 @@ function createHarness(): Harness {
 		pendingMessagesContainer: new Container(),
 		pendingBashComponents: [],
 		pendingPythonComponents: [],
+		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),
 		ui: { requestRender: vi.fn() },
 		isBackgrounded: false,

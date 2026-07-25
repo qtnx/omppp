@@ -377,7 +377,9 @@ export async function resolveEffectiveSubagentPolicy(
 		planMode,
 		isIsolated,
 		mergeMode: request.isolation?.merge ?? request.session.settings.get("task.isolation.merge"),
-		applyChanges: request.isolation?.apply !== false,
+		applyChanges:
+			request.isolation?.apply ??
+			(request.invocationKind === "task" ? request.session.settings.get("task.isolation.apply") : true),
 		enableLsp:
 			!planMode &&
 			(request.enableLsp ?? ((request.session.enableLsp ?? true) && request.session.settings.get("task.enableLsp"))),
@@ -504,6 +506,7 @@ function buildExecutorOptions(
 	);
 	return {
 		cwd: session.cwd,
+		additionalDirectories: session.additionalDirectories,
 		agent: policy.effectiveAgent,
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),

@@ -2,6 +2,7 @@ import { type AgentMessage, countTokens } from "@oh-my-pi/pi-agent-core";
 import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Effort, ImageContent, Model, TextContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { type CursorExecResolvedCarrier, kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
@@ -10,7 +11,12 @@ import consultationRequestAsyncTemplate from "../prompts/advisor/consultation-re
 import fableNormalMessageFramesNote from "../prompts/advisor/fable-normal-message-frames-note.md" with { type: "text" };
 import promptReviewTemplate from "../prompts/advisor/prompt-review.md" with { type: "text" };
 import { obfuscateToolArguments, type SecretObfuscator } from "../secrets/obfuscator";
-import { formatSessionHistoryMarkdown, PRIMARY_CONTEXT_CUSTOM_TYPES } from "../session/session-history-format";
+import {
+	formatExecutionSourcePreview,
+	formatSessionHistoryMarkdown,
+	formatToolResultErrorPreview,
+	PRIMARY_CONTEXT_CUSTOM_TYPES,
+} from "../session/session-history-format";
 
 /**
  * Minimal slice of `Agent` the runtime drives — satisfied by pi-agent-core
@@ -144,7 +150,20 @@ export function quarantineAdvisorUnsafeOutput(
 	const unavailableToolNames = new Set<string>();
 	const generatedParts: string[] = [];
 	for (const block of message.content) {
-		if (block.type === "toolCall" && !availableToolNames.has(block.name)) unavailableToolNames.add(block.name);
+		// Cursor exec-channel native blocks (bash/read/grep/...) are stamped
+		// kCursorExecResolved: they already ran server-side through the
+		// advisor-scoped CursorExecHandlers bridge, which rejects ungranted
+		// tools in-band ("Tool not available") and lets the model self-correct.
+		// Quarantining them would discard the legitimate advise emitted in the
+		// same turn (issue #5900). The scoped bridge is the grant gate here, not
+		// this pre-dispatch check.
+		if (
+			block.type === "toolCall" &&
+			!availableToolNames.has(block.name) &&
+			(block as CursorExecResolvedCarrier)[kCursorExecResolved] !== true
+		) {
+			unavailableToolNames.add(block.name);
+		}
 		if (block.type === "toolCall" && block.name === "advise" && typeof block.arguments.note === "string") {
 			generatedParts.push(block.arguments.note);
 		}
@@ -237,6 +256,12 @@ interface PendingConsult {
 	async?: boolean;
 }
 
+interface CatchupWaiter {
+	threshold: number;
+	finish: (caughtUp: boolean) => void;
+	timer?: NodeJS.Timeout;
+}
+
 type PendingItem = PendingDelta | PendingConsult;
 
 interface DeliveredMessage {
@@ -251,13 +276,6 @@ function fingerprintMessage(message: AgentMessage): bigint | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-interface CatchupWaiter {
-	threshold: number;
-	resolve: () => void;
-	finish: () => void;
-	timer?: NodeJS.Timeout;
 }
 
 export interface AdvisorRuntimeOptions {
@@ -360,6 +378,8 @@ export class AdvisorRuntime {
 	#seenContext = new Map<string, string>();
 	/** Incremented after re-prime so queued raw deltas can be rendered against fresh dedupe state. */
 	#renderRevision = 0;
+	/** Regex secret values observed in primary deltas and retained until advisor context resets. */
+	#advisorRegexSecretValues = new Set<string>();
 	#pending: PendingItem[] = [];
 	#busy = false;
 	#paused = false;
@@ -614,7 +634,13 @@ export class AdvisorRuntime {
 		this.#pending = [];
 	}
 
-	waitForCatchup(maxMs: number, threshold: number, signal?: AbortSignal): Promise<void> {
+	/**
+	 * Wait until the advisor backlog falls below `threshold`.
+	 *
+	 * Returns `false` when the deadline, abort signal, or a runtime failure releases
+	 * the waiter before the requested backlog was drained.
+	 */
+	waitForCatchup(maxMs: number, threshold: number, signal?: AbortSignal): Promise<boolean> {
 		if (
 			this.disposed ||
 			signal?.aborted ||
@@ -626,21 +652,26 @@ export class AdvisorRuntime {
 			// primary would otherwise park for the full catch-up budget.
 			this.#failing
 		)
-			return Promise.resolve();
-		const { promise, resolve } = Promise.withResolvers<void>();
+			return Promise.resolve(this.#backlog < threshold);
+		const { promise, resolve } = Promise.withResolvers<boolean>();
 		let waiter!: CatchupWaiter;
-		const finish = (): void => {
+		const finish = (caughtUp: boolean): void => {
 			const idx = this.#waiters.indexOf(waiter);
 			if (idx >= 0) this.#waiters.splice(idx, 1);
 			clearTimeout(waiter.timer);
-			signal?.removeEventListener("abort", finish);
-			resolve();
+			signal?.removeEventListener("abort", abort);
+			resolve(caughtUp);
 		};
-		waiter = { threshold, resolve, finish, timer: setTimeout(finish, maxMs) };
+		const abort = (): void => finish(false);
+		waiter = {
+			threshold,
+			finish,
+			timer: setTimeout(abort, maxMs),
+		};
 		this.#waiters.push(waiter);
-		signal?.addEventListener("abort", finish, { once: true });
+		signal?.addEventListener("abort", abort, { once: true });
 		if (signal?.aborted) {
-			finish();
+			abort();
 		}
 		return promise;
 	}
@@ -652,6 +683,7 @@ export class AdvisorRuntime {
 		this.#backlog = 0;
 		this.#consecutiveFailures = 0;
 		this.#failureNotified = false;
+		this.#advisorRegexSecretValues.clear();
 		this.#wakeAllWaiters();
 		try {
 			this.agent.abort("advisor disposed");
@@ -685,6 +717,7 @@ export class AdvisorRuntime {
 	#clearContextReplayState(): void {
 		this.#deliveredPrefix = [];
 		this.#seenContext.clear();
+		this.#advisorRegexSecretValues.clear();
 		this.#renderRevision++;
 		// The next rendered full-context replay is the host's chance to re-seed
 		// the advisor from durable brief state without this runtime reading files.
@@ -693,6 +726,7 @@ export class AdvisorRuntime {
 
 	#invalidateRenderedContext(): void {
 		this.#seenContext.clear();
+		this.#advisorRegexSecretValues.clear();
 		this.#renderRevision++;
 		this.#primeSeedPending = true;
 	}
@@ -711,14 +745,9 @@ export class AdvisorRuntime {
 		} catch {}
 	}
 
-	#formatRawDelta(rawMessages: readonly AgentMessage[], wip: boolean): string | null {
-		const delta = rawMessages
-			.filter(message => !(message.role === "custom" && message.customType === "advisor"))
-			.map(message => this.#dedupContextMessage(message));
-		if (delta.length === 0) return null;
+	#formatDeltaMarkdown(delta: AgentMessage[]): string | null {
 		const obfuscator = this.host.obfuscator;
-		const formattedDelta = obfuscator?.hasSecrets() ? obfuscateAdvisorDelta(obfuscator, delta) : delta;
-		const md = formatSessionHistoryMarkdown(formattedDelta, {
+		let md = formatSessionHistoryMarkdown(delta, {
 			includeThinking: true,
 			includeToolIntent: true,
 			watchedRoles: true,
@@ -729,6 +758,64 @@ export class AdvisorRuntime {
 			expandEditDiffs: true,
 		});
 		if (!md.trim()) return null;
+		if (!obfuscator?.hasSecrets()) return md;
+
+		let discoveredNewRegexSecretValue = false;
+		const addRegexValues = (text: string): void => {
+			for (const secretValue of obfuscator.collectRegexSecretValuesForObfuscation(text)) {
+				if (this.#advisorRegexSecretValues.has(secretValue)) continue;
+				this.#advisorRegexSecretValues.add(secretValue);
+				discoveredNewRegexSecretValue = true;
+			}
+		};
+		for (const message of delta) {
+			if (
+				message.role === "custom" &&
+				PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType) &&
+				typeof message.content === "string"
+			) {
+				addRegexValues(message.content);
+			}
+		}
+		addRegexValues(md);
+		scrubAdvisorHistory(obfuscator, this.agent.state.messages, this.#advisorRegexSecretValues);
+		if (discoveredNewRegexSecretValue) {
+			this.#pending = this.#pending.map(item =>
+				item.kind === "delta"
+					? {
+							...item,
+							text: obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(item.text, this.#advisorRegexSecretValues),
+						}
+					: item,
+			);
+		}
+		md = formatSessionHistoryMarkdown(
+			delta.map(message =>
+				message.role === "custom" && PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType)
+					? obfuscateAdvisorMessage(obfuscator, message, this.#advisorRegexSecretValues)
+					: message,
+			),
+			{
+				includeThinking: true,
+				includeToolIntent: true,
+				watchedRoles: true,
+				expandPrimaryContext: true,
+				renderThinking: this.host.renderThinking,
+				errorResultLines: 10,
+				expandAsyncResults: true,
+				expandEditDiffs: true,
+			},
+		);
+		return obfuscator.obfuscate(md, this.#advisorRegexSecretValues);
+	}
+
+	#formatRawDelta(rawMessages: readonly AgentMessage[], wip: boolean): string | null {
+		const delta = rawMessages
+			.filter(message => !(message.role === "custom" && message.customType === "advisor"))
+			.map(message => this.#dedupContextMessage(message));
+		if (delta.length === 0) return null;
+		const md = this.#formatDeltaMarkdown(delta);
+		if (!md) return null;
 		const statsHeader = this.host.renderStatsHeader?.()?.trim();
 		const seed = this.#takePrimeSeed();
 		const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
@@ -826,19 +913,8 @@ export class AdvisorRuntime {
 		}
 		this.#lastCount = effectiveEnd;
 		if (delta.length === 0) return null;
-		const obfuscator = this.host.obfuscator;
-		const formattedDelta = obfuscator?.hasSecrets() ? obfuscateAdvisorDelta(obfuscator, delta) : delta;
-		const md = formatSessionHistoryMarkdown(formattedDelta, {
-			includeThinking: true,
-			includeToolIntent: true,
-			watchedRoles: true,
-			expandPrimaryContext: true,
-			renderThinking: this.host.renderThinking,
-			errorResultLines: 10,
-			expandAsyncResults: true,
-			expandEditDiffs: true,
-		});
-		if (!md.trim()) return null;
+		const md = this.#formatDeltaMarkdown(delta);
+		if (!md) return null;
 		const statsHeader = this.host.renderStatsHeader?.()?.trim();
 		const seed = this.#takePrimeSeed();
 		const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
@@ -886,14 +962,14 @@ export class AdvisorRuntime {
 		for (let i = this.#waiters.length - 1; i >= 0; i--) {
 			const w = this.#waiters[i];
 			if (this.#backlog < w.threshold) {
-				w.finish();
+				w.finish(true);
 			}
 		}
 	}
 
 	#wakeAllWaiters(): void {
 		for (const w of [...this.#waiters]) {
-			w.finish();
+			w.finish(false);
 		}
 	}
 
@@ -1021,7 +1097,14 @@ export class AdvisorRuntime {
 				let reprimeAfterCoalesce = false;
 				let batchInvalidated = false;
 				for (let round = 0; round < MAX_COALESCE_ROUNDS; round++) {
-					const candidateBatch = buildBatch(deltasText);
+					let candidateBatch = buildBatch(deltasText);
+					const batchObfuscator = this.host.obfuscator;
+					if (candidateBatch !== null && batchObfuscator?.hasSecrets()) {
+						candidateBatch = batchObfuscator.stripUnsafeFriendlyPlaceholderPrefixes(
+							candidateBatch,
+							this.#advisorRegexSecretValues,
+						);
+					}
 					if (candidateBatch !== null) {
 						const model = this.agent.model;
 						candidatePrepared = {
@@ -1092,13 +1175,20 @@ export class AdvisorRuntime {
 					finalTurns = turnsCovered;
 				}
 
-				const finalBatchBase = buildBatch(deltaPart);
+				let finalBatchBase = buildBatch(deltaPart);
 				if (this.disposed || finalBatchBase === null) {
 					restoreEscalationIfNeeded();
 					consult?.resolve(null);
 					this.#backlog = Math.max(0, this.#backlog - finalTurns);
 					this.#notifyWaiters();
 					continue;
+				}
+				const finalBatchObfuscator = this.host.obfuscator;
+				if (finalBatchObfuscator?.hasSecrets()) {
+					finalBatchBase = finalBatchObfuscator.stripUnsafeFriendlyPlaceholderPrefixes(
+						finalBatchBase,
+						this.#advisorRegexSecretValues,
+					);
 				}
 
 				// Gist substitution: single point, after the re-prime branch and after
@@ -1399,12 +1489,16 @@ function getAdvisorTurnError(messages: readonly AgentMessage[]): Error | undefin
 
 type TextualContent = string | readonly (TextContent | ImageContent)[];
 
-function obfuscateTextualContent(obfuscator: SecretObfuscator, content: TextualContent): TextualContent {
-	if (typeof content === "string") return obfuscator.obfuscate(content);
+function obfuscateTextualContent(
+	obfuscator: SecretObfuscator,
+	content: TextualContent,
+	sharedRegexSecretValues: ReadonlySet<string>,
+): TextualContent {
+	if (typeof content === "string") return obfuscator.obfuscate(content, sharedRegexSecretValues);
 	let changed = false;
 	const result = content.map((block): TextContent | ImageContent => {
 		if (block.type !== "text") return block;
-		const text = obfuscator.obfuscate(block.text);
+		const text = obfuscator.obfuscate(block.text, sharedRegexSecretValues);
 		if (text === block.text) return block;
 		changed = true;
 		return { ...block, text };
@@ -1412,26 +1506,53 @@ function obfuscateTextualContent(obfuscator: SecretObfuscator, content: TextualC
 	return changed ? result : content;
 }
 
-function obfuscateAssistantMessage(obfuscator: SecretObfuscator, message: AssistantMessage): AssistantMessage {
+function firstAdvisorToolResultErrorLine(content: TextualContent): string | undefined {
+	if (typeof content === "string") return content.split("\n", 1)[0];
+	const first = content[0];
+	if (first?.type !== "text") return undefined;
+	return first.text.split("\n", 1)[0];
+}
+
+function obfuscateAdvisorToolResultErrorContent(
+	obfuscator: SecretObfuscator,
+	content: TextualContent,
+	sharedRegexSecretValues: ReadonlySet<string>,
+): TextualContent {
+	const firstLine = firstAdvisorToolResultErrorLine(content);
+	if (firstLine === undefined) return content;
+	const preview = formatToolResultErrorPreview(content);
+	const obfuscatedPreview = obfuscator.obfuscate(preview, sharedRegexSecretValues);
+	if (obfuscatedPreview === firstLine) return content;
+	if (typeof content === "string") return obfuscatedPreview + content.slice(firstLine.length);
+	const first = content[0]!;
+	if (first.type !== "text") return content;
+	return [{ ...first, text: obfuscatedPreview + first.text.slice(firstLine.length) }, ...content.slice(1)];
+}
+
+function obfuscateAssistantMessage(
+	obfuscator: SecretObfuscator,
+	message: AssistantMessage,
+	sharedRegexSecretValues: ReadonlySet<string>,
+): AssistantMessage {
 	let changed = false;
 	const content = message.content.map((block): AssistantMessage["content"][number] => {
 		if (block.type === "text") {
-			const text = obfuscator.obfuscate(block.text);
+			const text = obfuscator.obfuscate(block.text, sharedRegexSecretValues);
 			if (text === block.text) return block;
 			changed = true;
 			return { ...block, text };
 		}
+		if (block.type === "thinking") {
+			const thinking = obfuscator.obfuscate(block.thinking, sharedRegexSecretValues);
+			if (thinking === block.thinking) return block;
+			changed = true;
+			return { ...block, thinking, thinkingSignature: undefined };
+		}
 		if (block.type === "toolCall") {
-			const args = obfuscateToolArguments(obfuscator, block.arguments);
+			const args = obfuscateToolArguments(obfuscator, block.arguments, sharedRegexSecretValues);
 			if (args === block.arguments) return block;
 			changed = true;
 			return { ...block, arguments: args };
-		}
-		if (block.type === "thinking") {
-			const thinking = obfuscator.obfuscate(block.thinking);
-			if (thinking === block.thinking) return block;
-			changed = true;
-			return { ...block, thinking };
 		}
 		return block;
 	});
@@ -1441,68 +1562,83 @@ function obfuscateAssistantMessage(obfuscator: SecretObfuscator, message: Assist
 function obfuscateDetails(
 	obfuscator: SecretObfuscator,
 	details: Record<string, unknown> | undefined,
+	sharedRegexSecretValues: ReadonlySet<string>,
 ): Record<string, unknown> | undefined {
 	if (!details) return details;
 	// Walk strings at every depth: `customOneLiner` renders nested fields
 	// (e.g. `async-result` reads `details.jobs[].label`/`jobId`), so a shallow
 	// pass leaks any secret a background job's label happens to contain.
-	return obfuscateToolArguments(obfuscator, details);
+	return obfuscateToolArguments(obfuscator, details, sharedRegexSecretValues);
 }
 
-function obfuscateAdvisorMessage(obfuscator: SecretObfuscator, message: AgentMessage): AgentMessage {
+function obfuscateAdvisorMessage(
+	obfuscator: SecretObfuscator,
+	message: AgentMessage,
+	sharedRegexSecretValues: ReadonlySet<string>,
+): AgentMessage {
 	switch (message.role) {
 		case "user":
 		case "developer": {
-			const content = obfuscateTextualContent(obfuscator, message.content as TextualContent);
+			const content = obfuscateTextualContent(
+				obfuscator,
+				message.content as TextualContent,
+				sharedRegexSecretValues,
+			);
 			return content === message.content ? message : ({ ...(message as object), content } as AgentMessage);
 		}
 		case "toolResult": {
 			const msg = message as AgentMessage & {
 				content: TextualContent;
 				details?: Record<string, unknown>;
+				isError?: boolean;
 			};
-			const content = obfuscateTextualContent(obfuscator, msg.content);
-			const details = obfuscateDetails(obfuscator, msg.details);
+			const content = msg.isError
+				? obfuscateAdvisorToolResultErrorContent(obfuscator, msg.content, sharedRegexSecretValues)
+				: msg.content;
+			let details = msg.details;
+			if (typeof details?.diff === "string") {
+				const diff = obfuscator.obfuscate(details.diff, sharedRegexSecretValues);
+				if (diff !== details.diff) details = { ...details, diff };
+			}
 			if (content === msg.content && details === msg.details) return message;
 			return { ...(message as object), content, details } as AgentMessage;
 		}
 		case "assistant":
-			return obfuscateAssistantMessage(obfuscator, message as AssistantMessage) as AgentMessage;
+			return obfuscateAssistantMessage(
+				obfuscator,
+				message as AssistantMessage,
+				sharedRegexSecretValues,
+			) as AgentMessage;
 		case "custom":
 		case "hookMessage": {
+			if (!formatSessionHistoryMarkdown([message], { expandPrimaryContext: true }).trim()) return message;
 			const msg = message as AgentMessage & {
 				content: TextualContent;
 				details?: Record<string, unknown>;
 			};
-			const content = obfuscateTextualContent(obfuscator, msg.content);
-			const details = obfuscateDetails(obfuscator, msg.details);
+			const content = obfuscateTextualContent(obfuscator, msg.content, sharedRegexSecretValues);
+			const details = obfuscateDetails(obfuscator, msg.details, sharedRegexSecretValues);
 			if (content === msg.content && details === msg.details) return message;
 			return { ...(message as object), content, details } as AgentMessage;
 		}
 		case "bashExecution": {
-			const msg = message as AgentMessage & { command: string; output: string };
-			const command = obfuscator.obfuscate(msg.command);
-			const output = obfuscator.obfuscate(msg.output);
-			return command === msg.command && output === msg.output
-				? message
-				: ({ ...(message as object), command, output } as AgentMessage);
+			const msg = message as AgentMessage & { command: string };
+			const command = obfuscator.obfuscate(formatExecutionSourcePreview(msg.command), sharedRegexSecretValues);
+			return command === msg.command ? message : ({ ...(message as object), command } as AgentMessage);
 		}
 		case "pythonExecution": {
-			const msg = message as AgentMessage & { code: string; output: string };
-			const code = obfuscator.obfuscate(msg.code);
-			const output = obfuscator.obfuscate(msg.output);
-			return code === msg.code && output === msg.output
-				? message
-				: ({ ...(message as object), code, output } as AgentMessage);
+			const msg = message as AgentMessage & { code: string };
+			const code = obfuscator.obfuscate(formatExecutionSourcePreview(msg.code), sharedRegexSecretValues);
+			return code === msg.code ? message : ({ ...(message as object), code } as AgentMessage);
 		}
 		case "branchSummary": {
 			const msg = message as AgentMessage & { summary: string };
-			const summary = obfuscator.obfuscate(msg.summary);
+			const summary = obfuscator.obfuscate(msg.summary, sharedRegexSecretValues);
 			return summary === msg.summary ? message : ({ ...(message as object), summary } as AgentMessage);
 		}
 		case "compactionSummary": {
 			const msg = message as AgentMessage & { summary: string };
-			const summary = obfuscator.obfuscate(msg.summary);
+			const summary = obfuscator.obfuscate(msg.summary, sharedRegexSecretValues);
 			return summary === msg.summary ? message : ({ ...(message as object), summary } as AgentMessage);
 		}
 		case "fileMention": {
@@ -1511,11 +1647,10 @@ function obfuscateAdvisorMessage(obfuscator: SecretObfuscator, message: AgentMes
 			};
 			let changed = false;
 			const files = msg.files.map(file => {
-				const path = obfuscator.obfuscate(file.path);
-				const content = obfuscator.obfuscate(file.content);
-				if (path === file.path && content === file.content) return file;
+				const path = obfuscator.obfuscate(file.path, sharedRegexSecretValues);
+				if (path === file.path) return file;
 				changed = true;
-				return { ...file, path, content };
+				return { ...file, path };
 			});
 			return changed ? ({ ...(message as object), files } as AgentMessage) : message;
 		}
@@ -1524,12 +1659,14 @@ function obfuscateAdvisorMessage(obfuscator: SecretObfuscator, message: AgentMes
 	}
 }
 
-function obfuscateAdvisorDelta(obfuscator: SecretObfuscator, messages: AgentMessage[]): AgentMessage[] {
-	let changed = false;
-	const result = messages.map(message => {
-		const next = obfuscateAdvisorMessage(obfuscator, message);
-		if (next !== message) changed = true;
-		return next;
-	});
-	return changed ? result : messages;
+function scrubAdvisorHistory(
+	obfuscator: SecretObfuscator,
+	messages: AgentMessage[],
+	sharedRegexSecretValues: ReadonlySet<string>,
+): void {
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index]!;
+		const next = obfuscateAdvisorMessage(obfuscator, message, sharedRegexSecretValues);
+		if (next !== message) messages[index] = next;
+	}
 }

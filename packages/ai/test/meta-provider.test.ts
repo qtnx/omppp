@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
+import { loginMeta } from "@oh-my-pi/pi-ai/registry/meta";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/registry/oauth";
 import { getEnvApiKey } from "@oh-my-pi/pi-ai/stream";
 import type { Context, FetchImpl, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
@@ -50,13 +51,14 @@ function abortedSignal(): AbortSignal {
 function captureResponsesPayload(
 	model: Model<"openai-responses">,
 	maxTokens: number,
+	reasoning: Effort = Effort.High,
 ): Promise<Record<string, unknown>> {
 	const { promise, resolve } = Promise.withResolvers<Record<string, unknown>>();
 	streamOpenAIResponses(model, testContext, {
 		apiKey: "LLM|meta-test-key",
 		maxTokens,
 		maxTokensExplicit: true,
-		reasoning: Effort.High,
+		reasoning,
 		signal: abortedSignal(),
 		onPayload: payload => resolve(payload as Record<string, unknown>),
 	});
@@ -196,5 +198,33 @@ describe("Meta Model API provider", () => {
 
 		const payload = await captureResponsesPayload(generic, META_MAX_OUTPUT_TOKENS);
 		expect(payload.max_output_tokens).toBe(64_000);
+	});
+
+	it("preserves Meta's native xhigh and minimal reasoning efforts", async () => {
+		const model = getBundledModel("meta", META_MODEL_ID) as Model<"openai-responses">;
+		const xhighPayload = await captureResponsesPayload(model, META_MAX_OUTPUT_TOKENS, Effort.XHigh);
+		const minimalPayload = await captureResponsesPayload(model, META_MAX_OUTPUT_TOKENS, Effort.Minimal);
+
+		expect(xhighPayload.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+		expect(xhighPayload.include).toEqual(["reasoning.encrypted_content"]);
+		expect(minimalPayload.reasoning).toEqual({ effort: "minimal", summary: "auto" });
+	});
+
+	it("validates pasted keys against Meta's models endpoint without running inference", async () => {
+		let requestedUrl = "";
+		let authorization = "";
+		const apiKey = await loginMeta({
+			onAuth: () => {},
+			onPrompt: async () => " meta-test-key ",
+			fetch: (input, init) => {
+				requestedUrl = String(input);
+				authorization = new Headers(init?.headers).get("Authorization") ?? "";
+				return Promise.resolve(Response.json({ data: [{ id: META_MODEL_ID }] }));
+			},
+		});
+
+		expect(apiKey).toBe("meta-test-key");
+		expect(requestedUrl).toBe(`${META_BASE_URL}/models`);
+		expect(authorization).toBe("Bearer meta-test-key");
 	});
 });

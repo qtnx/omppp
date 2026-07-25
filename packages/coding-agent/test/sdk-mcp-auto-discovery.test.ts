@@ -107,11 +107,14 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 		try {
 			// Genuine integration wait: discovery spawns the fixture as a real
 			// subprocess and connects asynchronously, and the SDK fires that work
-			// fire-and-forget with no completion promise or event exposed — fake
-			// timers cannot drive a child process, so poll the live session with
-			// a generous ceiling, exiting the instant discovery flips on.
+			// fire-and-forget with no completion promise or event exposed. Fake
+			// timers cannot drive a child process, so poll the final discovery surface.
 			const deadline = Date.now() + 30_000;
-			while (!session.isMCPDiscoveryEnabled() && Date.now() < deadline) {
+			while (
+				(!session.getActiveToolNames().includes("search_tool_bm25") ||
+					session.getDiscoverableTools({ source: "mcp" }).length < MANY_TOOL_COUNT) &&
+				Date.now() < deadline
+			) {
 				await Bun.sleep(50);
 			}
 
@@ -132,11 +135,12 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 		const { session } = await createAgentSession({ ...baseOptions(), toolNames: ["read"] });
 		try {
 			// The manager returns from startup after 250 ms while this fixture is
-			// still connecting. Its eventual tools arrive through onToolsChanged,
-			// so wait for that observable registry update rather than a fixed delay.
+			// still connecting. Its eventual tools arrive through onToolsChanged;
+			// poll the final discovery surface, not the intermediate registry update.
 			const deadline = Date.now() + 30_000;
 			while (
-				session.getAllToolNames().filter(name => name.startsWith("mcp__")).length < MANY_TOOL_COUNT &&
+				(!session.getActiveToolNames().includes("search_tool_bm25") ||
+					session.getDiscoverableTools({ source: "mcp" }).length < MANY_TOOL_COUNT) &&
 				Date.now() < deadline
 			) {
 				await Bun.sleep(50);
@@ -164,13 +168,11 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 		if (!mcpManager) throw new Error("expected deferred session to own an MCPManager");
 		try {
 			// Deferred MCP discovery is fire-and-forget and exposes no promise or
-			// event; poll until the real fixture subprocess has registered every
-			// advertised tool before asserting the final active capability set.
+			// event; poll the final active capability rather than the intermediate
+			// registry population that precedes allowlist activation.
+			// The MCP server is a real subprocess, so fake timers cannot drive this boundary.
 			const deadline = Date.now() + 30_000;
-			while (
-				session.getAllToolNames().filter(name => name.startsWith("mcp__")).length < MANY_TOOL_COUNT &&
-				Date.now() < deadline
-			) {
+			while (!session.getActiveToolNames().includes("mcp__many_tool_aa") && Date.now() < deadline) {
 				await Bun.sleep(50);
 			}
 

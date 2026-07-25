@@ -1,6 +1,6 @@
 import { type } from "arktype";
 import { parseKnownModel, semverEqual } from "../identity/classify";
-import type { ModelSpec } from "../types";
+import type { FetchImpl, ModelSpec } from "../types";
 import { discoveryFetch } from "../utils";
 import { CODEX_BASE_URL, CODEX_CLIENT_VERSION, OPENAI_HEADER_VALUES, OPENAI_HEADERS } from "../wire/codex";
 
@@ -33,7 +33,7 @@ const codexModelEntrySchema = type({
 	"default_reasoning_level?": "unknown",
 	"supported_reasoning_levels?": "unknown",
 	"input_modalities?": "unknown",
-	"supported_in_api?": "unknown",
+	"visibility?": "unknown",
 	"priority?": "unknown",
 	"prefer_websockets?": "unknown",
 	"use_responses_lite?": "unknown",
@@ -69,7 +69,7 @@ export interface CodexModelDiscoveryOptions {
 	/** Abort signal for network request cancellation. */
 	signal?: AbortSignal;
 	/** Optional fetch implementation override for tests. */
-	fetchFn?: typeof fetch;
+	fetchFn?: FetchImpl;
 }
 
 /**
@@ -217,8 +217,8 @@ function normalizeCodexModelEntry(entry: unknown, baseUrl: string): NormalizedCo
 		return null;
 	}
 
-	const supportedInApi = toBoolean(payload.supported_in_api);
-	if (supportedInApi === false) {
+	const visibility = toNonEmptyString(payload.visibility)?.toLowerCase();
+	if (visibility === "hide" || visibility === "hidden") {
 		return null;
 	}
 

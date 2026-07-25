@@ -34,6 +34,12 @@ class _StubSandbox:
 
     natives_cache = None
 
+    def reclaim_workspace_caches(self, *, repo: str, number: int) -> bool:
+        return False
+
+    def reclaim_all_caches(self) -> int:
+        return 0
+
 
 class _StubGitTransport:
     """Sentinel; queue tests don't push."""

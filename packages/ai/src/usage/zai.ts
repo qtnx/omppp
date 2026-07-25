@@ -220,12 +220,16 @@ function rankZaiRequestLimits(report: UsageReport): UsageLimit[] {
 async function fetchZaiUsage(params: UsageFetchParams, ctx: UsageFetchContext): Promise<UsageReport | null> {
 	if (params.provider !== "zai") return null;
 	const credential = params.credential;
-	if (credential.type !== "api_key" || !credential.apiKey) return null;
+	// Sign-in (oauth) stores the minted id.secret key in accessToken; the paste
+	// path stores it in apiKey. Both are the same raw key used verbatim as the
+	// Authorization header (no Bearer prefix).
+	const token = credential.type === "oauth" ? credential.accessToken : credential.apiKey;
+	if (!token) return null;
 
 	const baseUrl = normalizeZaiBaseUrl(params.baseUrl);
 	const url = `${baseUrl}${QUOTA_PATH}`;
 	const headers: Record<string, string> = {
-		Authorization: credential.apiKey,
+		Authorization: token,
 		"Content-Type": "application/json",
 		"User-Agent": "OpenCode-Status-Plugin/1.0",
 	};
@@ -345,7 +349,9 @@ async function fetchZaiUsage(params: UsageFetchParams, ctx: UsageFetchContext): 
 export const zaiUsageProvider: UsageProvider = {
 	id: "zai",
 	fetchUsage: fetchZaiUsage,
-	supports: params => params.provider === "zai" && params.credential.type === "api_key",
+	supports: params =>
+		params.provider === "zai" &&
+		(params.credential.type === "oauth" ? Boolean(params.credential.accessToken) : Boolean(params.credential.apiKey)),
 };
 
 export const zaiRankingStrategy: CredentialRankingStrategy = {

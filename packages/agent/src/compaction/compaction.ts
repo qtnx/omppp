@@ -44,6 +44,7 @@ import {
 	V2_RETAINED_MESSAGE_TOKEN_BUDGET,
 } from "./compaction-v2-streaming";
 import type { CompactionEntry, SessionEntry } from "./entries";
+import { isEstimateCacheable, readEstimateCache, writeEstimateCache } from "./message-cache";
 import { type ConvertToLlm, createBranchSummaryMessage, createCustomMessage, defaultConvertToLlm } from "./messages";
 import {
 	buildOpenAiNativeHistory,
@@ -365,6 +366,21 @@ const IMAGE_TOKEN_ESTIMATE = 1200;
  * content) excludes them to avoid false triggers on thinking-heavy turns.
  */
 export function estimateTokens(message: AgentMessage, options?: { excludeEncryptedReasoning?: boolean }): number {
+	// Settled historical messages are counted once and reused until an owner
+	// (prune/shake/strip-images) invalidates them; streaming assistants bypass
+	// the cache entirely (see message-cache.ts settle-gate invariant).
+	const cacheable = isEstimateCacheable(message);
+	const excludeEncryptedReasoning = options?.excludeEncryptedReasoning === true;
+	if (cacheable) {
+		const cached = readEstimateCache(message, excludeEncryptedReasoning);
+		if (cached !== undefined) return cached;
+	}
+	const result = computeMessageTokens(message, options);
+	if (cacheable) writeEstimateCache(message, excludeEncryptedReasoning, result);
+	return result;
+}
+
+function computeMessageTokens(message: AgentMessage, options?: { excludeEncryptedReasoning?: boolean }): number {
 	const fragments: string[] = [];
 	let extra = 0;
 	if ((message as { role?: string }).role === "bashExecution") {
@@ -1122,33 +1138,37 @@ export interface CompactionPreparation {
 }
 
 /**
- * Whether a prior compaction's preserve data can be carried forward by the
- * upcoming compaction. A local compaction (no remote preserve) always can — it
- * holds a real textual summary. A remote compaction (V2 or V1) only can when
- * some candidate model shares its provider AND remote replay is still enabled;
- * otherwise its provider-native replay is dead weight and only the opaque
- * placeholder summary survives, so the caller must re-expand the originals.
+ * Whether a prior remote compaction's provider-native replay can still be read
+ * by the active model — the model that assembles the request context on every
+ * turn. A local compaction (no remote preserve) always can: it holds a real
+ * textual summary. A remote compaction (V2 or V1) only can when the active model
+ * shares the blob's provider AND remote replay is still enabled; otherwise the
+ * active model's encoder drops the payload (see `getOpenAIResponsesHistoryPayload`)
+ * and only the opaque placeholder summary survives, so the caller must re-expand
+ * the originals into a portable local summary rather than strand that history.
+ *
+ * Judged against the ACTIVE model, not the compaction candidate set: a role
+ * model (e.g. `modelRoles.smol`) that still maps to the blob's provider does not
+ * let the active model replay it, so keying reuse on "any candidate shares the
+ * provider" left a provider-switched session permanently context-less (#6343).
  */
-function remotePreserveReusableByAny(
+function remotePreserveReusable(
 	preserveData: Record<string, unknown> | undefined,
-	models: readonly Model[],
+	activeModel: Model,
 	settings: CompactionSettings,
 ): boolean {
 	const remote = getCompactionV2PreserveData(preserveData) ?? getPreservedOpenAiRemoteCompactionData(preserveData);
 	if (!remote) return true;
 	if (settings.remoteEnabled === false) return false;
-	for (const model of models) {
-		if (remote.provider !== model.provider) continue;
-		const v2Ok = settings.remoteStreamingV2Enabled !== false && shouldUseCompactionV2Streaming(model);
-		if (v2Ok || shouldUseOpenAiRemoteCompaction(model)) return true;
-	}
-	return false;
+	if (remote.provider !== activeModel.provider) return false;
+	const v2Ok = settings.remoteStreamingV2Enabled !== false && shouldUseCompactionV2Streaming(activeModel);
+	return v2Ok || shouldUseOpenAiRemoteCompaction(activeModel);
 }
 
 export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
-	compactionModels: readonly Model[] = [],
+	activeModel?: Model,
 ): CompactionPreparation | undefined {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;
@@ -1157,13 +1177,13 @@ export function prepareCompaction(
 	let prevCompactionIndex = -1;
 	for (let i = pathEntries.length - 1; i >= 0; i--) {
 		if (pathEntries[i].type !== "compaction") continue;
-		// Skip a prior remote compaction (V2 or V1) whose provider-native replay
-		// none of the upcoming compaction candidates can reuse: its summary is only
-		// an opaque placeholder, so re-expand its original messages and summarize
-		// them locally rather than stranding that history. compact() still reuses it
-		// when a candidate can (same provider, remote enabled).
+		// Skip a prior remote compaction (V2 or V1) whose provider-native replay the
+		// active model cannot read: its summary is only an opaque placeholder, so
+		// re-expand its original messages and summarize them locally rather than
+		// stranding that history. compact() still reuses the payload when the active
+		// model can replay it (same provider, remote enabled).
 		const entry = pathEntries[i] as CompactionEntry;
-		if (compactionModels.length > 0 && !remotePreserveReusableByAny(entry.preserveData, compactionModels, settings)) {
+		if (activeModel && !remotePreserveReusable(entry.preserveData, activeModel, settings)) {
 			continue;
 		}
 		prevCompactionIndex = i;
@@ -1533,7 +1553,7 @@ export async function compact(
 		// summarization so a successful remote compaction never pays for a second,
 		// redundant LLM round. If a LATER compaction cannot reuse this payload,
 		// prepareCompaction re-expands the original messages and summarizes them
-		// locally then (see remotePreserveReusableByAny).
+		// locally then (see remotePreserveReusable).
 		const usedTokens = getCompactionV2PreserveData(preserveData)?.usedTokens ?? 0;
 		summary =
 			"Remote compaction preserved provider-native history for this session." +
