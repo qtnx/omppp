@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { Agent, AgentBusyError, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Message, ToolCall } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, Message, ToolCall } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -24,7 +24,9 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import * as taskDiscovery from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import * as imageVisionFallback from "@oh-my-pi/pi-coding-agent/utils/image-vision-fallback";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
@@ -71,8 +73,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		AsyncJobManager.resetForTests();
 	});
 
-	async function createSession(settingsOverrides?: Partial<Record<SettingPath, unknown>>) {
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+	async function createSession(
+		settingsOverrides?: Partial<Record<SettingPath, unknown>>,
+		modelOverride = getBundledModel("anthropic", "claude-sonnet-4-5")!,
+	) {
+		const model = modelOverride;
 		let abortSignal: AbortSignal | undefined;
 
 		// Use a stream function that responds to abort
@@ -224,6 +229,75 @@ describe("AgentSession concurrent prompt guard", () => {
 		session.agent.clearAllQueues();
 		await session.abort();
 		await firstPrompt.catch(() => {});
+	});
+
+	it("drops an aborted follow-up after agent discovery while keeping a live signal deliverable", async () => {
+		await createSession();
+		const firstPrompt = session.prompt("Keep streaming");
+		await waitFor(() => session.isStreaming);
+
+		const discoveryGate = Promise.withResolvers<{ agents: []; projectAgentsDir: null }>();
+		const discoverySpy = vi.spyOn(taskDiscovery, "discoverAgents").mockImplementation(() => discoveryGate.promise);
+		const controller = new AbortController();
+		const cancelledFollowUp = session.followUp("$agent:cancelled-loop-delivery", undefined, {
+			signal: controller.signal,
+		});
+
+		await waitFor(() => discoverySpy.mock.calls.length === 1);
+		controller.abort();
+		discoveryGate.resolve({ agents: [], projectAgentsDir: null });
+		await cancelledFollowUp;
+
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+		expect(session.agent.peekFollowUpQueue()).toEqual([]);
+
+		await session.followUp("live-loop-delivery", undefined, { signal: new AbortController().signal });
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: ["live-loop-delivery"] });
+		expect(session.agent.peekFollowUpQueue()).toHaveLength(1);
+
+		session.agent.clearAllQueues();
+		await session.abort();
+		await firstPrompt.catch(() => {});
+	});
+
+	it("queues the image-description companion before a synthetic developer follow-up", async () => {
+		const textOnlyModel = {
+			...getBundledModel("anthropic", "claude-sonnet-4-5")!,
+			input: ["text"] as "text"[],
+		};
+		await createSession({ "images.describeForTextModels": true }, textOnlyModel);
+		const firstPrompt = session.prompt("Keep streaming");
+		await waitFor(() => session.isStreaming);
+		const image: ImageContent = {
+			type: "image",
+			data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+			mimeType: "image/png",
+		};
+		vi.spyOn(imageVisionFallback, "describeAttachedImagesForTextModel").mockResolvedValue([
+			{ type: "text", text: '<image path="local://image.png">\na red balloon\n</image>' },
+		]);
+
+		try {
+			await session.followUp("explain", [image], { synthetic: true });
+
+			const queue = session.agent.peekFollowUpQueue();
+			expect(queue).toHaveLength(2);
+			expect(queue[0]).toMatchObject({
+				role: "custom",
+				customType: "image-attachment-description",
+				display: false,
+				content: [{ type: "text", text: '<image path="local://image.png">\na red balloon\n</image>' }],
+			});
+			expect(queue[1]).toMatchObject({
+				role: "developer",
+				attribution: "agent",
+				content: [{ type: "text", text: "explain" }, { type: "image" }],
+			});
+		} finally {
+			session.agent.clearAllQueues();
+			await session.abort();
+			await firstPrompt.catch(() => {});
+		}
 	});
 
 	it("queues sendUserMessage as steer while streaming without AgentBusyError", async () => {

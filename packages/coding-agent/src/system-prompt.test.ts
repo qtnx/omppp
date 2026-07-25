@@ -417,6 +417,52 @@ describe("eager task runtime reminder", () => {
 		);
 	});
 });
+
+describe("loop engineering system prompt contract", () => {
+	const emptyWorkspaceTree = {
+		rootPath: import.meta.dir,
+		rendered: "",
+		truncated: false,
+		totalLines: 0,
+		agentsMdFiles: [] as [],
+	};
+
+	it("renders Loop Engineering when loop is available", async () => {
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: import.meta.dir,
+			toolNames: ["read", "bash", "edit", "write", "loop"],
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			workspaceTree: emptyWorkspaceTree,
+			activeRepoContext: null,
+			personality: "none",
+		});
+		const rendered = systemPrompt.join("\n");
+
+		expect(rendered).toContain("# Loop Engineering");
+		expect(rendered).toMatch(/loop engineering = engineering the system that prompts you/i);
+		expect(rendered).toMatch(/each iteration is a FRESH turn/i);
+	}, 15_000);
+
+	it("omits Loop Engineering when loop is unavailable", async () => {
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: import.meta.dir,
+			toolNames: ["read", "bash", "edit", "write", "task"],
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			workspaceTree: emptyWorkspaceTree,
+			activeRepoContext: null,
+			personality: "none",
+		});
+		const rendered = systemPrompt.join("\n");
+
+		expect(rendered).not.toContain("# Loop Engineering");
+		expect(rendered).not.toMatch(/loop engineering = engineering the system that prompts you/i);
+	}, 15_000);
+});
+
 describe("non-Linux system prompt CPU model", () => {
 	it("includes the model returned by os.cpus", async () => {
 		const originalPlatform = process.platform;

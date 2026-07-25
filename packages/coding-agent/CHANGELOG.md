@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added a `loop` tool that schedules a prompt as recurring follow-up turns (`prompt` / `interval` / `count`; min interval 10s, max 100 iterations; cancelled on session end), plus a `# Loop Engineering` system-prompt section.
 - Added idle low-memory mode: after 10 minutes idle (configurable via `memory.idleTrimSeconds`), an interactive session automatically parks live subagents, puts MCP servers to sleep (they reconnect lazily on the next tool call), terminates lazily-restartable background workers and eval kernels, clears process caches, and forces garbage collection — reducing idle memory pressure by releasing restartable resources without losing the session. Disable via `memory.idleTrimEnabled`; keep MCP servers connected via `memory.idleTrimMcp`. A `low-mem` status badge shows while trimmed.
 
 ## [1.6.3] - 2026-07-15
