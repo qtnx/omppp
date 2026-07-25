@@ -1,27 +1,19 @@
-import * as os from "node:os";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { AudioCapture } from "@oh-my-pi/pi-natives";
+import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
-import type { AgentSession } from "../session/agent-session";
-import type { AgentSessionEvent } from "../session/agent-session-events";
-import { LIVE_DELEGATION_MESSAGE_TYPE } from "../session/messages";
-import agentFinalMessageTemplate from "./prompts/agent-final-message.md" with { type: "text" };
+import type { LiveAgentEndpoint, LiveAgentIdentity, LiveMediaEndpoint } from "./endpoints";
 import liveInstructionsTemplate from "./prompts/live-instructions.md" with { type: "text" };
 import {
 	buildDelegationContextAppend,
 	buildSessionClose,
-	chunkLiveContext,
 	type LiveClientMessage,
 	type LiveServerEvent,
 } from "./protocol";
-import { CodexLiveTransport } from "./transport";
+import { CodexLiveTransport, type LiveTransportOptions } from "./transport";
 import type { LivePhase } from "./visualizer";
 
 const DEFAULT_VOICE = "sol";
-const OUTPUT_ACTIVE_LEVEL = 0.015;
-const MIN_BARGE_IN_LEVEL = 0.04;
-const OUTPUT_ECHO_RATIO = 0.65;
+/** Output RMS at or above this level counts as the assistant actively speaking. */
+export const OUTPUT_ACTIVE_LEVEL = 0.015;
 
 /** Incremental or final transcript for one realtime conversational turn. */
 export interface LiveTranscript {
@@ -36,67 +28,52 @@ export interface LiveTranscript {
 export interface LiveSessionCallbacks {
 	/** Reports connection and activity phase changes. */
 	onPhase(phase: LivePhase): void;
-	/** Reports clamped microphone and speaker RMS levels. */
-	onLevels(input: number, output: number): void;
 	/** Reports the latest available conversational transcript. */
 	onTranscript(transcript: LiveTranscript | undefined): void;
 	/** Reports one terminal stop, optionally carrying its cause. */
 	onTerminal(error?: Error): void;
 }
 
+/** Control plane the controller drives; `CodexLiveTransport` is the production implementation. */
+export interface LiveControlTransport {
+	connect(): Promise<void>;
+	send(message: LiveClientMessage): Promise<void>;
+	close(): Promise<void>;
+}
+
 /** Dependencies and presentation callbacks for a live session. */
 export interface LiveSessionControllerOptions {
-	/** Agent session that performs all delegated coding work. */
-	session: AgentSession;
+	/** Media plane: microphone, WebRTC peer, echo gate. */
+	media: LiveMediaEndpoint;
+	/** Agent plane: runs delegated coding requests. */
+	agent: LiveAgentEndpoint;
+	/** Identity of the agent host, feeding live instructions and Codex headers. */
+	identity: LiveAgentIdentity;
+	/** Credential storage used by the control plane for Codex signaling. */
+	authStorage: AuthStorage;
 	/** UI callbacks for live session state. */
 	callbacks: LiveSessionCallbacks;
-	/** Extracts visible assistant text using the caller's normal UI rules. */
-	extractAssistantText(message: AssistantMessage): string;
 	/** Realtime output voice, defaulting to sol. */
 	voice?: string;
+	/** Control-plane factory; defaults to the Codex live transport. Overridable for tests. */
+	createTransport?: (options: LiveTransportOptions) => LiveControlTransport;
 }
 
 function errorFrom(cause: unknown): Error {
 	return cause instanceof Error ? cause : new Error(String(cause));
 }
 
-function clampLevel(level: number): number {
-	if (!Number.isFinite(level) || level <= 0) return 0;
-	return Math.min(1, level);
-}
-
-function microphoneLevel(samples: Float32Array): number {
-	if (samples.length === 0) return 0;
-	let sumSquares = 0;
-	for (let index = 0; index < samples.length; index += 1) {
-		const sample = samples[index] ?? 0;
-		sumSquares += sample * sample;
-	}
-	return clampLevel(Math.sqrt(sumSquares / samples.length));
-}
-
-function currentUser(): { username: string; firstName: string } {
-	let username = "user";
-	try {
-		const candidate = os.userInfo().username.trim();
-		if (candidate) username = candidate;
-	} catch {
-		// Sandboxed runtimes may not expose OS account information.
-	}
-	const firstPart = username.split(/[._\-\s]+/).find(part => part.length > 0);
-	return { username, firstName: firstPart ?? "there" };
-}
-
-/** Coordinates the realtime conversational surface with normal AgentSession turns. */
+/** Coordinates the realtime conversational surface with delegated agent turns. */
 export class LiveSessionController {
-	readonly #session: AgentSession;
+	readonly #media: LiveMediaEndpoint;
+	readonly #agent: LiveAgentEndpoint;
+	readonly #identity: LiveAgentIdentity;
+	readonly #authStorage: AuthStorage;
 	readonly #callbacks: LiveSessionCallbacks;
-	readonly #extractAssistantText: (message: AssistantMessage) => string;
 	readonly #voice: string;
+	readonly #createTransport: (options: LiveTransportOptions) => LiveControlTransport;
 
-	#transport: CodexLiveTransport | undefined;
-	#recorder: AudioCapture | undefined;
-	#unsubscribeSession: (() => void) | undefined;
+	#transport: LiveControlTransport | undefined;
 	#sendChain: Promise<void> = Promise.resolve();
 	#stopPromise: Promise<void> | undefined;
 	#started = false;
@@ -105,7 +82,6 @@ export class LiveSessionController {
 	#failure: Error | undefined;
 	#muted = false;
 	#phase: LivePhase = "connecting";
-	#inputLevel = 0;
 	#outputLevel = 0;
 	#activeDelegationId: string | undefined;
 	#userTranscript = "";
@@ -117,10 +93,13 @@ export class LiveSessionController {
 	#lastTranscript: LiveTranscript | undefined;
 
 	constructor(options: LiveSessionControllerOptions) {
-		this.#session = options.session;
+		this.#media = options.media;
+		this.#agent = options.agent;
+		this.#identity = options.identity;
+		this.#authStorage = options.authStorage;
 		this.#callbacks = options.callbacks;
-		this.#extractAssistantText = options.extractAssistantText;
 		this.#voice = options.voice?.trim() || DEFAULT_VOICE;
+		this.#createTransport = options.createTransport ?? (opts => new CodexLiveTransport(opts));
 	}
 
 	/** Current realtime call phase. */
@@ -149,46 +128,34 @@ export class LiveSessionController {
 		}
 
 		try {
-			const user = currentUser();
-			const instructions = prompt.render(liveInstructionsTemplate, user);
-			const transport = new CodexLiveTransport({
-				authStorage: this.#session.modelRegistry.authStorage,
-				sessionId: this.#session.sessionId,
+			this.#media.onOutputLevel(level => this.#guardEvent(() => this.#handleOutputLevel(level)));
+			this.#media.onFailure(message => this.#guardEvent(() => this.#reportFailure(new Error(message))));
+			this.#agent.onContext((delegationId, text, kind) =>
+				this.#guardEvent(() => this.#queueSend(buildDelegationContextAppend(delegationId, text, kind))),
+			);
+			this.#agent.onDelegationEnd(delegationId => this.#guardEvent(() => this.#handleDelegationEnd(delegationId)));
+
+			const instructions = prompt.render(liveInstructionsTemplate, {
+				firstName: this.#identity.firstName,
+				username: this.#identity.username,
+			});
+			const transport = this.#createTransport({
+				authStorage: this.#authStorage,
+				sessionId: this.#identity.sessionId,
 				instructions,
 				voice: this.#voice,
-				callbacks: {
-					onEvent: event => this.#guardEvent(() => this.#handleLiveEvent(event)),
-					onOutputLevel: level => this.#guardEvent(() => this.#handleOutputLevel(level)),
-				},
+				media: this.#media,
+				callbacks: { onEvent: event => this.#guardEvent(() => this.#handleLiveEvent(event)) },
 			});
 			this.#transport = transport;
 			await transport.connect();
 			if (this.#stopped) {
 				throw this.#failure ?? new Error("The live session stopped while connecting.");
 			}
-			this.#unsubscribeSession = this.#session.subscribe(event =>
-				this.#guardEvent(() => this.#handleSessionEvent(event)),
-			);
-			if (this.#muted) await transport.setMuted(true);
+			if (this.#muted) await this.#media.setMuted(true);
 			if (this.#stopped) {
 				throw this.#failure ?? new Error("The live session stopped before recording began.");
 			}
-			const recorder = new AudioCapture(16_000, (error, samples) => {
-				if (error) {
-					this.#reportFailure(error);
-					return;
-				}
-				this.#handleMicrophoneAudio(samples);
-			});
-			if (this.#stopped) {
-				try {
-					recorder.stop();
-				} catch {
-					// Preserve the failure that stopped startup.
-				}
-				throw this.#failure ?? new Error("The live session stopped while recording began.");
-			}
-			this.#recorder = recorder;
 			this.#refreshAudioPhase();
 		} catch (cause) {
 			const error = errorFrom(cause);
@@ -202,15 +169,8 @@ export class LiveSessionController {
 	toggleMute(): void {
 		if (this.#stopped) return;
 		this.#muted = !this.#muted;
-		if (this.#muted) {
-			this.#inputLevel = 0;
-			this.#emitLevels();
-		}
 		this.#refreshAudioPhase();
-		const transport = this.#transport;
-		if (transport) {
-			void transport.setMuted(this.#muted).catch(cause => this.#reportFailure(errorFrom(cause)));
-		}
+		void this.#media.setMuted(this.#muted).catch(cause => this.#reportFailure(errorFrom(cause)));
 	}
 
 	/** Stops recording, closes the live session, and emits one terminal callback. */
@@ -221,18 +181,12 @@ export class LiveSessionController {
 
 	async #stop(): Promise<void> {
 		this.#stopped = true;
-		this.#unsubscribeSession?.();
-		this.#unsubscribeSession = undefined;
 		let cleanupError: Error | undefined;
 
-		const recorder = this.#recorder;
-		this.#recorder = undefined;
-		if (recorder) {
-			try {
-				recorder.stop();
-			} catch (cause) {
-				cleanupError = errorFrom(cause);
-			}
+		try {
+			await this.#agent.close();
+		} catch (cause) {
+			cleanupError = errorFrom(cause);
 		}
 
 		await this.#sendChain;
@@ -249,6 +203,12 @@ export class LiveSessionController {
 			} catch (cause) {
 				cleanupError ??= errorFrom(cause);
 			}
+		}
+
+		try {
+			await this.#media.close();
+		} catch (cause) {
+			cleanupError ??= errorFrom(cause);
 		}
 
 		if (cleanupError) this.#emitPhaseSafely("error");
@@ -301,75 +261,18 @@ export class LiveSessionController {
 		if (!request) return;
 		this.#activeDelegationId = event.item.id;
 		this.#emitPhase("working");
-		void this.#session
-			.sendCustomMessage(
-				{
-					customType: LIVE_DELEGATION_MESSAGE_TYPE,
-					content: request,
-					display: true,
-					attribution: "agent",
-				},
-				{ triggerTurn: true },
-			)
-			.catch(cause => this.#reportFailure(errorFrom(cause)));
+		this.#agent.startDelegation(event.item.id, request);
 	}
 
-	#handleSessionEvent(event: AgentSessionEvent): void {
-		if (event.type === "message_end" && event.message.role === "assistant") {
-			if (event.message.stopReason === "toolUse") this.#appendProgress(event.message);
-			return;
-		}
-		if (event.type !== "agent_end" || event.isTerminal === false) return;
-		this.#appendFinalResponse(event.messages);
-	}
-
-	#appendProgress(message: AssistantMessage): void {
-		const delegationId = this.#activeDelegationId;
-		if (!delegationId) return;
-		const progress = this.#extractAssistantText(message).trim();
-		if (!progress) return;
-		for (const chunk of chunkLiveContext(progress)) {
-			this.#queueSend(buildDelegationContextAppend(delegationId, chunk, "commentary"));
-		}
-	}
-
-	#appendFinalResponse(messages: readonly AgentMessage[]): void {
-		const delegationId = this.#activeDelegationId;
-		if (!delegationId) return;
-		for (let index = messages.length - 1; index >= 0; index -= 1) {
-			const message = messages[index];
-			if (message?.role !== "assistant") continue;
-			const text = this.#extractAssistantText(message).trim();
-			if (!text) continue;
-			const finalContext = prompt.render(agentFinalMessageTemplate, { message: text });
-			for (const chunk of chunkLiveContext(finalContext)) {
-				this.#queueSend(buildDelegationContextAppend(delegationId, chunk));
-			}
-			break;
-		}
+	#handleDelegationEnd(delegationId: string): void {
+		if (this.#activeDelegationId !== delegationId) return;
 		this.#activeDelegationId = undefined;
 		this.#refreshAudioPhase();
 	}
 
 	#handleOutputLevel(level: number): void {
-		this.#outputLevel = clampLevel(level);
-		this.#emitLevels();
+		this.#outputLevel = Number.isFinite(level) ? level : 0;
 		if (!this.#activeDelegationId) this.#refreshAudioPhase();
-	}
-
-	#handleMicrophoneAudio(samples: Float32Array): void {
-		if (this.#stopped || !this.#transport) return;
-		if (this.#muted) return;
-		this.#inputLevel = microphoneLevel(samples);
-		this.#emitLevels();
-		const outputActive = this.#outputLevel > OUTPUT_ACTIVE_LEVEL;
-		const echoThreshold = Math.max(MIN_BARGE_IN_LEVEL, this.#outputLevel * OUTPUT_ECHO_RATIO);
-		if (outputActive && this.#inputLevel < echoThreshold) return;
-		try {
-			this.#transport.pushAudio(samples);
-		} catch (cause) {
-			this.#reportFailure(errorFrom(cause));
-		}
 	}
 
 	#addTranscript(role: LiveTranscript["role"], text: string): void {
@@ -477,14 +380,6 @@ export class LiveSessionController {
 			this.#callbacks.onPhase(phase);
 		} catch {
 			// Terminal callback is the final error boundary for UI failures.
-		}
-	}
-
-	#emitLevels(): void {
-		try {
-			this.#callbacks.onLevels(this.#inputLevel, this.#outputLevel);
-		} catch (cause) {
-			this.#reportFailure(errorFrom(cause));
 		}
 	}
 

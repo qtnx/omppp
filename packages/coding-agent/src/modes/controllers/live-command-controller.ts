@@ -1,6 +1,10 @@
+import * as os from "node:os";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { withOAuthAccess } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
+import { LiveBridgeServer } from "../../live/bridge-server";
 import { LiveSessionController, type LiveTranscript } from "../../live/controller";
+import { LocalAgentEndpoint, LocalMediaEndpoint, localAgentIdentity } from "../../live/local-endpoints";
 import { LIVE_MODEL } from "../../live/protocol";
 import { LiveVisualizer } from "../../live/visualizer";
 import { vocalizer } from "../../tts/vocalizer";
@@ -29,6 +33,7 @@ export class LiveCommandController {
 	readonly #ctx: InteractiveModeContext;
 
 	#session: LiveSessionController | undefined;
+	#bridge: LiveBridgeServer | undefined;
 	#settling: Promise<void> | undefined;
 	#visualizer: LiveVisualizer | undefined;
 	#detachedEditor: CustomEditor | undefined;
@@ -49,18 +54,37 @@ export class LiveCommandController {
 		return this.#session !== undefined || this.#settling !== undefined;
 	}
 
-	/** Start live mode, or stop the currently active session. */
-	async handleCommand(): Promise<void> {
+	/** Whether this session is serving its agent plane to a remote media client. */
+	get bridged(): boolean {
+		return this.#bridge !== undefined;
+	}
+
+	/**
+	 * Start live mode, or stop the currently active session.
+	 *
+	 * `remote` serves this session's agent plane on a unix socket instead of
+	 * opening the local microphone, so a laptop can run the media half over SSH.
+	 */
+	async handleCommand(options: { remote?: boolean; forwardCredentials?: boolean } = {}): Promise<void> {
+		if (this.#bridge) {
+			await this.#stopBridge();
+			return;
+		}
 		if (this.#session) {
 			await this.stop();
 			return;
 		}
 		if (this.#settling) await this.#settling;
+		if (options.remote) {
+			await this.#startBridge(options.forwardCredentials === true);
+			return;
+		}
 		await this.#start();
 	}
 
-	/** Stop the active live session and restore the editor. */
+	/** Stop the active live session or bridge and restore the editor. */
 	async stop(): Promise<void> {
+		if (this.#bridge) await this.#stopBridge();
 		const session = this.#session;
 		if (!session) {
 			if (this.#settling) await this.#settling;
@@ -77,6 +101,13 @@ export class LiveCommandController {
 
 	/** Release UI resources during synchronous InteractiveMode teardown. */
 	dispose(): void {
+		const bridge = this.#bridge;
+		this.#bridge = undefined;
+		if (bridge) {
+			void bridge.stop().catch(cause => {
+				logger.debug("Live bridge teardown failed", { error: errorFrom(cause).message });
+			});
+		}
 		const session = this.#session;
 		if (session) {
 			this.#finish(session);
@@ -99,19 +130,23 @@ export class LiveCommandController {
 		});
 		this.#mountVisualizer(visualizer);
 
+		const media = new LocalMediaEndpoint();
+		media.onInputLevel(input => {
+			if (this.#visualizer !== visualizer) return;
+			visualizer.setInputLevel(input);
+			this.#ctx.ui.requestComponentRender(visualizer);
+		});
+
 		let session: LiveSessionController;
 		session = new LiveSessionController({
-			session: this.#ctx.session,
-			extractAssistantText: message => this.#ctx.extractAssistantText(message),
+			media,
+			agent: new LocalAgentEndpoint(this.#ctx.session, message => this.#ctx.extractAssistantText(message)),
+			identity: localAgentIdentity(this.#ctx.session),
+			authStorage: this.#ctx.session.modelRegistry.authStorage,
 			callbacks: {
 				onPhase: phase => {
 					if (this.#visualizer !== visualizer) return;
 					visualizer.setPhase(phase);
-					this.#ctx.ui.requestComponentRender(visualizer);
-				},
-				onLevels: input => {
-					if (this.#visualizer !== visualizer) return;
-					visualizer.setInputLevel(input);
 					this.#ctx.ui.requestComponentRender(visualizer);
 				},
 				onTranscript: transcript => {
@@ -139,6 +174,68 @@ export class LiveCommandController {
 				this.#finish(session, errorFrom(cause));
 			}
 		}
+	}
+
+	/**
+	 * Serve this session's agent plane on a unix socket. The microphone, speaker,
+	 * and realtime call all live on the machine that attaches, so nothing here
+	 * touches an audio device — which is the point on a headless or SSH host.
+	 */
+	async #startBridge(forwardCredentials: boolean): Promise<void> {
+		const session = this.#ctx.session;
+		const identity = localAgentIdentity(session);
+		const authStorage = session.modelRegistry.authStorage;
+		const bridge = new LiveBridgeServer({
+			agent: new LocalAgentEndpoint(session, message => this.#ctx.extractAssistantText(message)),
+			identity,
+			resolveCredential: forwardCredentials
+				? async () =>
+						await withOAuthAccess(
+							authStorage,
+							"openai-codex",
+							async access => ({
+								accessToken: access.accessToken,
+								accountId: access.accountId,
+								// Codex access tokens outlive a call; re-grant well inside their lifetime.
+								expiresAt: Date.now() + 30 * 60 * 1000,
+							}),
+							{
+								sessionId: identity.sessionId,
+								missingAccessMessage: "This host has no Codex credential to forward.",
+							},
+						)
+				: undefined,
+			onPeerChange: connected => {
+				this.#ctx.showStatus(
+					connected ? "Live: media client attached." : "Live: media client detached; socket still open.",
+				);
+			},
+			onPhase: phase => this.#ctx.showStatus(`Live: ${phase}`),
+		});
+
+		try {
+			await bridge.start();
+		} catch (cause) {
+			this.#ctx.showError(`Could not open the live bridge: ${errorFrom(cause).message}`);
+			return;
+		}
+		this.#bridge = bridge;
+		const host = os.hostname();
+		this.#ctx.showStatus(
+			`Live bridge ready. On the machine with your mic, run: ompx live --attach ${host}:${identity.sessionId}`,
+		);
+	}
+
+	async #stopBridge(): Promise<void> {
+		const bridge = this.#bridge;
+		this.#bridge = undefined;
+		if (!bridge) return;
+		try {
+			await bridge.stop();
+		} catch (cause) {
+			logger.debug("Live bridge teardown failed", { error: errorFrom(cause).message });
+		}
+		this.#ctx.showStatus("Live bridge closed.");
 	}
 
 	#presentAssistantTranscript(transcript: LiveTranscript): void {

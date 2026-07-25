@@ -21,6 +21,9 @@ import type {
 	AgentEvent as WireAgentEvent,
 	SessionEntry as WireSessionEntry,
 } from "@oh-my-pi/pi-wire";
+import { LiveSessionController } from "../live/controller";
+import { LocalAgentEndpoint, localAgentIdentity } from "../live/local-endpoints";
+import { RelayMediaEndpoint } from "../live/relay-media-endpoint";
 import type { InteractiveModeContext } from "../modes/types";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
@@ -132,6 +135,9 @@ export class CollabHost {
 	#uiReqSeq = 0;
 	#pendingUi = new Map<number, { request: CollabUiRequest; settle(result: CollabGuestUiResult): void }>();
 	#lastStateJson = "";
+	#liveSession: LiveSessionController | undefined;
+	#liveMedia: RelayMediaEndpoint | undefined;
+	#livePeer: number | undefined;
 	#stateDebounce: Timer | null = null;
 	#streamingInterval: Timer | null = null;
 	#agentsDebounce: Timer | null = null;
@@ -349,6 +355,18 @@ export class CollabHost {
 			case "fetch-transcript":
 				void this.#handleFetchTranscript(frame.reqId, frame.agentId, frame.fromByte, fromPeer);
 				break;
+			case "live-offer":
+				this.#handleLiveOffer(frame.reqId, frame.sdp, fromPeer);
+				break;
+			case "live-mute":
+				void this.#liveMedia?.setMuted(frame.muted);
+				break;
+			case "live-level":
+				this.#liveMedia?.submitLevel(frame.level);
+				break;
+			case "live-stop":
+				void this.#stopLive("the guest ended the call", fromPeer);
+				break;
 			default:
 				logger.debug("collab host ignoring unexpected frame", { type: frame.t, fromPeer });
 		}
@@ -516,6 +534,96 @@ export class CollabHost {
 		if (name) this.#ctx.session.emitNotice("info", `${name} left the collab session`, "collab");
 		this.#updateStatusSegment();
 		this.#scheduleStateBroadcast();
+	}
+
+	/**
+	 * Start a live voice call whose microphone and speaker live in the guest's
+	 * browser. This host keeps the Codex credential, the signaling call, the
+	 * sideband, and the agent; only the SDP handshake crosses the relay.
+	 */
+	#handleLiveOffer(reqId: number, sdp: string, fromPeer: number): void {
+		const peer = this.#peers.get(fromPeer);
+		if (!peer?.canWrite) {
+			this.#rejectReadOnly("starting a voice call", fromPeer);
+			return;
+		}
+		if (this.#liveSession) {
+			this.#socket?.send(
+				{ t: "live-answer", reqId, error: "A voice call is already running in this session." },
+				fromPeer,
+			);
+			return;
+		}
+
+		const media = new RelayMediaEndpoint({
+			sendAnswer: (id, result) => {
+				this.#socket?.send(
+					"sdp" in result
+						? { t: "live-answer", reqId: id, sdp: result.sdp }
+						: { t: "live-answer", reqId: id, error: result.error },
+					fromPeer,
+				);
+			},
+			sendMute: muted => this.#socket?.send({ t: "live-phase", phase: muted ? "muted" : "listening" }, fromPeer),
+			sendEnded: reason => this.#socket?.send({ t: "live-ended", reason }, fromPeer),
+		});
+		this.#liveMedia = media;
+		this.#livePeer = fromPeer;
+
+		const session = new LiveSessionController({
+			media,
+			agent: new LocalAgentEndpoint(this.#ctx.session, message => this.#ctx.extractAssistantText(message)),
+			identity: localAgentIdentity(this.#ctx.session),
+			authStorage: this.#ctx.session.modelRegistry.authStorage,
+			callbacks: {
+				onPhase: phase => this.#socket?.send({ t: "live-phase", phase }, fromPeer),
+				onTranscript: transcript => {
+					if (!transcript) return;
+					this.#socket?.send(
+						{
+							t: "live-transcript",
+							role: transcript.role,
+							turn: transcript.turn,
+							text: transcript.text,
+							final: transcript.final,
+						},
+						fromPeer,
+					);
+				},
+				onTerminal: error => {
+					void this.#stopLive(error?.message ?? "the call ended", fromPeer);
+				},
+			},
+		});
+		this.#liveSession = session;
+		media.submitOffer(reqId, sdp);
+		// The browser's peer is already negotiating by the time it sends the offer;
+		// signaling is the only step left before media flows.
+		media.markConnected();
+
+		this.#ctx.session.emitNotice("info", `${peer.name} started a voice call`, "collab");
+		void session.start().catch(cause => {
+			const message = cause instanceof Error ? cause.message : String(cause);
+			media.failSignaling(message);
+			void this.#stopLive(message, fromPeer);
+		});
+	}
+
+	async #stopLive(reason: string, fromPeer?: number): Promise<void> {
+		const session = this.#liveSession;
+		const media = this.#liveMedia;
+		const peer = this.#livePeer;
+		if (fromPeer !== undefined && peer !== undefined && fromPeer !== peer) return;
+		this.#liveSession = undefined;
+		this.#liveMedia = undefined;
+		this.#livePeer = undefined;
+		if (!session && !media) return;
+		try {
+			await session?.stop();
+		} catch (cause) {
+			logger.debug("collab live stop failed", { error: cause instanceof Error ? cause.message : String(cause) });
+		}
+		if (peer !== undefined) this.#socket?.send({ t: "live-ended", reason }, peer);
 	}
 
 	#buildState(): CollabSessionState {

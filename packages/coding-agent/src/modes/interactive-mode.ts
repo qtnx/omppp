@@ -5174,13 +5174,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 	}
 
-	/** Start or stop the Codex-backed realtime voice surface. */
-	async handleLiveCommand(): Promise<void> {
+	/** Start or stop the Codex-backed realtime voice surface, locally or bridged to a remote client. */
+	async handleLiveCommand(options: { remote?: boolean; forwardCredentials?: boolean } = {}): Promise<void> {
 		if (this.#sttController && this.#sttController.state !== "idle") {
 			this.showWarning("Finish the current speech-to-text capture before starting live mode.");
 			return;
 		}
-		await this.#liveCommandController.handleCommand();
+		await this.#liveCommandController.handleCommand(options);
 	}
 
 	#setMicCursor(color: { r: number; g: number; b: number }): void {

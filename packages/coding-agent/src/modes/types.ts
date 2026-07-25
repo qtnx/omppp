@@ -371,8 +371,8 @@ export interface InteractiveModeContext {
 	handleMemoryCommand(text: string): Promise<void>;
 	handleLearningCommand(text: string): Promise<void>;
 	handleSTTToggle(): Promise<void>;
-	/** Start or stop the Codex-backed realtime voice session. */
-	handleLiveCommand(): Promise<void>;
+	/** Start or stop the Codex-backed realtime voice session, locally or bridged to a remote client. */
+	handleLiveCommand(options?: { remote?: boolean; forwardCredentials?: boolean }): Promise<void>;
 	executeCompaction(
 		customInstructionsOrOptions?: string | CompactOptions,
 		isAuto?: boolean,

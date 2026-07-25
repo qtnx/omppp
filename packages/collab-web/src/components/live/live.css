@@ -1,0 +1,142 @@
+.lv-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 8px 12px;
+	border-top: 1px solid var(--border);
+	background: var(--bg-alt, transparent);
+}
+
+.lv-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.lv-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 10px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.lv-btn:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.lv-btn:focus-visible {
+	outline: 2px solid var(--accent, #4c8dff);
+	outline-offset: 2px;
+}
+
+.lv-btn-on {
+	border-color: var(--accent, #4c8dff);
+}
+
+.lv-btn-off {
+	opacity: 0.75;
+}
+
+.lv-phase {
+	font-size: 12px;
+	opacity: 0.75;
+}
+
+.lv-meters {
+	display: inline-flex;
+	gap: 4px;
+	margin-left: auto;
+}
+
+.lv-meter {
+	width: 48px;
+	height: 4px;
+	border-radius: 2px;
+	background: var(--border);
+	overflow: hidden;
+}
+
+.lv-meter-fill {
+	display: block;
+	height: 100%;
+	background: var(--accent, #4c8dff);
+	transition: width 80ms linear;
+}
+
+.lv-meter-out {
+	background: var(--ok, #3fbf7f);
+}
+
+.lv-line {
+	margin: 0;
+	font-size: 13px;
+	line-height: 1.4;
+}
+
+.lv-line-user {
+	opacity: 0.7;
+}
+
+.lv-error {
+	margin: 0;
+	font-size: 12px;
+	color: var(--danger, #e05252);
+}
+
+.lv-note {
+	margin: 0;
+	font-size: 12px;
+	opacity: 0.7;
+}
+
+/* ---- voice-only view (?voice=1) ---- */
+
+.lv-solo {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	max-width: 32rem;
+	margin: 0 auto;
+	padding: 24px 16px;
+}
+
+.lv-solo-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.lv-solo-title {
+	margin: 0;
+	font-size: 15px;
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+.lv-solo-note {
+	margin: 0;
+	font-size: 13px;
+	opacity: 0.8;
+}
+
+.lv-solo .lv-panel {
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm, 6px);
+	padding: 12px;
+}
+
+.lv-solo-hint {
+	margin: 0;
+	font-size: 12px;
+	opacity: 0.6;
+}

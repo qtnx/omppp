@@ -321,6 +321,13 @@ export type CollabUiRequestDraft =
 
 export type CollabUiRequest = CollabUiRequestDraft & { reqId: number };
 
+/**
+ * Phase of a live-voice call, surfaced to browser guests so they can render
+ * the call state. Mirrors the union in `coding-agent/src/live/visualizer.ts`;
+ * kept local because `@oh-my-pi/pi-wire` MUST stay dependency-free.
+ */
+export type LivePhase = "connecting" | "listening" | "speaking" | "working" | "muted" | "error";
+
 export type GuestFrame =
 	| {
 			t: "hello";
@@ -337,7 +344,15 @@ export type GuestFrame =
 	| { t: "ui-response"; reqId: number; value?: CollabUiResponseValue }
 	| { t: "abort" }
 	| { t: "agent-cmd"; cmd: "chat" | "kill" | "revive"; agentId: string; text?: string }
-	| { t: "fetch-transcript"; reqId: number; agentId: string; fromByte: number };
+	| { t: "fetch-transcript"; reqId: number; agentId: string; fromByte: number }
+	/** Guest offers a WebRTC session description to open the browser-owned live call; host replies with `live-answer`. */
+	| { t: "live-offer"; reqId: number; sdp: string }
+	/** Guest toggles its microphone; the host relays the mute state to the agent side. */
+	| { t: "live-mute"; muted: boolean }
+	/** Guest reports the current mic input level (0..1) for host-side visualization. */
+	| { t: "live-level"; level: number }
+	/** Guest tears down the live call. */
+	| { t: "live-stop" };
 
 /** EventBus channels mirrored to guests (task subagent traffic only). */
 export type BusChannel = "task:subagent:progress" | "task:subagent:lifecycle";
@@ -376,6 +391,14 @@ export type HostFrame =
 	| { t: "ui-request-end"; reqId: number }
 	/** Targeted reply to fetch-transcript; `text` is decoded JSONL from `fromByte`, `newSize` the next offset base. */
 	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string }
+	/** Host answers a `live-offer`; `sdp` carries the WebRTC answer, or `error` explains why the call could not open. */
+	| { t: "live-answer"; reqId: number; sdp?: string; error?: string }
+	/** Host reports the live call's phase so the guest can drive its call UI. */
+	| { t: "live-phase"; phase: LivePhase }
+	/** Host streams live-voice transcript deltas; `final` marks the last delta for a turn/role. */
+	| { t: "live-transcript"; role: "user" | "assistant"; turn: number; text: string; final: boolean }
+	/** Host signals the live call ended; `reason` is a human-readable cause when abnormal. */
+	| { t: "live-ended"; reason?: string }
 	| { t: "bye"; reason: string }
 	| { t: "error"; message: string };
 
@@ -393,8 +416,13 @@ export type WireFrame = GuestFrame | HostFrame;
  *   answered by the `ui-response` guest frame. Guests that predate the
  *   grammar would silently drop `ui-request` (asks hang forever on the
  *   host), so they must be rejected at hello.
+ * - `4`: adds the `live-*` guest/host frames for browser-owned live voice
+ *   (`live-offer`/`live-answer`, `live-mute`, `live-level`, `live-stop`,
+ *   `live-phase`, `live-transcript`, `live-ended`). Guests predating these
+ *   frames would silently drop the `live-*` host frames (the call UI never
+ *   updates), so they must be rejected at hello.
  */
-export const COLLAB_PROTO = 3;
+export const COLLAB_PROTO = 4;
 
 /** Parameter key used for intent tracing (e.g. prompt explanation/reasoning) */
 export const INTENT_FIELD = "i";

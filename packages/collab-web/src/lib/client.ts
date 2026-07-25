@@ -14,6 +14,7 @@ import type {
 	CollabUiRequest,
 	CollabUiResponseValue,
 	HostFrame,
+	LivePhase,
 	SessionEntry,
 	SessionHeader,
 	SessionState,
@@ -65,6 +66,22 @@ export interface GuestSnapshot {
 	uiRequest: CollabUiRequest | null;
 	/** Capped at 50, newest last. */
 	notices: readonly Notice[];
+	/** Browser-owned voice call state; `phase` is null when no call is running. */
+	live: LiveCallSnapshot;
+}
+
+export interface LiveTranscriptLine {
+	role: "user" | "assistant";
+	turn: number;
+	text: string;
+	final: boolean;
+}
+
+export interface LiveCallSnapshot {
+	phase: LivePhase | null;
+	transcript: LiveTranscriptLine | null;
+	/** Reason the host gave for ending the call, cleared when a new call starts. */
+	ended: string | null;
 }
 
 const MAX_NOTICES = 50;
@@ -118,6 +135,11 @@ export class GuestClient {
 	#uiRequest: CollabUiRequest | null = null;
 	#uiRequestQueue: CollabUiRequest[] = [];
 	#notices: readonly Notice[] = [];
+	#livePhase: LivePhase | null = null;
+	#liveTranscript: LiveTranscriptLine | null = null;
+	#liveEnded: string | null = null;
+	#pendingLiveOffer: { reqId: number; settle: PromiseWithResolvers<string> } | null = null;
+	#liveLevelSentAt = 0;
 	#snapshot: GuestSnapshot;
 
 	/** @throws Error when the link does not parse. */
@@ -187,6 +209,37 @@ export class GuestClient {
 
 	sendAgentCmd(cmd: "chat" | "kill" | "revive", agentId: string, text?: string): void {
 		this.#socket.send({ t: "agent-cmd", cmd, agentId, text });
+	}
+
+	/**
+	 * Hand a browser SDP offer to the host and resolve with the realtime answer.
+	 * The host signs and relays it; this browser never sees a credential.
+	 */
+	sendLiveOffer(sdp: string): Promise<string> {
+		this.#pendingLiveOffer?.settle.reject(new Error("A newer voice call replaced this one."));
+		const reqId = ++this.#reqSeq;
+		const settle = Promise.withResolvers<string>();
+		this.#pendingLiveOffer = { reqId, settle };
+		this.#liveEnded = null;
+		this.#socket.send({ t: "live-offer", reqId, sdp });
+		this.#commit();
+		return settle.promise;
+	}
+
+	sendLiveMute(muted: boolean): void {
+		this.#socket.send({ t: "live-mute", muted });
+	}
+
+	/** Report the assistant output level; throttled to 10 Hz so the relay is not flooded. */
+	sendLiveLevel(level: number): void {
+		const now = Date.now();
+		if (now - this.#liveLevelSentAt < 100) return;
+		this.#liveLevelSentAt = now;
+		this.#socket.send({ t: "live-level", level });
+	}
+
+	sendLiveStop(): void {
+		this.#socket.send({ t: "live-stop" });
 	}
 
 	/**
@@ -375,6 +428,29 @@ export class GuestClient {
 				}
 				break;
 			}
+			case "live-answer": {
+				const pending = this.#pendingLiveOffer;
+				if (pending?.reqId === frame.reqId) {
+					this.#pendingLiveOffer = null;
+					if (frame.sdp) pending.settle.resolve(frame.sdp);
+					else pending.settle.reject(new Error(frame.error ?? "The host refused the voice call."));
+				}
+				break;
+			}
+			case "live-phase":
+				this.#livePhase = frame.phase;
+				break;
+			case "live-transcript":
+				this.#liveTranscript = {
+					role: frame.role,
+					turn: frame.turn,
+					text: frame.text,
+					final: frame.final,
+				};
+				break;
+			case "live-ended":
+				this.#endLiveCall(frame.reason ?? "The voice call ended.");
+				break;
 			case "bye":
 				this.#end(frame.reason);
 				return; // #end already committed
@@ -493,6 +569,15 @@ export class GuestClient {
 		this.#uiRequestQueue = rest;
 	}
 
+	/** Clear call state and reject any offer still waiting on the host. */
+	#endLiveCall(reason: string): void {
+		this.#pendingLiveOffer?.settle.reject(new Error(reason));
+		this.#pendingLiveOffer = null;
+		this.#livePhase = null;
+		this.#liveTranscript = null;
+		this.#liveEnded = reason;
+	}
+
 	#buildSnapshot(): GuestSnapshot {
 		return {
 			phase: this.#phase,
@@ -510,6 +595,7 @@ export class GuestClient {
 			readOnly: this.#readOnly,
 			uiRequest: this.#uiRequest,
 			notices: this.#notices,
+			live: { phase: this.#livePhase, transcript: this.#liveTranscript, ended: this.#liveEnded },
 		};
 	}
 

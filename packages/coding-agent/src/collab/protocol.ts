@@ -12,6 +12,7 @@ import type {
 	BusChannel,
 	CollabUiRequest,
 	GuestFrame,
+	LivePhase,
 	ParsedCollabLink,
 	Participant,
 	SessionState,
@@ -102,6 +103,14 @@ export type CollabFrame =
 	| { t: "ui-request-end"; reqId: number }
 	/** Targeted reply to fetch-transcript; `error` marks a terminal read failure that guests must surface without hot retrying. */
 	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string }
+	/** Host answers a `live-offer`; `sdp` carries the WebRTC answer, or `error` explains the refusal. */
+	| { t: "live-answer"; reqId: number; sdp?: string; error?: string }
+	/** Host reports the live call's phase so the guest can drive its call UI. */
+	| { t: "live-phase"; phase: LivePhase }
+	/** Host streams live-voice transcript deltas; `final` marks the last delta for a turn/role. */
+	| { t: "live-transcript"; role: "user" | "assistant"; turn: number; text: string; final: boolean }
+	/** Host signals the live call ended; `reason` is a human-readable cause when abnormal. */
+	| { t: "live-ended"; reason?: string }
 	| { t: "bye"; reason: string }
 	| { t: "error"; message: string };
 

@@ -3466,10 +3466,13 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "live",
-		description: "Start Codex-backed realtime voice mode",
-		handleTui: async (_command, runtime) => {
+		description: "Start realtime voice mode; `remote` serves it to a client over SSH",
+		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleLiveCommand();
+			const args = command.args?.trim().toLowerCase() ?? "";
+			const remote = /\bremote\b/.test(args);
+			const forwardCredentials = /\bforward-credentials\b/.test(args);
+			await runtime.ctx.handleLiveCommand({ remote, forwardCredentials });
 		},
 	},
 	{
