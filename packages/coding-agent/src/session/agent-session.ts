@@ -304,7 +304,12 @@ import {
 	toRestoredQueuedMessage,
 } from "./queued-messages";
 import { formatRetryFallbackSelector, type RetryFallbackSelector } from "./retry-fallback-chains";
-import { type AdvisorStats, SessionAdvisors, type SessionAdvisorsHost } from "./session-advisors";
+import {
+	type AdvisorStats,
+	resolveAdvisorEnabled,
+	SessionAdvisors,
+	type SessionAdvisorsHost,
+} from "./session-advisors";
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
 import { getRestorableSessionModels } from "./session-context";
 import { formatSessionDumpText } from "./session-dump-format";
@@ -1425,6 +1430,7 @@ export class AgentSession {
 				this.#recovery.noteRetryFallbackCooldown(selector, retryAfterMs, errorMessage),
 			createCodexCompactionContext: createMaintenanceCodexCompactionContext,
 			sessionId: () => this.sessionId,
+			currentModel: () => this.model,
 			duoStatus: () => this.#duoOrchestrator?.status,
 			requestDuoTakeover: (purpose, reason, directive) =>
 				this.#duoOrchestrator?.requestTakeover(purpose, reason, directive) ?? "rejected",
@@ -1444,7 +1450,7 @@ export class AgentSession {
 				.filter((value): value is string => typeof value === "string" && value.length > 0)
 				.join("\n\n") || undefined;
 		this.#advisors = new SessionAdvisors(advisorsHost, {
-			enabled: this.settings.get("advisor.enabled"),
+			enabled: resolveAdvisorEnabled(this.settings, this.model),
 			tools: config.advisorTools,
 			watchdogPrompt: config.advisorWatchdogPrompt,
 			sharedInstructions: config.advisorSharedInstructions,

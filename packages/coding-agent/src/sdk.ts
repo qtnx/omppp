@@ -201,6 +201,7 @@ import {
 	type RetryFallbackResolutionContext,
 	resolveRetryFallbackChainKey,
 } from "./session/retry-fallback-chains";
+import { resolveAdvisorEnabled } from "./session/session-advisors";
 import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
@@ -2112,6 +2113,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			consultAdvisor: (question, signal) => session?.consultAdvisor(question, signal) ?? Promise.resolve(null),
 			consultAdvisorAsync: question => session?.consultAdvisorAsync(question) ?? false,
 			isAdvisorActive: () => session?.isAdvisorActive() ?? false,
+			isAdvisorEnabled: () =>
+				session?.isAdvisorEnabled() ?? resolveAdvisorEnabled(settings, agent?.state.model ?? model),
 			duoHandoffToExecutor: (resolution, scope) =>
 				session?.duoHandoffToExecutor(resolution, scope) ?? Promise.resolve("no-controller"),
 			duoEscalateToPlanner: reason => session?.duoEscalateToPlanner(reason) ?? Promise.resolve("unavailable"),

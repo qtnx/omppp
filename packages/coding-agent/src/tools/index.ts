@@ -548,6 +548,13 @@ export interface ToolSession {
 	consultAdvisorAsync?: (question: string) => boolean;
 	/** Whether an advisor runtime is currently live for this session. */
 	isAdvisorActive?: () => boolean;
+	/**
+	 * Whether this session will run an advisor at all. Resolved, not raw:
+	 * `advisor.enabled` defaults off for models that opt out (see
+	 * `resolveAdvisorEnabled`), so the raw setting would leak a dead `consult`
+	 * tool into those sessions.
+	 */
+	isAdvisorEnabled?: () => boolean;
 	/** Handoff an approved duo planner/takeover turn back to the executor. */
 	duoHandoffToExecutor?: (resolution: string, scope?: DuoExecutionScope) => Promise<DuoHandoffResult>;
 	/** Escalate an executor turn back to the duo planner. */
@@ -886,10 +893,8 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		// Mid-session advisor enablement gets the tool at the next session build;
 		// the prompt block is `{{#has tools "consult"}}`-guarded so prompts follow.
 		if (name === "consult") {
-			return (
-				(session.settings.get("advisor.enabled") || session.isAdvisorActive?.()) &&
-				session.settings.get("advisor.consult") !== false
-			);
+			const advisorOn = session.isAdvisorEnabled?.() ?? session.settings.get("advisor.enabled") === true;
+			return (advisorOn || session.isAdvisorActive?.()) && session.settings.get("advisor.consult") !== false;
 		}
 		return true;
 	};

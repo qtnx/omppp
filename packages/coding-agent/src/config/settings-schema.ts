@@ -439,7 +439,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Advisor",
 			label: "Enable Advisor",
 			description:
-				"Pair a second model (assigned to the 'advisor' role) that passively reviews each turn and injects notes.",
+				"Pair a second model (assigned to the 'advisor' role) that passively reviews each turn and injects notes. Unset, this stays off on Claude Opus 5, Claude Fable 5, and GPT-5.6 sessions; set it explicitly to force the advisor on or off everywhere.",
 		},
 	},
 	"advisor.fallbackModel": {
