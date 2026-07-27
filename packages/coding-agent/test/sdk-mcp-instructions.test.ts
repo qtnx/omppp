@@ -30,6 +30,7 @@ const MCP_MAPPING_FALLBACK =
 	"Additional mounted MCP tool mappings were omitted to keep this prompt bounded. Inspect `xd://` for the exact current paths.";
 const MCP_EXECUTION_GUIDANCE = "Execute each mounted tool by writing JSON arguments to its mounted path:";
 const MCP_ROUTE_SECTION = "## MCP Tool Routes";
+const DEFAULT_MCP_ROUTE = '- "do\\u0060thing" → `xd://mcp__instr_do_thing`';
 const CONTEXT_MODE_ROUTE = '- "ctx_execute" → `xd://mcp__context_mode_ctx_execute`';
 const CONTEXT_MODE_MCP_TOOL_NAME = "mcp__context_mode_ctx_execute";
 
@@ -112,16 +113,12 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			// instructions are not yet present.
 			expect(session.systemPrompt.join("\n")).not.toContain(SERVER_INSTRUCTIONS);
 
-			// Background connect + `refreshMCPTools` rebuild must surface the
-			// instructions. This is a genuine integration wait: discovery spawns
-			// the fixture as a real subprocess and connects asynchronously, and
-			// the SDK fires that work fire-and-forget with no completion promise
-			// or event exposed to await — so fake timers cannot drive it and we
-			// poll the live prompt with a generous ceiling, exiting the instant
-			// the rebuilt prompt carries the instructions.
+			// Background connect publishes server instructions before
+			// `refreshMCPTools` commits the mounted route. Poll the route itself:
+			// it is the observable completion condition this assertion needs.
 			const deadline = Date.now() + 12_000;
 			let prompt = session.systemPrompt.join("\n");
-			while (!prompt.includes(SERVER_INSTRUCTIONS) && Date.now() < deadline) {
+			while (!prompt.includes(DEFAULT_MCP_ROUTE) && Date.now() < deadline) {
 				await Bun.sleep(50);
 				prompt = session.systemPrompt.join("\n");
 			}
@@ -131,7 +128,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			// the escaped original tool name while routing through the exact
 			// normalized name actually mounted in the live xd:// registry.
 			expect(prompt).toContain("MCP Server Instructions");
-			expect(prompt).toContain('- "do\\u0060thing" → `xd://mcp__instr_do_thing`');
+			expect(prompt).toContain(DEFAULT_MCP_ROUTE);
 			expect(prompt).toContain(MCP_EXECUTION_GUIDANCE);
 		} finally {
 			await session.dispose();
@@ -213,7 +210,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			agentDir: tempDir,
 			modelRegistry,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({}),
+			settings: Settings.isolated({ "tools.discoveryMode": "off" }),
 			model: getBundledModel("openai", "gpt-4o-mini"),
 			disableExtensionDiscovery: true,
 			skills: [],
@@ -226,12 +223,12 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			hasUI: true,
 		});
 		try {
-			// Deferred discovery is a real child-process handshake with no
-			// completion signal exposed to this integration harness; fake timers
-			// cannot advance it, so retain the established polling bounds above.
+			// Server instructions become observable before the deferred tool refresh
+			// commits its route projection. Poll for the bounded-route fallback so
+			// assertions cannot observe that valid intermediate prompt.
 			const deadline = Date.now() + 12_000;
 			let prompt = session.systemPrompt.join("\n");
-			while (!prompt.includes(SERVER_INSTRUCTIONS) && Date.now() < deadline) {
+			while (!prompt.includes(MCP_MAPPING_FALLBACK) && Date.now() < deadline) {
 				await Bun.sleep(50);
 				prompt = session.systemPrompt.join("\n");
 			}

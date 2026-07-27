@@ -11,7 +11,11 @@ function createContext(): InteractiveModeContext {
 	};
 	return {
 		settings: Settings.isolated({ "live.voice": "vale" }),
-		session: {},
+		session: {
+			sessionId: "live-command-test",
+			subscribe: vi.fn(() => vi.fn()),
+			modelRegistry: { authStorage: {} },
+		},
 		extractAssistantText: vi.fn(() => ""),
 		editor,
 		editorContainer: { clear: vi.fn(), addChild: vi.fn() },

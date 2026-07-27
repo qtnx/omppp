@@ -627,11 +627,11 @@ describe("SecretObfuscator friendlyName placeholders", () => {
 		]);
 
 		const first = obfuscator.obfuscate("use OTHERSECRET now");
-		expect(first).toMatch(/^use #TOKABC123_[A-Z0-9]+:U# now$/);
+		expect(first).toMatch(/^use \$\$TOKABC123_[A-Z0-9]+:U\$\$ now$/);
 
 		const stripped = obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(first, new Set(["tok_abc123"]));
 		expect(stripped).not.toContain("TOKABC123_");
-		expect(stripped).toMatch(/^use #[A-Z0-9]+:U# now$/);
+		expect(stripped).toMatch(/^use \$\$[A-Z0-9]+:U\$\$ now$/);
 		expect(obfuscator.deobfuscate(stripped)).toBe("use OTHERSECRET now");
 	});
 

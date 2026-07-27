@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
+import { isProcessRunning, waitForProcessExit } from "@oh-my-pi/pi-natives/process";
 import type { Subprocess } from "bun";
 import { getAgentDir, MAIN_CONFIG_FILENAMES } from "./dirs";
 import { $env, filterChildShellEnv } from "./env";
@@ -215,7 +215,7 @@ export function isPidRunning(pid: number | Subprocess): boolean {
 		return true;
 	}
 
-	return Process.fromPid(pid)?.status() === ProcessStatus.Running;
+	return isProcessRunning(pid);
 }
 
 export async function onProcessExit(proc: Subprocess | number, abortSignal?: AbortSignal): Promise<boolean> {
@@ -226,5 +226,5 @@ export async function onProcessExit(proc: Subprocess | number, abortSignal?: Abo
 		);
 	}
 
-	return (await Process.fromPid(proc)?.waitForExit({ signal: abortSignal })) ?? true;
+	return waitForProcessExit(proc, abortSignal);
 }

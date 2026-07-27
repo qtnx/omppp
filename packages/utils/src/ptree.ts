@@ -7,7 +7,7 @@
  * - Convenience helpers: captureText / execText, AbortSignal, timeouts.
  */
 
-import { Process } from "@oh-my-pi/pi-natives";
+import { terminateProcess } from "@oh-my-pi/pi-natives/process";
 import type { Spawn, Subprocess } from "bun";
 
 type InMask = "pipe" | "ignore" | Buffer | Uint8Array | null;
@@ -218,11 +218,16 @@ export class ChildProcess<In extends InMask = InMask> {
 	}
 
 	kill(reason?: Exception) {
+		void this.terminate(reason).catch(e => void e);
+	}
+
+	/** Terminate the process tree and resolve only after native cleanup completes. */
+	async terminate(reason?: Exception): Promise<void> {
 		if (reason && !this.#exitReasonPending) this.#exitReasonPending = reason;
-		if (!this.proc.killed)
-			void Process.fromPid(this.proc.pid)
-				?.terminate()
-				?.catch(e => void e);
+		if (this.proc.killed) return;
+		await terminateProcess(this.proc.pid);
+		if (this.proc.exitCode === null) this.proc.kill("SIGKILL");
+		await this.proc.exited.catch(() => null);
 	}
 
 	// ── Output helpers ───────────────────────────────────────────────────

@@ -634,7 +634,7 @@ describe("AgentSession prewalk", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
+			settings: Settings.isolated({ "advisor.enabled": false, "compaction.enabled": false }),
 			modelRegistry,
 			toolRegistry,
 			thinkingLevel: Effort.Medium,
@@ -682,7 +682,7 @@ describe("AgentSession prewalk", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
+			settings: Settings.isolated({ "advisor.enabled": false, "compaction.enabled": false }),
 			modelRegistry,
 			toolRegistry,
 			thinkingLevel: Effort.Medium,
@@ -734,7 +734,7 @@ describe("AgentSession prewalk", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
+			settings: Settings.isolated({ "advisor.enabled": false, "compaction.enabled": false }),
 			modelRegistry,
 			toolRegistry,
 			thinkingLevel: Effort.High,
@@ -783,7 +783,7 @@ describe("AgentSession prewalk", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
+			settings: Settings.isolated({ "advisor.enabled": false, "compaction.enabled": false }),
 			modelRegistry,
 			toolRegistry,
 			thinkingLevel: AUTO_THINKING,

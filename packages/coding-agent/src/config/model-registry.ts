@@ -1162,6 +1162,7 @@ export class ModelRegistry {
 
 	#knownStaticProviders(): string[] {
 		const providers = new Set<string>(getBundledProviders());
+		providers.add("tnx");
 		for (const model of this.#cachedStandardModels) providers.add(model.provider);
 		for (const model of this.#cachedDiscoverableModels) providers.add(model.provider);
 		for (const model of this.#customModelOverlays) providers.add(model.provider);

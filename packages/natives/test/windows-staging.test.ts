@@ -137,9 +137,10 @@ describe("windows native addon staging", () => {
 	it("removes only older version directories after the current native version loads", async () => {
 		const nativesDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-natives-cache-"));
 		const currentMajor = Number.parseInt(packageJson.version, 10);
+		const olderVersion = `${currentMajor - 1}.0.0`;
 		const futureVersion = `${currentMajor + 1}.0.0`;
 		try {
-			await fs.mkdir(path.join(nativesDir, "15.10.11"));
+			await fs.mkdir(path.join(nativesDir, olderVersion));
 			await fs.mkdir(path.join(nativesDir, packageJson.version));
 			await fs.mkdir(path.join(nativesDir, futureVersion));
 			await fs.mkdir(path.join(nativesDir, "not-a-version"));
@@ -147,7 +148,7 @@ describe("windows native addon staging", () => {
 
 			const removed = cleanupStaleNativeVersions({ nativesDir, currentVersion: packageJson.version });
 
-			expect(removed.map(filePath => path.basename(filePath))).toEqual(["15.10.11"]);
+			expect(removed.map(filePath => path.basename(filePath))).toEqual([olderVersion]);
 			expect((await fs.readdir(nativesDir)).sort()).toEqual(
 				["README.txt", packageJson.version, futureVersion, "not-a-version"].sort(),
 			);

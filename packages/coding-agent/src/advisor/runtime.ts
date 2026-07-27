@@ -705,7 +705,6 @@ export class AdvisorRuntime {
 		this.#lastCount = 0;
 		this.#clearPending("reset");
 		this.#consecutiveFailures = 0;
-		this.#failureNotified = false;
 		if (this.#onFallbackModel) {
 			this.#restorePrimaryModel();
 		}

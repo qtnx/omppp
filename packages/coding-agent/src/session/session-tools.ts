@@ -52,6 +52,7 @@ import type { SessionManager } from "./session-manager";
 export interface SystemPromptRebuildContext {
 	xdevTools: Array<{ name: string; summary: string }>;
 	xdevDocs: string;
+	xdevRouteSources: readonly MountedMCPToolRouteSource[];
 }
 
 /** Capabilities borrowed from the owning AgentSession. */
@@ -962,19 +963,22 @@ export class SessionTools {
 		const previousMounted = this.#mountedXdevToolNames;
 		const nextMounted = new Set(mountedTools.map(tool => tool.name));
 		const promptXdevRegistry = this.#xdevRegistry?.forkWithDynamic(mountedTools);
+		const promptXdevRouteSources = promptXdevRegistry?.list() ?? [];
 		let rebuiltSystemPrompt: string[] | undefined;
 		let rebuiltSignature: string | undefined;
 		if (this.#rebuildSystemPrompt) {
-			const signature = this.#computeAppliedToolSignature(validToolNames, tools);
+			const signature = this.#computeAppliedToolSignature(validToolNames, tools, promptXdevRouteSources);
 			if (signature !== this.#lastAppliedToolSignature) {
 				const built = await this.#rebuildSystemPrompt(validToolNames, toolRegistry, {
 					xdevTools: promptXdevRegistry?.entries() ?? [],
 					xdevDocs: promptXdevRegistry?.docsAll() ?? "",
+					xdevRouteSources: promptXdevRouteSources,
 				});
 				rebuiltSystemPrompt = built.systemPrompt;
 				rebuiltSignature = signature;
 			}
 		}
+		if (this.#host.isDisposed()) return;
 
 		if (toolRegistry !== this.#toolRegistry) {
 			this.#toolRegistry.clear();
@@ -982,7 +986,6 @@ export class SessionTools {
 		}
 		this.#mountedXdevToolNames = nextMounted;
 		this.#xdevRegistry?.reconcile(mountedTools);
-		this.#notifyXdevMountDelta(previousMounted);
 		this.#host.agent.setTools(tools);
 		options?.onCommit?.();
 		this.#setActiveToolNames?.(validToolNames);
@@ -1418,16 +1421,18 @@ export class SessionTools {
 	 * Without this, a session spanning midnight with only tool-stable MCP
 	 * reconnects would keep yesterday's date indefinitely.
 	 */
-	#computeAppliedToolSignature(toolNames: string[], tools: AgentTool[]): string {
+	#computeAppliedToolSignature(
+		toolNames: string[],
+		tools: AgentTool[],
+		xdevRouteSources: readonly MountedMCPToolRouteSource[] = this.#xdevRegistry?.list() ?? [],
+	): string {
 		// Order-preserving join: any reorder must produce a different signature so
 		// the rebuild fires and the new tool list reaches the API.
 		const nameSegment = toolNames.join("\u0001");
 		const describeTool = (tool: AgentTool): string =>
 			`${tool.name}=${tool.label ?? ""}|${tool.description ?? ""}|${tool.customWireName ?? ""}`;
 		const descriptionSegment = tools.map(describeTool).join("\u0002");
-		const mountedMCPProjection = projectMountedMCPXdevGuidance(
-			collectMountedMCPToolRoutes(this.#xdevRegistry?.list() ?? []),
-		);
+		const mountedMCPProjection = projectMountedMCPXdevGuidance(collectMountedMCPToolRoutes(xdevRouteSources));
 		const mountedMCPRouteSegment =
 			JSON.stringify({
 				mappings: mountedMCPProjection.mappings.map(mapping => [mapping.label, mapping.path] as const),

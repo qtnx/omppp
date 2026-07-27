@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { AudioCapture, LiveWebRtcPeer } from "@oh-my-pi/pi-natives";
+import { createAudioCapture, createLiveWebRtcPeer } from "@oh-my-pi/pi-natives/live";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
@@ -93,9 +93,8 @@ export class LocalMediaEndpoint implements LiveMediaEndpoint {
 	#failureHandler: ((message: string) => void) | undefined;
 
 	constructor(options: LocalMediaEndpointOptions = {}) {
-		this.#createPeer =
-			options.createPeer ?? ((onEvent, onLevel, onFailure) => new LiveWebRtcPeer(onEvent, onLevel, onFailure));
-		this.#createCapture = options.createCapture ?? ((sampleRate, onAudio) => new AudioCapture(sampleRate, onAudio));
+		this.#createPeer = options.createPeer ?? createLiveWebRtcPeer;
+		this.#createCapture = options.createCapture ?? createAudioCapture;
 	}
 
 	onOutputLevel(handler: (level: number) => void): void {

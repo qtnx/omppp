@@ -13,7 +13,7 @@ import { type } from "arktype";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { daemonClientForProject } from "../launch/client";
 import type { DaemonOperation, DaemonRpcResult, DaemonSnapshot, DaemonSpec, DaemonState } from "../launch/protocol";
-import { renderTerminalOutput } from "../launch/terminal-output";
+import type { TerminalOutputOptions } from "../launch/terminal-output";
 import type { Theme, ThemeColor } from "../modes/theme/theme";
 import launchDescription from "../prompts/tools/launch.md" with { type: "text" };
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
@@ -170,6 +170,7 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 				grep: params.grep,
 				follow: params.follow ?? false,
 				cursor: params.cursor,
+				renderTerminalRows: true,
 				timeoutMs: timeoutMs(params.timeout, 30),
 			};
 		case "wait":
@@ -277,28 +278,38 @@ function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 	}
 }
 
+interface TerminalOutputRuntime {
+	renderTerminalOutput(output: string, options: TerminalOutputOptions): Promise<string[] | undefined>;
+}
+
+async function renderLegacyTerminalOutput(terminalText: string, params: LaunchParams): Promise<string[] | undefined> {
+	// `require` keeps xterm out of normal main/launch-tool startup while retaining
+	// compatibility with a legacy broker that was already running during upgrade.
+	const runtime = require("../launch/terminal-output") as TerminalOutputRuntime;
+	return runtime.renderTerminalOutput(terminalText, {
+		head: params.head ?? false,
+		maxRows: Math.min(1_000, Math.floor(params.lines ?? 100)),
+	});
+}
+
 async function toolDetails(result: DaemonRpcResult, params: LaunchParams): Promise<LaunchToolDetails> {
 	switch (result.op) {
 		case "start":
 			return { op: "start", daemon: result.daemon, timedOut: result.readyTimedOut };
 		case "list":
 			return { op: "list", daemons: result.daemons };
-		case "logs": {
-			const terminalRows =
-				result.terminalText === undefined
-					? undefined
-					: await renderTerminalOutput(result.terminalText, {
-							head: params.head ?? false,
-							maxRows: Math.min(1_000, Math.floor(params.lines ?? 100)),
-						});
+		case "logs":
 			return {
 				op: "logs",
 				cursor: result.cursor,
 				timedOut: result.timedOut,
 				state: result.state,
-				terminalRows,
+				terminalRows:
+					result.terminalRows ??
+					(result.terminalText === undefined
+						? undefined
+						: await renderLegacyTerminalOutput(result.terminalText, params)),
 			};
-		}
 		case "wait":
 			return { op: "wait", daemon: result.daemon, timedOut: result.timedOut, matched: result.matched };
 		case "send":

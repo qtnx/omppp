@@ -14,6 +14,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import {
 	collectMountedMCPToolRoutes,
 	projectMountedMCPXdevGuidance,
+	type SystemPromptRebuildContext,
 } from "@oh-my-pi/pi-coding-agent/session/session-tools";
 import { XdevRegistry } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { type } from "arktype";
@@ -101,7 +102,7 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 	}
 
 	function newSession(
-		rebuildSystemPrompt: (toolNames: string[]) => Promise<string>,
+		rebuildSystemPrompt: (toolNames: string[], context?: SystemPromptRebuildContext) => Promise<string>,
 		options: NewSessionOptions = {},
 	): {
 		session: AgentSession;
@@ -152,8 +153,8 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 				if (!toolRegistry.has("write")) toolRegistry.set("write", writeTool);
 				return true;
 			},
-			rebuildSystemPrompt: async (toolNames, _tools) => ({
-				systemPrompt: [await rebuildSystemPrompt(toolNames)],
+			rebuildSystemPrompt: async (toolNames, _tools, context) => ({
+				systemPrompt: [await rebuildSystemPrompt(toolNames, context)],
 			}),
 			getMcpServerInstructions: options.getMcpServerInstructions,
 			getLocalCalendarDate: options.getLocalCalendarDate,
@@ -260,9 +261,11 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		const renderedPrompts: string[] = [];
 		let rebuildCount = 0;
 		const { session } = newSession(
-			async () => {
+			async (_toolNames, context) => {
 				rebuildCount++;
-				const projection = projectMountedMCPXdevGuidance(collectMountedMCPToolRoutes(xdevRegistry.list()));
+				const projection = projectMountedMCPXdevGuidance(
+					collectMountedMCPToolRoutes(context?.xdevRouteSources ?? []),
+				);
 				const generatedPrompt = `mounted:${projection.mappings
 					.map(mapping => `${mapping.label}=${mapping.path}`)
 					.join(",")}`;

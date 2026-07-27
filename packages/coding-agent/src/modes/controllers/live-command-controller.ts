@@ -146,6 +146,7 @@ export class LiveCommandController {
 			agent: new LocalAgentEndpoint(this.#ctx.session, message => this.#ctx.extractAssistantText(message)),
 			identity: localAgentIdentity(this.#ctx.session),
 			authStorage: this.#ctx.session.modelRegistry.authStorage,
+			voice: this.#ctx.settings.get("live.voice"),
 			callbacks: {
 				onPhase: phase => {
 					if (this.#visualizer !== visualizer) return;

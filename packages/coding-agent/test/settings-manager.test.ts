@@ -256,6 +256,7 @@ describe("Settings", () => {
 
 		it("backs up a config corrupted after startup and retains the pending global change for retry", async () => {
 			await writeSettings({
+				setupVersion: 4,
 				auth: { broker: { token: "TOP-SECRET" } },
 				modelRoles: { default: "keep/default" },
 			});
@@ -274,6 +275,7 @@ describe("Settings", () => {
 
 			await settings.flush();
 			expect(await readSettings()).toEqual({
+				setupVersion: 4,
 				auth: { broker: { token: "TOP-SECRET" } },
 				modelRoles: { default: "keep/default" },
 				theme: { dark: "anthracite" },
@@ -286,7 +288,7 @@ describe("Settings", () => {
 		});
 
 		it("backs up a corrupted project config and retains the pending project role for retry", async () => {
-			await writeSettings({});
+			await writeSettings({ setupVersion: 4 });
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(
 				projectConfigPath,
@@ -317,19 +319,19 @@ describe("Settings", () => {
 
 		it("preserves a symlinked main config while atomically updating its target", async () => {
 			const managedConfigPath = tempDir.join("managed-config.yml");
-			await Bun.write(managedConfigPath, YAML.stringify({ setupVersion: 1 }, null, 2));
+			await Bun.write(managedConfigPath, YAML.stringify({ setupVersion: 4 }, null, 2));
 			await fs.promises.symlink(managedConfigPath, getConfigPath(), "file");
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			settings.set("setupVersion", 2);
+			settings.set("setupVersion", 5);
 			await settings.flush();
 
 			expect(fs.lstatSync(getConfigPath()).isSymbolicLink()).toBe(true);
-			expect(YAML.parse(await Bun.file(managedConfigPath).text())).toEqual({ setupVersion: 2 });
+			expect(YAML.parse(await Bun.file(managedConfigPath).text())).toEqual({ setupVersion: 5 });
 		});
 
 		it("falls back to move-aside replacement when Windows reports EPERM", async () => {
-			await writeSettings({ setupVersion: 1 });
+			await writeSettings({ setupVersion: 4 });
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			const canonicalConfigPath = await fs.promises.realpath(getConfigPath());
 			const rename = fs.promises.rename.bind(fs.promises);
@@ -342,17 +344,18 @@ describe("Settings", () => {
 				await rename(source, target);
 			});
 
-			settings.set("setupVersion", 2);
+			settings.set("setupVersion", 5);
 			await settings.flush();
 
 			expect(injected).toBe(true);
-			expect(await readSettings()).toEqual({ setupVersion: 2 });
+			expect(await readSettings()).toEqual({ setupVersion: 5 });
 			expect(fs.readdirSync(agentDir).some(name => name.endsWith(".tmp") || name.endsWith(".bak"))).toBe(false);
 		});
 
 		it("leaves an unreadable main config untouched and retains its pending change", async () => {
 			const original = YAML.stringify(
 				{
+					setupVersion: 4,
 					auth: { broker: { token: "TOP-SECRET" } },
 					modelRoles: { default: "keep/default" },
 				},
@@ -372,6 +375,7 @@ describe("Settings", () => {
 			expect(fs.readdirSync(agentDir).some(name => name.startsWith("config.yml.broken-"))).toBe(false);
 			await settings.flush();
 			expect(await readSettings()).toEqual({
+				setupVersion: 4,
 				auth: { broker: { token: "TOP-SECRET" } },
 				modelRoles: { default: "keep/default" },
 				theme: { dark: "anthracite" },

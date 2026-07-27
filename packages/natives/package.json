@@ -66,6 +66,14 @@
     "./desktop": {
       "types": "./native/desktop.d.ts",
       "import": "./native/desktop.js"
+    },
+    "./live": {
+      "types": "./native/live.d.ts",
+      "import": "./native/live.js"
+    },
+    "./process": {
+      "types": "./native/process.d.ts",
+      "import": "./native/process.js"
     }
   }
 }

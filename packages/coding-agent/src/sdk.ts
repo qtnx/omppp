@@ -3375,7 +3375,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (memoryInstructions) appendParts.push(memoryInstructions);
 			if (autoLearnInstructions) appendParts.push(autoLearnInstructions);
 			const projection = projectMountedMCPXdevGuidance(
-				collectMountedMCPToolRoutes(toolSession.xdevRegistry?.list() ?? []),
+				collectMountedMCPToolRoutes(context?.xdevRouteSources ?? toolSession.xdevRegistry?.list() ?? []),
 			);
 			if (projection.mappings.length > 0 || projection.hasOmittedMappings) {
 				appendParts.push(

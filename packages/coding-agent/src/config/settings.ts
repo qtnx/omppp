@@ -1384,8 +1384,20 @@ export class Settings {
 		} catch (error) {
 			return { kind: "invalid", error };
 		}
+		// The fork's setup-config migration only applies to the persisted global
+		// config, and write-path re-reads opt out of recording modified paths.
+		const applySetupConfigMigration = this.#persist && filePath === this.#configPath;
 		if (parsed === null || parsed === undefined) {
-			return { kind: "loaded", settings: {} };
+			return {
+				kind: "loaded",
+				settings: this.#migrateRawSettings(
+					{},
+					{
+						applySetupConfigMigration,
+						persistModifiedPaths: applySetupConfigMigration && (options.trackSetupMigration ?? true),
+					},
+				),
+			};
 		}
 		if (typeof parsed !== "object" || Array.isArray(parsed)) {
 			return {
@@ -1393,9 +1405,6 @@ export class Settings {
 				error: new Error("Settings YAML must contain a mapping at the document root"),
 			};
 		}
-		// The fork's setup-config migration only applies to the persisted global
-		// config, and write-path re-reads opt out of recording modified paths.
-		const applySetupConfigMigration = this.#persist && filePath === this.#configPath;
 		return {
 			kind: "loaded",
 			settings: this.#migrateRawSettings(parsed as RawSettings, {
@@ -1536,6 +1545,7 @@ export class Settings {
 			}
 			this.#projectSettingsPaths = projectSettingsPaths;
 			const nativeProject = await this.#loadYaml(path.join(this.#cwd, ".omp", "config.yml"));
+			this.#projectFileSettings = structuredClone(nativeProject);
 			const nativeModelRoles = getByPath(nativeProject, ["modelRoles"]);
 			if (nativeModelRoles !== undefined) {
 				merged = this.#deepMerge(merged, { modelRoles: nativeModelRoles });

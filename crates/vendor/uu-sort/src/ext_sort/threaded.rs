@@ -109,9 +109,8 @@ pub fn ext_sort(
 	// exit 0 with truncated or empty output.
 	match sorter_handle.join() {
 		Ok(()) => result,
-		Err(_) => {
-			result.and(Err(USimpleError::new(2, "sort: sorter thread terminated unexpectedly".to_string())))
-		},
+		Err(_) => result
+			.and(Err(USimpleError::new(2, "sort: sorter thread terminated unexpectedly".to_string()))),
 	}
 }
 
@@ -320,10 +319,10 @@ mod tests {
 	use super::*;
 
 	/// External (multi-chunk) sort must run to completion and emit fully sorted
-	/// output. Regression guard for #6760: `ext_sort` now joins the sorter thread
-	/// after `read_write_loop`. A tiny explicit buffer forces spilling to
-	/// temporary files, so the join runs on the `WroteChunksToFile` path — it
-	/// must surface sorted output rather than deadlock or truncate.
+	/// output. Regression guard for #6760: `ext_sort` now joins the sorter
+	/// thread after `read_write_loop`. A tiny explicit buffer forces spilling
+	/// to temporary files, so the join runs on the `WroteChunksToFile` path —
+	/// it must surface sorted output rather than deadlock or truncate.
 	#[test]
 	fn ext_sort_spills_to_files_and_sorts() {
 		let input: String = (0..200u32).rev().map(|i| format!("{i:04}\n")).collect();
@@ -335,9 +334,8 @@ mod tests {
 		let out_dir = tempfile::tempdir().expect("temp dir");
 		let out_path = out_dir.path().join("sorted.txt");
 
-		let mut files = std::iter::once(Ok(
-			Box::new(Cursor::new(input.into_bytes())) as Box<dyn Read + Send>,
-		));
+		let mut files =
+			std::iter::once(Ok(Box::new(Cursor::new(input.into_bytes())) as Box<dyn Read + Send>));
 		let output = Output::new(Some(out_path.as_os_str())).expect("open output");
 		let mut tmp_dir = TmpDirWrapper::new(std::env::temp_dir());
 

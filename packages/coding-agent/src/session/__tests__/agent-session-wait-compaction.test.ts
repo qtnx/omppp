@@ -8,6 +8,7 @@ import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
 import { disableAnnotateHttp, enableAnnotateHttp } from "../../tools/browser/annotate-http";
 import { AgentSession, type AgentSessionConfig, type AgentSessionEvent } from "../agent-session";
+import type { AuthStorage } from "../auth-storage";
 import type { SessionManager } from "../session-manager";
 
 const model = buildModel({
@@ -245,6 +246,7 @@ function createAgentSessionHarness(
 		sessionManager,
 		settings: createSettings(compactionSettings),
 		modelRegistry: createNoopProxy<ModelRegistry>({
+			authStorage: createNoopProxy<AuthStorage>({}),
 			getAvailable: () => options.models ?? (options.model ? [options.model] : [model]),
 			getApiKey: async () => "test-api-key",
 		}),
