@@ -400,8 +400,9 @@ function redactShareMessage(
 			};
 		case "assistant":
 			// Drop opaque provider-replay state (encrypted reasoning / native history) the viewer
-			// never reads and we cannot redact field-by-field: `providerPayload` and any
-			// `redactedThinking` blocks.
+			// never reads and we cannot redact field-by-field: `providerPayload`, any
+			// `redactedThinking` blocks, and native Anthropic server-tool blocks
+			// (`server_tool_use` input / `web_search_tool_result` encrypted_content).
 			return {
 				...message,
 				providerPayload: undefined,
@@ -410,7 +411,7 @@ function redactShareMessage(
 						? undefined
 						: o.obfuscate(message.errorMessage, sharedRegexSecretValues),
 				content: message.content.flatMap((block): AssistantMessage["content"] => {
-					if (block.type === "redactedThinking") return [];
+					if (block.type === "redactedThinking" || block.type === "anthropicServerTool") return [];
 					if (block.type === "text") return [{ ...block, text: o.obfuscate(block.text, sharedRegexSecretValues) }];
 					if (block.type === "thinking") {
 						return [{ ...block, thinking: o.obfuscate(block.thinking, sharedRegexSecretValues) }];

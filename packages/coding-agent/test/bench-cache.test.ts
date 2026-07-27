@@ -38,6 +38,7 @@ const codexModel = {
 
 const registry: BenchModelRegistry = {
 	getAll: () => [model],
+	getAvailable: () => [model],
 	getApiKey: async () => "sk-test",
 	resolver: () => (() => Promise.resolve("sk-test")) as unknown as ApiKeyResolver,
 };

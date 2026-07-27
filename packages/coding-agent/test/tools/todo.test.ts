@@ -458,6 +458,69 @@ describe("TodoTool lenient init shapes", () => {
 		expect(summary.text).toContain("Missing list for init operation");
 	});
 });
+describe("TodoTool lenient op recovery", () => {
+	// Regression: models occasionally drop `op` while sending an otherwise
+	// valid payload (e.g. `{list:[...]}`). The schema keeps `op` required, but
+	// `lenientArgValidation` routes the raw args to execute(), which infers
+	// the op for unambiguous shapes instead of failing the call.
+	it("keeps op required at the schema boundary but lenient at execute", () => {
+		const tool = new TodoTool(createSession());
+		expect(tool.parameters({ list: [{ phase: "Fixes", items: ["One"] }] }) instanceof type.errors).toBe(true);
+		expect(tool.lenientArgValidation).toBe(true);
+	});
+
+	it("infers init from a bare list payload", async () => {
+		const tool = new TodoTool(createSession());
+		const result = await tool.execute("call-1", {
+			list: [{ phase: "Fixes", items: ["Bytecompiler ordering", "Posix path fd handling"] }],
+		} as never);
+
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.op).toBe("init");
+		expect(result.details?.phases.map(phase => phase.name)).toEqual(["Fixes"]);
+		expect(result.details?.phases[0]?.tasks.map(task => task.content)).toEqual([
+			"Bytecompiler ordering",
+			"Posix path fd handling",
+		]);
+	});
+
+	it("infers append from phase plus items", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["First"] }] });
+
+		const result = await tool.execute("call-2", { phase: "Work", items: ["Second"] } as never);
+
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.op).toBe("append");
+		expect(result.details?.phases[0]?.tasks.map(task => task.content)).toEqual(["First", "Second"]);
+	});
+
+	it("infers init from bare items only when no todos exist", async () => {
+		const fresh = new TodoTool(createSession());
+		const initialized = await fresh.execute("call-1", { items: ["Only task"] } as never);
+		expect(initialized.isError).toBeUndefined();
+		expect(initialized.details?.op).toBe("init");
+
+		// With existing todos the same shape is ambiguous (flat init would wipe
+		// the list; append lacks a phase) and must error instead of guessing.
+		const populated = new TodoTool(
+			createSession([{ name: "Work", tasks: [{ content: "First", status: "pending" }] }]),
+		);
+		const ambiguous = await populated.execute("call-2", { items: ["Second"] } as never);
+		expect(ambiguous.isError).toBe(true);
+	});
+
+	it("surfaces the schema error when op is missing and not inferable", async () => {
+		const tool = new TodoTool(createSession());
+		const result = await tool.execute("call-1", { task: "Something" } as never);
+
+		expect(result.isError).toBe(true);
+		const summary = result.content.find(part => part.type === "text");
+		if (summary?.type !== "text") throw new Error("Expected text summary");
+		expect(summary.text).toContain("Invalid todo arguments");
+		expect(summary.text).toContain("op");
+	});
+});
 
 describe("TodoTool empty items tolerance", () => {
 	// Regression: a stray `items: []` on an op that ignores items (here `view`)

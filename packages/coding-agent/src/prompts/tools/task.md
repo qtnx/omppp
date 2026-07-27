@@ -33,6 +33,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
   - `agent`: The agent type running this item (e.g. `scout`, `reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
   - `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
   - `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
+  - `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
   - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
   - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
   - `max_runtime_seconds`: You MUST choose an appropriate cap for each implementation/research spawn. Recommended: `quick_task` 300, `explore`/`scout` 600, `task` 900, `heavy_task` 2400. The cap is a ceiling, not a target — a well-briefed owner finishes far inside it. Omit to use configured fallback; `0` means unlimited.
@@ -50,6 +51,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 - `agent`: The agent type to spawn (e.g. `scout`, `reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
 - `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
 - `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
+- `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
 - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
 - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
 - `max_runtime_seconds`: You MUST choose an appropriate cap for implementation/research work. Recommended: `quick_task` 300, `explore`/`scout` 600, `task` 900, `heavy_task` 2400. The cap is a ceiling, not a target — a well-briefed owner finishes far inside it. Omit to use configured fallback; `0` means unlimited.

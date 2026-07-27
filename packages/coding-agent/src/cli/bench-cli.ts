@@ -76,6 +76,7 @@ export interface BenchCommandArgs {
 
 export interface BenchModelRegistry {
 	getAll(): Model<Api>[];
+	getAvailable(): Model<Api>[];
 	getApiKey(model: Model<Api>, sessionId?: string): Promise<string | undefined>;
 	resolver(model: ApiKeyResolverModel, sessionId?: string): ApiKeyResolver;
 	hasConfiguredAuth?(model: Model<Api>): boolean;
@@ -693,7 +694,17 @@ function resolveBenchModels(
 	const resolved: BenchTarget[] = [];
 	const errors: string[] = [];
 	for (const selector of selectors) {
-		const result = resolveCliModel({ cliModel: selector, modelRegistry, settings, preferences });
+		// Bench intentionally resolves against the full catalog first, then applies
+		// its own exact-id credential fallback below. Using the CLI resolver's
+		// authenticated default here would silently redirect non-equivalent bare
+		// ids and suppress the warning for equivalent cross-provider models.
+		const result = resolveCliModel({
+			cliModel: selector,
+			modelRegistry,
+			availableModels: modelRegistry.getAll(),
+			settings,
+			preferences,
+		});
 		if (result.error) {
 			errors.push(`${selector}: ${result.error}`);
 			continue;

@@ -10,6 +10,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { getProjectDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
@@ -92,6 +93,16 @@ export function wrapShellLineForClientTerminal(
 ): { command: string; args: string[] } {
 	const finalLine = shellConfig.prefix ? `${shellConfig.prefix} ${line}` : line;
 	return { command: shellConfig.shell, args: [...shellConfig.args, finalLine] };
+}
+
+/**
+ * Mirrors pi-shell's `uutils_env_disabled` gate for `PI_DISABLE_UUTILS_BUILTINS`:
+ * session shell env first, then process env; truthy = present and not "", "0",
+ * or "false". Controls whether the prompt advertises the in-process builtins.
+ */
+function shellBuiltinsDisabled(settings: Settings): boolean {
+	const raw = settings.getShellConfig().env?.PI_DISABLE_UUTILS_BUILTINS ?? Bun.env.PI_DISABLE_UUTILS_BUILTINS;
+	return !!raw && raw !== "0" && raw.toLowerCase() !== "false";
 }
 
 /**
@@ -518,6 +529,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				"eval",
 				evalBackends.python || evalBackends.js || evalBackends.ruby || evalBackends.julia,
 			),
+			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
+			isWindows: process.platform === "win32",
 		});
 	}
 	readonly parameters: BashToolSchema;

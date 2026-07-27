@@ -681,6 +681,28 @@ export interface AnthropicFallbackContent {
 	to: { model: string };
 }
 
+/**
+ * Verbatim Anthropic web-search call/result retained for same-provider
+ * history replay. Other providers discard it in `transformMessages`.
+ */
+export interface AnthropicServerToolContent {
+	type: "anthropicServerTool";
+	block:
+		| {
+				type: "server_tool_use";
+				id: string;
+				name: "web_search";
+				input?: Record<string, unknown> | null;
+				[key: string]: unknown;
+		  }
+		| {
+				type: "web_search_tool_result";
+				tool_use_id: string;
+				content: unknown;
+				[key: string]: unknown;
+		  };
+}
+
 export interface ImageContent {
 	type: "image";
 	data: string; // base64 encoded image data
@@ -827,6 +849,7 @@ export interface AssistantMessage {
 		| ThinkingContent
 		| RedactedThinkingContent
 		| AnthropicFallbackContent
+		| AnthropicServerToolContent
 		| ImageContent
 		| ToolCall
 	)[];

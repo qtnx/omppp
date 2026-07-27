@@ -183,7 +183,7 @@ function isZaiFeatureRequestLimit(parsed: ZaiUsageLimitItem): boolean {
 }
 
 function requestQuotaLabel(parsed: ZaiUsageLimitItem): string {
-	if (isZaiFeatureRequestLimit(parsed)) return "ZAI Web Search / Reader / Zread Quota";
+	if (isZaiFeatureRequestLimit(parsed)) return "ZAI Zread Quota";
 	return "ZAI Request Quota";
 }
 
@@ -295,13 +295,13 @@ async function fetchZaiUsage(params: UsageFetchParams, ctx: UsageFetchContext): 
 			});
 			const featureLimit = isZaiFeatureRequestLimit(parsed);
 			limits.push({
-				id: featureLimit ? `zai:features:web-search-reader-zread:${window.id}` : `zai:requests:${window.id}`,
+				id: featureLimit ? `zai:features:zread:${window.id}` : `zai:requests:${window.id}`,
 				label: requestQuotaLabel(parsed),
 				scope: {
 					provider: params.provider,
 					windowId: window.id,
 					shared: !featureLimit,
-					...(featureLimit ? { tier: "web-search-reader-zread" } : {}),
+					...(featureLimit ? { tier: "zread" } : {}),
 				},
 				window,
 				amount,

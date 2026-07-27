@@ -200,6 +200,61 @@ export interface UsageCostHistoryQuery {
 	sinceMs?: number;
 }
 
+/**
+ * Aggregated request usage a client observed for one (provider, model) pair.
+ * Clients fold every completed request into per-pair buckets and flush them to
+ * the auth broker on a short cadence, so the broker can attribute token burn
+ * to the install that produced it.
+ */
+export interface ObservedUsageEntry {
+	/** Epoch ms of the newest request folded into this bucket. */
+	at: number;
+	provider: Provider;
+	model: string;
+	/** Completed requests folded into this bucket. */
+	requests: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	/** Estimated USD cost of the folded requests (0 when unknown). */
+	costUsd: number;
+}
+
+/** One client's observed-usage report, keyed by its stable install id. */
+export interface ClientUsageReport {
+	/** Stable per-machine install id — the client primary key. */
+	installId: string;
+	/** Human-readable machine name for display surfaces. */
+	hostname?: string;
+	entries: ObservedUsageEntry[];
+}
+
+/** Per-provider aggregate of one client's recorded usage. */
+export interface ClientProviderUsage {
+	provider: string;
+	requests: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	costUsd: number;
+}
+
+/** One known client with its usage aggregates over the queried window. */
+export interface ClientUsageClientSummary {
+	installId: string;
+	hostname?: string;
+	firstSeen: number;
+	lastSeen: number;
+	providers: ClientProviderUsage[];
+}
+
+/** Aggregated per-client usage recorded by the broker host. */
+export interface ClientUsageSummary {
+	clients: ClientUsageClientSummary[];
+}
+
 // ─── Zod schemas (wire-shape validation for the broker `/v1/usage` endpoint) ─
 
 export const usageUnitSchema = type("'percent' | 'tokens' | 'requests' | 'usd' | 'minutes' | 'bytes' | 'unknown'");

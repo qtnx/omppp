@@ -10,6 +10,7 @@ import {
 	getDashboardStats,
 	getModelDashboardStats,
 	getOverviewStats,
+	getProviderDashboardStats,
 	getRecentErrors,
 	getRecentRequests,
 	getRequestDetails,
@@ -382,6 +383,11 @@ export async function handleStatsApiRequest(req: Request, options: StatsApiOptio
 
 	if (path === "/api/stats/tools") {
 		const stats = await getToolDashboardStats(range);
+		return Response.json(stats);
+	}
+
+	if (path === "/api/stats/providers") {
+		const stats = await getProviderDashboardStats(range);
 		return Response.json(stats);
 	}
 

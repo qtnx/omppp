@@ -104,6 +104,54 @@ describe("Firecrawl web search provider", () => {
 			authMode: "api_key",
 		});
 	});
+	it("maps before:/after: to a cdr tbs and strips dates from the operator query", async () => {
+		const captured: { body?: unknown } = {};
+		const fetchMock: FetchImpl = async (_input, init) => {
+			captured.body = JSON.parse(String(init?.body ?? "null")) as unknown;
+			return new Response(JSON.stringify({ data: { web: [] } }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		await searchFirecrawl({
+			...makeParams("bun runtime site:github.com/oven-sh intitle:install after:2024-01-01 before:2024-06-30"),
+			recency: "month",
+			fetch: fetchMock,
+		});
+
+		expect(captured.body).toEqual({
+			query: "bun runtime site:github.com/oven-sh intitle:install",
+			limit: 10,
+			sources: [{ type: "web" }],
+			// Explicit absolute bounds take precedence over the qdr:m recency window.
+			tbs: "cdr:1,cd_min:01/01/2024,cd_max:06/30/2024",
+		});
+	});
+
+	it("re-emits non-date operators in the query while keeping recency tbs", async () => {
+		const captured: { body?: unknown } = {};
+		const fetchMock: FetchImpl = async (_input, init) => {
+			captured.body = JSON.parse(String(init?.body ?? "null")) as unknown;
+			return new Response(JSON.stringify({ data: { web: [] } }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		await searchFirecrawl({
+			...makeParams('"exact phrase" -site:reddit.com filetype:pdf'),
+			recency: "week",
+			fetch: fetchMock,
+		});
+
+		expect(captured.body).toEqual({
+			query: '"exact phrase" -site:reddit.com filetype:pdf',
+			limit: 10,
+			sources: [{ type: "web" }],
+			tbs: "qdr:w",
+		});
+	});
 
 	it("uses the initially resolved credential for the first authenticated request", async () => {
 		let resolutionCount = 0;

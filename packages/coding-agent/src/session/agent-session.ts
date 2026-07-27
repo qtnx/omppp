@@ -2708,6 +2708,20 @@ export class AgentSession {
 						baseUrl: this.#modelRegistry.getProviderBaseUrl?.(assistantMsg.provider),
 					});
 				}
+				// Broker deployments: report this request's burn so the broker can
+				// attribute token usage per install. No-op with a local auth store.
+				this.#modelRegistry.authStorage.recordObservedUsage({
+					provider: assistantMsg.provider,
+					model: assistantMsg.model,
+					at: assistantMsg.timestamp,
+					usage: {
+						input: assistantMsg.usage.input,
+						output: assistantMsg.usage.output,
+						cacheRead: assistantMsg.usage.cacheRead,
+						cacheWrite: assistantMsg.usage.cacheWrite,
+					},
+					costUsd: assistantMsg.usage.cost.total,
+				});
 			}
 			if (event.message.role === "toolResult") {
 				const { toolName, toolCallId, isError, content } = event.message;

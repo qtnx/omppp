@@ -7,8 +7,9 @@
  * usage reports cache TTL is 5 minutes per credential, so durability across
  * runs isn't required.
  */
+import * as os from "node:os";
 import { scheduler } from "node:timers/promises";
-import { logger } from "@oh-my-pi/pi-utils";
+import { getInstallId, logger } from "@oh-my-pi/pi-utils";
 import {
 	type AuthCredential,
 	type AuthCredentialSnapshotEntry,
@@ -21,8 +22,8 @@ import {
 import * as AIError from "../error";
 import type { OAuthCredentials } from "../registry/oauth/types";
 import type { Provider } from "../types";
-import type { UsageReport } from "../usage";
-import { type AuthBrokerClient, AuthBrokerStreamUnsupportedError } from "./client";
+import type { ObservedUsageEntry, UsageReport } from "../usage";
+import { type AuthBrokerClient, AuthBrokerError, AuthBrokerStreamUnsupportedError } from "./client";
 import type {
 	CredentialBlockSnapshot,
 	RefresherSchedule,
@@ -232,6 +233,8 @@ export interface RemoteAuthCredentialStoreOptions {
 	 * routing policy, not broker authorization.
 	 */
 	accountPool?: AuthBrokerAccountPool;
+	/** Flush cadence for batched observed-usage reports. Default 10s. */
+	observedUsageFlushMs?: number;
 }
 
 export class RemoteAuthCredentialStore implements AuthCredentialStore {
@@ -261,10 +264,17 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	#streamingActive = false;
 	/** Latched once the broker has answered 404 — never try the stream again. */
 	#streamingUnsupported = false;
+	/** Pending observed usage keyed by `provider\u0000model`, merged until flush. */
+	#observedUsage = new Map<string, ObservedUsageEntry>();
+	#observedUsageTimer: Timer | undefined;
+	readonly #observedUsageFlushMs: number;
+	/** Latched once the broker answered 404 — old broker, never report again. */
+	#observedUsageUnsupported = false;
 
 	constructor(opts: RemoteAuthCredentialStoreOptions) {
 		this.#client = opts.client;
 		this.#streamSnapshots = opts.streamSnapshots ?? true;
+		this.#observedUsageFlushMs = opts.observedUsageFlushMs ?? 10_000;
 		this.#accountPool = opts.accountPool
 			? new Map([...opts.accountPool].map(([provider, identities]) => [provider, new Set(identities)]))
 			: undefined;
@@ -1081,10 +1091,74 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		return inflight;
 	}
 
+	/**
+	 * Fold locally observed request usage into the pending report and schedule
+	 * a flush. One `POST /v1/usage/observed` at most per flush interval; on
+	 * failure the batch is retained and retried with the next flush. A 404
+	 * (pre-endpoint broker) disables reporting for the life of this store.
+	 */
+	recordObservedUsage(entries: ObservedUsageEntry[]): void {
+		if (this.#closed || this.#observedUsageUnsupported) return;
+		for (const entry of entries) {
+			const key = `${entry.provider}\u0000${entry.model}`;
+			const pending = this.#observedUsage.get(key);
+			if (pending) {
+				pending.at = Math.max(pending.at, entry.at);
+				pending.requests += entry.requests;
+				pending.inputTokens += entry.inputTokens;
+				pending.outputTokens += entry.outputTokens;
+				pending.cacheReadTokens += entry.cacheReadTokens;
+				pending.cacheWriteTokens += entry.cacheWriteTokens;
+				pending.costUsd += entry.costUsd;
+			} else {
+				this.#observedUsage.set(key, { ...entry });
+			}
+		}
+		if (this.#observedUsage.size > 0 && this.#observedUsageTimer === undefined) {
+			this.#observedUsageTimer = setTimeout(() => {
+				this.#observedUsageTimer = undefined;
+				void this.#flushObservedUsage();
+			}, this.#observedUsageFlushMs);
+			this.#observedUsageTimer.unref?.();
+		}
+	}
+
+	async #flushObservedUsage(): Promise<void> {
+		if (this.#observedUsage.size === 0 || this.#observedUsageUnsupported) return;
+		const batch = [...this.#observedUsage.values()];
+		this.#observedUsage.clear();
+		try {
+			await this.#client.reportClientUsage({
+				installId: getInstallId(),
+				hostname: os.hostname(),
+				entries: batch,
+			});
+		} catch (error) {
+			const status = error instanceof AuthBrokerError ? error.status : undefined;
+			if (status === 404 || status === 501) {
+				// Broker predates the endpoint (or store can't persist) — stop trying.
+				this.#observedUsageUnsupported = true;
+				logger.debug("auth-broker does not accept observed usage; reporting disabled", { status });
+				return;
+			}
+			logger.debug("auth-broker observed usage flush failed; retrying next flush", { error: String(error) });
+			// Merge the failed batch back under the (possibly refilled) buffer so
+			// nothing is lost; bounded because entries are keyed per (provider, model).
+			if (!this.#closed) this.recordObservedUsage(batch);
+		}
+	}
+
 	close(): void {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#backgroundAbort.abort();
+		if (this.#observedUsageTimer !== undefined) {
+			clearTimeout(this.#observedUsageTimer);
+			this.#observedUsageTimer = undefined;
+		}
+		// Best-effort final flush; failures are dropped (the process is exiting).
+		if (this.#observedUsage.size > 0) void this.#flushObservedUsage();
+		this.#cache.clear();
 		this.#usageOverlays.clear();
 		this.#snapshotChangedListeners.clear();
 	}

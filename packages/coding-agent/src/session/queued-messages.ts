@@ -44,7 +44,13 @@ export function isTerminalTextAssistantAnswer(message: AgentMessage | undefined)
 			if (part.text.trim().length > 0) hasText = true;
 			continue;
 		}
-		if (part.type === "thinking" || part.type === "redactedThinking" || part.type === "fallback") continue;
+		if (
+			part.type === "thinking" ||
+			part.type === "redactedThinking" ||
+			part.type === "fallback" ||
+			part.type === "anthropicServerTool"
+		)
+			continue;
 		return false;
 	}
 	return hasText;

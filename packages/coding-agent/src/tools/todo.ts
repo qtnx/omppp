@@ -524,7 +524,46 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 	}
 }
 
-function applyParams(phases: TodoPhase[], params: TodoParams): { phases: TodoPhase[]; errors: string[] } {
+/**
+ * Infer a missing `op` from the raw argument shape. Only unambiguous shapes
+ * are inferred:
+ * - `list` → `init` (list is init-only)
+ * - `items` + `phase` → `append` (lazily creates the phase, so the result
+ *   matches a single-phase init when nothing exists yet)
+ * - bare `items` with no existing todos → `init` (nothing to overwrite)
+ * Targeting args alone (`task`/`phase`) map to several ops and stay an error.
+ */
+function inferTodoOp(args: Record<string, unknown>, hasExistingPhases: boolean): TodoOperation | undefined {
+	if (Array.isArray(args.list) && args.list.length > 0) return "init";
+	if (Array.isArray(args.items) && args.items.length > 0) {
+		if (typeof args.phase === "string" && args.phase) return "append";
+		if (!hasExistingPhases) return "init";
+	}
+	return undefined;
+}
+
+/**
+ * Validate execute-time arguments, repairing an omitted `op`. The tool sets
+ * `lenientArgValidation`, so the agent loop hands `execute()` the raw
+ * arguments when schema validation fails; the only failure repaired here is
+ * a missing `op` alongside an unambiguous payload (models routinely send
+ * `{list:[...]}` with no op). Anything else returns the schema error text
+ * for a normal model retry.
+ */
+function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntryValue | string {
+	const direct = todoSchema(raw);
+	if (!(direct instanceof type.errors)) return direct;
+	if (isRecord(raw) && raw.op === undefined) {
+		const inferred = inferTodoOp(raw, hasExistingPhases);
+		if (inferred) {
+			const repaired = todoSchema({ ...raw, op: inferred });
+			if (!(repaired instanceof type.errors)) return repaired;
+		}
+	}
+	return `Invalid todo arguments: ${direct.summary}`;
+}
+
+function applyParams(phases: TodoPhase[], params: TodoOpEntryValue): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
 	const next = applyEntry(phases, params, errors);
 	normalizeInProgressTask(next);
@@ -534,7 +573,7 @@ function applyParams(phases: TodoPhase[], params: TodoParams): { phases: TodoPha
 /** Apply an array of `todo`-style ops to existing phases. Used by /todo slash command. */
 export function applyOpsToPhases(
 	currentPhases: TodoPhase[],
-	ops: TodoParams[],
+	ops: TodoOpEntryValue[],
 ): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
 	let next = clonePhases(currentPhases);
@@ -731,6 +770,9 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly parameters = todoSchema;
 	readonly concurrency = "exclusive";
 	readonly strict = true;
+	// Raw args reach execute() on schema failure; resolveTodoParams re-validates
+	// and repairs the one recoverable shape (missing `op`, unambiguous payload).
+	readonly lenientArgValidation = true;
 
 	readonly examples: readonly ToolExample<typeof todoSchema.infer>[] = [
 		{
@@ -789,11 +831,22 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
+		const storage = this.session.getSessionFile() ? "session" : "memory";
+		const resolved = resolveTodoParams(params, previousPhases.length > 0);
+		if (typeof resolved === "string") {
+			return {
+				content: [{ type: "text", text: resolved }],
+				details: { phases: previousPhases, storage },
+				isError: true,
+			};
+		}
+		const entry = resolved;
+		const op = entry.op;
 		// Pure-view calls are reads: no normalization, no state write.
-		const readOnly = params.op === "view";
+		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
-			: applyParams(clonePhases(previousPhases), params);
+			: applyParams(clonePhases(previousPhases), entry);
 		// A batch with any error is discarded wholesale: persisting a
 		// half-applied batch makes the natural retry hit "already exists" for
 		// the ops that did land. State and rendered summary stay at previous.
@@ -801,8 +854,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const effective = failed ? previousPhases : updated;
 		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, updated);
 		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
-		const storage = this.session.getSessionFile() ? "session" : "memory";
-		const details: TodoToolDetails = { op: params.op, phases: effective, storage };
+		const details: TodoToolDetails = { op, phases: effective, storage };
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 
 		return {

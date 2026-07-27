@@ -742,6 +742,14 @@ export function transformMessages<TApi extends Api>(
 					return [];
 				}
 
+				if (block.type === "anthropicServerTool") {
+					// Anthropic requires native server-tool calls and results to be
+					// replayed unchanged. They are meaningful only to the provider
+					// that produced them; every cross-provider target drops them.
+					if (isAnthropicReplay && assistantMsg.provider === model.provider) return block;
+					return [];
+				}
+
 				if (block.type === "fallback") {
 					// Server-side-fallback boundary marker (Anthropic beta
 					// `server-side-fallback-2026-06-01`). Only the official

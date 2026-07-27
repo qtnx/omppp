@@ -25,6 +25,7 @@ import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "tex
 import taskAsyncContractTemplate from "../prompts/tools/task-async-contract.md" with { type: "text" };
 import taskRateLimitNoticeTemplate from "../prompts/tools/task-rate-limit-notice.md" with { type: "text" };
 import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: "text" };
+import { TASK_EFFORTS, type TaskEffort } from "../thinking";
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/hub";
 import { formatBytes, formatDuration } from "../tools/render-utils";
@@ -305,6 +306,12 @@ function hasInvalidModelSelector(model: unknown): boolean {
 	);
 }
 
+/** Reject an out-of-range `effort` selector on internal/stale-transcript calls that bypass the wire schema. */
+function validateEffort(effort: TaskEffort | undefined, label: string): string | undefined {
+	if (effort === undefined || TASK_EFFORTS.includes(effort)) return undefined;
+	return `${label} has an invalid \`effort\` value ${JSON.stringify(effort)}. Use "lo", "med", or "hi".`;
+}
+
 function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string | undefined {
 	const hasTask = typeof params.task === "string" && params.task.trim() !== "";
 	const hasLegacyAssignment = typeof params.assignment === "string" && params.assignment.trim() !== "";
@@ -326,6 +333,8 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 			if (hasInvalidModelSelector(item.model)) {
 				return `Task ${i + 1}${item.name ? ` (\`${item.name}\`)` : ""} has an invalid \`model\`. Provide a non-empty selector or a non-empty array of non-empty selectors.`;
 			}
+			const effortError = validateEffort(item.effort, `Task ${i + 1}${item.name ? ` (\`${item.name}\`)` : ""}`);
+			if (effortError) return effortError;
 		}
 		const seen = new Map<string, string>();
 		for (const item of tasks) {
@@ -354,7 +363,7 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 	if (hasInvalidModelSelector(params.model)) {
 		return "Invalid `model`. Provide a non-empty selector or a non-empty array of non-empty selectors.";
 	}
-	return undefined;
+	return validateEffort(params.effort, "The call");
 }
 /**
  * Convert the model-facing seconds value once at the executor boundary.
@@ -392,6 +401,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	};
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
+	if ("effort" in params) item.effort = params.effort;
 	if ("isolated" in params) item.isolated = params.isolated;
 	if ("max_runtime_seconds" in params) item.max_runtime_seconds = params.max_runtime_seconds;
 	if ("self_review" in params) item.self_review = params.self_review;
@@ -429,6 +439,7 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 	if (params.context !== undefined) spawn.context = params.context;
 	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
 	if ("schemaMode" in item) spawn.schemaMode = item.schemaMode;
+	if ("effort" in item) spawn.effort = item.effort;
 	if (item.isolated !== undefined) {
 		spawn.isolated = item.isolated;
 	} else if ("isolated" in params) {
@@ -857,6 +868,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			model: params.model,
 			...(Object.hasOwn(params, "outputSchema") ? { outputSchema: params.outputSchema } : {}),
 			...(Object.hasOwn(params, "schemaMode") ? { schemaMode: params.schemaMode } : {}),
+			...(params.effort !== undefined ? { effort: params.effort } : {}),
 			...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
 			selfReview: params.self_review,
 			blockedAgent: this.#blockedAgent,
@@ -1675,6 +1687,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				model: params.model,
 				...(Object.hasOwn(params, "outputSchema") ? { outputSchema: params.outputSchema } : {}),
 				...(Object.hasOwn(params, "schemaMode") ? { schemaMode: params.schemaMode } : {}),
+				...(params.effort !== undefined ? { effort: params.effort } : {}),
 				identity: { id: preAllocatedId, label: params.name },
 				index: spawnIndex,
 				parentToolCallId: toolCallId,

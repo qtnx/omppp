@@ -305,6 +305,13 @@ uutil_builtin!(pub fn comm_builtin => uu_comm::run);
 uutil_builtin!(pub fn sed_builtin => uu_sed::run);
 uutil_builtin!(pub fn xargs_builtin => uu_xargs::run);
 uutil_builtin!(pub fn jq_builtin => jaq::run);
+uutil_builtin!(pub fn ts_builtin => crate::moreutils::ts::run);
+uutil_builtin!(pub fn sponge_builtin => crate::moreutils::sponge::run);
+uutil_builtin!(pub fn ifne_builtin => crate::moreutils::ifne::run);
+uutil_builtin!(pub fn isutf8_builtin => crate::moreutils::isutf8::run);
+uutil_builtin!(pub fn combine_builtin => crate::moreutils::combine::run);
+#[cfg(unix)]
+uutil_builtin!(pub fn errno_builtin => crate::moreutils::errno::run);
 
 #[cfg(test)]
 mod tests {

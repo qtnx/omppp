@@ -13,9 +13,12 @@ import {
 	getModelPerformanceSeries,
 	getModelTimeSeries,
 	getOverallStats,
+	getProviderHourlyBurn,
+	getProviderTimeSeries,
 	getStatsByAgentType,
 	getStatsByFolder,
 	getStatsByModel,
+	getStatsByProvider,
 	getSubagentPerformance,
 	getTimeSeries,
 	getToolStats,
@@ -39,7 +42,15 @@ import type { SyncWorkerRequest, SyncWorkerResponse } from "./sync-worker";
 // hidden argv mode, so the compiled binary and npm bundle only need one
 // JavaScript entry. Standalone source `omp-stats` keeps using this package's
 // own sync-worker source file.
-import type { BehaviorDashboardStats, DashboardStats, MessageStats, RequestDetails, ToolDashboardStats } from "./types";
+import type {
+	BehaviorDashboardStats,
+	DashboardStats,
+	MessageStats,
+	ProviderDashboardStats,
+	RequestDetails,
+	ToolDashboardStats,
+} from "./types";
+import { computeUsageWindowStats, fetchUsageSnapshots } from "./usage-windows";
 
 /**
  * Apply a freshly parsed result to the database. Runs entirely on the
@@ -516,5 +527,26 @@ export async function getToolDashboardStats(range?: string | null): Promise<Tool
 		byTool: getToolStats(cutoff ?? undefined),
 		byToolModel: getToolStatsByModel(cutoff ?? undefined),
 		series: getToolTimeSeries(modelSeriesDays, cutoff, modelSeriesBucketMs),
+	};
+}
+
+/**
+ * Get the providers dashboard payload: per-provider totals, peak-burn-hours
+ * histogram, provider token time series, and subscription-window analytics
+ * (utilization series + insights) derived from recorded usage-limit snapshots.
+ */
+export async function getProviderDashboardStats(range?: string | null): Promise<ProviderDashboardStats> {
+	await initDb();
+	const { modelSeriesDays, modelSeriesBucketMs, cutoff } = getTimeRangeConfig(range);
+	const providers = getStatsByProvider(cutoff ?? undefined);
+	const tokensByProvider = new Map(providers.map(p => [p.provider, p.totalTokens]));
+	const snapshots = await fetchUsageSnapshots(cutoff ?? 0);
+	const { usageSeries, windowInsights } = computeUsageWindowStats(snapshots, tokensByProvider);
+	return {
+		providers,
+		hourly: getProviderHourlyBurn(cutoff ?? undefined),
+		series: getProviderTimeSeries(modelSeriesDays, cutoff, modelSeriesBucketMs),
+		usageSeries,
+		windowInsights,
 	};
 }
