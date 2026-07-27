@@ -79,10 +79,21 @@ interface AskDialogCallbacks {
 	onPrompt(title: string, prefill?: string): Promise<string | undefined>;
 }
 
+interface AskDialogInputGuard {
+	isBlocked(): boolean;
+	handleInput(keyData: string): void;
+	hint: string;
+	/** Mirror the guard's blocked state onto the proxied draft surface each
+	 *  render, so a draft that owns input shows a visible insertion cursor even
+	 *  though this dialog holds TUI focus. */
+	syncPresentation?(): void;
+}
+
 interface AskDialogOptions {
 	timeout?: number;
 	onTimeout?: () => void;
 	tui?: TUI;
+	inputGuard?: AskDialogInputGuard;
 }
 
 interface QuestionState {
@@ -394,6 +405,12 @@ export class AskDialogComponent implements Component {
 			this.#finishCancel();
 			return;
 		}
+		const inputGuard = this.options.inputGuard;
+		if (inputGuard?.isBlocked()) {
+			inputGuard.handleInput(keyData);
+			this.#requestRender();
+			return;
+		}
 		if (this.#hasSubmitTab() && handleTabSwitchKey(keyData, direction => this.#switchTab(direction))) {
 			this.#requestRender();
 			return;
@@ -406,6 +423,10 @@ export class AskDialogComponent implements Component {
 	}
 
 	render(width: number): readonly string[] {
+		// Keep the proxied draft's cursor visible while it owns input (the editor
+		// renders as the next sibling in the same container, so this lands in the
+		// same frame).
+		this.options.inputGuard?.syncPresentation?.();
 		const innerWidth = Math.max(1, width - 4);
 		// Fixed panel height: measured from the tallest tab at spawn and
 		// re-measured only when the viewport changes. Tab switches, cursor
@@ -532,6 +553,8 @@ export class AskDialogComponent implements Component {
 
 	#footerHintText(indicator: string): string {
 		const cancel = `${cancelKeyLabel()} cancel`;
+		const inputGuard = this.options.inputGuard;
+		if (inputGuard?.isBlocked()) return `${inputGuard.hint} · ${cancel}`;
 		if (this.#isSubmitTab()) {
 			const scroll = indicator ? ` ${indicator} scroll ·` : "";
 			return `Enter submit · ↑/↓ scroll ·${scroll} ${cancel}`;

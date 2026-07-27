@@ -974,4 +974,31 @@ export class CustomEditor extends Editor {
 			this.insertText("\n");
 		}
 	}
+
+	/**
+	 * Route a keystroke through the base text-editor pipeline only, skipping the
+	 * app-level shortcut interception in {@link handleInput} (Agent Hub, model
+	 * selector, history search, external editor, …). Used when the editor is
+	 * mounted for draft editing beneath another focused surface — e.g. an Ask
+	 * dialog opened over a non-empty prompt — so finishing or submitting the
+	 * draft can never fire an editor-slot shortcut that clears `editorContainer`
+	 * and orphans the overlay. Only text editing, cursor movement, submission,
+	 * and the clear action reach the buffer.
+	 */
+	handleDraftEdit(data: string): void {
+		// The base editor reserves Ctrl+C for parent handling and returns without
+		// touching the buffer, so the configured clear action must be dispatched
+		// explicitly here — otherwise the guard's "finish or clear the prompt"
+		// instruction has no working clear key. onClear (Ctrl+C → handleCtrlC)
+		// clears the draft on first press without swapping the editor slot; a
+		// standalone editor with no callback clears its own text.
+		const parsed = parseKey(data);
+		const canonical = parsed !== undefined ? canonicalKeyId(parsed) : undefined;
+		if (canonical !== undefined && this.#matchesAction(canonical, "app.clear")) {
+			if (this.onClear) this.onClear();
+			else this.setText("");
+			return;
+		}
+		super.handleInput(data);
+	}
 }

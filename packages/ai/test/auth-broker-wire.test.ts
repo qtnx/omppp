@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { AuthStorage, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import {
 	AuthBrokerClient,
+	AuthBrokerError,
 	type AuthBrokerServerHandle,
 	AuthBrokerStreamUnsupportedError,
 	type SnapshotStreamEvent,
@@ -88,6 +89,32 @@ describe("auth-broker wire surface", () => {
 			expect(entry.credential.access).toBe("access-a");
 			// Refresh token is replaced with the wire sentinel — clients never see it.
 			expect(entry.credential.refresh).toBe(REMOTE_REFRESH_SENTINEL);
+		}
+	});
+
+	test("preserves an HTTP rejection when the caller aborts while reading its body", async () => {
+		const client = new AuthBrokerClient({
+			url: "http://broker.invalid",
+			token,
+			maxRetries: 0,
+			fetchImpl: (async (_input, init) => {
+				const signal = init?.signal;
+				const body = new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode("forbidden"));
+						signal?.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+					},
+				});
+				return new Response(body, { status: 401 });
+			}) as typeof fetch,
+		});
+
+		try {
+			await client.fetchSnapshot({ signal: AbortSignal.timeout(10) });
+			throw new Error("expected auth rejection");
+		} catch (error) {
+			expect(error).toBeInstanceOf(AuthBrokerError);
+			expect(error).toMatchObject({ status: 401 });
 		}
 	});
 

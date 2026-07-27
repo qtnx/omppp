@@ -353,6 +353,58 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		}
 	});
 
+	test("prefers authenticated providers for deferred bare role candidates", async () => {
+		const settings = Settings.isolated({
+			modelProviderOrder: ["aimlapi", "openai"],
+		});
+		settings.setModelRole("task", "missing-provider/missing-model,gpt-4o-mini");
+		const authStorage = await AuthStorage.create(path.join(tempDir, "ambiguous-role-auth.db"));
+		authStorage.setRuntimeApiKey("openai", "test-key");
+		authStoragesToClose.push(authStorage);
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "ambiguous-role-models.yml"));
+		const parsed = parseArgs(["--model", "task"]);
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number | string | null) => {
+			throw new Error(`buildSessionOptions unexpectedly exited with ${code}`);
+		});
+		try {
+			const cliOptions = await buildCliSessionOptions(
+				parsed,
+				[],
+				SessionManager.inMemory(),
+				modelRegistry,
+				settings,
+			);
+			expect(cliOptions.model).toBeUndefined();
+			expect(cliOptions.modelPattern).toBe("task");
+
+			const { session } = await createAgentSession({
+				...cliOptions,
+				cwd: tempDir,
+				agentDir: tempDir,
+				authStorage,
+				modelRegistry,
+				settings,
+				disableExtensionDiscovery: true,
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+				skipPythonPreflight: true,
+			});
+
+			try {
+				expect(session.model?.provider).toBe("openai");
+				expect(session.model?.id).toBe("gpt-4o-mini");
+			} finally {
+				await session.dispose();
+			}
+		} finally {
+			exitSpy.mockRestore();
+		}
+	});
+
 	test("uses a configured suffixed role fallback when its primary model is unavailable", async () => {
 		const settings = Settings.isolated({
 			"retry.fallbackChains": {

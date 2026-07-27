@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [17.1.5] - 2026-07-27
+
+### Fixed
+
+- `getShellConfig` no longer throws `No bash shell found` on Windows hosts without a discoverable bash. `resolveWindowsShell` searches Git for Windows install roots (machine, per-user, `GIT_INSTALL_ROOT`, scoop app dirs — scoop shims `sh.exe`/`git.exe` but never `bash.exe`), then `bash.exe`/`sh.exe` on PATH, and finally falls back to `cmd.exe` from ComSpec with `/c` args, so shell resolution always succeeds.
+
 ## [17.1.4] - 2026-07-26
 
 ### Fixed

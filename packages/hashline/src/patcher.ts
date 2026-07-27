@@ -38,9 +38,10 @@ import {
 } from "./messages";
 import { MismatchError } from "./mismatch";
 import { detectLineEnding, type LineEnding, normalizeToLF, restoreLineEndings, stripBom } from "./normalize";
+import { InvalidAbsoluteRangeError } from "./parser";
 import { Recovery, type RecoveryResult } from "./recovery";
 import type { Snapshot, SnapshotStore } from "./snapshots";
-import type { ApplyResult, BlockResolution, BlockResolver, Edit, FileOp } from "./types";
+import type { ApplyResult, BlockResolution, BlockResolver, BlockSpan, Edit, FileOp } from "./types";
 
 /**
  * Upper bound on the number of unseen anchor lines whose actual file content
@@ -277,6 +278,25 @@ export class Patcher {
 		}
 	}
 
+	async #parseWithRangeDiagnostics(section: PatchSection) {
+		try {
+			return section.parse();
+		} catch (error) {
+			if (!(error instanceof InvalidAbsoluteRangeError) || !this.blockResolver) throw error;
+			let span: BlockSpan | null = null;
+			try {
+				const read = await this.#tryRead(section.path);
+				if (read.exists) {
+					const normalized = normalizeToLF(stripBom(read.rawContent).text);
+					span = this.blockResolver({ path: section.path, text: normalized, line: error.startLine });
+				}
+			} catch {
+				// Source-aware enrichment is best-effort; preserve the actionable parser error.
+			}
+			throw span?.start === error.startLine && span.end > span.start ? error.withBlock(span) : error;
+		}
+	}
+
 	/**
 	 * Read a section's target file, parse the section, validate the snapshot
 	 * tag (with recovery), and apply the edits in memory. Returns a
@@ -287,7 +307,7 @@ export class Patcher {
 	 * tag mismatch ({@link MismatchError}).
 	 */
 	async prepare(section: PatchSection): Promise<PreparedSection> {
-		const parsed = section.parse();
+		const parsed = await this.#parseWithRangeDiagnostics(section);
 		const parseWarnings = [...parsed.warnings];
 		const fileOp = parsed.fileOp;
 		assertSectionHashPresent(section.path, section.fileHash);

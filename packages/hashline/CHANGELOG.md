@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [17.1.5] - 2026-07-27
+
+### Changed
+
+- Improved reversed-range and invalid block-anchor diagnostics with absolute endpoint corrections plus nearby syntactic opener suggestions, without auto-applying the suggested edit ([#6671](https://github.com/can1357/oh-my-pi/issues/6671)).
+- Accepted a single dot between integer range endpoints, such as `DEL 235.258`, as an unambiguous range separator ([#6671](https://github.com/can1357/oh-my-pi/issues/6671)).
+
 ## [17.1.2] - 2026-07-24
 
 ### Changed

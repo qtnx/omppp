@@ -23,6 +23,12 @@ describe("hashline format v4", () => {
 		expect(applyPatch(text, "DEL 2.=3")).toBe("a\nd");
 	});
 
+	it("accepts a single dot between integer range endpoints", () => {
+		const text = "a\nb\nc\nd";
+		expect(applyPatch(text, "DEL 2.3")).toBe("a\nd");
+		expect(applyPatch(text, "SWAP 2.3:\n+middle")).toBe("a\nmiddle\nd");
+	});
+
 	it("inserts before and after concrete anchors", () => {
 		const text = "a\nb\nc";
 		const diff = ["INS.PRE 2:", "+before", "INS.POST 2:", "+after"].join("\n");

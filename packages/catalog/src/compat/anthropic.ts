@@ -4,7 +4,7 @@
  * defaults come from provider ids, strict host checks, and model-id
  * classification, with explicit spec overrides assigned on top.
  */
-import { modelMatchesHost } from "../hosts";
+import { hostMatchesUrl, modelMatchesHost } from "../hosts";
 import {
 	hasOpus47ApiRestrictions,
 	isAnthropicFableOrMythosModel,
@@ -96,6 +96,23 @@ function isAzureAnthropicRoute(baseUrl?: string): boolean {
 	return baseUrl !== undefined && AZURE_ANTHROPIC_URL_MARKER.test(baseUrl);
 }
 
+/**
+ * Known non-official URLs that enforce Anthropic thinking signatures on replay.
+ *
+ * Runtime routing calls this with the effective URL because a model's resolved
+ * compat can be stale after Foundry or a provider base-URL override reroutes it.
+ */
+export function isAnthropicSigningProxyUrl(baseUrl?: string): boolean {
+	return (
+		hostMatchesUrl(baseUrl, "githubCopilot") ||
+		hostMatchesUrl(baseUrl, "zenmux") ||
+		isCloudflareAnthropicGateway(baseUrl) ||
+		isVertexAnthropicRoute(baseUrl) ||
+		isBedrockAnthropicRoute(baseUrl) ||
+		isAzureAnthropicRoute(baseUrl)
+	);
+}
+
 /** Build the resolved anthropic-messages compat record for a model spec. */
 export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): ResolvedAnthropicCompat {
 	const baseUrl = spec.baseUrl;
@@ -113,11 +130,8 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 	// (issue #4192).
 	const isZenmux = modelMatchesHost(spec, "zenmux");
 	const requiresThinkingEnabled = modelMatchesHost(spec, "moonshotNative") && matchesKimiMandatoryThinkingModel(spec);
-	const isVertex = isVertexAnthropicRoute(baseUrl);
-	const isBedrock = isBedrockAnthropicRoute(baseUrl);
 	const isAzure = isAzureAnthropicRoute(baseUrl);
-	const signingEndpoint =
-		official || isCopilot || isZenmux || isCloudflareAnthropicGateway(baseUrl) || isVertex || isBedrock || isAzure;
+	const signingEndpoint = official || isCopilot || isZenmux || isAnthropicSigningProxyUrl(baseUrl);
 	const compat: ResolvedAnthropicCompat = {
 		officialEndpoint: official,
 		signingEndpoint,

@@ -191,6 +191,39 @@ function createCompleteSimpleForbiddenStub(): CompleteSimpleStub {
 	return { calls, fn };
 }
 
+function createCompleteSimpleHangingStub(): CompleteSimpleStub {
+	const calls: unknown[][] = [];
+	const fn = (async (...args: unknown[]) => {
+		calls.push(args);
+		const options = args[2] as { signal?: AbortSignal } | undefined;
+		const stubSignal = options?.signal;
+		await new Promise<void>(resolve => {
+			if (!stubSignal) return;
+			if (stubSignal.aborted) return resolve();
+			stubSignal.addEventListener("abort", () => resolve(), { once: true });
+		});
+		return {
+			role: "assistant",
+			api: visionModel.api,
+			provider: visionModel.provider,
+			model: visionModel.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			},
+			stopReason: "aborted",
+			timestamp: Date.now(),
+			content: [],
+		};
+	}) as unknown as typeof completeSimple;
+
+	return { calls, fn };
+}
+
 describe("InspectImageTool", () => {
 	let testDir: string;
 
@@ -506,5 +539,55 @@ describe("InspectImageTool", () => {
 			/does not support image input/i,
 		);
 		expect(stub.calls).toHaveLength(0);
+	});
+
+	// Upstream's provider-credential guard does not apply here: this fork always
+	// routes inspect_image one-turn calls through its auth gateway bearer.
+	it("times out with a configured error when the vision-model call stalls", async () => {
+		const imagePath = path.join(testDir, "screen.png");
+		fs.writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+
+		const stub = createCompleteSimpleHangingStub();
+		const settings = Settings.isolated({ "inspect_image.timeoutMs": 50 });
+		const tool = new InspectImageTool(createSession(testDir, visionModel, "test-key", settings), stub.fn);
+
+		const start = Date.now();
+		await expect(tool.execute("call-timeout", { path: imagePath, question: "Anything?" })).rejects.toThrow(
+			/inspect_image request timed out.*inspect_image\.timeoutMs.*50ms/,
+		);
+		const elapsed = Date.now() - start;
+		expect(elapsed).toBeLessThan(5000);
+		expect(stub.calls).toHaveLength(1);
+	});
+
+	it("surfaces manual abort as aborted, not as timed out", async () => {
+		const imagePath = path.join(testDir, "screen.png");
+		fs.writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+
+		const stub = createCompleteSimpleHangingStub();
+		const settings = Settings.isolated({ "inspect_image.timeoutMs": 60_000 });
+		const tool = new InspectImageTool(createSession(testDir, visionModel, "test-key", settings), stub.fn);
+		const controller = new AbortController();
+
+		const pending = tool.execute("call-manual-abort", { path: imagePath, question: "Anything?" }, controller.signal);
+		setTimeout(() => controller.abort(), 25);
+		await expect(pending).rejects.toThrow(/inspect_image request aborted/);
+		await expect(pending).rejects.not.toThrow(/timed out/);
+		expect(stub.calls).toHaveLength(1);
+	});
+
+	it("skips the timeout guard when inspect_image.timeoutMs is zero", async () => {
+		const imagePath = path.join(testDir, "screen.png");
+		fs.writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+
+		const stub = createCompleteSimpleSuccessStub("Timeout disabled path");
+		const settings = Settings.isolated({ "inspect_image.timeoutMs": 0 });
+		const tool = new InspectImageTool(createSession(testDir, visionModel, "test-key", settings), stub.fn);
+
+		const result = await tool.execute("call-timeout-disabled", { path: imagePath, question: "Anything?" });
+		expect(result.content).toEqual([{ type: "text", text: "Timeout disabled path" }]);
+		expect(stub.calls).toHaveLength(1);
+		const passed = stub.calls[0]?.[2] as { signal?: AbortSignal } | undefined;
+		expect(passed?.signal).toBeUndefined();
 	});
 });

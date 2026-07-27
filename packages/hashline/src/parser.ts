@@ -5,11 +5,13 @@
  */
 import { HL_PAYLOAD_REPLACE, HL_RANGE_SEP } from "./format";
 import {
+	type AbsoluteRangeOp,
 	BARE_BODY_AUTO_PIPED_WARNING,
 	DELETE_BLOCK_TAKES_NO_BODY,
 	DELETE_TAKES_NO_BODY,
 	EMPTY_BLOCK,
 	EMPTY_INSERT,
+	invalidAbsoluteRangeMessage,
 	MINUS_BULLET_AUTO_PIPED_WARNING,
 	MINUS_ROW_REJECTED,
 	MOVE_TAKES_NO_BODY,
@@ -17,13 +19,36 @@ import {
 } from "./messages";
 import { stripOneLeadingHashlinePrefix } from "./prefixes";
 import { type BlockTarget, cloneCursor, type ParsedRange, type Token, Tokenizer } from "./tokenizer";
-import type { Anchor, Cursor, Edit, FileOp } from "./types";
+import type { Anchor, BlockSpan, Cursor, Edit, FileOp } from "./types";
+/** Parser error carrying enough range metadata for source-aware diagnostic enrichment. */
+export class InvalidAbsoluteRangeError extends Error {
+	/** Patch-language line containing the invalid range header. */
+	readonly patchLine: number;
+	/** Absolute first source line authored in the range. */
+	readonly startLine: number;
+	/** Invalid absolute last source line authored in the range. */
+	readonly endLine: number;
+	/** Operation whose range was invalid. */
+	readonly op: AbsoluteRangeOp;
 
-function validateRangeOrder(range: ParsedRange, lineNum: number): void {
+	constructor(patchLine: number, startLine: number, endLine: number, op: AbsoluteRangeOp, block?: BlockSpan) {
+		super(invalidAbsoluteRangeMessage(patchLine, startLine, endLine, op, block));
+		this.name = "InvalidAbsoluteRangeError";
+		this.patchLine = patchLine;
+		this.startLine = startLine;
+		this.endLine = endLine;
+		this.op = op;
+	}
+
+	/** Rebuild this error with a proven syntactic-block endpoint suggestion. */
+	withBlock(block: BlockSpan): InvalidAbsoluteRangeError {
+		return new InvalidAbsoluteRangeError(this.patchLine, this.startLine, this.endLine, this.op, block);
+	}
+}
+
+function validateRangeOrder(range: ParsedRange, lineNum: number, op: AbsoluteRangeOp): void {
 	if (range.end.line < range.start.line) {
-		throw new Error(
-			`line ${lineNum}: range ${range.start.line}${HL_RANGE_SEP}${range.end.line} ends before it starts.`,
-		);
+		throw new InvalidAbsoluteRangeError(lineNum, range.start.line, range.end.line, op);
 	}
 }
 
@@ -170,7 +195,7 @@ export class Executor {
 			case "op-block":
 				this.#discardPendingSkippableComments();
 				if (token.target.kind === "replace" || token.target.kind === "delete") {
-					validateRangeOrder(token.target.range, token.lineNum);
+					validateRangeOrder(token.target.range, token.lineNum, token.target.kind);
 				}
 				if (token.target.kind === "rem") {
 					this.#flushPending();

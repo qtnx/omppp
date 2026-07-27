@@ -10,8 +10,8 @@ import {
 } from "./protocol";
 import { CodexLiveTransport, type LiveTransportOptions } from "./transport";
 import type { LivePhase } from "./visualizer";
+import { DEFAULT_LIVE_VOICE } from "./voices";
 
-const DEFAULT_VOICE = "sol";
 /** Output RMS at or above this level counts as the assistant actively speaking. */
 export const OUTPUT_ACTIVE_LEVEL = 0.015;
 
@@ -98,7 +98,7 @@ export class LiveSessionController {
 		this.#identity = options.identity;
 		this.#authStorage = options.authStorage;
 		this.#callbacks = options.callbacks;
-		this.#voice = options.voice?.trim() || DEFAULT_VOICE;
+		this.#voice = options.voice?.trim() || DEFAULT_LIVE_VOICE;
 		this.#createTransport = options.createTransport ?? (opts => new CodexLiveTransport(opts));
 	}
 

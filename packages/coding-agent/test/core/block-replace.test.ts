@@ -196,6 +196,34 @@ describe("SWAP.BLK — native tree-sitter resolution end-to-end", () => {
 		});
 	});
 
+	it("suggests the next block opener for a blank anchor without modifying the file", async () => {
+		await withTempDir(async tempDir => {
+			const session = makeSession(tempDir);
+			const source = "\nfunction x() {\n  return 1;\n}\n";
+			const { filePath, header } = await seedFile(tempDir, session, "blank.ts", source);
+			const input = `${header}\nSWAP.BLK 1:\n+function y() {}`;
+
+			await expect(executeHashlineSingle(executeOptions(tempDir, input, session))).rejects.toThrow(
+				"Line 1 is blank; no syntactic block can begin there. The next multi-line block begins at line 2 and ends at line 4. Retry `SWAP.BLK 2:`.",
+			);
+			expect(await Bun.file(filePath).text()).toBe(source);
+		});
+	});
+
+	it("suggests the enclosing block and exact statement range without modifying the file", async () => {
+		await withTempDir(async tempDir => {
+			const session = makeSession(tempDir);
+			const source = "function x() {\n  run();\n}\n";
+			const { filePath, header } = await seedFile(tempDir, session, "statement.ts", source);
+			const input = `${header}\nSWAP.BLK 2:\n+  stop();`;
+
+			await expect(executeHashlineSingle(executeOptions(tempDir, input, session))).rejects.toThrow(
+				"For only this statement use `SWAP 2.=2:`. The nearest enclosing multi-line block begins at line 1 and ends at line 3; use `SWAP.BLK 1:` to target it.",
+			);
+			expect(await Bun.file(filePath).text()).toBe(source);
+		});
+	});
+
 	it("rejects a block edit on an unrecognized language", async () => {
 		await withTempDir(async tempDir => {
 			const session = makeSession(tempDir);

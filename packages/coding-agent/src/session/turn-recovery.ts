@@ -106,7 +106,7 @@ export interface TurnRecoveryHost {
 	promptGeneration(): number;
 	sessionId(): string;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
-	scheduleAgentContinue(options: { delayMs?: number; generation?: number }): void;
+	scheduleAgentContinue(options: { delayMs?: number; generation?: number; onError?: (error: unknown) => void }): void;
 	waitForSessionMessagePersistence(message: AssistantMessage): Promise<void>;
 	appendSessionMessage(message: AssistantMessage): void;
 	sessionMessageAlreadyPersisted(message: AssistantMessage): boolean;
@@ -1531,10 +1531,73 @@ export class TurnRecovery {
 			this.#retryAbortController = undefined;
 		}
 
-		// Retry via continue() outside the agent_end event callback chain.
-		this.#host.scheduleAgentContinue({ delayMs: 1, generation });
+		// The identity-keyed removal above can miss when a context rebuild
+		// recreated the failed turn's message object between settle and retry
+		// (fresh identity, same failed tail — issue #5382). Agent.continue()
+		// rejects any assistant tail, so a missed removal fails the scheduled
+		// retry locally before a provider request is ever made. Re-check the
+		// tail after the backoff (covering rebuilds during the sleep too) and
+		// strip a still-failed assistant tail by position. Never in
+		// preserveFailedTurn mode — the kept turn ends in synthetic tool
+		// results that continue() accepts — and never once a newer prompt owns
+		// the session.
+		if (!options?.preserveFailedTurn && this.#host.promptGeneration() === generation) {
+			this.#stripFailedAssistantTail();
+		}
+
+		// Retry via continue() outside the agent_end event callback chain. A
+		// continuation that still fails locally must close the retry saga —
+		// otherwise auto_retry_end never fires, retryPromise stays pending, and
+		// the in-flight prompt() (and the TUI retry indicator) hang forever.
+		this.#host.scheduleAgentContinue({
+			delayMs: 1,
+			generation,
+			onError: error => void this.#failRetryAfterLocalContinueError(message, error),
+		});
 
 		return true;
+	}
+
+	/**
+	 * Positional backstop for {@link removeAssistantMessageFromActiveContext}:
+	 * when the identity check missed, the failed assistant turn is still the
+	 * active tail and the scheduled continue() would reject it. An
+	 * error/aborted-stopped assistant tail is never legal continuation input
+	 * and no recovery path wants it replayed on the wire, so drop it by
+	 * position; any healthy tail is left untouched.
+	 */
+	#stripFailedAssistantTail(): void {
+		const messages = this.#host.agent.state.messages;
+		const tail = messages[messages.length - 1];
+		if (tail?.role !== "assistant") return;
+		if (tail.stopReason !== "error" && tail.stopReason !== "aborted") return;
+		logger.debug("agent active context failed assistant tail stripped positionally", {
+			stopReason: tail.stopReason,
+			timestamp: tail.timestamp,
+		});
+		this.#host.agent.replaceMessages(messages.slice(0, -1));
+	}
+
+	/**
+	 * Close the retry saga when the scheduled continue() failed locally (no
+	 * provider request was made). Mirrors the other retry dead-ends: emit the
+	 * closing `auto_retry_end` so subscribers stop showing retry progress, and
+	 * resolve the retry promise so the in-flight prompt() unwinds (issue #5382).
+	 */
+	async #failRetryAfterLocalContinueError(message: AssistantMessage, error: unknown): Promise<void> {
+		if (this.#retryAttempt === 0) return;
+		const attempt = this.#retryAttempt;
+		this.#retryAttempt = 0;
+		const localError = error instanceof Error ? error.message : String(error);
+		await this.persistTerminalEmptyErrorTurn(message);
+		await this.#host.emitSessionEvent({
+			type: "auto_retry_end",
+			success: false,
+			attempt,
+			finalError: `Retry continuation failed locally: ${localError}. Original error: ${message.errorMessage ?? "Unknown error"}`,
+		});
+		this.#clearPendingRecoveredRetryErrors();
+		this.resolveRetry();
 	}
 
 	/**

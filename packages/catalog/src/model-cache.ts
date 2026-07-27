@@ -9,8 +9,10 @@ import type { Api, Model, ModelSpec } from "./types";
 // Rows persist ModelSpec JSON (sparse `compat`, never the resolved record);
 // the model manager rebuilds via `buildModel` on load. Request headers are
 // intentionally omitted: arbitrary provider-defined header names can carry
-// credentials. v11 invalidates rows that may persist derived computer-use
-// support without provenance; v10 deletes rows that may contain persisted
+// credentials. v12 invalidates Kimi Code rows carrying the blanket
+// maxTokens: 32000 that predate per-family output caps (k3/k3-256k -> 131072,
+// kimi-for-coding[-highspeed] -> 32768, #6711); v11 invalidates rows that may
+// persist derived computer-use
 // headers and records which model ids lost headers or cannot be rebuilt.
 // v9 invalidated Kimi Code rows predating live effort and protocol metadata;
 // v8 invalidated Codex discovery rows predating provider-native V2 compaction
@@ -20,7 +22,7 @@ import type { Api, Model, ModelSpec } from "./types";
 // retired unknown-limit sentinels (222222/8888); v5 invalidated rows predating
 // effort-tier variant collapsing (raw `-low`/`-high`/`-thinking` member ids);
 // v4 dropped the pre-efforts ThinkingConfig shape.
-const CACHE_SCHEMA_VERSION = 11;
+const CACHE_SCHEMA_VERSION = 12;
 const HEADER_RESTORE_VERSION = 1;
 
 interface CacheRow {

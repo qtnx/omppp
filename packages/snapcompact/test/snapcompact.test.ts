@@ -924,6 +924,7 @@ describe("compact", () => {
 		expect(cols.slice(0, 3)).toEqual([hiCols, hiCols, hiCols]);
 		expect(cols.slice(-3)).toEqual([hiCols, hiCols, hiCols]);
 		expect(cols[3]).toBeGreaterThan(hiCols);
+		expect(result.summary).toContain(`${hiCols} or ${cols[3]} characters wide`);
 	});
 
 	it("keeps foveated Silver archives on the Silver font", async () => {

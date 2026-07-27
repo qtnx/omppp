@@ -1,6 +1,7 @@
 /** Centralized error/warning text for the hashline parser, applier, and patcher. */
 
 import { formatNumberedLine, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_RANGE_SEP } from "./format";
+import type { BlockSpan } from "./types";
 
 /** Lines of context shown either side of a hash mismatch. */
 export const MISMATCH_CONTEXT = 2;
@@ -28,6 +29,39 @@ export function formatAnchoredContext(anchorLines: readonly number[], fileLines:
 		rows.push(`${marker}${formatNumberedLine(lineNum, fileLines[lineNum - 1] ?? "")}`);
 	}
 	return rows;
+}
+/** Concrete range operation rejected because its absolute end precedes its start. */
+export type AbsoluteRangeOp = "replace" | "delete";
+
+/** Explain absolute range endpoints and provide safe, non-applying retry forms. */
+export function invalidAbsoluteRangeMessage(
+	patchLine: number,
+	start: number,
+	end: number,
+	op: AbsoluteRangeOp,
+	block?: BlockSpan,
+): string {
+	const single = op === "replace" ? `SWAP ${start}${HL_RANGE_SEP}${start}:` : `DEL ${start}`;
+	const countedEnd = start + end - 1;
+	const counted =
+		Number.isSafeInteger(countedEnd) && countedEnd >= start
+			? op === "replace"
+				? `SWAP ${start}${HL_RANGE_SEP}${countedEnd}:`
+				: `DEL ${start}${HL_RANGE_SEP}${countedEnd}`
+			: null;
+	const blockForm = op === "replace" ? `SWAP.BLK ${start}:` : `DEL.BLK ${start}`;
+	let message =
+		`line ${patchLine}: Invalid absolute range: start ${start}, end ${end}. ` +
+		`The value after \`${HL_RANGE_SEP}\` is an absolute source line, not a line count or replacement length. ` +
+		`For one line use \`${single}\`.`;
+	if (counted !== null) {
+		message += ` For ${end} lines starting at ${start}, use \`${counted}\`.`;
+	}
+	if (block?.start === start && block.end > start) {
+		message +=
+			` The syntactic block beginning at ${start} ends at ${block.end}, ` + `so \`${blockForm}\` is also valid.`;
+	}
+	return message;
 }
 
 /** Optional patch envelope start marker; silently consumed. */
@@ -70,6 +104,14 @@ export const EMPTY_REPLACE = `\`SWAP N${HL_RANGE_SEP}M:\` needs at least one \`+
 /** `replace_block N:` hunk with no body. */
 export const EMPTY_BLOCK = "`SWAP.BLK N:` needs at least one `+TEXT` body row. To delete a block, use `DEL.BLK N`.";
 
+/** Optional source-aware suggestions appended to block-anchor diagnostics. */
+export interface BlockDiagnosticSuggestions {
+	/** Closest following multi-line block that begins after the authored anchor. */
+	nextBlock?: BlockSpan;
+	/** Closest preceding multi-line block whose span contains the authored anchor. */
+	enclosingBlock?: BlockSpan;
+}
+
 /**
  * Block-anchored replace/delete could not resolve to a syntactic block
  * (unsupported language, blank/out-of-range line, no node beginning on N, or
@@ -82,12 +124,31 @@ export function blockUnresolvedMessage(
 	line: number,
 	op: "replace" | "delete" = "replace",
 	fileLines?: readonly string[],
+	suggestions: BlockDiagnosticSuggestions = {},
 ): string {
 	const phrase = op === "delete" ? `DEL.BLK ${line}` : `SWAP.BLK ${line}:`;
 	const fallback = op === "delete" ? `DEL ${line}${HL_RANGE_SEP}M` : `SWAP ${line}${HL_RANGE_SEP}M:`;
-	let message =
-		`\`${phrase}\` could not resolve a syntactic block beginning on line ${line} ` +
-		`(unsupported language, blank/closer line, or parse error). Use \`${fallback}\` with explicit lines.`;
+	const anchorText = fileLines?.[line - 1];
+	const nextBlock = suggestions.nextBlock;
+	let message: string;
+	if (anchorText !== undefined && anchorText.trim().length === 0 && nextBlock) {
+		const retry = op === "delete" ? `DEL.BLK ${nextBlock.start}` : `SWAP.BLK ${nextBlock.start}:`;
+		message =
+			`Line ${line} is blank; no syntactic block can begin there. ` +
+			`The next multi-line block begins at line ${nextBlock.start} and ends at line ${nextBlock.end}. ` +
+			`Retry \`${retry}\`.`;
+	} else {
+		message =
+			`\`${phrase}\` could not resolve a syntactic block beginning on line ${line} ` +
+			`(unsupported language, blank/closer line, or parse error). Use \`${fallback}\` with explicit lines.`;
+	}
+	const enclosingBlock = suggestions.enclosingBlock;
+	if (enclosingBlock) {
+		const retry = op === "delete" ? `DEL.BLK ${enclosingBlock.start}` : `SWAP.BLK ${enclosingBlock.start}:`;
+		message +=
+			` The nearest enclosing multi-line block begins at line ${enclosingBlock.start} ` +
+			`and ends at line ${enclosingBlock.end}; use \`${retry}\` to target it.`;
+	}
 	if (fileLines) {
 		const context = formatAnchoredContext([line], fileLines);
 		if (context.length > 0) message += `\n\n${context.join("\n")}`;
@@ -344,7 +405,7 @@ export type BlockOp = "replace" | "delete" | "insert_after";
  * form only earns its keep when it spares counting a closing line you cannot
  * see. Reject and point at both fixes.
  */
-export function blockSingleLineMessage(line: number, op: BlockOp): string {
+export function blockSingleLineMessage(line: number, op: BlockOp, enclosingBlock?: BlockSpan): string {
 	const blockForm = op === "insert_after" ? "INS.BLK.POST" : op === "delete" ? "DEL.BLK" : "SWAP.BLK";
 	const plainForm =
 		op === "insert_after"
@@ -352,9 +413,19 @@ export function blockSingleLineMessage(line: number, op: BlockOp): string {
 			: op === "delete"
 				? `DEL ${line}`
 				: `SWAP ${line}${HL_RANGE_SEP}${line}:`;
-	return (
+	let message =
 		`\`${blockForm} ${line}\` resolved a single-line block — line ${line} is a bare statement, not the opening line ` +
-		`of a multi-line construct. For that one line use \`${plainForm}\`; to act on an enclosing construct, anchor ${blockForm} ` +
-		`on the line that OPENS it (e.g. its \`function\`/\`if\`/\`case\` header), never a statement inside it.`
-	);
+		`of a multi-line construct. For only this statement use \`${plainForm}\`.`;
+	if (enclosingBlock) {
+		const enclosingForm =
+			op === "insert_after"
+				? `INS.BLK.POST ${enclosingBlock.start}:`
+				: op === "delete"
+					? `DEL.BLK ${enclosingBlock.start}`
+					: `SWAP.BLK ${enclosingBlock.start}:`;
+		message +=
+			` The nearest enclosing multi-line block begins at line ${enclosingBlock.start} ` +
+			`and ends at line ${enclosingBlock.end}; use \`${enclosingForm}\` to target it.`;
+	}
+	return message;
 }

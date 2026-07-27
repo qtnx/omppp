@@ -26,6 +26,7 @@ import {
 	parseDaemonWireRequest,
 } from "./protocol";
 import { resolveDaemonSpawnOptions } from "./spawn-options";
+import { renderTerminalOutput } from "./terminal-output";
 
 const DEFAULT_IDLE_GRACE_MS = 3_000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -90,7 +91,8 @@ interface BrokerLease {
 
 interface DaemonLogRead {
 	text: string;
-	terminalText: string;
+	terminalOutput: string;
+	cursor: number;
 }
 
 function quoteShellArg(value: string): string {
@@ -204,10 +206,19 @@ class DaemonLog {
 		return text;
 	}
 
-	async read(head: boolean, lines: number, grep?: string): Promise<DaemonLogRead> {
-		await this.#queue;
-		await this.#writer.flush();
-		return DaemonLog.readFiles(this.#path, this.#previousPath, head, lines, grep);
+	read(head: boolean, lines: number, cursor: number, grep?: string): Promise<DaemonLogRead> {
+		const snapshot = this.#queue.then(async () => {
+			await this.#writer.flush();
+			return DaemonLog.readFiles(this.#path, this.#previousPath, head, lines, cursor, grep);
+		});
+		// Appends that arrive after this call queue behind the file snapshot, so its
+		// cursor can never include bytes that its terminal replay did not read. A read
+		// failure still rejects the caller but must not poison the append queue.
+		this.#queue = snapshot.then(
+			() => undefined,
+			() => undefined,
+		);
+		return snapshot;
 	}
 
 	async close(): Promise<void> {
@@ -222,14 +233,15 @@ class DaemonLog {
 		previousPath: string,
 		head: boolean,
 		lines: number,
+		cursor: number,
 		grep?: string,
 	): Promise<DaemonLogRead> {
 		const [previous, current] = await Promise.all([fileTextSlice(previousPath, head), fileTextSlice(logPath, head)]);
 		const combined = `${previous}${previous && current && !previous.endsWith("\n") ? "\n" : ""}${current}`;
-		const terminalText = head
+		const terminalOutput = head
 			? truncateHeadBytes(combined, LOG_READ_BYTES).text
 			: truncateTailBytes(combined, LOG_READ_BYTES).text;
-		let text = sanitizeText(terminalText);
+		let text = sanitizeText(terminalOutput);
 		if (grep) {
 			let pattern: RegExp;
 			try {
@@ -245,7 +257,8 @@ class DaemonLog {
 		const options = { maxLines: lines, maxBytes: 256 * 1024 };
 		return {
 			text: head ? truncateHead(text, options).content : truncateTail(text, options).content,
-			terminalText,
+			terminalOutput,
+			cursor,
 		};
 	}
 
@@ -834,20 +847,30 @@ class DaemonBroker {
 		}
 		const lines = Math.max(1, Math.min(1_000, Math.floor(operation.lines)));
 		const output = record.log
-			? await record.log.read(operation.head, lines, operation.grep)
+			? await record.log.read(operation.head, lines, record.snapshot.outputBytes, operation.grep)
 			: await DaemonLog.readFiles(
 					path.join(record.dir, LOG_FILE),
 					path.join(record.dir, PREVIOUS_LOG_FILE),
 					operation.head,
 					lines,
+					record.snapshot.outputBytes,
 					operation.grep,
 				);
+		const terminalOutput = record.spec.pty && operation.grep === undefined ? output.terminalOutput : undefined;
+		const terminalRows =
+			terminalOutput !== undefined && operation.renderTerminalRows === true
+				? await renderTerminalOutput(terminalOutput, { head: operation.head, maxRows: lines })
+				: undefined;
 		return {
 			op: "logs",
 			name: record.snapshot.name,
 			text: output.text,
-			terminalText: record.spec.pty && operation.grep === undefined ? output.terminalText : undefined,
-			cursor: record.snapshot.outputBytes,
+			terminalRows,
+			terminalText:
+				terminalOutput !== undefined && (operation.renderTerminalRows !== true || terminalRows === undefined)
+					? terminalOutput
+					: undefined,
+			cursor: output.cursor,
 			timedOut,
 			state: record.snapshot.state,
 		};

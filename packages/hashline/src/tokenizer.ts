@@ -171,14 +171,18 @@ function scanRangeSeparator(line: string, index: number, end: number): number | 
 			consumedSeparator = true;
 			continue;
 		}
-		if (
-			code === CHAR_DOT &&
-			cursor + 1 < end &&
-			(line.charCodeAt(cursor + 1) === CHAR_DOT || line.charCodeAt(cursor + 1) === CHAR_EQUALS)
-		) {
-			cursor += 2;
-			consumedSeparator = true;
-			continue;
+		if (code === CHAR_DOT && cursor + 1 < end) {
+			const next = line.charCodeAt(cursor + 1);
+			if (next === CHAR_DOT || next === CHAR_EQUALS) {
+				cursor += 2;
+				consumedSeparator = true;
+				continue;
+			}
+			if (isNonZeroDigitCode(next)) {
+				cursor++;
+				consumedSeparator = true;
+				continue;
+			}
 		}
 		break;
 	}

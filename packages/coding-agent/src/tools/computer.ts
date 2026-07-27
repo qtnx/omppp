@@ -14,8 +14,8 @@ import type {
 	DesktopDisplay,
 	DesktopSessionOptions,
 } from "@oh-my-pi/pi-natives";
-import { prompt, sanitizeText } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
+import { once, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
+import { type Type, type } from "arktype";
 import computerDescription from "../prompts/tools/computer.md" with { type: "text" };
 import { truncateForPrompt } from "./approval";
 import { type ComputerController, ComputerSupervisor, registerComputerController } from "./computer/supervisor";
@@ -57,46 +57,72 @@ function captureOptions(session: ToolSession, coordinateSafeImageSizing: boolean
 const INT32_MIN = -2_147_483_648;
 const INT32_MAX = 2_147_483_647;
 
-const coordinateSchema = type("0 <= number.integer <= 2147483647");
-const scrollDeltaSchema = type("-2147483648 <= number.integer <= 2147483647");
+type ComputerSchemaPoint = {
+	x: number;
+	y: number;
+};
 
-const pointSchema = type({
-	x: coordinateSchema.describe("x pixel coordinate"),
-	y: coordinateSchema.describe("y pixel coordinate"),
-	"+": "reject",
+type ComputerSchemaAction = {
+	type: ComputerAction["type"];
+	x?: number;
+	y?: number;
+	button?: "left" | "right" | "wheel" | "back" | "forward";
+	path?: ComputerSchemaPoint[];
+	keys?: string[] | null;
+	scroll_x?: number;
+	scroll_y?: number;
+	text?: string;
+};
+
+export type ComputerParams = {
+	actions?: ComputerSchemaAction[];
+};
+
+type IsSameType<Left, Right> = [Left] extends [Right] ? ([Right] extends [Left] ? true : false) : false;
+type ComputerSchema<Schema extends Type = Type<ComputerParams>> =
+	IsSameType<ComputerParams, Schema["infer"]> extends true ? Schema : never;
+
+const getComputerSchema: () => ComputerSchema = once(() => {
+	const coordinateSchema = type("0 <= number.integer <= 2147483647");
+	const scrollDeltaSchema = type("-2147483648 <= number.integer <= 2147483647");
+
+	const pointSchema = type({
+		x: coordinateSchema.describe("x pixel coordinate"),
+		y: coordinateSchema.describe("y pixel coordinate"),
+		"+": "reject",
+	});
+
+	const computerActionSchema = type({
+		type: type(
+			"'click' | 'double_click' | 'drag' | 'keypress' | 'move' | 'screenshot' | 'scroll' | 'type' | 'wait'",
+		).describe("action kind"),
+		"x?": coordinateSchema.describe(
+			"x pixel coordinate in the most recent screenshot (click, double_click, move, scroll)",
+		),
+		"y?": coordinateSchema.describe(
+			"y pixel coordinate in the most recent screenshot (click, double_click, move, scroll)",
+		),
+		"button?": type("'left' | 'right' | 'wheel' | 'back' | 'forward'").describe("mouse button; required for click"),
+		"path?": pointSchema.array().atLeastLength(2).describe("waypoints from press to release; required for drag"),
+		"keys?": type("string[] | null").describe(
+			"key names (e.g. CTRL, SHIFT, ENTER, A); required chord for keypress, optional held modifiers for pointer actions",
+		),
+		"scroll_x?": scrollDeltaSchema.describe("horizontal scroll delta in pixels; required for scroll"),
+		"scroll_y?": scrollDeltaSchema.describe(
+			"vertical scroll delta in pixels, positive scrolls content down; required for scroll",
+		),
+		"text?": type("string").describe("literal text to type; required for type"),
+		"+": "reject",
+	});
+
+	const computerSchema = type({
+		"actions?": computerActionSchema
+			.array()
+			.describe("ordered actions executed as one batch; omit or pass [] to just capture a screenshot"),
+		"+": "reject",
+	});
+	return computerSchema satisfies ComputerSchema<typeof computerSchema>;
 });
-
-const computerActionSchema = type({
-	type: type(
-		"'click' | 'double_click' | 'drag' | 'keypress' | 'move' | 'screenshot' | 'scroll' | 'type' | 'wait'",
-	).describe("action kind"),
-	"x?": coordinateSchema.describe(
-		"x pixel coordinate in the most recent screenshot (click, double_click, move, scroll)",
-	),
-	"y?": coordinateSchema.describe(
-		"y pixel coordinate in the most recent screenshot (click, double_click, move, scroll)",
-	),
-	"button?": type("'left' | 'right' | 'wheel' | 'back' | 'forward'").describe("mouse button; required for click"),
-	"path?": pointSchema.array().atLeastLength(2).describe("waypoints from press to release; required for drag"),
-	"keys?": type("string[] | null").describe(
-		"key names (e.g. CTRL, SHIFT, ENTER, A); required chord for keypress, optional held modifiers for pointer actions",
-	),
-	"scroll_x?": scrollDeltaSchema.describe("horizontal scroll delta in pixels; required for scroll"),
-	"scroll_y?": scrollDeltaSchema.describe(
-		"vertical scroll delta in pixels, positive scrolls content down; required for scroll",
-	),
-	"text?": type("string").describe("literal text to type; required for type"),
-	"+": "reject",
-});
-
-const computerSchema = type({
-	"actions?": computerActionSchema
-		.array()
-		.describe("ordered actions executed as one batch; omit or pass [] to just capture a screenshot"),
-	"+": "reject",
-});
-
-export type ComputerParams = typeof computerSchema.infer;
 
 export interface ComputerToolDetails {
 	width: number;
@@ -374,14 +400,16 @@ function approvalActionSummary(actions: unknown): string[] {
 	return truncateForPrompt(lines.join("\n"), 2_000).split("\n");
 }
 
-export class ComputerTool implements AgentTool<typeof computerSchema, ComputerToolDetails> {
+export class ComputerTool implements AgentTool<ComputerSchema, ComputerToolDetails> {
 	readonly name = "computer";
 	readonly native = { type: "computer" } as const;
 	readonly label = "Computer";
 	readonly loadMode = "essential" as const;
 	readonly concurrency = "exclusive" as const;
 	readonly summary = "Capture and control the host desktop through native OS APIs";
-	readonly parameters = computerSchema;
+	get parameters(): ComputerSchema {
+		return getComputerSchema();
+	}
 	readonly strict = false;
 	readonly approval = computerApproval;
 	readonly formatApprovalDetails = (args: unknown): string[] => {

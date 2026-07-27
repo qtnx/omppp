@@ -7,7 +7,7 @@ import * as kimiOauth from "../../registry/oauth/kimi";
 import { streamSimple } from "../../stream";
 import type { Context, Model } from "../../types";
 import type { MessageCreateParamsStreaming } from "../anthropic-wire";
-import { type KimiApiFormat, streamKimi } from "../kimi";
+import { type KimiApiFormat, type KimiOptions, streamKimi } from "../kimi";
 import { streamOpenAIAnthropicShim } from "../openai-anthropic-shim";
 import {
 	applyChatCompletionsCompatPolicy,
@@ -95,6 +95,35 @@ async function captureKimiPayload(
 	return payload;
 }
 
+async function captureKimiCachePayload(
+	format: KimiApiFormat,
+	options: Omit<KimiOptions, "apiKey" | "format" | "onPayload">,
+): Promise<Record<string, unknown>> {
+	let payload: unknown;
+	const stream = streamKimi(
+		K3_MODEL,
+		{
+			systemPrompt: [],
+			messages: [{ role: "user", content: "Reply OK", timestamp: 0 }],
+			tools: [],
+		},
+		{
+			...options,
+			apiKey: "test-key",
+			format,
+			onPayload: body => {
+				payload = body;
+				throw new Error("stop after payload capture");
+			},
+		},
+	);
+	await stream.result();
+	if (payload === undefined || typeof payload !== "object" || payload === null) {
+		throw new Error("Kimi cache-affinity payload was not captured");
+	}
+	return payload as Record<string, unknown>;
+}
+
 afterEach(() => {
 	vi.restoreAllMocks();
 });
@@ -122,6 +151,7 @@ describe("OpenAI/Anthropic compatibility shim cache affinity", () => {
 			{
 				apiKey: "test-key",
 				format: "openai",
+				cacheRetention: "none",
 				promptCacheKey: cacheKey,
 				fetch: async (_input, init) => {
 					requestHeaders = new Headers(init?.headers);
@@ -140,6 +170,71 @@ describe("OpenAI/Anthropic compatibility shim cache affinity", () => {
 		await stream.result();
 
 		expect(requestHeaders?.get("x-grok-conv-id")).toBe(cacheKey);
+	});
+});
+
+describe("Kimi Code prompt cache affinity", () => {
+	it("sends the explicit cache key on both supported transports", async () => {
+		vi.spyOn(kimiOauth, "getKimiCommonHeaders").mockReturnValue(KIMI_HEADERS);
+
+		const openaiPayload = await captureKimiCachePayload("openai", {
+			promptCacheKey: "stable-cache-key",
+			sessionId: "side-channel-session",
+		});
+		const anthropicPayload = await captureKimiCachePayload("anthropic", {
+			promptCacheKey: "stable-cache-key",
+			sessionId: "side-channel-session",
+		});
+
+		expect(openaiPayload.prompt_cache_key).toBe("stable-cache-key");
+		expect(anthropicPayload.metadata).toEqual({ user_id: "stable-cache-key" });
+	});
+
+	it("falls back to the provider session on both supported transports", async () => {
+		vi.spyOn(kimiOauth, "getKimiCommonHeaders").mockReturnValue(KIMI_HEADERS);
+
+		const openaiPayload = await captureKimiCachePayload("openai", { sessionId: "stable-session" });
+		const anthropicPayload = await captureKimiCachePayload("anthropic", { sessionId: "stable-session" });
+
+		expect(openaiPayload.prompt_cache_key).toBe("stable-session");
+		expect(anthropicPayload.metadata).toEqual({ user_id: "stable-session" });
+	});
+
+	it("preserves an explicit Anthropic metadata user id", async () => {
+		vi.spyOn(kimiOauth, "getKimiCommonHeaders").mockReturnValue(KIMI_HEADERS);
+
+		const payload = await captureKimiCachePayload("anthropic", {
+			metadata: { user_id: "caller-user-id" },
+			promptCacheKey: "automatic-cache-key",
+		});
+
+		expect(payload.metadata).toEqual({ user_id: "caller-user-id" });
+	});
+
+	it("falls back from an invalid Anthropic metadata user id", async () => {
+		vi.spyOn(kimiOauth, "getKimiCommonHeaders").mockReturnValue(KIMI_HEADERS);
+
+		const payload = await captureKimiCachePayload("anthropic", {
+			metadata: { user_id: 0 },
+			promptCacheKey: "automatic-cache-key",
+		});
+
+		expect(payload.metadata).toEqual({ user_id: "automatic-cache-key" });
+	});
+
+	it("omits automatic affinity when prompt caching is disabled", async () => {
+		vi.spyOn(kimiOauth, "getKimiCommonHeaders").mockReturnValue(KIMI_HEADERS);
+		const options = {
+			cacheRetention: "none",
+			promptCacheKey: "disabled-cache-key",
+			sessionId: "disabled-session",
+		} as const;
+
+		const openaiPayload = await captureKimiCachePayload("openai", options);
+		const anthropicPayload = await captureKimiCachePayload("anthropic", options);
+
+		expect(openaiPayload).not.toHaveProperty("prompt_cache_key");
+		expect(anthropicPayload).not.toHaveProperty("metadata");
 	});
 });
 

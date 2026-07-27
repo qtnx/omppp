@@ -1817,6 +1817,93 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(modern.defaultHeaders["anthropic-beta"] ?? "").not.toContain("interleaved-thinking-2025-05-14");
 	});
 
+	it("uses the effective route for adaptive interleaved-thinking beta headers", () => {
+		const adaptiveProxySpec: ModelSpec<"anthropic-messages"> = {
+			...ANTHROPIC_MODEL_SPEC,
+			id: "claude-opus-4-8",
+			name: "Claude Opus 4.8",
+			provider: "custom-anthropic",
+			baseUrl: "https://proxy.example.com/anthropic",
+			thinking: {
+				mode: "anthropic-adaptive",
+				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+				supportsDisplay: true,
+			},
+		};
+		const signingProxyUrl = "https://gateway.ai.cloudflare.com/v1/account/gateway/anthropic";
+		const signingProxy = buildAnthropicClientOptions({
+			model: buildModel({ ...adaptiveProxySpec, baseUrl: signingProxyUrl }),
+			apiKey: "sk-proxy-test",
+			interleavedThinking: true,
+		});
+		const canonicalModel = buildModel({
+			...adaptiveProxySpec,
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+		});
+		const reroutedSigningProxy = buildAnthropicClientOptions({
+			// Runtime provider overrides replace baseUrl without rebuilding the
+			// canonical model's official-endpoint compat.
+			model: { ...canonicalModel, baseUrl: signingProxyUrl },
+			apiKey: "sk-proxy-test",
+			interleavedThinking: true,
+		});
+		const nonSigningProxy = buildAnthropicClientOptions({
+			model: buildModel(adaptiveProxySpec),
+			apiKey: "sk-proxy-test",
+			interleavedThinking: true,
+		});
+		// Vertex rawPredict is signing regardless of provider id, but only
+		// accepts betas in the JSON body (`anthropic_beta`) (#5614).
+		const vertexRawPredict = buildAnthropicClientOptions({
+			model: buildModel({
+				...adaptiveProxySpec,
+				provider: "custom-vertex",
+				baseUrl:
+					"https://us-east5-aiplatform.googleapis.com/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-opus-4-8:rawPredict",
+			}),
+			apiKey: "vertex-adc",
+			interleavedThinking: true,
+		});
+		// A custom provider on a Copilot host is signing, but the proxy rejects
+		// Anthropic betas outright and this path bypasses the provider branch.
+		const copilotUrlProxy = buildAnthropicClientOptions({
+			model: buildModel({
+				...adaptiveProxySpec,
+				provider: "custom-copilot",
+				baseUrl: "https://api.githubcopilot.com",
+			}),
+			apiKey: "ghu_test",
+			interleavedThinking: true,
+		});
+		// Issue #6717's reported configuration: an opaque proxy the URL list
+		// can't recognize, explicitly marked signing via spec compat override.
+		const flaggedOpaqueProxy = buildAnthropicClientOptions({
+			model: buildModel({ ...adaptiveProxySpec, compat: { signingEndpoint: true } }),
+			apiKey: "sk-proxy-test",
+			interleavedThinking: true,
+		});
+		// ZenMux's provider id classifies signing even on a customized mirror
+		// URL (see packages/catalog/test/anthropic-zenmux-signing-compat.test.ts).
+		const zenmuxMirror = buildAnthropicClientOptions({
+			model: buildModel({
+				...adaptiveProxySpec,
+				provider: "zenmux",
+				baseUrl: "https://mirror.example.net/api/anthropic",
+			}),
+			apiKey: "sk-proxy-test",
+			interleavedThinking: true,
+		});
+
+		expect(signingProxy.defaultHeaders["anthropic-beta"]).toContain("interleaved-thinking-2025-05-14");
+		expect(reroutedSigningProxy.defaultHeaders["anthropic-beta"]).toContain("interleaved-thinking-2025-05-14");
+		expect(nonSigningProxy.defaultHeaders["anthropic-beta"] ?? "").not.toContain("interleaved-thinking-2025-05-14");
+		expect(vertexRawPredict.defaultHeaders["anthropic-beta"] ?? "").not.toContain("interleaved-thinking-2025-05-14");
+		expect(copilotUrlProxy.defaultHeaders["anthropic-beta"] ?? "").not.toContain("interleaved-thinking-2025-05-14");
+		expect(flaggedOpaqueProxy.defaultHeaders["anthropic-beta"]).toContain("interleaved-thinking-2025-05-14");
+		expect(zenmuxMirror.defaultHeaders["anthropic-beta"]).toContain("interleaved-thinking-2025-05-14");
+	});
+
 	it("adds legacy fine-grained tool-streaming beta only for tool requests on incompatible models", () => {
 		const incompatibleModel: Model<"anthropic-messages"> = buildModel({
 			...ANTHROPIC_MODEL_SPEC,
