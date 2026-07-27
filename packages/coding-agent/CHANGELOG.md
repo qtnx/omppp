@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserved the `/live` visualizer across agent question dialogs, restoring it after an answer or cancellation instead of dropping back to the normal editor.
+
 ## [1.6.6] - 2026-07-25
 
 ### Breaking Changes

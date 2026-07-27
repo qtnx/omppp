@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { Container, setKeybindings } from "@oh-my-pi/pi-tui";
 import { KeybindingsManager } from "../../config/keybindings";
 import type { ExtensionAskDialogQuestion, ExtensionUIContext } from "../../extensibility/extensions";
+import { LiveVisualizer } from "../../live/visualizer";
 import { AskDialogComponent } from "../components/ask-dialog";
 import { CustomEditor } from "../components/custom-editor";
 import { getEditorTheme, getThemeByName, setThemeInstance } from "../theme/theme";
@@ -233,6 +234,29 @@ describe("ExtensionUiController editor UI", () => {
 		await Promise.resolve();
 		ask?.handleInput?.("!");
 		expect(harness.editor.getText()).toBe("half typed prompt!");
+	});
+
+	it.each([
+		["answered", "\n"],
+		["cancelled", "\x1b"],
+	] as const)("restores the live visualizer after an ask dialog is %s", async (_outcome, input) => {
+		const harness = makeHarness();
+		const liveVisualizer = new LiveVisualizer({ onStop: vi.fn(), onToggleMute: vi.fn() });
+		harness.editorContainer.clear();
+		harness.editorContainer.addChild(liveVisualizer);
+		const questions: ExtensionAskDialogQuestion[] = [
+			{ id: "confirm", question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] },
+		];
+
+		const pending = harness.controller.showAskDialog(questions);
+		const ask = harness.editorContainer.children[0];
+		expect(ask).toBeInstanceOf(AskDialogComponent);
+
+		ask?.handleInput?.(input);
+		await pending;
+
+		expect(harness.editorContainer.children).toEqual([liveVisualizer]);
+		expect(harness.setFocus).toHaveBeenLastCalledWith(liveVisualizer);
 	});
 
 	it("bridges addAutocompleteProvider factories to the interactive mode context (#4919)", async () => {
