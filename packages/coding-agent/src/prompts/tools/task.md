@@ -5,7 +5,9 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 {{#if asyncEnabled}}
 
 # Async Job Contract
-- Results auto-deliver. A settled `hub jobs`/`hub wait` snapshot is the delivery; no duplicate `async-result` follows.
+- Results auto-deliver; a settled `job list`/`job poll` snapshot consumes its delivery, so no duplicate `async-result` follows.
+- NEVER busy-poll. The parent uses `job list` for snapshots and exact-ID `job poll` only when completely blocked.
+- The parent uses `job cancel` for stuck or unneeded tasks. `hub`/`irc` are only for peer messaging and explicit reply waits, NEVER subagent completion.
 - Job IDs are process-local and expire roughly five minutes after settlement. Afterward, use the agent ID with `hub send`, `agent://<id>`, or `history://<id>`.
 - `completed` means successful yield/job exit, not artifact acceptance. Verify claimed changes.
 {{/if}}

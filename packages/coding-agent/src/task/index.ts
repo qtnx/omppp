@@ -1210,11 +1210,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const coordinationHint = [
 			started.length === 1
 				? ircEnabled
-					? `DM \`${started[0].agentId}\` via \`hub\` send to coordinate while it runs; use \`hub\` only to inspect (\`jobs\`), wait, or cancel a stuck task.`
-					: `Use \`hub\` to inspect (\`jobs\`), wait, or cancel a stuck task.`
+					? `DM \`${started[0].agentId}\` via \`hub\` send to coordinate while it runs. Results auto-deliver; the parent uses \`job list\` to inspect, \`job poll\` with its exact id only when completely blocked, or \`job cancel\` a stuck/unneeded task.`
+					: `Results auto-deliver; the parent uses \`job list\` to inspect, \`job poll\` with its exact id only when completely blocked, or \`job cancel\` a stuck/unneeded task.`
 				: ircEnabled
-					? `DM these ids via \`hub\` send to coordinate while they run; use \`hub\` only to inspect (\`jobs\`), wait, or cancel a stuck task.`
-					: `Use \`hub\` to inspect (\`jobs\`), wait, or cancel a stuck task by id.`,
+					? `DM these ids via \`hub\` send to coordinate while they run. Results auto-deliver; the parent uses \`job list\` to inspect, \`job poll\` with exact ids only when completely blocked, or \`job cancel\` stuck/unneeded tasks.`
+					: `Results auto-deliver; the parent uses \`job list\` to inspect, \`job poll\` with exact ids only when completely blocked, or \`job cancel\` stuck/unneeded tasks.`,
 			taskAsyncContractTemplate.trim(),
 		].join("\n");
 
@@ -1229,7 +1229,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					content: [
 						{
 							type: "text",
-							text: `Spawned agent \`${agentId}\` (job \`${jobId}\`). Its result auto-delivers on yield unless a settled \`hub jobs\`/\`wait\` snapshot consumes it first. ${coordinationHint}`,
+							text: `Spawned agent \`${agentId}\` (job \`${jobId}\`). Its result auto-delivers; a settled \`job list\`/\`job poll\` snapshot consumes it. ${coordinationHint}`,
 						},
 					],
 					details: buildAsyncDetails(),
@@ -1244,7 +1244,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				content: [
 					{
 						type: "text",
-						text: `Spawned ${started.length} background agents using ${agentLabel}.${scheduleFailureSummary} Each result auto-delivers on yield unless a settled \`hub jobs\`/\`wait\` snapshot consumes it first.\n${startedListing}\n${coordinationHint}`,
+						text: `Spawned ${started.length} background agents using ${agentLabel}.${scheduleFailureSummary} Each result auto-delivers; a settled \`job list\`/\`job poll\` snapshot consumes it.\n${startedListing}\n${coordinationHint}`,
 					},
 				],
 				details: buildAsyncDetails(),
@@ -1308,7 +1308,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 		const spawnedSummary =
 			started.length > 0
-				? `Spawned ${started.length} background agent${started.length === 1 ? "" : "s"}.${scheduleFailureSummary} Each result auto-delivers on yield unless a settled \`hub jobs\`/\`wait\` snapshot consumes it first.\n${started.map(({ agentId, jobId }) => `- \`${agentId}\` (job \`${jobId}\`)`).join("\n")}\n${coordinationHint}`
+				? `Spawned ${started.length} background agent${started.length === 1 ? "" : "s"}.${scheduleFailureSummary} Each result auto-delivers; a settled \`job list\`/\`job poll\` snapshot consumes it.\n${started.map(({ agentId, jobId }) => `- \`${agentId}\` (job \`${jobId}\`)`).join("\n")}\n${coordinationHint}`
 				: scheduleFailureSummary.trim();
 		const text = [merged.contentParts.join("\n\n"), spawnedSummary]
 			.filter(section => section.trim().length > 0)

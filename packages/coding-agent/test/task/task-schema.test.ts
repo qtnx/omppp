@@ -76,6 +76,23 @@ describe("task spawn validation", () => {
 		return result.content.find(part => part.type === "text")?.text ?? "";
 	}
 
+	it("renders dedicated job lifecycle guidance when async tasks are enabled", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [], projectAgentsDir: null });
+		const session = createSession();
+		session.settings = Settings.isolated({
+			"task.isolation.mode": "none",
+			"task.batch": true,
+			"async.enabled": true,
+		});
+		const tool = await TaskTool.create(session);
+
+		expect(tool.description).toContain("`job list`");
+		expect(tool.description).toContain("`job poll`");
+		expect(tool.description).toContain("`job cancel`");
+		expect(tool.description).not.toContain("`hub wait`");
+		expect(tool.description).not.toContain('`hub` op:"wait"');
+	});
+
 	it("defaults a missing agent to `task`", async () => {
 		// With no `agent`, execute() normalizes to the `task` default, so the
 		// failure is unknown-agent (none discovered), not missing-agent.
