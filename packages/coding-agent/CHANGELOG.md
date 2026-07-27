@@ -742,6 +742,15 @@
 - Fixed the downshift plan nudge silently ending the run with no code written when the model answered with a text-only reply (no tool call): the agent loop treats a tool-call-free turn as a natural stop and never prompts again, which the nudge's own "write the plan in your next reply" instruction makes common. The nudge now explicitly tells the model this is a checkpoint, not a final answer, and the session forces one more turn whenever a post-nudge reply lands with zero tool calls
 - Fixed the browser tool crashing the whole process (parent session and every subagent) when a CDP world re-acquire failed mid-navigation: the stealth `puppeteer-core` patch called the bare `debugError` logger, which is `undefined` while the `puppeteer:error` debug channel is disabled (the default), turning a transient acquire failure into a fatal `TypeError` unhandled rejection. The patched `FrameManager`/`WebWorker` acquire paths now use `debugCatchError` ([#5296](https://github.com/can1357/oh-my-pi/issues/5296))
 - Fixed a role with a `:high` thinking suffix resolving to a longer sibling model whose id embeds the tier name (e.g. `kimi-for-coding:high` → `kimi-for-coding-highspeed`). The thinking suffix is now stripped before any fuzzy match, so `provider/model:high` keeps the exact model at high effort ([#5151](https://github.com/can1357/oh-my-pi/issues/5151)).
+## [17.1.3] - 2026-07-24
+
+### Fixed
+
+- Fixed the in-process `find` builtin's `-exec`/`-execdir` children inheriting the omp process's real stdout/stderr, so commands like `find … -exec ls -ld {} \;` spammed their output straight into the terminal (corrupting the TUI) instead of the tool's captured output, and bypassed shell redirects. Exec children now stream stdout/stderr back through the shell's scope streams (matching `xargs`/`ifne`) and run with the shell's exported environment (`env_clear` + scope snapshot) instead of the host process environment.
+- Fixed `ast_edit` erroring with "`lang` is required" — an argument that no longer exists in the tool schema — when `paths` resolved to files of multiple languages (e.g. a crate directory with `.rs` + `.toml`). Mixed-language paths now rewrite per file: each file is parsed in its own inferred language, patterns are compiled per language, and a pattern that doesn't parse in some matched language simply skips those files.
+- Fixed the `retain` tool's TUI renderer crashing when streaming arguments temporarily expose a non-array `items` value ([#6528](https://github.com/can1357/oh-my-pi/issues/6528)).
+- Fixed Edit and Write tools failing with `Settings not initialized` in isolated sessions by using each tool session's settings for generated-file guards, with safe schema defaults for standalone guards and inline-image rendering ([#6549](https://github.com/can1357/oh-my-pi/issues/6549)).
+
 ## [17.1.2] - 2026-07-24
 
 ### Added
