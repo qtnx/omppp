@@ -105,6 +105,17 @@ interface PendingTranscript {
 	timer: Timer;
 }
 
+/**
+ * Explicit spoken-language choice for a voice call, read from `?lang=` the same
+ * way `?voice=1` selects the voice-only view. Undefined means "no opinion", and
+ * the host applies its own default (`vi-VN`) — so the default lives in exactly
+ * one place instead of being duplicated into every client.
+ */
+export function voiceLanguageOverride(search: string): string | undefined {
+	const value = new URLSearchParams(search).get("lang")?.trim();
+	return value ? value : undefined;
+}
+
 export class GuestClient {
 	readonly #socket: CollabSocket;
 	readonly #name: string;
@@ -214,14 +225,18 @@ export class GuestClient {
 	/**
 	 * Hand a browser SDP offer to the host and resolve with the realtime answer.
 	 * The host signs and relays it; this browser never sees a credential.
+	 *
+	 * `lang` is an explicit spoken-language choice (BCP-47). Omitting it leaves
+	 * the language to the host's default, which is what every client did before
+	 * the field existed.
 	 */
-	sendLiveOffer(sdp: string): Promise<string> {
+	sendLiveOffer(sdp: string, lang?: string): Promise<string> {
 		this.#pendingLiveOffer?.settle.reject(new Error("A newer voice call replaced this one."));
 		const reqId = ++this.#reqSeq;
 		const settle = Promise.withResolvers<string>();
 		this.#pendingLiveOffer = { reqId, settle };
 		this.#liveEnded = null;
-		this.#socket.send({ t: "live-offer", reqId, sdp });
+		this.#socket.send(lang ? { t: "live-offer", reqId, sdp, lang } : { t: "live-offer", reqId, sdp });
 		this.#commit();
 		return settle.promise;
 	}

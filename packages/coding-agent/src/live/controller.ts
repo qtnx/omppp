@@ -12,6 +12,11 @@ import { CodexLiveTransport, type LiveTransportOptions } from "./transport";
 import type { LivePhase } from "./visualizer";
 
 const DEFAULT_VOICE = "sol";
+/**
+ * Spoken language of the call when nobody picks one. `voice` above is a timbre
+ * id and says nothing about language; this is the locale the model answers in.
+ */
+const DEFAULT_LANGUAGE = "vi-VN";
 /** Output RMS at or above this level counts as the assistant actively speaking. */
 export const OUTPUT_ACTIVE_LEVEL = 0.015;
 
@@ -53,14 +58,34 @@ export interface LiveSessionControllerOptions {
 	authStorage: AuthStorage;
 	/** UI callbacks for live session state. */
 	callbacks: LiveSessionCallbacks;
-	/** Realtime output voice, defaulting to sol. */
+	/** Realtime output voice (timbre id), defaulting to sol. */
 	voice?: string;
+	/**
+	 * BCP-47 tag for the spoken language, defaulting to `vi-VN`. An explicit
+	 * choice — a guest's `live-offer` `lang`, or `ompx live --language` — wins.
+	 */
+	language?: string;
 	/** Control-plane factory; defaults to the Codex live transport. Overridable for tests. */
 	createTransport?: (options: LiveTransportOptions) => LiveControlTransport;
 }
 
 function errorFrom(cause: unknown): Error {
 	return cause instanceof Error ? cause : new Error(String(cause));
+}
+
+/**
+ * Render a BCP-47 tag the way the realtime model reads it best: the English
+ * language name plus the tag itself ("Vietnamese (Vietnam) (vi-VN)"). An
+ * unknown or malformed tag degrades to the raw tag instead of throwing, so a
+ * bad `--language` or a guest's typo never kills the call.
+ */
+function describeLanguage(tag: string): string {
+	try {
+		const name = new Intl.DisplayNames(["en"], { type: "language" }).of(tag);
+		return name && name !== tag ? `${name} (${tag})` : tag;
+	} catch {
+		return tag;
+	}
 }
 
 /** Coordinates the realtime conversational surface with delegated agent turns. */
@@ -71,6 +96,7 @@ export class LiveSessionController {
 	readonly #authStorage: AuthStorage;
 	readonly #callbacks: LiveSessionCallbacks;
 	readonly #voice: string;
+	readonly #language: string;
 	readonly #createTransport: (options: LiveTransportOptions) => LiveControlTransport;
 
 	#transport: LiveControlTransport | undefined;
@@ -99,6 +125,7 @@ export class LiveSessionController {
 		this.#authStorage = options.authStorage;
 		this.#callbacks = options.callbacks;
 		this.#voice = options.voice?.trim() || DEFAULT_VOICE;
+		this.#language = options.language?.trim() || DEFAULT_LANGUAGE;
 		this.#createTransport = options.createTransport ?? (opts => new CodexLiveTransport(opts));
 	}
 
@@ -138,6 +165,7 @@ export class LiveSessionController {
 			const instructions = prompt.render(liveInstructionsTemplate, {
 				firstName: this.#identity.firstName,
 				username: this.#identity.username,
+				language: describeLanguage(this.#language),
 			});
 			const transport = this.#createTransport({
 				authStorage: this.#authStorage,

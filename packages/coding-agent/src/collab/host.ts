@@ -356,7 +356,7 @@ export class CollabHost {
 				void this.#handleFetchTranscript(frame.reqId, frame.agentId, frame.fromByte, fromPeer);
 				break;
 			case "live-offer":
-				this.#handleLiveOffer(frame.reqId, frame.sdp, fromPeer);
+				this.#handleLiveOffer(frame.reqId, frame.sdp, fromPeer, frame.lang);
 				break;
 			case "live-mute":
 				void this.#liveMedia?.setMuted(frame.muted);
@@ -540,8 +540,11 @@ export class CollabHost {
 	 * Start a live voice call whose microphone and speaker live in the guest's
 	 * browser. This host keeps the Codex credential, the signaling call, the
 	 * sideband, and the agent; only the SDP handshake crosses the relay.
+	 *
+	 * `lang` is the guest's explicit spoken-language choice; older clients omit
+	 * it and the controller's default (`vi-VN`) applies.
 	 */
-	#handleLiveOffer(reqId: number, sdp: string, fromPeer: number): void {
+	#handleLiveOffer(reqId: number, sdp: string, fromPeer: number, lang?: string): void {
 		const peer = this.#peers.get(fromPeer);
 		if (!peer?.canWrite) {
 			this.#rejectReadOnly("starting a voice call", fromPeer);
@@ -575,6 +578,7 @@ export class CollabHost {
 			agent: new LocalAgentEndpoint(this.#ctx.session, message => this.#ctx.extractAssistantText(message)),
 			identity: localAgentIdentity(this.#ctx.session),
 			authStorage: this.#ctx.session.modelRegistry.authStorage,
+			language: lang,
 			callbacks: {
 				onPhase: phase => this.#socket?.send({ t: "live-phase", phase }, fromPeer),
 				onTranscript: transcript => {

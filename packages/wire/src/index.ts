@@ -345,8 +345,14 @@ export type GuestFrame =
 	| { t: "abort" }
 	| { t: "agent-cmd"; cmd: "chat" | "kill" | "revive"; agentId: string; text?: string }
 	| { t: "fetch-transcript"; reqId: number; agentId: string; fromByte: number }
-	/** Guest offers a WebRTC session description to open the browser-owned live call; host replies with `live-answer`. */
-	| { t: "live-offer"; reqId: number; sdp: string }
+	/**
+	 * Guest offers a WebRTC session description to open the browser-owned live call; host replies with `live-answer`.
+	 *
+	 * `lang` is an optional BCP-47 tag ("vi-VN", "en-US") choosing the call's
+	 * spoken language. Omitting it — which every client predating this field
+	 * does — leaves the choice to the host's default.
+	 */
+	| { t: "live-offer"; reqId: number; sdp: string; lang?: string }
 	/** Guest toggles its microphone; the host relays the mute state to the agent side. */
 	| { t: "live-mute"; muted: boolean }
 	/** Guest reports the current mic input level (0..1) for host-side visualization. */
