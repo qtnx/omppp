@@ -278,6 +278,7 @@ export function resolveOpenAIRequestSetup(
 		const credential = parseAlibabaTokenPlanCredential(rawApiKey);
 		if (!credential) throw new AIError.ConfigurationError("Invalid QwenCloud Token Plan credential");
 		apiKey = credential.token;
+		if (credential.baseUrl) baseUrl = credential.baseUrl;
 	}
 
 	if (options.alibabaCodingPlanAuth && model.provider === "alibaba-coding-plan") {
@@ -3331,6 +3332,16 @@ const TOP_LEVEL_EXCLUDE_MAP = {
 };
 
 /**
+ * Output-only lifecycle metadata excluded from per-item prefix identity:
+ * replay sanitization strips `status` from message/function_call/custom
+ * tool items (they reject output lifecycle fields), so raw response items
+ * must not be distinguished from their sanitized replay form.
+ */
+const ITEM_LIFECYCLE_EXCLUDE_MAP = {
+	status: true,
+};
+
+/**
  * Strict-prefix delta for stateful `previous_response_id` chaining (used by the
  * platform Responses provider and the Codex provider on both transports):
  * returns the input items the current request appends beyond the previous
@@ -3357,7 +3368,7 @@ export function buildResponsesDeltaInput<TItem extends ResponseInputItem | Input
 	for (const series of [previous.input, previousResponseItems]) {
 		if (!series) continue;
 		for (const item of series) {
-			if (deepEqualsWithout(item, current.input[index])) {
+			if (deepEqualsWithout(item, current.input[index], ITEM_LIFECYCLE_EXCLUDE_MAP)) {
 				index++;
 			} else {
 				return null;

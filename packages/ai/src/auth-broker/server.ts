@@ -22,6 +22,7 @@ import type {
 	CredentialDisableResponse,
 	CredentialRefreshResponse,
 	CredentialUploadResponse,
+	DisabledCredentialsResponse,
 	HealthzResponse,
 	RefresherSchedule,
 	SnapshotEntry,
@@ -658,6 +659,12 @@ export function startAuthBroker(opts: AuthBrokerServerOptions): AuthBrokerServer
 						logger.warn("auth-broker usage cache invalidation failed", { peer, error: message });
 						return json(500, { error: message });
 					}
+				}
+				if (req.method === "GET" && pathname === "/v1/credentials/disabled") {
+					const provider = url.searchParams.get("provider") ?? undefined;
+					const disabled = await opts.storage.listDisabledCredentials(provider, req.signal);
+					const body: DisabledCredentialsResponse = { generatedAt: Date.now(), disabled };
+					return json(200, body);
 				}
 				const refreshMatch = req.method === "POST" ? pathname.match(REFRESH_ROUTE) : null;
 				if (refreshMatch) {

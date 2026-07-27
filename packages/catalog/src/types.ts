@@ -834,6 +834,8 @@ export interface Model<TApi extends Api = Api> {
 	supportsTools?: boolean;
 	/** Whether this model accepts the GA OpenAI Responses `{ type: "computer" }` native tool. */
 	supportsComputerUse?: boolean;
+	/** Verbatim explicit computer-use support from the spec; undefined when `buildModel` inferred the runtime value. */
+	supportsComputerUseConfig?: boolean;
 	/** GitLab Duo Workflow root namespace selected during catalog discovery. */
 	gitlabDuoWorkflowRootNamespaceId?: string;
 	/** Cursor `max_mode` request flag returned by `GetUsableModels` for premium models that require max mode. */
@@ -919,7 +921,8 @@ export interface Model<TApi extends Api = Api> {
  * vocabulary of `buildModel`. Identical to `Model` except `compat` carries the
  * sparse override shape and nothing is resolved yet.
  */
-export interface ModelSpec<TApi extends Api = Api> extends Omit<Model<TApi>, "compat" | "compatConfig"> {
+export interface ModelSpec<TApi extends Api = Api>
+	extends Omit<Model<TApi>, "compat" | "compatConfig" | "supportsComputerUseConfig"> {
 	/** Sparse compatibility overrides; resolved into `Model.compat` by `buildModel`. */
 	compat?: CompatConfigOf<TApi>;
 }

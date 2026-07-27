@@ -28,7 +28,7 @@ import { convertTools } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import { buildResponsesInput, resolveOpenAICompatPolicy } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
-import { logger, prompt, stringifyJson } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt, stringifyJson } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type AgentTelemetry, instrumentedCompleteSimple } from "../telemetry";
 import { ThinkingLevel } from "../thinking";
@@ -52,6 +52,7 @@ import {
 	requestOpenAiRemoteCompaction,
 	requestRemoteCompaction,
 	shouldUseOpenAiRemoteCompaction,
+	trimRemoteCompactionInputToContextWindow,
 	withOpenAiRemoteCompactionPreserveData,
 } from "./openai";
 import autoHandoffThresholdFocusPrompt from "./prompts/auto-handoff-threshold-focus.md" with { type: "text" };
@@ -1298,7 +1299,7 @@ function buildOpenAiResponsesCompactionInput(
 	messages: Message[],
 	model: Model<"openai-responses" | "azure-openai-responses" | "openai-codex-responses">,
 	previousReplacementHistory: Array<Record<string, unknown>> | undefined,
-): unknown[] {
+): Array<Record<string, unknown>> {
 	const input = buildResponsesInput({
 		model,
 		context: { messages },
@@ -1308,7 +1309,14 @@ function buildOpenAiResponsesCompactionInput(
 		includeThinkingSignatures: true,
 		repairOrphanOutputs: true,
 	});
-	return previousReplacementHistory ? [...previousReplacementHistory, ...input] : input;
+	const nativeInput: Array<Record<string, unknown>> = [];
+	for (const item of input) {
+		if (!isRecord(item)) {
+			throw new Error("OpenAI Responses compaction input contains a non-object item");
+		}
+		nativeInput.push(item);
+	}
+	return previousReplacementHistory ? [...previousReplacementHistory, ...nativeInput] : nativeInput;
 }
 
 /**
@@ -1426,20 +1434,33 @@ export async function compact(
 		);
 		if (remoteHistory.length > 0) {
 			try {
-				const request = buildCompactionV2Request(
-					model,
+				const instructions = summaryOptions.remoteInstructions ?? SUMMARIZATION_SYSTEM_PROMPT;
+				const tools = summaryOptions.tools
+					? convertTools(summaryOptions.tools, model.compat.supportsStrictMode, model)
+					: undefined;
+				const trimmed = trimRemoteCompactionInputToContextWindow(
 					remoteHistory,
-					summaryOptions.remoteInstructions ?? SUMMARIZATION_SYSTEM_PROMPT,
-					{
-						tools: summaryOptions.tools
-							? convertTools(summaryOptions.tools, model.compat.supportsStrictMode, model)
-							: undefined,
-						reasoning: buildCompactionV2Reasoning(model, summaryOptions.thinkingLevel),
-						sessionId: summaryOptions.sessionId,
-						promptCacheKey: summaryOptions.promptCacheKey,
-						retainedMessageBudget: settings.v2RetainedMessageBudget,
-					},
+					model.contextWindow,
+					instructions,
+					tools,
 				);
+				if (trimmed.rewrittenOutputs > 0) {
+					logger.info("Rewrote trailing tool outputs before OpenAI V2 remote compaction", {
+						model: model.id,
+						provider: model.provider,
+						rewrittenOutputs: trimmed.rewrittenOutputs,
+						estimatedTokensBefore: trimmed.estimatedTokensBefore,
+						estimatedTokensAfter: trimmed.estimatedTokensAfter,
+						contextWindow: model.contextWindow,
+					});
+				}
+				const request = buildCompactionV2Request(model, trimmed.input, instructions, {
+					tools,
+					reasoning: buildCompactionV2Reasoning(model, summaryOptions.thinkingLevel),
+					sessionId: summaryOptions.sessionId,
+					promptCacheKey: summaryOptions.promptCacheKey,
+					retainedMessageBudget: settings.v2RetainedMessageBudget,
+				});
 				const remote = await withAuth(
 					apiKey,
 					key =>

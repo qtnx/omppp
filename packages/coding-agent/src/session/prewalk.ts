@@ -1,7 +1,6 @@
 import type { Agent, AgentMessage, AgentToolResult, AgentTurnEndContext } from "@oh-my-pi/pi-agent-core";
 import { invalidateMessageCache } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Model, TextContent } from "@oh-my-pi/pi-ai";
-import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { resolveApprovedPlan } from "../plan-mode/approved-plan";
@@ -11,7 +10,7 @@ import planYoloHandoffPrompt from "../prompts/system/plan-yolo-handoff.md" with 
 import prewalkChecklistPrompt from "../prompts/system/prewalk-checklist.md" with { type: "text" };
 import prewalkContinuePrompt from "../prompts/system/prewalk-continue.md" with { type: "text" };
 import prewalkPlanPrompt from "../prompts/system/prewalk-plan.md" with { type: "text" };
-import type { ConfiguredThinkingLevel } from "../thinking";
+import { type ConfiguredThinkingLevel, prewalkWouldBeNoop } from "../thinking";
 import type { PlanProposalHandler } from "../tools/resolve";
 import { ToolError } from "../tools/tool-errors";
 import type { PlanYolo, Prewalk } from "./agent-session-types";
@@ -70,6 +69,7 @@ export interface PrewalkCoordinatorHost {
 	agent: Agent;
 	sessionManager: SessionManager;
 	model(): Model | undefined;
+	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	setModelTemporary(
 		model: Model,
@@ -165,8 +165,13 @@ export class PrewalkCoordinator {
 		this.#scrubPlanNudge(liveMessages);
 		const target = prewalk.target;
 		const currentModel = this.#host.model();
-		if (currentModel && modelsAreEqual(currentModel, target)) {
+		if (prewalkWouldBeNoop(currentModel, this.#host.configuredThinkingLevel(), target, prewalk.thinkingLevel)) {
 			this.#prewalk = undefined;
+			this.#host.emitNotice(
+				"info",
+				`Prewalk: target ${target.provider}/${target.id} already matches the active model and thinking level; nothing to switch.`,
+				"prewalk",
+			);
 			return;
 		}
 		await this.#host.setModelTemporary(target, prewalk.thinkingLevel, { ephemeral: true });

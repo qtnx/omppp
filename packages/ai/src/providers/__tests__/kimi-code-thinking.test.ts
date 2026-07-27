@@ -271,7 +271,7 @@ describe("Kimi K2.7 Code thinking policy", () => {
 		expect(model.compat.disableReasoningOnForcedToolChoice).toBe(true);
 	});
 
-	it("keeps the forced tool choice and omits thinking on Kimi Code's Anthropic endpoint", async () => {
+	it("downgrades the forced tool choice on Kimi Code's Anthropic endpoint", async () => {
 		const model = getBundledModel<"openai-completions">("kimi-code", "kimi-for-coding");
 		let payload: MessageCreateParamsStreaming | undefined;
 		const stream = streamOpenAIAnthropicShim(
@@ -295,10 +295,45 @@ describe("Kimi K2.7 Code thinking policy", () => {
 
 		await stream.result();
 
-		// With reasoning disabled the Anthropic wire carries no thinking block,
-		// and the forced tool choice survives (thinking yields to the choice).
-		expect(payload?.thinking).toBeUndefined();
-		expect(payload?.tool_choice).toEqual({ type: "tool", name: "set_title" });
+		// api.kimi.com keeps thinking enabled server-side no matter what the
+		// request carries: an omitted thinking block defaults to enabled, and an
+		// explicit disabled block is rejected (#3852). Either way a forced
+		// tool_choice 400s (`tool_choice 'specified' is incompatible with
+		// thinking enabled`), so the only viable path is downgrading the choice
+		// to auto while keeping the tool available — thinking stays on.
+		expect(payload?.tool_choice).toEqual({ type: "auto" });
+		expect(payload?.thinking).toBeDefined();
+	});
+
+	it("downgrades forced tool choice for every thinking-locked Kimi Code alias", async () => {
+		// The kimi-code catalog aliases the mandatory-thinking K2.7 Code family
+		// as `kimi-for-coding[-highspeed]` and K3 as `k3`; none match the native
+		// `kimi-k2.7-code*` id pattern, so each must be recognised explicitly.
+		for (const id of ["k3", "kimi-for-coding", "kimi-for-coding-highspeed"]) {
+			const model = getBundledModel<"openai-completions">("kimi-code", id);
+			let payload: MessageCreateParamsStreaming | undefined;
+			const stream = streamOpenAIAnthropicShim(
+				model,
+				TITLE_CONTEXT,
+				{
+					apiKey: "test-key",
+					maxTokens: 1024,
+					toolChoice: { type: "tool", name: "set_title" },
+					onPayload: body => {
+						payload = body as MessageCreateParamsStreaming;
+						throw new Error("stop after payload capture");
+					},
+				},
+				{
+					anthropicBaseUrl: "https://api.kimi.com/coding",
+					defaultFormat: "anthropic",
+				},
+			);
+
+			await stream.result();
+
+			expect(payload?.tool_choice).toEqual({ type: "auto" });
+		}
 	});
 
 	it("uses the configured Kimi base URL for Anthropic requests", async () => {

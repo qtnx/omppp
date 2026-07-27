@@ -51,6 +51,20 @@ export const CLOUDFLARE_FALLBACK_MODEL: ModelSpec<"anthropic-messages"> = {
 	maxTokens: 64000,
 };
 
+/**
+ * `models.dev` currently lists `jp.anthropic.claude-opus-5`, but AWS's own
+ * Bedrock model card documents only `anthropic.claude-opus-5` plus the `us.`,
+ * `eu.`, `au.`, and `global.` Geo/Global inference-profile IDs under
+ * Programmatic Access; Japan regions are marked unsupported for Geo inference
+ * in the same card's regional-availability table. Bedrock rejects an
+ * undocumented inference-profile ID outright, so drop this specific upstream
+ * row rather than ship a selector that 4xxs on first use (PR #6591 review).
+ * https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-5.html
+ */
+export function dropUnsupportedBedrockGeoIds(models: readonly ModelSpec[]): ModelSpec[] {
+	return models.filter(model => !(model.provider === "amazon-bedrock" && model.id === "jp.anthropic.claude-opus-5"));
+}
+
 const CODEX_GPT_5_4_PRIORITY_BY_VARIANT: Partial<Record<OpenAIVariant, number>> = {
 	base: 0,
 	mini: 1,

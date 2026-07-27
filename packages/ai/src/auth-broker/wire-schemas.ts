@@ -34,6 +34,7 @@ export const oauthCredentialSchema = type({
 	"accountId?": "string",
 	"orgId?": "string",
 	"orgName?": "string",
+	"authorizedAt?": "number",
 });
 
 /** OAuth credential as it appears in broker snapshots — refresh replaced with sentinel. */
@@ -49,6 +50,7 @@ export const remoteOauthCredentialSchema = type({
 	"accountId?": "string",
 	"orgId?": "string",
 	"orgName?": "string",
+	"authorizedAt?": "number",
 });
 
 export const apiKeyCredentialSchema = type({
@@ -318,6 +320,27 @@ export const credentialDisableRequestSchema = type({
 export const credentialDisableResponseSchema = type({
 	"+": "reject",
 	ok: "boolean",
+});
+
+/** One disabled-credential tombstone — identity + cause, never token material. */
+export const disabledCredentialSummarySchema = type({
+	"+": "reject",
+	id: "number.integer",
+	provider: type("string").atLeastLength(1),
+	type: "'oauth' | 'api_key'",
+	"email?": "string",
+	"accountId?": "string",
+	"orgId?": "string",
+	"orgName?": "string",
+	cause: "string",
+	"disabledAtMs?": "number",
+});
+
+/** Broker `GET /v1/credentials/disabled` response. */
+export const disabledCredentialsResponseSchema = type({
+	"+": "reject",
+	generatedAt: "number",
+	disabled: disabledCredentialSummarySchema.array(),
 });
 
 // ─── Credential blocks ──────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Loader, replaceTabs, TERMINAL, Text, type TUI } from "@oh-my-pi/pi-tui";
-import { APP_DISPLAY_NAME, logger, prompt } from "@oh-my-pi/pi-utils";
+import { APP_DISPLAY_NAME, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
@@ -18,7 +18,7 @@ import {
 	readArgsHaveTarget,
 } from "../../modes/components/read-tool-group";
 import { TodoReminderComponent } from "../../modes/components/todo-reminder";
-import { ToolExecutionComponent } from "../../modes/components/tool-execution";
+import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/components/tool-execution";
 import { TtsrNotificationComponent } from "../../modes/components/ttsr-notification";
 import { createUsageRowBlock } from "../../modes/components/usage-row";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
@@ -95,6 +95,17 @@ export class EventController {
 	#readToolCallArgs = new Map<string, Record<string, unknown>>();
 	#readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#toolTimelineComponents = new Map<string, Component>();
+	// Completions that arrived before any component existed for their call id.
+	// Cursor's server-resolved tools (todo) emit `tool_execution_end` through a
+	// synchronous callback fired mid-parse, while the `toolcall_start` for the
+	// same call rides `AssistantMessageEventStream` and is delivered a microtask
+	// later. When the server packs start and completion into one HTTP/2 chunk
+	// the completion is handled FIRST — with no `pendingTools` entry to settle.
+	// Dropping it would strand the card the streamed block creates moments
+	// later, so the event is held here and replayed the moment that component
+	// materializes (`#handleMessageUpdate`). Keyed by call id; ids are unique
+	// per turn, and the map is cleared with the other transcript anchors.
+	#orphanedToolCompletions = new Map<string, Extract<AgentSessionEvent, { type: "tool_execution_end" }>>();
 	#postToolAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#lastAssistantComponent: AssistantMessageComponent | undefined = undefined;
 	// Assistant component whose turn-ending error is currently mirrored in the
@@ -393,6 +404,7 @@ export class EventController {
 		this.#renderedCustomMessages.clear();
 		this.#lastIntent = undefined;
 		this.#toolTimelineComponents.clear();
+		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
 		this.#backgroundTaskCallIds.clear();
 		this.#approvalAttentionToolCallIds.clear();
@@ -488,6 +500,7 @@ export class EventController {
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
 		this.#toolTimelineComponents.clear();
+		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
 		this.#lastIntent = undefined;
 		this.#readToolCallArgs.clear();
@@ -862,7 +875,14 @@ export class EventController {
 					this.#toolArgsReveal.finish(content.id);
 					renderArgs = content.arguments;
 				}
-				if (!this.ctx.pendingTools.has(content.id)) {
+				// `message_update` is cumulative — every update re-lists all blocks
+				// of the streaming message — so creation must also be guarded by the
+				// timeline map: `pendingTools` loses the id the moment a completion
+				// settles the card, and for server-resolved (Cursor) tools that can
+				// happen while the message is still streaming. Without the second
+				// check the next cumulative update would recreate a card for a call
+				// that already finished, permanently pending.
+				if (!this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id)) {
 					this.#resolveDisplaceablePoll(content.name);
 					this.#resetReadGroup();
 					const component = new ToolExecutionComponent(
@@ -884,6 +904,16 @@ export class EventController {
 					this.ctx.pendingTools.set(content.id, component);
 					this.#toolTimelineComponents.set(content.id, component);
 					this.#toolArgsReveal.bind(content.id, component);
+					// A held completion for this call means its `tool_execution_end`
+					// outran this streamed block (see #orphanedToolCompletions).
+					// Attach it now that the card exists so it settles immediately
+					// instead of animating forever. Only the component is settled —
+					// the handler's other side effects already ran on first arrival.
+					const orphan = this.#orphanedToolCompletions.get(content.id);
+					if (orphan) {
+						this.#orphanedToolCompletions.delete(content.id);
+						this.#settleHeldCompletion(component, orphan);
+					}
 				} else {
 					const component = this.ctx.pendingTools.get(content.id);
 					if (component) {
@@ -1153,6 +1183,44 @@ export class EventController {
 		}
 	}
 
+	/**
+	 * Attach a held completion to the component that was created for it after
+	 * the fact (see {@link #orphanedToolCompletions}) and settle the card.
+	 *
+	 * Deliberately NOT a re-entry into `#handleToolExecutionEnd`: every
+	 * user-facing side effect of that handler — the todo panel refresh, the
+	 * failure warning, plan approval, the terminal-title transition — already
+	 * ran when the completion first arrived. Replaying the whole handler would
+	 * show the same warning twice and re-push an identical `setTodos`. Only the
+	 * component half was missed, because the component did not exist yet.
+	 */
+	#settleHeldCompletion(
+		component: ToolExecutionHandle,
+		event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>,
+	): void {
+		component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
+		this.ctx.pendingTools.delete(event.toolCallId);
+		if (
+			component instanceof ToolExecutionComponent &&
+			component.isDisplaceableBlock() &&
+			event.toolName === "todo" &&
+			component.canBeDisplacedBy("todo")
+		) {
+			// Mirrors the displacement bookkeeping in `#handleToolExecutionEnd`:
+			// a successful snapshot supersedes the previous live panel.
+			const previous = this.#displaceableTodoComponent;
+			if (previous && previous !== component && previous.isDisplaceableBlock()) {
+				this.#displaceableTodoComponent = undefined;
+				if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
+					this.ctx.chatContainer.removeChild(previous);
+				}
+				previous.seal();
+			}
+			this.#displaceableTodoComponent = component;
+		}
+		this.ctx.ui.requestRender();
+	}
+
 	async #handleToolExecutionEnd(event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>): Promise<void> {
 		// A transient overlay (auto-compaction / auto-retry / handoff) that ran
 		// between this tool's start and end could have detached the working
@@ -1229,6 +1297,15 @@ export class EventController {
 					}
 				}
 				this.ctx.ui.requestRender();
+			} else if (event.toolName === "todo") {
+				// No component yet: the streamed block that creates the card has not
+				// been delivered (see #orphanedToolCompletions). Hold the completion
+				// for replay instead of dropping it — scoped to `todo`, the only
+				// tool whose completion is emitted synchronously mid-parse. The
+				// panel/warning side effects below still run NOW, on first arrival;
+				// the replay settles only the component
+				// (`#settleHeldCompletion`), so neither is repeated.
+				this.#orphanedToolCompletions.set(event.toolCallId, event);
 			}
 		}
 		// Update todo display when todo tool completes
@@ -1241,8 +1318,22 @@ export class EventController {
 			const textContent = event.result.content.find(
 				(content: { type: string; text?: string }) => content.type === "text",
 			)?.text;
+			// This text can be a provider error copied verbatim off the wire (the
+			// Cursor todo bridge forwards the server's string), so it may carry
+			// ANSI escapes, other C0/C1 controls, tabs, newlines, or a line far
+			// wider than the terminal. `showWarning` renders through a plain
+			// `Text`, which strips none of that — an escape reaches the terminal
+			// and can repaint outside the row. `sanitizeText` drops the control
+			// sequences (and returns the same reference when there are none),
+			// then `previewLine` collapses the remaining whitespace and bounds
+			// the width. Sanitizing first matters: truncating before stripping
+			// can cut an escape mid-sequence and leave a dangling introducer.
+			//
+			// This is the render boundary, not the persisted result: the stored
+			// error stays full-fidelity for the transcript and for replays.
+			const detail = textContent ? previewLine(sanitizeText(textContent), TRUNCATE_LENGTHS.LINE) : "";
 			this.ctx.showWarning(
-				`Todo update failed${textContent ? `: ${textContent}` : ". Progress may be stale until todo succeeds."}`,
+				`Todo update failed${detail ? `: ${detail}` : ". Progress may be stale until todo succeeds."}`,
 			);
 		}
 		// Plan approval rides a `write` to xd://propose: the dispatch metadata on
@@ -1324,6 +1415,7 @@ export class EventController {
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
 		this.#toolTimelineComponents.clear();
+		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
 		this.#resetReadGroup();
 		// The turn is over: nothing else lands this turn, so the waiting poll is

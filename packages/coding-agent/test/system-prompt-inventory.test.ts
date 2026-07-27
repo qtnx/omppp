@@ -233,6 +233,32 @@ describe("system prompt tool inventory", () => {
 		expect(compactGuidance).toMatch(/last action|end[- ]of[- ]turn|end of your turn|before ending (?:your )?turn/i);
 	});
 
+	it("keeps enabled computer routing explicit in compact native-tool mode", async () => {
+		const tools = new Map(TOOLS);
+		tools.set("computer", {
+			label: "Computer",
+			description: "Controls the host desktop.",
+			parameters: { type: "object", properties: {} },
+		});
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: ["read", "computer"],
+			tools,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			nativeTools: true,
+			inlineToolDescriptors: false,
+		});
+		const text = systemPrompt.join("\n\n");
+		expect(text).toContain("# Computer Use");
+		expect(text).toContain("The `computer` tool is explicitly enabled and available");
+		expect(text).toContain("MUST use `computer` for requests to view or control host desktop applications");
+		expect(text).toContain("NEVER claim Computer Use is unavailable");
+		expect(text).toContain("Inspect the fresh screenshot returned by every successful `computer` call");
+	});
+
 	it("renders `# Tool:` sections (not a name list) when tools are not native", async () => {
 		const text = await render({ nativeTools: false, inlineToolDescriptors: false });
 		expect(text).toContain("# Tool: read");

@@ -48,7 +48,7 @@ import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
-import { type ConfiguredThinkingLevel, resolveTaskEffortLevel, type TaskEffort } from "../thinking";
+import { type ConfiguredThinkingLevel, prewalkWouldBeNoop, resolveTaskEffortLevel, type TaskEffort } from "../thinking";
 import type { ContextFileEntry, ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { isIrcEnabled } from "../tools/hub";
@@ -2947,10 +2947,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						pattern: prewalkPattern,
 						warning: resolvedPrewalk.warning,
 					});
-				} else if (model && target.provider === model.provider && target.id === model.id) {
-					// Switching to the starting model is a no-op that would still inject
-					// the plan/checklist nudges — skip.
-					logger.debug("Subagent prewalk target equals starting model; skipping prewalk", {
+				} else if (prewalkWouldBeNoop(model, effectiveThinkingLevel, target, resolvedPrewalk.thinkingLevel)) {
+					// Same model AND same effective thinking level: switching would only
+					// inject the plan/checklist nudges for no gain — skip. An effort-only
+					// delta on the same model still arms (it is a real cheapening hand-off).
+					logger.debug("Subagent prewalk target matches starting model and thinking level; skipping prewalk", {
 						agent: agent.name,
 						pattern: prewalkPattern,
 					});

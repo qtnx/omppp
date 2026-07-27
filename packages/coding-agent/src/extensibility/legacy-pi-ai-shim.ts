@@ -19,6 +19,9 @@
  * `types.ts` via the `export *` below — pi-ai still exports both as types,
  * only the runtime `Type` builder and `StringEnum()` helper were removed.
  */
+import type { Api, Model } from "@oh-my-pi/pi-ai";
+import type { Effort } from "@oh-my-pi/pi-catalog/effort";
+import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import {
 	calculateCost,
 	getBundledModel,
@@ -69,6 +72,12 @@ export function StringEnum<T extends string | number>(
 		configurable: true,
 	});
 	return schema;
+}
+
+/** Clamp a historical Pi thinking level against OMP's model metadata. */
+export function clampThinkingLevel<TApi extends Api>(model: Model<TApi>, level: Effort | "off"): Effort | "off" {
+	if (level === "off") return "off";
+	return clampThinkingLevelForModel(model, level) ?? "off";
 }
 
 export * from "@oh-my-pi/pi-ai";

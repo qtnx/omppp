@@ -34,9 +34,12 @@ ENV BUN_INSTALL=/opt/bun \
     PATH=/opt/bun/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin \
     CARGO_TERM_COLOR=never
 
+# clang/libclang-dev: bindgen for maudio-sys (miniaudio); cmake/make/ninja-build:
+# audiopus_sys builds bundled libopus via CMake (native audio stack, 17.1.1+).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl ca-certificates pkg-config libssl-dev unzip git \
+        clang libclang-dev cmake make ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" \

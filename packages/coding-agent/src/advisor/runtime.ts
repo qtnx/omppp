@@ -227,6 +227,15 @@ export function buildAdvisorQuarantineSourceText(currentInput: string, messages:
 /** Maximum maintain-and-coalesce rounds per drain cycle; later arrivals defer. */
 const MAX_COALESCE_ROUNDS = 3;
 
+/**
+ * Consecutive quarantined advisor turns tolerated before the failure is surfaced
+ * to the host UI. A quarantine discards the advisor's whole turn before dispatch,
+ * so its advice never reaches the primary; one silent re-prime is allowed to
+ * recover a one-off hallucination, but a persistent quarantine loop is a real
+ * supervision gap the user must see (issue #6661). Reset on any successful turn.
+ */
+const MAX_QUARANTINE_RETRIES = 2;
+
 /** A queued advisor session-update delta (one or more coalesced primary turns). */
 interface PendingDelta {
 	kind: "delta";
@@ -387,6 +396,8 @@ export class AdvisorRuntime {
 	#consecutiveFailures = 0;
 	#failureNotified = false;
 	#primeSeedPending = true;
+	/** Consecutive quarantined turns since the last success/reset (issue #6661). */
+	#consecutiveQuarantines = 0;
 	/** Completed 3-failure backlog-drop cycles since the last success/reset. */
 	#droppedBacklogs = 0;
 	/** Stop retrying after repeated dropped backlogs or a permanent request rejection. */
@@ -837,6 +848,8 @@ export class AdvisorRuntime {
 		this.#halted = false;
 		this.#failing = false;
 		this.#droppedBacklogs = 0;
+		this.#consecutiveQuarantines = 0;
+		this.#failureNotified = false;
 		this.#resetAdvisorContext(true, true);
 	}
 
@@ -1028,6 +1041,17 @@ export class AdvisorRuntime {
 			}
 		}
 		return false;
+	}
+
+	/** Surface an advisor failure to the host at most once until the next reset (issue #6661). */
+	#notifyFailureOnce(error: unknown): void {
+		if (this.#failureNotified) return;
+		this.#failureNotified = true;
+		try {
+			this.host.notifyFailure?.(error);
+		} catch (notifyErr) {
+			logger.warn("advisor failure notification failed", { err: String(notifyErr) });
+		}
 	}
 
 	async #drain(): Promise<void> {
@@ -1274,6 +1298,7 @@ export class AdvisorRuntime {
 					} else {
 						consult?.resolve(this.#extractConsultAnswer(messageSnapshot));
 					}
+					this.#consecutiveQuarantines = 0;
 					if (this.host.onTurnSuccess) {
 						try {
 							await this.host.onTurnSuccess();
@@ -1345,6 +1370,19 @@ export class AdvisorRuntime {
 						continue;
 					}
 					if (err instanceof AdvisorOutputQuarantinedError) {
+						// A quarantine discards the advisor's whole turn before dispatch, so
+						// its advice never reaches the primary. One re-prime is allowed to
+						// recover a one-off hallucination silently; a persistent quarantine
+						// loop is a supervision gap the user must see in the main UI — not an
+						// unbounded silent retry. Surface it (deduped by #notifyFailureOnce)
+						// and drop the batch to break the loop (issue #6661).
+						this.#consecutiveQuarantines++;
+						if (this.#consecutiveQuarantines >= MAX_QUARANTINE_RETRIES) {
+							this.#notifyFailureOnce(err);
+							this.#consecutiveQuarantines = 0;
+							this.#resetAdvisorContext(true, true);
+							continue;
+						}
 						const rePrime = this.#pending.length > 0 ? this.#latestMessages : undefined;
 						this.#resetAdvisorContext(true, !rePrime);
 						if (rePrime) this.onTurnEnd(rePrime);

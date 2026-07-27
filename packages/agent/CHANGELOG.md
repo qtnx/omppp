@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [17.1.4] - 2026-07-26
+
+### Changed
+
+- Steering is now woken by an event instead of polled on a fixed interval while a tool batch runs. `AgentLoopConfig.waitForSteeringMessages` resolves when a steer is enqueued, so an interruption is observed as soon as it arrives rather than at the next tick, and idle batches stop burning wakeups. The interval timer remains for the IRC interrupt queue, which has no wake callback, and checks only IRC while the event watcher owns steering. Waits are raced against local abort, so a callback that does not observe its signal cannot hang batch teardown.
+
+### Fixed
+
+- Fixed a Cursor tool result being lost when a custom `cursorOnToolResult` transformer was still pending as the turn closed. The provider dispatches decoded messages without awaiting them, so a `message_end` from the same chunk could drain the buffer before the transformer resolved, dropping the result and leaving its `toolCall` block to be stripped as dangling on replay. The entry is now reserved synchronously and patched in place once the transformer resolves, preserving buffer order.
+- Fixed an async `cursorOnToolResult` transformer's rewrite being silently discarded when it resolved after the buffer drain. The reservation kept the call from dangling but the late patch mutated a detached entry, so the already-persisted message kept the pre-transform payload. The drain now awaits any transformer still in flight before persisting, matching the awaited exec-channel paths. A rejecting transformer is swallowed and the reserved payload stands in, so a failing hook cannot take the turn down or cost the result.
+- Fixed Cursor tool results being dropped for hosts that pass neither `cursorExecHandlers` nor `cursorOnToolResult`. Both are optional, but the Cursor provider resolves native todo calls server-side and synthesizes exec blocks regardless, marking both as resolved so no placeholder result is emitted for them. The result buffer callback was only installed when one of the options was present, so a bare SDK host discarded the provider's paired result and every rebuilt transcript stripped the interaction. It is now installed unconditionally.
+- Fixed an async `cursorOnToolResult` rewrite being lost when the provider errored mid-transform. The normal drain waits for a pending transformer, but the error path snapshotted the buffer without that await, so a transform still in flight patched an entry the catch path had already detached and the pre-transform payload was persisted. A provider error is exactly when a transform is most likely to be mid-flight.
+- Reduced oversized OpenAI native compaction requests by replacing only trailing tool-output bodies that exceed the model context window, while preserving calls, assistant history, and reasoning.
+
 ## [17.1.2] - 2026-07-24
 
 ### Added

@@ -103,10 +103,11 @@ function handlerTimeoutForEvent(eventType: string): number {
 }
 
 const EXTENSION_HANDLER_TIMEOUT = Symbol("extensionHandlerTimeout");
+const EXTENSION_HANDLER_ABORTED = Symbol("extensionHandlerAborted");
 
 /**
- * Race `work` against a `timeoutMs` budget, clearing the pending timer the
- * instant the work settles.
+ * Race `work` against a `timeoutMs` budget and optional cancellation signal,
+ * clearing the timer and abort listener as soon as one branch settles.
  *
  * We deliberately avoid `Bun.sleep(timeoutMs).then(...)` here: that leaves an
  * uncancellable timer registered with the event loop, so every successful
@@ -119,14 +120,20 @@ const EXTENSION_HANDLER_TIMEOUT = Symbol("extensionHandlerTimeout");
 async function raceHandlerWithTimeout<T>(
 	work: Promise<T>,
 	timeoutMs: number,
-): Promise<T | typeof EXTENSION_HANDLER_TIMEOUT> {
-	const { promise: timeoutPromise, resolve: resolveTimeout } =
-		Promise.withResolvers<typeof EXTENSION_HANDLER_TIMEOUT>();
-	const timer = setTimeout(() => resolveTimeout(EXTENSION_HANDLER_TIMEOUT), timeoutMs);
+	signal?: AbortSignal,
+): Promise<T | typeof EXTENSION_HANDLER_TIMEOUT | typeof EXTENSION_HANDLER_ABORTED> {
+	if (signal?.aborted) return EXTENSION_HANDLER_ABORTED;
+	const { promise: interruptPromise, resolve: resolveInterrupt } = Promise.withResolvers<
+		typeof EXTENSION_HANDLER_TIMEOUT | typeof EXTENSION_HANDLER_ABORTED
+	>();
+	const timer = setTimeout(() => resolveInterrupt(EXTENSION_HANDLER_TIMEOUT), timeoutMs);
+	const onAbort = () => resolveInterrupt(EXTENSION_HANDLER_ABORTED);
+	signal?.addEventListener("abort", onAbort, { once: true });
 	try {
-		return await Promise.race([work, timeoutPromise]);
+		return await Promise.race([work, interruptPromise]);
 	} finally {
 		clearTimeout(timer);
+		signal?.removeEventListener("abort", onAbort);
 	}
 }
 
@@ -378,7 +385,9 @@ export class ExtensionRunner {
 		await this.emit({ type: "credential_disabled", ...event });
 	}
 
+	/** Emits a session stop pass that can be cancelled with the active settle signal. */
 	async emitSessionStop(event: Omit<SessionStopEvent, "type">): Promise<SessionStopEventResult | undefined> {
+		if (event.signal.aborted) return undefined;
 		return await this.emit({ type: "session_stop", ...event });
 	}
 
@@ -631,8 +640,14 @@ export class ExtensionRunner {
 		ext: Extension,
 		timeoutMs: number,
 	): Promise<TResult | undefined> {
+		const signal =
+			event.type === "session_stop" && "signal" in event && event.signal instanceof AbortSignal
+				? event.signal
+				: undefined;
+		if (signal?.aborted) return undefined;
 		try {
-			const handlerResult = await raceHandlerWithTimeout(Promise.resolve(handler(event, ctx)), timeoutMs);
+			const handlerResult = await raceHandlerWithTimeout(Promise.resolve(handler(event, ctx)), timeoutMs, signal);
+			if (handlerResult === EXTENSION_HANDLER_ABORTED) return undefined;
 			if (handlerResult === EXTENSION_HANDLER_TIMEOUT) {
 				const error = `handler timed out after ${timeoutMs}ms`;
 				logger.warn("Extension handler timed out", {

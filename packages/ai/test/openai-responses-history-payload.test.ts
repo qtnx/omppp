@@ -944,9 +944,9 @@ describe("OpenAI responses history payload", () => {
 		const payload = (await captureResponsesPayload(model, incrementalContext)) as { input?: unknown[] };
 		expect(payload.input).toEqual([
 			{ role: "user", content: [{ type: "input_text", text: "first question" }] },
-			...incrementalItems1.map(({ id: _id, ...item }) => item),
+			...incrementalItems1.map(({ id: _id, status: _status, ...item }) => item),
 			{ role: "user", content: [{ type: "input_text", text: "second question" }] },
-			...incrementalItems2.map(({ id: _id, ...item }) => item),
+			...incrementalItems2.map(({ id: _id, status: _status, ...item }) => item),
 			{ role: "user", content: [{ type: "input_text", text: "third question" }] },
 		]);
 	});
@@ -1125,13 +1125,15 @@ describe("OpenAI responses history payload", () => {
 		]);
 	});
 
-	it("strips replay-only ids and item references while preserving paired call_id values", async () => {
+	it("strips output-only replay metadata while preserving paired call_id values", async () => {
 		const opaqueReasoningId = `item_${"copilot/reasoning+token=".repeat(8)}`;
 		const opaqueMessageId = `item_${"copilot/message+opaque=".repeat(8)}`;
 		const opaqueCallId = `call_${"copilot/tool-call+opaque/=".repeat(8)}`;
 		const opaqueFunctionItemId = `item_${"copilot/function-item+opaque/=".repeat(8)}`;
+		const opaqueCustomCallId = `call_${"copilot/custom-call+opaque/=".repeat(8)}`;
+		const opaqueCustomItemId = `item_${"copilot/custom-item+opaque/=".repeat(8)}`;
 		const replayHistoryItems: Array<Record<string, unknown>> = [
-			{ type: "reasoning", id: opaqueReasoningId, encrypted_content: "enc_opaque" },
+			{ type: "reasoning", id: opaqueReasoningId, encrypted_content: "enc_opaque", status: "completed" },
 			{
 				type: "message",
 				role: "assistant",
@@ -1148,6 +1150,19 @@ describe("OpenAI responses history payload", () => {
 				status: "completed",
 			},
 			{ type: "function_call_output", id: "fco_should_be_removed", call_id: opaqueCallId, output: "72F" },
+			{
+				type: "custom_tool_call",
+				id: opaqueCustomItemId,
+				call_id: opaqueCustomCallId,
+				name: "apply_patch",
+				input: "*** Begin Patch\n*** End Patch\n",
+				status: "completed",
+			},
+			{
+				type: "custom_tool_call_output",
+				call_id: opaqueCustomCallId,
+				output: "patch applied",
+			},
 			{ type: "item_reference", id: opaqueMessageId },
 		];
 		const context: Context = {
@@ -1163,6 +1178,7 @@ describe("OpenAI responses history payload", () => {
 		const messageItem = findResponsesInputItem(payload.input, "message");
 		const functionCallItem = findResponsesInputItem(payload.input, "function_call");
 		const functionCallOutputItem = findResponsesInputItem(payload.input, "function_call_output");
+		const customToolCallItem = findResponsesInputItem(payload.input, "custom_tool_call");
 		const itemReference = findResponsesInputItem(payload.input, "item_reference");
 		const expectedCallId = truncateResponseItemId(opaqueCallId, "call");
 
@@ -1170,11 +1186,16 @@ describe("OpenAI responses history payload", () => {
 		expect(messageItem).toBeDefined();
 		expect(functionCallItem).toBeDefined();
 		expect(functionCallOutputItem).toBeDefined();
+		expect(customToolCallItem).toBeDefined();
 		expect(reasoningItem?.id).toBeUndefined();
 		expect(messageItem?.id).toBeUndefined();
 		expect(functionCallItem?.id).toBeUndefined();
 		expect(functionCallOutputItem?.id).toBeUndefined();
 		expect(itemReference).toBeUndefined();
+		expect(reasoningItem).not.toHaveProperty("status");
+		expect(messageItem).not.toHaveProperty("status");
+		expect(functionCallItem).not.toHaveProperty("status");
+		expect(customToolCallItem).not.toHaveProperty("status");
 		expect(
 			(payload.input ?? []).some(
 				item => item && typeof item === "object" && "id" in (item as Record<string, unknown>),
@@ -1184,15 +1205,19 @@ describe("OpenAI responses history payload", () => {
 		expect(functionCallItem).toBeDefined();
 		expect(functionCallItem!.call_id).toBe(expectedCallId);
 		expect(functionCallOutputItem?.call_id).toBe(expectedCallId);
+		expect(customToolCallItem?.call_id).toBe(truncateResponseItemId(opaqueCustomCallId, "call"));
 		expect((functionCallItem!.call_id as string).length).toBeLessThanOrEqual(64);
 		expect(containsAssistantOutputText(payload.input, "Sanitized assistant answer")).toBe(true);
 		expect(replayHistoryItems[0]?.id).toBe(opaqueReasoningId);
 		expect(replayHistoryItems[1]?.id).toBe(opaqueMessageId);
 		expect(replayHistoryItems[2]?.id).toBe(opaqueFunctionItemId);
 		expect(replayHistoryItems[2]?.call_id).toBe(opaqueCallId);
+		expect(replayHistoryItems[1]?.status).toBe("completed");
+		expect(replayHistoryItems[2]?.status).toBe("completed");
 		expect(replayHistoryItems[3]?.id).toBe("fco_should_be_removed");
 		expect(replayHistoryItems[3]?.call_id).toBe(opaqueCallId);
-		expect(replayHistoryItems[4]?.id).toBe(opaqueMessageId);
+		expect(replayHistoryItems[4]?.status).toBe("completed");
+		expect(replayHistoryItems[6]?.id).toBe(opaqueMessageId);
 	});
 
 	it("backward compat: old full-snapshot payloads still replace history for legacy same-provider assistant turns", async () => {

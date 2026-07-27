@@ -154,6 +154,38 @@ describe("Settings", () => {
 		});
 	});
 
+	describe("shell configuration errors", () => {
+		it("points to the selected global config in the active agent directory", async () => {
+			const configPath = path.join(agentDir, "config.yaml");
+			const missingShell = tempDir.join("missing-global-bash");
+			await Bun.write(configPath, YAML.stringify({ shellPath: missingShell }, null, 2));
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(() => settings.getShellConfig()).toThrow(`Please update shellPath in ${configPath}`);
+		});
+
+		it("points to the project file that supplied shellPath", async () => {
+			const configPath = path.join(getProjectAgentDir(projectDir), "config.yml");
+			const missingShell = tempDir.join("missing-project-bash");
+			await Bun.write(configPath, YAML.stringify({ shellPath: missingShell }, null, 2));
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(() => settings.getShellConfig()).toThrow(`Please update shellPath in ${configPath}`);
+		});
+
+		it("points to the overlay that supplied shellPath", async () => {
+			const configPath = tempDir.join("shell-overlay.yml");
+			const missingShell = tempDir.join("missing-overlay-bash");
+			await Bun.write(configPath, YAML.stringify({ shellPath: missingShell }, null, 2));
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir, configFiles: [configPath] });
+
+			expect(() => settings.getShellConfig()).toThrow(`Please update shellPath in ${configPath}`);
+		});
+	});
+
 	describe("defaults", () => {
 		it("keeps eight inline images live by default", async () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });

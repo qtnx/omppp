@@ -7,7 +7,7 @@
  */
 import { readSseEvents } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
-import type { AuthCredential } from "../auth-storage";
+import type { AuthCredential, DisabledCredentialSummary } from "../auth-storage";
 import type {
 	ClientUsageReportRequest,
 	ClientUsageReportResponse,
@@ -20,6 +20,7 @@ import type {
 	CredentialRefreshResponse,
 	CredentialUploadRequest,
 	CredentialUploadResponse,
+	DisabledCredentialsResponse,
 	HealthzResponse,
 	SnapshotResponse,
 	SnapshotStreamEvent,
@@ -35,6 +36,7 @@ import {
 	credentialDisableResponseSchema,
 	credentialRefreshResponseSchema,
 	credentialUploadResponseSchema,
+	disabledCredentialsResponseSchema,
 	healthzResponseSchema,
 	snapshotResponseSchema,
 	snapshotStreamEventSchema,
@@ -304,6 +306,27 @@ export class AuthBrokerClient {
 			schema: credentialDisableResponseSchema,
 			signal,
 		});
+	}
+
+	/**
+	 * Disabled-credential tombstones (identity + cause, no token material).
+	 * Returns an empty list against brokers predating `GET
+	 * /v1/credentials/disabled` (404).
+	 */
+	async listDisabledCredentials(provider?: string, signal?: AbortSignal): Promise<DisabledCredentialSummary[]> {
+		const params = new URLSearchParams();
+		if (provider) params.set("provider", provider);
+		const path = `/v1/credentials/disabled${params.size > 0 ? `?${params.toString()}` : ""}`;
+		try {
+			const response = await this.#request<DisabledCredentialsResponse>("GET", path, {
+				schema: disabledCredentialsResponseSchema,
+				signal,
+			});
+			return response.disabled;
+		} catch (error) {
+			if (error instanceof AuthBrokerError && error.status === 404) return [];
+			throw error;
+		}
 	}
 
 	async uploadCredential(

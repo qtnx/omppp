@@ -10,6 +10,7 @@ import type {
 	AuthCredential,
 	AuthCredentialSnapshot,
 	AuthCredentialSnapshotEntry,
+	DisabledCredentialSummary,
 	StoredCredentialBlock,
 } from "../auth-storage";
 import type { ClientUsageClientSummary, ClientUsageReport, UsageHistoryEntry, UsageReport } from "../usage";
@@ -84,6 +85,12 @@ export interface CredentialDisableRequest {
 /** POST /v1/credential/:id/disable response body. */
 export interface CredentialDisableResponse {
 	ok: boolean;
+}
+
+/** GET /v1/credentials/disabled response body — tombstones of auto-disabled rows. */
+export interface DisabledCredentialsResponse {
+	generatedAt: number;
+	disabled: DisabledCredentialSummary[];
 }
 
 /** POST /v1/credential/:id/block request body. */

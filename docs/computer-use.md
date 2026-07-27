@@ -46,7 +46,7 @@ omp config set computer.enabled true
 omp config get computer.enabled
 ```
 
-Inside a running session, the `/computer` slash command (`/computer`, `/computer on|off|status`) toggles the tool for that session only; it never writes settings files. Backend, display, and image-size settings still snapshot when the session's desktop controller is created, so change those in config and start a new session.
+Inside a running session, the `/computer` slash command (`/computer`, `/computer on|off|status`) toggles the tool for that session only; it never writes settings files. `/computer status` reports the effective enabled/active state, backend, display and capture limits, active model, and whether that model receives native or function exposure. Explicit enablement and the desktop controller stay active across model switches; exposure is recomputed for the new model, and a switch that crosses the coordinate-safe sizing boundary recreates the controller and resnapshots backend/display/image-size settings. Changing config alone does not; start a new session after a settings change.
 
 ### Settings
 
@@ -55,8 +55,8 @@ Inside a running session, the `/computer` slash command (`/computer`, `/computer
 | `computer.enabled` | `false` | Register the essential `computer` tool. |
 | `computer.backend` | `auto` | `auto` or `native`. Both require a native backend; neither falls back to browser or software automation. |
 | `computer.display` | `all` | Composite every active display, or select one numeric native display ID. |
-| `computer.maxWidth` | `1920` | Maximum composite screenshot width in pixels. Must be greater than zero. |
-| `computer.maxHeight` | `1200` | Maximum composite screenshot height in pixels. Must be greater than zero. |
+| `computer.maxWidth` | `1920` | Maximum composite screenshot width in pixels. Image transports that cannot preserve original detail, including GitHub Copilot Responses and xAI OAuth, cap the effective width at `1280`; Claude-family models use the same cap as a compatibility fallback. |
+| `computer.maxHeight` | `1200` | Maximum composite screenshot height in pixels. Those coordinate-safe transports cap the effective height at `896`; other models retain the configured limit. |
 
 The first successful result lists each display ID, name, logical rectangle, screenshot-pixel rectangle, scale, and primary status. Use one of those IDs as a string when you want a single display:
 
@@ -74,11 +74,14 @@ Models with native OpenAI GA computer-use support receive the wire declaration `
 OMP marks a model natively capable when either:
 
 - its catalog metadata explicitly sets `supportsComputerUse: true`, or
-- it uses `openai-responses`, `openai-codex-responses`, or `azure-openai-responses` and resolves to an OpenAI/OpenAI Codex or Azure model ID matching `gpt-5.4` or later in the `gpt-5.x` family.
+- it uses a direct OpenAI Responses or Azure OpenAI Responses endpoint and resolves to a model ID matching `gpt-5.4` or later in the `gpt-5.x` family.
 
-An explicit `supportsComputerUse: false` disables automatic derivation and routes the model through the function-tool form.
+Codex subscription endpoints and custom or proxy routes do not infer native support from the model ID. They receive the regular `computer` function tool unless catalog metadata explicitly opts into the GA contract. An explicit `supportsComputerUse: false` also disables automatic derivation.
 
-Natively capable OpenAI Responses routes may receive a forced `{ "type": "computer" }` choice. Function-tool fallback forcing is provider-specific: OpenAI/Ollama use a named function, Anthropic/Bedrock use a named tool, Google uses required-tool mode, and adapters without a forcing form keep provider-default selection. When native computer history is replayed to a non-native OpenAI Responses-family model, that adapter converts prior `computer_call` and `computer_call_output` items into stable text notes rather than sending invalid native items. Other provider adapters serialize the generic call and result through their ordinary tool format.
+Natively capable OpenAI Responses routes may receive a forced `{ "type": "computer" }` choice. Function-tool fallback forcing is provider-specific: OpenAI/Ollama use a named function, Anthropic/Bedrock use a named tool, Google uses required-tool mode, and adapters without a forcing form keep provider-default selection. Responses Lite moves tools into `additional_tools`; for an explicitly forced computer declaration it sends only that declaration and uses `tool_choice: "required"`, preserving both selection and forcing without an invalid object choice that refers to removed top-level tools.
+
+When a session switches from a native-capable API route to a subscription or proxy route, prior native computer history is converted to a representation the target accepts. Codex subscription requests replay it as named `computer` function calls and results, then declare the next computer call as the same named function. Other non-native OpenAI Responses-family targets may use stable assistant text notes; other provider adapters use their ordinary tool format.
+While the tool is active, the system prompt makes host-desktop routing explicit even for compact native-tool inventories: desktop requests must use `computer`, and every successful action must be followed by inspection of its fresh screenshot before the next action. This does not auto-enable the tool, bypass approval, or prevent a user-requested alternative after a computer error.
 
 If the tool never appears:
 
@@ -107,14 +110,14 @@ A batch containing only `screenshot` and `wait` is observation-only. Any click, 
 
 ## Screenshot coordinates and image mapping
 
-Always choose coordinates from the immediately preceding successful computer result. Every coordinate action in one batch maps through that same prior frame. Do not use OS logical coordinates, CSS pixels, terminal cell positions, coordinates copied from another screenshot, or an in-batch `screenshot` marker as a new frame.
+Always choose coordinates from the immediately preceding successful computer result returned by the current desktop controller. Every coordinate action in one batch maps through that same prior frame. A model switch that crosses the coordinate-safe sizing boundary recreates the controller and invalidates the prior frame, so capture a fresh screenshot before the next coordinate action. Do not use OS logical coordinates, CSS pixels, terminal cell positions, coordinates copied from another screenshot, or an image resized after capture.
 
 For each capture, OMP:
 
 1. Enumerates the selected native displays and their global logical rectangles.
 2. Captures every selected display at native pixel density.
 3. Builds one logical bounding rectangle, including negative monitor origins.
-4. Chooses one render scale that preserves the desktop layout and stays within `maxWidth` and `maxHeight`.
+4. Chooses one render scale that preserves the desktop layout and stays within the configured `maxWidth` and `maxHeight` limits. Image transports that cannot preserve original detail, including GitHub Copilot Responses and xAI OAuth, additionally cap the effective frame at `1280×896`; Claude-family models use the same cap as a compatibility fallback, and other providers retain the configured limits.
 5. Places each resized display image into the composite and returns a PNG.
 
 Each result's `displays` metadata maps both spaces:

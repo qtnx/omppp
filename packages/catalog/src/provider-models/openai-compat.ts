@@ -7,6 +7,7 @@ import {
 import { Effort, THINKING_EFFORTS } from "../effort";
 import { FIREWORKS_FAST_SUFFIX, toFireworksPublicModelId } from "../fireworks-model-id";
 import {
+	anthropicModelSupportsThinking,
 	isGlmVisionModelId,
 	isGrokReasoningEffortCapable,
 	isKimiK3ModelId,
@@ -17,7 +18,7 @@ import type { ModelManagerOptions } from "../model-manager";
 import { getBundledModels } from "../models";
 import type { Api, FetchImpl, Model, ModelSpec, OpenAICompat, Provider, ThinkingConfig } from "../types";
 import { discoveryFetch, isAnthropicOAuthToken, isRecord, toBoolean, toNumber, toPositiveNumber } from "../utils";
-import { parseAlibabaTokenPlanCredential } from "../wire/alibaba-token-plan";
+import { ALIBABA_TOKEN_PLAN_BASE_URL, parseAlibabaTokenPlanCredential } from "../wire/alibaba-token-plan";
 import { coreWeaveProjectHeaders } from "../wire/coreweave";
 import {
 	COPILOT_API_HEADERS,
@@ -2512,7 +2513,7 @@ export function alibabaCodingPlanModelManagerOptions(
 // Alibaba Token Plan
 // ---------------------------------------------------------------------------
 
-export const ALIBABA_TOKEN_PLAN_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
+export { ALIBABA_TOKEN_PLAN_BASE_URL };
 
 const ALIBABA_TOKEN_PLAN_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 const ALIBABA_TOKEN_PLAN_COMPAT: OpenAICompat = {
@@ -2634,7 +2635,10 @@ export function alibabaTokenPlanModelManagerOptions(
 ): ModelManagerOptions<"openai-completions"> {
 	const credential = config?.apiKey ? parseAlibabaTokenPlanCredential(config.apiKey) : undefined;
 	const apiKey = credential?.token;
-	const baseUrl = config?.baseUrl ?? ALIBABA_TOKEN_PLAN_BASE_URL;
+	// A region-locked credential (China/custom) dictates the discovery endpoint:
+	// its key only authenticates against its own region, so fetching /models from
+	// any other base URL would 401 (#6682).
+	const baseUrl = credential?.baseUrl ?? config?.baseUrl ?? ALIBABA_TOKEN_PLAN_BASE_URL;
 	return {
 		providerId: "alibaba-token-plan",
 		dynamicModelsAuthoritative: true,
@@ -4340,6 +4344,13 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 	return {
 		providerId: "github-copilot",
 		dropCachedModelIdsOnStaticMismatch: COPILOT_CACHE_INVALIDATED_MODEL_IDS,
+		// COPILOT_API_HEADERS are compile-time constants (User-Agent + API
+		// version), not credentials. The cache omits all request headers for
+		// safety and can only restore them from a bundled static entry — so a
+		// Copilot model with no bundled reference (e.g. a freshly served
+		// claude-opus-5 and its synthesized -1m sibling) is dropped on offline
+		// reads. Declaring the constant lets the cache restore it by value.
+		restorableHeaderFallback: { ...COPILOT_API_HEADERS },
 		...(apiKey && {
 			fetchDynamicModels: async () => {
 				const longContextVariants: ModelSpec<Api>[] = [];
@@ -4438,6 +4449,17 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 									contextWindow: defaultTierWindow,
 									maxTokens,
 									headers: { ...COPILOT_API_HEADERS },
+									// Copilot's `/models` advertises no reasoning bit, so a
+									// thinking-capable Claude with no bundled reference would
+									// fall back to `reasoning: false` and lose its effort dial.
+									// Gate on the id classifier (not the transport alone) so a
+									// lagging enterprise catalog serving a pre-thinking Claude
+									// (<= 3.5) over the Messages proxy is not handed a fabricated
+									// dial it would reject; a modern reference-less model (e.g.
+									// claude-opus-5) is marked so `buildModel` derives the ladder.
+									...(api === "anthropic-messages" && anthropicModelSupportsThinking(defaults.id)
+										? { reasoning: true }
+										: {}),
 									...(api === "openai-completions"
 										? {
 												compat: {

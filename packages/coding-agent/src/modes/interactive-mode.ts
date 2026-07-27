@@ -1847,6 +1847,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 
+		if (action === "reset" && this.vibeModeEnabled) {
+			this.disableLoopMode("Exit vibe mode before using reset loops. Loop mode disabled.");
+			return;
+		}
+
 		if (!hasLoopIterationRemaining(this.loopRuntime)) {
 			this.disableLoopMode("Loop iteration limit reached. Loop mode disabled.");
 			return;
@@ -4339,6 +4344,17 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 
+		// resolveApprovedPlan may return a newer draft than the path recorded in
+		// plan-mode state. `AgentSession.#buildPlanModeMessage()` reads that state,
+		// so if the operator refines (or dismisses and keeps planning) the next
+		// planning turn must target the plan just reviewed — promote the reviewed
+		// path into plan-mode state now, mirroring the print-mode approval handler.
+		const planState = this.session.getPlanModeState();
+		if (planState?.enabled && planState.planFilePath !== planFilePath) {
+			this.session.setPlanModeState({ ...planState, planFilePath });
+			this.sessionManager.appendModeChange("plan", { planFilePath });
+		}
+
 		const contextUsage = this.#getPlanApprovalContextUsage();
 		const keepContextLabel = this.#formatKeepContextLabel(contextUsage);
 		const keepContextDisabled = this.#isKeepContextDisabled(contextUsage);
@@ -5131,6 +5147,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#commandController.handleContextCommand();
 	}
 
+	#vibeSessionTransitionBlocked(): boolean {
+		if (!this.vibeModeEnabled) return false;
+		this.showWarning("Exit vibe mode first.");
+		return true;
+	}
+
 	#prepareSessionSwitch(): void {
 		this.#btwController.dispose();
 		this.#omfgController.dispose();
@@ -5141,6 +5163,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async handleClearCommand(options?: { preserveLoopPrompt?: boolean }): Promise<void> {
+		if (this.#vibeSessionTransitionBlocked()) return;
 		const shouldPreserveLoopPrompt = options?.preserveLoopPrompt !== false;
 		const promptFilePath = shouldPreserveLoopPrompt && this.loopModeEnabled ? this.loopPromptFilePath : undefined;
 		let promptText: string | undefined;
@@ -5165,19 +5188,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleFreshCommand();
 	}
 
-	handleDropCommand(): Promise<void> {
+	async handleDropCommand(): Promise<void> {
+		if (this.#vibeSessionTransitionBlocked()) return;
 		this.#prepareSessionSwitch();
-		return this.#commandController.handleDropCommand();
+		await this.#commandController.handleDropCommand();
 	}
 
-	handleForkCommand(): Promise<void> {
+	async handleForkCommand(): Promise<void> {
+		if (this.#vibeSessionTransitionBlocked()) return;
 		this.#btwController.dispose();
 		this.#omfgController.dispose();
-		return this.#commandController.handleForkCommand();
+		await this.#commandController.handleForkCommand();
 	}
 
-	handleMoveCommand(targetPath?: string): Promise<void> {
-		return this.#commandController.handleMoveCommand(targetPath);
+	async handleMoveCommand(targetPath?: string): Promise<void> {
+		if (this.#vibeSessionTransitionBlocked()) return;
+		await this.#commandController.handleMoveCommand(targetPath);
 	}
 
 	handleRenameCommand(title: string): Promise<void> {

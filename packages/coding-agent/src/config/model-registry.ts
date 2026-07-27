@@ -812,7 +812,23 @@ function getDisabledProviderIdsFromSettings(): Set<string> {
 interface ModelRegistryOptions {
 	fetch?: FetchImpl;
 	ignoreUserConfig?: boolean;
+	/**
+	 * Gateway mode: ignore local `models.yml` entirely (provider overrides,
+	 * config API keys, custom models, custom discovery). A broker-backed
+	 * gateway serves only bundled + broker-discovered catalog metadata and
+	 * must never apply client-side credential or routing overrides.
+	 */
+	ignoreLocalModelConfig?: boolean;
 }
+/** Authentication material returned to legacy extensions for one model request. */
+export type ResolvedRequestAuth =
+	| {
+			ok: true;
+			apiKey?: string;
+			headers?: Record<string, string>;
+			env?: Record<string, string>;
+	  }
+	| { ok: false; error: string };
 
 /**
  * Model registry - loads and manages models, resolves API keys via AuthStorage.
@@ -844,6 +860,7 @@ export class ModelRegistry {
 	// Runtime model managers registered by extensions via fetchDynamicModels.
 	// Keyed by provider name; use the same SQLite cache path as builtins.
 	#runtimeModelManagers: Map<string, { options: ModelManagerOptions<Api>; sourceId: string }> = new Map();
+	#ignoreLocalModelConfig: boolean;
 	#fetch: FetchImpl;
 	#ignoreUserConfig: boolean;
 
@@ -883,6 +900,7 @@ export class ModelRegistry {
 		modelsPath?: string,
 		options?: ModelRegistryOptions,
 	) {
+		this.#ignoreLocalModelConfig = options?.ignoreLocalModelConfig ?? false;
 		this.#fetch =
 			options?.fetch ??
 			(isBunTestRuntime()
@@ -1524,6 +1542,24 @@ export class ModelRegistry {
 	}
 
 	#loadCustomModels(): CustomModelsResult {
+		// Gateway mode: serve bundled + broker-discovered catalog metadata only.
+		// Local models.yml provider overrides (baseUrl/apiKey/headers/transport),
+		// custom models, custom discovery, and config API keys are all client-side
+		// routing that MUST NOT reach a broker-backed gateway — applying them would
+		// send broker bearers to a configured endpoint, install config keys that
+		// shadow broker credentials (bypassing account pooling/refresh/accounting),
+		// or route a pi-native gateway back into itself.
+		if (this.#ignoreLocalModelConfig) {
+			return {
+				models: [],
+				overrides: new Map(),
+				modelOverrides: new Map(),
+				keylessProviders: new Set(),
+				discoverableProviders: [],
+				configuredProviders: new Set(),
+				found: false,
+			};
+		}
 		const { value, error, status } = this.#modelsConfigFile.tryLoad();
 
 		if (status === "error") {
@@ -2115,12 +2151,22 @@ export class ModelRegistry {
 			remoteCompaction: mergeProviderRemoteCompactionConfig(entry.remoteCompaction, override.remoteCompaction),
 		};
 	}
+	#applyProviderTransportOverrideToModel(
+		model: Model<Api>,
+		override: Pick<
+			ProviderOverride,
+			"baseUrl" | "headers" | "authHeader" | "apiKey" | "remoteCompaction" | "transport"
+		>,
+	): Model<Api> {
+		return buildModel(this.#applyProviderTransportOverride(toModelSpec(model), override));
+	}
+
 	#applyRuntimeProviderOverrides(models: Model<Api>[]): Model<Api>[] {
 		if (this.#runtimeProviderOverrides.size === 0) return models;
 		return models.map(model => {
 			const override = this.#runtimeProviderOverrides.get(model.provider);
 			if (!override) return model;
-			return this.#applyProviderTransportOverride(model, override);
+			return this.#applyProviderTransportOverrideToModel(model, override);
 		});
 	}
 	#resolveLiveModelOverride(model: Model<Api>): ModelOverride | undefined {
@@ -2358,6 +2404,20 @@ export class ModelRegistry {
 		});
 	}
 
+	/** Resolve request authentication through the historical Pi extension facade. */
+	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
+		try {
+			const apiKey = await this.getApiKey(model);
+			if (apiKey === undefined) {
+				return { ok: false, error: `No API key found for "${model.provider}"` };
+			}
+			const headers = this.getProviderHeaders(model.provider);
+			return { ok: true, apiKey, headers };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	}
+
 	/**
 	 * Get API key for a provider (e.g., "openai").
 	 *
@@ -2571,7 +2631,7 @@ export class ModelRegistry {
 			const withRuntimeTransportOverride = runtimeTransportOverride
 				? nextModels.map(model => {
 						if (model.provider !== providerName) return model;
-						return this.#applyProviderTransportOverride(model, runtimeTransportOverride);
+						return this.#applyProviderTransportOverrideToModel(model, runtimeTransportOverride);
 					})
 				: nextModels;
 
@@ -2655,7 +2715,7 @@ export class ModelRegistry {
 			this.#models = this.#applyLlamaCppQwenThinkingToModels(
 				this.#models.map(m => {
 					if (m.provider !== providerName) return m;
-					return this.#applyProviderTransportOverride(m, transportOverride);
+					return this.#applyProviderTransportOverrideToModel(m, transportOverride);
 				}),
 			);
 		}

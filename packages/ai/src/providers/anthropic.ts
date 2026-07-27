@@ -65,6 +65,7 @@ import { COMBINATOR_KEYS, NO_STRICT, toolWireSchema } from "../utils/schema";
 import { spillToDescription } from "../utils/schema/spill";
 import { createSdkStreamRequestOptions } from "../utils/sdk-stream-timeout";
 import { notifyRawSseEvent } from "../utils/sse-debug";
+import { isForcedToolChoice } from "../utils/tool-choice";
 import {
 	AnthropicApiError,
 	AnthropicConnectionTimeoutError,
@@ -86,6 +87,14 @@ import {
 	type RawMessageStreamEvent,
 	type TextBlockParam,
 } from "./anthropic-wire";
+import {
+	CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+	claudeAgentSdkVersion,
+	claudeClientVersion,
+	claudeCodeSystemInstruction,
+	claudeCodeVersion,
+	claudeToolPrefix,
+} from "./claude-code-fingerprint";
 import {
 	buildCopilotDynamicHeaders,
 	hasCopilotVisionInput,
@@ -129,6 +138,22 @@ export function buildBetaHeader(baseBetas: readonly string[], extraBetas: readon
 		}
 	}
 	return result.join(",");
+}
+
+/**
+ * Merge an extra Anthropic beta into a caller-provided `anthropic-beta` header,
+ * preserving the caller's key casing and deduping the tokens. Returns a
+ * single-entry header record for a per-request `headers` override — used to
+ * attach a required beta to injected SDK clients that bypass the client-level
+ * beta construction.
+ */
+function mergeAnthropicBetaHeader(callerHeaders: Record<string, string>, beta: string): Record<string, string> {
+	for (const key in callerHeaders) {
+		if (key.toLowerCase() === "anthropic-beta") {
+			return { [key]: buildBetaHeader(normalizeExtraBetas(callerHeaders[key]), [beta]) };
+		}
+	}
+	return { "anthropic-beta": beta };
 }
 
 const midConversationSystemBeta = "mid-conversation-system-2026-04-07";
@@ -465,16 +490,9 @@ function getCacheControl(
 	};
 }
 
-// Stealth mode: mimic Claude Code's request fingerprint.
-export const claudeCodeVersion = "2.1.165";
-export const claudeAgentSdkVersion = "0.3.165";
-export const claudeClientVersion = "1.11187.4";
-export const claudeToolPrefix: string = "_";
-export const claudeCodeSystemInstruction = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
-// Claude Code caps requested output at 64k tokens even when the model ceiling is
-// higher (e.g. Opus 4.8 supports 128k); OAuth requests clamp to match the wire
-// fingerprint. API-key requests keep the full model ceiling.
-export const CLAUDE_CODE_MAX_OUTPUT_TOKENS = 64000;
+// Stealth mode: mimic Claude Code's request fingerprint. Constants live in the
+// leaf module so registry/usage consumers avoid an init cycle through this file.
+export * from "./claude-code-fingerprint";
 
 export function mapStainlessOs(platform: string): "MacOS" | "Windows" | "Linux" | "FreeBSD" | `Other::${string}` {
 	switch (platform.toLowerCase()) {
@@ -1846,20 +1864,19 @@ const streamAnthropicOnce = (
 				if (options?.taskBudget && !extraBetas.includes(taskBudgetBeta)) {
 					extraBetas.push(taskBudgetBeta);
 				}
-				// `output_config.effort` ships on thinking-on requests AND on the
-				// thinking-off adaptive pin (adaptive-only models get effort:"low" so
-				// the toggle cannot 400); the beta must accompany the field in both.
-				// MiniMax uses `thinking.type:"adaptive"` itself as the control surface,
-				// so the sentinel "adaptive" value intentionally sends no output_config.
-				// Skip Vertex rawPredict: that adapter needs betas in the body
-				// (`anthropic_beta`), not as an `anthropic-beta` HTTP header, so the
-				// effort field is dropped from the body there too (see buildParams) and
-				// advertising the beta would only earn a 400 (#5614).
+				// `output_config.effort` ships on thinking-on requests, explicit
+				// thinking-off adaptive pins, and forced-tool adaptive pins. The beta
+				// must accompany the field even when direct streamAnthropic callers omit
+				// thinkingEnabled (#6589). MiniMax uses `thinking.type:"adaptive"` itself
+				// as the control surface, so the sentinel "adaptive" value intentionally
+				// sends no output_config. Skip Vertex rawPredict: that adapter needs betas
+				// in the body (`anthropic_beta`), not as an `anthropic-beta` HTTP header,
+				// so the effort field is dropped from the body there too (see buildParams)
+				// and advertising the beta would only earn a 400 (#5614).
 				const sendsAdaptiveEffortPin =
-					options?.thinkingEnabled === false &&
-					model.thinking?.mode === "anthropic-adaptive" &&
-					!model.compat.disableAdaptiveThinking &&
-					!usesAdaptiveThinkingTagOnly(model);
+					isAdaptiveOnlyThinking(model) &&
+					(options?.thinkingEnabled === false ||
+						(model.compat.supportsForcedToolChoice && isForcedToolChoice(options?.toolChoice)));
 				if (
 					model.reasoning &&
 					model.provider !== "google-vertex" &&
@@ -2070,10 +2087,27 @@ const streamAnthropicOnce = (
 				// to zero even when no watchdog timeout is configured (the helper only
 				// pins it alongside a timeout; a client retry budget of 5 would otherwise
 				// multiply with PROVIDER_MAX_RETRIES into up to 66 wire attempts).
+				// Injected SDK clients (`options.client`) bypass the client-level
+				// `anthropic-beta` construction below, so any `output_config.effort` the
+				// body carries — the adaptive-only thinking-off / forced-tool pins and
+				// enabled-effort turns alike — would reach Anthropic without the required
+				// `effort-2025-11-24` beta and 400. `create()` accepts per-request headers
+				// (already used for the gateway web-search header), so merge the beta with
+				// any caller-provided `anthropic-beta` (deduped) and attach it there. Vertex
+				// never carries the effort field (dropped in buildParams), so it is unaffected.
+				const injectedClientEffortHeaders =
+					options?.client !== undefined &&
+					(params.output_config as AnthropicOutputConfig | undefined)?.effort !== undefined
+						? mergeAnthropicBetaHeader(mergedCallerHeaders, effortBeta)
+						: undefined;
+				const perRequestHeaders =
+					umansGatewayWebSearchHeader || injectedClientEffortHeaders
+						? { ...umansGatewayWebSearchHeader, ...injectedClientEffortHeaders }
+						: undefined;
 				const requestOptions = {
 					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
 					maxRetries: 0,
-					...(umansGatewayWebSearchHeader ? { headers: umansGatewayWebSearchHeader } : {}),
+					...(perRequestHeaders ? { headers: perRequestHeaders } : {}),
 				};
 				const anthropicRequest: unknown =
 					isOAuthToken && client.beta
@@ -2966,13 +3000,32 @@ function createClient(
 	return { client, isOAuthToken: oauthToken };
 }
 
-function disableThinkingIfToolChoiceForced(params: MessageCreateParamsStreaming): void {
+function disableThinkingIfToolChoiceForced(
+	params: MessageCreateParamsStreaming,
+	model: Model<"anthropic-messages">,
+): void {
 	const toolChoice = params.tool_choice;
 	if (!toolChoice) return;
 	if (toolChoice.type !== "any" && toolChoice.type !== "tool") return;
 
 	delete params.thinking;
 	delete params.context_management;
+
+	// Adaptive-only models can't be switched off by omitting `thinking` — a bare
+	// omission defaults to adaptive thinking ON, so a forced-tool turn would still
+	// reason instead of calling the tool (#6589). Pin the lowest adaptive effort
+	// instead of dropping it, mirroring the disable branch in buildParams. Vertex
+	// rawPredict is the sole exception: it can only carry the effort beta in the
+	// body (dropped there too, see buildParams), so it keeps the delete behavior.
+	// The effort beta itself is attached at the request site — including per-request
+	// for injected SDK clients that bypass client-level beta construction.
+	if (isAdaptiveOnlyThinking(model) && model.provider !== "google-vertex") {
+		const outputConfig = (params.output_config as AnthropicOutputConfig | undefined) ?? {};
+		outputConfig.effort = "low";
+		params.output_config = outputConfig;
+		return;
+	}
+
 	const outputConfig = params.output_config as AnthropicOutputConfig | undefined;
 	if (!outputConfig) return;
 
@@ -3247,6 +3300,22 @@ function usesAdaptiveThinkingTagOnly(model: Model<"anthropic-messages">): boolea
 	return thinking.efforts.length > 0;
 }
 
+/**
+ * True for adaptive-only Claude models (Opus 4.6+, Sonnet 4.6+, Fable/Mythos 5)
+ * that reject `thinking.type: "disabled"`. Turning thinking off on these models
+ * means omitting the `thinking` field entirely and pinning the lowest adaptive
+ * effort — a bare omission defaults to adaptive thinking ON. Excludes MiniMax,
+ * which drives adaptive thinking through the `thinking.type: "adaptive"` tag
+ * itself rather than `output_config.effort`.
+ */
+function isAdaptiveOnlyThinking(model: Model<"anthropic-messages">): boolean {
+	return (
+		model.thinking?.mode === "anthropic-adaptive" &&
+		!model.compat.disableAdaptiveThinking &&
+		!usesAdaptiveThinkingTagOnly(model)
+	);
+}
+
 function resolveAnthropicAdaptiveEffort(
 	model: Model<"anthropic-messages">,
 	options: AnthropicOptions,
@@ -3372,17 +3441,14 @@ function buildParams(
 				if (mode === "anthropic-budget-effort" && effort && effort !== "adaptive") outputConfigEffort = effort;
 			}
 		} else if (options?.thinkingEnabled === false) {
-			const compat = model.compat;
-			if (
-				model.thinking?.mode === "anthropic-adaptive" &&
-				!compat.disableAdaptiveThinking &&
-				!usesAdaptiveThinkingTagOnly(model)
-			) {
+			if (isAdaptiveOnlyThinking(model)) {
 				// Adaptive-only Claude models (Opus 4.6+, Sonnet 4.6+, Fable/Mythos 5) reject
 				// `thinking.type: "disabled"` — adaptive thinking cannot be switched off.
 				// Omit the thinking field (the API defaults to adaptive) and pin the
 				// lowest effort so "thinking off" calls stay cheap instead of failing
 				// the request with a 400 (a hidden-thinking toggle must never break it).
+				// The effort field requires the `effort-2025-11-24` beta; it is attached
+				// at the request site, including per-request for injected SDK clients.
 				outputConfigEffort = "low";
 			} else {
 				thinking = { type: "disabled" };
@@ -3504,7 +3570,7 @@ function buildParams(
 		}
 	}
 
-	disableThinkingIfToolChoiceForced(params);
+	disableThinkingIfToolChoiceForced(params, model);
 	ensureMaxTokensForThinking(params, maxOutputTokens);
 	applyPromptCaching(params, cacheControl);
 	enforceCacheControlLimit(params, 4);

@@ -280,6 +280,7 @@ import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
 import { queueResolveHandler } from "./tools/resolve";
+import { USER_TODO_EDIT_CUSTOM_TYPE } from "./tools/todo";
 import { ttsTool } from "./tools/tts";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
@@ -3271,6 +3272,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getTool: resolveDeviceTool,
 			getToolContext: () => toolContextStore.getContext(),
 			emitEvent: event => cursorEventEmitter?.(event),
+			getTodoPhases: () => session.getTodoPhases(),
+			setTodoPhases: phases => session.setTodoPhases(phases),
+			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
 		});
 
 		// Resolve the inline-descriptors setting against the session-start model.

@@ -784,10 +784,6 @@ export class TurnRecovery {
 		return AIError.is(id, AIError.Flag.Transient);
 	}
 
-	#isGenericAbortSentinel(message: AssistantMessage): boolean {
-		return message.errorMessage === "Request was aborted" || message.errorMessage === "Request was aborted.";
-	}
-
 	/**
 	 * Retry an empty, reason-less provider abort: a turn with no content that
 	 * carries the generic sentinel (bare `abort()`), whether the provider
@@ -816,7 +812,9 @@ export class TurnRecovery {
 
 		const id = this.#classifyRetryMessage(message);
 		if (message.stopReason === "aborted" && AIError.is(id, AIError.Flag.Abort)) return true;
-		if (!this.#isGenericAbortSentinel(message)) return false;
+		if (message.errorMessage !== "Request was aborted" && message.errorMessage !== "Request was aborted.") {
+			return false;
+		}
 
 		message.errorId = AIError.create(AIError.Flag.Abort);
 		return true;
@@ -840,30 +838,48 @@ export class TurnRecovery {
 	}
 
 	/**
-	 * Resume a stalled turn after every emitted tool call has produced a result.
-	 * Cursor calls must also carry the server-execution marker. The failed
-	 * assistant/tool-result pair stays in context so completed side effects are
-	 * continued from rather than replayed.
+	 * Classify a reasonless abort or stream stall whose emitted tool calls all
+	 * have results. The failed assistant/tool-result pair stays in context so
+	 * continuation cannot replay completed side effects; synthetic results tell
+	 * the next turn that an unexecuted call must be reissued.
 	 */
-	canResumeResolvedStreamStall(message: AssistantMessage): boolean {
-		if (message.stopReason !== "error" || !message.errorMessage?.toLowerCase().includes("stream stall")) {
-			return false;
-		}
+	classifyResolvedInterruptedToolTurn(message: AssistantMessage): "reasonless-abort" | "stream-stall" | undefined {
 		const id = this.#classifyRetryMessage(message);
-		if (!AIError.retriable(id)) return false;
+		const genericAbort =
+			message.errorMessage === "Request was aborted" || message.errorMessage === "Request was aborted.";
+		const reasonlessAbort =
+			(message.stopReason === "aborted" || message.stopReason === "error") &&
+			!this.#host.abortInProgress() &&
+			!this.#host.isDisposed() &&
+			!this.#host.streamingEditAbortTriggered() &&
+			((message.stopReason === "aborted" && AIError.is(id, AIError.Flag.Abort)) || genericAbort);
+		const streamStall =
+			message.stopReason === "error" &&
+			message.errorMessage?.toLowerCase().includes("stream stall") === true &&
+			AIError.retriable(id);
+		if (!reasonlessAbort && !streamStall) return undefined;
+		if (reasonlessAbort && genericAbort) message.errorId = AIError.create(AIError.Flag.Abort);
 
+		// The Cursor server-execution marker gate applies only to the stream-stall
+		// path: an unmarked/unresolved Cursor block there means the server has not
+		// finished executing, so resuming would race it. A reasonless abort instead
+		// ends the turn and the agent loop pairs every un-run call (Cursor's unmarked
+		// `todo`/MCP blocks included) with a synthetic `executed: false` result, so
+		// the tool-result reconciliation below is the safety gate and the marker is
+		// irrelevant.
 		const resolvedToolCallIds: string[] = [];
 		for (const block of message.content) {
 			if (block.type !== "toolCall") continue;
 			if (
+				streamStall &&
 				message.provider === "cursor" &&
 				(!(kCursorExecResolved in block) || block[kCursorExecResolved] !== true)
 			) {
-				return false;
+				return undefined;
 			}
 			resolvedToolCallIds.push(block.id);
 		}
-		if (resolvedToolCallIds.length === 0) return false;
+		if (resolvedToolCallIds.length === 0) return undefined;
 
 		const messages = this.#host.agent.state.messages;
 		let assistantIndex = -1;
@@ -874,14 +890,15 @@ export class TurnRecovery {
 				break;
 			}
 		}
-		if (assistantIndex < 0) return false;
+		if (assistantIndex < 0) return undefined;
 
 		const unresolvedToolCallIds = new Set(resolvedToolCallIds);
 		for (let i = assistantIndex + 1; i < messages.length; i++) {
 			const candidate = messages[i];
 			if (candidate.role === "toolResult") unresolvedToolCallIds.delete(candidate.toolCallId);
 		}
-		return unresolvedToolCallIds.size === 0;
+		if (unresolvedToolCallIds.size > 0) return undefined;
+		return reasonlessAbort ? "reasonless-abort" : "stream-stall";
 	}
 	/**
 	 * Retried turns remove the failed assistant message from active context.

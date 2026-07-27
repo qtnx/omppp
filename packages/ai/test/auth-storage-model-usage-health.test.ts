@@ -81,6 +81,7 @@ const strategy: CredentialRankingStrategy = {
 	scopeLimits: (usage, context) =>
 		usage.limits.filter(entry => entry.scope.modelId === undefined || entry.scope.modelId === context?.modelId),
 	blockScope: context => (context?.modelId ? `model:${context.modelId}` : undefined),
+	blockScopes: context => [context?.modelId ? `model:${context.modelId}` : "model", "shared"],
 	windowDefaults: { primaryMs: 60_000, secondaryMs: 60_000 },
 };
 
@@ -115,6 +116,30 @@ describe("AuthStorage model usage health", () => {
 		storages.push(storage);
 		return storage;
 	}
+
+	it("honours every request scope when checking persisted health blocks", async () => {
+		const rows = [oauthRow(1)];
+		const store = makeStore(rows);
+		store.getCredentialBlock = (credentialId, _providerKey, blockScope) =>
+			credentialId === 1 && blockScope === "shared" ? Date.now() + 60_000 : undefined;
+		const storage = new AuthStorage(store, {
+			usageProviderResolver: provider =>
+				provider === "anthropic"
+					? makeUsageProvider({ "account-1": report("account-1", [limit("short", 0.2)]) })
+					: undefined,
+			rankingStrategyResolver: provider => (provider === "anthropic" ? strategy : undefined),
+			configValueResolver: async value => value,
+		});
+		await storage.reload();
+		storages.push(storage);
+
+		const health = await storage.getModelUsageHealth("anthropic", {
+			modelId: "claude",
+			reserveFraction: 0.1,
+		});
+		expect(health.state).toBe("depleted");
+		expect(health.accounts[0]?.state).toBe("depleted");
+	});
 
 	it("keeps the model healthy while any OAuth sibling has headroom", async () => {
 		const storage = await createStorage([oauthRow(1), oauthRow(2)], {

@@ -761,6 +761,7 @@ describe("ExtensionRunner", () => {
 				session_id: "session-123",
 				session_file: "/tmp/session.jsonl",
 				stop_hook_active: false,
+				signal: new AbortController().signal,
 			});
 
 			const events = (await Bun.file(eventsPath).text())
@@ -779,6 +780,81 @@ describe("ExtensionRunner", () => {
 				},
 			]);
 			expect(stopResult).toEqual({ continue: true, additionalContext: "Run one more pass." });
+		});
+
+		it("skips cancelled handlers, releases in-flight handlers, and preserves timeout errors", async () => {
+			const extensionPath = path.join(tempDir.path(), "cancel-session-stop.ts");
+			const startedPath = path.join(tempDir.path(), "session-stop-started.txt");
+			await Bun.write(
+				extensionPath,
+				`
+				import * as fs from "node:fs";
+
+				export default function(pi) {
+					pi.on("session_stop", async () => {
+						fs.writeFileSync(${JSON.stringify(startedPath)}, "started");
+						await Promise.withResolvers().promise;
+					});
+				}
+			`,
+			);
+
+			const result = await loadTestExtensions([extensionPath]);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const errors: ExtensionError[] = [];
+			runner.onError(error => errors.push(error));
+			testSetExtensionHandlerTimeoutMs(100);
+			const controller = new AbortController();
+			const preAborted = new AbortController();
+			preAborted.abort();
+			await expect(
+				runner.emitSessionStop({
+					messages: [],
+					turn_id: 0,
+					session_id: "session-123",
+					stop_hook_active: false,
+					signal: preAborted.signal,
+				}),
+			).resolves.toBeUndefined();
+			expect(await Bun.file(startedPath).exists()).toBe(false);
+
+			const emission = runner.emitSessionStop({
+				messages: [],
+				turn_id: 0,
+				session_id: "session-123",
+				stop_hook_active: false,
+				signal: controller.signal,
+			});
+			expect(await Bun.file(startedPath).text()).toBe("started");
+			controller.abort();
+
+			await expect(emission).resolves.toBeUndefined();
+			expect(errors).toEqual([]);
+
+			// A non-cancelled handler still exercises the production timer and reports its timeout.
+			testSetExtensionHandlerTimeoutMs(10);
+			await expect(
+				runner.emitSessionStop({
+					messages: [],
+					turn_id: 1,
+					session_id: "session-123",
+					stop_hook_active: false,
+					signal: new AbortController().signal,
+				}),
+			).resolves.toBeUndefined();
+			expect(errors).toEqual([
+				{
+					extensionPath,
+					event: "session_stop",
+					error: "handler timed out after 10ms",
+				},
+			]);
 		});
 
 		it("continues to later handlers after empty continuation feedback", async () => {
@@ -823,6 +899,7 @@ describe("ExtensionRunner", () => {
 					messages: [completedMessage],
 					turn_id: 0,
 					last_assistant_message: completedMessage,
+					signal: new AbortController().signal,
 					session_id: "session-123",
 					session_file: "/tmp/session.jsonl",
 					stop_hook_active: false,
