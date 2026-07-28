@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import type { AdvisorConsultResult } from "@oh-my-pi/pi-coding-agent/advisor/runtime";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import type { AdvisorConsultResult } from "@oh-my-pi/pi-coding-agent/advisor/runtime";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { detectCompletionClaim, hasMutationsSinceLastUserPrompt } from "@oh-my-pi/pi-coding-agent/duo/takeover-signals";
@@ -209,7 +209,8 @@ describe("AgentSession advisor done-review gate", () => {
 		});
 		return {
 			consultStarted,
-			resolveConsult: () => resolveConsult({ status: "queue_cleared", attempts: [], reason: "test released consult" }),
+			resolveConsult: () =>
+				resolveConsult({ status: "queue_cleared", attempts: [], reason: "test released consult" }),
 		};
 	}
 

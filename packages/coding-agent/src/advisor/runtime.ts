@@ -618,7 +618,14 @@ export class AdvisorRuntime {
 			signal?.removeEventListener("abort", onAbort);
 			resolve(result);
 		};
-		const item: PendingConsult = { kind: "consult", question, turns: 0, epoch: this.#epoch, attempts: [], resolve: settle };
+		const item: PendingConsult = {
+			kind: "consult",
+			question,
+			turns: 0,
+			epoch: this.#epoch,
+			attempts: [],
+			resolve: settle,
+		};
 		// Abort/timeout are terminal for THIS consult: mark it so the drain loop
 		// never requeues/retries it, and drop it from the queue if still waiting.
 		const terminate = (result: AdvisorConsultResult): void => {
@@ -685,7 +692,6 @@ export class AdvisorRuntime {
 	 *  external reset/dispose can settle it instead of letting it outlive the
 	 *  epoch until its own timer fires. */
 	#inFlightConsult?: PendingConsult;
-
 
 	/** Terminal result for a consult invalidated by a queue clear / epoch bump. */
 	#clearedResult(attempts: readonly AdvisorConsultAttempt[]): AdvisorConsultResult {
@@ -1281,7 +1287,8 @@ export class AdvisorRuntime {
 				let finalBatchBase = buildBatch(deltaPart);
 				if (this.disposed || finalBatchBase === null) {
 					restoreEscalationIfNeeded();
-					if (consult) consult.resolve({ status: "disposed", attempts: snapshotConsultAttempts(consult.attempts) });
+					if (consult)
+						consult.resolve({ status: "disposed", attempts: snapshotConsultAttempts(consult.attempts) });
 					this.#backlog = Math.max(0, this.#backlog - finalTurns);
 					this.#notifyWaiters();
 					continue;

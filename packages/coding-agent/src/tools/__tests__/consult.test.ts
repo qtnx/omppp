@@ -5,7 +5,8 @@ import type { ToolSession } from "../index";
 
 function createToolSession(result?: AdvisorConsultResult): ToolSession {
 	return {
-		consultAdvisor: async () => result ?? { status: "answered", answer: "blocking-answer", attempts: [{ attempt: 1 }] },
+		consultAdvisor: async () =>
+			result ?? { status: "answered", answer: "blocking-answer", attempts: [{ attempt: 1 }] },
 		consultAdvisorAsync: () => true,
 	} as unknown as ToolSession;
 }
@@ -124,7 +125,11 @@ describe("ConsultTool", () => {
 			name: "provider_error retryable",
 			result: {
 				status: "provider_error",
-				attempts: [{ attempt: 1, error: "boom" }, { attempt: 2, error: "boom" }, { attempt: 3, error: "boom" }],
+				attempts: [
+					{ attempt: 1, error: "boom" },
+					{ attempt: 2, error: "boom" },
+					{ attempt: 3, error: "boom" },
+				],
 				error: "boom",
 				retryable: true,
 			},
