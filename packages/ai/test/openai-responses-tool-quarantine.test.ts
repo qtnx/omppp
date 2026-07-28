@@ -71,6 +71,12 @@ const goodTool: Tool = {
 	description: "read a file",
 	parameters: type({ path: "string" }),
 };
+const computerTool: Tool = {
+	name: "computer",
+	description: "control the desktop",
+	parameters: type({}),
+	native: { type: "computer" },
+};
 
 describe("convertTools quarantine (#2652)", () => {
 	test("drops only the tool with the provider-rejecting schema, keeping the rest", () => {
@@ -122,5 +128,17 @@ describe("buildParams tool_choice reconciliation (#2652)", () => {
 			undefined,
 		);
 		expect(params.tool_choice).toEqual({ type: "function", name: "read_file" });
+	});
+
+	test("keeps a forced native computer choice when only a sibling tool is quarantined", () => {
+		const nativeModel = { ...makeModel(), supportsComputerUse: true };
+		const { params } = buildParams(
+			nativeModel,
+			ctx([computerTool, badTool]),
+			{ toolChoice: { type: "computer" } },
+			undefined,
+		);
+		expect(params.tools).toEqual([{ type: "computer" }]);
+		expect(params.tool_choice).toEqual({ type: "computer" });
 	});
 });

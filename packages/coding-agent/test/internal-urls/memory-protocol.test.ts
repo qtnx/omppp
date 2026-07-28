@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { getMemoryRoot } from "@oh-my-pi/pi-coding-agent/memories";
 import {
@@ -12,6 +13,8 @@ import {
 } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { GlobTool } from "@oh-my-pi/pi-coding-agent/tools/glob";
 import { getAgentDir, removeWithRetries, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
 // Mnemopi state is loaded lazily; preload so `new MnemopiSessionState(...)` can
@@ -53,6 +56,17 @@ async function withMemoryFixture(fn: (fixture: MemoryFixture) => Promise<void>):
 		setAgentDir(previousAgentDir);
 		await removeWithRetries(cleanupRoot);
 	}
+}
+
+function createGlobTool(cwd: string): GlobTool {
+	const session: ToolSession = {
+		cwd,
+		hasUI: false,
+		settings: Settings.isolated({}),
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+	};
+	return new GlobTool(session);
 }
 
 describe("MemoryProtocolHandler", () => {
@@ -233,6 +247,95 @@ describe("MemoryProtocolHandler", () => {
 			);
 		});
 	});
+
+	it("globs nested directories within the memory root", async () => {
+		await withMemoryFixture(async ({ cwd, memoryRoot }) => {
+			const nestedSkill = path.join(memoryRoot, "skills", "demo", "nested", "SKILL.md");
+			await fs.mkdir(path.dirname(nestedSkill), { recursive: true });
+			await Bun.write(nestedSkill, "nested skill");
+			await Bun.write(path.join(memoryRoot, "skills", "demo", "notes.txt"), "not markdown");
+
+			const tool = createGlobTool(cwd);
+			const result = await tool.execute("memory-glob", { path: "memory://root/skills/**/*.md" });
+
+			expect(result.details?.files).toHaveLength(1);
+			expect(result.details?.files?.[0]).toEndWith("/skills/demo/nested/SKILL.md");
+
+			const rootResult = await tool.execute("memory-root-glob", { path: "memory://root/**/*.md" });
+
+			expect(rootResult.details?.files).toHaveLength(1);
+			expect(rootResult.details?.files?.[0]).toEndWith("/skills/demo/nested/SKILL.md");
+		});
+	});
+
+	it("preserves literal question-mark wildcards in memory globs", async () => {
+		await withMemoryFixture(async ({ cwd, memoryRoot }) => {
+			const skillsDir = path.join(memoryRoot, "skills");
+			await fs.mkdir(skillsDir, { recursive: true });
+			await Bun.write(path.join(skillsDir, "a.md"), "single character");
+			await Bun.write(path.join(skillsDir, "ab.md"), "two characters");
+
+			const result = await createGlobTool(cwd).execute("memory-question-glob", {
+				path: "memory://root/skills/?.md",
+			});
+
+			expect(result.details?.files).toHaveLength(1);
+			expect(result.details?.files?.[0]).toEndWith("/skills/a.md");
+		});
+	});
+
+	it("resolves encoded literal glob characters before the wildcard boundary", async () => {
+		await withMemoryFixture(async ({ cwd, memoryRoot }) => {
+			const encodedLiteralDir = path.join(memoryRoot, "skills", "[demo]");
+			await fs.mkdir(encodedLiteralDir, { recursive: true });
+			await Bun.write(path.join(encodedLiteralDir, "SKILL.md"), "encoded literal directory");
+
+			const result = await createGlobTool(cwd).execute("memory-encoded-literal-glob", {
+				path: "memory://root/skills/%5Bdemo%5D/*.md",
+			});
+
+			expect(result.details?.files).toHaveLength(1);
+			expect(result.details?.files?.[0]).toEndWith("/skills/[demo]/SKILL.md");
+		});
+	});
+
+	it("keeps encoded glob characters literal after the wildcard boundary", async () => {
+		await withMemoryFixture(async ({ cwd, memoryRoot }) => {
+			const skillsDir = path.join(memoryRoot, "skills");
+			await fs.mkdir(skillsDir, { recursive: true });
+			await Bun.write(path.join(skillsDir, "[demo].md"), "literal brackets");
+			await Bun.write(path.join(skillsDir, "d.md"), "single character");
+
+			const result = await createGlobTool(cwd).execute("memory-encoded-suffix-glob", {
+				path: "memory://root/*/%5Bdemo%5D.md",
+			});
+
+			expect(result.details?.files).toHaveLength(1);
+			expect(result.details?.files?.[0]).toEndWith("/skills/[demo].md");
+		});
+	});
+
+	it.each(["memory://root/skills/**/../*.md", "memory://root/skills/**/%2e%2e/*.md"])(
+		"rejects traversal in a memory glob suffix: %s",
+		async pattern => {
+			await withMemoryFixture(async ({ cwd }) => {
+				await expect(createGlobTool(cwd).execute("memory-glob-traversal", { path: pattern })).rejects.toThrow(
+					/traversal/i,
+				);
+			});
+		},
+	);
+
+	it.each(["memory://root/skills/**/demo%2fnested/*.md", "memory://root/skills/**/demo%5cnested/*.md"])(
+		"rejects encoded separators in a memory glob suffix: %s",
+		async pattern => {
+			await withMemoryFixture(async ({ cwd }) => {
+				await expect(createGlobTool(cwd).execute("memory-glob-separator", { path: pattern })).rejects.toThrow(
+					/encoded path separator/i,
+				);
+			});
+		},
+	);
 
 	it("throws clear error for missing files", async () => {
 		await withMemoryFixture(async () => {

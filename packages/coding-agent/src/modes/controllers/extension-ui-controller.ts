@@ -651,11 +651,30 @@ export class ExtensionUiController {
 			let promptEditor: HookEditorComponent | undefined;
 			let promptResolve: ((value: string | undefined) => void) | undefined;
 			let closed = false;
+			const draftEditor = this.ctx.editor;
+			const inputGuard =
+				draftEditor.getText().length > 0
+					? {
+							isBlocked: () => draftEditor.getText().length > 0,
+							handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
+							hint: "Finish or clear the current prompt to answer",
+							// Show the draft's insertion cursor while it owns input; drop it
+							// once the draft clears and the ask controls take over.
+							syncPresentation: () => {
+								draftEditor.focused = draftEditor.getText().length > 0;
+							},
+						}
+					: undefined;
 
 			const restoreAskDialog = (): void => {
 				if (closed || !askDialog) return;
 				this.ctx.editorContainer.clear();
 				this.ctx.editorContainer.addChild(askDialog);
+				// Keep the draft editor mounted beneath the restored ask, matching the
+				// initial presentation: the guard re-blocks whenever the draft is
+				// non-empty (e.g. a failed submit restored its text while a nested
+				// prompt was open), and routed input must land on a visible surface.
+				if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
 				this.ctx.ui.setFocus(askDialog);
 				this.ctx.ui.requestRender();
 			};
@@ -698,10 +717,12 @@ export class ExtensionUiController {
 					timeout: dialogOptions?.timeout,
 					onTimeout: dialogOptions?.onTimeout,
 					tui: this.ctx.ui,
+					inputGuard,
 				},
 			);
 			this.ctx.editorContainer.clear();
 			this.ctx.editorContainer.addChild(askDialog);
+			if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
 			this.ctx.ui.setFocus(askDialog);
 			this.ctx.ui.requestRender();
 
@@ -1175,15 +1196,17 @@ export class ExtensionUiController {
 	/**
 	 * Present a modal dialog on the shared editor surface, serializing against any
 	 * dialog already open. `present` builds the component, swaps it into
-	 * `editorContainer`, steals focus, and returns a `hide` closure; it is invoked
-	 * with a single `settle` callback that the component fires on submit/cancel.
+	 * `editorContainer`, steals focus, and returns a `hide` closure. Settling hides
+	 * the dialog and restores the surface it displaced (the editor, `/live`
+	 * visualizer, or another owning mode).
 	 *
 	 * Because selector / input / editor all clear `editorContainer` and re-focus,
 	 * showing a second one while the first is open would orphan the first — its
 	 * promise would hang until the caller's signal aborts. So at most one dialog is
 	 * presented at a time and the rest queue (FIFO). `settle` (or an abort) hides
-	 * the current dialog and hands the surface to the next queued request. A request
-	 * whose signal aborts before its turn resolves `undefined` and is never shown.
+	 * the current dialog, restores its displaced surface, and then hands that surface
+	 * to the next queued request. A request whose signal aborts before its turn
+	 * resolves `undefined` and is never shown.
 	 */
 	#presentDialog<T = string>(
 		signal: AbortSignal | undefined,
@@ -1218,12 +1241,28 @@ export class ExtensionUiController {
 			}
 			started = true;
 			this.#dialogActive = true;
+			const previousChildren = [...this.ctx.editorContainer.children];
+			const previousFocus = previousChildren[0] ?? this.ctx.editor;
+			const restorePreviousSurface = (): void => {
+				this.ctx.editorContainer.clear();
+				for (const child of previousChildren) this.ctx.editorContainer.addChild(child);
+				this.ctx.ui.setFocus(previousFocus);
+				this.ctx.ui.requestRender();
+			};
 			try {
-				hide = present(settle);
+				const hidePresentation = present(settle);
+				hide = () => {
+					try {
+						hidePresentation();
+					} finally {
+						restorePreviousSurface();
+					}
+				};
 			} catch (error) {
 				settled = true;
 				signal?.removeEventListener("abort", onAbort);
 				this.#dialogActive = false;
+				restorePreviousSurface();
 				reject(error);
 				this.#advanceDialogQueue();
 			}

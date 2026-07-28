@@ -538,6 +538,13 @@ export interface StreamOptions {
 	 */
 	streamIdleTimeoutMs?: number;
 	/**
+	 * Optional cap on Codex SSE pre-response attempts, including the initial
+	 * request. WebSocket retries and outer agent retries have separate budgets.
+	 * Finite values below `1` and non-finite values are clamped to one request;
+	 * omission preserves the provider default.
+	 */
+	codexSseMaxAttempts?: number;
+	/**
 	 * Optional retry delay hook for tests and transports that need custom scheduling.
 	 */
 	providerRetryWait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
@@ -597,7 +604,14 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	thinkingBudgets?: ThinkingBudgets;
 	/** Cursor exec handlers for local tool execution */
 	cursorExecHandlers?: CursorExecHandlers;
-	/** Hook to handle tool results from Cursor exec */
+	/**
+	 * Optional rewrite of Cursor exec-channel tool results. May return a Promise.
+	 *
+	 * The Agent reserves the original result in its buffer before awaiting this
+	 * hook, and the `message_end` drain waits for a still-pending rewrite, so an
+	 * async transformer is honored even when the turn closes in the same chunk.
+	 * A rejecting transformer is swallowed and the reserved payload stands in.
+	 */
 	cursorOnToolResult?: CursorToolResultHandler;
 	/** Optional tool choice override for compatible providers */
 	toolChoice?: ToolChoice;
@@ -679,6 +693,28 @@ export interface AnthropicFallbackContent {
 	type: "fallback";
 	from: { model: string };
 	to: { model: string };
+}
+
+/**
+ * Verbatim Anthropic web-search call/result retained for same-provider
+ * history replay. Other providers discard it in `transformMessages`.
+ */
+export interface AnthropicServerToolContent {
+	type: "anthropicServerTool";
+	block:
+		| {
+				type: "server_tool_use";
+				id: string;
+				name: "web_search";
+				input?: Record<string, unknown> | null;
+				[key: string]: unknown;
+		  }
+		| {
+				type: "web_search_tool_result";
+				tool_use_id: string;
+				content: unknown;
+				[key: string]: unknown;
+		  };
 }
 
 export interface ImageContent {
@@ -827,6 +863,7 @@ export interface AssistantMessage {
 		| ThinkingContent
 		| RedactedThinkingContent
 		| AnthropicFallbackContent
+		| AnthropicServerToolContent
 		| ImageContent
 		| ToolCall
 	)[];
@@ -895,9 +932,27 @@ export type Message = UserMessage | DeveloperMessage | AssistantMessage | ToolRe
 
 export type CursorExecHandlerResult<T> = { result: T; toolResult?: ToolResultMessage } | T | ToolResultMessage;
 
+/**
+ * Optional rewrite of a Cursor exec-channel tool result.
+ * May return a Promise. Returning `undefined` keeps the original result.
+ *
+ * The Agent reserves the original result in its buffer before awaiting this
+ * hook, and the `message_end` drain waits for a still-pending rewrite, so an
+ * async transformer is honored even when the turn closes in the same chunk.
+ * A rejecting transformer is swallowed and the reserved payload stands in.
+ */
 export type CursorToolResultHandler = (
 	result: ToolResultMessage,
 ) => ToolResultMessage | undefined | Promise<ToolResultMessage | undefined>;
+
+/**
+ * Identifies the synthesized assistant block a Cursor exec call was filed
+ * under, so paths that produce no handler `toolResult` can still pair one.
+ */
+export interface CursorExecPairing {
+	toolCallId: string;
+	toolName: string;
+}
 
 export interface CursorMcpCall {
 	name: string;
@@ -907,6 +962,50 @@ export interface CursorMcpCall {
 	args: Record<string, unknown>;
 	rawArgs: Record<string, Uint8Array>;
 }
+
+export interface CursorTodoSnapshotItem {
+	content: string;
+	status: "pending" | "in_progress" | "completed" | "abandoned";
+}
+
+/**
+ * Authoritative todo list state settled by Cursor's server-side
+ * `update_todos` / `read_todos` tools.
+ */
+export interface CursorTodoSnapshot {
+	todos: CursorTodoSnapshotItem[];
+	/** True when the server reported the update as a merge. Presentation only. */
+	merged: boolean;
+}
+
+/**
+ * Settles a native todo call in the host.
+ *
+ * Called for every completed native todo call, not just successful ones: the
+ * interactive todo card only resolves on a matching `tool_execution_end`, so a
+ * refused or failed call that stayed silent would animate forever.
+ *
+ * `snapshot` is the server-confirmed list, or `null` when there is nothing to
+ * mirror — a server error (`error` set), or a benign refusal with `error` null:
+ * a filtered, truncated, or empty read, or a snapshot the local model cannot
+ * represent (two rows sharing content). Local state MUST be left untouched
+ * unless a snapshot is supplied.
+ *
+ * `toolCallId` is the id of the streamed native call, which is also the key the
+ * interactive transcript filed the visible block under. The host MUST reuse it
+ * when emitting the synthetic completion, or that block never resolves.
+ *
+ * Returns the result to persist for that block — always, since every settle
+ * needs a paired result or `buildSessionContext` strips the block as dangling.
+ * Only the host knows the phase grouping the todo renderer replays from, so the
+ * provider persists this value verbatim. When no handler is registered at all,
+ * the provider falls back to its own summary-only result.
+ */
+export type CursorTodoSyncHandler = (
+	snapshot: CursorTodoSnapshot | null,
+	toolCallId: string,
+	error: string | null,
+) => ToolResultMessage;
 
 export interface CursorShellStreamCallbacks {
 	onStdout(data: string): void;
@@ -926,6 +1025,8 @@ export interface CursorExecHandlers {
 	) => Promise<CursorExecHandlerResult<ShellResult>>;
 	diagnostics?: (args: DiagnosticsArgs) => Promise<CursorExecHandlerResult<DiagnosticsResult>>;
 	mcp?: (call: CursorMcpCall) => Promise<CursorExecHandlerResult<McpResult>>;
+	/** Mirror Cursor's server-owned todo list into local session state. */
+	todoSync?: CursorTodoSyncHandler;
 	onToolResult?: CursorToolResultHandler;
 }
 

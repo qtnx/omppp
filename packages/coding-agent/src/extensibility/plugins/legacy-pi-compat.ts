@@ -6,29 +6,10 @@ import * as path from "node:path";
 import * as url from "node:url";
 import type { ParseResult, ParserPlugin } from "@babel/parser";
 import { parse as parseBabel } from "@babel/parser";
-import * as traverseModule from "@babel/traverse";
 import { isCompiledBinary, stripWindowsExtendedLengthPathPrefix } from "@oh-my-pi/pi-utils";
 import { registerPluginCacheInvalidator } from "../../discovery/helpers";
 
 const IS_COMPILED_BINARY = isCompiledBinary();
-
-function isBabelTraverse(value: unknown): value is typeof traverseModule.default {
-	return typeof value === "function";
-}
-
-// Bun's compiled CJS interop wraps Babel traverse's default one level deeper.
-const traverseDefault: unknown = traverseModule.default;
-const nestedTraverse =
-	traverseDefault !== null && typeof traverseDefault === "object" && "default" in traverseDefault
-		? traverseDefault.default
-		: undefined;
-const traverseCandidate = isBabelTraverse(traverseDefault) ? traverseDefault : nestedTraverse;
-if (!isBabelTraverse(traverseCandidate)) {
-	throw new TypeError(
-		`Invalid @babel/traverse export: expected function, got default=${typeof traverseDefault}, nested=${typeof nestedTraverse}`,
-	);
-}
-const traverseAst = traverseCandidate;
 
 // === Bundled host modules (issue #3423) ===
 //
@@ -101,6 +82,365 @@ function parseExtensionSource(source: string, importerPath: string): ParseResult
 	}
 }
 
+const REQUIRE_BINDING = 1 << 0;
+const OBJECT_BINDING = 1 << 1;
+const EXPORTS_BINDING = 1 << 2;
+const MODULE_BINDING = 1 << 3;
+
+interface StructuralAstNode {
+	readonly type: string;
+	readonly [key: string]: unknown;
+}
+
+interface BindingScope {
+	readonly parent: BindingScope | null;
+	readonly ownsVarBindings: boolean;
+	bindings: number;
+}
+
+interface ScopedAstNode {
+	readonly node: StructuralAstNode;
+	readonly scope: BindingScope;
+	readonly order: number;
+}
+
+interface ScopeWalkItem {
+	readonly node: StructuralAstNode;
+	readonly scope: BindingScope | null;
+	readonly parent: StructuralAstNode | null;
+	readonly parentKey: string | null;
+}
+
+function asAstNode(value: unknown): StructuralAstNode | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const candidate = value as { readonly type?: unknown };
+	return typeof candidate.type === "string" ? (candidate as StructuralAstNode) : null;
+}
+
+function nodeArray(node: StructuralAstNode, key: string): readonly unknown[] | null {
+	const value = node[key];
+	return Array.isArray(value) ? value : null;
+}
+
+function nodeArgument(node: StructuralAstNode | null, index: number): StructuralAstNode | null {
+	if (!node) return null;
+	const values = nodeArray(node, "arguments");
+	return values ? asAstNode(values[index]) : null;
+}
+
+function isIdentifier(node: StructuralAstNode | null, name: string): boolean {
+	return node?.type === "Identifier" && node.name === name;
+}
+
+function trackedBinding(name: unknown): number {
+	switch (name) {
+		case "require":
+			return REQUIRE_BINDING;
+		case "Object":
+			return OBJECT_BINDING;
+		case "exports":
+			return EXPORTS_BINDING;
+		case "module":
+			return MODULE_BINDING;
+		default:
+			return 0;
+	}
+}
+
+function addPatternBindings(scope: BindingScope, pattern: unknown): void {
+	const stack: unknown[] = [pattern];
+	while (stack.length > 0) {
+		const node = asAstNode(stack.pop());
+		if (!node) continue;
+		switch (node.type) {
+			case "Identifier":
+				scope.bindings |= trackedBinding(node.name);
+				break;
+			case "AssignmentPattern":
+				stack.push(node.left);
+				break;
+			case "RestElement":
+				stack.push(node.argument);
+				break;
+			case "ArrayPattern": {
+				const elements = nodeArray(node, "elements");
+				if (elements) stack.push(...elements);
+				break;
+			}
+			case "ObjectPattern": {
+				const properties = nodeArray(node, "properties");
+				if (!properties) break;
+				for (const value of properties) {
+					const property = asAstNode(value);
+					if (!property) continue;
+					stack.push(property.type === "RestElement" ? property.argument : property.value);
+				}
+				break;
+			}
+			case "TSParameterProperty":
+				stack.push(node.parameter);
+				break;
+		}
+	}
+}
+
+function isFunctionScopeNode(node: StructuralAstNode): boolean {
+	switch (node.type) {
+		case "FunctionDeclaration":
+		case "FunctionExpression":
+		case "ArrowFunctionExpression":
+		case "ObjectMethod":
+		case "ClassMethod":
+		case "ClassPrivateMethod":
+		case "TSDeclareFunction":
+		case "TSDeclareMethod":
+		case "DeclareFunction":
+			return true;
+		default:
+			return false;
+	}
+}
+
+function isFunctionDeclarationNode(node: StructuralAstNode): boolean {
+	return node.type === "FunctionDeclaration" || node.type === "TSDeclareFunction" || node.type === "DeclareFunction";
+}
+
+function isClassScopeNode(node: StructuralAstNode): boolean {
+	return node.type === "ClassDeclaration" || node.type === "ClassExpression";
+}
+
+function scopeKind(node: StructuralAstNode, parent: StructuralAstNode | null, parentKey: string | null): 0 | 1 | 2 {
+	if (
+		node.type === "Program" ||
+		isFunctionScopeNode(node) ||
+		node.type === "StaticBlock" ||
+		node.type === "TSModuleBlock"
+	) {
+		return 2;
+	}
+	if (
+		isClassScopeNode(node) ||
+		node.type === "CatchClause" ||
+		node.type === "ForStatement" ||
+		node.type === "ForInStatement" ||
+		node.type === "ForOfStatement" ||
+		node.type === "SwitchStatement"
+	) {
+		return 1;
+	}
+	if (node.type === "BlockStatement" && !(parent && isFunctionScopeNode(parent) && parentKey === "body")) {
+		return 1;
+	}
+	return 0;
+}
+
+function nearestVarScope(scope: BindingScope): BindingScope {
+	let current = scope;
+	while (!current.ownsVarBindings && current.parent) current = current.parent;
+	return current;
+}
+
+function registerOuterDeclaration(node: StructuralAstNode, scope: BindingScope | null): void {
+	if (!scope) return;
+	if (
+		(isFunctionDeclarationNode(node) && node.type !== "TSDeclareFunction" && node.type !== "DeclareFunction") ||
+		(node.type === "ClassDeclaration" && node.declare !== true)
+	) {
+		addPatternBindings(scope, node.id);
+	}
+}
+
+function registerScopeBindings(node: StructuralAstNode, scope: BindingScope): void {
+	if (isFunctionScopeNode(node)) {
+		addPatternBindings(scope, node.id);
+		const parameters = nodeArray(node, "params");
+		if (parameters) {
+			for (const parameter of parameters) addPatternBindings(scope, parameter);
+		}
+	}
+	if (isClassScopeNode(node)) addPatternBindings(scope, node.id);
+	if (node.type === "CatchClause") addPatternBindings(scope, node.param);
+
+	if (node.type === "ImportDeclaration") {
+		const specifiers = nodeArray(node, "specifiers");
+		if (specifiers) {
+			for (const value of specifiers) {
+				const specifier = asAstNode(value);
+				if (specifier) addPatternBindings(scope, specifier.local);
+			}
+		}
+	} else if (node.type === "TSImportEqualsDeclaration") {
+		addPatternBindings(scope, node.id);
+	} else if (node.type === "VariableDeclaration") {
+		const target = node.kind === "var" ? nearestVarScope(scope) : scope;
+		const declarations = nodeArray(node, "declarations");
+		if (declarations) {
+			for (const value of declarations) {
+				const declaration = asAstNode(value);
+				if (declaration) addPatternBindings(target, declaration.id);
+			}
+		}
+	}
+}
+
+function isAstMetadataKey(key: string): boolean {
+	switch (key) {
+		case "loc":
+		case "extra":
+		case "range":
+		case "comments":
+		case "tokens":
+		case "errors":
+		case "leadingComments":
+		case "trailingComments":
+		case "innerComments":
+		case "parent":
+		case "parentPath":
+		case "scope":
+		case "hub":
+			return true;
+		default:
+			return false;
+	}
+}
+
+function scopeForChild(
+	node: StructuralAstNode,
+	key: string,
+	outerScope: BindingScope | null,
+	nodeScope: BindingScope,
+): BindingScope {
+	if (node.type === "SwitchStatement" && key === "discriminant") {
+		return outerScope ?? nodeScope;
+	}
+	if (isFunctionScopeNode(node) && (key === "key" || key === "decorators")) {
+		return outerScope ?? nodeScope;
+	}
+	if (isClassScopeNode(node) && key === "decorators") {
+		return outerScope ?? nodeScope;
+	}
+	return nodeScope;
+}
+
+/**
+ * Builds only the lexical information needed by legacy extension rewriting.
+ * Scope frames are fully populated before selected nodes are returned, so
+ * hoisted and TDZ bindings behave independently of textual declaration order.
+ */
+function collectScopedAstNodes(root: unknown, select: (node: StructuralAstNode) => boolean): ScopedAstNode[] {
+	const rootNode = asAstNode(root);
+	if (!rootNode) return [];
+
+	const selected: ScopedAstNode[] = [];
+	const stack: ScopeWalkItem[] = [{ node: rootNode, scope: null, parent: null, parentKey: null }];
+	const seen = new WeakSet<object>();
+	let order = 0;
+	while (stack.length > 0) {
+		const item = stack.pop();
+		if (!item || seen.has(item.node)) continue;
+		seen.add(item.node);
+
+		registerOuterDeclaration(item.node, item.scope);
+		const kind = scopeKind(item.node, item.parent, item.parentKey);
+		const activeScope: BindingScope | null =
+			kind === 0
+				? item.scope
+				: {
+						parent: item.scope,
+						ownsVarBindings: kind === 2,
+						bindings: 0,
+					};
+		if (activeScope) {
+			registerScopeBindings(item.node, activeScope);
+			if (select(item.node)) selected.push({ node: item.node, scope: activeScope, order });
+		}
+		order++;
+
+		for (const key in item.node) {
+			if (isAstMetadataKey(key)) continue;
+			const childScope = activeScope ? scopeForChild(item.node, key, item.scope, activeScope) : null;
+			const value = item.node[key];
+			if (Array.isArray(value)) {
+				for (const element of value) {
+					const child = asAstNode(element);
+					if (child) stack.push({ node: child, scope: childScope, parent: item.node, parentKey: key });
+				}
+			} else {
+				const child = asAstNode(value);
+				if (child) stack.push({ node: child, scope: childScope, parent: item.node, parentKey: key });
+			}
+		}
+	}
+
+	selected.sort((left, right) => {
+		const leftStart = typeof left.node.start === "number" ? left.node.start : Number.MAX_SAFE_INTEGER;
+		const rightStart = typeof right.node.start === "number" ? right.node.start : Number.MAX_SAFE_INTEGER;
+		return leftStart - rightStart || left.order - right.order;
+	});
+	return selected;
+}
+
+function scopeHasBinding(scope: BindingScope, binding: number): boolean {
+	let current: BindingScope | null = scope;
+	while (current) {
+		if ((current.bindings & binding) !== 0) return true;
+		current = current.parent;
+	}
+	return false;
+}
+
+function isSpecifierReferenceNode(node: StructuralAstNode): boolean {
+	switch (node.type) {
+		case "ImportDeclaration":
+		case "ExportNamedDeclaration":
+		case "ExportAllDeclaration":
+		case "ImportExpression":
+		case "TSImportEqualsDeclaration":
+		case "CallExpression":
+			return true;
+		default:
+			return false;
+	}
+}
+
+function isUncomputedMember(node: StructuralAstNode | null, objectName: string, propertyName: string): boolean {
+	if (node?.type !== "MemberExpression" || node.computed === true) return false;
+	return isIdentifier(asAstNode(node.object), objectName) && isIdentifier(asAstNode(node.property), propertyName);
+}
+
+function isUnshadowedExportsTarget(node: StructuralAstNode | null, scope: BindingScope): boolean {
+	return (
+		(isIdentifier(node, "exports") && !scopeHasBinding(scope, EXPORTS_BINDING)) ||
+		(isUncomputedMember(node, "module", "exports") && !scopeHasBinding(scope, MODULE_BINDING))
+	);
+}
+
+function isGlobalRequireCall(node: StructuralAstNode | null, scope: BindingScope): boolean {
+	return (
+		node?.type === "CallExpression" &&
+		isIdentifier(asAstNode(node.callee), "require") &&
+		!scopeHasBinding(scope, REQUIRE_BINDING)
+	);
+}
+
+function staticMemberPropertyName(node: StructuralAstNode): string | null {
+	const property = asAstNode(node.property);
+	if (node.computed !== true && property?.type === "Identifier" && typeof property.name === "string") {
+		return property.name;
+	}
+	if (node.computed === true && property?.type === "StringLiteral" && typeof property.value === "string") {
+		return property.value;
+	}
+	return null;
+}
+
+function staticObjectPropertyName(node: StructuralAstNode): string | null {
+	if (node.computed === true) return null;
+	const key = asAstNode(node.key);
+	if (key?.type === "Identifier" && typeof key.name === "string") return key.name;
+	return key?.type === "StringLiteral" && typeof key.value === "string" ? key.value : null;
+}
+
 function collectExtensionSpecifierReferences(
 	source: string,
 	importerPath: string,
@@ -108,10 +448,9 @@ function collectExtensionSpecifierReferences(
 ): ExtensionSpecifierReference[] {
 	const references: ExtensionSpecifierReference[] = [];
 	const record = (kind: ExtensionSpecifierReference["kind"], literal: unknown): void => {
-		if (!literal || typeof literal !== "object") return;
-		const node = literal as { type?: string; value?: unknown; start?: number | null; end?: number | null };
+		const node = asAstNode(literal);
 		if (
-			node.type === "StringLiteral" &&
+			node?.type === "StringLiteral" &&
 			typeof node.value === "string" &&
 			typeof node.start === "number" &&
 			typeof node.end === "number"
@@ -119,35 +458,29 @@ function collectExtensionSpecifierReferences(
 			references.push({ kind, specifier: node.value, start: node.start, end: node.end });
 		}
 	};
-	traverseAst(ast, {
-		enter(nodePath) {
-			const node = nodePath.node;
-			if (
-				node.type === "ImportDeclaration" ||
-				node.type === "ExportNamedDeclaration" ||
-				node.type === "ExportAllDeclaration"
-			) {
-				record("import", node.source);
-			} else if (node.type === "ImportExpression") {
-				record("import", node.source);
-			} else if (
-				node.type === "TSImportEqualsDeclaration" &&
-				node.moduleReference.type === "TSExternalModuleReference"
-			) {
-				record("require", node.moduleReference.expression);
-			} else if (node.type === "CallExpression") {
-				if (node.callee.type === "Import") {
-					record("import", node.arguments[0]);
-				} else if (
-					node.callee.type === "Identifier" &&
-					node.callee.name === "require" &&
-					!nodePath.scope.hasBinding("require", true)
-				) {
-					record("require", node.arguments[0]);
-				}
+	for (const { node, scope } of collectScopedAstNodes(ast, isSpecifierReferenceNode)) {
+		if (
+			node.type === "ImportDeclaration" ||
+			node.type === "ExportNamedDeclaration" ||
+			node.type === "ExportAllDeclaration"
+		) {
+			record("import", node.source);
+		} else if (node.type === "ImportExpression") {
+			record("import", node.source);
+		} else if (node.type === "TSImportEqualsDeclaration") {
+			const moduleReference = asAstNode(node.moduleReference);
+			if (moduleReference?.type === "TSExternalModuleReference") {
+				record("require", moduleReference.expression);
 			}
-		},
-	});
+		} else if (node.type === "CallExpression") {
+			const callee = asAstNode(node.callee);
+			if (callee?.type === "Import") {
+				record("import", nodeArgument(node, 0));
+			} else if (isIdentifier(callee, "require") && !scopeHasBinding(scope, REQUIRE_BINDING)) {
+				record("require", nodeArgument(node, 0));
+			}
+		}
+	}
 	return references;
 }
 
@@ -1776,140 +2109,74 @@ function collectCommonJsNamedExports(source: string, modulePath: string, visited
 
 	const reexportSpecifiers = new Set<string>();
 	const ast = parseExtensionSource(source, modulePath);
-	traverseAst(ast, {
-		enter(nodePath) {
-			const node = nodePath.node;
-			if (node.type === "CallExpression") {
-				const definePropertyCall =
-					node.callee.type === "MemberExpression" &&
-					!node.callee.computed &&
-					node.callee.object.type === "Identifier" &&
-					node.callee.object.name === "Object" &&
-					node.callee.property.type === "Identifier" &&
-					node.callee.property.name === "defineProperty" &&
-					!nodePath.scope.hasBinding("Object", true);
-				if (definePropertyCall) {
-					const target = node.arguments[0];
-					const property = node.arguments[1];
-					const targetsExports =
-						(target?.type === "Identifier" &&
-							target.name === "exports" &&
-							!nodePath.scope.hasBinding("exports", true)) ||
-						(target?.type === "MemberExpression" &&
-							!target.computed &&
-							target.object.type === "Identifier" &&
-							target.object.name === "module" &&
-							target.property.type === "Identifier" &&
-							target.property.name === "exports" &&
-							!nodePath.scope.hasBinding("module", true));
-					if (
-						targetsExports &&
-						property?.type === "StringLiteral" &&
-						property.value !== "default" &&
-						COMMONJS_NAMED_EXPORT_IDENTIFIER.test(property.value)
-					) {
-						names.add(property.value);
+	for (const { node, scope } of collectScopedAstNodes(
+		ast,
+		candidate => candidate.type === "CallExpression" || candidate.type === "AssignmentExpression",
+	)) {
+		if (node.type === "CallExpression") {
+			const callee = asAstNode(node.callee);
+			if (isUncomputedMember(callee, "Object", "defineProperty") && !scopeHasBinding(scope, OBJECT_BINDING)) {
+				const target = nodeArgument(node, 0);
+				const property = nodeArgument(node, 1);
+				if (
+					isUnshadowedExportsTarget(target, scope) &&
+					property?.type === "StringLiteral" &&
+					typeof property.value === "string" &&
+					property.value !== "default" &&
+					COMMONJS_NAMED_EXPORT_IDENTIFIER.test(property.value)
+				) {
+					names.add(property.value);
+				}
+				continue;
+			}
+			if (isIdentifier(callee, "__exportStar")) {
+				const sourceCall = nodeArgument(node, 0);
+				const target = nodeArgument(node, 1);
+				if (isUnshadowedExportsTarget(target, scope) && isGlobalRequireCall(sourceCall, scope)) {
+					const argument = nodeArgument(sourceCall, 0);
+					if (argument?.type === "StringLiteral" && typeof argument.value === "string") {
+						reexportSpecifiers.add(argument.value);
 					}
-					return;
 				}
-				if (node.callee.type === "Identifier" && node.callee.name === "__exportStar") {
-					const source = node.arguments[0];
-					const target = node.arguments[1];
-					const targetsExports =
-						(target?.type === "Identifier" &&
-							target.name === "exports" &&
-							!nodePath.scope.hasBinding("exports", true)) ||
-						(target?.type === "MemberExpression" &&
-							!target.computed &&
-							target.object.type === "Identifier" &&
-							target.object.name === "module" &&
-							target.property.type === "Identifier" &&
-							target.property.name === "exports" &&
-							!nodePath.scope.hasBinding("module", true));
-					if (
-						targetsExports &&
-						source?.type === "CallExpression" &&
-						source.callee.type === "Identifier" &&
-						source.callee.name === "require" &&
-						!nodePath.scope.hasBinding("require", true)
-					) {
-						const argument = source.arguments[0];
-						if (argument?.type === "StringLiteral") {
-							reexportSpecifiers.add(argument.value);
-						}
-					}
-					return;
-				}
+				continue;
 			}
-			if (node.type !== "AssignmentExpression" || node.operator !== "=" || node.left.type !== "MemberExpression") {
-				return;
-			}
-			const left = node.left;
-			const propertyName =
-				!left.computed && left.property.type === "Identifier"
-					? left.property.name
-					: left.computed && left.property.type === "StringLiteral"
-						? left.property.value
-						: null;
-			const object = left.object;
-			const assignsExportsProperty =
-				propertyName !== null &&
-				((object.type === "Identifier" &&
-					object.name === "exports" &&
-					!nodePath.scope.hasBinding("exports", true)) ||
-					(object.type === "MemberExpression" &&
-						!object.computed &&
-						object.object.type === "Identifier" &&
-						object.object.name === "module" &&
-						object.property.type === "Identifier" &&
-						object.property.name === "exports" &&
-						!nodePath.scope.hasBinding("module", true)));
-			if (assignsExportsProperty) {
-				if (propertyName !== "default" && COMMONJS_NAMED_EXPORT_IDENTIFIER.test(propertyName)) {
-					names.add(propertyName);
-				}
-				return;
-			}
-			const assignsModuleExports =
-				!left.computed &&
-				left.object.type === "Identifier" &&
-				left.object.name === "module" &&
-				left.property.type === "Identifier" &&
-				left.property.name === "exports" &&
-				!nodePath.scope.hasBinding("module", true);
-			if (!assignsModuleExports) return;
+		}
+		if (node.type !== "AssignmentExpression" || node.operator !== "=") continue;
+		const left = asAstNode(node.left);
+		if (left?.type !== "MemberExpression") continue;
 
-			const right = node.right;
-			if (right.type === "ObjectExpression") {
-				for (const property of right.properties) {
-					if ((property.type !== "ObjectProperty" && property.type !== "ObjectMethod") || property.computed) {
-						continue;
-					}
-					const name =
-						property.key.type === "Identifier"
-							? property.key.name
-							: property.key.type === "StringLiteral"
-								? property.key.value
-								: null;
+		const propertyName = staticMemberPropertyName(left);
+		const object = asAstNode(left.object);
+		if (propertyName !== null && isUnshadowedExportsTarget(object, scope)) {
+			if (propertyName !== "default" && COMMONJS_NAMED_EXPORT_IDENTIFIER.test(propertyName)) {
+				names.add(propertyName);
+			}
+			continue;
+		}
+		if (!isUncomputedMember(left, "module", "exports") || scopeHasBinding(scope, MODULE_BINDING)) continue;
+
+		const right = asAstNode(node.right);
+		if (right?.type === "ObjectExpression") {
+			const properties = nodeArray(right, "properties");
+			if (properties) {
+				for (const value of properties) {
+					const property = asAstNode(value);
+					if (!property || (property.type !== "ObjectProperty" && property.type !== "ObjectMethod")) continue;
+					const name = staticObjectPropertyName(property);
 					if (name && name !== "default" && COMMONJS_NAMED_EXPORT_IDENTIFIER.test(name)) {
 						names.add(name);
 					}
 				}
-				return;
 			}
-			if (
-				right.type === "CallExpression" &&
-				right.callee.type === "Identifier" &&
-				right.callee.name === "require" &&
-				!nodePath.scope.hasBinding("require", true)
-			) {
-				const argument = right.arguments[0];
-				if (argument?.type === "StringLiteral") {
-					reexportSpecifiers.add(argument.value);
-				}
+			continue;
+		}
+		if (isGlobalRequireCall(right, scope)) {
+			const argument = nodeArgument(right, 0);
+			if (argument?.type === "StringLiteral" && typeof argument.value === "string") {
+				reexportSpecifiers.add(argument.value);
 			}
-		},
-	});
+		}
+	}
 	const nativeRequire = createRequire(modulePath);
 	for (const specifier of reexportSpecifiers) {
 		try {

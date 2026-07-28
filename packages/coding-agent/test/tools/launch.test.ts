@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createDaemonBrokerClient, type DaemonBrokerClient } from "../../src/launch/client";
 import { registerDaemonProjectPresence } from "../../src/launch/presence";
-import type { DaemonSpec } from "../../src/launch/protocol";
+import type { DaemonOperation, DaemonSpec } from "../../src/launch/protocol";
 
 const cleanupDirs: string[] = [];
 
@@ -192,16 +192,45 @@ setInterval(() => {}, 1000);
 				head: false,
 				follow: false,
 				timeoutMs: 1_000,
-			});
+				renderTerminalRows: true,
+			} as DaemonOperation);
 			expect(logs.op).toBe("logs");
 			if (logs.op !== "logs") throw new Error("unexpected logs result");
 			expect(logs.text).toContain("READY");
 			expect(logs.text).not.toContain("\x1b");
 			expect(logs.text).not.toContain("BOOT:0");
 			expect(logs.text).toContain('INPUT:"run\\r"');
-			expect(logs.terminalText).toContain("\x1b[2J\x1b[H");
-			expect(logs.terminalText).toContain("\x1b[1;32mREADY\x1b[0m");
-			expect(logs.terminalText).toContain("BOOT:0");
+			const expectedTerminalRows = [
+				...Array.from({ length: 18 }, (_, index) => `\x1b[0mBOOT:${index + 7}`),
+				"\x1b[0m\x1b[1;38;5;2mREADY",
+				'\x1b[0mINPUT:"run\\r"',
+			];
+			expect(logs.terminalRows).toEqual(expectedTerminalRows);
+
+			const legacyLogs = await second.request({
+				op: "logs",
+				name: "debugger",
+				lines: 20,
+				head: false,
+				follow: false,
+				timeoutMs: 1_000,
+			});
+			if (legacyLogs.op !== "logs") throw new Error("unexpected legacy logs result");
+			expect("terminalText" in legacyLogs ? legacyLogs.terminalText : undefined).toContain("BOOT:0");
+			expect(legacyLogs.terminalRows).toBeUndefined();
+
+			const grepped = await second.request({
+				op: "logs",
+				name: "debugger",
+				lines: 20,
+				head: false,
+				grep: "READY",
+				follow: false,
+				timeoutMs: 1_000,
+			});
+			if (grepped.op !== "logs") throw new Error("unexpected grep logs result");
+			expect(grepped.text).toContain("READY");
+			expect(grepped.terminalRows).toBeUndefined();
 
 			const stopped = await first.request({ op: "stop", name: "debugger", timeoutMs: 2_000 });
 			expect(stopped.op).toBe("stop");
@@ -210,6 +239,47 @@ setInterval(() => {}, 1000);
 		} finally {
 			await shutdown(first);
 			second.close();
+		}
+	}, 20_000);
+
+	it("omits terminal rows for non-PTY logs", async () => {
+		const projectDir = await tempDir("omp-daemon-plain-project-");
+		const runtimeDir = await tempDir("omp-daemon-plain-runtime-");
+		const client = await createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 5_000 });
+		try {
+			const started = await client.request({
+				op: "start",
+				spec: {
+					name: "plain",
+					application: process.execPath,
+					args: ["-e", 'process.stdout.write("\\x1b[31mPLAIN\\x1b[0m\\n"); process.stdin.resume();'],
+					env: {},
+					cwd: projectDir,
+					pty: false,
+					ready: { log: "PLAIN", timeoutMs: 5_000 },
+					restart: "no",
+					persist: false,
+					detached: false,
+				},
+			});
+			if (started.op !== "start") throw new Error("unexpected start result");
+			expect(started.readyTimedOut).toBeFalse();
+
+			const logs = await client.request({
+				op: "logs",
+				name: "plain",
+				lines: 20,
+				head: false,
+				follow: false,
+				timeoutMs: 1_000,
+			});
+			if (logs.op !== "logs") throw new Error("unexpected logs result");
+			expect(logs.text).toBe("PLAIN\n");
+			expect(logs.terminalRows).toBeUndefined();
+
+			await client.request({ op: "stop", name: "plain", timeoutMs: 2_000 });
+		} finally {
+			await shutdown(client);
 		}
 	}, 20_000);
 

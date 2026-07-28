@@ -38,6 +38,8 @@ use crate::task;
 const OPERATION_TIMEOUT: Duration = Duration::from_mins(1);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const WAIT_ACTION_DURATION: Duration = Duration::from_secs(2);
+#[cfg(any(target_os = "macos", test))]
+const MACOS_POST_INPUT_SETTLE_DURATION: Duration = Duration::from_millis(100);
 const MAX_COMPOSITE_PIXELS: u64 = 268_435_456;
 
 const PERMISSION_GRANTED: &str = "granted";
@@ -925,6 +927,73 @@ fn executable_batch_actions(
 		.filter(|action| !matches!(action, ValidatedAction::Screenshot))
 }
 
+#[cfg(any(target_os = "macos", test))]
+/// Whether the final segment after the last explicit wait contains input.
+/// Screenshot markers are deferred and do not affect settling.
+fn needs_post_input_settle(actions: &[ValidatedAction]) -> bool {
+	let mut needs_settle = false;
+	for action in actions {
+		match action {
+			ValidatedAction::Wait => needs_settle = false,
+			ValidatedAction::Screenshot => {},
+			ValidatedAction::Click { .. }
+			| ValidatedAction::Drag { .. }
+			| ValidatedAction::Keypress { .. }
+			| ValidatedAction::Move { .. }
+			| ValidatedAction::Scroll { .. }
+			| ValidatedAction::Type { .. } => needs_settle = true,
+		}
+	}
+	needs_settle
+}
+
+enum DesktopBatchStep {
+	Action(ValidatedAction),
+	#[cfg(any(target_os = "macos", test))]
+	PostInputSettle,
+	Capture,
+}
+
+fn desktop_batch_steps(actions: Vec<ValidatedAction>) -> impl Iterator<Item = DesktopBatchStep> {
+	#[cfg(any(target_os = "macos", test))]
+	let post_input_settle =
+		needs_post_input_settle(&actions).then_some(DesktopBatchStep::PostInputSettle);
+	#[cfg(not(any(target_os = "macos", test)))]
+	let post_input_settle: Option<DesktopBatchStep> = None;
+
+	executable_batch_actions(actions)
+		.map(DesktopBatchStep::Action)
+		.chain(post_input_settle)
+		.chain(std::iter::once(DesktopBatchStep::Capture))
+}
+
+fn execute_desktop_batch<C, T>(
+	context: &mut C,
+	actions: Vec<ValidatedAction>,
+	deadline: Instant,
+	mut execute_action: impl FnMut(&mut C, ValidatedAction) -> CoreResult<()>,
+	mut capture: impl FnMut(&mut C) -> CoreResult<T>,
+) -> CoreResult<T> {
+	for step in desktop_batch_steps(actions) {
+		match step {
+			DesktopBatchStep::Action(action) => {
+				check_deadline(deadline)?;
+				execute_action(context, action)?;
+			},
+			#[cfg(any(target_os = "macos", test))]
+			DesktopBatchStep::PostInputSettle => {
+				let remaining = deadline.saturating_duration_since(Instant::now());
+				thread::sleep(MACOS_POST_INPUT_SETTLE_DURATION.min(remaining));
+			},
+			DesktopBatchStep::Capture => {
+				check_deadline(deadline)?;
+				return capture(context);
+			},
+		}
+	}
+	unreachable!("desktop batch always ends with capture")
+}
+
 struct DesktopWorker {
 	config:         SessionConfig,
 	capabilities:   Arc<Mutex<DesktopCapabilities>>,
@@ -1239,72 +1308,77 @@ impl DesktopWorker {
 		// Freeze coordinate mapping to the last frame returned before this batch.
 		// In-batch screenshot markers are deferred to the single final capture.
 		let batch_frame = BatchCoordinateFrame::from_returned_frame(self.returned_frame.as_ref());
-		for action in executable_batch_actions(actions) {
-			check_deadline(deadline)?;
-			match action {
-				ValidatedAction::Click { x, y, button, count, modifiers } => {
-					let frame = self.ensure_coordinate_frame(&batch_frame)?;
-					let (x, y) = frame.map_point(x, y)?;
-					let input = self.ensure_input()?;
-					with_modifiers(input, &modifiers, |input| {
-						click_at(input, x, y, button, count, &modifiers)
-					})?;
-				},
-				ValidatedAction::Drag { path, modifiers } => {
-					let frame = self.ensure_coordinate_frame(&batch_frame)?;
-					let mapped = path
-						.into_iter()
-						.map(|point| frame.map_point(point.x, point.y))
-						.collect::<CoreResult<Vec<_>>>()?;
-					let input = self.ensure_input()?;
-					with_modifiers(input, &modifiers, |input| drag_path(input, &mapped, &modifiers))?;
-				},
-				ValidatedAction::Keypress { keys } => {
-					let parsed = parse_keypress(&keys)?;
-					execute_keypress(self.ensure_input()?, &parsed)?;
-				},
-				ValidatedAction::Move { x, y, modifiers } => {
-					let frame = self.ensure_coordinate_frame(&batch_frame)?;
-					let (x, y) = frame.map_point(x, y)?;
-					with_modifiers(self.ensure_input()?, &modifiers, |input| move_mouse(input, x, y))?;
-				},
-				ValidatedAction::Screenshot => unreachable!("screenshot actions are deferred"),
-				ValidatedAction::Scroll { x, y, scroll_x, scroll_y, modifiers } => {
-					let frame = self.ensure_coordinate_frame(&batch_frame)?;
-					let (x, y) = frame.map_point(x, y)?;
-					let input = self.ensure_input()?;
-					with_modifiers(input, &modifiers, |input| {
-						move_mouse(input, x, y)?;
-						let horizontal = scroll_steps(scroll_x);
-						let vertical = scroll_steps(scroll_y);
-						if horizontal != 0 {
-							input
-								.scroll(horizontal, Axis::Horizontal)
-								.map_err(input_error)?;
+		execute_desktop_batch(
+			self,
+			actions,
+			deadline,
+			|worker, action| {
+				match action {
+					ValidatedAction::Click { x, y, button, count, modifiers } => {
+						let frame = worker.ensure_coordinate_frame(&batch_frame)?;
+						let (x, y) = frame.map_point(x, y)?;
+						let input = worker.ensure_input()?;
+						with_modifiers(input, &modifiers, |input| {
+							click_at(input, x, y, button, count, &modifiers)
+						})?;
+					},
+					ValidatedAction::Drag { path, modifiers } => {
+						let frame = worker.ensure_coordinate_frame(&batch_frame)?;
+						let mapped = path
+							.into_iter()
+							.map(|point| frame.map_point(point.x, point.y))
+							.collect::<CoreResult<Vec<_>>>()?;
+						let input = worker.ensure_input()?;
+						with_modifiers(input, &modifiers, |input| drag_path(input, &mapped, &modifiers))?;
+					},
+					ValidatedAction::Keypress { keys } => {
+						let parsed = parse_keypress(&keys)?;
+						execute_keypress(worker.ensure_input()?, &parsed)?;
+					},
+					ValidatedAction::Move { x, y, modifiers } => {
+						let frame = worker.ensure_coordinate_frame(&batch_frame)?;
+						let (x, y) = frame.map_point(x, y)?;
+						with_modifiers(worker.ensure_input()?, &modifiers, |input| {
+							move_mouse(input, x, y)
+						})?;
+					},
+					ValidatedAction::Screenshot => unreachable!("screenshot actions are deferred"),
+					ValidatedAction::Scroll { x, y, scroll_x, scroll_y, modifiers } => {
+						let frame = worker.ensure_coordinate_frame(&batch_frame)?;
+						let (x, y) = frame.map_point(x, y)?;
+						let input = worker.ensure_input()?;
+						with_modifiers(input, &modifiers, |input| {
+							move_mouse(input, x, y)?;
+							let horizontal = scroll_steps(scroll_x);
+							let vertical = scroll_steps(scroll_y);
+							if horizontal != 0 {
+								input
+									.scroll(horizontal, Axis::Horizontal)
+									.map_err(input_error)?;
+							}
+							if vertical != 0 {
+								input
+									.scroll(vertical, Axis::Vertical)
+									.map_err(input_error)?;
+							}
+							Ok(())
+						})?;
+					},
+					ValidatedAction::Type { text } => {
+						worker.ensure_input()?.text(&text).map_err(input_error)?;
+					},
+					ValidatedAction::Wait => {
+						let remaining = deadline.saturating_duration_since(Instant::now());
+						if remaining.is_zero() {
+							return Err(deadline_exceeded());
 						}
-						if vertical != 0 {
-							input
-								.scroll(vertical, Axis::Vertical)
-								.map_err(input_error)?;
-						}
-						Ok(())
-					})?;
-				},
-				ValidatedAction::Type { text } => {
-					self.ensure_input()?.text(&text).map_err(input_error)?;
-				},
-				ValidatedAction::Wait => {
-					let remaining = deadline.saturating_duration_since(Instant::now());
-					if remaining.is_zero() {
-						return Err(deadline_exceeded());
-					}
-					thread::sleep(WAIT_ACTION_DURATION.min(remaining));
-				},
-			}
-		}
-		// The result is always a new frame taken after the complete ordered batch.
-		check_deadline(deadline)?;
-		self.capture()
+						thread::sleep(WAIT_ACTION_DURATION.min(remaining));
+					},
+				}
+				Ok(())
+			},
+			Self::capture,
+		)
 	}
 }
 
@@ -2206,6 +2280,95 @@ mod tests {
 			ValidatedAction::Wait,
 			ValidatedAction::Keypress { keys: vec!["A".to_string()] },
 		]);
+	}
+
+	#[test]
+	fn post_input_settle_depends_on_input_after_the_last_wait() {
+		let input_actions = [
+			ValidatedAction::Click {
+				x:         0,
+				y:         0,
+				button:    MouseButton::Left,
+				count:     1,
+				modifiers: Vec::new(),
+			},
+			ValidatedAction::Drag {
+				path:      vec![DesktopPoint { x: 0, y: 0 }, DesktopPoint { x: 1, y: 1 }],
+				modifiers: Vec::new(),
+			},
+			ValidatedAction::Keypress { keys: vec!["A".to_string()] },
+			ValidatedAction::Move { x: 0, y: 0, modifiers: Vec::new() },
+			ValidatedAction::Scroll {
+				x:         0,
+				y:         0,
+				scroll_x:  0,
+				scroll_y:  1,
+				modifiers: Vec::new(),
+			},
+			ValidatedAction::Type { text: "x".to_string() },
+		];
+		for input in input_actions {
+			assert!(needs_post_input_settle(&[input]));
+		}
+
+		assert!(!needs_post_input_settle(&[ValidatedAction::Screenshot]));
+		assert!(!needs_post_input_settle(&[ValidatedAction::Wait]));
+		assert!(!needs_post_input_settle(&[
+			ValidatedAction::Type { text: "x".to_string() },
+			ValidatedAction::Wait,
+		]));
+		assert!(needs_post_input_settle(&[
+			ValidatedAction::Type { text: "x".to_string() },
+			ValidatedAction::Wait,
+			ValidatedAction::Keypress { keys: vec!["A".to_string()] },
+		]));
+		assert!(needs_post_input_settle(&[
+			ValidatedAction::Move { x: 0, y: 0, modifiers: Vec::new() },
+			ValidatedAction::Screenshot,
+		]));
+	}
+
+	#[test]
+	fn post_input_settle_occurs_after_last_input_before_capture() {
+		#[derive(Default)]
+		struct BatchTiming {
+			executed_actions: Vec<ValidatedAction>,
+			last_input_at:    Option<Instant>,
+			captured_at:      Option<Instant>,
+		}
+
+		let input = ValidatedAction::Type { text: "x".to_string() };
+		let mut timing = BatchTiming::default();
+		execute_desktop_batch(
+			&mut timing,
+			vec![ValidatedAction::Wait, input.clone(), ValidatedAction::Screenshot],
+			Instant::now() + Duration::from_secs(1),
+			|timing, action| {
+				let is_input = matches!(&action, ValidatedAction::Type { .. });
+				timing.executed_actions.push(action);
+				if is_input {
+					timing.last_input_at = Some(Instant::now());
+				}
+				Ok(())
+			},
+			|timing| {
+				timing.captured_at = Some(Instant::now());
+				Ok(())
+			},
+		)
+		.unwrap();
+
+		assert_eq!(timing.executed_actions, vec![ValidatedAction::Wait, input]);
+		let last_input_at = timing.last_input_at.expect("input action should execute");
+		let captured_at = timing.captured_at.expect("final capture should execute");
+		let elapsed = captured_at
+			.checked_duration_since(last_input_at)
+			.expect("capture should follow input");
+		assert!(
+			elapsed >= MACOS_POST_INPUT_SETTLE_DURATION,
+			"final capture started after {elapsed:?}, before the \
+			 {MACOS_POST_INPUT_SETTLE_DURATION:?} post-input settle completed"
+		);
 	}
 
 	#[test]

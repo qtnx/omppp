@@ -130,6 +130,8 @@ describe("SqliteAuthCredentialStore.open SQLITE_BUSY handling", () => {
 			"auth_credentials",
 			"auth_schema_version",
 			"cache",
+			"client_usage",
+			"clients",
 			"usage_cost_history",
 			"usage_history",
 		];

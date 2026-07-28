@@ -15,12 +15,57 @@
 import { STRUCTURAL_CLOSER_RE } from "./apply";
 import {
 	BLOCK_RESOLVER_UNAVAILABLE,
+	type BlockDiagnosticSuggestions,
 	blockSingleLineMessage,
 	blockUnresolvedMessage,
 	insertAfterBlockCloserLoweredWarning,
 	insertAfterBlockUnresolvedLoweredWarning,
 } from "./messages";
-import type { BlockResolution, BlockResolver, Cursor, Edit } from "./types";
+import type { BlockResolution, BlockResolver, BlockSpan, Cursor, Edit } from "./types";
+
+/** Maximum nearby lines inspected only after a block anchor has already failed. */
+const BLOCK_SUGGESTION_SCAN_LIMIT = 64;
+
+function resolveDiagnosticBlock(resolver: BlockResolver, path: string, text: string, line: number): BlockSpan | null {
+	try {
+		return resolver({ path, text, line });
+	} catch {
+		// Suggestions are best-effort and must never hide the authoritative anchor error.
+		return null;
+	}
+}
+
+function findNextBlock(
+	anchorLine: number,
+	lines: readonly string[],
+	path: string,
+	text: string,
+	resolver: BlockResolver,
+): BlockSpan | null {
+	const lastLine = Math.min(lines.length, anchorLine + BLOCK_SUGGESTION_SCAN_LIMIT);
+	for (let line = anchorLine + 1; line <= lastLine; line++) {
+		if (lines[line - 1]?.trim().length === 0) continue;
+		const span = resolveDiagnosticBlock(resolver, path, text, line);
+		if (span?.start === line && span.end > line) return span;
+	}
+	return null;
+}
+
+function findEnclosingBlock(
+	anchorLine: number,
+	lines: readonly string[],
+	path: string,
+	text: string,
+	resolver: BlockResolver,
+): BlockSpan | null {
+	const firstLine = Math.max(1, anchorLine - BLOCK_SUGGESTION_SCAN_LIMIT);
+	for (let line = anchorLine - 1; line >= firstLine; line--) {
+		if (lines[line - 1]?.trim().length === 0) continue;
+		const span = resolveDiagnosticBlock(resolver, path, text, line);
+		if (span?.start === line && span.end >= anchorLine && span.end > line) return span;
+	}
+	return null;
+}
 
 export interface ResolveBlockEditsOptions {
 	/**
@@ -105,11 +150,18 @@ export function resolveBlockEdits(
 				continue;
 			}
 			if (onUnresolved === "drop") continue;
-			throw new Error(
-				`line ${edit.lineNum}: ${
-					resolver ? blockUnresolvedMessage(edit.anchor.line, op, text.split("\n")) : BLOCK_RESOLVER_UNAVAILABLE
-				}`,
-			);
+			if (!resolver) throw new Error(`line ${edit.lineNum}: ${BLOCK_RESOLVER_UNAVAILABLE}`);
+			const lines = text.split("\n");
+			const nextBlock =
+				lines[edit.anchor.line - 1]?.trim().length === 0
+					? findNextBlock(edit.anchor.line, lines, path, text, resolver)
+					: null;
+			const enclosingBlock =
+				nextBlock === null ? findEnclosingBlock(edit.anchor.line, lines, path, text, resolver) : null;
+			const suggestions: BlockDiagnosticSuggestions = {};
+			if (nextBlock) suggestions.nextBlock = nextBlock;
+			if (enclosingBlock) suggestions.enclosingBlock = enclosingBlock;
+			throw new Error(`line ${edit.lineNum}: ${blockUnresolvedMessage(edit.anchor.line, op, lines, suggestions)}`);
 		}
 		if (span.start === span.end) {
 			// A single-line block resolution means line N is a bare statement, not
@@ -118,7 +170,12 @@ export function resolveBlockEdits(
 			// and its `break;`). The plain op is exact for one line, so reject and
 			// point at it; drop instead on the lenient preview path.
 			if (onUnresolved === "drop") continue;
-			throw new Error(`line ${edit.lineNum}: ${blockSingleLineMessage(edit.anchor.line, op)}`);
+			const enclosingBlock = resolver
+				? findEnclosingBlock(edit.anchor.line, text.split("\n"), path, text, resolver)
+				: null;
+			throw new Error(
+				`line ${edit.lineNum}: ${blockSingleLineMessage(edit.anchor.line, op, enclosingBlock ?? undefined)}`,
+			);
 		}
 		options.onResolved?.({
 			anchorLine: edit.anchor.line,

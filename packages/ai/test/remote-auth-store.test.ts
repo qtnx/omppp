@@ -786,7 +786,10 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 						},
 						identityKey: "email:remote@example.com",
 						rotatesInMs: null,
-						blocks: [{ providerKey: "anthropic:oauth", blockScope: "tier:fable", blockedUntilMs: futureBlock }],
+						blocks: [
+							{ providerKey: "anthropic:oauth", blockScope: "tier:fable", blockedUntilMs: futureBlock },
+							{ providerKey: "anthropic:oauth", blockScope: "shared", blockedUntilMs: futureBlock },
+						],
 					},
 				],
 			},
@@ -807,6 +810,9 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 				blockScope: "tier:fable",
 				blockedUntilMs: laterBlock,
 			});
+			remoteStore.deleteCredentialBlock(7, "anthropic:oauth", "tier:fable");
+			expect(remoteStore.getCredentialBlock(7, "anthropic:oauth", "tier:fable")).toBe(laterBlock);
+			expect(remoteStore.getCredentialBlock(7, "anthropic:oauth", "shared")).toBe(futureBlock);
 		} finally {
 			remoteStore.close();
 		}

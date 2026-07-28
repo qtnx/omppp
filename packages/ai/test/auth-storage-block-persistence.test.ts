@@ -168,6 +168,16 @@ describe("AuthStorage credential block persistence", () => {
 					updatedAtMs: expect.any(Number),
 				},
 			]);
+			const generationBeforeScopedDelete = storage.getGeneration();
+			storage.deleteCredentialBlock(row.id, PROVIDER_KEY, "tier:fable");
+			expect(storage.listCredentialBlocks([row.id])).toEqual([]);
+			expect(storage.getGeneration()).toBe(generationBeforeScopedDelete + 1);
+			storage.upsertCredentialBlock({
+				credentialId: row.id,
+				providerKey: PROVIDER_KEY,
+				blockScope: "tier:fable",
+				blockedUntilMs: FUTURE_BLOCK_MS,
+			});
 
 			const generationBeforeDelete = storage.getGeneration();
 			storage.deleteCredentialBlocks(row.id);

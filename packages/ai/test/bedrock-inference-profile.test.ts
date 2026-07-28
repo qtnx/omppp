@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { streamBedrock } from "@oh-my-pi/pi-ai/providers/amazon-bedrock";
 import type { Context, FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { withEnv } from "./helpers";
 
 const profileArn = "arn:aws:bedrock:us-east-2:1234567890:application-inference-profile/company-opus-48";
@@ -16,6 +17,11 @@ const profileModel: Model<"bedrock-converse-stream"> = buildModel({
 	cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 	contextWindow: 1000000,
 	maxTokens: 128000,
+	thinking: {
+		mode: "anthropic-adaptive",
+		efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.Max],
+		supportsDisplay: true,
+	},
 });
 
 function userContext(): Context {
@@ -45,6 +51,72 @@ describe("Bedrock inference profile ARNs", () => {
 		expect(calls).toEqual([
 			`https://bedrock-runtime.us-east-2.amazonaws.com/model/${encodeURIComponent(profileArn)}/converse-stream`,
 		]);
+	});
+
+	test("replays captured thinking signatures for ARN profiles", async () => {
+		const context: Context = {
+			messages: [
+				{ role: "user", content: "Plan the change", timestamp: 0 },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "Inspect the implementation", thinkingSignature: "signed-reasoning" },
+						{ type: "text", text: "I found the relevant code." },
+					],
+					api: "bedrock-converse-stream",
+					provider: "amazon-bedrock",
+					model: profileArn,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				},
+				{ role: "user", content: "Continue", timestamp: 2 },
+			],
+		};
+		const controller = new AbortController();
+		controller.abort();
+		const { promise, resolve } = Promise.withResolvers<unknown>();
+
+		void streamBedrock(profileModel, context, {
+			signal: controller.signal,
+			reasoning: Effort.High,
+			maxTokens: 16,
+			onPayload: payload => {
+				resolve(payload);
+			},
+		});
+
+		expect(await promise).toMatchObject({
+			additionalModelRequestFields: {
+				thinking: { type: "adaptive", display: "summarized" },
+				output_config: { effort: "high" },
+			},
+			messages: [
+				{ role: "user", content: [{ text: "Plan the change" }] },
+				{
+					role: "assistant",
+					content: [
+						{
+							reasoningContent: {
+								reasoningText: {
+									text: "Inspect the implementation",
+									signature: "signed-reasoning",
+								},
+							},
+						},
+						{ text: "I found the relevant code." },
+					],
+				},
+				{ role: "user", content: [{ text: "Continue" }] },
+			],
+		});
 	});
 });
 

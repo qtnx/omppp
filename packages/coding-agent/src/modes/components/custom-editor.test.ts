@@ -8,6 +8,7 @@ import {
 	CustomEditor,
 	extractBracketedImagePastePaths,
 	extractBracketedPastePaths,
+	extractImagePastePathsFromText,
 	extractImagePathFromText,
 	extractPastePathsFromText,
 	SPACE_HOLD_MECHANICAL_RUN,
@@ -182,6 +183,43 @@ describe("CustomEditor bracketed path paste", () => {
 		expect(editor.getText()).toBe("/tmp/report.csv");
 		expect(imagePathCalls).toBe(0);
 	});
+
+	it("attaches a spaced screenshot path as an image instead of inserting it as literal text", () => {
+		// #6578: the raw macOS "copy screenshot path" payload has unescaped
+		// spaces, which defeats the segment splitter. Before the whole-text
+		// fallback the paste degraded to literal text in the prompt.
+		const { editor } = makeEditor();
+		const screenshot = "/Users/me/Desktop/Screenshot 2026-07-24 at 1.55.12 PM.png";
+		const pasted: string[] = [];
+		editor.onPasteImagePath = path => {
+			pasted.push(path);
+		};
+
+		editor.handleInput(bracketedPaste(screenshot));
+
+		expect(pasted).toEqual([screenshot]);
+		expect(editor.getText()).toBe("");
+	});
+
+	it("keeps a two-file drag with unescaped spaces as text instead of attaching one fused path", () => {
+		// PR #6582 review: selecting two screenshots and dropping them together
+		// emits a single space-separated payload the splitter also refuses
+		// (`PM.png` carries no directory). Fusing it into one path attaches
+		// nothing — `handleImagePathPaste` hits ENOENT and only shows a status,
+		// never restoring the text — so the drop must degrade to a text paste.
+		const { editor } = makeEditor();
+		const dropped =
+			"/Users/me/Desktop/Screenshot 2026-07-24 at 1.55.12 PM.png /Users/me/Desktop/Screenshot 2026-07-24 at 1.56.00 PM.png";
+		const pasted: string[] = [];
+		editor.onPasteImagePath = path => {
+			pasted.push(path);
+		};
+
+		editor.handleInput(bracketedPaste(dropped));
+
+		expect(pasted).toEqual([]);
+		expect(editor.getText()).toBe(dropped);
+	});
 });
 describe("CustomEditor configured paste image keys", () => {
 	it("routes Ghostty Cmd+V kitty key events through the macOS image-paste default", () => {
@@ -250,6 +288,12 @@ describe("extractImagePathFromText (issue #3506)", () => {
 		);
 	});
 
+	it("returns undefined for two spaced paths the splitter could not separate", () => {
+		// Only the whole-text pass survives the splitter here, and it must not
+		// fuse the pair into one path the loader can never resolve.
+		expect(extractImagePathFromText("/tmp/a.png /tmp/b shot.png")).toBeUndefined();
+	});
+
 	it("does not hijack prose that happens to contain a path-shaped fragment", () => {
 		// The whole-text branch is gated on ABSOLUTE_PATH_PREFIX_REGEX, so a
 		// non-anchored prefix ("see ...") never triggers it.
@@ -262,6 +306,132 @@ describe("extractPastePathsFromText", () => {
 		expect(extractPastePathsFromText("/tmp/a.png /tmp/b.png")).toEqual(["/tmp/a.png", "/tmp/b.png"]);
 		expect(extractPastePathsFromText("just text")).toBeUndefined();
 	});
+});
+
+describe("extractImagePastePathsFromText (issue #6578)", () => {
+	const MAC_SCREENSHOT =
+		"/var/folders/xx/T/TemporaryItems/NSIRD_screencaptureui_ab/Screenshot 2026-07-24 at 1.55.12 PM.png";
+	const WINDOWS_SPACED = "C:\\Users\\me\\My Pictures\\shot 1.png";
+
+	// Every case must resolve identically on the stripped-marker route
+	// (assembled pastes) and the bracketed route, since the latter now
+	// delegates to the former.
+	const cases: { name: string; text: string; expected: string[] | undefined }[] = [
+		{ name: "a macOS screenshot path with unescaped spaces", text: MAC_SCREENSHOT, expected: [MAC_SCREENSHOT] },
+		{ name: "a Windows drive path with unescaped spaces", text: WINDOWS_SPACED, expected: [WINDOWS_SPACED] },
+		{
+			name: "a home-anchored path with unescaped spaces",
+			text: "~/Pictures/Cleanshot 2026-07-24 at 12.00.png",
+			expected: ["~/Pictures/Cleanshot 2026-07-24 at 12.00.png"],
+		},
+		{
+			name: "a shell-escaped spaced path",
+			text: "/tmp/My\\ Photos/shot\\ 1.png",
+			expected: ["/tmp/My Photos/shot 1.png"],
+		},
+		{
+			name: "a double-quoted spaced path",
+			text: '"/tmp/My Photos/shot 1.png"',
+			expected: ["/tmp/My Photos/shot 1.png"],
+		},
+		{ name: "a spaced path with a non-image extension", text: "/tmp/my report 2026.csv", expected: undefined },
+		{
+			// Ends in a real image extension, so only the absolute-prefix
+			// anchor keeps the whole-text fallback from swallowing the prose.
+			name: "prose ending in a path-shaped fragment",
+			text: "see /Users/me/Desktop/Screen Shot 1.png",
+			expected: undefined,
+		},
+		{
+			name: "two spaced image paths on separate lines",
+			text: "/tmp/a shot.png\n/tmp/b shot.png",
+			expected: undefined,
+		},
+		{
+			name: "a bare spaced filename with no leading separator",
+			text: "Screenshot 2026-07-24 at 1.55.12 PM.png",
+			expected: undefined,
+		},
+		{
+			name: "two POSIX paths dragged together when one has unescaped spaces",
+			text: "/tmp/a.png /tmp/b shot.png",
+			expected: undefined,
+		},
+		{
+			name: "two macOS screenshots dragged together",
+			text: `${MAC_SCREENSHOT} /var/folders/xx/T/TemporaryItems/NSIRD_screencaptureui_ab/Screenshot 2026-07-24 at 1.56.00 PM.png`,
+			expected: undefined,
+		},
+		{
+			name: "two home-anchored paths with unescaped spaces",
+			text: "~/a.png ~/Pictures/b shot.png",
+			expected: undefined,
+		},
+		{
+			name: "two Windows drive paths with unescaped spaces",
+			text: `C:\\Users\\me\\a.png ${WINDOWS_SPACED}`,
+			expected: undefined,
+		},
+		{
+			name: "two `file://` URLs with unescaped spaces",
+			text: "file:///tmp/a.png file:///tmp/b shot.png",
+			expected: undefined,
+		},
+		{
+			name: "two UNC paths with unescaped spaces",
+			text: "\\\\srv\\share\\a.png \\\\srv\\share\\b shot.png",
+			expected: undefined,
+		},
+		{
+			name: "a tab-separated pair of dragged paths",
+			text: "/tmp/a.png\t/tmp/b shot.png",
+			expected: undefined,
+		},
+		{
+			name: "an absolute path followed by a dot-relative path with unescaped spaces",
+			text: "/tmp/a.png ./b shot.png",
+			expected: undefined,
+		},
+		{
+			name: "an absolute path followed by a parent-relative path with unescaped spaces",
+			text: "/tmp/a.png ../pics/b shot.png",
+			expected: undefined,
+		},
+		{
+			name: "a Windows drive path followed by a dot-relative path with unescaped spaces",
+			text: "C:\\Users\\me\\a.png .\\b shot.png",
+			expected: undefined,
+		},
+		{
+			// The interior `Photos/shot` token after an unescaped space is the
+			// shape of a spaced directory name, not of a second dragged path —
+			// this is why bare relatives are not multi-path anchors.
+			name: "a single path with an unescaped spaced directory name",
+			text: "/Users/me/My Photos/shot 1.png",
+			expected: ["/Users/me/My Photos/shot 1.png"],
+		},
+		{
+			// The escape asserts the space belongs to the path, so the `/sub`
+			// that follows is a component rather than a second drag payload.
+			name: "a path whose escaped space precedes a slash-led component",
+			text: "/tmp/odd dir\\ /sub/a b.png",
+			expected: ["/tmp/odd dir /sub/a b.png"],
+		},
+		{
+			// Splitter-success path: both segments are explicit, so the
+			// whole-text pass never runs and the pair still attaches as two.
+			name: "two explicit image paths the splitter can separate",
+			text: "/tmp/a.png /tmp/b.png",
+			expected: ["/tmp/a.png", "/tmp/b.png"],
+		},
+	];
+
+	for (const { name, text, expected } of cases) {
+		it(`${expected ? "recovers" : "rejects"} ${name} on both paste routes`, () => {
+			expect(extractImagePastePathsFromText(text)).toEqual(expected);
+			expect(extractBracketedImagePastePaths(bracketedPaste(text))).toEqual(expected);
+		});
+	}
 });
 
 describe("CustomEditor space-hold push-to-talk", () => {

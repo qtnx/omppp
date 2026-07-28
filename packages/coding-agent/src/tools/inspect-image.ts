@@ -1,6 +1,13 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { instrumentedCompleteSimple, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
-import { type Api, completeSimple, type ImageContent, type Model, type ToolExample } from "@oh-my-pi/pi-ai";
+import {
+	type Api,
+	type AssistantMessage,
+	completeSimple,
+	type ImageContent,
+	type Model,
+	type ToolExample,
+} from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { extractTextContent } from "../commit/utils";
@@ -207,32 +214,55 @@ export class InspectImageTool implements AgentTool<typeof inspectImageSchema, In
 		}
 
 		const telemetry = resolveTelemetry(this.session.getTelemetry?.(), this.session.getSessionId?.() ?? undefined);
-		const response = await instrumentedCompleteSimple(
-			requestModel,
-			{
-				systemPrompt: [prompt.render(inspectImageSystemPromptTemplate)],
-				messages: [
-					{
-						role: "user",
-						content: [
-							{ type: "image", data: imageInput.data, mimeType: imageInput.mimeType },
-							{ type: "text", text: params.question },
-						],
-						timestamp: Date.now(),
-					},
-				],
-			},
-			{
-				apiKey: resolveAuthGatewayBearer(),
-				signal,
-			},
-			{ telemetry, oneshotKind: "inspect_image", completeImpl: this.completeImageRequest },
-		);
+		const timeoutMs = this.session.settings.get("inspect_image.timeoutMs");
+		const hasTimeout = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0;
+		const timeoutSignal = hasTimeout ? AbortSignal.timeout(timeoutMs) : undefined;
+		const effectiveSignal = timeoutSignal
+			? signal
+				? AbortSignal.any([signal, timeoutSignal])
+				: timeoutSignal
+			: signal;
+		const timedOut = (): boolean => Boolean(timeoutSignal?.aborted) && !signal?.aborted;
+		const formatTimeoutMessage = (): string => {
+			const seconds = timeoutMs % 1000 === 0 ? `${timeoutMs / 1000}` : (timeoutMs / 1000).toFixed(1);
+			return `inspect_image request timed out after ${seconds}s. Increase inspect_image.timeoutMs (currently ${timeoutMs}ms; 0 disables) or check the vision model provider.`;
+		};
+
+		let response: AssistantMessage;
+		try {
+			response = await instrumentedCompleteSimple(
+				requestModel,
+				{
+					systemPrompt: [prompt.render(inspectImageSystemPromptTemplate)],
+					messages: [
+						{
+							role: "user",
+							content: [
+								{ type: "image", data: imageInput.data, mimeType: imageInput.mimeType },
+								{ type: "text", text: params.question },
+							],
+							timestamp: Date.now(),
+						},
+					],
+				},
+				{
+					apiKey: resolveAuthGatewayBearer(),
+					signal: effectiveSignal,
+				},
+				{ telemetry, oneshotKind: "inspect_image", completeImpl: this.completeImageRequest },
+			);
+		} catch (error) {
+			if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
+				if (timedOut()) throw new ToolError(formatTimeoutMessage());
+			}
+			throw error;
+		}
 
 		if (response.stopReason === "error") {
 			throw new ToolError(response.errorMessage ?? "inspect_image request failed.");
 		}
 		if (response.stopReason === "aborted") {
+			if (timedOut()) throw new ToolError(formatTimeoutMessage());
 			throw new ToolError("inspect_image request aborted.");
 		}
 

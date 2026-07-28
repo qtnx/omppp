@@ -5,24 +5,50 @@
  */
 import { HL_PAYLOAD_REPLACE, HL_RANGE_SEP } from "./format";
 import {
+	type AbsoluteRangeOp,
 	BARE_BODY_AUTO_PIPED_WARNING,
 	DELETE_BLOCK_TAKES_NO_BODY,
 	DELETE_TAKES_NO_BODY,
 	EMPTY_BLOCK,
 	EMPTY_INSERT,
+	invalidAbsoluteRangeMessage,
+	MINUS_BULLET_AUTO_PIPED_WARNING,
 	MINUS_ROW_REJECTED,
 	MOVE_TAKES_NO_BODY,
 	REM_TAKES_NO_BODY,
 } from "./messages";
 import { stripOneLeadingHashlinePrefix } from "./prefixes";
 import { type BlockTarget, cloneCursor, type ParsedRange, type Token, Tokenizer } from "./tokenizer";
-import type { Anchor, Cursor, Edit, FileOp } from "./types";
+import type { Anchor, BlockSpan, Cursor, Edit, FileOp } from "./types";
+/** Parser error carrying enough range metadata for source-aware diagnostic enrichment. */
+export class InvalidAbsoluteRangeError extends Error {
+	/** Patch-language line containing the invalid range header. */
+	readonly patchLine: number;
+	/** Absolute first source line authored in the range. */
+	readonly startLine: number;
+	/** Invalid absolute last source line authored in the range. */
+	readonly endLine: number;
+	/** Operation whose range was invalid. */
+	readonly op: AbsoluteRangeOp;
 
-function validateRangeOrder(range: ParsedRange, lineNum: number): void {
+	constructor(patchLine: number, startLine: number, endLine: number, op: AbsoluteRangeOp, block?: BlockSpan) {
+		super(invalidAbsoluteRangeMessage(patchLine, startLine, endLine, op, block));
+		this.name = "InvalidAbsoluteRangeError";
+		this.patchLine = patchLine;
+		this.startLine = startLine;
+		this.endLine = endLine;
+		this.op = op;
+	}
+
+	/** Rebuild this error with a proven syntactic-block endpoint suggestion. */
+	withBlock(block: BlockSpan): InvalidAbsoluteRangeError {
+		return new InvalidAbsoluteRangeError(this.patchLine, this.startLine, this.endLine, this.op, block);
+	}
+}
+
+function validateRangeOrder(range: ParsedRange, lineNum: number, op: AbsoluteRangeOp): void {
 	if (range.end.line < range.start.line) {
-		throw new Error(
-			`line ${lineNum}: range ${range.start.line}${HL_RANGE_SEP}${range.end.line} ends before it starts.`,
-		);
+		throw new InvalidAbsoluteRangeError(lineNum, range.start.line, range.end.line, op);
 	}
 }
 
@@ -42,6 +68,13 @@ function isSkippableCommentLine(line: string): boolean {
  * dict/YAML body rather than read-output paste.
  */
 const BARE_LITERAL_VALUE_RE = /^\s*(?:"[^"]*"|'[^']*'|[-+]?\d+(?:\.\d+)?)\s*,?\s*$/;
+
+/**
+ * Markdown-bullet shape: optional indent, `-`, exactly one space, then
+ * content. Unified-diff `-` rows almost never match — code lines get the `-`
+ * glued on (`-old()`) and indented deletions carry multiple spaces (`-    x`).
+ */
+const MD_BULLET_ROW_RE = /^\s*- \S/;
 
 function detectApplyPatchContamination(text: string, _hasPending: boolean): string | null {
 	const trimmed = text.trimStart();
@@ -93,7 +126,7 @@ interface PendingComment {
 	text: string;
 }
 
-type PayloadRow = { kind: "literal"; text: string; lineNum: number; bare?: boolean };
+type PayloadRow = { kind: "literal"; text: string; lineNum: number; bare?: boolean; minus?: boolean };
 
 interface Pending {
 	target: BlockTarget;
@@ -162,7 +195,7 @@ export class Executor {
 			case "op-block":
 				this.#discardPendingSkippableComments();
 				if (token.target.kind === "replace" || token.target.kind === "delete") {
-					validateRangeOrder(token.target.range, token.lineNum);
+					validateRangeOrder(token.target.range, token.lineNum, token.target.kind);
 				}
 				if (token.target.kind === "rem") {
 					this.#flushPending();
@@ -284,8 +317,12 @@ export class Executor {
 			if (this.#pending.target.kind === "delete") throw new Error(`line ${lineNum}: ${DELETE_TAKES_NO_BODY}`);
 			if (this.#pending.target.kind === "delete_block")
 				throw new Error(`line ${lineNum}: ${DELETE_BLOCK_TAKES_NO_BODY}`);
-			if (text.trimStart().charCodeAt(0) === 45 /* - */) throw new Error(`line ${lineNum}: ${MINUS_ROW_REJECTED}`);
-			if (!this.#warnings.includes(BARE_BODY_AUTO_PIPED_WARNING)) this.#warnings.push(BARE_BODY_AUTO_PIPED_WARNING);
+			const row: PayloadRow = { kind: "literal", text, lineNum, bare: true };
+			// `-` rows are held and judged at flush time by #resolveMinusRows,
+			// once the whole body is visible.
+			if (text.trimStart().charCodeAt(0) === 45 /* - */) row.minus = true;
+			else if (!this.#warnings.includes(BARE_BODY_AUTO_PIPED_WARNING))
+				this.#warnings.push(BARE_BODY_AUTO_PIPED_WARNING);
 			this.#commitDeferredBlanks(this.#pending);
 			// Defer read-output line-number stripping to #flushPending: a bare
 			// "N:text" row is only a copy-paste artifact from snapshot output
@@ -294,7 +331,7 @@ export class Executor {
 			// with "digits:" (YAML ports "42:hello", timestamps "12:30") when it
 			// sits next to an unprefixed sibling. Rows with an explicit "+" go
 			// through #handleLiteralPayload and are never bare, never stripped.
-			this.#pending.payloads.push({ kind: "literal", text, lineNum, bare: true });
+			this.#pending.payloads.push(row);
 			return;
 		}
 		if (text.trim().length === 0) return;
@@ -324,6 +361,38 @@ export class Executor {
 		if (!this.#warnings.includes(BARE_BODY_AUTO_PIPED_WARNING)) this.#warnings.push(BARE_BODY_AUTO_PIPED_WARNING);
 		pending.payloads.push(...pending.deferredBlanks);
 		pending.deferredBlanks = [];
+	}
+
+	/**
+	 * Judge bare `-` body rows once the whole hunk body is known. They are
+	 * usually unified-diff contamination (`-old` next to `+new`) and inserting
+	 * them would corrupt the file, so they are rejected — EXCEPT when the body
+	 * is unambiguously a Markdown bullet list: every `-` row is bullet-shaped
+	 * (`- item`) and the body is either fully bare or already contains an
+	 * explicit `+- item` sibling. Those rows are kept as literal content with a
+	 * warning instead of failing the patch.
+	 */
+	#resolveMinusRows(payloads: readonly PayloadRow[]): void {
+		let firstMinus: PayloadRow | undefined;
+		let allBulletShaped = true;
+		let hasExplicit = false;
+		let hasExplicitBullet = false;
+		for (const row of payloads) {
+			if (row.minus) {
+				firstMinus ??= row;
+				allBulletShaped &&= MD_BULLET_ROW_RE.test(row.text);
+			} else if (!row.bare) {
+				hasExplicit = true;
+				hasExplicitBullet ||= MD_BULLET_ROW_RE.test(row.text);
+			}
+		}
+		if (firstMinus === undefined) return;
+		if (allBulletShaped && (!hasExplicit || hasExplicitBullet)) {
+			if (!this.#warnings.includes(MINUS_BULLET_AUTO_PIPED_WARNING))
+				this.#warnings.push(MINUS_BULLET_AUTO_PIPED_WARNING);
+			return;
+		}
+		throw new Error(`line ${firstMinus.lineNum}: ${MINUS_ROW_REJECTED}`);
 	}
 
 	/**
@@ -388,6 +457,7 @@ export class Executor {
 		const pending = this.#pending;
 		if (!pending) return;
 		const { target, lineNum, payloads } = pending;
+		this.#resolveMinusRows(payloads);
 		this.#stripBarePrefixesIfUniform(payloads);
 		this.#pending = undefined;
 		if (target.kind === "delete") {

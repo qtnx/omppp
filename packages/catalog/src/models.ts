@@ -10,27 +10,27 @@ import type { Api, KnownProvider, Model, ModelSpec, Usage } from "./types";
  *
  * For runtime-aware resolution, use `createModelManager()` / `resolveProviderModels()`.
  */
-let modelRegistry: Map<string, Map<string, Model<Api>>> | undefined;
+const modelRegistry = new Map<string, Map<string, Model<Api>>>();
 
-/** Build (once) and return the enriched bundled-model registry. Lazy: enrichment of ~12K models is deferred off module load. */
-function getModelRegistry(): Map<string, Map<string, Model<Api>>> {
-	if (modelRegistry === undefined) {
-		modelRegistry = new Map();
-		for (const [provider, models] of Object.entries(MODELS)) {
-			const providerModels = new Map<string, Model<Api>>();
-			for (const [id, model] of Object.entries(models)) {
-				providerModels.set(id, buildModel(model as ModelSpec<Api>));
-			}
-			modelRegistry.set(provider, providerModels);
-		}
+/** Build (once) and return one provider's enriched bundled models. */
+function getProviderModels(provider: string): Map<string, Model<Api>> | undefined {
+	const cachedModels = modelRegistry.get(provider);
+	if (cachedModels !== undefined) return cachedModels;
+	if (!Object.hasOwn(MODELS, provider)) return undefined;
+
+	const providerModels = new Map<string, Model<Api>>();
+	const rawModels = MODELS[provider as keyof typeof MODELS];
+	for (const [id, model] of Object.entries(rawModels)) {
+		providerModels.set(id, buildModel(model as ModelSpec<Api>));
 	}
-	return modelRegistry;
+	modelRegistry.set(provider, providerModels);
+	return providerModels;
 }
 
 export type GeneratedProvider = keyof typeof MODELS;
 
 export function getBundledModel<TApi extends Api = Api>(provider: GeneratedProvider, modelId: string): Model<TApi> {
-	const providerModels = getModelRegistry().get(provider);
+	const providerModels = getProviderModels(provider);
 	return providerModels?.get(modelId) as Model<TApi>;
 }
 
@@ -39,7 +39,7 @@ export function getBundledProviders(): KnownProvider[] {
 }
 
 export function getBundledModels(provider: GeneratedProvider): Model<Api>[] {
-	const models = getModelRegistry().get(provider);
+	const models = getProviderModels(provider);
 	return models ? (Array.from(models.values()) as Model<Api>[]) : [];
 }
 

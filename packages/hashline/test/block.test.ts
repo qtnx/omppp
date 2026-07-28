@@ -104,6 +104,30 @@ describe("resolveBlockEdits", () => {
 		expect(error?.message).not.toContain("foxtrot");
 	});
 
+	it("suggests the next multi-line opener for a blank anchor without applying it", () => {
+		const text = "alpha\n\nfunction x() {\n  return 1;\n}";
+		const resolver: BlockResolver = ({ line }) => (line === 3 ? { start: 3, end: 5 } : null);
+		const edits = parsePatch("SWAP.BLK 2:\n+function y() {}").edits;
+
+		expect(() => resolveBlockEdits(edits, text, PATH, resolver)).toThrow(
+			"Line 2 is blank; no syntactic block can begin there. The next multi-line block begins at line 3 and ends at line 5. Retry `SWAP.BLK 3:`.",
+		);
+	});
+
+	it("suggests both the exact statement range and nearest enclosing block", () => {
+		const text = "function x() {\n  run();\n}";
+		const resolver: BlockResolver = ({ line }) => {
+			if (line === 2) return { start: 2, end: 2 };
+			if (line === 1) return { start: 1, end: 3 };
+			return null;
+		};
+		const edits = parsePatch("SWAP.BLK 2:\n+  stop();").edits;
+
+		expect(() => resolveBlockEdits(edits, text, PATH, resolver)).toThrow(
+			"For only this statement use `SWAP 2.=2:`. The nearest enclosing multi-line block begins at line 1 and ends at line 3; use `SWAP.BLK 1:` to target it.",
+		);
+	});
+
 	it("omits the context preview when the anchor line is out of range", () => {
 		const edits = parsePatch("SWAP.BLK 9:\n+X").edits;
 		let error: Error | undefined;
@@ -217,6 +241,20 @@ describe("Patcher with a block resolver", () => {
 		const result = await patcher.apply(Patch.parse(`[${PATH}#${tag}]\nSWAP.BLK 2:\n+  if (y || z) {\n+  }`));
 
 		expect(result.sections[0]?.blockResolutions).toEqual([{ anchorLine: 2, start: 2, end: 3, op: "replace" }]);
+	});
+
+	it("enriches reversed absolute ranges with the resolved block endpoint without writing", async () => {
+		const source = Array.from({ length: 255 }, (_, index) => `line ${index + 1}`).join("\n");
+		const fs = new InMemoryFilesystem([[PATH, source]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = snapshots.record(PATH, source);
+		const resolver: BlockResolver = ({ line }) => (line === 195 ? { start: 195, end: 255 } : null);
+		const patcher = new Patcher({ fs, snapshots, blockResolver: resolver });
+
+		await expect(patcher.apply(Patch.parse(`[${PATH}#${tag}]\nSWAP 195.=61:\n+replacement`))).rejects.toThrow(
+			"Invalid absolute range: start 195, end 61. The value after `.=` is an absolute source line, not a line count or replacement length. For one line use `SWAP 195.=195:`. For 61 lines starting at 195, use `SWAP 195.=255:`. The syntactic block beginning at 195 ends at 255, so `SWAP.BLK 195:` is also valid.",
+		);
+		expect(fs.get(PATH)).toBe(source);
 	});
 
 	it("resolves against the tagged snapshot and recovers onto drifted content", async () => {

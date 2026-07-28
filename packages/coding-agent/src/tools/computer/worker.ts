@@ -1,9 +1,5 @@
-import {
-	type DesktopAction,
-	type DesktopCapture,
-	DesktopSession,
-	type DesktopSessionOptions,
-} from "@oh-my-pi/pi-natives";
+import type { DesktopAction, DesktopCapture, DesktopSession, DesktopSessionOptions } from "@oh-my-pi/pi-natives";
+import { createDesktopSession } from "@oh-my-pi/pi-natives/desktop";
 import type { ComputerWorkerError, ComputerWorkerInbound, ComputerWorkerTransport } from "./protocol";
 
 export interface NativeDesktopSession {
@@ -44,7 +40,7 @@ export class ComputerWorkerCore {
 
 	constructor(
 		private readonly transport: ComputerWorkerTransport,
-		private readonly createSession: NativeDesktopSessionFactory = options => new DesktopSession(options),
+		private readonly createSession: NativeDesktopSessionFactory = createDesktopSession,
 	) {
 		this.#unsubscribe = transport.onMessage(message => this.#onMessage(message));
 	}

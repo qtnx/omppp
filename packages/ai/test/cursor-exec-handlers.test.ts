@@ -6,20 +6,31 @@ import {
 	buildCursorSystemPromptJsons,
 	emptyGrepPatternRejection,
 	handleServerMessage,
+	processInteractionUpdate,
 	resolveExecHandler,
 	streamCursor,
 	type ToolCallState,
 } from "@oh-my-pi/pi-ai/providers/cursor";
 import { streamCursor as lazyStreamCursor, setCursorProviderModule } from "@oh-my-pi/pi-ai/providers/register-builtins";
 import type { AssistantMessage, Context, CursorExecHandlers, Model, ToolResultMessage } from "@oh-my-pi/pi-ai/types";
+import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import type { McpResult, ReadResult } from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
 import {
 	type AgentRunRequest,
 	AgentServerMessageSchema,
 	ExecServerMessageSchema,
 	McpArgsSchema,
+	McpResultSchema,
+	McpSuccessSchema,
+	McpTextContentSchema,
+	McpToolResultContentItemSchema,
 	ReadArgsSchema,
+	ReadErrorSchema,
+	ReadRejectedSchema,
+	ReadResultSchema,
+	ReadSuccessSchema,
 } from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
 
 const cursorModel: Model<"cursor-agent"> = buildModel({
@@ -128,6 +139,7 @@ describe("Cursor resolveExecHandler execHandlers binding", () => {
 			() => ({}),
 			() => ({ tag: "rejected" }),
 			() => ({ tag: "error" }),
+			{ toolCallId: "exec-bind", toolName: "read" },
 		);
 
 		expect(execResult).toBe(sentinel);
@@ -152,10 +164,252 @@ describe("Cursor resolveExecHandler execHandlers binding", () => {
 			() => ({}),
 			() => ({ tag: "rejected" }),
 			(msg: string) => ({ tag: "error", message: msg }),
+			{ toolCallId: "exec-bind", toolName: "read" },
 		);
 
 		// Should get error result (handler threw accessing undefined.sentinel)
 		expect(execResult).toEqual({ tag: "error", message: expect.any(String) });
+	});
+
+	// `synthesizeCursorExecToolCall` marks every exec block `kCursorExecResolved`
+	// BEFORE the handler runs, so `agent-loop.ts` emits no placeholder result for
+	// it. Any exit that returns no `toolResult` therefore leaves the call
+	// unpaired and `buildSessionContext` strips the whole interaction on replay.
+	describe("pairs a toolResult on every result-less exit", () => {
+		const pairing = { toolCallId: "exec-1", toolName: "read" };
+
+		it("pairs when no handler is installed", async () => {
+			// The bare-SDK shape: `cursorExecHandlers` is optional, but the block
+			// was already synthesized and resolved by the time we get here.
+			const { execResult, toolResult } = await resolveExecHandler(
+				{ path: "/tmp/foo" },
+				undefined,
+				undefined,
+				() => ({}),
+				(reason: string) => ({ tag: "rejected", reason }),
+				() => ({ tag: "error" }),
+				pairing,
+			);
+
+			expect(execResult).toEqual({ tag: "rejected", reason: "Tool not available" });
+			// Same text the server sees in `execResult`, so transcript and wire agree.
+			expect(toolResult).toMatchObject({
+				role: "toolResult",
+				toolCallId: "exec-1",
+				toolName: "read",
+				content: [{ type: "text", text: "Tool not available" }],
+				isError: true,
+			});
+		});
+
+		it("pairs when the handler produces nothing", async () => {
+			const { execResult, toolResult } = await resolveExecHandler(
+				{ path: "/tmp/foo" },
+				async () => ({ execResult: undefined, toolResult: undefined }),
+				undefined,
+				() => ({}),
+				(reason: string) => ({ tag: "rejected", reason }),
+				() => ({ tag: "error" }),
+				pairing,
+			);
+
+			expect(execResult).toEqual({ tag: "rejected", reason: "Tool returned no result" });
+			expect(toolResult).toMatchObject({
+				toolCallId: "exec-1",
+				content: [{ type: "text", text: "Tool returned no result" }],
+				isError: true,
+			});
+		});
+
+		it("pairs when the handler throws", async () => {
+			const { execResult, toolResult } = await resolveExecHandler(
+				{ path: "/tmp/foo" },
+				async () => {
+					throw new Error("handler blew up");
+				},
+				undefined,
+				() => ({}),
+				() => ({ tag: "rejected" }),
+				(message: string) => ({ tag: "error", message }),
+				pairing,
+			);
+
+			expect(execResult).toEqual({ tag: "error", message: "handler blew up" });
+			expect(toolResult).toMatchObject({
+				toolCallId: "exec-1",
+				content: [{ type: "text", text: "handler blew up" }],
+				isError: true,
+			});
+		});
+
+		it("pairs when the handler returns an execResult but no toolResult", async () => {
+			// The server got a real answer; only the transcript side is missing.
+			// Not an error — but still needs a result to keep the block paired.
+			const { execResult, toolResult } = await resolveExecHandler(
+				{ path: "/tmp/foo" },
+				async () => ({ execResult: { tag: "ok" }, toolResult: undefined }),
+				undefined,
+				() => ({}),
+				() => ({ tag: "rejected" }),
+				() => ({ tag: "error" }),
+				pairing,
+			);
+
+			expect(execResult).toEqual({ tag: "ok" });
+			expect(toolResult).toMatchObject({ toolCallId: "exec-1", isError: false });
+		});
+
+		it("records a rejected TResult-only return as a failed call", async () => {
+			// TResult-only is a supported handler form, so the transcript entry has
+			// to be synthesized. A `rejected` result means Cursor was told the call
+			// failed - recording it as successful hides that from the user and from
+			// downstream lifecycle logic.
+			const rejected = create(ReadResultSchema, {
+				result: { case: "rejected", value: create(ReadRejectedSchema, { path: "/tmp/foo", reason: "denied" }) },
+			});
+			// Explicit TResult: `ReadResult` has its own `result` field, so inference
+			// would otherwise match the `{ result?: TResult }` handler-return variant
+			// and unwrap the oneof as the exec result.
+			const { execResult, toolResult } = await resolveExecHandler<{ path: string }, ReadResult>(
+				{ path: "/tmp/foo" },
+				async () => rejected,
+				undefined,
+				() => rejected,
+				() => rejected,
+				() => rejected,
+				pairing,
+			);
+
+			expect(execResult).toBe(rejected);
+			// The variant's own text is what the server received, so reuse it.
+			expect(toolResult).toMatchObject({
+				toolCallId: "exec-1",
+				content: [{ type: "text", text: "denied" }],
+				isError: true,
+			});
+		});
+
+		it("records an errored TResult-only return as a failed call", async () => {
+			const errored = create(ReadResultSchema, {
+				result: { case: "error", value: create(ReadErrorSchema, { path: "/tmp/foo", error: "EIO" }) },
+			});
+			const { toolResult } = await resolveExecHandler<{ path: string }, ReadResult>(
+				{ path: "/tmp/foo" },
+				async () => errored,
+				undefined,
+				() => errored,
+				() => errored,
+				() => errored,
+				pairing,
+			);
+
+			expect(toolResult).toMatchObject({ content: [{ type: "text", text: "EIO" }], isError: true });
+		});
+
+		it("keeps a successful TResult-only return successful", async () => {
+			// `success` is the only non-failure variant; the placeholder text still
+			// applies because the handler gave the transcript nothing to show.
+			const ok = create(ReadResultSchema, {
+				result: {
+					case: "success",
+					value: create(ReadSuccessSchema, { path: "/tmp/foo", output: { case: "content", value: "hi" } }),
+				},
+			});
+			const { toolResult } = await resolveExecHandler<{ path: string }, ReadResult>(
+				{ path: "/tmp/foo" },
+				async () => ok,
+				undefined,
+				() => ok,
+				() => ok,
+				() => ok,
+				pairing,
+			);
+
+			expect(toolResult).toMatchObject({
+				content: [{ type: "text", text: "Tool produced no transcript result" }],
+				isError: false,
+			});
+		});
+
+		it("records an MCP success carrying is_error as a failed call", async () => {
+			// MCP is the one shape where `success` is not enough: an application-level
+			// tool failure rides inside the success variant as `is_error`, mirroring
+			// the MCP spec. Cursor sees a failed tool, so the transcript must too.
+			const mcpFailure = create(McpResultSchema, {
+				result: {
+					case: "success",
+					value: create(McpSuccessSchema, {
+						content: [
+							create(McpToolResultContentItemSchema, {
+								content: { case: "text", value: create(McpTextContentSchema, { text: "upstream 503" }) },
+							}),
+						],
+						isError: true,
+					}),
+				},
+			});
+			const { toolResult } = await resolveExecHandler<{ name: string }, McpResult>(
+				{ name: "mcp__fixture" },
+				async () => mcpFailure,
+				undefined,
+				() => mcpFailure,
+				() => mcpFailure,
+				() => mcpFailure,
+				{ toolCallId: "exec-1", toolName: "mcp__fixture" },
+			);
+
+			// The payload's own content is the failure text — not a placeholder.
+			expect(toolResult).toMatchObject({
+				content: [{ type: "text", text: "upstream 503" }],
+				isError: true,
+			});
+		});
+
+		it("keeps an MCP success without is_error successful", async () => {
+			const mcpOk = create(McpResultSchema, {
+				result: {
+					case: "success",
+					value: create(McpSuccessSchema, {
+						content: [
+							create(McpToolResultContentItemSchema, {
+								content: { case: "text", value: create(McpTextContentSchema, { text: "all good" }) },
+							}),
+						],
+						isError: false,
+					}),
+				},
+			});
+			const { toolResult } = await resolveExecHandler<{ name: string }, McpResult>(
+				{ name: "mcp__fixture" },
+				async () => mcpOk,
+				undefined,
+				() => mcpOk,
+				() => mcpOk,
+				() => mcpOk,
+				{ toolCallId: "exec-1", toolName: "mcp__fixture" },
+			);
+
+			expect(toolResult).toMatchObject({ isError: false });
+		});
+
+		it("routes a synthesized result through onToolResult, like a real one", async () => {
+			const seen: string[] = [];
+			const { toolResult } = await resolveExecHandler(
+				{ path: "/tmp/foo" },
+				undefined,
+				result => {
+					seen.push(result.toolCallId);
+					return { ...result, content: [{ type: "text" as const, text: "rewritten" }] };
+				},
+				() => ({}),
+				() => ({ tag: "rejected" }),
+				() => ({ tag: "error" }),
+				pairing,
+			);
+
+			expect(seen).toEqual(["exec-1"]);
+			expect(toolResult).toMatchObject({ content: [{ type: "text", text: "rewritten" }] });
+		});
 	});
 });
 
@@ -269,7 +523,7 @@ describe("Cursor history encoding", () => {
 		expect(history.rootPromptMessagesJson).toEqual([
 			{
 				role: "user",
-				content: [{ type: "image", image: imageData, mediaType: "image/png" }],
+				content: [{ type: "image", image: `data:image/png;base64,${imageData}`, mediaType: "image/png" }],
 			},
 			{
 				role: "assistant",
@@ -516,7 +770,7 @@ describe("Cursor exec local-work tracking (issue #4593)", () => {
 		expect(written.length).toBe(1);
 	});
 
-	it("marks an MCP call as resolved before its streamed block arrives", async () => {
+	it("synthesizes an MCP call when the exec frame precedes its streamed block", async () => {
 		const output = cursorAssistantMessage();
 		const stream = new AssistantMessageEventStream();
 		const state = newBlockState();
@@ -534,6 +788,7 @@ describe("Cursor exec local-work tracking (issue #4593)", () => {
 							toolName: "mcp__fixture_report",
 							toolCallId: "call-mcp-1",
 							providerIdentifier: "pi-agent",
+							args: { query: new TextEncoder().encode(JSON.stringify("latest chess news")) },
 						}),
 					},
 				}),
@@ -567,7 +822,157 @@ describe("Cursor exec local-work tracking (issue #4593)", () => {
 			[],
 		);
 
+		processInteractionUpdate(
+			{ message: { case: "textDelta", value: { text: "Final synthesized answer" } } },
+			output,
+			stream,
+			state,
+			{ sawTokenDelta: false },
+		);
+
+		expect(output.content).toHaveLength(2);
+		expect(output.content[0]).toMatchObject({
+			type: "toolCall",
+			id: "call-mcp-1",
+			name: "mcp__fixture_report",
+			arguments: { query: "latest chess news" },
+		});
+		expect(output.content[1]).toMatchObject({ type: "text", text: "Final synthesized answer" });
 		expect(state.resolvedMcpToolCallIds.has("call-mcp-1")).toBe(true);
+	});
+
+	it("leaves an MCP call unpaired when no mcp handler is installed", async () => {
+		// The exception to the pairing rule. Every other exec case synthesizes a
+		// block and marks it resolved unconditionally, but `mcpArgs` only marks it
+		// when an `mcp` handler exists. Without one the streamed block stays
+		// unresolved, so `agent-loop.ts` runs it locally and pairs its own result
+		// — synthesizing one here would double up.
+		const output = cursorAssistantMessage();
+		const stream = new AssistantMessageEventStream();
+		const state = newBlockState();
+		const h2Request = { write: () => true } as unknown as Parameters<typeof handleServerMessage>[5];
+		const serverMsg = create(AgentServerMessageSchema, {
+			message: {
+				case: "execServerMessage",
+				value: create(ExecServerMessageSchema, {
+					id: 1,
+					execId: "exec-mcp-2",
+					message: {
+						case: "mcpArgs",
+						value: create(McpArgsSchema, {
+							name: "mcp__fixture_report",
+							toolName: "mcp__fixture_report",
+							toolCallId: "call-mcp-unhandled",
+							providerIdentifier: "pi-agent",
+						}),
+					},
+				}),
+			},
+		});
+		const collected: ToolResultMessage[] = [];
+
+		await handleServerMessage(
+			serverMsg,
+			output,
+			stream,
+			state,
+			new Map(),
+			h2Request,
+			undefined,
+			result => {
+				collected.push(result);
+				return result;
+			},
+			{ sawTokenDelta: false },
+			[],
+		);
+
+		expect(state.resolvedMcpToolCallIds.has("call-mcp-unhandled")).toBe(false);
+		expect(collected).toEqual([]);
+
+		// The block itself only exists once the streamed call arrives. It must
+		// come out unresolved, so `agent-loop.ts` executes it and pairs a result.
+		processInteractionUpdate(
+			{
+				message: {
+					case: "toolCallStarted",
+					value: {
+						callId: "call-mcp-unhandled",
+						toolCall: {
+							mcpToolCall: {
+								args: {
+									name: "mcp__fixture_report",
+									toolName: "mcp__fixture_report",
+									toolCallId: "call-mcp-unhandled",
+								},
+							},
+						},
+					},
+				},
+			},
+			output,
+			stream,
+			state,
+			{ sawTokenDelta: false },
+		);
+
+		const mcpBlock = output.content.find(
+			(block): block is ToolCallState => block.type === "toolCall" && block.id === "call-mcp-unhandled",
+		);
+		expect(mcpBlock).toBeDefined();
+		expect(mcpBlock?.[kCursorExecResolved]).toBeUndefined();
+	});
+
+	it("pairs a result for a synthesized exec block when no handler is installed", async () => {
+		// End-to-end over the real dispatch: synthesis, resolved marking and
+		// pairing must line up. `cursorExecHandlers` is optional (a bare SDK host
+		// passes none), but the block is synthesized and marked
+		// `kCursorExecResolved` regardless, so `agent-loop.ts` emits no
+		// placeholder for it. Production callsites discard the returned
+		// `toolResult` — the sink is the only path that reaches the transcript,
+		// so an unpaired call here is stripped from every rebuild.
+		const output = cursorAssistantMessage();
+		const stream = new AssistantMessageEventStream();
+		const state = newBlockState();
+		const h2Request = { write: () => true } as unknown as Parameters<typeof handleServerMessage>[5];
+		const serverMsg = create(AgentServerMessageSchema, {
+			message: {
+				case: "execServerMessage",
+				value: create(ExecServerMessageSchema, {
+					id: 1,
+					execId: "exec-read-1",
+					message: {
+						case: "readArgs",
+						value: create(ReadArgsSchema, { path: "/tmp/orphan", toolCallId: "call-read-orphan" }),
+					},
+				}),
+			},
+		});
+		const collected: ToolResultMessage[] = [];
+
+		await handleServerMessage(
+			serverMsg,
+			output,
+			stream,
+			state,
+			new Map(),
+			h2Request,
+			undefined,
+			result => {
+				collected.push(result);
+				return result;
+			},
+			{ sawTokenDelta: false },
+			[],
+		);
+
+		const blocks = output.content.filter((block): block is ToolCallState => block.type === "toolCall");
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0]).toMatchObject({ id: "call-read-orphan", name: "read" });
+		// Resolved => no placeholder from agent-loop, so the sink must have fired.
+		expect(blocks[0][kCursorExecResolved]).toBe(true);
+		expect(collected.map(result => result.toolCallId)).toEqual(["call-read-orphan"]);
+		expect(collected[0]).toMatchObject({ toolName: "read", isError: true });
 	});
 
 	it("survives a local exec tool outliving the lazy idle budget end to end", async () => {

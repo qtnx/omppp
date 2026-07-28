@@ -85,6 +85,28 @@ describe("QwenCloud Token Plan provider", () => {
 		expect(options.dynamicModelsAuthoritative).toBe(true);
 	});
 
+	test("routes discovery to the credential's region when it is China (Beijing)", async () => {
+		let requestedUrl = "";
+		const fetchMock: FetchImpl = input => {
+			requestedUrl = String(input);
+			return Promise.resolve(Response.json({ data: [{ id: "qwen3.7-plus", owned_by: "qwencloud" }] }));
+		};
+
+		const apiKey = serializeAlibabaTokenPlanCredential(
+			"sk-sp-beijing",
+			"",
+			"https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+		);
+		const options = alibabaTokenPlanModelManagerOptions({ apiKey, fetch: fetchMock });
+		const models = await options.fetchDynamicModels?.();
+
+		expect(requestedUrl).toBe("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models");
+		expect(models?.[0]).toMatchObject({
+			id: "qwen3.7-plus",
+			baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+		});
+	});
+
 	test("rejects malformed compound credentials before model discovery", () => {
 		let fetched = false;
 		const fetchMock: FetchImpl = () => {

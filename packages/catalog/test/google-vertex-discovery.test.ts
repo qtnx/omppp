@@ -85,9 +85,9 @@ describe("google-vertex model catalog", () => {
 		expect(options.fetchDynamicModels).toBeUndefined();
 		expect(options.staticModels).toBeUndefined();
 
-		const result = await resolveProviderModels(options, "offline");
+		const result = await resolveProviderModels({ ...options, cacheDbPath: ":memory:" }, "offline");
 		expect(result.stale).toBe(false);
-		expect(result.models.some(model => model.id === "openai/gpt-oss-120b-maas")).toBe(true);
+		expect(result.models.some(model => model.id.endsWith("-maas") && model.api === "openai-completions")).toBe(true);
 		expect(result.models.some(model => model.id === "gemini-3.5-flash")).toBe(true);
 		expect(result.models.some(model => model.id === "gemini-1.5-pro")).toBe(false);
 	});

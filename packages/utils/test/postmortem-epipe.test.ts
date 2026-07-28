@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
 import { postmortem } from "@oh-my-pi/pi-utils";
 
 const childFlag = "--stdio-epipe-child";
@@ -21,15 +22,9 @@ if (childFlagIndex >= 0) {
 	const marker = process.argv[process.argv.indexOf(raceChildFlag) + 1];
 	if (!marker) throw new Error("Missing cleanup marker path");
 	let cleanupComplete = false;
-	let exitAttempted = false;
-	const exit = process.exit;
-	process.exit = ((code?: number) => {
-		if (!exitAttempted) {
-			exitAttempted = true;
-			void Bun.write(marker, cleanupComplete ? "after cleanup" : "before cleanup").then(() => exit(code));
-		}
-		return undefined as never;
-	}) as typeof process.exit;
+	process.on("exit", () => {
+		fs.writeFileSync(marker, cleanupComplete ? "after cleanup" : "before cleanup");
+	});
 	postmortem.registerStdioDisconnectHandling();
 	postmortem.register("stdio-epipe-race-test", async () => {
 		process.stderr.write("cleanup started\n");

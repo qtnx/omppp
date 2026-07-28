@@ -26,6 +26,7 @@ import {
 	parseDaemonWireRequest,
 } from "./protocol";
 import { resolveDaemonSpawnOptions } from "./spawn-options";
+import { renderTerminalOutput } from "./terminal-output";
 
 const DEFAULT_IDLE_GRACE_MS = 3_000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -33,6 +34,12 @@ const MAX_LOG_BYTES = 25 * 1024 * 1024;
 const LOG_READ_BYTES = 2 * 1024 * 1024;
 const READINESS_BUFFER_CHARS = 64 * 1024;
 const RESTART_MAX_DELAY_MS = 30_000;
+/**
+ * Cap on terminal (exited/failed) daemons surfaced by `list`. Active daemons
+ * are always shown in full; older history is truncated so the response stays
+ * bounded over a long-lived project (issue #6517).
+ */
+const MAX_TERMINAL_DAEMONS_LISTED = 10;
 const TOKEN_FILE = "broker.token";
 const PID_FILE = "broker.pid";
 const META_FILE = "meta.json";
@@ -84,7 +91,8 @@ interface BrokerLease {
 
 interface DaemonLogRead {
 	text: string;
-	terminalText: string;
+	terminalOutput: string;
+	cursor: number;
 }
 
 function quoteShellArg(value: string): string {
@@ -93,6 +101,41 @@ function quoteShellArg(value: string): string {
 
 function terminalState(state: DaemonSnapshot["state"]): boolean {
 	return state === "exited" || state === "failed";
+}
+
+/**
+ * Order daemons for the `list` response: non-terminal (active) daemons first,
+ * oldest to newest, so the process the user is acting on is immediately visible
+ * instead of buried behind exited history; then the most recently exited/failed
+ * ones, capped at {@link MAX_TERMINAL_DAEMONS_LISTED} to keep the response from
+ * growing without bound. Truncated terminal records stay addressable by name
+ * via `describe`/`logs`/`restart`.
+ */
+function orderDaemonsForListing(snapshots: DaemonSnapshot[]): DaemonSnapshot[] {
+	const active: DaemonSnapshot[] = [];
+	const terminal: DaemonSnapshot[] = [];
+	for (const snapshot of snapshots) {
+		(terminalState(snapshot.state) ? terminal : active).push(snapshot);
+	}
+	active.sort((left, right) => left.createdAt - right.createdAt);
+	terminal.sort((left, right) => (right.exitedAt ?? right.createdAt) - (left.exitedAt ?? left.createdAt));
+	return [...active, ...terminal.slice(0, MAX_TERMINAL_DAEMONS_LISTED)];
+}
+
+/**
+ * Reap a recovered non-detached daemon snapshot in place. Already-terminal
+ * records are left untouched so `list` keeps their real {@link DaemonSnapshot.exitedAt}
+ * for recency ranking; records that were still alive when the previous broker
+ * exited are marked `exited` at `now`, since their process died with that broker
+ * (issue #6517). Returns whether the record was reaped.
+ */
+function reapRecoveredSnapshot(snapshot: DaemonSnapshot, now: number): boolean {
+	if (terminalState(snapshot.state)) return false;
+	snapshot.pid = undefined;
+	snapshot.state = "exited";
+	snapshot.exitedAt = now;
+	snapshot.exitReason = "previous broker exited";
+	return true;
 }
 
 /** Mirror per-condition readiness progress into the snapshot so clients can see which condition is unmet. */
@@ -163,10 +206,19 @@ class DaemonLog {
 		return text;
 	}
 
-	async read(head: boolean, lines: number, grep?: string): Promise<DaemonLogRead> {
-		await this.#queue;
-		await this.#writer.flush();
-		return DaemonLog.readFiles(this.#path, this.#previousPath, head, lines, grep);
+	read(head: boolean, lines: number, cursor: number, grep?: string): Promise<DaemonLogRead> {
+		const snapshot = this.#queue.then(async () => {
+			await this.#writer.flush();
+			return DaemonLog.readFiles(this.#path, this.#previousPath, head, lines, cursor, grep);
+		});
+		// Appends that arrive after this call queue behind the file snapshot, so its
+		// cursor can never include bytes that its terminal replay did not read. A read
+		// failure still rejects the caller but must not poison the append queue.
+		this.#queue = snapshot.then(
+			() => undefined,
+			() => undefined,
+		);
+		return snapshot;
 	}
 
 	async close(): Promise<void> {
@@ -181,14 +233,15 @@ class DaemonLog {
 		previousPath: string,
 		head: boolean,
 		lines: number,
+		cursor: number,
 		grep?: string,
 	): Promise<DaemonLogRead> {
 		const [previous, current] = await Promise.all([fileTextSlice(previousPath, head), fileTextSlice(logPath, head)]);
 		const combined = `${previous}${previous && current && !previous.endsWith("\n") ? "\n" : ""}${current}`;
-		const terminalText = head
+		const terminalOutput = head
 			? truncateHeadBytes(combined, LOG_READ_BYTES).text
 			: truncateTailBytes(combined, LOG_READ_BYTES).text;
-		let text = sanitizeText(terminalText);
+		let text = sanitizeText(terminalOutput);
 		if (grep) {
 			let pattern: RegExp;
 			try {
@@ -204,7 +257,8 @@ class DaemonLog {
 		const options = { maxLines: lines, maxBytes: 256 * 1024 };
 		return {
 			text: head ? truncateHead(text, options).content : truncateTail(text, options).content,
-			terminalText,
+			terminalOutput,
+			cursor,
 		};
 	}
 
@@ -402,9 +456,7 @@ class DaemonBroker {
 				await Promise.all([...this.#records.values()].map(record => this.#refreshDetached(record)));
 				return {
 					op: "list",
-					daemons: [...this.#records.values()]
-						.sort((left, right) => left.snapshot.createdAt - right.snapshot.createdAt)
-						.map(record => record.snapshot),
+					daemons: orderDaemonsForListing([...this.#records.values()].map(record => record.snapshot)),
 				};
 			}
 			case "logs":
@@ -795,20 +847,30 @@ class DaemonBroker {
 		}
 		const lines = Math.max(1, Math.min(1_000, Math.floor(operation.lines)));
 		const output = record.log
-			? await record.log.read(operation.head, lines, operation.grep)
+			? await record.log.read(operation.head, lines, record.snapshot.outputBytes, operation.grep)
 			: await DaemonLog.readFiles(
 					path.join(record.dir, LOG_FILE),
 					path.join(record.dir, PREVIOUS_LOG_FILE),
 					operation.head,
 					lines,
+					record.snapshot.outputBytes,
 					operation.grep,
 				);
+		const terminalOutput = record.spec.pty && operation.grep === undefined ? output.terminalOutput : undefined;
+		const terminalRows =
+			terminalOutput !== undefined && operation.renderTerminalRows === true
+				? await renderTerminalOutput(terminalOutput, { head: operation.head, maxRows: lines })
+				: undefined;
 		return {
 			op: "logs",
 			name: record.snapshot.name,
 			text: output.text,
-			terminalText: record.spec.pty && operation.grep === undefined ? output.terminalText : undefined,
-			cursor: record.snapshot.outputBytes,
+			terminalRows,
+			terminalText:
+				terminalOutput !== undefined && (operation.renderTerminalRows !== true || terminalRows === undefined)
+					? terminalOutput
+					: undefined,
+			cursor: output.cursor,
 			timedOut,
 			state: record.snapshot.state,
 		};
@@ -973,11 +1035,13 @@ class DaemonBroker {
 					snapshot.state !== "stopping" &&
 					processRef?.status() === "running";
 				if (!detached) {
-					if (processRef) await processRef.terminate({ group: true, gracefulMs: 500, timeoutMs: 2_000 });
-					snapshot.pid = undefined;
-					snapshot.state = "exited";
-					snapshot.exitedAt = Date.now();
-					snapshot.exitReason = "previous broker exited";
+					// Reap only records that were still alive when the previous broker
+					// exited; already-terminal records keep their real exit time so
+					// `list` ranks exited history by true recency (issue #6517).
+					if (!terminalState(snapshot.state) && processRef) {
+						await processRef.terminate({ group: true, gracefulMs: 500, timeoutMs: 2_000 });
+					}
+					reapRecoveredSnapshot(snapshot, Date.now());
 				} else if (snapshot.state === "restarting") {
 					snapshot.state = spec.ready ? "starting" : "running";
 				}

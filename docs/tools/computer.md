@@ -21,13 +21,13 @@ User setup, safety guidance, platform permissions, and verified limitations: [Na
 
 ## Availability and declaration
 
-- `computer.enabled` gates registration and defaults to `false`. The `/computer` slash command toggles it for the current session without persisting settings.
+- `computer.enabled` gates registration and defaults to `false`. The `/computer` slash command toggles it for the current session without persisting settings. `/computer status` reports enabled/active state, controller settings, active model, and effective native/function exposure. Explicit enablement and the controller survive model switches while exposure is recomputed for the selected model.
 - Enabled tool load mode: `essential`.
 - Concurrency: `exclusive`.
 - Native descriptor: `{ type: "computer" }`.
 - Providers serialize the native descriptor only when `model.supportsComputerUse === true`; every other function-calling model receives `computer` as a regular function tool with the typed action schema below.
-- Automatic capability derivation covers GA `gpt-5.4+` IDs on OpenAI Responses, OpenAI Codex Responses, and Azure OpenAI Responses; explicit model metadata overrides derivation.
-- When OpenAI Responses-family history is replayed to a model without native support, native call/output items become stable assistant text notes. Other provider adapters serialize the generic call/result in their ordinary tool format.
+- Automatic capability derivation covers GA `gpt-5.4+` IDs only on direct OpenAI Responses and Azure OpenAI Responses endpoints. Codex subscription and custom or proxy routes fall back unless explicit model metadata opts in.
+- When a session switches from a native-capable API route to a non-native route, native history is adapted instead of being replayed as invalid GA items. Codex subscription requests use named function calls/results and the next declaration is a named function; other OpenAI Responses-family targets may use stable assistant text notes. Responses Lite preserves an explicit computer choice by placing only the selected declaration in `additional_tools` and using `tool_choice: "required"`. Other provider adapters use their ordinary tool format.
 
 Unlike `browser`, `computer` operates the entire visible host session. It can act in IDEs, terminals, native applications, browser windows, and system dialogs, but has no structured application/DOM inspection.
 
@@ -38,10 +38,10 @@ Unlike `browser`, `computer` operates the entire visible host session. It can ac
 | `computer.enabled` | boolean | `false` | Register tool. |
 | `computer.backend` | `auto \| native` | `auto` | Both prohibit non-native fallback. |
 | `computer.display` | string | `all` | `all` or numeric native monitor ID. |
-| `computer.maxWidth` | number | `1920` | Maximum composite PNG width; must be positive. |
-| `computer.maxHeight` | number | `1200` | Maximum composite PNG height; must be positive. |
+| `computer.maxWidth` | number | `1920` | Maximum composite PNG width. Image transports that cannot preserve original detail, including GitHub Copilot Responses and xAI OAuth, cap the effective width at `1280`; Claude-family models use the same cap as a compatibility fallback. |
+| `computer.maxHeight` | number | `1200` | Maximum composite PNG height. Those coordinate-safe transports cap the effective height at `896`; other models retain the configured limit. |
 
-Constructor snapshots these settings into one `DesktopSessionOptions`. No setting is reread per call.
+The controller snapshots these settings into one `DesktopSessionOptions`. Crossing the coordinate-safe sizing boundary during a model switch recreates the controller, resnapshots the options, and invalidates the prior coordinate frame; the next pointer action requires a fresh screenshot.
 
 ## Inputs
 
@@ -132,15 +132,16 @@ OMP native execution never creates a provider Files upload. The provider contrac
 1. Tool registration checks `computer.enabled`.
 2. `ComputerTool` constructs a `ComputerSupervisor` with session settings but does not start a worker.
 3. Provider adapter exposes the native declaration only for capable models.
-4. Provider `action`/`actions` and pending safety checks become typed tool-call metadata.
-5. Extension wrapper resolves tool approval and mandatory provider safety approval.
-6. `ComputerTool.execute()` chooses metadata actions, validates the batch, and rechecks safety approval.
-7. Supervisor serializes execution behind a promise tail and lazily starts one Bun worker.
-8. Worker constructs one native `DesktopSession` and reports capabilities.
-9. Worker rejects coordinate input until it has returned a screenshot to the provider.
-10. Native session validates all actions, executes them in order, defers any `screenshot` markers, and captures one fresh PNG after the entire successful batch.
-11. Worker transfers the PNG buffer to the parent and preserves session/frame state for the next call.
-12. Tool returns image content, display/capability details, and exact GA result metadata.
+4. While active, the system prompt routes host-desktop requests through `computer` and requires inspection of each fresh returned screenshot before the next action.
+5. Provider `action`/`actions` and pending safety checks become typed tool-call metadata.
+6. Extension wrapper resolves tool approval and mandatory provider safety approval.
+7. `ComputerTool.execute()` chooses metadata actions, validates the batch, and rechecks safety approval.
+8. Supervisor serializes execution behind a promise tail and lazily starts one Bun worker.
+9. Worker constructs one native `DesktopSession` and reports capabilities.
+10. Worker rejects coordinate input until it has returned a screenshot to the provider.
+11. Native session validates all actions, executes them in order, defers any `screenshot` markers, and captures one fresh PNG after the entire successful batch.
+12. Worker transfers the PNG buffer to the parent and preserves session/frame state for the next call.
+13. Tool returns image content, display/capability details, and exact GA result metadata.
 
 ## Capture and coordinate mapping
 
@@ -234,4 +235,4 @@ Key platform failures and remedies are listed in [Native computer use: Troublesh
 - Linux coordinate input rejects negative global display origins; X11/XTest also rejects global positions above 32767.
 - Windows backend implemented but not remotely exercised for this feature.
 - Real remote macOS proof used `ComputerSupervisor` → worker → native session on a real macOS host, controlling TextEdit with global hotkey, double-click, click, type, and 1920×1080 Quartz capture after permissions were granted.
-- That proof did not include a live OpenAI native provider round trip. GA transport and replay are contract-tested locally. The pure-Rust Linux backend is exercised by unit tests (pixel conversion, keysym mapping, deadline enforcement), not by a live X session in CI.
+- Live subscription-provider round trips exercised function-tool exposure and real screenshot execution for GPT-5.3 Codex Spark plus GPT-5.6 Luna, Terra, and Sol. Live native OpenAI GA transport was not exercised; GA transport and replay are contract-tested locally. The pure-Rust Linux backend is exercised by unit tests (pixel conversion, keysym mapping, deadline enforcement), not by a live X session in CI.

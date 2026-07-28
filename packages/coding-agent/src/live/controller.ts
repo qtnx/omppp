@@ -10,8 +10,8 @@ import {
 } from "./protocol";
 import { CodexLiveTransport, type LiveTransportOptions } from "./transport";
 import type { LivePhase } from "./visualizer";
+import { DEFAULT_LIVE_VOICE } from "./voices";
 
-const DEFAULT_VOICE = "sol";
 /**
  * Spoken language of the call when nobody picks one. `voice` above is a timbre
  * id and says nothing about language; this is the locale the model answers in.
@@ -124,7 +124,7 @@ export class LiveSessionController {
 		this.#identity = options.identity;
 		this.#authStorage = options.authStorage;
 		this.#callbacks = options.callbacks;
-		this.#voice = options.voice?.trim() || DEFAULT_VOICE;
+		this.#voice = options.voice?.trim() || DEFAULT_LIVE_VOICE;
 		this.#language = options.language?.trim() || DEFAULT_LANGUAGE;
 		this.#createTransport = options.createTransport ?? (opts => new CodexLiveTransport(opts));
 	}

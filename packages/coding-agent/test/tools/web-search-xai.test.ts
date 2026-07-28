@@ -163,6 +163,48 @@ describe("xAI web search provider", () => {
 		expect(capture.capturedRequest?.body).not.toHaveProperty("search_parameters");
 	});
 
+	it("maps site: onto web_search allowed_domains and strips it from the query", async () => {
+		const capture = captureFetch({ id: "resp_directives", model: "grok-4.3", output_text: "directive answer" });
+
+		await searchXAI({
+			...makeParams(capture.fetchMock),
+			query: "grok api site:docs.x.ai after:2025-01-01",
+		});
+
+		const body = capture.capturedRequest?.body;
+		expect(body?.tools).toEqual([{ type: "web_search", filters: { allowed_domains: ["docs.x.ai"] } }]);
+		// The Responses web_search tool has no from_date/to_date, so the date
+		// bound stays in the query text for the agent while site: is stripped.
+		const input = body?.input as { role: string; content: string }[];
+		expect(input[1]?.content).toBe("grok api after:2025-01-01");
+	});
+
+	it("maps -site: onto excluded_domains as bare hosts only when no allow list is present", async () => {
+		const capture = captureFetch({ id: "resp_excludes", model: "grok-4.3", output_text: "exclude answer" });
+
+		await searchXAI({
+			...makeParams(capture.fetchMock),
+			query: "grok changelog -site:reddit.com/r/grok -site:news.ycombinator.com",
+		});
+
+		const body = capture.capturedRequest?.body;
+		expect(body?.tools).toEqual([
+			{ type: "web_search", filters: { excluded_domains: ["reddit.com", "news.ycombinator.com"] } },
+		]);
+		const input = body?.input as { role: string; content: string }[];
+		expect(input[1]?.content).toBe("grok changelog");
+
+		await searchXAI({
+			...makeParams(capture.fetchMock),
+			query: "grok changelog site:docs.x.ai -site:reddit.com",
+		});
+		// allowed_domains and excluded_domains are mutually exclusive per
+		// request: the allow list wins, exclusions fall to the central filter.
+		expect(capture.capturedRequest?.body?.tools).toEqual([
+			{ type: "web_search", filters: { allowed_domains: ["docs.x.ai"] } },
+		]);
+	});
+
 	it("uses dedicated xAI OAuth credentials for Responses API bearer auth", async () => {
 		const capture = captureFetch({ id: "resp_xai_oauth", model: "grok-4.3", output_text: "xAI OAuth answer" });
 

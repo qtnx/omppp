@@ -77,6 +77,22 @@ describe("selector setting side effects", () => {
 
 		expect(applyMemoryBackend).toHaveBeenCalledTimes(1);
 	});
+	it("stops the live advisor runtime when advisor.enabled is turned off in /settings", () => {
+		const setAdvisorEnabled = vi.fn();
+		const invalidate = vi.fn();
+		const requestRender = vi.fn();
+		const controller = new SelectorController({
+			session: { setAdvisorEnabled },
+			statusLine: { invalidate },
+			ui: { requestRender },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("advisor.enabled", false);
+
+		expect(setAdvisorEnabled).toHaveBeenCalledWith(false);
+		expect(invalidate).toHaveBeenCalledTimes(1);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
 
 	for (const id of ["terminal.showImages", "showImages"]) {
 		for (const visible of [false, true]) {

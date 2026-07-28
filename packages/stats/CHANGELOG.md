@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [17.1.2] - 2026-07-24
+
+### Added
+
+- Added a Providers dashboard section: per-provider totals, stacked token/cost burn over time, peak-burn-hours histogram, subscription-window insights (windows burned, estimated tokens per window, peak concurrent utilization, ideal account count, exhaustion events), and latest window utilization per account — window analytics read the auth broker's `/v1/usage/history` when a broker is configured (falling back to the local agent DB), since broker deployments record usage history on the broker host
+
 ## [17.1.0] - 2026-07-24
 
 ### Fixed

@@ -53,6 +53,10 @@ function migrateJsonToYml(jsonPath: string, ymlPath: string) {
 	}
 }
 
+export type ConfigSchemaSource =
+	| { readonly kind: "eager"; readonly schema: Type }
+	| { readonly kind: "deferred"; readonly resolve: () => Type };
+
 export interface IConfigFile<T> {
 	readonly id: string;
 	readonly schema: Type;
@@ -125,14 +129,17 @@ export class ConfigFile<T> implements IConfigFile<T> {
 	readonly #basePath: string;
 	readonly #yamlFallbackPath: string | null;
 	readonly #jsonMigrationPath: string | null;
+	readonly #schemaSource: ConfigSchemaSource;
+	#resolvedSchema?: Type;
 	#cache?: LoadResult<T>;
 	#auxValidate?: (value: T) => void;
 
 	constructor(
 		readonly id: string,
-		readonly schema: Type,
+		schema: Type | ConfigSchemaSource,
 		configPath: string = path.join(getAgentDir(), `${id}.yml`),
 	) {
+		this.#schemaSource = typeof schema === "function" ? { kind: "eager", schema } : schema;
 		this.#basePath = configPath;
 		if (configPath.endsWith(".yml")) {
 			this.#yamlFallbackPath = `${configPath.slice(0, -4)}.yaml`;
@@ -150,6 +157,12 @@ export class ConfigFile<T> implements IConfigFile<T> {
 		}
 	}
 
+	get schema(): Type {
+		if (this.#schemaSource.kind === "eager") return this.#schemaSource.schema;
+		if (!this.#resolvedSchema) this.#resolvedSchema = this.#schemaSource.resolve();
+		return this.#resolvedSchema;
+	}
+
 	/**
 	 * Run the JSON → YAML migration synchronously, if applicable. Idempotent.
 	 * Sync callers (tests, settings init) hit this implicitly via {@link tryLoad}.
@@ -164,8 +177,9 @@ export class ConfigFile<T> implements IConfigFile<T> {
 
 	relocate(configPath?: string): ConfigFile<T> {
 		if (!configPath || configPath === this.#basePath) return this;
-		const result = new ConfigFile<T>(this.id, this.schema, configPath);
+		const result = new ConfigFile<T>(this.id, this.#schemaSource, configPath);
 		result.#auxValidate = this.#auxValidate;
+		result.#resolvedSchema = this.#resolvedSchema;
 		result.#ensureMigrated();
 		return result;
 	}

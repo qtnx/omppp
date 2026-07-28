@@ -318,6 +318,26 @@ function modelIdEntries(model: Model<Api>): string[] {
 	return [qualifiedModelId(model), model.id];
 }
 
+/**
+ * Index resolvable models by the request ids clients may send: the
+ * provider-qualified `provider/id` (always) and the bare `id` (first-write-wins
+ * fallback for legacy clients). Scoped to providers the gateway holds broker
+ * credentials for, since only those are routable.
+ */
+export function indexModelsByRequestId(
+	models: readonly Model<Api>[],
+	providersWithCreds: ReadonlySet<string>,
+): Map<string, Model<Api>> {
+	const modelById = new Map<string, Model<Api>>();
+	for (const model of models) {
+		if (!providersWithCreds.has(model.provider)) continue;
+		for (const entry of modelIdEntries(model)) {
+			if (!modelById.has(entry)) modelById.set(entry, model);
+		}
+	}
+	return modelById;
+}
+
 function cloneAliasModel(alias: string, target: Model<Api>): Model<Api> {
 	return { ...target, id: alias };
 }

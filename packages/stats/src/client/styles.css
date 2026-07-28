@@ -1172,6 +1172,7 @@
 .stats-text-primary { color: var(--text); }
 .stats-text-secondary { color: var(--muted); }
 .stats-text-muted { color: var(--dim); }
+.stats-text-warning { color: var(--warning); }
 .stats-text-xs { font-size: 12px; }
 .stats-font-medium { font-weight: 500; }
 .stats-font-semibold { font-weight: 600; }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { Api, ComputerAction, ComputerToolCallMetadata, Model } from "@oh-my-pi/pi-ai";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
@@ -24,6 +25,7 @@ import {
 	type ComputerWorkerHandle,
 	registerComputerController,
 	releaseComputerSessionsForOwner,
+	smokeTestComputerWorker,
 } from "@oh-my-pi/pi-coding-agent/tools/computer/supervisor";
 import { ComputerWorkerCore, type NativeDesktopSession } from "@oh-my-pi/pi-coding-agent/tools/computer/worker";
 import { computerToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/computer-renderer";
@@ -179,13 +181,46 @@ class NonClosingWorker implements ComputerWorkerHandle {
 	}
 }
 
-function toolSession(settings: Settings): ToolSession {
+class SmokeWorker implements ComputerWorkerHandle {
+	readonly sent: ComputerWorkerInbound[] = [];
+	#messageHandlers = new Set<(message: ComputerWorkerOutbound) => void>();
+	terminateCount = 0;
+
+	send(message: ComputerWorkerInbound): void {
+		this.sent.push(message);
+		if (message.type === "init") {
+			queueMicrotask(() => this.#emit({ type: "ready", capabilities }));
+		} else if (message.type === "close") {
+			queueMicrotask(() => this.#emit({ type: "closed" }));
+		}
+	}
+
+	onMessage(handler: (message: ComputerWorkerOutbound) => void): () => void {
+		this.#messageHandlers.add(handler);
+		return () => this.#messageHandlers.delete(handler);
+	}
+
+	onError(_handler: (error: Error) => void): () => void {
+		return () => {};
+	}
+
+	async terminate(): Promise<void> {
+		this.terminateCount += 1;
+	}
+
+	#emit(message: ComputerWorkerOutbound): void {
+		for (const handler of this.#messageHandlers) handler(message);
+	}
+}
+
+function toolSession(settings: Settings, model?: Model<Api>): ToolSession {
 	return {
 		cwd: ".",
 		hasUI: false,
 		settings,
 		getSessionFile: () => null,
 		getSessionSpawns: () => null,
+		getActiveModel: () => model,
 	} as ToolSession;
 }
 
@@ -341,6 +376,19 @@ describe("native computer worker", () => {
 });
 
 describe("computer supervisor", () => {
+	it("constructs and closes a native session during install smoke", async () => {
+		const worker = new SmokeWorker();
+		await smokeTestComputerWorker(50, () => worker);
+		expect(worker.sent).toEqual([
+			{
+				type: "init",
+				options: { backend: "auto", display: "all", maxWidth: 1920, maxHeight: 1200 },
+			},
+			{ type: "close" },
+		]);
+		expect(worker.terminateCount).toBe(1);
+	});
+
 	it("force-terminates a worker that misses the bounded close handshake", async () => {
 		const worker = new NonClosingWorker();
 		const supervisor = new ComputerSupervisor(
@@ -435,16 +483,20 @@ describe("computer tool", () => {
 		expect(tool.parameters({ actions: [], unexpected: true }) instanceof arkType.errors).toBe(true);
 	});
 
-	it("executes function-call params.actions and defaults empty batches to a screenshot", async () => {
+	it("executes function-call params.actions and defaults omitted, undefined, null, and empty batches to a screenshot", async () => {
 		const controller = new FakeController();
 		const tool = new ComputerTool(toolSession(Settings.isolated({ "computer.enabled": true })), () => controller);
 		const result = await tool.execute("call", { actions: [{ type: "click", x: 5, y: 6, button: "left" }] });
 		expect(result.content).toEqual([{ type: "image", data: "AQ==", mimeType: "image/png", detail: "original" }]);
 		expect(result.providerMetadata).toBeUndefined();
 		await tool.execute("call", {});
+		await tool.execute("call", { actions: undefined } as unknown as ComputerParams);
+		await tool.execute("call", { actions: null } as unknown as ComputerParams);
 		await tool.execute("call", { actions: [] });
 		expect(controller.batches).toEqual([
 			[{ type: "click", x: 5, y: 6, button: "left" }],
+			[{ type: "screenshot" }],
+			[{ type: "screenshot" }],
 			[{ type: "screenshot" }],
 			[{ type: "screenshot" }],
 		]);
@@ -479,9 +531,6 @@ describe("computer tool", () => {
 		for (const actions of invalidBatches) {
 			await expect(tool.execute("call", { actions })).rejects.toThrow("Computer call contains an invalid action");
 		}
-		await expect(tool.execute("call", { actions: null } as unknown as ComputerParams)).rejects.toThrow(
-			"Computer call requires an array of actions",
-		);
 		expect(controller.batches).toHaveLength(0);
 		await tool.execute("call", {
 			actions: [{ type: "scroll", x: 0, y: 0, scroll_x: -2_147_483_648, scroll_y: 2_147_483_647 }],
@@ -492,20 +541,156 @@ describe("computer tool", () => {
 		await tool.close();
 	});
 
+	it("preserves smaller configured capture limits for Claude-family transports", async () => {
+		const settings = Settings.isolated({
+			"computer.enabled": true,
+			"computer.maxWidth": 960,
+			"computer.maxHeight": 640,
+		});
+		const model = { id: "claude-sonnet-4-6", api: "openai-completions" } as unknown as Model<Api>;
+		let receivedOptions: DesktopSessionOptions | undefined;
+		const tool = new ComputerTool(toolSession(settings, model), options => {
+			receivedOptions = options;
+			return new FakeController();
+		});
+
+		expect(receivedOptions).toMatchObject({ maxWidth: 960, maxHeight: 640 });
+		await tool.close();
+	});
+
+	it("caps Claude-family captures without changing the public defaults", async () => {
+		const settings = Settings.isolated({ "computer.enabled": true });
+		const model = { id: "claude-opus-4-8", api: "openai-completions" } as unknown as Model<Api>;
+		let receivedOptions: DesktopSessionOptions | undefined;
+		const tool = new ComputerTool(toolSession(settings, model), options => {
+			receivedOptions = options;
+			return new FakeController();
+		});
+
+		expect(settings.get("computer.maxWidth")).toBe(1920);
+		expect(settings.get("computer.maxHeight")).toBe(1200);
+		expect(receivedOptions).toMatchObject({ maxWidth: 1280, maxHeight: 896 });
+		await tool.close();
+	});
+
+	it("caps Copilot GPT-5 Responses captures when original image detail is unavailable", async () => {
+		const settings = Settings.isolated({ "computer.enabled": true });
+		const model = buildModel({
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			api: "openai-responses",
+			provider: "github-copilot",
+			baseUrl: "https://api.githubcopilot.com",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 32_000,
+		});
+		let receivedOptions: DesktopSessionOptions | undefined;
+		const tool = new ComputerTool(toolSession(settings, model), options => {
+			receivedOptions = options;
+			return new FakeController();
+		});
+
+		expect(settings.get("computer.maxWidth")).toBe(1920);
+		expect(settings.get("computer.maxHeight")).toBe(1200);
+		expect(receivedOptions).toMatchObject({ maxWidth: 1280, maxHeight: 896 });
+		await tool.close();
+	});
+
+	it("recognizes Claude aliases without classifying every Anthropic-API model as Claude", async () => {
+		const settings = Settings.isolated({ "computer.enabled": true });
+		const claudeModels = [
+			{ id: "anthropic/claude-sonnet-4-6" },
+			{ id: "us.anthropic.claude-haiku-4-5-20251001-v1:0" },
+			{ id: "local-alias", requestModelId: "claude-opus-4-8" },
+			{ id: "claude-opus-4-8", requestModelId: "upstream-alias" },
+			{ id: "opaque-proxy-alias", name: "Claude Sonnet 4.6" },
+		] as unknown as Model<Api>[];
+		for (const model of claudeModels) {
+			let receivedOptions: DesktopSessionOptions | undefined;
+			const tool = new ComputerTool(toolSession(settings, model), options => {
+				receivedOptions = options;
+				return new FakeController();
+			});
+			expect(receivedOptions).toMatchObject({ maxWidth: 1280, maxHeight: 896 });
+			await tool.close();
+		}
+
+		for (const model of [{ id: "MiniMax-M2.5", api: "anthropic-messages" }, undefined] as Array<
+			Model<Api> | undefined
+		>) {
+			let receivedOptions: DesktopSessionOptions | undefined;
+			const tool = new ComputerTool(toolSession(settings, model), options => {
+				receivedOptions = options;
+				return new FakeController();
+			});
+			expect(receivedOptions).toMatchObject({ maxWidth: 1920, maxHeight: 1200 });
+			await tool.close();
+		}
+	});
+
+	it("recreates the controller when model switches cross the Claude sizing boundary", async () => {
+		const settings = Settings.isolated({ "computer.enabled": true });
+		const gpt = { id: "gpt-5.6", api: "openai-responses" } as unknown as Model<Api>;
+		const claude = { id: "claude-sonnet-4-6", api: "openai-completions" } as unknown as Model<Api>;
+		let activeModel = gpt;
+		const session = toolSession(settings);
+		session.getActiveModel = () => activeModel;
+		const receivedOptions: DesktopSessionOptions[] = [];
+		const controllers: FakeController[] = [];
+		const tool = new ComputerTool(session, options => {
+			receivedOptions.push(options);
+			const controller = new FakeController();
+			controllers.push(controller);
+			return controller;
+		});
+
+		activeModel = claude;
+		await tool.execute("call", { actions: [{ type: "screenshot" }] });
+		activeModel = gpt;
+		await tool.execute("call", { actions: [{ type: "screenshot" }] });
+
+		expect(receivedOptions.map(options => [options.maxWidth, options.maxHeight])).toEqual([
+			[1920, 1200],
+			[1280, 896],
+			[1920, 1200],
+		]);
+		expect(controllers.map(controller => controller.closeCount)).toEqual([1, 1, 0]);
+		expect(controllers.map(controller => controller.batches.length)).toEqual([0, 1, 1]);
+		await tool.close();
+	});
+
 	it("uses registered native options, adapts every GA field, and returns exactly one fresh PNG with metadata", async () => {
 		const settings = Settings.isolated({
 			"computer.enabled": true,
 			"computer.backend": "native",
 			"computer.display": "display-1",
 			"computer.maxWidth": 1600,
-			"computer.maxHeight": 900,
+			"computer.maxHeight": 1000,
 		});
+		const model = {
+			id: "gpt-5.6",
+			api: "openai-responses",
+			supportsComputerUse: true,
+		} as unknown as Model<Api>;
 		const controller = new FakeController();
 		let receivedOptions: DesktopSessionOptions | undefined;
-		const tool = new ComputerTool(toolSession(settings), options => {
+		const tool = new ComputerTool(toolSession(settings, model), options => {
 			receivedOptions = options;
 			return controller;
 		});
+		expect(tool.effectiveConfiguration).toEqual({
+			backend: "native",
+			display: "display-1",
+			maxWidth: 1600,
+			maxHeight: 1000,
+		});
+		expect(Object.isFrozen(tool.effectiveConfiguration)).toBe(true);
+		settings.override("computer.display", "all");
+		settings.override("computer.maxWidth", 1920);
+		expect(tool.effectiveConfiguration).toMatchObject({ display: "display-1", maxWidth: 1600 });
 		const actions: ComputerAction[] = [
 			{ type: "click", x: 11, y: 22, button: "right", keys: ["SHIFT"] },
 			{ type: "double_click", x: 30, y: 40, keys: null },
@@ -531,7 +716,7 @@ describe("computer tool", () => {
 			backend: "native",
 			display: "display-1",
 			maxWidth: 1600,
-			maxHeight: 900,
+			maxHeight: 1000,
 		});
 		expect(controller.batches).toEqual([
 			[
@@ -570,9 +755,19 @@ describe("computer tool", () => {
 		expect(controller.closeCount).toBe(1);
 	});
 
-	it("classifies observation-only batches as read and input as exec", () => {
-		expect(computerApproval({ actions: [{ type: "screenshot" }, { type: "wait" }] })).toBe("read");
-		expect(computerApproval({ actions: [{ type: "move", x: 1, y: 2 }] })).toBe("exec");
+	it("classifies screenshot-default and observation-only calls as read while malformed and input calls require exec", () => {
+		for (const args of [
+			{},
+			{ actions: undefined },
+			{ actions: null },
+			{ actions: [] },
+			{ actions: [{ type: "screenshot" }, { type: "wait" }] },
+		]) {
+			expect(computerApproval(args)).toBe("read");
+		}
+		for (const actions of ["screenshot", { type: "screenshot" }, [{ type: "move", x: 1, y: 2 }]]) {
+			expect(computerApproval({ actions })).toBe("exec");
+		}
 	});
 
 	it("shows exact action details at approval time", () => {

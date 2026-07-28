@@ -312,18 +312,38 @@ export interface CodexLiteShapedBody {
  * rewrite removes top-level `tools`, a forced hosted-tool choice (e.g.
  * `{ type: "web_search" }`) would leave the backend unable to validate the
  * choice against a tools collection and it rejects the request with HTTP 400
- * (#5771). Such choices must fall back to `"auto"`; explicit string constraints
- * such as `"none"` and `"required"` remain valid. Shared by normal turns and
- * both remote-compaction paths — codex-rs routes `/responses/compact` through
- * the same builder.
+ * (#5771). Native computer and named-function choices preserve exact forcing
+ * by isolating the selected declaration and using `"required"`; other hosted
+ * choices fall back to `"auto"`. Explicit string constraints such as `"none"`
+ * and `"required"` remain valid. Shared by normal turns and both remote-compaction
+ * paths — codex-rs routes `/responses/compact` through the same builder.
  */
 export function applyCodexResponsesLiteShape(body: CodexLiteShapedBody): void {
 	const input = Array.isArray(body.input) ? body.input : [];
 	stripImageDetails(input);
 	body.parallel_tool_calls = false;
-	const prefix: InputItem[] = [
-		{ type: "additional_tools", role: "developer", tools: Array.isArray(body.tools) ? body.tools : [] },
-	];
+	const declaredTools = Array.isArray(body.tools) ? body.tools : [];
+	let additionalTools = declaredTools;
+	if (body.tool_choice && typeof body.tool_choice === "object" && "type" in body.tool_choice) {
+		const choice = body.tool_choice;
+		const selected = declaredTools.find(tool => {
+			if (tool === null || typeof tool !== "object" || !("type" in tool)) return false;
+			if (choice.type === "computer") return tool.type === "computer";
+			return (
+				choice.type === "function" &&
+				tool.type === "function" &&
+				"name" in choice &&
+				typeof choice.name === "string" &&
+				"name" in tool &&
+				tool.name === choice.name
+			);
+		});
+		if (selected) {
+			additionalTools = [selected];
+			body.tool_choice = "required";
+		}
+	}
+	const prefix: InputItem[] = [{ type: "additional_tools", role: "developer", tools: additionalTools }];
 	if (typeof body.instructions === "string" && body.instructions.length > 0) {
 		prefix.push({
 			type: "message",

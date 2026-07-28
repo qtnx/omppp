@@ -2,7 +2,7 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { isRecord, prompt } from "@oh-my-pi/pi-utils";
+import { isRecord, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import chalk from "chalk";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -12,7 +12,7 @@ import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
 import { framedBlock, renderStatusLine, renderTreeList } from "../tui";
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
-import { formatErrorDetail, formatMoreItems, PREVIEW_LIMITS, pluralize } from "./render-utils";
+import { formatErrorDetail, formatMoreItems, PREVIEW_LIMITS, pluralize, replaceTabs } from "./render-utils";
 
 // =============================================================================
 // Types
@@ -524,7 +524,46 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 	}
 }
 
-function applyParams(phases: TodoPhase[], params: TodoParams): { phases: TodoPhase[]; errors: string[] } {
+/**
+ * Infer a missing `op` from the raw argument shape. Only unambiguous shapes
+ * are inferred:
+ * - `list` → `init` (list is init-only)
+ * - `items` + `phase` → `append` (lazily creates the phase, so the result
+ *   matches a single-phase init when nothing exists yet)
+ * - bare `items` with no existing todos → `init` (nothing to overwrite)
+ * Targeting args alone (`task`/`phase`) map to several ops and stay an error.
+ */
+function inferTodoOp(args: Record<string, unknown>, hasExistingPhases: boolean): TodoOperation | undefined {
+	if (Array.isArray(args.list) && args.list.length > 0) return "init";
+	if (Array.isArray(args.items) && args.items.length > 0) {
+		if (typeof args.phase === "string" && args.phase) return "append";
+		if (!hasExistingPhases) return "init";
+	}
+	return undefined;
+}
+
+/**
+ * Validate execute-time arguments, repairing an omitted `op`. The tool sets
+ * `lenientArgValidation`, so the agent loop hands `execute()` the raw
+ * arguments when schema validation fails; the only failure repaired here is
+ * a missing `op` alongside an unambiguous payload (models routinely send
+ * `{list:[...]}` with no op). Anything else returns the schema error text
+ * for a normal model retry.
+ */
+function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntryValue | string {
+	const direct = todoSchema(raw);
+	if (!(direct instanceof type.errors)) return direct;
+	if (isRecord(raw) && raw.op === undefined) {
+		const inferred = inferTodoOp(raw, hasExistingPhases);
+		if (inferred) {
+			const repaired = todoSchema({ ...raw, op: inferred });
+			if (!(repaired instanceof type.errors)) return repaired;
+		}
+	}
+	return `Invalid todo arguments: ${direct.summary}`;
+}
+
+function applyParams(phases: TodoPhase[], params: TodoOpEntryValue): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
 	const next = applyEntry(phases, params, errors);
 	normalizeInProgressTask(next);
@@ -534,7 +573,7 @@ function applyParams(phases: TodoPhase[], params: TodoParams): { phases: TodoPha
 /** Apply an array of `todo`-style ops to existing phases. Used by /todo slash command. */
 export function applyOpsToPhases(
 	currentPhases: TodoPhase[],
-	ops: TodoParams[],
+	ops: TodoOpEntryValue[],
 ): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
 	let next = clonePhases(currentPhases);
@@ -731,6 +770,9 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly parameters = todoSchema;
 	readonly concurrency = "exclusive";
 	readonly strict = true;
+	// Raw args reach execute() on schema failure; resolveTodoParams re-validates
+	// and repairs the one recoverable shape (missing `op`, unambiguous payload).
+	readonly lenientArgValidation = true;
 
 	readonly examples: readonly ToolExample<typeof todoSchema.infer>[] = [
 		{
@@ -789,11 +831,22 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
+		const storage = this.session.getSessionFile() ? "session" : "memory";
+		const resolved = resolveTodoParams(params, previousPhases.length > 0);
+		if (typeof resolved === "string") {
+			return {
+				content: [{ type: "text", text: resolved }],
+				details: { phases: previousPhases, storage },
+				isError: true,
+			};
+		}
+		const entry = resolved;
+		const op = entry.op;
 		// Pure-view calls are reads: no normalization, no state write.
-		const readOnly = params.op === "view";
+		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
-			: applyParams(clonePhases(previousPhases), params);
+			: applyParams(clonePhases(previousPhases), entry);
 		// A batch with any error is discarded wholesale: persisting a
 		// half-applied batch makes the natural retry hit "already exists" for
 		// the ops that did land. State and rendered summary stay at previous.
@@ -801,8 +854,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const effective = failed ? previousPhases : updated;
 		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, updated);
 		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
-		const storage = this.session.getSessionFile() ? "session" : "memory";
-		const details: TodoToolDetails = { op: params.op, phases: effective, storage };
+		const details: TodoToolDetails = { op, phases: effective, storage };
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 
 		return {
@@ -877,9 +929,27 @@ export function phaseRomanNumeral(oneBasedIndex: number): string {
 	return out;
 }
 
-/** Display-only phase header: `I. Foundation`. State and prompts never see this. */
+/**
+ * Every render boundary in this file funnels display text through here.
+ *
+ * `sanitizeText` strips ANSI/C0 sequences but deliberately preserves tabs, and
+ * a raw tab punches holes in bordered TUI output, so both are needed. The raw
+ * value stays untouched everywhere else: task content and phase names are the
+ * identity keys the local list is looked up by, and what gets persisted.
+ */
+function forDisplay(text: string): string {
+	return replaceTabs(sanitizeText(text));
+}
+
+/**
+ * Display-only phase header: `I. Foundation`. State and prompts never see this.
+ *
+ * Sanitized for the same reason task labels are: this is a render boundary and
+ * the name may carry provider or session text holding control sequences. The
+ * raw `phase.name` stays the lookup key everywhere else.
+ */
 export function formatPhaseDisplayName(name: string, oneBasedIndex: number): string {
-	return `${phaseRomanNumeral(oneBasedIndex)}. ${name}`;
+	return `${phaseRomanNumeral(oneBasedIndex)}. ${forDisplay(name)}`;
 }
 
 export const TODO_STRIKE_HOLD_FRAMES = 2;
@@ -918,27 +988,31 @@ function formatTodoLine(
 	matched = false,
 ): string {
 	const checkbox = uiTheme.checkbox;
+	// Sanitize only for display. A mirrored Cursor snapshot carries provider text
+	// verbatim, and a label holding ANSI/C0 sequences would otherwise rewrite the
+	// terminal every time the list renders or replays. `item.content` stays raw
+	// everywhere else: it is the identity key the local list is looked up by
+	// (`findTaskByContent`) and what gets persisted.
+	const label = forDisplay(item.content);
 	switch (item.status) {
 		case "completed": {
-			const revealCount = completionKeys.has(item.content) ? strikeRevealCount(item.content, frame) : undefined;
+			const revealCount = completionKeys.has(item.content) ? strikeRevealCount(label, frame) : undefined;
 			const content =
-				revealCount === undefined
-					? strikethroughText(item.content)
-					: partialStrikethrough(item.content, revealCount);
+				revealCount === undefined ? strikethroughText(label) : partialStrikethrough(label, revealCount);
 			return uiTheme.fg("success", `${prefix}${checkbox.checked} ${content}`);
 		}
 		case "in_progress":
-			return uiTheme.fg("accent", `${prefix}${checkbox.unchecked} ${item.content}`);
+			return uiTheme.fg("accent", `${prefix}${checkbox.unchecked} ${label}`);
 		case "abandoned":
-			return uiTheme.fg("error", `${prefix}${checkbox.unchecked} ${strikethroughText(item.content)}`);
+			return uiTheme.fg("error", `${prefix}${checkbox.unchecked} ${strikethroughText(label)}`);
 		case "blocked": {
-			const note = item.blocker ? `blocked: ${item.blocker}` : "blocked";
-			return uiTheme.fg("warning", `${prefix}${checkbox.unchecked} ${item.content} (${note})`);
+			const note = item.blocker ? `blocked: ${forDisplay(item.blocker)}` : "blocked";
+			return uiTheme.fg("warning", `${prefix}${checkbox.unchecked} ${label} (${note})`);
 		}
 		default:
 			// A pending todo lit by a live subagent match renders accent, matching
 			// the sticky HUD's convention (#5873).
-			return uiTheme.fg(matched ? "accent" : "dim", `${prefix}${checkbox.unchecked} ${item.content}`);
+			return uiTheme.fg(matched ? "accent" : "dim", `${prefix}${checkbox.unchecked} ${label}`);
 	}
 }
 
@@ -1013,13 +1087,15 @@ export const todoToolRenderer = {
 		// both the new single-op and legacy batch shapes so a malformed delta
 		// never breaks the TUI render loop (#2005).
 		const opsList = normalizeTodoArg(args);
+		// Model-authored, partially-streamed strings going straight into a header:
+		// `renderStatusLine` only flattens CR/LF and leaves the rest to the caller.
 		const ops =
 			opsList.length === 0
 				? ["update"]
 				: opsList.map(e => {
-						const parts = [e.op ?? "update"];
-						if (e.task) parts.push(e.task);
-						if (e.phase) parts.push(e.phase);
+						const parts = [forDisplay(e.op ?? "update")];
+						if (e.task) parts.push(forDisplay(e.task));
+						if (e.phase) parts.push(forDisplay(e.phase));
 						if (Array.isArray(e.items) && e.items.length) {
 							parts.push(`${e.items.length} item${e.items.length === 1 ? "" : "s"}`);
 						}
@@ -1073,7 +1149,10 @@ export const todoToolRenderer = {
 			uiTheme,
 		);
 		if (allTasks.length === 0) {
-			const fallback = result.content?.find(content => content.type === "text")?.text ?? "No todos";
+			// Provider text on the Cursor path (the todo summary or a refusal note),
+			// so sanitize like every other label. The error branch above already
+			// goes through `formatErrorDetail`.
+			const fallback = forDisplay(result.content?.find(content => content.type === "text")?.text ?? "No todos");
 			return new Text(`${header}\n  ${uiTheme.fg("dim", fallback)}`, 0, 0);
 		}
 

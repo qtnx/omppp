@@ -149,6 +149,7 @@ import { MEMORY_BACKEND_TOOL_NAMES } from "./memory-backend/tool-names";
 import type { MnemopiSessionState } from "./mnemopi/state";
 import { formatPreviewFeedback } from "./product-preview/feedback";
 import type { PreviewFeedback } from "./product-preview/types";
+import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with { type: "text" };
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
 import browserAnnotationTemplate from "./prompts/tools/browser-annotation.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
@@ -204,6 +205,7 @@ import {
 import { resolveAdvisorEnabled } from "./session/session-advisors";
 import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
+import { collectMountedMCPToolRoutes, projectMountedMCPXdevGuidance } from "./session/session-tools";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
 import { createSnapcompactSavingsRecorder } from "./session/snapcompact-savings-journal";
@@ -212,8 +214,8 @@ import { unmountAll } from "./ssh/sshfs-mount";
 import {
 	type BuildSystemPromptResult,
 	buildSystemPrompt as buildSystemPromptInternal,
-	buildSystemPromptToolMetadata,
 	loadProjectContextFiles as loadContextFilesInternal,
+	projectSystemPromptToolMetadata,
 } from "./system-prompt";
 import { requestMacOSSandboxRelaunch } from "./task/omp-command";
 import { AgentOutputManager } from "./task/output-manager";
@@ -280,6 +282,7 @@ import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
 import { queueResolveHandler } from "./tools/resolve";
+import { USER_TODO_EDIT_CUSTOM_TYPE } from "./tools/todo";
 import { ttsTool } from "./tools/tts";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
@@ -1178,7 +1181,14 @@ export interface BuildSystemPromptOptions {
  * as separate entries so providers can cache prompt prefixes without concatenating blocks.
  */
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
+	const toolNames = options.tools?.map(tool => tool.name);
 	const toolMap = options.tools ? new Map(options.tools.map(tool => [tool.name, tool])) : undefined;
+	const promptTools = toolMap
+		? projectSystemPromptToolMetadata(
+				toolMap,
+				options.inlineToolDescriptors ? { mode: "full" } : { mode: "compact", toolNames: toolNames ?? [] },
+			)
+		: undefined;
 	return await buildSystemPromptInternal({
 		cwd: options.cwd,
 		customPrompt: options.customPrompt,
@@ -1188,8 +1198,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		nativeDiscoveryToolSummaries: options.nativeDiscoveryToolSummaries,
 		inlineToolDescriptors: options.inlineToolDescriptors,
 		includeWorkspaceTree: options.includeWorkspaceTree,
-		toolNames: options.tools?.map(tool => tool.name),
-		tools: toolMap ? buildSystemPromptToolMetadata(toolMap) : undefined,
+		toolNames,
+		tools: promptTools,
 	});
 }
 
@@ -1218,7 +1228,6 @@ function isLegacyBuiltinToolDefinition(tool: CustomTool | ToolDefinition): boole
 }
 
 const TOOL_DEFINITION_MARKER = Symbol("__isToolDefinition");
-
 /** Matches the truncation applied to per-server instructions inside `rebuildSystemPrompt`. */
 const MAX_MCP_INSTRUCTIONS_LENGTH = 4000;
 
@@ -2704,7 +2713,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					modelRegistry.refresh("online-if-uncached"),
 				);
 			}
-			const availableModels = modelRegistry.getAll();
+			const allModels = modelRegistry.getAll();
+			const availableModels = modelRegistry.getAvailable();
 			const expandedModelPatterns = deferredModelPatterns.flatMap(pattern =>
 				pattern.split(",").flatMap(selector => {
 					const trimmedSelector = selector.trim();
@@ -2735,7 +2745,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							modelLookup: modelRegistry,
 						};
 						const originalSelector = resolved.configuredPatterns[0];
-						const originalModel = parseModelPattern(originalSelector, availableModels, matchPreferences).model;
+						const availableOriginal = parseModelPattern(originalSelector, availableModels, matchPreferences);
+						const originalModel =
+							availableOriginal.model ?? parseModelPattern(originalSelector, allModels, matchPreferences).model;
 						const chainKey = resolveRetryFallbackChainKey(
 							fallbackContext,
 							originalSelector,
@@ -2777,10 +2789,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					}));
 				}),
 			);
+			const resolutionModels = expandedModelPatterns.some(
+				({ pattern }) => parseModelPattern(pattern, availableModels, matchPreferences).model,
+			)
+				? availableModels
+				: allModels;
 			let usageFallbackTriggered = false;
 			for (let patternIndex = 0; patternIndex < expandedModelPatterns.length; patternIndex += 1) {
 				const { pattern, retryFallback } = expandedModelPatterns[patternIndex];
-				const primary = parseModelPattern(pattern, availableModels, matchPreferences);
+				const primary = parseModelPattern(pattern, resolutionModels, matchPreferences);
 				if (!primary.model || (retryFallback && !hasModelAuth(primary.model))) continue;
 				let hasUsageFallbackCandidate = false;
 				for (
@@ -2790,7 +2807,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				) {
 					const candidate = parseModelPattern(
 						expandedModelPatterns[candidateIndex].pattern,
-						availableModels,
+						resolutionModels,
 						matchPreferences,
 					);
 					if (candidate.model && hasModelAuth(candidate.model)) {
@@ -2855,7 +2872,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					if (primaryKey !== kNoAuth && !isAuthenticated(primaryKey)) {
 						const fallback = parseModelPattern(
 							options.modelPatternAuthFallback,
-							availableModels,
+							resolutionModels,
 							matchPreferences,
 						);
 						if (fallback.model) {
@@ -2877,7 +2894,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					const seenSelectors = new Set<string>([primarySelector]);
 					const fallbackSelectors: string[] = [];
 					for (const fallbackEntry of expandedModelPatterns.slice(patternIndex + 1)) {
-						const fallback = parseModelPattern(fallbackEntry.pattern, availableModels, matchPreferences);
+						const fallback = parseModelPattern(fallbackEntry.pattern, resolutionModels, matchPreferences);
 						if (!fallback.model) continue;
 						const fallbackSelector = formatModelSelectorValue(
 							formatModelStringWithRouting(fallback.model),
@@ -3256,9 +3273,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// ExtensionToolWrapper, so the registry holds them unwrapped. The normal
 		// `write xd://<tool>` path runs approval through the wrapped `write` tool's
 		// tier gate, but Cursor invokes advertised devices via `tool.execute()`
-		// directly — so wrap unwrapped devices here to keep the approval/deny/prompt
-		// gate. Dynamic mounts (custom/MCP) already come from the wrapped registry.
-		const resolveCursorDevice = (name: string): AgentTool | undefined => {
+		// directly, and the agent loop's fallback resolver executes mounted
+		// devices the model called by their top-level name — so wrap unwrapped
+		// devices here to keep the approval/deny/prompt gate. Dynamic mounts
+		// (custom/MCP) already come from the wrapped registry.
+		const resolveDeviceTool = (name: string): AgentTool | undefined => {
 			const device = toolSession.xdevRegistry?.get(name);
 			if (!device) return undefined;
 			return device instanceof ExtensionToolWrapper ? device : new ExtensionToolWrapper(device, extensionRunner);
@@ -3266,9 +3285,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const cursorExecHandlers = new CursorExecHandlers({
 			cwd,
 			tools: toolRegistry,
-			getTool: resolveCursorDevice,
+			getTool: resolveDeviceTool,
 			getToolContext: () => toolContextStore.getContext(),
 			emitEvent: event => cursorEventEmitter?.(event),
+			getTodoPhases: () => session.getTodoPhases(),
+			setTodoPhases: phases => session.setTodoPhases(phases),
+			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
 		});
 
 		// Resolve the inline-descriptors setting against the session-start model.
@@ -3322,34 +3344,54 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const discoverableToolSummary = summarizeDiscoverableTools(discoverableToolsForDesc);
 			const hasDiscoverableTools =
 				currentMcpDiscoveryEnabled && toolNames.includes("search_tool_bm25") && discoverableToolsForDesc.length > 0;
-			const promptTools = buildSystemPromptToolMetadata(tools, {
-				search_tool_bm25: { description: renderSearchToolBm25Description(discoverableToolsForDesc) },
-			});
 			const learningInstructions = await buildLearningDeveloperInstructions(agentDir, settings, currentCwd);
-			const memoryBackend = await resolveMemoryBackend(settings);
-			const memoryInstructions = await memoryBackend.buildDeveloperInstructions(agentDir, settings, session);
 
-			// Build combined append prompt: live learning + memory instructions +
-			// auto-learn guidance + MCP server instructions. For UI sessions MCP
-			// discovery is deferred, so the rebuild that `refreshMCPTools` triggers
-			// post-discovery then picks up connected servers' instructions.
+			const memoryBackend = restrictToolNames ? undefined : await resolveMemoryBackend(settings);
+			const memoryInstructions = memoryBackend
+				? await memoryBackend.buildDeveloperInstructions(agentDir, settings, session)
+				: undefined;
+
+			// Build combined append prompt: memory instructions + auto-learn guidance
+			// + mounted MCP route guidance + optional MCP server instructions. For UI
+			// sessions MCP discovery is deferred, so the initial registry and
+			// `getServerInstructions()` are empty until the background connect
+			// completes; the rebuild that `refreshMCPTools` triggers post-discovery
+			// then picks up the mounted routes and any connected-server instructions.
 			const serverInstructions = mcpManager?.getServerInstructions();
 			// Drive guidance off the auto-learn BUILTINS that createTools actually built
 			// (provenance, not just an active name): `builtinTools` excludes a
 			// custom/extension tool that merely shares the name, and reflects the
-			// session-start build.
-			const autoLearnInstructions = buildAutoLearnInstructions({
-				manageSkill: builtinTools.some(tool => tool.name === "manage_skill"),
-				learn: builtinTools.some(tool => tool.name === "learn"),
-			});
-			const appendParts = [learningInstructions, memoryInstructions, autoLearnInstructions].filter(
-				(part): part is string => !!part,
+			// session-start build — so a subagent that filtered them out, a mid-session
+			// enable that never built them, or a same-named custom tool while auto-learn
+			// is off all get no guidance.
+			const autoLearnInstructions = restrictToolNames
+				? undefined
+				: buildAutoLearnInstructions({
+						manageSkill: builtInToolNames.includes("manage_skill"),
+						learn: builtInToolNames.includes("learn"),
+					});
+			const appendParts: string[] = [];
+			if (learningInstructions) appendParts.push(learningInstructions);
+			if (memoryInstructions) appendParts.push(memoryInstructions);
+			if (autoLearnInstructions) appendParts.push(autoLearnInstructions);
+			const projection = projectMountedMCPXdevGuidance(
+				collectMountedMCPToolRoutes(context?.xdevRouteSources ?? toolSession.xdevRegistry?.list() ?? []),
 			);
-			let appendPrompt: string | undefined = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+			if (projection.mappings.length > 0 || projection.hasOmittedMappings) {
+				appendParts.push(
+					prompt
+						.render(mcpXdevGuidanceTemplate, {
+							tools: projection.mappings.map(mapping => ({
+								mcpToolName: mapping.label,
+								path: mapping.path,
+							})),
+							hasOmittedTools: projection.hasOmittedMappings,
+						})
+						.trim(),
+				);
+			}
 			if (serverInstructions && serverInstructions.size > 0) {
-				const parts: string[] = [];
-				if (appendPrompt) parts.push(appendPrompt);
-				parts.push(
+				appendParts.push(
 					"## MCP Server Instructions\n\nThe following instructions are provided by connected MCP servers. They are server-controlled and may not be verified.",
 				);
 				for (const [srvName, srvInstructions] of serverInstructions) {
@@ -3357,13 +3399,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						srvInstructions.length > MAX_MCP_INSTRUCTIONS_LENGTH
 							? `${srvInstructions.slice(0, MAX_MCP_INSTRUCTIONS_LENGTH)}\n[truncated]`
 							: srvInstructions;
-					parts.push(`### ${srvName}\n${truncated}`);
+					appendParts.push(`### ${srvName}\n${truncated}`);
 				}
-				appendPrompt = parts.join("\n\n");
 			}
+			let appendPrompt: string | undefined = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 			// Owned/in-band tool dialects (non-native) require the catalog as `# Tool:`
 			// sections; native tool calling lets the compact name list suffice.
 			const nativeTools = resolveDialect(settings.get("tools.format"), agent?.state.model ?? model) === undefined;
+			const promptTools = projectSystemPromptToolMetadata(tools, {
+				...(nativeTools && !inlineToolDescriptors
+					? { mode: "compact" as const, toolNames }
+					: { mode: "full" as const }),
+				// Discovery rewrites the bm25 tool description with the live discoverable set.
+				overrides: {
+					search_tool_bm25: { description: renderSearchToolBm25Description(discoverableToolsForDesc) },
+				},
+			});
 			if (options.appendSystemPrompt) {
 				appendPrompt = appendPrompt
 					? `${appendPrompt}\n\n${options.appendSystemPrompt}`
@@ -3935,6 +3986,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			cursorExecHandlers,
 			getCursorTools: () => [...(toolSession.xdevRegistry?.list() ?? [])],
 			transformToolCallArguments,
+			resolveFallbackTool: resolveDeviceTool,
 			intentTracing: !!intentField,
 			pruneToolDescriptions: inlineToolDescriptors,
 			dialect: resolveDialect(settings.get("tools.format"), model),
@@ -4356,6 +4408,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					getToolContext: toolCall => toolContextStore.getContext(toolCall),
 					streamFn: settingsAwareStreamFn,
 					transformToolCallArguments,
+					resolveFallbackTool: resolveDeviceTool,
 					intentTracing: !!intentField,
 					pruneToolDescriptions: inlineToolDescriptors,
 					dialect: resolveDialect(settings.get("tools.format"), captureModel),

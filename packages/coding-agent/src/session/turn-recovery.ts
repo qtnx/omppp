@@ -106,7 +106,7 @@ export interface TurnRecoveryHost {
 	promptGeneration(): number;
 	sessionId(): string;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
-	scheduleAgentContinue(options: { delayMs?: number; generation?: number }): void;
+	scheduleAgentContinue(options: { delayMs?: number; generation?: number; onError?: (error: unknown) => void }): void;
 	waitForSessionMessagePersistence(message: AssistantMessage): Promise<void>;
 	appendSessionMessage(message: AssistantMessage): void;
 	sessionMessageAlreadyPersisted(message: AssistantMessage): boolean;
@@ -784,10 +784,6 @@ export class TurnRecovery {
 		return AIError.is(id, AIError.Flag.Transient);
 	}
 
-	#isGenericAbortSentinel(message: AssistantMessage): boolean {
-		return message.errorMessage === "Request was aborted" || message.errorMessage === "Request was aborted.";
-	}
-
 	/**
 	 * Retry an empty, reason-less provider abort: a turn with no content that
 	 * carries the generic sentinel (bare `abort()`), whether the provider
@@ -816,7 +812,9 @@ export class TurnRecovery {
 
 		const id = this.#classifyRetryMessage(message);
 		if (message.stopReason === "aborted" && AIError.is(id, AIError.Flag.Abort)) return true;
-		if (!this.#isGenericAbortSentinel(message)) return false;
+		if (message.errorMessage !== "Request was aborted" && message.errorMessage !== "Request was aborted.") {
+			return false;
+		}
 
 		message.errorId = AIError.create(AIError.Flag.Abort);
 		return true;
@@ -840,30 +838,48 @@ export class TurnRecovery {
 	}
 
 	/**
-	 * Resume a stalled turn after every emitted tool call has produced a result.
-	 * Cursor calls must also carry the server-execution marker. The failed
-	 * assistant/tool-result pair stays in context so completed side effects are
-	 * continued from rather than replayed.
+	 * Classify a reasonless abort or stream stall whose emitted tool calls all
+	 * have results. The failed assistant/tool-result pair stays in context so
+	 * continuation cannot replay completed side effects; synthetic results tell
+	 * the next turn that an unexecuted call must be reissued.
 	 */
-	canResumeResolvedStreamStall(message: AssistantMessage): boolean {
-		if (message.stopReason !== "error" || !message.errorMessage?.toLowerCase().includes("stream stall")) {
-			return false;
-		}
+	classifyResolvedInterruptedToolTurn(message: AssistantMessage): "reasonless-abort" | "stream-stall" | undefined {
 		const id = this.#classifyRetryMessage(message);
-		if (!AIError.retriable(id)) return false;
+		const genericAbort =
+			message.errorMessage === "Request was aborted" || message.errorMessage === "Request was aborted.";
+		const reasonlessAbort =
+			(message.stopReason === "aborted" || message.stopReason === "error") &&
+			!this.#host.abortInProgress() &&
+			!this.#host.isDisposed() &&
+			!this.#host.streamingEditAbortTriggered() &&
+			((message.stopReason === "aborted" && AIError.is(id, AIError.Flag.Abort)) || genericAbort);
+		const streamStall =
+			message.stopReason === "error" &&
+			message.errorMessage?.toLowerCase().includes("stream stall") === true &&
+			AIError.retriable(id);
+		if (!reasonlessAbort && !streamStall) return undefined;
+		if (reasonlessAbort && genericAbort) message.errorId = AIError.create(AIError.Flag.Abort);
 
+		// The Cursor server-execution marker gate applies only to the stream-stall
+		// path: an unmarked/unresolved Cursor block there means the server has not
+		// finished executing, so resuming would race it. A reasonless abort instead
+		// ends the turn and the agent loop pairs every un-run call (Cursor's unmarked
+		// `todo`/MCP blocks included) with a synthetic `executed: false` result, so
+		// the tool-result reconciliation below is the safety gate and the marker is
+		// irrelevant.
 		const resolvedToolCallIds: string[] = [];
 		for (const block of message.content) {
 			if (block.type !== "toolCall") continue;
 			if (
+				streamStall &&
 				message.provider === "cursor" &&
 				(!(kCursorExecResolved in block) || block[kCursorExecResolved] !== true)
 			) {
-				return false;
+				return undefined;
 			}
 			resolvedToolCallIds.push(block.id);
 		}
-		if (resolvedToolCallIds.length === 0) return false;
+		if (resolvedToolCallIds.length === 0) return undefined;
 
 		const messages = this.#host.agent.state.messages;
 		let assistantIndex = -1;
@@ -874,14 +890,15 @@ export class TurnRecovery {
 				break;
 			}
 		}
-		if (assistantIndex < 0) return false;
+		if (assistantIndex < 0) return undefined;
 
 		const unresolvedToolCallIds = new Set(resolvedToolCallIds);
 		for (let i = assistantIndex + 1; i < messages.length; i++) {
 			const candidate = messages[i];
 			if (candidate.role === "toolResult") unresolvedToolCallIds.delete(candidate.toolCallId);
 		}
-		return unresolvedToolCallIds.size === 0;
+		if (unresolvedToolCallIds.size > 0) return undefined;
+		return reasonlessAbort ? "reasonless-abort" : "stream-stall";
 	}
 	/**
 	 * Retried turns remove the failed assistant message from active context.
@@ -1514,10 +1531,73 @@ export class TurnRecovery {
 			this.#retryAbortController = undefined;
 		}
 
-		// Retry via continue() outside the agent_end event callback chain.
-		this.#host.scheduleAgentContinue({ delayMs: 1, generation });
+		// The identity-keyed removal above can miss when a context rebuild
+		// recreated the failed turn's message object between settle and retry
+		// (fresh identity, same failed tail — issue #5382). Agent.continue()
+		// rejects any assistant tail, so a missed removal fails the scheduled
+		// retry locally before a provider request is ever made. Re-check the
+		// tail after the backoff (covering rebuilds during the sleep too) and
+		// strip a still-failed assistant tail by position. Never in
+		// preserveFailedTurn mode — the kept turn ends in synthetic tool
+		// results that continue() accepts — and never once a newer prompt owns
+		// the session.
+		if (!options?.preserveFailedTurn && this.#host.promptGeneration() === generation) {
+			this.#stripFailedAssistantTail();
+		}
+
+		// Retry via continue() outside the agent_end event callback chain. A
+		// continuation that still fails locally must close the retry saga —
+		// otherwise auto_retry_end never fires, retryPromise stays pending, and
+		// the in-flight prompt() (and the TUI retry indicator) hang forever.
+		this.#host.scheduleAgentContinue({
+			delayMs: 1,
+			generation,
+			onError: error => void this.#failRetryAfterLocalContinueError(message, error),
+		});
 
 		return true;
+	}
+
+	/**
+	 * Positional backstop for {@link removeAssistantMessageFromActiveContext}:
+	 * when the identity check missed, the failed assistant turn is still the
+	 * active tail and the scheduled continue() would reject it. An
+	 * error/aborted-stopped assistant tail is never legal continuation input
+	 * and no recovery path wants it replayed on the wire, so drop it by
+	 * position; any healthy tail is left untouched.
+	 */
+	#stripFailedAssistantTail(): void {
+		const messages = this.#host.agent.state.messages;
+		const tail = messages[messages.length - 1];
+		if (tail?.role !== "assistant") return;
+		if (tail.stopReason !== "error" && tail.stopReason !== "aborted") return;
+		logger.debug("agent active context failed assistant tail stripped positionally", {
+			stopReason: tail.stopReason,
+			timestamp: tail.timestamp,
+		});
+		this.#host.agent.replaceMessages(messages.slice(0, -1));
+	}
+
+	/**
+	 * Close the retry saga when the scheduled continue() failed locally (no
+	 * provider request was made). Mirrors the other retry dead-ends: emit the
+	 * closing `auto_retry_end` so subscribers stop showing retry progress, and
+	 * resolve the retry promise so the in-flight prompt() unwinds (issue #5382).
+	 */
+	async #failRetryAfterLocalContinueError(message: AssistantMessage, error: unknown): Promise<void> {
+		if (this.#retryAttempt === 0) return;
+		const attempt = this.#retryAttempt;
+		this.#retryAttempt = 0;
+		const localError = error instanceof Error ? error.message : String(error);
+		await this.persistTerminalEmptyErrorTurn(message);
+		await this.#host.emitSessionEvent({
+			type: "auto_retry_end",
+			success: false,
+			attempt,
+			finalError: `Retry continuation failed locally: ${localError}. Original error: ${message.errorMessage ?? "Unknown error"}`,
+		});
+		this.#clearPendingRecoveredRetryErrors();
+		this.resolveRetry();
 	}
 
 	/**

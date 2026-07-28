@@ -1,14 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { DesktopSession } from "../native/index.js";
 
-// A locally built addon can predate the DesktopSession binding; skip instead of
-// failing on stale artifacts, mirroring the opt-in gate below.
-const desktopTest = typeof DesktopSession === "function" ? it : it.skip;
-const optInCaptureTest =
-	typeof DesktopSession === "function" && Bun.env.OMP_NATIVE_DESKTOP_CAPTURE_TEST === "1" ? it : it.skip;
+const optInCaptureTest = Bun.env.OMP_NATIVE_DESKTOP_CAPTURE_TEST === "1" ? it : it.skip;
 
 describe("DesktopSession", () => {
-	desktopTest("reports native capability state and closes idempotently without input", async () => {
+	it("exports DesktopSession from the packaged native addon", () => {
+		expect(typeof DesktopSession).toBe("function");
+	});
+
+	it("reports native capability state and closes idempotently without input", async () => {
 		const session = new DesktopSession({
 			backend: "native",
 			display: "all",
@@ -27,7 +27,7 @@ describe("DesktopSession", () => {
 		await expect(session.capture()).rejects.toThrow("DESKTOP_SESSION_CLOSED");
 	});
 
-	desktopTest("rejects malformed GA actions before emitting native input", async () => {
+	it("rejects malformed GA actions before emitting native input", async () => {
 		const session = new DesktopSession({ backend: "auto" });
 		try {
 			expect(() => session.execute([{ type: "scroll", x: 10, y: 20, scroll_x: 0 }])).toThrow(

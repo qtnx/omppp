@@ -365,6 +365,22 @@ describe("openai-codex Responses Lite input shaping", () => {
 		expect(disabled.tools).toBeUndefined();
 	});
 
+	it.each(["gpt-5.3-codex-spark", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"])(
+		"preserves a forced computer function through Lite for %s",
+		async modelId => {
+			const model = createCodexModel(modelId);
+			const computer = { type: "function", name: "computer", parameters: { type: "object" } };
+			const other = { type: "function", name: "read", parameters: { type: "object" } };
+			const body = await transformRequestBody(
+				{ model: model.id, tools: [computer, other], tool_choice: { type: "function", name: "computer" } },
+				model,
+				{ responsesLite: true },
+			);
+			expect(body.input?.[0]).toEqual({ type: "additional_tools", role: "developer", tools: [computer] });
+			expect(body.tool_choice).toBe("required");
+		},
+	);
+
 	it("moves instructions and tools into input items under lite", async () => {
 		const model = createCodexModel("gpt-5.6-terra");
 		const tools = [{ type: "function", name: "shot", parameters: { type: "object" } }];

@@ -102,6 +102,8 @@ export interface SessionStopEvent {
 	session_id: string;
 	session_file?: string;
 	stop_hook_active: boolean;
+	/** Cancels handler waiting when the active settle pass is aborted. */
+	signal: AbortSignal;
 }
 
 /** Preparation data for tree navigation (used by session_before_tree event) */

@@ -112,6 +112,87 @@ describe("RemoteAuthCredentialStore SSE integration", () => {
 		expect(remote!.snapshot.credentials[0].id).not.toBe(bId);
 	});
 
+	test("batches observed usage and reports it to the broker as per-install client usage", async () => {
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		remote = new RemoteAuthCredentialStore({ client, observedUsageFlushMs: 25 });
+
+		const at = Date.now();
+		// Two requests for the same (provider, model) must merge into one entry;
+		// a second model produces its own entry in the same flush.
+		remote.recordObservedUsage([
+			{
+				at,
+				provider: "anthropic",
+				model: "claude-x",
+				requests: 1,
+				inputTokens: 100,
+				outputTokens: 50,
+				cacheReadTokens: 10,
+				cacheWriteTokens: 5,
+				costUsd: 0.5,
+			},
+		]);
+		remote.recordObservedUsage([
+			{
+				at: at + 1,
+				provider: "anthropic",
+				model: "claude-x",
+				requests: 1,
+				inputTokens: 200,
+				outputTokens: 100,
+				cacheReadTokens: 20,
+				cacheWriteTokens: 10,
+				costUsd: 1.0,
+			},
+			{
+				at: at + 2,
+				provider: "openai-codex",
+				model: "gpt-y",
+				requests: 1,
+				inputTokens: 30,
+				outputTokens: 15,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+				costUsd: 0,
+			},
+		]);
+
+		await waitUntil(() => storage!.getClientUsageSummary(0).clients.length === 1);
+		const summary = storage!.getClientUsageSummary(0);
+		const reported = summary.clients[0];
+		expect(reported.installId.length).toBeGreaterThan(0);
+		expect(reported.hostname).toBe(os.hostname());
+
+		const anthropic = reported.providers.find(p => p.provider === "anthropic");
+		expect(anthropic).toMatchObject({
+			requests: 2,
+			inputTokens: 300,
+			outputTokens: 150,
+			cacheReadTokens: 30,
+			cacheWriteTokens: 15,
+		});
+		expect(anthropic?.costUsd).toBeCloseTo(1.5, 10);
+		expect(reported.providers.find(p => p.provider === "openai-codex")).toMatchObject({
+			requests: 1,
+			inputTokens: 30,
+		});
+
+		// A follow-up report — routed through the client-side AuthStorage facade,
+		// like the coding-agent does per assistant message — merges into the same
+		// 5-minute bucket row instead of accreting a new row per flush.
+		const clientStorage = new AuthStorage(remote);
+		clientStorage.recordObservedUsage({
+			provider: "anthropic",
+			model: "claude-x",
+			at: at + 3,
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+		});
+		await waitUntil(() => {
+			const current = storage!.getClientUsageSummary(0).clients[0];
+			return current?.providers.find(p => p.provider === "anthropic")?.requests === 3;
+		});
+	});
+
 	test("calls onSnapshot for broker snapshots but not the constructor snapshot", async () => {
 		const client = new AuthBrokerClient({ url: handle!.url, token });
 		const initialResult = await client.fetchSnapshot();

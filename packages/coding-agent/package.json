@@ -54,7 +54,6 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "catalog:",
     "@babel/parser": "catalog:",
-    "@babel/traverse": "catalog:",
     "@mozilla/readability": "catalog:",
     "@oh-my-pi/context-gc-plugin": "catalog:",
     "@oh-my-pi/delegation-reminder-plugin": "catalog:",
@@ -121,6 +120,7 @@
   "files": [
     "src",
     "dist/cli.js",
+    "dist/CHANGELOG-*.md",
     "dist/*.node",
     "scripts",
     "examples",

@@ -440,7 +440,10 @@ export interface AstReplaceFileChange {
 export interface AstReplaceOptions {
   /** Map of pattern string to replacement template. */
   rewrites?: Record<string, string>
-  /** Language override; otherwise inferred from discovered files. */
+  /**
+   * Language override applied to every file; otherwise inferred per file, so
+   * mixed-language paths rewrite each file in its own language.
+   */
   lang?: string
   /** Single file or directory to rewrite. */
   path?: string

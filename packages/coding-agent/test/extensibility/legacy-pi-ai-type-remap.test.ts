@@ -192,6 +192,20 @@ describe("legacy-pi @(scope)/pi-ai root `Type` remap (issue #1437)", () => {
 		expect(loaded.models).toBe(getBundledModels);
 	});
 
+	it("exports clampThinkingLevel with the historical off fallback", async () => {
+		const loaded = await loadLegacyPiModule(
+			await writeFixtureExtension(
+				[
+					'import { clampThinkingLevel } from "@earendil-works/pi-ai";',
+					"export const supported = clampThinkingLevel({ reasoning: true, thinking: { efforts: ['low', 'high'] } }, 'high');",
+					"export const disabled = clampThinkingLevel({ reasoning: false }, 'high');",
+				].join("\n"),
+			),
+		);
+
+		expect(loaded).toMatchObject({ supported: "high", disabled: "off" });
+	});
+
 	it("exports StringEnum as a schema builder with options support", async () => {
 		const loaded = (await loadLegacyPiModule(
 			await writeFixtureExtension(
@@ -249,6 +263,30 @@ describe("legacy pi package root remaps (issue #1474)", () => {
 			"function",
 		]);
 		expect(loaded.printable).toBe("a");
+	});
+
+	it("loads pi-sprite's legacy terminal helpers", async () => {
+		const entry = await writeFixtureExtension(
+			[
+				'import { deleteAllKittyImages, deleteKittyImage, getCapabilities } from "@earendil-works/pi-tui";',
+				"export const deleteOne = deleteKittyImage(42);",
+				"export const deleteAll = deleteAllKittyImages();",
+				"export const capabilities = getCapabilities();",
+			].join("\n"),
+		);
+
+		const loaded = (await loadLegacyPiModule(entry)) as {
+			deleteOne: string;
+			deleteAll: string;
+			capabilities: { images: "kitty" | "iterm2" | null; trueColor: boolean; hyperlinks: boolean };
+		};
+		// Bare sequences, exactly like upstream Pi: legacy callers (pi-sprite)
+		// apply their own tmux passthrough wrapping.
+		expect(loaded.deleteOne).toBe("\x1b_Ga=d,d=I,i=42,q=2\x1b\\");
+		expect(loaded.deleteAll).toBe("\x1b_Ga=d,d=A,q=2\x1b\\");
+		expect(["kitty", "iterm2", null]).toContain(loaded.capabilities.images);
+		expect(typeof loaded.capabilities.trueColor).toBe("boolean");
+		expect(typeof loaded.capabilities.hyperlinks).toBe("boolean");
 	});
 
 	it("preserves legacy defineTool root imports and usable coding tools", async () => {

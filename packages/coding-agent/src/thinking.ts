@@ -1,6 +1,7 @@
 import { type ResolvedThinkingLevel, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { Effort, type Model, THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
 import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
+import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 
 /**
  * Metadata used to render thinking selector values in the coding-agent UI.
@@ -142,6 +143,44 @@ export function concreteThinkingLevel(level: ConfiguredThinkingLevel | undefined
 	return level === AUTO_THINKING ? undefined : level;
 }
 
+/**
+ * True when a prewalk hand-off from `current`/`currentLevel` to
+ * `target`/`targetLevel` would change nothing observable: same model id, same
+ * auto/fixed mode, and the same model-clamped effective effort. Prewalk arms and
+ * switches only when this is false.
+ *
+ * An effort-only delta on the same model id is a legitimate cheapening hand-off
+ * — on a reasoning model the effort is the bulk of the cost — so it is NOT a
+ * no-op and must still switch. A `targetLevel` of `undefined` means the prewalk
+ * pattern carried no explicit `:level` suffix (no effort change requested),
+ * which on the same model is a no-op.
+ *
+ * `auto` mode is compared before efforts: `auto` and a fixed selector that both
+ * resolve to `undefined` effort (e.g. `:inherit`) are NOT interchangeable —
+ * applying the fixed selector clears per-turn classification, so switching
+ * auto↔fixed is always a real change even when the clamped efforts match.
+ *
+ * Efforts are otherwise compared AFTER model clamping, so a target the model
+ * cannot honor (e.g. `:xhigh` on a model capped at `high`) — which
+ * `setThinkingLevel` would clamp straight back to the active effort — is
+ * recognized as a no-op instead of triggering an ephemeral reset and the
+ * plan/checklist nudges for nothing.
+ */
+export function prewalkWouldBeNoop(
+	current: Model | undefined,
+	currentLevel: ConfiguredThinkingLevel | undefined,
+	target: Model,
+	targetLevel: ConfiguredThinkingLevel | undefined,
+): boolean {
+	if (!modelsAreEqual(current, target)) return false;
+	if (targetLevel === undefined) return true;
+	if ((targetLevel === AUTO_THINKING) !== (currentLevel === AUTO_THINKING)) return false;
+	return (
+		resolveThinkingLevelForModel(target, concreteThinkingLevel(targetLevel)) ===
+		resolveThinkingLevelForModel(target, concreteThinkingLevel(currentLevel))
+	);
+}
+
 /** Metadata used to render the `auto` selector value alongside concrete levels. */
 export interface ConfiguredThinkingLevelMetadata {
 	value: ConfiguredThinkingLevel;
@@ -218,6 +257,33 @@ export function clampAutoThinkingEffort(model: Model | undefined, effort: Effort
 		chosen = candidate;
 	}
 	return chosen;
+}
+
+/** Coarse per-spawn effort selectors accepted by the task tool. */
+export const TASK_EFFORTS = ["lo", "med", "hi"] as const;
+
+/** Coarse task-spawn effort: the lowest, middle, or highest thinking level the target model supports. */
+export type TaskEffort = (typeof TASK_EFFORTS)[number];
+
+/**
+ * Maps a coarse task effort onto the model's supported thinking range:
+ * `lo` = lowest supported level, `hi` = highest (whatever the model tops out
+ * at — high, xhigh, or max), `med` = the middle (lower of the two middles for
+ * an even-sized range). Without a model, maps over the full canonical range.
+ * Returns `undefined` when the model has no controllable effort surface, so
+ * callers fall back to their default selector (e.g. `auto`).
+ */
+export function resolveTaskEffortLevel(model: Model | undefined, effort: TaskEffort): Effort | undefined {
+	const supported = model ? getSupportedEfforts(model) : THINKING_EFFORTS;
+	if (supported.length === 0) return undefined;
+	switch (effort) {
+		case "lo":
+			return supported[0];
+		case "med":
+			return supported[(supported.length - 1) >> 1];
+		case "hi":
+			return supported[supported.length - 1];
+	}
 }
 
 /**

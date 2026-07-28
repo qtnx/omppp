@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
+import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -7,6 +8,7 @@ import * as pluginCli from "@oh-my-pi/pi-coding-agent/cli/plugin-cli";
 import * as updateCli from "@oh-my-pi/pi-coding-agent/cli/update-cli";
 import {
 	buildBunInstallArgs,
+	downloadVerifiedBinary,
 	getBinaryNameForTest,
 	installScriptUrl,
 	parseReportedVersion,
@@ -14,8 +16,10 @@ import {
 	pruneBunInstallCache,
 	replaceBinaryForUpdate,
 	resolveBunGlobalNodeModulesDirFromLocations,
+	resolveReleaseBinaryAsset,
 	resolveUpdateMethodForTest,
 	sweepStaleBackups,
+	updateViaBinaryAt,
 	updateViaInstallScript,
 } from "@oh-my-pi/pi-coding-agent/cli/update-cli";
 import Update from "@oh-my-pi/pi-coding-agent/commands/update";
@@ -32,6 +36,7 @@ async function makeTempDir(): Promise<string> {
 
 afterEach(async () => {
 	vi.restoreAllMocks();
+
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
 });
 const TEST_CONFIG: CliConfig = {
@@ -75,6 +80,118 @@ describe("update-cli install target detection", () => {
 		const method = resolveUpdateMethodForTest("/Users/test/.bun/bin/omp", "/Users/test/.bun/bin");
 
 		expect(method).toBe("bun");
+	});
+
+	it("uses npm update when prioritized omp is inside an npm global bin", () => {
+		const method = resolveUpdateMethodForTest("/Users/test/.npm-global/bin/omp", undefined, {
+			npmBinDir: "/Users/test/.npm-global/bin",
+		});
+
+		expect(method).toBe("npm");
+	});
+
+	it("uses npm update for Windows npm command shims even when no package-manager bin dirs were detected", () => {
+		const method = resolveUpdateMethodForTest("C:\\Users\\test\\AppData\\Roaming\\npm\\omp.cmd", undefined);
+
+		expect(method).toBe("npm");
+	});
+
+	it("uses binary update when a plain file in the npm global bin dir is the standalone binary, not an npm symlink", () => {
+		// Regression: with `npm prefix -g` pointed at the installer's default
+		// (~/.local), directory containment alone misclassified the standalone
+		// binary as npm-managed, so `npm install -g` failed with EEXIST refusing
+		// to overwrite the existing executable.
+		const method = resolveUpdateMethodForTest("/home/u/.local/bin/omp", undefined, {
+			npmBinDir: "/home/u/.local/bin",
+			ompIsRegularFile: true,
+		});
+
+		expect(method).toBe("binary");
+	});
+
+	it("uses binary update when a plain file in the bun global bin dir is the standalone binary", () => {
+		const method = resolveUpdateMethodForTest("/home/u/.local/bin/omp", "/home/u/.local/bin", {
+			ompIsRegularFile: true,
+		});
+
+		expect(method).toBe("binary");
+	});
+
+	it("keeps bun update for regular-file entries in the bun global bin dir on Windows, where bun writes .exe shims", () => {
+		// On Windows a bun-managed global install is a regular-file .exe
+		// launcher, not a symlink, so the standalone-binary override must not
+		// apply there — it would clobber the shim with a raw binary. Paths use
+		// forward slashes so the lexical containment check works on the POSIX
+		// host running this suite; the platform gate is what is under test.
+		const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+		if (!platformDescriptor) throw new Error("process.platform descriptor missing");
+		Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
+		try {
+			const method = resolveUpdateMethodForTest("C:/Users/test/.bun/bin/omp.exe", "C:/Users/test/.bun/bin", {
+				ompIsRegularFile: true,
+			});
+
+			expect(method).toBe("bun");
+		} finally {
+			Object.defineProperty(process, "platform", platformDescriptor);
+		}
+	});
+
+	it("still uses npm update when the npm global bin entry is a package-manager symlink, not a plain file", () => {
+		const method = resolveUpdateMethodForTest("/home/u/.local/bin/omp", undefined, {
+			npmBinDir: "/home/u/.local/bin",
+			ompIsRegularFile: false,
+		});
+
+		expect(method).toBe("npm");
+	});
+
+	it("uses binary update when prioritized omp is outside bun global bin", () => {
+		const method = resolveUpdateMethodForTest("/Users/test/.local/bin/omp", "/Users/test/.bun/bin");
+
+		expect(method).toBe("binary");
+	});
+
+	it("uses binary update when bun global bin cannot be resolved", () => {
+		const method = resolveUpdateMethodForTest("/Users/test/.local/bin/omp", undefined);
+
+		expect(method).toBe("binary");
+	});
+
+	it("uses Homebrew update when prioritized omp resolves into the Homebrew formula", async () => {
+		const dir = await makeTempDir();
+		const prefix = path.join(dir, "opt", "omp");
+		const linkedBin = path.join(dir, "bin");
+		await fs.mkdir(path.join(prefix, "bin"), { recursive: true });
+		await fs.mkdir(linkedBin, { recursive: true });
+		await Bun.write(path.join(prefix, "bin", "omp"), "binary");
+		await fs.symlink(path.join(prefix, "bin", "omp"), path.join(linkedBin, "omp"));
+
+		const method = resolveUpdateMethodForTest(path.join(linkedBin, "omp"), "/Users/test/.bun/bin", {
+			homebrewPrefix: prefix,
+		});
+
+		expect(method).toBe("brew");
+	});
+
+	it("uses mise update when prioritized omp is in an active mise bin path", () => {
+		const method = resolveUpdateMethodForTest(
+			"/Users/test/.local/share/mise/installs/github-can1357-oh-my-pi/latest/bin/omp",
+			undefined,
+			{
+				miseBinDirs: ["/Users/test/.local/share/mise/installs/github-can1357-oh-my-pi/latest/bin"],
+			},
+		);
+
+		expect(method).toBe("mise");
+	});
+
+	it("uses mise update when prioritized omp is a mise shim", () => {
+		const method = resolveUpdateMethodForTest("/Users/test/.local/share/mise/shims/omp", undefined, {
+			miseDataDir: "/Users/test/.local/share/mise",
+		});
+
+		expect(method).toBe("mise");
 	});
 });
 describe("update-cli bun install command", () => {
@@ -210,6 +327,206 @@ describe("update-cli bun cache pruning", () => {
 		expect(await Bun.file(path.join(dir, "pkg@1.0.0-beta.1@@@1", "package.json")).exists()).toBe(false);
 		expect(await Bun.file(path.join(dir, "pkg", "1.0.0@@@1")).exists()).toBe(true);
 		expect(await Bun.file(path.join(dir, "pkg@1.0.0@@@1", "package.json")).exists()).toBe(true);
+	});
+});
+
+describe("update-cli release binary integrity", () => {
+	const tag = "v17.1.2";
+	const binaryName = "omp-linux-x64";
+	// OMPx self-updates from the fork's releases; keep the fixture URL on `qtnx/omppp`.
+	const url = `https://github.com/qtnx/omppp/releases/download/${tag}/${binaryName}`;
+	const content = "verified binary";
+	const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
+
+	function releaseAsset(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+		return {
+			tag_name: tag,
+			draft: false,
+			prerelease: false,
+			assets: [
+				{
+					name: binaryName,
+					state: "uploaded",
+					size: Buffer.byteLength(content),
+					digest,
+					browser_download_url: url,
+					...overrides,
+				},
+			],
+		};
+	}
+
+	it("selects an uploaded asset with a valid SHA-256 digest", () => {
+		expect(resolveReleaseBinaryAsset(releaseAsset(), tag, binaryName)).toEqual({
+			url,
+			size: Buffer.byteLength(content),
+			digest,
+		});
+	});
+
+	it("rejects missing and unsupported release asset digests", () => {
+		expect(() => resolveReleaseBinaryAsset(releaseAsset({ digest: null }), tag, binaryName)).toThrow("has no digest");
+		expect(() => resolveReleaseBinaryAsset(releaseAsset({ digest: "sha512:abc" }), tag, binaryName)).toThrow(
+			"has an unsupported digest",
+		);
+	});
+
+	it("rejects release metadata that does not identify one exact stable asset", () => {
+		expect(() => resolveReleaseBinaryAsset({ ...releaseAsset(), prerelease: true }, tag, binaryName)).toThrow(
+			"is not a published stable release",
+		);
+		expect(() => resolveReleaseBinaryAsset({ ...releaseAsset(), assets: [] }, tag, binaryName)).toThrow(
+			`has 0 assets named ${binaryName}`,
+		);
+		expect(() =>
+			resolveReleaseBinaryAsset(
+				{ ...releaseAsset(), assets: [releaseAsset().assets, releaseAsset().assets].flat() },
+				tag,
+				binaryName,
+			),
+		).toThrow(`has 2 assets named ${binaryName}`);
+		expect(() =>
+			resolveReleaseBinaryAsset(
+				releaseAsset({ browser_download_url: "https://example.com/omp-linux-x64" }),
+				tag,
+				binaryName,
+			),
+		).toThrow("has an unexpected download URL");
+	});
+
+	it("writes a download only after its size and digest match", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, binaryName);
+
+		await downloadVerifiedBinary({
+			url,
+			targetPath,
+			expectedSize: Buffer.byteLength(content),
+			expectedDigest: digest,
+			fetchImpl: async () => new Response(content),
+		});
+
+		expect(await Bun.file(targetPath).text()).toBe(content);
+		expect((await fs.stat(targetPath)).mode & 0o777).toBe(0o755);
+	});
+
+	it("aborts the response stream as soon as it exceeds the expected size", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, binaryName);
+		let pulls = 0;
+		const body = new ReadableStream<Uint8Array>(
+			{
+				pull(controller) {
+					pulls++;
+					controller.enqueue(new Uint8Array(pulls === 1 ? 2 : 1));
+					if (pulls === 2) controller.close();
+				},
+			},
+			{ highWaterMark: 0 },
+		);
+
+		await expect(
+			downloadVerifiedBinary({
+				url,
+				targetPath,
+				expectedSize: 1,
+				expectedDigest: digest,
+				fetchImpl: async () => new Response(body),
+			}),
+		).rejects.toThrow("received at least 2");
+		expect(pulls).toBe(1);
+		expect(await Bun.file(targetPath).exists()).toBe(false);
+	});
+
+	it("removes downloads whose size or digest does not match", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, binaryName);
+		const fetchImpl = async () => new Response(content);
+
+		await expect(
+			downloadVerifiedBinary({
+				url,
+				targetPath,
+				expectedSize: Buffer.byteLength(content) + 1,
+				expectedDigest: digest,
+				fetchImpl,
+			}),
+		).rejects.toThrow("size mismatch");
+		expect(await Bun.file(targetPath).exists()).toBe(false);
+
+		await expect(
+			downloadVerifiedBinary({
+				url,
+				targetPath,
+				expectedSize: Buffer.byteLength(content),
+				expectedDigest: `sha256:${createHash("sha256").update("different binary").digest("hex")}`,
+				fetchImpl,
+			}),
+		).rejects.toThrow("digest mismatch");
+		expect(await Bun.file(targetPath).exists()).toBe(false);
+	});
+
+	it("rejects an altered version-reporting executable before replacing the installed binary", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, binaryName);
+		const installed = "#!/bin/sh\necho omp/17.0.8\n";
+		const altered = "#!/bin/sh\necho omp/17.1.2\n";
+		const expectedDigest = `sha256:${createHash("sha256")
+			.update("x".repeat(Buffer.byteLength(altered)))
+			.digest("hex")}`;
+		await Bun.write(targetPath, installed);
+		await fs.chmod(targetPath, 0o755);
+
+		const metadataAuthorizations: Array<string | null> = [];
+		const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+			const requestUrl = String(input);
+			if (requestUrl.startsWith("https://api.github.com/")) {
+				metadataAuthorizations.push(new Headers(init?.headers).get("Authorization"));
+				return new Response(
+					JSON.stringify(
+						releaseAsset({
+							size: Buffer.byteLength(altered),
+							digest: expectedDigest,
+						}),
+					),
+				);
+			}
+			if (requestUrl === url) return new Response(altered);
+			throw new Error(`Unexpected request: ${requestUrl}`);
+		};
+
+		const previousGitHubToken = Bun.env.GITHUB_TOKEN;
+		Bun.env.GITHUB_TOKEN = "test-token";
+		try {
+			await expect(
+				updateViaBinaryAt(targetPath, "17.1.2", {
+					binaryName,
+					fetchImpl,
+				}),
+			).rejects.toThrow("digest mismatch");
+			expect(metadataAuthorizations).toEqual(["Bearer test-token"]);
+			expect(await Bun.file(targetPath).text()).toBe(installed);
+			expect((await fs.stat(targetPath)).mode & 0o777).toBe(0o755);
+			expect(await Bun.file(`${targetPath}.new`).exists()).toBe(false);
+		} finally {
+			if (previousGitHubToken === undefined) delete Bun.env.GITHUB_TOKEN;
+			else Bun.env.GITHUB_TOKEN = previousGitHubToken;
+		}
+	});
+
+	it("explains how to authenticate after an anonymous GitHub API rate limit", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, binaryName);
+		const fetchImpl = async () => new Response(null, { status: 403, statusText: "rate limit exceeded" });
+
+		await expect(
+			updateViaBinaryAt(targetPath, "17.1.2", {
+				binaryName,
+				fetchImpl,
+				githubToken: "",
+			}),
+		).rejects.toThrow("retry later or set GITHUB_TOKEN or GH_TOKEN");
+		expect(await Bun.file(targetPath).exists()).toBe(false);
 	});
 });
 

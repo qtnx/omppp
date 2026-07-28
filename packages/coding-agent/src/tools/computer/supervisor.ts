@@ -1,5 +1,7 @@
 import type { DesktopAction, DesktopCapabilities, DesktopCapture, DesktopSessionOptions } from "@oh-my-pi/pi-natives";
-import { withTimeout, workerHostEntry } from "@oh-my-pi/pi-utils";
+import { withTimeout } from "@oh-my-pi/pi-utils/async";
+import * as logger from "@oh-my-pi/pi-utils/logger";
+import { workerHostEntry } from "@oh-my-pi/pi-utils/worker-host";
 import { ToolAbortError, ToolError } from "../tool-errors";
 import {
 	COMPUTER_WORKER_ARG,
@@ -138,11 +140,23 @@ export class ComputerSupervisor implements ComputerController {
 		if (this.#startPromise) return this.#startPromise;
 		const ready = Promise.withResolvers<void>();
 		try {
+			logger.debug("Starting native computer worker", {
+				backend: this.options.backend,
+				display: this.options.display,
+				maxWidth: this.options.maxWidth,
+				maxHeight: this.options.maxHeight,
+			});
 			const worker = this.createWorker();
 			this.#worker = worker;
 			this.#unsubscribeMessage = worker.onMessage(message => {
 				if (message.type === "ready") {
 					this.#capabilities = message.capabilities;
+					logger.debug("Native computer worker ready", {
+						backend: message.capabilities.backend,
+						capturePermission: message.capabilities.capturePermission,
+						inputPermission: message.capabilities.inputPermission,
+						displayCount: message.capabilities.displayCount,
+					});
 					ready.resolve();
 					return;
 				}
@@ -151,10 +165,22 @@ export class ComputerSupervisor implements ComputerController {
 					const pending = this.#pending.get(message.id);
 					this.#pending.delete(message.id);
 					pending?.resolve(message.capture);
+					logger.debug("Native computer capture completed", {
+						requestId: message.id,
+						backend: message.capture.backend,
+						capturePermission: message.capture.capturePermission,
+						inputPermission: message.capture.inputPermission,
+						width: message.capture.width,
+						height: message.capture.height,
+					});
 					return;
 				}
 				if (message.type === "error") {
 					const error = workerError(message.error);
+					logger.warn("Native computer worker request failed", {
+						requestId: message.id,
+						errorName: message.error.name,
+					});
 					if (message.id) {
 						const pending = this.#pending.get(message.id);
 						this.#pending.delete(message.id);
@@ -184,6 +210,9 @@ export class ComputerSupervisor implements ComputerController {
 	}
 
 	async #terminate(reason: unknown): Promise<void> {
+		logger.debug("Terminating native computer worker", {
+			reason: reason instanceof Error ? reason.name : typeof reason,
+		});
 		const worker = this.#worker;
 		this.#worker = undefined;
 		this.#startPromise = undefined;
@@ -239,20 +268,39 @@ export async function releaseComputerSessionsForOwner(ownerId: string | undefine
 	await Promise.allSettled(Array.from(controllers, controller => controller.close()));
 }
 
-export async function smokeTestComputerWorker(timeoutMs = SMOKE_TIMEOUT_MS): Promise<void> {
-	const worker = spawnComputerWorker();
-	const id = "computer-smoke";
-	const pong = Promise.withResolvers<void>();
-	const unsubscribeMessage = worker.onMessage(message => {
-		if (message.type === "pong" && message.id === id) pong.resolve();
-	});
-	const unsubscribeError = worker.onError(error => pong.reject(error));
+export async function smokeTestComputerWorker(
+	timeoutMs = SMOKE_TIMEOUT_MS,
+	createWorker: ComputerWorkerFactory = spawnComputerWorker,
+): Promise<void> {
+	const worker = createWorker();
+	const exchange = async (
+		message: ComputerWorkerInbound,
+		expected: ComputerWorkerOutbound["type"],
+		failureMessage: string,
+	): Promise<void> => {
+		const response = Promise.withResolvers<void>();
+		const unsubscribeMessage = worker.onMessage(received => {
+			if (received.type === expected) response.resolve();
+			else if (received.type === "error") response.reject(workerError(received.error));
+		});
+		const unsubscribeError = worker.onError(error => response.reject(error));
+		try {
+			worker.send(message);
+			await withTimeout(response.promise, timeoutMs, failureMessage);
+		} finally {
+			unsubscribeMessage();
+			unsubscribeError();
+		}
+	};
+
 	try {
-		worker.send({ type: "ping", id });
-		await withTimeout(pong.promise, timeoutMs, "Computer worker smoke ping timed out");
+		await exchange(
+			{ type: "init", options: { backend: "auto", display: "all", maxWidth: 1920, maxHeight: 1200 } },
+			"ready",
+			"Computer worker smoke initialization timed out",
+		);
+		await exchange({ type: "close" }, "closed", "Computer worker smoke close timed out");
 	} finally {
-		unsubscribeMessage();
-		unsubscribeError();
 		await worker.terminate();
 	}
 }

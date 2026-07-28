@@ -272,6 +272,25 @@ describe("InteractiveMode vibe mode toggle", () => {
 		expect(mode.vibeModeEnabled).toBe(true);
 	});
 
+	it("warns instead of rejecting for interactive session transitions while vibe is active", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		await mode.handleVibeModeCommand();
+		await session.sessionManager.ensureOnDisk();
+		const sessionFile = session.sessionFile;
+		if (!sessionFile) throw new Error("Expected persisted session file");
+		const warning = vi.spyOn(mode, "showWarning");
+
+		await expect(mode.handleClearCommand()).resolves.toBeUndefined();
+		await expect(mode.handleDropCommand()).resolves.toBeUndefined();
+		await expect(mode.handleForkCommand()).resolves.toBeUndefined();
+		await expect(mode.handleMoveCommand(path.join(tempDir.path(), "other-project"))).resolves.toBeUndefined();
+
+		expect(warning).toHaveBeenCalledTimes(4);
+		expect(warning).toHaveBeenCalledWith("Exit vibe mode first.");
+		expect(session.sessionFile).toBe(sessionFile);
+		expect(mode.vibeModeEnabled).toBe(true);
+	});
+
 	it("keeps vibe mode and tools active after a real storage failure, then allows a retry", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		await mode.handleVibeModeCommand();

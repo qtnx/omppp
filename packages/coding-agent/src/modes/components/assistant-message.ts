@@ -1,11 +1,21 @@
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
-import { Container, Image, type ImageBudget, ImageProtocol, Markdown, Spacer, TERMINAL, Text } from "@oh-my-pi/pi-tui";
+import {
+	Container,
+	Image,
+	type ImageBudget,
+	ImageProtocol,
+	Markdown,
+	replaceTabs,
+	Spacer,
+	TERMINAL,
+	Text,
+} from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { isBlobRef } from "../../session/blob-store";
-import { getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
+import { expandKeyHint, getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { canonicalizeMessage, formatThinkingForDisplay, hasDisplayableThinking } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cache-invalidation-marker";
@@ -203,6 +213,22 @@ export class AssistantMessageComponent extends Container {
 	 * transcript keeps the error in history.
 	 */
 	#errorPinned = false;
+	/**
+	 * Whether the inline turn-ending error block renders its full body instead of
+	 * the {@link MAX_TRANSCRIPT_ERROR_LINES}-capped preview. Toggled by
+	 * {@link setExpanded} so Ctrl+O (tool-output expansion) reveals a long
+	 * provider error whose tail would otherwise be unreachable in the live TUI.
+	 */
+	#errorExpanded = false;
+	/**
+	 * True when the current {@link updateContent} message carries a truncatable
+	 * inline provider error (the `#appendErrorBlock` path) — set whether or not
+	 * the inline block was actually drawn, so it stays true even while the error
+	 * is suppressed under a pinned banner. Gates {@link setExpanded} so toggling
+	 * expansion only re-renders assistant turns that carry such an error, not
+	 * every message in the transcript.
+	 */
+	#hasTruncatableError = false;
 	/**
 	 * Monotonic content version reported to the transcript container via
 	 * {@link getTranscriptBlockVersion}. Bumped by {@link updateContent} — the
@@ -446,6 +472,22 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	/**
+	 * Expand or collapse the inline turn-ending error block so Ctrl+O
+	 * (tool-output expansion) can reveal a long provider error's hidden tail.
+	 * Only re-renders when the current message carries a truncatable error, so
+	 * toggling expansion across the transcript skips ordinary turns. Works even
+	 * while the error is pinned in the banner: the inline block is drawn (in full)
+	 * when expanded so the complete body is reachable without sending a message.
+	 */
+	setExpanded(expanded: boolean): void {
+		if (this.#errorExpanded === expanded) return;
+		this.#errorExpanded = expanded;
+		if (this.#hasTruncatableError && this.#lastMessage) {
+			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+		}
+	}
+
 	isTranscriptBlockFinalized(): boolean {
 		return this.#transcriptBlockFinalized;
 	}
@@ -559,18 +601,41 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	/**
-	 * Render a turn-ending provider error inline. Drops blank lines, clamps the
-	 * line count to {@link MAX_TRANSCRIPT_ERROR_LINES}, and width-truncates each
-	 * line so a pathological body — e.g. the HTML page a proxy returns on a 502 —
-	 * can't flood the transcript. Mirrors {@link ErrorBannerComponent}.
+	 * Render a turn-ending provider error inline. Collapsed (default), it drops
+	 * blank lines, clamps the line count to {@link MAX_TRANSCRIPT_ERROR_LINES},
+	 * and width-truncates each line so a pathological body — e.g. the HTML page a
+	 * proxy returns on a 502 — can't flood the transcript, appending a dim
+	 * `ctrl+o`/expand hint when lines were hidden. Expanded (via
+	 * {@link setExpanded}), it renders the full body — tabs replaced, blank lines
+	 * preserved — letting {@link Text} word-wrap each line to the render width so
+	 * the complete message is reachable. Mirrors {@link ErrorBannerComponent}.
 	 */
 	#appendErrorBlock(message: string): void {
+		if (this.#errorExpanded) {
+			const [first = "Unknown error", ...rest] = replaceTabs(message.replace(/\s+$/, "")).split("\n");
+			this.#contentContainer.addChild(new Text(theme.fg("error", `Error: ${first}`), 1, 0));
+			for (const line of rest) {
+				this.#contentContainer.addChild(new Text(theme.fg("error", `  ${line}`), 1, 0));
+			}
+			return;
+		}
+		const total = message.split("\n").filter(l => l.trim()).length;
 		const lines = getPreviewLines(message, MAX_TRANSCRIPT_ERROR_LINES, TRUNCATE_LENGTHS.LINE);
 		if (lines.length === 0) lines.push("Unknown error");
 		// The caller owns the separating Spacer; adding one here doubled the gap.
 		this.#contentContainer.addChild(new Text(theme.fg("error", `Error: ${lines[0]}`), 1, 0));
 		for (const line of lines.slice(1)) {
 			this.#contentContainer.addChild(new Text(theme.fg("error", `  ${line}`), 1, 0));
+		}
+		if (total > lines.length) {
+			const hidden = total - lines.length;
+			this.#contentContainer.addChild(
+				new Text(
+					theme.fg("dim", `  … +${hidden} more line${hidden === 1 ? "" : "s"} (${expandKeyHint()} to expand)`),
+					1,
+					0,
+				),
+			);
 		}
 	}
 
@@ -738,7 +803,10 @@ export class AssistantMessageComponent extends Container {
 		if (this.#toolImagesByCallId.size > 0) return false;
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		if (errorPresentation.kind === "compact-recovered") return false;
-		if (errorPresentation.kind === "full" && !(message.stopReason === "error" && this.#errorPinned)) {
+		if (
+			errorPresentation.kind === "full" &&
+			!(message.stopReason === "error" && this.#errorPinned && !this.#errorExpanded)
+		) {
 			return false;
 		}
 		// Extension stability: if thinking renderers exist and any tracked thinking
@@ -882,6 +950,7 @@ export class AssistantMessageComponent extends Container {
 		// Clear content container
 		this.#contentContainer.clear();
 		this.#thinkingDots = undefined;
+		this.#hasTruncatableError = false;
 
 		// Determine if we should capture Markdown instances for next fast path
 		const shouldCapture = this.#canFastPath(message);
@@ -970,11 +1039,19 @@ export class AssistantMessageComponent extends Container {
 			this.#contentContainer.addChild(new Spacer(1));
 			this.#contentContainer.addChild(new Text(theme.fg("dim", errorPresentation.text), 1, 0));
 		} else if (!hasToolCalls && errorPresentation.kind === "full") {
-			if (!(message.stopReason === "error" && this.#errorPinned)) {
+			if (message.stopReason === "aborted") {
 				this.#contentContainer.addChild(new Spacer(1));
-				if (message.stopReason === "aborted") {
-					this.#contentContainer.addChild(new Text(theme.fg("error", errorPresentation.text), 1, 0));
-				} else {
+				this.#contentContainer.addChild(new Text(theme.fg("error", errorPresentation.text), 1, 0));
+			} else {
+				// Non-aborted provider error: a truncatable inline block. Mark it so
+				// setExpanded re-renders even while the same error is pinned above.
+				this.#hasTruncatableError = true;
+				// Suppress the inline block only while pinned AND collapsed — the
+				// banner already shows the capped error there. When expanded, draw
+				// the inline block in full so the complete body is reachable without
+				// sending a message; the pinned banner stays a short reminder.
+				if (!(message.stopReason === "error" && this.#errorPinned) || this.#errorExpanded) {
+					this.#contentContainer.addChild(new Spacer(1));
 					this.#appendErrorBlock(errorPresentation.text);
 				}
 			}

@@ -27,7 +27,23 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 
 const AUDIO_CHANNELS: u32 = 1;
-const AUDIO_PERIOD_MS: u32 = 20;
+// PulseAudio TCP playback stutters with a 20 ms target buffer; 50 ms absorbs
+// transport jitter while preserving interactive latency.
+#[cfg(target_os = "linux")]
+const PLAYBACK_PERIOD_MS: u32 = 50;
+#[cfg(not(target_os = "linux"))]
+const PLAYBACK_PERIOD_MS: u32 = 20;
+// miniaudio's PulseAudio backend reserves three periods. Android's OpenSL ES
+// source emits 125 ms fragments, so Linux capture needs at least 150 ms queued.
+#[cfg(target_os = "linux")]
+const CAPTURE_PERIOD_MS: u32 = 50;
+#[cfg(not(target_os = "linux"))]
+const CAPTURE_PERIOD_MS: u32 = 20;
+// PulseAudio can retain its default three periods after the producer closes.
+// Wait for all of them before stopping the device so the tail reaches the sink.
+#[cfg(target_os = "linux")]
+const PLAYBACK_DRAIN_CALLBACKS: usize = 3;
+#[cfg(not(target_os = "linux"))]
 const PLAYBACK_DRAIN_CALLBACKS: usize = 2;
 
 #[cfg(target_os = "macos")]
@@ -133,7 +149,7 @@ impl PlaybackStream {
 		builder
 			.sample_rate(sample_rate)
 			.playback_channels(AUDIO_CHANNELS)
-			.period_size_millis(AUDIO_PERIOD_MS)
+			.period_size_millis(PLAYBACK_PERIOD_MS)
 			.performance_profile(PerformanceProfile::LowLatency)
 			.backends(AUDIO_BACKENDS);
 		let mut device = builder
@@ -259,6 +275,31 @@ fn fill_playback(
 	}
 }
 
+fn start_capture_device<C>(sample_rate: u32, mut on_audio: C) -> NativeResult<Device<f32>>
+where
+	C: FnMut(&[f32]) + Send + 'static,
+{
+	let sample_rate = audio_sample_rate(sample_rate)?;
+	let mut builder = DeviceBuilder::capture().f32();
+	builder
+		.sample_rate(sample_rate)
+		.capture_channels(AUDIO_CHANNELS)
+		.period_size_millis(CAPTURE_PERIOD_MS)
+		.performance_profile(PerformanceProfile::LowLatency)
+		.backends(AUDIO_BACKENDS);
+	let mut device = builder
+		.with_callback(move |_device, samples| {
+			if !samples.is_empty() {
+				on_audio(samples);
+			}
+		})
+		.map_err(|error| format!("Failed to open the default microphone: {error}"))?;
+	device
+		.device_start()
+		.map_err(|error| format!("Failed to start microphone capture: {error}"))?;
+	Ok(device)
+}
+
 /// Default-microphone capture converted to mono `f32` at the requested sample
 /// rate.
 #[napi]
@@ -275,30 +316,11 @@ impl AudioCapture {
 		#[napi(ts_arg_type = "(error: Error | null, samples: Float32Array) => void")]
 		on_audio: CaptureCallback,
 	) -> Result<Self> {
-		let sample_rate = audio_sample_rate(sample_rate).map_err(napi::Error::from_reason)?;
-		let mut builder = DeviceBuilder::capture().f32();
-		builder
-			.sample_rate(sample_rate)
-			.capture_channels(AUDIO_CHANNELS)
-			.period_size_millis(AUDIO_PERIOD_MS)
-			.performance_profile(PerformanceProfile::LowLatency)
-			.backends(AUDIO_BACKENDS);
-		let mut device = builder
-			.with_callback(move |_device, samples| {
-				if samples.is_empty() {
-					return;
-				}
-				on_audio.call(
-					Ok(Float32Array::new(samples.to_vec())),
-					ThreadsafeFunctionCallMode::NonBlocking,
-				);
-			})
-			.map_err(|error| {
-				napi::Error::from_reason(format!("Failed to open the default microphone: {error}"))
-			})?;
-		device.device_start().map_err(|error| {
-			napi::Error::from_reason(format!("Failed to start microphone capture: {error}"))
-		})?;
+		let device = start_capture_device(sample_rate, move |samples| {
+			on_audio
+				.call(Ok(Float32Array::new(samples.to_vec())), ThreadsafeFunctionCallMode::NonBlocking);
+		})
+		.map_err(napi::Error::from_reason)?;
 		Ok(Self { device: Mutex::new(Some(device)) })
 	}
 
@@ -405,6 +427,14 @@ impl Drop for AudioPlayback {
 
 #[cfg(test)]
 mod tests {
+	use std::{
+		env,
+		mem::forget,
+		sync::atomic::AtomicUsize,
+		thread::sleep,
+		time::{Duration, Instant},
+	};
+
 	use super::*;
 
 	#[test]
@@ -425,8 +455,38 @@ mod tests {
 		assert_eq!(output, [0.5, -0.5, 0.25, -0.25, 0.0]);
 		assert!(!state.drained.load(Ordering::Acquire));
 		let mut silence = [1.0; 2];
-		fill_playback(&rx, &mut current, &mut cursor, &mut silence, &state, &mut empty_callbacks);
-		assert_eq!(silence, [0.0, 0.0]);
-		assert!(state.drained.load(Ordering::Acquire));
+		while empty_callbacks < PLAYBACK_DRAIN_CALLBACKS {
+			silence.fill(1.0);
+			fill_playback(&rx, &mut current, &mut cursor, &mut silence, &state, &mut empty_callbacks);
+			assert_eq!(silence, [0.0, 0.0]);
+			assert_eq!(
+				state.drained.load(Ordering::Acquire),
+				empty_callbacks >= PLAYBACK_DRAIN_CALLBACKS
+			);
+		}
+	}
+
+	#[test]
+	fn opt_in_default_capture_receives_frames() {
+		if env::var_os("OMP_NATIVE_AUDIO_CAPTURE_TEST").is_none() {
+			return;
+		}
+
+		let callbacks = Arc::new(AtomicUsize::new(0));
+		let callback_count = Arc::clone(&callbacks);
+		let mut device = start_capture_device(16_000, move |_samples| {
+			callback_count.fetch_add(1, Ordering::Relaxed);
+		})
+		.expect("default capture device starts");
+
+		let deadline = Instant::now() + Duration::from_secs(5);
+		while callbacks.load(Ordering::Relaxed) == 0 && Instant::now() < deadline {
+			sleep(Duration::from_millis(20));
+		}
+		if callbacks.load(Ordering::Relaxed) == 0 {
+			forget(device);
+			panic!("capture device started but delivered no frames within five seconds");
+		}
+		device.device_stop().expect("capture device stops");
 	}
 }

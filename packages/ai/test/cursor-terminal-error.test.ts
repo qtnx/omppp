@@ -6,7 +6,9 @@ import type { Context, Model } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import {
 	AgentServerMessageSchema,
+	ExecServerMessageSchema,
 	InteractionUpdateSchema,
+	ReadArgsSchema,
 	TextDeltaUpdateSchema,
 	TurnEndedUpdateSchema,
 } from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
@@ -18,7 +20,10 @@ type Scenario =
 	| { kind: "connect-error-after-turn" }
 	| { kind: "grpc-trailer-after-turn" }
 	| { kind: "end-before-turn" }
-	| { kind: "hang-after-turn" };
+	| { kind: "hang-after-turn" }
+	| { kind: "exec-in-final-chunk"; responseFinished: PromiseWithResolvers<void> }
+	| { kind: "exec-then-transport-error"; responseFinished: PromiseWithResolvers<void> }
+	| { kind: "exec-then-hang" };
 
 let server: http2.Http2Server | undefined;
 const sessions = new Set<http2.Http2Session>();
@@ -67,6 +72,38 @@ function connectEndErrorFrame(code: string, message: string): Buffer {
 	return frameConnectMessage(payload, CONNECT_END_STREAM_FLAG);
 }
 
+/**
+ * A `read` exec request. The provider parses every frame in a chunk
+ * synchronously and dispatches each `handleServerMessage` fire-and-forget, so
+ * pairing this with a terminal frame in ONE chunk leaves the exec handler
+ * running while the transport settles.
+ */
+function execRequestFrame(): Buffer {
+	const message = create(AgentServerMessageSchema, {
+		message: {
+			case: "execServerMessage",
+			value: create(ExecServerMessageSchema, {
+				id: 1,
+				execId: "exec-final",
+				message: {
+					case: "readArgs",
+					value: create(ReadArgsSchema, { path: "/tmp/final", toolCallId: "call-final" }),
+				},
+			}),
+		},
+	});
+	return frameConnectMessage(toBinary(AgentServerMessageSchema, message));
+}
+
+/**
+ * Exec request + `turnEnded` in one chunk: the clean-completion race. Without a
+ * barrier before `done`, the Agent drains its Cursor result buffer first and
+ * the call is never paired.
+ */
+function execAndTurnEndedFrame(): Buffer {
+	return Buffer.concat([execRequestFrame(), turnEndedFrame()]);
+}
+
 async function startServer(): Promise<string> {
 	server = http2.createServer();
 	server.on("session", session => {
@@ -110,6 +147,37 @@ async function startServer(): Promise<string> {
 		if (scenario.kind === "end-before-turn") {
 			stream.write(textDeltaFrame("partial"));
 			stream.end();
+			return;
+		}
+
+		if (scenario.kind === "exec-in-final-chunk") {
+			const { responseFinished } = scenario;
+			// Resolves once the server has flushed the whole response, so the test
+			// never guesses at timing.
+			stream.on("finish", () => responseFinished.resolve());
+			stream.write(execAndTurnEndedFrame());
+			stream.end();
+			return;
+		}
+
+		if (scenario.kind === "exec-then-transport-error") {
+			const { responseFinished } = scenario;
+			stream.on("finish", () => responseFinished.resolve());
+			// The exec request and the failure land in ONE chunk: the handler is
+			// dispatched fire-and-forget and is still running when the transport
+			// rejects. `turnEnded` is deliberately absent — this is the turn dying,
+			// not ending.
+			stream.write(
+				Buffer.concat([execRequestFrame(), connectEndErrorFrame("unavailable", "mid-exec transport failure")]),
+			);
+			stream.end();
+			return;
+		}
+
+		if (scenario.kind === "exec-then-hang") {
+			// Exec request, then the stream stays open: the only way this turn
+			// ends is the client aborting.
+			stream.write(execRequestFrame());
 			return;
 		}
 
@@ -250,6 +318,190 @@ describe("Cursor terminal lifecycle after turnEnded", () => {
 		}
 		const result = await stream.result();
 		expect(eventTypes[0]).toBe("start");
+		expect(eventTypes.at(-1)).toBe("error");
+		expect(eventTypes).not.toContain("done");
+		expect(result.stopReason).toBe("aborted");
+	});
+
+	it("waits for an exec handler decoded from the final chunk before done", async () => {
+		// The provider dispatches every decoded message fire-and-forget so the
+		// socket keeps draining. When the exec request, `turnEnded` and the close
+		// arrive in ONE chunk, the transport completes while the handler is still
+		// running. `done` must not be pushed first: the Agent drains its Cursor
+		// result buffer on the terminal event, so a result reserved afterwards
+		// misses the drain and the synthesized (already resolved) toolCall block
+		// is stripped from every rebuilt transcript as dangling.
+		//
+		// No wall-clock delay. The handler is released only after the server has
+		// flushed its whole response AND the handler is known to be running, so
+		// the transport has genuinely completed while the handler is in flight.
+		const responseFinished = Promise.withResolvers<void>();
+		scenario = { kind: "exec-in-final-chunk", responseFinished };
+		const baseUrl = await startServer();
+		const paired: string[] = [];
+		const handlerStarted = Promise.withResolvers<void>();
+		const handlerDone = Promise.withResolvers<void>();
+		const stream = streamCursor(makeModel(baseUrl), context, {
+			apiKey: "test-token",
+			execHandlers: {
+				async read() {
+					handlerStarted.resolve();
+					await handlerDone.promise;
+					return {
+						role: "toolResult",
+						toolCallId: "call-final",
+						toolName: "read",
+						content: [{ type: "text", text: "file body" }],
+						isError: false,
+						timestamp: 1,
+					};
+				},
+			},
+			onToolResult: result => {
+				paired.push(result.toolCallId);
+				return result;
+			},
+		});
+
+		const gate = (async () => {
+			await Promise.all([handlerStarted.promise, responseFinished.promise]);
+			// `finish` means the server flushed its bytes, not that the client has
+			// processed the end. Yield so the client's `end` handler and every
+			// queued continuation run first: a provider that does not await the
+			// handler settles the stream in exactly that window.
+			await Bun.sleep(0);
+			try {
+				expect(stream.resultSettled).toBe(false);
+				expect(paired).toEqual([]);
+			} finally {
+				// Always release: a failing assertion here must surface as that
+				// failure, not as a hung `for await` that waits for a handler
+				// nobody will ever unblock.
+				handlerDone.resolve();
+			}
+		})();
+
+		const eventTypes: string[] = [];
+		for await (const event of stream) {
+			// The result must already be paired by the time `done` is observed.
+			if (event.type === "done") expect(paired).toEqual(["call-final"]);
+			eventTypes.push(event.type);
+		}
+		await gate;
+
+		expect(eventTypes).toContain("done");
+		expect(paired).toEqual(["call-final"]);
+	});
+
+	it("waits for an in-flight exec handler before emitting the transport error", async () => {
+		// Same race as above, but the turn DIES instead of ending: the exec request
+		// and the transport failure arrive in one chunk. The Agent finalizes the
+		// synthesized call from the terminal error and clears its Cursor result
+		// buffer, so a handler still running would land its real result after
+		// `agent_end` and have it discarded — even though the tool may already
+		// have performed side effects. The error must not be pushed first.
+		const responseFinished = Promise.withResolvers<void>();
+		scenario = { kind: "exec-then-transport-error", responseFinished };
+		const baseUrl = await startServer();
+		const paired: string[] = [];
+		const handlerStarted = Promise.withResolvers<void>();
+		const handlerDone = Promise.withResolvers<void>();
+		const stream = streamCursor(makeModel(baseUrl), context, {
+			apiKey: "test-token",
+			execHandlers: {
+				async read() {
+					handlerStarted.resolve();
+					await handlerDone.promise;
+					return {
+						role: "toolResult",
+						toolCallId: "call-final",
+						toolName: "read",
+						content: [{ type: "text", text: "file body" }],
+						isError: false,
+						timestamp: 1,
+					};
+				},
+			},
+			onToolResult: result => {
+				paired.push(result.toolCallId);
+				return result;
+			},
+		});
+
+		const gate = (async () => {
+			await Promise.all([handlerStarted.promise, responseFinished.promise]);
+			await Bun.sleep(0);
+			try {
+				expect(stream.resultSettled).toBe(false);
+				expect(paired).toEqual([]);
+			} finally {
+				handlerDone.resolve();
+			}
+		})();
+
+		const eventTypes: string[] = [];
+		for await (const event of stream) {
+			// The handler's result must already exist by the time the terminal
+			// error is observed — that is the event the Agent drains on.
+			if (event.type === "error") expect(paired).toEqual(["call-final"]);
+			eventTypes.push(event.type);
+		}
+		await gate;
+		const result = await stream.result();
+
+		expect(eventTypes.at(-1)).toBe("error");
+		expect(eventTypes).not.toContain("done");
+		expect(result.errorMessage).toContain("mid-exec transport failure");
+		expect(paired).toEqual(["call-final"]);
+	});
+
+	it("does not hold the abort hostage to a hung exec handler", async () => {
+		// Exec handlers have no cancellation contract — the coding-agent bridge
+		// invokes `tool.execute` with no signal — so a hung or long-running tool
+		// cannot be interrupted. Once the user aborts, the drain must not wait
+		// for it: the Agent finalizes from the abort error and discards late
+		// results regardless, so waiting only delays the terminal event the
+		// user asked for. Without the abort-bounded drain this test times out
+		// with the stream never settling.
+		scenario = { kind: "exec-then-hang" };
+		const baseUrl = await startServer();
+		const controller = new AbortController();
+		const handlerStarted = Promise.withResolvers<void>();
+		const handlerDone = Promise.withResolvers<void>();
+		const stream = streamCursor(makeModel(baseUrl), context, {
+			apiKey: "test-token",
+			signal: controller.signal,
+			execHandlers: {
+				async read() {
+					handlerStarted.resolve();
+					await handlerDone.promise;
+					return {
+						role: "toolResult",
+						toolCallId: "call-final",
+						toolName: "read",
+						content: [{ type: "text", text: "late result" }],
+						isError: false,
+						timestamp: 1,
+					};
+				},
+			},
+		});
+
+		const gate = (async () => {
+			await handlerStarted.promise;
+			controller.abort();
+		})();
+
+		const eventTypes: string[] = [];
+		for await (const event of stream) {
+			eventTypes.push(event.type);
+		}
+		await gate;
+		const result = await stream.result();
+		// Released only AFTER the stream settled: reaching this line at all
+		// proves the terminal error did not wait for the handler.
+		handlerDone.resolve();
+
 		expect(eventTypes.at(-1)).toBe("error");
 		expect(eventTypes).not.toContain("done");
 		expect(result.stopReason).toBe("aborted");

@@ -633,7 +633,8 @@ const streamOpenAICompletionsOnce = (
 			const idleTimeoutFallbackMs = model.compat.streamIdleTimeoutMs;
 			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs(idleTimeoutFallbackMs);
 			const firstEventTimeoutMs =
-				options?.streamFirstEventTimeoutMs ?? getOpenAIStreamFirstEventTimeoutMs(idleTimeoutMs);
+				options?.streamFirstEventTimeoutMs ??
+				getOpenAIStreamFirstEventTimeoutMs(idleTimeoutMs, model.compat.streamFirstEventTimeoutMs);
 			const requestTimeoutMs =
 				firstEventTimeoutMs !== undefined && firstEventTimeoutMs > 0 ? firstEventTimeoutMs : undefined;
 			const { copilotPremiumRequests, baseUrl, headers, query, requestHeaders } = createRequestSetup(
@@ -1500,6 +1501,11 @@ function applyOpenAIChatCompletionsPromptCachePolicy(
 	model: Model<"openai-completions">,
 	options: OpenAICompletionsOptions | undefined,
 ): void {
+	const promptCacheKey = getOpenAIPromptCacheKey(options);
+	if (model.provider === "kimi-code" && promptCacheKey !== undefined) {
+		params.prompt_cache_key = promptCacheKey;
+	}
+
 	const promptCache = options?.promptCache;
 	if (!promptCache || resolveCacheRetention(options?.cacheRetention) === "none") return;
 	if (!model.compat.supportsPromptCacheBreakpoints) {
@@ -1511,7 +1517,7 @@ function applyOpenAIChatCompletionsPromptCachePolicy(
 		return;
 	}
 
-	params.prompt_cache_key = getOpenAIPromptCacheKey(options);
+	params.prompt_cache_key = promptCacheKey;
 	params.prompt_cache_options = {
 		mode: promptCache.mode,
 		ttl: promptCache.ttl ?? model.compat.promptCacheBreakpointTtl,

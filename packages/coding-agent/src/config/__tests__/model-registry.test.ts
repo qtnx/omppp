@@ -3,24 +3,34 @@ import { mkdtempSync, rmSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "../model-registry";
 
-/**
- * Stub AuthStorage that satisfies the surface used by ModelRegistry's
- * constructor (#loadModels → clearConfigApiKeys, constructor →
- * setFallbackResolver). The awaiter under test never reaches auth-gated code
- * paths, so no real credential store is required.
- */
+/** Stub auth storage for registry lifecycle and missing-credential coverage. */
 function createStubAuthStorage(): AuthStorage {
 	const stub = {
 		setFallbackResolver: () => {},
 		clearConfigApiKeys: () => {},
 		hasAuth: () => false,
+		getApiKey: async () => undefined,
 	};
 	return stub as unknown as AuthStorage;
 }
 
-describe("ModelRegistry.awaitBackgroundRefresh", () => {
+const testModel = buildModel({
+	id: "test-model",
+	name: "Test Model",
+	api: "openai-completions",
+	provider: "test",
+	baseUrl: "https://example.test",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 1000,
+	maxTokens: 100,
+});
+
+describe("ModelRegistry", () => {
 	let tmpDir: string;
 	let registry: ModelRegistry;
 
@@ -143,5 +153,30 @@ describe("ModelRegistry.awaitBackgroundRefresh", () => {
 
 		secondResolve();
 		await registry.awaitBackgroundRefresh();
+	});
+	test("resolves API keys and provider headers for legacy extensions", async () => {
+		const model = testModel;
+		vi.spyOn(registry, "getApiKey").mockResolvedValue("test-key");
+		vi.spyOn(registry, "getProviderHeaders").mockReturnValue({ "x-test": "value" });
+
+		expect(await registry.getApiKeyAndHeaders(model)).toEqual({
+			ok: true,
+			apiKey: "test-key",
+			headers: { "x-test": "value" },
+		});
+	});
+
+	test("returns an error when authentication resolves without a credential", async () => {
+		expect(await registry.getApiKeyAndHeaders(testModel)).toEqual({
+			ok: false,
+			error: 'No API key found for "test"',
+		});
+	});
+
+	test("maps legacy extension auth failures into the result contract", async () => {
+		const model = testModel;
+		vi.spyOn(registry, "getApiKey").mockRejectedValue(new Error("auth failed"));
+
+		expect(await registry.getApiKeyAndHeaders(model)).toEqual({ ok: false, error: "auth failed" });
 	});
 });
