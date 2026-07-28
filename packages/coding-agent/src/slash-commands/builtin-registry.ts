@@ -3508,6 +3508,20 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "telegram",
+		description: "Connect a Telegram bridge to this session",
+		subcommands: [
+			{ name: "on", description: "Connect Telegram for this session" },
+			{ name: "off", description: "Disconnect Telegram for this session" },
+			{ name: "status", description: "Show Telegram connection status" },
+		],
+		allowArgs: true,
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleTelegramCommand(command.args.trim().toLowerCase());
+		},
+	},
+	{
 		name: "live",
 		description: "Start realtime voice mode; `remote` serves it to a client over SSH",
 		allowArgs: true,

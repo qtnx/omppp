@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildAvailableSlashCommands } from "@oh-my-pi/pi-coding-agent/slash-commands/available-commands";
+import { BUILTIN_SLASH_COMMANDS_INTERNAL } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 
 describe("buildAvailableSlashCommands", () => {
 	test("returns RPC-safe command metadata with stable sources", async () => {
@@ -47,6 +48,18 @@ describe("buildAvailableSlashCommands", () => {
 		expect(byName["reset-usage"]).toBeUndefined();
 
 		expect(byName.fast.description).toBe("Toggle fast mode");
+		const telegramCommands = BUILTIN_SLASH_COMMANDS_INTERNAL.filter(command => command.name === "telegram");
+		expect(telegramCommands).toHaveLength(1);
+		expect(telegramCommands[0]).toMatchObject({
+			description: "Connect a Telegram bridge to this session",
+			subcommands: [
+				{ name: "on", description: "Connect Telegram for this session" },
+				{ name: "off", description: "Disconnect Telegram for this session" },
+				{ name: "status", description: "Show Telegram connection status" },
+			],
+		});
+		expect(telegramCommands[0]?.handle).toBeUndefined();
+		expect(telegramCommands[0]?.handleTui).toBeDefined();
 		expect(byName["ext:hello"].description).toBe("Extension hello");
 		expect(byName["custom:hello"].description).toBe("Custom hello");
 		expect(byName["server:prompt"].description).toBe("MCP prompt");

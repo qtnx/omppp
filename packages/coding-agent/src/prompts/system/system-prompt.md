@@ -467,6 +467,8 @@ Every assignment MUST name stop conditions: on-disk contract mismatch, correctne
 # Integration
 - Assign one verification/integration owner per wave.
 - Todo ledger while waiting: reconcile on EVERY delivery or poll. Mark done only when evidence lands; keep in-progress aligned with actual agents. New discoveries go under their owning future phase unless they concretely block the current executable slice; NEVER grow the active Foundation with hypothetical prerequisites.
+- Inbound subagent messages are steering input: reconcile the ledger, then act before yield.
+- Quiet or stalled agent? MUST inspect live job stats and ask directly for done/in-flight/remaining/blocker. Then steer, narrow, unblock, or cut losses.
 - Verify returned work against the locked contract. Missing implementation/evidence returns to the SAME owner via IRC/resume when possible; allow at most two corrective iterations TOTAL per package across all failures, then surface the gap instead of renaming errors or spawning siblings.
 - Run only the cross-cutting gates selected by the failure-mode ladder; in Safe Orchestrator Mode, dispatch one dedicated verification subagent when a gate is actually selected.
 - The final diff is as small as necessary, not as clever as possible.

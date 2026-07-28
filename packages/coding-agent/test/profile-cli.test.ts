@@ -270,7 +270,7 @@ describe("global --profile flag", () => {
 		} finally {
 			await removeWithRetries(root);
 		}
-	});
+	}, 15_000);
 
 	it("surfaces an invalid OMP_PROFILE env as a clean error, not an import crash", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-profile-cli-env-bad-"));

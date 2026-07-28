@@ -372,11 +372,13 @@ exit 1
 		await fs.chmod(gh, 0o755);
 		const script = nativeArtifactLookupScript()
 			.replace(sourceHashPlaceholder, "testhash")
-			.replace(repositoryPlaceholder, "owner/repo");
+			.replace(repositoryPlaceholder, "owner/repo")
+			.replaceAll("gh ", '"$GH_BIN" ');
 		const proc = Bun.spawn(["bash", "-c", script], {
 			env: {
 				...Bun.env,
 				GH_ARGS: argsPath,
+				GH_BIN: gh,
 				GITHUB_OUTPUT: outputPath,
 				PATH: `${tempDir}:${Bun.env.PATH ?? ""}`,
 			},

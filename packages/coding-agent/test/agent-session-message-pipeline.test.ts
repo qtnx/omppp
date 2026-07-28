@@ -19,6 +19,7 @@ import {
 	type Message,
 	type Model,
 	type ModelSpec,
+	type ModelUsageHealth,
 	registerCustomApi,
 	type SimpleStreamOptions,
 	type TextContent,
@@ -588,6 +589,107 @@ describe("AgentSession message pipeline", () => {
 			setAgentDir(previousAgentDir);
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
+	});
+
+	it("accepts an enqueued user steer after adding one steering queue entry", async () => {
+		const session = new AgentSession({
+			agent: createAgent(),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+		});
+		sessions.push(session);
+		vi.spyOn(session.agent, "continue").mockResolvedValue(undefined);
+
+		const accepted = await session.enqueueUserMessage("queued steer", "steer");
+
+		expect(accepted).toBe(true);
+		expect(session.agent.peekSteeringQueue()).toHaveLength(1);
+		expect(session.agent.peekFollowUpQueue()).toHaveLength(0);
+		session.clearQueue();
+	});
+
+	it("accepts an enqueued user follow-up after adding one follow-up queue entry", async () => {
+		const session = new AgentSession({
+			agent: createAgent(),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+		});
+		sessions.push(session);
+		vi.spyOn(session.agent, "continue").mockResolvedValue(undefined);
+
+		const accepted = await session.enqueueUserMessage("queued follow-up", "followUp");
+
+		expect(accepted).toBe(true);
+		expect(session.agent.peekSteeringQueue()).toHaveLength(0);
+		expect(session.agent.peekFollowUpQueue()).toHaveLength(1);
+		session.clearQueue();
+	});
+
+	it("rejects an aborted enqueue after usage preflight without mutating either queue", async () => {
+		const model = {
+			id: "enqueue-preflight-model",
+			name: "Enqueue Preflight Model",
+			api: "anthropic",
+			provider: "test-provider",
+			baseUrl: "",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 4096,
+			maxTokens: 1024,
+			compat: undefined,
+		} satisfies Model;
+		const preflightStarted = Promise.withResolvers<void>();
+		const usageHealth = Promise.withResolvers<ModelUsageHealth>();
+		const modelRegistry = {
+			authStorage: {
+				getModelUsageHealth: vi.fn(async () => {
+					preflightStarted.resolve();
+					return usageHealth.promise;
+				}),
+			},
+		} as unknown as ModelRegistry;
+		const session = new AgentSession({
+			agent: new Agent({
+				getApiKey: async () => "test-key",
+				initialState: { model, systemPrompt: ["system prompt"], messages: [], tools: [] },
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({
+				"compaction.enabled": false,
+				"retry.modelFallback": true,
+				"retry.usageAwareFallback": true,
+			}),
+			modelRegistry,
+		});
+		sessions.push(session);
+		const controller = new AbortController();
+
+		const accepted = session.enqueueUserMessage("cancelled before queueing", "steer", controller.signal);
+		await preflightStarted.promise;
+		controller.abort();
+		usageHealth.resolve({ state: "healthy", accounts: [] });
+
+		await expect(accepted).resolves.toBe(false);
+		expect(session.agent.peekSteeringQueue()).toHaveLength(0);
+		expect(session.agent.peekFollowUpQueue()).toHaveLength(0);
+	});
+
+	it("keeps sendUserMessage's queueing branch void", async () => {
+		const session = new AgentSession({
+			agent: createAgent(),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+		});
+		sessions.push(session);
+		vi.spyOn(session.agent, "continue").mockResolvedValue(undefined);
+
+		const result = await session.sendUserMessage("legacy queue", { deliverAs: "steer" });
+		expect(result).toBeUndefined();
+		session.clearQueue();
 	});
 
 	it("marks queued user steers without changing the public queue text", async () => {

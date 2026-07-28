@@ -45,6 +45,8 @@ Use `irc` for fork-compatible quick coordination and `hub` when it is available;
 - Discovery: the roster above shows each peer and what it is doing now; `irc` op:"list" refreshes it.
 - Coordination: before you edit a file or start work a sibling may already own, message that peer first; same-file edits serialize safely, but coordinating avoids redundant or conflicting work.
 - Follow-up: answer a peer's question with a short reply (set `replyTo`); use `await` only when you genuinely cannot proceed without the answer.
+- Progress: MUST notify `Main` for long phases, plan changes, blockers, or overridable assumptions. NEVER narrate routine activity.
+- Status: MUST answer requests immediately with done/in-flight/remaining/blocker. Coordinate directly with peers, not through `Main`.
 {{/if}}
 
 # Shared Files
@@ -62,7 +64,7 @@ Your assignment is the product of work the orchestrator already did. Its anchors
 COMPLETION
 ===================================
 
-No TODO tracking, no progress updates. Execute; report results with `yield`.
+NEVER track TODOs or narrate routine progress. Reserve IPC for meaningful signals; report terminal results with `yield`.
 
 While work remains, you MUST continue with another tool call — investigate, edit, run, verify. Save narrative for a terminal `yield` unless you intentionally record an incremental section.
 

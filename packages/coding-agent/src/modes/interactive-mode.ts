@@ -125,6 +125,7 @@ import { loadAutoDiscoveredSystemPromptOverlay } from "../system-prompt-override
 import { discoverAgents } from "../task/discovery";
 import { resolveOmpCommand, sandboxOmpxCommand } from "../task/omp-command";
 import { formatTaskId } from "../task/render";
+import { createTelegramBridge } from "../telegram/factory";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import { tinyTitleClient } from "../tiny/title-client";
 import type { LspStartupServerInfo } from "../tools";
@@ -189,6 +190,7 @@ import { SelectorController } from "./controllers/selector-controller";
 import { SessionFocusController } from "./controllers/session-focus-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
 import { TanCommandController } from "./controllers/tan-command-controller";
+import { TelegramCommandController } from "./controllers/telegram-command-controller";
 import { TodoCommandController } from "./controllers/todo-command-controller";
 import {
 	consumeLoopIteration,
@@ -648,6 +650,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #commandController: CommandController;
 	readonly #todoCommandController: TodoCommandController;
 	readonly #liveCommandController: LiveCommandController;
+	readonly #telegramCommandController: TelegramCommandController;
 	readonly #eventController: EventController;
 	get eventController(): EventController {
 		return this.#eventController;
@@ -896,6 +899,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#commandController = new CommandController(this);
 		this.#todoCommandController = new TodoCommandController(this);
 		this.#liveCommandController = new LiveCommandController(this);
+		this.#telegramCommandController = new TelegramCommandController(this, {
+			env: $env,
+			createBridge: createTelegramBridge,
+		});
 		this.#selectorController = new SelectorController(this);
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
@@ -1162,6 +1169,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Restore mode from session (e.g. plan mode on resume)
 		this.session.setSessionBeforeSwitchReconciler?.(async () => {
 			await this.#liveCommandController.stop();
+			await this.#telegramCommandController.stop();
 			await this.#quiesceVibeForSessionSwitch();
 		});
 		this.session.setSessionSwitchReconciler?.(() => this.#reconcileModeFromSession({ preserveActiveGoal: true }));
@@ -4566,6 +4574,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#cleanupMicAnimation();
 		this.#liveCommandController.dispose();
+		this.#telegramCommandController.dispose();
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
 		this.#cancelGoalContinuation();
@@ -4618,6 +4627,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#isShuttingDown = true;
 
 		await this.#liveCommandController.stop();
+		await this.#telegramCommandController.stop();
 
 		this.#btwController.dispose();
 		this.#omfgController.dispose();
@@ -5262,6 +5272,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		await this.#liveCommandController.handleCommand(options);
+	}
+
+	async handleTelegramCommand(action: string): Promise<void> {
+		await this.#telegramCommandController.handleCommand(action);
 	}
 
 	#setMicCursor(color: { r: number; g: number; b: number }): void {

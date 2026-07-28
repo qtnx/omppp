@@ -62,11 +62,15 @@ describe("InteractiveMode long shutdown status", () => {
 		vi.spyOn(mode, "showStatus").mockImplementation(message => {
 			statuses.push(message);
 		});
+		const disposeStarted = Promise.withResolvers<void>();
 		const teardown = Promise.withResolvers<void>();
-		vi.spyOn(session, "dispose").mockImplementation(() => teardown.promise);
+		vi.spyOn(session, "dispose").mockImplementation(() => {
+			disposeStarted.resolve();
+			return teardown.promise;
+		});
 
 		const shutdown = mode.shutdown();
-		await flushMicrotasks();
+		await disposeStarted.promise;
 		expect(statuses).toEqual(["Closing session…"]);
 
 		vi.advanceTimersByTime(2_999);
