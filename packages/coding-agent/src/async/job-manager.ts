@@ -6,6 +6,8 @@ const DELIVERY_RETRY_MAX_MS = 30_000;
 const DELIVERY_RETRY_JITTER_MS = 200;
 const DEFAULT_RETENTION_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RUNNING_JOBS = 15;
+/** Bound result formatting/artifact writes while covering the default 32-agent task fanout in one wave. */
+const MAX_CONCURRENT_DELIVERIES = 32;
 
 /**
  * Adaptive poll-wait ladder (ms) for blocking `job` and `hub` polls. A tight
@@ -176,6 +178,7 @@ export class AsyncJobManager {
 	readonly #maxRunningJobs: number;
 	readonly #retentionMs: number;
 	readonly #eventBus: EventBus | undefined;
+	#deliveryWake = Promise.withResolvers<void>();
 	#deliveryLoop: Promise<void> | undefined;
 	#disposed = false;
 
@@ -786,8 +789,15 @@ export class AsyncJobManager {
 		this.#ensureDeliveryLoop();
 	}
 
+	#signalDeliveryLoop(): void {
+		const wake = this.#deliveryWake;
+		this.#deliveryWake = Promise.withResolvers<void>();
+		wake.resolve();
+	}
+
 	#ensureDeliveryLoop(): void {
 		if (this.#deliveryLoop) {
+			this.#signalDeliveryLoop();
 			return;
 		}
 
@@ -805,25 +815,43 @@ export class AsyncJobManager {
 
 	async #runDeliveryLoop(): Promise<void> {
 		while (this.#deliveries.length > 0) {
-			const delivery = this.#deliveries[0];
-			if (this.isDeliverySuppressed(delivery.jobId)) {
-				this.#deliveries.shift();
-				continue;
-			}
-			const waitMs = delivery.nextAttemptAt - Date.now();
-			if (waitMs > 0) {
-				await Bun.sleep(waitMs);
-			}
-			if (this.#deliveries[0] !== delivery) {
-				continue;
-			}
-			if (this.isDeliverySuppressed(delivery.jobId)) {
-				this.#deliveries.shift();
-				continue;
+			const available = MAX_CONCURRENT_DELIVERIES - this.#inFlightDeliveries.length;
+			const now = Date.now();
+			let nextAttemptAt = Number.POSITIVE_INFINITY;
+			let started = 0;
+
+			for (let index = 0; index < this.#deliveries.length; ) {
+				const delivery = this.#deliveries[index]!;
+				if (this.isDeliverySuppressed(delivery.jobId)) {
+					this.#deliveries.splice(index, 1);
+					continue;
+				}
+				if (started < available && delivery.nextAttemptAt <= now) {
+					this.#deliveries.splice(index, 1);
+					started += 1;
+					void this.#deliverDelivery(delivery);
+					continue;
+				}
+				nextAttemptAt = Math.min(nextAttemptAt, delivery.nextAttemptAt);
+				index += 1;
 			}
 
-			this.#deliveries.shift();
-			await this.#deliverDelivery(delivery);
+			if (started > 0) continue;
+			if (this.#deliveries.length === 0) return;
+
+			const wake = this.#deliveryWake.promise;
+			if (available <= 0 || !Number.isFinite(nextAttemptAt)) {
+				await wake;
+				continue;
+			}
+			const timeout = Promise.withResolvers<void>();
+			const timer = setTimeout(timeout.resolve, Math.max(0, nextAttemptAt - Date.now()));
+			timer.unref();
+			try {
+				await Promise.race([wake, timeout.promise]);
+			} finally {
+				clearTimeout(timer);
+			}
 		}
 	}
 
