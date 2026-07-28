@@ -383,7 +383,9 @@ exit 1
 		});
 		const exitCode = await proc.exited;
 		if (exitCode !== 0) throw new Error(`native lookup script exited ${exitCode}`);
-		return Bun.file(argsPath).text();
+		// Await the capture before `finally` removes tempDir; returning the
+		// pending `Bun.file(...).text()` races cleanup under parallel load.
+		return await Bun.file(argsPath).text();
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
