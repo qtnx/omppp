@@ -51,11 +51,19 @@ describe("release publish", () => {
 				version: "1.2.3",
 				exports: {
 					"./desktop": { types: "./native/desktop.d.ts", import: "./native/desktop.js" },
+					"./process": { types: "./native/process.d.ts", import: "./native/process.js" },
 				},
 			}),
 		);
 
 		const manifest = await prepareNativeCorePackage(root, false);
-		expect(manifest.files).toEqual(expect.arrayContaining(["native/desktop.js", "native/desktop.d.ts"]));
+		expect(manifest.files).toEqual(
+			expect.arrayContaining([
+				"native/desktop.js",
+				"native/desktop.d.ts",
+				"native/process.js",
+				"native/process.d.ts",
+			]),
+		);
 	});
 });
