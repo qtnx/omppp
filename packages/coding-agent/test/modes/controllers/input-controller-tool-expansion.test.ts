@@ -79,6 +79,8 @@ describe("InputController streaming escape cancellation", () => {
 			handleBtwEscape: vi.fn(() => false),
 			hasActiveOmfg: vi.fn(() => false),
 			handleOmfgEscape: vi.fn(() => false),
+			hasActiveUsagePanel: vi.fn(() => false),
+			dismissUsagePanel: vi.fn(() => false),
 			cancelPendingSubmission: vi.fn(() => false),
 			locallySubmittedUserSignatures: new Set(),
 			compactionQueuedMessages: [],
