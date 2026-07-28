@@ -249,6 +249,36 @@ interface PendingDelta {
 	overflowRecovery?: boolean;
 }
 
+/** One actual advisor model prompt attempt for a blocking consult. */
+export interface AdvisorConsultAttempt {
+	attempt: number;
+	error?: string;
+}
+
+/**
+ * Discriminated settlement of a blocking consult. Every variant carries the
+ * per-prompt attempt history so callers can report exactly what happened.
+ */
+export type AdvisorConsultResult =
+	| { status: "answered"; answer: string; attempts: readonly AdvisorConsultAttempt[] }
+	| { status: "unavailable"; attempts: readonly AdvisorConsultAttempt[] }
+	| { status: "paused"; attempts: readonly AdvisorConsultAttempt[] }
+	| { status: "disposed"; attempts: readonly AdvisorConsultAttempt[] }
+	| { status: "aborted"; attempts: readonly AdvisorConsultAttempt[] }
+	| { status: "timed_out"; attempts: readonly AdvisorConsultAttempt[]; elapsedMs: number; timeoutMs: number }
+	| { status: "queue_cleared"; attempts: readonly AdvisorConsultAttempt[]; reason: string }
+	| { status: "rate_limited"; attempts: readonly AdvisorConsultAttempt[]; error: string; requeued: true }
+	| { status: "provider_error"; attempts: readonly AdvisorConsultAttempt[]; error: string; retryable: boolean }
+	| { status: "empty_response"; attempts: readonly AdvisorConsultAttempt[] };
+
+function consultErrorText(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
+
+function snapshotConsultAttempts(attempts: readonly AdvisorConsultAttempt[]): AdvisorConsultAttempt[] {
+	return attempts.map(({ attempt, error }) => (error === undefined ? { attempt } : { attempt, error }));
+}
+
 /**
  * A queued "phone a friend" consultation. Carries its own `resolve` so the
  * primary agent (blocked in the consult tool) is answered exactly once —
@@ -259,7 +289,10 @@ interface PendingConsult {
 	question: string;
 	turns: 0;
 	epoch: number;
-	resolve: (answer: string | null) => void;
+	resolve: (result: AdvisorConsultResult) => void;
+	attempts: AdvisorConsultAttempt[];
+	/** Abort/timeout settled this consult; the drain loop must never requeue or retry it. */
+	terminated?: boolean;
 	fallbackAttempted?: boolean;
 	overflowRecovery?: boolean;
 	async?: boolean;
@@ -547,13 +580,16 @@ export class AdvisorRuntime {
 
 	/**
 	 * "Phone a friend": ask the advisor a question mid-turn and block until it
-	 * answers. Resolves with the advisor's plain-text reply, or `null` on timeout
-	 * (default 120s), `opts.signal` abort, or disposal/reset. Renders a fresh
-	 * mid-turn delta first so the advisor sees current context alongside the
-	 * question, then enqueues the consult and drains.
+	 * settles. Always resolves with a discriminated {@link AdvisorConsultResult}
+	 * carrying the per-prompt attempt history — `answered` on success, otherwise
+	 * the precise failure cause. Renders a fresh mid-turn delta first so the
+	 * advisor sees current context alongside the question, then enqueues the
+	 * consult and drains. Abort and timeout are terminal for the consult: it is
+	 * removed from the queue and never retried.
 	 */
-	consult(question: string, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<string | null> {
-		if (this.disposed || this.#paused) return Promise.resolve(null);
+	consult(question: string, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<AdvisorConsultResult> {
+		if (this.disposed) return Promise.resolve({ status: "disposed", attempts: [] });
+		if (this.#paused) return Promise.resolve({ status: "paused", attempts: [] });
 
 		// Render a fresh mid-turn delta so the advisor sees everything up to the
 		// current (possibly still-streaming) point before the question. `turns: 0`
@@ -569,30 +605,48 @@ export class AdvisorRuntime {
 		// than a stale transcript.
 		this.#latestMessages = snapshot;
 
-		const { promise, resolve } = Promise.withResolvers<string | null>();
+		const { promise, resolve } = Promise.withResolvers<AdvisorConsultResult>();
 		let settled = false;
 		const signal = opts?.signal;
 		let timer: NodeJS.Timeout | undefined;
 		// First resolution wins; later ones (a late model answer racing a timeout,
 		// or a reset that already resolved the item) are no-ops.
-		const settle = (answer: string | null): void => {
+		const settle = (result: AdvisorConsultResult): void => {
 			if (settled) return;
 			settled = true;
-			if (timer) clearTimeout(timer);
+			clearTimeout(timer);
 			signal?.removeEventListener("abort", onAbort);
-			resolve(answer);
+			resolve(result);
 		};
-		function onAbort(): void {
-			settle(null);
-		}
+		const item: PendingConsult = { kind: "consult", question, turns: 0, epoch: this.#epoch, attempts: [], resolve: settle };
+		// Abort/timeout are terminal for THIS consult: mark it so the drain loop
+		// never requeues/retries it, and drop it from the queue if still waiting.
+		const terminate = (result: AdvisorConsultResult): void => {
+			item.terminated = true;
+			this.#pending = this.#pending.filter(p => p !== item);
+			settle(result);
+		};
+		const onAbort = (): void => {
+			terminate({ status: "aborted", attempts: snapshotConsultAttempts(item.attempts) });
+		};
 
-		this.#pending.push({ kind: "consult", question, turns: 0, epoch: this.#epoch, resolve: settle });
+		this.#pending.push(item);
 		void this.#drain();
 
 		const timeoutMs = opts?.timeoutMs ?? BLOCKING_CONSULT_TIMEOUT_MS;
-		timer = setTimeout(() => settle(null), timeoutMs);
+		const startedAt = Date.now();
+		timer = setTimeout(
+			() =>
+				terminate({
+					status: "timed_out",
+					attempts: snapshotConsultAttempts(item.attempts),
+					elapsedMs: Date.now() - startedAt,
+					timeoutMs,
+				}),
+			timeoutMs,
+		);
 		if (signal) {
-			if (signal.aborted) settle(null);
+			if (signal.aborted) onAbort();
 			else signal.addEventListener("abort", onAbort, { once: true });
 		}
 		return promise;
@@ -620,22 +674,39 @@ export class AdvisorRuntime {
 			async: true,
 			turns: 0,
 			epoch: this.#epoch,
+			attempts: [],
 			resolve: () => {},
 		});
 		void this.#drain();
 	}
 
+	#lastClearReason = "reset";
+	/** The consult currently being prompted (popped off `#pending`), so an
+	 *  external reset/dispose can settle it instead of letting it outlive the
+	 *  epoch until its own timer fires. */
+	#inFlightConsult?: PendingConsult;
+
+
+	/** Terminal result for a consult invalidated by a queue clear / epoch bump. */
+	#clearedResult(attempts: readonly AdvisorConsultAttempt[]): AdvisorConsultResult {
+		const snapshot = snapshotConsultAttempts(attempts);
+		return this.#lastClearReason === "dispose"
+			? { status: "disposed", attempts: snapshot }
+			: { status: "queue_cleared", attempts: snapshot, reason: this.#lastClearReason };
+	}
+
 	/**
 	 * Route every `#pending` clear through here so an orphaned consult never
-	 * leaves the primary agent hanging: resolve `null` on every queued consult
-	 * before dropping the queue.
+	 * leaves the primary agent hanging: settle every queued consult with a
+	 * terminal `disposed`/`queue_cleared` result before dropping the queue.
 	 */
 	#clearPending(reason: string): void {
+		this.#lastClearReason = reason;
 		if (this.#pending.length) {
 			for (const item of this.#pending) {
 				if (item.kind === "consult") {
 					try {
-						item.resolve(null);
+						item.resolve(this.#clearedResult(item.attempts));
 					} catch (err) {
 						logger.debug("advisor consult resolve failed during clear", { reason, err: String(err) });
 					}
@@ -691,6 +762,10 @@ export class AdvisorRuntime {
 		this.disposed = true;
 		this.#epoch++;
 		this.#clearPending("dispose");
+		if (this.#inFlightConsult) {
+			this.#inFlightConsult.resolve(this.#clearedResult(this.#inFlightConsult.attempts));
+			this.#inFlightConsult = undefined;
+		}
 		this.#backlog = 0;
 		this.#consecutiveFailures = 0;
 		this.#failureNotified = false;
@@ -850,6 +925,10 @@ export class AdvisorRuntime {
 		this.#consecutiveQuarantines = 0;
 		this.#failureNotified = false;
 		this.#resetAdvisorContext(true, true);
+		if (this.#inFlightConsult) {
+			this.#inFlightConsult.resolve(this.#clearedResult(this.#inFlightConsult.attempts));
+			this.#inFlightConsult = undefined;
+		}
 	}
 
 	/**
@@ -1085,6 +1164,7 @@ export class AdvisorRuntime {
 				if (cut < popped.length) {
 					this.#pending.unshift(...popped.slice(cut));
 				}
+				this.#inFlightConsult = consult;
 				const batchAlreadyUsedFallback = popped.some(item => item.fallbackAttempted);
 				const recoveringOverflow = popped.some(item => item.overflowRecovery === true);
 
@@ -1174,7 +1254,7 @@ export class AdvisorRuntime {
 				}
 				if (batchInvalidated) {
 					restoreEscalationIfNeeded();
-					consult?.resolve(null);
+					if (consult) consult.resolve(this.#clearedResult(consult.attempts));
 					continue;
 				}
 
@@ -1201,7 +1281,7 @@ export class AdvisorRuntime {
 				let finalBatchBase = buildBatch(deltaPart);
 				if (this.disposed || finalBatchBase === null) {
 					restoreEscalationIfNeeded();
-					consult?.resolve(null);
+					if (consult) consult.resolve({ status: "disposed", attempts: snapshotConsultAttempts(consult.attempts) });
 					this.#backlog = Math.max(0, this.#backlog - finalTurns);
 					this.#notifyWaiters();
 					continue;
@@ -1230,7 +1310,7 @@ export class AdvisorRuntime {
 					// A reset/dispose during substitution invalidates this batch.
 					if (this.#epoch !== epoch) {
 						restoreEscalationIfNeeded();
-						consult?.resolve(null);
+						if (consult) consult.resolve(this.#clearedResult(consult.attempts));
 						continue;
 					}
 				}
@@ -1247,7 +1327,20 @@ export class AdvisorRuntime {
 							: { text: finalBatch };
 				if (this.#epoch !== epoch) {
 					restoreEscalationIfNeeded();
-					consult?.resolve(null);
+					if (consult) consult.resolve(this.#clearedResult(consult.attempts));
+					continue;
+				}
+				// An abort/timeout during batch assembly must never reach the model:
+				// the caller is already settled, so requeue the deltas (their context
+				// is still pending) and drop the consult without prompting.
+				if (consult && !consult.async && consult.terminated) {
+					restoreEscalationIfNeeded();
+					if (deltaPart) {
+						this.#pending.unshift({
+							...this.#createPendingDelta(deltaPart, finalTurns, wip),
+							fallbackAttempted: batchAlreadyUsedFallback || undefined,
+						});
+					}
 					continue;
 				}
 
@@ -1259,11 +1352,15 @@ export class AdvisorRuntime {
 				// would leak orphan failures into the next successful run's context. It
 				// also bounds the answer-extraction scan to this consult's turns.
 				const messageSnapshot = this.agent.state.messages.length;
+				const consultAttempt: AdvisorConsultAttempt | undefined = consult
+					? { attempt: consult.attempts.length + 1 }
+					: undefined;
 				try {
 					// Reset the host's per-update advisor state (one-advise-per-update
 					// gate) before each model cycle, so the new batch starts with a
 					// fresh budget. Dedupe history persists across cycles.
 					this.host.beginAdvisorUpdate?.({ consultAnswer: consult?.async === true });
+					if (consult && consultAttempt) consult.attempts.push(consultAttempt);
 					await this.agent.prompt(promptPayload.text, promptPayload.images);
 					// `Agent.#runLoop` catches provider/stream failures internally and
 					// resolves `prompt()` cleanly with the assistant turn ending in
@@ -1294,8 +1391,13 @@ export class AdvisorRuntime {
 							const answer = this.#extractConsultAnswer(messageSnapshot);
 							if (answer) this.host.enqueueAdvice(answer);
 						}
-					} else {
-						consult?.resolve(this.#extractConsultAnswer(messageSnapshot));
+					} else if (consult) {
+						const answer = this.#extractConsultAnswer(messageSnapshot);
+						consult.resolve(
+							answer
+								? { status: "answered", answer, attempts: snapshotConsultAttempts(consult.attempts) }
+								: { status: "empty_response", attempts: snapshotConsultAttempts(consult.attempts) },
+						);
 					}
 					this.#consecutiveQuarantines = 0;
 					if (this.host.onTurnSuccess) {
@@ -1308,9 +1410,10 @@ export class AdvisorRuntime {
 				} catch (err) {
 					// A reset/dispose abort belongs to the discarded epoch, never to the
 					// next advisor conversation.
+					if (consultAttempt) consultAttempt.error = consultErrorText(err);
 					if (this.#epoch !== epoch) {
 						restoreEscalationIfNeeded();
-						consult?.resolve(null);
+						if (consult) consult.resolve(this.#clearedResult(consult.attempts));
 						continue;
 					}
 
@@ -1349,7 +1452,10 @@ export class AdvisorRuntime {
 								fallbackAttempted: true,
 							});
 						}
-						if (consult) requeue.push({ ...consult, fallbackAttempted: true });
+						if (consult && !consult.terminated) {
+							consult.fallbackAttempted = true;
+							requeue.push(consult);
+						}
 						if (requeue.length) {
 							this.#fallbackRetryItemCount = requeue.length;
 							this.#pending.unshift(...requeue);
@@ -1365,7 +1471,7 @@ export class AdvisorRuntime {
 					}
 					if (this.#epoch !== epoch) {
 						restoreEscalationIfNeeded();
-						consult?.resolve(null);
+						if (consult) consult.resolve(this.#clearedResult(consult.attempts));
 						continue;
 					}
 					if (err instanceof AdvisorOutputQuarantinedError) {
@@ -1380,11 +1486,20 @@ export class AdvisorRuntime {
 							this.#notifyFailureOnce(err);
 							this.#consecutiveQuarantines = 0;
 							this.#resetAdvisorContext(true, true);
+							if (consult && !consult.terminated) {
+								consult.resolve({
+									status: "provider_error",
+									attempts: snapshotConsultAttempts(consult.attempts),
+									error: consultErrorText(err),
+									retryable: false,
+								});
+							}
 							continue;
 						}
 						const rePrime = this.#pending.length > 0 ? this.#latestMessages : undefined;
 						this.#resetAdvisorContext(true, !rePrime);
 						if (rePrime) this.onTurnEnd(rePrime);
+						if (consult && !consult.terminated) this.#pending.push(consult);
 						continue;
 					}
 
@@ -1396,8 +1511,10 @@ export class AdvisorRuntime {
 								fallbackAttempted: batchAlreadyUsedFallback || undefined,
 							});
 						}
-						if (consult)
-							pending.push(batchAlreadyUsedFallback ? { ...consult, fallbackAttempted: true } : consult);
+						if (consult && !consult.terminated) {
+							if (batchAlreadyUsedFallback) consult.fallbackAttempted = true;
+							pending.push(consult);
+						}
 						if (pending.length) this.#pending.unshift(...pending);
 					};
 					if (recovered) {
@@ -1411,7 +1528,20 @@ export class AdvisorRuntime {
 						this.#consecutiveFailures = 0;
 						this.#failureNotified = false;
 						this.#clearContextReplayState();
+						// The blocked caller settles immediately, but the requeued prompt must
+						// later arrive as advice rather than resolving its settled promise.
+						if (consult) consult.async = true;
 						requeue();
+						// The requeue keeps today's quota behavior, but the blocked caller
+						// must not sit on the 300s timer for an already-known quota wall.
+						if (consult) {
+							consult.resolve({
+								status: "rate_limited",
+								attempts: snapshotConsultAttempts(consult.attempts),
+								error: consultErrorText(err),
+								requeued: true,
+							});
+						}
 						this.#wakeAllWaiters();
 						try {
 							this.host.notifyQuotaExhausted?.();
@@ -1429,7 +1559,14 @@ export class AdvisorRuntime {
 							this.#failureNotified = true;
 							this.host.notifyFailure?.(err);
 						}
-						consult?.resolve(null);
+						if (consult) {
+							consult.resolve({
+								status: "provider_error",
+								attempts: snapshotConsultAttempts(consult.attempts),
+								error: consultErrorText(err),
+								retryable: false,
+							});
+						}
 						this.#wakeAllWaiters();
 						success = true;
 					} else if (contextOverflow) {
@@ -1439,7 +1576,14 @@ export class AdvisorRuntime {
 								this.#failureNotified = true;
 								this.host.notifyFailure?.(err);
 							}
-							consult?.resolve(null);
+							if (consult) {
+								consult.resolve({
+									status: "provider_error",
+									attempts: snapshotConsultAttempts(consult.attempts),
+									error: consultErrorText(err),
+									retryable: false,
+								});
+							}
 							success = true;
 						} else {
 							const pending: PendingItem[] = [];
@@ -1450,7 +1594,10 @@ export class AdvisorRuntime {
 									overflowRecovery: true,
 								});
 							}
-							if (consult) pending.push({ ...consult, overflowRecovery: true });
+							if (consult && !consult.terminated) {
+								consult.overflowRecovery = true;
+								pending.push(consult);
+							}
 							if (pending.length) this.#pending.unshift(...pending);
 							restoreEscalationIfNeeded();
 							continue;
@@ -1461,18 +1608,25 @@ export class AdvisorRuntime {
 							this.#consecutiveFailures = 0;
 							this.#droppedBacklogs++;
 							if (isPermanentAdvisorError(err) || this.#droppedBacklogs >= 3) this.#halted = true;
-							this.#pending = [];
+							this.#clearPending("advisor failure backlog dropped");
 							this.#backlog = 0;
 							this.#invalidateRenderedContext();
 							if (!this.#failureNotified) {
 								this.#failureNotified = true;
 								this.host.notifyFailure?.(err);
 							}
-							consult?.resolve(null);
+							if (consult) {
+								consult.resolve({
+									status: "provider_error",
+									attempts: snapshotConsultAttempts(consult.attempts),
+									error: consultErrorText(err),
+									retryable: terminalFailureRetriable,
+								});
+							}
 							success = true;
 						} else {
 							requeue();
-							await Bun.sleep(this.retryDelayMs);
+							await Bun.sleep(this.retryDelayMs * this.#consecutiveFailures);
 						}
 					}
 				}
@@ -1490,6 +1644,7 @@ export class AdvisorRuntime {
 				this.#restorePrimaryModel();
 			}
 			this.#busy = false;
+			this.#inFlightConsult = undefined;
 		}
 	}
 

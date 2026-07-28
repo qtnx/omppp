@@ -1068,7 +1068,7 @@ describe("advisor", () => {
 
 				const answer = await runtime.consult(question, { timeoutMs: 1000 });
 
-				expect(answer).toBeNull();
+				expect(answer.status).toBe("empty_response");
 				expect(renderManySpy).toHaveBeenCalledTimes(1);
 				const renderedInput = renderManySpy.mock.calls[0]?.[0] as string | undefined;
 				expect(renderedInput).toContain(largeMarker);
@@ -1282,7 +1282,7 @@ describe("advisor", () => {
 			expect(promptInputs).toHaveLength(0);
 		});
 
-		it("resolves consults null immediately while paused", async () => {
+		it("resolves consults as paused immediately while paused", async () => {
 			const promptInputs: string[] = [];
 			const agent = makeAgent(promptInputs);
 			const messages: AgentMessage[] = [{ role: "user", content: "current context", timestamp: 1 } as AgentMessage];
@@ -1295,7 +1295,7 @@ describe("advisor", () => {
 			runtime.pause();
 			const answer = await runtime.consult("Should the done gate pass?");
 
-			expect(answer).toBeNull();
+			expect(answer).toEqual({ status: "paused", attempts: [] });
 			expect(promptInputs).toHaveLength(0);
 			expect(runtime.backlog).toBe(0);
 		});
@@ -1349,7 +1349,7 @@ describe("advisor", () => {
 
 			const answer = await runtime.consult("Should the done gate pass?", { timeoutMs: 1000 });
 
-			expect(answer).toBe("Escalated answer.");
+			expect(answer).toMatchObject({ status: "answered", answer: "Escalated answer." });
 			expect(promptedModels).toEqual(["anthropic/claude-fable-5:high:true"]);
 			expect(currentModel).toBe(normal);
 			expect(currentThinking).toBe(Effort.Low);
@@ -1448,7 +1448,7 @@ describe("advisor", () => {
 
 			const answer = await runtime.consult("Should the done gate pass?", { timeoutMs: 1000 });
 
-			expect(answer).toBe("Escalated answer.");
+			expect(answer).toMatchObject({ status: "answered", answer: "Escalated answer." });
 			expect(promptedModels).toEqual(["anthropic/claude-fable-5:high"]);
 			expect(currentModel).toBe(promoted);
 			expect(currentThinking as Effort | undefined).toBe(Effort.Medium);
@@ -1508,7 +1508,7 @@ describe("advisor", () => {
 
 			const answer = await runtime.consult("Should the done gate pass?", { timeoutMs: 1000 });
 
-			expect(answer).toBe("Fallback answer.");
+			expect(answer).toMatchObject({ status: "answered", answer: "Fallback answer." });
 			expect(promptedModels).toEqual(["anthropic/claude-fable-5:high:true", "openai/gpt-5.5-fallback:low:false"]);
 			expect(currentModel).toBe(normal);
 			expect(currentThinking).toBe(Effort.Low);
@@ -1566,7 +1566,7 @@ describe("advisor", () => {
 			expect(promptInputs).toHaveLength(0);
 		});
 
-		it("resolves queued consults null when disposed while paused", async () => {
+		it("resolves queued consults as disposed when disposed while paused", async () => {
 			const promptInputs: string[] = [];
 			const { promise: started, resolve: markStarted } = Promise.withResolvers<void>();
 			const { promise: hold } = Promise.withResolvers<void>();
@@ -1593,7 +1593,7 @@ describe("advisor", () => {
 			runtime.pause();
 			runtime.dispose();
 
-			expect(await queued).toBeNull();
+			expect(await queued).toEqual({ status: "disposed", attempts: [] });
 			expect(promptInputs).toHaveLength(1);
 		});
 
@@ -4761,7 +4761,7 @@ describe("advisor", () => {
 			const runtime = new AdvisorRuntime(agent, host);
 
 			const answer = await runtime.consult("Which approach?");
-			expect(answer).toBe("Use approach B, it is reversible.");
+			expect(answer).toMatchObject({ status: "answered", answer: "Use approach B, it is reversible." });
 			expect(promptInputs).toHaveLength(1);
 			expect(promptInputs[0]).toContain("### Consultation request");
 			expect(promptInputs[0]).toContain("Which approach?");
@@ -4777,7 +4777,7 @@ describe("advisor", () => {
 
 			const answer = await runtime.consult(question);
 
-			expect(answer).toBe("Keep the public API contract.");
+			expect(answer).toMatchObject({ status: "answered", answer: "Keep the public API contract." });
 			expect(promptInputs).toHaveLength(1);
 			const input = promptInputs[0];
 			expect(input).toContain("### Consultation request");
@@ -4885,7 +4885,7 @@ describe("advisor", () => {
 			const runtime = new AdvisorRuntime(agent, host);
 
 			const answer = await runtime.consult("my-question");
-			expect(answer).toBe("answer");
+			expect(answer).toMatchObject({ status: "answered", answer: "answer" });
 			expect(promptInputs).toHaveLength(1);
 			const prompt = promptInputs[0];
 			expect(prompt).toContain("delta-marker");
@@ -4902,15 +4902,15 @@ describe("advisor", () => {
 			const runtime = new AdvisorRuntime(agent, host);
 
 			const [a, b] = await Promise.all([runtime.consult("q-one"), runtime.consult("q-two")]);
-			expect(a).toBe("ans-one");
-			expect(b).toBe("ans-two");
+			expect(a).toMatchObject({ status: "answered", answer: "ans-one" });
+			expect(b).toMatchObject({ status: "answered", answer: "ans-two" });
 			expect(promptInputs).toHaveLength(2);
 			expect(promptInputs[0]).toContain("q-one");
 			expect(promptInputs[0]).not.toContain("q-two");
 			expect(promptInputs[1]).toContain("q-two");
 		});
 
-		it("keeps the resolver alive across a single prompt failure, then delivers the answer", async () => {
+		it("keeps the resolver alive across a single prompt failure, then delivers the answer with attempt history", async () => {
 			const promptInputs: string[] = [];
 			let fail = true;
 			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
@@ -4934,13 +4934,16 @@ describe("advisor", () => {
 			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
 			const runtime = new AdvisorRuntime(agent, host, 1);
 
-			const answer = await runtime.consult("survive?");
-			expect(answer).toBe("recovered-answer");
-			expect(promptInputs.length).toBeGreaterThanOrEqual(2);
+			const result = await runtime.consult("survive?");
+			expect(result.status).toBe("answered");
+			if (result.status !== "answered") throw new Error("unreachable");
+			expect(result.answer).toBe("recovered-answer");
+			expect(result.attempts).toEqual([{ attempt: 1, error: "transient" }, { attempt: 2 }]);
+			expect(promptInputs).toHaveLength(2);
 			expect(promptInputs.every(p => p.includes("survive?"))).toBe(true);
 		});
 
-		it("resolves null (no hang) after three consecutive failures drop the batch", async () => {
+		it("returns provider_error with the actual error and three attempts after exhausting retries", async () => {
 			const promptInputs: string[] = [];
 			const agent: AdvisorAgent = {
 				prompt: async input => {
@@ -4955,12 +4958,17 @@ describe("advisor", () => {
 			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
-			const answer = await runtime.consult("doomed");
-			expect(answer).toBeNull();
+			const result = await runtime.consult("doomed");
+			expect(result.status).toBe("provider_error");
+			if (result.status !== "provider_error") throw new Error("unreachable");
+			expect(result.error).toBe("down");
+			expect(result.retryable).toBe(true);
+			expect(result.attempts).toHaveLength(3);
+			expect(result.attempts.every(a => a.error === "down")).toBe(true);
 			expect(promptInputs).toHaveLength(3);
 		});
 
-		it("resolves a queued consult to null on reset()", async () => {
+		it("settles a queued consult as queue_cleared on reset()", async () => {
 			const promptInputs: string[] = [];
 			const { promise: started, resolve: markStarted } = Promise.withResolvers<void>();
 			const { promise: hold } = Promise.withResolvers<void>();
@@ -4980,24 +4988,34 @@ describe("advisor", () => {
 
 			void runtime.consult("interrupted");
 			await started;
-			// A second consult sits in the queue and must be resolved null by reset.
+			// A second consult sits in the queue and must be settled by reset.
 			const queued = runtime.consult("also-interrupted");
 			runtime.reset();
-			expect(await queued).toBeNull();
+			const result = await queued;
+			expect(result).toEqual({ status: "queue_cleared", attempts: [], reason: "reset" });
 		});
 
-		it("resolves a queued consult to null on dispose()", async () => {
+		it("returns disposed for a consult after dispose()", async () => {
 			const promptInputs: string[] = [];
 			const agent = makeConsultAgent(promptInputs, () => [text("late")]);
 			const messages: AgentMessage[] = [];
 			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
 			const runtime = new AdvisorRuntime(agent, host);
 			runtime.dispose();
-			// consult after dispose short-circuits to null.
-			expect(await runtime.consult("q")).toBeNull();
+			expect(await runtime.consult("q")).toEqual({ status: "disposed", attempts: [] });
 		});
 
-		it("times out to null when the advisor never answers", async () => {
+		it("returns paused for a consult while the runtime is paused", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeConsultAgent(promptInputs, () => [text("late")]);
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+			runtime.pause();
+			expect(await runtime.consult("q")).toEqual({ status: "paused", attempts: [] });
+		});
+
+		it("times out with elapsed and ceiling when the advisor never answers", async () => {
 			const { promise: hold } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async () => {
@@ -5011,10 +5029,14 @@ describe("advisor", () => {
 			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
 			const runtime = new AdvisorRuntime(agent, host);
 
-			expect(await runtime.consult("slow", { timeoutMs: 10 })).toBeNull();
+			const result = await runtime.consult("slow", { timeoutMs: 10 });
+			expect(result.status).toBe("timed_out");
+			if (result.status !== "timed_out") throw new Error("unreachable");
+			expect(result.timeoutMs).toBe(10);
+			expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
 		});
 
-		it("resolves null when opts.signal is aborted", async () => {
+		it("returns aborted when opts.signal is aborted", async () => {
 			const { promise: hold } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async () => {
@@ -5028,9 +5050,160 @@ describe("advisor", () => {
 			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
 			const runtime = new AdvisorRuntime(agent, host);
 			const controller = new AbortController();
-			const answer = runtime.consult("q", { signal: controller.signal });
+			const pendingResult = runtime.consult("q", { signal: controller.signal });
 			controller.abort();
-			expect(await answer).toBeNull();
+			expect(await pendingResult).toEqual({ status: "aborted", attempts: [{ attempt: 1 }] });
+		});
+
+		it("abort during a provider failure prevents any retry of that consult", async () => {
+			const promptInputs: string[] = [];
+			const controller = new AbortController();
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					if (promptInputs.length === 1) {
+						controller.abort();
+						throw new Error("flaky");
+					}
+					state.messages.push(text("follow-up-answer"));
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host, 1);
+
+			const result = await runtime.consult("cancel-me", { signal: controller.signal });
+			expect(result.status).toBe("aborted");
+			// A follow-up consult drains AFTER any (incorrect) retry of the aborted
+			// one would have run: exactly one extra prompt, and never "cancel-me".
+			const followUp = await runtime.consult("follow-up");
+			expect(followUp.status).toBe("answered");
+			expect(promptInputs).toHaveLength(2);
+			expect(promptInputs[1]).toContain("follow-up");
+			expect(promptInputs[1]).not.toContain("cancel-me");
+		});
+
+		it("settles the in-flight consult on reset() even when the hung prompt never returns", async () => {
+			const { promise: started, resolve: markStarted } = Promise.withResolvers<void>();
+			const { promise: hold } = Promise.withResolvers<void>();
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					markStarted();
+					await hold; // ignores abort — the prompt outlives the epoch
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			const inFlight = runtime.consult("in flight");
+			await started;
+			runtime.reset();
+			expect(await inFlight).toMatchObject({ status: "queue_cleared", reason: "reset" });
+		});
+
+		it("settles the in-flight consult as disposed on dispose() even when the hung prompt never returns", async () => {
+			const { promise: started, resolve: markStarted } = Promise.withResolvers<void>();
+			const { promise: hold } = Promise.withResolvers<void>();
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					markStarted();
+					await hold;
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			const inFlight = runtime.consult("in flight");
+			await started;
+			runtime.dispose();
+			expect(await inFlight).toMatchObject({ status: "disposed" });
+		});
+
+		it("never prompts the model for a consult aborted during pre-prompt context maintenance", async () => {
+			const promptInputs: string[] = [];
+			const controller = new AbortController();
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				// Abort while the drain loop is still assembling the batch, BEFORE
+				// any prompt is sent — the question must never reach the model.
+				maintainContext: async () => {
+					controller.abort();
+					return false;
+				},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			const result = await runtime.consult("too-late", { signal: controller.signal });
+			expect(result.status).toBe("aborted");
+			expect(promptInputs).toHaveLength(0);
+		});
+
+		it("resolves rate_limited immediately with the original error instead of waiting for the timeout", async () => {
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					throw new Error("usage_limit_reached");
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host, 1000);
+
+			const startedAt = Date.now();
+			// Default consult ceiling is 300s: finishing in milliseconds proves the
+			// caller was released by the quota branch, not by its timer.
+			const result = await runtime.consult("quota?");
+			expect(Date.now() - startedAt).toBeLessThan(2000);
+			expect(result.status).toBe("rate_limited");
+			if (result.status !== "rate_limited") throw new Error("unreachable");
+			expect(result.requeued).toBe(true);
+			expect(result.error).toBe("usage_limit_reached");
+			expect(result.attempts).toEqual([{ attempt: 1, error: "usage_limit_reached" }]);
+			expect(promptInputs).toHaveLength(1);
+			expect(runtime.quotaExhausted).toBe(true);
+		});
+
+		it("returns empty_response when the advisor completes without any answer text", async () => {
+			const agent: AdvisorAgent = {
+				prompt: async () => {},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages, enqueueAdvice: () => {} };
+			const runtime = new AdvisorRuntime(agent, host);
+
+			expect(await runtime.consult("silent")).toEqual({ status: "empty_response", attempts: [{ attempt: 1 }] });
 		});
 
 		it("does not increment backlog for the mid-turn pre-delta (turns 0)", async () => {
@@ -5070,7 +5243,7 @@ describe("advisor", () => {
 			const runtime = new AdvisorRuntime(agent, host);
 
 			const answer = await runtime.consult("reprime-question");
-			expect(answer).toBe("re-primed-answer");
+			expect(answer).toMatchObject({ status: "answered", answer: "re-primed-answer" });
 			expect(promptInputs).toHaveLength(1);
 			expect(promptInputs[0]).toContain("### Consultation request");
 			expect(promptInputs[0]).toContain("reprime-question");

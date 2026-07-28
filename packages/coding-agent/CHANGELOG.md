@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed blocking advisor consultations collapsing paused, disposed, aborted, timed-out, queue-cleared, rate-limited, empty-response, and provider-error outcomes into a misleading timeout. Consults now report the exact cause and provider attempt history, expose the existing bounded retry cycle, return immediately when a rate-limited request is requeued, and stop retrying after cancellation.
+
 ## [1.6.8] - 2026-07-28
 
 ### Added

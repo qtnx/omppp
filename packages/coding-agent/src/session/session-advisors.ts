@@ -52,6 +52,7 @@ import {
 	annotateForStaleness,
 	buildAdvisorQuarantineSourceText,
 	type DoneVerdict,
+	type AdvisorConsultResult,
 	DoneVerdictTool,
 	formatAdvisorBatchContent,
 	getOrCreateAdvisorProviderSessionId,
@@ -1956,10 +1957,11 @@ export class SessionAdvisors {
 		return this.#advisors[0]?.runtime;
 	}
 
-	/** Ask the primary advisor synchronously, returning null when unavailable. */
-	async consult(question: string, signal?: AbortSignal): Promise<string | null> {
+	/** Ask the primary advisor synchronously, reporting unavailability as a result. */
+	async consult(question: string, signal?: AbortSignal): Promise<AdvisorConsultResult> {
 		const advisor = this.#advisors[0];
-		if (!advisor || advisor.runtime.disposed) return null;
+		if (!advisor) return { status: "unavailable", attempts: [] };
+		if (advisor.runtime.disposed) return { status: "disposed", attempts: [] };
 		this.#advisorConsultInFlight = true;
 		try {
 			return await advisor.runtime.consult(question, { signal, timeoutMs: 300_000 });

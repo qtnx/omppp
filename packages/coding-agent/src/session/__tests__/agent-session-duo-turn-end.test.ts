@@ -285,10 +285,10 @@ describe("AgentSession duo turn-end maintenance", () => {
 
 		const normalAnswer = await session.consultAdvisor("Normal advisor?");
 		expect(providerCalls).toEqual([gpt55.id]);
-		expect(normalAnswer).toBe("advisor answer");
+		expect(normalAnswer).toEqual({ status: "answered", answer: "advisor answer", attempts: [{ attempt: 1 }] });
 		await session.setDuoEnabled(true);
 		const answer = await session.consultAdvisor("Should the done gate pass?");
-		expect(answer).toBe("advisor answer");
+		expect(answer).toEqual({ status: "answered", answer: "advisor answer", attempts: [{ attempt: 1 }] });
 		expect(providerCalls).toEqual([gpt55.id, planner.id]);
 	});
 

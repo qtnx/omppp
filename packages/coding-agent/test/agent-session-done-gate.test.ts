@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import type { AdvisorConsultResult } from "@oh-my-pi/pi-coding-agent/advisor/runtime";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@oh-my-pi/pi-ai";
@@ -200,13 +201,16 @@ describe("AgentSession advisor done-review gate", () => {
 	function stubConsult(): { consultStarted: Promise<void>; resolveConsult: () => void } {
 		const runtime = session.getAdvisorRuntimeForTest();
 		if (!runtime) throw new Error("advisor runtime not live");
-		const { promise: consultPromise, resolve: resolveConsult } = Promise.withResolvers<string | null>();
+		const { promise: consultPromise, resolve: resolveConsult } = Promise.withResolvers<AdvisorConsultResult>();
 		const { promise: consultStarted, resolve: resolveConsultStarted } = Promise.withResolvers<void>();
 		vi.spyOn(runtime, "consult").mockImplementation(() => {
 			resolveConsultStarted();
 			return consultPromise;
 		});
-		return { consultStarted, resolveConsult: () => resolveConsult(null) };
+		return {
+			consultStarted,
+			resolveConsult: () => resolveConsult({ status: "queue_cleared", attempts: [], reason: "test released consult" }),
+		};
 	}
 
 	async function enableAdvisor(): Promise<void> {
