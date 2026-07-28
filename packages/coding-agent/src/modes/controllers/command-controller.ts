@@ -40,6 +40,7 @@ import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import { MoveOverlay, type MoveOverlayResult } from "../../modes/components/move-overlay";
 import { TranscriptBlock } from "../../modes/components/transcript-container";
+import { UsagePanel } from "../../modes/components/usage-panel";
 import { getMarkdownTheme, getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
@@ -92,6 +93,7 @@ export async function refreshActiveUsagePanelForSession(session: InteractiveMode
 
 export class CommandController {
 	#usagePanelActive = false;
+	#usagePanel: UsagePanel | undefined;
 
 	constructor(private readonly ctx: InteractiveModeContext) {
 		// Main subscribes to AuthStorage generation changes; this registry lets it refresh only the last-rendered /usage view.
@@ -102,8 +104,31 @@ export class CommandController {
 		return this.#usagePanelActive;
 	}
 
+	hasActiveUsagePanel(): boolean {
+		return this.#usagePanelActive && this.#usagePanel !== undefined;
+	}
+
 	clearUsagePanelActive(): void {
 		this.#usagePanelActive = false;
+		this.#usagePanel = undefined;
+	}
+
+	dismissUsagePanel(): boolean {
+		const panel = this.#usagePanel;
+		if (!this.#usagePanelActive || !panel) return false;
+		this.clearUsagePanelActive();
+		if (this.ctx.chatContainer.isBlockUncommitted(panel)) {
+			this.ctx.chatContainer.removeChild(panel);
+		} else {
+			panel.dismissUncommittedSuffix();
+		}
+		this.ctx.ui.requestRender();
+		return true;
+	}
+
+	#deactivateUsagePanelAfterScroll(panel: UsagePanel): void {
+		if (this.#usagePanel !== panel) return;
+		this.clearUsagePanelActive();
 	}
 
 	async refreshActiveUsagePanel(): Promise<void> {
@@ -574,21 +599,21 @@ export class CommandController {
 		if (!usageReports) {
 			const provider = this.ctx.session as { fetchUsageReports?: () => Promise<UsageReport[] | null> };
 			if (!provider.fetchUsageReports) {
-				this.#usagePanelActive = false;
+				this.clearUsagePanelActive();
 				this.ctx.showWarning("Usage reporting is not configured for this session.");
 				return;
 			}
 			try {
 				usageReports = await provider.fetchUsageReports();
 			} catch (error) {
-				this.#usagePanelActive = false;
+				this.clearUsagePanelActive();
 				this.ctx.showError(`Failed to fetch usage data: ${error instanceof Error ? error.message : String(error)}`);
 				return;
 			}
 		}
 
 		if (!usageReports || usageReports.length === 0) {
-			this.#usagePanelActive = false;
+			this.clearUsagePanelActive();
 			this.ctx.showWarning("No usage data available.");
 			return;
 		}
@@ -610,8 +635,11 @@ export class CommandController {
 			provider => (provider === currentProvider ? activeAccount : undefined),
 			usageModelSelectors,
 		);
-		this.ctx.present([new Spacer(1), new Text(output, 1, 0)]);
+		let panel: UsagePanel;
+		panel = new UsagePanel(output, () => this.#deactivateUsagePanelAfterScroll(panel));
+		this.ctx.present(panel);
 		// A successful render marks /usage as the last account-dependent panel eligible for live refresh.
+		this.#usagePanel = panel;
 		this.#usagePanelActive = true;
 	}
 

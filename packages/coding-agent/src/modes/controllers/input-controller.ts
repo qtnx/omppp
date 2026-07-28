@@ -331,6 +331,9 @@ export class InputController {
 		if (this.ctx.hasActiveOmfg() && this.ctx.handleOmfgEscape()) {
 			return;
 		}
+		if (this.ctx.hasActiveUsagePanel() && this.ctx.dismissUsagePanel()) {
+			return;
+		}
 		if (!this.ctx.focusedAgentId) {
 			const viewSession = this.ctx.viewSession;
 			let aborted = false;

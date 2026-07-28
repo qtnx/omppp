@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Made the interactive `/usage` panel dismissible with Escape and automatically retire its live lifecycle after the full panel enters terminal scrollback, while preserving committed usage rows as history.
+
 ## [1.6.7] - 2026-07-28
 
 ### Added
