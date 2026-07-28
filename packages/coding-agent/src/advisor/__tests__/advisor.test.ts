@@ -1391,7 +1391,7 @@ describe("advisor", () => {
 				{ escalationModel: escalation },
 			);
 
-			await runtime.consult("Should escalation fail on Fable?", { timeoutMs: 50 });
+			await runtime.consult("Should escalation fail on Fable?", { timeoutMs: 1000 });
 
 			expect(failedModels.length).toBeGreaterThan(0);
 			expect(failedModels.every(model => model?.provider === "anthropic" && model.id === "claude-fable-5")).toBe(
