@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an optional `lang` field (BCP-47) to the `live-offer` guest frame, letting a browser guest pick the spoken language of a live voice call. The field is additive and needs no `COLLAB_PROTO` bump: clients predating it omit it and the host applies its own default.
+
 ## [1.6.6] - 2026-07-25
 
 ### Added

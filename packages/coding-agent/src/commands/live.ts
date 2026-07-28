@@ -32,8 +32,10 @@ export interface LiveAttachOptions {
 	session?: string;
 	/** Ask the host to forward a Codex credential when this machine has none. */
 	forwardCredentials?: boolean;
-	/** Realtime output voice. */
+	/** Realtime output voice (timbre id). */
 	voice?: string;
+	/** BCP-47 spoken language for the call; defaults to `vi-VN`. */
+	language?: string;
 	/** Diagnostic sink; defaults to stdout. */
 	write?: (text: string) => void;
 	/** Abort signal wired to SIGINT/SIGTERM by the command. */
@@ -112,6 +114,7 @@ export async function runLiveAttach(options: LiveAttachOptions): Promise<number>
 		identity: welcome,
 		authStorage: await discoverAuthStorage(),
 		voice: options.voice,
+		language: options.language,
 		callbacks: {
 			onPhase: phase => {
 				write(`[${PHASE_LABEL[phase]}]\n`);
@@ -163,7 +166,8 @@ export default class Live extends Command {
 		"forward-credentials": Flags.boolean({
 			description: "Ask the host to forward a Codex credential when this machine has none",
 		}),
-		voice: Flags.string({ description: "Realtime output voice" }),
+		voice: Flags.string({ description: "Realtime output voice (timbre id, e.g. sol)" }),
+		language: Flags.string({ description: "Spoken language as a BCP-47 tag (default vi-VN)" }),
 	};
 
 	async run(): Promise<void> {
@@ -184,6 +188,7 @@ export default class Live extends Command {
 				session: typeof flags.session === "string" ? flags.session : undefined,
 				forwardCredentials: flags["forward-credentials"] === true,
 				voice: typeof flags.voice === "string" ? flags.voice : undefined,
+				language: typeof flags.language === "string" ? flags.language : undefined,
 				signal: abort.signal,
 			});
 		} finally {

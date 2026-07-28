@@ -1,8 +1,11 @@
-import { Mic, MicOff, PhoneOff } from "lucide-react";
+import { Mic, MicOff, PhoneOff, PictureInPicture } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { GuestClient, GuestSnapshot } from "../../lib/client";
+import { browserCallPipDeps, CallPip } from "../../lib/call-pip";
+import { browserCallPresenceDeps, CallPresence } from "../../lib/call-presence";
+import { type GuestClient, type GuestSnapshot, voiceLanguageOverride } from "../../lib/client";
 import { LivePeer } from "../../lib/live-peer";
+import { browserScreenWakeDeps, ScreenWakeGuard } from "../../lib/screen-wake";
 import "./live.css";
 
 export interface LivePanelProps {
@@ -37,14 +40,36 @@ export function LivePanel({ client, snapshot }: LivePanelProps): ReactNode {
 	const [levels, setLevels] = useState({ input: 0, output: 0 });
 	const audioRef = useRef<HTMLAudioElement | null>(null);
 	const peerRef = useRef<LivePeer | null>(null);
+	const wakeRef = useRef<ScreenWakeGuard | null>(null);
+	const presenceRef = useRef<CallPresence | null>(null);
+	const pipRef = useRef<CallPip | null>(null);
+	const [pipActive, setPipActive] = useState(false);
+	const [pipSupported, setPipSupported] = useState(false);
+
+	const title = snapshot.header?.title ?? snapshot.state?.sessionName ?? "omp collab";
+	const phase = snapshot.live.phase;
+	const status = muted ? "Muted" : phase ? (PHASE_LABEL[phase] ?? phase) : "In call";
 
 	const teardown = useCallback((): void => {
 		peerRef.current?.stop();
 		peerRef.current = null;
+		// A wake lock, a fallback video, a lock-screen notification or a floating
+		// window outliving the call is a defect: the mic and the screen go together.
+		void wakeRef.current?.stop();
+		wakeRef.current = null;
+		presenceRef.current?.stop();
+		presenceRef.current = null;
+		void pipRef.current?.exit();
+		pipRef.current = null;
+		setPipActive(false);
 		setPeer(null);
 		setMuted(false);
 		setLevels({ input: 0, output: 0 });
 	}, []);
+
+	// Picture-in-Picture is the only always-on-top surface a PWA gets on Android;
+	// probing it in an effect keeps the component renderable without a DOM.
+	useEffect(() => setPipSupported(browserCallPipDeps().supported()), []);
 
 	// The host owns the call's lifetime: when it says the call ended, release the mic.
 	useEffect(() => {
@@ -52,6 +77,24 @@ export function LivePanel({ client, snapshot }: LivePanelProps): ReactNode {
 	}, [snapshot.live.ended, teardown]);
 
 	useEffect(() => teardown, [teardown]);
+
+	const applyMute = useCallback(
+		(next: boolean): void => {
+			const active = peerRef.current;
+			if (!active) return;
+			active.setMuted(next);
+			client.sendLiveMute(next);
+			setMuted(next);
+		},
+		[client],
+	);
+
+	const stop = useCallback((): void => {
+		client.sendLiveStop();
+		teardown();
+	}, [client, teardown]);
+
+	const toggleMute = useCallback((): void => applyMute(!muted), [applyMute, muted]);
 
 	const start = useCallback(async (): Promise<void> => {
 		const element = audioRef.current;
@@ -67,7 +110,8 @@ export function LivePanel({ client, snapshot }: LivePanelProps): ReactNode {
 			createPeerConnection: () => new RTCPeerConnection(),
 			createAudioContext: () => new AudioContext(),
 			audioElement: element,
-			sendOffer: sdp => client.sendLiveOffer(sdp),
+			// `?lang=` wins; with no override the host picks the call's language.
+			sendOffer: sdp => client.sendLiveOffer(sdp, voiceLanguageOverride(window.location.search)),
 			onLevels: (input, output) => {
 				setLevels({ input, output });
 				client.sendLiveLevel(output);
@@ -80,6 +124,17 @@ export function LivePanel({ client, snapshot }: LivePanelProps): ReactNode {
 		peerRef.current = next;
 		try {
 			await next.start();
+			// Negotiation is async: the call may have ended while it was in flight.
+			if (peerRef.current !== next) return;
+			// The call is live: hold the screen, and put the call in the system UI
+			// so it stays visible and controllable once the guest leaves the page.
+			const wake = new ScreenWakeGuard(browserScreenWakeDeps());
+			wakeRef.current = wake;
+			void wake.start();
+			const presence = new CallPresence(browserCallPresenceDeps());
+			presence.start({ title, status: "Connecting", muted: false }, { setMuted: applyMute, hangup: stop });
+			presenceRef.current = presence;
+			pipRef.current = new CallPip(browserCallPipDeps({ onActiveChange: setPipActive }));
 			setPeer(next);
 		} catch (cause) {
 			setError(describeStartFailure(cause));
@@ -87,21 +142,23 @@ export function LivePanel({ client, snapshot }: LivePanelProps): ReactNode {
 		} finally {
 			setStarting(false);
 		}
-	}, [client, starting, teardown]);
+	}, [applyMute, client, starting, stop, teardown, title]);
 
-	const stop = useCallback((): void => {
-		client.sendLiveStop();
-		teardown();
-	}, [client, teardown]);
+	// One source of truth for both surfaces: the lock-screen notification and the
+	// floating window show the same phase and mic state as the page.
+	useEffect(() => {
+		const state = { title, status, muted };
+		presenceRef.current?.update(state);
+		pipRef.current?.update(state);
+	}, [title, status, muted]);
 
-	const toggleMute = useCallback((): void => {
-		const active = peerRef.current;
-		if (!active) return;
-		const next = !muted;
-		active.setMuted(next);
-		client.sendLiveMute(next);
-		setMuted(next);
-	}, [client, muted]);
+	const togglePip = useCallback(async (): Promise<void> => {
+		const pip = pipRef.current;
+		if (!pip) return;
+		// Entering must happen inside the click: Android requires a user gesture.
+		if (pip.active) await pip.exit();
+		else await pip.enter({ title, status, muted });
+	}, [title, status, muted]);
 
 	if (snapshot.readOnly) {
 		// Hiding the control silently reads as a missing feature; say why it is absent.
@@ -112,7 +169,6 @@ export function LivePanel({ client, snapshot }: LivePanelProps): ReactNode {
 		);
 	}
 
-	const phase = snapshot.live.phase;
 	const transcript = snapshot.live.transcript;
 
 	return (
@@ -135,6 +191,18 @@ export function LivePanel({ client, snapshot }: LivePanelProps): ReactNode {
 							<PhoneOff size={14} />
 							End call
 						</button>
+						{pipSupported && (
+							<button
+								type="button"
+								className="lv-btn"
+								onClick={() => void togglePip()}
+								aria-pressed={pipActive}
+								title="Float the call over other apps"
+							>
+								<PictureInPicture size={14} />
+								{pipActive ? "Dock" : "Pop out"}
+							</button>
+						)}
 					</>
 				) : (
 					<button type="button" className="lv-btn lv-btn-on" onClick={() => void start()} disabled={starting}>

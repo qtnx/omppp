@@ -8,6 +8,7 @@ import {
 import type { LiveAgentEndpoint, LiveAgentIdentity, LiveMediaEndpoint } from "../../src/live/endpoints";
 import { LiveInputDeviceError } from "../../src/live/local-endpoints";
 import { buildDelegationContextAppend, type LiveClientMessage, type LiveServerEvent } from "../../src/live/protocol";
+import type { LiveTransportOptions } from "../../src/live/transport";
 import type { LivePhase } from "../../src/live/visualizer";
 
 // Drain the queued microtasks that serialize the controller's send chain (no wall clock).
@@ -87,10 +88,12 @@ interface Harness {
 	phases: LivePhase[];
 	transcripts: Array<LiveTranscript | undefined>;
 	terminals: Array<Error | undefined>;
+	/** Session the controller opened: instructions, voice, and the rest. */
+	readonly opened: LiveTransportOptions | undefined;
 	connectError?: Error;
 }
 
-function makeHarness(options?: { connectError?: Error }): Harness {
+function makeHarness(options?: { connectError?: Error; language?: string }): Harness {
 	const media = new FakeMedia();
 	const agent = new FakeAgent();
 	const transportCalls: string[] = [];
@@ -100,6 +103,7 @@ function makeHarness(options?: { connectError?: Error }): Harness {
 	const transcripts: Array<LiveTranscript | undefined> = [];
 	const terminals: Array<Error | undefined> = [];
 	let emit: (event: LiveServerEvent) => void = () => {};
+	let opened: LiveTransportOptions | undefined;
 
 	const identity: LiveAgentIdentity = { sessionId: "s1", username: "tester", firstName: "Test", cwd: "/tmp" };
 	const controllerOptions: LiveSessionControllerOptions = {
@@ -107,12 +111,14 @@ function makeHarness(options?: { connectError?: Error }): Harness {
 		agent,
 		identity,
 		authStorage: {} as AuthStorage,
+		language: options?.language,
 		callbacks: {
 			onPhase: phase => phases.push(phase),
 			onTranscript: transcript => transcripts.push(transcript),
 			onTerminal: error => terminals.push(error),
 		},
 		createTransport: transportOptions => {
+			opened = transportOptions;
 			emit = event => transportOptions.callbacks.onEvent(event);
 			return {
 				connect: async () => {
@@ -142,6 +148,9 @@ function makeHarness(options?: { connectError?: Error }): Harness {
 		phases,
 		transcripts,
 		terminals,
+		get opened() {
+			return opened;
+		},
 	};
 }
 
@@ -217,5 +226,45 @@ describe("LiveSessionController", () => {
 		expect(h.terminals).toHaveLength(1);
 		expect(h.terminals[0]?.message).toContain("ompx live --attach");
 		expect(h.media.calls).toContain("close");
+	});
+});
+
+describe("live call language", () => {
+	test("defaults the spoken language to Vietnamese when nobody picks one", async () => {
+		const h = makeHarness();
+		await h.controller.start();
+
+		expect(h.opened?.instructions).toContain("Your default spoken language is");
+		expect(h.opened?.instructions).toContain("vi-VN");
+		expect(h.opened?.instructions).toContain("Vietnamese");
+	});
+
+	test("an explicit language wins over the default", async () => {
+		const h = makeHarness({ language: "en-US" });
+		await h.controller.start();
+
+		expect(h.opened?.instructions).toContain("en-US");
+		expect(h.opened?.instructions).not.toContain("vi-VN");
+	});
+
+	test("a blank language falls back to the default instead of an empty directive", async () => {
+		const h = makeHarness({ language: "   " });
+		await h.controller.start();
+
+		expect(h.opened?.instructions).toContain("vi-VN");
+	});
+
+	test("an unrecognized tag reaches the model verbatim rather than throwing", async () => {
+		const h = makeHarness({ language: "qaa-x-private" });
+		await h.controller.start();
+
+		expect(h.opened?.instructions).toContain("qaa-x-private");
+	});
+
+	test("language leaves the output voice alone — timbre and locale are separate knobs", async () => {
+		const h = makeHarness({ language: "en-US" });
+		await h.controller.start();
+
+		expect(h.opened?.voice).toBe("sol");
 	});
 });
