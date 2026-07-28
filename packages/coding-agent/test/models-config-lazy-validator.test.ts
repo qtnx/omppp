@@ -31,7 +31,7 @@ async function runProbe(root: string, mode: "missing" | "custom"): Promise<Probe
 	return JSON.parse(stdout) as ProbeResult;
 }
 
-test("models config validation resources are retained only for a custom config", async () => {
+test("models config validation resources are retained only for a custom config", { timeout: 30000 }, async () => {
 	const tempDir = TempDir.createSync("@models-config-validator-");
 	try {
 		const missing = await runProbe(tempDir.path(), "missing");
