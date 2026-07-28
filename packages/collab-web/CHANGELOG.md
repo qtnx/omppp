@@ -2,24 +2,14 @@
 
 ## [Unreleased]
 
+## [1.6.7] - 2026-07-28
+
 ### Added
 
 - Added screen-wake handling to the voice call so a phone no longer dims and locks mid-conversation: the call acquires a Screen Wake Lock, re-acquires it when the page becomes visible again (the browser drops it on every backgrounding), and falls back to a 1.5 KB inaudible looping `playsInline` video on browsers without the API — older iOS Safari especially. Exactly one mechanism runs at a time, and both are released when the call ends, fails, or the page goes away.
 - Added the call to the phone's system UI through the Media Session API: title, phase, and mic state appear on the lock screen and in the notification shade, with `play`/`pause`/`stop` plus Chrome's `hangup` and `togglemicrophone` actions wired to the real mute and hang-up.
 - Added a "Pop out" control that floats the call over other apps using video Picture-in-Picture (Android Chrome 105+): call state is painted into a canvas and captured into the PiP video, with mute and hang-up reachable through the Media Session buttons. Document Picture-in-Picture is desktop-only, and a true system overlay needs a native shell, so this is the ceiling for an installed PWA.
 - Added a `?lang=<bcp47>` override for the spoken language of a voice call; it rides along with the WebRTC offer. Without it the client sends no language and the host's default (`vi-VN`) applies, which is also what every older client does.
-
-## [1.6.6] - 2026-07-25
-
-### Added
-
-- Added a voice panel for write-capable guests: the browser captures the microphone, negotiates a WebRTC call whose SDP the host signs, plays the assistant's audio, and mirrors the host's call phase and transcript. Read-only guests do not see it, and an insecure page explains that HTTPS or localhost is required for microphone access.
-- Added mermaid rendering to transcript markdown: a ```mermaid fence renders as an SVG diagram (mermaid `securityLevel: "strict"`), falling back to the source as code while the browser renders and on any parse error.
-- Added a voice-only view at `?voice=1`: the same relay session with just the call controls, no transcript, tool cards, agent rail, or composer — 70 DOM nodes and ~0.1% idle CPU against ~3% for the full client on a 360-row session.
-
-### Fixed
-
-- Fixed the running-agent status dot burning CPU on long sessions: its pulse animated `box-shadow` with `color-mix()`, which Chrome cannot run on the compositor, so every frame re-ran style recalc across the whole transcript. On a 360-row session that cost ~21% CPU while completely idle (60 recalcs/sec); the halo now animates a pseudo-element's `transform`/`opacity`, measuring ~3% CPU and 5 recalcs/sec, and the reduced-motion path still drops the motion.
 
 ## [17.1.0] - 2026-07-24
 
@@ -227,6 +217,18 @@
 ### Security
 
 - Hardened transcript Markdown rendering by escaping embedded HTML and allowing only safe link schemes
+
+## [1.6.6] - 2026-07-25
+
+### Added
+
+- Added a voice panel for write-capable guests: the browser captures the microphone, negotiates a WebRTC call whose SDP the host signs, plays the assistant's audio, and mirrors the host's call phase and transcript. Read-only guests do not see it, and an insecure page explains that HTTPS or localhost is required for microphone access.
+- Added mermaid rendering to transcript markdown: a ```mermaid fence renders as an SVG diagram (mermaid `securityLevel: "strict"`), falling back to the source as code while the browser renders and on any parse error.
+- Added a voice-only view at `?voice=1`: the same relay session with just the call controls, no transcript, tool cards, agent rail, or composer — 70 DOM nodes and ~0.1% idle CPU against ~3% for the full client on a 360-row session.
+
+### Fixed
+
+- Fixed the running-agent status dot burning CPU on long sessions: its pulse animated `box-shadow` with `color-mix()`, which Chrome cannot run on the compositor, so every frame re-ran style recalc across the whole transcript. On a 360-row session that cost ~21% CPU while completely idle (60 recalcs/sec); the halo now animates a pseudo-element's `transform`/`opacity`, measuring ~3% CPU and 5 recalcs/sec, and the reduced-motion path still drops the motion.
 
 ## [1.6.4] - 2026-07-19
 
