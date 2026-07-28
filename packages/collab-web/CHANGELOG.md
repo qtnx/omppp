@@ -2,15 +2,6 @@
 
 ## [Unreleased]
 
-## [1.6.7] - 2026-07-28
-
-### Added
-
-- Added screen-wake handling to the voice call so a phone no longer dims and locks mid-conversation: the call acquires a Screen Wake Lock, re-acquires it when the page becomes visible again (the browser drops it on every backgrounding), and falls back to a 1.5 KB inaudible looping `playsInline` video on browsers without the API — older iOS Safari especially. Exactly one mechanism runs at a time, and both are released when the call ends, fails, or the page goes away.
-- Added the call to the phone's system UI through the Media Session API: title, phase, and mic state appear on the lock screen and in the notification shade, with `play`/`pause`/`stop` plus Chrome's `hangup` and `togglemicrophone` actions wired to the real mute and hang-up.
-- Added a "Pop out" control that floats the call over other apps using video Picture-in-Picture (Android Chrome 105+): call state is painted into a canvas and captured into the PiP video, with mute and hang-up reachable through the Media Session buttons. Document Picture-in-Picture is desktop-only, and a true system overlay needs a native shell, so this is the ceiling for an installed PWA.
-- Added a `?lang=<bcp47>` override for the spoken language of a voice call; it rides along with the WebRTC offer. Without it the client sends no language and the host's default (`vi-VN`) applies, which is also what every older client does.
-
 ## [17.1.0] - 2026-07-24
 
 ### Fixed
@@ -217,6 +208,15 @@
 ### Security
 
 - Hardened transcript Markdown rendering by escaping embedded HTML and allowing only safe link schemes
+
+## [1.6.7] - 2026-07-28
+
+### Added
+
+- Added screen-wake handling to the voice call so a phone no longer dims and locks mid-conversation: the call acquires a Screen Wake Lock, re-acquires it when the page becomes visible again (the browser drops it on every backgrounding), and falls back to a 1.5 KB inaudible looping `playsInline` video on browsers without the API — older iOS Safari especially. Exactly one mechanism runs at a time, and both are released when the call ends, fails, or the page goes away.
+- Added the call to the phone's system UI through the Media Session API: title, phase, and mic state appear on the lock screen and in the notification shade, with `play`/`pause`/`stop` plus Chrome's `hangup` and `togglemicrophone` actions wired to the real mute and hang-up.
+- Added a "Pop out" control that floats the call over other apps using video Picture-in-Picture (Android Chrome 105+): call state is painted into a canvas and captured into the PiP video, with mute and hang-up reachable through the Media Session buttons. Document Picture-in-Picture is desktop-only, and a true system overlay needs a native shell, so this is the ceiling for an installed PWA.
+- Added a `?lang=<bcp47>` override for the spoken language of a voice call; it rides along with the WebRTC offer. Without it the client sends no language and the host's default (`vi-VN`) applies, which is also what every older client does.
 
 ## [1.6.6] - 2026-07-25
 
