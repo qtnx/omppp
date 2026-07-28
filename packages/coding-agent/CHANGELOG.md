@@ -5,6 +5,9 @@
 ### Added
 
 - Added a spoken-language default to live voice: realtime calls now answer in Vietnamese (`vi-VN`) unless something picks another language. The live instructions carry the language directive, `ompx live --language <bcp47>` overrides it on the CLI, and a collab guest overrides it per call through the `live-offer` frame's new `lang` field. Output voice (`--voice`, a timbre id) is unchanged and independent of language.
+### Fixed
+
+- Fixed async job result delivery awaiting each completion sink globally, so one slow result formatter or artifact write no longer delays other completed subagents; delivery remains bounded to 32 concurrent sinks.
 
 ## [1.6.6] - 2026-07-25
 

@@ -38,6 +38,61 @@ describe("AsyncJobManager", () => {
 		expect(manager.getJob(jobId)?.status).toBe("completed");
 	});
 
+	test("starts ready completion sinks without waiting for an earlier sink", async () => {
+		const releaseFirst = Promise.withResolvers<void>();
+		const firstStarted = Promise.withResolvers<void>();
+		const started: string[] = [];
+		const manager = new AsyncJobManager({
+			onJobComplete: async jobId => {
+				started.push(jobId);
+				if (jobId === "blocked") {
+					firstStarted.resolve();
+					await releaseFirst.promise;
+				}
+			},
+		});
+
+		manager.register("task", "blocked", async () => "blocked result", { id: "blocked" });
+		await firstStarted.promise;
+
+		const queuedIds = Array.from({ length: 7 }, (_, index) => `queued-${index}`);
+		for (const jobId of queuedIds) {
+			manager.register("task", jobId, async () => `${jobId} result`, { id: jobId });
+		}
+		await manager.waitForAll();
+		for (let index = 0; index < 5; index++) await Promise.resolve();
+		const startedBeforeRelease = [...started];
+
+		releaseFirst.resolve();
+		expect(await manager.drainDeliveries({ timeoutMs: 2_000 })).toBe(true);
+		expect(startedBeforeRelease.sort()).toEqual(["blocked", ...queuedIds].sort());
+	});
+
+	test("keeps concurrent completion delivery bounded", async () => {
+		const releaseSinks = Promise.withResolvers<void>();
+		const started: string[] = [];
+		const manager = new AsyncJobManager({
+			onJobComplete: async jobId => {
+				started.push(jobId);
+				await releaseSinks.promise;
+			},
+		});
+
+		const jobIds = Array.from({ length: 33 }, (_, index) => `bounded-${index}`);
+		for (const jobId of jobIds) {
+			manager.register("task", jobId, async () => `${jobId} result`, { id: jobId, queued: true });
+		}
+		await manager.waitForAll();
+		for (let index = 0; index < 5; index++) await Promise.resolve();
+		const startedBeforeRelease = started.length;
+
+		releaseSinks.resolve();
+		expect(await manager.drainDeliveries({ timeoutMs: 2_000 })).toBe(true);
+		expect(startedBeforeRelease).toBeGreaterThan(1);
+		expect(startedBeforeRelease).toBeLessThan(jobIds.length);
+		expect(started.sort()).toEqual(jobIds.sort());
+	});
+
 	test("emits lifecycle and progress events for background jobs", async () => {
 		const eventBus = new EventBus();
 		const lifecycleEvents: unknown[] = [];
