@@ -52,6 +52,7 @@ describe("release publish", () => {
 				exports: {
 					"./desktop": { types: "./native/desktop.d.ts", import: "./native/desktop.js" },
 					"./process": { types: "./native/process.d.ts", import: "./native/process.js" },
+					"./live": { types: "./native/live.d.ts", import: "./native/live.js" },
 				},
 			}),
 		);
@@ -63,6 +64,8 @@ describe("release publish", () => {
 				"native/desktop.d.ts",
 				"native/process.js",
 				"native/process.d.ts",
+				"native/live.js",
+				"native/live.d.ts",
 			]),
 		);
 	});
