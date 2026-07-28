@@ -6,6 +6,9 @@
 
 - Preserved the `/live` visualizer across agent question dialogs, restoring it after an answer or cancellation instead of dropping back to the normal editor.
 - Fixed `/live --remote` being rejected by slash-command dispatch before it could start the SSH live bridge.
+### Added
+
+- Added a spoken-language default to live voice: realtime calls now answer in Vietnamese (`vi-VN`) unless something picks another language. The live instructions carry the language directive, `ompx live --language <bcp47>` overrides it on the CLI, and a collab guest overrides it per call through the `live-offer` frame's new `lang` field. Output voice (`--voice`, a timbre id) is unchanged and independent of language.
 
 ## [1.6.6] - 2026-07-25
 

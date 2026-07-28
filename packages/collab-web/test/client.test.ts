@@ -10,7 +10,7 @@ import type {
 	SubagentProgressPayload,
 	WireMessage,
 } from "@oh-my-pi/pi-wire";
-import { GuestClient } from "../src/lib/client";
+import { GuestClient, voiceLanguageOverride } from "../src/lib/client";
 import { COLLAB_PROTO, encodeBase64Url } from "../src/lib/link";
 import { CollabSocket } from "../src/lib/socket";
 
@@ -306,5 +306,41 @@ describe("GuestClient frame apply", () => {
 		expect(after).not.toBe(before);
 		expect(after.agents).not.toBe(before.agents);
 		expect(after.entries).toBe(before.entries);
+	});
+});
+
+describe("live call language", () => {
+	function captureSends(run: (client: GuestClient) => void): GuestFrame[] {
+		const sent: GuestFrame[] = [];
+		const sendSpy = vi.spyOn(CollabSocket.prototype, "send").mockImplementation((frame: GuestFrame) => {
+			sent.push(frame);
+		});
+		try {
+			run(liveClient());
+		} finally {
+			sendSpy.mockRestore();
+		}
+		return sent;
+	}
+
+	it("omits lang when the guest has no explicit choice, leaving the host's default", () => {
+		const sent = captureSends(client => void client.sendLiveOffer("v=0"));
+
+		expect(sent).toEqual([{ t: "live-offer", reqId: 1, sdp: "v=0" }]);
+		// The absent key is the contract: an older host and this one both fall back.
+		expect(Object.hasOwn(sent[0] as object, "lang")).toBe(false);
+	});
+
+	it("carries an explicit language on the offer", () => {
+		const sent = captureSends(client => void client.sendLiveOffer("v=0", "en-US"));
+
+		expect(sent).toEqual([{ t: "live-offer", reqId: 1, sdp: "v=0", lang: "en-US" }]);
+	});
+
+	it("reads the explicit choice from ?lang= and treats blank or missing as no opinion", () => {
+		expect(voiceLanguageOverride("?voice=1&lang=en-US")).toBe("en-US");
+		expect(voiceLanguageOverride("?lang=%20")).toBeUndefined();
+		expect(voiceLanguageOverride("?voice=1")).toBeUndefined();
+		expect(voiceLanguageOverride("")).toBeUndefined();
 	});
 });
