@@ -6186,6 +6186,24 @@ export class AgentSession {
 	}
 
 	/**
+	 * Queue a user message without starting a turn.
+	 *
+	 * Resolves after usage preflight and queue acceptance, not model completion.
+	 */
+	async enqueueUserMessage(
+		content: string | (TextContent | ImageContent)[],
+		deliverAs: "steer" | "followUp",
+		signal?: AbortSignal,
+	): Promise<boolean> {
+		if (signal?.aborted) return false;
+		const { text, images } = this.#normalizeUserMessageContent(content);
+		if (!(await this.#runUsageAwarePreflight()) || signal?.aborted) return false;
+
+		await this.#queueUserMessage(text, images, deliverAs, signal);
+		return !signal?.aborted;
+	}
+
+	/**
 	 * Send a user message through the prompt flow.
 	 *
 	 * Omitted `deliverAs` starts a turn when idle and queues as a steer while streaming.
@@ -6195,37 +6213,16 @@ export class AgentSession {
 		content: string | (TextContent | ImageContent)[],
 		options?: { deliverAs?: "steer" | "followUp" },
 	): Promise<void> {
-		// Normalize content to text string + optional images
-		let text: string;
-		let images: ImageContent[] | undefined;
-
-		if (typeof content === "string") {
-			text = content;
-		} else {
-			const textParts: string[] = [];
-			images = [];
-			for (const part of content) {
-				if (part.type === "text") {
-					textParts.push(part.text);
-				} else {
-					images.push(part);
-				}
-			}
-			text = textParts.join("\n");
-			if (images.length === 0) images = undefined;
-		}
-
-		if (options?.deliverAs && !(await this.#runUsageAwarePreflight())) return;
-
 		if (options?.deliverAs === "followUp") {
-			await this.#queueUserMessage(text, images, "followUp");
+			await this.enqueueUserMessage(content, "followUp");
 			return;
 		}
 		if (options?.deliverAs === "steer") {
-			await this.#queueUserMessage(text, images, "steer");
+			await this.enqueueUserMessage(content, "steer");
 			return;
 		}
 
+		const { text, images } = this.#normalizeUserMessageContent(content);
 		// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion.
 		// `streamingBehavior: "steer"` preserves prompt-flow side effects during streaming while
 		// covering the narrow race where a stream starts before prompt() acquires the turn.
@@ -6234,6 +6231,26 @@ export class AgentSession {
 			images,
 			streamingBehavior: "steer",
 		});
+	}
+
+	#normalizeUserMessageContent(content: string | (TextContent | ImageContent)[]): {
+		text: string;
+		images: ImageContent[] | undefined;
+	} {
+		if (typeof content === "string") {
+			return { text: content, images: undefined };
+		}
+
+		const textParts: string[] = [];
+		const images: ImageContent[] = [];
+		for (const part of content) {
+			if (part.type === "text") {
+				textParts.push(part.text);
+			} else {
+				images.push(part);
+			}
+		}
+		return { text: textParts.join("\n"), images: images.length > 0 ? images : undefined };
 	}
 
 	/** Clear queued messages and return the user-restorable ones (text plus any attached images).

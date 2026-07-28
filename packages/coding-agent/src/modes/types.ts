@@ -378,6 +378,7 @@ export interface InteractiveModeContext {
 	handleSTTToggle(): Promise<void>;
 	/** Start or stop the Codex-backed realtime voice session, locally or bridged to a remote client. */
 	handleLiveCommand(options?: { remote?: boolean; forwardCredentials?: boolean }): Promise<void>;
+	handleTelegramCommand(action: string): Promise<void>;
 	executeCompaction(
 		customInstructionsOrOptions?: string | CompactOptions,
 		isAuto?: boolean,
