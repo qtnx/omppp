@@ -88,15 +88,15 @@ const codingAgentBucketPlans: Record<CodingAgentBucket, { label: string; paralle
 // runs them through a bounded pool instead of strictly serially: the native
 // bucket alone is 66 chunks whose median runtime is ~10s, i.e. ~12min of pure
 // serial wall time on the CI critical path. A chunk peaks ~1.3GB RSS under
-// `--smol`, so the pool width is what keeps a memory-capped runner alive —
-// `groupConcurrency` additionally clamps to the host's core count, so a 2-core
-// runner never oversubscribes. Singleton stays at 1: its files accumulate
+// `--smol`; cap native fan-out at three so PDF/native chunks are not starved
+// until the 10-minute watchdog on memory-capped runners.
+// `groupConcurrency` still clamps to core count. Singleton stays at 1 because
 // native/global state and are deliberately serialized.
 const commandGroupParallel: Record<string, number> = {
 	"coding-agent-singleton": 1,
 	"coding-agent-ui": 2,
 	"coding-agent-runtime": 2,
-	"coding-agent-native": 4,
+	"coding-agent-native": 3,
 };
 
 // Effective pool width for a command group: the configured width, clamped to
