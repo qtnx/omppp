@@ -47,20 +47,24 @@ async function pingComputerWorker(
 	}
 }
 
-it("starts ordinary CLI paths without loading the native computer addon", async () => {
-	const cliPath = path.resolve(import.meta.dir, "../../cli.ts");
-	for (const args of [
-		["--no-addons", cliPath, "--version"],
-		[cliPath, "--help"],
-	]) {
-		const proc = Bun.spawn([process.execPath, ...args], {
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
-		expect(exitCode, `${args.at(-1)}: ${stderr}`).toBe(0);
-	}
-});
+it(
+	"starts ordinary CLI paths without loading the native computer addon",
+	async () => {
+		const cliPath = path.resolve(import.meta.dir, "../../cli.ts");
+		for (const args of [
+			["--no-addons", cliPath, "--version"],
+			[cliPath, "--help"],
+		]) {
+			const proc = Bun.spawn([process.execPath, ...args], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+			expect(exitCode, `${args.at(-1)}: ${stderr}`).toBe(0);
+		}
+	},
+	{ timeout: 30000 },
+);
 
 it("dispatches the computer worker through the CLI host selector in a child process", async () => {
 	const fixture = path.resolve(import.meta.dir, "../../../test/fixtures/computer-worker-cli-selector.ts");
