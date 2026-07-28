@@ -5546,6 +5546,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#omfgController.handleEscape();
 	}
 
+	hasActiveUsagePanel(): boolean {
+		return this.#commandController.hasActiveUsagePanel();
+	}
+
+	dismissUsagePanel(): boolean {
+		return this.#commandController.dismissUsagePanel();
+	}
+
 	cycleThinkingLevel(): void {
 		this.#inputController.cycleThinkingLevel();
 	}

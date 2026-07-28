@@ -72,8 +72,10 @@ function createContext(): {
 		handleBtwCommand: Spy;
 		handleBtwEscape: Spy;
 		handleOmfgEscape: Spy;
+		dismissUsagePanel: Spy;
 		hasActiveBtw: Spy;
 		hasActiveOmfg: Spy;
+		hasActiveUsagePanel: Spy;
 		onInputCallback: Spy;
 		prompt: Spy;
 		requestRender: Spy;
@@ -107,6 +109,8 @@ function createContext(): {
 	const hasActiveBtw = vi.fn(() => false);
 	const handleOmfgEscape = vi.fn(() => true);
 	const hasActiveOmfg = vi.fn(() => false);
+	const dismissUsagePanel = vi.fn(() => false);
+	const hasActiveUsagePanel = vi.fn(() => false);
 	const updatePendingMessagesDisplay = vi.fn();
 	const prompt = vi.fn();
 	const startPendingSubmission = vi.fn(
@@ -219,6 +223,8 @@ function createContext(): {
 		hasActiveBtw,
 		handleOmfgEscape,
 		hasActiveOmfg,
+		dismissUsagePanel,
+		hasActiveUsagePanel,
 		showTreeSelector: vi.fn(),
 		showUserMessageSelector: vi.fn(),
 		showSessionSelector: vi.fn(),
@@ -247,7 +253,9 @@ function createContext(): {
 			handleBtwEscape,
 			hasActiveBtw,
 			handleOmfgEscape,
+			dismissUsagePanel,
 			hasActiveOmfg,
+			hasActiveUsagePanel,
 			onInputCallback,
 			prompt,
 			requestRender,
@@ -496,6 +504,34 @@ describe("InputController escape behavior", () => {
 		expect(spies.handleBtwEscape).toHaveBeenCalledTimes(1);
 		expect(spies.abortHandoff).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
+	});
+
+	it("dismisses a visible /usage panel without canceling handoff or the main stream", () => {
+		const { ctx, editor, spies, sessionState } = createContext();
+		abortViewSession(ctx).isGeneratingHandoff = true;
+		sessionState.isStreaming = true;
+		spies.hasActiveUsagePanel.mockReturnValue(true);
+		spies.dismissUsagePanel.mockReturnValue(true);
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(spies.dismissUsagePanel).toHaveBeenCalledTimes(1);
+		expect(spies.abortHandoff).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+	});
+
+	it("keeps the existing handoff Escape action when no /usage panel is visible", () => {
+		const { ctx, editor, spies } = createContext();
+		abortViewSession(ctx).isGeneratingHandoff = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(spies.dismissUsagePanel).not.toHaveBeenCalled();
+		expect(spies.abortHandoff).toHaveBeenCalledTimes(1);
 	});
 
 	it("requires a second Esc within two seconds to abort streaming", () => {

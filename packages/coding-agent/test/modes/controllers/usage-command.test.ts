@@ -1,6 +1,8 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
+import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
+import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 
@@ -8,8 +10,20 @@ interface RenderableBlock {
 	render(width: number): string[];
 }
 
+interface UsagePanelBlock extends RenderableBlock {
+	setNativeScrollbackCommittedRows(rows: number): void;
+}
+
 function isRenderableBlock(value: unknown): value is RenderableBlock {
 	return value !== null && typeof value === "object" && "render" in value && typeof value.render === "function";
+}
+
+function isUsagePanelBlock(value: unknown): value is UsagePanelBlock {
+	return (
+		isRenderableBlock(value) &&
+		"setNativeScrollbackCommittedRows" in value &&
+		typeof value.setNativeScrollbackCommittedRows === "function"
+	);
 }
 
 function renderPresentedBlocks(value: unknown): string {
@@ -22,6 +36,15 @@ function renderPresentedBlocks(value: unknown): string {
 
 function createUsageSessionDouble() {
 	return { getUsageReportingModelSelectors: () => [] };
+}
+
+function createUsageReport(): UsageReport {
+	return {
+		provider: "openai-codex",
+		fetchedAt: 1_700_000_000_000,
+		limits: [],
+		metadata: { email: "user@example.com" },
+	};
 }
 
 describe("CommandController /usage", () => {
@@ -227,5 +250,116 @@ describe("CommandController /usage", () => {
 
 		await learningController.handleLearningCommand("/learning unknown");
 		expect(learningController.isUsagePanelActive()).toBe(false);
+	});
+
+	it("deactivates only after every rendered /usage row enters native scrollback", async () => {
+		const presented: unknown[] = [];
+		const ctx = {
+			session: createUsageSessionDouble(),
+			ui: { terminal: { columns: 100 } },
+			present: vi.fn((component: unknown) => presented.push(component)),
+			showWarning: vi.fn(),
+			showError: vi.fn(),
+		} as unknown as InteractiveModeContext;
+		const controller = new CommandController(ctx);
+
+		await controller.handleUsageCommand([createUsageReport()]);
+		const panel = presented[0];
+		if (!isUsagePanelBlock(panel)) throw new Error("Expected a scroll-aware usage panel");
+		const rows = panel.render(120);
+		expect(rows.length).toBeGreaterThan(0);
+
+		panel.setNativeScrollbackCommittedRows(rows.length);
+		expect(controller.isUsagePanelActive()).toBe(true);
+		const narrowRows = panel.render(20);
+		expect(narrowRows.length).toBeGreaterThan(rows.length);
+		await Promise.resolve();
+		expect(controller.isUsagePanelActive()).toBe(false);
+
+		await controller.handleUsageCommand([createUsageReport()]);
+		expect(controller.isUsagePanelActive()).toBe(true);
+		panel.setNativeScrollbackCommittedRows(narrowRows.length);
+		await Promise.resolve();
+		expect(controller.isUsagePanelActive()).toBe(true);
+	});
+
+	it("keeps partial usage rows live across repeats and resize, then dismisses to the exact committed prefix", async () => {
+		const presented: unknown[] = [];
+		const removeChild = vi.fn();
+		const requestRender = vi.fn();
+		const ctx = {
+			session: createUsageSessionDouble(),
+			ui: { terminal: { columns: 100 }, requestRender },
+			chatContainer: {
+				isBlockUncommitted: vi.fn(() => false),
+				removeChild,
+			},
+			present: vi.fn((component: unknown) => presented.push(component)),
+			showWarning: vi.fn(),
+			showError: vi.fn(),
+		} as unknown as InteractiveModeContext;
+		const controller = new CommandController(ctx);
+
+		await controller.handleUsageCommand([createUsageReport()]);
+		const panel = presented[0];
+		if (!isUsagePanelBlock(panel)) throw new Error("Expected a scroll-aware usage panel");
+		const initialRows = panel.render(20);
+		const committedRows = Math.max(1, initialRows.length - 1);
+
+		panel.setNativeScrollbackCommittedRows(committedRows);
+		const resizedRows = panel.render(120);
+		expect(committedRows).toBeGreaterThanOrEqual(resizedRows.length);
+		panel.setNativeScrollbackCommittedRows(committedRows);
+		await Promise.resolve();
+		expect(controller.isUsagePanelActive()).toBe(true);
+
+		expect(controller.dismissUsagePanel()).toBe(true);
+		expect(removeChild).not.toHaveBeenCalled();
+		const dismissedRows = panel.render(40);
+		expect(dismissedRows).toEqual(initialRows.slice(0, committedRows));
+		expect(dismissedRows).not.toEqual(resizedRows);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+		expect(controller.dismissUsagePanel()).toBe(false);
+	});
+
+	it("retracts only the uncommitted usage suffix inside a real transcript", async () => {
+		const transcript = new TranscriptContainer();
+		const before = new Text("before history", 0, 0);
+		const after = new Text("after history", 0, 0);
+		let usagePanel: Component | undefined;
+		transcript.addChild(before);
+		const ctx = {
+			session: createUsageSessionDouble(),
+			ui: { terminal: { columns: 100 }, requestRender: vi.fn() },
+			chatContainer: transcript,
+			present: vi.fn((component: Component) => {
+				usagePanel = component;
+				transcript.addChild(component);
+			}),
+			showWarning: vi.fn(),
+			showError: vi.fn(),
+		} as unknown as InteractiveModeContext;
+		const controller = new CommandController(ctx);
+
+		await controller.handleUsageCommand([createUsageReport()]);
+		if (!usagePanel) throw new Error("Expected /usage to mount a transcript component");
+		transcript.addChild(after);
+		const beforeDismiss = [...transcript.render(120)];
+		const beforeAfterIndex = beforeDismiss.findIndex(line => line.trimEnd() === "after history");
+		expect(beforeAfterIndex).toBeGreaterThan(3);
+		const committedRows = beforeAfterIndex - 2;
+		const committedPrefix = beforeDismiss.slice(0, committedRows);
+
+		transcript.setNativeScrollbackCommittedRows(committedRows);
+		expect(transcript.isBlockUncommitted(usagePanel)).toBe(false);
+		expect(transcript.isBlockUncommitted(after)).toBe(true);
+		expect(controller.dismissUsagePanel()).toBe(true);
+		const afterDismiss = transcript.render(120);
+		const afterAfterIndex = afterDismiss.findIndex(line => line.trimEnd() === "after history");
+
+		expect(afterDismiss.slice(0, committedRows)).toEqual(committedPrefix);
+		expect(afterAfterIndex).toBeGreaterThanOrEqual(committedRows);
+		expect(afterAfterIndex).toBeLessThan(beforeAfterIndex);
+		expect(afterDismiss.slice(afterAfterIndex)).toEqual(beforeDismiss.slice(beforeAfterIndex));
 	});
 });
