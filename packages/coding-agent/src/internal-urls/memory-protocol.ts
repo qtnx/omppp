@@ -6,6 +6,7 @@ import { getMnemopiSessionState, type MnemopiScopedMemoryHit, type MnemopiSessio
 import { AgentRegistry } from "../registry/agent-registry";
 import { isMarkdownPath } from "../utils/lang-from-path";
 import { buildDirectoryResource } from "./filesystem-resource";
+import { parseInternalUrl } from "./parse";
 import { validateRelativePath } from "./skill-protocol";
 import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, UrlCompletion } from "./types";
 
@@ -43,6 +44,71 @@ function ensureWithinRoot(targetPath: string, rootPath: string): void {
 function toMemoryValidationError(error: unknown): Error {
 	const message = error instanceof Error ? error.message : String(error);
 	return new Error(message.replace("skill://", "memory://"));
+}
+
+export interface MemoryGlobPattern {
+	baseUrl: string;
+	globPattern: string;
+}
+
+/**
+ * Decode percent-escapes in a raw glob-suffix segment, bracket-escaping any
+ * glob metacharacter that was percent-encoded so it stays a literal filename
+ * character instead of becoming glob syntax.
+ */
+function decodeGlobSuffixSegment(rawSegment: string): string {
+	// Escape runs are decoded together so multi-byte UTF-8 sequences survive.
+	return rawSegment.replace(/(?:%[0-9a-f]{2})+/gi, run => decodeURIComponent(run).replace(/[*?[{]/g, "[$&]"));
+}
+
+/**
+ * Split a memory:// glob at its first wildcard after validating the complete
+ * decoded path. The suffix is validated before filesystem globbing so `..`
+ * cannot escape a safely resolved base directory.
+ */
+export function splitMemoryGlobPattern(input: string): MemoryGlobPattern {
+	const urlMatch = input.match(/^([a-z][a-z0-9+.-]*:\/\/[^/?#]*)(\/.*)?$/i);
+	if (!urlMatch) {
+		throw new Error(`Invalid memory glob URL: ${input}`);
+	}
+
+	// Parse only the scheme and authority. A literal `?` in the path is glob
+	// syntax, not a query delimiter, and must survive unchanged.
+	const url = parseInternalUrl(urlMatch[1]);
+	const namespace = url.rawHost || url.hostname;
+	if (url.protocol !== "memory:" || namespace !== MEMORY_NAMESPACE) {
+		throw new Error(`Memory glob patterns require the ${MEMORY_NAMESPACE} namespace: ${input}`);
+	}
+
+	const rawPathname = urlMatch[2] ?? "";
+	if (/%(?:2f|5c)/i.test(rawPathname)) {
+		throw new Error(`Encoded path separators are not allowed in memory:// glob patterns: ${input}`);
+	}
+
+	let relativePath: string;
+	try {
+		relativePath = decodeURIComponent(rawPathname.replace(/^\//, ""));
+	} catch {
+		throw new Error(`Invalid URL encoding in memory:// path: ${input}`);
+	}
+
+	try {
+		validateRelativePath(relativePath);
+	} catch (error) {
+		throw toMemoryValidationError(error);
+	}
+
+	const rawSegments = rawPathname.replace(/^\//, "").split("/");
+	const firstGlobIndex = rawSegments.findIndex(segment => ["*", "?", "[", "{"].some(char => segment.includes(char)));
+	if (firstGlobIndex === -1) {
+		throw new Error(`memory:// URL does not contain a glob pattern: ${input}`);
+	}
+
+	const rawBasePath = rawSegments.slice(0, firstGlobIndex).join("/") || ".";
+	return {
+		baseUrl: `memory://${namespace}/${rawBasePath}`,
+		globPattern: rawSegments.slice(firstGlobIndex).map(decodeGlobSuffixSegment).join("/"),
+	};
 }
 
 /**
@@ -91,12 +157,14 @@ async function tryResolveInRoot(url: InternalUrl, memoryRoot: string): Promise<I
 	const targetPath = resolveMemoryUrlToPath(url, resolvedRoot);
 	ensureWithinRoot(targetPath, resolvedRoot);
 
-	const parentDir = path.dirname(targetPath);
-	try {
-		const realParent = await fs.realpath(parentDir);
-		ensureWithinRoot(realParent, resolvedRoot);
-	} catch (error) {
-		if (!isEnoent(error)) throw error;
+	if (targetPath !== resolvedRoot) {
+		const parentDir = path.dirname(targetPath);
+		try {
+			const realParent = await fs.realpath(parentDir);
+			ensureWithinRoot(realParent, resolvedRoot);
+		} catch (error) {
+			if (!isEnoent(error)) throw error;
+		}
 	}
 
 	let realTargetPath: string;

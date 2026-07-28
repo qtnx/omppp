@@ -830,10 +830,9 @@ function convertMessages(
 						case "thinking":
 							// Skip empty thinking blocks
 							if (c.thinking.trim().length === 0) continue;
-							// Thinking blocks require a valid signature when sent as reasoningContent.
-							// If the signature is missing (e.g., from an aborted stream), or the model
-							// doesn't support signatures, convert to plain text instead.
-							if (supportsThinkingSignature(model) && c.thinkingSignature) {
+							// A captured signature is authoritative even when the model id is an opaque ARN.
+							// Without one, known non-Claude families use unsigned reasoning; known Claude ids demote to text.
+							if (c.thinkingSignature) {
 								contentBlocks.push({
 									reasoningContent: {
 										reasoningText: { text: c.thinking.toWellFormed(), signature: c.thinkingSignature },

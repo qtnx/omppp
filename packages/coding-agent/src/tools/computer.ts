@@ -5,7 +5,8 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
-import type { ComputerAction, ComputerSafetyCheck, ComputerToolCallMetadata } from "@oh-my-pi/pi-ai";
+import type { ComputerAction, ComputerSafetyCheck, ComputerToolCallMetadata, Model } from "@oh-my-pi/pi-ai";
+import { isClaudeModelId } from "@oh-my-pi/pi-catalog/identity";
 import type {
 	DesktopAction,
 	DesktopCapabilities,
@@ -13,59 +14,115 @@ import type {
 	DesktopDisplay,
 	DesktopSessionOptions,
 } from "@oh-my-pi/pi-natives";
-import { prompt, sanitizeText } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
+import { once, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
+import { type Type, type } from "arktype";
 import computerDescription from "../prompts/tools/computer.md" with { type: "text" };
 import { truncateForPrompt } from "./approval";
 import { type ComputerController, ComputerSupervisor, registerComputerController } from "./computer/supervisor";
 import type { ToolSession } from "./index";
 import { ToolError, throwIfAborted } from "./tool-errors";
 
+// Image transports that cannot preserve native screenshot detail resize frames
+// without returning transformed dimensions. Keep their native coordinate frames
+// below the empirically verified threshold so pointer actions match what the
+// model sees. Claude paths predate the resolved transport capability and retain
+// their established model-family fallback.
+const COORDINATE_SAFE_MAX_CAPTURE_WIDTH = 1280;
+const COORDINATE_SAFE_MAX_CAPTURE_HEIGHT = 896;
+
+function usesCoordinateSafeImageSizing(model: Model | undefined): boolean {
+	if (!model) return false;
+	const compat = model.compat;
+	return (
+		(!!compat && "supportsImageDetailOriginal" in compat && compat.supportsImageDetailOriginal === false) ||
+		isClaudeModelId(model.id) ||
+		(model.requestModelId !== undefined && isClaudeModelId(model.requestModelId)) ||
+		(typeof model.name === "string" && /^claude(?:\s|$)/i.test(model.name))
+	);
+}
+
+function captureOptions(session: ToolSession, coordinateSafeImageSizing: boolean): DesktopSessionOptions {
+	const maxWidth = session.settings.get("computer.maxWidth");
+	const maxHeight = session.settings.get("computer.maxHeight");
+	return {
+		backend: session.settings.get("computer.backend"),
+		display: session.settings.get("computer.display"),
+		maxWidth: coordinateSafeImageSizing ? Math.min(maxWidth, COORDINATE_SAFE_MAX_CAPTURE_WIDTH) : maxWidth,
+		maxHeight: coordinateSafeImageSizing ? Math.min(maxHeight, COORDINATE_SAFE_MAX_CAPTURE_HEIGHT) : maxHeight,
+	};
+}
+
 // Desktop actions cross the N-API boundary as i32; out-of-range JS numbers
 // must fail closed here instead of truncating in the napi conversion.
 const INT32_MIN = -2_147_483_648;
 const INT32_MAX = 2_147_483_647;
 
-const coordinateSchema = type("0 <= number.integer <= 2147483647");
-const scrollDeltaSchema = type("-2147483648 <= number.integer <= 2147483647");
+type ComputerSchemaPoint = {
+	x: number;
+	y: number;
+};
 
-const pointSchema = type({
-	x: coordinateSchema.describe("x pixel coordinate"),
-	y: coordinateSchema.describe("y pixel coordinate"),
-	"+": "reject",
+type ComputerSchemaAction = {
+	type: ComputerAction["type"];
+	x?: number;
+	y?: number;
+	button?: "left" | "right" | "wheel" | "back" | "forward";
+	path?: ComputerSchemaPoint[];
+	keys?: string[] | null;
+	scroll_x?: number;
+	scroll_y?: number;
+	text?: string;
+};
+
+export type ComputerParams = {
+	actions?: ComputerSchemaAction[];
+};
+
+type IsSameType<Left, Right> = [Left] extends [Right] ? ([Right] extends [Left] ? true : false) : false;
+type ComputerSchema<Schema extends Type = Type<ComputerParams>> =
+	IsSameType<ComputerParams, Schema["infer"]> extends true ? Schema : never;
+
+const getComputerSchema: () => ComputerSchema = once(() => {
+	const coordinateSchema = type("0 <= number.integer <= 2147483647");
+	const scrollDeltaSchema = type("-2147483648 <= number.integer <= 2147483647");
+
+	const pointSchema = type({
+		x: coordinateSchema.describe("x pixel coordinate"),
+		y: coordinateSchema.describe("y pixel coordinate"),
+		"+": "reject",
+	});
+
+	const computerActionSchema = type({
+		type: type(
+			"'click' | 'double_click' | 'drag' | 'keypress' | 'move' | 'screenshot' | 'scroll' | 'type' | 'wait'",
+		).describe("action kind"),
+		"x?": coordinateSchema.describe(
+			"x pixel coordinate in the most recent screenshot (click, double_click, move, scroll)",
+		),
+		"y?": coordinateSchema.describe(
+			"y pixel coordinate in the most recent screenshot (click, double_click, move, scroll)",
+		),
+		"button?": type("'left' | 'right' | 'wheel' | 'back' | 'forward'").describe("mouse button; required for click"),
+		"path?": pointSchema.array().atLeastLength(2).describe("waypoints from press to release; required for drag"),
+		"keys?": type("string[] | null").describe(
+			"key names (e.g. CTRL, SHIFT, ENTER, A); required chord for keypress, optional held modifiers for pointer actions",
+		),
+		"scroll_x?": scrollDeltaSchema.describe("horizontal scroll delta in pixels; required for scroll"),
+		"scroll_y?": scrollDeltaSchema.describe(
+			"vertical scroll delta in pixels, positive scrolls content down; required for scroll",
+		),
+		"text?": type("string").describe("literal text to type; required for type"),
+		"+": "reject",
+	});
+
+	const computerSchema = type({
+		"actions?": computerActionSchema
+			.array()
+			.describe("ordered actions executed as one batch; omit or pass [] to just capture a screenshot"),
+		"+": "reject",
+	});
+	return computerSchema satisfies ComputerSchema<typeof computerSchema>;
 });
-
-const computerActionSchema = type({
-	type: type(
-		"'click' | 'double_click' | 'drag' | 'keypress' | 'move' | 'screenshot' | 'scroll' | 'type' | 'wait'",
-	).describe("action kind"),
-	"x?": coordinateSchema.describe(
-		"x pixel coordinate in the most recent screenshot (click, double_click, move, scroll)",
-	),
-	"y?": coordinateSchema.describe(
-		"y pixel coordinate in the most recent screenshot (click, double_click, move, scroll)",
-	),
-	"button?": type("'left' | 'right' | 'wheel' | 'back' | 'forward'").describe("mouse button; required for click"),
-	"path?": pointSchema.array().atLeastLength(2).describe("waypoints from press to release; required for drag"),
-	"keys?": type("string[] | null").describe(
-		"key names (e.g. CTRL, SHIFT, ENTER, A); required chord for keypress, optional held modifiers for pointer actions",
-	),
-	"scroll_x?": scrollDeltaSchema.describe("horizontal scroll delta in pixels; required for scroll"),
-	"scroll_y?": scrollDeltaSchema.describe(
-		"vertical scroll delta in pixels, positive scrolls content down; required for scroll",
-	),
-	"text?": type("string").describe("literal text to type; required for type"),
-	"+": "reject",
-});
-
-const computerSchema = type({
-	"actions?": computerActionSchema
-		.array()
-		.describe("ordered actions executed as one batch; omit or pass [] to just capture a screenshot"),
-	"+": "reject",
-});
-
-export type ComputerParams = typeof computerSchema.infer;
 
 export interface ComputerToolDetails {
 	width: number;
@@ -230,7 +287,7 @@ function isComputerAction(value: unknown): value is ComputerAction {
 function parseActions(value: unknown): ComputerAction[] {
 	// Missing or empty action batches degrade to a plain screenshot so a
 	// function-calling model can observe the screen before acting.
-	if (value === undefined) return [{ type: "screenshot" }];
+	if (value == null) return [{ type: "screenshot" }];
 	if (!Array.isArray(value)) throw new ToolError("Computer call requires an array of actions");
 	if (value.length === 0) return [{ type: "screenshot" }];
 	if (!value.every(isComputerAction)) throw new ToolError("Computer call contains an invalid action");
@@ -286,6 +343,7 @@ function callMetadata(context: AgentToolContext | undefined): ComputerToolCallMe
 export function computerApproval(args: unknown): ToolApprovalDecision {
 	const actions =
 		args && typeof args === "object" && "actions" in args ? (args as { actions?: unknown }).actions : undefined;
+	if (actions == null) return "read";
 	if (!Array.isArray(actions)) return "exec";
 	return actions.every(action => {
 		if (!action || typeof action !== "object") return false;
@@ -342,22 +400,32 @@ function approvalActionSummary(actions: unknown): string[] {
 	return truncateForPrompt(lines.join("\n"), 2_000).split("\n");
 }
 
-export class ComputerTool implements AgentTool<typeof computerSchema, ComputerToolDetails> {
+export class ComputerTool implements AgentTool<ComputerSchema, ComputerToolDetails> {
 	readonly name = "computer";
 	readonly native = { type: "computer" } as const;
 	readonly label = "Computer";
 	readonly loadMode = "essential" as const;
 	readonly concurrency = "exclusive" as const;
 	readonly summary = "Capture and control the host desktop through native OS APIs";
-	readonly parameters = computerSchema;
+	get parameters(): ComputerSchema {
+		return getComputerSchema();
+	}
 	readonly strict = false;
 	readonly approval = computerApproval;
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const actions = args && typeof args === "object" ? (args as { actions?: unknown }).actions : undefined;
 		return approvalActionSummary(actions);
 	};
-	readonly #controller: ComputerController;
-	readonly #unregisterOwner: () => void;
+	/**
+	 * Settings snapshot used to create the tool's current controller; refreshed
+	 * when a model switch crosses the coordinate-safe sizing boundary. Surfaced
+	 * by `/computer status`.
+	 */
+	effectiveConfiguration: Readonly<DesktopSessionOptions>;
+	readonly #createController: ComputerControllerFactory;
+	#controller: ComputerController;
+	#unregisterOwner: () => void;
+	#usesCoordinateSafeImageSizing: boolean;
 	#closed = false;
 	#description?: string;
 
@@ -365,12 +433,10 @@ export class ComputerTool implements AgentTool<typeof computerSchema, ComputerTo
 		readonly session: ToolSession,
 		createController: ComputerControllerFactory = options => new ComputerSupervisor(options),
 	) {
-		this.#controller = createController({
-			backend: session.settings.get("computer.backend"),
-			display: session.settings.get("computer.display"),
-			maxWidth: session.settings.get("computer.maxWidth"),
-			maxHeight: session.settings.get("computer.maxHeight"),
-		});
+		this.#createController = createController;
+		this.#usesCoordinateSafeImageSizing = usesCoordinateSafeImageSizing(session.getActiveModel?.());
+		this.effectiveConfiguration = Object.freeze(captureOptions(session, this.#usesCoordinateSafeImageSizing));
+		this.#controller = createController(this.effectiveConfiguration);
 		this.#unregisterOwner = registerComputerController(
 			session.getEvalKernelOwnerId?.() ?? undefined,
 			this.#controller,
@@ -379,6 +445,21 @@ export class ComputerTool implements AgentTool<typeof computerSchema, ComputerTo
 	get description(): string {
 		this.#description ??= prompt.render(computerDescription);
 		return this.#description;
+	}
+
+	async #refreshControllerForModel(): Promise<void> {
+		const nextUsesCoordinateSafeImageSizing = usesCoordinateSafeImageSizing(this.session.getActiveModel?.());
+		if (nextUsesCoordinateSafeImageSizing === this.#usesCoordinateSafeImageSizing) return;
+
+		const previous = this.#controller;
+		const nextOptions = Object.freeze(captureOptions(this.session, nextUsesCoordinateSafeImageSizing));
+		const next = this.#createController(nextOptions);
+		this.#unregisterOwner();
+		this.#controller = next;
+		this.#unregisterOwner = registerComputerController(this.session.getEvalKernelOwnerId?.() ?? undefined, next);
+		this.#usesCoordinateSafeImageSizing = nextUsesCoordinateSafeImageSizing;
+		this.effectiveConfiguration = nextOptions;
+		await previous.close();
 	}
 
 	async execute(
@@ -396,6 +477,8 @@ export class ComputerTool implements AgentTool<typeof computerSchema, ComputerTo
 		if (pendingSafetyChecks.length > 0 && context?.providerSafetyApproved !== true) {
 			throw new ToolError("Provider safety checks require interactive approval before computer input");
 		}
+		await this.#refreshControllerForModel();
+		throwIfAborted(signal);
 		const capture = await this.#controller.execute(actions.map(toDesktopAction), signal);
 		throwIfAborted(signal);
 		const data = Buffer.from(capture.data).toBase64();

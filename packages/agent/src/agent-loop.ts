@@ -348,6 +348,8 @@ function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantC
 			return { ...block };
 		case "redactedThinking":
 			return { ...block };
+		case "anthropicServerTool":
+			return { ...block, block: structuredCloneJSON(block.block) };
 		case "fallback":
 			return { ...block, from: { ...block.from }, to: { ...block.to } };
 		case "toolCall":
@@ -2138,6 +2140,7 @@ async function executeToolCalls(
 		interruptMode = "immediate",
 		getToolContext,
 		transformToolCallArguments,
+		resolveFallbackTool,
 		intentTracing,
 		beforeToolCall,
 		afterToolCall,
@@ -2166,7 +2169,7 @@ async function executeToolCalls(
 	// external + IRC aborts. Every other tool sees ONLY the external signal:
 	// neither queued steering nor a peer IRC ever hard-kills a partially
 	// side-effecting foreground tool (e.g. `bash`) — those get the cooperative
-	// steeringSignal above, and the message injects at the next boundary.
+	// `steeringSignal` above, and the message injects at the next boundary.
 	const nonInterruptibleSignal: AbortSignal = signal ?? new AbortController().signal;
 	const interruptibleSignal: AbortSignal = signal
 		? AbortSignal.any([signal, steeringAbortController.signal, ircAbortController.signal])
@@ -2180,7 +2183,10 @@ async function executeToolCalls(
 		// determinism if both somehow collide.
 		const tool =
 			tools?.find(t => t.name === toolCall.name) ??
-			tools?.find(t => t.customWireName !== undefined && t.customWireName === toolCall.name);
+			tools?.find(t => t.customWireName !== undefined && t.customWireName === toolCall.name) ??
+			// Not in the advertised set: let the host route side-transport tools
+			// (e.g. xd:// device mounts) called by their top-level name.
+			resolveFallbackTool?.(toolCall.name);
 		const args = toolCall.arguments as Record<string, unknown>;
 		const interruptibleMode = tool?.interruptible;
 		let interruptible = false;
@@ -2208,6 +2214,21 @@ async function executeToolCalls(
 			resultEmitted: false,
 		};
 	});
+
+	const checkIrcInterrupts = async (): Promise<void> => {
+		// IRC only fires once: a peer interrupt already recorded on interruptState
+		// must not re-abort, and (unlike steering) never re-consumes a queue.
+		if (!shouldInterruptImmediately || signal?.aborted || interruptState.triggered) return;
+		if (hasIrcInterrupts && (await hasIrcInterrupts())) {
+			// Peer IRC hard-aborts interruptible waits only; foreground tools keep
+			// running (no partial side effects) but get the cooperative soft
+			// signal so backgroundable work can step aside for the peer message.
+			interruptState.triggered = true;
+			interruptState.source = "irc";
+			ircAbortController.abort();
+			steeringSoftController.abort();
+		}
+	};
 
 	const checkSteering = async (): Promise<void> => {
 		// `signal` (external/user abort) is checked separately from the internal
@@ -2246,18 +2267,7 @@ async function executeToolCalls(
 			}
 			return;
 		}
-		// IRC only fires once: a peer interrupt already recorded on interruptState
-		// must not re-abort, and (unlike steering above) never re-consume a queue.
-		if (interruptState.triggered) return;
-		if (hasIrcInterrupts && (await hasIrcInterrupts())) {
-			// Peer IRC hard-aborts interruptible waits only; foreground tools keep
-			// running (no partial side effects) but get the cooperative soft
-			// signal so backgroundable work can step aside for the peer message.
-			interruptState.triggered = true;
-			interruptState.source = "irc";
-			ircAbortController.abort();
-			steeringSoftController.abort();
-		}
+		await checkIrcInterrupts();
 	};
 
 	const emitToolResult = (record: (typeof records)[number], result: AgentToolResult<any>, isError: boolean): void => {
@@ -2602,13 +2612,60 @@ async function executeToolCalls(
 	// mode; checkSteering is idempotent (no-op once triggered).
 	const watchSteeringWhileRunning =
 		shouldInterruptImmediately && (hasSteeringMessages !== undefined || hasIrcInterrupts !== undefined);
-	const steeringWatchTimer = watchSteeringWhileRunning
-		? setInterval(() => void checkSteering(), STEERING_INTERRUPT_POLL_MS)
+	const eventDrivenSteeringWatch =
+		watchSteeringWhileRunning && config.waitForSteeringMessages !== undefined && hasSteeringMessages !== undefined;
+	const steeringWatchAbortController = new AbortController();
+	const steeringWatchSignal = signal
+		? AbortSignal.any([signal, steeringWatchAbortController.signal])
+		: steeringWatchAbortController.signal;
+	// Race every wait against one local abort promise. The callback contract does
+	// not require an implementation to observe the signal, and one that resolves
+	// only on the next queue event would otherwise never settle once the batch
+	// finishes, so awaiting it during teardown would hang a batch with no steer.
+	const { promise: watchAborted, resolve: resolveWatchAbort } = Promise.withResolvers<void>();
+	if (steeringWatchSignal.aborted) {
+		resolveWatchAbort();
+	} else {
+		steeringWatchSignal.addEventListener("abort", () => resolveWatchAbort(), { once: true });
+	}
+	const watchAbortedFalse = watchAborted.then(() => false);
+	const steeringWatchPromise = eventDrivenSteeringWatch
+		? (async (): Promise<void> => {
+				while (!steeringWatchSignal.aborted) {
+					// Subscribe before checking queue state. This closes the edge
+					// race where a steer arrives after a check but before listener
+					// registration: the subsequent check observes queued state,
+					// while later arrivals resolve this already-installed wait.
+					const steeringQueued = config.waitForSteeringMessages?.(steeringWatchSignal).then(
+						() => true,
+						() => false,
+					);
+					const steeringChecked = checkSteering().then(
+						() => true,
+						() => false,
+					);
+					if (!(await Promise.race([steeringChecked, watchAbortedFalse]))) return;
+					if (steeringWatchSignal.aborted || interruptState.triggered) return;
+					if (!(await Promise.race([steeringQueued, watchAbortedFalse]))) return;
+				}
+			})()
 		: undefined;
+	// IRC interrupt records have a separate session-owned queue and no wake
+	// callback. Keep its established timer fallback when that queue is present;
+	// system steering uses the event-driven path above and does not poll.
+	const steeringWatchTimer =
+		watchSteeringWhileRunning && (!eventDrivenSteeringWatch || hasIrcInterrupts !== undefined)
+			? setInterval(
+					() => void (eventDrivenSteeringWatch ? checkIrcInterrupts() : checkSteering()),
+					STEERING_INTERRUPT_POLL_MS,
+				)
+			: undefined;
 	try {
 		await Promise.allSettled(tasks);
 	} finally {
-		if (steeringWatchTimer !== undefined) clearInterval(steeringWatchTimer);
+		steeringWatchAbortController.abort();
+		await steeringWatchPromise?.catch(() => undefined);
+		clearInterval(steeringWatchTimer);
 	}
 	// Yield after batch tool execution to let GC and I/O catch up,
 	// especially when tool results are large (e.g. bash output).

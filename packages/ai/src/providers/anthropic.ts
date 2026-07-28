@@ -2,7 +2,8 @@ import * as nodeCrypto from "node:crypto";
 import * as fs from "node:fs";
 import { scheduler } from "node:timers/promises";
 import * as tls from "node:tls";
-import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
+import { isAnthropicSigningProxyUrl, isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
+import { hostMatchesUrl, isVertexRawPredictUrl } from "@oh-my-pi/pi-catalog/hosts";
 import { isFableOrMythos, parseAnthropicModel } from "@oh-my-pi/pi-catalog/identity/classify";
 import { mapEffortToAnthropicAdaptiveEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost, getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -22,6 +23,7 @@ import * as AIError from "../error";
 import { getEnvApiKey, OUTPUT_FALLBACK_BUFFER } from "../stream";
 import type {
 	AnthropicFallbackContent,
+	AnthropicServerToolContent,
 	Api,
 	AssistantMessage,
 	CacheRetention,
@@ -64,6 +66,7 @@ import { COMBINATOR_KEYS, NO_STRICT, toolWireSchema } from "../utils/schema";
 import { spillToDescription } from "../utils/schema/spill";
 import { createSdkStreamRequestOptions } from "../utils/sdk-stream-timeout";
 import { notifyRawSseEvent } from "../utils/sse-debug";
+import { isForcedToolChoice } from "../utils/tool-choice";
 import {
 	AnthropicApiError,
 	AnthropicConnectionTimeoutError,
@@ -73,22 +76,32 @@ import {
 	calculateAnthropicRetryDelayMs,
 	retryDelayFromHeaders,
 } from "./anthropic-client";
-import type {
-	ToolInputSchema as AnthropicToolInputSchema,
-	Tool as AnthropicWireTool,
-	Usage as AnthropicWireUsage,
-	ContentBlockParam,
-	FallbackParam,
-	MessageCreateParamsStreaming,
-	MessageParam,
-	RawMessageStreamEvent,
-	TextBlockParam,
+import {
+	type ToolInputSchema as AnthropicToolInputSchema,
+	type Tool as AnthropicWireTool,
+	type Usage as AnthropicWireUsage,
+	type ContentBlockParam,
+	type FallbackParam,
+	isAnthropicWebSearchHistoryBlock,
+	type MessageCreateParamsStreaming,
+	type MessageParam,
+	type RawMessageStreamEvent,
+	type TextBlockParam,
 } from "./anthropic-wire";
+import {
+	CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+	claudeAgentSdkVersion,
+	claudeClientVersion,
+	claudeCodeSystemInstruction,
+	claudeCodeVersion,
+	claudeToolPrefix,
+} from "./claude-code-fingerprint";
 import {
 	buildCopilotDynamicHeaders,
 	hasCopilotVisionInput,
 	resolveGitHubCopilotBaseUrl,
 } from "./github-copilot-headers";
+import { getOpenAIPromptCacheKey } from "./openai-shared";
 import { transformMessages } from "./transform-messages";
 import { isImageContentAvailable, NON_VISION_IMAGE_PLACEHOLDER, UNAVAILABLE_IMAGE_PLACEHOLDER } from "./vision-guard";
 
@@ -127,6 +140,22 @@ export function buildBetaHeader(baseBetas: readonly string[], extraBetas: readon
 		}
 	}
 	return result.join(",");
+}
+
+/**
+ * Merge an extra Anthropic beta into a caller-provided `anthropic-beta` header,
+ * preserving the caller's key casing and deduping the tokens. Returns a
+ * single-entry header record for a per-request `headers` override — used to
+ * attach a required beta to injected SDK clients that bypass the client-level
+ * beta construction.
+ */
+function mergeAnthropicBetaHeader(callerHeaders: Record<string, string>, beta: string): Record<string, string> {
+	for (const key in callerHeaders) {
+		if (key.toLowerCase() === "anthropic-beta") {
+			return { [key]: buildBetaHeader(normalizeExtraBetas(callerHeaders[key]), [beta]) };
+		}
+	}
+	return { "anthropic-beta": beta };
 }
 
 const midConversationSystemBeta = "mid-conversation-system-2026-04-07";
@@ -463,16 +492,9 @@ function getCacheControl(
 	};
 }
 
-// Stealth mode: mimic Claude Code's request fingerprint.
-export const claudeCodeVersion = "2.1.165";
-export const claudeAgentSdkVersion = "0.3.165";
-export const claudeClientVersion = "1.11187.4";
-export const claudeToolPrefix: string = "_";
-export const claudeCodeSystemInstruction = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
-// Claude Code caps requested output at 64k tokens even when the model ceiling is
-// higher (e.g. Opus 4.8 supports 128k); OAuth requests clamp to match the wire
-// fingerprint. API-key requests keep the full model ceiling.
-export const CLAUDE_CODE_MAX_OUTPUT_TOKENS = 64000;
+// Stealth mode: mimic Claude Code's request fingerprint. Constants live in the
+// leaf module so registry/usage consumers avoid an init cycle through this file.
+export * from "./claude-code-fingerprint";
 
 export function mapStainlessOs(platform: string): "MacOS" | "Windows" | "Linux" | "FreeBSD" | `Other::${string}` {
 	switch (platform.toLowerCase()) {
@@ -1844,20 +1866,19 @@ const streamAnthropicOnce = (
 				if (options?.taskBudget && !extraBetas.includes(taskBudgetBeta)) {
 					extraBetas.push(taskBudgetBeta);
 				}
-				// `output_config.effort` ships on thinking-on requests AND on the
-				// thinking-off adaptive pin (adaptive-only models get effort:"low" so
-				// the toggle cannot 400); the beta must accompany the field in both.
-				// MiniMax uses `thinking.type:"adaptive"` itself as the control surface,
-				// so the sentinel "adaptive" value intentionally sends no output_config.
-				// Skip Vertex rawPredict: that adapter needs betas in the body
-				// (`anthropic_beta`), not as an `anthropic-beta` HTTP header, so the
-				// effort field is dropped from the body there too (see buildParams) and
-				// advertising the beta would only earn a 400 (#5614).
+				// `output_config.effort` ships on thinking-on requests, explicit
+				// thinking-off adaptive pins, and forced-tool adaptive pins. The beta
+				// must accompany the field even when direct streamAnthropic callers omit
+				// thinkingEnabled (#6589). MiniMax uses `thinking.type:"adaptive"` itself
+				// as the control surface, so the sentinel "adaptive" value intentionally
+				// sends no output_config. Skip Vertex rawPredict: that adapter needs betas
+				// in the body (`anthropic_beta`), not as an `anthropic-beta` HTTP header,
+				// so the effort field is dropped from the body there too (see buildParams)
+				// and advertising the beta would only earn a 400 (#5614).
 				const sendsAdaptiveEffortPin =
-					options?.thinkingEnabled === false &&
-					model.thinking?.mode === "anthropic-adaptive" &&
-					!model.compat.disableAdaptiveThinking &&
-					!usesAdaptiveThinkingTagOnly(model);
+					isAdaptiveOnlyThinking(model) &&
+					(options?.thinkingEnabled === false ||
+						(model.compat.supportsForcedToolChoice && isForcedToolChoice(options?.toolChoice)));
 				if (
 					model.reasoning &&
 					model.provider !== "google-vertex" &&
@@ -1876,15 +1897,17 @@ const streamAnthropicOnce = (
 				// `context_management.clear_thinking_20251015` requires this beta. OAuth
 				// requests carry it in `claudeCodeAgentBetaDefaults`; API-key requests
 				// need it added explicitly so the field is honored instead of rejected
-				// (#3288). Skip transports where this package cannot deliver the beta
-				// in the form their adapter accepts: Copilot strips Anthropic betas,
-				// and Vertex rawPredict needs betas in the body (`anthropic_beta`),
-				// not as an `anthropic-beta` HTTP header.
+				// (#3288). Skip transports where this package cannot deliver or the
+				// provider cannot accept the beta: Copilot strips Anthropic betas;
+				// Vertex rawPredict needs betas in the body (`anthropic_beta`), not as
+				// an `anthropic-beta` HTTP header; and OpenCode Zen rejects the related
+				// `context_management` field (#6510).
 				if (
 					model.reasoning &&
 					options?.thinkingEnabled &&
 					model.provider !== "github-copilot" &&
 					model.provider !== "google-vertex" &&
+					model.provider !== "opencode-zen" &&
 					!extraBetas.includes(contextManagementBeta)
 				) {
 					extraBetas.push(contextManagementBeta);
@@ -1983,6 +2006,7 @@ const streamAnthropicOnce = (
 				| RedactedThinkingContent
 				| TextContent
 				| AnthropicFallbackContent
+				| (AnthropicServerToolContent & { [kStreamingPartialJson]?: string })
 				| (ToolCall & { [kStreamingPartialJson]: string; [kStreamingLastParseLen]?: number })
 			) & { [kStreamingBlockIndex]: number };
 			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs();
@@ -2000,6 +2024,23 @@ const streamAnthropicOnce = (
 						block.thinkingSignature = undefined;
 					}
 					stream.push({ type: "thinking_end", contentIndex, content: block.thinking, partial: output });
+				} else if (block.type === "anthropicServerTool" && block.block.type === "server_tool_use") {
+					const partialJson = block[kStreamingPartialJson];
+					if (partialJson) {
+						try {
+							const input = parseJsonWithRepair(partialJson);
+							if (isRecord(input)) {
+								block.block.input = input;
+							} else {
+								reportAnthropicEnvelopeAnomaly("server_tool_use input is not a JSON object");
+							}
+						} catch (parseError) {
+							reportAnthropicEnvelopeAnomaly(
+								`server_tool_use ${block.block.id} input is not valid JSON: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+							);
+						}
+					}
+					clearStreamingPartialJson(block);
 				} else if (block.type === "toolCall") {
 					const finalJson =
 						block[kStreamingPartialJson].length > 0
@@ -2048,10 +2089,27 @@ const streamAnthropicOnce = (
 				// to zero even when no watchdog timeout is configured (the helper only
 				// pins it alongside a timeout; a client retry budget of 5 would otherwise
 				// multiply with PROVIDER_MAX_RETRIES into up to 66 wire attempts).
+				// Injected SDK clients (`options.client`) bypass the client-level
+				// `anthropic-beta` construction below, so any `output_config.effort` the
+				// body carries — the adaptive-only thinking-off / forced-tool pins and
+				// enabled-effort turns alike — would reach Anthropic without the required
+				// `effort-2025-11-24` beta and 400. `create()` accepts per-request headers
+				// (already used for the gateway web-search header), so merge the beta with
+				// any caller-provided `anthropic-beta` (deduped) and attach it there. Vertex
+				// never carries the effort field (dropped in buildParams), so it is unaffected.
+				const injectedClientEffortHeaders =
+					options?.client !== undefined &&
+					(params.output_config as AnthropicOutputConfig | undefined)?.effort !== undefined
+						? mergeAnthropicBetaHeader(mergedCallerHeaders, effortBeta)
+						: undefined;
+				const perRequestHeaders =
+					umansGatewayWebSearchHeader || injectedClientEffortHeaders
+						? { ...umansGatewayWebSearchHeader, ...injectedClientEffortHeaders }
+						: undefined;
 				const requestOptions = {
 					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
 					maxRetries: 0,
-					...(umansGatewayWebSearchHeader ? { headers: umansGatewayWebSearchHeader } : {}),
+					...(perRequestHeaders ? { headers: perRequestHeaders } : {}),
 				};
 				const anthropicRequest: unknown =
 					isOAuthToken && client.beta
@@ -2100,7 +2158,14 @@ const streamAnthropicOnce = (
 						number,
 						{
 							contentIndex: number;
-							kind: "text" | "thinking" | "redactedThinking" | "fallback" | "toolCall" | "ignored";
+							kind:
+								| "text"
+								| "thinking"
+								| "redactedThinking"
+								| "fallback"
+								| "anthropicServerTool"
+								| "toolCall"
+								| "ignored";
 						}
 					>();
 
@@ -2282,6 +2347,22 @@ const streamAnthropicOnce = (
 									contentIndex: output.content.length - 1,
 									kind: "redactedThinking",
 								});
+							} else if (
+								isAnthropicWebSearchHistoryBlock(event.content_block) &&
+								umansGatewayWebSearchHeader === undefined
+							) {
+								streamedReplayUnsafeContent = true;
+								const block: Block = {
+									type: "anthropicServerTool",
+									block: { ...event.content_block },
+									[kStreamingPartialJson]: "",
+									[kStreamingBlockIndex]: event.index,
+								};
+								output.content.push(block);
+								openBlocks.set(event.index, {
+									contentIndex: output.content.length - 1,
+									kind: "anthropicServerTool",
+								});
 							} else if (event.content_block.type === "tool_use") {
 								streamedReplayUnsafeContent = true;
 								const block: Block = {
@@ -2352,6 +2433,15 @@ const streamAnthropicOnce = (
 									partial: output,
 								});
 							} else if (event.delta.type === "input_json_delta") {
+								if (
+									openBlock.kind === "anthropicServerTool" &&
+									block?.type === "anthropicServerTool" &&
+									block.block.type === "server_tool_use"
+								) {
+									block[kStreamingPartialJson] =
+										(block[kStreamingPartialJson] ?? "") + event.delta.partial_json;
+									continue;
+								}
 								if (openBlock.kind !== "toolCall" || block?.type !== "toolCall") {
 									reportAnthropicEnvelopeAnomaly(`received input_json_delta for ${openBlock.kind} block`);
 									continue;
@@ -2768,9 +2858,32 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	} = args;
 	const compat = model.compat;
 	const disableStrictTools = disableStrictToolsOverride ?? compat.disableStrictTools;
-	const needsInterleavedBeta = interleavedThinking && !model.thinking?.supportsDisplay;
-	const oauthToken = isOAuth ?? isAnthropicOAuthToken(apiKey);
 	const baseUrl = resolveAnthropicBaseUrl(model, apiKey);
+	// Adaptive models (`supportsDisplay`) get native interleaved thinking on the
+	// official API, so only non-official signing routes need the beta (#6717).
+	// Two classifications feed the predicate: the effective URL, because Foundry
+	// and provider overrides can reroute a model without rebuilding its
+	// materialized compat, and non-official `compat.signingEndpoint`, because
+	// provider ids (e.g. ZenMux on a mirror URL) and explicit spec overrides on
+	// opaque proxies are authoritative even when the URL isn't recognized.
+	// Stale-official compat never qualifies: a canonical model rerouted to an
+	// unrecognized proxy keeps `officialEndpoint: true` (see
+	// resolveEagerToolInputStreamingSupport), and signing there is unknowable.
+	// Two signing routes still can't take the beta as this `anthropic-beta` HTTP
+	// header, so they're excluded: Vertex rawPredict accepts betas only in the
+	// JSON body (`anthropic_beta`) and 400s on the header (#5614), and GitHub
+	// Copilot rejects Anthropic betas outright — the `github-copilot` provider
+	// branch below strips them, but a custom provider id or a canonical model
+	// rerouted to `api.githubcopilot.com` / `copilot-api.*` reaches the generic
+	// header builder instead, so exclude those effective URLs here too.
+	const needsInterleavedBeta =
+		interleavedThinking &&
+		(!model.thinking?.supportsDisplay ||
+			(!isOfficialAnthropicApiUrl(baseUrl) &&
+				(isAnthropicSigningProxyUrl(baseUrl) || (compat.signingEndpoint && !compat.officialEndpoint)) &&
+				!isVertexRawPredictUrl(baseUrl ?? "") &&
+				!hostMatchesUrl(baseUrl, "githubCopilot")));
+	const oauthToken = isOAuth ?? isAnthropicOAuthToken(apiKey);
 	const supportsEagerToolInputStreaming = resolveEagerToolInputStreamingSupport(model, baseUrl);
 	const needsFineGrainedToolStreamingBeta =
 		hasTools && isOfficialAnthropicApiUrl(baseUrl) && !supportsEagerToolInputStreaming;
@@ -2863,27 +2976,15 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		};
 	}
 
-	// OpenCode Go and Umans validate Anthropic-compatible API-key auth through
-	// `X-Api-Key`; bearer-only requests reach the endpoint but fail auth.
-	if (model.provider === "opencode-go" || model.provider === "umans") {
+	// OpenCode Go/Zen and Umans validate Anthropic-compatible API-key auth
+	// through `X-Api-Key`; bearer-only requests reach the endpoint but fail auth
+	// with `401 Missing API key` (#6510). Drop the auto-built `Authorization`
+	// header and keep `apiKey` so the client emits `X-Api-Key`.
+	if (model.provider === "opencode-go" || model.provider === "opencode-zen" || model.provider === "umans") {
 		delete defaultHeaders.Authorization;
 		return {
 			isOAuthToken: false,
 			apiKey,
-			authToken: null,
-			baseURL: baseUrl,
-			maxRetries: 5,
-			defaultHeaders,
-			fetch: cchFetch,
-			fetchOptions,
-		};
-	}
-	// OpenCode Zen's Anthropic-compatible gateway accepts bearer auth only;
-	// leaving apiKey set lets the client add X-Api-Key, which upstream Alibaba rejects.
-	if (model.provider === "opencode-zen") {
-		return {
-			isOAuthToken: false,
-			apiKey: null,
 			authToken: null,
 			baseURL: baseUrl,
 			maxRetries: 5,
@@ -2924,13 +3025,32 @@ function createClient(
 	return { client, isOAuthToken: oauthToken };
 }
 
-function disableThinkingIfToolChoiceForced(params: MessageCreateParamsStreaming): void {
+function disableThinkingIfToolChoiceForced(
+	params: MessageCreateParamsStreaming,
+	model: Model<"anthropic-messages">,
+): void {
 	const toolChoice = params.tool_choice;
 	if (!toolChoice) return;
 	if (toolChoice.type !== "any" && toolChoice.type !== "tool") return;
 
 	delete params.thinking;
 	delete params.context_management;
+
+	// Adaptive-only models can't be switched off by omitting `thinking` — a bare
+	// omission defaults to adaptive thinking ON, so a forced-tool turn would still
+	// reason instead of calling the tool (#6589). Pin the lowest adaptive effort
+	// instead of dropping it, mirroring the disable branch in buildParams. Vertex
+	// rawPredict is the sole exception: it can only carry the effort beta in the
+	// body (dropped there too, see buildParams), so it keeps the delete behavior.
+	// The effort beta itself is attached at the request site — including per-request
+	// for injected SDK clients that bypass client-level beta construction.
+	if (isAdaptiveOnlyThinking(model) && model.provider !== "google-vertex") {
+		const outputConfig = (params.output_config as AnthropicOutputConfig | undefined) ?? {};
+		outputConfig.effort = "low";
+		params.output_config = outputConfig;
+		return;
+	}
+
 	const outputConfig = params.output_config as AnthropicOutputConfig | undefined;
 	if (!outputConfig) return;
 
@@ -3205,6 +3325,22 @@ function usesAdaptiveThinkingTagOnly(model: Model<"anthropic-messages">): boolea
 	return thinking.efforts.length > 0;
 }
 
+/**
+ * True for adaptive-only Claude models (Opus 4.6+, Sonnet 4.6+, Fable/Mythos 5)
+ * that reject `thinking.type: "disabled"`. Turning thinking off on these models
+ * means omitting the `thinking` field entirely and pinning the lowest adaptive
+ * effort — a bare omission defaults to adaptive thinking ON. Excludes MiniMax,
+ * which drives adaptive thinking through the `thinking.type: "adaptive"` tag
+ * itself rather than `output_config.effort`.
+ */
+function isAdaptiveOnlyThinking(model: Model<"anthropic-messages">): boolean {
+	return (
+		model.thinking?.mode === "anthropic-adaptive" &&
+		!model.compat.disableAdaptiveThinking &&
+		!usesAdaptiveThinkingTagOnly(model)
+	);
+}
+
 function resolveAnthropicAdaptiveEffort(
 	model: Model<"anthropic-messages">,
 	options: AnthropicOptions,
@@ -3290,7 +3426,9 @@ function buildParams(
 	// Pre-compute metadata.
 	const metadataAccountId = readAnthropicMetadataAccountId(options?.metadata);
 	const metadataUserId = resolveAnthropicMetadataUserId(
-		options?.metadata?.user_id,
+		readMetadataString(options?.metadata, "user_id") ??
+			// Deliberately share the normalized affinity identity across Kimi's two transports.
+			(model.provider === "kimi-code" ? getOpenAIPromptCacheKey(options) : undefined),
 		isOAuthToken,
 		options?.sessionId,
 		metadataAccountId,
@@ -3330,17 +3468,14 @@ function buildParams(
 				if (mode === "anthropic-budget-effort" && effort && effort !== "adaptive") outputConfigEffort = effort;
 			}
 		} else if (options?.thinkingEnabled === false) {
-			const compat = model.compat;
-			if (
-				model.thinking?.mode === "anthropic-adaptive" &&
-				!compat.disableAdaptiveThinking &&
-				!usesAdaptiveThinkingTagOnly(model)
-			) {
+			if (isAdaptiveOnlyThinking(model)) {
 				// Adaptive-only Claude models (Opus 4.6+, Sonnet 4.6+, Fable/Mythos 5) reject
 				// `thinking.type: "disabled"` — adaptive thinking cannot be switched off.
 				// Omit the thinking field (the API defaults to adaptive) and pin the
 				// lowest effort so "thinking off" calls stay cheap instead of failing
 				// the request with a 400 (a hidden-thinking toggle must never break it).
+				// The effort field requires the `effort-2025-11-24` beta; it is attached
+				// at the request site, including per-request for injected SDK clients.
 				outputConfigEffort = "low";
 			} else {
 				thinking = { type: "disabled" };
@@ -3361,11 +3496,15 @@ function buildParams(
 	// blocks to text upstream, so `keep: "all"` is a no-op that risks proxy
 	// rejection of an unrecognized field. Skip Vertex rawPredict because that
 	// adapter requires betas in the JSON body (`anthropic_beta`) instead of the
-	// Anthropic HTTP beta header this code can add.
+	// Anthropic HTTP beta header this code can add. Skip OpenCode Zen because
+	// its Anthropic proxy rejects the unrecognized `context_management` field
+	// with `400 Extra inputs are not permitted` on several Claude families
+	// (#6510) — same rationale as Copilot.
 	const shouldKeepThinkingContext =
 		!options?.client &&
 		model.provider !== "github-copilot" &&
 		model.provider !== "google-vertex" &&
+		model.provider !== "opencode-zen" &&
 		(thinking?.type === "adaptive" || thinking?.type === "enabled");
 	const contextManagement = shouldKeepThinkingContext
 		? { edits: [{ type: "clear_thinking_20251015" as const, keep: "all" as const }] }
@@ -3458,7 +3597,7 @@ function buildParams(
 		}
 	}
 
-	disableThinkingIfToolChoiceForced(params);
+	disableThinkingIfToolChoiceForced(params, model);
 	ensureMaxTokensForThinking(params, maxOutputTokens);
 	applyPromptCaching(params, cacheControl);
 	enforceCacheControlLimit(params, 4);
@@ -3657,6 +3796,8 @@ export function convertAnthropicMessages(
 						type: "redacted_thinking",
 						data: block.data,
 					});
+				} else if (block.type === "anthropicServerTool") {
+					blocks.push(block.block);
 				} else if (block.type === "fallback") {
 					// Replay ONLY when both sides are aligned: the current
 					// request opted into the beta chain, and the target is

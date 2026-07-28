@@ -21,7 +21,9 @@ InterruptMode: TypeAlias = Literal["immediate", "wait"]
 StopReason: TypeAlias = Literal["stop", "length", "toolUse", "error", "aborted"]
 NotifyType: TypeAlias = Literal["info", "warning", "error"]
 WidgetPlacement: TypeAlias = Literal["aboveEditor", "belowEditor"]
-TodoStatus: TypeAlias = Literal["pending", "in_progress", "completed", "abandoned"]
+TodoStatus: TypeAlias = Literal[
+    "pending", "in_progress", "completed", "abandoned", "blocked"
+]
 ExtensionUiMethod: TypeAlias = Literal[
     "select",
     "confirm",
@@ -65,7 +67,7 @@ _WIDGET_PLACEMENT_VALUES: Final[frozenset[str]] = frozenset(
     {"aboveEditor", "belowEditor"}
 )
 _TODO_STATUS_VALUES: Final[frozenset[str]] = frozenset(
-    {"pending", "in_progress", "completed", "abandoned"}
+    {"pending", "in_progress", "completed", "abandoned", "blocked"}
 )
 _EXTENSION_UI_METHOD_VALUES: Final[frozenset[str]] = frozenset(
     {
@@ -745,6 +747,8 @@ class TodoItem:
     status: TodoStatus
     notes: str | None = None
     details: str | None = None
+    # What a `blocked` task is waiting on; None for all other statuses.
+    blocker: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -1260,6 +1264,7 @@ def parse_todo_item(payload: JsonObject) -> TodoItem:
         ),
         notes=_optional_str(payload, "notes"),
         details=_optional_str(payload, "details"),
+        blocker=_optional_str(payload, "blocker"),
     )
 
 

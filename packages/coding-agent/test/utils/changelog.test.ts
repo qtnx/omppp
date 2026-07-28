@@ -153,7 +153,7 @@ describe("selectStartupChangelog", () => {
 });
 
 describe("parseChangelog", () => {
-	test("reads the embedded release history when no package path is available", async () => {
+	test("reads current source release data and filters versions newer than the previous release", async () => {
 		const entries = await parseChangelog(undefined);
 
 		// Upstream ships a single release line, so its newest section is always first.

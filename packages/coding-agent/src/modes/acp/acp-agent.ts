@@ -1747,6 +1747,12 @@ export class AcpAgent implements Agent {
 			planExists: true,
 		};
 		if (!approved) {
+			// Rejection keeps plan mode active for another planning turn. Promote the
+			// reviewed path into plan-mode state so the next `#buildPlanModeMessage()`
+			// targets the plan just reviewed, not the stale state path.
+			if (state.planFilePath !== planFilePath) {
+				session.setPlanModeState({ ...state, planFilePath });
+			}
 			const normalizedTitle = normalizePlanTitle(resolvedTitle).title;
 			return {
 				content: [

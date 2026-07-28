@@ -25,6 +25,8 @@ interface DapSpawnOptions {
 	 * @internal
 	 */
 	socketReadyTimeoutMs?: number;
+	/** Override socket transport selection without mutating process-global platform state. @internal */
+	socketPlatform?: NodeJS.Platform;
 }
 
 /** Minimal write interface shared by Bun.FileSink and Bun TCP sockets. */
@@ -104,9 +106,9 @@ export class DapClient {
 		);
 	}
 
-	static async spawn({ adapter, cwd, socketReadyTimeoutMs }: DapSpawnOptions): Promise<DapClient> {
+	static async spawn({ adapter, cwd, socketReadyTimeoutMs, socketPlatform }: DapSpawnOptions): Promise<DapClient> {
 		if (adapter.connectMode === "socket") {
-			return DapClient.#spawnSocket({ adapter, cwd, socketReadyTimeoutMs });
+			return DapClient.#spawnSocket({ adapter, cwd, socketReadyTimeoutMs, socketPlatform });
 		}
 		if (adapter.connectMode === "tcp") {
 			return DapClient.#spawnTcp({ adapter, cwd, socketReadyTimeoutMs });
@@ -209,7 +211,7 @@ export class DapClient {
 			return client;
 		} catch (error) {
 			try {
-				proc.kill();
+				await proc.terminate();
 			} catch {
 				/* proc may already be dead */
 			}
@@ -222,13 +224,18 @@ export class DapClient {
 	 * Linux: connect to a unix domain socket via --listen=unix:<path>
 	 * macOS/other: the adapter dials into our TCP listener via --client-addr
 	 */
-	static async #spawnSocket({ adapter, cwd, socketReadyTimeoutMs }: DapSpawnOptions): Promise<DapClient> {
+	static async #spawnSocket({
+		adapter,
+		cwd,
+		socketReadyTimeoutMs,
+		socketPlatform,
+	}: DapSpawnOptions): Promise<DapClient> {
 		const env = {
 			...Bun.env,
 			...NON_INTERACTIVE_ENV,
 		};
 		const timeoutMs = socketReadyTimeoutMs ?? SOCKET_READY_TIMEOUT_MS;
-		const isLinux = process.platform === "linux";
+		const isLinux = (socketPlatform ?? process.platform) === "linux";
 
 		if (isLinux) {
 			return DapClient.#spawnSocketUnix({ adapter, cwd, env, timeoutMs });
@@ -267,7 +274,7 @@ export class DapClient {
 			return client;
 		} catch (error) {
 			try {
-				proc.kill();
+				await proc.terminate();
 			} catch {
 				/* proc may already be dead */
 			}
@@ -328,7 +335,7 @@ export class DapClient {
 			return client;
 		} catch (error) {
 			try {
-				proc.kill();
+				await proc.terminate();
 			} catch {
 				/* proc may already be dead */
 			}

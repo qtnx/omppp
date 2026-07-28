@@ -52,7 +52,7 @@ type TestContext = InteractiveModeContext & {
 function createControllerContext() {
 	const editor = { id: "core-editor" };
 	const editorContainer = {
-		children: [] as unknown[],
+		children: [editor] as unknown[],
 		clear() {
 			this.children = [];
 		},

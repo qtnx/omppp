@@ -3,7 +3,7 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { withOAuthAccess } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { LiveBridgeServer } from "../../live/bridge-server";
-import { LiveSessionController, type LiveTranscript } from "../../live/controller";
+import { LiveSessionController, type LiveSessionControllerOptions, type LiveTranscript } from "../../live/controller";
 import { LocalAgentEndpoint, LocalMediaEndpoint, localAgentIdentity } from "../../live/local-endpoints";
 import { LIVE_MODEL } from "../../live/protocol";
 import { LiveVisualizer } from "../../live/visualizer";
@@ -15,6 +15,7 @@ import type { InteractiveModeContext } from "../types";
 import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
 
 const ANIMATION_INTERVAL_MS = 80;
+type LiveSessionFactory = (options: LiveSessionControllerOptions) => LiveSessionController;
 
 const LIVE_MESSAGE_USAGE: AssistantMessage["usage"] = {
 	input: 0,
@@ -31,6 +32,7 @@ function errorFrom(cause: unknown): Error {
 /** Owns the editor-replacing visualizer and realtime session lifecycle for `/live`. */
 export class LiveCommandController {
 	readonly #ctx: InteractiveModeContext;
+	readonly #createSession: LiveSessionFactory | undefined;
 
 	#session: LiveSessionController | undefined;
 	#bridge: LiveBridgeServer | undefined;
@@ -45,8 +47,9 @@ export class LiveCommandController {
 	#assistantTranscriptTurn = 0;
 	#assistantTranscriptStartedAt = 0;
 
-	constructor(ctx: InteractiveModeContext) {
+	constructor(ctx: InteractiveModeContext, createSession?: LiveSessionFactory) {
 		this.#ctx = ctx;
+		this.#createSession = createSession;
 	}
 
 	/** Whether a live session is connected, connecting, or closing. */
@@ -138,11 +141,12 @@ export class LiveCommandController {
 		});
 
 		let session: LiveSessionController;
-		session = new LiveSessionController({
+		const options: LiveSessionControllerOptions = {
 			media,
 			agent: new LocalAgentEndpoint(this.#ctx.session, message => this.#ctx.extractAssistantText(message)),
 			identity: localAgentIdentity(this.#ctx.session),
 			authStorage: this.#ctx.session.modelRegistry.authStorage,
+			voice: this.#ctx.settings.get("live.voice"),
 			callbacks: {
 				onPhase: phase => {
 					if (this.#visualizer !== visualizer) return;
@@ -163,7 +167,8 @@ export class LiveCommandController {
 				},
 				onTerminal: error => this.#finish(session, error),
 			},
-		});
+		};
+		session = this.#createSession ? this.#createSession(options) : new LiveSessionController(options);
 		this.#session = session;
 
 		try {

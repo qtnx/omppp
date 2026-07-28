@@ -278,6 +278,7 @@ export function resolveOpenAIRequestSetup(
 		const credential = parseAlibabaTokenPlanCredential(rawApiKey);
 		if (!credential) throw new AIError.ConfigurationError("Invalid QwenCloud Token Plan credential");
 		apiKey = credential.token;
+		if (credential.baseUrl) baseUrl = credential.baseUrl;
 	}
 
 	if (options.alibabaCodingPlanAuth && model.provider === "alibaba-coding-plan") {
@@ -1367,28 +1368,22 @@ export function collectComputerCallIds(messages: ResponseInput): Set<string> {
  * codex provider — issue #1351 / regression of #472.
  */
 export function repairOrphanResponsesToolOutputs(input: ResponseInput): ResponseInput {
-	const callKinds = new Map<string, ResponsesToolCallKind>();
-	for (const item of input) {
-		const kind = responsesToolCallKind(item.type);
+	const precedingCalls = new Set<string>();
+	let repaired: ResponseInput | undefined;
+	for (let index = 0; index < input.length; index++) {
+		const item = input[index];
+		const callKind = responsesToolCallKind(item.type);
 		const callId = responseInputCallId(item);
-		if (kind && callId) callKinds.set(callId, kind);
-	}
-	let hasOrphan = false;
-	for (const item of input) {
-		const kind = responsesToolOutputKind(item.type);
-		const callId = responseInputCallId(item);
-		if (kind && callId && callKinds.get(callId) !== kind) {
-			hasOrphan = true;
-			break;
+		if (callKind && callId) precedingCalls.add(`${callKind}\0${callId}`);
+
+		const outputKind = responsesToolOutputKind(item.type);
+		if (!outputKind || !callId || precedingCalls.has(`${outputKind}\0${callId}`)) {
+			repaired?.push(item);
+			continue;
 		}
-	}
-	if (!hasOrphan) return input;
-	return input.map(item => {
-		const kind = responsesToolOutputKind(item.type);
-		if (!kind) return item;
-		const callId = responseInputCallId(item);
-		if (!callId || callKinds.get(callId) === kind) return item;
-		const toolName = kind === "computer" ? "computer" : "tool";
+
+		if (!repaired) repaired = input.slice(0, index);
+		const toolName = outputKind === "computer" ? "computer" : "tool";
 		const rawOutput = "output" in item ? item.output : undefined;
 		let text: string;
 		if (typeof rawOutput === "string") text = rawOutput;
@@ -1402,12 +1397,13 @@ export function repairOrphanResponsesToolOutputs(input: ResponseInput): Response
 		}
 		const ORPHAN_OUTPUT_LIMIT = 16_000;
 		if (text.length > ORPHAN_OUTPUT_LIMIT) text = `${text.slice(0, ORPHAN_OUTPUT_LIMIT)}\n...[truncated]`;
-		return {
+		repaired.push({
 			type: "message",
 			role: "assistant",
 			content: `[Orphan ${toolName} result; call_id=${callId}]: ${text}`,
-		} as ResponseInput[number];
-	});
+		} as ResponseInput[number]);
+	}
+	return repaired ?? input;
 }
 
 /** Placeholder output for a tool call whose result is absent from the input. */
@@ -1429,27 +1425,29 @@ const ORPHAN_TOOL_CALL_PLACEHOLDER =
  * {@link repairOrphanResponsesToolOutputs}.
  */
 export function repairOrphanResponsesToolCalls(input: ResponseInput): ResponseInput {
-	const outputKinds = new Map<string, ResponsesToolCallKind>();
-	for (const item of input) {
-		const kind = responsesToolOutputKind(item.type);
+	const laterOutputs = new Set<string>();
+	const orphanIndexes = new Set<number>();
+	for (let index = input.length - 1; index >= 0; index--) {
+		const item = input[index];
 		const callId = responseInputCallId(item);
-		if (kind && callId) outputKinds.set(callId, kind);
+		const outputKind = responsesToolOutputKind(item.type);
+		if (outputKind && callId) laterOutputs.add(`${outputKind}\0${callId}`);
+
+		const callKind = responsesToolCallKind(item.type);
+		if (callKind && callId && !laterOutputs.has(`${callKind}\0${callId}`)) orphanIndexes.add(index);
 	}
-	let hasOrphan = false;
-	for (const item of input) {
-		const kind = responsesToolCallKind(item.type);
-		const callId = responseInputCallId(item);
-		if (kind && callId && outputKinds.get(callId) !== kind) {
-			hasOrphan = true;
-			break;
-		}
-	}
-	if (!hasOrphan) return input;
+	if (orphanIndexes.size === 0) return input;
+
 	const repaired: ResponseInput = [];
-	for (const item of input) {
+	for (let index = 0; index < input.length; index++) {
+		const item = input[index];
+		if (!orphanIndexes.has(index)) {
+			repaired.push(item);
+			continue;
+		}
 		const kind = responsesToolCallKind(item.type);
 		const callId = responseInputCallId(item);
-		if (!kind || !callId || outputKinds.get(callId) === kind) {
+		if (!kind || !callId) {
 			repaired.push(item);
 			continue;
 		}
@@ -3331,6 +3329,16 @@ const TOP_LEVEL_EXCLUDE_MAP = {
 };
 
 /**
+ * Output-only lifecycle metadata excluded from per-item prefix identity:
+ * replay sanitization strips `status` from message/function_call/custom
+ * tool items (they reject output lifecycle fields), so raw response items
+ * must not be distinguished from their sanitized replay form.
+ */
+const ITEM_LIFECYCLE_EXCLUDE_MAP = {
+	status: true,
+};
+
+/**
  * Strict-prefix delta for stateful `previous_response_id` chaining (used by the
  * platform Responses provider and the Codex provider on both transports):
  * returns the input items the current request appends beyond the previous
@@ -3357,7 +3365,7 @@ export function buildResponsesDeltaInput<TItem extends ResponseInputItem | Input
 	for (const series of [previous.input, previousResponseItems]) {
 		if (!series) continue;
 		for (const item of series) {
-			if (deepEqualsWithout(item, current.input[index])) {
+			if (deepEqualsWithout(item, current.input[index], ITEM_LIFECYCLE_EXCLUDE_MAP)) {
 				index++;
 			} else {
 				return null;

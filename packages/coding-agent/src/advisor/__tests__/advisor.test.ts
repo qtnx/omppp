@@ -2203,7 +2203,7 @@ describe("advisor", () => {
 			await Promise.resolve();
 
 			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("#TOKABC123_");
+			expect(promptInputs[0]).toContain("$$TOKABC123_");
 			expect(promptInputs[0]).not.toContain("tok_abc123");
 		});
 		it("does not scan advisor-hidden successful tool-result bodies", async () => {
@@ -2235,7 +2235,7 @@ describe("advisor", () => {
 			await Promise.resolve();
 
 			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("#TOKABC123_");
+			expect(promptInputs[0]).toContain("$$TOKABC123_");
 			expect(promptInputs[0]).not.toContain("tok_abc123");
 		});
 		it("does not scan tool-call arguments hidden by the primary-argument preview", async () => {
@@ -2262,7 +2262,7 @@ describe("advisor", () => {
 			});
 			runtime.onTurnEnd();
 			await runtime.waitForCatchup(1000, 1);
-			expect(promptInputs[0]).toContain("#TOKABC123_");
+			expect(promptInputs[0]).toContain("$$TOKABC123_");
 			expect(promptInputs[0]).not.toContain("tok_abc123");
 		});
 
@@ -2293,7 +2293,7 @@ describe("advisor", () => {
 			});
 			runtime.onTurnEnd();
 			await runtime.waitForCatchup(1000, 1);
-			expect(promptInputs[0]).toContain("#TOKABC123_");
+			expect(promptInputs[0]).toContain("$$TOKABC123_");
 			expect(promptInputs[0]).not.toContain("tok_abc123");
 		});
 
@@ -2332,7 +2332,7 @@ describe("advisor", () => {
 			await Promise.resolve();
 
 			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("#TOKABC123_");
+			expect(promptInputs[0]).toContain("$$TOKABC123_");
 			expect(promptInputs[0]).not.toContain("tok_abc123");
 		});
 		it("does not scan execution source after the advisor preview cap", async () => {
@@ -2369,7 +2369,7 @@ describe("advisor", () => {
 			await Promise.resolve();
 
 			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("#TOKABC123_");
+			expect(promptInputs[0]).toContain("$$TOKABC123_");
 			expect(promptInputs[0]).not.toContain("tok_abc123");
 		});
 
@@ -2400,7 +2400,7 @@ describe("advisor", () => {
 			await Promise.resolve();
 
 			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("#TOKABC123_");
+			expect(promptInputs[0]).toContain("$$TOKABC123_");
 			expect(promptInputs[0]).not.toContain("tok_abc123");
 			expect(obfuscate).not.toHaveBeenCalledWith("tok_abc123", expect.anything());
 		});
@@ -2435,7 +2435,7 @@ describe("advisor", () => {
 			await Promise.resolve();
 
 			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("#TOKABC123_");
+			expect(promptInputs[0]).toContain("$$TOKABC123_");
 			expect(promptInputs[0]).not.toContain("tok_abc123");
 			expect(obfuscate).not.toHaveBeenCalledWith("tok_abc123", expect.anything());
 		});
@@ -2447,7 +2447,7 @@ describe("advisor", () => {
 			// precomputation obfuscateMessages performs for the primary provider path
 			// (see secrets-obfuscator.test.ts). Redacting message fields independently
 			// would let the EARLIER user message's plain secret (OTHERSECRET) mint a
-			// friendly-prefixed placeholder ("#TOKABC123_<hash>#") before the SIBLING
+			// friendly-prefixed placeholder ("$$TOKABC123_<hash>$$") before the SIBLING
 			// toolResult's `details.diff` field, later in the same delta, reveals the
 			// regex-protected value that friendly name normalizes to
 			// (tok_abc123 -> TOKABC123) — baking a normalized rendering of that
@@ -2575,7 +2575,7 @@ describe("advisor", () => {
 			// placeholder from a PRIOR thinking block: if thinking fell through
 			// unredacted, the advisor prompt would receive both the raw secret AND,
 			// had it been redacted without sharing the regex collision set, a
-			// normalized "#TOKABC123_<hash>#" rendering of the regex-protected value
+			// normalized "$$TOKABC123_<hash>$$" rendering of the regex-protected value
 			// (tok_abc123) only discovered later in the same delta.
 			const obfuscator = new SecretObfuscator([
 				{ type: "plain", content: "OTHERSECRET", friendlyName: "TOKABC123" },
@@ -4566,6 +4566,76 @@ describe("advisor", () => {
 			expect(promptInputs).toHaveLength(2);
 			expect(promptInputs[1]).toContain("aaa");
 			expect(promptInputs[1]).toContain("bbb");
+		});
+
+		it("notifies the host after the advisor persistently quarantines its output (issue #6661)", async () => {
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			let promptCalls = 0;
+			let shouldQuarantine = true;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptCalls++;
+					state.messages.push({ role: "user", content: input, timestamp: Date.now() } as AgentMessage);
+					if (shouldQuarantine) {
+						state.messages.push({
+							role: "assistant",
+							content: [
+								{ type: "text", text: "The agent skipped the required plan step." },
+								{ type: "toolCall", id: `tc-${promptCalls}`, name: "bash", arguments: { command: "ls" } },
+							],
+							stopReason: "toolUse",
+							timestamp: Date.now(),
+						} as unknown as AgentMessage);
+						throw new AdvisorOutputQuarantinedError(
+							"Advisor response quarantined: requested unavailable tool bash",
+						);
+					}
+					state.messages.push({
+						role: "assistant",
+						content: [{ type: "text", text: "ok" }],
+						timestamp: Date.now(),
+					} as unknown as AgentMessage);
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				rollbackTo: count => {
+					if (count < state.messages.length) state.messages.length = count;
+					state.error = undefined;
+				},
+				state,
+			};
+			const notifyFailures: string[] = [];
+			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				notifyFailure: err => notifyFailures.push(err instanceof Error ? err.message : String(err)),
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+
+			// Every advisor turn calls an ungranted tool and is quarantined, so its
+			// advice never reaches the primary. A persistently-quarantining advisor is
+			// a supervision failure the user must see in the main UI, not an unbounded
+			// silent re-prime loop.
+			for (let i = 2; i <= 5; i++) {
+				messages.push({ role: "user", content: `msg-${i}`, timestamp: i } as AgentMessage);
+				runtime.onTurnEnd(messages);
+				await settleUntil(() => runtime.backlog === 0);
+			}
+
+			expect(promptCalls).toBeGreaterThanOrEqual(2);
+			expect(notifyFailures).toEqual(["Advisor response quarantined: requested unavailable tool bash"]);
+			expect(runtime.failureNotified).toBe(true);
+
+			shouldQuarantine = false;
+			messages.push({ role: "user", content: "recovered", timestamp: 6 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => runtime.backlog === 0);
+
+			expect(runtime.failureNotified).toBe(false);
 		});
 
 		it("drops the in-flight batch when a reset aborts the advisor prompt", async () => {

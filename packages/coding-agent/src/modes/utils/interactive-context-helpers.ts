@@ -25,5 +25,6 @@ export function createAssistantMessageComponent(
 		ctx.proseOnlyThinking,
 	);
 	component.setImagesVisible(ctx.settings.get("terminal.showImages"));
+	component.setExpanded(ctx.toolOutputExpanded);
 	return component;
 }

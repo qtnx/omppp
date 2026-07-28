@@ -1055,6 +1055,13 @@ export class TUI extends Container {
 	#ghosttyInitialImageDelayTimer: RenderTimer | undefined;
 	#ghosttyImageReadyAtMs = 0;
 	#clearScrollbackOnNextRender = false;
+	// Set by `resetDisplay()` and consumed by the next authoritative normal-screen
+	// render. If that render is a full paint, it is a user-driven replay of the
+	// current transcript (Ctrl+O expand, thinking/setting toggles, display reset)
+	// that must show every row, so it opts out of #truncateLargeConptyFrame.
+	// Multiplexer resets render as in-place updates; consuming the flag there
+	// prevents a later /resume or handoff bulk replacement from inheriting it.
+	#unboundedConptyPaintRequested = false;
 	#forceViewportRepaintOnNextRender = false;
 	#hasEverRendered = false;
 	#scrollbackRebuildEnabled =
@@ -1091,6 +1098,13 @@ export class TUI extends Container {
 	// resize frames so width changes truncate the transient viewport instead of
 	// pushing wrapped fragments into native scrollback.
 	#resizeAltActive = false;
+	// Latched once this terminal is observed re-reporting its size across an
+	// alternate-screen toggle (a pure height change between alt-buffer enter and
+	// exit). That is the Warp-class quirk {@link reportsSizeOnAltScreenToggle}
+	// hardcodes: without it, leaving a fullscreen overlay flashes a destructive
+	// ED3 full paint and the revert SIGWINCH flashes another (#6511). Once set,
+	// {@link #resizeRepaintsInPlace} routes resizes through the in-place path.
+	#altToggleResizesInPlace = false;
 	#stopped = false;
 	// Always-on event-loop lag probe. The high default threshold keeps it quiet;
 	// it only logs `ui.loop-blocked` (with the current loop phase) when a frame
@@ -1590,8 +1604,26 @@ export class TUI extends Container {
 				// window) into a single render once the pane is quiet —
 				// `#resizeEventPending` is set first so the eventual render still
 				// classifies as a resize.
+				// A SIGWINCH while a fullscreen overlay covers the transcript is
+				// either a genuine resize behind the overlay or the alt-toggle size
+				// echo (a terminal re-reporting its size whenever the alternate
+				// screen buffer toggles). The transcript is not visible either way,
+				// so arming the drag/settle would only queue a destructive ED3
+				// rebuild that fires as a flash when the overlay closes (#6511). A
+				// pure height change is the alt-toggle-echo signature — latch the
+				// in-place resize path — and just repaint the overlay at the new
+				// size. #resizeEventPending carries to the overlay-exit render so it
+				// still classifies as a resize.
+				if (this.#altActive) {
+					if (this.#altEnterWidth === this.terminal.columns && this.#altEnterHeight !== this.terminal.rows) {
+						this.#altToggleResizesInPlace = true;
+					}
+					this.#resizeEventPending = true;
+					this.requestRender();
+					return;
+				}
 				this.#resizeEventPending = true;
-				if (!resizeRepaintsInPlace()) {
+				if (!this.#resizeRepaintsInPlace()) {
 					// Enter the viewport fast path and (re)arm the settle timer, then
 					// request the cheap viewport-only paint. The authoritative full
 					// replay fires from the settle timer once the drag goes quiet.
@@ -1864,6 +1896,10 @@ export class TUI extends Container {
 	 */
 	resetDisplay(): void {
 		if (this.#stopped) return;
+		// This is a user-driven redraw of the current transcript; it must replay
+		// every row, so opt the next full paint out of the ConPTY resume bound.
+		// Set before the multiplexer early-return so it survives a deferred paint.
+		this.#unboundedConptyPaintRequested = true;
 		this.invalidate();
 		// A reset that lands inside a tmux/screen/zellij resize burst would
 		// paint mid-reflow and re-introduce the flash race (issue #2088).
@@ -2630,7 +2666,14 @@ export class TUI extends Container {
 		overlayWidth: number,
 		totalWidth: number,
 	): string {
-		if (TERMINAL.isImageLine(baseLine)) return baseLine;
+		if (TERMINAL.isImageLine(baseLine)) {
+			// Full-width overlays such as /switch are opaque: replace the
+			// Unicode placeholder cells so the image cannot cover the modal.
+			// Partial overlays cannot safely splice placement control sequences.
+			if (startCol !== 0 || overlayWidth < totalWidth) return baseLine;
+			const overlay = sliceWithWidth(overlayLine, 0, totalWidth, true);
+			return SEGMENT_RESET + overlay.text + " ".repeat(Math.max(0, totalWidth - overlay.width));
+		}
 
 		// Single pass through baseLine extracts both before and after segments
 		const afterStart = startCol + overlayWidth;
@@ -2815,9 +2858,15 @@ export class TUI extends Container {
 			this.#altPreviousLines = [];
 			// A resize while on the alt buffer reflowed the terminal's saved
 			// normal screen; it no longer matches our accounting, so force the
-			// geometry rebuild path instead of a stale diff.
+			// geometry rebuild path instead of a stale diff. A pure height change
+			// across the alt-buffer boundary (width unchanged) is the signature of
+			// a terminal that re-reports its size whenever the alternate screen
+			// toggles — the Warp-class quirk. Latch the in-place resize path so
+			// this exit and the revert SIGWINCH repaint without an ED3 scrollback
+			// rewrap instead of flashing a destructive full paint (#6511).
 			if (width !== this.#altEnterWidth || height !== this.#altEnterHeight) {
 				this.#resizeEventPending = true;
+				if (width === this.#altEnterWidth) this.#altToggleResizesInPlace = true;
 			}
 		} else if (wantMouseTracking !== this.#altMouseTrackingActive) {
 			this.terminal.write(wantMouseTracking ? MOUSE_TRACKING_ON : MOUSE_TRACKING_OFF);
@@ -2870,7 +2919,7 @@ export class TUI extends Container {
 		// count too: both enter the geometry rebuild path below.
 		const replayFullHistory =
 			this.#hasEverRendered &&
-			!resizeRepaintsInPlace() &&
+			!this.#resizeRepaintsInPlace() &&
 			(this.#clearScrollbackOnNextRender ||
 				this.#resizeEventPending ||
 				(this.#previousWidth > 0 && this.#previousWidth !== width) ||
@@ -3018,7 +3067,7 @@ export class TUI extends Container {
 		// feedback loop), so committed history keeps its old wrap.
 		const firstPaint = !this.#hasEverRendered;
 		const replaceRequested = this.#clearScrollbackOnNextRender;
-		const geometryRebuild = geometryChanged && !resizeRepaintsInPlace();
+		const geometryRebuild = geometryChanged && !this.#resizeRepaintsInPlace();
 		// Committed history no longer matches the frame: a finalized block
 		// replaced its scrolled-off live render, or the frame collapsed into
 		// recorded rows. Native scrollback is a render cache, not a court
@@ -3123,6 +3172,12 @@ export class TUI extends Container {
 		}
 		const cursorTrackingLineCount = hasVisibleOverlay ? Math.max(frame.length, windowTop + height) : frame.length;
 
+		// `resetDisplay()` requests an unbounded replay of the current
+		// transcript. Consume that one-shot intent on this authoritative
+		// normal-screen render even when a multiplexer makes it an in-place
+		// update; otherwise a later /resume or handoff full paint inherits it.
+		const unboundedConptyPaint = this.#unboundedConptyPaintRequested;
+		this.#unboundedConptyPaintRequested = false;
 		const intent: RenderIntent = fullPaint
 			? {
 					kind: "fullPaint",
@@ -3156,6 +3211,7 @@ export class TUI extends Container {
 				chunkTo,
 				windowTop,
 				cursorTrackingLineCount,
+				boundConptyPaint: !unboundedConptyPaint,
 				leadingSequence: deferredAltExit,
 			});
 			this.#pendingAltExit = "";
@@ -3175,7 +3231,8 @@ export class TUI extends Container {
 			windowTop,
 			prevWindowTop,
 			prevHardwareCursorRow,
-			forceWindowRewrite: this.#forceViewportRepaintOnNextRender || (geometryChanged && resizeRepaintsInPlace()),
+			forceWindowRewrite:
+				this.#forceViewportRepaintOnNextRender || (geometryChanged && this.#resizeRepaintsInPlace()),
 			repaintVirtualScrollInPlace: hasVisibleOverlay,
 			cursorTrackingLineCount,
 		});
@@ -3556,6 +3613,16 @@ export class TUI extends Container {
 			chunkTo: number;
 			windowTop: number;
 			cursorTrackingLineCount: number;
+			/**
+			 * Whether this paint may be bounded by {@link #truncateLargeConptyFrame}
+			 * on ConPTY hosts. True for bulk transcript-replacement paints — first
+			 * paint, /resume, handoff, and resize geometry rebuilds — where a
+			 * multi-megabyte synchronized frame stalls conhost (issue #2115). False
+			 * for a user-driven `resetDisplay()` (Ctrl+O expand, thinking/setting
+			 * toggles, display reset), which must replay the whole transcript so
+			 * nothing is silently dropped from scrollback (issue #4863).
+			 */
+			boundConptyPaint: boolean;
 			leadingSequence: string;
 		},
 	): void {
@@ -3572,16 +3639,19 @@ export class TUI extends Container {
 				paintCursorPos = { row: chunkTo + cursorPos.row - windowTop, col: cursorPos.col };
 			}
 		}
-		// ConPTY hosts bound the replay: merge prefix + window into one array
-		// so #truncateLargeConptyFrame can measure the payload and retain only
-		// the tail. Gated on the host check — everywhere else the merge would
-		// copy a pointer per committed row (a 50k-row session = 50k-entry
-		// array per resize step / theme change / session replace) just to be
-		// returned unchanged. `paintLines` stays null unless truncation
-		// actually rewrote the replay.
+		// ConPTY hosts bound bulk transcript-replacement replays (resume, handoff,
+		// first paint, resize): merge prefix + window into one array so
+		// #truncateLargeConptyFrame can measure the payload and retain only the
+		// tail (#2115). Gated on `boundConptyPaint` — a user-driven `resetDisplay()`
+		// (Ctrl+O expand, toggles) sets it false and replays the whole transcript
+		// untruncated so nothing is dropped from scrollback (#4863). Gated on the
+		// host check too — everywhere else the merge would copy a pointer per
+		// committed row (a 50k-row session = 50k-entry array per resize step /
+		// theme change / session replace) just to be returned unchanged.
+		// `paintLines` stays null unless truncation actually rewrote the replay.
 		let paintLines: string[] | null = null;
 		let paintLineCount = chunkTo + height;
-		if (isConPTYHosted()) {
+		if (options.boundConptyPaint && isConPTYHosted()) {
 			const merged = new Array<string>(chunkTo + height);
 			for (let i = 0; i < chunkTo; i++) merged[i] = frame[i] ?? "";
 			for (let screenRow = 0; screenRow < height; screenRow++) {
@@ -3810,6 +3880,21 @@ export class TUI extends Container {
 		setAltScreenActive(false);
 		this.#forgetHardwareCursorState();
 		return `${enhancementExit}${ALT_SCREEN_EXIT}`;
+	}
+
+	/**
+	 * Whether a resize repaints the visible window in place — no alternate-screen
+	 * borrow, no ED3 scrollback rewrap. Combines the static host detection
+	 * ({@link resizeRepaintsInPlace}) with the runtime {@link #altToggleResizesInPlace}
+	 * latch, so a terminal that re-reports its size on alt-screen toggles is
+	 * treated like Warp once observed, breaking the overlay-exit ED3 flash loop.
+	 * An explicit `PI_TUI_RESIZE_IN_PLACE=0|false` suppresses the runtime latch;
+	 * multiplexer handling remains authoritative through the static predicate.
+	 */
+	#resizeRepaintsInPlace(): boolean {
+		const override = Bun.env.PI_TUI_RESIZE_IN_PLACE;
+		const allowAutoDetection = override !== "0" && override !== "false";
+		return resizeRepaintsInPlace() || (allowAutoDetection && this.#altToggleResizesInPlace);
 	}
 
 	/**

@@ -2536,6 +2536,45 @@ describe.serial("openai-codex streaming", () => {
 		expect(result.content.find(block => block.type === "text")?.text).toBe("Recovered after watchdog timeout");
 	});
 
+	it("bounds Codex SSE socket-close attempts and preserves the default when omitted", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const token = createCodexTestToken();
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const model = { ...createCodexTestModel("https://chatgpt.com/backend-api"), preferWebsockets: false };
+		const cases = [
+			{ value: undefined, expected: 6 },
+			{ value: 1, expected: 1 },
+			{ value: 2, expected: 2 },
+			{ value: 2.9, expected: 2 },
+			{ value: 0, expected: 1 },
+			{ value: -2, expected: 1 },
+			{ value: 0.5, expected: 1 },
+			{ value: Number.NaN, expected: 1 },
+			{ value: Number.POSITIVE_INFINITY, expected: 1 },
+			{ value: Number.NEGATIVE_INFINITY, expected: 1 },
+		];
+
+		for (const { value, expected } of cases) {
+			let requestCount = 0;
+			const fetchMock: FetchImpl = async () => {
+				requestCount += 1;
+				throw new TypeError(
+					"The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
+				);
+			};
+			const result = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+				apiKey: token,
+				fetch: fetchMock,
+				codexSseMaxAttempts: value,
+			}).result();
+
+			expect(requestCount).toBe(expected);
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toContain("socket connection was closed unexpectedly");
+		}
+	});
+
 	it("does not retry a caller abort before response headers", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");
 		setAgentDir(tempDir.path());

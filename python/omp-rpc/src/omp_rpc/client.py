@@ -1674,6 +1674,7 @@ class RpcClient:
                     "status": cast(JsonValue, seed.status),
                     "notes": seed.notes,
                     "details": seed.details,
+                    "blocker": seed.blocker,
                 }
 
             content = seed.get("content")
@@ -1684,6 +1685,7 @@ class RpcClient:
             raw_status = seed.get("status")
             raw_notes = seed.get("notes")
             raw_details = seed.get("details")
+            raw_blocker = seed.get("blocker")
             if isinstance(raw_status, str):
                 if raw_status not in _TODO_STATUS_VALUES:
                     raise RpcError(f"Unsupported todo status: {raw_status}")
@@ -1698,6 +1700,7 @@ class RpcClient:
                 "status": cast(JsonValue, status),
                 "notes": raw_notes if isinstance(raw_notes, str) else None,
                 "details": raw_details if isinstance(raw_details, str) else None,
+                "blocker": raw_blocker if isinstance(raw_blocker, str) else None,
             }
 
         def is_phase_seed(seed: TodoSeed | TodoPhaseSeed) -> bool:

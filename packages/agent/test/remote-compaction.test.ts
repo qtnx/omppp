@@ -10,12 +10,14 @@ import {
 import {
 	buildCompactionV2Request,
 	buildOpenAiNativeHistory,
+	CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE,
 	getCompactionV2PreserveData,
 	requestCompactionV2Streaming,
 	requestOpenAiRemoteCompaction,
 	requestRemoteCompaction,
 	shouldUseCompactionV2Streaming,
 	shouldUseOpenAiRemoteCompaction,
+	trimRemoteCompactionInputToContextWindow,
 } from "@oh-my-pi/pi-agent-core/compaction/openai";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core/types";
@@ -528,13 +530,19 @@ describe("buildOpenAiNativeHistory computer calls", () => {
 });
 
 describe("remote compaction input forwarding", () => {
-	test("sends the full native history without local trimming", async () => {
-		// Contract: the compact endpoint owns compression. Trimming locally dropped
-		// assistant turns + encrypted reasoning before the provider ever saw them,
-		// so the client now forwards the full input untouched even on a tiny window.
+	test("rewrites an oversized trailing tool output without dropping native history", async () => {
+		// The compact endpoint still receives every call/result item. Only the
+		// trailing output body is replaced when the request cannot fit.
+		const nativeInput = [
+			{ type: "custom_tool_call", call_id: "call_apply_1", name: "apply_patch", input: "{}" },
+			{ type: "custom_tool_call_output", call_id: "call_apply_1", output: "patch applied".repeat(1_000) },
+		];
 		let requestInput: Array<Record<string, unknown>> | undefined;
 		const fetchMock: FetchImpl = async (_input, init) => {
-			const body = JSON.parse(String(init?.body)) as { input: Array<Record<string, unknown>> };
+			const body: unknown = JSON.parse(String(init?.body));
+			if (!isRecord(body) || !Array.isArray(body.input) || !body.input.every(isRecord)) {
+				throw new Error("expected remote compaction input");
+			}
 			requestInput = body.input;
 			return Response.json({
 				output: [{ type: "compaction_summary", summary: "compact" }],
@@ -542,19 +550,138 @@ describe("remote compaction input forwarding", () => {
 		};
 
 		await requestOpenAiRemoteCompaction(
-			makeOpenAiModel({ contextWindow: 1 }),
+			makeOpenAiModel({ contextWindow: 1_000 }),
 			"test-key",
-			[
-				{ type: "custom_tool_call", call_id: "call_apply_1", name: "apply_patch", input: "x".repeat(10_000) },
-				{ type: "custom_tool_call_output", call_id: "call_apply_1", output: "patch applied".repeat(1_000) },
-			],
+			nativeInput,
 			"compact",
 			undefined,
 			{ fetch: fetchMock },
 		);
 
+		const trimmed = trimRemoteCompactionInputToContextWindow(nativeInput, 1_000, "compact");
+		expect(trimmed.estimatedTokensAfter).toBeLessThanOrEqual(1_000);
 		expect(requestInput?.some(item => item.type === "custom_tool_call")).toBe(true);
-		expect(requestInput?.some(item => item.type === "custom_tool_call_output")).toBe(true);
+		expect(requestInput?.find(item => item.type === "custom_tool_call_output")?.output).toBe(
+			CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE,
+		);
+	});
+
+	test("rewrites contiguous trailing outputs until the request fits", () => {
+		const input = [
+			{ type: "function_call", call_id: "call_1", name: "read", arguments: "{}" },
+			{ type: "function_call", call_id: "call_2", name: "read", arguments: "{}" },
+			{ type: "function_call_output", call_id: "call_1", output: "a".repeat(8_000) },
+			{ type: "function_call_output", call_id: "call_2", output: "b".repeat(8_000) },
+		];
+
+		const result = trimRemoteCompactionInputToContextWindow(input, 1_000, "compact");
+
+		expect(result.rewrittenOutputs).toBe(2);
+		expect(result.input.slice(0, 2)).toEqual(input.slice(0, 2));
+		expect(result.input.slice(2).map(item => item.output)).toEqual([
+			CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE,
+			CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE,
+		]);
+		expect(result.estimatedTokensAfter).toBeLessThanOrEqual(1_000);
+		expect(input[2].output).toHaveLength(8_000);
+	});
+
+	test("keeps the original input when trailing rewrites cannot make the request fit", () => {
+		const input = [
+			{ type: "function_call", call_id: "call_1", name: "read", arguments: "{}" },
+			{ type: "function_call_output", call_id: "call_1", output: "a".repeat(20_000) },
+			{ type: "function_call", call_id: "call_2", name: "read", arguments: "{}" },
+			{ type: "function_call_output", call_id: "call_2", output: "useful latest result" },
+		];
+
+		const result = trimRemoteCompactionInputToContextWindow(input, 1_000, "compact");
+
+		expect(result.rewrittenOutputs).toBe(0);
+		expect(result.input).toEqual(input);
+		expect(result.input[3].output).toBe("useful latest result");
+		expect(result.estimatedTokensAfter).toBe(result.estimatedTokensBefore);
+	});
+
+	test("charges inline images by the maximum vision budget instead of serialized base64 size", () => {
+		const input = [
+			{
+				type: "message",
+				role: "user",
+				content: [
+					{ type: "input_image", detail: "auto", image_url: `data:image/png;base64,${"a".repeat(80_000)}` },
+				],
+			},
+			{ type: "function_call_output", call_id: "call_1", output: "useful result" },
+		];
+
+		const result = trimRemoteCompactionInputToContextWindow(input, 15_000, "compact");
+
+		expect(result.rewrittenOutputs).toBe(0);
+		expect(result.input).toEqual(input);
+		expect(result.estimatedTokensAfter).toBeGreaterThan(12_000);
+		expect(result.estimatedTokensAfter).toBeLessThanOrEqual(15_000);
+	});
+
+	test("uses conservative token accounting for token-dense trailing output", () => {
+		const output = Array.from({ length: 1_000 }, (_, index) => index.toString(16).padStart(8, "0")).join("");
+		const input = [{ type: "function_call_output", call_id: "call_1", output }];
+
+		const result = trimRemoteCompactionInputToContextWindow(input, 3_000, "compact");
+
+		expect(result.estimatedTokensBefore).toBeGreaterThan(3_000);
+		expect(result.rewrittenOutputs).toBe(1);
+		expect(result.input[0].output).toBe(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE);
+		expect(result.estimatedTokensAfter).toBeLessThanOrEqual(3_000);
+	});
+
+	test("scans past a synthetic tool-image attachment to rewrite its output", () => {
+		const attachment = {
+			type: "message",
+			role: "user",
+			content: [
+				{ type: "input_text", text: "Attached image(s) from tool result:" },
+				{ type: "input_image", detail: "auto", image_url: "data:image/png;base64,AAAA" },
+			],
+		};
+		const input = [
+			{ type: "function_call_output", call_id: "call_1", output: "large tool output".repeat(1_000) },
+			attachment,
+		];
+
+		const result = trimRemoteCompactionInputToContextWindow(input, 15_000, "compact");
+
+		expect(result.rewrittenOutputs).toBe(1);
+		expect(result.input[0].output).toBe(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE);
+		expect(result.input[1]).toEqual(attachment);
+		expect(result.estimatedTokensAfter).toBeLessThanOrEqual(15_000);
+	});
+
+	test("reserves the maximum patch budget for original-detail images", () => {
+		const input = [
+			{
+				type: "message",
+				role: "user",
+				content: [
+					{ type: "input_image", detail: "original", image_url: `data:image/png;base64,${"a".repeat(80_000)}` },
+				],
+			},
+			{ type: "function_call_output", call_id: "call_1", output: "useful result".repeat(2_000) },
+		];
+
+		const result = trimRemoteCompactionInputToContextWindow(input, 15_000, "compact");
+
+		expect(result.estimatedTokensBefore).toBeGreaterThan(15_000);
+		expect(result.rewrittenOutputs).toBe(1);
+		expect(result.estimatedTokensAfter).toBeLessThanOrEqual(15_000);
+	});
+
+	test("returns semantically unchanged input when it already fits", () => {
+		const input = [{ type: "function_call_output", call_id: "call_1", output: "small" }];
+
+		const result = trimRemoteCompactionInputToContextWindow(input, 1_000, "compact");
+
+		expect(result.rewrittenOutputs).toBe(0);
+		expect(result.input).toEqual(input);
 	});
 });
 
@@ -1513,6 +1640,70 @@ describe("compact() remote compaction failure handling", () => {
 
 		expect(requestBody?.model).toBe("gpt-5.6-sol");
 		expect(requestBody?.reasoning).toEqual({ mode: "pro" });
+	});
+
+	test("rewrites an oversized trailing tool output before V2 streaming compaction", async () => {
+		const preparation = makePreparation();
+		preparation.settings = { ...preparation.settings, remoteStreamingV2Enabled: true };
+		preparation.messagesToSummarize = [
+			{ role: "user", content: "inspect the large file", timestamp: 1 },
+			{
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "call_read_large|fc_read_large", name: "read", arguments: { path: "/tmp/x" } },
+				],
+				timestamp: 2,
+				provider: "openai",
+				model: "gpt-5",
+				api: "openai-responses",
+				usage: ZERO_USAGE,
+				stopReason: "toolUse",
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call_read_large|fc_read_large",
+				toolName: "read",
+				content: [{ type: "text", text: "large output".repeat(10_000) }],
+				isError: false,
+				timestamp: 3,
+			},
+		];
+		preparation.recentMessages = [];
+		const model = makeOpenAiModel({
+			contextWindow: 20_000,
+			remoteCompaction: {
+				enabled: true,
+				v2StreamingEnabled: true,
+				v2Endpoint: "https://compact.example/v1/responses",
+			},
+		});
+		let requestInput: Array<Record<string, unknown>> = [];
+		const fetchMock: FetchImpl = async (_input, init) => {
+			const body: unknown = JSON.parse(String(init?.body));
+			if (!isRecord(body) || !Array.isArray(body.input) || !body.input.every(isRecord)) {
+				throw new Error("expected V2 compaction input");
+			}
+			requestInput = body.input;
+			return sseResponse([
+				{
+					type: "response.output_item.done",
+					output_index: 0,
+					item: { type: "compaction", encrypted_content: "enc_trimmed" },
+				},
+				{
+					type: "response.completed",
+					response: { usage: { input_tokens: 100, output_tokens: 2, total_tokens: 102 } },
+				},
+			]);
+		};
+
+		await compact(preparation, model, "test-key", undefined, undefined, { fetch: fetchMock });
+
+		expect(requestInput.some(item => item.type === "function_call" && item.call_id === "call_read_large")).toBe(true);
+		expect(requestInput.find(item => item.type === "function_call_output")?.output).toBe(
+			CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE,
+		);
+		expect(requestInput.at(-1)).toEqual({ type: "compaction_trigger" });
 	});
 
 	test("re-expands a prior V2 compaction's originals when no candidate can reuse the replay", async () => {

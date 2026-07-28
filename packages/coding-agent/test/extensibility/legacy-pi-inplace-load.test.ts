@@ -850,6 +850,45 @@ describe("legacy-pi in-place module loading (issue #1674)", () => {
 		});
 	});
 
+	it("exposes a fresh legacy extension runtime through the package root", async () => {
+		const dir = await writePackage({
+			"package.json": JSON.stringify({ name: "legacy-extension-runtime-ext", version: "1.0.0" }),
+			"index.ts": [
+				'import { createExtensionRuntime } from "@earendil-works/pi-coding-agent";',
+				"const first = createExtensionRuntime();",
+				"const second = createExtensionRuntime();",
+				"first.flagValues.set('sprite', true);",
+				"let initializationError;",
+				"try {",
+				"  first.getActiveTools();",
+				"} catch (error) {",
+				"  initializationError = error instanceof Error ? error.message : String(error);",
+				"}",
+				"export const runtimeContract = {",
+				"  firstFlag: first.flagValues.get('sprite'),",
+				"  secondHasFlag: second.flagValues.has('sprite'),",
+				"  initializationError,",
+				"};",
+				"export default function (pi) { void pi; }",
+			].join("\n"),
+		});
+
+		const mod = (await loadLegacyPiModule(path.join(dir, "index.ts"))) as {
+			runtimeContract: {
+				firstFlag: boolean;
+				secondHasFlag: boolean;
+				initializationError: string;
+			};
+		};
+
+		expect(mod.runtimeContract).toEqual({
+			firstFlag: true,
+			secondHasFlag: false,
+			initializationError:
+				"Extension runtime not initialized. Action methods cannot be called during extension loading.",
+		});
+	});
+
 	it("honors legacy bash operations overrides", async () => {
 		const dir = await writePackage({
 			"package.json": JSON.stringify({ name: "legacy-bash-ops-ext", version: "1.0.0" }),

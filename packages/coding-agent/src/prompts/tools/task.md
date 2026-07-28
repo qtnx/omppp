@@ -5,7 +5,9 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 {{#if asyncEnabled}}
 
 # Async Job Contract
-- Results auto-deliver. A settled `hub jobs`/`hub wait` snapshot is the delivery; no duplicate `async-result` follows.
+- Results auto-deliver; a settled `job list`/`job poll` snapshot consumes its delivery, so no duplicate `async-result` follows.
+- NEVER busy-poll. The parent uses `job list` for snapshots and exact-ID `job poll` only when completely blocked.
+- The parent uses `job cancel` for stuck or unneeded tasks. `hub`/`irc` are only for peer messaging and explicit reply waits, NEVER subagent completion.
 - Job IDs are process-local and expire roughly five minutes after settlement. Afterward, use the agent ID with `hub send`, `agent://<id>`, or `history://<id>`.
 - `completed` means successful yield/job exit, not artifact acceptance. Verify claimed changes.
 {{/if}}
@@ -33,6 +35,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
   - `agent`: The agent type running this item (e.g. `scout`, `reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
   - `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
   - `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
+  - `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
   - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
   - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
   - `max_runtime_seconds`: You MUST choose an appropriate cap for each implementation/research spawn. Recommended: `quick_task` 300, `explore`/`scout` 600, `task` 900, `heavy_task` 2400. The cap is a ceiling, not a target — a well-briefed owner finishes far inside it. Omit to use configured fallback; `0` means unlimited.
@@ -50,6 +53,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 - `agent`: The agent type to spawn (e.g. `scout`, `reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
 - `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
 - `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
+- `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
 - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
 - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
 - `max_runtime_seconds`: You MUST choose an appropriate cap for implementation/research work. Recommended: `quick_task` 300, `explore`/`scout` 600, `task` 900, `heavy_task` 2400. The cap is a ceiling, not a target — a well-briefed owner finishes far inside it. Omit to use configured fallback; `0` means unlimited.

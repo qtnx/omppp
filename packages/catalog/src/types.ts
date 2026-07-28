@@ -348,6 +348,12 @@ export interface OpenAICompat {
 	 */
 	toolSchemaFlavor?: "moonshot-mfjs" | "grammar" | "none";
 	/**
+	 * Stream-watchdog first-event timeout in ms.
+	 * Set to `0` to allow unbounded prompt processing. Default: auto-detected
+	 * (disabled for local OpenAI-compatible backends).
+	 */
+	streamFirstEventTimeoutMs?: number;
+	/**
 	 * Stream-watchdog idle-timeout floor in ms for slow reasoning hosts.
 	 * Default: auto-detected (GLM coding-plan hosts, direct DeepSeek reasoning).
 	 */
@@ -471,6 +477,20 @@ export interface AnthropicCompat {
 	 * blocks instead of normal `tool_use` calls.
 	 */
 	escapeBuiltinToolNames?: boolean;
+	/**
+	 * The configured endpoint enforces Anthropic's signature protocol on
+	 * replayed thinking blocks — either the official API itself or a proxy
+	 * that forwards to it (GitHub Copilot, ZenMux, Cloudflare AI Gateway's
+	 * `/anthropic` route, Google Vertex's `publishers/anthropic/…`).
+	 * Downstream transforms strip stale cross-model thinking signatures on
+	 * these endpoints so the signing proxy doesn't 400 with
+	 * `Invalid signature in thinking block` (#4297), and adaptive-thinking
+	 * models keep the interleaved-thinking beta on them (#6717). Known hosts
+	 * are auto-detected from provider id and baseUrl; set this to mark an
+	 * opaque signing proxy the URL list can't recognize. Superset of
+	 * {@link ResolvedAnthropicCompat.officialEndpoint}.
+	 */
+	signingEndpoint?: boolean;
 }
 
 /**
@@ -571,6 +591,8 @@ export interface ResolvedOpenAISharedCompat {
 	requiresAssistantContentForToolCalls: boolean;
 	stripDeepseekSpecialTokens: boolean;
 	streamMarkupHealingPattern?: OpenAIStreamMarkupHealingPattern;
+	/** See {@link OpenAICompat.streamFirstEventTimeoutMs}. */
+	streamFirstEventTimeoutMs?: number;
 	reasoningDeltasMayBeCumulative: boolean;
 	emptyLengthFinishIsContextError: boolean;
 	usesOpenAIToolCallIdLimit: boolean;
@@ -654,6 +676,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "extraBody"
 			| "toolStrictMode"
 			| "toolSchemaFlavor"
+			| "streamFirstEventTimeoutMs"
 			| "streamIdleTimeoutMs"
 			| "cacheControlFormat"
 			| "thinkingKeep"
@@ -704,17 +727,6 @@ export type ResolvedAnthropicCompat = Required<AnthropicCompat> & {
 	 * env headers, and cache-TTL shaping without per-request URL parsing.
 	 */
 	officialEndpoint: boolean;
-	/**
-	 * The configured endpoint enforces Anthropic's signature protocol on
-	 * replayed thinking blocks — either the official API itself or a proxy
-	 * that forwards to it (GitHub Copilot, ZenMux, Cloudflare AI Gateway's
-	 * `/anthropic` route, Google Vertex's `publishers/anthropic/…`).
-	 * Downstream transforms strip stale cross-model thinking signatures on
-	 * these endpoints so the signing proxy doesn't 400 with
-	 * `Invalid signature in thinking block` (#4297). Superset of
-	 * {@link officialEndpoint}.
-	 */
-	signingEndpoint: boolean;
 };
 
 /**
@@ -825,6 +837,8 @@ export interface Model<TApi extends Api = Api> {
 	supportsTools?: boolean;
 	/** Whether this model accepts the GA OpenAI Responses `{ type: "computer" }` native tool. */
 	supportsComputerUse?: boolean;
+	/** Verbatim explicit computer-use support from the spec; undefined when `buildModel` inferred the runtime value. */
+	supportsComputerUseConfig?: boolean;
 	/** GitLab Duo Workflow root namespace selected during catalog discovery. */
 	gitlabDuoWorkflowRootNamespaceId?: string;
 	/** Cursor `max_mode` request flag returned by `GetUsableModels` for premium models that require max mode. */
@@ -910,7 +924,8 @@ export interface Model<TApi extends Api = Api> {
  * vocabulary of `buildModel`. Identical to `Model` except `compat` carries the
  * sparse override shape and nothing is resolved yet.
  */
-export interface ModelSpec<TApi extends Api = Api> extends Omit<Model<TApi>, "compat" | "compatConfig"> {
+export interface ModelSpec<TApi extends Api = Api>
+	extends Omit<Model<TApi>, "compat" | "compatConfig" | "supportsComputerUseConfig"> {
 	/** Sparse compatibility overrides; resolved into `Model.compat` by `buildModel`. */
 	compat?: CompatConfigOf<TApi>;
 }

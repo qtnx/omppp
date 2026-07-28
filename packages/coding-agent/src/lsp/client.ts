@@ -200,10 +200,10 @@ function abortReason(signal: AbortSignal): Error {
 	return signal.reason instanceof Error ? signal.reason : new ToolAbortError();
 }
 
-class LspFlushAbortError extends Error {
+class LspDrainAbortError extends Error {
 	constructor(readonly reason: Error) {
 		super(reason.message);
-		this.name = "LspFlushAbortError";
+		this.name = "LspDrainAbortError";
 	}
 }
 
@@ -216,26 +216,30 @@ async function writeMessage(
 		throw abortReason(signal);
 	}
 	const content = JSON.stringify(message);
-	sink.write(`Content-Length: ${Buffer.byteLength(content, "utf-8")}\r\n\r\n${content}`);
-	const flush = Promise.resolve(sink.flush());
+	const write = Promise.resolve(
+		sink.write(`Content-Length: ${Buffer.byteLength(content, "utf-8")}\r\n\r\n${content}`),
+	);
+	// Attach before flush(): it may throw synchronously after write() returned a
+	// rejected Promise, and leaving that rejection unobserved kills the host.
+	void write.catch(() => {});
+	const drain = Promise.all([write, Promise.resolve(sink.flush())]).then(() => {});
 	if (!signal) {
-		await flush;
+		await drain;
 		return;
 	}
-	// The sink's flush blocks on the OS-level pipe drain: if the server is
-	// alive but stopped reading stdin, `await sink.flush()` never resolves.
-	// Race the flush against the caller's signal so a wedged server surfaces
-	// as the tool's normal timeout/cancel instead of a permanent hang.
+	// Either sink operation can block on the OS-level pipe drain when a live
+	// server stops reading stdin. Race the combined drain against the caller's
+	// signal so a wedged server surfaces as the tool's normal timeout/cancel.
 	const { promise, resolve, reject } = Promise.withResolvers<void>();
 	const onAbort = () => {
 		signal.removeEventListener("abort", onAbort);
-		// The underlying flush stays pending in the background; suppress its
+		// The underlying drain stays pending in the background; suppress its
 		// eventual settlement so we do not surface an unhandled rejection.
-		flush.catch(() => {});
-		reject(new LspFlushAbortError(abortReason(signal)));
+		drain.catch(() => {});
+		reject(new LspDrainAbortError(abortReason(signal)));
 	};
 	signal.addEventListener("abort", onAbort, { once: true });
-	flush.then(
+	drain.then(
 		() => {
 			signal.removeEventListener("abort", onAbort);
 			resolve();
@@ -249,8 +253,8 @@ async function writeMessage(
 }
 
 /**
- * Kill a client whose write queue is stuck (aborted flush left the sink's
- * flush promise pending, so subsequent writes queue behind a wedge forever).
+ * Kill a client whose write queue is stuck (an aborted drain left a sink
+ * operation pending, so subsequent writes queue behind the wedge forever).
  * Remove it from `clients` immediately so concurrent `getOrCreateClient`
  * callers do not grab the corpse before `proc.exited` cleans up.
  */
@@ -270,8 +274,8 @@ function queueWriteMessage(
 ): Promise<void> {
 	const write = client.writeQueue.catch(() => {}).then(() => writeMessage(client.proc.stdin, message, signal));
 	const result = write.catch((err: unknown) => {
-		if (err instanceof LspFlushAbortError) {
-			// Only an abort that raced this write's in-flight flush leaves
+		if (err instanceof LspDrainAbortError) {
+			// Only an abort that raced this write's in-flight drain leaves
 			// the sink pending. Pre-write aborts and queued caller timeouts
 			// must not kill a healthy shared client.
 			teardownWedgedClient(client);
@@ -1067,7 +1071,7 @@ const WATCHED_FILES_NOTIFY_TIMEOUT_MS = 2_000;
  * This covers sibling files that are not open text documents, such as generated
  * CSS modules or type files that another edited document imports immediately.
  *
- * The underlying stdin flush is self-bounded by
+ * The underlying stdin write drain is self-bounded by
  * {@link WATCHED_FILES_NOTIFY_TIMEOUT_MS}; only an abort of the caller's
  * `signal` rejects.
  */

@@ -147,6 +147,10 @@ describe("AgentSession advisor delivery during a tool batch", () => {
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 		const advisor = session.getAdvisorAgent();
 		if (!advisor) throw new Error("Expected advisor agent to be live");
+		const adviceRecorded = Promise.withResolvers<void>();
+		const unsubscribeAdvisor = advisor.subscribe(event => {
+			if (event.type === "tool_execution_end" && event.toolName === "advise") adviceRecorded.resolve();
+		});
 
 		const toolEnds: Array<Extract<AgentSessionEvent, { type: "tool_execution_end" }>> = [];
 		session.subscribe(event => {
@@ -157,15 +161,17 @@ describe("AgentSession advisor delivery during a tool batch", () => {
 		await firstToolStarted.promise;
 		expect(session.agent.state.isStreaming).toBe(true);
 
+		const advisorRunning = advisor.prompt("Review the in-flight primary turn");
 		try {
-			await advisor.prompt("Review the in-flight primary turn");
-			expect(advisorMock.calls).toHaveLength(2);
+			await adviceRecorded.promise;
 			expect(session.agent.state.isStreaming).toBe(true);
 			expect(session.hasPendingDeliverableAsides()).toBe(false);
 		} finally {
 			releaseFirstTool.resolve();
 		}
-		await running;
+		await Promise.all([advisorRunning, running]);
+		unsubscribeAdvisor();
+		expect(advisorMock.calls).toHaveLength(2);
 
 		expect(executions).toEqual(["first_gate", "second_probe"]);
 		expect(toolEnds.map(event => event.toolCallId)).toEqual(["call-first", "call-second"]);

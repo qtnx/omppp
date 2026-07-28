@@ -86,18 +86,18 @@ describe("zai usage provider", () => {
 
 		expect(report).not.toBeNull();
 		expect(report!.limits.map(limit => limit.id)).toEqual([
-			"zai:features:web-search-reader-zread:1mo",
+			"zai:features:zread:1mo",
 			"zai:tokens:5h",
 			"zai:tokens:1w",
 		]);
 		expect(report!.limits.map(limit => limit.label)).toEqual([
-			"ZAI Web Search / Reader / Zread Quota",
+			"ZAI Zread Quota",
 			"ZAI 5 Hours Token Quota",
 			"ZAI Weekly Token Quota",
 		]);
 		expect(report!.limits.map(limit => limit.scope.windowId)).toEqual(["1mo", "5h", "1w"]);
 		expect(report!.limits.map(limit => limit.scope.shared)).toEqual([false, true, true]);
-		expect(report!.limits[0]?.scope.tier).toBe("web-search-reader-zread");
+		expect(report!.limits[0]?.scope.tier).toBe("zread");
 		expect(report!.limits.map(limit => limit.window?.durationMs)).toEqual([
 			30 * 24 * 60 * 60 * 1000,
 			5 * 60 * 60 * 1000,

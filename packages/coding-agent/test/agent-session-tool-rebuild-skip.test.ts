@@ -11,6 +11,11 @@ import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import {
+	collectMountedMCPToolRoutes,
+	projectMountedMCPXdevGuidance,
+	type SystemPromptRebuildContext,
+} from "@oh-my-pi/pi-coding-agent/session/session-tools";
 import { XdevRegistry } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { type } from "arktype";
 
@@ -97,12 +102,14 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 	}
 
 	function newSession(
-		rebuildSystemPrompt: (toolNames: string[]) => Promise<string>,
+		rebuildSystemPrompt: (toolNames: string[], context?: SystemPromptRebuildContext) => Promise<string>,
 		options: NewSessionOptions = {},
 	): {
 		session: AgentSession;
 		/** Provider-call message snapshots (LLM-converted), one per model request. */
 		contexts: Message[][];
+		/** Mutable registry shared with the session, for lifecycle-only mount fixtures. */
+		toolRegistry: Map<string, AgentTool>;
 	} {
 		const readTool = createBasicTool("read", "Read");
 		const initialMcp = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
@@ -146,15 +153,15 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 				if (!toolRegistry.has("write")) toolRegistry.set("write", writeTool);
 				return true;
 			},
-			rebuildSystemPrompt: async (toolNames, _tools) => ({
-				systemPrompt: [await rebuildSystemPrompt(toolNames)],
+			rebuildSystemPrompt: async (toolNames, _tools, context) => ({
+				systemPrompt: [await rebuildSystemPrompt(toolNames, context)],
 			}),
 			getMcpServerInstructions: options.getMcpServerInstructions,
 			getLocalCalendarDate: options.getLocalCalendarDate,
 			xdevRegistry: options.xdevRegistry,
 		});
 		sessions.push(session);
-		return { session, contexts };
+		return { session, contexts, toolRegistry };
 	}
 
 	it("skips rebuild when an MCP refresh produces an identical tool set", async () => {
@@ -177,7 +184,243 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		expect(rebuildCount).toBe(1);
 
 		// Third refresh, again identical: still no rebuild.
+
 		await session.refreshMCPTools([initialMcp]);
+		expect(rebuildCount).toBe(1);
+	});
+
+	it("serializes concurrent MCP refreshes before committing rebuilt prompts", async () => {
+		const firstRebuildStarted = Promise.withResolvers<void>();
+		const releaseFirstRebuild = Promise.withResolvers<void>();
+		const releaseSecondRebuild = Promise.withResolvers<void>();
+		let rebuildCount = 0;
+		const { session } = newSession(async toolNames => {
+			rebuildCount++;
+			if (rebuildCount === 1) {
+				firstRebuildStarted.resolve();
+				await releaseFirstRebuild.promise;
+			} else {
+				await releaseSecondRebuild.promise;
+			}
+			return `tools:${toolNames.join(",")}`;
+		});
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const fetch = createMcpCustomTool("mcp__nucleus_fetch", "nucleus", "fetch", "Fetch nucleus");
+
+		const olderRefresh = session.refreshMCPTools([search]);
+		await firstRebuildStarted.promise;
+		const newerRefresh = session.refreshMCPTools([search, fetch]);
+
+		// Even if the newer rebuild would be allowed to resolve first, it cannot
+		// start until the older refresh has committed.
+		releaseSecondRebuild.resolve();
+		expect(rebuildCount).toBe(1);
+
+		releaseFirstRebuild.resolve();
+		await Promise.all([olderRefresh, newerRefresh]);
+		expect(rebuildCount).toBe(2);
+		expect(session.systemPrompt).toEqual(["tools:read,mcp__nucleus_search,mcp__nucleus_fetch"]);
+	});
+
+	it("drops queued and in-flight MCP prompt commits when disposal begins", async () => {
+		const firstRebuildStarted = Promise.withResolvers<void>();
+		const releaseFirstRebuild = Promise.withResolvers<void>();
+		let rebuildCount = 0;
+		const { session, toolRegistry } = newSession(async toolNames => {
+			rebuildCount++;
+			firstRebuildStarted.resolve();
+			await releaseFirstRebuild.promise;
+			return `tools:${toolNames.join(",")}`;
+		});
+		const initialPrompt = [...session.systemPrompt];
+		const initialToolNames = session.getActiveToolNames();
+		const initialSearchTool = toolRegistry.get("mcp__nucleus_search");
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const fetch = createMcpCustomTool("mcp__nucleus_fetch", "nucleus", "fetch", "Fetch nucleus");
+
+		const inFlightRefresh = session.refreshMCPTools([search]);
+		await firstRebuildStarted.promise;
+		const queuedRefresh = session.refreshMCPTools([search, fetch]);
+		session.beginDispose();
+		releaseFirstRebuild.resolve();
+
+		await Promise.all([inFlightRefresh, queuedRefresh]);
+		expect(rebuildCount).toBe(1);
+		expect(session.systemPrompt).toEqual(initialPrompt);
+		expect(session.getActiveToolNames()).toEqual(initialToolNames);
+		expect(toolRegistry.get("mcp__nucleus_search")).toBe(initialSearchTool);
+		expect(toolRegistry.has("mcp__nucleus_fetch")).toBe(false);
+	});
+
+	it("rebuilds generated guidance when its ordered mounted MCP route projection changes", async () => {
+		const xdevRegistry = new XdevRegistry([]);
+		const serverInstructions = new Map([
+			["archive", "Archive instructions"],
+			["nucleus", "Nucleus instructions"],
+		]);
+		const renderedPrompts: string[] = [];
+		let rebuildCount = 0;
+		const { session } = newSession(
+			async (_toolNames, context) => {
+				rebuildCount++;
+				const projection = projectMountedMCPXdevGuidance(
+					collectMountedMCPToolRoutes(context?.xdevRouteSources ?? []),
+				);
+				const generatedPrompt = `mounted:${projection.mappings
+					.map(mapping => `${mapping.label}=${mapping.path}`)
+					.join(",")}`;
+				renderedPrompts.push(generatedPrompt);
+				return generatedPrompt;
+			},
+			{ xdevRegistry, getMcpServerInstructions: () => serverInstructions },
+		);
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const fetch = createMcpCustomTool("mcp__nucleus_fetch", "nucleus", "fetch", "Fetch nucleus");
+		const uninstructed = createMcpCustomTool("mcp__silent_ping", "silent", "ping", "Ping silently");
+		const searchPrompt = 'mounted:"search"=xd://mcp__nucleus_search';
+		const searchAndUninstructedPrompt = 'mounted:"search"=xd://mcp__nucleus_search,"ping"=xd://mcp__silent_ping';
+		const searchFetchAndUninstructedPrompt =
+			'mounted:"search"=xd://mcp__nucleus_search,"fetch"=xd://mcp__nucleus_fetch,"ping"=xd://mcp__silent_ping';
+
+		await session.refreshMCPTools([search]);
+		expect(rebuildCount).toBe(1);
+		expect(session.systemPrompt).toEqual([searchPrompt]);
+
+		// A new object with the same ordered route identity is still the same
+		// externally rendered inventory, so reconnecting it must preserve the
+		// cached prompt rather than rebuilding.
+		const equivalentSearch = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		await session.refreshMCPTools([equivalentSearch]);
+		expect(rebuildCount).toBe(1);
+		expect(session.systemPrompt).toEqual([searchPrompt]);
+
+		// Global route guidance is independent of optional server instructions.
+		// Adding a route for a server absent from the instructions map must rebuild.
+		await session.refreshMCPTools([equivalentSearch, uninstructed]);
+		expect(rebuildCount).toBe(2);
+		expect(session.systemPrompt).toEqual([searchAndUninstructedPrompt]);
+
+		await session.refreshMCPTools([equivalentSearch, fetch, uninstructed]);
+		expect(rebuildCount).toBe(3);
+		expect(session.systemPrompt).toEqual([searchFetchAndUninstructedPrompt]);
+
+		const fetchSearchAndUninstructedPrompt =
+			'mounted:"fetch"=xd://mcp__nucleus_fetch,"search"=xd://mcp__nucleus_search,"ping"=xd://mcp__silent_ping';
+		await session.refreshMCPTools([fetch, equivalentSearch, uninstructed]);
+		expect(rebuildCount).toBe(4);
+		expect(session.systemPrompt).toEqual([fetchSearchAndUninstructedPrompt]);
+
+		const replacementSearch = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		await session.refreshMCPTools([replacementSearch, uninstructed]);
+		expect(rebuildCount).toBe(5);
+		expect(session.systemPrompt).toEqual([searchAndUninstructedPrompt]);
+		const stableLabel = replacementSearch.label;
+		const reownedSearch = {
+			...createMcpCustomTool("mcp__nucleus_search", "archive", "search", "Search nucleus"),
+			label: stableLabel,
+		};
+		// Ownership alone is not rendered in the global route projection.
+		await session.refreshMCPTools([reownedSearch, uninstructed]);
+		expect(rebuildCount).toBe(5);
+		expect(session.systemPrompt).toEqual([searchAndUninstructedPrompt]);
+
+		const renamedOriginalSearch = {
+			...createMcpCustomTool("mcp__nucleus_search", "archive", "lookup", "Search nucleus"),
+			label: stableLabel,
+		};
+		const renamedOriginalAndUninstructedPrompt =
+			'mounted:"lookup"=xd://mcp__nucleus_search,"ping"=xd://mcp__silent_ping';
+		await session.refreshMCPTools([renamedOriginalSearch, uninstructed]);
+		expect(rebuildCount).toBe(6);
+		expect(session.systemPrompt).toEqual([renamedOriginalAndUninstructedPrompt]);
+
+		const remountedSearch = {
+			...createMcpCustomTool("mcp__archive_lookup", "archive", "lookup", "Search nucleus"),
+			label: stableLabel,
+		};
+		const remountedAndUninstructedPrompt = 'mounted:"lookup"=xd://mcp__archive_lookup,"ping"=xd://mcp__silent_ping';
+		await session.refreshMCPTools([remountedSearch, uninstructed]);
+		expect(rebuildCount).toBe(7);
+		expect(session.systemPrompt).toEqual([remountedAndUninstructedPrompt]);
+
+		const equivalentRemountedSearch = {
+			...createMcpCustomTool("mcp__archive_lookup", "archive", "lookup", "Search nucleus"),
+			label: stableLabel,
+		};
+		await session.refreshMCPTools([equivalentRemountedSearch, uninstructed]);
+		expect(rebuildCount).toBe(7);
+		expect(session.systemPrompt).toEqual([remountedAndUninstructedPrompt]);
+
+		// Removing the uninstructed server's rendered route also changes guidance.
+		const remountedPrompt = 'mounted:"lookup"=xd://mcp__archive_lookup';
+		await session.refreshMCPTools([equivalentRemountedSearch]);
+		expect(rebuildCount).toBe(8);
+		expect(session.systemPrompt).toEqual([remountedPrompt]);
+		expect(renderedPrompts).toEqual([
+			searchPrompt,
+			searchAndUninstructedPrompt,
+			searchFetchAndUninstructedPrompt,
+			fetchSearchAndUninstructedPrompt,
+			searchAndUninstructedPrompt,
+			renamedOriginalAndUninstructedPrompt,
+			remountedAndUninstructedPrompt,
+			remountedPrompt,
+		]);
+	});
+
+	it("skips rebuild when only an omitted mounted MCP mapping changes", async () => {
+		const xdevRegistry = new XdevRegistry([]);
+		let rebuildCount = 0;
+		const { session } = newSession(
+			async () => {
+				rebuildCount++;
+				return "bounded mounted MCP guidance";
+			},
+			{ xdevRegistry },
+		);
+		const tools = Array.from({ length: 65 }, (_, index) =>
+			createMcpCustomTool(`mcp__archive_tool_${index}`, "archive", `tool_${index}`, "Archive tool"),
+		);
+
+		await session.refreshMCPTools(tools);
+		expect(rebuildCount).toBe(1);
+
+		const changedOmittedTool = {
+			...createMcpCustomTool("mcp__archive_tool_64", "archive", "renamed_tail", "Archive tool"),
+			label: tools[64]!.label,
+		};
+		await session.refreshMCPTools([...tools.slice(0, 64), changedOmittedTool]);
+		expect(rebuildCount).toBe(1);
+	});
+
+	it("skips rebuild when only non-MCP xd mounts change", async () => {
+		const xdevRegistry = new XdevRegistry([]);
+		let rebuildCount = 0;
+		const { session, toolRegistry } = newSession(
+			async toolNames => {
+				rebuildCount++;
+				return `tools:${toolNames.join(",")}`;
+			},
+			{ xdevRegistry },
+		);
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const catalog = {
+			...createBasicTool("catalog_lookup", "Catalog Lookup"),
+			loadMode: "discoverable" as const,
+		};
+		toolRegistry.set(catalog.name, catalog);
+
+		await session.refreshMCPTools([search]);
+		expect(rebuildCount).toBe(1);
+
+		// Ordinary xd:// inventory changes travel through mount notices and do
+		// not affect the global MCP-route guidance or its rebuild signature.
+		await session.setActiveToolPresentation(["read", search.name, catalog.name], [search.name, catalog.name]);
+		expect(session.getMountedXdevToolNames()).toContain(catalog.name);
+		expect(rebuildCount).toBe(1);
+
+		await session.setActiveToolPresentation(["read", search.name], [search.name]);
+		expect(session.getMountedXdevToolNames()).not.toContain(catalog.name);
 		expect(rebuildCount).toBe(1);
 	});
 
@@ -638,7 +881,7 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		await session.refreshMCPTools([search, fetch]);
 		releaseFirstCall.resolve();
 		await firstPrompt;
-		expect(rebuildCount).toBe(1);
+		expect(rebuildCount).toBe(2);
 		expect(contexts).toHaveLength(1);
 		expect(mountNoticesIn(contexts[0])).toHaveLength(0);
 
@@ -654,7 +897,7 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 
 		// A later unmount is likewise held for the following user prompt.
 		await session.refreshMCPTools([search]);
-		expect(rebuildCount).toBe(1);
+		expect(rebuildCount).toBe(3);
 		expect(contexts).toHaveLength(2);
 		await session.prompt("third");
 		const allNotices = mountNoticesIn(contexts[2]);

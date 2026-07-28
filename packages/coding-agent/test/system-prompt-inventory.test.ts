@@ -8,6 +8,7 @@ import {
 	buildSystemPrompt,
 	buildSystemPromptToolMetadata,
 	DEFAULT_SYSTEM_PROMPT_TOOL_NAMES,
+	projectSystemPromptToolMetadata,
 	type SystemPromptToolMetadata,
 } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -74,6 +75,17 @@ const ARCHIVE_PROMPT_SKILL_NAMES = [
 	"git-craft",
 	"incident-response",
 ] as const;
+interface MetadataGetterCounts {
+	label: number;
+	wireName: number;
+	description: number;
+	parameters: number;
+	examples: number;
+}
+
+function emptyMetadataGetterCounts(): MetadataGetterCounts {
+	return { label: 0, wireName: 0, description: 0, parameters: 0, examples: 0 };
+}
 
 describe("system prompt tool inventory", () => {
 	let tempDir = "";
@@ -212,6 +224,270 @@ describe("system prompt tool inventory", () => {
 		} as ToolSession;
 	}
 
+	it("preserves the one-argument full metadata builder", () => {
+		const metadata = buildSystemPromptToolMetadata(new Map([[SDK_TOOL.name, SDK_TOOL]]));
+
+		expect(Array.from(metadata.keys())).toEqual(["sdk_custom"]);
+		expect(metadata.get("sdk_custom")).toMatchObject({
+			label: "SDK Custom",
+			description: "SDK-provided custom tool.",
+			parameters: { type: "object", properties: {} },
+		});
+	});
+
+	it("preserves the legacy metadata overrides map", () => {
+		const metadata = buildSystemPromptToolMetadata(new Map([[SDK_TOOL.name, SDK_TOOL]]), {
+			sdk_custom: {
+				label: "Overridden label",
+				description: "Overridden description.",
+				wireName: "sdk_custom_wire",
+			},
+		});
+
+		expect(metadata.get("sdk_custom")).toMatchObject({
+			label: "Overridden label",
+			description: "Overridden description.",
+			parameters: { type: "object", properties: {} },
+			wireName: "sdk_custom_wire",
+		});
+	});
+
+	it("snapshots every full metadata getter once per rebuild and keeps fresh values", async () => {
+		let revision = 1;
+		const reads = new Map<string, MetadataGetterCounts>();
+		const makeTool = (name: string): Tool => {
+			const counts = emptyMetadataGetterCounts();
+			reads.set(name, counts);
+			return {
+				name,
+				approval: "read",
+				get label() {
+					counts.label += 1;
+					return `${name} label r${revision}`;
+				},
+				get customWireName() {
+					counts.wireName += 1;
+					return `${name}_wire_r${revision}`;
+				},
+				get description() {
+					counts.description += 1;
+					return `${name} description r${revision}`;
+				},
+				get parameters() {
+					counts.parameters += 1;
+					return {
+						type: "object",
+						properties: { [`arg_r${revision}`]: { type: "string" } },
+						required: [`arg_r${revision}`],
+					};
+				},
+				get examples() {
+					counts.examples += 1;
+					return [{ caption: `${name} example r${revision}`, note: `note r${revision}` }];
+				},
+				async execute() {
+					return { content: [{ type: "text", text: "ok" }] };
+				},
+			};
+		};
+		const tools = new Map<string, Tool>([
+			["read", makeTool("read")],
+			["edit", makeTool("edit")],
+		]);
+
+		const first = projectSystemPromptToolMetadata(tools, { mode: "full" });
+		expect(Array.from(first.keys())).toEqual(["read", "edit"]);
+		expect(first.get("edit")).toEqual({
+			label: "edit label r1",
+			description: "edit description r1",
+			parameters: {
+				type: "object",
+				properties: { arg_r1: { type: "string" } },
+				required: ["arg_r1"],
+			},
+			examples: [{ caption: "edit example r1", note: "note r1" }],
+			wireName: "edit_wire_r1",
+		});
+		expect(Array.from(reads.values())).toEqual([
+			{ label: 1, wireName: 1, description: 1, parameters: 1, examples: 1 },
+			{ label: 1, wireName: 1, description: 1, parameters: 1, examples: 1 },
+		]);
+
+		const firstPrompt = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: ["edit", "read"],
+			tools: first,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			nativeTools: false,
+			inlineToolDescriptors: false,
+		});
+		const firstText = firstPrompt.systemPrompt.join("\n\n");
+		expect(firstText.indexOf("# Tool: edit_wire_r1")).toBeLessThan(firstText.indexOf("# Tool: read_wire_r1"));
+		expect(firstText).toContain("edit description r1");
+		expect(firstText).toContain("arg_r1: string;");
+
+		revision = 2;
+		const second = projectSystemPromptToolMetadata(tools, { mode: "full" });
+		expect(second.get("edit")?.description).toBe("edit description r2");
+		expect(second.get("edit")?.wireName).toBe("edit_wire_r2");
+		expect(first.get("edit")?.description).toBe("edit description r1");
+		expect(Array.from(reads.values())).toEqual([
+			{ label: 2, wireName: 2, description: 2, parameters: 2, examples: 2 },
+			{ label: 2, wireName: 2, description: 2, parameters: 2, examples: 2 },
+		]);
+
+		const secondPrompt = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: ["edit", "read"],
+			tools: second,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			nativeTools: false,
+			inlineToolDescriptors: false,
+		});
+		const secondText = secondPrompt.systemPrompt.join("\n\n");
+		expect(secondText.indexOf("# Tool: edit_wire_r2")).toBeLessThan(secondText.indexOf("# Tool: read_wire_r2"));
+		expect(secondText).toContain("edit description r2");
+		expect(secondText).toContain("arg_r2: string;");
+		expect(secondText).not.toContain("edit description r1");
+	});
+
+	it("projects compact metadata in active order without reading descriptors or inactive tools", async () => {
+		const reads = new Map<string, MetadataGetterCounts>();
+		const makeTool = (name: string, label: string, wireName?: string): Tool => {
+			const counts = emptyMetadataGetterCounts();
+			reads.set(name, counts);
+			return {
+				name,
+				approval: "read",
+				get label() {
+					counts.label += 1;
+					return label;
+				},
+				get customWireName() {
+					counts.wireName += 1;
+					return wireName;
+				},
+				get description(): string {
+					counts.description += 1;
+					throw new Error(`${name} description getter was read`);
+				},
+				get parameters(): Tool["parameters"] {
+					counts.parameters += 1;
+					throw new Error(`${name} parameters getter was read`);
+				},
+				get examples(): Tool["examples"] {
+					counts.examples += 1;
+					throw new Error(`${name} examples getter was read`);
+				},
+				async execute() {
+					return { content: [{ type: "text", text: "ok" }] };
+				},
+			};
+		};
+		const tools = new Map<string, Tool>([
+			["inactive", makeTool("inactive", "Inactive")],
+			["read", makeTool("read", "Read")],
+			["edit", makeTool("edit", "Edit", "apply_patch")],
+		]);
+
+		const metadata = projectSystemPromptToolMetadata(tools, {
+			mode: "compact",
+			toolNames: ["edit", "read"],
+		});
+		expect(Array.from(metadata.keys())).toEqual(["edit", "read"]);
+		expect(metadata.get("edit")).toMatchObject({ label: "Edit", wireName: "apply_patch" });
+		expect(metadata.get("read")).toMatchObject({ label: "Read" });
+		expect(reads.get("inactive")).toEqual(emptyMetadataGetterCounts());
+		expect(reads.get("edit")).toEqual({
+			label: 1,
+			wireName: 1,
+			description: 0,
+			parameters: 0,
+			examples: 0,
+		});
+		expect(reads.get("read")).toEqual({
+			label: 1,
+			wireName: 1,
+			description: 0,
+			parameters: 0,
+			examples: 0,
+		});
+
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: ["edit", "read"],
+			tools: metadata,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			nativeTools: true,
+			inlineToolDescriptors: false,
+		});
+		expect(inventoryFrom(systemPrompt.join("\n\n")).trim()).toBe(
+			"# Tool Inventory\n- Edit: `apply_patch`\n- Read: `read`",
+		);
+	});
+
+	it("does not construct descriptor records for a compact native inventory", async () => {
+		const reads = new Map<string, MetadataGetterCounts>();
+		const makeMetadata = (name: string, label: string, wireName?: string): SystemPromptToolMetadata => {
+			const counts = emptyMetadataGetterCounts();
+			reads.set(name, counts);
+			return {
+				get label() {
+					counts.label += 1;
+					return label;
+				},
+				get wireName() {
+					counts.wireName += 1;
+					return wireName;
+				},
+				get description(): string {
+					counts.description += 1;
+					throw new Error(`${name} description getter was read`);
+				},
+				get parameters(): SystemPromptToolMetadata["parameters"] {
+					counts.parameters += 1;
+					throw new Error(`${name} parameters getter was read`);
+				},
+				get examples(): SystemPromptToolMetadata["examples"] {
+					counts.examples += 1;
+					throw new Error(`${name} examples getter was read`);
+				},
+			};
+		};
+		const metadata = new Map<string, SystemPromptToolMetadata>([
+			["read", makeMetadata("read", "Read")],
+			["edit", makeMetadata("edit", "Edit", "apply_patch")],
+		]);
+
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: ["edit", "read"],
+			tools: metadata,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			nativeTools: true,
+			inlineToolDescriptors: false,
+		});
+		expect(inventoryFrom(systemPrompt.join("\n\n")).trim()).toBe(
+			"# Tool Inventory\n- Edit: `apply_patch`\n- Read: `read`",
+		);
+		expect(Array.from(reads.values())).toEqual([
+			{ label: 1, wireName: 1, description: 0, parameters: 0, examples: 0 },
+			{ label: 1, wireName: 1, description: 0, parameters: 0, examples: 0 },
+		]);
+	});
+
 	it("renders a compact name list only when native tools are active and descriptors stay in schemas", async () => {
 		const text = await render({ nativeTools: true, inlineToolDescriptors: false });
 		expect(text).toContain("- Read: `read`");
@@ -231,6 +507,32 @@ describe("system prompt tool inventory", () => {
 			/(?:stale|older)[\s\S]{0,260}context[\s\S]{0,260}(?:no longer needed|not needed (?:for )?next)|context[\s\S]{0,260}(?:no longer needed|not needed (?:for )?next)/i,
 		);
 		expect(compactGuidance).toMatch(/last action|end[- ]of[- ]turn|end of your turn|before ending (?:your )?turn/i);
+	});
+
+	it("keeps enabled computer routing explicit in compact native-tool mode", async () => {
+		const tools = new Map(TOOLS);
+		tools.set("computer", {
+			label: "Computer",
+			description: "Controls the host desktop.",
+			parameters: { type: "object", properties: {} },
+		});
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: ["read", "computer"],
+			tools,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			nativeTools: true,
+			inlineToolDescriptors: false,
+		});
+		const text = systemPrompt.join("\n\n");
+		expect(text).toContain("# Computer Use");
+		expect(text).toContain("The `computer` tool is explicitly enabled and available");
+		expect(text).toContain("MUST use `computer` for requests to view or control host desktop applications");
+		expect(text).toContain("NEVER claim Computer Use is unavailable");
+		expect(text).toContain("Inspect the fresh screenshot returned by every successful `computer` call");
 	});
 
 	it("renders `# Tool:` sections (not a name list) when tools are not native", async () => {

@@ -19,7 +19,8 @@ import {
 	setProfile,
 	VERSION,
 } from "@oh-my-pi/pi-utils/dirs";
-import { declareWorkerHostEntry, installWorkerInbox } from "@oh-my-pi/pi-utils/worker-host";
+import { interceptUnhandledRejections } from "@oh-my-pi/pi-utils/postmortem";
+import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@oh-my-pi/pi-utils/worker-host";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
 import { extractRootNoSandboxFlag } from "./cli/sandbox-flags";
@@ -30,8 +31,12 @@ import {
 	TINY_WORKER_ARG,
 	TINY_WORKER_ARGS,
 } from "./cli/worker-selectors";
+import { startJsEvalProcess } from "./eval/js/process-entry";
+import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
+import { smokeTestComputerWorker } from "./tools/computer/supervisor";
+import { startComputerWorker } from "./tools/computer/worker-entry";
 
 const MACOS_SANDBOX_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_INHERITED";
 const LINUX_SANDBOX_INHERITED_ENV = "PI_OMPX_LINUX_SANDBOX_INHERITED";
@@ -93,8 +98,7 @@ async function runSmokeTest(): Promise<void> {
 	const { smokeTestTtsWorker } = await import("./tts/tts-client");
 	const { smokeTestMnemopiEmbedWorker } = await import("./mnemopi/embed-client");
 	const { smokeTestJsEvalWorker } = await import("./eval/js/context-manager");
-	const { smokeTestComputerWorker } = await import("./tools/computer/supervisor");
-	// Smoke dependencies stay lazy so normal CLI startup does not load worker clients.
+	// Other smoke dependencies stay lazy so normal CLI startup does not load their worker clients.
 	const { smokeTestDaemonBroker } = await import("./launch/client");
 	await smokeTestSyncWorker();
 
@@ -138,7 +142,7 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		// spawning (the smoke ping, the first parse request) would be dropped.
 		// Park early events and replay them once the module's handler is live.
 		// Worker-thread entries using `parentPort` need the same sync-prefix
-		// buffering; the tab/eval cases install that inbox below before import.
+		// buffering; the computer/tab/eval cases install that inbox below.
 		const scope = globalThis as unknown as { onmessage: ((event: MessageEvent) => void) | null };
 		const pending: MessageEvent[] = [];
 		const buffer = (event: MessageEvent): void => {
@@ -153,12 +157,10 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		return true;
 	}
 	// Bun flushes messages the parent posted before spawn once this entry's
-	// top-level evaluation completes, delivering them only to listeners present
-	// at that moment. These worker modules are imported dynamically below, so
-	// their own `parentPort.on("message")` lands after the flush and the parent's
-	// synchronous `init` is dropped. Install a buffering inbox synchronously here
-	// (still inside the entry's sync prefix) so the handshake survives; the worker
-	// module binds the real handler once loaded.
+	// top-level evaluation completes. Install a buffering inbox synchronously
+	// before binding the selected worker's real handler so the parent's
+	// synchronous `init` survives. The dynamically imported tab/eval modules
+	// consume the same inbox after their module evaluation begins.
 	if (arg === TAB_WORKER_ARG) {
 		if (parentPort) installWorkerInbox(parentPort);
 		await import("./tools/browser/tab-worker-entry");
@@ -166,7 +168,7 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	}
 	if (arg === COMPUTER_WORKER_ARG) {
 		if (parentPort) installWorkerInbox(parentPort);
-		await import("./tools/computer/worker-entry");
+		startComputerWorker();
 		return true;
 	}
 	if (arg === JS_EVAL_WORKER_ARG) {
@@ -175,11 +177,15 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		return true;
 	}
 	if (arg === JS_EVAL_PROCESS_ARG) {
-		const { startJsEvalProcess } = await import("./eval/js/process-entry");
+		// The bootstrap-safe interceptor seam is linked statically so this selector
+		// cannot load profile-scoped environment state after dispatch has begun.
 		// The JS evaluator forwards user-controlled payloads (tool-call args,
 		// display outputs); a non-serializable one must fail that cell, not
 		// SIGKILL the kernel and erase the eval session's state.
-		await runIpcSubprocessWorker(startJsEvalProcess, { rethrowConnectedSendErrors: true });
+		await runIpcSubprocessWorker<JsWorkerInbound, JsWorkerOutbound>(
+			transport => startJsEvalProcess(transport, interceptUnhandledRejections),
+			{ rethrowConnectedSendErrors: true },
+		);
 		return true;
 	}
 	if (arg === STT_WORKER_ARG) {
@@ -365,7 +371,7 @@ export async function runCli(argv: string[]): Promise<void> {
 	}
 	// Worker-thread entry dispatch must run before the first later import:
 	// the stats sync worker installs its buffering handler synchronously.
-	if (resolvedArgv[0]?.startsWith("__omp_worker_")) {
+	if (isWorkerHostSelector(resolvedArgv[0])) {
 		const dispatched = await runWorkerEntrypoint(resolvedArgv[0]);
 		if (!dispatched) {
 			process.stderr.write(`Error: unknown worker selector: ${resolvedArgv[0]}\n`);

@@ -1829,7 +1829,7 @@ export async function executePatchSingle(
 		resolvedRename ? [resolvedPath, resolvedRename] : [resolvedPath],
 		signal,
 		async () => {
-			await assertEditableFile(resolvedPath, path);
+			await assertEditableFile(resolvedPath, path, session.settings);
 
 			// Capture pre-edit content so we can verify the write actually hit disk.
 			// `LspFileSystem.writeFile` delegates to a writethrough callback that, in

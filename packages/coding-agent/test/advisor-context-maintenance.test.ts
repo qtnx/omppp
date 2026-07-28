@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent, type AgentMessage, type CompactionSummaryMessage, countTokens } from "@oh-my-pi/pi-agent-core";
 import { calculateContextTokens, estimateTokens, resolveThresholdTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { createMockModel, type MockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { createMockModel, type MockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { estimateToolSchemaTokens } from "@oh-my-pi/pi-coding-agent/modes/utils/context-usage";
@@ -195,5 +195,78 @@ describe("AgentSession advisor context maintenance", () => {
 		expect(sentContext).toContain("equal-timestamp post-compaction update");
 		expect(sentContext).not.toContain("retained pre-compaction output");
 		expect(sentContext).not.toContain("fresh post-compaction output");
+	});
+
+	it("forwards the advisor session metadata to overflow compaction requests", async () => {
+		// Regression for #6625 review: advisor overflow compaction issues a direct
+		// `compact(...)` request that bypasses the advisor `Agent`, so the metadata
+		// resolver installed on the agent never runs for it. The direct call must
+		// still emit the advisor's `metadata.user_id` session identity.
+		// The advisor model is the first compaction candidate; registering the mock
+		// API lets the compaction one-shot's `completeSimple` route to it so the
+		// summarization request actually reaches the mock (and its recorded calls).
+		registerMockApi();
+		const primaryMock = createMockModel({
+			provider: "anthropic",
+			responses: [{ content: ["primary complete"] }],
+		});
+		const advisorMock = createMockModel({
+			provider: "anthropic",
+			contextWindow: CONTEXT_WINDOW,
+			handler: () => ({ content: ["bounded advisor summary"] }),
+		});
+		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
+		const settings = Settings.isolated({
+			"advisor.syncBacklog": "1",
+			"compaction.enabled": true,
+			"compaction.strategy": "context-full",
+			"contextPromotion.enabled": false,
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: primaryMock, systemPrompt: [], tools: [] },
+			streamFn: primaryMock.stream,
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			advisorTools: [],
+			advisorStreamFn: advisorMock.stream,
+		});
+		settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		const advisor = session.getAdvisorAgent();
+		if (!advisor?.sessionId) throw new Error("Expected advisor agent with a provider session id");
+		advisor.setModel(advisorMock);
+		// Unlike the recovery-branch harness, the advisor holds usable credentials
+		// so maintenance runs the LLM summarization compaction path.
+		vi.spyOn(modelRegistry, "getApiKey").mockResolvedValue("test-key");
+
+		// Two accumulated turns so compaction has older history to summarize while
+		// retaining the most recent one (a single message would be fully retained,
+		// making compaction a no-op).
+		advisor.state.messages.push(
+			usageAnchor(advisorMock, Date.now() - 2_000),
+			usageAnchor(advisorMock, Date.now() - 1_000),
+		);
+
+		await session.prompt("small current update");
+
+		// A summarization compaction one-shot actually ran (its prompt wraps the
+		// conversation in <conversation> tags).
+		const compactionCalls = advisorMock.calls.filter(call =>
+			JSON.stringify(call.context.messages).includes("<conversation>"),
+		);
+		expect(compactionCalls.length).toBeGreaterThan(0);
+
+		// Every advisor request — the compaction one-shot and the advisor turn —
+		// carries the advisor's own provider session id via metadata.user_id.
+		for (const call of advisorMock.calls) {
+			const userId = call.options?.metadata?.user_id;
+			if (typeof userId !== "string") throw new Error("Expected advisor metadata.user_id");
+			expect((JSON.parse(userId) as { session_id?: string }).session_id).toBe(advisor.sessionId);
+		}
 	});
 });

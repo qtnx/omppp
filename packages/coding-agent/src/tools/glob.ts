@@ -9,6 +9,7 @@ import { formatGroupedPaths, isEnoent, prompt, untilAborted } from "@oh-my-pi/pi
 import { type } from "arktype";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
+import { splitMemoryGlobPattern } from "../internal-urls/memory-protocol";
 import type { Theme } from "../modes/theme/theme";
 import globDescription from "../prompts/tools/glob.md" with { type: "text" };
 import { type TruncationResult, truncateHead } from "../session/streaming-output";
@@ -176,7 +177,25 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 					);
 				}
 				if (hasGlobPathChars(rawPattern)) {
-					throw new ToolError(`Glob patterns are not supported for internal URLs: ${rawPattern}`);
+					if (!/^memory:\/\//i.test(rawPattern)) {
+						throw new ToolError(`Glob patterns are not supported for internal URLs: ${rawPattern}`);
+					}
+					const memoryGlob = splitMemoryGlobPattern(rawPattern);
+					const resource = await internalRouter.resolve(memoryGlob.baseUrl, {
+						cwd: this.session.cwd,
+						settings: this.session.settings,
+						signal,
+						localProtocolOptions: this.session.localProtocolOptions,
+						skills: this.session.skills,
+						pathOnly: true,
+					});
+					if (!resource.sourcePath) {
+						throw new ToolError(`Cannot find internal URL without a backing file: ${memoryGlob.baseUrl}`);
+					}
+					normalizedPatterns.push(
+						path.join(resource.sourcePath.replace(/[*?[{]/g, "[$&]"), memoryGlob.globPattern),
+					);
+					continue;
 				}
 				const resource = await internalRouter.resolve(rawPattern, {
 					cwd: this.session.cwd,

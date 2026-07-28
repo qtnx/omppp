@@ -645,6 +645,7 @@ def _run_rpc_blocking(
                                         "status": t.status,
                                         "notes": t.notes,
                                         "details": t.details,
+                                        "blocker": t.blocker,
                                     }
                                     for t in p.tasks
                                 ],

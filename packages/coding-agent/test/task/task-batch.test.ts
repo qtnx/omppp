@@ -412,6 +412,11 @@ describe("task.batch spawning", () => {
 		expect(text).toContain("Spawned 2 background agents");
 		expect(text).toContain("- `Alpha`");
 		expect(text).toContain("- `Beta`");
+		expect(text).toContain("`job list`");
+		expect(text).toContain("`job poll`");
+		expect(text).toContain("`job cancel`");
+		expect(text).not.toContain("`hub wait`");
+		expect(text).not.toContain('`hub` op:"wait"');
 		expect(result.details?.progress?.map(progress => progress.id)).toEqual(["Alpha", "Beta"]);
 		expect(result.details?.async?.state).toBe("running");
 

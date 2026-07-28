@@ -48,7 +48,7 @@ import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
-import type { ConfiguredThinkingLevel } from "../thinking";
+import { type ConfiguredThinkingLevel, prewalkWouldBeNoop, resolveTaskEffortLevel, type TaskEffort } from "../thinking";
 import type { ContextFileEntry, ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { isIrcEnabled } from "../tools/hub";
@@ -411,6 +411,8 @@ export interface ExecutorOptions {
 	 */
 	parentActiveModelPattern?: string;
 	thinkingLevel?: ConfiguredThinkingLevel;
+	/** Caller-requested coarse effort (`lo`/`med`/`hi`); maps onto the resolved model's supported thinking range and wins over {@link thinkingLevel}. */
+	effort?: TaskEffort;
 	/** Schema used to validate the final structured completion. */
 	outputSchema?: unknown;
 	/** Enforcement policy for {@link outputSchema}; defaults to legacy permissive behavior. */
@@ -2086,15 +2088,16 @@ async function driveSessionToYield(
 		// pending owner work left is terminal — the isolation runner captures
 		// and destroys the worktree right after this run resolves, so no
 		// owner job that could still re-wake the session may outlive it.
-		// Suppressed (acknowledged / hub-watched) jobs never re-wake the run
+		// Suppressed (acknowledged / lifecycle-observed) jobs never re-wake the run
 		// and are reaped at teardown.
 		//
 		// Before blocking on running jobs, tell the model ONCE what it is
-		// waiting on so it can `hub` wait/cancel instead of sitting silent
-		// until the jobs (or the runtime limit) expire. Runs that never yield
-		// (ladder exhausted / terminal model error) skip the barrier — more
-		// injected turns just multiply the failure noise; the teardown reap
-		// still cancels and awaits their jobs before worktree capture.
+		// waiting on so it can `job poll` with exact IDs only when blocked or
+		// `job cancel` instead of sitting silent until the jobs (or the runtime
+		// limit) expire. Runs that never yield (ladder exhausted / terminal model
+		// error) skip the barrier — more injected turns just multiply the failure
+		// noise; the teardown reap still cancels and awaits their jobs before
+		// worktree capture.
 		let asyncPendingNoticeSent = false;
 		while (!abortSignal.aborted) {
 			if (!monitor.yieldCalled()) {
@@ -2908,16 +2911,22 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (model?.contextWindow && model.contextWindow > 0) {
 				progress.contextWindow = model.contextWindow;
 			}
+			// Caller-requested coarse effort maps onto the resolved model's
+			// supported range; undefined (no effort, or no controllable effort
+			// surface) falls through to the normal selectors below.
+			const effortLevel = options.effort !== undefined ? resolveTaskEffortLevel(model, options.effort) : undefined;
 			if (model) {
-				progress.resolvedModel = explicitThinkingLevel
-					? formatModelSelectorValue(formatModelStringWithRouting(model), resolvedThinkingLevel)
-					: formatModelStringWithRouting(model);
+				const displayLevel = effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : undefined);
+				progress.resolvedModel =
+					displayLevel !== undefined
+						? formatModelSelectorValue(formatModelStringWithRouting(model), displayLevel)
+						: formatModelStringWithRouting(model);
 			}
-			// Precedence: explicit `:level` suffix on the resolved model pattern >
-			// agent-definition default (e.g. task's `auto`) > pattern-derived level.
-			const effectiveThinkingLevel = explicitThinkingLevel
-				? resolvedThinkingLevel
-				: (thinkingLevel ?? resolvedThinkingLevel);
+			// Precedence: caller `effort` > explicit `:level` suffix on the resolved
+			// model pattern > agent-definition default (e.g. task's `auto`) >
+			// pattern-derived level.
+			const effectiveThinkingLevel =
+				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? resolvedThinkingLevel));
 			resolvedAt = performance.now();
 			// Per-agent prewalk: the agent definition's `prewalk` frontmatter or the
 			// `task.agentPrewalk` settings override hands the subagent off to a
@@ -2939,10 +2948,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						pattern: prewalkPattern,
 						warning: resolvedPrewalk.warning,
 					});
-				} else if (model && target.provider === model.provider && target.id === model.id) {
-					// Switching to the starting model is a no-op that would still inject
-					// the plan/checklist nudges — skip.
-					logger.debug("Subagent prewalk target equals starting model; skipping prewalk", {
+				} else if (prewalkWouldBeNoop(model, effectiveThinkingLevel, target, resolvedPrewalk.thinkingLevel)) {
+					// Same model AND same effective thinking level: switching would only
+					// inject the plan/checklist nudges for no gain — skip. An effort-only
+					// delta on the same model still arms (it is a real cheapening hand-off).
+					logger.debug("Subagent prewalk target matches starting model and thinking level; skipping prewalk", {
 						agent: agent.name,
 						pattern: prewalkPattern,
 					});
