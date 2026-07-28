@@ -5,6 +5,7 @@
 ### Fixed
 
 - Preserved the `/live` visualizer across agent question dialogs, restoring it after an answer or cancellation instead of dropping back to the normal editor.
+- Fixed `/live --remote` being rejected by slash-command dispatch before it could start the SSH live bridge.
 
 ## [1.6.6] - 2026-07-25
 

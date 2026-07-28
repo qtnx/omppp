@@ -3510,6 +3510,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "live",
 		description: "Start realtime voice mode; `remote` serves it to a client over SSH",
+		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.setText("");
 			const args = command.args?.trim().toLowerCase() ?? "";
