@@ -4,6 +4,7 @@ import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import type { AdvisorConsultResult } from "../src/advisor/runtime";
 import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
 import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES } from "../src/orchestrator-mode/state";
@@ -111,7 +112,9 @@ describe("AgentSession live duo/advisor tool availability", () => {
 			authStorage,
 			modelRegistry,
 			getToolByName: name => session?.getToolByName(name),
-			consultAdvisor: (question, signal) => session?.consultAdvisor(question, signal) ?? Promise.resolve(null),
+			consultAdvisor: (question, signal) =>
+				session?.consultAdvisor(question, signal) ??
+				Promise.resolve({ status: "unavailable", attempts: [] } satisfies AdvisorConsultResult),
 			isAdvisorActive: () => session?.isAdvisorActive() ?? false,
 			duoHandoffToExecutor: (resolution, scope) =>
 				session?.duoHandoffToExecutor(resolution, scope) ?? Promise.resolve("no-controller"),

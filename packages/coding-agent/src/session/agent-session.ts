@@ -93,7 +93,7 @@ import {
 	stringProperty,
 	withTimeout,
 } from "@oh-my-pi/pi-utils";
-import type { AdvisorConfig, AdvisorRuntime, AdvisorRuntimeStatus } from "../advisor";
+import type { AdvisorConfig, AdvisorConsultResult, AdvisorRuntime, AdvisorRuntimeStatus } from "../advisor";
 import { type AsyncJob, AsyncJobManager } from "../async";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
@@ -8925,8 +8925,8 @@ export class AgentSession {
 		return this.#advisors.getAdvisorRuntimeForTest();
 	}
 
-	/** Ask the primary advisor and wait for its answer when one is active. */
-	consultAdvisor(question: string, signal?: AbortSignal): Promise<string | null> {
+	/** Ask the primary advisor and wait for its consult result when one is active. */
+	consultAdvisor(question: string, signal?: AbortSignal): Promise<AdvisorConsultResult> {
 		return this.#advisors.consult(question, signal);
 	}
 

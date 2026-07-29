@@ -2,6 +2,7 @@ import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTelemetryConfig, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { AdvisorConsultResult } from "../advisor";
 import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
 import type { PromptTemplate } from "../config/prompt-templates";
@@ -539,11 +540,12 @@ export interface ToolSession {
 	getImageAttachments?: () => ImageAttachmentEntry[];
 	/**
 	 * "Phone a friend": ask the always-watching advisor a question mid-turn and
-	 * block until it answers. Resolves with the advisor's plain-text reply, or
-	 * `null` when the advisor is inactive / did not answer in time / was aborted.
-	 * Used by the `consult` tool.
+	 * block until it settles. Always resolves with a discriminated
+	 * `AdvisorConsultResult` carrying the per-prompt attempt history —
+	 * `answered` on success, otherwise the precise failure cause. Used by the
+	 * `consult` tool.
 	 */
-	consultAdvisor?: (question: string, signal?: AbortSignal) => Promise<string | null>;
+	consultAdvisor?: (question: string, signal?: AbortSignal) => Promise<AdvisorConsultResult>;
 	/** Fire-and-forget consult; advisor answers later through its advice channel. */
 	consultAdvisorAsync?: (question: string) => boolean;
 	/** Whether an advisor runtime is currently live for this session. */

@@ -60,6 +60,7 @@ import {
 	SYSTEM_CONTEXT_REMINDER_LABEL,
 } from "@oh-my-pi/system-context-reminder-plugin";
 import {
+	type AdvisorConsultResult,
 	discoverAdvisorConfigs,
 	discoverWatchdogFiles,
 	formatActiveRepoWatchdogPrompt,
@@ -2119,7 +2120,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getActiveModel: () => agent?.state.model ?? model,
 			getServiceTierByFamily: () => session?.serviceTierByFamily,
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
-			consultAdvisor: (question, signal) => session?.consultAdvisor(question, signal) ?? Promise.resolve(null),
+			consultAdvisor: (question, signal) =>
+				session?.consultAdvisor(question, signal) ??
+				Promise.resolve({ status: "unavailable", attempts: [] } satisfies AdvisorConsultResult),
 			consultAdvisorAsync: question => session?.consultAdvisorAsync(question) ?? false,
 			isAdvisorActive: () => session?.isAdvisorActive() ?? false,
 			isAdvisorEnabled: () =>
