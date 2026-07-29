@@ -34,6 +34,13 @@ export interface LiveAttachOptions {
 	forwardCredentials?: boolean;
 	/** Realtime output voice. */
 	voice?: string;
+	/**
+	 * Command run on the remote host. Defaults to `ompx`, which requires the
+	 * binary on the remote's NON-INTERACTIVE PATH — `ssh host ompx` skips the
+	 * shell rc files that usually add `~/.local/bin` or `~/.bun/bin`, so an
+	 * absolute path is often the working answer.
+	 */
+	remoteBin?: string;
 	/** Diagnostic sink; defaults to stdout. */
 	write?: (text: string) => void;
 	/** Abort signal wired to SIGINT/SIGTERM by the command. */
@@ -65,7 +72,8 @@ export async function runLiveAttach(options: LiveAttachOptions): Promise<number>
 	const { host, session: targetSession } = splitTarget(options.target);
 	const session = options.session ?? targetSession ?? "latest";
 
-	const child = Bun.spawn([sshBin, "-T", host, "ompx", "live-agent", "--session", session], {
+	const remoteBin = options.remoteBin?.trim() || "ompx";
+	const child = Bun.spawn([sshBin, "-T", host, remoteBin, "live-agent", "--session", session], {
 		stdin: "pipe",
 		stdout: "pipe",
 		stderr: "inherit",
@@ -164,6 +172,10 @@ export default class Live extends Command {
 			description: "Ask the host to forward a Codex credential when this machine has none",
 		}),
 		voice: Flags.string({ description: "Realtime output voice" }),
+		"remote-bin": Flags.string({
+			description:
+				"Command to run on the remote host; use an absolute path when ompx is not on its non-interactive PATH",
+		}),
 	};
 
 	async run(): Promise<void> {
@@ -184,6 +196,7 @@ export default class Live extends Command {
 				session: typeof flags.session === "string" ? flags.session : undefined,
 				forwardCredentials: flags["forward-credentials"] === true,
 				voice: typeof flags.voice === "string" ? flags.voice : undefined,
+				remoteBin: typeof flags["remote-bin"] === "string" ? flags["remote-bin"] : undefined,
 				signal: abort.signal,
 			});
 		} finally {
