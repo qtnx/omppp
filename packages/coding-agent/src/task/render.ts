@@ -1299,6 +1299,21 @@ function formatReviewGateLine(reviewGate: ReviewGateResult, theme: Theme): strin
 	return parts.join(theme.sep.dot);
 }
 
+function renderSubagentTimingLine(result: SingleResult, continuePrefix: string, theme: Theme): string | undefined {
+	const timings = result.telemetry?.timings;
+	if (!timings) return undefined;
+	const positiveMs = (value: number | undefined): number =>
+		typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+	const launchMs = positiveMs(timings.queueMs) + positiveMs(timings.preRunMs) + positiveMs(timings.setupMs);
+	const parts: string[] = [];
+	if (launchMs > 0) parts.push(`launch ${formatDuration(launchMs)}`);
+	const modelMs = positiveMs(timings.modelMs);
+	if (modelMs > 0) parts.push(`model ${formatDuration(modelMs)}`);
+	const toolMs = positiveMs(timings.toolMs);
+	if (toolMs > 0) parts.push(`tools ${formatDuration(toolMs)}`);
+	return parts.length > 0 ? `${continuePrefix}${theme.fg("dim", parts.join(theme.sep.dot))}` : undefined;
+}
+
 /**
  * Render final result for a single agent.
  */
@@ -1369,6 +1384,8 @@ function renderAgentResult(
 	}
 
 	lines.push(statusLine);
+	const timingLine = renderSubagentTimingLine(result, continuePrefix, theme);
+	if (timingLine) lines.push(timingLine);
 
 	lines.push(...renderTaskSection(result.assignment ?? result.task, continuePrefix, expanded, theme));
 
