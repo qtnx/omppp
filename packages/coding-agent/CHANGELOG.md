@@ -2,19 +2,11 @@
 
 ## [Unreleased]
 
+## [1.6.9] - 2026-07-29
+
 ### Fixed
 
 - Fixed blocking advisor consultations collapsing paused, disposed, aborted, timed-out, queue-cleared, rate-limited, empty-response, and provider-error outcomes into a misleading timeout. Consults now report the exact cause and provider attempt history, expose the existing bounded retry cycle, return immediately when a rate-limited request is requeued, and stop retrying after cancellation.
-
-## [1.6.8] - 2026-07-28
-
-### Added
-
-- Added a session-scoped `/telegram on|off|status` bridge for steering or queueing messages from one allowlisted private Telegram chat and receiving final assistant responses. Configure `OMP_TELEGRAM_BOT_TOKEN` and `OMP_TELEGRAM_ALLOWED_CHAT_ID`; the bridge uses bounded long polling, refuses active webhooks, and fails closed on unauthorized chats, unsafe retries, queue overflow, and lifecycle races.
-
-### Fixed
-
-- Made the interactive `/usage` panel dismissible with Escape and automatically retire its live lifecycle after the full panel enters terminal scrollback, while preserving committed usage rows as history.
 
 ## [17.1.5] - 2026-07-27
 
@@ -9830,6 +9822,16 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.6.8] - 2026-07-28
+
+### Added
+
+- Added a session-scoped `/telegram on|off|status` bridge for steering or queueing messages from one allowlisted private Telegram chat and receiving final assistant responses. Configure `OMP_TELEGRAM_BOT_TOKEN` and `OMP_TELEGRAM_ALLOWED_CHAT_ID`; the bridge uses bounded long polling, refuses active webhooks, and fails closed on unauthorized chats, unsafe retries, queue overflow, and lifecycle races.
+
+### Fixed
+
+- Made the interactive `/usage` panel dismissible with Escape and automatically retire its live lifecycle after the full panel enters terminal scrollback, while preserving committed usage rows as history.
 
 ## [1.6.7] - 2026-07-28
 
