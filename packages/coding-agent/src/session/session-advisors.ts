@@ -577,6 +577,11 @@ export class SessionAdvisors {
 	resetAllRuntimes(): void {
 		this.#resetAllAdvisorRuntimes();
 	}
+
+	/** Preserve advisor context while aligning cursors after automatic primary-history pruning. */
+	rebaseAllRuntimes(): void {
+		for (const advisor of this.#advisors) advisor.runtime.rebaseToCurrentTranscript();
+	}
 	/** Pause all live runtimes while Duo gives the main stream to its planner. */
 	pauseAll(): void {
 		for (const advisor of this.#advisors) advisor.runtime.pause();

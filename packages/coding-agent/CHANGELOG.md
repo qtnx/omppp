@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed automatic tool-output pruning repeatedly resetting the advisor and replaying the full primary transcript, which could grow the advisor session file and process memory without bound during long tool-heavy sessions.
+
 ## [1.6.9] - 2026-07-29
 
 ### Fixed

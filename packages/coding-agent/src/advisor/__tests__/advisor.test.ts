@@ -2936,6 +2936,58 @@ describe("advisor", () => {
 			expect(promptInputs[1]).toContain("summary-bbb");
 		});
 
+		it("rebases a rewritten transcript without replaying delivered history or resetting the advisor", async () => {
+			const promptInputs: string[] = [];
+			const { promise: firstPromptDone, resolve: finishFirst } = Promise.withResolvers<void>();
+			const { promise: secondPromptDone, resolve: finishSecond } = Promise.withResolvers<void>();
+			let promptCalls = 0;
+			let resetCount = 0;
+			let abortCount = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					promptCalls++;
+					if (promptCalls === 1) finishFirst();
+					else if (promptCalls === 2) finishSecond();
+				},
+				abort: () => {
+					abortCount++;
+				},
+				reset: () => {
+					resetCount++;
+				},
+				state: { messages: [] },
+			};
+			const oldLargeMarker = "OLD_LARGE_TRANSCRIPT_MARKER";
+			const oldLargeTranscript = `${oldLargeMarker}:${"x".repeat(32_000)}`;
+			const messages: AgentMessage[] = [{ role: "user", content: oldLargeTranscript, timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.onTurnEnd();
+			await firstPromptDone;
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain(oldLargeMarker);
+
+			const rewrittenMessages = messages.map(message => structuredClone(message));
+			messages.splice(0, messages.length, ...rewrittenMessages);
+			runtime.rebaseToCurrentTranscript();
+
+			const newMarker = "NEW_MESSAGE_AFTER_REBASE";
+			messages.push({ role: "user", content: newMarker, timestamp: 2 } as AgentMessage);
+			runtime.onTurnEnd();
+			await secondPromptDone;
+
+			expect(promptInputs).toHaveLength(2);
+			expect(promptInputs[1]).toContain(newMarker);
+			expect(promptInputs[1]).not.toContain(oldLargeMarker);
+			expect(resetCount).toBe(0);
+			expect(abortCount).toBe(0);
+		});
+
 		it("clears advisor context without replaying primary history when maintenance requests recovery", async () => {
 			const promptInputs: string[] = [];
 			const { promise: firstPromptDone, resolve: finishFirst } = Promise.withResolvers<void>();
