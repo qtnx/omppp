@@ -11,6 +11,7 @@ import {
 } from "./types";
 
 const TELEGRAM_TOKEN_PATTERN = /^\d{1,20}:[A-Za-z0-9_-]{35}$/;
+const SAFE_TRANSPORT_CODE_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const TELEGRAM_METHODS: Record<TelegramMethod, true> = {
 	getMe: true,
 	getWebhookInfo: true,
@@ -18,7 +19,9 @@ const TELEGRAM_METHODS: Record<TelegramMethod, true> = {
 	sendMessage: true,
 };
 const MAX_RETRY_AFTER_MS = 300_000;
-const FAILURE_MESSAGE = "Telegram Bot API request failed";
+const MAX_SAFE_DESCRIPTION_LENGTH = 240;
+const MAX_TRANSPORT_CAUSE_DEPTH = 8;
+const REDACTED_VALUE = "[REDACTED]";
 
 type TelegramFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -37,21 +40,110 @@ export class TelegramApiError extends Error implements TelegramApiFailure {
 	readonly errorCode?: number;
 	readonly retryAfterMs?: number;
 	readonly transport?: boolean;
+	readonly description?: string;
+	readonly transportCode?: string;
+	readonly invalidToken?: boolean;
 	readonly ambiguous: boolean;
 
 	constructor(options: ErrorOptions) {
-		super(FAILURE_MESSAGE);
+		super(telegramApiFailureMessage(options));
 		this.method = options.method;
 		this.ambiguous = options.ambiguous;
 		if (options.httpStatus !== undefined) this.httpStatus = options.httpStatus;
 		if (options.errorCode !== undefined) this.errorCode = options.errorCode;
 		if (options.retryAfterMs !== undefined) this.retryAfterMs = options.retryAfterMs;
 		if (options.transport === true) this.transport = true;
+		if (options.description !== undefined) this.description = options.description;
+		if (options.transportCode !== undefined) this.transportCode = options.transportCode;
+		if (options.invalidToken === true) this.invalidToken = true;
 	}
+}
+
+export function isValidTelegramBotToken(token: string): boolean {
+	return TELEGRAM_TOKEN_PATTERN.test(token);
+}
+
+export function telegramApiErrorMessage(error: unknown): string | undefined {
+	return error instanceof TelegramApiError ? error.message : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function telegramApiFailureMessage(options: ErrorOptions): string {
+	const prefix = `Telegram Bot API ${options.method} failed`;
+	if (options.transport === true) {
+		return options.transportCode === undefined
+			? `${prefix}: transport failure`
+			: `${prefix}: transport failure (${options.transportCode})`;
+	}
+
+	const details: string[] = [];
+	if (options.invalidToken === true) details.push("invalid OMP_TELEGRAM_BOT_TOKEN");
+	if (options.httpStatus !== undefined) details.push(`HTTP ${options.httpStatus}`);
+	if (options.errorCode !== undefined) details.push(`Telegram ${options.errorCode}`);
+	if (
+		options.method === "sendMessage" &&
+		(options.httpStatus === 400 || options.errorCode === 400) &&
+		options.description?.toLowerCase().includes("chat not found")
+	) {
+		details.push("OMP_TELEGRAM_ALLOWED_CHAT_ID is unreachable or incorrect");
+	}
+	if (options.method === "getUpdates" && (options.httpStatus === 409 || options.errorCode === 409)) {
+		details.push("another poller is using the same bot token");
+	}
+	if (options.description !== undefined) details.push(options.description);
+	return details.length === 0 ? prefix : `${prefix}: ${details.join("; ")}`;
+}
+
+function errorProperty(value: Record<string, unknown>, property: string): unknown {
+	try {
+		return value[property];
+	} catch {
+		return undefined;
+	}
+}
+
+function extractTransportCode(error: unknown): string | undefined {
+	const seen = new Set<object>();
+	let current = error;
+	for (let depth = 0; depth < MAX_TRANSPORT_CAUSE_DEPTH; depth++) {
+		if (!isRecord(current) || seen.has(current)) return undefined;
+		seen.add(current);
+
+		const code = errorProperty(current, "code");
+		if (typeof code === "string" && SAFE_TRANSPORT_CODE_PATTERN.test(code)) return code;
+
+		const name = errorProperty(current, "name");
+		if (name === "AbortError" || name === "TimeoutError") return name;
+
+		current = errorProperty(current, "cause");
+	}
+	return undefined;
+}
+
+function redactDescriptionValues(value: string, values: readonly string[]): string {
+	let redacted = value;
+	for (const secret of values) {
+		const normalizedSecret = secret.replace(/[\s\x00-\x1F\x7F-\x9F]+/g, " ").trim();
+		if (normalizedSecret !== "") redacted = redacted.split(normalizedSecret).join(REDACTED_VALUE);
+	}
+	return redacted;
+}
+
+function telegramDescription(value: unknown, token: string, body: Record<string, unknown>): string | undefined {
+	if (typeof value !== "string") return undefined;
+
+	const sensitiveValues = [token];
+	if (typeof body.text === "string") sensitiveValues.push(body.text);
+	if (typeof body.chat_id === "number" && Number.isFinite(body.chat_id)) {
+		sensitiveValues.push(String(body.chat_id));
+	}
+
+	const normalizedDescription = value.replace(/[\s\x00-\x1F\x7F-\x9F]+/g, " ").trim();
+	const description = redactDescriptionValues(normalizedDescription, sensitiveValues);
+	return description === "" ? undefined : description.slice(0, MAX_SAFE_DESCRIPTION_LENGTH);
 }
 
 function retryAfterMs(value: unknown): number | undefined {
@@ -173,11 +265,19 @@ export class TelegramBotClient implements TelegramBotClientContract {
 		isResult: (value: unknown) => value is Result,
 		signal?: AbortSignal,
 	): Promise<Result> {
-		if (!TELEGRAM_METHODS[method] || !TELEGRAM_TOKEN_PATTERN.test(this.#token)) {
+		if (!TELEGRAM_METHODS[method]) {
 			throw new TelegramApiError({ method, ambiguous: false });
 		}
+		if (!isValidTelegramBotToken(this.#token)) {
+			throw new TelegramApiError({ method, ambiguous: false, invalidToken: true });
+		}
 		if (signal?.aborted) {
-			throw new TelegramApiError({ method, ambiguous: false, transport: true });
+			throw new TelegramApiError({
+				method,
+				ambiguous: false,
+				transport: true,
+				transportCode: extractTransportCode(signal.reason),
+			});
 		}
 
 		const timeoutSignal = AbortSignal.timeout(Math.max(0, this.#timeoutMs));
@@ -196,8 +296,13 @@ export class TelegramBotClient implements TelegramBotClientContract {
 				},
 				requestSignal,
 			);
-		} catch {
-			throw new TelegramApiError({ method, ambiguous, transport: true });
+		} catch (error) {
+			throw new TelegramApiError({
+				method,
+				ambiguous,
+				transport: true,
+				transportCode: extractTransportCode(error),
+			});
 		}
 
 		let payload: unknown;
@@ -211,16 +316,19 @@ export class TelegramBotClient implements TelegramBotClientContract {
 			throw new TelegramApiError({ method, httpStatus: response.status, ambiguous });
 		}
 		if (!payload.ok) {
+			const errorCode =
+				typeof payload.error_code === "number" &&
+				Number.isSafeInteger(payload.error_code) &&
+				payload.error_code >= 0
+					? payload.error_code
+					: undefined;
 			throw new TelegramApiError({
 				method,
 				httpStatus: response.status,
-				errorCode:
-					typeof payload.error_code === "number" &&
-					Number.isSafeInteger(payload.error_code) &&
-					payload.error_code >= 0
-						? payload.error_code
-						: undefined,
+				errorCode,
 				retryAfterMs: isRecord(payload.parameters) ? retryAfterMs(payload.parameters.retry_after) : undefined,
+				description: telegramDescription(payload.description, this.#token, body),
+				invalidToken: method === "getMe" && (response.status === 401 || errorCode === 401),
 				ambiguous: false,
 			});
 		}

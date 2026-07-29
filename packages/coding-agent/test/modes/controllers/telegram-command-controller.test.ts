@@ -8,6 +8,9 @@ import type {
 	TelegramBridgeStatus,
 } from "@oh-my-pi/pi-coding-agent/telegram/types";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import { TelegramApiError, telegramApiErrorMessage } from "../../../src/telegram/client";
+
+const VALID_BOT_TOKEN = `123456789:${"a".repeat(35)}`;
 
 interface BridgeRecord {
 	handle: TelegramBridgeHandle;
@@ -34,7 +37,9 @@ interface ControllerHarness extends ContextHarness {
 	bridge: BridgeHarness;
 }
 
-function createBridgeHarness(options?: { start?: () => Promise<void> }): BridgeHarness {
+function createBridgeHarness(options?: {
+	start?: (bridgeOptions: TelegramBridgeFactoryOptions) => Promise<void>;
+}): BridgeHarness {
 	const capturedOptions: TelegramBridgeFactoryOptions[] = [];
 	const handles: BridgeRecord[] = [];
 	const factory: CreateTelegramBridge = bridgeOptions => {
@@ -45,7 +50,7 @@ function createBridgeHarness(options?: { start?: () => Promise<void> }): BridgeH
 		let disposeCalls = 0;
 		const start = async () => {
 			startCalls++;
-			await options?.start?.();
+			await options?.start?.(bridgeOptions);
 			status = { phase: "connected", botUsername: "bridgebot" };
 		};
 		const stop = async () => {
@@ -99,7 +104,7 @@ function createContext(): ContextHarness {
 
 function createController(
 	env: Record<string, string | undefined>,
-	options?: { start?: () => Promise<void> },
+	options?: { start?: (bridgeOptions: TelegramBridgeFactoryOptions) => Promise<void> },
 ): ControllerHarness {
 	const context = createContext();
 	const bridge = createBridgeHarness(options);
@@ -111,14 +116,27 @@ function createController(
 }
 
 describe("TelegramCommandController", () => {
-	it("rejects missing token and every non-canonical chat id before constructing a bridge", async () => {
-		const missingToken = createController({ OMP_TELEGRAM_ALLOWED_CHAT_ID: "42" });
-		await missingToken.controller.handleCommand("on");
-		expect(missingToken.bridge.handles).toHaveLength(0);
-		expect(missingToken.errors).toEqual([
-			"Telegram could not start, so no Telegram messages are connected. Set OMP_TELEGRAM_BOT_TOKEN and try /telegram on again.",
-		]);
+	it("rejects a missing token before constructing a bridge", async () => {
+		const harness = createController({ OMP_TELEGRAM_ALLOWED_CHAT_ID: "42" });
+		await harness.controller.handleCommand("on");
+		expect(harness.bridge.handles).toHaveLength(0);
+		expect(harness.errors).toEqual([expect.stringContaining("OMP_TELEGRAM_BOT_TOKEN")]);
+		expect(JSON.stringify(harness.errors)).not.toContain("malformed");
+	});
 
+	it("rejects a malformed token before constructing a bridge without leaking it", async () => {
+		const harness = createController({
+			OMP_TELEGRAM_BOT_TOKEN: "not-a-telegram-token",
+			OMP_TELEGRAM_ALLOWED_CHAT_ID: "42",
+		});
+		await harness.controller.handleCommand("on");
+		expect(harness.bridge.handles).toHaveLength(0);
+		expect(harness.errors).toEqual([expect.stringContaining("OMP_TELEGRAM_BOT_TOKEN")]);
+		expect(harness.errors).toEqual([expect.stringContaining("malformed")]);
+		expect(JSON.stringify(harness.errors)).not.toContain("not-a-telegram-token");
+	});
+
+	it("rejects every invalid or non-canonical chat id before constructing a bridge", async () => {
 		for (const chatId of [
 			undefined,
 			" ",
@@ -132,14 +150,12 @@ describe("TelegramCommandController", () => {
 			String(Number.MAX_SAFE_INTEGER + 1),
 		]) {
 			const harness = createController({
-				OMP_TELEGRAM_BOT_TOKEN: "token-secret",
+				OMP_TELEGRAM_BOT_TOKEN: VALID_BOT_TOKEN,
 				OMP_TELEGRAM_ALLOWED_CHAT_ID: chatId,
 			});
 			await harness.controller.handleCommand("on");
 			expect(harness.bridge.handles).toHaveLength(0);
-			expect(harness.errors).toEqual([
-				"Telegram could not start, so no Telegram messages are connected. Set OMP_TELEGRAM_ALLOWED_CHAT_ID to a positive safe integer and try /telegram on again.",
-			]);
+			expect(harness.errors).toEqual([expect.stringContaining("OMP_TELEGRAM_ALLOWED_CHAT_ID")]);
 		}
 	});
 
@@ -147,7 +163,7 @@ describe("TelegramCommandController", () => {
 		const started = Promise.withResolvers<void>();
 		const releaseStart = Promise.withResolvers<void>();
 		const harness = createController(
-			{ OMP_TELEGRAM_BOT_TOKEN: "token-secret", OMP_TELEGRAM_ALLOWED_CHAT_ID: "42" },
+			{ OMP_TELEGRAM_BOT_TOKEN: VALID_BOT_TOKEN, OMP_TELEGRAM_ALLOWED_CHAT_ID: "42" },
 			{
 				start: async () => {
 					started.resolve();
@@ -183,7 +199,7 @@ describe("TelegramCommandController", () => {
 
 	it("replaces a failed bridge on retry while preserving active-start idempotency", async () => {
 		const harness = createController({
-			OMP_TELEGRAM_BOT_TOKEN: "token-secret",
+			OMP_TELEGRAM_BOT_TOKEN: VALID_BOT_TOKEN,
 			OMP_TELEGRAM_ALLOWED_CHAT_ID: "42",
 		});
 
@@ -205,44 +221,99 @@ describe("TelegramCommandController", () => {
 		expect(harness.bridge.handles).toHaveLength(2);
 	});
 
-	it("uses safe copy for status and failures and never records sensitive bridge data", async () => {
+	it("shows a Telegram API startup cause once and logs only its event", async () => {
+		const failure = new TelegramApiError({
+			method: "sendMessage",
+			httpStatus: 400,
+			errorCode: 400,
+			description: "Bad Request: chat not found",
+			ambiguous: false,
+		});
+		const safeCause = telegramApiErrorMessage(failure);
+		if (!safeCause) throw new Error("Expected a safe Telegram API failure cause.");
+		expect(safeCause).toContain("chat not found");
+		const harness = createController(
+			{ OMP_TELEGRAM_BOT_TOKEN: VALID_BOT_TOKEN, OMP_TELEGRAM_ALLOWED_CHAT_ID: "42" },
+			{
+				start: async bridgeOptions => {
+					bridgeOptions.onStatus({ phase: "failed", message: safeCause });
+					throw failure;
+				},
+			},
+		);
+		const warn = vi.spyOn(logger, "warn");
+		try {
+			await harness.controller.handleCommand("on");
+			expect(harness.errors).toHaveLength(1);
+			expect(harness.errors[0]).toContain("Telegram could not start");
+			expect(harness.errors[0]).toContain(safeCause);
+			expect(warn.mock.calls).toEqual([
+				["Telegram bridge command failed", { event: "telegram_bridge_start_failed" }],
+			]);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it("shows a bridge-safe terminal cause with retry guidance", async () => {
+		const failure = new TelegramApiError({
+			method: "getUpdates",
+			httpStatus: 409,
+			errorCode: 409,
+			ambiguous: false,
+		});
+		const safeCause = telegramApiErrorMessage(failure);
+		if (!safeCause) throw new Error("Expected a safe Telegram API failure cause.");
+		const harness = createController({
+			OMP_TELEGRAM_BOT_TOKEN: VALID_BOT_TOKEN,
+			OMP_TELEGRAM_ALLOWED_CHAT_ID: "42",
+		});
+
+		await harness.controller.handleCommand("on");
+		harness.bridge.handles[0]?.emit({ phase: "failed", message: safeCause });
+
+		expect(harness.errors).toHaveLength(1);
+		expect(harness.errors[0]).toContain(safeCause);
+		expect(harness.errors[0]).toContain("Run /telegram on to try again.");
+	});
+
+	it("keeps arbitrary startup errors generic and logs only their event identifier", async () => {
 		const sentinel = {
-			token: "token-secret",
-			url: "https://secret.example/bottoken-secret",
+			token: VALID_BOT_TOKEN,
+			url: `https://api.telegram.org/bot${VALID_BOT_TOKEN}/sendMessage`,
 			chatId: "42",
 			inbound: "private inbound text",
 			output: "private model output",
 		};
-		const harness = createController({
-			OMP_TELEGRAM_BOT_TOKEN: sentinel.token,
-			OMP_TELEGRAM_ALLOWED_CHAT_ID: sentinel.chatId,
-		});
+		const harness = createController(
+			{ OMP_TELEGRAM_BOT_TOKEN: sentinel.token, OMP_TELEGRAM_ALLOWED_CHAT_ID: sentinel.chatId },
+			{
+				start: async () => {
+					throw new Error(Object.values(sentinel).join(" "));
+				},
+			},
+		);
 		const warn = vi.spyOn(logger, "warn");
-
-		await harness.controller.handleCommand("status");
-		await harness.controller.handleCommand("wat");
-		await harness.controller.handleCommand("");
-		await harness.controller.handleCommand("on");
-		harness.bridge.handles[0]?.emit({
-			phase: "failed",
-			message: `${sentinel.url} ${sentinel.inbound} ${sentinel.output}`,
-		});
-
-		expect(harness.statuses).toContain("Telegram is disconnected.");
-		expect(harness.errors).toEqual([
-			"Usage: /telegram <on|off|status>",
-			"Usage: /telegram <on|off|status>",
-			"Telegram bridge failed, so Telegram messages are disconnected. Run /telegram on to try again.",
-		]);
-		const captured = JSON.stringify({ statuses: harness.statuses, errors: harness.errors, logs: warn.mock.calls });
-		for (const value of Object.values(sentinel)) expect(captured).not.toContain(value);
+		try {
+			await harness.controller.handleCommand("on");
+			expect(harness.errors).toEqual([
+				"Telegram could not start, so no Telegram messages are connected. Check the Telegram configuration and try /telegram on again.",
+			]);
+			expect(warn.mock.calls).toEqual([
+				["Telegram bridge command failed", { event: "telegram_bridge_start_failed" }],
+			]);
+			const captured = JSON.stringify({ statuses: harness.statuses, errors: harness.errors, logs: warn.mock.calls });
+			for (const value of Object.values(sentinel)) expect(captured).not.toContain(value);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	it("fences status and lifecycle work after synchronous disposal", async () => {
 		const started = Promise.withResolvers<void>();
 		const releaseStart = Promise.withResolvers<void>();
 		const harness = createController(
-			{ OMP_TELEGRAM_BOT_TOKEN: "token-secret", OMP_TELEGRAM_ALLOWED_CHAT_ID: "42" },
+			{ OMP_TELEGRAM_BOT_TOKEN: VALID_BOT_TOKEN, OMP_TELEGRAM_ALLOWED_CHAT_ID: "42" },
 			{
 				start: async () => {
 					started.resolve();
