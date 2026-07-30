@@ -5,6 +5,13 @@
 ### Fixed
 
 - Fixed advisor memory growth caused by automatic tool-output pruning replaying the full primary transcript and by transcript recording reloading the entire advisor journal before appending. Pruning-only rewrites now rebase the cursor, while recorder startup reads only the final JSONL entry.
+### Added
+
+- Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
+
+### Fixed
+
+- Fixed Telegram bridge startup and polling failures collapsing missing or rejected credentials, invalid chat access, API status details, network errors, and competing pollers into generic configuration messages.
 
 ## [1.6.9] - 2026-07-29
 

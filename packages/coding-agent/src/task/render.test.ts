@@ -223,6 +223,51 @@ describe("task live progress rendering", () => {
 		expect(text).not.toContain("\r");
 	});
 
+	it("shows the persisted launch, model, and tool timing split for finalized agents", () => {
+		const timed = makeSingleResult(0, {
+			durationMs: 3_100,
+			telemetry: {
+				version: 1,
+				runId: "run-timed",
+				agent: "task",
+				phase: "work",
+				startedAt: 1_000,
+				completedAt: 4_100,
+				status: "completed",
+				requests: 1,
+				toolCalls: 1,
+				maxRuntimeMs: 0,
+				earlyYieldNoticeSent: false,
+				timings: {
+					queueMs: 20,
+					preRunMs: 30,
+					setupMs: 50,
+					totalMs: 3_100,
+					modelMs: 2_000,
+					toolMs: 1_000,
+				},
+			},
+		});
+
+		const timedText = renderResultText(
+			{ projectAgentsDir: null, results: [timed], totalDurationMs: timed.durationMs },
+			false,
+			uiTheme,
+		);
+		expect(timedText).toContain("launch 100ms");
+		expect(timedText).toContain("model 2.0s");
+		expect(timedText).toContain("tools 1.0s");
+
+		const untimedText = renderResultText(
+			{ projectAgentsDir: null, results: [makeSingleResult(0)], totalDurationMs: 5 },
+			false,
+			uiTheme,
+		);
+		expect(untimedText).not.toContain("launch ");
+		expect(untimedText).not.toContain("model ");
+		expect(untimedText).not.toContain("tools ");
+	});
+
 	it("caps collapsed nested task progress at four rows plus an elision line", () => {
 		setViewportRows(40);
 		const text = renderProgressText(makeParentWithNestedProgress(6), false, uiTheme);

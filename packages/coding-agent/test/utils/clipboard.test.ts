@@ -337,42 +337,34 @@ describe("readTextFromClipboard", () => {
 	it("keeps the event loop responsive while the clipboard tool runs (#4235)", async () => {
 		setPlatform("darwin");
 
-		// Simulate a slow pbpaste: its stdout stream only emits after a real
-		// setTimeout, so the event loop must be free during the read. Under the
-		// pre-fix execSync path, this would spin the child synchronously and
-		// starve every setInterval tick.
-		const DELAY_MS = 80;
+		// Gate the subprocess output on a separate event-loop turn. The
+		// clipboard read cannot complete unless it yields, without relying on
+		// scheduler timing or a minimum number of interval ticks.
+		const heartbeat = Promise.withResolvers<void>();
+		let heartbeatRan = false;
 		const slowProc = {
 			pid: 1,
 			stdout: new ReadableStream<Uint8Array>({
 				async start(controller) {
-					await Bun.sleep(DELAY_MS);
+					await heartbeat.promise;
 					controller.enqueue(new TextEncoder().encode("payload"));
 					controller.close();
 				},
 			}),
 			stderr: streamOf(""),
 			exitCode: 0,
-			exited: (async () => {
-				await Bun.sleep(DELAY_MS);
-				return 0;
-			})(),
+			exited: heartbeat.promise.then(() => 0),
 			kill: () => true,
 		} as unknown as Subprocess;
 		spyClipboardSpawn([], () => slowProc);
 
-		let ticks = 0;
-		const timer = setInterval(() => {
-			ticks += 1;
-		}, 10);
-		try {
-			const text = await readTextFromClipboard();
-			expect(text).toBe("payload");
-		} finally {
-			clearInterval(timer);
-		}
-		// If the read blocked the loop, ticks would stay at 0. A yielding
-		// implementation fires several ticks in the ~80ms window.
-		expect(ticks).toBeGreaterThanOrEqual(2);
+		const textPromise = readTextFromClipboard();
+		setImmediate(() => {
+			heartbeatRan = true;
+			heartbeat.resolve();
+		});
+
+		expect(await textPromise).toBe("payload");
+		expect(heartbeatRan).toBe(true);
 	});
 });

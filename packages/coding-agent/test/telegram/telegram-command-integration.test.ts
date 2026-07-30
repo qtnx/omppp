@@ -378,17 +378,26 @@ describe("Telegram command integration over Bot API HTTP", () => {
 			name: "active webhook",
 			stub: () => startStandardStub({ webhookUrl: `https://private.invalid/${TOKEN}` }),
 			methods: ["getMe", "getWebhookInfo"],
+			errorFragments: [
+				"Telegram could not start, so no Telegram messages are connected. Check the Telegram configuration and try /telegram on again.",
+			],
 		},
 		{
 			name: "409 conflict",
 			stub: () =>
 				startStandardStub({ activation: () => json({ ok: false, error_code: 409, description: TOKEN }, 409) }),
 			methods: ["getMe", "getWebhookInfo", "getUpdates"],
+			errorFragments: [
+				"Telegram could not start:",
+				"Telegram Bot API getUpdates failed: HTTP 409",
+				"another poller is using the same bot token",
+			],
 		},
 		{
 			name: "malformed envelope",
 			stub: () => startStandardStub({ activation: () => json({ result: [] }) }),
 			methods: ["getMe", "getWebhookInfo", "getUpdates"],
+			errorFragments: ["Telegram could not start:", "Telegram Bot API getUpdates failed: HTTP 200"],
 		},
 		{
 			name: "unsafe update id",
@@ -397,10 +406,13 @@ describe("Telegram command integration over Bot API HTTP", () => {
 					activation: () => json({ ok: true, result: [{ update_id: Number.MAX_SAFE_INTEGER + 1 }] }),
 				}),
 			methods: ["getMe", "getWebhookInfo", "getUpdates"],
+			errorFragments: [
+				"Telegram could not start, so no Telegram messages are connected. Check the Telegram configuration and try /telegram on again.",
+			],
 		},
 	])(
 		"fails closed on $name without webhook mutation, retries, or sensitive diagnostics",
-		async ({ stub, methods }) => {
+		async ({ stub, methods, errorFragments }) => {
 			const harness = createHarness(stub());
 			const warnings: unknown[][] = [];
 			const warn = spyOn(logger, "warn").mockImplementation((...values: unknown[]) => warnings.push(values));
@@ -409,9 +421,9 @@ describe("Telegram command integration over Bot API HTTP", () => {
 				expect(harness.stub.requests.map(request => request.method)).toEqual([...methods]);
 				expect(harness.session.enqueueCalls.values).toEqual([]);
 				expect(sendBodies(harness.stub)).toEqual([]);
-				expect(harness.errors.values.at(-1)).toBe(
-					"Telegram could not start, so no Telegram messages are connected. Check the Telegram configuration and try /telegram on again.",
-				);
+				for (const errorFragment of errorFragments) {
+					expect(harness.errors.values.at(-1)).toContain(errorFragment);
+				}
 				const captured = diagnostics(harness, warnings);
 				expect(captured).not.toContain(TOKEN);
 				expect(captured).not.toContain("private.invalid");

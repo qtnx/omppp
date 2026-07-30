@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { AgentSessionEvent } from "../../src/session/agent-session-events";
 import { TelegramBridge } from "../../src/telegram/bridge";
+import { TelegramApiError, telegramApiErrorMessage } from "../../src/telegram/client";
 import type {
 	TelegramApiFailure,
 	TelegramBotClientContract,
@@ -33,11 +34,13 @@ async function flush(): Promise<void> {
 }
 
 function telegramFailure(overrides: Partial<TelegramApiFailure>): TelegramApiFailure & Error {
-	return Object.assign(new Error("telegram failure"), {
-		name: "TelegramApiError" as const,
-		method: "getUpdates" as const,
-		ambiguous: false,
-		...overrides,
+	return new TelegramApiError({
+		method: overrides.method ?? "getUpdates",
+		httpStatus: overrides.httpStatus,
+		errorCode: overrides.errorCode,
+		retryAfterMs: overrides.retryAfterMs,
+		transport: overrides.transport,
+		ambiguous: overrides.ambiguous ?? false,
 	});
 }
 
@@ -266,6 +269,73 @@ describe("TelegramBridge lifecycle, retries, and outbound FIFO", () => {
 		await expect(fixture.bridge.start()).rejects.toThrow();
 		expect(fixture.client.getUpdatesCalls).toEqual([]);
 		expect(fixture.session.listeners.size).toBe(0);
+	});
+
+	it("rethrows a Telegram API startup failure and publishes its safe cause", async () => {
+		const fixture = bridgeFixture();
+		const failure = new TelegramApiError({
+			method: "sendMessage",
+			httpStatus: 400,
+			errorCode: 400,
+			description: "Bad Request: chat not found",
+			ambiguous: false,
+		});
+		const safeCause = telegramApiErrorMessage(failure);
+		if (!safeCause) throw new Error("Expected a safe Telegram API failure cause.");
+		expect(safeCause).toContain("chat not found");
+		fixture.client.updates.push([]);
+		fixture.client.sendResults.push(failure);
+
+		await expect(fixture.bridge.start()).rejects.toBe(failure);
+		expect(fixture.bridge.status).toEqual({ phase: "failed", message: safeCause });
+		await fixture.bridge.stop();
+	});
+
+	it("publishes a terminal 409 poll cause that identifies another poller", async () => {
+		const fixture = bridgeFixture();
+		const failure = new TelegramApiError({
+			method: "getUpdates",
+			httpStatus: 409,
+			errorCode: 409,
+			ambiguous: false,
+		});
+		const safeCause = telegramApiErrorMessage(failure);
+		if (!safeCause) throw new Error("Expected a safe Telegram API failure cause.");
+		fixture.client.updates.push([], failure);
+
+		await fixture.bridge.start();
+		await flush();
+
+		expect(fixture.bridge.status).toEqual({ phase: "failed", message: safeCause });
+		expect(safeCause.toLowerCase()).toContain("another poller");
+		await fixture.bridge.stop();
+	});
+
+	it("publishes a safe terminal send cause without outbound content", async () => {
+		const fixture = bridgeFixture();
+		const failure = new TelegramApiError({
+			method: "sendMessage",
+			httpStatus: 400,
+			errorCode: 400,
+			ambiguous: false,
+		});
+		const safeCause = telegramApiErrorMessage(failure);
+		if (!safeCause) throw new Error("Expected a safe Telegram API failure cause.");
+		fixture.client.updates.push([]);
+		await fixture.bridge.start();
+		fixture.client.sendResults.push(failure);
+		fixture.session.emit({ type: "agent_start" } as AgentSessionEvent);
+		fixture.session.emit({
+			type: "agent_end",
+			messages: [
+				{ role: "assistant", content: [{ type: "text", text: "private model output" }] } as AssistantMessage,
+			],
+		} as AgentSessionEvent);
+		await flush();
+
+		expect(fixture.bridge.status).toEqual({ phase: "failed", message: safeCause });
+		expect(JSON.stringify(fixture.statuses)).not.toContain("private model output");
+		await fixture.bridge.stop();
 	});
 
 	it("retries only validated getUpdates rate limits with backoff and stops ambiguous outbound sends", async () => {

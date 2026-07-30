@@ -1,5 +1,6 @@
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { AgentSessionEvent } from "../session/agent-session-events";
+import { telegramApiErrorMessage } from "./client";
 import type {
 	TelegramApiFailure,
 	TelegramBridgeHandle,
@@ -150,10 +151,10 @@ export class TelegramBridge implements TelegramBridgeHandle {
 			}
 			this.#setStatus(generation, { phase: "connected", botUsername: me.username });
 			generation.pollPromise = this.#poll(generation);
-		} catch {
-			if (this.#isCurrent(generation) && !generation.controller.signal.aborted)
-				this.#fail(generation, "Telegram bridge could not start.");
-			throw new Error("Telegram bridge could not start.");
+		} catch (error) {
+			const message = telegramApiErrorMessage(error) ?? "Telegram bridge could not start.";
+			if (this.#isCurrent(generation) && !generation.controller.signal.aborted) this.#fail(generation, message);
+			throw error;
 		}
 	}
 
@@ -185,7 +186,7 @@ export class TelegramBridge implements TelegramBridgeHandle {
 				if (!this.#isLive(generation)) return;
 				const retryAfterMs = this.#pollRetryDelay(error, retryAttempt);
 				if (retryAfterMs === undefined) {
-					this.#fail(generation, "Telegram bridge polling stopped.");
+					this.#fail(generation, telegramApiErrorMessage(error) ?? "Telegram bridge polling stopped.");
 					return;
 				}
 				this.#setStatus(generation, { phase: "retrying", retryAfterMs });
@@ -330,7 +331,10 @@ export class TelegramBridge implements TelegramBridgeHandle {
 						attempts >= TELEGRAM_MAX_SEND_RATE_LIMIT_ATTEMPTS ||
 						waitedMs + retryAfterMs > TELEGRAM_MAX_SEND_RATE_LIMIT_WAIT_MS
 					) {
-						this.#fail(generation, "Telegram bridge could not send a response.");
+						this.#fail(
+							generation,
+							telegramApiErrorMessage(error) ?? "Telegram bridge could not send a response.",
+						);
 						return;
 					}
 					waitedMs += retryAfterMs;
