@@ -20,6 +20,9 @@ export interface TelegramApiFailure {
 	readonly errorCode?: number;
 	readonly retryAfterMs?: number;
 	readonly transport?: boolean;
+	readonly description?: string;
+	readonly transportCode?: string;
+	readonly invalidToken?: boolean;
 	readonly ambiguous: boolean;
 }
 

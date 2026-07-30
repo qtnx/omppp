@@ -1,4 +1,5 @@
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import { isValidTelegramBotToken, telegramApiErrorMessage } from "../../telegram/client";
 import type { CreateTelegramBridge, TelegramBridgeHandle, TelegramBridgeStatus } from "../../telegram/types";
 import type { InteractiveModeContext } from "../types";
 
@@ -8,8 +9,10 @@ export interface TelegramCommandControllerDeps {
 }
 
 const USAGE = "Usage: /telegram <on|off|status>";
-const INVALID_TOKEN_MESSAGE =
+const MISSING_TOKEN_MESSAGE =
 	"Telegram could not start, so no Telegram messages are connected. Set OMP_TELEGRAM_BOT_TOKEN and try /telegram on again.";
+const MALFORMED_TOKEN_MESSAGE =
+	"Telegram could not start, so no Telegram messages are connected. OMP_TELEGRAM_BOT_TOKEN is malformed. Set a valid Telegram bot token and try /telegram on again.";
 const INVALID_CHAT_ID_MESSAGE =
 	"Telegram could not start, so no Telegram messages are connected. Set OMP_TELEGRAM_ALLOWED_CHAT_ID to a positive safe integer and try /telegram on again.";
 const START_FAILED_MESSAGE =
@@ -19,6 +22,11 @@ const STOP_FAILED_MESSAGE =
 const BRIDGE_FAILED_MESSAGE =
 	"Telegram bridge failed, so Telegram messages are disconnected. Run /telegram on to try again.";
 
+function withTelegramRetryGuidance(message: string, verb: "Run" | "Try"): string {
+	const separator = /[.!?]$/.test(message) ? " " : ". ";
+	return `${message}${separator}${verb} /telegram on to try again.`;
+}
+
 /** Owns the session-scoped Telegram bridge lifecycle for `/telegram`. */
 export class TelegramCommandController {
 	readonly #ctx: InteractiveModeContext;
@@ -26,6 +34,7 @@ export class TelegramCommandController {
 	#bridge: TelegramBridgeHandle | undefined;
 	#lifecycle: Promise<void> = Promise.resolve();
 	#disposed = false;
+	#startingBridge: TelegramBridgeHandle | undefined;
 
 	constructor(ctx: InteractiveModeContext, deps: TelegramCommandControllerDeps) {
 		this.#ctx = ctx;
@@ -66,6 +75,7 @@ export class TelegramCommandController {
 		this.#disposed = true;
 		const bridge = this.#bridge;
 		this.#bridge = undefined;
+		if (this.#startingBridge === bridge) this.#startingBridge = undefined;
 		if (!bridge) return;
 		bridge.dispose();
 		void bridge.stop().catch(() => {
@@ -97,7 +107,11 @@ export class TelegramCommandController {
 		}
 		const token = this.#deps.env.OMP_TELEGRAM_BOT_TOKEN;
 		if (!token) {
-			this.#ctx.showError(INVALID_TOKEN_MESSAGE);
+			this.#ctx.showError(MISSING_TOKEN_MESSAGE);
+			return;
+		}
+		if (!isValidTelegramBotToken(token)) {
+			this.#ctx.showError(MALFORMED_TOKEN_MESSAGE);
 			return;
 		}
 		const rawChatId = this.#deps.env.OMP_TELEGRAM_ALLOWED_CHAT_ID;
@@ -111,7 +125,7 @@ export class TelegramCommandController {
 			return;
 		}
 
-		let bridge: TelegramBridgeHandle;
+		let bridge: TelegramBridgeHandle | undefined;
 		try {
 			bridge = this.#deps.createBridge({
 				token,
@@ -119,23 +133,28 @@ export class TelegramCommandController {
 				allowedChatId,
 				extractAssistantText: message => this.#ctx.extractAssistantText(message),
 				onStatus: status => {
-					if (this.#disposed || this.#bridge !== bridge) return;
+					if (!bridge || this.#disposed || this.#bridge !== bridge) return;
+					if (status.phase === "failed" && this.#startingBridge === bridge) return;
 					this.#showBridgeStatus(status);
 				},
 			});
-		} catch {
-			this.#reportFailure("telegram_bridge_create_failed", START_FAILED_MESSAGE);
+		} catch (error) {
+			this.#reportFailure("telegram_bridge_create_failed", this.#startupFailureMessage(error));
 			return;
 		}
+		if (!bridge) return;
 		this.#bridge = bridge;
+		this.#startingBridge = bridge;
 
 		try {
 			await bridge.start();
-		} catch {
+		} catch (error) {
 			if (this.#bridge === bridge) this.#bridge = undefined;
 			bridge.dispose();
-			if (!this.#disposed) this.#reportFailure("telegram_bridge_start_failed", START_FAILED_MESSAGE);
+			if (!this.#disposed) this.#reportFailure("telegram_bridge_start_failed", this.#startupFailureMessage(error));
 			return;
+		} finally {
+			if (this.#startingBridge === bridge) this.#startingBridge = undefined;
 		}
 		if (this.#disposed || this.#bridge !== bridge) return;
 		this.#showBridgeStatus(bridge.status);
@@ -182,12 +201,22 @@ export class TelegramCommandController {
 			case "stopping":
 				this.#ctx.showStatus("Telegram bridge is stopping.");
 				return;
-			case "failed":
-				this.#reportFailure("telegram_bridge_failed", BRIDGE_FAILED_MESSAGE);
+			case "failed": {
+				const message =
+					status.message === undefined ? BRIDGE_FAILED_MESSAGE : withTelegramRetryGuidance(status.message, "Run");
+				this.#reportFailure("telegram_bridge_failed", message);
 				return;
+			}
 			case "disconnected":
 				this.#ctx.showStatus("Telegram is disconnected.");
 		}
+	}
+
+	#startupFailureMessage(error: unknown): string {
+		const cause = telegramApiErrorMessage(error);
+		return cause === undefined
+			? START_FAILED_MESSAGE
+			: withTelegramRetryGuidance(`Telegram could not start: ${cause}`, "Try");
 	}
 
 	#reportFailure(event: string, message: string): void {

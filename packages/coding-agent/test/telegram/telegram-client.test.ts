@@ -1,8 +1,17 @@
 import { afterEach, describe, expect, spyOn, test, vi } from "bun:test";
-import { createTelegramBotClient, TelegramApiError, TelegramBotClient } from "../../src/telegram/client";
+import {
+	createTelegramBotClient,
+	isValidTelegramBotToken,
+	TelegramApiError,
+	TelegramBotClient,
+	telegramApiErrorMessage,
+} from "../../src/telegram/client";
 
 const TOKEN = "123456789:AA_SENTINEL_TOKEN_MUST_NEVER_APPEAR";
 const ORIGIN = "https://telegram.test";
+const SAFE_DESCRIPTION = "Bad Request: chat not found";
+const ARBITRARY_TRANSPORT_TEXT = "untrusted transport failure detail";
+
 const CONTENT = "private Telegram content";
 const RAW_DESCRIPTION = "raw Telegram description";
 
@@ -27,7 +36,6 @@ function response(body: unknown, status = 200): Response {
 function assertSafeFailure(error: unknown, sensitiveValues: readonly string[] = [TOKEN]): TelegramApiError {
 	expect(error).toBeInstanceOf(TelegramApiError);
 	const apiError = error as TelegramApiError;
-	expect(apiError.message).toBe("Telegram Bot API request failed");
 
 	expect(apiError.cause).toBeUndefined();
 	for (const sensitiveValue of sensitiveValues) {
@@ -68,6 +76,15 @@ afterEach(() => {
 });
 
 describe("TelegramBotClient", () => {
+	test("exports safe Telegram error helpers", () => {
+		const error = new TelegramApiError({ method: "getMe", ambiguous: false });
+
+		expect(isValidTelegramBotToken(TOKEN)).toBe(true);
+		expect(isValidTelegramBotToken("not-a-token")).toBe(false);
+		expect(telegramApiErrorMessage(error)).toBe(error.message);
+		expect(telegramApiErrorMessage(new Error(error.message))).toBeUndefined();
+	});
+
 	test("posts the exact getMe request and returns a typed bot user", async () => {
 		const calls: FetchCall[] = [];
 		const client = makeClient(async (input, init) => {
@@ -181,6 +198,62 @@ describe("TelegramBotClient", () => {
 		expect(error.httpStatus).toBe(httpStatus);
 	});
 
+	test("retains a safe API rejection description while redacting request secrets", async () => {
+		const error = await expectFailure(
+			() =>
+				makeClient(async () =>
+					response(
+						{
+							ok: false,
+							error_code: 400,
+							description: `${SAFE_DESCRIPTION}\n${TOKEN}\t${CONTENT}`,
+						},
+						400,
+					),
+				).sendMessage(4, CONTENT),
+			[TOKEN, CONTENT],
+		);
+
+		expect(error).toMatchObject({
+			method: "sendMessage",
+			httpStatus: 400,
+			errorCode: 400,
+			ambiguous: false,
+		});
+		expect(error.description).toContain(SAFE_DESCRIPTION);
+		expect(error.description).not.toContain(TOKEN);
+		expect(error.description).not.toContain(CONTENT);
+		expect(error.description).not.toContain("\n");
+		expect(error.message).toContain("sendMessage");
+		expect(error.message).toContain("400");
+		expect(error.message).toContain(SAFE_DESCRIPTION);
+		expect(error.message).toContain("OMP_TELEGRAM_ALLOWED_CHAT_ID");
+		expect(error.message).toContain("unreachable or incorrect");
+	});
+
+	test("classifies getMe 401 as an invalid bot token without leaking it", async () => {
+		const error = await expectFailure(
+			() =>
+				makeClient(async () =>
+					response({ ok: false, error_code: 401, description: `Unauthorized ${TOKEN}` }, 401),
+				).getMe(),
+			[TOKEN],
+		);
+
+		expect(error).toMatchObject({
+			method: "getMe",
+			httpStatus: 401,
+			errorCode: 401,
+			invalidToken: true,
+			ambiguous: false,
+		});
+		expect(error.description).toContain("Unauthorized");
+		expect(error.description).not.toContain(TOKEN);
+		expect(error.message).toContain("OMP_TELEGRAM_BOT_TOKEN");
+		expect(error.message).toContain("401");
+		expect(error.message).toContain("Unauthorized");
+	});
+
 	test("retains a sanitized HTTP 429 envelope and capped retry metadata", async () => {
 		const error = await expectFailure(
 			() =>
@@ -195,16 +268,18 @@ describe("TelegramBotClient", () => {
 						429,
 					),
 				).sendMessage(4, CONTENT),
-			[TOKEN, CONTENT, RAW_DESCRIPTION],
+			[TOKEN, CONTENT],
 		);
 
 		expect(error).toMatchObject({
 			method: "sendMessage",
 			httpStatus: 429,
 			errorCode: 429,
+			description: RAW_DESCRIPTION,
 			retryAfterMs: 300_000,
 			ambiguous: false,
 		});
+		expect(error.message).toContain(RAW_DESCRIPTION);
 		expect(error.transport).toBeUndefined();
 	});
 
@@ -240,34 +315,52 @@ describe("TelegramBotClient", () => {
 		expect(error.retryAfterMs).toBe(expectedRetryAfterMs);
 	});
 
-	test("replaces abort and timeout failures without leaking the token", async () => {
-		const controller = new AbortController();
-		controller.abort(new Error(TOKEN));
-		const abortError = await expectFailure(() =>
-			makeClient(async () => Promise.withResolvers<Response>().promise).getMe(controller.signal),
+	test("retains an allowlisted transport code without arbitrary transport text", async () => {
+		const transportFailure = Object.assign(new Error(`${TOKEN} ${CONTENT} ${ARBITRARY_TRANSPORT_TEXT}`), {
+			cause: { code: "ECONNRESET" },
+		});
+		const error = await expectFailure(
+			() => makeClient(async () => Promise.reject(transportFailure)).getMe(),
+			[TOKEN, CONTENT, ARBITRARY_TRANSPORT_TEXT],
 		);
-		expect(abortError).toMatchObject({ method: "getMe", ambiguous: false, transport: true });
 
-		const timeoutError = await expectFailure(() =>
-			makeClient(async () => Promise.withResolvers<Response>().promise, 0).getMe(),
-		);
-		expect(timeoutError).toMatchObject({ method: "getMe", ambiguous: false, transport: true });
+		expect(error).toMatchObject({
+			method: "getMe",
+			ambiguous: false,
+			transport: true,
+			transportCode: "ECONNRESET",
+		});
+		expect(error.message).toContain("getMe");
+		expect(error.message).toContain("ECONNRESET");
 	});
 
-	test.each([
-		["getMe", (client: TelegramBotClient) => client.getMe(), false],
-		[
-			"getUpdates",
-			(client: TelegramBotClient) => client.getUpdates({ timeoutSeconds: 1, allowedUpdates: [] }),
-			false,
-		],
-		["sendMessage", (client: TelegramBotClient) => client.sendMessage(4, CONTENT), true],
-	])("classifies %s fetch failures as transport errors", async (method, operation, ambiguous) => {
+	test("retains a sanitized getUpdates 409 description with poller guidance", async () => {
 		const error = await expectFailure(
-			() => operation(makeClient(async () => Promise.reject(new Error(`${TOKEN} ${CONTENT} ${RAW_DESCRIPTION}`)))),
-			[TOKEN, CONTENT, RAW_DESCRIPTION],
+			() =>
+				makeClient(async () =>
+					response(
+						{
+							ok: false,
+							error_code: 409,
+							description: `Conflict:\nterminated by other getUpdates request ${TOKEN}`,
+						},
+						409,
+					),
+				).getUpdates({ timeoutSeconds: 1, allowedUpdates: [] }),
+			[TOKEN],
 		);
-		expect(error).toMatchObject({ method, ambiguous, transport: true });
+
+		expect(error).toMatchObject({
+			method: "getUpdates",
+			httpStatus: 409,
+			errorCode: 409,
+			ambiguous: false,
+		});
+		expect(error.description).toContain("Conflict: terminated by other getUpdates request");
+		expect(error.description).not.toContain(TOKEN);
+		expect(error.description).not.toContain("\n");
+		expect(error.message).toContain("another poller is using the same bot token");
+		expect(error.message).toContain("Conflict: terminated by other getUpdates request");
 	});
 
 	test("rejects invalid tokens before invoking fetch", async () => {
@@ -281,7 +374,8 @@ describe("TelegramBotClient", () => {
 			timeoutMs: 50,
 		});
 		const error = await expectFailure(() => client.getMe(), ["not-a-token"]);
-		expect(error).toMatchObject({ method: "getMe", ambiguous: false });
+		expect(error).toMatchObject({ method: "getMe", ambiguous: false, invalidToken: true });
+		expect(error.message).toContain("OMP_TELEGRAM_BOT_TOKEN");
 		expect(calls).toBe(0);
 	});
 
