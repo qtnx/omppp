@@ -19,6 +19,8 @@ import doneReviewTemplate from "../../prompts/advisor/done-review.md" with { typ
 import advisorSystemPrompt from "../../prompts/advisor/system.md" with { type: "text" };
 import { SecretObfuscator } from "../../secrets/obfuscator";
 import { formatSessionHistoryMarkdown } from "../../session/session-history-format";
+import { SessionManager } from "../../session/session-manager";
+import { FileSessionStorage } from "../../session/session-storage";
 import { YieldQueue } from "../../session/yield-queue";
 import { BUILTIN_TOOL_NAMES } from "../../tools/builtin-names";
 import {
@@ -29,6 +31,7 @@ import {
 	AdvisorOutputQuarantinedError,
 	AdvisorRuntime,
 	type AdvisorRuntimeHost,
+	AdvisorTranscriptRecorder,
 	advisorTranscriptFilename,
 	annotateForStaleness,
 	buildAdvisorQuarantineSourceText,
@@ -5686,6 +5689,159 @@ describe("advisor", () => {
 			).toBe("preserve");
 		});
 	});
+	describe("advisor transcript persistence", () => {
+		it("appends to an existing journal without reading the whole file", async () => {
+			const dir = await mkdtemp(join(tmpdir(), "advisor-transcript-"));
+			const ownerSessionFile = join(dir, "owner.jsonl");
+			const transcriptFile = join(dir, "owner", "__advisor.jsonl");
+			try {
+				const initial = await SessionManager.open(transcriptFile, undefined, undefined, {
+					initialCwd: dir,
+					suppressBreadcrumb: true,
+				});
+				const firstId = initial.appendMessage({
+					role: "user",
+					content: "x".repeat(70_000),
+					timestamp: 1,
+				});
+				await initial.close();
+
+				const readWholeFile = vi.spyOn(FileSessionStorage.prototype, "readText");
+				const readBytes = vi.spyOn(FileSessionStorage.prototype, "readBytes");
+				const recorder = new AdvisorTranscriptRecorder(
+					() => ownerSessionFile,
+					() => dir,
+				);
+				recorder.record({
+					role: "user",
+					content: "second",
+					timestamp: 2,
+				});
+				await recorder.close();
+				expect(readWholeFile).not.toHaveBeenCalled();
+				expect(readBytes.mock.calls.length).toBeGreaterThan(1);
+				expect(Math.max(...readBytes.mock.calls.map(([, , length]) => length))).toBeLessThanOrEqual(64 * 1024);
+				readWholeFile.mockRestore();
+
+				const reopened = await SessionManager.open(transcriptFile, undefined, undefined, {
+					initialCwd: dir,
+					suppressBreadcrumb: true,
+				});
+				const messages = reopened.getEntries().filter(entry => entry.type === "message");
+				expect(messages).toHaveLength(2);
+				expect(messages[1]?.parentId).toBe(firstId);
+				expect(messages[1]?.message).toMatchObject({
+					role: "user",
+					content: "second",
+					synthetic: true,
+					attribution: "agent",
+				});
+				await reopened.close();
+			} finally {
+				vi.restoreAllMocks();
+				await rm(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("creates a new journal and preserves message order", async () => {
+			const dir = await mkdtemp(join(tmpdir(), "advisor-transcript-"));
+			const ownerSessionFile = join(dir, "owner.jsonl");
+			const transcriptFile = join(dir, "owner", "__advisor.jsonl");
+			try {
+				const recorder = new AdvisorTranscriptRecorder(
+					() => ownerSessionFile,
+					() => dir,
+				);
+				recorder.record({ role: "user", content: "first", timestamp: 1 });
+				recorder.record({ role: "user", content: "second", timestamp: 2 });
+				await recorder.close();
+
+				const reopened = await SessionManager.open(transcriptFile, undefined, undefined, {
+					initialCwd: dir,
+					suppressBreadcrumb: true,
+				});
+				const messages = reopened.getEntries().filter(entry => entry.type === "message");
+				expect(messages.map(entry => entry.message.role === "user" && entry.message.content)).toEqual([
+					"first",
+					"second",
+				]);
+				expect(messages[1]?.parentId).toBe(messages[0]?.id);
+				await reopened.close();
+			} finally {
+				await rm(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("continues after a malformed final journal record", async () => {
+			const dir = await mkdtemp(join(tmpdir(), "advisor-transcript-"));
+			const ownerSessionFile = join(dir, "owner.jsonl");
+			const transcriptFile = join(dir, "owner", "__advisor.jsonl");
+			try {
+				const initial = await SessionManager.open(transcriptFile, undefined, undefined, {
+					initialCwd: dir,
+					suppressBreadcrumb: true,
+				});
+				const firstId = initial.appendMessage({ role: "user", content: "first", timestamp: 1 });
+				await initial.close();
+				const interruptedWriter = new FileSessionStorage().openWriter(transcriptFile, { flags: "a" });
+				await interruptedWriter.append(
+					`{"type":"message","id":"broken","parentId":"${firstId}","timestamp":"2026-07-31T00:00:00.000Z","message":\n`,
+				);
+				await interruptedWriter.close();
+
+				const recorder = new AdvisorTranscriptRecorder(
+					() => ownerSessionFile,
+					() => dir,
+				);
+				recorder.record({ role: "user", content: "second", timestamp: 2 });
+				await recorder.close();
+
+				const reopened = await SessionManager.open(transcriptFile, undefined, undefined, {
+					initialCwd: dir,
+					suppressBreadcrumb: true,
+				});
+				const messages = reopened.getEntries().filter(entry => entry.type === "message");
+				expect(messages).toHaveLength(2);
+				expect(messages[1]?.parentId).toBe(firstId);
+				await reopened.close();
+			} finally {
+				await rm(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("starts a root message when an existing journal contains only metadata", async () => {
+			const dir = await mkdtemp(join(tmpdir(), "advisor-transcript-"));
+			const ownerSessionFile = join(dir, "owner.jsonl");
+			const transcriptFile = join(dir, "owner", "__advisor.jsonl");
+			try {
+				const initial = await SessionManager.open(transcriptFile, undefined, undefined, {
+					initialCwd: dir,
+					suppressBreadcrumb: true,
+				});
+				await initial.ensureOnDisk();
+				await initial.close();
+
+				const recorder = new AdvisorTranscriptRecorder(
+					() => ownerSessionFile,
+					() => dir,
+				);
+				recorder.record({ role: "user", content: "first", timestamp: 1 });
+				await recorder.close();
+
+				const reopened = await SessionManager.open(transcriptFile, undefined, undefined, {
+					initialCwd: dir,
+					suppressBreadcrumb: true,
+				});
+				const messages = reopened.getEntries().filter(entry => entry.type === "message");
+				expect(messages).toHaveLength(1);
+				expect(messages[0]?.parentId).toBeNull();
+				await reopened.close();
+			} finally {
+				await rm(dir, { recursive: true, force: true });
+			}
+		});
+	});
+
 	describe("advisor transcript filenames", () => {
 		it("derives default and named transcript filenames", () => {
 			expect(advisorTranscriptFilename("")).toBe("__advisor.jsonl");

@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed automatic tool-output pruning repeatedly resetting the advisor and replaying the full primary transcript, which could grow the advisor session file and process memory without bound during long tool-heavy sessions.
+- Fixed advisor memory growth caused by automatic tool-output pruning replaying the full primary transcript and by transcript recording reloading the entire advisor journal before appending. Pruning-only rewrites now rebase the cursor, while recorder startup reads only the final JSONL entry.
 
 ## [1.6.9] - 2026-07-29
 
