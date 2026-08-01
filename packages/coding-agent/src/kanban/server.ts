@@ -148,7 +148,11 @@ class KanbanHttpServer implements KanbanServerHandle {
 	start(): KanbanServerHandle {
 		if (this.#server) return this;
 		this.#tailnetAddresses = localTailnetAddresses();
-		const hostname = "::";
+		// Loopback-only unless this host is actually on a tailnet. `::` is
+		// dual-stack, which the tailnet needs for its IPv6 ULA address; who may
+		// talk is still decided by `#authorizePeer`, so the wider bind never
+		// widens access.
+		const hostname = this.#tailnetAddresses.length > 0 ? "::" : "127.0.0.1";
 		this.#server = Bun.serve({
 			hostname,
 			port: this.#options.port ?? 0,
