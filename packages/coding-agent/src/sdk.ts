@@ -167,6 +167,7 @@ import {
 	obfuscateProviderContext,
 	type SecretEntry,
 	SecretObfuscator,
+	SecretVault,
 	secretEntriesNeedPlaceholderKey,
 } from "./secrets";
 import {
@@ -1730,10 +1731,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Load and create secret obfuscator early so resumed session state and prompt warnings
 		// reflect actual loaded secrets, not just the setting toggle.
 		let obfuscator: SecretObfuscator | undefined;
+		let secretVault: SecretVault | undefined;
 		if (settings.get("secrets.enabled")) {
+			secretVault = await SecretVault.open(agentDir);
 			const fileEntries = await logger.time("loadSecrets", loadSecrets, cwd, agentDir);
 			const envEntries = collectEnvSecrets();
-			const allEntries = [...envEntries, ...fileEntries];
+			const allEntries = [...envEntries, ...fileEntries, ...secretVault.toSecretEntries()];
 			// The keyed placeholder digest must survive a process restart so persisted
 			// obfuscate-mode placeholders deobfuscate on resume. Only create/persist the
 			// per-install key when an active entry can actually mint a reversible
@@ -1743,6 +1746,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// existing key without creating one and redact it as a one-way secret, so a
 			// tool read of the stale key file cannot leak it to the provider.
 			const redactableEntries: SecretEntry[] = [...allEntries];
+			// The vault key is retrievable by a model-issued bash command on EVERY
+			// backend (`security find-generic-password …`, `secret-tool lookup …`,
+			// or reading the fallback key file), so redact it one-way regardless of
+			// backend. This also guarantees a non-empty entry set, so the obfuscator
+			// below always exists once the vault opened.
+			if (secretVault.keyMaterialToRedact) {
+				redactableEntries.push({ type: "plain", content: secretVault.keyMaterialToRedact, mode: "replace" });
+			}
 			let placeholderKey: string | undefined;
 			if (secretEntriesNeedPlaceholderKey(allEntries)) {
 				placeholderKey = await getSecretPlaceholderKey(agentDir);
@@ -4093,6 +4104,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
 			settings,
+			secretVault,
 			autoApprove: options.autoApprove,
 			evalKernelOwnerId,
 			// Defined only for top-level sessions (creation is gated above).

@@ -41,6 +41,7 @@ export const commands: CommandEntry[] = [
 		load: () => import("./commands/product").then(module => module.standaloneProductPreviewCommand.command),
 	},
 	{ name: "say", load: () => import("./commands/say").then(m => m.default) },
+	{ name: "secrets", load: () => import("./commands/secrets").then(m => m.default) },
 	{ name: "setup", load: () => import("./commands/setup").then(m => m.default) },
 	{ name: "shell", load: () => import("./commands/shell").then(m => m.default) },
 	{ name: "read", load: () => import("./commands/read").then(m => m.default) },

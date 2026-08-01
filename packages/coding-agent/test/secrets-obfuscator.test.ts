@@ -3586,3 +3586,36 @@ describe("deobfuscateAgentMessages (display restore)", () => {
 		expect(image.type === "image" && image.data).toBe(imageData);
 	});
 });
+
+describe("SecretObfuscator post-construction plain entries", () => {
+	it("obfuscates and restores an added plain secret", () => {
+		const obfuscator = new SecretObfuscator([]);
+		const secret = "ADDED_SECRET_TOKEN_12345";
+
+		obfuscator.addPlainEntries([{ type: "plain", content: secret, mode: "obfuscate" }]);
+
+		const obfuscated = obfuscator.obfuscate(`token=${secret}`);
+		expect(obfuscated).not.toContain(secret);
+		expect(obfuscator.deobfuscate(obfuscated)).toBe(`token=${secret}`);
+	});
+
+	it("skips short added obfuscate-mode secrets", () => {
+		const obfuscator = new SecretObfuscator([]);
+		const secret = "short";
+
+		obfuscator.addPlainEntries([{ type: "plain", content: secret, mode: "obfuscate" }]);
+
+		expect(obfuscator.obfuscate(`token=${secret}`)).toBe(`token=${secret}`);
+	});
+
+	it("redacts added replace-mode secrets without restoring them", () => {
+		const obfuscator = new SecretObfuscator([]);
+		const secret = "ONE_WAY_SECRET_TOKEN_12345";
+
+		obfuscator.addPlainEntries([{ type: "plain", content: secret, mode: "replace" }]);
+
+		const obfuscated = obfuscator.obfuscate(`token=${secret}`);
+		expect(obfuscated).not.toContain(secret);
+		expect(obfuscator.deobfuscate(obfuscated)).toBe(obfuscated);
+	});
+});

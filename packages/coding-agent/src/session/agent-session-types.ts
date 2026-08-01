@@ -24,6 +24,7 @@ import type { ContextUsage } from "../extensibility/extensions/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import type { SecretObfuscator } from "../secrets/obfuscator";
+import type { SecretVaultLike } from "../secrets/vault";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { EffectiveToolDiscoveryMode } from "../tool-discovery/mode";
 import type { ToolSession } from "../tools";
@@ -221,6 +222,8 @@ export interface AgentSessionConfig {
 	ttsrManager?: TtsrManager;
 	/** Secret obfuscator for provider and edit content. */
 	obfuscator?: SecretObfuscator;
+	/** Vault shared with prompt handling and bash environment injection. */
+	secretVault?: SecretVaultLike;
 	/** Inherited eval executor session id from a parent agent. */
 	parentEvalSessionId?: string;
 	/** Logical owner for retained eval kernels created by this session. */

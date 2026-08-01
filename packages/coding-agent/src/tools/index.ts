@@ -28,6 +28,7 @@ import { startPreviewServer } from "../product-preview";
 import type { PreviewFeedback } from "../product-preview/types";
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
+import type { SecretVaultLike } from "../secrets/vault";
 import type { ArtifactManager } from "../session/artifacts";
 import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
@@ -89,6 +90,7 @@ import { createReportToolIssueTool } from "./report-tool-issue";
 import { type PlanProposalHandler, ResolveTool } from "./resolve";
 import { reportFindingTool } from "./review";
 import { SearchToolBm25Tool } from "./search-tool-bm25";
+import { SecretsTool } from "./secrets";
 import { ShakeTool } from "./shake";
 import { loadSshTool } from "./ssh";
 import { SuperReviewTool } from "./super-review";
@@ -153,6 +155,7 @@ export * from "./report-tool-issue";
 export * from "./resolve";
 export * from "./review";
 export * from "./search-tool-bm25";
+export * from "./secrets";
 export * from "./shake";
 export * from "./ssh";
 export * from "./super-review";
@@ -250,6 +253,8 @@ export interface ToolSession {
 	cwd: string;
 	/** Additional workspace directories beyond cwd (multi-root), forwarded to subagents. */
 	additionalDirectories?: string[];
+	/** Managed secret vault; injected as env into bash and listed (masked) by the secrets tool. */
+	secretVault?: SecretVaultLike;
 	/** Whether UI is available */
 	hasUI: boolean;
 	/**
@@ -583,6 +588,7 @@ export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = [
 	"eval",
 	"task",
 	"todo",
+	"secrets",
 	"browser",
 	"super_review",
 ] as const;
@@ -672,6 +678,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	loop: LoopTool.createIf,
 	irc: IrcTool.createIf,
 	todo: s => new TodoTool(s),
+	secrets: SecretsTool.createIf,
 	web_search: s => new WebSearchTool(s),
 	search_tool_bm25: SearchToolBm25Tool.createIf,
 	write: s => new WriteTool(s),

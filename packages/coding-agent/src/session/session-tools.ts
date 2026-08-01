@@ -19,6 +19,7 @@ import advisorSkillOversightPrompt from "../prompts/system/advisor-skill-oversig
 import orchestratorModeActivePrompt from "../prompts/system/orchestrator-mode-active.md" with { type: "text" };
 import orchestratorModeOverlayTemplate from "../prompts/system/orchestrator-mode-overlay.md" with { type: "text" };
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
+import type { SecretVaultLike } from "../secrets/vault";
 import { usesCodexTaskPrompt } from "../task/prompt-policy";
 import { countToolsForAutoDiscovery, type EffectiveToolDiscoveryMode } from "../tool-discovery/mode";
 import {
@@ -77,6 +78,7 @@ export interface SessionToolsHost {
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	notifyCommandMetadataChanged(): void;
 	localProtocolOptions(): LocalProtocolOptions;
+	secretVault: SecretVaultLike | undefined;
 }
 
 interface SessionToolsOptions {
@@ -274,6 +276,7 @@ export class SessionTools {
 		this.#autoApprove = options.autoApprove === true;
 		this.#toolRegistry = options.toolRegistry ?? new Map();
 		this.#toolSession = options.toolSession;
+		if (this.#toolSession) this.#toolSession.secretVault = host.secretVault;
 		this.#createVibeTools = options.createVibeTools;
 		this.#createComputerTool = options.createComputerTool;
 		this.#builtInToolNames = new Set(options.builtInToolNames ?? []);

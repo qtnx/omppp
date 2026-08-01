@@ -6,6 +6,9 @@ import { YAML } from "bun";
 import { regexHasUnresolvableShortMatchFallback, type SecretEntry, sanitizeSecretFriendlyName } from "./obfuscator";
 import { compileSecretRegex } from "./regex";
 
+export * from "./detect";
+export * from "./vault";
+
 const PLACEHOLDER_KEY_RE = /^[A-Za-z0-9_-]{43}$/;
 const cachedPlaceholderKeys = new Map<string, string>();
 

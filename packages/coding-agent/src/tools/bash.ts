@@ -763,7 +763,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		requestedTimeoutSec?: number;
 		notices?: readonly string[];
 
-		resolvedEnv?: Record<string, string>;
+		execEnv?: Record<string, string>;
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
 		forwardUpdates: boolean;
 	}): ManagedBashJobHandle {
@@ -791,7 +791,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
-						env: options.resolvedEnv,
+						env: options.execEnv,
 						artifactPath,
 						artifactId,
 						onRawChunk: chunk => {
@@ -979,6 +979,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					),
 				)
 			: undefined;
+		const vaultEnv =
+			this.session.settings.get("secrets.enabled") && this.session.settings.get("secrets.injectEnv")
+				? this.session.secretVault?.env()
+				: undefined;
+		const execEnv = vaultEnv && Object.keys(vaultEnv).length > 0 ? { ...vaultEnv, ...resolvedEnv } : resolvedEnv;
 
 		// Resolve protocol URLs (skill://, agent://, etc.) in extracted cwd.
 		if (cwd?.includes("://") || cwd?.includes("local:/")) {
@@ -1032,7 +1037,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				requestedTimeoutSec,
 				notices: pendingNotices,
 
-				resolvedEnv,
+				execEnv,
 				onUpdate,
 				forwardUpdates: false,
 			});
@@ -1070,7 +1075,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				requestedTimeoutSec,
 				notices: pendingNotices,
 
-				resolvedEnv,
+				execEnv,
 				onUpdate,
 				forwardUpdates: !startBackgrounded,
 			});
@@ -1128,7 +1133,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			(clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty) ||
 			canUseInteractiveBashPty(pty, ctx)
 				? await applyDirenvPreflight(command, commandCwd, {
-						callerEnv: resolvedEnv,
+						callerEnv: execEnv,
 						signal,
 						timeoutMs: this.session.settings.get("bash.direnvLoadTimeoutMs"),
 						callerTimeoutMs: timeoutMs,
@@ -1199,7 +1204,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				// direnv-transformed command (carries any `unset -v` prefix) + merged
 				// env; falls back to the raw command/env when direnv is off/absent.
 				const bridgeCommand = backendPreflight?.command ?? command;
-				const bridgeEnv = backendPreflight?.env ?? resolvedEnv;
+				const bridgeEnv = backendPreflight?.env ?? execEnv;
 				const shellSpawn = wrapShellLineForClientTerminal(bridgeCommand, this.session.settings.getShellConfig());
 				const createP = clientBridge.createTerminal({
 					command: shellSpawn.command,
@@ -1410,7 +1415,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					cwd: commandCwd,
 					timeoutMs,
 					signal,
-					env: backendPreflight?.env ?? resolvedEnv,
+					env: backendPreflight?.env ?? execEnv,
 					artifactPath,
 					artifactId,
 					onChunk: chunk => {
@@ -1420,14 +1425,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					},
 				})
 			: // executeBash runs its OWN direnv preflight internally — pass the RAW
-				// command + resolvedEnv here so the unset prefix / env merge is not
+				// command + execEnv here so the unset prefix / env merge is not
 				// applied twice.
 				await executeBash(command, {
 					cwd: commandCwd,
 					sessionKey: this.session.getSessionId?.() ?? undefined,
 					timeout: timeoutMs ?? 0,
 					signal,
-					env: resolvedEnv,
+					env: execEnv,
 					artifactPath,
 					onRawChunk: chunk => {
 						if (!sandboxDenialSeen && outputLooksLikeMacOSSandboxDenial(chunk)) {

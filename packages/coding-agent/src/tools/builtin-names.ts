@@ -30,6 +30,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"loop",
 	"irc",
 	"todo",
+	"secrets",
 	"web_search",
 	"search_tool_bm25",
 	"write",

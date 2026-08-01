@@ -5,6 +5,8 @@
 ### Added
 
 - Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
+- Added an encrypted secret vault with OS-keychain-backed keys, prompt auto-detection, masked `/secrets` management, a secrets tool, and opt-in bash environment injection.
+- Added an `ompx secrets` command (`list`, `get [--reveal]`, `copy`, `add [--stdin]`, `remove`) so the vault owner can read or copy a stored value from their own shell; the agent-facing tool and slash command stay mask-only.
 
 ### Fixed
 
