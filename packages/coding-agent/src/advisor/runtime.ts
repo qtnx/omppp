@@ -956,6 +956,29 @@ export class AdvisorRuntime {
 		this.#wakeAllWaiters();
 	}
 
+	/**
+	 * Align the delivered-prefix cursor after a semantics-preserving primary
+	 * history rewrite without clearing the advisor's private conversation.
+	 *
+	 * Automatic pruning replaces already-delivered message objects to shrink the
+	 * primary prompt. Replaying that rewritten transcript would duplicate context
+	 * the advisor already saw and can turn frequent pruning into unbounded prompt
+	 * persistence. Pending updates and advisor-local dedupe state intentionally
+	 * remain intact.
+	 */
+	rebaseToCurrentTranscript(): void {
+		if (this.disposed) return;
+		const messages = this.host.snapshotMessages();
+		this.#latestMessages = messages;
+		const last = messages.at(-1);
+		const effectiveEnd =
+			last?.role === "assistant" && last.stopReason === undefined ? messages.length - 1 : messages.length;
+		this.#lastCount = effectiveEnd;
+		this.#deliveredPrefix = messages
+			.slice(0, effectiveEnd)
+			.map(message => ({ message, fingerprint: fingerprintMessage(message) }));
+	}
+
 	#renderPendingDelta(messages: AgentMessage[], turns: number, wip: boolean): PendingDelta | null {
 		const cursorBefore = this.#lastCount;
 		const revisionBefore = this.#renderRevision;

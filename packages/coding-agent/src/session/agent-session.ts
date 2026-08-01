@@ -1540,6 +1540,7 @@ export class AgentSession {
 			},
 			syncTodoPhasesFromBranch: () => this.#todo.syncFromBranch(),
 			resetAdvisorRuntimes: () => this.#advisors.resetAllRuntimes(),
+			rebaseAdvisorRuntimes: () => this.#advisors.rebaseAllRuntimes(),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
 			getContextBreakdown: options => this.getContextBreakdown(options),
 			getContextUsage: options => this.getContextUsage(options),

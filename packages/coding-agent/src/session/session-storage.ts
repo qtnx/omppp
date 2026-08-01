@@ -246,6 +246,17 @@ export class FileSessionStorage implements SessionStorage {
 		]);
 	}
 
+	async readBytes(path: string, offset: number, length: number): Promise<Uint8Array> {
+		const bytes = await Bun.file(path)
+			.slice(offset, offset + length)
+			.arrayBuffer();
+		return new Uint8Array(bytes);
+	}
+
+	truncate(path: string, length: number): Promise<void> {
+		return fs.promises.truncate(path, length);
+	}
+
 	async writeText(path: string, content: string): Promise<void> {
 		await Bun.write(path, content, { createPath: true });
 	}
