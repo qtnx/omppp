@@ -61,6 +61,9 @@ function configureHerdrEnv(options: { idleDebounceMs?: number; retryGraceMs?: nu
 	process.env.HERDR_ENV = "1";
 	process.env.HERDR_SOCKET_PATH = "/tmp/herdr.sock";
 	process.env.HERDR_PANE_ID = "w1:p1";
+	// This harness only exercises the state channel; keep it off the real
+	// `~/.omp/run/control` run dir.
+	process.env.HERDR_CONTROL_SOCKET = "0";
 	process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = String(options.idleDebounceMs ?? 0);
 	process.env.HERDR_OMP_RETRY_GRACE_MS = String(options.retryGraceMs ?? 0);
 	delete process.env[HERDR_NATIVE_AGENT_STATE_ENV];

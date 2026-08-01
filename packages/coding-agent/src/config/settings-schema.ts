@@ -3646,6 +3646,60 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Herdr
+	"herdr.notify.done": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: "Herdr",
+			label: "Notify When Done",
+			description: "Show a herdr notification when a turn settles after unseen background work",
+		},
+	},
+	"herdr.notify.blocked": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: "Herdr",
+			label: "Notify When Blocked",
+			description: "Show a herdr notification when the agent needs review or is blocked",
+		},
+	},
+	"herdr.notify.sound": {
+		type: "enum",
+		values: ["none", "done", "request"] as const,
+		default: "done",
+		ui: {
+			tab: "interaction",
+			group: "Herdr",
+			label: "Notification Sound",
+			description: "Sound played with herdr notifications",
+		},
+	},
+	"herdr.notify.minWorkMs": {
+		type: "number",
+		default: 20_000,
+		ui: {
+			tab: "interaction",
+			group: "Herdr",
+			label: "Done Notification Minimum Work",
+			description:
+				"Only notify on done when the turn ran at least this many milliseconds (avoids spam on quick replies)",
+		},
+	},
+	"herdr.metadata.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Herdr",
+			label: "Report Pane Metadata",
+			description: "Report title, model, token spend and session identity to the herdr pane surface",
+		},
+	},
+
 	// ────────────────────────────────────────────────────────────────────────
 	// Editing
 	// ────────────────────────────────────────────────────────────────────────
@@ -6588,6 +6642,18 @@ export interface TtsrSettings {
 	disabledRules?: string[];
 }
 
+export interface HerdrSettings {
+	notify: {
+		done: boolean;
+		blocked: boolean;
+		sound: "none" | "done" | "request";
+		minWorkMs: number;
+	};
+	metadata: {
+		enabled: boolean;
+	};
+}
+
 export interface ExaSettings {
 	enabled: boolean;
 	enableSearch: boolean;
@@ -6677,6 +6743,7 @@ export interface GroupTypeMap {
 	skills: SkillsSettings;
 	commit: CommitSettings;
 	ttsr: TtsrSettings;
+	herdr: HerdrSettings;
 	exa: ExaSettings;
 	statusLine: StatusLineSettings;
 	thinkingBudgets: ThinkingBudgetsSettings;

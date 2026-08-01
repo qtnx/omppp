@@ -28,6 +28,7 @@ export const commands: CommandEntry[] = [
 	{ name: "grep", load: () => import("./commands/grep").then(m => m.default) },
 	{ name: "gallery", load: () => import("./commands/gallery").then(m => m.default) },
 	{ name: "grievances", load: () => import("./commands/grievances").then(m => m.default) },
+	{ name: "herdr", load: () => import("./commands/herdr").then(m => m.default) },
 	{ name: "install", load: () => import("./commands/install").then(m => m.default) },
 	{ name: "join", load: () => import("./commands/join").then(m => m.default) },
 	{ name: "live", load: () => import("./commands/live").then(m => m.default) },
@@ -40,6 +41,7 @@ export const commands: CommandEntry[] = [
 		// keep product/env imports behind the command loader.
 		load: () => import("./commands/product").then(module => module.standaloneProductPreviewCommand.command),
 	},
+	{ name: "prompt", load: () => import("./commands/prompt").then(m => m.default) },
 	{ name: "say", load: () => import("./commands/say").then(m => m.default) },
 	{ name: "setup", load: () => import("./commands/setup").then(m => m.default) },
 	{ name: "shell", load: () => import("./commands/shell").then(m => m.default) },
