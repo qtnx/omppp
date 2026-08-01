@@ -23,6 +23,7 @@ class FakeStream {
 class FakePeerConnection {
 	iceGatheringState: RTCIceGatheringState = "complete";
 	iceConnectionState: RTCIceConnectionState = "new";
+	connectionState: RTCPeerConnectionState = "new";
 	localDescription: { sdp: string } | null = null;
 	remoteDescription: { type: string; sdp: string } | null = null;
 	closed = false;
@@ -30,6 +31,7 @@ class FakePeerConnection {
 	readonly addedTracks: FakeTrack[] = [];
 	ontrack: ((event: { streams: unknown[]; track: unknown }) => void) | null = null;
 	oniceconnectionstatechange: (() => void) | null = null;
+	onconnectionstatechange: (() => void) | null = null;
 
 	createDataChannel(label: string): void {
 		this.channels.push(label);
@@ -45,6 +47,11 @@ class FakePeerConnection {
 	}
 	async setRemoteDescription(description: { type: string; sdp: string }): Promise<void> {
 		this.remoteDescription = description;
+	}
+
+	setConnectionState(state: RTCPeerConnectionState): void {
+		this.connectionState = state;
+		this.onconnectionstatechange?.();
 	}
 	addEventListener(): void {}
 	removeEventListener(): void {}
@@ -125,6 +132,62 @@ describe("LivePeer", () => {
 		expect(h.stream.tracks[0].stopped).toBe(true);
 		expect(h.pc.closed).toBe(true);
 		expect(h.element.srcObject).toBeNull();
+	});
+
+	it("plays the local cue once only after the transport connects", async () => {
+		let cueCount = 0;
+		const h = harness({
+			playConnectedCue: () => {
+				cueCount += 1;
+			},
+		});
+		await h.peer.start();
+
+		h.pc.setConnectionState("connecting");
+		expect(cueCount).toBe(0);
+
+		h.pc.setConnectionState("connected");
+		h.pc.setConnectionState("connected");
+		await Promise.resolve();
+		expect(cueCount).toBe(1);
+	});
+
+	it("keeps the outbound microphone disabled until the connected cue finishes", async () => {
+		const cue = Promise.withResolvers<void>();
+		let trackEnabledDuringCue: boolean | undefined;
+		const h = harness({
+			playConnectedCue: () => {
+				trackEnabledDuringCue = h.stream.tracks[0].enabled;
+				return cue.promise;
+			},
+		});
+		await h.peer.start();
+
+		h.pc.setConnectionState("connected");
+		await Promise.resolve();
+		expect(trackEnabledDuringCue).toBe(false);
+		expect(h.stream.tracks[0].enabled).toBe(false);
+
+		cue.resolve();
+		await cue.promise;
+		await Promise.resolve();
+		expect(h.stream.tracks[0].enabled).toBe(true);
+	});
+
+	it("silently restores the microphone when connected cue playback is unavailable", async () => {
+		const h = harness({
+			playConnectedCue: () => {
+				throw new Error("no audio output");
+			},
+		});
+		await h.peer.start();
+
+		h.pc.setConnectionState("connected");
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(h.stream.tracks[0].enabled).toBe(true);
+		expect(h.failures).toEqual([]);
 	});
 
 	it("surfaces a refused offer instead of leaving the call half-open", async () => {

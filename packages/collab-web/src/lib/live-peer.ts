@@ -14,6 +14,49 @@ const ICE_GATHER_TIMEOUT_MS = 10_000;
 /** Level sampling cadence; also the outbound `live-level` rate. */
 const LEVEL_INTERVAL_MS = 100;
 
+/** Short, quiet success tone; long enough to notice without masking the call. */
+const CONNECTED_CUE_DURATION_SECONDS = 0.14;
+/** Bounds microphone isolation even if a browser fails to dispatch `ended`. */
+const CONNECTED_CUE_TIMEOUT_MS = 500;
+
+/**
+ * Play the connected cue through a local-only Web Audio graph.
+ *
+ * The oscillator is connected only to the browser's output destination. It is
+ * never added to the peer connection or any outbound `MediaStream`.
+ */
+export async function playConnectedCue(): Promise<void> {
+	let audio: AudioContext | undefined;
+	const timedOut = Promise.withResolvers<void>();
+	const timeout = globalThis.setTimeout(timedOut.resolve, CONNECTED_CUE_TIMEOUT_MS);
+	try {
+		audio = new AudioContext();
+		if (audio.state === "suspended") await Promise.race([audio.resume(), timedOut.promise]);
+		if (audio.state !== "running") return;
+
+		const oscillator = audio.createOscillator();
+		const gain = audio.createGain();
+		const now = audio.currentTime;
+		const ended = Promise.withResolvers<void>();
+		oscillator.type = "sine";
+		oscillator.frequency.setValueAtTime(880, now);
+		gain.gain.setValueAtTime(0.0001, now);
+		gain.gain.exponentialRampToValueAtTime(0.08, now + 0.015);
+		gain.gain.exponentialRampToValueAtTime(0.0001, now + CONNECTED_CUE_DURATION_SECONDS);
+		oscillator.connect(gain);
+		gain.connect(audio.destination);
+		oscillator.onended = () => ended.resolve();
+		oscillator.start(now);
+		oscillator.stop(now + CONNECTED_CUE_DURATION_SECONDS);
+		await Promise.race([ended.promise, timedOut.promise]);
+	} catch {
+		// Audio output is optional. A missing or blocked backend must not break the call.
+	} finally {
+		globalThis.clearTimeout(timeout);
+		await audio?.close().catch(() => {});
+	}
+}
+
 export interface LivePeerDeps {
 	getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
 	createPeerConnection(): RTCPeerConnection;
@@ -26,6 +69,8 @@ export interface LivePeerDeps {
 	onLevels?(input: number, output: number): void;
 	/** Fatal failure; the call is over. */
 	onFailure?(message: string): void;
+	/** Local-only cue played after the WebRTC transport reaches `connected`. */
+	playConnectedCue?(): void | Promise<void>;
 	/** Scheduler seam so tests do not depend on wall-clock timers. */
 	setInterval?(handler: () => void, ms: number): number;
 	clearInterval?(handle: number): void;
@@ -52,6 +97,8 @@ export class LivePeer {
 	#levelTimer: number | undefined;
 	#muted = false;
 	#stopped = false;
+	#connectedCueStarted = false;
+	#connectedCuePlaying = false;
 
 	constructor(deps: LivePeerDeps) {
 		this.#deps = deps;
@@ -80,9 +127,8 @@ export class LivePeer {
 		pc.createDataChannel(EVENT_CHANNEL);
 		for (const track of stream.getAudioTracks()) pc.addTrack(track, stream);
 		pc.ontrack = event => this.#attachRemote(event.streams[0] ?? new MediaStream([event.track]));
-		pc.oniceconnectionstatechange = () => {
-			if (pc.iceConnectionState === "failed") this.#fail("The voice connection dropped.");
-		};
+		pc.onconnectionstatechange = () => this.#handleConnectionState(pc);
+		pc.oniceconnectionstatechange = () => this.#handleConnectionState(pc);
 
 		const offer = await pc.createOffer();
 		await pc.setLocalDescription(offer);
@@ -99,7 +145,7 @@ export class LivePeer {
 	/** Toggle the microphone without tearing the call down. */
 	setMuted(muted: boolean): void {
 		this.#muted = muted;
-		for (const track of this.#stream?.getAudioTracks() ?? []) track.enabled = !muted;
+		this.#syncOutboundTrackState();
 	}
 
 	/** Release the microphone, the peer, and the audio graph. Safe to call repeatedly. */
@@ -116,12 +162,58 @@ export class LivePeer {
 		if (pc) {
 			pc.ontrack = null;
 			pc.oniceconnectionstatechange = null;
+			pc.onconnectionstatechange = null;
 			pc.close();
 		}
 		const audio = this.#audio;
 		this.#audio = undefined;
 		void audio?.close().catch(() => {});
 		this.#deps.audioElement.srcObject = null;
+	}
+
+	#handleConnectionState(pc: RTCPeerConnection): void {
+		if (pc.connectionState === "failed" || pc.iceConnectionState === "failed") {
+			this.#fail("The voice connection dropped.");
+			return;
+		}
+		if (
+			pc.connectionState !== "connected" &&
+			pc.iceConnectionState !== "connected" &&
+			pc.iceConnectionState !== "completed"
+		) {
+			return;
+		}
+		this.#startConnectedCue();
+	}
+
+	#startConnectedCue(): void {
+		if (this.#stopped || this.#connectedCueStarted) return;
+		this.#connectedCueStarted = true;
+		const play = this.#deps.playConnectedCue;
+		if (!play) return;
+
+		// A speaker cue can be picked up acoustically by the microphone even though
+		// its Web Audio graph is not part of the outbound stream. Hold the sender
+		// silent until playback settles, then restore the user's current mute state.
+		this.#connectedCuePlaying = true;
+		this.#syncOutboundTrackState();
+		const finish = (): void => {
+			this.#connectedCuePlaying = false;
+			this.#syncOutboundTrackState();
+		};
+		try {
+			const pending = play();
+			if (pending) void pending.catch(() => {}).finally(finish);
+			else finish();
+		} catch {
+			finish();
+		}
+	}
+
+	#syncOutboundTrackState(): void {
+		for (const track of this.#stream?.getAudioTracks() ?? []) {
+			track.enabled = !this.#muted && !this.#connectedCuePlaying;
+		}
 	}
 
 	#releaseTracks(): void {
