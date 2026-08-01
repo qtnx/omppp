@@ -8,6 +8,7 @@
 ### Added
 
 - Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
+- Added a session-native local Kanban board with SQLite persistence, optimistic concurrency, idempotent mutations, cursor-based realtime updates, capability-protected loopback access, and inert delivery of board activity to the owning model session.
 
 ### Fixed
 

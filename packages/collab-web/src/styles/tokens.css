@@ -29,6 +29,20 @@
 	--warn: oklch(0.79 0.14 85);
 	--err: oklch(0.66 0.19 25);
 
+	/* Kanban workflow semantics; aliases follow both theme palettes. */
+	--status-backlog: var(--fg-faint);
+	--status-ready: var(--ring);
+	--status-in-progress: var(--accent);
+	--status-blocked: var(--err);
+	--status-review: var(--warn);
+	--status-done: var(--ok);
+	--status-cancelled: var(--fg-faint);
+	--priority-lowest: var(--fg-faint);
+	--priority-low: var(--ring);
+	--priority-medium: var(--fg-muted);
+	--priority-high: var(--warn);
+	--priority-highest: var(--err);
+
 	/* hairlines */
 	--border: oklch(1 0 0 / 9%);
 	--border-strong: oklch(1 0 0 / 13%);

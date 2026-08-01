@@ -1197,6 +1197,10 @@ function isUserInvokedSkillPrompt(message: CustomMessage): boolean {
 	return message.customType === SKILL_PROMPT_MESSAGE_TYPE && message.attribution === "user";
 }
 
+function isUserAttributedKanbanEvent(message: CustomMessage): boolean {
+	return message.customType === "kanban-event" && message.attribution === "user";
+}
+
 function convertImageBearingCustomMessage(message: CustomMessage | HookMessage): Message[] | undefined {
 	if (!isCustomMessageContent(message.content)) return undefined;
 	if (typeof message.content === "string") return undefined;
@@ -1341,7 +1345,7 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 		}
 		case "custom": {
 			if (!isCustomMessageContent(m.content)) return [];
-			if (isUserInvokedSkillPrompt(m)) {
+			if (isUserInvokedSkillPrompt(m) || isUserAttributedKanbanEvent(m)) {
 				return [
 					{
 						role: "user",

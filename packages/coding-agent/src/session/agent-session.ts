@@ -140,6 +140,7 @@ import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
+import { unregisterKanbanSession } from "../kanban";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { containsOrchestrate, ORCHESTRATE_NOTICE } from "../modes/orchestrate";
@@ -467,6 +468,8 @@ export class AgentSession {
 	#cancelExitRecorder?: () => void;
 	#exitRecorded = false;
 	#unsubscribeAppendOnly?: () => void;
+	#kanbanUnregister?: Promise<void>;
+	readonly #kanbanDurableListeners = new Set<(eventIds: readonly string[]) => void>();
 	#unsubscribeModelRoles?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
@@ -1995,6 +1998,42 @@ export class AgentSession {
 		this.#emit({ type: "notice", level, message, source });
 	}
 
+	onKanbanEventsDurable(listener: (eventIds: readonly string[]) => void): () => void {
+		this.#kanbanDurableListeners.add(listener);
+		return () => this.#kanbanDurableListeners.delete(listener);
+	}
+
+	hasDurableKanbanEvent(eventId: string): boolean {
+		for (const entry of this.sessionManager.getBranch()) {
+			if (entry.type !== "message" || entry.message.role !== "custom") continue;
+			if (entry.message.customType !== "kanban-event" || !isRecord(entry.message.details)) continue;
+			const eventIds = entry.message.details.eventIds;
+			if (Array.isArray(eventIds) && eventIds.includes(eventId)) return true;
+		}
+		return false;
+	}
+
+	#kanbanEventIds(message: AgentMessage): string[] {
+		if (message.role !== "custom" || message.customType !== "kanban-event" || !isRecord(message.details)) return [];
+		const eventIds = message.details.eventIds;
+		if (!Array.isArray(eventIds)) return [];
+		return [
+			...new Set(eventIds.filter((eventId): eventId is string => typeof eventId === "string" && eventId.length > 0)),
+		];
+	}
+
+	#notifyKanbanEventsDurable(eventIds: readonly string[]): void {
+		for (const listener of this.#kanbanDurableListeners) {
+			try {
+				listener(eventIds);
+			} catch (error) {
+				logger.warn("Failed to acknowledge durable Kanban events", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+	}
+
 	#recordToolExecutionStart(event: Extract<AgentEvent, { type: "tool_execution_start" }>): void {
 		const data: ToolExecutionStartData = {
 			toolCallId: event.toolCallId,
@@ -2615,6 +2654,12 @@ export class AgentSession {
 				await messageEndPersistence.persist(persistMessageEnd);
 			} else {
 				persistMessageEnd();
+			}
+			const durableKanbanEventIds = this.#kanbanEventIds(event.message);
+			if (durableKanbanEventIds.length > 0 && this.sessionManager.getSessionFile()) {
+				await this.sessionManager.ensureOnDisk();
+				await this.sessionManager.flush();
+				this.#notifyKanbanEventsDurable(durableKanbanEventIds);
 			}
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
@@ -3722,6 +3767,11 @@ export class AgentSession {
 		// into a session already tearing down and queue a followUp mid-dispose.
 		this.#loopManager?.cancelAll();
 		this.#isDisposed = true;
+		this.#kanbanUnregister ??= unregisterKanbanSession(this).catch(error => {
+			logger.warn("Failed to unregister Kanban session during dispose", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
 		this.#memory.cancelLocalMemoryStartup();
 		this.#titleGenerationAbortController.abort();
 		this.#abortAutolearnCapture();
@@ -3827,6 +3877,7 @@ export class AgentSession {
 
 	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
 		this.beginDispose();
+		await this.#kanbanUnregister;
 		this.#recordSessionExit(options.reason ?? "dispose");
 		this.#cancelExitRecorder?.();
 		this.#cancelExitRecorder = undefined;

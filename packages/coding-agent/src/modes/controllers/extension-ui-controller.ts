@@ -1,5 +1,6 @@
 import type { Component, OverlayHandle, TUI } from "@oh-my-pi/pi-tui";
 import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
+import { logger } from "@oh-my-pi/pi-utils";
 import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire";
 import { KeybindingsManager } from "../../config/keybindings";
 import type {
@@ -22,6 +23,8 @@ import type {
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
 import { createExtensionModelQuery } from "../../extensibility/extensions/model-api";
+import { registerKanbanSession, unregisterKanbanSession } from "../../kanban";
+import type { KanbanSessionPort } from "../../kanban/runtime";
 import { AskDialogComponent, boundPromptTitle } from "../../modes/components/ask-dialog";
 import { HookEditorComponent } from "../../modes/components/hook-editor";
 import { HookInputComponent } from "../../modes/components/hook-input";
@@ -34,6 +37,20 @@ import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/
 const MAX_WIDGET_LINES = 10;
 const ASK_OTHER_OPTION = "Other (type your own)";
 const ASK_CHAT_OPTION = "Chat about this";
+
+interface DisposableKanbanSession extends KanbanSessionPort {
+	readonly isDisposed: boolean;
+}
+
+export async function registerKanbanSessionWhileActive(
+	session: DisposableKanbanSession,
+	register: (candidate: KanbanSessionPort) => Promise<unknown> = registerKanbanSession,
+	unregister: (candidate: KanbanSessionPort) => Promise<void> = unregisterKanbanSession,
+): Promise<void> {
+	if (session.isDisposed) return;
+	await register(session);
+	if (session.isDisposed) await unregister(session);
+}
 const ASK_NEXT_OPTION = "Next →";
 
 interface CollabDialogWinner {
@@ -296,6 +313,13 @@ export class ExtensionUiController {
 		await extensionRunner.emit({
 			type: "session_start",
 		});
+		try {
+			await registerKanbanSessionWhileActive(this.ctx.session);
+		} catch (error) {
+			logger.warn("Failed to start Kanban runtime", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	/**
