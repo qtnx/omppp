@@ -40,6 +40,7 @@ const ASK_CHAT_OPTION = "Chat about this";
 
 interface DisposableKanbanSession extends KanbanSessionPort {
 	readonly isDisposed: boolean;
+	refreshKanbanTool?(): Promise<void>;
 }
 
 export async function registerKanbanSessionWhileActive(
@@ -49,7 +50,11 @@ export async function registerKanbanSessionWhileActive(
 ): Promise<void> {
 	if (session.isDisposed) return;
 	await register(session);
-	if (session.isDisposed) await unregister(session);
+	if (session.isDisposed) {
+		await unregister(session);
+		return;
+	}
+	await session.refreshKanbanTool?.();
 }
 const ASK_NEXT_OPTION = "Next →";
 

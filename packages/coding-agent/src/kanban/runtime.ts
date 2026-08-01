@@ -14,6 +14,19 @@ export interface KanbanRuntimeOptions {
 
 export interface KanbanRegistration {
 	boardUrl: string;
+	/** Tailnet-addressed board URLs; empty when Tailscale is not up on this host. */
+	tailnetUrls: readonly string[];
+}
+
+/**
+ * Board access handed to the in-session Kanban tool. Model-authored mutations
+ * reach connected boards through {@link publish} but are never delivered back
+ * into the model session that produced them — the model already knows.
+ */
+export interface KanbanModelApi {
+	readonly sessionId: string;
+	readonly store: KanbanStore;
+	publish(activity: KanbanActivity | null | undefined): void;
 }
 
 export class KanbanRuntime {
@@ -42,6 +55,27 @@ export class KanbanRuntime {
 		return this.#server?.localUrl ?? null;
 	}
 
+	/**
+	 * Board access for the in-session tool, or `null` when this runtime does not
+	 * own a live board for `sessionId`. Published activities reach connected
+	 * browsers and are acknowledged immediately: the model authored them, so
+	 * replaying them back into its own session would echo.
+	 */
+	apiForSession(sessionId: string): KanbanModelApi | null {
+		const store = this.#store;
+		const server = this.#server;
+		if (!store || !server || !this.#sessionForId(sessionId)) return null;
+		return {
+			sessionId,
+			store,
+			publish: activity => {
+				if (!activity) return;
+				server.broadcast(activity);
+				store.markDelivered(activity.sessionId, activity.id);
+			},
+		};
+	}
+
 	async registerSession(session: KanbanSessionPort): Promise<KanbanRegistration> {
 		return await this.#serialize(async () => {
 			this.#ensureRunning();
@@ -55,8 +89,10 @@ export class KanbanRuntime {
 			}
 			await this.#replaySession(session);
 			const boardUrl = this.#boardUrl(session.sessionId);
-			session.emitNotice("info", `Kanban board: ${boardUrl}`, "kanban");
-			return { boardUrl };
+			const tailnetUrls = this.#tailnetBoardUrls(session.sessionId);
+			const reachable = [boardUrl, ...tailnetUrls].join("  ");
+			session.emitNotice("info", `Kanban board: ${reachable}`, "kanban");
+			return { boardUrl, tailnetUrls };
 		});
 	}
 
@@ -190,6 +226,11 @@ export class KanbanRuntime {
 		const localUrl = this.#server?.localUrl;
 		if (!localUrl) throw new Error("Kanban runtime is not running");
 		return `${localUrl}kanban/${encodeURIComponent(sessionId)}`;
+	}
+
+	/** Same board, addressed over this host's tailnet so phones and laptops on it can open it. */
+	#tailnetBoardUrls(sessionId: string): string[] {
+		return (this.#server?.tailnetUrls ?? []).map(root => `${root}kanban/${encodeURIComponent(sessionId)}`);
 	}
 
 	async #serialize<T>(work: () => Promise<T> | T): Promise<T> {

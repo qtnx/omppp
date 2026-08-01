@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	createKanbanServer,
+	isTailnetAddress,
 	type KanbanClientAssets,
 	type KanbanServerHandle,
 } from "@oh-my-pi/pi-coding-agent/kanban/server";
@@ -421,5 +422,98 @@ describe("Kanban server", () => {
 		} finally {
 			db.close();
 		}
+	});
+	it("recognizes only Tailscale CGNAT and ULA peer address ranges", () => {
+		for (const address of [
+			"100.64.0.1",
+			"100.75.161.60",
+			"100.127.255.254",
+			"fd7a:115c:a1e0::4b01:a188",
+			"::ffff:100.100.1.1",
+		]) {
+			expect(isTailnetAddress(address)).toBe(true);
+		}
+		for (const address of [
+			undefined,
+			"100.63.255.255",
+			"100.128.0.1",
+			"99.64.0.1",
+			"192.168.1.5",
+			"127.0.0.1",
+			"fd00::1",
+		]) {
+			expect(isTailnetAddress(address)).toBe(false);
+		}
+	});
+
+	it("pairs loopback peers with an allowed Host on the live server port", async () => {
+		const harness = await createHarness();
+		const localhost = `localhost:${harness.handle.port}`;
+		const board = await fetch(url(harness, "/kanban/session-a"), { headers: { Host: localhost } });
+		expect(board.status).toBe(200);
+
+		const foreignHost = await fetch(url(harness, "/kanban/session-a"), {
+			headers: { Host: `evil.example:${harness.handle.port}` },
+		});
+		expect(foreignHost.status).toBe(403);
+		expect(await foreignHost.json()).toEqual({ error: { code: "forbidden", message: "Forbidden" } });
+
+		const wrongPort = await fetch(url(harness, "/kanban/session-a"), {
+			headers: { Host: `127.0.0.1:${harness.handle.port + 1}` },
+		});
+		expect(wrongPort.status).toBe(403);
+		expect(await wrongPort.json()).toEqual({ error: { code: "forbidden", message: "Forbidden" } });
+	});
+
+	it("derives mutation Origin from the same allowed Host without writing foreign-origin tasks", async () => {
+		const harness = await createHarness();
+		const cookie = await boardCookie(harness);
+		const host = `localhost:${harness.handle.port}`;
+		const readTaskCount = async (): Promise<number> => {
+			const response = await fetch(url(harness, "/api/v1/sessions/session-a/board"), {
+				headers: { Cookie: cookie, Host: host },
+			});
+			expect(response.status).toBe(200);
+			const payload: unknown = await response.json();
+			if (
+				!payload ||
+				typeof payload !== "object" ||
+				!("data" in payload) ||
+				!payload.data ||
+				typeof payload.data !== "object" ||
+				!("tasks" in payload.data) ||
+				!Array.isArray(payload.data.tasks)
+			) {
+				throw new Error("Board response was malformed");
+			}
+			return payload.data.tasks.length;
+		};
+		const headers = mutationHeaders(harness, cookie, { key: "localhost-origin", origin: `http://${host}` });
+		headers.set("Host", host);
+		const created = await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ title: "Localhost origin", status: "backlog", priority: "high" }),
+		});
+		expect(created.status).toBe(201);
+
+		expect(await readTaskCount()).toBe(1);
+
+		const foreignOriginHeaders = mutationHeaders(harness, cookie, {
+			key: "foreign-origin",
+			origin: `http://127.0.0.1:${harness.handle.port}`,
+		});
+		foreignOriginHeaders.set("Host", host);
+		const foreignOrigin = await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+			method: "POST",
+			headers: foreignOriginHeaders,
+			body: JSON.stringify({ title: "Rejected foreign origin", status: "backlog", priority: "high" }),
+		});
+		expect(foreignOrigin.status).toBe(403);
+		expect(await foreignOrigin.json()).toEqual({
+			error: { code: "forbidden", message: "Mutation Origin is not allowed" },
+		});
+
+		expect(await readTaskCount()).toBe(1);
 	});
 });

@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import * as os from "node:os";
 import { logger } from "@oh-my-pi/pi-utils";
 import { KanbanError } from "./errors";
 import type { KanbanStore } from "./store";
@@ -42,6 +43,10 @@ export interface KanbanServerOptions {
 export interface KanbanServerHandle {
 	readonly port: number;
 	readonly localUrl: string;
+	/** Board roots reachable over this host's tailnet; empty when Tailscale is down. */
+	readonly tailnetUrls: readonly string[];
+	/** Publish an activity to connected board clients without model delivery. */
+	broadcast(activity: KanbanActivity): void;
 	stop(): Promise<void>;
 }
 
@@ -78,6 +83,43 @@ function isLoopback(address: string | undefined): boolean {
 	return normalized === "127.0.0.1" || normalized === "::1" || normalized === "::ffff:127.0.0.1";
 }
 
+/**
+ * Tailscale's CGNAT range (100.64.0.0/10) and its ULA prefix (fd7a:115c:a1e0::/48).
+ * Peers reaching the board over the tailnet always present one of these; nothing
+ * else on a LAN or the public internet can.
+ */
+export function isTailnetAddress(address: string | undefined): boolean {
+	if (!address) return false;
+	const normalized = address.toLowerCase().replace(/^::ffff:/, "");
+	if (normalized.startsWith("fd7a:115c:a1e0:")) return true;
+	const v4 = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(normalized);
+	if (!v4) return false;
+	const first = Number(v4[1]);
+	const second = Number(v4[2]);
+	return first === 100 && second >= 64 && second <= 127;
+}
+
+/** This host's own tailnet addresses, or an empty list when Tailscale is down. */
+function localTailnetAddresses(): string[] {
+	const found: string[] = [];
+	for (const entries of Object.values(os.networkInterfaces())) {
+		for (const entry of entries ?? []) {
+			if (entry.internal || !isTailnetAddress(entry.address)) continue;
+			found.push(entry.address.toLowerCase());
+		}
+	}
+	return found;
+}
+
+/** Split `host:port` / `[v6]:port` into its lowercased hostname and port text. */
+function splitHostHeader(host: string): { hostname: string; port: string } | null {
+	const bracketed = /^\[([0-9a-f:.]+)\]:(\d{1,5})$/.exec(host);
+	if (bracketed) return { hostname: bracketed[1]!, port: bracketed[2]! };
+	const plain = /^([a-z0-9.-]+):(\d{1,5})$/.exec(host);
+	if (plain) return { hostname: plain[1]!, port: plain[2]! };
+	return null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -89,9 +131,12 @@ export function createKanbanServer(options: KanbanServerOptions): KanbanServerHa
 class KanbanHttpServer implements KanbanServerHandle {
 	port = 0;
 	localUrl = "";
+	tailnetUrls: readonly string[] = [];
 	readonly #options: KanbanServerOptions;
 	readonly #capabilitySecret = randomBytes(32);
 	readonly #sseClients = new Set<SseClient>();
+	/** This host's own tailnet literals, resolved once at bind time. */
+	#tailnetAddresses: readonly string[] = [];
 	#server: Bun.Server<undefined> | null = null;
 	#heartbeat: Timer | null = null;
 	#stopped = false;
@@ -102,8 +147,10 @@ class KanbanHttpServer implements KanbanServerHandle {
 
 	start(): KanbanServerHandle {
 		if (this.#server) return this;
+		this.#tailnetAddresses = localTailnetAddresses();
+		const hostname = "::";
 		this.#server = Bun.serve({
-			hostname: "127.0.0.1",
+			hostname,
 			port: this.#options.port ?? 0,
 			idleTimeout: 30,
 			maxRequestBodySize: HARD_MAX_REQUEST_BODY_BYTES,
@@ -111,8 +158,11 @@ class KanbanHttpServer implements KanbanServerHandle {
 		});
 		this.port = this.#server.port ?? 0;
 		this.localUrl = `http://127.0.0.1:${this.port}/`;
+		this.tailnetUrls = this.#tailnetAddresses.map(
+			address => `http://${address.includes(":") ? `[${address}]` : address}:${this.port}/`,
+		);
 		this.#heartbeat = setInterval(() => this.#heartbeatSse(), SSE_HEARTBEAT_MS);
-		logger.debug("Kanban server listening", { port: this.port });
+		logger.debug("Kanban server listening", { port: this.port, hostname, tailnet: this.tailnetUrls.length });
 		return this;
 	}
 
@@ -129,9 +179,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 
 	async #handleRequest(request: Request, server: Bun.Server<undefined>): Promise<Response> {
 		const url = new URL(request.url);
-		const host = request.headers.get("host")?.toLowerCase() ?? "";
-		const expectedHost = `127.0.0.1:${this.port}`;
-		if (host !== expectedHost || !isLoopback(server.requestIP(request)?.address)) {
+		if (!this.#authorizePeer(request, server)) {
 			return this.#error(403, "forbidden", "Forbidden", false);
 		}
 
@@ -342,9 +390,33 @@ class KanbanHttpServer implements KanbanServerHandle {
 		return new Response(asset.body, { status: 200, headers });
 	}
 
+	/**
+	 * Only loopback and tailnet peers may reach the board, and the `Host` they
+	 * present must match how they got here — a loopback name for loopback peers,
+	 * one of this host's tailnet literals or a MagicDNS `*.ts.net` name for
+	 * tailnet peers. That pairing is what stops DNS rebinding from turning a
+	 * public hostname into a loopback-privileged origin.
+	 */
+	#authorizePeer(request: Request, server: Bun.Server<undefined>): boolean {
+		const parsed = splitHostHeader(request.headers.get("host")?.toLowerCase() ?? "");
+		if (!parsed || parsed.port !== String(this.port)) return false;
+		const peer = server.requestIP(request)?.address;
+		if (isLoopback(peer)) {
+			return parsed.hostname === "127.0.0.1" || parsed.hostname === "::1" || parsed.hostname === "localhost";
+		}
+		if (!isTailnetAddress(peer)) return false;
+		return this.#tailnetAddresses.includes(parsed.hostname) || parsed.hostname.endsWith(".ts.net");
+	}
+
+	/** The origin a same-origin board page presents, derived from its own `Host`. */
+	#requestOrigin(request: Request): string | null {
+		const host = request.headers.get("host")?.toLowerCase() ?? "";
+		return splitHostHeader(host) ? `http://${host}` : null;
+	}
+
 	#authorizeMutation(request: Request): void {
-		const expectedOrigin = this.localUrl.slice(0, -1);
-		if (request.headers.get("origin") !== expectedOrigin) {
+		const expectedOrigin = this.#requestOrigin(request);
+		if (!expectedOrigin || request.headers.get("origin") !== expectedOrigin) {
 			throw new KanbanError(403, "forbidden", "Mutation Origin is not allowed");
 		}
 		if (request.headers.get(MUTATION_HEADER) !== "1") {
@@ -473,6 +545,10 @@ class KanbanHttpServer implements KanbanServerHandle {
 		headers.set("Connection", "keep-alive");
 		headers.set("X-Accel-Buffering", "no");
 		return new Response(stream, { status: 200, headers });
+	}
+
+	broadcast(activity: KanbanActivity): void {
+		this.#broadcast(activity);
 	}
 
 	#broadcast(activity: KanbanActivity): void {

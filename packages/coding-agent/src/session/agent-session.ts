@@ -4400,6 +4400,11 @@ export class AgentSession {
 		return this.#tools.refreshSshTool(options);
 	}
 
+	/** Reconciles the discoverable Kanban tool with the live board runtime. */
+	refreshKanbanTool(): Promise<void> {
+		return this.#tools.refreshKanbanTool();
+	}
+
 	/** Selects enabled tools, ignoring names absent from the registry. */
 	setActiveToolsByName(toolNames: string[]): Promise<void> {
 		return this.#tools.setActiveToolsByName(toolNames);

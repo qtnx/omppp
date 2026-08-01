@@ -19,6 +19,7 @@ import type { GoalModeState, GoalRuntime } from "../goals";
 import { CreateGoalTool, GetGoalTool, GoalTool, UpdateGoalTool } from "../goals/tools/goal-tool";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
+import { KanbanTool } from "../kanban/tool";
 import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
 import type { MnemopiSessionState } from "../mnemopi/state";
@@ -658,6 +659,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	glob: s => new GlobTool(s, { rootPathAlias: true }),
 	grep: s => new GrepTool(s),
 	lsp: LspTool.createIf,
+	kanban: KanbanTool.createIf,
 	inspect_image: s => new InspectImageTool(s),
 	browser: s => new BrowserTool(s),
 	computer: s => new ComputerTool(s),

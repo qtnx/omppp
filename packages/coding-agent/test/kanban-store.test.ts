@@ -132,11 +132,11 @@ describe("KanbanStore", () => {
 			task("First"),
 			operation("first", "/api/v1/sessions/session-a/tasks", task("First")),
 		).data;
-		const second = store.createTask(
+		store.createTask(
 			"session-a",
 			task("Second"),
 			operation("second", "/api/v1/sessions/session-a/tasks", task("Second")),
-		).data;
+		);
 		const third = store.createTask(
 			"session-a",
 			task("Third"),

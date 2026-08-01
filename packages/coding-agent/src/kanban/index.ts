@@ -1,6 +1,6 @@
 import { getAgentDbPath } from "@oh-my-pi/pi-utils";
 import { KANBAN_CLIENT_ASSETS } from "./client/assets.generated";
-import { type KanbanRegistration, KanbanRuntime, type KanbanSessionPort } from "./runtime";
+import { type KanbanModelApi, type KanbanRegistration, KanbanRuntime, type KanbanSessionPort } from "./runtime";
 
 let runtime: KanbanRuntime | null = null;
 
@@ -13,4 +13,12 @@ export async function unregisterKanbanSession(session: KanbanSessionPort): Promi
 	if (!runtime) return;
 	await runtime.unregisterSession(session);
 	if (!runtime.running) runtime = null;
+}
+
+/**
+ * Board access for the in-session Kanban tool. `null` when no board is running
+ * for `sessionId`, which is the normal state outside interactive sessions.
+ */
+export function getKanbanModelApi(sessionId: string): KanbanModelApi | null {
+	return runtime?.apiForSession(sessionId) ?? null;
 }

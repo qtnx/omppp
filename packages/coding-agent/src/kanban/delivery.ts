@@ -98,7 +98,7 @@ export class KanbanSessionDelivery {
 	async deliver(session: KanbanSessionPort, event: KanbanActivity): Promise<void> {
 		if (requiresSteering(event)) {
 			const message = buildEventMessage([event]);
-			if (!message || message.role !== "custom") return;
+			if (message?.role !== "custom") return;
 			await session.promptCustomMessage(
 				{
 					customType: "kanban-event",

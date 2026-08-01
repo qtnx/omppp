@@ -217,7 +217,7 @@ describe("Kanban session delivery", () => {
 		expect(commentResponse.status).toBe(201);
 		const streamed = sessionA.drainStreaming();
 		const streamedMessage = streamed[0];
-		if (!streamedMessage || streamedMessage.role !== "custom" || typeof streamedMessage.content !== "string") {
+		if (streamedMessage?.role !== "custom" || typeof streamedMessage.content !== "string") {
 			throw new Error("Streaming Kanban message was malformed");
 		}
 		expect(streamedMessage).toMatchObject({ role: "custom", customType: "kanban-event", attribution: "user" });

@@ -1,0 +1,278 @@
+import { randomUUID } from "node:crypto";
+import type {
+	AgentTool,
+	AgentToolContext,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+	ToolApprovalDecision,
+} from "@oh-my-pi/pi-agent-core";
+import { prompt } from "@oh-my-pi/pi-utils";
+import { type } from "arktype";
+import { getKanbanModelApi } from "../kanban";
+import type { ToolSession } from "../tools";
+import type { OutputMeta } from "../tools/output-meta";
+import { ToolError } from "../tools/tool-errors";
+import { toolResult } from "../tools/tool-result";
+import { KanbanError } from "./errors";
+import kanbanDescription from "./kanban-tool.md" with { type: "text" };
+import type { KanbanModelApi } from "./runtime";
+import type { KanbanIdempotencyOperation } from "./store";
+import {
+	KANBAN_STATUSES,
+	type KanbanBoardSnapshot,
+	type KanbanComment,
+	type KanbanMutation,
+	type KanbanTask,
+} from "./types";
+import {
+	validateCommentCreate,
+	validateExpectedVersion,
+	validateMove,
+	validateTaskCreate,
+	validateTaskUpdate,
+} from "./validation";
+
+const kanbanSchema = type({
+	op: type("'board' | 'get' | 'create' | 'update' | 'move' | 'delete' | 'comment' | 'comments'").describe("operation"),
+	"taskId?": type("string").describe("task id"),
+	"task?": type("unknown").describe("create: task fields"),
+	"patch?": type("unknown").describe("update: fields including expectedVersion"),
+	"move?": type("unknown").describe("move: expectedVersion, status, index"),
+	"expectedVersion?": type("number").describe("delete: current task version"),
+	"comment?": type("unknown").describe("comment: author and body"),
+});
+
+export type KanbanToolParams = typeof kanbanSchema.infer;
+
+export interface KanbanToolDetails {
+	op: KanbanToolParams["op"];
+	taskId?: string;
+	status?: number;
+	board?: KanbanBoardSnapshot;
+	task?: KanbanTask;
+	comments?: KanbanComment[];
+	comment?: KanbanComment;
+	meta?: OutputMeta;
+}
+
+interface LiveKanbanApi {
+	sessionId: string;
+	api: KanbanModelApi;
+}
+
+const READ_ONLY_OPERATIONS: Partial<Record<KanbanToolParams["op"], true>> = {
+	board: true,
+	get: true,
+	comments: true,
+};
+
+function compactBoard(board: KanbanBoardSnapshot): object {
+	return {
+		cursor: board.cursor,
+		columns: KANBAN_STATUSES.map(status => ({
+			status,
+			tasks: board.tasks
+				.filter(task => task.status === status)
+				.map(task => ({
+					id: task.id,
+					title: task.title,
+					status: task.status,
+					priority: task.priority,
+					position: task.position,
+					version: task.version,
+					assignee: task.assignee,
+					labels: task.labels,
+				})),
+		})),
+	};
+}
+
+function formatKanbanError(error: KanbanError): string {
+	const message = `Kanban error [${error.code}] (${error.status}): ${error.message}`;
+	return error.code === "version_conflict"
+		? `${message}. Re-read the board or task, then retry with its current version.`
+		: message;
+}
+
+/** Session-scoped model tool for the live Kanban board. */
+export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDetails> {
+	readonly name = "kanban";
+	readonly approval = (args: unknown): ToolApprovalDecision => {
+		const op = (args as Partial<KanbanToolParams>).op;
+		return op && READ_ONLY_OPERATIONS[op] ? "read" : "write";
+	};
+	readonly formatApprovalDetails = (args: unknown): string[] => {
+		const params = args as Partial<KanbanToolParams>;
+		const operation = typeof params.op === "string" ? params.op : "(missing)";
+		const lines = [`Operation: ${operation}`];
+		if (typeof params.taskId === "string" && params.taskId.length > 0) lines.push(`Task: ${params.taskId}`);
+		return lines;
+	};
+	readonly label = "Kanban";
+	readonly summary = "Read and update the session Kanban board";
+	readonly description: string;
+	readonly parameters = kanbanSchema;
+	readonly strict = true;
+	readonly loadMode = "discoverable";
+
+	constructor(private readonly session: ToolSession) {
+		this.description = prompt.render(kanbanDescription);
+	}
+
+	/**
+	 * Create only while this session owns a live board. Tools are built before
+	 * the board registers, so the first pass returns `null`; the runtime mounts
+	 * this tool afterwards via `SessionTools.refreshKanbanTool()`.
+	 */
+	static createIf(session: ToolSession): KanbanTool | null {
+		const sessionId = session.getSessionId?.();
+		return sessionId && getKanbanModelApi(sessionId) ? new KanbanTool(session) : null;
+	}
+
+	async execute(
+		_toolCallId: string,
+		params: KanbanToolParams,
+		_signal?: AbortSignal,
+		_onUpdate?: AgentToolUpdateCallback<KanbanToolDetails>,
+		_context?: AgentToolContext,
+	): Promise<AgentToolResult<KanbanToolDetails>> {
+		try {
+			const { api, sessionId } = this.#liveApi();
+			switch (params.op) {
+				case "board": {
+					const board = api.store.getBoard(sessionId);
+					return toolResult<KanbanToolDetails>({ op: params.op, board })
+						.text(this.#json(compactBoard(board)))
+						.done();
+				}
+				case "get": {
+					const taskId = this.#taskId(params);
+					const task = api.store.getTask(sessionId, taskId);
+					const comments = api.store.listComments(sessionId, taskId);
+					return toolResult<KanbanToolDetails>({ op: params.op, taskId, task, comments })
+						.text(this.#json({ task, comments }))
+						.done();
+				}
+				case "create": {
+					const input = validateTaskCreate(params.task);
+					const result = api.store.createTask(
+						sessionId,
+						input,
+						this.#operation(`/api/v1/sessions/${sessionId}/tasks`, params.task),
+					);
+					api.publish(result.activity);
+					return this.#taskMutationResult(params.op, result);
+				}
+				case "update": {
+					const taskId = this.#taskId(params);
+					const input = validateTaskUpdate(params.patch);
+					const result = api.store.updateTask(sessionId, taskId, input);
+					api.publish(result.activity);
+					return this.#taskMutationResult(params.op, result);
+				}
+				case "move": {
+					const taskId = this.#taskId(params);
+					const input = validateMove(params.move);
+					const result = api.store.moveTask(
+						sessionId,
+						taskId,
+						input,
+						this.#operation(`/api/v1/sessions/${sessionId}/tasks/${taskId}/moves`, params.move),
+					);
+					api.publish(result.activity);
+					return this.#taskMutationResult(params.op, result);
+				}
+				case "delete": {
+					const taskId = this.#taskId(params);
+					const input = validateExpectedVersion({ expectedVersion: params.expectedVersion });
+					const result = api.store.deleteTask(sessionId, taskId, input);
+					api.publish(result.activity);
+					return toolResult<KanbanToolDetails>({ op: params.op, taskId, status: result.status })
+						.text(`Deleted task ${taskId}.`)
+						.done();
+				}
+				case "comment": {
+					const taskId = this.#taskId(params);
+					const input = validateCommentCreate(params.comment);
+					const result = api.store.createComment(
+						sessionId,
+						taskId,
+						input,
+						this.#operation(`/api/v1/sessions/${sessionId}/tasks/${taskId}/comments`, params.comment),
+					);
+					api.publish(result.activity);
+					return toolResult<KanbanToolDetails>({
+						op: params.op,
+						taskId,
+						status: result.status,
+						comment: result.data,
+					})
+						.text(this.#json({ comment: result.data }))
+						.done();
+				}
+				case "comments": {
+					const taskId = this.#taskId(params);
+					const comments = api.store.listComments(sessionId, taskId);
+					return toolResult<KanbanToolDetails>({ op: params.op, taskId, comments })
+						.text(this.#json({ comments }))
+						.done();
+				}
+				default:
+					throw new ToolError(`Unsupported Kanban operation: ${String(params.op)}`);
+			}
+		} catch (error) {
+			throw this.#toolError(error);
+		}
+	}
+
+	#liveApi(): LiveKanbanApi {
+		const sessionId = this.session.getSessionId?.();
+		if (!sessionId) throw new ToolError("Kanban board is unavailable because this session has no session ID.");
+		const api = getKanbanModelApi(sessionId);
+		if (!api) {
+			throw new ToolError(
+				"Kanban board is no longer running for this session. Re-open the board before using kanban.",
+			);
+		}
+		return { sessionId, api };
+	}
+
+	#taskId(params: KanbanToolParams): string {
+		const taskId = params.taskId?.trim();
+		if (!taskId) throw new ToolError(`Kanban ${params.op} requires a non-empty taskId.`);
+		return taskId;
+	}
+
+	/**
+	 * `body` is the caller's raw argument, matching what the HTTP route hashes.
+	 * A post-validation object can carry explicit `undefined` fields, which the
+	 * store's canonical JSON rejects outright.
+	 */
+	#operation(route: string, body: unknown): KanbanIdempotencyOperation {
+		return { key: randomUUID(), method: "POST", route, body: body ?? null };
+	}
+
+	#taskMutationResult(
+		op: Extract<KanbanToolParams["op"], "create" | "update" | "move">,
+		result: KanbanMutation<KanbanTask>,
+	): AgentToolResult<KanbanToolDetails> {
+		return toolResult<KanbanToolDetails>({
+			op,
+			taskId: result.data.id,
+			status: result.status,
+			task: result.data,
+		})
+			.text(this.#json({ task: result.data }))
+			.done();
+	}
+
+	#toolError(error: unknown): ToolError {
+		if (error instanceof ToolError) return error;
+		if (error instanceof KanbanError) return new ToolError(formatKanbanError(error));
+		return new ToolError(`Kanban operation failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
+
+	#json(value: unknown): string {
+		return JSON.stringify(value, null, 2) ?? "null";
+	}
+}
