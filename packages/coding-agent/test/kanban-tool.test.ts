@@ -227,4 +227,66 @@ describe("KanbanTool", () => {
 		expect(message).toMatch(/current version/i);
 		expect(published).toHaveLength(publishCountBeforeStale);
 	});
+	it("mounts and reads the board registered under the provider session id", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "ompx-kanban-tool-"));
+		roots.push(root);
+		const store = KanbanStore.open(path.join(root, "kanban.db"));
+		openStores.push(store);
+		const providerId = "provider-id";
+		const observedLookupIds: string[] = [];
+		const api: KanbanModelApi = {
+			sessionId: providerId,
+			store,
+			publish() {},
+		};
+		vi.spyOn(kanban, "getKanbanModelApi").mockImplementation(sessionId => {
+			observedLookupIds.push(sessionId);
+			return sessionId === providerId ? api : null;
+		});
+		const session = {
+			cwd: root,
+			hasUI: false,
+			getSessionId: () => "manager-id",
+			getKanbanSessionId: () => providerId,
+		} as ToolSession;
+
+		const tool = KanbanTool.createIf(session);
+		expect(tool).not.toBeNull();
+		if (tool === null) throw new Error("expected Kanban tool to mount");
+
+		const result = await tool.execute("call-provider-board", { op: "board" });
+		expect(requireDetails(result).board?.tasks).toEqual([]);
+		expect(observedLookupIds).toEqual([providerId, providerId]);
+	});
+
+	it("falls back to the session-manager id when no Kanban session id is exposed", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "ompx-kanban-tool-"));
+		roots.push(root);
+		const store = KanbanStore.open(path.join(root, "kanban.db"));
+		openStores.push(store);
+		const managerId = "manager-id";
+		const observedLookupIds: string[] = [];
+		const api: KanbanModelApi = {
+			sessionId: managerId,
+			store,
+			publish() {},
+		};
+		vi.spyOn(kanban, "getKanbanModelApi").mockImplementation(sessionId => {
+			observedLookupIds.push(sessionId);
+			return sessionId === managerId ? api : null;
+		});
+		const session = {
+			cwd: root,
+			hasUI: false,
+			getSessionId: () => managerId,
+		} as ToolSession;
+
+		const tool = KanbanTool.createIf(session);
+		expect(tool).not.toBeNull();
+		if (tool === null) throw new Error("expected Kanban tool to mount");
+
+		const result = await tool.execute("call-manager-board", { op: "board" });
+		expect(requireDetails(result).board?.tasks).toEqual([]);
+		expect(observedLookupIds).toEqual([managerId, managerId]);
+	});
 });

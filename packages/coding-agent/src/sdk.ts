@@ -2097,6 +2097,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				session ? session.trackEvalExecution(execution, abortController) : execution,
 			hasPendingAgentAsides: () => session?.hasPendingDeliverableAsides() ?? false,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
+			getKanbanSessionId: () => session?.sessionId ?? null,
 			requestMacOSSandboxRelaunch: paths => {
 				const sessionFile = sessionManager.getSessionFile();
 				return sessionFile

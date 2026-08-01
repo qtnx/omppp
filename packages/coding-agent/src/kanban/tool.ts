@@ -94,6 +94,16 @@ function formatKanbanError(error: KanbanError): string {
 		: message;
 }
 
+/**
+ * The id the Kanban runtime registers boards under. `getSessionId` returns the
+ * session-manager id, which diverges from `AgentSession.sessionId` whenever a
+ * provider session id is active — looking a board up by that one silently finds
+ * nothing and leaves the tool unmounted.
+ */
+function boardSessionId(session: ToolSession): string | null {
+	return session.getKanbanSessionId?.() ?? session.getSessionId?.() ?? null;
+}
+
 /** Session-scoped model tool for the live Kanban board. */
 export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDetails> {
 	readonly name = "kanban";
@@ -125,7 +135,7 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 	 * this tool afterwards via `SessionTools.refreshKanbanTool()`.
 	 */
 	static createIf(session: ToolSession): KanbanTool | null {
-		const sessionId = session.getSessionId?.();
+		const sessionId = boardSessionId(session);
 		return sessionId && getKanbanModelApi(sessionId) ? new KanbanTool(session) : null;
 	}
 
@@ -226,7 +236,7 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 	}
 
 	#liveApi(): LiveKanbanApi {
-		const sessionId = this.session.getSessionId?.();
+		const sessionId = boardSessionId(this.session);
 		if (!sessionId) throw new ToolError("Kanban board is unavailable because this session has no session ID.");
 		const api = getKanbanModelApi(sessionId);
 		if (!api) {
