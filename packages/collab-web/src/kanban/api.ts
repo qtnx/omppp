@@ -26,11 +26,20 @@ export class KanbanApiError extends Error {
 	}
 }
 
+/**
+ * Idempotency keys must be unpredictable, not cryptographically ceremonial.
+ * `randomUUID` is secure-context only, and the board is also served over plain
+ * HTTP on tailnet addresses, where it is missing while `getRandomValues` still
+ * works — so fall back to 16 random bytes rather than failing every mutation.
+ */
 function createIdempotencyKey(): string {
-	if (!globalThis.crypto?.randomUUID) {
-		throw new KanbanApiError(0, "crypto_unavailable", "Secure browser randomness is unavailable.");
+	const webCrypto = globalThis.crypto;
+	if (webCrypto?.randomUUID) return webCrypto.randomUUID();
+	if (webCrypto?.getRandomValues) {
+		const bytes = webCrypto.getRandomValues(new Uint8Array(16));
+		return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
 	}
-	return globalThis.crypto.randomUUID();
+	throw new KanbanApiError(0, "crypto_unavailable", "Secure browser randomness is unavailable.");
 }
 
 async function parseResponseBody(response: Response): Promise<unknown> {
