@@ -493,9 +493,7 @@ describe("subagent model selection system prompt contract", () => {
 
 		// Exception: only an explicit user request may pin a model.
 		expect(rendered).toMatch(/Set `model` ONLY when the user explicitly names a model/);
-		expect(rendered).toMatch(
-			/NEVER infer a model override from task size, complexity, cost, speed, risk/i,
-		);
+		expect(rendered).toMatch(/NEVER infer a model override from task size, complexity, cost, speed, risk/i);
 
 		// The old size-based heuristic must be gone, not living beside the new rule.
 		expect(rendered).not.toContain("# Small-model dispatch");
