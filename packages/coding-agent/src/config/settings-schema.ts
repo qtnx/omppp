@@ -5760,7 +5760,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Services",
 			label: "Image Provider Order",
 			description:
-				"Prioritized providers for image generation; unlisted providers follow the active session provider and the built-in order",
+				"Prioritized providers for image generation; unlisted providers fall back to a connected Codex subscription, then the active session provider, then the built-in order",
 			options: IMAGE_PROVIDER_CHOICES,
 			ordered: true,
 		},

@@ -40,6 +40,7 @@
 ### Fixed
 
 - Fixed Telegram bridge startup and polling failures collapsing missing or rejected credentials, invalid chat access, API status details, network errors, and competing pollers into generic configuration messages.
+- Fixed `generate_image` resolving a Codex (ChatGPT) subscription only when the session already ran an OpenAI/Codex model. A connected Codex subscription is now the first auto-resolution provider and outranks the session's own provider, so Anthropic, Gemini, xAI, OpenRouter, and local-model sessions generate images through it instead of falling through to whichever key happens to exist; an explicitly configured `providers.imageOrder` list and per-request `provider` override still win. A session already chatting with a Codex hosted-image model keeps using that exact model.
 
 ## [1.6.9] - 2026-07-29
 

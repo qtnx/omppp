@@ -576,6 +576,13 @@ function resolveDefaultCodexImageModel(modelRegistry: ModelRegistry): Model | un
  * Codex subscription credentials require a connected account claim. API keys
  * under the provider cannot use the ChatGPT image backend, so leave them for
  * the remaining providers instead of treating them as usable credentials.
+ *
+ * Resolution is deliberately independent of the session's model: the only
+ * model-derived preference is that a session ALREADY chatting with a Codex
+ * hosted-image model keeps generating through that exact model (same account,
+ * same base URL). Every other session — Anthropic, Gemini, xAI, OpenRouter,
+ * local — resolves the default Codex image model instead of being denied the
+ * provider.
  */
 async function findCodexSubscriptionImageCredentials(
 	modelRegistry: ModelRegistry | undefined,
@@ -583,12 +590,12 @@ async function findCodexSubscriptionImageCredentials(
 	sessionId?: string,
 ): Promise<ImageApiKey | null> {
 	if (!modelRegistry) return null;
-	if (isOpenAIHostedImageModel(activeModel) && getOpenAIHostedImageProvider(activeModel) === "openai-codex") {
-		return null;
-	}
 	const token = await modelRegistry.getApiKeyForProvider("openai-codex", sessionId);
 	if (!token || !getCodexAccountId(token)) return null;
-	const model = resolveDefaultCodexImageModel(modelRegistry);
+	const model =
+		isOpenAIHostedImageModel(activeModel) && getOpenAIHostedImageProvider(activeModel) === "openai-codex"
+			? activeModel
+			: resolveDefaultCodexImageModel(modelRegistry);
 	if (!model) return null;
 	const apiKey = await modelRegistry.getApiKey(model, sessionId);
 	if (!isAuthenticated(apiKey) || !getCodexAccountId(apiKey)) return null;
@@ -598,8 +605,9 @@ async function findCodexSubscriptionImageCredentials(
 function activeImageProvider(model: Model | undefined): Exclude<ImageProviderPreference, "auto"> | null {
 	switch (model?.provider) {
 		case "openai":
-		case "openai-codex":
 			return "openai";
+		case "openai-codex":
+			return "openai-codex";
 		case "google-antigravity":
 			return "antigravity";
 		case "xai":
@@ -623,10 +631,14 @@ function imageProviderOrder(activeModel: Model | undefined, requested?: ImagePro
 		providers.push(provider);
 	};
 
-	// Per-request provider wins, then the configured priority list, then the
-	// active session's provider, then the built-in auto order.
+	// Per-request provider wins, then the configured priority list, then a
+	// connected Codex subscription, then the active session's provider, then the
+	// built-in auto order. Codex outranks the session provider on purpose: it is
+	// key-free and model-agnostic, so the model a session happens to chat with
+	// must never shadow it (an Anthropic/Gemini session still generates images).
 	if (requested !== undefined && requested !== "auto") add(requested);
 	for (const provider of configuredImageProviderOrder) add(provider);
+	add("openai-codex");
 	add(activeImageProvider(activeModel));
 	for (const provider of AUTO_IMAGE_PROVIDER_ORDER) add(provider);
 	return providers;
