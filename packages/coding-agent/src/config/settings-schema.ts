@@ -137,6 +137,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Startup & Updates",
 		"Power (macOS)",
 		"Agent",
+		"Herdr",
 		"Git",
 	],
 	context: ["General", "Compaction", "Memory", "Rules (TTSR)", "Experimental"],
