@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { startKanbanBoard } from "@oh-my-pi/pi-coding-agent/kanban";
 import {
 	type KanbanCustomMessagePayload,
 	type KanbanPromptOptions,
@@ -12,7 +13,6 @@ import {
 } from "@oh-my-pi/pi-coding-agent/kanban/runtime";
 import type { KanbanClientAssets } from "@oh-my-pi/pi-coding-agent/kanban/server";
 import { KanbanStore } from "@oh-my-pi/pi-coding-agent/kanban/store";
-import { registerKanbanSessionWhileActive } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
 import { YieldQueue } from "@oh-my-pi/pi-coding-agent/session/yield-queue";
 
 const CLIENT_ASSETS: KanbanClientAssets = {
@@ -323,12 +323,13 @@ describe("Kanban session delivery", () => {
 		const release = Promise.withResolvers<void>();
 		let registerCalls = 0;
 		let unregisterCalls = 0;
-		const registration = registerKanbanSessionWhileActive(
+		const registration = startKanbanBoard(
 			session,
 			async () => {
 				registerCalls++;
 				entered.resolve();
 				await release.promise;
+				return { boardUrl: "http://127.0.0.1:0/kanban/session-race", tailnetUrls: [] };
 			},
 			async () => {
 				unregisterCalls++;
@@ -340,10 +341,11 @@ describe("Kanban session delivery", () => {
 		await registration;
 		expect({ registerCalls, unregisterCalls }).toEqual({ registerCalls: 1, unregisterCalls: 1 });
 
-		await registerKanbanSessionWhileActive(
+		await startKanbanBoard(
 			session,
 			async () => {
 				registerCalls++;
+				return { boardUrl: "http://127.0.0.1:0/kanban/session-race", tailnetUrls: [] };
 			},
 			async () => {
 				unregisterCalls++;

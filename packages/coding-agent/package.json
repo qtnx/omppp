@@ -384,6 +384,10 @@
       "types": "./src/eval/py/*.ts",
       "import": "./src/eval/py/*.ts"
     },
+    "./kanban": {
+      "types": "./src/kanban/index.ts",
+      "import": "./src/kanban/index.ts"
+    },
     "./lsp": {
       "types": "./src/lsp/index.ts",
       "import": "./src/lsp/index.ts"

@@ -8,8 +8,8 @@
 ### Added
 
 - Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
-- Added a session-native local Kanban board with SQLite persistence, optimistic concurrency, idempotent mutations, cursor-based realtime updates, capability-protected loopback access, and inert delivery of board activity to the owning model session.
-- Added tailnet reachability to the session Kanban board: on a Tailscale host the board also answers on the host's tailnet addresses, so phones and other tailnet devices can open it, while every request is still restricted to loopback or tailnet peers with a `Host`-matched origin.
+- Added a session-native local Kanban board, started with `/kanban`, with SQLite persistence, optimistic concurrency, idempotent mutations, cursor-based realtime updates, capability-protected access, and inert delivery of board activity to the owning model session. `/kanban off` stops it; `/kanban status` reports whether it runs.
+- Added tailnet reachability to the Kanban board: on a Tailscale host the board also answers on the host's tailnet addresses, so phones and other tailnet devices can open it, while every request is still restricted to loopback or tailnet peers with a `Host`-matched origin.
 - Added a session-scoped `kanban` tool that mounts once the board is running, letting the model read the board and create, update, move, delete, and comment on tasks; model-authored changes stream to open boards without echoing back into the model's own session.
 
 ### Fixed
