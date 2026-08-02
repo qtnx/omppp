@@ -24,6 +24,7 @@ import type { ValidTaskForm } from "./task-form";
 import {
 	isRecord,
 	type KanbanActivity,
+	type KanbanBoardSession,
 	type KanbanBoardSnapshot,
 	type KanbanConnectionState,
 	type KanbanStatus,
@@ -53,12 +54,12 @@ interface Notice {
 	message: string;
 }
 
-function sessionIdFromPath(pathname: string): string | null {
+function boardIdFromPath(pathname: string): string | null {
 	const match = /^\/kanban\/([^/]+)\/?$/.exec(pathname);
 	if (!match) return null;
 	try {
-		const sessionId = decodeURIComponent(match[1]);
-		return sessionId.length > 0 ? sessionId : null;
+		const boardId = decodeURIComponent(match[1]);
+		return boardId.length > 0 ? boardId : null;
 	} catch {
 		return null;
 	}
@@ -138,7 +139,7 @@ function LoadingBoard(): ReactNode {
 }
 
 export function KanbanApp() {
-	const sessionId = useMemo(() => sessionIdFromPath(window.location.pathname), []);
+	const boardId = useMemo(() => boardIdFromPath(window.location.pathname), []);
 	const [snapshot, setSnapshot] = useState<KanbanBoardSnapshot | null>(null);
 	const [connection, setConnection] = useState<KanbanConnectionState>(() =>
 		navigator.onLine ? "loading" : "disconnected",
@@ -152,6 +153,7 @@ export function KanbanApp() {
 	const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
 	const [activityOpen, setActivityOpen] = useState(false);
 	const [notifyOn, setNotifyOn] = useState(() => notificationsEnabled());
+	const [sessions, setSessions] = useState<readonly KanbanBoardSession[]>([]);
 	const activityTrigger = useRef<HTMLElement | null>(null);
 	const connectionRef = useRef<KanbanConnectionState>(connection);
 	const cursorRef = useRef(0);
@@ -163,21 +165,21 @@ export function KanbanApp() {
 	}, [connection]);
 
 	const api = useMemo(
-		() => (sessionId ? new KanbanApi(sessionId, undefined, () => connectionRef.current) : null),
-		[sessionId],
+		() => (boardId ? new KanbanApi(boardId, undefined, () => connectionRef.current) : null),
+		[boardId],
 	);
 
 	const loadBoard = useCallback(
 		async (reason: "initial" | "event" | "reconnect" | "retry" | "conflict"): Promise<boolean> => {
-			if (!api || !sessionId) return false;
+			if (!api || !boardId) return false;
 			const generation = ++loadGeneration.current;
 			if (reason === "initial" || reason === "retry") setLoading(true);
 			try {
 				const next = await api.loadBoard();
 				if (generation !== loadGeneration.current) return false;
 				if (
-					next.tasks.some(task => task.sessionId !== sessionId) ||
-					next.activity.some(item => item.sessionId !== sessionId)
+					next.tasks.some(task => task.boardId !== boardId) ||
+					next.activity.some(item => item.boardId !== boardId)
 				) {
 					throw new KanbanProtocolError("The board returned data for a different session.");
 				}
@@ -197,15 +199,36 @@ export function KanbanApp() {
 				return false;
 			}
 		},
-		[api, sessionId],
+		[api, boardId],
 	);
 
 	useEffect(() => {
 		void loadBoard("initial");
 	}, [loadBoard]);
 
+	// Assignees are live sessions, so the picker refreshes on the same cadence
+	// the server ages them out with.
 	useEffect(() => {
-		if (!api || !sessionId) return;
+		if (!api) return;
+		let stopped = false;
+		const refresh = async (): Promise<void> => {
+			try {
+				const next = await api.listSessions();
+				if (!stopped) setSessions(next);
+			} catch {
+				if (!stopped) setSessions([]);
+			}
+		};
+		void refresh();
+		const timer = setInterval(() => void refresh(), 15_000);
+		return () => {
+			stopped = true;
+			clearInterval(timer);
+		};
+	}, [api]);
+
+	useEffect(() => {
+		if (!api || !boardId) return;
 		let stopped = false;
 		let source: EventSource | null = null;
 		let reconnectTimer: number | null = null;
@@ -234,7 +257,7 @@ export function KanbanApp() {
 					const raw: unknown = JSON.parse(message.data);
 					const candidate = isRecord(raw) && isRecord(raw.data) && "cursor" in raw.data ? raw.data : raw;
 					const event = parseKanbanEvent(candidate);
-					if (event.sessionId !== sessionId)
+					if (event.boardId !== boardId)
 						throw new KanbanProtocolError("A live update targeted a different session.");
 					const nextRealtime = applyRealtimeEvent(realtimeRef.current, event);
 					if (nextRealtime === realtimeRef.current) return;
@@ -286,7 +309,7 @@ export function KanbanApp() {
 			window.removeEventListener("offline", offline);
 			window.removeEventListener("online", online);
 		};
-	}, [api, loadBoard, sessionId]);
+	}, [api, loadBoard, boardId]);
 
 	useEffect(() => {
 		const viewport = window.visualViewport;
@@ -394,7 +417,7 @@ export function KanbanApp() {
 		setAnnouncement(message);
 	};
 
-	if (!sessionId) {
+	if (!boardId) {
 		return (
 			<main className="kb-fatal">
 				<Columns3 size={28} aria-hidden="true" />
@@ -412,8 +435,12 @@ export function KanbanApp() {
 						<Columns3 size={17} />
 					</span>
 					<div>
-						<h1>Session Kanban</h1>
-						<p title={sessionId}>Session {sessionId}</p>
+						<h1>Project Kanban</h1>
+						<p title={boardId}>
+							{sessions.length === 0
+								? "No sessions connected"
+								: `${sessions.length} session${sessions.length === 1 ? "" : "s"}: ${sessions.map(session => session.name).join(", ")}`}
+						</p>
 					</div>
 				</div>
 				<div className="kb-header-actions">
@@ -552,6 +579,7 @@ export function KanbanApp() {
 					task={selectedTask}
 					defaultStatus={sheet.status}
 					api={api}
+					sessions={sessions}
 					activity={snapshot?.activity ?? []}
 					canWrite={canWrite}
 					busy={busyTaskId !== null}

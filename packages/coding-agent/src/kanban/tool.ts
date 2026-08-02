@@ -57,7 +57,7 @@ export interface KanbanToolDetails {
 }
 
 interface LiveKanbanApi {
-	sessionId: string;
+	boardId: string;
 	api: KanbanModelApi;
 }
 
@@ -152,19 +152,19 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<KanbanToolDetails>> {
 		try {
-			const { api, sessionId } = this.#liveApi();
+			const { api, boardId } = this.#liveApi();
 			switch (params.op) {
 				case "board": {
-					const board = api.store.getBoard(sessionId);
+					const board = api.store.getBoard(boardId);
 					return toolResult<KanbanToolDetails>({ op: params.op, board })
 						.text(this.#json(compactBoard(board)))
 						.done();
 				}
 				case "get": {
 					const taskId = this.#taskId(params);
-					const task = api.store.getTask(sessionId, taskId);
-					const comments = api.store.listComments(sessionId, taskId);
-					const images = this.#taskImages(api, sessionId, task, comments);
+					const task = api.store.getTask(boardId, taskId);
+					const comments = api.store.listComments(boardId, taskId);
+					const images = this.#taskImages(api, boardId, task, comments);
 					const summary = this.#json({ task, comments });
 					const builder = toolResult<KanbanToolDetails>({ op: params.op, taskId, task, comments });
 					return images.length === 0
@@ -174,9 +174,9 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 				case "create": {
 					const input = validateTaskCreate(params.task);
 					const result = api.store.createTask(
-						sessionId,
+						boardId,
 						input,
-						this.#operation(`/api/v1/sessions/${sessionId}/tasks`, params.task),
+						this.#operation(`/api/v1/boards/${boardId}/tasks`, params.task),
 					);
 					api.publish(result.activity);
 					return this.#taskMutationResult(params.op, result);
@@ -184,7 +184,7 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 				case "update": {
 					const taskId = this.#taskId(params);
 					const input = validateTaskUpdate(params.patch);
-					const result = api.store.updateTask(sessionId, taskId, input);
+					const result = api.store.updateTask(boardId, taskId, input);
 					api.publish(result.activity);
 					return this.#taskMutationResult(params.op, result);
 				}
@@ -192,10 +192,10 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 					const taskId = this.#taskId(params);
 					const input = validateMove(params.move);
 					const result = api.store.moveTask(
-						sessionId,
+						boardId,
 						taskId,
 						input,
-						this.#operation(`/api/v1/sessions/${sessionId}/tasks/${taskId}/moves`, params.move),
+						this.#operation(`/api/v1/boards/${boardId}/tasks/${taskId}/moves`, params.move),
 					);
 					api.publish(result.activity);
 					return this.#taskMutationResult(params.op, result);
@@ -203,7 +203,7 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 				case "delete": {
 					const taskId = this.#taskId(params);
 					const input = validateExpectedVersion({ expectedVersion: params.expectedVersion });
-					const result = api.store.deleteTask(sessionId, taskId, input);
+					const result = api.store.deleteTask(boardId, taskId, input);
 					api.publish(result.activity);
 					return toolResult<KanbanToolDetails>({ op: params.op, taskId, status: result.status })
 						.text(`Deleted task ${taskId}.`)
@@ -211,12 +211,12 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 				}
 				case "comment": {
 					const taskId = this.#taskId(params);
-					const input = validateCommentCreate(params.comment);
+					const input = validateCommentCreate(params.comment, api.sessionName);
 					const result = api.store.createComment(
-						sessionId,
+						boardId,
 						taskId,
 						input,
-						this.#operation(`/api/v1/sessions/${sessionId}/tasks/${taskId}/comments`, params.comment),
+						this.#operation(`/api/v1/boards/${boardId}/tasks/${taskId}/comments`, params.comment),
 					);
 					api.publish(result.activity);
 					return toolResult<KanbanToolDetails>({
@@ -230,7 +230,7 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 				}
 				case "comments": {
 					const taskId = this.#taskId(params);
-					const comments = api.store.listComments(sessionId, taskId);
+					const comments = api.store.listComments(boardId, taskId);
 					return toolResult<KanbanToolDetails>({ op: params.op, taskId, comments })
 						.text(this.#json({ comments }))
 						.done();
@@ -252,7 +252,7 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 				"Kanban board is no longer running for this session. Re-open the board before using kanban.",
 			);
 		}
-		return { sessionId, api };
+		return { boardId: api.boardId, api };
 	}
 
 	/**
@@ -262,7 +262,7 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 	 */
 	#taskImages(
 		api: KanbanModelApi,
-		sessionId: string,
+		boardId: string,
 		task: KanbanTask,
 		comments: readonly KanbanComment[],
 	): ImageContent[] {
@@ -275,7 +275,7 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 		}
 		const images: ImageContent[] = [];
 		for (const id of ids) {
-			const found = api.store.readAttachment(sessionId, id);
+			const found = api.store.readAttachment(boardId, id);
 			if (!found) continue;
 			images.push({
 				type: "image",

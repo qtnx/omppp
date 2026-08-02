@@ -9,7 +9,13 @@ import {
 	type ValidTaskForm,
 	validateTaskForm,
 } from "./task-form";
-import { KANBAN_PRIORITIES, KANBAN_STATUSES, type KanbanStatus, type KanbanTask } from "./types";
+import {
+	KANBAN_PRIORITIES,
+	KANBAN_STATUSES,
+	type KanbanBoardSession,
+	type KanbanStatus,
+	type KanbanTask,
+} from "./types";
 import { PRIORITY_LABELS, STATUS_LABELS } from "./view-model";
 
 interface TaskFormProps {
@@ -19,6 +25,7 @@ interface TaskFormProps {
 	canWrite: boolean;
 	serverError: string | null;
 	api: KanbanApi | null;
+	sessions: readonly KanbanBoardSession[];
 	onSubmit(valid: ValidTaskForm): Promise<void>;
 	onCancel(): void;
 }
@@ -51,10 +58,25 @@ function Field({ label, field, errors, helper, children }: FieldProps) {
 	);
 }
 
-export function TaskForm({ task, defaultStatus, busy, canWrite, serverError, api, onSubmit, onCancel }: TaskFormProps) {
+export function TaskForm({
+	task,
+	defaultStatus,
+	busy,
+	canWrite,
+	serverError,
+	api,
+	sessions,
+	onSubmit,
+	onCancel,
+}: TaskFormProps) {
 	const formId = useId();
 	const [values, setValues] = useState<TaskFormValues>(() => taskToFormValues(task, defaultStatus));
 	const [errors, setErrors] = useState<TaskFormErrors>({});
+	// Keep an assignee that is offline right now: the session may come back, and
+	// silently dropping it from the picker would silently reassign the task.
+	const assigneeOptions = [
+		...new Set([...sessions.map(session => session.name), values.assignee].filter(name => name.length > 0)),
+	].sort();
 	const describedBy = (field: TaskFormField): string | undefined => {
 		if (errors[field]) return `kb-task-${field}-error`;
 		if (field === "status" && task) return "kb-task-status-help";
@@ -145,14 +167,26 @@ export function TaskForm({ task, defaultStatus, busy, canWrite, serverError, api
 					/>
 				</Field>
 				<div className="kb-field-row">
-					<Field label="Assignee" field="assignee" errors={errors}>
-						<input
+					<Field
+						label="Assignee"
+						field="assignee"
+						errors={errors}
+						helper="Pick the session that should pick this up."
+					>
+						<select
 							id="kb-task-assignee"
 							value={values.assignee}
 							onChange={event => update("assignee", event.target.value)}
 							aria-invalid={Boolean(errors.assignee)}
 							aria-describedby={describedBy("assignee")}
-						/>
+						>
+							<option value="">Unassigned (any session)</option>
+							{assigneeOptions.map(name => (
+								<option key={name} value={name}>
+									{name}
+								</option>
+							))}
+						</select>
 					</Field>
 					<Field label="Due date" field="dueAt" errors={errors}>
 						<input

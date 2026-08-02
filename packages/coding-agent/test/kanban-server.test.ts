@@ -30,7 +30,6 @@ interface ServerHarness {
 	dbPath: string;
 	store: KanbanStore;
 	handle: KanbanServerHandle;
-	activeSessionIds: string[];
 	closed: boolean;
 }
 
@@ -41,14 +40,13 @@ async function createHarness(dbPath?: string): Promise<ServerHarness> {
 	if (!dbPath) await fs.mkdir(root, { recursive: true });
 	const resolvedDbPath = dbPath ?? path.join(root, "kanban.db");
 	const store = KanbanStore.open(resolvedDbPath);
-	const activeSessionIds = ["session-b", "session-a"];
 	const handle = createKanbanServer({
 		store,
 		assets: CLIENT_ASSETS,
-		activeSessionIds: () => activeSessionIds,
+		boardId: "session-a",
 		port: 0,
 	});
-	const harness = { root, dbPath: resolvedDbPath, store, handle, activeSessionIds, closed: false };
+	const harness = { root, dbPath: resolvedDbPath, store, handle, closed: false };
 	harnesses.push(harness);
 	return harness;
 }
@@ -74,8 +72,8 @@ function origin(harness: ServerHarness): string {
 	return harness.handle.localUrl.slice(0, -1);
 }
 
-async function boardCookie(harness: ServerHarness, sessionId = "session-a"): Promise<string> {
-	const response = await fetch(url(harness, `/kanban/${encodeURIComponent(sessionId)}`), { redirect: "manual" });
+async function boardCookie(harness: ServerHarness, boardId = "session-a"): Promise<string> {
+	const response = await fetch(url(harness, `/kanban/${encodeURIComponent(boardId)}`), { redirect: "manual" });
 	expect(response.status).toBe(200);
 	const setCookie = response.headers.get("set-cookie");
 	expect(setCookie).not.toBeNull();
@@ -103,7 +101,7 @@ async function createTask(
 	key: string,
 	title = "Server task",
 ): Promise<Response> {
-	return await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+	return await fetch(url(harness, "/api/v1/boards/session-a/tasks"), {
 		method: "POST",
 		headers: mutationHeaders(harness, cookie, { key }),
 		body: JSON.stringify({ title, status: "backlog", priority: "high" }),
@@ -158,8 +156,8 @@ async function readSseFrame(
 			typeof parsed.id !== "string" ||
 			!("cursor" in parsed) ||
 			typeof parsed.cursor !== "number" ||
-			!("sessionId" in parsed) ||
-			typeof parsed.sessionId !== "string" ||
+			!("boardId" in parsed) ||
+			typeof parsed.boardId !== "string" ||
 			!("type" in parsed) ||
 			typeof parsed.type !== "string" ||
 			!("createdAt" in parsed) ||
@@ -176,7 +174,7 @@ async function readSseFrame(
 }
 
 describe("Kanban server", () => {
-	it("serves the offline root shell and session-specific install manifest", async () => {
+	it("serves the offline root shell and board-specific install manifest", async () => {
 		const harness = await createHarness();
 		const root = await fetch(url(harness, "/"));
 		expect(root.status).toBe(200);
@@ -186,39 +184,31 @@ describe("Kanban server", () => {
 		expect(fallback.status).toBe(307);
 		expect(fallback.headers.get("location")).toBe("/kanban/session-a");
 
-		const board = await fetch(url(harness, "/kanban/session-b"));
+		const board = await fetch(url(harness, "/kanban/session-a"));
 		expect(board.status).toBe(200);
-		expect(await board.text()).toContain("/kanban/session-b/manifest.webmanifest");
+		expect(await board.text()).toContain("/kanban/session-a/manifest.webmanifest");
 		const setCookie = board.headers.get("set-cookie") ?? "";
 		expect(setCookie).toContain("HttpOnly");
 		expect(setCookie).toContain("SameSite=Strict");
 		expect(setCookie).toContain("Path=/");
-		expect(setCookie).not.toContain("session-b");
+		expect(setCookie).not.toContain("session-a");
 
-		const manifest = await fetch(url(harness, "/kanban/session-b/manifest.webmanifest"));
+		const manifest = await fetch(url(harness, "/kanban/session-a/manifest.webmanifest"));
 		expect(manifest.status).toBe(200);
-		expect(await manifest.json()).toMatchObject({ start_url: "/kanban/session-b", scope: "/kanban/" });
+		expect(await manifest.json()).toMatchObject({ start_url: "/kanban/session-a", scope: "/kanban/" });
 		expect(manifest.headers.get("cache-control")).toBe("no-store");
 
-		harness.activeSessionIds.splice(0, harness.activeSessionIds.length);
-		const inactive = await fetch(url(harness, "/kanban/session-a"));
-		expect(inactive.status).toBe(404);
-		expect(inactive.headers.get("set-cookie")).toBeNull();
+		const foreignBoard = await fetch(url(harness, "/kanban/some-other-project"));
+		expect(foreignBoard.status).toBe(404);
+		expect(foreignBoard.headers.get("set-cookie")).toBeNull();
 	});
 
-	it("enforces Host, capability cookie, same Origin, mutation header, and object ownership", async () => {
+	it("enforces Host, capability cookie, same Origin, mutation header, and board boundaries", async () => {
 		const harness = await createHarness();
 		const cookie = await boardCookie(harness);
-		const sessionBCookie = await boardCookie(harness, "session-b");
-		expect(sessionBCookie).not.toBe(cookie);
-		const sessionACookieOnB = await fetch(url(harness, "/api/v1/sessions/session-b/board"), {
-			headers: { Cookie: cookie },
-		});
-		expect(sessionACookieOnB.status).toBe(401);
-		const sessionBCookieOnB = await fetch(url(harness, "/api/v1/sessions/session-b/board"), {
-			headers: { Cookie: sessionBCookie },
-		});
-		expect(sessionBCookieOnB.status).toBe(200);
+		const foreignBoardApi = await fetch(url(harness, "/api/v1/boards/some-other-project/board"));
+		expect(foreignBoardApi.status).toBe(404);
+		expect(await foreignBoardApi.json()).toEqual({ error: { code: "not_found", message: "Board not found" } });
 
 		const wrongHost = await fetch(url(harness, "/kanban/session-a"), {
 			headers: { Host: "attacker.invalid" },
@@ -226,17 +216,17 @@ describe("Kanban server", () => {
 		expect(wrongHost.status).toBe(403);
 		expect(wrongHost.headers.get("access-control-allow-origin")).toBeNull();
 
-		const noCookie = await fetch(url(harness, "/api/v1/sessions/session-a/board"));
+		const noCookie = await fetch(url(harness, "/api/v1/boards/session-a/board"));
 		expect(noCookie.status).toBe(401);
 
-		const missingHeader = await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+		const missingHeader = await fetch(url(harness, "/api/v1/boards/session-a/tasks"), {
 			method: "POST",
 			headers: mutationHeaders(harness, cookie, { key: "missing-header", kanbanHeader: "0" }),
 			body: JSON.stringify({ title: "Rejected", status: "backlog", priority: "medium" }),
 		});
 		expect(missingHeader.status).toBe(403);
 
-		const wrongOrigin = await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+		const wrongOrigin = await fetch(url(harness, "/api/v1/boards/session-a/tasks"), {
 			method: "POST",
 			headers: mutationHeaders(harness, cookie, { key: "wrong-origin", origin: "http://attacker.invalid" }),
 			body: JSON.stringify({ title: "Rejected", status: "backlog", priority: "medium" }),
@@ -247,30 +237,52 @@ describe("Kanban server", () => {
 		expect(createdResponse.status).toBe(201);
 		const created = await parseTaskResponse(createdResponse);
 
-		const db = new Database(harness.dbPath, { readonly: true });
-		const before = db.prepare("SELECT COUNT(*) AS count FROM kanban_activity").get();
-		db.close();
-		const crossSession = await fetch(
-			url(harness, `/api/v1/sessions/session-b/tasks/${encodeURIComponent(created.id)}`),
-			{
-				method: "PATCH",
-				headers: mutationHeaders(harness, sessionBCookie),
-				body: JSON.stringify({ expectedVersion: created.version, title: "Cross-session overwrite" }),
-			},
-		);
-		expect(crossSession.status).toBe(404);
-		expect(await crossSession.json()).toEqual({ error: { code: "not_found", message: "Task not found" } });
-
 		const check = new Database(harness.dbPath, { readonly: true });
 		try {
 			expect(check.prepare("SELECT title FROM kanban_tasks WHERE id = ?").get(created.id)).toEqual({
 				title: "Server task",
 			});
-			expect(check.prepare("SELECT COUNT(*) AS count FROM kanban_activity").get()).toEqual(before);
+			expect(check.prepare("SELECT COUNT(*) AS count FROM kanban_tasks").get()).toEqual({ count: 1 });
+			expect(check.prepare("SELECT COUNT(*) AS count FROM kanban_activity").get()).toEqual({ count: 1 });
 			expect(check.prepare("SELECT COUNT(*) AS count FROM kanban_idempotency").get()).toEqual({ count: 1 });
 		} finally {
 			check.close();
 		}
+	});
+
+	it("lists registered board sessions only with a capability cookie", async () => {
+		const harness = await createHarness();
+		harness.store.upsertSession("session-a", "session-a", "swift-otter");
+		harness.store.upsertSession("session-a", "session-b", "quiet-raven");
+
+		const unauthorized = await fetch(url(harness, "/api/v1/boards/session-a/sessions"));
+		expect(unauthorized.status).toBe(401);
+		expect(await unauthorized.json()).toEqual({
+			error: { code: "unauthorized", message: "Kanban capability is missing or invalid" },
+		});
+
+		const authorized = await fetch(url(harness, "/api/v1/boards/session-a/sessions"), {
+			headers: { Cookie: await boardCookie(harness) },
+		});
+		expect(authorized.status).toBe(200);
+		const sessions = (await authorized.json()) as { data: unknown[] };
+		expect(sessions).toEqual({
+			data: expect.arrayContaining([
+				{
+					sessionId: "session-a",
+					name: "swift-otter",
+					createdAt: expect.any(String),
+					lastSeenAt: expect.any(String),
+				},
+				{
+					sessionId: "session-b",
+					name: "quiet-raven",
+					createdAt: expect.any(String),
+					lastSeenAt: expect.any(String),
+				},
+			]),
+		});
+		expect(sessions.data).toHaveLength(2);
 	});
 
 	it("replays exact idempotent status/body and rejects malformed or oversized writes unchanged", async () => {
@@ -289,21 +301,21 @@ describe("Kanban server", () => {
 			error: { code: "idempotency_key_reused", message: "Idempotency key was already used for a different request" },
 		});
 
-		const malformed = await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+		const malformed = await fetch(url(harness, "/api/v1/boards/session-a/tasks"), {
 			method: "POST",
 			headers: mutationHeaders(harness, cookie, { key: "malformed" }),
 			body: "{",
 		});
 		expect(malformed.status).toBe(400);
 
-		const identityField = await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+		const identityField = await fetch(url(harness, "/api/v1/boards/session-a/tasks"), {
 			method: "POST",
 			headers: mutationHeaders(harness, cookie, { key: "identity" }),
 			body: JSON.stringify({ id: "chosen", title: "Rejected", status: "backlog", priority: "medium" }),
 		});
 		expect(identityField.status).toBe(422);
 
-		const invalidDate = await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+		const invalidDate = await fetch(url(harness, "/api/v1/boards/session-a/tasks"), {
 			method: "POST",
 			headers: mutationHeaders(harness, cookie, { key: "invalid-date" }),
 			body: JSON.stringify({
@@ -315,7 +327,7 @@ describe("Kanban server", () => {
 		});
 		expect(invalidDate.status).toBe(422);
 
-		const oversized = await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+		const oversized = await fetch(url(harness, "/api/v1/boards/session-a/tasks"), {
 			method: "POST",
 			headers: mutationHeaders(harness, cookie, { key: "oversized" }),
 			body: JSON.stringify({
@@ -345,7 +357,7 @@ describe("Kanban server", () => {
 				controller.close();
 			},
 		});
-		const streamedOversized = await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+		const streamedOversized = await fetch(url(harness, "/api/v1/boards/session-a/tasks"), {
 			method: "POST",
 			headers: mutationHeaders(harness, cookie, { key: "oversized-stream" }),
 			body: oversizedStream,
@@ -372,7 +384,7 @@ describe("Kanban server", () => {
 		const createdResponse = await createTask(harness, cookie, "sse-task", "SSE task");
 		const task = await parseTaskResponse(createdResponse);
 
-		const replayResponse = await fetch(url(harness, "/api/v1/sessions/session-a/events?cursor=0"), {
+		const replayResponse = await fetch(url(harness, "/api/v1/boards/session-a/events?cursor=0"), {
 			headers: { Cookie: cookie },
 			signal: AbortSignal.timeout(3_000),
 		});
@@ -380,16 +392,16 @@ describe("Kanban server", () => {
 		expect(replayResponse.headers.get("cache-control")).toBe("no-store");
 		const replayReader = replayResponse.body!.getReader();
 		const replay = await readSseFrame(replayReader);
-		expect(replay.event).toMatchObject({ sessionId: "session-a", taskId: task.id, type: "task.created" });
+		expect(replay.event).toMatchObject({ boardId: "session-a", taskId: task.id, type: "task.created" });
 		await replayReader.cancel();
 
-		const liveResponse = await fetch(
-			url(harness, `/api/v1/sessions/session-a/events?cursor=${replay.event.cursor}`),
-			{ headers: { Cookie: cookie }, signal: AbortSignal.timeout(3_000) },
-		);
+		const liveResponse = await fetch(url(harness, `/api/v1/boards/session-a/events?cursor=${replay.event.cursor}`), {
+			headers: { Cookie: cookie },
+			signal: AbortSignal.timeout(3_000),
+		});
 		const liveReader = liveResponse.body!.getReader();
 		const commentResponse = await fetch(
-			url(harness, `/api/v1/sessions/session-a/tasks/${encodeURIComponent(task.id)}/comments`),
+			url(harness, `/api/v1/boards/session-a/tasks/${encodeURIComponent(task.id)}/comments`),
 			{
 				method: "POST",
 				headers: mutationHeaders(harness, cookie, { key: "sse-comment" }),
@@ -398,14 +410,14 @@ describe("Kanban server", () => {
 		);
 		expect(commentResponse.status).toBe(201);
 		const live = await readSseFrame(liveReader);
-		expect(live.event).toMatchObject({ sessionId: "session-a", taskId: task.id, type: "comment.created" });
+		expect(live.event).toMatchObject({ boardId: "session-a", taskId: task.id, type: "comment.created" });
 		expect(live.event.cursor).toBeGreaterThan(replay.event.cursor);
 		await liveReader.cancel();
 
 		await closeHarness(harness, false);
 		const restarted = await createHarness(harness.dbPath);
 		cookie = await boardCookie(restarted);
-		const restartedResponse = await fetch(url(restarted, "/api/v1/sessions/session-a/events?cursor=0"), {
+		const restartedResponse = await fetch(url(restarted, "/api/v1/boards/session-a/events?cursor=0"), {
 			headers: { Cookie: cookie },
 			signal: AbortSignal.timeout(3_000),
 		});
@@ -470,7 +482,7 @@ describe("Kanban server", () => {
 		const cookie = await boardCookie(harness);
 		const host = `localhost:${harness.handle.port}`;
 		const readTaskCount = async (): Promise<number> => {
-			const response = await fetch(url(harness, "/api/v1/sessions/session-a/board"), {
+			const response = await fetch(url(harness, "/api/v1/boards/session-a/board"), {
 				headers: { Cookie: cookie, Host: host },
 			});
 			expect(response.status).toBe(200);
@@ -490,7 +502,7 @@ describe("Kanban server", () => {
 		};
 		const headers = mutationHeaders(harness, cookie, { key: "localhost-origin", origin: `http://${host}` });
 		headers.set("Host", host);
-		const created = await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+		const created = await fetch(url(harness, "/api/v1/boards/session-a/tasks"), {
 			method: "POST",
 			headers,
 			body: JSON.stringify({ title: "Localhost origin", status: "backlog", priority: "high" }),
@@ -504,7 +516,7 @@ describe("Kanban server", () => {
 			origin: `http://127.0.0.1:${harness.handle.port}`,
 		});
 		foreignOriginHeaders.set("Host", host);
-		const foreignOrigin = await fetch(url(harness, "/api/v1/sessions/session-a/tasks"), {
+		const foreignOrigin = await fetch(url(harness, "/api/v1/boards/session-a/tasks"), {
 			method: "POST",
 			headers: foreignOriginHeaders,
 			body: JSON.stringify({ title: "Rejected foreign origin", status: "backlog", priority: "high" }),

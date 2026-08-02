@@ -9,6 +9,8 @@ export type { KanbanCustomMessagePayload, KanbanPromptOptions, KanbanSessionPort
 export interface KanbanRuntimeOptions {
 	dbPath: string;
 	assets: KanbanClientAssets;
+	/** Stable id for this project's board; every session in the cwd shares it. */
+	boardId: string;
 	port?: number;
 }
 
@@ -16,6 +18,8 @@ export interface KanbanRegistration {
 	boardUrl: string;
 	/** Tailnet-addressed board URLs; empty when Tailscale is not up on this host. */
 	tailnetUrls: readonly string[];
+	/** This session's board name — the value tasks are assigned to. */
+	name: string;
 }
 
 /**
@@ -24,19 +28,81 @@ export interface KanbanRegistration {
  * into the model session that produced them — the model already knows.
  */
 export interface KanbanModelApi {
-	readonly sessionId: string;
+	readonly boardId: string;
+	readonly sessionName: string;
 	readonly store: KanbanStore;
 	publish(activity: KanbanActivity | null | undefined): void;
 }
 
+/** How often each process re-announces itself and looks for peers' writes. */
+const SYNC_INTERVAL_MS = 2_000;
+/** Ids already routed in this process, so polling never double-delivers. */
+const SEEN_EVENT_LIMIT = 512;
+
+const NAME_ADJECTIVES = [
+	"amber",
+	"brisk",
+	"calm",
+	"clever",
+	"deft",
+	"eager",
+	"fleet",
+	"keen",
+	"lucid",
+	"nimble",
+	"quiet",
+	"rapid",
+	"solid",
+	"steady",
+	"swift",
+	"vivid",
+] as const;
+
+const NAME_ANIMALS = [
+	"otter",
+	"heron",
+	"lynx",
+	"raven",
+	"tapir",
+	"ibex",
+	"marten",
+	"osprey",
+	"badger",
+	"falcon",
+	"gecko",
+	"kite",
+	"mantis",
+	"puffin",
+	"shrike",
+	"wren",
+] as const;
+
+/**
+ * A short, stable, human-sayable name per session. Derived from the session id
+ * so a resumed session keeps the assignments already written against its name.
+ */
+export function sessionBoardName(sessionId: string): string {
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < sessionId.length; index++) {
+		hash ^= sessionId.charCodeAt(index);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	const adjective = NAME_ADJECTIVES[hash % NAME_ADJECTIVES.length]!;
+	const animal = NAME_ANIMALS[(hash >>> 8) % NAME_ANIMALS.length]!;
+	return `${adjective}-${animal}`;
+}
+
 export class KanbanRuntime {
 	readonly #options: KanbanRuntimeOptions;
-	readonly #sessions = new Set<KanbanSessionPort>();
+	readonly #sessions = new Map<KanbanSessionPort, string>();
 	readonly #delivery = new KanbanSessionDelivery();
-	readonly #pendingEvents = new Map<KanbanSessionPort, Map<string, string>>();
+	readonly #pendingEvents = new Map<KanbanSessionPort, Set<string>>();
 	readonly #durableUnregister = new Map<KanbanSessionPort, () => void>();
+	readonly #seenEvents = new Set<string>();
 	#store: KanbanStore | null = null;
 	#server: KanbanServerHandle | null = null;
+	#sync: Timer | null = null;
+	#syncCursor = 0;
 	#lifecycle: Promise<void> = Promise.resolve();
 
 	constructor(options: KanbanRuntimeOptions) {
@@ -56,22 +122,27 @@ export class KanbanRuntime {
 	}
 
 	/**
-	 * Board access for the in-session tool, or `null` when this runtime does not
-	 * own a live board for `sessionId`. Published activities reach connected
-	 * browsers and are acknowledged immediately: the model authored them, so
-	 * replaying them back into its own session would echo.
+	 * Board access for the in-session tool, or `null` while this session owns no
+	 * live board. Published activities reach connected browsers and are
+	 * acknowledged immediately: the model authored them, so replaying them back
+	 * into its own session would echo.
 	 */
 	apiForSession(sessionId: string): KanbanModelApi | null {
 		const store = this.#store;
 		const server = this.#server;
-		if (!store || !server || !this.#sessionForId(sessionId)) return null;
+		const session = this.#sessionForId(sessionId);
+		if (!store || !server || !session) return null;
+		const boardId = this.#options.boardId;
 		return {
-			sessionId,
+			boardId,
+			sessionName: this.#sessions.get(session) ?? sessionBoardName(sessionId),
 			store,
 			publish: activity => {
 				if (!activity) return;
+				this.#seenEvents.add(activity.id);
+				this.#syncCursor = Math.max(this.#syncCursor, activity.cursor);
 				server.broadcast(activity);
-				store.markDelivered(activity.sessionId, activity.id);
+				store.markDelivered(boardId, activity.id);
 			},
 		};
 	}
@@ -79,20 +150,22 @@ export class KanbanRuntime {
 	async registerSession(session: KanbanSessionPort): Promise<KanbanRegistration> {
 		return await this.#serialize(async () => {
 			this.#ensureRunning();
+			const name = sessionBoardName(session.sessionId);
 			if (!this.#sessions.has(session)) {
-				this.#sessions.add(session);
+				this.#sessions.set(session, name);
 				this.#delivery.register(session);
 				this.#durableUnregister.set(
 					session,
 					session.onKanbanEventsDurable(eventIds => this.#acknowledgeDurableEvents(session, eventIds)),
 				);
 			}
+			this.#store?.upsertSession(this.#options.boardId, session.sessionId, name);
 			await this.#replaySession(session);
-			const boardUrl = this.#boardUrl(session.sessionId);
-			const tailnetUrls = this.#tailnetBoardUrls(session.sessionId);
+			const boardUrl = this.#boardUrl();
+			const tailnetUrls = this.#tailnetBoardUrls();
 			const reachable = [boardUrl, ...tailnetUrls].join("  ");
-			session.emitNotice("info", `Kanban board: ${reachable}`, "kanban");
-			return { boardUrl, tailnetUrls };
+			session.emitNotice("info", `Kanban board (${name}): ${reachable}`, "kanban");
+			return { boardUrl, tailnetUrls, name };
 		});
 	}
 
@@ -103,12 +176,14 @@ export class KanbanRuntime {
 			this.#durableUnregister.delete(session);
 			this.#pendingEvents.delete(session);
 			this.#delivery.unregister(session);
+			this.#store?.removeSession(session.sessionId);
 			if (this.#sessions.size === 0) await this.#stopRuntime();
 		});
 	}
 
 	async close(): Promise<void> {
 		await this.#serialize(async () => {
+			for (const session of this.#sessions.keys()) this.#store?.removeSession(session.sessionId);
 			this.#sessions.clear();
 			for (const unregister of this.#durableUnregister.values()) unregister();
 			this.#durableUnregister.clear();
@@ -125,13 +200,15 @@ export class KanbanRuntime {
 			const server = createKanbanServer({
 				store,
 				assets: this.#options.assets,
-				activeSessionIds: () => this.#activeSessionIds(),
+				boardId: this.#options.boardId,
 				port: this.#options.port ?? 0,
-				onActivity: async activity => await this.#deliverActivity(activity),
-				onSessionAccess: async sessionId => await this.#replayBySessionId(sessionId),
+				onActivity: async activity => await this.#routeActivity(activity),
+				onBoardAccess: async () => await this.#replayAll(),
 			});
 			this.#store = store;
 			this.#server = server;
+			this.#syncCursor = store.getBoard(this.#options.boardId).cursor;
+			this.#sync = setInterval(() => void this.#syncWithPeers(), SYNC_INTERVAL_MS);
 		} catch (error) {
 			store.close();
 			throw error;
@@ -143,35 +220,67 @@ export class KanbanRuntime {
 		const store = this.#store;
 		this.#server = null;
 		this.#store = null;
+		clearInterval(this.#sync ?? undefined);
+		this.#sync = null;
 		if (server) await server.stop();
 		store?.close();
 		this.#pendingEvents.clear();
+		this.#seenEvents.clear();
 	}
 
-	#activeSessionIds(): string[] {
-		return [...new Set([...this.#sessions].map(session => session.sessionId).filter(Boolean))];
+	/**
+	 * Boards are shared by every session in the project, and each session runs in
+	 * its own process with its own SSE clients. Polling the shared cursor is what
+	 * makes a peer's write show up here — SQLite gives no cross-process events.
+	 */
+	async #syncWithPeers(): Promise<void> {
+		const store = this.#store;
+		const server = this.#server;
+		if (!store || !server) return;
+		try {
+			for (const [session, name] of this.#sessions) {
+				store.upsertSession(this.#options.boardId, session.sessionId, name);
+			}
+			const batch = store.listActivitiesAfter(this.#options.boardId, this.#syncCursor);
+			for (const activity of batch) {
+				this.#syncCursor = Math.max(this.#syncCursor, activity.cursor);
+				if (this.#seenEvents.has(activity.id)) continue;
+				server.broadcast(activity);
+				await this.#routeActivity(activity);
+			}
+		} catch (error) {
+			logger.warn("Kanban peer sync failed", { error: error instanceof Error ? error.name : "unknown" });
+		}
 	}
 
 	#sessionForId(sessionId: string): KanbanSessionPort | null {
-		for (const session of this.#sessions) {
+		for (const session of this.#sessions.keys()) {
 			if (session.sessionId === sessionId) return session;
 		}
 		return null;
 	}
 
-	async #replayBySessionId(sessionId: string): Promise<void> {
-		const session = this.#sessionForId(sessionId);
-		if (session) await this.#replaySession(session);
+	/** Sessions an event belongs to: the assignee's, or everyone when unassigned. */
+	#recipients(activity: KanbanActivity): KanbanSessionPort[] {
+		const assignee = assigneeOf(activity);
+		if (!assignee) return [...this.#sessions.keys()];
+		const matches = [...this.#sessions].filter(([, name]) => name === assignee).map(([session]) => session);
+		return matches;
+	}
+
+	async #replayAll(): Promise<void> {
+		for (const session of [...this.#sessions.keys()]) await this.#replaySession(session);
 	}
 
 	async #replaySession(session: KanbanSessionPort): Promise<void> {
 		const store = this.#store;
 		if (!store) return;
-		const sessionId = session.sessionId;
-		for (const event of store.listUndelivered(sessionId)) {
-			if (session.sessionId !== sessionId) return;
+		const boardId = this.#options.boardId;
+		for (const event of store.listUndelivered(boardId)) {
+			if (!this.#sessions.has(session)) return;
+			if (!this.#recipients(event).includes(session)) continue;
 			if (session.hasDurableKanbanEvent(event.id)) {
-				store.markDelivered(sessionId, event.id);
+				store.markDelivered(boardId, event.id);
 				continue;
 			}
 			try {
@@ -185,21 +294,33 @@ export class KanbanRuntime {
 		}
 	}
 
-	async #deliverActivity(activity: KanbanActivity): Promise<void> {
-		const session = this.#sessionForId(activity.sessionId);
-		if (!session) return;
-		await this.#handoff(session, activity);
+	async #routeActivity(activity: KanbanActivity): Promise<void> {
+		this.#remember(activity.id);
+		for (const session of this.#recipients(activity)) {
+			await this.#handoff(session, activity);
+		}
+	}
+
+	#remember(eventId: string): void {
+		this.#seenEvents.add(eventId);
+		if (this.#seenEvents.size <= SEEN_EVENT_LIMIT) return;
+		const oldest = this.#seenEvents.values().next().value;
+		if (oldest) this.#seenEvents.delete(oldest);
 	}
 
 	async #handoff(session: KanbanSessionPort, activity: KanbanActivity): Promise<void> {
 		if (!this.#store) return;
+		// Replay and peer polling can both surface the same row. Remember it on
+		// every path, not just the routed one, or the second path re-delivers
+		// once the first has already been acknowledged and cleared from pending.
+		this.#remember(activity.id);
 		let pending = this.#pendingEvents.get(session);
 		if (!pending) {
-			pending = new Map<string, string>();
+			pending = new Set<string>();
 			this.#pendingEvents.set(session, pending);
 		}
 		if (pending.has(activity.id)) return;
-		pending.set(activity.id, activity.sessionId);
+		pending.add(activity.id);
 		try {
 			await this.#delivery.deliver(session, activity);
 		} catch (error) {
@@ -214,23 +335,23 @@ export class KanbanRuntime {
 		const pending = this.#pendingEvents.get(session);
 		if (!store || !pending) return;
 		for (const eventId of new Set(eventIds)) {
-			const sessionId = pending.get(eventId);
-			if (!sessionId) continue;
-			store.markDelivered(sessionId, eventId);
-			pending.delete(eventId);
+			if (!pending.delete(eventId)) continue;
+			store.markDelivered(this.#options.boardId, eventId);
 		}
 		if (pending.size === 0) this.#pendingEvents.delete(session);
 	}
 
-	#boardUrl(sessionId: string): string {
+	#boardUrl(): string {
 		const localUrl = this.#server?.localUrl;
 		if (!localUrl) throw new Error("Kanban runtime is not running");
-		return `${localUrl}kanban/${encodeURIComponent(sessionId)}`;
+		return `${localUrl}kanban/${encodeURIComponent(this.#options.boardId)}`;
 	}
 
 	/** Same board, addressed over this host's tailnet so phones and laptops on it can open it. */
-	#tailnetBoardUrls(sessionId: string): string[] {
-		return (this.#server?.tailnetUrls ?? []).map(root => `${root}kanban/${encodeURIComponent(sessionId)}`);
+	#tailnetBoardUrls(): string[] {
+		return (this.#server?.tailnetUrls ?? []).map(
+			root => `${root}kanban/${encodeURIComponent(this.#options.boardId)}`,
+		);
 	}
 
 	async #serialize<T>(work: () => Promise<T> | T): Promise<T> {
@@ -244,4 +365,12 @@ export class KanbanRuntime {
 			release.resolve();
 		}
 	}
+}
+
+/** The assignee an event routes to, read from whichever task shape it carries. */
+function assigneeOf(activity: KanbanActivity): string | null {
+	const task = activity.data.task;
+	if (!task || typeof task !== "object" || !("assignee" in task)) return null;
+	const assignee = task.assignee;
+	return typeof assignee === "string" && assignee.length > 0 ? assignee : null;
 }

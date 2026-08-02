@@ -20,7 +20,7 @@ function taskResponse() {
 	return Response.json({
 		data: {
 			id: "task-1",
-			sessionId: "session-1",
+			boardId: "session-1",
 			status: "backlog",
 			position: 0,
 			title: "Ship native board",

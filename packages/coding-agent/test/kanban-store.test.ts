@@ -8,6 +8,7 @@ import {
 	KANBAN_SCHEMA_VERSION,
 	type KanbanIdempotencyOperation,
 	KanbanStore,
+	type KanbanStoreOptions,
 } from "@oh-my-pi/pi-coding-agent/kanban/store";
 import type { KanbanTaskCreate } from "@oh-my-pi/pi-coding-agent/kanban/types";
 
@@ -29,11 +30,11 @@ function operation(key: string, route: string, body: unknown): KanbanIdempotency
 	return { key, method: "POST", route, body };
 }
 
-async function createStore(): Promise<{ store: KanbanStore; dbPath: string }> {
+async function createStore(options: KanbanStoreOptions = {}): Promise<{ store: KanbanStore; dbPath: string }> {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "ompx-kanban-store-"));
 	roots.push(root);
 	const dbPath = path.join(root, "kanban.db");
-	return { store: KanbanStore.open(dbPath), dbPath };
+	return { store: KanbanStore.open(dbPath, options), dbPath };
 }
 
 afterEach(async () => {
@@ -41,7 +42,7 @@ afterEach(async () => {
 });
 
 describe("KanbanStore", () => {
-	it("applies migration 1 idempotently and reopens with WAL and foreign keys", async () => {
+	it("applies schema migrations idempotently and reopens with WAL and foreign keys", async () => {
 		const { store, dbPath } = await createStore();
 		expect(store.schemaVersion()).toBe(KANBAN_SCHEMA_VERSION);
 		expect(store.foreignKeysEnabled()).toBe(true);
@@ -61,12 +62,50 @@ describe("KanbanStore", () => {
 		}
 	});
 
+	it("tracks live board sessions without duplicates and excludes stale or removed sessions", async () => {
+		let now = new Date("2026-01-01T00:00:00.000Z");
+		const { store } = await createStore({ now: () => now });
+		const boardId = "project-board";
+		try {
+			store.upsertSession(boardId, "session-a", "swift-otter");
+			now = new Date("2026-01-01T00:00:05.000Z");
+			store.upsertSession(boardId, "session-a", "quiet-raven");
+
+			expect(store.listSessions(boardId, 60_000)).toEqual([
+				{
+					sessionId: "session-a",
+					name: "quiet-raven",
+					createdAt: "2026-01-01T00:00:00.000Z",
+					lastSeenAt: "2026-01-01T00:00:05.000Z",
+				},
+			]);
+
+			now = new Date("2026-01-01T00:02:00.000Z");
+			expect(store.listSessions(boardId, 60_000)).toEqual([]);
+
+			store.upsertSession(boardId, "session-a", "quiet-raven");
+			expect(store.listSessions(boardId, 60_000)).toEqual([
+				{
+					sessionId: "session-a",
+					name: "quiet-raven",
+					createdAt: "2026-01-01T00:00:00.000Z",
+					lastSeenAt: "2026-01-01T00:02:00.000Z",
+				},
+			]);
+
+			store.removeSession("session-a");
+			expect(store.listSessions(boardId, 60_000)).toEqual([]);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("persists task and comment CRUD while soft-deleting comment content", async () => {
 		const { store, dbPath } = await createStore();
 		const created = store.createTask(
 			"session-a",
 			{ ...task("Ship native board"), labels: ["backend"] },
-			operation("task-create", "/api/v1/sessions/session-a/tasks", task("Ship native board")),
+			operation("task-create", "/api/v1/boards/session-a/tasks", task("Ship native board")),
 		);
 		expect(created.status).toBe(201);
 		expect(created.activity?.type).toBe("task.created");
@@ -83,7 +122,7 @@ describe("KanbanStore", () => {
 			"session-a",
 			created.data.id,
 			commentBody,
-			operation("comment-create", `/api/v1/sessions/session-a/tasks/${created.data.id}/comments`, commentBody),
+			operation("comment-create", `/api/v1/boards/session-a/tasks/${created.data.id}/comments`, commentBody),
 		).data;
 		const edited = store.updateComment("session-a", created.data.id, comment.id, {
 			expectedVersion: comment.version,
@@ -125,29 +164,29 @@ describe("KanbanStore", () => {
 		const first = store.createTask(
 			"session-a",
 			task("First"),
-			operation("first", "/api/v1/sessions/session-a/tasks", task("First")),
+			operation("first", "/api/v1/boards/session-a/tasks", task("First")),
 		).data;
 		store.createTask(
 			"session-a",
 			task("Second"),
-			operation("second", "/api/v1/sessions/session-a/tasks", task("Second")),
+			operation("second", "/api/v1/boards/session-a/tasks", task("Second")),
 		);
 		const third = store.createTask(
 			"session-a",
 			task("Third"),
-			operation("third", "/api/v1/sessions/session-a/tasks", task("Third")),
+			operation("third", "/api/v1/boards/session-a/tasks", task("Third")),
 		).data;
 		store.createTask(
 			"session-a",
 			task("Ready", "ready"),
-			operation("ready", "/api/v1/sessions/session-a/tasks", task("Ready", "ready")),
+			operation("ready", "/api/v1/boards/session-a/tasks", task("Ready", "ready")),
 		);
 
 		const movedThird = store.moveTask(
 			"session-a",
 			third.id,
 			{ expectedVersion: third.version, status: "backlog", index: 0 },
-			operation("move-third", `/api/v1/sessions/session-a/tasks/${third.id}/moves`, {
+			operation("move-third", `/api/v1/boards/session-a/tasks/${third.id}/moves`, {
 				expectedVersion: third.version,
 				status: "backlog",
 				index: 0,
@@ -170,7 +209,7 @@ describe("KanbanStore", () => {
 			"session-a",
 			first.id,
 			{ expectedVersion: latestFirst.version, status: "ready", index: 1 },
-			operation("move-first", `/api/v1/sessions/session-a/tasks/${first.id}/moves`, {
+			operation("move-first", `/api/v1/boards/session-a/tasks/${first.id}/moves`, {
 				expectedVersion: latestFirst.version,
 				status: "ready",
 				index: 1,
@@ -184,7 +223,7 @@ describe("KanbanStore", () => {
 				"session-a",
 				first.id,
 				{ expectedVersion: latestFirst.version, status: "done", index: 0 },
-				operation("stale-move", `/api/v1/sessions/session-a/tasks/${first.id}/moves`, {
+				operation("stale-move", `/api/v1/boards/session-a/tasks/${first.id}/moves`, {
 					expectedVersion: latestFirst.version,
 					status: "done",
 					index: 0,
@@ -197,7 +236,7 @@ describe("KanbanStore", () => {
 		const db = new Database(dbPath, { readonly: true });
 		try {
 			const rows = db
-				.prepare("SELECT status, position FROM kanban_tasks WHERE session_id = ? ORDER BY status, position")
+				.prepare("SELECT status, position FROM kanban_tasks WHERE board_id = ? ORDER BY status, position")
 				.all("session-a") as Array<{ status: string; position: number }>;
 			for (const status of new Set(rows.map(row => row.status))) {
 				expect(rows.filter(row => row.status === status).map(row => row.position)).toEqual(
@@ -212,7 +251,7 @@ describe("KanbanStore", () => {
 	it("replays canonical idempotent responses and persists outbox acknowledgement", async () => {
 		const { store, dbPath } = await createStore();
 		const input = task("Canonical");
-		const route = "/api/v1/sessions/session-a/tasks";
+		const route = "/api/v1/boards/session-a/tasks";
 		const first = store.createTask(
 			"session-a",
 			input,

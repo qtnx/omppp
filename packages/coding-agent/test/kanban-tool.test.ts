@@ -13,6 +13,7 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ToolError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 
 const SESSION_ID = "kanban-tool-session";
+const BOARD_ID = "kanban-tool-project";
 const roots: string[] = [];
 const openStores: KanbanStore[] = [];
 
@@ -49,7 +50,8 @@ async function createHarness(): Promise<{
 
 	const published: Array<KanbanActivity | null | undefined> = [];
 	const api: KanbanModelApi = {
-		sessionId: SESSION_ID,
+		boardId: BOARD_ID,
+		sessionName: "swift-otter",
 		store,
 		publish(activity) {
 			published.push(activity);
@@ -73,7 +75,7 @@ afterEach(async () => {
 });
 
 describe("KanbanTool", () => {
-	it("create then board round-trips through the real store and publishes one task.created", async () => {
+	it("creates and reads a task from the model API board rather than the session id", async () => {
 		const { store, tool, published } = await createHarness();
 		const title = "Ship kanban tool round trip";
 
@@ -96,7 +98,7 @@ describe("KanbanTool", () => {
 		expect(boardTasks.some(task => task.id === taskId && task.title === title)).toBe(true);
 		expect(JSON.stringify(board.content)).toContain(title);
 
-		const stored = store.getTask(SESSION_ID, taskId);
+		const stored = store.getTask(BOARD_ID, taskId);
 		expect(stored.title).toBe(title);
 		expect(stored.id).toBe(taskId);
 
@@ -118,7 +120,7 @@ describe("KanbanTool", () => {
 			throw new Error("expected created taskId");
 		}
 
-		const stored = store.getTask(SESSION_ID, taskId);
+		const stored = store.getTask(BOARD_ID, taskId);
 		expect(stored).toMatchObject({ id: taskId, title: "Tool proof task", status: "backlog", priority: "high" });
 		expect(published).toHaveLength(1);
 		expect(published[0]?.type).toBe("task.created");
@@ -143,7 +145,7 @@ describe("KanbanTool", () => {
 			move: { expectedVersion: 1, status: "ready", index: 0 },
 		});
 
-		expect(store.getTask(SESSION_ID, taskId)).toMatchObject({ id: taskId, status: "ready", version: 2 });
+		expect(store.getTask(BOARD_ID, taskId)).toMatchObject({ id: taskId, status: "ready", version: 2 });
 		expect(published).toHaveLength(1);
 		expect(published[0]?.type).toBe("task.moved");
 	});
@@ -172,7 +174,7 @@ describe("KanbanTool", () => {
 			throw new Error("expected commentId");
 		}
 
-		expect(store.listComments(SESSION_ID, taskId)).toContainEqual(
+		expect(store.listComments(BOARD_ID, taskId)).toContainEqual(
 			expect.objectContaining({ id: commentId, author: "Tool proof", body: "Regression coverage" }),
 		);
 		expect(published).toHaveLength(1);
@@ -222,15 +224,24 @@ describe("KanbanTool", () => {
 		expect(message).toMatch(/current version/i);
 		expect(published).toHaveLength(publishCountBeforeStale);
 	});
-	it("mounts and reads the board registered under the provider session id", async () => {
+	it("mounts using the provider session id and reads its shared board", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "ompx-kanban-tool-"));
 		roots.push(root);
 		const store = KanbanStore.open(path.join(root, "kanban.db"));
 		openStores.push(store);
 		const providerId = "provider-id";
+		const boardId = "provider-project-board";
+		const input = taskCreate("Provider board task");
+		const seeded = store.createTask(boardId, input, {
+			key: "provider-board-seed",
+			method: "POST",
+			route: `/api/v1/boards/${boardId}/tasks`,
+			body: input,
+		});
 		const observedLookupIds: string[] = [];
 		const api: KanbanModelApi = {
-			sessionId: providerId,
+			boardId,
+			sessionName: "swift-otter",
 			store,
 			publish() {},
 		};
@@ -250,19 +261,30 @@ describe("KanbanTool", () => {
 		if (tool === null) throw new Error("expected Kanban tool to mount");
 
 		const result = await tool.execute("call-provider-board", { op: "board" });
-		expect(requireDetails(result).board?.tasks).toEqual([]);
+		expect(requireDetails(result).board?.tasks).toEqual([
+			expect.objectContaining({ id: seeded.data.id, title: "Provider board task" }),
+		]);
 		expect(observedLookupIds).toEqual([providerId, providerId]);
 	});
 
-	it("falls back to the session-manager id when no Kanban session id is exposed", async () => {
+	it("falls back to the session-manager id and reads its shared board", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "ompx-kanban-tool-"));
 		roots.push(root);
 		const store = KanbanStore.open(path.join(root, "kanban.db"));
 		openStores.push(store);
 		const managerId = "manager-id";
+		const boardId = "manager-project-board";
+		const input = taskCreate("Manager board task");
+		const seeded = store.createTask(boardId, input, {
+			key: "manager-board-seed",
+			method: "POST",
+			route: `/api/v1/boards/${boardId}/tasks`,
+			body: input,
+		});
 		const observedLookupIds: string[] = [];
 		const api: KanbanModelApi = {
-			sessionId: managerId,
+			boardId,
+			sessionName: "swift-otter",
 			store,
 			publish() {},
 		};
@@ -281,7 +303,9 @@ describe("KanbanTool", () => {
 		if (tool === null) throw new Error("expected Kanban tool to mount");
 
 		const result = await tool.execute("call-manager-board", { op: "board" });
-		expect(requireDetails(result).board?.tasks).toEqual([]);
+		expect(requireDetails(result).board?.tasks).toEqual([
+			expect.objectContaining({ id: seeded.data.id, title: "Manager board task" }),
+		]);
 		expect(observedLookupIds).toEqual([managerId, managerId]);
 	});
 });

@@ -8,9 +8,11 @@
 ### Added
 
 - Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
-- Added a session-native local Kanban board, started with `/kanban`, with SQLite persistence, optimistic concurrency, idempotent mutations, cursor-based realtime updates, capability-protected access, and inert delivery of board activity to the owning model session. `/kanban off` stops it; `/kanban status` reports whether it runs.
+- Added a project-scoped Kanban board, started with `/kanban`, stored in `<project>/.omp/kanban.db`. Every session in the same directory shares one board and one URL; each session gets a stable short name that tasks are assigned to, and board events reach the assigned session (or every session when unassigned). `/kanban off` stops it; `/kanban status` reports whether it runs.
 - Added tailnet reachability to the Kanban board: on a Tailscale host the board also answers on the host's tailnet addresses, so phones and other tailnet devices can open it, while every request is still restricted to loopback or tailnet peers with a `Host`-matched origin.
 - Added a session-scoped `kanban` tool that mounts once the board is running, letting the model read the board and create, update, move, delete, and comment on tasks; model-authored changes stream to open boards without echoing back into the model's own session.
+- Added markdown task descriptions with pasted, dropped, or picked image attachments stored alongside the board; `kanban get` returns those images to the model so it can read screenshots directly.
+- Added an opt-in board notification that fires when the agent changes the board and the tab is not focused.
 
 ### Fixed
 

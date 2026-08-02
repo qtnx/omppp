@@ -84,3 +84,6 @@ packages/coding-agent/bench/boot-baseline.json
 
 # product-preview runtime state
 docs/product/.ompx-preview/
+.omp/kanban.db
+.omp/kanban.db-shm
+.omp/kanban.db-wal

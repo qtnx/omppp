@@ -43,10 +43,11 @@ export type KanbanClientAssets = Readonly<Record<string, KanbanClientAsset>>;
 export interface KanbanServerOptions {
 	store: KanbanStore;
 	assets: KanbanClientAssets;
-	activeSessionIds: () => readonly string[];
+	/** The single board this process serves, derived from the project directory. */
+	boardId: string;
 	port?: number;
 	onActivity?: (activity: KanbanActivity) => Promise<void> | void;
-	onSessionAccess?: (sessionId: string) => Promise<void> | void;
+	onBoardAccess?: () => Promise<void> | void;
 }
 
 export interface KanbanServerHandle {
@@ -60,7 +61,7 @@ export interface KanbanServerHandle {
 }
 
 interface SseClient {
-	sessionId: string;
+	boardId: string;
 	lastCursor: number;
 	controller: ReadableStreamDefaultController<Uint8Array>;
 }
@@ -202,11 +203,11 @@ class KanbanHttpServer implements KanbanServerHandle {
 
 			const segments = url.pathname.split("/").slice(1);
 			if (request.method === "GET" && segments.length === 2 && segments[0] === "kanban") {
-				const sessionId = decodeSegment(segments[1]!);
-				if (!sessionId || !this.#isActiveSession(sessionId))
-					throw new KanbanError(404, "not_found", "Session not found");
-				await this.#options.onSessionAccess?.(sessionId);
-				return this.#board(sessionId);
+				const boardId = decodeSegment(segments[1]!);
+				if (!boardId || boardId !== this.#options.boardId)
+					throw new KanbanError(404, "not_found", "Board not found");
+				await this.#options.onBoardAccess?.();
+				return this.#board(boardId);
 			}
 			if (
 				request.method === "GET" &&
@@ -214,16 +215,16 @@ class KanbanHttpServer implements KanbanServerHandle {
 				segments[0] === "kanban" &&
 				segments[2] === "manifest.webmanifest"
 			) {
-				const sessionId = decodeSegment(segments[1]!);
-				if (!sessionId || !this.#isActiveSession(sessionId))
-					throw new KanbanError(404, "not_found", "Session not found");
-				await this.#options.onSessionAccess?.(sessionId);
-				return this.#sessionManifest(sessionId);
+				const boardId = decodeSegment(segments[1]!);
+				if (!boardId || boardId !== this.#options.boardId)
+					throw new KanbanError(404, "not_found", "Board not found");
+				await this.#options.onBoardAccess?.();
+				return this.#sessionManifest(boardId);
 			}
 			if (request.method === "GET" && Object.hasOwn(this.#options.assets, url.pathname)) {
 				return this.#asset(url.pathname, false);
 			}
-			if (segments[0] === "api" && segments[1] === "v1" && segments[2] === "sessions") {
+			if (segments[0] === "api" && segments[1] === "v1" && segments[2] === "boards") {
 				return await this.#handleApi(request, url, segments);
 			}
 			return this.#error(404, "not_found", "Not found", false);
@@ -244,12 +245,12 @@ class KanbanHttpServer implements KanbanServerHandle {
 
 	async #handleApi(request: Request, url: URL, segments: string[]): Promise<Response> {
 		if (segments.length < 5) throw new KanbanError(404, "not_found", "Not found");
-		const sessionId = decodeSegment(segments[3]!);
-		if (!sessionId || !this.#isActiveSession(sessionId)) throw new KanbanError(404, "not_found", "Session not found");
-		if (!this.#authenticate(sessionId, request.headers.get("cookie"))) {
+		const boardId = decodeSegment(segments[3]!);
+		if (!boardId || boardId !== this.#options.boardId) throw new KanbanError(404, "not_found", "Board not found");
+		if (!this.#authenticate(boardId, request.headers.get("cookie"))) {
 			throw new KanbanError(401, "unauthorized", "Kanban capability is missing or invalid");
 		}
-		await this.#options.onSessionAccess?.(sessionId);
+		await this.#options.onBoardAccess?.();
 
 		const mutation = request.method === "POST" || request.method === "PATCH" || request.method === "DELETE";
 		if (mutation) this.#authorizeMutation(request, segments[4] !== "attachments");
@@ -258,7 +259,10 @@ class KanbanHttpServer implements KanbanServerHandle {
 		}
 
 		if (request.method === "GET" && segments.length === 5 && segments[4] === "board") {
-			return this.#json(this.#options.store.getBoard(sessionId), 200);
+			return this.#json(this.#options.store.getBoard(boardId), 200);
+		}
+		if (request.method === "GET" && segments.length === 5 && segments[4] === "sessions") {
+			return this.#json(this.#options.store.listSessions(boardId), 200);
 		}
 		if (request.method === "GET" && segments.length === 5 && segments[4] === "events") {
 			if ([...url.searchParams.keys()].some(key => key !== "cursor")) {
@@ -268,15 +272,14 @@ class KanbanHttpServer implements KanbanServerHandle {
 			if (!/^\d+$/.test(cursorText) || !Number.isSafeInteger(Number(cursorText))) {
 				throw new KanbanError(422, "validation_error", "cursor must be a nonnegative integer");
 			}
-			return this.#events(sessionId, Number(cursorText));
+			return this.#events(boardId, Number(cursorText));
 		}
 		if (segments[4] === "attachments") {
-			if (request.method === "POST" && segments.length === 5)
-				return await this.#uploadAttachment(request, sessionId);
+			if (request.method === "POST" && segments.length === 5) return await this.#uploadAttachment(request, boardId);
 			if (request.method === "GET" && segments.length === 6) {
 				const attachmentId = decodeSegment(segments[5] ?? "");
 				if (!attachmentId) throw new KanbanError(404, "not_found", "Attachment not found");
-				return this.#attachment(sessionId, attachmentId);
+				return this.#attachment(boardId, attachmentId);
 			}
 			throw new KanbanError(404, "not_found", "Not found");
 		}
@@ -285,7 +288,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 		if (request.method === "POST" && segments.length === 5) {
 			const raw = await this.#readJson(request);
 			const input = validateTaskCreate(raw);
-			const result = this.#options.store.createTask(sessionId, input, {
+			const result = this.#options.store.createTask(boardId, input, {
 				key: this.#idempotencyKey(request),
 				method: "POST",
 				route: url.pathname,
@@ -298,7 +301,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 		if (!taskId) throw new KanbanError(404, "not_found", "Task not found");
 		if (request.method === "PATCH" && segments.length === 6) {
 			const result = this.#options.store.updateTask(
-				sessionId,
+				boardId,
 				taskId,
 				validateTaskUpdate(await this.#readJson(request)),
 			);
@@ -306,7 +309,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 		}
 		if (request.method === "DELETE" && segments.length === 6) {
 			const result = this.#options.store.deleteTask(
-				sessionId,
+				boardId,
 				taskId,
 				validateExpectedVersion(await this.#readJson(request)),
 			);
@@ -314,7 +317,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 		}
 		if (request.method === "POST" && segments.length === 7 && segments[6] === "moves") {
 			const raw = await this.#readJson(request);
-			const result = this.#options.store.moveTask(sessionId, taskId, validateMove(raw), {
+			const result = this.#options.store.moveTask(boardId, taskId, validateMove(raw), {
 				key: this.#idempotencyKey(request),
 				method: "POST",
 				route: url.pathname,
@@ -324,11 +327,11 @@ class KanbanHttpServer implements KanbanServerHandle {
 		}
 		if (segments[6] !== "comments") throw new KanbanError(404, "not_found", "Not found");
 		if (request.method === "GET" && segments.length === 7) {
-			return this.#json(this.#options.store.listComments(sessionId, taskId), 200);
+			return this.#json(this.#options.store.listComments(boardId, taskId), 200);
 		}
 		if (request.method === "POST" && segments.length === 7) {
 			const raw = await this.#readJson(request);
-			const result = this.#options.store.createComment(sessionId, taskId, validateCommentCreate(raw), {
+			const result = this.#options.store.createComment(boardId, taskId, validateCommentCreate(raw, "user"), {
 				key: this.#idempotencyKey(request),
 				method: "POST",
 				route: url.pathname,
@@ -341,7 +344,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 		if (!commentId) throw new KanbanError(404, "not_found", "Comment not found");
 		if (request.method === "PATCH" && segments.length === 8) {
 			const result = this.#options.store.updateComment(
-				sessionId,
+				boardId,
 				taskId,
 				commentId,
 				validateCommentUpdate(await this.#readJson(request)),
@@ -350,7 +353,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 		}
 		if (request.method === "DELETE" && segments.length === 8) {
 			const result = this.#options.store.deleteComment(
-				sessionId,
+				boardId,
 				taskId,
 				commentId,
 				validateExpectedVersion(await this.#readJson(request)),
@@ -360,19 +363,17 @@ class KanbanHttpServer implements KanbanServerHandle {
 		throw new KanbanError(405, "method_not_allowed", "Method not allowed");
 	}
 
+	/** `/kanban/` with no id redirects to this process's one board. */
 	#fallbackBoard(): Response {
-		const sessions = [...new Set(this.#options.activeSessionIds())].sort();
-		const first = sessions[0];
-		if (!first) return this.#error(404, "not_found", "Session not found", false);
 		const headers = securityHeaders("no-store");
-		headers.set("Location", `/kanban/${encodeURIComponent(first)}`);
+		headers.set("Location", `/kanban/${encodeURIComponent(this.#options.boardId)}`);
 		return new Response(null, { status: 307, headers });
 	}
 
-	#board(sessionId: string): Response {
+	#board(boardId: string): Response {
 		const asset = this.#options.assets["/"];
 		if (!asset || typeof asset.body !== "string") throw new Error("Kanban root asset is missing");
-		const encodedSessionId = encodeURIComponent(sessionId);
+		const encodedSessionId = encodeURIComponent(boardId);
 		const manifestHref = `/kanban/${encodedSessionId}/manifest.webmanifest`;
 		const body = asset.body.replace(
 			/(<link\s+rel=["']manifest["']\s+href=)["']\/manifest\.webmanifest["']/i,
@@ -383,18 +384,18 @@ class KanbanHttpServer implements KanbanServerHandle {
 		headers.set("Content-Type", asset.contentType);
 		headers.set(
 			"Set-Cookie",
-			`${this.#cookieName(sessionId)}=${this.#capabilityForSession(sessionId)}; HttpOnly; SameSite=Strict; Path=/`,
+			`${this.#cookieName(boardId)}=${this.#capabilityForSession(boardId)}; HttpOnly; SameSite=Strict; Path=/`,
 		);
 		return new Response(body, { status: 200, headers });
 	}
 
-	#sessionManifest(sessionId: string): Response {
+	#sessionManifest(boardId: string): Response {
 		const asset = this.#options.assets["/manifest.webmanifest"];
 		if (!asset) throw new Error("Kanban manifest asset is missing");
 		const source = typeof asset.body === "string" ? asset.body : new TextDecoder().decode(asset.body);
 		const parsed: unknown = JSON.parse(source);
 		if (!isRecord(parsed)) throw new Error("Kanban manifest asset is malformed");
-		const startUrl = `/kanban/${encodeURIComponent(sessionId)}`;
+		const startUrl = `/kanban/${encodeURIComponent(boardId)}`;
 		const headers = securityHeaders("no-store");
 		headers.set("Content-Type", asset.contentType);
 		return new Response(JSON.stringify({ ...parsed, id: startUrl, start_url: startUrl, scope: "/kanban/" }), {
@@ -457,7 +458,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 	 * than multipart, so uploads reuse the JSON routes' auth and the reader can
 	 * abort on size without parsing a form.
 	 */
-	async #uploadAttachment(request: Request, sessionId: string): Promise<Response> {
+	async #uploadAttachment(request: Request, boardId: string): Promise<Response> {
 		const contentType = (request.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
 		if (!Object.hasOwn(ALLOWED_IMAGE_TYPES, contentType)) {
 			throw new KanbanError(415, "unsupported_media_type", "Attachments must be PNG, JPEG, GIF, or WebP");
@@ -466,15 +467,15 @@ class KanbanHttpServer implements KanbanServerHandle {
 		if (bytes.byteLength === 0) throw new KanbanError(422, "validation_error", "Attachment body is empty");
 		const rawName = request.headers.get("x-kanban-filename") ?? "image";
 		const filename = rawName.replace(/[^\w.\- ]/g, "").slice(0, 120) || "image";
-		const attachment = this.#options.store.createAttachment(sessionId, { filename, contentType, bytes });
+		const attachment = this.#options.store.createAttachment(boardId, { filename, contentType, bytes });
 		return this.#json(
-			{ ...attachment, url: `/api/v1/sessions/${encodeURIComponent(sessionId)}/attachments/${attachment.id}` },
+			{ ...attachment, url: `/api/v1/boards/${encodeURIComponent(boardId)}/attachments/${attachment.id}` },
 			201,
 		);
 	}
 
-	#attachment(sessionId: string, attachmentId: string): Response {
-		const found = this.#options.store.readAttachment(sessionId, attachmentId);
+	#attachment(boardId: string, attachmentId: string): Response {
+		const found = this.#options.store.readAttachment(boardId, attachmentId);
 		if (!found) throw new KanbanError(404, "not_found", "Attachment not found");
 		const headers = securityHeaders("private, max-age=31536000, immutable");
 		headers.set("Content-Type", found.contentType);
@@ -483,21 +484,18 @@ class KanbanHttpServer implements KanbanServerHandle {
 		return new Response(found.bytes, { status: 200, headers });
 	}
 
-	#cookieName(sessionId: string): string {
-		const suffix = createHmac("sha256", this.#capabilitySecret)
-			.update("cookie-name\0")
-			.update(sessionId)
-			.digest("hex");
+	#cookieName(boardId: string): string {
+		const suffix = createHmac("sha256", this.#capabilitySecret).update("cookie-name\0").update(boardId).digest("hex");
 		return `${COOKIE_NAME_PREFIX}${suffix}`;
 	}
 
-	#capabilityForSession(sessionId: string): string {
-		return createHmac("sha256", this.#capabilitySecret).update("capability\0").update(sessionId).digest("base64url");
+	#capabilityForSession(boardId: string): string {
+		return createHmac("sha256", this.#capabilitySecret).update("capability\0").update(boardId).digest("base64url");
 	}
 
-	#authenticate(sessionId: string, cookieHeader: string | null): boolean {
+	#authenticate(boardId: string, cookieHeader: string | null): boolean {
 		if (!cookieHeader) return false;
-		const cookieName = this.#cookieName(sessionId);
+		const cookieName = this.#cookieName(boardId);
 		const values = cookieHeader
 			.split(";")
 			.map(part => part.trim())
@@ -505,7 +503,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 			.map(part => part.slice(cookieName.length + 1));
 		if (values.length !== 1) return false;
 		const candidate = Buffer.from(values[0]!, "utf8");
-		const expected = Buffer.from(this.#capabilityForSession(sessionId), "utf8");
+		const expected = Buffer.from(this.#capabilityForSession(boardId), "utf8");
 		return candidate.length === expected.length && timingSafeEqual(candidate, expected);
 	}
 
@@ -580,16 +578,16 @@ class KanbanHttpServer implements KanbanServerHandle {
 		return this.#json(result.data, result.status);
 	}
 
-	#events(sessionId: string, cursor: number): Response {
+	#events(boardId: string, cursor: number): Response {
 		let client: SseClient | null = null;
 		const stream = new ReadableStream<Uint8Array>({
 			start: controller => {
-				client = { sessionId, lastCursor: cursor, controller };
+				client = { boardId, lastCursor: cursor, controller };
 				this.#sseClients.add(client);
 				controller.enqueue(TEXT_ENCODER.encode(": connected\n\n"));
 				let replayCursor = cursor;
 				while (true) {
-					const batch = this.#options.store.listActivitiesAfter(sessionId, replayCursor);
+					const batch = this.#options.store.listActivitiesAfter(boardId, replayCursor);
 					for (const activity of batch) {
 						this.#enqueueSse(client!, activity);
 						replayCursor = activity.cursor;
@@ -614,7 +612,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 
 	#broadcast(activity: KanbanActivity): void {
 		for (const client of [...this.#sseClients]) {
-			if (client.sessionId === activity.sessionId) this.#enqueueSse(client, activity);
+			if (client.boardId === activity.boardId) this.#enqueueSse(client, activity);
 		}
 	}
 
@@ -650,8 +648,8 @@ class KanbanHttpServer implements KanbanServerHandle {
 		}
 	}
 
-	#isActiveSession(sessionId: string): boolean {
-		return this.#options.activeSessionIds().includes(sessionId);
+	#isActiveBoard(boardId: string): boolean {
+		return boardId === this.#options.boardId;
 	}
 
 	#json(data: unknown, status: number): Response {

@@ -20,7 +20,7 @@ export type KanbanActivityType = (typeof KANBAN_ACTIVITY_TYPES)[number];
 
 export interface KanbanTask {
 	id: string;
-	sessionId: string;
+	boardId: string;
 	status: KanbanStatus;
 	position: number;
 	title: string;
@@ -48,7 +48,7 @@ export interface KanbanComment {
 export interface KanbanActivity {
 	id: string;
 	cursor: number;
-	sessionId: string;
+	boardId: string;
 	taskId: string | null;
 	type: KanbanActivityType;
 	createdAt: string;
@@ -90,7 +90,8 @@ export interface KanbanMoveRequest {
 }
 
 export interface KanbanCommentDraft {
-	author: string;
+	/** Omitted by the board: the server stamps "user" for browser comments. */
+	author?: string;
 	body: string;
 }
 
@@ -108,4 +109,12 @@ export function isKanbanPriority(value: unknown): value is KanbanPriority {
 
 export function isKanbanActivityType(value: unknown): value is KanbanActivityType {
 	return typeof value === "string" && (KANBAN_ACTIVITY_TYPES as readonly string[]).includes(value);
+}
+
+/** A live OMPx session sharing this board; `name` is the assignee value. */
+export interface KanbanBoardSession {
+	sessionId: string;
+	name: string;
+	createdAt: string;
+	lastSeenAt: string;
 }

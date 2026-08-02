@@ -166,10 +166,15 @@ export function validateMove(value: unknown): KanbanMove {
 	return { expectedVersion: expectedVersion(input), status: status(input.status), index: Number(index) };
 }
 
-export function validateCommentCreate(value: unknown): KanbanCommentCreate {
+/**
+ * `author` is optional on the wire: the board UI never asks a human to type a
+ * name, and the caller (HTTP route or in-session tool) supplies the identity.
+ */
+export function validateCommentCreate(value: unknown, defaultAuthor: string): KanbanCommentCreate {
 	const input = record(value);
 	rejectUnknown(input, ["author", "body"]);
-	return { author: requiredString(input, "author", 64), body: requiredString(input, "body", 10_000) };
+	const author = Object.hasOwn(input, "author") ? requiredString(input, "author", 64) : defaultAuthor;
+	return { author, body: requiredString(input, "body", 10_000) };
 }
 
 export function validateCommentUpdate(value: unknown): KanbanCommentUpdate {

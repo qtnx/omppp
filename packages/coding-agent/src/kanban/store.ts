@@ -8,6 +8,7 @@ import type {
 	KanbanAttachment,
 	KanbanAttachmentBody,
 	KanbanAttachmentCreate,
+	KanbanBoardSession,
 	KanbanBoardSnapshot,
 	KanbanComment,
 	KanbanCommentCreate,
@@ -22,10 +23,13 @@ import type {
 	KanbanTaskUpdate,
 } from "./types";
 
-export const KANBAN_SCHEMA_VERSION = 2;
+/** v3: board scope replaces session scope and the board lives in the project. */
+export const KANBAN_SCHEMA_VERSION = 3;
+const ACTIVITY_SNAPSHOT_LIMIT = 200;
+/** A session that has not heartbeat within this window is treated as gone. */
+const SESSION_STALE_MS = 90_000;
 /** Dropped in v2: the agent keeps this context in the description instead. */
 const RETIRED_TASK_COLUMNS = ["repo", "worktree", "branch", "acceptance_criteria_json", "blocker_reason"] as const;
-const ACTIVITY_SNAPSHOT_LIMIT = 200;
 
 export interface KanbanIdempotencyOperation {
 	key: string;
@@ -41,7 +45,7 @@ export interface KanbanStoreOptions {
 
 interface TaskRow {
 	id: string;
-	session_id: string;
+	board_id: string;
 	status: string;
 	position: number;
 	title: string;
@@ -69,7 +73,7 @@ interface CommentRow {
 interface ActivityRow {
 	id: string;
 	cursor: number;
-	session_id: string;
+	board_id: string;
 	task_id: string | null;
 	type: string;
 	created_at: string;
@@ -90,6 +94,13 @@ interface AttachmentRow {
 	created_at: string;
 }
 
+interface SessionRow {
+	session_id: string;
+	name: string;
+	created_at: string;
+	last_seen_at: string;
+}
+
 const MIGRATION_SQL = `
 CREATE TABLE IF NOT EXISTS kanban_schema_migrations (
 	version INTEGER PRIMARY KEY,
@@ -98,7 +109,7 @@ CREATE TABLE IF NOT EXISTS kanban_schema_migrations (
 
 CREATE TABLE IF NOT EXISTS kanban_tasks (
 	id TEXT PRIMARY KEY,
-	session_id TEXT NOT NULL,
+	board_id TEXT NOT NULL,
 	status TEXT NOT NULL CHECK (status IN ('backlog','ready','in_progress','blocked','review','done','cancelled')),
 	position INTEGER NOT NULL CHECK (position >= 0),
 	title TEXT NOT NULL,
@@ -111,7 +122,17 @@ CREATE TABLE IF NOT EXISTS kanban_tasks (
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS kanban_tasks_board_idx ON kanban_tasks(session_id, status, position);
+CREATE INDEX IF NOT EXISTS kanban_tasks_column_idx ON kanban_tasks(board_id, status, position);
+
+-- Live sessions sharing this board; the name column is what tasks are assigned to.
+CREATE TABLE IF NOT EXISTS kanban_sessions (
+	session_id TEXT PRIMARY KEY,
+	board_id TEXT NOT NULL,
+	name TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	last_seen_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS kanban_sessions_board_idx ON kanban_sessions(board_id, last_seen_at);
 
 CREATE TABLE IF NOT EXISTS kanban_comments (
 	id TEXT PRIMARY KEY,
@@ -128,26 +149,26 @@ CREATE INDEX IF NOT EXISTS kanban_comments_task_idx ON kanban_comments(task_id, 
 CREATE TABLE IF NOT EXISTS kanban_activity (
 	cursor INTEGER PRIMARY KEY AUTOINCREMENT,
 	id TEXT NOT NULL UNIQUE,
-	session_id TEXT NOT NULL,
+	board_id TEXT NOT NULL,
 	task_id TEXT,
 	type TEXT NOT NULL CHECK (type IN ('task.created','task.updated','task.deleted','task.moved','comment.created','comment.updated','comment.deleted')),
 	created_at TEXT NOT NULL,
 	data_json TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS kanban_activity_session_cursor_idx ON kanban_activity(session_id, cursor);
+CREATE INDEX IF NOT EXISTS kanban_activity_session_cursor_idx ON kanban_activity(board_id, cursor);
 
 CREATE TABLE IF NOT EXISTS kanban_outbox (
 	event_id TEXT PRIMARY KEY REFERENCES kanban_activity(id) ON DELETE RESTRICT,
 	cursor INTEGER NOT NULL UNIQUE,
-	session_id TEXT NOT NULL,
+	board_id TEXT NOT NULL,
 	payload_json TEXT NOT NULL,
 	created_at TEXT NOT NULL,
 	delivered_at TEXT
 );
-CREATE INDEX IF NOT EXISTS kanban_outbox_pending_idx ON kanban_outbox(session_id, delivered_at, cursor);
+CREATE INDEX IF NOT EXISTS kanban_outbox_pending_idx ON kanban_outbox(board_id, delivered_at, cursor);
 
 CREATE TABLE IF NOT EXISTS kanban_idempotency (
-	session_id TEXT NOT NULL,
+	board_id TEXT NOT NULL,
 	idempotency_key TEXT NOT NULL,
 	request_hash TEXT NOT NULL,
 	method TEXT NOT NULL,
@@ -155,19 +176,19 @@ CREATE TABLE IF NOT EXISTS kanban_idempotency (
 	status INTEGER NOT NULL,
 	response_json TEXT NOT NULL,
 	created_at TEXT NOT NULL,
-	PRIMARY KEY (session_id, idempotency_key)
+	PRIMARY KEY (board_id, idempotency_key)
 );
 
 CREATE TABLE IF NOT EXISTS kanban_attachments (
 	id TEXT PRIMARY KEY,
-	session_id TEXT NOT NULL,
+	board_id TEXT NOT NULL,
 	filename TEXT NOT NULL,
 	content_type TEXT NOT NULL,
 	size INTEGER NOT NULL CHECK (size > 0),
 	bytes BLOB NOT NULL,
 	created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS kanban_attachments_session_idx ON kanban_attachments(session_id, created_at);
+CREATE INDEX IF NOT EXISTS kanban_attachments_board_idx ON kanban_attachments(board_id, created_at);
 `;
 
 function parseStringArray(serialized: string): string[] {
@@ -251,27 +272,27 @@ export class KanbanStore {
 		return row.foreign_keys === 1;
 	}
 
-	getBoard(sessionId: string): KanbanBoardSnapshot {
+	getBoard(boardId: string): KanbanBoardSnapshot {
 		const taskRows = this.#db
 			.prepare(`
 				SELECT * FROM kanban_tasks
-				WHERE session_id = ?
+				WHERE board_id = ?
 				ORDER BY CASE status
 					WHEN 'backlog' THEN 0 WHEN 'ready' THEN 1 WHEN 'in_progress' THEN 2
 					WHEN 'blocked' THEN 3 WHEN 'review' THEN 4 WHEN 'done' THEN 5 ELSE 6 END,
 					position, id
 			`)
-			.all(sessionId) as TaskRow[];
+			.all(boardId) as TaskRow[];
 		const activityRows = this.#db
 			.prepare(`
 				SELECT * FROM (
-					SELECT * FROM kanban_activity WHERE session_id = ? ORDER BY cursor DESC LIMIT ?
+					SELECT * FROM kanban_activity WHERE board_id = ? ORDER BY cursor DESC LIMIT ?
 				) ORDER BY cursor ASC
 			`)
-			.all(sessionId, ACTIVITY_SNAPSHOT_LIMIT) as ActivityRow[];
+			.all(boardId, ACTIVITY_SNAPSHOT_LIMIT) as ActivityRow[];
 		const cursorRow = this.#db
-			.prepare("SELECT COALESCE(MAX(cursor), 0) AS cursor FROM kanban_activity WHERE session_id = ?")
-			.get(sessionId) as { cursor: number };
+			.prepare("SELECT COALESCE(MAX(cursor), 0) AS cursor FROM kanban_activity WHERE board_id = ?")
+			.get(boardId) as { cursor: number };
 		return {
 			tasks: taskRows.map(row => this.#taskFromRow(row)),
 			activity: activityRows.map(row => this.#activityFromRow(row)),
@@ -279,26 +300,26 @@ export class KanbanStore {
 		};
 	}
 
-	getTask(sessionId: string, taskId: string): KanbanTask {
-		const row = this.#taskRow(sessionId, taskId);
+	getTask(boardId: string, taskId: string): KanbanTask {
+		const row = this.#taskRow(boardId, taskId);
 		if (!row) throw notFound("Task");
 		return this.#taskFromRow(row);
 	}
 
 	createTask(
-		sessionId: string,
+		boardId: string,
 		input: KanbanTaskCreate,
 		operation: KanbanIdempotencyOperation,
 	): KanbanMutation<KanbanTask> {
-		return this.#idempotent(sessionId, operation, 201, () => {
+		return this.#idempotent(boardId, operation, 201, () => {
 			const now = this.#timestamp();
 			const id = this.#createId();
 			const positionRow = this.#db
-				.prepare("SELECT COUNT(*) AS count FROM kanban_tasks WHERE session_id = ? AND status = ?")
-				.get(sessionId, input.status) as { count: number };
+				.prepare("SELECT COUNT(*) AS count FROM kanban_tasks WHERE board_id = ? AND status = ?")
+				.get(boardId, input.status) as { count: number };
 			const task: KanbanTask = {
 				id,
-				sessionId,
+				boardId,
 				status: input.status,
 				position: positionRow.count,
 				title: input.title,
@@ -312,14 +333,14 @@ export class KanbanStore {
 				updatedAt: now,
 			};
 			this.#insertTask(task);
-			const activity = this.#recordActivity(sessionId, task.id, "task.created", { task });
+			const activity = this.#recordActivity(boardId, task.id, "task.created", { task });
 			return { data: task, activity };
 		});
 	}
 
-	updateTask(sessionId: string, taskId: string, input: KanbanTaskUpdate): KanbanMutation<KanbanTask> {
+	updateTask(boardId: string, taskId: string, input: KanbanTaskUpdate): KanbanMutation<KanbanTask> {
 		return this.#transaction(() => {
-			const row = this.#taskRow(sessionId, taskId);
+			const row = this.#taskRow(boardId, taskId);
 			if (!row) throw notFound("Task");
 			if (row.version !== input.expectedVersion) throw versionConflict();
 			const current = this.#taskFromRow(row);
@@ -340,7 +361,7 @@ export class KanbanStore {
 					UPDATE kanban_tasks SET
 						title = ?, description = ?, assignee = ?, labels_json = ?, due_at = ?,
 						priority = ?, version = ?, updated_at = ?
-					WHERE id = ? AND session_id = ? AND version = ?
+					WHERE id = ? AND board_id = ? AND version = ?
 				`)
 				.run(
 					next.title,
@@ -352,61 +373,61 @@ export class KanbanStore {
 					next.version,
 					next.updatedAt,
 					taskId,
-					sessionId,
+					boardId,
 					input.expectedVersion,
 				);
 			if (result.changes !== 1) throw versionConflict();
-			const activity = this.#recordActivity(sessionId, taskId, "task.updated", { task: next, changedFields });
+			const activity = this.#recordActivity(boardId, taskId, "task.updated", { task: next, changedFields });
 			return { status: 200, data: next, activity, replayed: false };
 		});
 	}
 
-	deleteTask(sessionId: string, taskId: string, input: KanbanExpectedVersion): KanbanMutation<null> {
+	deleteTask(boardId: string, taskId: string, input: KanbanExpectedVersion): KanbanMutation<null> {
 		return this.#transaction(() => {
-			const row = this.#taskRow(sessionId, taskId);
+			const row = this.#taskRow(boardId, taskId);
 			if (!row) throw notFound("Task");
 			if (row.version !== input.expectedVersion) throw versionConflict();
 			const task = this.#taskFromRow(row);
 			const result = this.#db
-				.prepare("DELETE FROM kanban_tasks WHERE id = ? AND session_id = ? AND version = ?")
-				.run(taskId, sessionId, input.expectedVersion);
+				.prepare("DELETE FROM kanban_tasks WHERE id = ? AND board_id = ? AND version = ?")
+				.run(taskId, boardId, input.expectedVersion);
 			if (result.changes !== 1) throw versionConflict();
 			const now = this.#timestamp();
 			this.#db
 				.prepare(`
 					UPDATE kanban_tasks SET position = position - 1, version = version + 1, updated_at = ?
-					WHERE session_id = ? AND status = ? AND position > ?
+					WHERE board_id = ? AND status = ? AND position > ?
 				`)
-				.run(now, sessionId, task.status, task.position);
-			const activity = this.#recordActivity(sessionId, taskId, "task.deleted", { task });
+				.run(now, boardId, task.status, task.position);
+			const activity = this.#recordActivity(boardId, taskId, "task.deleted", { task });
 			return { status: 200, data: null, activity, replayed: false };
 		});
 	}
 
 	moveTask(
-		sessionId: string,
+		boardId: string,
 		taskId: string,
 		input: KanbanMove,
 		operation: KanbanIdempotencyOperation,
 	): KanbanMutation<KanbanTask> {
-		return this.#idempotent(sessionId, operation, 200, () => {
-			const row = this.#taskRow(sessionId, taskId);
+		return this.#idempotent(boardId, operation, 200, () => {
+			const row = this.#taskRow(boardId, taskId);
 			if (!row) throw notFound("Task");
 			if (row.version !== input.expectedVersion) throw versionConflict();
 			const before = this.#taskFromRow(row);
-			const targetIds = this.#columnTaskIds(sessionId, input.status).filter(id => id !== taskId);
+			const targetIds = this.#columnTaskIds(boardId, input.status).filter(id => id !== taskId);
 			if (input.index > targetIds.length) {
 				throw new KanbanError(422, "validation_error", "Move index is outside the target column");
 			}
 			targetIds.splice(input.index, 0, taskId);
 			const now = this.#timestamp();
 			if (before.status !== input.status) {
-				const sourceIds = this.#columnTaskIds(sessionId, before.status).filter(id => id !== taskId);
-				this.#writeColumn(sessionId, before.status, sourceIds, now);
+				const sourceIds = this.#columnTaskIds(boardId, before.status).filter(id => id !== taskId);
+				this.#writeColumn(boardId, before.status, sourceIds, now);
 			}
-			this.#writeColumn(sessionId, input.status, targetIds, now);
-			const moved = this.getTask(sessionId, taskId);
-			const activity = this.#recordActivity(sessionId, taskId, "task.moved", {
+			this.#writeColumn(boardId, input.status, targetIds, now);
+			const moved = this.getTask(boardId, taskId);
+			const activity = this.#recordActivity(boardId, taskId, "task.moved", {
 				task: moved,
 				fromStatus: before.status,
 				fromIndex: before.position,
@@ -417,27 +438,27 @@ export class KanbanStore {
 		});
 	}
 
-	listComments(sessionId: string, taskId: string): KanbanComment[] {
-		if (!this.#taskRow(sessionId, taskId)) throw notFound("Task");
+	listComments(boardId: string, taskId: string): KanbanComment[] {
+		if (!this.#taskRow(boardId, taskId)) throw notFound("Task");
 		const rows = this.#db
 			.prepare(`
 				SELECT c.* FROM kanban_comments c
 				JOIN kanban_tasks t ON t.id = c.task_id
-				WHERE c.task_id = ? AND t.session_id = ?
+				WHERE c.task_id = ? AND t.board_id = ?
 				ORDER BY c.created_at, c.id
 			`)
-			.all(taskId, sessionId) as CommentRow[];
+			.all(taskId, boardId) as CommentRow[];
 		return rows.map(row => this.#commentFromRow(row));
 	}
 
 	createComment(
-		sessionId: string,
+		boardId: string,
 		taskId: string,
 		input: KanbanCommentCreate,
 		operation: KanbanIdempotencyOperation,
 	): KanbanMutation<KanbanComment> {
-		return this.#idempotent(sessionId, operation, 201, () => {
-			if (!this.#taskRow(sessionId, taskId)) throw notFound("Task");
+		return this.#idempotent(boardId, operation, 201, () => {
+			if (!this.#taskRow(boardId, taskId)) throw notFound("Task");
 			const comment: KanbanComment = {
 				id: this.#createId(),
 				taskId,
@@ -454,19 +475,19 @@ export class KanbanStore {
 					VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
 				`)
 				.run(comment.id, taskId, comment.author, comment.body, comment.version, comment.createdAt);
-			const activity = this.#recordActivity(sessionId, taskId, "comment.created", { comment });
+			const activity = this.#recordActivity(boardId, taskId, "comment.created", { comment });
 			return { data: comment, activity };
 		});
 	}
 
 	updateComment(
-		sessionId: string,
+		boardId: string,
 		taskId: string,
 		commentId: string,
 		input: KanbanCommentUpdate,
 	): KanbanMutation<KanbanComment> {
 		return this.#transaction(() => {
-			const row = this.#commentRow(sessionId, taskId, commentId);
+			const row = this.#commentRow(boardId, taskId, commentId);
 			if (!row) throw notFound("Comment");
 			if (row.version !== input.expectedVersion) throw versionConflict();
 			if (row.deleted_at) throw new KanbanError(409, "comment_deleted", "Deleted comments cannot be edited");
@@ -478,20 +499,20 @@ export class KanbanStore {
 				`)
 				.run(input.body, editedAt, commentId, taskId, input.expectedVersion);
 			if (result.changes !== 1) throw versionConflict();
-			const comment = this.#commentFromRow(this.#commentRow(sessionId, taskId, commentId)!);
-			const activity = this.#recordActivity(sessionId, taskId, "comment.updated", { comment });
+			const comment = this.#commentFromRow(this.#commentRow(boardId, taskId, commentId)!);
+			const activity = this.#recordActivity(boardId, taskId, "comment.updated", { comment });
 			return { status: 200, data: comment, activity, replayed: false };
 		});
 	}
 
 	deleteComment(
-		sessionId: string,
+		boardId: string,
 		taskId: string,
 		commentId: string,
 		input: KanbanExpectedVersion,
 	): KanbanMutation<KanbanComment> {
 		return this.#transaction(() => {
-			const row = this.#commentRow(sessionId, taskId, commentId);
+			const row = this.#commentRow(boardId, taskId, commentId);
 			if (!row) throw notFound("Comment");
 			if (row.version !== input.expectedVersion) throw versionConflict();
 			if (row.deleted_at) throw new KanbanError(409, "comment_deleted", "Comment is already deleted");
@@ -503,60 +524,60 @@ export class KanbanStore {
 				`)
 				.run(deletedAt, commentId, taskId, input.expectedVersion);
 			if (result.changes !== 1) throw versionConflict();
-			const comment = this.#commentFromRow(this.#commentRow(sessionId, taskId, commentId)!);
-			const activity = this.#recordActivity(sessionId, taskId, "comment.deleted", { comment });
+			const comment = this.#commentFromRow(this.#commentRow(boardId, taskId, commentId)!);
+			const activity = this.#recordActivity(boardId, taskId, "comment.deleted", { comment });
 			return { status: 200, data: comment, activity, replayed: false };
 		});
 	}
 
-	listActivitiesAfter(sessionId: string, cursor: number, limit = 500): KanbanActivity[] {
+	listActivitiesAfter(boardId: string, cursor: number, limit = 500): KanbanActivity[] {
 		const rows = this.#db
 			.prepare(`
 				SELECT * FROM kanban_activity
-				WHERE session_id = ? AND cursor > ?
+				WHERE board_id = ? AND cursor > ?
 				ORDER BY cursor ASC
 				LIMIT ?
 			`)
-			.all(sessionId, cursor, limit) as ActivityRow[];
+			.all(boardId, cursor, limit) as ActivityRow[];
 		return rows.map(row => this.#activityFromRow(row));
 	}
 
-	listUndelivered(sessionId: string): KanbanActivity[] {
+	listUndelivered(boardId: string): KanbanActivity[] {
 		const rows = this.#db
 			.prepare(`
 				SELECT a.* FROM kanban_outbox o
 				JOIN kanban_activity a ON a.id = o.event_id
-				WHERE o.session_id = ? AND o.delivered_at IS NULL
+				WHERE o.board_id = ? AND o.delivered_at IS NULL
 				ORDER BY o.cursor ASC
 			`)
-			.all(sessionId) as ActivityRow[];
+			.all(boardId) as ActivityRow[];
 		return rows.map(row => this.#activityFromRow(row));
 	}
 
-	markDelivered(sessionId: string, eventId: string): void {
+	markDelivered(boardId: string, eventId: string): void {
 		this.#db
 			.prepare(
-				"UPDATE kanban_outbox SET delivered_at = ? WHERE session_id = ? AND event_id = ? AND delivered_at IS NULL",
+				"UPDATE kanban_outbox SET delivered_at = ? WHERE board_id = ? AND event_id = ? AND delivered_at IS NULL",
 			)
-			.run(this.#timestamp(), sessionId, eventId);
+			.run(this.#timestamp(), boardId, eventId);
 	}
 
 	/**
 	 * Board images live in SQLite next to the rest of the board so a session's
 	 * attachments travel with `agent.db` and need no filesystem cleanup.
 	 */
-	createAttachment(sessionId: string, input: KanbanAttachmentCreate): KanbanAttachment {
+	createAttachment(boardId: string, input: KanbanAttachmentCreate): KanbanAttachment {
 		const id = this.#createId();
 		const createdAt = this.#timestamp();
 		this.#db
 			.prepare(`
-				INSERT INTO kanban_attachments(id, session_id, filename, content_type, size, bytes, created_at)
+				INSERT INTO kanban_attachments(id, board_id, filename, content_type, size, bytes, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
 			`)
-			.run(id, sessionId, input.filename, input.contentType, input.bytes.byteLength, input.bytes, createdAt);
+			.run(id, boardId, input.filename, input.contentType, input.bytes.byteLength, input.bytes, createdAt);
 		return {
 			id,
-			sessionId,
+			boardId,
 			filename: input.filename,
 			contentType: input.contentType,
 			size: input.bytes.byteLength,
@@ -564,22 +585,57 @@ export class KanbanStore {
 		};
 	}
 
-	readAttachment(sessionId: string, attachmentId: string): KanbanAttachmentBody | null {
+	readAttachment(boardId: string, attachmentId: string): KanbanAttachmentBody | null {
 		const row = this.#db
 			.prepare(
-				"SELECT filename, content_type, size, bytes, created_at FROM kanban_attachments WHERE id = ? AND session_id = ?",
+				"SELECT filename, content_type, size, bytes, created_at FROM kanban_attachments WHERE id = ? AND board_id = ?",
 			)
-			.get(attachmentId, sessionId) as AttachmentRow | undefined;
+			.get(attachmentId, boardId) as AttachmentRow | undefined;
 		if (!row) return null;
 		return {
 			id: attachmentId,
-			sessionId,
+			boardId,
 			filename: row.filename,
 			contentType: row.content_type,
 			size: row.size,
 			createdAt: row.created_at,
 			bytes: new Uint8Array(row.bytes),
 		};
+	}
+
+	/**
+	 * Sessions announce themselves so the board can offer real assignees. Rows
+	 * survive a crash, so `listSessions` filters by heartbeat rather than
+	 * trusting that every session unregistered cleanly.
+	 */
+	upsertSession(boardId: string, sessionId: string, name: string): void {
+		const now = this.#timestamp();
+		this.#db
+			.prepare(`
+				INSERT INTO kanban_sessions(session_id, board_id, name, created_at, last_seen_at)
+				VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT(session_id) DO UPDATE SET board_id = excluded.board_id, name = excluded.name, last_seen_at = excluded.last_seen_at
+			`)
+			.run(sessionId, boardId, name, now, now);
+	}
+
+	removeSession(sessionId: string): void {
+		this.#db.prepare("DELETE FROM kanban_sessions WHERE session_id = ?").run(sessionId);
+	}
+
+	listSessions(boardId: string, staleAfterMs = SESSION_STALE_MS): KanbanBoardSession[] {
+		const cutoff = new Date(this.#now().getTime() - staleAfterMs).toISOString();
+		const rows = this.#db
+			.prepare(
+				"SELECT session_id, name, created_at, last_seen_at FROM kanban_sessions WHERE board_id = ? AND last_seen_at >= ? ORDER BY created_at ASC",
+			)
+			.all(boardId, cutoff) as SessionRow[];
+		return rows.map(row => ({
+			sessionId: row.session_id,
+			name: row.name,
+			createdAt: row.created_at,
+			lastSeenAt: row.last_seen_at,
+		}));
 	}
 
 	#migrate(): void {
@@ -621,7 +677,7 @@ export class KanbanStore {
 	}
 
 	#idempotent<T>(
-		sessionId: string,
+		boardId: string,
 		operation: KanbanIdempotencyOperation,
 		status: number,
 		mutate: () => { data: T; activity: KanbanActivity },
@@ -631,9 +687,9 @@ export class KanbanStore {
 			const existing = this.#db
 				.prepare(`
 					SELECT request_hash, status, response_json FROM kanban_idempotency
-					WHERE session_id = ? AND idempotency_key = ?
+					WHERE board_id = ? AND idempotency_key = ?
 				`)
-				.get(sessionId, operation.key) as IdempotencyRow | null;
+				.get(boardId, operation.key) as IdempotencyRow | null;
 			if (existing) {
 				if (existing.request_hash !== hash) {
 					throw new KanbanError(
@@ -655,11 +711,11 @@ export class KanbanStore {
 			this.#db
 				.prepare(`
 					INSERT INTO kanban_idempotency(
-						session_id, idempotency_key, request_hash, method, route, status, response_json, created_at
+						board_id, idempotency_key, request_hash, method, route, status, response_json, created_at
 					) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 				`)
 				.run(
-					sessionId,
+					boardId,
 					operation.key,
 					hash,
 					operation.method,
@@ -676,13 +732,13 @@ export class KanbanStore {
 		this.#db
 			.prepare(`
 				INSERT INTO kanban_tasks(
-					id, session_id, status, position, title, description, assignee, labels_json, due_at,
+					id, board_id, status, position, title, description, assignee, labels_json, due_at,
 					priority, version, created_at, updated_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`)
 			.run(
 				task.id,
-				task.sessionId,
+				task.boardId,
 				task.status,
 				task.position,
 				task.title,
@@ -698,7 +754,7 @@ export class KanbanStore {
 	}
 
 	#recordActivity(
-		sessionId: string,
+		boardId: string,
 		taskId: string | null,
 		type: KanbanActivityType,
 		data: Record<string, unknown>,
@@ -707,14 +763,14 @@ export class KanbanStore {
 		const createdAt = this.#timestamp();
 		const insert = this.#db
 			.prepare(`
-				INSERT INTO kanban_activity(id, session_id, task_id, type, created_at, data_json)
+				INSERT INTO kanban_activity(id, board_id, task_id, type, created_at, data_json)
 				VALUES (?, ?, ?, ?, ?, ?)
 			`)
-			.run(id, sessionId, taskId, type, createdAt, JSON.stringify(data));
+			.run(id, boardId, taskId, type, createdAt, JSON.stringify(data));
 		const activity: KanbanActivity = {
 			id,
 			cursor: Number(insert.lastInsertRowid),
-			sessionId,
+			boardId,
 			taskId,
 			type,
 			createdAt,
@@ -722,44 +778,44 @@ export class KanbanStore {
 		};
 		this.#db
 			.prepare(`
-				INSERT INTO kanban_outbox(event_id, cursor, session_id, payload_json, created_at, delivered_at)
+				INSERT INTO kanban_outbox(event_id, cursor, board_id, payload_json, created_at, delivered_at)
 				VALUES (?, ?, ?, ?, ?, NULL)
 			`)
-			.run(id, activity.cursor, sessionId, JSON.stringify(activity), createdAt);
+			.run(id, activity.cursor, boardId, JSON.stringify(activity), createdAt);
 		return activity;
 	}
 
-	#taskRow(sessionId: string, taskId: string): TaskRow | null {
+	#taskRow(boardId: string, taskId: string): TaskRow | null {
 		return this.#db
-			.prepare("SELECT * FROM kanban_tasks WHERE id = ? AND session_id = ?")
-			.get(taskId, sessionId) as TaskRow | null;
+			.prepare("SELECT * FROM kanban_tasks WHERE id = ? AND board_id = ?")
+			.get(taskId, boardId) as TaskRow | null;
 	}
 
-	#commentRow(sessionId: string, taskId: string, commentId: string): CommentRow | null {
+	#commentRow(boardId: string, taskId: string, commentId: string): CommentRow | null {
 		return this.#db
 			.prepare(`
 				SELECT c.* FROM kanban_comments c
 				JOIN kanban_tasks t ON t.id = c.task_id
-				WHERE c.id = ? AND c.task_id = ? AND t.session_id = ?
+				WHERE c.id = ? AND c.task_id = ? AND t.board_id = ?
 			`)
-			.get(commentId, taskId, sessionId) as CommentRow | null;
+			.get(commentId, taskId, boardId) as CommentRow | null;
 	}
 
-	#columnTaskIds(sessionId: string, status: KanbanStatus): string[] {
+	#columnTaskIds(boardId: string, status: KanbanStatus): string[] {
 		const rows = this.#db
-			.prepare("SELECT id FROM kanban_tasks WHERE session_id = ? AND status = ? ORDER BY position, id")
-			.all(sessionId, status) as Array<{ id: string }>;
+			.prepare("SELECT id FROM kanban_tasks WHERE board_id = ? AND status = ? ORDER BY position, id")
+			.all(boardId, status) as Array<{ id: string }>;
 		return rows.map(row => row.id);
 	}
 
-	#writeColumn(sessionId: string, status: KanbanStatus, ids: string[], now: string): void {
+	#writeColumn(boardId: string, status: KanbanStatus, ids: string[], now: string): void {
 		const statement = this.#db.prepare(`
 			UPDATE kanban_tasks
 			SET status = ?, position = ?, version = version + 1, updated_at = ?
-			WHERE id = ? AND session_id = ?
+			WHERE id = ? AND board_id = ?
 		`);
 		for (const [position, id] of ids.entries()) {
-			const result = statement.run(status, position, now, id, sessionId);
+			const result = statement.run(status, position, now, id, boardId);
 			if (result.changes !== 1) throw new Error("Kanban reorder lost a task inside its transaction");
 		}
 	}
@@ -767,7 +823,7 @@ export class KanbanStore {
 	#taskFromRow(row: TaskRow): KanbanTask {
 		return {
 			id: row.id,
-			sessionId: row.session_id,
+			boardId: row.board_id,
 			status: row.status as KanbanStatus,
 			position: row.position,
 			title: row.title,
@@ -799,7 +855,7 @@ export class KanbanStore {
 		return {
 			id: row.id,
 			cursor: row.cursor,
-			sessionId: row.session_id,
+			boardId: row.board_id,
 			taskId: row.task_id,
 			type: row.type as KanbanActivityType,
 			createdAt: row.created_at,

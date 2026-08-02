@@ -20,7 +20,7 @@ export type KanbanActivityType = (typeof KANBAN_ACTIVITY_TYPES)[number];
 
 export interface KanbanTask {
 	id: string;
-	sessionId: string;
+	boardId: string;
 	status: KanbanStatus;
 	position: number;
 	title: string;
@@ -48,7 +48,7 @@ export interface KanbanComment {
 export interface KanbanActivity {
 	id: string;
 	cursor: number;
-	sessionId: string;
+	boardId: string;
 	taskId: string | null;
 	type: KanbanActivityType;
 	createdAt: string;
@@ -111,7 +111,7 @@ export interface KanbanMutation<T> {
 /** Metadata for a board image; `bytes` stays out of JSON responses. */
 export interface KanbanAttachment {
 	id: string;
-	sessionId: string;
+	boardId: string;
 	filename: string;
 	contentType: string;
 	size: number;
@@ -126,4 +126,12 @@ export interface KanbanAttachmentCreate {
 	filename: string;
 	contentType: string;
 	bytes: Uint8Array;
+}
+
+/** A live OMPx session sharing this board; `name` is the assignee value. */
+export interface KanbanBoardSession {
+	sessionId: string;
+	name: string;
+	createdAt: string;
+	lastSeenAt: string;
 }

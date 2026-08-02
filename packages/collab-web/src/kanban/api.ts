@@ -1,6 +1,7 @@
 import { parseBoardSnapshot, parseKanbanComment, parseKanbanTask } from "./state";
 import {
 	isRecord,
+	type KanbanBoardSession,
 	type KanbanComment,
 	type KanbanCommentDraft,
 	type KanbanConnectionState,
@@ -60,22 +61,22 @@ export interface KanbanAttachmentRef {
 }
 
 export class KanbanApi {
-	readonly #sessionId: string;
+	readonly #boardId: string;
 	readonly #fetch: KanbanFetch;
 	readonly #connection: () => KanbanConnectionState;
 
 	constructor(
-		sessionId: string,
+		boardId: string,
 		fetchImplementation: KanbanFetch = (input, init) => globalThis.fetch(input, init),
 		connection: () => KanbanConnectionState = () => "connected",
 	) {
-		this.#sessionId = sessionId;
+		this.#boardId = boardId;
 		this.#fetch = fetchImplementation;
 		this.#connection = connection;
 	}
 
-	#sessionPath(suffix = ""): string {
-		return `/api/v1/sessions/${encodeURIComponent(this.#sessionId)}${suffix}`;
+	#boardPath(suffix = ""): string {
+		return `/api/v1/boards/${encodeURIComponent(this.#boardId)}${suffix}`;
 	}
 
 	#assertConnected(): void {
@@ -130,12 +131,24 @@ export class KanbanApi {
 	}
 
 	async loadBoard() {
-		return parseBoardSnapshot(await this.#request(this.#sessionPath("/board")));
+		return parseBoardSnapshot(await this.#request(this.#boardPath("/board")));
 	}
 
 	eventsUrl(cursor: number): string {
 		if (!Number.isInteger(cursor) || cursor < 0) throw new Error("Kanban SSE cursor must be a nonnegative integer");
-		return `${this.#sessionPath("/events")}?cursor=${cursor}`;
+		return `${this.#boardPath("/events")}?cursor=${cursor}`;
+	}
+
+	/** Sessions currently sharing this board; used as the assignee options. */
+	async listSessions(): Promise<KanbanBoardSession[]> {
+		const payload = await this.#request(this.#boardPath("/sessions"));
+		if (!Array.isArray(payload)) return [];
+		return payload.filter(isRecord).map(entry => ({
+			sessionId: String(entry.sessionId ?? ""),
+			name: String(entry.name ?? ""),
+			createdAt: String(entry.createdAt ?? ""),
+			lastSeenAt: String(entry.lastSeenAt ?? ""),
+		}));
 	}
 
 	/**
@@ -144,7 +157,7 @@ export class KanbanApi {
 	 */
 	async uploadAttachment(file: File): Promise<KanbanAttachmentRef> {
 		this.#assertConnected();
-		const payload = await this.#request(this.#sessionPath("/attachments"), {
+		const payload = await this.#request(this.#boardPath("/attachments"), {
 			method: "POST",
 			headers: {
 				"Content-Type": file.type,
@@ -161,27 +174,27 @@ export class KanbanApi {
 	}
 
 	async createTask(draft: KanbanTaskDraft): Promise<KanbanTask> {
-		return parseKanbanTask(await this.#mutate(this.#sessionPath("/tasks"), "POST", draft));
+		return parseKanbanTask(await this.#mutate(this.#boardPath("/tasks"), "POST", draft));
 	}
 
 	async updateTask(taskId: string, update: KanbanTaskUpdate): Promise<KanbanTask> {
 		return parseKanbanTask(
-			await this.#mutate(this.#sessionPath(`/tasks/${encodeURIComponent(taskId)}`), "PATCH", update),
+			await this.#mutate(this.#boardPath(`/tasks/${encodeURIComponent(taskId)}`), "PATCH", update),
 		);
 	}
 
 	async deleteTask(taskId: string, expectedVersion: number): Promise<void> {
-		await this.#mutate(this.#sessionPath(`/tasks/${encodeURIComponent(taskId)}`), "DELETE", { expectedVersion });
+		await this.#mutate(this.#boardPath(`/tasks/${encodeURIComponent(taskId)}`), "DELETE", { expectedVersion });
 	}
 
 	async moveTask(taskId: string, move: KanbanMoveRequest): Promise<KanbanTask> {
 		return parseKanbanTask(
-			await this.#mutate(this.#sessionPath(`/tasks/${encodeURIComponent(taskId)}/moves`), "POST", move),
+			await this.#mutate(this.#boardPath(`/tasks/${encodeURIComponent(taskId)}/moves`), "POST", move),
 		);
 	}
 
 	async listComments(taskId: string): Promise<KanbanComment[]> {
-		const data = await this.#request(this.#sessionPath(`/tasks/${encodeURIComponent(taskId)}/comments`));
+		const data = await this.#request(this.#boardPath(`/tasks/${encodeURIComponent(taskId)}/comments`));
 		const comments = Array.isArray(data)
 			? data
 			: isRecord(data) && Array.isArray(data.comments)
@@ -193,7 +206,7 @@ export class KanbanApi {
 
 	async createComment(taskId: string, draft: KanbanCommentDraft): Promise<KanbanComment> {
 		return parseKanbanComment(
-			await this.#mutate(this.#sessionPath(`/tasks/${encodeURIComponent(taskId)}/comments`), "POST", draft),
+			await this.#mutate(this.#boardPath(`/tasks/${encodeURIComponent(taskId)}/comments`), "POST", draft),
 		);
 	}
 
@@ -205,7 +218,7 @@ export class KanbanApi {
 	): Promise<KanbanComment> {
 		return parseKanbanComment(
 			await this.#mutate(
-				this.#sessionPath(`/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}`),
+				this.#boardPath(`/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}`),
 				"PATCH",
 				{ expectedVersion, body },
 			),
@@ -215,7 +228,7 @@ export class KanbanApi {
 	async deleteComment(taskId: string, commentId: string, expectedVersion: number): Promise<KanbanComment> {
 		return parseKanbanComment(
 			await this.#mutate(
-				this.#sessionPath(`/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}`),
+				this.#boardPath(`/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}`),
 				"DELETE",
 				{ expectedVersion },
 			),

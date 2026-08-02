@@ -15,7 +15,7 @@ function activity(cursor: number): KanbanActivity {
 	return {
 		id: `event-${cursor}`,
 		cursor,
-		sessionId: "session-1",
+		boardId: "session-1",
 		taskId: "task-1",
 		type: "task.updated",
 		createdAt: CREATED_AT,
@@ -26,7 +26,7 @@ function activity(cursor: number): KanbanActivity {
 function task(overrides: Partial<KanbanTask>): KanbanTask {
 	return {
 		id: "task-1",
-		sessionId: "session-1",
+		boardId: "session-1",
 		status: "ready",
 		position: 0,
 		title: "Ship native board",

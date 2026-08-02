@@ -55,7 +55,7 @@ export function parseKanbanTask(value: unknown): KanbanTask {
 
 	return {
 		id: requireString(value, "id"),
-		sessionId: requireString(value, "sessionId"),
+		boardId: requireString(value, "boardId"),
 		status: value.status,
 		position: requireNonnegativeInteger(value, "position"),
 		title: requireString(value, "title"),
@@ -100,7 +100,7 @@ export function parseKanbanEvent(value: unknown): KanbanActivity {
 	return {
 		id: requireString(value, "id"),
 		cursor: Number(value.cursor),
-		sessionId: requireString(value, "sessionId"),
+		boardId: requireString(value, "boardId"),
 		taskId,
 		type: value.type,
 		createdAt: requireString(value, "createdAt"),

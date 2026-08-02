@@ -3,7 +3,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import type { KanbanApi } from "./api";
 import { TaskForm } from "./TaskForm";
 import type { ValidTaskForm } from "./task-form";
-import type { KanbanActivity, KanbanComment, KanbanStatus, KanbanTask } from "./types";
+import type { KanbanActivity, KanbanBoardSession, KanbanComment, KanbanStatus, KanbanTask } from "./types";
 import { ACTIVITY_LABELS, activityDetail, formatKanbanDate, PRIORITY_LABELS, STATUS_LABELS } from "./view-model";
 
 type TaskSheetTab = "details" | "comments" | "activity";
@@ -12,6 +12,7 @@ interface TaskSheetProps {
 	task: KanbanTask | null;
 	defaultStatus: KanbanStatus;
 	api: KanbanApi;
+	sessions: readonly KanbanBoardSession[];
 	activity: readonly KanbanActivity[];
 	canWrite: boolean;
 	busy: boolean;
@@ -24,20 +25,11 @@ interface TaskSheetProps {
 	onDismiss(): void;
 }
 
-const COMMENT_AUTHOR_KEY = "omp-kanban-comment-author";
-
-function initialAuthor(): string {
-	try {
-		return globalThis.localStorage.getItem(COMMENT_AUTHOR_KEY) ?? "";
-	} catch {
-		return "";
-	}
-}
-
 export function TaskSheet({
 	task,
 	defaultStatus,
 	api,
+	sessions,
 	activity,
 	canWrite,
 	busy,
@@ -54,7 +46,6 @@ export function TaskSheet({
 	const [comments, setComments] = useState<KanbanComment[]>([]);
 	const [commentsLoading, setCommentsLoading] = useState(Boolean(task));
 	const [commentsError, setCommentsError] = useState<string | null>(null);
-	const [commentAuthor, setCommentAuthor] = useState(initialAuthor);
 	const [commentBody, setCommentBody] = useState("");
 	const [commentFormError, setCommentFormError] = useState<string | null>(null);
 	const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
@@ -97,23 +88,15 @@ export function TaskSheet({
 	const submitComment = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
 		event.preventDefault();
 		if (!task) return;
-		const author = commentAuthor.trim();
 		const body = commentBody.trim();
-		if (author.length < 1 || author.length > 64) {
-			setCommentFormError("Enter an author name between 1 and 64 characters.");
-			return;
-		}
 		if (body.length < 1 || body.length > 10_000) {
 			setCommentFormError("Enter a comment between 1 and 10,000 characters.");
 			return;
 		}
-		const created = await onRunMutation(task.id, () => api.createComment(task.id, { author, body }));
+		// The server stamps the author: "user" from the board, the session name
+		// when the model comments, so nobody has to type an identity.
+		const created = await onRunMutation(task.id, () => api.createComment(task.id, { body }));
 		if (!created) return;
-		try {
-			globalThis.localStorage.setItem(COMMENT_AUTHOR_KEY, author);
-		} catch {
-			// The comment still succeeds when storage is unavailable.
-		}
 		setComments(current => [...current, created]);
 		setCommentBody("");
 		setCommentFormError(null);
@@ -216,6 +199,7 @@ export function TaskSheet({
 										canWrite={canWrite}
 										serverError={serverError}
 										api={api}
+										sessions={sessions}
 										onSubmit={async valid => {
 											if (await onSave(valid)) dialogRef.current?.close();
 										}}
@@ -431,16 +415,6 @@ export function TaskSheet({
 							</ol>
 							<form className="kb-comment-form" onSubmit={submitComment} noValidate>
 								<h3>Add comment</h3>
-								<div className="kb-field">
-									<label htmlFor="kb-comment-author">Author (required)</label>
-									<input
-										id="kb-comment-author"
-										value={commentAuthor}
-										onChange={event => setCommentAuthor(event.target.value)}
-										maxLength={65}
-										required
-									/>
-								</div>
 								<div className="kb-field">
 									<label htmlFor="kb-comment-body">Comment (required)</label>
 									<textarea
