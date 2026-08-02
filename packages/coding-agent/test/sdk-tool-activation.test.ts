@@ -842,6 +842,33 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
+	// `generate_image` is a custom tool gated only by its setting and the tool
+	// whitelist — never by the session's provider/model family. Non-OpenAI
+	// sessions must still register and activate it.
+	for (const [provider, modelId] of [
+		["anthropic", "claude-sonnet-4-5"],
+		["google", "gemini-2.5-pro"],
+	] as const) {
+		it(`registers generate_image on a non-OpenAI session model (${provider}/${modelId})`, async () => {
+			const model = getBundledModel(provider, modelId);
+			expect(model).toBeDefined();
+
+			const { session } = await createAgentSession({
+				...baseOptions(makeTempDir()),
+				model,
+				settings: Settings.isolated({ "advisor.enabled": false, "generate_image.enabled": true }),
+				toolNames: ["read", "generate_image"],
+			});
+
+			try {
+				expect(session.getToolByName("generate_image")).toBeDefined();
+				expect(session.getActiveToolNames()).toContain("generate_image");
+			} finally {
+				await session.dispose();
+			}
+		});
+	}
+
 	it("keeps restricted host tool lists isolated from configured custom capabilities", async () => {
 		const restrictedDir = makeTempDir();
 		const normalDir = makeTempDir();

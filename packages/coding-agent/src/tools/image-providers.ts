@@ -9,10 +9,16 @@
 /** Image generation backends, in settings/tool vocabulary. */
 export type ImageProvider = "antigravity" | "gemini" | "openai" | "openai-codex" | "openrouter" | "xai";
 
-/** Auto-resolution fallback order when no configured entry or session provider matches. */
+/**
+ * Auto-resolution fallback order used after the per-request provider and the
+ * configured `providers.imageOrder` list. A connected Codex (ChatGPT)
+ * subscription leads: it needs no extra API key and is resolved independently
+ * of the model the session is chatting with, so it must also outrank the
+ * session's own provider (see `imageProviderOrder` in `image-gen.ts`).
+ */
 export const AUTO_IMAGE_PROVIDER_ORDER: readonly ImageProvider[] = [
-	"openai",
 	"openai-codex",
+	"openai",
 	"antigravity",
 	"xai",
 	"openrouter",
@@ -22,14 +28,14 @@ export const AUTO_IMAGE_PROVIDER_ORDER: readonly ImageProvider[] = [
 /** Settings choices for `providers.imageOrder` (labels shared with the retired single-preference enum). */
 export const IMAGE_PROVIDER_CHOICES = [
 	{
-		value: "openai",
-		label: "OpenAI",
-		description: "OPENAI_API_KEY (gpt-image-2) or active GPT model; falls back to a connected Codex subscription",
-	},
-	{
 		value: "openai-codex",
 		label: "OpenAI Codex (ChatGPT)",
 		description: "Uses a connected Codex / ChatGPT subscription — no OPENAI_API_KEY needed",
+	},
+	{
+		value: "openai",
+		label: "OpenAI",
+		description: "OPENAI_API_KEY (gpt-image-2) or active GPT model; falls back to a connected Codex subscription",
 	},
 	{
 		value: "antigravity",
