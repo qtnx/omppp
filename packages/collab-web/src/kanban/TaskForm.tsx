@@ -55,7 +55,7 @@ export function TaskForm({ task, defaultStatus, busy, canWrite, serverError, onS
 	const describedBy = (field: TaskFormField): string | undefined => {
 		if (errors[field]) return `kb-task-${field}-error`;
 		if (field === "status" && task) return "kb-task-status-help";
-		if (field === "labels" || field === "acceptanceCriteria") return `kb-task-${field}-help`;
+		if (field === "labels") return `kb-task-${field}-help`;
 		return undefined;
 	};
 	const update = <K extends TaskFormField>(field: K, value: TaskFormValues[K]): void => {
@@ -169,60 +169,6 @@ export function TaskForm({ task, defaultStatus, busy, canWrite, serverError, onS
 						rows={2}
 						aria-invalid={Boolean(errors.labels)}
 						aria-describedby={describedBy("labels")}
-					/>
-				</Field>
-				<div className="kb-field-row">
-					<Field label="Repository" field="repo" errors={errors}>
-						<input
-							id="kb-task-repo"
-							value={values.repo}
-							onChange={event => update("repo", event.target.value)}
-							aria-invalid={Boolean(errors.repo)}
-							aria-describedby={describedBy("repo")}
-						/>
-					</Field>
-					<Field label="Branch" field="branch" errors={errors}>
-						<input
-							id="kb-task-branch"
-							value={values.branch}
-							onChange={event => update("branch", event.target.value)}
-							aria-invalid={Boolean(errors.branch)}
-							aria-describedby={describedBy("branch")}
-						/>
-					</Field>
-				</div>
-				<Field label="Worktree" field="worktree" errors={errors}>
-					<input
-						id="kb-task-worktree"
-						value={values.worktree}
-						onChange={event => update("worktree", event.target.value)}
-						aria-invalid={Boolean(errors.worktree)}
-						aria-describedby={describedBy("worktree")}
-					/>
-				</Field>
-				<Field
-					label="Acceptance criteria"
-					field="acceptanceCriteria"
-					errors={errors}
-					helper="Enter one criterion per line."
-				>
-					<textarea
-						id="kb-task-acceptanceCriteria"
-						value={values.acceptanceCriteria}
-						onChange={event => update("acceptanceCriteria", event.target.value)}
-						rows={4}
-						aria-invalid={Boolean(errors.acceptanceCriteria)}
-						aria-describedby={describedBy("acceptanceCriteria")}
-					/>
-				</Field>
-				<Field label="Blocker reason" field="blockerReason" errors={errors}>
-					<textarea
-						id="kb-task-blockerReason"
-						value={values.blockerReason}
-						onChange={event => update("blockerReason", event.target.value)}
-						rows={3}
-						aria-invalid={Boolean(errors.blockerReason)}
-						aria-describedby={describedBy("blockerReason")}
 					/>
 				</Field>
 			</div>

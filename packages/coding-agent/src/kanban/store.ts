@@ -19,7 +19,9 @@ import type {
 	KanbanTaskUpdate,
 } from "./types";
 
-export const KANBAN_SCHEMA_VERSION = 1;
+export const KANBAN_SCHEMA_VERSION = 2;
+/** Dropped in v2: the agent keeps this context in the description instead. */
+const RETIRED_TASK_COLUMNS = ["repo", "worktree", "branch", "acceptance_criteria_json", "blocker_reason"] as const;
 const ACTIVITY_SNAPSHOT_LIMIT = 200;
 
 export interface KanbanIdempotencyOperation {
@@ -44,11 +46,6 @@ interface TaskRow {
 	assignee: string | null;
 	labels_json: string;
 	due_at: string | null;
-	repo: string | null;
-	worktree: string | null;
-	branch: string | null;
-	acceptance_criteria_json: string;
-	blocker_reason: string | null;
 	priority: string;
 	version: number;
 	created_at: string;
@@ -98,11 +95,6 @@ CREATE TABLE IF NOT EXISTS kanban_tasks (
 	assignee TEXT,
 	labels_json TEXT NOT NULL,
 	due_at TEXT,
-	repo TEXT,
-	worktree TEXT,
-	branch TEXT,
-	acceptance_criteria_json TEXT NOT NULL,
-	blocker_reason TEXT,
 	priority TEXT NOT NULL CHECK (priority IN ('lowest','low','medium','high','highest')),
 	version INTEGER NOT NULL CHECK (version >= 1),
 	created_at TEXT NOT NULL,
@@ -292,11 +284,6 @@ export class KanbanStore {
 				assignee: input.assignee ?? null,
 				labels: [...(input.labels ?? [])],
 				dueAt: input.dueAt ?? null,
-				repo: input.repo ?? null,
-				worktree: input.worktree ?? null,
-				branch: input.branch ?? null,
-				acceptanceCriteria: [...(input.acceptanceCriteria ?? [])],
-				blockerReason: input.blockerReason ?? null,
 				priority: input.priority,
 				version: 1,
 				createdAt: now,
@@ -322,16 +309,6 @@ export class KanbanStore {
 				assignee: this.#updatedValue(input, "assignee", current.assignee, changedFields),
 				labels: this.#updatedArray(input, "labels", current.labels, changedFields),
 				dueAt: this.#updatedValue(input, "dueAt", current.dueAt, changedFields),
-				repo: this.#updatedValue(input, "repo", current.repo, changedFields),
-				worktree: this.#updatedValue(input, "worktree", current.worktree, changedFields),
-				branch: this.#updatedValue(input, "branch", current.branch, changedFields),
-				acceptanceCriteria: this.#updatedArray(
-					input,
-					"acceptanceCriteria",
-					current.acceptanceCriteria,
-					changedFields,
-				),
-				blockerReason: this.#updatedValue(input, "blockerReason", current.blockerReason, changedFields),
 				priority: this.#updatedValue(input, "priority", current.priority, changedFields),
 				version: current.version + 1,
 				updatedAt: this.#timestamp(),
@@ -339,8 +316,8 @@ export class KanbanStore {
 			const result = this.#db
 				.prepare(`
 					UPDATE kanban_tasks SET
-						title = ?, description = ?, assignee = ?, labels_json = ?, due_at = ?, repo = ?, worktree = ?,
-						branch = ?, acceptance_criteria_json = ?, blocker_reason = ?, priority = ?, version = ?, updated_at = ?
+						title = ?, description = ?, assignee = ?, labels_json = ?, due_at = ?,
+						priority = ?, version = ?, updated_at = ?
 					WHERE id = ? AND session_id = ? AND version = ?
 				`)
 				.run(
@@ -349,11 +326,6 @@ export class KanbanStore {
 					next.assignee,
 					JSON.stringify(next.labels),
 					next.dueAt,
-					next.repo,
-					next.worktree,
-					next.branch,
-					JSON.stringify(next.acceptanceCriteria),
-					next.blockerReason,
 					next.priority,
 					next.version,
 					next.updatedAt,
@@ -550,10 +522,27 @@ export class KanbanStore {
 	#migrate(): void {
 		this.#transaction(() => {
 			this.#db.exec(MIGRATION_SQL);
+			this.#dropRetiredTaskColumns();
 			this.#db
 				.prepare("INSERT OR IGNORE INTO kanban_schema_migrations(version, applied_at) VALUES (?, ?)")
 				.run(KANBAN_SCHEMA_VERSION, this.#timestamp());
 		});
+	}
+
+	/**
+	 * v1 boards carry repo/worktree/branch/acceptance-criteria/blocker columns.
+	 * `acceptance_criteria_json` is NOT NULL, so leaving it in place would break
+	 * every insert from the v2 code path — drop them instead of writing dummies.
+	 */
+	#dropRetiredTaskColumns(): void {
+		const present = new Set(
+			(this.#db.prepare("PRAGMA table_info(kanban_tasks)").all() as Array<{ name: string }>).map(
+				column => column.name,
+			),
+		);
+		for (const column of RETIRED_TASK_COLUMNS) {
+			if (present.has(column)) this.#db.exec(`ALTER TABLE kanban_tasks DROP COLUMN ${column}`);
+		}
 	}
 
 	#transaction<T>(run: () => T): T {
@@ -624,9 +613,9 @@ export class KanbanStore {
 		this.#db
 			.prepare(`
 				INSERT INTO kanban_tasks(
-					id, session_id, status, position, title, description, assignee, labels_json, due_at, repo,
-					worktree, branch, acceptance_criteria_json, blocker_reason, priority, version, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					id, session_id, status, position, title, description, assignee, labels_json, due_at,
+					priority, version, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`)
 			.run(
 				task.id,
@@ -638,11 +627,6 @@ export class KanbanStore {
 				task.assignee,
 				JSON.stringify(task.labels),
 				task.dueAt,
-				task.repo,
-				task.worktree,
-				task.branch,
-				JSON.stringify(task.acceptanceCriteria),
-				task.blockerReason,
 				task.priority,
 				task.version,
 				task.createdAt,
@@ -728,11 +712,6 @@ export class KanbanStore {
 			assignee: row.assignee,
 			labels: parseStringArray(row.labels_json),
 			dueAt: row.due_at,
-			repo: row.repo,
-			worktree: row.worktree,
-			branch: row.branch,
-			acceptanceCriteria: parseStringArray(row.acceptance_criteria_json),
-			blockerReason: row.blocker_reason,
 			priority: row.priority as KanbanPriority,
 			version: row.version,
 			createdAt: row.created_at,
@@ -777,9 +756,9 @@ export class KanbanStore {
 		return next;
 	}
 
-	#updatedArray<T extends KanbanTaskUpdate, K extends "labels" | "acceptanceCriteria">(
+	#updatedArray<T extends KanbanTaskUpdate>(
 		input: T,
-		key: K,
+		key: "labels",
 		current: string[],
 		changedFields: string[],
 	): string[] {

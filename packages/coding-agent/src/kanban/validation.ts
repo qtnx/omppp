@@ -13,20 +13,7 @@ import {
 } from "./types";
 
 const RFC3339_UTC = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?Z$/;
-const TASK_CREATE_FIELDS = [
-	"title",
-	"status",
-	"priority",
-	"description",
-	"assignee",
-	"labels",
-	"dueAt",
-	"repo",
-	"worktree",
-	"branch",
-	"acceptanceCriteria",
-	"blockerReason",
-] as const;
+const TASK_CREATE_FIELDS = ["title", "status", "priority", "description", "assignee", "labels", "dueAt"] as const;
 const TASK_UPDATE_FIELDS = [
 	"expectedVersion",
 	"title",
@@ -34,11 +21,6 @@ const TASK_UPDATE_FIELDS = [
 	"assignee",
 	"labels",
 	"dueAt",
-	"repo",
-	"worktree",
-	"branch",
-	"acceptanceCriteria",
-	"blockerReason",
 	"priority",
 ] as const;
 
@@ -157,11 +139,6 @@ export function validateTaskCreate(value: unknown): KanbanTaskCreate {
 		assignee: optionalNullableString(input, "assignee", 128),
 		labels: stringArray(input, "labels", 20, 64),
 		dueAt: dueAt(input),
-		repo: optionalNullableString(input, "repo", 4096),
-		worktree: optionalNullableString(input, "worktree", 4096),
-		branch: optionalNullableString(input, "branch", 4096),
-		acceptanceCriteria: stringArray(input, "acceptanceCriteria", 50, 1000),
-		blockerReason: optionalNullableString(input, "blockerReason", 2000),
 	};
 }
 
@@ -177,15 +154,6 @@ export function validateTaskUpdate(value: unknown): KanbanTaskUpdate {
 	if (Object.hasOwn(input, "assignee")) update.assignee = optionalNullableString(input, "assignee", 128);
 	if (Object.hasOwn(input, "labels")) update.labels = stringArray(input, "labels", 20, 64);
 	if (Object.hasOwn(input, "dueAt")) update.dueAt = dueAt(input);
-	if (Object.hasOwn(input, "repo")) update.repo = optionalNullableString(input, "repo", 4096);
-	if (Object.hasOwn(input, "worktree")) update.worktree = optionalNullableString(input, "worktree", 4096);
-	if (Object.hasOwn(input, "branch")) update.branch = optionalNullableString(input, "branch", 4096);
-	if (Object.hasOwn(input, "acceptanceCriteria")) {
-		update.acceptanceCriteria = stringArray(input, "acceptanceCriteria", 50, 1000);
-	}
-	if (Object.hasOwn(input, "blockerReason")) {
-		update.blockerReason = optionalNullableString(input, "blockerReason", 2000);
-	}
 	if (Object.hasOwn(input, "priority")) update.priority = priority(input.priority);
 	return update;
 }

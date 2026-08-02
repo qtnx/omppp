@@ -22,11 +22,6 @@ function task(title: string, status: KanbanTaskCreate["status"] = "backlog"): Ka
 		assignee: null,
 		labels: [],
 		dueAt: null,
-		repo: null,
-		worktree: null,
-		branch: null,
-		acceptanceCriteria: [],
-		blockerReason: null,
 	};
 }
 
@@ -70,7 +65,7 @@ describe("KanbanStore", () => {
 		const { store, dbPath } = await createStore();
 		const created = store.createTask(
 			"session-a",
-			{ ...task("Ship native board"), labels: ["backend"], acceptanceCriteria: ["focused tests pass"] },
+			{ ...task("Ship native board"), labels: ["backend"] },
 			operation("task-create", "/api/v1/sessions/session-a/tasks", task("Ship native board")),
 		);
 		expect(created.status).toBe(201);

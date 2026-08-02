@@ -1,4 +1,4 @@
-import { CalendarDays, GripVertical, Plus, Tag, UserRound } from "lucide-react";
+import { CalendarDays, GripVertical, Plus } from "lucide-react";
 import {
 	type KeyboardEvent,
 	type PointerEvent as ReactPointerEvent,
@@ -11,6 +11,19 @@ import {
 import { calculateMoveDestination, type MoveDestination, projectKeyboardMove } from "./reorder";
 import { isKanbanStatus, KANBAN_STATUSES, type KanbanStatus, type KanbanTask } from "./types";
 import { formatKanbanDate, PRIORITY_LABELS, STATUS_LABELS } from "./view-model";
+
+/** Avatar bubble text: first letters of the first two words, Jira-style. */
+function initials(assignee: string): string {
+	const parts = assignee
+		.trim()
+		.split(/[\s._-]+/)
+		.filter(Boolean);
+	if (parts.length === 0) return "?";
+	return parts
+		.slice(0, 2)
+		.map(part => part[0]!.toUpperCase())
+		.join("");
+}
 
 interface KanbanBoardProps {
 	tasks: readonly KanbanTask[];
@@ -276,30 +289,37 @@ export function KanbanBoard({
 													className="kb-card-open"
 													onClick={event => onOpenTask(task, event.currentTarget)}
 												>
-													<span className="kb-priority" data-priority={task.priority}>
-														{PRIORITY_LABELS[task.priority]}
-													</span>
 													<strong>{task.title}</strong>
 													{task.description ? (
 														<span className="kb-card-description">{task.description}</span>
 													) : null}
 													<span className="kb-card-meta">
-														{task.assignee ? (
-															<span>
-																<UserRound size={13} aria-hidden="true" />
-																{task.assignee}
+														<span
+															className="kb-priority"
+															data-priority={task.priority}
+															title={`${PRIORITY_LABELS[task.priority]} priority`}
+														>
+															{PRIORITY_LABELS[task.priority].slice(0, 1)}
+														</span>
+														<span className="kb-card-key">{task.id.slice(0, 8)}</span>
+														{task.labels.length > 0 ? (
+															<span className="kb-card-labels">
+																{task.labels.slice(0, 2).map(label => (
+																	<span key={label}>{label}</span>
+																))}
+																{task.labels.length > 2 ? <span>+{task.labels.length - 2}</span> : null}
 															</span>
 														) : null}
+														<span className="kb-card-spacer" />
 														{due ? (
 															<span>
 																<CalendarDays size={13} aria-hidden="true" />
 																{due}
 															</span>
 														) : null}
-														{task.labels.length > 0 ? (
-															<span>
-																<Tag size={13} aria-hidden="true" />
-																{task.labels.length}
+														{task.assignee ? (
+															<span className="kb-avatar" title={task.assignee}>
+																{initials(task.assignee)}
 															</span>
 														) : null}
 													</span>

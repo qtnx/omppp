@@ -5,12 +5,8 @@ import eventTemplate from "./kanban-event.md" with { type: "text" };
 import type { KanbanActivity } from "./types";
 
 const URGENT_UPDATE_FIELDS: Readonly<Record<string, true>> = {
-	acceptanceCriteria: true,
 	assignee: true,
-	branch: true,
 	description: true,
-	repo: true,
-	worktree: true,
 };
 
 export interface KanbanCustomMessagePayload {

@@ -33,11 +33,6 @@ function taskCreate(title: string, status: "backlog" | "ready" | "in_progress" =
 		assignee: null,
 		labels: [] as string[],
 		dueAt: null,
-		repo: null,
-		worktree: null,
-		branch: null,
-		acceptanceCriteria: [] as string[],
-		blockerReason: null,
 	};
 }
 

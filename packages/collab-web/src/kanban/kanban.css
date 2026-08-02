@@ -1,9 +1,11 @@
 /* Native Kanban UI. Raw colors stay in styles/tokens.css. */
 
+/* Flex column, not a fixed 4-row grid: the banner and notice rows are
+   conditional, so a positional grid drops `main` into an `auto` row and the
+   board stops filling the viewport. */
 .kb-app {
-	display: grid;
-	grid-template-rows: auto auto auto minmax(0, 1fr);
-	grid-template-columns: minmax(0, 1fr);
+	display: flex;
+	flex-direction: column;
 	height: var(--viewport-height, 100%);
 	min-width: 0;
 	background: var(--bg);
@@ -166,7 +168,7 @@
 .kb-board,
 .kb-column,
 .kb-column-list { min-width: 0; min-height: 0; }
-.kb-main { overflow: hidden; }
+.kb-main { flex: 1; overflow: hidden; }
 .kb-board-region { display: flex; height: 100%; flex-direction: column; overflow: hidden; }
 .kb-keyboard-instructions { padding: 6px 12px; font-size: 10px; color: var(--fg-faint); border-bottom: 1px solid var(--border); background: var(--bg-inset); }
 
@@ -203,11 +205,11 @@
 .kb-column[data-kanban-column="cancelled"] { --column-accent: var(--status-cancelled); }
 .kb-column[data-drop-target="true"] { background: color-mix(in oklch, var(--column-accent) 8%, var(--bg-inset)); border-color: var(--column-accent); }
 
-.kb-column-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 8px 7px 10px; border-bottom: 1px solid var(--border); }
-.kb-column-header > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.kb-column-header h2 { font-size: 11px; font-weight: 700; letter-spacing: 0.035em; text-transform: uppercase; }
-.kb-column-header span { min-width: 20px; padding: 1px 5px; font: 600 10px / 1.5 var(--font-mono); text-align: center; color: var(--fg-muted); background: var(--bg-overlay); border-radius: var(--radius-sm); }
-.kb-column-list { display: flex; flex: 1; flex-direction: column; gap: 6px; padding: 7px; overflow-y: auto; }
+.kb-column-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 8px 8px 11px; }
+.kb-column-header > div { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.kb-column-header h2 { font-size: 11px; font-weight: 700; letter-spacing: 0.045em; text-transform: uppercase; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-column-header span { min-width: 20px; padding: 1px 6px; font: 600 10px / 1.5 var(--font-mono); text-align: center; color: var(--fg-muted); background: var(--bg-overlay); border-radius: 999px; }
+.kb-column-list { display: flex; flex: 1; flex-direction: column; gap: 7px; padding: 0 7px 8px; overflow-y: auto; }
 
 .kb-task-card {
 	--priority-color: var(--priority-medium);
@@ -216,28 +218,34 @@
 	grid-template-columns: minmax(0, 1fr) 32px;
 	background: var(--bg-raised);
 	border: 1px solid var(--border);
-	border-left: 2px solid var(--priority-color);
 	border-radius: var(--radius);
-	box-shadow: 0 1px 0 var(--border);
-	transition: transform 150ms ease-out, border-color 150ms ease-out, background 150ms ease-out;
+	box-shadow: 0 1px 1px color-mix(in oklch, var(--border-strong) 55%, transparent);
+	transition: transform 150ms ease-out, box-shadow 150ms ease-out, border-color 150ms ease-out;
 }
 .kb-task-card[data-priority="lowest"] { --priority-color: var(--priority-lowest); }
 .kb-task-card[data-priority="low"] { --priority-color: var(--priority-low); }
 .kb-task-card[data-priority="high"] { --priority-color: var(--priority-high); }
 .kb-task-card[data-priority="highest"] { --priority-color: var(--priority-highest); }
-.kb-task-card:hover { background: var(--bg-overlay); border-color: var(--border-strong); border-left-color: var(--priority-color); }
+/* Jira lifts the card under the cursor rather than tinting it. */
+.kb-task-card:hover { border-color: var(--border-strong); box-shadow: 0 3px 8px color-mix(in oklch, var(--border-strong) 60%, transparent); transform: translateY(-1px); }
 .kb-task-card[data-keyboard-preview="true"] { outline: 2px solid var(--ring); outline-offset: 1px; transform: scale(0.985); }
 
-.kb-card-open { display: flex; min-width: 0; padding: 9px 7px 9px 10px; flex-direction: column; align-items: flex-start; gap: 5px; text-align: left; background: transparent; border: 0; border-radius: var(--radius) 0 0 var(--radius); }
+.kb-card-open { display: flex; min-width: 0; padding: 10px 8px 9px 11px; flex-direction: column; align-items: flex-start; gap: 7px; text-align: left; background: transparent; border: 0; border-radius: var(--radius) 0 0 var(--radius); }
 .kb-card-open strong,
 .kb-card-description,
 .kb-card-meta,
 .kb-card-meta span { max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
 .kb-card-open strong { font-size: 12px; line-height: 1.35; }
 .kb-card-description { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 11px; line-height: 1.4; color: var(--fg-muted); }
-.kb-priority { font: 600 9px / 1.4 var(--font-mono); color: var(--priority-color); }
-.kb-card-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 10px; color: var(--fg-faint); }
+/* Card footer reads like a Jira issue row: priority glyph, key, labels, avatar. */
+.kb-priority { display: inline-grid; place-items: center; width: 14px; height: 14px; font: 700 8px / 1 var(--font-mono); color: var(--bg); background: var(--priority-color); border-radius: 3px; }
+.kb-card-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; width: 100%; font: 500 10px / 1.4 var(--font-mono); color: var(--fg-faint); }
 .kb-card-meta span { gap: 3px; }
+.kb-card-key { letter-spacing: 0.05em; text-transform: uppercase; }
+.kb-card-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+.kb-card-labels span { padding: 1px 6px; font-size: 9px; color: var(--fg-muted); background: var(--bg-inset); border: 1px solid var(--border); border-radius: 999px; }
+.kb-card-spacer { flex: 1; }
+.kb-avatar { display: grid; place-items: center; width: 20px; height: 20px; font: 600 9px / 1 var(--font-sans, inherit); color: var(--bg); background: var(--accent); border-radius: 999px; }
 
 .kb-drag-handle { display: grid; place-items: center; width: 32px; min-height: 44px; padding: 0; align-self: stretch; color: var(--fg-faint); background: transparent; border: 0; border-left: 1px solid var(--border); border-radius: 0 var(--radius) var(--radius) 0; touch-action: none; cursor: grab; }
 .kb-drag-handle:active:not(:disabled),
@@ -267,20 +275,59 @@
 .kb-load-error p,
 .kb-fatal p { color: var(--fg-muted); overflow-wrap: anywhere; }
 
+/* Jira-style centered issue modal: floats over the board instead of pinning to
+   an edge, so the board stays visible as context behind the backdrop. */
 .kb-sheet,
-.kb-activity-dialog { width: min(720px, 100%); max-width: none; height: var(--viewport-height, 100dvh); max-height: none; margin: 0 0 0 auto; padding: 0; color: var(--fg); background: var(--bg); border: 0; box-shadow: var(--shadow-overlay); }
+.kb-activity-dialog {
+	width: min(980px, 92vw);
+	max-width: none;
+	height: auto;
+	max-height: min(88vh, calc(var(--viewport-height, 100dvh) - 48px));
+	margin: auto;
+	padding: 0;
+	color: var(--fg);
+	background: var(--bg-raised);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-overlay);
+	overflow: hidden;
+}
+.kb-sheet-create { width: min(640px, 92vw); }
+.kb-activity-dialog { width: min(560px, 92vw); }
 .kb-sheet::backdrop,
 .kb-activity-dialog::backdrop { background: var(--backdrop); }
 .kb-sheet-frame,
 .kb-activity-dialog-frame { display: grid; grid-template-rows: auto auto minmax(0, 1fr); height: 100%; min-width: 0; min-height: 0; }
 .kb-sheet-header,
-.kb-activity-dialog-frame > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: calc(12px + env(safe-area-inset-top, 0px)) 14px 12px; border-bottom: 1px solid var(--border); }
+.kb-activity-dialog-frame > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: calc(12px + env(safe-area-inset-top, 0px)) 14px 12px; border-bottom: 1px solid var(--border); }
 .kb-sheet-header > div,
 .kb-activity-dialog-frame > header > div { min-width: 0; }
 .kb-sheet-header p,
-.kb-activity-dialog-frame > header p { font: 600 10px / 1.4 var(--font-mono); color: var(--fg-faint); }
+.kb-activity-dialog-frame > header p { display: flex; align-items: center; gap: 8px; font: 600 10px / 1.4 var(--font-mono); color: var(--fg-faint); }
 .kb-sheet-header h2,
 .kb-activity-dialog-frame > header h2 { font-size: 17px; line-height: 1.3; overflow-wrap: anywhere; }
+/* Issue key, Jira's `PROJ-123` slot — here the task id's stable prefix. */
+.kb-issue-key { letter-spacing: 0.06em; text-transform: uppercase; }
+.kb-status-chip { padding: 2px 7px; font: 600 9px / 1.5 var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg); background: color-mix(in oklch, var(--chip-color, var(--status-backlog)) 22%, var(--bg-inset)); border: 1px solid color-mix(in oklch, var(--chip-color, var(--status-backlog)) 45%, var(--border)); border-radius: 999px; }
+.kb-status-chip[data-status="ready"] { --chip-color: var(--status-ready); }
+.kb-status-chip[data-status="in_progress"] { --chip-color: var(--status-in-progress); }
+.kb-status-chip[data-status="blocked"] { --chip-color: var(--status-blocked); }
+.kb-status-chip[data-status="review"] { --chip-color: var(--status-review); }
+.kb-status-chip[data-status="done"] { --chip-color: var(--status-done); }
+.kb-status-chip[data-status="cancelled"] { --chip-color: var(--status-cancelled); }
+
+/* Two-pane issue body: editor on the left, read-only metadata rail on the
+   right, collapsing to one column when the modal is too narrow to split. */
+.kb-sheet-split { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 18px; align-items: start; }
+.kb-sheet-main { display: grid; min-width: 0; gap: 14px; }
+.kb-sheet-side { display: grid; gap: 8px; padding: 12px; background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius); }
+.kb-sheet-side h3 { font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg-faint); }
+.kb-sheet-side dl { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 6px 10px; margin: 0; }
+.kb-sheet-side dt { font-size: 10px; color: var(--fg-faint); }
+.kb-sheet-side dd { margin: 0; font-size: 11px; color: var(--fg); overflow-wrap: anywhere; }
+@media (max-width: 899px) {
+	.kb-sheet-split { grid-template-columns: minmax(0, 1fr); }
+}
 
 .kb-tabs { display: flex; gap: 4px; padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--bg-inset); }
 .kb-tabs button { min-height: 34px; padding: 5px 10px; font-size: 11px; }
@@ -345,7 +392,7 @@
 .kb-comment-edit { display: grid; gap: 6px; }
 .kb-comment-edit textarea { width: 100%; min-height: 90px; padding: 7px 9px; color: var(--fg); background: var(--bg-inset); border: 1px solid var(--border-strong); border-radius: var(--radius); resize: vertical; }
 .kb-activity-list strong { font-size: 12px; }
-.kb-activity-dialog { width: min(440px, 100%); }
+.kb-activity-dialog { width: min(560px, 92vw); }
 .kb-activity-dialog-frame { grid-template-rows: auto minmax(0, 1fr); }
 .kb-activity-dialog .kb-activity-list,
 .kb-activity-dialog .kb-activity-empty { margin: 12px; overflow-y: auto; }
@@ -376,8 +423,10 @@
 	.kb-drag-handle { width: 44px; }
 	.kb-task-card { grid-template-columns: minmax(0, 1fr) 44px; }
 	.kb-board-empty { align-items: stretch; flex-direction: column; }
+	/* Phones get a full-bleed sheet: a floating card wastes edge space here. */
 	.kb-sheet,
-	.kb-activity-dialog { width: 100%; height: var(--viewport-height, 100dvh); }
+	.kb-sheet-create,
+	.kb-activity-dialog { width: 100%; max-width: none; height: var(--viewport-height, 100dvh); max-height: none; border: 0; border-radius: 0; }
 	.kb-sheet-content { padding: 12px; }
 	.kb-field-row { grid-template-columns: minmax(0, 1fr); }
 	.kb-field input,
@@ -390,7 +439,7 @@
 @media (min-width: 768px) and (max-width: 1100px) {
 	.kb-column,
 	.kb-loading-column { width: 270px; min-width: 270px; }
-	.kb-sheet { width: min(680px, 88vw); }
+	.kb-sheet { width: min(720px, 92vw); }
 	.kb-button,
 	.kb-icon-button,
 	.sh-theme-toggle,

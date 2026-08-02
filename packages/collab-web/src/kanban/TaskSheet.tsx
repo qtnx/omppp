@@ -148,14 +148,26 @@ export function TaskSheet({
 	const taskActivity = activity.filter(item => item.taskId === task?.id);
 
 	return (
-		<dialog ref={dialogRef} className="kb-sheet" aria-labelledby="kb-sheet-title" onClose={dismiss}>
+		<dialog
+			ref={dialogRef}
+			className={task ? "kb-sheet" : "kb-sheet kb-sheet-create"}
+			aria-labelledby="kb-sheet-title"
+			onClose={dismiss}
+		>
 			<div className="kb-sheet-frame">
 				<header className="kb-sheet-header">
 					<div>
 						<p>
-							{task
-								? `${STATUS_LABELS[task.status]} task`
-								: `New ${STATUS_LABELS[defaultStatus].toLowerCase()} task`}
+							{task ? (
+								<>
+									<span className="kb-issue-key">{task.id.slice(0, 8)}</span>
+									<span className="kb-status-chip" data-status={task.status}>
+										{STATUS_LABELS[task.status]}
+									</span>
+								</>
+							) : (
+								<span className="kb-issue-key">New {STATUS_LABELS[defaultStatus].toLowerCase()} task</span>
+							)}
 						</p>
 						<h2 id="kb-sheet-title">{task?.title ?? "Create task"}</h2>
 					</div>
@@ -163,7 +175,7 @@ export function TaskSheet({
 						type="button"
 						className="kb-icon-button"
 						onClick={() => dialogRef.current?.close()}
-						aria-label="Close task details"
+						aria-label={task ? "Close task details" : "Close create task"}
 					>
 						<X size={18} aria-hidden="true" />
 					</button>
@@ -194,25 +206,45 @@ export function TaskSheet({
 				<div className="kb-sheet-content">
 					{tab === "details" ? (
 						<section id="kb-panel-details" role="tabpanel" aria-labelledby={task ? "kb-tab-details" : undefined}>
-							{task ? (
-								<div className="kb-task-summary" aria-label="Task metadata">
-									<span>Priority: {PRIORITY_LABELS[task.priority]}</span>
-									<span>Version: {task.version}</span>
-									<span>Updated: {formatKanbanDate(task.updatedAt)}</span>
+							<div className={task ? "kb-sheet-split" : undefined}>
+								<div className="kb-sheet-main">
+									<TaskForm
+										key={`${task?.id ?? "new"}:${task?.version ?? 0}:${defaultStatus}`}
+										task={task}
+										defaultStatus={defaultStatus}
+										busy={busy}
+										canWrite={canWrite}
+										serverError={serverError}
+										onSubmit={async valid => {
+											if (await onSave(valid)) dialogRef.current?.close();
+										}}
+										onCancel={() => dialogRef.current?.close()}
+									/>
 								</div>
-							) : null}
-							<TaskForm
-								key={`${task?.id ?? "new"}:${task?.version ?? 0}:${defaultStatus}`}
-								task={task}
-								defaultStatus={defaultStatus}
-								busy={busy}
-								canWrite={canWrite}
-								serverError={serverError}
-								onSubmit={async valid => {
-									if (await onSave(valid)) dialogRef.current?.close();
-								}}
-								onCancel={() => dialogRef.current?.close()}
-							/>
+								{task ? (
+									<aside className="kb-sheet-side" aria-label="Task metadata">
+										<h3>Details</h3>
+										<dl>
+											<dt>Status</dt>
+											<dd>{STATUS_LABELS[task.status]}</dd>
+											<dt>Priority</dt>
+											<dd>{PRIORITY_LABELS[task.priority]}</dd>
+											<dt>Assignee</dt>
+											<dd>{task.assignee ?? "Unassigned"}</dd>
+											<dt>Labels</dt>
+											<dd>{task.labels.length > 0 ? task.labels.join(", ") : "None"}</dd>
+											<dt>Due</dt>
+											<dd>{task.dueAt ? formatKanbanDate(task.dueAt) : "No due date"}</dd>
+											<dt>Version</dt>
+											<dd>{task.version}</dd>
+											<dt>Created</dt>
+											<dd>{formatKanbanDate(task.createdAt)}</dd>
+											<dt>Updated</dt>
+											<dd>{formatKanbanDate(task.updatedAt)}</dd>
+										</dl>
+									</aside>
+								) : null}
+							</div>
 							{task ? (
 								<section className="kb-danger-zone" aria-labelledby="kb-delete-task-title">
 									<h3 id="kb-delete-task-title">Delete task</h3>

@@ -28,11 +28,6 @@ export interface KanbanTask {
 	assignee: string | null;
 	labels: string[];
 	dueAt: string | null;
-	repo: string | null;
-	worktree: string | null;
-	branch: string | null;
-	acceptanceCriteria: string[];
-	blockerReason: string | null;
 	priority: KanbanPriority;
 	version: number;
 	createdAt: string;
@@ -76,11 +71,6 @@ export interface KanbanTaskDraft {
 	assignee?: string | null;
 	labels?: string[];
 	dueAt?: string | null;
-	repo?: string | null;
-	worktree?: string | null;
-	branch?: string | null;
-	acceptanceCriteria?: string[];
-	blockerReason?: string | null;
 }
 
 export interface KanbanTaskUpdate {
@@ -90,11 +80,6 @@ export interface KanbanTaskUpdate {
 	assignee: string | null;
 	labels: string[];
 	dueAt: string | null;
-	repo: string | null;
-	worktree: string | null;
-	branch: string | null;
-	acceptanceCriteria: string[];
-	blockerReason: string | null;
 	priority: KanbanPriority;
 }
 
