@@ -7,6 +7,40 @@
 - Fixed advisor memory growth caused by automatic tool-output pruning replaying the full primary transcript and by transcript recording reloading the entire advisor journal before appending. Pruning-only rewrites now rebase the cursor, while recorder startup reads only the final JSONL entry.
 ### Added
 
+- Herdr integration: a per-session control socket (`~/.omp/run/control/<sessionId>.sock`) plus an `ompx prompt` command that delivers a prompt into a running session from outside its TTY. The text is submitted as one user message with the exact bytes — multi-line, unicode, backticks and a leading `/` all survive, with no keystroke synthesis or autocomplete interference. Target a session with `--pane`, `--session`, `--cwd` or `--socket`; `ompx prompt --list` shows live sessions. Opt out with `HERDR_CONTROL_SOCKET=0`.
+- `ompx herdr install` creates the `omp`-named entrypoint herdr's built-in `omp` agent kind needs, so `herdr agent prompt` and `herdr agent send-keys` can drive an `ompx` pane (herdr matches the pane's foreground process name, which is `ompx` on this fork). `ompx herdr status` also warns about a shell `alias omp=…` that would shadow it; `ompx herdr uninstall` removes it. See `docs/herdr-ompx-integration.md`.
+- Herdr pane coordination metadata: the running session reports the current task title, model, token spend, cost and context usage as pane tokens with a TTL, plus its session id and transcript path (`herdr.metadata.enabled`, default on).
+- Herdr notifications on a settled turn and when the agent needs review, behind `herdr.notify.done`, `herdr.notify.blocked`, `herdr.notify.sound` and `herdr.notify.minWorkMs` (all off/conservative by default).
+- Peer-agent notifications between Herdr panes, off until a session opts in with `/herdr-notify on`. Opting in publishes a `0600` descriptor under `~/.omp/run/notify` and nothing else: delivery reuses the session's existing control socket (unix, mode `0600`), so there is no port, no token, and nothing to configure. Finished peers arrive as follow-up messages that never interrupt a running turn; `/herdr-notify off|status` withdraws or inspects the opt-in.
+- Added `ompx herdr watch`, a single per-machine bridge that subscribes to Herdr's event socket and forwards agents settling to `done` or `idle` after `working` to every opted-in session, with `--detach`, `--status`, and `--stop`.
+
+## [1.6.6] - 2026-07-25
+
+### Breaking Changes
+
+- Reworked the task tool's model-facing wire schema: moved `agent` into individual task items and renamed `assignment`/`id` to `task`/`name`; the fork retains `assignment`, `id`, `role`, and `description` as runtime compatibility aliases for internal callers and persisted transcripts.
+- Unified tool presentation on `loadMode` (`essential` | `discoverable`), replacing the custom-tool `xdev?: boolean` opt-out. Custom, extension, MCP, RPC host, image-generation, and TTS tools now default to `discoverable` and mount under `xd://` when enabled. `generate_image`, `tts`, and MCP tools are now exposed as `xd://` devices in default sessions instead of shipping their schemas top-level.
+- Replaced the `--reasoning-slide-*` flag family with a unified `--prewalk` mechanism (`--prewalk`, `--prewalk-into <model>`, and `--no-prewalk`) to manage model handoffs during execution.
+- Changed the public `selectLaunchAdapter()` result from `DapResolvedAdapter | null` to `LaunchAdapterSelection`; callers must handle `adapter`, `unavailable`, and `none` outcomes.
+- Removed _input as a supported alias for the edit tool input field
+- Changed search tool `paths` parameter to a single semicolon-delimited `path` string parameter
+- Changed the `grep`, `glob`, and `ast_grep` tools to take a single optional `path` argument instead of a `paths` array. `path` accepts one path or a semicolon-delimited list (`src; tests`); omitting it searches the workspace root (`.`). Multi-path search, delimited expansion, and internal-URL scopes are unchanged. (`ast_edit` continues to take `paths`.)
+- Removed the canonical-alias grouping and resolution layer. The `equivalence` key (`overrides`/`exclude`) in `models.yml`/`models.json` is now inert, and canonical-related methods have been removed from `ModelRegistry`.
+- Removed the "CANONICAL" tab from the interactive model selector and the `omp models canonical` subcommand.
+- Replaced the global `serviceTier` and `fastModeScope` settings with granular, per-family settings (`tier.openai`, `tier.anthropic`, and `tier.google`) to control service tiers, subagents, advisors, and `/fast` mode targets.
+- Renamed the `search` tool to `grep` and the `find` tool to `glob`. Existing user settings are automatically migrated to the new configuration keys.
+- Renamed the eval `agent()` helper parameters `agent_type` → `agent` and `return_handle` → `handle` across every workflow runtime (Python, JavaScript, Ruby, Julia), so the names are identical in every language (no camelCase/snake_case split) and the agent-selection parameter matches the `task` tool's `agent`. The `__agent__` eval bridge wire protocol was renamed to match.
+- Changed the `eval` tool to take a single cell per call (`{ language, code, title?, timeout?, reset? }`) instead of a `cells` array. State still persists per language across separate eval calls, tool calls, and `task` subagents, so each call is one logical step that reuses everything earlier calls defined — the array only encouraged re-importing/re-declaring the same setup in every batch. The schema, field descriptions, examples, system `eval.md`/`workflowz` helper docs, and the `[i/n]` cell-counter (now hidden for single cells) were updated to match; the renderer, ACP start-text, copy-targets, and collab-web tool view still parse legacy multi-cell transcripts.
+- **Settings:** `hooks` and `customTools` arrays replaced with single `extensions` array
+- **CLI:** `--hook` and `--tool` flags replaced with `--extension` / `-e`
+- **Directories:** `hooks/`, `tools/` → `extensions/`; `commands/` → `prompts/`
+- **Types:** See type renames above
+- **SDK:** See SDK migration above
+- Renamed the SDK tool format type and resolver from `ToolCallFormat`/`resolveToolCallSyntax` to `DialectFormat`/`resolveDialect`, and the agent option from `toolCallSyntax` to `dialect`.
+- Changed `/dump` transcript output to render messages with the selected model's native dialect turn and thinking envelopes instead of markdown role headings.
+
+### Added
+
 - Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
 - Added a project-scoped Kanban board, started with `/kanban`, stored in `<project>/.omp/kanban.db`. Every session in the same directory shares one board and one URL; each session gets a stable short name that tasks are assigned to, and board events reach the assigned session (or every session when unassigned). `/kanban off` stops it; `/kanban status` reports whether it runs.
 - Added tailnet reachability to the Kanban board: on a Tailscale host the board also answers on the host's tailnet addresses, so phones and other tailnet devices can open it, while every request is still restricted to loopback or tailnet peers with a `Host`-matched origin.

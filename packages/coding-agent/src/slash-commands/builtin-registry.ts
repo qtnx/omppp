@@ -45,6 +45,8 @@ import {
 	MarketplaceManager,
 } from "../extensibility/plugins/marketplace";
 import type { Skill } from "../extensibility/skills";
+import { disableHerdrNotify, enableHerdrNotify, herdrNotifyStatus } from "../herdr/notify-optin";
+import { isHerdrPane } from "../herdr/socket";
 import { isKanbanBoardRunning, startKanbanBoard, stopKanbanBoard } from "../kanban";
 import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../learnings";
 import * as learningConsolidation from "../learnings/consolidate";
@@ -1003,6 +1005,63 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			}
 			runtime.ctx.showStatus("Usage: /fast [on|off|status]");
 			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "herdr-notify",
+		description: "Receive notifications when other Herdr agents finish (off by default)",
+		acpInputHint: "[on|off|status]",
+		subcommands: [
+			{ name: "on", description: "Enable Herdr agent-finished notifications" },
+			{ name: "off", description: "Disable Herdr agent-finished notifications" },
+			{ name: "status", description: "Show Herdr notification status" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (!arg || arg === "status") {
+				const status = herdrNotifyStatus();
+				await runtime.output(
+					status.enabled
+						? [
+								"Herdr notifications are enabled.",
+								...(status.socket ? [`Socket: ${status.socket}`] : []),
+								...(status.descriptorPath ? [`Descriptor: ${status.descriptorPath}`] : []),
+							].join("\n")
+						: "Herdr notifications are disabled.",
+				);
+				return commandConsumed();
+			}
+			if (arg === "on") {
+				if (!isHerdrPane()) {
+					await runtime.output("Herdr notifications are unavailable: this session is not inside a Herdr pane.");
+					return commandConsumed();
+				}
+				try {
+					await enableHerdrNotify({
+						sessionId: runtime.sessionManager.getSessionId(),
+						cwd: runtime.sessionManager.getCwd(),
+						paneId: process.env.HERDR_PANE_ID,
+						tabId: process.env.HERDR_TAB_ID,
+						workspaceId: process.env.HERDR_WORKSPACE_ID,
+					});
+				} catch (error) {
+					await runtime.output(
+						`Could not enable Herdr notifications: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					return commandConsumed();
+				}
+				await runtime.output(
+					["Herdr notifications enabled.", "Run `ompx herdr watch --detach` once so the bridge is up."].join("\n"),
+				);
+				return commandConsumed();
+			}
+			if (arg === "off") {
+				await disableHerdrNotify();
+				await runtime.output("Herdr notifications disabled.");
+				return commandConsumed();
+			}
+			return usage("Usage: /herdr-notify [on|off|status]", runtime);
 		},
 	},
 	{
