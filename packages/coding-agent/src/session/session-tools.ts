@@ -351,6 +351,11 @@ export class SessionTools {
 		this.#host.agent.setSystemPrompt(this.#applySystemPromptOverlay(this.#baseSystemPrompt));
 	}
 
+	/** Re-runs the overlay after its inputs changed, without touching the base. */
+	reapplySystemPromptOverlay(): void {
+		this.#host.agent.setSystemPrompt(this.#applySystemPromptOverlay(this.#baseSystemPrompt));
+	}
+
 	/** Skills currently rendered into the system prompt. */
 	get skills(): Skill[] {
 		return this.#skills;

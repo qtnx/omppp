@@ -151,7 +151,8 @@ export class KanbanRuntime {
 		return await this.#serialize(async () => {
 			this.#ensureRunning();
 			const name = sessionBoardName(session.sessionId);
-			if (!this.#sessions.has(session)) {
+			const joined = !this.#sessions.has(session);
+			if (joined) {
 				this.#sessions.set(session, name);
 				this.#delivery.register(session);
 				this.#durableUnregister.set(
@@ -160,8 +161,10 @@ export class KanbanRuntime {
 				);
 			}
 			this.#store?.upsertSession(this.#options.boardId, session.sessionId, name);
-			await this.#replaySession(session);
 			const boardUrl = this.#boardUrl();
+			// System-prompt section, not a chat message: compaction must not erase it.
+			session.setKanbanBriefing(this.#delivery.briefing(boardUrl, name));
+			await this.#replaySession(session);
 			const tailnetUrls = this.#tailnetBoardUrls();
 			const reachable = [boardUrl, ...tailnetUrls].join("  ");
 			session.emitNotice("info", `Kanban board (${name}): ${reachable}`, "kanban");
@@ -172,6 +175,7 @@ export class KanbanRuntime {
 	async unregisterSession(session: KanbanSessionPort): Promise<void> {
 		await this.#serialize(async () => {
 			if (!this.#sessions.delete(session)) return;
+			session.setKanbanBriefing(null);
 			this.#durableUnregister.get(session)?.();
 			this.#durableUnregister.delete(session);
 			this.#pendingEvents.delete(session);
@@ -183,7 +187,10 @@ export class KanbanRuntime {
 
 	async close(): Promise<void> {
 		await this.#serialize(async () => {
-			for (const session of this.#sessions.keys()) this.#store?.removeSession(session.sessionId);
+			for (const session of this.#sessions.keys()) {
+				this.#store?.removeSession(session.sessionId);
+				session.setKanbanBriefing(null);
+			}
 			this.#sessions.clear();
 			for (const unregister of this.#durableUnregister.values()) unregister();
 			this.#durableUnregister.clear();

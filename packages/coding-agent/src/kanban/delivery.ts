@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { YieldQueue } from "../session/yield-queue";
+import briefingTemplate from "./kanban-briefing.md" with { type: "text" };
 import eventTemplate from "./kanban-event.md" with { type: "text" };
 import type { KanbanActivity } from "./types";
 
@@ -29,6 +30,8 @@ export interface KanbanSessionPort {
 	promptCustomMessage(message: KanbanCustomMessagePayload, options: KanbanPromptOptions): Promise<void>;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	onKanbanEventsDurable(listener: (eventIds: readonly string[]) => void): () => void;
+	/** Publishes the board briefing as a system-prompt section; `null` clears it. */
+	setKanbanBriefing(section: string | null): void;
 	hasDurableKanbanEvent(eventId: string): boolean;
 }
 
@@ -59,9 +62,16 @@ function taskData(event: KanbanActivity): Record<string, unknown> | null {
 	return task && typeof task === "object" && !Array.isArray(task) ? (task as Record<string, unknown>) : null;
 }
 
+/**
+ * Which board changes interrupt the session instead of waiting for its next
+ * idle turn: the ones that are an instruction — a new idea to refine, a
+ * go-ahead, a block, or a human talking to the agent in a comment.
+ */
 function requiresSteering(event: KanbanActivity): boolean {
 	const task = taskData(event);
 	if (task?.status === "blocked" || task?.status === "cancelled") return true;
+	if (event.type === "task.created") return true;
+	if (event.type === "task.moved") return task?.status === "ready";
 	if (event.type !== "task.updated") return false;
 	const changedFields = event.data.changedFields;
 	return (
@@ -89,6 +99,15 @@ export class KanbanSessionDelivery {
 	clear(): void {
 		for (const unregister of this.#unregister.values()) unregister();
 		this.#unregister.clear();
+	}
+
+	/**
+	 * Renders the board briefing that the session publishes as a system-prompt
+	 * section. It must not be a chat message: compaction would drop it and the
+	 * agent would forget the workflow mid-session.
+	 */
+	briefing(boardUrl: string, sessionName: string): string {
+		return prompt.render(briefingTemplate, { board_url: boardUrl, session_name: sessionName });
 	}
 
 	async deliver(session: KanbanSessionPort, event: KanbanActivity): Promise<void> {

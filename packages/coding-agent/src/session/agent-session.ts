@@ -470,6 +470,8 @@ export class AgentSession {
 	#unsubscribeAppendOnly?: () => void;
 	#kanbanUnregister?: Promise<void>;
 	readonly #kanbanDurableListeners = new Set<(eventIds: readonly string[]) => void>();
+	/** Kanban board briefing rendered into the system prompt while a board runs. */
+	#kanbanBriefing: string | null = null;
 	#unsubscribeModelRoles?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
@@ -1489,11 +1491,14 @@ export class AgentSession {
 			goalModeEnabled: () => this.#goalModeState?.enabled === true,
 		};
 		this.#duoOrchestrator = new SessionDuoOrchestrator(duoHost, restoredDuoSnapshot);
-		this.#tools.setSystemPromptOverlay(baseSystemPrompt =>
-			this.#duoOrchestrator.orchestratorModeState?.enabled
+		this.#tools.setSystemPromptOverlay(baseSystemPrompt => {
+			const withOrchestrator = this.#duoOrchestrator.orchestratorModeState?.enabled
 				? buildSystemPromptWithOrchestratorOverlay(baseSystemPrompt)
-				: baseSystemPrompt,
-		);
+				: baseSystemPrompt;
+			// The board briefing belongs in the system prompt, not in history: a
+			// compaction would otherwise erase the workflow the agent must follow.
+			return this.#kanbanBriefing ? [...withOrchestrator, this.#kanbanBriefing] : withOrchestrator;
+		});
 		void this.#duoOrchestrator.initialize();
 
 		const maintenanceHost: SessionMaintenanceHost = {
@@ -1996,6 +2001,17 @@ export class AgentSession {
 	 */
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void {
 		this.#emit({ type: "notice", level, message, source });
+	}
+
+	/**
+	 * Publishes (or clears) the Kanban board briefing as a system-prompt section.
+	 * A chat message would be dropped by compaction; the system prompt survives,
+	 * so the board's workflow rules stay in force for the whole session.
+	 */
+	setKanbanBriefing(section: string | null): void {
+		if (this.#kanbanBriefing === section) return;
+		this.#kanbanBriefing = section;
+		this.#tools.reapplySystemPromptOverlay();
 	}
 
 	onKanbanEventsDurable(listener: (eventIds: readonly string[]) => void): () => void {
