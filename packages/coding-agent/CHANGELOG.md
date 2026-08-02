@@ -13,6 +13,29 @@
 - Added a session-scoped `kanban` tool that mounts once the board is running, letting the model read the board and create, update, move, delete, and comment on tasks; model-authored changes stream to open boards without echoing back into the model's own session.
 - Added markdown task descriptions with pasted, dropped, or picked image attachments stored alongside the board; `kanban get` returns those images to the model so it can read screenshots directly.
 - Added an opt-in board notification that fires when the agent changes the board and the tab is not focused.
+- Added vim-style keyboard control to the Kanban board: `h`/`j`/`k`/`l` move focus between cards and columns, `gg`/`G` jump to a column's first or last card, `o` opens the focused task, `c` creates one in the focused column, `?` toggles a shortcut panel, and `h`/`j`/`k`/`l` also steer a lifted card. `Ctrl`/`Cmd`+`Enter` submits the task form and posts a comment.
+- Added an unread indicator and a comment count to Kanban cards. A card is unread when its `updatedAt`/comment-count pair differs from the one last seen in this browser; opening the task clears it, and a board's first visit starts fully read.
+- Added a label picker to the Kanban task form: chips for every label already on the board, a field for new ones that rejects case-insensitive duplicates, and a per-label colour derived from the name so the same label always looks the same on every card.
+- Added in-app toasts, an optional chime, and an unread badge on the tab title and favicon when the board changes from another session; the tab's own changes stay silent.
+- Added short task ids to the Kanban board. Every task carries a per-board number rendered as `T-1`, `T-2`, allocated from a monotonic counter so deleting the newest task never reissues its number, and existing boards backfill by creation order on first open.
+- Added background board agents: a task landing in `backlog` or `ready` now forks an agent carrying the session's context instead of interrupting the main stream, at most three at a time with the rest queued in arrival order. Comments reach the agent already carrying that task; every other event still reaches the session that owns it.
+- Added task names to the Kanban activity history; each entry opens its task.
+
+### Changed
+
+- Kanban card dragging now runs on dnd-kit. Cards drag from anywhere on the card, a click that never travels still opens the task, touch keeps column scrolling until a 250ms hold, and keyboard lifting keeps `h`/`j`/`k`/`l` alongside the arrows. The hand-rolled layer hit-tested the DOM and re-rendered the whole board on every pointer move; that work is gone.
+- Kanban task titles are now optional. An omitted title is stored empty, renders as "Untitled task", and the session receiving the `task.created` event generates a real title and updates it.
+- Kanban task details now show Details permanently with a two-tab Comments/Activity strip below it, the comment composer above the thread, and newest comments first. Comment bodies render markdown with highlighted code.
+- The Kanban status dropdown in task details now applies immediately, moving the card to the end of its new column instead of telling the reader to drag the card.
+- Opening a Kanban task with a description now starts on the rendered preview instead of the raw markdown editor.
+- Kanban cards with unseen activity are now tinted and carry an accent edge, mixed against the active theme's own background so it reads on light and dark.
+- Kanban tasks landing in `done` or `cancelled` no longer notify any agent, and a `cancelled` task releases the background agent working on it.
+
+### Fixed
+
+- Fixed the Kanban notification toggle offering to enable notifications outside a secure context, where the browser silently refuses them — the board is commonly opened over plain http on a tailnet address.
+- Fixed Kanban board shortcuts doing nothing until a card was focused: the keymap was bound to the board section, so a fresh page load left every key dead. It now listens on the document, stays inert while a dialog is open, and adopts the first card when nothing is focused.
+- Fixed an agent leaving `assignee` empty after taking a Kanban task: a `kanban` tool move into `in_progress` now stamps the calling session's board name when the task is unassigned, without ever overwriting someone else's claim or affecting drags from the board UI.
 
 ### Fixed
 

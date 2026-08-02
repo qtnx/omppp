@@ -196,6 +196,7 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 						taskId,
 						input,
 						this.#operation(`/api/v1/boards/${boardId}/tasks/${taskId}/moves`, params.move),
+						{ claimBy: api.sessionName },
 					);
 					api.publish(result.activity);
 					return this.#taskMutationResult(params.op, result);

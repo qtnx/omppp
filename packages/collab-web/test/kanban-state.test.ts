@@ -6,6 +6,7 @@ import {
 	classifyMutationFailure,
 	createRealtimeState,
 	parseKanbanEvent,
+	parseKanbanTask,
 } from "../src/kanban/state";
 import type { KanbanActivity, KanbanTask } from "../src/kanban/types";
 
@@ -29,6 +30,7 @@ function task(overrides: Partial<KanbanTask>): KanbanTask {
 		boardId: "session-1",
 		status: "ready",
 		position: 0,
+		shortId: 1,
 		title: "Ship native board",
 		description: null,
 		assignee: null,
@@ -37,6 +39,7 @@ function task(overrides: Partial<KanbanTask>): KanbanTask {
 		priority: "medium",
 		version: 1,
 		createdAt: CREATED_AT,
+		commentCount: 0,
 		updatedAt: CREATED_AT,
 		...overrides,
 	};
@@ -59,6 +62,26 @@ describe("Kanban realtime state", () => {
 			"Kanban event cursor must be a nonnegative integer",
 		);
 		expect(() => parseKanbanEvent({ ...activity(1), type: "task.executed" })).toThrow("Kanban event type is invalid");
+	});
+});
+
+describe("Kanban task parsing", () => {
+	test("requires a nonnegative comment count in task payloads", () => {
+		const parsed = parseKanbanTask({ ...task({}), commentCount: 2 });
+		expect(parsed).toMatchObject({ commentCount: 2 });
+
+		const missingCommentCount: Record<string, unknown> = { ...task({}) };
+		delete missingCommentCount.commentCount;
+		expect(() => parseKanbanTask(missingCommentCount)).toThrow("Kanban commentCount must be a nonnegative integer");
+	});
+
+	test("requires a nonnegative short id in task payloads", () => {
+		const parsed = parseKanbanTask({ ...task({}), shortId: 2 });
+		expect(parsed).toMatchObject({ shortId: 2 });
+
+		const missingShortId: Record<string, unknown> = { ...task({}) };
+		delete missingShortId.shortId;
+		expect(() => parseKanbanTask(missingShortId)).toThrow("Kanban shortId must be a nonnegative integer");
 	});
 });
 

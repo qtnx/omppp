@@ -21,6 +21,7 @@ export type KanbanActivityType = (typeof KANBAN_ACTIVITY_TYPES)[number];
 export interface KanbanTask {
 	id: string;
 	boardId: string;
+	shortId: number;
 	status: KanbanStatus;
 	position: number;
 	title: string;
@@ -32,6 +33,7 @@ export interface KanbanTask {
 	version: number;
 	createdAt: string;
 	updatedAt: string;
+	commentCount: number;
 }
 
 export interface KanbanComment {

@@ -2,9 +2,15 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { KanbanSessionDelivery, type KanbanSessionPort } from "./delivery";
 import { createKanbanServer, type KanbanClientAssets, type KanbanServerHandle } from "./server";
 import { KanbanStore } from "./store";
-import type { KanbanActivity } from "./types";
+import type { KanbanActivity, KanbanComment, KanbanTask } from "./types";
 
-export type { KanbanCustomMessagePayload, KanbanPromptOptions, KanbanSessionPort } from "./delivery";
+export type {
+	KanbanCustomMessagePayload,
+	KanbanForkedAgent,
+	KanbanForkRequest,
+	KanbanPromptOptions,
+	KanbanSessionPort,
+} from "./delivery";
 
 export interface KanbanRuntimeOptions {
 	dbPath: string;
@@ -99,6 +105,8 @@ export class KanbanRuntime {
 	readonly #pendingEvents = new Map<KanbanSessionPort, Set<string>>();
 	readonly #durableUnregister = new Map<KanbanSessionPort, () => void>();
 	readonly #seenEvents = new Set<string>();
+	/** Ephemeral background aliases that may use their parent's board API. */
+	readonly #forkedAgents = new Map<string, KanbanSessionPort>();
 	#store: KanbanStore | null = null;
 	#server: KanbanServerHandle | null = null;
 	#sync: Timer | null = null;
@@ -130,7 +138,7 @@ export class KanbanRuntime {
 	apiForSession(sessionId: string): KanbanModelApi | null {
 		const store = this.#store;
 		const server = this.#server;
-		const session = this.#sessionForId(sessionId);
+		const session = this.#sessionForId(sessionId) ?? this.#forkedAgents.get(sessionId);
 		if (!store || !server || !session) return null;
 		const boardId = this.#options.boardId;
 		return {
@@ -144,6 +152,20 @@ export class KanbanRuntime {
 				server.broadcast(activity);
 				store.markDelivered(boardId, activity.id);
 			},
+		};
+	}
+
+	/**
+	 * Gives a forked background agent access to its interactive parent's board
+	 * without registering it as a board recipient.
+	 */
+	attachForkedAgent(parentSessionId: string, agentSessionId: string): (() => void) | null {
+		if (!this.#store || !this.#server) return null;
+		const parent = this.#sessionForId(parentSessionId);
+		if (!parent) return null;
+		this.#forkedAgents.set(agentSessionId, parent);
+		return () => {
+			if (this.#forkedAgents.get(agentSessionId) === parent) this.#forkedAgents.delete(agentSessionId);
 		};
 	}
 
@@ -179,6 +201,9 @@ export class KanbanRuntime {
 			this.#durableUnregister.get(session)?.();
 			this.#durableUnregister.delete(session);
 			this.#pendingEvents.delete(session);
+			for (const [agentSessionId, parent] of this.#forkedAgents) {
+				if (parent === session) this.#forkedAgents.delete(agentSessionId);
+			}
 			this.#delivery.unregister(session);
 			this.#store?.removeSession(session.sessionId);
 			if (this.#sessions.size === 0) await this.#stopRuntime();
@@ -195,6 +220,7 @@ export class KanbanRuntime {
 			for (const unregister of this.#durableUnregister.values()) unregister();
 			this.#durableUnregister.clear();
 			this.#pendingEvents.clear();
+			this.#forkedAgents.clear();
 			this.#delivery.clear();
 			await this.#stopRuntime();
 		});
@@ -232,6 +258,7 @@ export class KanbanRuntime {
 		if (server) await server.stop();
 		store?.close();
 		this.#pendingEvents.clear();
+		this.#forkedAgents.clear();
 		this.#seenEvents.clear();
 	}
 
@@ -269,10 +296,20 @@ export class KanbanRuntime {
 
 	/** Sessions an event belongs to: the assignee's, or everyone when unassigned. */
 	#recipients(activity: KanbanActivity): KanbanSessionPort[] {
-		const assignee = assigneeOf(activity);
+		const assignee = assigneeOf(activity) ?? this.#storedTaskAssignee(activity.taskId);
 		if (!assignee) return [...this.#sessions.keys()];
 		const matches = [...this.#sessions].filter(([, name]) => name === assignee).map(([session]) => session);
 		return matches;
+	}
+
+	#storedTaskAssignee(taskId: string | null): string | null {
+		const store = this.#store;
+		if (!store || !taskId) return null;
+		try {
+			return store.getTask(this.#options.boardId, taskId)?.assignee ?? null;
+		} catch {
+			return null;
+		}
 	}
 
 	async #replayAll(): Promise<void> {
@@ -328,8 +365,13 @@ export class KanbanRuntime {
 		}
 		if (pending.has(activity.id)) return;
 		pending.add(activity.id);
+		const context = this.#taskContext(activity);
 		try {
-			await this.#delivery.deliver(session, activity);
+			await this.#delivery.deliver(session, activity, {
+				task: context.task,
+				comments: context.comments,
+				onAgentDispatched: eventId => this.#acknowledgeDurableEvents(session, [eventId]),
+			});
 		} catch (error) {
 			pending.delete(activity.id);
 			if (pending.size === 0) this.#pendingEvents.delete(session);
@@ -346,6 +388,19 @@ export class KanbanRuntime {
 			store.markDelivered(this.#options.boardId, eventId);
 		}
 		if (pending.size === 0) this.#pendingEvents.delete(session);
+	}
+
+	#taskContext(activity: KanbanActivity): { task: KanbanTask | null; comments: readonly KanbanComment[] } {
+		const store = this.#store;
+		if (!store || !activity.taskId) return { task: null, comments: [] };
+		try {
+			return {
+				task: store.getTask(this.#options.boardId, activity.taskId),
+				comments: store.listComments(this.#options.boardId, activity.taskId),
+			};
+		} catch {
+			return { task: null, comments: [] };
+		}
 	}
 
 	#boardUrl(): string {

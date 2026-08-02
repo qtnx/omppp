@@ -6,7 +6,7 @@ export interface TaskFormValues {
 	priority: KanbanPriority;
 	description: string;
 	assignee: string;
-	labels: string;
+	labels: string[];
 	dueAt: string;
 }
 
@@ -34,7 +34,7 @@ export function taskToFormValues(task: KanbanTask | null, defaultStatus: KanbanS
 		priority: task?.priority ?? "medium",
 		description: task?.description ?? "",
 		assignee: task?.assignee ?? "",
-		labels: task?.labels.join(", ") ?? "",
+		labels: [...(task?.labels ?? [])],
 		dueAt: localDateTime(task?.dueAt ?? null),
 	};
 }
@@ -44,23 +44,31 @@ function optionalTrimmed(value: string): string | null {
 	return trimmed.length > 0 ? trimmed : null;
 }
 
-function splitList(value: string): string[] {
-	return value
-		.split(/[,\n]/)
-		.map(item => item.trim())
-		.filter(item => item.length > 0);
+export function normalizeTaskLabels(labels: readonly string[]): { labels: string[]; duplicate: string | null } {
+	const normalized: string[] = [];
+	const seen = new Set<string>();
+	for (const value of labels) {
+		const label = value.trim().replace(/\s+/g, " ");
+		if (label.length === 0) continue;
+		const key = label.toLocaleLowerCase();
+		if (seen.has(key)) return { labels: normalized, duplicate: label };
+		seen.add(key);
+		normalized.push(label);
+	}
+	return { labels: normalized, duplicate: null };
 }
 
 export function validateTaskForm(values: TaskFormValues): { errors: TaskFormErrors; valid: ValidTaskForm | null } {
 	const errors: TaskFormErrors = {};
 	const title = values.title.trim();
-	if (title.length === 0) errors.title = "Enter a task title.";
-	else if (title.length > 200) errors.title = "Keep the title to 200 characters or fewer.";
+	if (title.length > 200) errors.title = "Keep the title to 200 characters or fewer.";
 	if (values.description.length > 20_000) errors.description = "Keep the description to 20,000 characters or fewer.";
 	if (values.assignee.length > 128) errors.assignee = "Keep the assignee to 128 characters or fewer.";
 
-	const labels = splitList(values.labels);
-	if (labels.length > 20) errors.labels = "Use no more than 20 labels.";
+	const normalizedLabels = normalizeTaskLabels(values.labels);
+	const labels = normalizedLabels.labels;
+	if (normalizedLabels.duplicate) errors.labels = `The label “${normalizedLabels.duplicate}” is already selected.`;
+	else if (labels.length > 20) errors.labels = "Use no more than 20 labels.";
 	else if (labels.some(label => label.length > 64)) errors.labels = "Keep each label to 64 characters or fewer.";
 
 	let dueAt: string | null = null;

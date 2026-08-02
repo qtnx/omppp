@@ -21,19 +21,3 @@ export function calculateMoveDestination(
 		index: Math.max(0, Math.min(targetLength, Math.trunc(requestedIndex))),
 	};
 }
-
-export function projectKeyboardMove(
-	tasks: readonly KanbanTask[],
-	taskId: string,
-	statusOrder: readonly KanbanStatus[],
-	current: MoveDestination,
-	direction: "up" | "down" | "left" | "right",
-): MoveDestination {
-	if (direction === "up" || direction === "down") {
-		return calculateMoveDestination(tasks, taskId, current.status, current.index + (direction === "up" ? -1 : 1));
-	}
-
-	const currentColumn = statusOrder.indexOf(current.status);
-	const nextColumn = Math.max(0, Math.min(statusOrder.length - 1, currentColumn + (direction === "left" ? -1 : 1)));
-	return calculateMoveDestination(tasks, taskId, statusOrder[nextColumn], current.index);
-}

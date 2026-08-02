@@ -62,6 +62,370 @@ describe("KanbanStore", () => {
 		}
 	});
 
+	it("allocates monotonic short task ids per board", async () => {
+		const { store } = await createStore();
+		try {
+			const first = store.createTask("board-a", task("First"), operation("create-a1", "/tasks", task("First"))).data;
+			const second = store.createTask(
+				"board-a",
+				task("Second"),
+				operation("create-a2", "/tasks", task("Second")),
+			).data;
+			const otherBoard = store.createTask(
+				"board-b",
+				task("Other"),
+				operation("create-b1", "/tasks", task("Other")),
+			).data;
+
+			expect(first.shortId).toBe(1);
+			expect(second.shortId).toBe(2);
+			expect(otherBoard.shortId).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("does not reissue a short id after deleting the newest task", async () => {
+		const { store } = await createStore();
+		try {
+			const first = store.createTask("board-a", task("First"), operation("create-a1", "/tasks", task("First"))).data;
+			const second = store.createTask(
+				"board-a",
+				task("Second"),
+				operation("create-a2", "/tasks", task("Second")),
+			).data;
+			const newest = store.createTask(
+				"board-a",
+				task("Third"),
+				operation("create-a3", "/tasks", task("Third")),
+			).data;
+
+			store.deleteTask("board-a", newest.id, { expectedVersion: newest.version });
+			const replacement = store.createTask(
+				"board-a",
+				task("Replacement"),
+				operation("create-a4", "/tasks", task("Replacement")),
+			).data;
+
+			expect(replacement.shortId).toBe(4);
+			expect(new Set([first.shortId, second.shortId, replacement.shortId]).size).toBe(3);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("does not reissue a short id after deleting every task on a board", async () => {
+		const { store } = await createStore();
+		try {
+			const first = store.createTask("board-a", task("First"), operation("create-a1", "/tasks", task("First"))).data;
+			const second = store.createTask(
+				"board-a",
+				task("Second"),
+				operation("create-a2", "/tasks", task("Second")),
+			).data;
+
+			store.deleteTask("board-a", second.id, { expectedVersion: second.version });
+			store.deleteTask("board-a", first.id, { expectedVersion: first.version });
+			const replacement = store.createTask(
+				"board-a",
+				task("Replacement"),
+				operation("create-a3", "/tasks", task("Replacement")),
+			).data;
+
+			expect(replacement.shortId).toBe(3);
+			expect(replacement.shortId).not.toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps short-id allocation after reopening a board database", async () => {
+		const { store, dbPath } = await createStore();
+		try {
+			store.createTask("board-a", task("First"), operation("create-a1", "/tasks", task("First")));
+			store.createTask("board-a", task("Second"), operation("create-a2", "/tasks", task("Second")));
+		} finally {
+			store.close();
+		}
+
+		const reopened = KanbanStore.open(dbPath);
+		try {
+			const third = reopened.createTask(
+				"board-a",
+				task("Third"),
+				operation("create-a3", "/tasks", task("Third")),
+			).data;
+			expect(third.shortId).toBe(3);
+		} finally {
+			reopened.close();
+		}
+	});
+
+	it("backfills legacy task short ids by board creation order without repeating the migration", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "ompx-kanban-store-"));
+		roots.push(root);
+		const dbPath = path.join(root, "kanban.db");
+		const legacy = new Database(dbPath);
+		try {
+			legacy.exec(`
+				CREATE TABLE kanban_schema_migrations (
+					version INTEGER PRIMARY KEY,
+					applied_at TEXT NOT NULL
+				);
+				INSERT INTO kanban_schema_migrations(version, applied_at) VALUES (3, '2026-01-01T00:00:00.000Z');
+				CREATE TABLE kanban_tasks (
+					id TEXT PRIMARY KEY,
+					board_id TEXT NOT NULL,
+					status TEXT NOT NULL,
+					position INTEGER NOT NULL,
+					title TEXT NOT NULL,
+					description TEXT,
+					assignee TEXT,
+					labels_json TEXT NOT NULL,
+					due_at TEXT,
+					priority TEXT NOT NULL,
+					version INTEGER NOT NULL,
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL
+				);
+			`);
+			const insert = legacy.prepare(`
+				INSERT INTO kanban_tasks(
+					id, board_id, status, position, title, description, assignee, labels_json, due_at,
+					priority, version, created_at, updated_at
+				) VALUES (?, ?, 'backlog', 0, ?, NULL, NULL, '[]', NULL, 'medium', 1, ?, ?)
+			`);
+			insert.run("task-first", "board-a", "First", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+			insert.run("task-second-a", "board-a", "Second", "2026-01-02T00:00:00.000Z", "2026-01-02T00:00:00.000Z");
+			insert.run("task-second-b", "board-a", "Third", "2026-01-02T00:00:00.000Z", "2026-01-02T00:00:00.000Z");
+			insert.run("task-other-board", "board-b", "Other", "2026-01-03T00:00:00.000Z", "2026-01-03T00:00:00.000Z");
+		} finally {
+			legacy.close();
+		}
+
+		const migrated = KanbanStore.open(dbPath);
+		try {
+			expect(migrated.getTask("board-a", "task-first").shortId).toBe(1);
+			expect(migrated.getTask("board-a", "task-second-a").shortId).toBe(2);
+			expect(migrated.getTask("board-a", "task-second-b").shortId).toBe(3);
+			expect(migrated.getTask("board-b", "task-other-board").shortId).toBe(1);
+		} finally {
+			migrated.close();
+		}
+
+		const reopened = KanbanStore.open(dbPath);
+		try {
+			expect(reopened.getTask("board-a", "task-second-b").shortId).toBe(3);
+		} finally {
+			reopened.close();
+		}
+
+		const db = new Database(dbPath, { readonly: true });
+		try {
+			expect(db.prepare("SELECT COUNT(*) AS count FROM kanban_tasks WHERE short_id IS NULL").get()).toEqual({
+				count: 0,
+			});
+			expect(
+				db
+					.prepare("SELECT COUNT(*) AS count FROM kanban_schema_migrations WHERE version = ?")
+					.get(KANBAN_SCHEMA_VERSION),
+			).toEqual({ count: 1 });
+		} finally {
+			db.close();
+		}
+	});
+
+	it("backfills cached legacy task mutation responses with short ids", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "ompx-kanban-store-"));
+		roots.push(root);
+		const dbPath = path.join(root, "kanban.db");
+		const createdAt = "2026-01-01T00:00:00.000Z";
+		const route = "/api/v1/boards/board-a/tasks";
+		const body = { title: "First", status: "backlog", priority: "medium" };
+		const requestHash = new Bun.CryptoHasher("sha256")
+			.update(`POST\n${route}\n{"priority":"medium","status":"backlog","title":"First"}`)
+			.digest("hex");
+		const legacy = new Database(dbPath);
+		try {
+			legacy.exec(`
+				CREATE TABLE kanban_schema_migrations (
+					version INTEGER PRIMARY KEY,
+					applied_at TEXT NOT NULL
+				);
+				INSERT INTO kanban_schema_migrations(version, applied_at) VALUES (3, '${createdAt}');
+				CREATE TABLE kanban_tasks (
+					id TEXT PRIMARY KEY,
+					board_id TEXT NOT NULL,
+					status TEXT NOT NULL,
+					position INTEGER NOT NULL,
+					title TEXT NOT NULL,
+					description TEXT,
+					assignee TEXT,
+					labels_json TEXT NOT NULL,
+					due_at TEXT,
+					priority TEXT NOT NULL,
+					version INTEGER NOT NULL,
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL
+				);
+				CREATE TABLE kanban_idempotency (
+					board_id TEXT NOT NULL,
+					idempotency_key TEXT NOT NULL,
+					request_hash TEXT NOT NULL,
+					method TEXT NOT NULL,
+					route TEXT NOT NULL,
+					status INTEGER NOT NULL,
+					response_json TEXT NOT NULL,
+					created_at TEXT NOT NULL,
+					PRIMARY KEY (board_id, idempotency_key)
+				);
+			`);
+			legacy
+				.prepare(`
+					INSERT INTO kanban_tasks(
+						id, board_id, status, position, title, description, assignee, labels_json, due_at,
+						priority, version, created_at, updated_at
+					) VALUES (?, ?, 'backlog', 0, ?, NULL, NULL, '[]', NULL, 'medium', 1, ?, ?)
+				`)
+				.run("task-first", "board-a", "First", createdAt, createdAt);
+			legacy
+				.prepare(`
+					INSERT INTO kanban_idempotency(
+						board_id, idempotency_key, request_hash, method, route, status, response_json, created_at
+					) VALUES (?, ?, ?, 'POST', ?, 201, ?, ?)
+				`)
+				.run(
+					"board-a",
+					"legacy-key",
+					requestHash,
+					route,
+					JSON.stringify({
+						data: {
+							id: "task-first",
+							boardId: "board-a",
+							status: "backlog",
+							position: 0,
+							title: "First",
+							description: null,
+							assignee: null,
+							labels: [],
+							dueAt: null,
+							priority: "medium",
+							version: 1,
+							createdAt,
+							updatedAt: createdAt,
+							commentCount: 0,
+						},
+					}),
+					createdAt,
+				);
+		} finally {
+			legacy.close();
+		}
+
+		const migrated = KanbanStore.open(dbPath);
+		try {
+			const replay = migrated.createTask("board-a", task("First"), operation("legacy-key", route, body));
+			expect(replay).toMatchObject({ replayed: true, data: { id: "task-first", shortId: 1 } });
+		} finally {
+			migrated.close();
+		}
+	});
+
+	it("backfills short ids into legacy activity task snapshots", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "ompx-kanban-store-"));
+		roots.push(root);
+		const dbPath = path.join(root, "kanban.db");
+		const createdAt = "2026-01-01T00:00:00.000Z";
+		const legacy = new Database(dbPath);
+		try {
+			legacy.exec(`
+				CREATE TABLE kanban_schema_migrations (
+					version INTEGER PRIMARY KEY,
+					applied_at TEXT NOT NULL
+				);
+				INSERT INTO kanban_schema_migrations(version, applied_at) VALUES (3, '${createdAt}');
+				CREATE TABLE kanban_tasks (
+					id TEXT PRIMARY KEY,
+					board_id TEXT NOT NULL,
+					status TEXT NOT NULL,
+					position INTEGER NOT NULL,
+					title TEXT NOT NULL,
+					description TEXT,
+					assignee TEXT,
+					labels_json TEXT NOT NULL,
+					due_at TEXT,
+					priority TEXT NOT NULL,
+					version INTEGER NOT NULL,
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL
+				);
+				CREATE TABLE kanban_activity (
+					cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+					id TEXT NOT NULL UNIQUE,
+					board_id TEXT NOT NULL,
+					task_id TEXT,
+					type TEXT NOT NULL,
+					created_at TEXT NOT NULL,
+					data_json TEXT NOT NULL
+				);
+			`);
+			legacy
+				.prepare(`
+					INSERT INTO kanban_tasks(
+						id, board_id, status, position, title, description, assignee, labels_json, due_at,
+						priority, version, created_at, updated_at
+					) VALUES (?, ?, 'backlog', 0, ?, NULL, NULL, '[]', NULL, 'medium', 1, ?, ?)
+				`)
+				.run("task-first", "board-a", "First", createdAt, createdAt);
+			legacy
+				.prepare(`
+					INSERT INTO kanban_activity(id, board_id, task_id, type, created_at, data_json)
+					VALUES (?, ?, ?, 'task.created', ?, ?)
+				`)
+				.run(
+					"activity-first",
+					"board-a",
+					"task-first",
+					createdAt,
+					JSON.stringify({
+						task: {
+							id: "task-first",
+							boardId: "board-a",
+							title: "First",
+						},
+					}),
+				);
+		} finally {
+			legacy.close();
+		}
+
+		const migrated = KanbanStore.open(dbPath);
+		try {
+			expect(migrated.getTask("board-a", "task-first").shortId).toBe(1);
+			expect(migrated.getBoard("board-a").activity).toEqual([
+				expect.objectContaining({
+					id: "activity-first",
+					data: { task: { id: "task-first", boardId: "board-a", title: "First", shortId: 1 } },
+				}),
+			]);
+		} finally {
+			migrated.close();
+		}
+
+		const db = new Database(dbPath, { readonly: true });
+		try {
+			const activity = db.prepare("SELECT data_json FROM kanban_activity WHERE id = ?").get("activity-first") as {
+				data_json: string;
+			};
+			expect(JSON.parse(activity.data_json)).toEqual({
+				task: { id: "task-first", boardId: "board-a", title: "First", shortId: 1 },
+			});
+		} finally {
+			db.close();
+		}
+	});
+
 	it("tracks live board sessions without duplicates and excludes stale or removed sessions", async () => {
 		let now = new Date("2026-01-01T00:00:00.000Z");
 		const { store } = await createStore({ now: () => now });
@@ -159,6 +523,37 @@ describe("KanbanStore", () => {
 		}
 	});
 
+	it("counts non-deleted comments in task snapshots", async () => {
+		const { store } = await createStore();
+		const created = store.createTask(
+			"session-a",
+			task("Review comments"),
+			operation("task-create-comments", "/api/v1/boards/session-a/tasks", task("Review comments")),
+		).data;
+		const first = store.createComment(
+			"session-a",
+			created.id,
+			{ author: "owner", body: "Remove this comment." },
+			operation("comment-create-first", `/api/v1/boards/session-a/tasks/${created.id}/comments`, {
+				author: "owner",
+				body: "Remove this comment.",
+			}),
+		).data;
+		store.createComment(
+			"session-a",
+			created.id,
+			{ author: "owner", body: "Keep this comment." },
+			operation("comment-create-second", `/api/v1/boards/session-a/tasks/${created.id}/comments`, {
+				author: "owner",
+				body: "Keep this comment.",
+			}),
+		);
+		store.deleteComment("session-a", created.id, first.id, { expectedVersion: first.version });
+
+		expect(store.getBoard("session-a").tasks).toEqual([expect.objectContaining({ id: created.id, commentCount: 1 })]);
+		store.close();
+	});
+
 	it("reorders densely across columns and rolls back stale writes", async () => {
 		const { store, dbPath } = await createStore();
 		const first = store.createTask(
@@ -246,6 +641,54 @@ describe("KanbanStore", () => {
 		} finally {
 			db.close();
 		}
+	});
+
+	it("does not claim an unassigned task without an explicit claim value", async () => {
+		const { store } = await createStore();
+		const created = store.createTask(
+			"session-a",
+			task("HTTP move"),
+			operation("http-move-create", "/api/v1/boards/session-a/tasks", task("HTTP move")),
+		).data;
+
+		const moved = store.moveTask(
+			"session-a",
+			created.id,
+			{ expectedVersion: created.version, status: "in_progress", index: 0 },
+			operation("http-move", `/api/v1/boards/session-a/tasks/${created.id}/moves`, {
+				expectedVersion: created.version,
+				status: "in_progress",
+				index: 0,
+			}),
+		).data;
+
+		expect(moved).toMatchObject({ status: "in_progress", assignee: null, version: 2 });
+		store.close();
+	});
+
+	it("does not claim a task when moving it outside in_progress", async () => {
+		const { store } = await createStore();
+		const created = store.createTask(
+			"session-a",
+			task("Review move"),
+			operation("review-move-create", "/api/v1/boards/session-a/tasks", task("Review move")),
+		).data;
+
+		const moved = store.moveTask(
+			"session-a",
+			created.id,
+			{ expectedVersion: created.version, status: "review", index: 0 },
+			operation("review-move", `/api/v1/boards/session-a/tasks/${created.id}/moves`, {
+				expectedVersion: created.version,
+				status: "review",
+				index: 0,
+			}),
+			{ claimBy: "swift-otter" },
+		);
+
+		expect(moved.data).toMatchObject({ status: "review", assignee: null, version: 2 });
+		expect(moved.activity?.data).toMatchObject({ task: expect.objectContaining({ assignee: null }) });
+		store.close();
 	});
 
 	it("replays canonical idempotent responses and persists outbox acknowledgement", async () => {

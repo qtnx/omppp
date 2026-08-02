@@ -648,10 +648,6 @@ class KanbanHttpServer implements KanbanServerHandle {
 		}
 	}
 
-	#isActiveBoard(boardId: string): boolean {
-		return boardId === this.#options.boardId;
-	}
-
 	#json(data: unknown, status: number): Response {
 		const headers = securityHeaders("no-store");
 		headers.set("Content-Type", "application/json; charset=utf-8");

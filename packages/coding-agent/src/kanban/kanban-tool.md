@@ -18,6 +18,7 @@ Each call takes `op` plus that op's fields.
 `status`: `backlog`, `ready`, `in_progress`, `blocked`, `review`, `done`, `cancelled`.
 `priority`: `lowest`, `low`, `medium`, `high`, `highest`.
 `dueAt`: RFC3339 UTC, e.g. `2026-08-09T17:00:00Z`, or `null` to clear.
+`shortId` is each task's board-local number, shown as `T-<n>` (for example, `T-12`); use it to refer to a task in comments.
 
 `expectedVersion` is the task's current `version`. A mismatch fails with a version conflict: re-read with `get`, reconcile with whatever changed, then retry — never clobber a concurrent edit.
 

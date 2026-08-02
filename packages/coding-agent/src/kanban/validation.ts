@@ -48,6 +48,15 @@ function requiredString(input: Record<string, unknown>, key: string, max: number
 	return value;
 }
 
+function optionalTaskTitle(input: Record<string, unknown>, key: string, max: number): string {
+	if (!Object.hasOwn(input, key) || input[key] === null) return "";
+	const value = input[key];
+	if (typeof value !== "string" || value.length > max) {
+		throw validationError(`${key} must be a string of at most ${max} characters`);
+	}
+	return value.trim().length === 0 ? "" : value;
+}
+
 function optionalNullableString(input: Record<string, unknown>, key: string, max: number): string | null | undefined {
 	if (!Object.hasOwn(input, key)) return undefined;
 	const value = input[key];
@@ -132,7 +141,7 @@ export function validateTaskCreate(value: unknown): KanbanTaskCreate {
 	if (!Object.hasOwn(input, "status")) throw validationError("status is required");
 	if (!Object.hasOwn(input, "priority")) throw validationError("priority is required");
 	return {
-		title: requiredString(input, "title", 200),
+		title: optionalTaskTitle(input, "title", 200),
 		status: status(input.status),
 		priority: priority(input.priority),
 		description: optionalNullableString(input, "description", 20_000),
@@ -149,7 +158,7 @@ export function validateTaskUpdate(value: unknown): KanbanTaskUpdate {
 		throw validationError("Task update must change at least one field");
 	}
 	const update: KanbanTaskUpdate = { expectedVersion: expectedVersion(input) };
-	if (Object.hasOwn(input, "title")) update.title = requiredString(input, "title", 200);
+	if (Object.hasOwn(input, "title")) update.title = optionalTaskTitle(input, "title", 200);
 	if (Object.hasOwn(input, "description")) update.description = optionalNullableString(input, "description", 20_000);
 	if (Object.hasOwn(input, "assignee")) update.assignee = optionalNullableString(input, "assignee", 128);
 	if (Object.hasOwn(input, "labels")) update.labels = stringArray(input, "labels", 20, 64);

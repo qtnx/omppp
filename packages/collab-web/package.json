@@ -37,7 +37,11 @@
     "fmt": "biome format --write ."
   },
   "dependencies": {
+    "@dnd-kit/core": "6.3.1",
+    "@dnd-kit/sortable": "10.0.0",
+    "@dnd-kit/utilities": "3.2.2",
     "@oh-my-pi/pi-wire": "catalog:",
+    "highlight.js": "11.11.1",
     "lucide-react": "catalog:",
     "marked": "catalog:",
     "mermaid": "11.16.0",

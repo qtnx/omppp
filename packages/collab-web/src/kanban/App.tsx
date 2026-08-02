@@ -1,4 +1,4 @@
-import { Activity, Bell, BellOff, CirclePlus, CloudOff, Columns3, RefreshCw, X } from "lucide-react";
+import { Activity, Bell, BellOff, CirclePlus, CloudOff, Columns3, RefreshCw, Volume2, VolumeX, X } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
 import { KanbanApi } from "./api";
@@ -9,6 +9,10 @@ import {
 	notificationsEnabled,
 	notificationsSupported,
 	notifyBoardEvent,
+	playBoardChime,
+	setBoardAttention,
+	setSoundEnabled,
+	soundEnabled,
 } from "./notify";
 import { calculateMoveDestination, type MoveDestination } from "./reorder";
 import {
@@ -30,7 +34,7 @@ import {
 	type KanbanStatus,
 	type KanbanTask,
 } from "./types";
-import { ACTIVITY_LABELS, activityDetail, formatKanbanDate, STATUS_LABELS } from "./view-model";
+import { ACTIVITY_LABELS, activityDetail, displayTitle, formatKanbanDate, STATUS_LABELS } from "./view-model";
 
 interface CreateSheetState {
 	mode: "create";
@@ -65,13 +69,66 @@ function boardIdFromPath(pathname: string): string | null {
 	}
 }
 
+type SeenTaskVersions = Record<string, string>;
+
+const SEEN_TASK_STORAGE_KEY_PREFIX = "ompx.kanban.seen.";
+/**
+ * Fingerprint of the exact row a change produced. Matching an incoming event
+ * against what this tab just wrote is how a self-echo is recognised; a time
+ * window keyed on the task id would also swallow someone else's comment landing
+ * on the same task seconds later.
+ */
+function entityEcho(value: unknown): string | null {
+	if (!isRecord(value) || typeof value.id !== "string") return null;
+	const kind = "taskId" in value ? "comment" : "task";
+	return `${kind}:${value.id}:${String(value.version)}`;
+}
+
+function taskSeenVersion(task: KanbanTask): string {
+	return `${task.updatedAt}|${task.commentCount}`;
+}
+
+function readSeenTaskVersions(boardId: string): SeenTaskVersions | null {
+	try {
+		const serialized = globalThis.localStorage.getItem(`${SEEN_TASK_STORAGE_KEY_PREFIX}${boardId}`);
+		if (serialized === null) return null;
+		const parsed: unknown = JSON.parse(serialized);
+		if (!isRecord(parsed)) return null;
+		const entries: Array<[string, string]> = [];
+		for (const [taskId, version] of Object.entries(parsed)) {
+			if (typeof version !== "string") return null;
+			entries.push([taskId, version]);
+		}
+		return Object.fromEntries(entries);
+	} catch {
+		return null;
+	}
+}
+
+function writeSeenTaskVersions(boardId: string, seen: SeenTaskVersions): void {
+	try {
+		globalThis.localStorage.setItem(`${SEEN_TASK_STORAGE_KEY_PREFIX}${boardId}`, JSON.stringify(seen));
+	} catch {
+		// Private-mode or quota failures leave the current in-memory state usable.
+	}
+}
+
+function pruneSeenTaskVersions(seen: SeenTaskVersions, tasks: readonly KanbanTask[]): SeenTaskVersions {
+	const taskIds = new Set(tasks.map(task => task.id));
+	return Object.fromEntries(Object.entries(seen).filter(([taskId]) => taskIds.has(taskId)));
+}
+
 function ActivityDialog({
 	activity,
+	tasks,
 	returnFocus,
+	onOpenTask,
 	onDismiss,
 }: {
 	activity: readonly KanbanActivity[];
+	tasks: readonly KanbanTask[];
 	returnFocus: HTMLElement | null;
+	onOpenTask(task: KanbanTask, trigger: HTMLElement): void;
 	onDismiss(): void;
 }) {
 	const ref = useRef<HTMLDialogElement>(null);
@@ -108,13 +165,34 @@ function ActivityDialog({
 					<ol className="kb-activity-list">
 						{[...activity]
 							.sort((left, right) => right.cursor - left.cursor)
-							.map(item => (
-								<li key={item.id}>
-									<strong>{ACTIVITY_LABELS[item.type]}</strong>
-									{activityDetail(item) ? <p>{activityDetail(item)}</p> : null}
-									<time dateTime={item.createdAt}>{formatKanbanDate(item.createdAt)}</time>
-								</li>
-							))}
+							.map(item => {
+								const detail = activityDetail(item);
+								// A history line that only says "Task moved" makes the reader guess.
+								// Name the task, and make it the way back to that task.
+								const task = item.taskId ? tasks.find(candidate => candidate.id === item.taskId) : undefined;
+								return (
+									<li key={item.id}>
+										{task ? (
+											<button
+												type="button"
+												className="kb-activity-entry"
+												onClick={event => onOpenTask(task, event.currentTarget)}
+											>
+												<strong>{ACTIVITY_LABELS[item.type]}</strong>
+												<span className="kb-activity-task">{displayTitle(task.title)}</span>
+												{detail ? <p>{detail}</p> : null}
+											</button>
+										) : (
+											<div className="kb-activity-entry" data-static="true">
+												<strong>{ACTIVITY_LABELS[item.type]}</strong>
+												{item.taskId ? <span className="kb-activity-task">Deleted task</span> : null}
+												{detail ? <p>{detail}</p> : null}
+											</div>
+										)}
+										<time dateTime={item.createdAt}>{formatKanbanDate(item.createdAt)}</time>
+									</li>
+								);
+							})}
 					</ol>
 				)}
 			</div>
@@ -141,6 +219,9 @@ function LoadingBoard(): ReactNode {
 export function KanbanApp() {
 	const boardId = useMemo(() => boardIdFromPath(window.location.pathname), []);
 	const [snapshot, setSnapshot] = useState<KanbanBoardSnapshot | null>(null);
+	const [seenTaskVersions, setSeenTaskVersions] = useState<SeenTaskVersions | null>(() =>
+		boardId ? readSeenTaskVersions(boardId) : null,
+	);
 	const [connection, setConnection] = useState<KanbanConnectionState>(() =>
 		navigator.onLine ? "loading" : "disconnected",
 	);
@@ -154,18 +235,57 @@ export function KanbanApp() {
 	const [activityOpen, setActivityOpen] = useState(false);
 	const [notifyOn, setNotifyOn] = useState(() => notificationsEnabled());
 	const [sessions, setSessions] = useState<readonly KanbanBoardSession[]>([]);
+	const [soundOn, setSoundOn] = useState(() => soundEnabled());
+	const [unseen, setUnseen] = useState(0);
 	const activityTrigger = useRef<HTMLElement | null>(null);
 	const connectionRef = useRef<KanbanConnectionState>(connection);
 	const cursorRef = useRef(0);
 	const realtimeRef = useRef<RealtimeState>(createRealtimeState(0));
 	const loadGeneration = useRef(0);
+	/** Fingerprints of rows this tab just wrote, consumed when their event echoes back. */
+	const localEchoes = useRef(new Set<string>());
+	/** Task whose mutation is in flight: its event can outrun the HTTP response. */
+	const inFlightTaskId = useRef<string | null>(null);
 
 	useEffect(() => {
 		connectionRef.current = connection;
 	}, [connection]);
 
+	useEffect(() => {
+		setBoardAttention(unseen);
+	}, [unseen]);
+
+	useEffect(() => {
+		const onVisibility = (): void => {
+			if (document.visibilityState === "visible") setUnseen(0);
+		};
+		document.addEventListener("visibilitychange", onVisibility);
+		return () => document.removeEventListener("visibilitychange", onVisibility);
+	}, []);
+
 	const api = useMemo(
 		() => (boardId ? new KanbanApi(boardId, undefined, () => connectionRef.current) : null),
+		[boardId],
+	);
+
+	const synchronizeSeenTaskVersions = useCallback(
+		(tasks: readonly KanbanTask[]): void => {
+			if (!boardId) return;
+			setSeenTaskVersions(current => {
+				if (current === null) {
+					const seeded = Object.fromEntries(tasks.map(task => [task.id, taskSeenVersion(task)] as const));
+					writeSeenTaskVersions(boardId, seeded);
+					return seeded;
+				}
+				const pruned = pruneSeenTaskVersions(current, tasks);
+				const unchanged =
+					Object.keys(current).length === Object.keys(pruned).length &&
+					Object.entries(current).every(([taskId, version]) => pruned[taskId] === version);
+				if (unchanged) return current;
+				writeSeenTaskVersions(boardId, pruned);
+				return pruned;
+			});
+		},
 		[boardId],
 	);
 
@@ -183,6 +303,7 @@ export function KanbanApp() {
 				) {
 					throw new KanbanProtocolError("The board returned data for a different session.");
 				}
+				synchronizeSeenTaskVersions(next.tasks);
 				setSnapshot(next);
 				cursorRef.current = next.cursor;
 				realtimeRef.current = createRealtimeState(next.cursor);
@@ -199,7 +320,7 @@ export function KanbanApp() {
 				return false;
 			}
 		},
-		[api, boardId],
+		[api, boardId, synchronizeSeenTaskVersions],
 	);
 
 	useEffect(() => {
@@ -275,6 +396,20 @@ export function KanbanApp() {
 							: current,
 					);
 					notifyBoardEvent(event);
+					// A change this tab made already reported itself; re-announcing the echo
+					// would replace that specific message with a vaguer one.
+					// The event can outrun its own HTTP response, so an in-flight mutation on
+					// the same task counts as ours too, not just an already-recorded echo.
+					const echo = entityEcho(event.data.comment) ?? entityEcho(event.data.task);
+					const ownEcho = echo !== null && localEchoes.current.delete(echo);
+					const ownInFlight = event.taskId !== null && event.taskId === inFlightTaskId.current;
+					if (!ownEcho && !ownInFlight) {
+						const detail = activityDetail(event);
+						const label = ACTIVITY_LABELS[event.type];
+						setNotice({ kind: "info", message: detail ? `${label} — ${detail}` : label });
+						playBoardChime();
+						if (document.visibilityState !== "visible") setUnseen(count => count + 1);
+					}
 					void loadBoard("event");
 				} catch {
 					setNotice({ kind: "error", message: "A live update couldn't be read. Reloading the board." });
@@ -338,9 +473,21 @@ export function KanbanApp() {
 
 	const runMutation = async <T,>(taskId: string | null, action: () => Promise<T>): Promise<T | null> => {
 		setBusyTaskId(taskId ?? "board");
+		inFlightTaskId.current = taskId;
 		setSheetError(null);
 		try {
-			return await action();
+			const result = await action();
+			const echo = entityEcho(result);
+			if (echo !== null) {
+				// Bounded: an echo that never arrives (offline, dropped stream) must not
+				// pin memory, so the oldest entry falls out once the set gets long.
+				if (localEchoes.current.size >= 64) {
+					const oldest = localEchoes.current.values().next().value;
+					if (oldest !== undefined) localEchoes.current.delete(oldest);
+				}
+				localEchoes.current.add(echo);
+			}
+			return result;
 		} catch (error) {
 			const resolution = classifyMutationFailure(error);
 			setNotice({ kind: resolution.kind === "conflict" ? "conflict" : "error", message: resolution.announcement });
@@ -351,6 +498,7 @@ export function KanbanApp() {
 				setConnection("disconnected");
 			return null;
 		} finally {
+			inFlightTaskId.current = null;
 			setBusyTaskId(null);
 		}
 	};
@@ -358,6 +506,42 @@ export function KanbanApp() {
 	const selectedTask =
 		sheet?.mode === "task" ? (snapshot?.tasks.find(task => task.id === sheet.taskId) ?? null) : null;
 	const canWrite = connection === "connected" && !loading && !loadError;
+	// Every label already in use on the board, deduped case-insensitively so `Bug`
+	// and `bug` offer one chip instead of two.
+	const knownLabels = useMemo(
+		() =>
+			[
+				...new Map(
+					(snapshot?.tasks ?? [])
+						.flatMap(task => task.labels)
+						.filter(label => label.length > 0)
+						.map(label => [label.toLocaleLowerCase(), label]),
+				).values(),
+			].sort((left, right) => left.localeCompare(right)),
+		[snapshot],
+	);
+
+	const markTaskRead = useCallback(
+		(task: KanbanTask): void => {
+			if (!boardId) return;
+			const version = taskSeenVersion(task);
+			setSeenTaskVersions(current => {
+				const seen = current ?? {};
+				if (seen[task.id] === version) return current ?? seen;
+				const next = { ...seen, [task.id]: version };
+				writeSeenTaskVersions(boardId, next);
+				return next;
+			});
+		},
+		[boardId],
+	);
+
+	const unreadTaskIds = useMemo<ReadonlySet<string>>(() => {
+		if (!snapshot || seenTaskVersions === null) return new Set();
+		return new Set(
+			snapshot.tasks.filter(task => seenTaskVersions[task.id] !== taskSeenVersion(task)).map(task => task.id),
+		);
+	}, [seenTaskVersions, snapshot?.tasks]);
 
 	const saveTask = async (valid: ValidTaskForm): Promise<boolean> => {
 		if (!api || !sheet) return false;
@@ -396,12 +580,12 @@ export function KanbanApp() {
 		return true;
 	};
 
-	const moveTask = async (task: KanbanTask, requested: MoveDestination): Promise<void> => {
-		if (!api || !snapshot) return;
+	const moveTask = async (task: KanbanTask, requested: MoveDestination): Promise<boolean> => {
+		if (!api || !snapshot) return false;
 		const destination = calculateMoveDestination(snapshot.tasks, task.id, requested.status, requested.index);
 		if (task.status === destination.status && task.position === destination.index) {
 			setAnnouncement(`${task.title} stayed in ${STATUS_LABELS[task.status]}, position ${task.position + 1}.`);
-			return;
+			return true;
 		}
 		const moved = await runMutation(task.id, () =>
 			api.moveTask(task.id, {
@@ -410,11 +594,23 @@ export function KanbanApp() {
 				index: destination.index,
 			}),
 		);
-		if (!moved) return;
+		if (!moved) return false;
 		await loadBoard("event");
 		const message = `${moved.title} moved to ${STATUS_LABELS[moved.status]}, position ${moved.position + 1}.`;
 		setNotice({ kind: "success", message });
 		setAnnouncement(message);
+		return true;
+	};
+
+	/**
+	 * Status chosen in the task sheet. The server has no status field on PATCH —
+	 * a task changes column only through `/moves`, which needs a destination
+	 * index — so the dropdown reuses the drag path and lands the card at the end
+	 * of its new column rather than displacing whatever is at the top.
+	 */
+	const changeTaskStatus = (task: KanbanTask, status: KanbanStatus): Promise<boolean> => {
+		const end = snapshot?.tasks.filter(item => item.status === status && item.id !== task.id).length ?? 0;
+		return moveTask(task, { status, index: end });
 	};
 
 	if (!boardId) {
@@ -482,6 +678,22 @@ export function KanbanApp() {
 							{notifyOn ? <Bell size={16} aria-hidden="true" /> : <BellOff size={16} aria-hidden="true" />}
 						</button>
 					) : null}
+					<button
+						type="button"
+						className="kb-icon-button"
+						aria-pressed={soundOn}
+						title={soundOn ? "Sound on for board activity" : "Sound off for board activity"}
+						aria-label={soundOn ? "Turn activity sound off" : "Turn activity sound on"}
+						onClick={() => {
+							const next = !soundOn;
+							setSoundEnabled(next);
+							setSoundOn(next);
+							// Play on enable so the click doubles as a preview and unlocks audio.
+							if (next) playBoardChime();
+						}}
+					>
+						{soundOn ? <Volume2 size={16} aria-hidden="true" /> : <VolumeX size={16} aria-hidden="true" />}
+					</button>
 					<ThemeToggle />
 					<button
 						type="button"
@@ -555,15 +767,19 @@ export function KanbanApp() {
 							tasks={snapshot.tasks}
 							canWrite={canWrite}
 							busyTaskId={busyTaskId}
+							unreadTaskIds={unreadTaskIds}
 							onOpenTask={(task, trigger) => {
 								setSheetError(null);
+								markTaskRead(task);
 								setSheet({ mode: "task", taskId: task.id, status: task.status, trigger });
 							}}
 							onCreate={(status, trigger) => {
 								setSheetError(null);
 								setSheet({ mode: "create", status, trigger });
 							}}
-							onMove={moveTask}
+							onMove={async (task, destination) => {
+								await moveTask(task, destination);
+							}}
 							onAnnounce={setAnnouncement}
 						/>
 					</>
@@ -580,6 +796,7 @@ export function KanbanApp() {
 					defaultStatus={sheet.status}
 					api={api}
 					sessions={sessions}
+					knownLabels={knownLabels}
 					activity={snapshot?.activity ?? []}
 					canWrite={canWrite}
 					busy={busyTaskId !== null}
@@ -588,6 +805,7 @@ export function KanbanApp() {
 					onSave={saveTask}
 					onDelete={deleteTask}
 					onRunMutation={runMutation}
+					onStatusChange={changeTaskStatus}
 					onAnnounce={setAnnouncement}
 					onDismiss={() => {
 						setSheet(null);
@@ -599,7 +817,16 @@ export function KanbanApp() {
 			{activityOpen ? (
 				<ActivityDialog
 					activity={snapshot?.activity ?? []}
+					tasks={snapshot?.tasks ?? []}
 					returnFocus={activityTrigger.current}
+					onOpenTask={(task, trigger) => {
+						// Jumping straight from history to the task means the activity dialog
+						// closes first: two stacked modals would trap focus in the wrong one.
+						setActivityOpen(false);
+						setSheetError(null);
+						markTaskRead(task);
+						setSheet({ mode: "task", taskId: task.id, status: task.status, trigger });
+					}}
 					onDismiss={() => setActivityOpen(false)}
 				/>
 			) : null}

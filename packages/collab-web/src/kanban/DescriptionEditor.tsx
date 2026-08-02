@@ -1,5 +1,6 @@
+import hljs from "highlight.js/lib/common";
 import { ImagePlus, Loader2 } from "lucide-react";
-import { marked } from "marked";
+import { Marked, type Tokens } from "marked";
 import { type ChangeEvent, type ClipboardEvent, type DragEvent, useRef, useState } from "react";
 import type { KanbanApi } from "./api";
 
@@ -31,7 +32,11 @@ export function DescriptionEditor({
 }: DescriptionEditorProps) {
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
-	const [tab, setTab] = useState<EditorTab>("write");
+	// Opening a task is usually a read, not an edit, so an existing description
+	// starts rendered — otherwise the reader gets raw markdown and images that only
+	// appear after a click. An empty one starts in Write; a blank preview helps
+	// nobody. Lazy initialiser on purpose: typing must not yank the tab back.
+	const [tab, setTab] = useState<EditorTab>(() => (value.trim().length > 0 ? "preview" : "write"));
 	const [uploading, setUploading] = useState(false);
 	const [uploadError, setUploadError] = useState<string | null>(null);
 	const [dragging, setDragging] = useState(false);
@@ -165,10 +170,34 @@ export function DescriptionEditor({
 }
 
 /**
+ * Fenced blocks are highlighted by default — a board comment is where people
+ * paste patches and stack traces, and unstyled code is where they stop reading.
+ * `hljs` escapes its own output, so the injected HTML stays inert.
+ */
+const boardMarkdown = new Marked({
+	gfm: true,
+	breaks: true,
+	renderer: {
+		code({ text, lang }: Tokens.Code): string {
+			// `renderMarkdown` escapes `<`/`>` before lexing; undo exactly that pair so
+			// the highlighter sees real source. `&` was never escaped, so leave it be.
+			const source = text.replaceAll("&lt;", "<").replaceAll("&gt;", ">");
+			const language = lang?.trim().split(/\s+/)[0] ?? "";
+			const known = language.length > 0 && Boolean(hljs.getLanguage(language));
+			const highlighted = known
+				? hljs.highlight(source, { language, ignoreIllegals: true }).value
+				: hljs.highlightAuto(source).value;
+			const languageClass = known ? ` language-${language}` : "";
+			return `<pre><code class="hljs${languageClass}">${highlighted}</code></pre>\n`;
+		},
+	},
+});
+
+/**
  * Renders board markdown with raw HTML disabled, so a pasted `<script>` stays
  * literal text instead of executing inside the board's own origin.
  */
 export function renderMarkdown(source: string): string {
 	const escaped = source.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-	return marked.parse(escaped, { async: false, gfm: true, breaks: true });
+	return boardMarkdown.parse(escaped, { async: false });
 }

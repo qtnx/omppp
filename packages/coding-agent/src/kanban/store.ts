@@ -23,8 +23,8 @@ import type {
 	KanbanTaskUpdate,
 } from "./types";
 
-/** v3: board scope replaces session scope and the board lives in the project. */
-export const KANBAN_SCHEMA_VERSION = 3;
+/** v4: tasks receive board-local human-readable short ids. */
+export const KANBAN_SCHEMA_VERSION = 4;
 const ACTIVITY_SNAPSHOT_LIMIT = 200;
 /** A session that has not heartbeat within this window is treated as gone. */
 const SESSION_STALE_MS = 90_000;
@@ -38,6 +38,10 @@ export interface KanbanIdempotencyOperation {
 	body: unknown;
 }
 
+export interface KanbanMoveOptions {
+	claimBy?: string;
+}
+
 export interface KanbanStoreOptions {
 	now?: () => Date;
 	createId?: () => string;
@@ -46,6 +50,7 @@ export interface KanbanStoreOptions {
 interface TaskRow {
 	id: string;
 	board_id: string;
+	short_id: number;
 	status: string;
 	position: number;
 	title: string;
@@ -57,6 +62,7 @@ interface TaskRow {
 	version: number;
 	created_at: string;
 	updated_at: string;
+	comment_count: number;
 }
 
 interface CommentRow {
@@ -110,6 +116,7 @@ CREATE TABLE IF NOT EXISTS kanban_schema_migrations (
 CREATE TABLE IF NOT EXISTS kanban_tasks (
 	id TEXT PRIMARY KEY,
 	board_id TEXT NOT NULL,
+	short_id INTEGER NOT NULL,
 	status TEXT NOT NULL CHECK (status IN ('backlog','ready','in_progress','blocked','review','done','cancelled')),
 	position INTEGER NOT NULL CHECK (position >= 0),
 	title TEXT NOT NULL,
@@ -123,6 +130,14 @@ CREATE TABLE IF NOT EXISTS kanban_tasks (
 	updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS kanban_tasks_column_idx ON kanban_tasks(board_id, status, position);
+
+-- Monotonic short-id source per board. Kept apart from kanban_tasks on purpose:
+-- deriving the next id from MAX(short_id) would reissue a number after the newest
+-- task is deleted, and a board's history must never name two tasks T-7.
+CREATE TABLE IF NOT EXISTS kanban_board_counters (
+	board_id TEXT PRIMARY KEY,
+	next_short_id INTEGER NOT NULL CHECK (next_short_id >= 1)
+);
 
 -- Live sessions sharing this board; the name column is what tasks are assigned to.
 CREATE TABLE IF NOT EXISTS kanban_sessions (
@@ -275,8 +290,12 @@ export class KanbanStore {
 	getBoard(boardId: string): KanbanBoardSnapshot {
 		const taskRows = this.#db
 			.prepare(`
-				SELECT * FROM kanban_tasks
-				WHERE board_id = ?
+				SELECT t.*, (
+					SELECT COUNT(*) FROM kanban_comments c
+					WHERE c.task_id = t.id AND c.deleted_at IS NULL
+				) AS comment_count
+				FROM kanban_tasks t
+				WHERE t.board_id = ?
 				ORDER BY CASE status
 					WHEN 'backlog' THEN 0 WHEN 'ready' THEN 1 WHEN 'in_progress' THEN 2
 					WHEN 'blocked' THEN 3 WHEN 'review' THEN 4 WHEN 'done' THEN 5 ELSE 6 END,
@@ -317,9 +336,14 @@ export class KanbanStore {
 			const positionRow = this.#db
 				.prepare("SELECT COUNT(*) AS count FROM kanban_tasks WHERE board_id = ? AND status = ?")
 				.get(boardId, input.status) as { count: number };
+			// A high-water mark, not `MAX(short_id)`: deleting the newest task must
+			// never hand its number to the next one, or `T-7` would name two
+			// different tasks in the board's history.
+			const shortId = this.#nextShortId(boardId);
 			const task: KanbanTask = {
 				id,
 				boardId,
+				shortId,
 				status: input.status,
 				position: positionRow.count,
 				title: input.title,
@@ -331,6 +355,7 @@ export class KanbanStore {
 				version: 1,
 				createdAt: now,
 				updatedAt: now,
+				commentCount: 0,
 			};
 			this.#insertTask(task);
 			const activity = this.#recordActivity(boardId, task.id, "task.created", { task });
@@ -409,12 +434,18 @@ export class KanbanStore {
 		taskId: string,
 		input: KanbanMove,
 		operation: KanbanIdempotencyOperation,
+		options?: KanbanMoveOptions,
 	): KanbanMutation<KanbanTask> {
 		return this.#idempotent(boardId, operation, 200, () => {
 			const row = this.#taskRow(boardId, taskId);
 			if (!row) throw notFound("Task");
 			if (row.version !== input.expectedVersion) throw versionConflict();
 			const before = this.#taskFromRow(row);
+			const claimBy = options?.claimBy;
+			const claim =
+				input.status === "in_progress" && before.assignee === null && claimBy !== undefined
+					? { taskId, assignee: claimBy }
+					: undefined;
 			const targetIds = this.#columnTaskIds(boardId, input.status).filter(id => id !== taskId);
 			if (input.index > targetIds.length) {
 				throw new KanbanError(422, "validation_error", "Move index is outside the target column");
@@ -425,7 +456,7 @@ export class KanbanStore {
 				const sourceIds = this.#columnTaskIds(boardId, before.status).filter(id => id !== taskId);
 				this.#writeColumn(boardId, before.status, sourceIds, now);
 			}
-			this.#writeColumn(boardId, input.status, targetIds, now);
+			this.#writeColumn(boardId, input.status, targetIds, now, claim);
 			const moved = this.getTask(boardId, taskId);
 			const activity = this.#recordActivity(boardId, taskId, "task.moved", {
 				task: moved,
@@ -642,10 +673,120 @@ export class KanbanStore {
 		this.#transaction(() => {
 			this.#db.exec(MIGRATION_SQL);
 			this.#dropRetiredTaskColumns();
+			const row = this.#db
+				.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM kanban_schema_migrations")
+				.get() as { version: number };
+			if (row.version < KANBAN_SCHEMA_VERSION) this.#migrateShortTaskIds();
 			this.#db
 				.prepare("INSERT OR IGNORE INTO kanban_schema_migrations(version, applied_at) VALUES (?, ?)")
 				.run(KANBAN_SCHEMA_VERSION, this.#timestamp());
 		});
+	}
+
+	#migrateShortTaskIds(): void {
+		const columns = new Set(
+			(this.#db.prepare("PRAGMA table_info(kanban_tasks)").all() as Array<{ name: string }>).map(
+				column => column.name,
+			),
+		);
+		if (!columns.has("short_id")) this.#db.exec("ALTER TABLE kanban_tasks ADD COLUMN short_id INTEGER");
+		this.#db.exec(`
+			UPDATE kanban_tasks AS task
+			SET short_id = (
+				SELECT COUNT(*)
+				FROM kanban_tasks AS earlier
+				WHERE earlier.board_id = task.board_id
+					AND (earlier.created_at < task.created_at OR (earlier.created_at = task.created_at AND earlier.id <= task.id))
+			)
+			WHERE task.short_id IS NULL
+		`);
+		this.#backfillCachedTaskMutationResponses();
+		this.#backfillActivityTaskShortIds();
+	}
+
+	/** Reserves the next per-board short id and advances the counter. */
+	#nextShortId(boardId: string): number {
+		const counter = this.#db
+			.prepare("SELECT next_short_id FROM kanban_board_counters WHERE board_id = ?")
+			.get(boardId) as { next_short_id: number } | null;
+		// Named rather than inlined: the shape is this file's own SELECT list, not
+		// external input, so the assertion is local and reviewable.
+		const highestRow = this.#db
+			.prepare("SELECT COALESCE(MAX(short_id), 0) AS highest FROM kanban_tasks WHERE board_id = ?")
+			.get(boardId) as { highest: number };
+		// A board that predates the counter seeds from the tasks it already has.
+		const next = counter?.next_short_id ?? highestRow.highest + 1;
+		this.#db
+			.prepare(
+				`INSERT INTO kanban_board_counters(board_id, next_short_id) VALUES (?, ?)
+				 ON CONFLICT(board_id) DO UPDATE SET next_short_id = excluded.next_short_id`,
+			)
+			.run(boardId, next + 1);
+		return next;
+	}
+
+	#backfillCachedTaskMutationResponses(): void {
+		const taskShortId = this.#db.prepare("SELECT short_id FROM kanban_tasks WHERE board_id = ? AND id = ?");
+		const updateResponse = this.#db.prepare(`
+			UPDATE kanban_idempotency
+			SET response_json = ?
+			WHERE board_id = ? AND idempotency_key = ?
+		`);
+		const cachedResponses = this.#db
+			.prepare("SELECT board_id, idempotency_key, response_json FROM kanban_idempotency")
+			.all() as Array<{ board_id: string; idempotency_key: string; response_json: string }>;
+		for (const cached of cachedResponses) {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(cached.response_json);
+			} catch {
+				continue;
+			}
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+			const response = parsed as Record<string, unknown>;
+			const data = response.data;
+			if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+			const task = data as Record<string, unknown>;
+			if (typeof task.id !== "string" || task.boardId !== cached.board_id) continue;
+			const row = taskShortId.get(cached.board_id, task.id) as { short_id: number } | null;
+			if (!row || task.shortId === row.short_id) continue;
+			updateResponse.run(
+				JSON.stringify({ ...response, data: { ...task, shortId: row.short_id } }),
+				cached.board_id,
+				cached.idempotency_key,
+			);
+		}
+	}
+
+	/**
+	 * Activity rows store the task snapshot as it was when the event fired, so a
+	 * board upgraded in place still replays payloads with no `shortId`. Sessions
+	 * quote those payloads back to the model, and a task that answers to `T-4` on
+	 * the board must not appear nameless in its own history.
+	 */
+	#backfillActivityTaskShortIds(): void {
+		const taskShortId = this.#db.prepare("SELECT short_id FROM kanban_tasks WHERE board_id = ? AND id = ?");
+		const updateActivity = this.#db.prepare("UPDATE kanban_activity SET data_json = ? WHERE id = ?");
+		const rows = this.#db
+			.prepare("SELECT id, board_id, data_json FROM kanban_activity WHERE data_json LIKE '%\"task\"%'")
+			.all() as Array<{ id: string; board_id: string; data_json: string }>;
+		for (const activity of rows) {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(activity.data_json);
+			} catch {
+				continue;
+			}
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+			const data = parsed as Record<string, unknown>;
+			const taskValue = data.task;
+			if (!taskValue || typeof taskValue !== "object" || Array.isArray(taskValue)) continue;
+			const task = taskValue as Record<string, unknown>;
+			if (typeof task.id !== "string" || typeof task.shortId === "number") continue;
+			const row = taskShortId.get(activity.board_id, task.id) as { short_id: number } | null;
+			if (!row) continue;
+			updateActivity.run(JSON.stringify({ ...data, task: { ...task, shortId: row.short_id } }), activity.id);
+		}
 	}
 
 	/**
@@ -732,13 +873,14 @@ export class KanbanStore {
 		this.#db
 			.prepare(`
 				INSERT INTO kanban_tasks(
-					id, board_id, status, position, title, description, assignee, labels_json, due_at,
+					id, board_id, short_id, status, position, title, description, assignee, labels_json, due_at,
 					priority, version, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`)
 			.run(
 				task.id,
 				task.boardId,
+				task.shortId,
 				task.status,
 				task.position,
 				task.title,
@@ -787,7 +929,14 @@ export class KanbanStore {
 
 	#taskRow(boardId: string, taskId: string): TaskRow | null {
 		return this.#db
-			.prepare("SELECT * FROM kanban_tasks WHERE id = ? AND board_id = ?")
+			.prepare(`
+				SELECT t.*, (
+					SELECT COUNT(*) FROM kanban_comments c
+					WHERE c.task_id = t.id AND c.deleted_at IS NULL
+				) AS comment_count
+				FROM kanban_tasks t
+				WHERE t.id = ? AND t.board_id = ?
+			`)
 			.get(taskId, boardId) as TaskRow | null;
 	}
 
@@ -808,14 +957,29 @@ export class KanbanStore {
 		return rows.map(row => row.id);
 	}
 
-	#writeColumn(boardId: string, status: KanbanStatus, ids: string[], now: string): void {
+	#writeColumn(
+		boardId: string,
+		status: KanbanStatus,
+		ids: string[],
+		now: string,
+		claim?: { taskId: string; assignee: string },
+	): void {
 		const statement = this.#db.prepare(`
 			UPDATE kanban_tasks
-			SET status = ?, position = ?, version = version + 1, updated_at = ?
+			SET status = ?, position = ?, assignee = CASE WHEN id = ? AND assignee IS NULL THEN ? ELSE assignee END,
+				version = version + 1, updated_at = ?
 			WHERE id = ? AND board_id = ?
 		`);
 		for (const [position, id] of ids.entries()) {
-			const result = statement.run(status, position, now, id, boardId);
+			const result = statement.run(
+				status,
+				position,
+				claim?.taskId ?? null,
+				claim?.assignee ?? null,
+				now,
+				id,
+				boardId,
+			);
 			if (result.changes !== 1) throw new Error("Kanban reorder lost a task inside its transaction");
 		}
 	}
@@ -824,6 +988,7 @@ export class KanbanStore {
 		return {
 			id: row.id,
 			boardId: row.board_id,
+			shortId: row.short_id,
 			status: row.status as KanbanStatus,
 			position: row.position,
 			title: row.title,
@@ -835,6 +1000,7 @@ export class KanbanStore {
 			version: row.version,
 			createdAt: row.created_at,
 			updatedAt: row.updated_at,
+			commentCount: row.comment_count,
 		};
 	}
 

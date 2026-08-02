@@ -56,6 +56,7 @@ export function parseKanbanTask(value: unknown): KanbanTask {
 	return {
 		id: requireString(value, "id"),
 		boardId: requireString(value, "boardId"),
+		shortId: requireNonnegativeInteger(value, "shortId"),
 		status: value.status,
 		position: requireNonnegativeInteger(value, "position"),
 		title: requireString(value, "title"),
@@ -67,6 +68,7 @@ export function parseKanbanTask(value: unknown): KanbanTask {
 		version: requireNonnegativeInteger(value, "version"),
 		createdAt: requireString(value, "createdAt"),
 		updatedAt: requireString(value, "updatedAt"),
+		commentCount: requireNonnegativeInteger(value, "commentCount"),
 	};
 }
 

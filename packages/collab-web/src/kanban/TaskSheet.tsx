@@ -1,24 +1,35 @@
 import { MessageSquare, Pencil, Trash2, X } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import type { KanbanApi } from "./api";
+import { renderMarkdown } from "./DescriptionEditor";
 import { TaskForm } from "./TaskForm";
 import type { ValidTaskForm } from "./task-form";
 import type { KanbanActivity, KanbanBoardSession, KanbanComment, KanbanStatus, KanbanTask } from "./types";
-import { ACTIVITY_LABELS, activityDetail, formatKanbanDate, PRIORITY_LABELS, STATUS_LABELS } from "./view-model";
+import {
+	ACTIVITY_LABELS,
+	activityDetail,
+	displayTitle,
+	formatKanbanDate,
+	PRIORITY_LABELS,
+	STATUS_LABELS,
+} from "./view-model";
 
-type TaskSheetTab = "details" | "comments" | "activity";
+type TaskSheetTab = "comments" | "activity";
 
 interface TaskSheetProps {
 	task: KanbanTask | null;
 	defaultStatus: KanbanStatus;
 	api: KanbanApi;
 	sessions: readonly KanbanBoardSession[];
+	/** Every label already used on this board, forwarded to the task form's picker. */
+	knownLabels: readonly string[];
 	activity: readonly KanbanActivity[];
 	canWrite: boolean;
 	busy: boolean;
 	serverError: string | null;
 	returnFocus: HTMLElement | null;
 	onSave(valid: ValidTaskForm): Promise<boolean>;
+	onStatusChange(task: KanbanTask, status: KanbanStatus): Promise<boolean>;
 	onDelete(task: KanbanTask): Promise<boolean>;
 	onRunMutation<T>(taskId: string | null, action: () => Promise<T>): Promise<T | null>;
 	onAnnounce(message: string): void;
@@ -30,19 +41,21 @@ export function TaskSheet({
 	defaultStatus,
 	api,
 	sessions,
+	knownLabels,
 	activity,
 	canWrite,
 	busy,
 	serverError,
 	returnFocus,
 	onSave,
+	onStatusChange,
 	onDelete,
 	onRunMutation,
 	onAnnounce,
 	onDismiss,
 }: TaskSheetProps) {
 	const dialogRef = useRef<HTMLDialogElement>(null);
-	const [tab, setTab] = useState<TaskSheetTab>("details");
+	const [tab, setTab] = useState<TaskSheetTab>("comments");
 	const [comments, setComments] = useState<KanbanComment[]>([]);
 	const [commentsLoading, setCommentsLoading] = useState(Boolean(task));
 	const [commentsError, setCommentsError] = useState<string | null>(null);
@@ -143,7 +156,7 @@ export function TaskSheet({
 						<p>
 							{task ? (
 								<>
-									<span className="kb-issue-key">{task.id.slice(0, 8)}</span>
+									<span className="kb-issue-key">T-{task.shortId}</span>
 									<span className="kb-status-chip" data-status={task.status}>
 										{STATUS_LABELS[task.status]}
 									</span>
@@ -152,7 +165,7 @@ export function TaskSheet({
 								<span className="kb-issue-key">New {STATUS_LABELS[defaultStatus].toLowerCase()} task</span>
 							)}
 						</p>
-						<h2 id="kb-sheet-title">{task?.title ?? "Create task"}</h2>
+						<h2 id="kb-sheet-title">{task ? displayTitle(task.title) : "Create task"}</h2>
 					</div>
 					<button
 						type="button"
@@ -164,111 +177,108 @@ export function TaskSheet({
 					</button>
 				</header>
 
-				{task ? (
-					<div className="kb-tabs" role="tablist" aria-label="Task details">
-						{(["details", "comments", "activity"] as const).map(item => (
-							<button
-								key={item}
-								type="button"
-								role="tab"
-								aria-selected={tab === item}
-								aria-controls={`kb-panel-${item}`}
-								id={`kb-tab-${item}`}
-								onClick={() => setTab(item)}
-							>
-								{item === "details"
-									? "Details"
-									: item === "comments"
-										? `Comments (${comments.length})`
-										: `Activity (${taskActivity.length})`}
-							</button>
-						))}
-					</div>
-				) : null}
-
 				<div className="kb-sheet-content">
-					{tab === "details" ? (
-						<section id="kb-panel-details" role="tabpanel" aria-labelledby={task ? "kb-tab-details" : undefined}>
-							<div className={task ? "kb-sheet-split" : undefined}>
-								<div className="kb-sheet-main">
-									<TaskForm
-										key={`${task?.id ?? "new"}:${task?.version ?? 0}:${defaultStatus}`}
-										task={task}
-										defaultStatus={defaultStatus}
-										busy={busy}
-										canWrite={canWrite}
-										serverError={serverError}
-										api={api}
-										sessions={sessions}
-										onSubmit={async valid => {
-											if (await onSave(valid)) dialogRef.current?.close();
-										}}
-										onCancel={() => dialogRef.current?.close()}
-									/>
-								</div>
-								{task ? (
-									<aside className="kb-sheet-side" aria-label="Task metadata">
-										<h3>Details</h3>
-										<dl>
-											<dt>Status</dt>
-											<dd>{STATUS_LABELS[task.status]}</dd>
-											<dt>Priority</dt>
-											<dd>{PRIORITY_LABELS[task.priority]}</dd>
-											<dt>Assignee</dt>
-											<dd>{task.assignee ?? "Unassigned"}</dd>
-											<dt>Labels</dt>
-											<dd>{task.labels.length > 0 ? task.labels.join(", ") : "None"}</dd>
-											<dt>Due</dt>
-											<dd>{task.dueAt ? formatKanbanDate(task.dueAt) : "No due date"}</dd>
-											<dt>Version</dt>
-											<dd>{task.version}</dd>
-											<dt>Created</dt>
-											<dd>{formatKanbanDate(task.createdAt)}</dd>
-											<dt>Updated</dt>
-											<dd>{formatKanbanDate(task.updatedAt)}</dd>
-										</dl>
-									</aside>
-								) : null}
+					{/* Details is the page, not a tab: it stays open above the discussion. */}
+					<section className="kb-details-section" aria-label={task ? "Task details" : "Create task"}>
+						<div className={task ? "kb-sheet-split" : undefined}>
+							<div className="kb-sheet-main">
+								<TaskForm
+									key={`${task?.id ?? "new"}:${task?.version ?? 0}:${defaultStatus}`}
+									task={task}
+									defaultStatus={defaultStatus}
+									busy={busy}
+									canWrite={canWrite}
+									serverError={serverError}
+									api={api}
+									sessions={sessions}
+									knownLabels={knownLabels}
+									onSubmit={async valid => {
+										if (await onSave(valid)) dialogRef.current?.close();
+									}}
+									onStatusChange={async status => (task ? onStatusChange(task, status) : true)}
+									onCancel={() => dialogRef.current?.close()}
+								/>
 							</div>
 							{task ? (
-								<section className="kb-danger-zone" aria-labelledby="kb-delete-task-title">
-									<h3 id="kb-delete-task-title">Delete task</h3>
-									{confirmTaskDelete ? (
-										<div className="kb-delete-confirm" role="alert">
-											<p>Delete {task.title}? This can't be undone.</p>
-											<div>
-												<button
-													type="button"
-													className="kb-button"
-													onClick={() => setConfirmTaskDelete(false)}
-												>
-													Keep task
-												</button>
-												<button
-													type="button"
-													className="kb-button kb-button-danger"
-													disabled={busy || !canWrite}
-													onClick={async () => {
-														if (await onDelete(task)) dialogRef.current?.close();
-													}}
-												>
-													Delete task
-												</button>
-											</div>
-										</div>
-									) : (
-										<button
-											type="button"
-											className="kb-button kb-button-danger"
-											onClick={() => setConfirmTaskDelete(true)}
-											disabled={!canWrite}
-										>
-											Delete task
-										</button>
-									)}
-								</section>
+								<aside className="kb-sheet-side" aria-label="Task metadata">
+									<h3>Details</h3>
+									<dl>
+										<dt>Status</dt>
+										<dd>{STATUS_LABELS[task.status]}</dd>
+										<dt>Priority</dt>
+										<dd>{PRIORITY_LABELS[task.priority]}</dd>
+										<dt>Assignee</dt>
+										<dd>{task.assignee ?? "Unassigned"}</dd>
+										<dt>Labels</dt>
+										<dd>{task.labels.length > 0 ? task.labels.join(", ") : "None"}</dd>
+										<dt>Due</dt>
+										<dd>{task.dueAt ? formatKanbanDate(task.dueAt) : "No due date"}</dd>
+										<dt>Version</dt>
+										<dd>{task.version}</dd>
+										<dt>Created</dt>
+										<dd>{formatKanbanDate(task.createdAt)}</dd>
+										<dt>Updated</dt>
+										<dd>{formatKanbanDate(task.updatedAt)}</dd>
+									</dl>
+								</aside>
 							) : null}
-						</section>
+						</div>
+						{task ? (
+							<section className="kb-danger-zone" aria-labelledby="kb-delete-task-title">
+								<h3 id="kb-delete-task-title">Delete task</h3>
+								{confirmTaskDelete ? (
+									<div className="kb-delete-confirm" role="alert">
+										<p>Delete {displayTitle(task.title)}? This can't be undone.</p>
+										<div>
+											<button
+												type="button"
+												className="kb-button"
+												onClick={() => setConfirmTaskDelete(false)}
+											>
+												Keep task
+											</button>
+											<button
+												type="button"
+												className="kb-button kb-button-danger"
+												disabled={busy || !canWrite}
+												onClick={async () => {
+													if (await onDelete(task)) dialogRef.current?.close();
+												}}
+											>
+												Delete task
+											</button>
+										</div>
+									</div>
+								) : (
+									<button
+										type="button"
+										className="kb-button kb-button-danger"
+										onClick={() => setConfirmTaskDelete(true)}
+										disabled={!canWrite}
+									>
+										Delete task
+									</button>
+								)}
+							</section>
+						) : null}
+					</section>
+
+					{task ? (
+						<div className="kb-tabs kb-sheet-tabs" role="tablist" aria-label="Task discussion">
+							{(["comments", "activity"] as const).map(item => (
+								<button
+									key={item}
+									type="button"
+									role="tab"
+									aria-selected={tab === item}
+									aria-controls={`kb-panel-${item}`}
+									id={`kb-tab-${item}`}
+									onClick={() => setTab(item)}
+								>
+									{item === "comments" ? `Comments (${comments.length})` : `Activity (${taskActivity.length})`}
+								</button>
+							))}
+						</div>
 					) : null}
 
 					{task && tab === "comments" ? (
@@ -278,6 +288,40 @@ export function TaskSheet({
 							aria-labelledby="kb-tab-comments"
 							className="kb-comments-panel"
 						>
+							<form
+								className="kb-comment-form"
+								onSubmit={submitComment}
+								onKeyDown={event => {
+									// The composer is a textarea, so Enter stays a newline and
+									// Ctrl/Cmd+Enter posts — the shortcut chat clients trained everyone on.
+									if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey) || busy || !canWrite) return;
+									event.preventDefault();
+									event.currentTarget.requestSubmit();
+								}}
+								noValidate
+							>
+								<h3>Add comment</h3>
+								<div className="kb-field">
+									<label htmlFor="kb-comment-body">Comment (required)</label>
+									<textarea
+										id="kb-comment-body"
+										value={commentBody}
+										onChange={event => setCommentBody(event.target.value)}
+										rows={5}
+										maxLength={10_001}
+										required
+									/>
+								</div>
+								{commentFormError ? (
+									<p className="kb-field-error" role="alert">
+										{commentFormError}
+									</p>
+								) : null}
+								{!canWrite ? <p className="kb-disabled-reason">Reconnect to add or change comments.</p> : null}
+								<button type="submit" className="kb-button kb-button-primary" disabled={!canWrite || busy}>
+									Add comment
+								</button>
+							</form>
 							{commentsLoading ? (
 								<div className="kb-comment-skeleton" aria-busy="true">
 									<span>Loading comments...</span>
@@ -320,7 +364,8 @@ export function TaskSheet({
 								</div>
 							) : null}
 							<ol className="kb-comment-list">
-								{comments.map(comment => (
+								{/* `comments` stays chronological so edit/delete map in place; only the view is newest-first. */}
+								{[...comments].reverse().map(comment => (
 									<li
 										key={comment.id}
 										className="kb-comment"
@@ -365,7 +410,10 @@ export function TaskSheet({
 												</div>
 											</div>
 										) : (
-											<p className="kb-comment-body">{comment.body}</p>
+											<div
+												className="kb-comment-body kb-markdown"
+												dangerouslySetInnerHTML={{ __html: renderMarkdown(comment.body) }}
+											/>
 										)}
 										{!comment.deletedAt && editingCommentId !== comment.id ? (
 											<div className="kb-comment-actions">
@@ -413,29 +461,6 @@ export function TaskSheet({
 									</li>
 								))}
 							</ol>
-							<form className="kb-comment-form" onSubmit={submitComment} noValidate>
-								<h3>Add comment</h3>
-								<div className="kb-field">
-									<label htmlFor="kb-comment-body">Comment (required)</label>
-									<textarea
-										id="kb-comment-body"
-										value={commentBody}
-										onChange={event => setCommentBody(event.target.value)}
-										rows={5}
-										maxLength={10_001}
-										required
-									/>
-								</div>
-								{commentFormError ? (
-									<p className="kb-field-error" role="alert">
-										{commentFormError}
-									</p>
-								) : null}
-								{!canWrite ? <p className="kb-disabled-reason">Reconnect to add or change comments.</p> : null}
-								<button type="submit" className="kb-button kb-button-primary" disabled={!canWrite || busy}>
-									Add comment
-								</button>
-							</form>
 						</section>
 					) : null}
 

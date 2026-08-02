@@ -221,14 +221,36 @@
 	border-radius: var(--radius);
 	box-shadow: 0 1px 1px color-mix(in oklch, var(--border-strong) 55%, transparent);
 	transition: transform 150ms ease-out, box-shadow 150ms ease-out, border-color 150ms ease-out;
+	user-select: none;
+	cursor: grab;
 }
 .kb-task-card[data-priority="lowest"] { --priority-color: var(--priority-lowest); }
 .kb-task-card[data-priority="low"] { --priority-color: var(--priority-low); }
 .kb-task-card[data-priority="high"] { --priority-color: var(--priority-high); }
 .kb-task-card[data-priority="highest"] { --priority-color: var(--priority-highest); }
+/* An unread card is tinted, not recoloured: `color-mix` against `--bg-raised`
+   keeps the shift proportional to whichever theme is active, so the card reads
+   correctly on both light and dark instead of needing two hard-coded colours.
+   The accent-tinted left edge carries the signal for anyone who cannot separate
+   the two backgrounds. */
+.kb-task-card[data-unread="true"] {
+	background: color-mix(in oklch, var(--accent) 9%, var(--bg-raised));
+	border-color: color-mix(in oklch, var(--accent) 35%, var(--border));
+	box-shadow: inset 3px 0 0 color-mix(in oklch, var(--accent) 70%, transparent);
+}
+/* The generic hover rule below also sets `box-shadow`, so the unread edge has to
+   be restated here or hovering an unread card would erase its own marker. */
+.kb-task-card[data-unread="true"]:hover {
+	background: color-mix(in oklch, var(--accent) 13%, var(--bg-raised));
+	border-color: color-mix(in oklch, var(--accent) 50%, var(--border-strong));
+	box-shadow:
+		inset 3px 0 0 color-mix(in oklch, var(--accent) 70%, transparent),
+		0 3px 8px color-mix(in oklch, var(--border-strong) 60%, transparent);
+}
 /* Jira lifts the card under the cursor rather than tinting it. */
 .kb-task-card:hover { border-color: var(--border-strong); box-shadow: 0 3px 8px color-mix(in oklch, var(--border-strong) 60%, transparent); transform: translateY(-1px); }
 .kb-task-card[data-keyboard-preview="true"] { outline: 2px solid var(--ring); outline-offset: 1px; transform: scale(0.985); }
+.kb-board[data-pointer-dragging="true"] .kb-task-card { cursor: grabbing; }
 
 .kb-card-open { display: flex; min-width: 0; padding: 10px 8px 9px 11px; flex-direction: column; align-items: flex-start; gap: 7px; text-align: left; background: transparent; border: 0; border-radius: var(--radius) 0 0 var(--radius); }
 .kb-card-open strong,
@@ -242,18 +264,48 @@
 .kb-card-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; width: 100%; font: 500 10px / 1.4 var(--font-mono); color: var(--fg-faint); }
 .kb-card-meta span { gap: 3px; }
 .kb-card-key { letter-spacing: 0.05em; text-transform: uppercase; }
+.kb-card-comments { display: inline-flex; align-items: center; padding: 1px 5px; color: var(--fg-muted); background: var(--bg-inset); border: 1px solid var(--border); border-radius: 999px; }
+.kb-unread-dot { position: absolute; top: 5px; left: 5px; z-index: 1; width: 6px; height: 6px; background: var(--accent); border: 1px solid var(--bg-raised); border-radius: 999px; pointer-events: none; }
 .kb-card-labels { display: flex; flex-wrap: wrap; gap: 4px; }
 .kb-card-labels span { padding: 1px 6px; font-size: 9px; color: var(--fg-muted); background: var(--bg-inset); border: 1px solid var(--border); border-radius: 999px; }
+/* A label carries its own hue as a tint, never as raw coloured text: the chip has
+   to stay legible on both the light and the dark board. */
+.kb-card-labels span[data-labelled="true"] {
+	color: var(--fg);
+	background: color-mix(in oklch, var(--label-color) 22%, var(--bg-inset));
+	border-color: color-mix(in oklch, var(--label-color) 55%, var(--border));
+}
+/* The picker in the task form shares the card chip's tint language so a label
+   looks the same whether you are choosing it or reading it off a card. */
+.kb-label-picker { display: grid; gap: 7px; }
+.kb-label-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.kb-label-chip { padding: 3px 9px; font-size: 11px; line-height: 1.4; color: var(--fg-muted); background: var(--bg-inset); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease; }
+.kb-label-chip:hover:not(:disabled) { color: var(--fg); border-color: var(--border-strong); }
+.kb-label-chip[aria-pressed="true"] {
+	color: var(--fg);
+	background: color-mix(in oklch, var(--kb-label) 24%, var(--bg-inset));
+	border-color: color-mix(in oklch, var(--kb-label) 60%, var(--border));
+}
+.kb-label-chip[aria-pressed="true"]:hover { background: color-mix(in oklch, var(--kb-label) 32%, var(--bg-inset)); }
+.kb-label-hint { font-size: 10px; color: var(--fg-faint); }
 .kb-card-spacer { flex: 1; }
 .kb-avatar { display: grid; place-items: center; width: 20px; height: 20px; font: 600 9px / 1 var(--font-sans, inherit); color: var(--bg); background: var(--accent); border-radius: 999px; }
 
 .kb-drag-handle { display: grid; place-items: center; width: 32px; min-height: 44px; padding: 0; align-self: stretch; color: var(--fg-faint); background: transparent; border: 0; border-left: 1px solid var(--border); border-radius: 0 var(--radius) var(--radius) 0; touch-action: none; cursor: grab; }
 .kb-drag-handle:active:not(:disabled),
 .kb-drag-handle[aria-pressed="true"] { color: var(--accent); cursor: grabbing; }
-.kb-drop-marker { position: absolute; inset: -5px 4px auto; height: 2px; background: var(--accent); border-radius: 2px; pointer-events: none; }
-.kb-drop-marker-end { position: relative; inset: auto; display: block; flex: none; }
-.kb-drag-preview { position: fixed; inset: 0 auto auto 0; z-index: 3; gap: 7px; width: min(260px, calc(100vw - 32px)); padding: 9px 11px; color: var(--fg); background: var(--bg-overlay); border: 1px solid var(--ring); border-radius: var(--radius); box-shadow: var(--shadow-overlay); pointer-events: none; will-change: transform; }
+/* dnd-kit lifts the card into a DragOverlay, so the origin slot stays in the flow
+   as a dimmed placeholder instead of needing a separate insertion marker. */
+.kb-task-card[data-dragging="true"] { opacity: 0.4; }
+/* DragOverlay owns the positioning wrapper, so the preview itself is plain flow. */
+.kb-drag-preview { display: flex; align-items: center; gap: 7px; width: min(260px, calc(100vw - 32px)); padding: 9px 11px; color: var(--fg); background: var(--bg-overlay); border: 1px solid var(--ring); border-radius: var(--radius); box-shadow: var(--shadow-overlay); cursor: grabbing; }
 .kb-drag-preview span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-shortcut-help { position: absolute; inset: 40px 12px auto auto; z-index: 2; display: grid; gap: 10px; width: min(260px, calc(100% - 24px)); padding: 12px; background: var(--bg-overlay); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-overlay); }
+.kb-shortcut-help strong { font-size: 12px; }
+.kb-shortcut-help dl { display: grid; gap: 6px; margin: 0; }
+.kb-shortcut-help dl div { display: grid; grid-template-columns: 92px 1fr; gap: 8px; }
+.kb-shortcut-help dt { font: 600 10px / 1.4 var(--font-mono); color: var(--fg); }
+.kb-shortcut-help dd { margin: 0; font-size: 10px; color: var(--fg-muted); }
 
 .kb-column-empty { display: grid; place-items: center; gap: 8px; min-height: 104px; padding: 14px; text-align: center; color: var(--fg-faint); border: 1px dashed var(--border-strong); border-radius: var(--radius); }
 .kb-column-empty p { font-size: 11px; }
@@ -297,7 +349,7 @@
 .kb-sheet::backdrop,
 .kb-activity-dialog::backdrop { background: var(--backdrop); }
 .kb-sheet-frame,
-.kb-activity-dialog-frame { display: grid; grid-template-rows: auto auto minmax(0, 1fr); height: 100%; min-width: 0; min-height: 0; }
+.kb-activity-dialog-frame { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; min-width: 0; min-height: 0; }
 .kb-sheet-header,
 .kb-activity-dialog-frame > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: calc(12px + env(safe-area-inset-top, 0px)) 14px 12px; border-bottom: 1px solid var(--border); }
 .kb-sheet-header > div,
@@ -332,6 +384,10 @@
 .kb-tabs { display: flex; gap: 4px; padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--bg-inset); }
 .kb-tabs button { min-height: 34px; padding: 5px 10px; font-size: 11px; }
 .kb-tabs button[aria-selected="true"] { color: var(--fg); background: var(--bg-overlay); border-color: var(--accent); }
+/* The discussion tabs sit inside the scrolling page now, under Details, so they
+   bleed to the sheet edges and carry a top rule instead of the old header seam. */
+.kb-sheet-tabs { position: sticky; top: -14px; z-index: 1; margin: 18px -14px 14px; padding-inline: 14px; border-top: 1px solid var(--border); }
+.kb-details-section { display: grid; gap: 14px; }
 .kb-sheet-content { min-width: 0; min-height: 0; padding: 14px; overflow-y: auto; overscroll-behavior: contain; }
 .kb-task-summary { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
 .kb-task-summary span { padding: 3px 6px; font: 500 10px / 1.4 var(--font-mono); color: var(--fg-muted); background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius-sm); }
@@ -383,15 +439,25 @@
 .kb-comment header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .kb-comment header span,
 .kb-activity-list time { font: 400 10px / 1.4 var(--font-mono); color: var(--fg-faint); }
-.kb-comment-body,
 .kb-comment-deleted,
 .kb-activity-list p { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Comment bodies are markdown now, so the shared `.kb-markdown` block styling
+   applies — minus the preview pane's inset frame and minimum height. */
+.kb-comment-body.kb-markdown { min-height: 0; padding: 0; background: transparent; border: 0; }
+.kb-comment-body :last-child { margin-bottom: 0; }
 .kb-comment-deleted { font-style: italic; color: var(--fg-faint); }
 .kb-comment-actions { display: flex; gap: 5px; }
 .kb-comment-actions button { display: inline-flex; align-items: center; gap: 4px; min-height: 30px; padding: 3px 7px; font-size: 10px; }
 .kb-comment-edit { display: grid; gap: 6px; }
 .kb-comment-edit textarea { width: 100%; min-height: 90px; padding: 7px 9px; color: var(--fg); background: var(--bg-inset); border: 1px solid var(--border-strong); border-radius: var(--radius); resize: vertical; }
 .kb-activity-list strong { font-size: 12px; }
+/* A history line doubles as the way back to its task, so the whole entry is the
+   hit target; the deleted-task variant keeps the layout without the affordance. */
+.kb-activity-entry { display: grid; gap: 5px; width: 100%; padding: 0; font: inherit; color: inherit; text-align: left; background: transparent; border: 0; cursor: pointer; }
+.kb-activity-entry[data-static="true"] { cursor: default; }
+.kb-activity-entry:hover:not([data-static="true"]) .kb-activity-task { color: var(--accent); text-decoration: underline; }
+.kb-activity-entry:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; border-radius: var(--radius-sm); }
+.kb-activity-task { font-size: 11px; color: var(--fg-muted); overflow-wrap: anywhere; }
 .kb-activity-dialog { width: min(560px, 92vw); }
 .kb-activity-dialog-frame { grid-template-rows: auto minmax(0, 1fr); }
 .kb-activity-dialog .kb-activity-list,
@@ -428,6 +494,7 @@
 	.kb-sheet-create,
 	.kb-activity-dialog { width: 100%; max-width: none; height: var(--viewport-height, 100dvh); max-height: none; border: 0; border-radius: 0; }
 	.kb-sheet-content { padding: 12px; }
+	.kb-sheet-tabs { top: -12px; margin-inline: -12px; padding-inline: 12px; }
 	.kb-field-row { grid-template-columns: minmax(0, 1fr); }
 	.kb-field input,
 	.kb-field textarea,
@@ -484,6 +551,36 @@
 .kb-markdown code { padding: 1px 4px; font: 500 11px / 1.4 var(--font-mono); background: var(--bg-overlay); border-radius: var(--radius-sm); }
 .kb-markdown pre { margin: 0 0 8px; padding: 9px 11px; overflow-x: auto; background: var(--bg-overlay); border-radius: var(--radius); }
 .kb-markdown pre code { padding: 0; background: transparent; }
+/* highlight.js token palette, mapped onto the board's own tokens so code blocks
+   follow the active theme instead of shipping a second colour system. */
+.kb-markdown .hljs-comment,
+.kb-markdown .hljs-quote { font-style: italic; color: var(--fg-faint); }
+.kb-markdown .hljs-keyword,
+.kb-markdown .hljs-selector-tag,
+.kb-markdown .hljs-section,
+.kb-markdown .hljs-name,
+.kb-markdown .hljs-tag { color: color-mix(in oklch, var(--accent) 72%, var(--fg)); }
+.kb-markdown .hljs-string,
+.kb-markdown .hljs-regexp,
+.kb-markdown .hljs-addition { color: var(--ok); }
+.kb-markdown .hljs-number,
+.kb-markdown .hljs-literal,
+.kb-markdown .hljs-symbol,
+.kb-markdown .hljs-bullet,
+.kb-markdown .hljs-link,
+.kb-markdown .hljs-meta { color: var(--warn); }
+.kb-markdown .hljs-title,
+.kb-markdown .hljs-title.function_,
+.kb-markdown .hljs-attr,
+.kb-markdown .hljs-attribute,
+.kb-markdown .hljs-variable,
+.kb-markdown .hljs-property { color: var(--fg); }
+.kb-markdown .hljs-type,
+.kb-markdown .hljs-title.class_,
+.kb-markdown .hljs-built_in { color: color-mix(in oklch, var(--accent) 45%, var(--fg)); }
+.kb-markdown .hljs-deletion { color: var(--err); }
+.kb-markdown .hljs-emphasis { font-style: italic; }
+.kb-markdown .hljs-strong { font-weight: 700; }
 .kb-markdown img { max-width: 100%; height: auto; margin: 4px 0; border: 1px solid var(--border); border-radius: var(--radius); }
 .kb-markdown blockquote { margin: 0 0 8px; padding-left: 10px; color: var(--fg-muted); border-left: 2px solid var(--border-strong); }
 .kb-markdown a { color: var(--accent); }

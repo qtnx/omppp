@@ -3,6 +3,8 @@ import * as path from "node:path";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { KANBAN_CLIENT_ASSETS } from "./client/assets.generated";
 import {
+	type KanbanForkedAgent,
+	type KanbanForkRequest,
 	type KanbanModelApi,
 	type KanbanRegistration,
 	KanbanRuntime,
@@ -12,6 +14,7 @@ import {
 
 export { sessionBoardName } from "./runtime";
 
+export type KanbanBoardForker = (request: KanbanForkRequest) => Promise<KanbanForkedAgent | null>;
 let runtime: KanbanRuntime | null = null;
 
 /**
@@ -39,7 +42,9 @@ export async function registerKanbanSession(session: KanbanSessionPort): Promise
 
 export async function unregisterKanbanSession(session: KanbanSessionPort): Promise<void> {
 	if (!runtime) return;
-	await runtime.unregisterSession(session);
+	const registered = boardPorts.get(session) ?? session;
+	await runtime.unregisterSession(registered);
+	boardPorts.delete(session);
 	if (!runtime.running) runtime = null;
 }
 
@@ -51,10 +56,48 @@ export function getKanbanModelApi(sessionId: string): KanbanModelApi | null {
 	return runtime?.apiForSession(sessionId) ?? null;
 }
 
+/** Lets interactive mode add fork capability without changing SDK session shape. */
+export function setKanbanBoardForker(session: KanbanBoardOwner, forker: KanbanBoardForker): void {
+	boardForkers.set(session, forker);
+}
+
+/** Grants a background clone access to its parent session's live board API. */
+export function attachKanbanForkedAgent(parentSessionId: string, agentSessionId: string): (() => void) | null {
+	return runtime?.attachForkedAgent(parentSessionId, agentSessionId) ?? null;
+}
+
 /** A session that can own a board: disposal-aware and able to remount the tool. */
 export interface KanbanBoardOwner extends KanbanSessionPort {
 	readonly isDisposed: boolean;
 	refreshKanbanTool?(): Promise<void>;
+}
+
+const boardForkers = new WeakMap<KanbanSessionPort, KanbanBoardForker>();
+const boardPorts = new WeakMap<KanbanSessionPort, KanbanSessionPort>();
+
+function boardPortFor(session: KanbanBoardOwner): KanbanSessionPort {
+	const registered = boardPorts.get(session);
+	if (registered) return registered;
+	if (!boardForkers.has(session)) return session;
+	const port: KanbanSessionPort = {
+		get sessionId() {
+			return session.sessionId;
+		},
+		get isStreaming() {
+			return session.isStreaming;
+		},
+		get yieldQueue() {
+			return session.yieldQueue;
+		},
+		promptCustomMessage: (message, options) => session.promptCustomMessage(message, options),
+		emitNotice: (level, message, source) => session.emitNotice(level, message, source),
+		forkBoardAgent: async request => (await boardForkers.get(session)?.(request)) ?? null,
+		onKanbanEventsDurable: listener => session.onKanbanEventsDurable(listener),
+		setKanbanBriefing: section => session.setKanbanBriefing(section),
+		hasDurableKanbanEvent: eventId => session.hasDurableKanbanEvent(eventId),
+	};
+	boardPorts.set(session, port);
+	return port;
 }
 
 /**
@@ -70,9 +113,10 @@ export async function startKanbanBoard(
 	unregister: (candidate: KanbanSessionPort) => Promise<void> = unregisterKanbanSession,
 ): Promise<KanbanRegistration | null> {
 	if (session.isDisposed) return null;
-	const registration = await register(session);
+	const boardSession = boardPortFor(session);
+	const registration = await register(boardSession);
 	if (session.isDisposed) {
-		await unregister(session);
+		await unregister(boardSession);
 		return null;
 	}
 	await session.refreshKanbanTool?.();

@@ -1,7 +1,8 @@
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { type CSSProperties, type FormEvent, type ReactNode, useId, useState } from "react";
 import type { KanbanApi } from "./api";
 import { DescriptionEditor } from "./DescriptionEditor";
 import {
+	normalizeTaskLabels,
 	type TaskFormErrors,
 	type TaskFormField,
 	type TaskFormValues,
@@ -16,7 +17,7 @@ import {
 	type KanbanStatus,
 	type KanbanTask,
 } from "./types";
-import { PRIORITY_LABELS, STATUS_LABELS } from "./view-model";
+import { labelColor, PRIORITY_LABELS, STATUS_LABELS } from "./view-model";
 
 interface TaskFormProps {
 	task: KanbanTask | null;
@@ -26,7 +27,11 @@ interface TaskFormProps {
 	serverError: string | null;
 	api: KanbanApi | null;
 	sessions: readonly KanbanBoardSession[];
+	/** Every label already used on this board, so the picker can offer them as chips. */
+	knownLabels: readonly string[];
 	onSubmit(valid: ValidTaskForm): Promise<void>;
+	/** Applies a status change immediately; resolves false when the move was rejected. */
+	onStatusChange(status: KanbanStatus): Promise<boolean>;
 	onCancel(): void;
 }
 
@@ -66,7 +71,9 @@ export function TaskForm({
 	serverError,
 	api,
 	sessions,
+	knownLabels,
 	onSubmit,
+	onStatusChange,
 	onCancel,
 }: TaskFormProps) {
 	const formId = useId();
@@ -87,6 +94,47 @@ export function TaskForm({
 		setValues(current => ({ ...current, [field]: value }));
 		if (errors[field]) setErrors(current => ({ ...current, [field]: undefined }));
 	};
+	const [labelDraft, setLabelDraft] = useState("");
+	const [labelHint, setLabelHint] = useState<string | null>(null);
+	// Offer every label the board already knows plus whatever this task carries, so a
+	// label that was removed from every other task stays visible while editing.
+	const labelOptions = [
+		...new Map(
+			[...knownLabels, ...values.labels]
+				.filter(label => label.length > 0)
+				.map(label => [label.toLocaleLowerCase(), label]),
+		).values(),
+	].sort((left, right) => left.localeCompare(right));
+	const isSelected = (label: string): boolean =>
+		values.labels.some(current => current.toLocaleLowerCase() === label.toLocaleLowerCase());
+	const setLabels = (labels: string[]): void => {
+		setLabelHint(null);
+		update("labels", labels);
+	};
+	const addLabel = (label: string): void => {
+		const normalized = normalizeTaskLabels([...values.labels, label]);
+		// normalizeTaskLabels bails out at the first duplicate, so its list is only
+		// usable when nothing collided; otherwise keep the selection and hint instead.
+		if (normalized.duplicate) {
+			setLabelHint(`“${normalized.duplicate}” is already on this task.`);
+			return;
+		}
+		setLabels(normalized.labels);
+	};
+	const toggleLabel = (label: string): void => {
+		if (isSelected(label)) {
+			setLabels(values.labels.filter(current => current.toLocaleLowerCase() !== label.toLocaleLowerCase()));
+			return;
+		}
+		addLabel(label);
+	};
+	const commitLabelDraft = (): void => {
+		const draft = labelDraft.trim();
+		if (draft.length === 0) return;
+		addLabel(draft);
+		setLabelDraft("");
+	};
+	const chipStyle = (label: string): CSSProperties => ({ "--kb-label": labelColor(label) }) as CSSProperties;
 	const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
 		event.preventDefault();
 		const result = validateTaskForm(values);
@@ -102,22 +150,34 @@ export function TaskForm({
 	};
 
 	return (
-		<form id={formId} className="kb-task-form" onSubmit={submit} noValidate>
+		<form
+			id={formId}
+			className="kb-task-form"
+			onSubmit={submit}
+			onKeyDown={event => {
+				// Description and labels are textareas, so plain Enter has to stay a
+				// newline; Ctrl/Cmd+Enter is the submit gesture from anywhere in the form.
+				if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey) || busy || !canWrite) return;
+				event.preventDefault();
+				event.currentTarget.requestSubmit();
+			}}
+			noValidate
+		>
 			{serverError ? (
 				<div className="kb-form-alert" role="alert">
 					{serverError}
 				</div>
 			) : null}
 			<div className="kb-form-grid">
-				<Field label="Title (required)" field="title" errors={errors}>
+				<Field label="Title (optional)" field="title" errors={errors}>
 					<input
 						id="kb-task-title"
 						value={values.title}
 						onChange={event => update("title", event.target.value)}
+						placeholder="Leave blank to let the agent name it"
 						maxLength={201}
 						aria-invalid={Boolean(errors.title)}
 						aria-describedby={describedBy("title")}
-						required
 					/>
 				</Field>
 				<div className="kb-field-row">
@@ -125,13 +185,23 @@ export function TaskForm({
 						label="Status"
 						field="status"
 						errors={errors}
-						helper={task ? "Move the card on the board to change status." : undefined}
+						helper={task ? "Applies right away — the card moves to the end of that column." : undefined}
 					>
 						<select
 							id="kb-task-status"
 							value={values.status}
-							onChange={event => update("status", event.target.value as KanbanStatus)}
-							disabled={Boolean(task)}
+							onChange={event => {
+								const next = event.target.value as KanbanStatus;
+								const previous = values.status;
+								update("status", next);
+								// Status is not a PATCH field, so it cannot ride along with Save: it
+								// moves the card now, and snaps back if the server refuses the move.
+								if (!task) return;
+								void onStatusChange(next).then(moved => {
+									if (!moved) update("status", previous);
+								});
+							}}
+							disabled={!canWrite || busy}
 							aria-describedby={describedBy("status")}
 						>
 							{KANBAN_STATUSES.map(status => (
@@ -199,15 +269,48 @@ export function TaskForm({
 						/>
 					</Field>
 				</div>
-				<Field label="Labels" field="labels" errors={errors} helper="Separate labels with commas or new lines.">
-					<textarea
-						id="kb-task-labels"
-						value={values.labels}
-						onChange={event => update("labels", event.target.value)}
-						rows={2}
-						aria-invalid={Boolean(errors.labels)}
-						aria-describedby={describedBy("labels")}
-					/>
+				<Field
+					label="Labels"
+					field="labels"
+					errors={errors}
+					helper="Pick a label to toggle it, or type a new one and press Enter."
+				>
+					<div className="kb-label-picker">
+						{labelOptions.length > 0 ? (
+							<div className="kb-label-chips">
+								{labelOptions.map(label => (
+									<button
+										key={label.toLocaleLowerCase()}
+										type="button"
+										className="kb-label-chip"
+										aria-pressed={isSelected(label)}
+										style={chipStyle(label)}
+										onClick={() => toggleLabel(label)}
+									>
+										{label}
+									</button>
+								))}
+							</div>
+						) : null}
+						<input
+							id="kb-task-labels"
+							type="text"
+							value={labelDraft}
+							placeholder="Add a label"
+							onChange={event => setLabelDraft(event.target.value)}
+							onKeyDown={event => {
+								// The form only submits on Ctrl/Cmd+Enter, so a plain Enter here is
+								// ours to consume: add the drafted label instead of bubbling.
+								if (event.key !== "Enter") return;
+								event.preventDefault();
+								commitLabelDraft();
+							}}
+							onBlur={commitLabelDraft}
+							aria-invalid={Boolean(errors.labels)}
+							aria-describedby={describedBy("labels")}
+						/>
+						{labelHint ? <p className="kb-label-hint">{labelHint}</p> : null}
+					</div>
 				</Field>
 			</div>
 			{!canWrite ? <p className="kb-disabled-reason">Reconnect to save changes.</p> : null}

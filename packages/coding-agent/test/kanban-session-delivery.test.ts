@@ -8,6 +8,8 @@ import { startKanbanBoard } from "@oh-my-pi/pi-coding-agent/kanban";
 import { KanbanSessionDelivery } from "@oh-my-pi/pi-coding-agent/kanban/delivery";
 import {
 	type KanbanCustomMessagePayload,
+	type KanbanForkedAgent,
+	type KanbanForkRequest,
 	type KanbanPromptOptions,
 	KanbanRuntime,
 	type KanbanSessionPort,
@@ -35,6 +37,7 @@ const BOARD_ID = "project-board";
 class FakeSession implements KanbanSessionPort {
 	isStreaming = false;
 	isDisposed = false;
+	forkBoardAgent?: (request: KanbanForkRequest) => Promise<KanbanForkedAgent | null>;
 	readonly idleMessages: AgentMessage[] = [];
 	readonly urgentMessages: Array<{ message: AgentMessage; options: KanbanPromptOptions }> = [];
 	readonly notices: string[] = [];
@@ -118,6 +121,30 @@ class FakeSession implements KanbanSessionPort {
 		}
 		return messages;
 	}
+}
+
+interface ForkedTestAgent {
+	agent: KanbanForkedAgent;
+	messages: string[];
+	finish(): void;
+}
+
+function createForkedTestAgent(id: string): ForkedTestAgent {
+	const settled = Promise.withResolvers<void>();
+	const messages: string[] = [];
+	return {
+		agent: {
+			id,
+			settled: settled.promise,
+			send: async message => {
+				messages.push(message);
+				return true;
+			},
+			cancel: () => settled.resolve(),
+		},
+		messages,
+		finish: () => settled.resolve(),
+	};
 }
 
 interface RuntimeHarness {
@@ -460,6 +487,361 @@ describe("Kanban session delivery", () => {
 		} finally {
 			db.close();
 		}
+	});
+
+	it("forks a background agent for a backlog task without steering the session", async () => {
+		const delivery = new KanbanSessionDelivery();
+		const session = new FakeSession("session-fork-backlog");
+		const requests: KanbanForkRequest[] = [];
+		session.forkBoardAgent = async request => {
+			requests.push(request);
+			return createForkedTestAgent("board-agent-backlog").agent;
+		};
+
+		await delivery.deliver(session, {
+			id: "event-fork-backlog",
+			cursor: 1,
+			boardId: BOARD_ID,
+			taskId: "task-backlog",
+			type: "task.created",
+			createdAt: "2026-08-02T00:00:00.000Z",
+			data: { task: { id: "task-backlog", status: "backlog", title: "Refine this" } },
+		});
+
+		expect(requests).toHaveLength(1);
+		expect(requests[0]).toMatchObject({ taskId: "task-backlog" });
+		expect(session.urgentMessages).toHaveLength(0);
+		expect(session.notices).toHaveLength(1);
+	});
+
+	it("forks a background agent when a task moves to ready", async () => {
+		const delivery = new KanbanSessionDelivery();
+		const session = new FakeSession("session-fork-ready");
+		const requests: KanbanForkRequest[] = [];
+		session.forkBoardAgent = async request => {
+			requests.push(request);
+			return createForkedTestAgent("board-agent-ready").agent;
+		};
+
+		await delivery.deliver(session, {
+			id: "event-fork-ready",
+			cursor: 2,
+			boardId: BOARD_ID,
+			taskId: "task-ready",
+			type: "task.moved",
+			createdAt: "2026-08-02T00:00:00.000Z",
+			data: { task: { id: "task-ready", status: "ready", title: "Implement this" } },
+		});
+
+		expect(requests).toHaveLength(1);
+		expect(requests[0]).toMatchObject({ taskId: "task-ready" });
+		expect(session.urgentMessages).toHaveLength(0);
+	});
+
+	it("routes a comment to the live board agent for its task", async () => {
+		const delivery = new KanbanSessionDelivery();
+		const session = new FakeSession("session-comment-continuity");
+		const requests: KanbanForkRequest[] = [];
+		const liveAgent = createForkedTestAgent("board-agent-comment");
+		session.forkBoardAgent = async request => {
+			requests.push(request);
+			return liveAgent.agent;
+		};
+
+		await delivery.deliver(session, {
+			id: "event-comment-task",
+			cursor: 3,
+			boardId: BOARD_ID,
+			taskId: "task-comment",
+			type: "task.created",
+			createdAt: "2026-08-02T00:00:00.000Z",
+			data: { task: { id: "task-comment", status: "backlog", title: "Discuss this" } },
+		});
+		await delivery.deliver(session, {
+			id: "event-comment",
+			cursor: 4,
+			boardId: BOARD_ID,
+			taskId: "task-comment",
+			type: "comment.created",
+			createdAt: "2026-08-02T00:00:01.000Z",
+			data: { comment: { body: "Please cover the failure path." } },
+		});
+
+		expect(requests).toHaveLength(1);
+		expect(liveAgent.messages).toHaveLength(1);
+		expect(liveAgent.messages[0]).toContain("Please cover the failure path.");
+		expect(session.urgentMessages).toHaveLength(0);
+	});
+
+	it("delivers a comment on a task no board agent is carrying to the owning session", async () => {
+		const delivery = new KanbanSessionDelivery();
+		const session = new FakeSession("session-comment-orphan");
+		const requests: KanbanForkRequest[] = [];
+		session.forkBoardAgent = async request => {
+			requests.push(request);
+			return createForkedTestAgent("board-agent-orphan").agent;
+		};
+		delivery.register(session);
+
+		await delivery.deliver(session, {
+			id: "event-orphan-comment",
+			cursor: 9,
+			boardId: BOARD_ID,
+			taskId: "task-owned-by-session",
+			type: "comment.created",
+			createdAt: "2026-08-02T00:00:00.000Z",
+			data: { comment: { body: "Any progress on this?" } },
+		});
+		await session.flushIdle();
+
+		// Forking here would answer the operator from a stranger agent while the
+		// session actually holding the task stays silent, and would start a second
+		// worker on a task someone is already implementing.
+		expect(requests).toHaveLength(0);
+		// Comments ride the idle queue rather than steering, same as before this
+		// routing change; what matters is that the owning session still gets them.
+		expect(session.idleMessages).toHaveLength(1);
+		expect(JSON.stringify(session.idleMessages[0])).toContain("Any progress on this?");
+	});
+
+	it("delivers each live-agent comment once across fork-capable sessions", async () => {
+		const delivery = new KanbanSessionDelivery();
+		const first = new FakeSession("session-live-dedupe-a");
+		const second = new FakeSession("session-live-dedupe-b");
+		const liveAgent = createForkedTestAgent("board-agent-dedupe");
+		const secondRequests: KanbanForkRequest[] = [];
+		first.forkBoardAgent = async () => liveAgent.agent;
+		second.forkBoardAgent = async request => {
+			secondRequests.push(request);
+			return createForkedTestAgent("board-agent-dedupe-second").agent;
+		};
+
+		await delivery.deliver(first, {
+			id: "event-live-dedupe-created",
+			cursor: 5,
+			boardId: BOARD_ID,
+			taskId: "task-live-dedupe",
+			type: "task.created",
+			createdAt: "2026-08-02T00:00:00.000Z",
+			data: { task: { id: "task-live-dedupe", status: "backlog", title: "Discuss this" } },
+		});
+		const comment: KanbanActivity = {
+			id: "event-live-dedupe-comment",
+			cursor: 6,
+			boardId: BOARD_ID,
+			taskId: "task-live-dedupe",
+			type: "comment.created",
+			createdAt: "2026-08-02T00:00:01.000Z",
+			data: { comment: { body: "Send this once." } },
+		};
+		await delivery.deliver(first, comment);
+		await delivery.deliver(second, comment);
+
+		expect(liveAgent.messages).toHaveLength(1);
+		expect(secondRequests).toHaveLength(0);
+	});
+
+	it("forwards a ready move to the live board agent", async () => {
+		const delivery = new KanbanSessionDelivery();
+		const session = new FakeSession("session-ready-continuity");
+		const requests: KanbanForkRequest[] = [];
+		const liveAgent = createForkedTestAgent("board-agent-ready-continuity");
+		session.forkBoardAgent = async request => {
+			requests.push(request);
+			return liveAgent.agent;
+		};
+
+		await delivery.deliver(session, {
+			id: "event-ready-continuity-created",
+			cursor: 5,
+			boardId: BOARD_ID,
+			taskId: "task-ready-continuity",
+			type: "task.created",
+			createdAt: "2026-08-02T00:00:00.000Z",
+			data: { task: { id: "task-ready-continuity", status: "backlog", title: "Refine this first" } },
+		});
+		await delivery.deliver(session, {
+			id: "event-ready-continuity-moved",
+			cursor: 6,
+			boardId: BOARD_ID,
+			taskId: "task-ready-continuity",
+			type: "task.moved",
+			createdAt: "2026-08-02T00:01:00.000Z",
+			data: { task: { id: "task-ready-continuity", status: "ready", title: "Implement this now" } },
+		});
+
+		expect(requests).toHaveLength(1);
+		expect(liveAgent.messages).toHaveLength(1);
+		expect(liveAgent.messages[0]).toContain("Implement this now");
+	});
+
+	it("routes an assigned task comment only to its owning board agent", async () => {
+		const harness = await createHarness();
+		const sessionA = new FakeSession("session-comment-owner-a");
+		const sessionB = new FakeSession("session-comment-owner-b");
+		const agentsA: ForkedTestAgent[] = [];
+		const requestsB: KanbanForkRequest[] = [];
+		sessionA.forkBoardAgent = async () => {
+			const agent = createForkedTestAgent(`board-agent-comment-owner-a-${agentsA.length}`);
+			agentsA.push(agent);
+			return agent.agent;
+		};
+		sessionB.forkBoardAgent = async request => {
+			requestsB.push(request);
+			return createForkedTestAgent(`board-agent-comment-owner-b-${requestsB.length}`).agent;
+		};
+		const registrationA = await harness.runtime.registerSession(sessionA);
+		await harness.runtime.registerSession(sessionB);
+		const capability = await cookie(harness.runtime, BOARD_ID);
+
+		const created = await fetch(endpoint(harness.runtime, `/api/v1/boards/${BOARD_ID}/tasks`), {
+			method: "POST",
+			headers: headers(harness.runtime, capability, "comment-owner-created"),
+			body: JSON.stringify({
+				title: "Assigned comment owner",
+				status: "backlog",
+				priority: "highest",
+				assignee: registrationA.name,
+			}),
+		});
+		expect(created.status).toBe(201);
+		const createdPayload: unknown = await created.json();
+		if (
+			!createdPayload ||
+			typeof createdPayload !== "object" ||
+			!("data" in createdPayload) ||
+			!createdPayload.data ||
+			typeof createdPayload.data !== "object" ||
+			!("id" in createdPayload.data) ||
+			typeof createdPayload.data.id !== "string"
+		) {
+			throw new Error("Create-task response was malformed");
+		}
+
+		const commented = await fetch(
+			endpoint(
+				harness.runtime,
+				`/api/v1/boards/${BOARD_ID}/tasks/${encodeURIComponent(createdPayload.data.id)}/comments`,
+			),
+			{
+				method: "POST",
+				headers: headers(harness.runtime, capability, "comment-owner-comment"),
+				body: JSON.stringify({ author: "browser-user", body: "Please keep this with the owner." }),
+			},
+		);
+		expect(commented.status).toBe(201);
+		expect(agentsA).toHaveLength(1);
+		expect(agentsA[0]?.messages).toHaveLength(1);
+		expect(requestsB).toHaveLength(0);
+	});
+
+	it("starts queued board work in arrival order after a live agent finishes", async () => {
+		const delivery = new KanbanSessionDelivery();
+		const session = new FakeSession("session-fork-queue");
+		const requests: KanbanForkRequest[] = [];
+		const agents: ForkedTestAgent[] = [];
+		const fourthStarted = Promise.withResolvers<void>();
+		session.forkBoardAgent = async request => {
+			requests.push(request);
+			const agent = createForkedTestAgent(`board-agent-${requests.length}`);
+			agents.push(agent);
+			if (requests.length === 4) fourthStarted.resolve();
+			return agent.agent;
+		};
+
+		for (const number of [1, 2, 3, 4]) {
+			await delivery.deliver(session, {
+				id: `event-queue-${number}`,
+				cursor: number,
+				boardId: BOARD_ID,
+				taskId: `task-queue-${number}`,
+				type: "task.created",
+				createdAt: "2026-08-02T00:00:00.000Z",
+				data: { task: { id: `task-queue-${number}`, status: "backlog", title: `Task ${number}` } },
+			});
+		}
+
+		expect(requests.map(request => request.taskId)).toEqual(["task-queue-1", "task-queue-2", "task-queue-3"]);
+		agents[0]?.finish();
+		await fourthStarted.promise;
+		expect(requests.map(request => request.taskId)).toEqual([
+			"task-queue-1",
+			"task-queue-2",
+			"task-queue-3",
+			"task-queue-4",
+		]);
+	});
+
+	it("keeps terminal task moves silent and releases cancelled board work", async () => {
+		const delivery = new KanbanSessionDelivery();
+		const session = new FakeSession("session-terminal-task");
+		const requests: KanbanForkRequest[] = [];
+		const settled = Promise.withResolvers<void>();
+		let cancelled = false;
+		session.forkBoardAgent = async request => {
+			requests.push(request);
+			return {
+				id: "board-agent-terminal",
+				settled: settled.promise,
+				send: async () => true,
+				cancel: () => {
+					cancelled = true;
+					settled.resolve();
+				},
+			};
+		};
+		delivery.register(session);
+		const move = (id: string, taskId: string, status: "done" | "cancelled" | "blocked"): KanbanActivity => ({
+			id,
+			cursor: requests.length + 1,
+			boardId: BOARD_ID,
+			taskId,
+			type: "task.moved",
+			createdAt: "2026-08-02T00:00:00.000Z",
+			data: { task: { id: taskId, status } },
+		});
+
+		await delivery.deliver(session, move("event-done", "task-done", "done"));
+		await delivery.deliver(session, move("event-cancelled", "task-cancelled", "cancelled"));
+		await session.flushIdle();
+		expect(requests).toHaveLength(0);
+		expect(session.urgentMessages).toHaveLength(0);
+		expect(session.idleMessages).toHaveLength(0);
+
+		await delivery.deliver(session, move("event-blocked", "task-blocked", "blocked"));
+		expect(session.urgentMessages.flatMap(({ message }) => deliveredEventIds(message))).toEqual(["event-blocked"]);
+		expect(requests).toHaveLength(0);
+
+		await delivery.deliver(session, {
+			id: "event-live",
+			cursor: 4,
+			boardId: BOARD_ID,
+			taskId: "task-live",
+			type: "task.created",
+			createdAt: "2026-08-02T00:00:00.000Z",
+			data: { task: { id: "task-live", status: "backlog" } },
+		});
+		await delivery.deliver(session, move("event-live-cancelled", "task-live", "cancelled"));
+		expect(cancelled).toBe(true);
+	});
+
+	it("steers a cancellation to a session without board agent support", async () => {
+		const delivery = new KanbanSessionDelivery();
+		const session = new FakeSession("session-cancelled-fallback");
+
+		await delivery.deliver(session, {
+			id: "event-cancelled-fallback",
+			cursor: 1,
+			boardId: BOARD_ID,
+			taskId: "task-cancelled-fallback",
+			type: "task.moved",
+			createdAt: "2026-08-02T00:00:00.000Z",
+			data: { task: { id: "task-cancelled-fallback", status: "cancelled" } },
+		});
+
+		expect(session.urgentMessages.flatMap(({ message }) => deliveredEventIds(message))).toEqual([
+			"event-cancelled-fallback",
+		]);
 	});
 
 	it("steers only board activity that interrupts the workflow", async () => {

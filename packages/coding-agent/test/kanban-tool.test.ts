@@ -126,6 +126,28 @@ describe("KanbanTool", () => {
 		expect(published[0]?.type).toBe("task.created");
 	});
 
+	it("stores an omitted title as empty while rejecting titles over 200 characters", async () => {
+		const { store, tool } = await createHarness();
+
+		const created = await tool.execute("call-untitled-create", {
+			op: "create",
+			task: { status: "backlog", priority: "medium" },
+		});
+		const taskId = requireDetails(created).taskId;
+		expect(taskId).toBeDefined();
+		if (taskId === undefined) {
+			throw new Error("expected created taskId");
+		}
+		expect(store.getTask(BOARD_ID, taskId).title).toBe("");
+
+		await expect(
+			tool.execute("call-overlong-title", {
+				op: "create",
+				task: { title: "x".repeat(201), status: "backlog", priority: "medium" },
+			}),
+		).rejects.toThrow("title must be a string of at most 200 characters");
+	});
+
 	it("moves a task through the real store and publishes task.moved once", async () => {
 		const { store, tool, published } = await createHarness();
 		const seeded = await tool.execute("call-move-seed", {
@@ -148,6 +170,64 @@ describe("KanbanTool", () => {
 		expect(store.getTask(BOARD_ID, taskId)).toMatchObject({ id: taskId, status: "ready", version: 2 });
 		expect(published).toHaveLength(1);
 		expect(published[0]?.type).toBe("task.moved");
+	});
+
+	it("claims an unassigned task for the calling board when moving it to in_progress", async () => {
+		const { store, tool, published } = await createHarness();
+		const seeded = await tool.execute("call-claim-seed", {
+			op: "create",
+			task: taskCreate("Claim proof task"),
+		});
+		const taskId = requireDetails(seeded).taskId;
+		expect(taskId).toBeDefined();
+		if (taskId === undefined) {
+			throw new Error("expected created taskId");
+		}
+		published.length = 0;
+
+		await tool.execute("call-claim-move", {
+			op: "move",
+			taskId,
+			move: { expectedVersion: 1, status: "in_progress", index: 0 },
+		});
+
+		expect(store.getTask(BOARD_ID, taskId)).toMatchObject({
+			status: "in_progress",
+			assignee: "swift-otter",
+			version: 2,
+		});
+		expect(published[0]?.data).toMatchObject({
+			task: expect.objectContaining({ id: taskId, assignee: "swift-otter" }),
+		});
+	});
+
+	it("preserves another board's assignee when moving its task to in_progress", async () => {
+		const { store, tool, published } = await createHarness();
+		const seeded = await tool.execute("call-assigned-seed", {
+			op: "create",
+			task: { ...taskCreate("Assigned move"), assignee: "calm-raven" },
+		});
+		const taskId = requireDetails(seeded).taskId;
+		expect(taskId).toBeDefined();
+		if (taskId === undefined) {
+			throw new Error("expected created taskId");
+		}
+		published.length = 0;
+
+		await tool.execute("call-assigned-move", {
+			op: "move",
+			taskId,
+			move: { expectedVersion: 1, status: "in_progress", index: 0 },
+		});
+
+		expect(store.getTask(BOARD_ID, taskId)).toMatchObject({
+			status: "in_progress",
+			assignee: "calm-raven",
+			version: 2,
+		});
+		expect(published[0]?.data).toMatchObject({
+			task: expect.objectContaining({ id: taskId, assignee: "calm-raven" }),
+		});
 	});
 
 	it("comments through the real store and publishes comment.created once", async () => {

@@ -86,6 +86,8 @@ import { loadSlashCommands } from "../extensibility/slash-commands";
 import { type GuidedGoalMessage, newGuidedGoalSessionId, runGuidedGoalTurn } from "../goals/guided-setup";
 import type { Goal, GoalModeState, GoalStatus } from "../goals/state";
 import { resolveLocalUrlToPath } from "../internal-urls";
+import { setKanbanBoardForker } from "../kanban";
+import type { KanbanForkedAgent, KanbanForkRequest } from "../kanban/runtime";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
 import {
@@ -872,6 +874,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#uiHelpers = new UiHelpers(this);
 		this.#btwController = new BtwController(this);
 		this.#tanCommandController = new TanCommandController(this);
+		setKanbanBoardForker(this.session, request => this.handleKanbanBoardAgent(request));
 		this.#omfgController = new OmfgController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
 		// Idle low-memory trim is TUI interactive only: EventController lives here,
@@ -5503,6 +5506,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleTanCommand(work: string): Promise<void> {
 		return this.#tanCommandController.start(work);
+	}
+
+	handleKanbanBoardAgent(request: KanbanForkRequest): Promise<KanbanForkedAgent | null> {
+		return this.#tanCommandController.startBoardAgent(request);
 	}
 
 	hasActiveBtw(): boolean {
