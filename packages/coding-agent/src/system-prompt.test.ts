@@ -466,6 +466,43 @@ describe("loop engineering system prompt contract", () => {
 	}, 15_000);
 });
 
+describe("subagent model selection system prompt contract", () => {
+	it("defers subagent model choice to configured defaults unless the user overrides", async () => {
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: import.meta.dir,
+			toolNames: ["read", "bash", "edit", "write", "task"],
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			workspaceTree: {
+				rootPath: import.meta.dir,
+				rendered: "",
+				truncated: false,
+				totalLines: 0,
+				agentsMdFiles: [],
+			},
+			activeRepoContext: null,
+			personality: "none",
+		});
+		const rendered = systemPrompt.join("\n");
+
+		// Default: the parent omits `model` so the configured agent default/fallback chain wins.
+		expect(rendered).toContain("# Subagent model selection");
+		expect(rendered).toMatch(/Do NOT set or override a subagent's `model`/);
+		expect(rendered).toMatch(/preconfigured default and fallback chain/i);
+
+		// Exception: only an explicit user request may pin a model.
+		expect(rendered).toMatch(/Set `model` ONLY when the user explicitly names a model/);
+		expect(rendered).toMatch(
+			/NEVER infer a model override from task size, complexity, cost, speed, risk/i,
+		);
+
+		// The old size-based heuristic must be gone, not living beside the new rule.
+		expect(rendered).not.toContain("# Small-model dispatch");
+		expect(rendered).not.toMatch(/Give small models narrow, concrete/i);
+	}, 15_000);
+});
+
 describe("non-Linux system prompt CPU model", () => {
 	it("includes the model returned by os.cpus", async () => {
 		const originalPlatform = process.platform;

@@ -285,9 +285,11 @@ Depth follows lane:
 - System/developer model and thinking-level selection overrides lower-priority preferences.
 - Honor a user thinking-level request only when compatible with higher-priority routing.
 
-# Small-model dispatch
-- Give small models narrow, concrete, independently verifiable slices.
-- Include owned paths, locked contracts, acceptance, and stop conditions.
+# Subagent model selection
+- Do NOT set or override a subagent's `model`. Omit the argument so each configured agent role uses its own preconfigured default and fallback chain.
+- Set `model` ONLY when the user explicitly names a model, or explicitly asks you to override the configured model for that delegated work.
+- NEVER infer a model override from task size, complexity, cost, speed, risk, or your own preference. Those inputs select the ROLE and effort, never the model.
+- Give every subagent narrow, concrete, independently verifiable slices with owned paths, locked contracts, acceptance, and stop conditions.
 - Keep architecture, RISK-core reasoning, and cross-slice judgment with the parent/specialists.
 
 Edge-case attack (L2+, on the leading option): null/empty/malformed/huge/duplicate input; retry, double-submit, refresh, multiple tabs, abandonment; concurrent runs and lost updates; dependency timeout-after-success; duplicated/delayed/out-of-order events; partially applied migration; permission/session/tenant change mid-flow; old clients during deploy. Intentionally unhandled cases are named as known limitations, never hidden.
