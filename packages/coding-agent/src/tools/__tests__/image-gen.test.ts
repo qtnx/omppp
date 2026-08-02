@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { Api, FetchImpl, Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { CustomToolContext } from "../../extensibility/custom-tools/types";
-import { type ImageGenParams, imageGenTool, isImageProviderPreference, setPreferredImageProvider } from "../image-gen";
+import {
+	type ImageGenParams,
+	imageGenTool,
+	isImageProviderPreference,
+	setImageProviderOrder,
+	setPreferredImageProvider,
+} from "../image-gen";
 
 const SESSION_ID = "image-gen-test-session";
 const IMAGE_BYTES_BASE64 = "iVBORw0KGgo=";
@@ -195,6 +201,82 @@ describe("imageGenTool provider preference", () => {
 
 		expect(captured).toHaveLength(1);
 		expect(captured[0]?.body).toMatchObject({ model: "gpt-4.1" });
+		expect(result.details?.provider).toBe("openai");
+		expect(result.details?.model).toBe("gpt-4.1");
+	});
+
+	it("routes a non-OpenAI session to Codex under the default auto order", async () => {
+		const activeModel = makeModel("anthropic", "claude-opus-4-1", "anthropic-messages");
+		const openaiModel = makeModel("openai", "gpt-4.1", "openai-responses", {
+			baseUrl: "https://api.openai.com/v1",
+		});
+		const codexModel = makeModel("openai-codex", "gpt-5.5", "openai-codex-responses", {
+			baseUrl: "https://chatgpt.com/backend-api",
+		});
+		const captured: CapturedRequest[] = [];
+		const registry = makeRegistry({
+			available: [openaiModel, codexModel, activeModel],
+			// Both backends are usable; the auto order must still pick Codex.
+			keys: { openai: "sk-openai-test", "openai-codex": makeCodexToken("acct_codex_auto") },
+		});
+
+		const result = await runImageTool({
+			model: activeModel,
+			registry,
+			fetchImpl: createCapturingFetch(captured, { sse: true }),
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.url).toBe("https://chatgpt.com/backend-api/codex/responses");
+		expect(result.details?.provider).toBe("openai-codex");
+		expect(result.details?.model).toBe("gpt-5.5");
+	});
+
+	it("does not let the session's own OpenAI provider shadow a connected Codex subscription", async () => {
+		const activeModel = makeModel("openai", "gpt-4.1", "openai-responses", {
+			baseUrl: "https://api.openai.com/v1",
+		});
+		const codexModel = makeModel("openai-codex", "gpt-5.5", "openai-codex-responses", {
+			baseUrl: "https://chatgpt.com/backend-api",
+		});
+		const captured: CapturedRequest[] = [];
+		const registry = makeRegistry({
+			available: [activeModel, codexModel],
+			keys: { openai: "sk-openai-test", "openai-codex": makeCodexToken("acct_codex_priority") },
+		});
+
+		const result = await runImageTool({
+			model: activeModel,
+			registry,
+			fetchImpl: createCapturingFetch(captured, { sse: true }),
+		});
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.headers.get("chatgpt-account-id")).toBe("acct_codex_priority");
+		expect(result.details?.provider).toBe("openai-codex");
+		expect(result.details?.model).toBe("gpt-5.5");
+	});
+
+	it("still honors an explicit configured order ahead of Codex", async () => {
+		const activeModel = makeModel("openai", "gpt-4.1", "openai-responses", {
+			baseUrl: "https://api.openai.com/v1",
+		});
+		const codexModel = makeModel("openai-codex", "gpt-5.5", "openai-codex-responses", {
+			baseUrl: "https://chatgpt.com/backend-api",
+		});
+		const captured: CapturedRequest[] = [];
+		const registry = makeRegistry({
+			available: [activeModel, codexModel],
+			keys: { openai: "sk-openai-test", "openai-codex": makeCodexToken("acct_codex_cfg") },
+		});
+
+		// An explicit list is authoritative: Codex stays available but must not
+		// preempt a provider the user put first.
+		setImageProviderOrder(["openai"]);
+		const result = await runImageTool({ model: activeModel, registry, fetchImpl: createCapturingFetch(captured) });
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.url).toBe("https://api.openai.com/v1/responses");
 		expect(result.details?.provider).toBe("openai");
 		expect(result.details?.model).toBe("gpt-4.1");
 	});
