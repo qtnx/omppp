@@ -15,7 +15,16 @@ import {
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 const COOKIE_NAME_PREFIX = "ompx_kanban_";
-const HARD_MAX_REQUEST_BODY_BYTES = MAX_JSON_BODY_BYTES * 2;
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+/** Formats the board renders inline and the model can read back as an image. */
+const ALLOWED_IMAGE_TYPES: Readonly<Record<string, true>> = {
+	"image/png": true,
+	"image/jpeg": true,
+	"image/gif": true,
+	"image/webp": true,
+};
+/** Server hard ceiling: the largest route limit (attachments) plus slack. */
+const HARD_MAX_REQUEST_BODY_BYTES = MAX_ATTACHMENT_BYTES + 64 * 1024;
 const MUTATION_HEADER = "X-OMPx-Kanban";
 const SSE_HEARTBEAT_MS = 15_000;
 const TEXT_ENCODER = new TextEncoder();
@@ -243,7 +252,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 		await this.#options.onSessionAccess?.(sessionId);
 
 		const mutation = request.method === "POST" || request.method === "PATCH" || request.method === "DELETE";
-		if (mutation) this.#authorizeMutation(request);
+		if (mutation) this.#authorizeMutation(request, segments[4] !== "attachments");
 		if (url.search && !(request.method === "GET" && segments.length === 5 && segments[4] === "events")) {
 			throw new KanbanError(422, "validation_error", "Query parameters are not allowed for this route");
 		}
@@ -260,6 +269,16 @@ class KanbanHttpServer implements KanbanServerHandle {
 				throw new KanbanError(422, "validation_error", "cursor must be a nonnegative integer");
 			}
 			return this.#events(sessionId, Number(cursorText));
+		}
+		if (segments[4] === "attachments") {
+			if (request.method === "POST" && segments.length === 5)
+				return await this.#uploadAttachment(request, sessionId);
+			if (request.method === "GET" && segments.length === 6) {
+				const attachmentId = decodeSegment(segments[5] ?? "");
+				if (!attachmentId) throw new KanbanError(404, "not_found", "Attachment not found");
+				return this.#attachment(sessionId, attachmentId);
+			}
+			throw new KanbanError(404, "not_found", "Not found");
 		}
 		if (segments[4] !== "tasks") throw new KanbanError(404, "not_found", "Not found");
 
@@ -418,7 +437,7 @@ class KanbanHttpServer implements KanbanServerHandle {
 		return splitHostHeader(host) ? `http://${host}` : null;
 	}
 
-	#authorizeMutation(request: Request): void {
+	#authorizeMutation(request: Request, expectJson = true): void {
 		const expectedOrigin = this.#requestOrigin(request);
 		if (!expectedOrigin || request.headers.get("origin") !== expectedOrigin) {
 			throw new KanbanError(403, "forbidden", "Mutation Origin is not allowed");
@@ -426,10 +445,42 @@ class KanbanHttpServer implements KanbanServerHandle {
 		if (request.headers.get(MUTATION_HEADER) !== "1") {
 			throw new KanbanError(403, "kanban_header_required", "Kanban mutation header is required");
 		}
+		if (!expectJson) return;
 		const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
 		if (!contentType.startsWith("application/json")) {
 			throw new KanbanError(415, "unsupported_media_type", "Mutation body must be JSON");
 		}
+	}
+
+	/**
+	 * Board image upload: raw bytes plus an `X-Kanban-Filename` header rather
+	 * than multipart, so uploads reuse the JSON routes' auth and the reader can
+	 * abort on size without parsing a form.
+	 */
+	async #uploadAttachment(request: Request, sessionId: string): Promise<Response> {
+		const contentType = (request.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+		if (!Object.hasOwn(ALLOWED_IMAGE_TYPES, contentType)) {
+			throw new KanbanError(415, "unsupported_media_type", "Attachments must be PNG, JPEG, GIF, or WebP");
+		}
+		const bytes = await this.#readBytes(request, MAX_ATTACHMENT_BYTES, "Attachment exceeds 5 MiB");
+		if (bytes.byteLength === 0) throw new KanbanError(422, "validation_error", "Attachment body is empty");
+		const rawName = request.headers.get("x-kanban-filename") ?? "image";
+		const filename = rawName.replace(/[^\w.\- ]/g, "").slice(0, 120) || "image";
+		const attachment = this.#options.store.createAttachment(sessionId, { filename, contentType, bytes });
+		return this.#json(
+			{ ...attachment, url: `/api/v1/sessions/${encodeURIComponent(sessionId)}/attachments/${attachment.id}` },
+			201,
+		);
+	}
+
+	#attachment(sessionId: string, attachmentId: string): Response {
+		const found = this.#options.store.readAttachment(sessionId, attachmentId);
+		if (!found) throw new KanbanError(404, "not_found", "Attachment not found");
+		const headers = securityHeaders("private, max-age=31536000, immutable");
+		headers.set("Content-Type", found.contentType);
+		headers.set("Content-Length", String(found.size));
+		headers.set("Content-Disposition", `inline; filename="${found.filename.replace(/"/g, "")}"`);
+		return new Response(found.bytes, { status: 200, headers });
 	}
 
 	#cookieName(sessionId: string): string {
@@ -466,10 +517,11 @@ class KanbanHttpServer implements KanbanServerHandle {
 		return key;
 	}
 
-	async #readJson(request: Request): Promise<unknown> {
+	/** Bounded body reader: aborts mid-stream instead of buffering an oversized body. */
+	async #readBytes(request: Request, limit: number, overflowMessage: string): Promise<Uint8Array> {
 		const contentLength = request.headers.get("content-length");
-		if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_JSON_BODY_BYTES) {
-			throw new KanbanError(413, "payload_too_large", "JSON body exceeds 64 KiB");
+		if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > limit) {
+			throw new KanbanError(413, "payload_too_large", overflowMessage);
 		}
 		const chunks: Uint8Array[] = [];
 		let byteLength = 0;
@@ -480,9 +532,9 @@ class KanbanHttpServer implements KanbanServerHandle {
 					const result = await reader.read();
 					if (result.done) break;
 					byteLength += result.value.byteLength;
-					if (byteLength > MAX_JSON_BODY_BYTES) {
+					if (byteLength > limit) {
 						await reader.cancel("payload_too_large").catch(() => undefined);
-						throw new KanbanError(413, "payload_too_large", "JSON body exceeds 64 KiB");
+						throw new KanbanError(413, "payload_too_large", overflowMessage);
 					}
 					chunks.push(result.value);
 				}
@@ -496,6 +548,11 @@ class KanbanHttpServer implements KanbanServerHandle {
 			bytes.set(chunk, offset);
 			offset += chunk.byteLength;
 		}
+		return bytes;
+	}
+
+	async #readJson(request: Request): Promise<unknown> {
+		const bytes = await this.#readBytes(request, MAX_JSON_BODY_BYTES, "JSON body exceeds 64 KiB");
 		let text: string;
 		try {
 			text = TEXT_DECODER.decode(bytes);

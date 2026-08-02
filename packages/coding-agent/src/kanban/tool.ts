@@ -6,6 +6,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { getKanbanModelApi } from "../kanban";
@@ -94,6 +95,10 @@ function formatKanbanError(error: KanbanError): string {
 		: message;
 }
 
+/** `/api/v1/sessions/<session>/attachments/<id>` as written into markdown. */
+const ATTACHMENT_URL_RE = /\/api\/v1\/sessions\/[^/\s)"']+\/attachments\/([\w-]+)/g;
+const MAX_TOOL_IMAGES = 6;
+
 /**
  * The id the Kanban runtime registers boards under. `getSessionId` returns the
  * session-manager id, which diverges from `AgentSession.sessionId` whenever a
@@ -159,9 +164,12 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 					const taskId = this.#taskId(params);
 					const task = api.store.getTask(sessionId, taskId);
 					const comments = api.store.listComments(sessionId, taskId);
-					return toolResult<KanbanToolDetails>({ op: params.op, taskId, task, comments })
-						.text(this.#json({ task, comments }))
-						.done();
+					const images = this.#taskImages(api, sessionId, task, comments);
+					const summary = this.#json({ task, comments });
+					const builder = toolResult<KanbanToolDetails>({ op: params.op, taskId, task, comments });
+					return images.length === 0
+						? builder.text(summary).done()
+						: builder.content([{ type: "text", text: summary }, ...images]).done();
 				}
 				case "create": {
 					const input = validateTaskCreate(params.task);
@@ -245,6 +253,37 @@ export class KanbanTool implements AgentTool<typeof kanbanSchema, KanbanToolDeta
 			);
 		}
 		return { sessionId, api };
+	}
+
+	/**
+	 * Board images referenced from the description or comments, decoded so the
+	 * model sees the screenshot instead of a URL it cannot fetch. Bounded so one
+	 * image-heavy task cannot blow up a tool result.
+	 */
+	#taskImages(
+		api: KanbanModelApi,
+		sessionId: string,
+		task: KanbanTask,
+		comments: readonly KanbanComment[],
+	): ImageContent[] {
+		const sources = [task.description ?? "", ...comments.map(comment => comment.body)].join("\n");
+		const ids = new Set<string>();
+		for (const match of sources.matchAll(ATTACHMENT_URL_RE)) {
+			const id = match[1];
+			if (id) ids.add(id);
+			if (ids.size >= MAX_TOOL_IMAGES) break;
+		}
+		const images: ImageContent[] = [];
+		for (const id of ids) {
+			const found = api.store.readAttachment(sessionId, id);
+			if (!found) continue;
+			images.push({
+				type: "image",
+				data: Buffer.from(found.bytes).toString("base64"),
+				mimeType: found.contentType,
+			});
+		}
+		return images;
 	}
 
 	#taskId(params: KanbanToolParams): string {

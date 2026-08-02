@@ -1,4 +1,6 @@
 import { type FormEvent, type ReactNode, useId, useState } from "react";
+import type { KanbanApi } from "./api";
+import { DescriptionEditor } from "./DescriptionEditor";
 import {
 	type TaskFormErrors,
 	type TaskFormField,
@@ -16,6 +18,7 @@ interface TaskFormProps {
 	busy: boolean;
 	canWrite: boolean;
 	serverError: string | null;
+	api: KanbanApi | null;
 	onSubmit(valid: ValidTaskForm): Promise<void>;
 	onCancel(): void;
 }
@@ -48,7 +51,7 @@ function Field({ label, field, errors, helper, children }: FieldProps) {
 	);
 }
 
-export function TaskForm({ task, defaultStatus, busy, canWrite, serverError, onSubmit, onCancel }: TaskFormProps) {
+export function TaskForm({ task, defaultStatus, busy, canWrite, serverError, api, onSubmit, onCancel }: TaskFormProps) {
 	const formId = useId();
 	const [values, setValues] = useState<TaskFormValues>(() => taskToFormValues(task, defaultStatus));
 	const [errors, setErrors] = useState<TaskFormErrors>({});
@@ -131,13 +134,14 @@ export function TaskForm({ task, defaultStatus, busy, canWrite, serverError, onS
 					</Field>
 				</div>
 				<Field label="Description" field="description" errors={errors}>
-					<textarea
+					<DescriptionEditor
 						id="kb-task-description"
 						value={values.description}
-						onChange={event => update("description", event.target.value)}
-						rows={5}
-						aria-invalid={Boolean(errors.description)}
-						aria-describedby={describedBy("description")}
+						disabled={!canWrite || busy}
+						api={api}
+						invalid={Boolean(errors.description)}
+						describedBy={describedBy("description")}
+						onChange={next => update("description", next)}
 					/>
 				</Field>
 				<div className="kb-field-row">

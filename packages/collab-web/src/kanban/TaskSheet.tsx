@@ -215,6 +215,7 @@ export function TaskSheet({
 										busy={busy}
 										canWrite={canWrite}
 										serverError={serverError}
+										api={api}
 										onSubmit={async valid => {
 											if (await onSave(valid)) dialogRef.current?.close();
 										}}

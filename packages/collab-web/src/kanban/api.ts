@@ -52,6 +52,13 @@ async function parseResponseBody(response: Response): Promise<unknown> {
 	}
 }
 
+/** What the board needs after an upload to write markdown for the image. */
+export interface KanbanAttachmentRef {
+	id: string;
+	url: string;
+	filename: string;
+}
+
 export class KanbanApi {
 	readonly #sessionId: string;
 	readonly #fetch: KanbanFetch;
@@ -129,6 +136,28 @@ export class KanbanApi {
 	eventsUrl(cursor: number): string {
 		if (!Number.isInteger(cursor) || cursor < 0) throw new Error("Kanban SSE cursor must be a nonnegative integer");
 		return `${this.#sessionPath("/events")}?cursor=${cursor}`;
+	}
+
+	/**
+	 * Uploads one board image as raw bytes. Multipart would buy nothing here:
+	 * the server reads a single body and takes the name from a header.
+	 */
+	async uploadAttachment(file: File): Promise<KanbanAttachmentRef> {
+		this.#assertConnected();
+		const payload = await this.#request(this.#sessionPath("/attachments"), {
+			method: "POST",
+			headers: {
+				"Content-Type": file.type,
+				"X-OMPx-Kanban": "1",
+				"X-Kanban-Filename": file.name.replace(/[^\w.\- ]/g, "") || "image",
+				"Idempotency-Key": createIdempotencyKey(),
+			},
+			body: file,
+		});
+		if (!isRecord(payload) || typeof payload.url !== "string" || typeof payload.id !== "string") {
+			throw new KanbanApiError(200, "invalid_response", "The upload response was malformed.");
+		}
+		return { id: payload.id, url: payload.url, filename: file.name };
 	}
 
 	async createTask(draft: KanbanTaskDraft): Promise<KanbanTask> {

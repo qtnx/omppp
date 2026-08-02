@@ -1,8 +1,15 @@
-import { Activity, CirclePlus, CloudOff, Columns3, RefreshCw, X } from "lucide-react";
+import { Activity, Bell, BellOff, CirclePlus, CloudOff, Columns3, RefreshCw, X } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
 import { KanbanApi } from "./api";
 import { KanbanBoard } from "./Board";
+import {
+	disableNotifications,
+	enableNotifications,
+	notificationsEnabled,
+	notificationsSupported,
+	notifyBoardEvent,
+} from "./notify";
 import { calculateMoveDestination, type MoveDestination } from "./reorder";
 import {
 	applyRealtimeEvent,
@@ -144,6 +151,7 @@ export function KanbanApp() {
 	const [sheetError, setSheetError] = useState<string | null>(null);
 	const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
 	const [activityOpen, setActivityOpen] = useState(false);
+	const [notifyOn, setNotifyOn] = useState(() => notificationsEnabled());
 	const activityTrigger = useRef<HTMLElement | null>(null);
 	const connectionRef = useRef<KanbanConnectionState>(connection);
 	const cursorRef = useRef(0);
@@ -243,6 +251,7 @@ export function KanbanApp() {
 								}
 							: current,
 					);
+					notifyBoardEvent(event);
 					void loadBoard("event");
 				} catch {
 					setNotice({ kind: "error", message: "A live update couldn't be read. Reloading the board." });
@@ -427,6 +436,25 @@ export function KanbanApp() {
 					>
 						<Activity size={16} aria-hidden="true" /> Activity
 					</button>
+					{notificationsSupported() ? (
+						<button
+							type="button"
+							className="kb-icon-button"
+							aria-pressed={notifyOn}
+							title={notifyOn ? "Board notifications on" : "Notify me when the agent changes the board"}
+							aria-label={notifyOn ? "Turn board notifications off" : "Turn board notifications on"}
+							onClick={async () => {
+								if (notifyOn) {
+									disableNotifications();
+									setNotifyOn(false);
+									return;
+								}
+								setNotifyOn(await enableNotifications());
+							}}
+						>
+							{notifyOn ? <Bell size={16} aria-hidden="true" /> : <BellOff size={16} aria-hidden="true" />}
+						</button>
+					) : null}
 					<ThemeToggle />
 					<button
 						type="button"

@@ -107,3 +107,23 @@ export interface KanbanMutation<T> {
 	activity: KanbanActivity | null;
 	replayed: boolean;
 }
+
+/** Metadata for a board image; `bytes` stays out of JSON responses. */
+export interface KanbanAttachment {
+	id: string;
+	sessionId: string;
+	filename: string;
+	contentType: string;
+	size: number;
+	createdAt: string;
+}
+
+export interface KanbanAttachmentBody extends KanbanAttachment {
+	bytes: Uint8Array;
+}
+
+export interface KanbanAttachmentCreate {
+	filename: string;
+	contentType: string;
+	bytes: Uint8Array;
+}

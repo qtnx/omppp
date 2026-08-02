@@ -5,6 +5,9 @@ import { KanbanError, notFound, versionConflict } from "./errors";
 import type {
 	KanbanActivity,
 	KanbanActivityType,
+	KanbanAttachment,
+	KanbanAttachmentBody,
+	KanbanAttachmentCreate,
 	KanbanBoardSnapshot,
 	KanbanComment,
 	KanbanCommentCreate,
@@ -79,6 +82,14 @@ interface IdempotencyRow {
 	response_json: string;
 }
 
+interface AttachmentRow {
+	filename: string;
+	content_type: string;
+	size: number;
+	bytes: Uint8Array;
+	created_at: string;
+}
+
 const MIGRATION_SQL = `
 CREATE TABLE IF NOT EXISTS kanban_schema_migrations (
 	version INTEGER PRIMARY KEY,
@@ -146,6 +157,17 @@ CREATE TABLE IF NOT EXISTS kanban_idempotency (
 	created_at TEXT NOT NULL,
 	PRIMARY KEY (session_id, idempotency_key)
 );
+
+CREATE TABLE IF NOT EXISTS kanban_attachments (
+	id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	filename TEXT NOT NULL,
+	content_type TEXT NOT NULL,
+	size INTEGER NOT NULL CHECK (size > 0),
+	bytes BLOB NOT NULL,
+	created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS kanban_attachments_session_idx ON kanban_attachments(session_id, created_at);
 `;
 
 function parseStringArray(serialized: string): string[] {
@@ -517,6 +539,47 @@ export class KanbanStore {
 				"UPDATE kanban_outbox SET delivered_at = ? WHERE session_id = ? AND event_id = ? AND delivered_at IS NULL",
 			)
 			.run(this.#timestamp(), sessionId, eventId);
+	}
+
+	/**
+	 * Board images live in SQLite next to the rest of the board so a session's
+	 * attachments travel with `agent.db` and need no filesystem cleanup.
+	 */
+	createAttachment(sessionId: string, input: KanbanAttachmentCreate): KanbanAttachment {
+		const id = this.#createId();
+		const createdAt = this.#timestamp();
+		this.#db
+			.prepare(`
+				INSERT INTO kanban_attachments(id, session_id, filename, content_type, size, bytes, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+			`)
+			.run(id, sessionId, input.filename, input.contentType, input.bytes.byteLength, input.bytes, createdAt);
+		return {
+			id,
+			sessionId,
+			filename: input.filename,
+			contentType: input.contentType,
+			size: input.bytes.byteLength,
+			createdAt,
+		};
+	}
+
+	readAttachment(sessionId: string, attachmentId: string): KanbanAttachmentBody | null {
+		const row = this.#db
+			.prepare(
+				"SELECT filename, content_type, size, bytes, created_at FROM kanban_attachments WHERE id = ? AND session_id = ?",
+			)
+			.get(attachmentId, sessionId) as AttachmentRow | undefined;
+		if (!row) return null;
+		return {
+			id: attachmentId,
+			sessionId,
+			filename: row.filename,
+			contentType: row.content_type,
+			size: row.size,
+			createdAt: row.created_at,
+			bytes: new Uint8Array(row.bytes),
+		};
 	}
 
 	#migrate(): void {
