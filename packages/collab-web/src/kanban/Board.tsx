@@ -163,7 +163,7 @@ function TaskCard({ task, canWrite, busyTaskId, unread, onOpenTask }: TaskCardPr
 				className="kb-drag-handle"
 				data-kanban-move-task={task.id}
 				disabled={!canWrite || (busyTaskId !== null && busyTaskId !== task.id)}
-				aria-label={`Move task: ${displayTitle(task.title)}${unread ? " (unread)" : ""}`}
+				aria-label={`Move task: ${displayTitle(task.title)}${unread ? " (unread comment)" : ""}`}
 				// `aria-describedby` is intentionally absent: the sortable attributes below
 				// point it at dnd-kit's own live drag instructions, which stay accurate.
 				title={!canWrite ? "Reconnect to move tasks" : "Move task"}

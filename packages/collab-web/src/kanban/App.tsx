@@ -84,8 +84,13 @@ function entityEcho(value: unknown): string | null {
 	return `${kind}:${value.id}:${String(value.version)}`;
 }
 
+/**
+ * A card is marked unread only for conversation, never for board mechanics.
+ * Moving a task or editing its fields is already visible in place; a comment is
+ * the only change that carries something someone has to read.
+ */
 function taskSeenVersion(task: KanbanTask): string {
-	return `${task.updatedAt}|${task.commentCount}`;
+	return String(task.commentCount);
 }
 
 function readSeenTaskVersions(boardId: string): SeenTaskVersions | null {
@@ -113,9 +118,14 @@ function writeSeenTaskVersions(boardId: string, seen: SeenTaskVersions): void {
 	}
 }
 
-function pruneSeenTaskVersions(seen: SeenTaskVersions, tasks: readonly KanbanTask[]): SeenTaskVersions {
-	const taskIds = new Set(tasks.map(task => task.id));
-	return Object.fromEntries(Object.entries(seen).filter(([taskId]) => taskIds.has(taskId)));
+/**
+ * Drops rows for tasks that no longer exist and enrols tasks this browser has
+ * never seen at their current fingerprint. Enrolling matters: a task appearing
+ * on the board is not something to read, so it starts read and only its first
+ * comment lights it up.
+ */
+function reconcileSeenTaskVersions(seen: SeenTaskVersions, tasks: readonly KanbanTask[]): SeenTaskVersions {
+	return Object.fromEntries(tasks.map(task => [task.id, seen[task.id] ?? taskSeenVersion(task)] as const));
 }
 
 function ActivityDialog({
@@ -277,13 +287,13 @@ export function KanbanApp() {
 					writeSeenTaskVersions(boardId, seeded);
 					return seeded;
 				}
-				const pruned = pruneSeenTaskVersions(current, tasks);
+				const reconciled = reconcileSeenTaskVersions(current, tasks);
 				const unchanged =
-					Object.keys(current).length === Object.keys(pruned).length &&
-					Object.entries(current).every(([taskId, version]) => pruned[taskId] === version);
+					Object.keys(current).length === Object.keys(reconciled).length &&
+					Object.entries(current).every(([taskId, version]) => reconciled[taskId] === version);
 				if (unchanged) return current;
-				writeSeenTaskVersions(boardId, pruned);
-				return pruned;
+				writeSeenTaskVersions(boardId, reconciled);
+				return reconciled;
 			});
 		},
 		[boardId],
@@ -395,7 +405,6 @@ export function KanbanApp() {
 								}
 							: current,
 					);
-					notifyBoardEvent(event);
 					// A change this tab made already reported itself; re-announcing the echo
 					// would replace that specific message with a vaguer one.
 					// The event can outrun its own HTTP response, so an in-flight mutation on
@@ -407,8 +416,14 @@ export function KanbanApp() {
 						const detail = activityDetail(event);
 						const label = ACTIVITY_LABELS[event.type];
 						setNotice({ kind: "info", message: detail ? `${label} — ${detail}` : label });
-						playBoardChime();
-						if (document.visibilityState !== "visible") setUnseen(count => count + 1);
+						// Only conversation interrupts. A status change is board mechanics: it
+						// is already visible on the board, so it never earns a chime, a badge,
+						// or a desktop notification the way a comment addressed to you does.
+						if (event.type === "comment.created") {
+							notifyBoardEvent(event);
+							playBoardChime();
+							if (document.visibilityState !== "visible") setUnseen(count => count + 1);
+						}
 					}
 					void loadBoard("event");
 				} catch {
