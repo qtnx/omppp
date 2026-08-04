@@ -72,6 +72,8 @@ function boardIdFromPath(pathname: string): string | null {
 type SeenTaskVersions = Record<string, string>;
 
 const SEEN_TASK_STORAGE_KEY_PREFIX = "ompx.kanban.seen.";
+/** Trailing window that folds a burst of live events into one snapshot fetch. */
+const EVENT_LOAD_COALESCE_MS = 300;
 /**
  * Fingerprint of the exact row a change produced. Matching an incoming event
  * against what this tab just wrote is how a self-echo is recognised; a time
@@ -256,6 +258,10 @@ export function KanbanApp() {
 	const localEchoes = useRef(new Set<string>());
 	/** Task whose mutation is in flight: its event can outrun the HTTP response. */
 	const inFlightTaskId = useRef<string | null>(null);
+	/** Aborts the in-flight snapshot fetch when a newer load supersedes it. */
+	const loadAbort = useRef<AbortController | null>(null);
+	/** Pending trailing load for a burst of live events. */
+	const eventLoadTimer = useRef<number | null>(null);
 
 	useEffect(() => {
 		connectionRef.current = connection;
@@ -303,9 +309,16 @@ export function KanbanApp() {
 		async (reason: "initial" | "event" | "reconnect" | "retry" | "conflict"): Promise<boolean> => {
 			if (!api || !boardId) return false;
 			const generation = ++loadGeneration.current;
+			// One snapshot is hundreds of kilobytes. A superseded request is not just
+			// an ignored result: left running it competes for the same link as the
+			// load that replaced it, which is how a burst of events used to turn into
+			// a pile of overlapping fetches that never settled.
+			loadAbort.current?.abort();
+			const controller = new AbortController();
+			loadAbort.current = controller;
 			if (reason === "initial" || reason === "retry") setLoading(true);
 			try {
-				const next = await api.loadBoard();
+				const next = await api.loadBoard(controller.signal);
 				if (generation !== loadGeneration.current) return false;
 				if (
 					next.tasks.some(task => task.boardId !== boardId) ||
@@ -322,15 +335,41 @@ export function KanbanApp() {
 				if (navigator.onLine) setConnection("connected");
 				return true;
 			} catch (error) {
+				// A newer load cancelled this one; it owns the outcome, so stay silent.
+				if (controller.signal.aborted) return false;
 				if (generation !== loadGeneration.current) return false;
 				const message = error instanceof Error ? error.message : "Couldn't load this board.";
 				setLoadError(`${message} Check the connection and try again.`);
 				setLoading(false);
 				setConnection(navigator.onLine ? "reconnecting" : "disconnected");
 				return false;
+			} finally {
+				if (loadAbort.current === controller) loadAbort.current = null;
 			}
 		},
 		[api, boardId, synchronizeSeenTaskVersions],
+	);
+
+	/**
+	 * Events arrive in bursts — an agent moving a task writes several in a row,
+	 * and each one used to trigger its own full-snapshot fetch. Collapsing a burst
+	 * into one trailing load keeps the board current without the stampede.
+	 */
+	const scheduleEventLoad = useCallback((): void => {
+		if (eventLoadTimer.current !== null) return;
+		eventLoadTimer.current = window.setTimeout(() => {
+			eventLoadTimer.current = null;
+			void loadBoard("event");
+		}, EVENT_LOAD_COALESCE_MS);
+	}, [loadBoard]);
+
+	useEffect(
+		() => () => {
+			if (eventLoadTimer.current !== null) window.clearTimeout(eventLoadTimer.current);
+			eventLoadTimer.current = null;
+			loadAbort.current?.abort();
+		},
+		[],
 	);
 
 	useEffect(() => {
@@ -425,10 +464,10 @@ export function KanbanApp() {
 							if (document.visibilityState !== "visible") setUnseen(count => count + 1);
 						}
 					}
-					void loadBoard("event");
+					scheduleEventLoad();
 				} catch {
 					setNotice({ kind: "error", message: "A live update couldn't be read. Reloading the board." });
-					void loadBoard("event");
+					scheduleEventLoad();
 				}
 			};
 			source.onerror = () => {
@@ -459,7 +498,7 @@ export function KanbanApp() {
 			window.removeEventListener("offline", offline);
 			window.removeEventListener("online", online);
 		};
-	}, [api, loadBoard, boardId]);
+	}, [api, loadBoard, scheduleEventLoad, boardId]);
 
 	useEffect(() => {
 		const viewport = window.visualViewport;

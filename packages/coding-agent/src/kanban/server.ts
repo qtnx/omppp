@@ -27,6 +27,8 @@ const ALLOWED_IMAGE_TYPES: Readonly<Record<string, true>> = {
 const HARD_MAX_REQUEST_BODY_BYTES = MAX_ATTACHMENT_BYTES + 64 * 1024;
 const MUTATION_HEADER = "X-OMPx-Kanban";
 const SSE_HEARTBEAT_MS = 15_000;
+/** Most events one reconnect may replay; a client further behind reloads instead. */
+const SSE_REPLAY_LIMIT = 200;
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
 const APP_CSP =
@@ -578,6 +580,13 @@ class KanbanHttpServer implements KanbanServerHandle {
 		return this.#json(result.data, result.status);
 	}
 
+	/**
+	 * Catch-up for a reconnecting client. Draining the whole backlog pushed the
+	 * entire activity table into the stream buffer synchronously — megabytes per
+	 * reconnect, no backpressure, and a reconnect loop paid it again every time.
+	 * The window is the NEWEST events, so a client that fell far behind lands on
+	 * the current tail; it reloads the board snapshot on the next event anyway.
+	 */
 	#events(boardId: string, cursor: number): Response {
 		let client: SseClient | null = null;
 		const stream = new ReadableStream<Uint8Array>({
@@ -585,15 +594,8 @@ class KanbanHttpServer implements KanbanServerHandle {
 				client = { boardId, lastCursor: cursor, controller };
 				this.#sseClients.add(client);
 				controller.enqueue(TEXT_ENCODER.encode(": connected\n\n"));
-				let replayCursor = cursor;
-				while (true) {
-					const batch = this.#options.store.listActivitiesAfter(boardId, replayCursor);
-					for (const activity of batch) {
-						this.#enqueueSse(client!, activity);
-						replayCursor = activity.cursor;
-					}
-					if (batch.length < 500) break;
-				}
+				const backlog = this.#options.store.listRecentActivitiesAfter(boardId, cursor, SSE_REPLAY_LIMIT);
+				for (const activity of backlog) this.#enqueueSse(client, activity);
 			},
 			cancel: () => {
 				if (client) this.#sseClients.delete(client);

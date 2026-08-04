@@ -25,7 +25,9 @@ import type {
 
 /** v4: tasks receive board-local human-readable short ids. */
 export const KANBAN_SCHEMA_VERSION = 4;
-const ACTIVITY_SNAPSHOT_LIMIT = 200;
+const ACTIVITY_SNAPSHOT_LIMIT = 40;
+/** Longest free-text field, ellipsis included, carried by a snapshot activity entry. */
+const SNAPSHOT_TEXT_PREVIEW_CHARS = 160;
 /** A session that has not heartbeat within this window is treated as gone. */
 const SESSION_STALE_MS = 90_000;
 /** Dropped in v2: the agent keeps this context in the description instead. */
@@ -314,7 +316,7 @@ export class KanbanStore {
 			.get(boardId) as { cursor: number };
 		return {
 			tasks: taskRows.map(row => this.#taskFromRow(row)),
-			activity: activityRows.map(row => this.#activityFromRow(row)),
+			activity: activityRows.map(row => this.#snapshotActivityFromRow(row)),
 			cursor: cursorRow.cursor,
 		};
 	}
@@ -568,6 +570,23 @@ export class KanbanStore {
 				WHERE board_id = ? AND cursor > ?
 				ORDER BY cursor ASC
 				LIMIT ?
+			`)
+			.all(boardId, cursor, limit) as ActivityRow[];
+		return rows.map(row => this.#activityFromRow(row));
+	}
+
+	/**
+	 * The newest events after `cursor`, oldest-first. A reconnecting SSE client
+	 * that has fallen far behind must land on the CURRENT tail, not on the oldest
+	 * page of its backlog — otherwise it replays ancient history and still is not
+	 * caught up, and every reconnect repeats the same page forever.
+	 */
+	listRecentActivitiesAfter(boardId: string, cursor: number, limit: number): KanbanActivity[] {
+		const rows = this.#db
+			.prepare(`
+				SELECT * FROM (
+					SELECT * FROM kanban_activity WHERE board_id = ? AND cursor > ? ORDER BY cursor DESC LIMIT ?
+				) ORDER BY cursor ASC
 			`)
 			.all(boardId, cursor, limit) as ActivityRow[];
 		return rows.map(row => this.#activityFromRow(row));
@@ -1027,6 +1046,30 @@ export class KanbanStore {
 			createdAt: row.created_at,
 			data: parseRecord(row.data_json),
 		};
+	}
+
+	/**
+	 * Activity text was 85% of the snapshot payload; the feed renders labels and
+	 * titles, never the full body, so long free text travels as a preview whose
+	 * total length — ellipsis included — stays within the budget.
+	 */
+	#snapshotActivityFromRow(row: ActivityRow): KanbanActivity {
+		const activity = this.#activityFromRow(row);
+		const data = { ...activity.data };
+		for (const [key, textField] of [
+			["task", "description"],
+			["comment", "body"],
+		] as const) {
+			const nested = data[key];
+			if (!nested || typeof nested !== "object" || Array.isArray(nested)) continue;
+			const preview = { ...nested } as Record<string, unknown>;
+			const text = preview[textField];
+			if (typeof text === "string" && text.length > SNAPSHOT_TEXT_PREVIEW_CHARS) {
+				preview[textField] = `${text.slice(0, SNAPSHOT_TEXT_PREVIEW_CHARS - 1)}…`;
+			}
+			data[key] = preview;
+		}
+		return { ...activity, data };
 	}
 
 	#updatedValue<T extends KanbanTaskUpdate, K extends keyof T>(

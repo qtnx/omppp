@@ -554,6 +554,86 @@ describe("KanbanStore", () => {
 		store.close();
 	});
 
+	it("limits board snapshot activity to the newest forty events in cursor order", async () => {
+		const { store } = await createStore();
+		try {
+			for (let index = 1; index <= 41; index++) {
+				const input = task(`Task ${index}`);
+				store.createTask(
+					"session-a",
+					input,
+					operation(`task-create-${index}`, "/api/v1/boards/session-a/tasks", input),
+				);
+			}
+
+			const allActivity = store.listActivitiesAfter("session-a", 0);
+			const snapshot = store.getBoard("session-a");
+			expect(snapshot.activity).toHaveLength(40);
+			expect(snapshot.activity.map(activity => activity.cursor)).toEqual(
+				allActivity.slice(-40).map(activity => activity.cursor),
+			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("truncates task and comment snapshot text without changing the SSE activity payload", async () => {
+		const { store } = await createStore();
+		try {
+			const description = "x".repeat(161);
+			const body = "y".repeat(161);
+			const input = { ...task("Detailed task"), description };
+			const created = store.createTask(
+				"session-a",
+				input,
+				operation("task-create-detailed", "/api/v1/boards/session-a/tasks", input),
+			).data;
+			store.createComment(
+				"session-a",
+				created.id,
+				{ author: "owner", body },
+				operation("comment-create-detailed", `/api/v1/boards/session-a/tasks/${created.id}/comments`, {
+					author: "owner",
+					body,
+				}),
+			);
+
+			const snapshot = store.getBoard("session-a").activity;
+			const live = store.listActivitiesAfter("session-a", 0);
+			// The budget covers the ellipsis: a preview never exceeds 160 characters total.
+			expect(snapshot[0]?.data.task).toEqual(expect.objectContaining({ description: `${"x".repeat(159)}…` }));
+			expect(snapshot[1]?.data.comment).toEqual(expect.objectContaining({ body: `${"y".repeat(159)}…` }));
+			const previewed = snapshot[0]?.data.task as { description: string } | undefined;
+			expect(previewed?.description).toHaveLength(160);
+			expect(live[0]?.data.task).toEqual(expect.objectContaining({ description }));
+			expect(live[1]?.data.comment).toEqual(expect.objectContaining({ body }));
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps malformed nested and empty activity data readable in board snapshots", async () => {
+		const { store, dbPath } = await createStore();
+		const db = new Database(dbPath);
+		try {
+			const insert = db.prepare(`
+				INSERT INTO kanban_activity(id, board_id, task_id, type, created_at, data_json)
+				VALUES (?, 'session-a', NULL, 'task.updated', '2026-01-01T00:00:00.000Z', ?)
+			`);
+			insert.run("malformed-nested-data", JSON.stringify({ task: "not-an-object", comment: null }));
+			insert.run("empty-data", JSON.stringify({}));
+
+			expect(() => store.getBoard("session-a")).not.toThrow();
+			expect(store.getBoard("session-a").activity.map(activity => activity.data)).toEqual([
+				{ task: "not-an-object", comment: null },
+				{},
+			]);
+		} finally {
+			db.close();
+			store.close();
+		}
+	});
+
 	it("reorders densely across columns and rolls back stale writes", async () => {
 		const { store, dbPath } = await createStore();
 		const first = store.createTask(

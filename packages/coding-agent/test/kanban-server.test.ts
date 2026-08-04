@@ -172,6 +172,54 @@ async function readSseFrame(
 		return { event, remainder: received };
 	}
 }
+function seedActivities(harness: ServerHarness, count: number, prefix: string): KanbanActivity[] {
+	const activities: KanbanActivity[] = [];
+	for (let index = 0; index < count; index += 1) {
+		const input = { title: `${prefix} ${index}`, status: "backlog" as const, priority: "low" as const };
+		const mutation = harness.store.createTask("session-a", input, {
+			key: `${prefix}-${index}`,
+			method: "POST",
+			route: "/api/v1/boards/session-a/tasks",
+			body: input,
+		});
+		if (!mutation.activity) throw new Error("Seed mutation did not create activity");
+		activities.push(mutation.activity);
+	}
+	return activities;
+}
+
+async function readSseEvents(
+	reader: { read(): Promise<{ done: boolean; value?: Uint8Array }> },
+	count: number,
+): Promise<{ events: KanbanActivity[]; cursors: number[] }> {
+	const decoder = new TextDecoder();
+	const events: KanbanActivity[] = [];
+	const cursors: number[] = [];
+	let received = "";
+	while (events.length < count) {
+		while (!received.includes("\n\n")) {
+			const result = await reader.read();
+			if (result.done) throw new Error(`SSE closed after ${events.length} events`);
+			received += decoder.decode(result.value, { stream: true });
+		}
+		const boundary = received.indexOf("\n\n");
+		const frame = received.slice(0, boundary);
+		received = received.slice(boundary + 2);
+		const data = frame
+			.split("\n")
+			.filter(line => line.startsWith("data: "))
+			.map(line => line.slice(6))
+			.join("\n");
+		if (data.length === 0) continue;
+		const ids = frame.split("\n").filter(line => line.startsWith("id: "));
+		if (ids.length !== 1) throw new Error(`SSE event had ${ids.length} id lines`);
+		const cursor = Number(ids[0]!.slice(4));
+		if (!Number.isInteger(cursor)) throw new Error(`SSE event id was not a cursor: ${ids[0]}`);
+		events.push(JSON.parse(data) as KanbanActivity);
+		cursors.push(cursor);
+	}
+	return { events, cursors };
+}
 
 describe("Kanban server", () => {
 	it("serves the offline root shell and board-specific install manifest", async () => {
@@ -375,6 +423,78 @@ describe("Kanban server", () => {
 			expect(db.prepare("SELECT COUNT(*) AS count FROM kanban_idempotency").get()).toEqual({ count: 1 });
 		} finally {
 			db.close();
+		}
+	});
+
+	it("replays only the newest 200 activity events in ascending cursor order", async () => {
+		const harness = await createHarness();
+		const cookie = await boardCookie(harness);
+		const activities = seedActivities(harness, 201, "bounded-replay");
+
+		const response = await fetch(url(harness, "/api/v1/boards/session-a/events?cursor=0"), {
+			headers: { Cookie: cookie },
+			signal: AbortSignal.timeout(3_000),
+		});
+		expect(response.status).toBe(200);
+		const reader = response.body!.getReader();
+		try {
+			const replayed = await readSseEvents(reader, 200);
+			const expected = activities.slice(-200);
+			expect(replayed.cursors).toEqual(expected.map(event => event.cursor));
+			expect(replayed.events.map(event => event.cursor)).toEqual(replayed.cursors);
+			expect(replayed.cursors[replayed.cursors.length - 1]).toBe(activities[activities.length - 1]!.cursor);
+		} finally {
+			await reader.cancel();
+		}
+	});
+
+	it("replays every event in a small activity backlog", async () => {
+		const harness = await createHarness();
+		const cookie = await boardCookie(harness);
+		const activities = seedActivities(harness, 3, "small-replay");
+
+		const response = await fetch(url(harness, "/api/v1/boards/session-a/events?cursor=0"), {
+			headers: { Cookie: cookie },
+			signal: AbortSignal.timeout(3_000),
+		});
+		expect(response.status).toBe(200);
+		const reader = response.body!.getReader();
+		try {
+			const replayed = await readSseEvents(reader, activities.length);
+			expect(replayed.cursors).toEqual(activities.map(event => event.cursor));
+			expect(replayed.events.map(event => event.cursor)).toEqual(replayed.cursors);
+		} finally {
+			await reader.cancel();
+		}
+	});
+
+	it("connects caught-up clients without replay and broadcasts subsequent activity", async () => {
+		const harness = await createHarness();
+		const cookie = await boardCookie(harness);
+		const [current] = seedActivities(harness, 1, "caught-up");
+
+		const response = await fetch(url(harness, `/api/v1/boards/session-a/events?cursor=${current!.cursor}`), {
+			headers: { Cookie: cookie },
+			signal: AbortSignal.timeout(3_000),
+		});
+		expect(response.status).toBe(200);
+		const reader = response.body!.getReader();
+		try {
+			const connected = await reader.read();
+			expect(connected.done).toBe(false);
+			expect(new TextDecoder().decode(connected.value)).toBe(": connected\n\n");
+
+			const created = await createTask(harness, cookie, "caught-up-live", "Caught-up live task");
+			expect(created.status).toBe(201);
+			const live = await readSseFrame(reader);
+			expect(live.event).toMatchObject({
+				boardId: "session-a",
+				cursor: current!.cursor + 1,
+				type: "task.created",
+				data: { task: { title: "Caught-up live task" } },
+			});
+		} finally {
+			await reader.cancel();
 		}
 	});
 

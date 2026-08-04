@@ -130,8 +130,8 @@ export class KanbanApi {
 		});
 	}
 
-	async loadBoard() {
-		return parseBoardSnapshot(await this.#request(this.#boardPath("/board")));
+	async loadBoard(signal?: AbortSignal) {
+		return parseBoardSnapshot(await this.#request(this.#boardPath("/board"), { signal }));
 	}
 
 	eventsUrl(cursor: number): string {

@@ -86,3 +86,36 @@ describe("Kanban API idempotency keys", () => {
 		expect(keys).toEqual([]);
 	});
 });
+
+describe("loadBoard", () => {
+	test("forwards AbortSignal and throws abort error", async () => {
+		let requestInit: RequestInit | undefined;
+		const api = new KanbanApi("session-1", async (_input, init) => {
+			requestInit = init;
+			throw new DOMException("The user aborted a request.", "AbortError");
+		});
+
+		const controller = new AbortController();
+		controller.abort();
+
+		await expect(api.loadBoard(controller.signal)).rejects.toThrow("aborted");
+		expect(requestInit?.signal).toBe(controller.signal);
+	});
+
+	test("successfully loads without aborting", async () => {
+		const api = new KanbanApi("session-1", async () => {
+			return Response.json({
+				data: {
+					boardId: "session-1",
+					cursor: 42,
+					tasks: [],
+					activity: [],
+					users: {},
+				},
+			});
+		});
+
+		const result = await api.loadBoard();
+		expect(result.cursor).toBe(42);
+	});
+});
