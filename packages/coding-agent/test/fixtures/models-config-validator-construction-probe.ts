@@ -9,14 +9,52 @@ interface HeapSnapshot {
 	snapshot: { meta: { node_fields: string[] } };
 }
 
-const root = process.argv[2];
-const mode = process.argv[3];
-if (!root || (mode !== "missing" && mode !== "custom")) {
-	throw new Error("Expected an isolated config root and missing|custom mode");
+interface ProbeResult {
+	retainedHeapNodes: number;
+	schemaIdentityStable?: boolean;
+	model?: {
+		provider: string;
+		id: string;
+		baseUrl: string;
+		api: string;
+		thinking?: unknown;
+	};
 }
 
-const configPath = path.join(root, mode, "models.yml");
-if (mode === "custom") {
+const root = process.argv[2];
+if (!root) {
+	throw new Error("Expected an isolated config root");
+}
+
+function retainedHeapNodes(): number {
+	Bun.gc(true);
+	const snapshot = JSON.parse(Bun.generateHeapSnapshot("v8")) as HeapSnapshot;
+	return snapshot.nodes.length / snapshot.snapshot.meta.node_fields.length;
+}
+
+async function measureMissing(): Promise<ProbeResult> {
+	let model: ProbeResult["model"];
+	{
+		const authStorage = await AuthStorage.create(":memory:");
+		try {
+			const registry = new ModelRegistry(authStorage, path.join(root, "missing", "models.yml"));
+			const found = registry.find("anthropic", "claude-sonnet-4-5");
+			model = found && {
+				provider: found.provider,
+				id: found.id,
+				baseUrl: found.baseUrl,
+				api: found.api,
+				thinking: found.thinking,
+			};
+		} finally {
+			authStorage.close();
+		}
+	}
+	return { retainedHeapNodes: retainedHeapNodes(), model };
+}
+
+async function writeCustomConfig(): Promise<string> {
+	const configPath = path.join(root, "custom", "models.yml");
 	await Bun.write(
 		configPath,
 		YAML.stringify(
@@ -45,34 +83,38 @@ if (mode === "custom") {
 			2,
 		),
 	);
+	return configPath;
 }
 
-const authStorage = await AuthStorage.create(":memory:");
-try {
-	const registry = new ModelRegistry(authStorage, configPath);
-	const model =
-		mode === "custom" ? registry.find("lazy-models", "lazy-model") : registry.find("anthropic", "claude-sonnet-4-5");
-	const firstSchema = mode === "custom" ? ModelsConfigFile.relocate(configPath).schema : undefined;
-	const secondSchema =
-		mode === "custom" ? ModelsConfigFile.relocate(path.join(root, "second", "models.yml")).schema : undefined;
-
-	Bun.gc(true);
-	const snapshot = JSON.parse(Bun.generateHeapSnapshot("v8")) as HeapSnapshot;
-	const nodeWidth = snapshot.snapshot.meta.node_fields.length;
-
-	process.stdout.write(
-		JSON.stringify({
-			retainedHeapNodes: snapshot.nodes.length / nodeWidth,
-			schemaIdentityStable: mode === "custom" ? firstSchema === secondSchema : undefined,
-			model: model && {
-				provider: model.provider,
-				id: model.id,
-				baseUrl: model.baseUrl,
-				api: model.api,
-				thinking: model.thinking,
-			},
-		}),
-	);
-} finally {
-	authStorage.close();
+async function measureCustom(configPath: string): Promise<ProbeResult> {
+	let model: ProbeResult["model"];
+	let schemaIdentityStable = false;
+	{
+		const authStorage = await AuthStorage.create(":memory:");
+		try {
+			const registry = new ModelRegistry(authStorage, configPath);
+			const found = registry.find("lazy-models", "lazy-model");
+			model = found && {
+				provider: found.provider,
+				id: found.id,
+				baseUrl: found.baseUrl,
+				api: found.api,
+				thinking: found.thinking,
+			};
+			const firstSchema = ModelsConfigFile.relocate(configPath).schema;
+			const secondSchema = ModelsConfigFile.relocate(path.join(root, "second", "models.yml")).schema;
+			schemaIdentityStable = firstSchema === secondSchema;
+		} finally {
+			authStorage.close();
+		}
+	}
+	return {
+		retainedHeapNodes: retainedHeapNodes(),
+		schemaIdentityStable,
+		model,
+	};
 }
+
+const missing = await measureMissing();
+const custom = await measureCustom(await writeCustomConfig());
+process.stdout.write(JSON.stringify({ missing, custom }));

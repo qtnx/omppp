@@ -89,6 +89,7 @@ function newHarness(): Harness {
 		get currentToolCall() {
 			return toolCall;
 		},
+		openToolCalls: new Map(),
 		resolvedMcpToolCallIds: new Set(),
 		firstTokenTime: undefined,
 		setTextBlock: b => {

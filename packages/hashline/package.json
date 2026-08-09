@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@oh-my-pi/pi-natives": "catalog:",
-    "lru-cache": "catalog:"
+    "@oh-my-pi/pi-utils": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:"

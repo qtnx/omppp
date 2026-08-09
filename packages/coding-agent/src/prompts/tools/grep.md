@@ -1,12 +1,13 @@
-Greps files using regex (Rust regex + PCRE2).
+Searches files and internal URLs with Rust regex plus PCRE2 fallback.
 
 <instruction>
-- `path`: scope to known path (e.g. `src`); pass several as delimited list (`src; tests`).
-  Line selector on one file (`src/foo.ts:50-100`); selectors never choose search root.
-- Cross-line patterns from literal `\n` or `\\n` in `pattern`.
+- Scope `path` to known files, directories, globs, or internal URLs; separate roots with `;`.
+- Broad searches can time out; scope them narrowly or use `glob` first.
+- One-file line selector: `src/foo.ts:50-100` (selectors never choose the search root).
+- Literal `\n` or `\\n` enables cross-line patterns.
 </instruction>
 
 <critical>
 - MUST use built-in `grep` for any content search. NEVER shell out to `grep`, `rg`, `ripgrep`, `ag`, `ack`, `git grep`, `awk`, `sed`-for-search, or any CLI search via Bash — not even for one match or a quick check.
-- Open-ended search needing multiple rounds? MUST use the Task tool with the explore subagent, NOT chained `grep` calls.
+- Open-ended multi-round search MUST use {{#if scoutAvailable}}Task + scout{{else}}Task + explore{{/if}}, not chained `grep` calls.
 </critical>

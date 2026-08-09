@@ -1,8 +1,8 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { formatNumber, prompt } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import createGoalDescription from "../../prompts/tools/create-goal.md" with { type: "text" };
@@ -17,35 +17,31 @@ import { framedBlock, renderStatusLine, truncateToWidth } from "../../tui";
 import { completionBudgetReport, type GoalRuntime, remainingTokens } from "../runtime";
 import type { Goal, GoalStatus, GoalToolDetails } from "../state";
 
-const getGoalSchema = z.object({});
+const getGoalSchema = type({});
 
-const createGoalSchema = z.object({
-	objective: z.string().describe("Required. The concrete objective to start pursuing."),
-	token_budget: z
-		.number()
-		.int()
-		.describe("Positive token budget for the new goal. Omit unless explicitly requested.")
-		.optional(),
+const createGoalSchema = type({
+	objective: type("string").describe("Required. The concrete objective to start pursuing."),
+	"token_budget?": type("number.integer").describe(
+		"Positive token budget for the new goal. Omit unless explicitly requested.",
+	),
 });
 
-const updateGoalSchema = z.object({
-	status: z
-		.enum(["complete", "blocked"])
-		.describe(
-			"Required. Set to complete only when achieved; set to blocked only after the same blocker repeats for at least three consecutive goal turns.",
-		),
+const updateGoalSchema = type({
+	status: type("'complete' | 'blocked'").describe(
+		"Required. Set to complete only when achieved; set to blocked only after the same blocker repeats for at least three consecutive goal turns.",
+	),
 });
 
-const goalSchema = z.object({
-	op: z.enum(["create", "get", "complete", "resume", "drop"]).describe("goal operation"),
-	objective: z.string().describe("goal objective").optional(),
-	token_budget: z.number().int().describe("token budget").optional(),
+const goalSchema = type({
+	op: type("'create' | 'get' | 'complete' | 'resume' | 'drop'").describe("goal operation"),
+	"objective?": type("string").describe("goal objective"),
+	"token_budget?": type("number.integer").describe("token budget"),
 });
 
-export type GetGoalToolInput = z.infer<typeof getGoalSchema>;
-export type CreateGoalToolInput = z.infer<typeof createGoalSchema>;
-export type UpdateGoalToolInput = z.infer<typeof updateGoalSchema>;
-export type GoalToolInput = z.infer<typeof goalSchema>;
+export type GetGoalToolInput = typeof getGoalSchema.infer;
+export type CreateGoalToolInput = typeof createGoalSchema.infer;
+export type UpdateGoalToolInput = typeof updateGoalSchema.infer;
+export type GoalToolInput = typeof goalSchema.infer;
 
 export interface GoalToolResponse {
 	goal: Goal | null;

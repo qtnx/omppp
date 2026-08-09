@@ -130,6 +130,7 @@ export class LiveCommandController {
 				void this.stop().catch(cause => this.#ctx.showError(errorFrom(cause).message));
 			},
 			onToggleMute: () => this.#session?.toggleMute(),
+			stopKeys: this.#ctx.keybindings.getKeys("app.live.toggle"),
 		});
 		this.#mountVisualizer(visualizer);
 

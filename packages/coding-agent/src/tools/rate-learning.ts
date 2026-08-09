@@ -1,6 +1,6 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { getAgentDbPath } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import { resolveRepoKey } from "../learnings/repo-key";
 import { closeLearningDb, findActiveByAliasPrefix, openLearningDb, recordLearningFeedback } from "../learnings/storage";
 import rateLearningDescription from "../prompts/tools/rate-learning.md" with { type: "text" };

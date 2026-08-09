@@ -7,6 +7,7 @@ interface CacheProbeResult {
 	rss: number;
 	heapUsed: number;
 	paths: string[];
+	terminalRows?: string[];
 }
 
 const fixture = (name: string): string => path.resolve(import.meta.dir, "fixtures", name);
@@ -26,25 +27,33 @@ async function runProbe(childPath: string): Promise<CacheProbeResult> {
 	return JSON.parse(stdout) as CacheProbeResult;
 }
 
-describe("launch xterm runtime ownership", () => {
-	test("cache detector observes the direct xterm positive control", async () => {
+describe("launch vterm runtime ownership", () => {
+	test("cache detector observes the direct vterm positive control", async () => {
 		const result = await runProbe(fixture("xterm-cache-positive-control.ts"));
-		expect(result.modules, JSON.stringify(result)).toBe(1);
+		expect(result.modules, JSON.stringify(result)).toBeGreaterThan(0);
 		expect(result.bytes, JSON.stringify(result)).toBeGreaterThan(0);
 	});
 
-	test("normal main startup evaluates no xterm CommonJS module", async () => {
+	test("normal main startup evaluates no vterm module", async () => {
 		const result = await runProbe(fixture("xterm-cache-main-probe.ts"));
 		expect(result.modules, JSON.stringify(result)).toBe(0);
 	});
 
-	test("static Hub import evaluates no xterm CommonJS module", async () => {
+	test("static Hub import evaluates no vterm module", async () => {
 		const result = await runProbe(fixture("xterm-cache-hub-probe.ts"));
 		expect(result.modules, JSON.stringify(result)).toBe(0);
 	});
 
-	test("broker import owns exactly one xterm CommonJS module", async () => {
+	test("legacy replay evaluates vterm outside the client process", async () => {
+		const result = await runProbe(fixture("xterm-cache-legacy-replay-probe.ts"));
+		expect(result.terminalRows).toEqual(["\x1b[0m\x1b[1;38;5;2mready"]);
+		expect(result.modules, JSON.stringify(result)).toBe(0);
+		expect(result.bytes, JSON.stringify(result)).toBe(0);
+	});
+
+	test("broker import owns the vterm runtime", async () => {
 		const result = await runProbe(fixture("xterm-cache-broker-probe.ts"));
-		expect(result.modules, JSON.stringify(result)).toBe(1);
+		expect(result.modules, JSON.stringify(result)).toBeGreaterThan(0);
+		expect(result.bytes, JSON.stringify(result)).toBeGreaterThan(0);
 	});
 });

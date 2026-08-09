@@ -89,6 +89,7 @@ function createSessionHarness(): { session: AgentSession; steeringQueue: AgentMe
 		getArtifactsDir: () => undefined,
 		getBranch: () => [],
 		getEntries: () => [],
+		getCredentialPins: () => [],
 		buildSessionContext: () => ({
 			messages: agentState.messages,
 			systemPrompt: [],

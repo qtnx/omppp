@@ -1,6 +1,6 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import requestTakeoverDescription from "../prompts/tools/duo-request-takeover.md" with { type: "text" };
 import { ToolError } from "../tools/tool-errors";
 import type { TakeoverDecision, TakeoverPurpose } from "./state";

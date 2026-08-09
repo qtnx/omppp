@@ -13,7 +13,7 @@ Structural code search via ast-grep. Use when syntax shape matters more than tex
 </instruction>
 
 <critical>
-- AVOID repo-root scans — narrow `path` first
-- Parse issues = query failure, not absence: fix the pattern or tighten `path` before concluding "no matches"
-- Broad cross-subsystem exploration: you SHOULD use the Task tool + explore subagent first
+- AVOID repo-root scans — narrow `path` first.
+- Parse issues = query failure, not absence: fix pattern or tighten `path` before concluding "no matches".
+- Broad cross-subsystem exploration → {{#if scoutAvailable}}Task tool + scout{{else}}Task tool + explore{{/if}} subagent first.
 </critical>

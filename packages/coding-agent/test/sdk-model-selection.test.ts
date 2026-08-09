@@ -512,6 +512,33 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		}
 	});
 
+	test("rejects a depleted terminal fallback after startup skips the primary", async () => {
+		const settings = Settings.isolated({
+			"retry.usageAwareFallback": true,
+			"retry.usageReservePolicy": "confirm",
+		});
+		settings.setModelRole("task", "runtime-provider/runtime-model,runtime-provider/runtime-reasoning-model");
+		const options = await buildSessionOptions("task");
+		const usageHealth = vi.spyOn(options.authStorage, "getModelUsageHealth").mockResolvedValue({
+			state: "depleted",
+			accounts: [{ credentialId: 1, credentialType: "oauth", state: "depleted" }],
+		});
+
+		const { session, modelFallbackMessage } = await createAgentSession({
+			...options,
+			modelPatternFallbackRole: "subagent:usage-aware-terminal",
+			settings,
+			hasUI: false,
+		});
+		try {
+			expect(usageHealth).toHaveBeenCalledTimes(2);
+			expect(session.model).toBeUndefined();
+			expect(modelFallbackMessage).toContain("not found");
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	test("defers ACP reserve fallback until prompt-time capabilities are configured", async () => {
 		const settings = Settings.isolated({
 			"retry.usageAwareFallback": true,

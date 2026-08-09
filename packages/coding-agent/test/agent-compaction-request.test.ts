@@ -218,7 +218,10 @@ describe("agent-requested compaction", () => {
 	});
 
 	it("runs requested compaction even when ordinary threshold compaction is disabled", async () => {
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected persisted session file");
 		await session.dispose();
+		sessionManager = await SessionManager.open(sessionFile);
 		session = createSession({
 			"compaction.enabled": false,
 			"compaction.strategy": "context-full",

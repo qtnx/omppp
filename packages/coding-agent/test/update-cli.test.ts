@@ -11,6 +11,7 @@ import {
 	downloadVerifiedBinary,
 	getBinaryNameForTest,
 	installScriptUrl,
+	isMuslLinuxForTest,
 	parseReportedVersion,
 	parseUpdateArgs,
 	pruneBunInstallCache,
@@ -75,6 +76,27 @@ describe("parseUpdateArgs", () => {
 	});
 });
 
+describe("update-cli libc detection", () => {
+	it("does not mistake an installed musl loader for a glibc host", () => {
+		expect(
+			isMuslLinuxForTest({
+				platform: "linux",
+				alpineRelease: false,
+				lddOutput: "ldd (Ubuntu GLIBC 2.39-0ubuntu8.7) 2.39",
+			}),
+		).toBe(false);
+	});
+
+	it("recognizes a musl host from ldd output", () => {
+		expect(
+			isMuslLinuxForTest({
+				platform: "linux",
+				alpineRelease: false,
+				lddOutput: "musl libc (x86_64)",
+			}),
+		).toBe(true);
+	});
+});
 describe("update-cli install target detection", () => {
 	it("uses bun update when prioritized omp is inside bun global bin", () => {
 		const method = resolveUpdateMethodForTest("/Users/test/.bun/bin/omp", "/Users/test/.bun/bin");
@@ -328,6 +350,30 @@ describe("update-cli bun cache pruning", () => {
 		expect(await Bun.file(path.join(dir, "pkg", "1.0.0@@@1")).exists()).toBe(true);
 		expect(await Bun.file(path.join(dir, "pkg@1.0.0@@@1", "package.json")).exists()).toBe(true);
 	});
+
+	it("compares numeric version segments without precision loss", async () => {
+		const dir = await makeTempDir();
+		const older = "1.0.99999999999999999999";
+		const newer = "1.0.100000000000000000000";
+		await Bun.write(path.join(dir, "pkg", `${older}@@@1`), "");
+		await Bun.write(path.join(dir, "pkg", `${newer}@@@1`), "");
+		await Bun.write(
+			path.join(dir, `pkg@${older}@@@1`, "package.json"),
+			JSON.stringify({ name: "pkg", version: older }),
+		);
+		await Bun.write(
+			path.join(dir, `pkg@${newer}@@@1`, "package.json"),
+			JSON.stringify({ name: "pkg", version: newer }),
+		);
+
+		const result = await pruneBunInstallCache(dir, new Set(["pkg"]));
+
+		expect(result).toEqual({ scannedPackages: 1, removedEntries: 2 });
+		expect(await Bun.file(path.join(dir, "pkg", `${older}@@@1`)).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, `pkg@${older}@@@1`, "package.json")).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, "pkg", `${newer}@@@1`)).exists()).toBe(true);
+		expect(await Bun.file(path.join(dir, `pkg@${newer}@@@1`, "package.json")).exists()).toBe(true);
+	});
 });
 
 describe("update-cli release binary integrity", () => {
@@ -435,6 +481,31 @@ describe("update-cli release binary integrity", () => {
 			}),
 		).rejects.toThrow("received at least 2");
 		expect(pulls).toBe(1);
+		expect(await Bun.file(targetPath).exists()).toBe(false);
+	});
+
+	it("wraps a timeout during body streaming with a friendly message", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, binaryName);
+		const body = new ReadableStream<Uint8Array>(
+			{
+				pull(controller) {
+					controller.enqueue(new Uint8Array(1));
+					controller.error(new DOMException("The operation timed out.", "TimeoutError"));
+				},
+			},
+			{ highWaterMark: 0 },
+		);
+
+		await expect(
+			downloadVerifiedBinary({
+				url,
+				targetPath,
+				expectedSize: Buffer.byteLength(content),
+				expectedDigest: digest,
+				fetchImpl: async () => new Response(body),
+			}),
+		).rejects.toThrow("Timed out downloading release binary after 15 minutes");
 		expect(await Bun.file(targetPath).exists()).toBe(false);
 	});
 

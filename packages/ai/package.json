@@ -38,11 +38,10 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "catalog:",
+    "@oh-my-pi/omptype": "catalog:",
     "@oh-my-pi/pi-catalog": "catalog:",
     "@oh-my-pi/pi-utils": "catalog:",
-    "@oh-my-pi/pi-wire": "catalog:",
-    "arktype": "catalog:",
-    "zod": "catalog:"
+    "@oh-my-pi/pi-wire": "catalog:"
   },
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "catalog:",

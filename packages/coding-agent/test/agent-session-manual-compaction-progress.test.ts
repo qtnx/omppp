@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { CompactionProgressUpdate } from "@oh-my-pi/pi-agent-core/compaction";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
@@ -12,7 +13,6 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 
 // WP4 contract: the PUBLIC manual `compact()` method must forward its
 // `CompactOptions.onProgress` into the underlying `compaction.compact()`

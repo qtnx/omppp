@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [17.2.11] - 2026-08-07
+
+### Fixed
+
+- Fixed an issue where an interrupted local embedding model download could permanently corrupt the cache and silently disable semantic recall. The system now automatically detects incomplete model files, clears the corrupted cache, and retries the download.
+
+## [17.2.10] - 2026-08-06
+
+### Changed
+
+- Updated internal LRU cache implementation.
+
+## [17.2.6] - 2026-08-03
+
+### Added
+
+- Added opt-in SQLite page-size configuration for file-backed databases, configurable via the `MNEMOPI_DB_PAGE_SIZE` environment variable or the `pageSize` option in `openDatabase`. Existing databases retain their original page size.
+
+## [17.2.3] - 2026-08-01
+
+### Fixed
+
+- Stripped `<think>…</think>` reasoning blocks from remote LLM output in `cleanOutput`, so reasoning-model responses no longer leak into consolidated memories or corrupt fact extraction (the reasoning wrapper previously survived parsing and every stored fact became reasoning prose). ([#7231](https://github.com/can1357/oh-my-pi/issues/7231))
+
+## [17.2.2] - 2026-07-31
+
+### Fixed
+
+- Fixed a resource leak where SQLite prepared statements were not properly released, keeping the database connection alive after calling close(). This resolves file locking issues on Windows (which prevented deleting, moving, or rotating database files) and silent file handle leaks on POSIX systems.
+
 ## [17.0.8] - 2026-07-22
 
 ### Changed

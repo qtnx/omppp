@@ -21,9 +21,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { $env, $which, APP_NAME, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
+import { $env, $which, APP_NAME, compareVersions, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { $ } from "bun";
-import chalk from "chalk";
 import { theme } from "../modes/theme/theme";
 import { isTimeoutError, withTimeoutSignal } from "../utils/fetch-timeout";
 import { fetchLatestReleaseInfo, type ReleaseInfo } from "./update-release";
@@ -218,6 +218,9 @@ export async function downloadVerifiedBinary(options: VerifiedBinaryDownloadOpti
 		await fs.promises.chmod(options.targetPath, 0o755);
 	} catch (err) {
 		await unlinkIfExists(options.targetPath);
+		if (isTimeoutError(err)) {
+			throw new Error("Timed out downloading release binary after 15 minutes", { cause: err });
+		}
 		throw err;
 	}
 }
@@ -362,42 +365,6 @@ function stripBunCacheVersionSuffix(name: string): string {
 	return metadataIndex === -1 ? name : name.slice(0, metadataIndex);
 }
 
-function compareSemverIdentifier(a: string, b: string): number {
-	const aNumber = /^\d+$/.test(a);
-	const bNumber = /^\d+$/.test(b);
-	if (aNumber && bNumber) return Number(a) - Number(b);
-	if (aNumber) return -1;
-	if (bNumber) return 1;
-	return a.localeCompare(b);
-}
-
-function compareSemverLikeVersions(a: string, b: string): number {
-	const [aCoreWithPrerelease] = a.split("+", 1);
-	const [bCoreWithPrerelease] = b.split("+", 1);
-	const [aCore, aPrerelease] = aCoreWithPrerelease.split("-", 2);
-	const [bCore, bPrerelease] = bCoreWithPrerelease.split("-", 2);
-	const aParts = aCore.split(".");
-	const bParts = bCore.split(".");
-	for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
-		const diff = Number(aParts[i] ?? 0) - Number(bParts[i] ?? 0);
-		if (diff !== 0 && Number.isFinite(diff)) return diff;
-	}
-	if (!aPrerelease && !bPrerelease) return 0;
-	if (!aPrerelease) return 1;
-	if (!bPrerelease) return -1;
-	const aPrereleaseParts = aPrerelease.split(".");
-	const bPrereleaseParts = bPrerelease.split(".");
-	for (let i = 0; i < Math.max(aPrereleaseParts.length, bPrereleaseParts.length); i++) {
-		const aPart = aPrereleaseParts[i];
-		const bPart = bPrereleaseParts[i];
-		if (aPart === undefined) return -1;
-		if (bPart === undefined) return 1;
-		const diff = compareSemverIdentifier(aPart, bPart);
-		if (diff !== 0) return diff;
-	}
-	return 0;
-}
-
 async function readdirIfExists(dir: string): Promise<fs.Dirent[]> {
 	try {
 		return await fs.promises.readdir(dir, { withFileTypes: true });
@@ -519,7 +486,7 @@ export async function pruneBunInstallCache(
 		scannedPackages++;
 		let latestVersion: string | undefined;
 		for (const version of group.actualDirs.keys()) {
-			if (!latestVersion || compareSemverLikeVersions(version, latestVersion) > 0) latestVersion = version;
+			if (!latestVersion || compareVersions(version, latestVersion) > 0) latestVersion = version;
 		}
 		if (!latestVersion) continue;
 		for (const [version, paths] of group.actualDirs) {
@@ -548,14 +515,33 @@ export function resolveBunGlobalNodeModulesDirFromLocations(
 /**
  * Detect a musl-libc Linux host (Alpine, Void-musl) so self-update replaces a
  * musl binary with the musl release asset instead of the glibc build, which
- * would fail to start on the next run. Mirrors the detection in
- * scripts/install.sh.
+ * would fail to start on the next run. The loader file alone is not sufficient:
+ * glibc hosts may have musl installed for cross-compilation.
  */
-function isMuslLinux(): boolean {
-	if (process.platform !== "linux") return false;
-	if (fs.existsSync("/etc/alpine-release")) return true;
-	const loaderArch = process.arch === "arm64" ? "aarch64" : "x86_64";
-	return fs.existsSync(`/lib/ld-musl-${loaderArch}.so.1`);
+interface MuslDetectionOptions {
+	platform?: NodeJS.Platform;
+	alpineRelease?: boolean;
+	lddOutput?: string;
+}
+
+function detectLddOutput(): string | undefined {
+	try {
+		const result = Bun.spawnSync(["ldd", "--version"], { stdout: "pipe", stderr: "pipe" });
+		return `${result.stdout.toString("utf-8")}\n${result.stderr.toString("utf-8")}`;
+	} catch {
+		return undefined;
+	}
+}
+
+function isMuslLinux(options: MuslDetectionOptions = {}): boolean {
+	if ((options.platform ?? process.platform) !== "linux") return false;
+	if (options.alpineRelease ?? fs.existsSync("/etc/alpine-release")) return true;
+	return /\bmusl\b/i.test(options.lddOutput ?? detectLddOutput() ?? "");
+}
+
+/** Test seam for libc detection. */
+export function isMuslLinuxForTest(options: Required<MuslDetectionOptions>): boolean {
+	return isMuslLinux(options);
 }
 
 /**

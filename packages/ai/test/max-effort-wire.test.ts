@@ -128,7 +128,14 @@ describe("first-class max reasoning tier wire coverage", () => {
 		});
 		let body: Record<string, unknown> | undefined;
 		const fetchMock: FetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-			body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as Record<string, unknown>;
+			const requestBody = init?.body;
+			const bodyJson =
+				typeof requestBody === "string"
+					? requestBody
+					: requestBody instanceof Uint8Array
+						? new TextDecoder().decode(Bun.zstdDecompressSync(requestBody))
+						: "{}";
+			body = JSON.parse(bodyJson) as Record<string, unknown>;
 			return responsesSse();
 		});
 
