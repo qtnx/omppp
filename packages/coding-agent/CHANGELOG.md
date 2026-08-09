@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed advisor memory growth caused by automatic tool-output pruning replaying the full primary transcript and by transcript recording reloading the entire advisor journal before appending. Pruning-only rewrites now rebase the cursor, while recorder startup reads only the final JSONL entry.
+- Subagent spawns no longer escalate past the thinking level configured for the agent: a `task.agentModelOverrides` selector that pins an explicit level (e.g. `task: openai-codex/gpt-5.6-terra:high`) now outranks the spawning model's coarse `effort` hint, and a coarse `effort: "hi"` tops out one level below `max` (`max` stays reserved for an explicit human selection, matching `auto`). Previously every `effort: "hi"` spawn ran at `max` regardless of the configured level.
 ### Added
 
 - Herdr integration: a per-session control socket (`~/.omp/run/control/<sessionId>.sock`) plus an `ompx prompt` command that delivers a prompt into a running session from outside its TTY. The text is submitted as one user message with the exact bytes — multi-line, unicode, backticks and a leading `/` all survive, with no keystroke synthesis or autocomplete interference. Target a session with `--pane`, `--session`, `--cwd` or `--socket`; `ompx prompt --list` shows live sessions. Opt out with `HERDR_CONTROL_SOCKET=0`.

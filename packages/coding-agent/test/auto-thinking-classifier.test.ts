@@ -285,8 +285,9 @@ describe("auto thinking classifier helpers", () => {
 			maxTokens: 4096,
 		});
 
-		// hi = whatever the model tops out at; lo = its floor; med = middle of
-		// the supported range (lower-middle for an even-sized range).
+		// hi = whatever the model tops out at (Max excluded — reserved for an
+		// explicit human selection); lo = its floor; med = middle of the
+		// supported range (lower-middle for an even-sized range).
 		expect(resolveTaskEffortLevel(xhighCeilingModel, "hi")).toBe(Effort.XHigh);
 		expect(resolveTaskEffortLevel(xhighCeilingModel, "lo")).toBe(Effort.Low);
 		expect(resolveTaskEffortLevel(xhighCeilingModel, "med")).toBe(Effort.Medium);
@@ -294,7 +295,10 @@ describe("auto thinking classifier helpers", () => {
 		const sonnet = getBundledModel("anthropic", "claude-sonnet-4-6");
 		if (!sonnet) throw new Error("Expected bundled Claude Sonnet 4.6 model");
 		const sonnetEfforts = sonnet.thinking?.efforts ?? [];
-		expect(resolveTaskEffortLevel(sonnet, "hi")).toBe(sonnetEfforts[sonnetEfforts.length - 1]);
+		const sonnetTop = sonnetEfforts[sonnetEfforts.length - 1];
+		expect(resolveTaskEffortLevel(sonnet, "hi")).toBe(
+			sonnetTop === Effort.Max ? sonnetEfforts[sonnetEfforts.length - 2] : sonnetTop,
+		);
 		expect(resolveTaskEffortLevel(sonnet, "lo")).toBe(sonnetEfforts[0]);
 
 		// No controllable effort surface (devin-agent shape) → undefined, so the
@@ -313,9 +317,9 @@ describe("auto thinking classifier helpers", () => {
 		} as Model;
 		expect(resolveTaskEffortLevel(devinModel, "hi")).toBeUndefined();
 
-		// No model at all → full canonical range.
+		// No model at all → full canonical range, still capped below Max.
 		expect(resolveTaskEffortLevel(undefined, "lo")).toBe(Effort.Minimal);
-		expect(resolveTaskEffortLevel(undefined, "hi")).toBe(Effort.Max);
+		expect(resolveTaskEffortLevel(undefined, "hi")).toBe(Effort.XHigh);
 	});
 
 	it("rejects inherited object keys as thinking selectors", () => {

@@ -8,7 +8,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
-import { resolveAgentModelPatterns } from "../config/model-resolver";
+import { resolveAgentModelPatterns, resolveConfiguredModelPatterns } from "../config/model-resolver";
 import type { Skill } from "../extensibility/skills";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
@@ -129,6 +129,12 @@ export interface EffectiveSubagentPolicy {
 	effectiveAgent: AgentDefinition;
 	modelOverride?: string | string[];
 	parentActiveModelPattern?: string;
+	/**
+	 * {@link modelOverride} came from `task.agentModelOverrides` (human config)
+	 * rather than the caller's per-spawn `model`. Lets the executor rank an
+	 * explicit `:level` in that selector above the caller's coarse `effort`.
+	 */
+	modelOverrideFromUserConfig?: boolean;
 	schema: StructuredSubagentSchemaResolution;
 	/** Resolved only for an explicit self-review request. */
 	reviewGate?: ReviewGateConfig;
@@ -352,14 +358,21 @@ export async function resolveEffectiveSubagentPolicy(
 		}
 	}
 	const agentModelOverrides = request.session.settings.get("task.agentModelOverrides");
+	const settingsModelOverride = agentModelOverrides[agentName];
 	const parentActiveModelPattern = request.session.getActiveModelString?.();
 	const modelOverride = resolveAgentModelPatterns({
-		settingsOverride: request.model ?? agentModelOverrides[agentName],
+		settingsOverride: request.model ?? settingsModelOverride,
 		agentModel: effectiveAgent.model,
 		settings: request.session.settings,
 		activeModelPattern: parentActiveModelPattern,
 		fallbackModelPattern: request.session.getModelString?.(),
 	});
+	// A `task.agentModelOverrides` entry is the human's choice, so its explicit
+	// `:level` outranks the spawning model's coarse `effort`. A per-spawn
+	// `model` comes from the same caller as `effort`, so it does not.
+	const modelOverrideFromUserConfig =
+		request.model === undefined &&
+		resolveConfiguredModelPatterns(settingsModelOverride, request.session.settings).length > 0;
 	const isolationMode = request.session.settings.get("task.isolation.mode");
 	const isIsolated = request.isolation?.requested === true;
 	if (isIsolated && isolationMode === "none") {
@@ -375,6 +388,7 @@ export async function resolveEffectiveSubagentPolicy(
 		effectiveAgent,
 		modelOverride,
 		parentActiveModelPattern,
+		modelOverrideFromUserConfig,
 		schema,
 		reviewGate,
 		planMode,
@@ -525,6 +539,7 @@ function buildExecutorOptions(
 		acquiredAt: request.acquiredAt,
 		modelOverride: policy.modelOverride,
 		parentActiveModelPattern: policy.parentActiveModelPattern,
+		modelSelectorFromUserConfig: policy.modelOverrideFromUserConfig,
 		thinkingLevel: policy.effectiveAgent.thinkingLevel,
 		effort: request.effort,
 		...(policy.schema.source === "none"
@@ -769,9 +784,9 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 				gateRequest: { promptText: string; iteration: number },
 			) => {
 				const explicitModel = role === "review" ? gateConfig.reviewerModel : undefined;
+				const gateSettingsOverride = request.session.settings.get("task.agentModelOverrides")[gateAgent.name];
 				const gateModelOverride = resolveAgentModelPatterns({
-					settingsOverride:
-						explicitModel ?? request.session.settings.get("task.agentModelOverrides")[gateAgent.name],
+					settingsOverride: explicitModel ?? gateSettingsOverride,
 					agentModel: explicitModel ?? gateAgent.model,
 					settings: request.session.settings,
 					activeModelPattern: policy.parentActiveModelPattern,
@@ -783,6 +798,9 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 					agent: gateAgent,
 					effectiveAgent: gateAgent,
 					modelOverride: gateModelOverride,
+					modelOverrideFromUserConfig:
+						explicitModel === undefined &&
+						resolveConfiguredModelPatterns(gateSettingsOverride, request.session.settings).length > 0,
 					schema:
 						gateAgent.output === undefined
 							? { schema: undefined, source: "none", mode: "permissive", outputSchemaOverridesAgent: false }
