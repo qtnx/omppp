@@ -2,9 +2,12 @@
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-08-09
+
 ### Added
 
 - Added a local audible cue when a live voice call connects, with the outbound microphone isolated during playback.
+
 ## [17.2.10] - 2026-08-06
 
 ### Changed

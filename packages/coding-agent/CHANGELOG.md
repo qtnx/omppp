@@ -2,10 +2,8 @@
 
 ## [Unreleased]
 
-### Fixed
+## [1.7.0] - 2026-08-09
 
-- Fixed advisor memory growth caused by automatic tool-output pruning replaying the full primary transcript and by transcript recording reloading the entire advisor journal before appending. Pruning-only rewrites now rebase the cursor, while recorder startup reads only the final JSONL entry.
-- Subagent spawns no longer escalate past the thinking level configured for the agent: a `task.agentModelOverrides` selector that pins an explicit level (e.g. `task: openai-codex/gpt-5.6-terra:high`) now outranks the spawning model's coarse `effort` hint, and a coarse `effort: "hi"` tops out one level below `max` (`max` stays reserved for an explicit human selection, matching `auto`). Previously every `effort: "hi"` spawn ran at `max` regardless of the configured level.
 ### Added
 
 - Herdr integration: a per-session control socket (`~/.omp/run/control/<sessionId>.sock`) plus an `ompx prompt` command that delivers a prompt into a running session from outside its TTY. The text is submitted as one user message with the exact bytes — multi-line, unicode, backticks and a leading `/` all survive, with no keystroke synthesis or autocomplete interference. Target a session with `--pane`, `--session`, `--cwd` or `--socket`; `ompx prompt --list` shows live sessions. Opt out with `HERDR_CONTROL_SOCKET=0`.
@@ -14,46 +12,16 @@
 - Herdr notifications on a settled turn and when the agent needs review, behind `herdr.notify.done`, `herdr.notify.blocked`, `herdr.notify.sound` and `herdr.notify.minWorkMs` (all off/conservative by default).
 - Peer-agent notifications between Herdr panes, off until a session opts in with `/herdr-notify on`. Opting in publishes a `0600` descriptor under `~/.omp/run/notify` and nothing else: delivery reuses the session's existing control socket (unix, mode `0600`), so there is no port, no token, and nothing to configure. Finished peers arrive as follow-up messages that never interrupt a running turn; `/herdr-notify off|status` withdraws or inspects the opt-in.
 - Added `ompx herdr watch`, a single per-machine bridge that subscribes to Herdr's event socket and forwards agents settling to `done` or `idle` after `working` to every opted-in session, with `--detach`, `--status`, and `--stop`.
+- Added a session-scoped `/telegram on|off|status` bridge for steering or queueing messages from one allowlisted private Telegram chat and receiving final assistant responses. Configure `OMP_TELEGRAM_BOT_TOKEN` and `OMP_TELEGRAM_ALLOWED_CHAT_ID`; the bridge uses bounded long polling, refuses active webhooks, and fails closed on unauthorized chats, unsafe retries, queue overflow, and lifecycle races.
 
-## [1.6.9] - 2026-07-29
+### Changed
 
-### Fixed
-
-- Fixed blocking advisor consultations collapsing paused, disposed, aborted, timed-out, queue-cleared, rate-limited, empty-response, and provider-error outcomes into a misleading timeout. Consults now report the exact cause and provider attempt history, expose the existing bounded retry cycle, return immediately when a rate-limited request is requeued, and stop retrying after cancellation.
-
-## [1.6.6] - 2026-07-25
-
-### Breaking Changes
-
-- Reworked the task tool's model-facing wire schema: moved `agent` into individual task items and renamed `assignment`/`id` to `task`/`name`; the fork retains `assignment`, `id`, `role`, and `description` as runtime compatibility aliases for internal callers and persisted transcripts.
-- Unified tool presentation on `loadMode` (`essential` | `discoverable`), replacing the custom-tool `xdev?: boolean` opt-out. Custom, extension, MCP, RPC host, image-generation, and TTS tools now default to `discoverable` and mount under `xd://` when enabled. `generate_image`, `tts`, and MCP tools are now exposed as `xd://` devices in default sessions instead of shipping their schemas top-level.
-- Replaced the `--reasoning-slide-*` flag family with a unified `--prewalk` mechanism (`--prewalk`, `--prewalk-into <model>`, and `--no-prewalk`) to manage model handoffs during execution.
-- Changed the public `selectLaunchAdapter()` result from `DapResolvedAdapter | null` to `LaunchAdapterSelection`; callers must handle `adapter`, `unavailable`, and `none` outcomes.
-- Removed _input as a supported alias for the edit tool input field
-- Changed search tool `paths` parameter to a single semicolon-delimited `path` string parameter
-- Changed the `grep`, `glob`, and `ast_grep` tools to take a single optional `path` argument instead of a `paths` array. `path` accepts one path or a semicolon-delimited list (`src; tests`); omitting it searches the workspace root (`.`). Multi-path search, delimited expansion, and internal-URL scopes are unchanged. (`ast_edit` continues to take `paths`.)
-- Removed the canonical-alias grouping and resolution layer. The `equivalence` key (`overrides`/`exclude`) in `models.yml`/`models.json` is now inert, and canonical-related methods have been removed from `ModelRegistry`.
-- Removed the "CANONICAL" tab from the interactive model selector and the `omp models canonical` subcommand.
-- Replaced the global `serviceTier` and `fastModeScope` settings with granular, per-family settings (`tier.openai`, `tier.anthropic`, and `tier.google`) to control service tiers, subagents, advisors, and `/fast` mode targets.
-- Renamed the `search` tool to `grep` and the `find` tool to `glob`. Existing user settings are automatically migrated to the new configuration keys.
-- Renamed the eval `agent()` helper parameters `agent_type` → `agent` and `return_handle` → `handle` across every workflow runtime (Python, JavaScript, Ruby, Julia), so the names are identical in every language (no camelCase/snake_case split) and the agent-selection parameter matches the `task` tool's `agent`. The `__agent__` eval bridge wire protocol was renamed to match.
-- Changed the `eval` tool to take a single cell per call (`{ language, code, title?, timeout?, reset? }`) instead of a `cells` array. State still persists per language across separate eval calls, tool calls, and `task` subagents, so each call is one logical step that reuses everything earlier calls defined — the array only encouraged re-importing/re-declaring the same setup in every batch. The schema, field descriptions, examples, system `eval.md`/`workflowz` helper docs, and the `[i/n]` cell-counter (now hidden for single cells) were updated to match; the renderer, ACP start-text, copy-targets, and collab-web tool view still parse legacy multi-cell transcripts.
-- **Settings:** `hooks` and `customTools` arrays replaced with single `extensions` array
-- **CLI:** `--hook` and `--tool` flags replaced with `--extension` / `-e`
-- **Directories:** `hooks/`, `tools/` → `extensions/`; `commands/` → `prompts/`
-- **Types:** See type renames above
-- **SDK:** See SDK migration above
-- Renamed the SDK tool format type and resolver from `ToolCallFormat`/`resolveToolCallSyntax` to `DialectFormat`/`resolveDialect`, and the agent option from `toolCallSyntax` to `dialect`.
-- Changed `/dump` transcript output to render messages with the selected model's native dialect turn and thinking envelopes instead of markdown role headings.
-
-### Added
-
-- Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
+- Unified subprocess lifecycle management for mnemopi, speech, tiny-model, and TTS workers
 
 ### Fixed
 
-- Fixed Telegram bridge startup and polling failures collapsing missing or rejected credentials, invalid chat access, API status details, network errors, and competing pollers into generic configuration messages.
-- Fixed `generate_image` resolving a Codex (ChatGPT) subscription only when the session already ran an OpenAI/Codex model. A connected Codex subscription is now the first auto-resolution provider and outranks the session's own provider, so Anthropic, Gemini, xAI, OpenRouter, and local-model sessions generate images through it instead of falling through to whichever key happens to exist; an explicitly configured `providers.imageOrder` list and per-request `provider` override still win. A session already chatting with a Codex hosted-image model keeps using that exact model.
+- Fixed advisor memory growth caused by automatic tool-output pruning replaying the full primary transcript and by transcript recording reloading the entire advisor journal before appending. Pruning-only rewrites now rebase the cursor, while recorder startup reads only the final JSONL entry.
+- Subagent spawns no longer escalate past the thinking level configured for the agent: a `task.agentModelOverrides` selector that pins an explicit level (e.g. `task: openai-codex/gpt-5.6-terra:high`) now outranks the spawning model's coarse `effort` hint, and a coarse `effort: "hi"` tops out one level below `max` (`max` stays reserved for an explicit human selection, matching `auto`). Previously every `effort: "hi"` spawn ran at `max` regardless of the configured level.
 
 ## [17.2.12] - 2026-08-08
 
@@ -3144,7 +3112,6 @@
 
 ### Changed
 
-- Unified subprocess lifecycle management for mnemopi, speech, tiny-model, and TTS workers
 - Changed advisor prompting guidance to emit at most one `advise` per update and to prefer silence when the agent is on track
 - Changed `/dump` default output to compact markdown format; use `/dump raw` for the legacy uncompact format
 - Changed `/dump` and `/advisor dump` to default to compact transcript output and accept an optional `raw` flag for the legacy uncompact format
@@ -12398,11 +12365,13 @@
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
 
+## [1.6.9] - 2026-07-29
+
+### Fixed
+
+- Fixed blocking advisor consultations collapsing paused, disposed, aborted, timed-out, queue-cleared, rate-limited, empty-response, and provider-error outcomes into a misleading timeout. Consults now report the exact cause and provider attempt history, expose the existing bounded retry cycle, return immediately when a rate-limited request is requeued, and stop retrying after cancellation.
+
 ## [1.6.8] - 2026-07-28
-
-### Added
-
-- Added a session-scoped `/telegram on|off|status` bridge for steering or queueing messages from one allowlisted private Telegram chat and receiving final assistant responses. Configure `OMP_TELEGRAM_BOT_TOKEN` and `OMP_TELEGRAM_ALLOWED_CHAT_ID`; the bridge uses bounded long polling, refuses active webhooks, and fails closed on unauthorized chats, unsafe retries, queue overflow, and lifecycle races.
 
 ### Fixed
 
@@ -13070,6 +13039,40 @@ Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mon
 - Removed the `/orchestrate` slash command; orchestration is now triggered by the `orchestrate` keyword (see Added) so the contract rides alongside the user's own prompt instead of replacing it.
 - Removed the sticky Todos panel all-done drop/collapse animation; completed todo state now stays visible until the next explicit todo update changes it.
 - `omp plugin install` now accepts GitHub/GitLab/Bitbucket shorthand (`github:user/repo`, `gitlab:user/repo`, …) and full git URLs (`https://github.com/user/repo`, `git@github.com:user/repo`, …) in addition to npm specs and marketplace refs.
+
+## [1.6.6] - 2026-07-25
+
+### Breaking Changes
+
+- Reworked the task tool's model-facing wire schema: moved `agent` into individual task items and renamed `assignment`/`id` to `task`/`name`; the fork retains `assignment`, `id`, `role`, and `description` as runtime compatibility aliases for internal callers and persisted transcripts.
+- Unified tool presentation on `loadMode` (`essential` | `discoverable`), replacing the custom-tool `xdev?: boolean` opt-out. Custom, extension, MCP, RPC host, image-generation, and TTS tools now default to `discoverable` and mount under `xd://` when enabled. `generate_image`, `tts`, and MCP tools are now exposed as `xd://` devices in default sessions instead of shipping their schemas top-level.
+- Replaced the `--reasoning-slide-*` flag family with a unified `--prewalk` mechanism (`--prewalk`, `--prewalk-into <model>`, and `--no-prewalk`) to manage model handoffs during execution.
+- Changed the public `selectLaunchAdapter()` result from `DapResolvedAdapter | null` to `LaunchAdapterSelection`; callers must handle `adapter`, `unavailable`, and `none` outcomes.
+- Removed _input as a supported alias for the edit tool input field
+- Changed search tool `paths` parameter to a single semicolon-delimited `path` string parameter
+- Changed the `grep`, `glob`, and `ast_grep` tools to take a single optional `path` argument instead of a `paths` array. `path` accepts one path or a semicolon-delimited list (`src; tests`); omitting it searches the workspace root (`.`). Multi-path search, delimited expansion, and internal-URL scopes are unchanged. (`ast_edit` continues to take `paths`.)
+- Removed the canonical-alias grouping and resolution layer. The `equivalence` key (`overrides`/`exclude`) in `models.yml`/`models.json` is now inert, and canonical-related methods have been removed from `ModelRegistry`.
+- Removed the "CANONICAL" tab from the interactive model selector and the `omp models canonical` subcommand.
+- Replaced the global `serviceTier` and `fastModeScope` settings with granular, per-family settings (`tier.openai`, `tier.anthropic`, and `tier.google`) to control service tiers, subagents, advisors, and `/fast` mode targets.
+- Renamed the `search` tool to `grep` and the `find` tool to `glob`. Existing user settings are automatically migrated to the new configuration keys.
+- Renamed the eval `agent()` helper parameters `agent_type` → `agent` and `return_handle` → `handle` across every workflow runtime (Python, JavaScript, Ruby, Julia), so the names are identical in every language (no camelCase/snake_case split) and the agent-selection parameter matches the `task` tool's `agent`. The `__agent__` eval bridge wire protocol was renamed to match.
+- Changed the `eval` tool to take a single cell per call (`{ language, code, title?, timeout?, reset? }`) instead of a `cells` array. State still persists per language across separate eval calls, tool calls, and `task` subagents, so each call is one logical step that reuses everything earlier calls defined — the array only encouraged re-importing/re-declaring the same setup in every batch. The schema, field descriptions, examples, system `eval.md`/`workflowz` helper docs, and the `[i/n]` cell-counter (now hidden for single cells) were updated to match; the renderer, ACP start-text, copy-targets, and collab-web tool view still parse legacy multi-cell transcripts.
+- **Settings:** `hooks` and `customTools` arrays replaced with single `extensions` array
+- **CLI:** `--hook` and `--tool` flags replaced with `--extension` / `-e`
+- **Directories:** `hooks/`, `tools/` → `extensions/`; `commands/` → `prompts/`
+- **Types:** See type renames above
+- **SDK:** See SDK migration above
+- Renamed the SDK tool format type and resolver from `ToolCallFormat`/`resolveToolCallSyntax` to `DialectFormat`/`resolveDialect`, and the agent option from `toolCallSyntax` to `dialect`.
+- Changed `/dump` transcript output to render messages with the selected model's native dialect turn and thinking envelopes instead of markdown role headings.
+
+### Added
+
+- Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
+
+### Fixed
+
+- Fixed Telegram bridge startup and polling failures collapsing missing or rejected credentials, invalid chat access, API status details, network errors, and competing pollers into generic configuration messages.
+- Fixed `generate_image` resolving a Codex (ChatGPT) subscription only when the session already ran an OpenAI/Codex model. A connected Codex subscription is now the first auto-resolution provider and outranks the session's own provider, so Anthropic, Gemini, xAI, OpenRouter, and local-model sessions generate images through it instead of falling through to whichever key happens to exist; an explicitly configured `providers.imageOrder` list and per-request `provider` override still win. A session already chatting with a Codex hosted-image model keeps using that exact model.
 
 ## [1.6.6] - 2026-07-25
 
