@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { compareVersions, enumerateChangelogVersions, mergePackageSection } from "./ci-release-notes";
+import { compareVersions } from "../packages/utils/src/version";
+import { enumerateChangelogVersions, mergePackageSection } from "./ci-release-notes";
 
 const FIXTURE = [
 	"# Changelog",

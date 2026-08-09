@@ -53,6 +53,14 @@ async function readPowerShellInstallerConfigSeed(): Promise<string> {
 	return normalizeConfig(match[1]);
 }
 
+/**
+ * The installer verifies a freshly downloaded binary by running `--version`
+ * before installing it (upstream startup verification), so the fake release
+ * payload has to be an executable script rather than opaque text.
+ */
+const RUNNABLE_RELEASE_BINARY = "#!/bin/sh\nexit 0\n";
+const RUNNABLE_FALLBACK_BINARY = "#!/bin/sh\n# fallback\nexit 0\n";
+
 function shellConfigPath(root: string): string {
 	return path.join(root, "home", ".omp", "agent", "config.yml");
 }
@@ -337,7 +345,7 @@ describe("installer supply-chain hardening", () => {
 	});
 
 	it("installs a release binary only after matching SHA256SUMS", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		try {
@@ -366,8 +374,10 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 
 			expect(result.exitCode).toBe(0);
 			expect(result.output).toContain("Updating Superpowers skills");
+			// The installed binary is probed with `--version` (startup verification)
+			// before the installer drives any real command.
 			expect(await Bun.file(superpowersLog).text()).toBe(
-				"config update --json\ninstall git:github.com/obra/superpowers\n",
+				"--version\nconfig update --json\ninstall git:github.com/obra/superpowers\n",
 			);
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
@@ -375,7 +385,7 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 	});
 
 	it("keeps existing shell installer config values while adding config migrations", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
@@ -403,7 +413,7 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 	});
 
 	it("adds shell installer syntax highlighting migration to an existing display block", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
@@ -430,7 +440,7 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 		}
 	});
 	it("migrates shell installer UI agent overrides while preserving custom overrides and syntax highlighting", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
@@ -458,7 +468,7 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 		}
 	});
 	it("migrates shell installer UI agent overrides with inline comments", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
@@ -484,7 +494,7 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 	});
 
 	it("preserves inline shell installer agent override maps while adding UI routes", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
@@ -507,7 +517,7 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 	});
 
 	it("migrates legacy GPT-5.5 routes idempotently while preserving custom routes", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
@@ -595,7 +605,7 @@ task:
 
 	for (const { name, input, expectedReviewer } of reviewerMigrationCases) {
 		it(name, async () => {
-			const binaryContent = "safe release binary";
+			const binaryContent = RUNNABLE_RELEASE_BINARY;
 			const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 			const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 			const configPath = shellConfigPath(root);
@@ -616,7 +626,7 @@ task:
 	}
 
 	it("adds shell installer heavy_task fallback chain to existing retry chains idempotently", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
@@ -665,7 +675,7 @@ providers:
 	});
 
 	it("does not create shell installer heavy_task fallback chain without retry chains", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
@@ -694,7 +704,7 @@ providers:
 	});
 
 	it("migrates existing legacy GPT-5.5 heavy, QA, and tester overrides", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
@@ -726,7 +736,7 @@ providers:
 	});
 
 	it("migrates existing Claude Opus 4.8 routes to Opus 5 while preserving effort suffixes", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
@@ -782,7 +792,7 @@ retry:
 	});
 
 	it("bumps previously-shipped heavy_task sol:high override to terra:high while preserving custom overrides", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		const configPath = shellConfigPath(root);
@@ -820,6 +830,12 @@ retry:
 
 	it("runs the installed config update command for existing shell configs", async () => {
 		const binaryContent = `#!/bin/sh
+# The installer verifies the freshly downloaded binary with \`--version\` before
+# it runs any real command; answer that probe instead of failing the contract.
+if [ "$1" = "--version" ]; then
+  printf "ompx/0.0.0-test\\n"
+  exit 0
+fi
 if [ "$1" != "config" ] || [ "$2" != "update" ] || [ "$3" != "--json" ] || [ "$#" -ne 3 ]; then
   printf "unexpected args: %s\\n" "$*" >&2
   exit 64
@@ -874,7 +890,7 @@ printf "called\\n" > "$marker_file"
 	});
 
 	it("skips shell installer config seeding when requested", async () => {
-		const binaryContent = "safe release binary";
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		try {
@@ -890,7 +906,7 @@ printf "called\\n" > "$marker_file"
 	});
 
 	it("falls back to the verified binary path when default mode finds an outdated Bun", async () => {
-		const binaryContent = "safe fallback binary";
+		const binaryContent = RUNNABLE_FALLBACK_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
 		try {
