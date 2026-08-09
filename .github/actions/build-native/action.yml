@@ -356,6 +356,7 @@ runs:
            CROSS_TARGET: ${{ steps.resolve.outputs.cross_target }}
            TARGET_PLATFORM: ${{ inputs.platform }}
            TARGET_ARCH: ${{ inputs.arch }}
+           LIBC: ${{ inputs.libc }}
            TARGET_VARIANTS: ${{ inputs.variant }}
         run: bun run ci:build:native
       - name: sccache stats
