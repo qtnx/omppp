@@ -59,22 +59,15 @@ inputs:
 runs:
    using: composite
    steps:
-      - name: Detect runner environment
+      # The fork intentionally runs CI only on GitHub-hosted runners. Keep the
+      # composite action on that path even if a caller happens to carry an
+      # infrastructure-specific environment variable.
+      - name: Select GitHub-hosted toolchain path
         id: detect
         shell: bash
         run: |
-           # $SCCACHE_BUCKET is injected only on the self-hosted omp-kata runner
-           # pods (envFrom sccache-s3); its presence is the repo's single
-           # "on can.internal infra?" signal. On-infra: baked toolchains, RustFS
-           # sccache, no GitHub target/ cache. Off-infra (GitHub-hosted): install
-           # toolchains, Swatinem target/ cache, GitHub Actions sccache backend.
-           if [ -n "${SCCACHE_BUCKET:-}" ]; then
-             echo "on_infra=true" >> "$GITHUB_OUTPUT"
-             echo "runner: self-hosted omp-kata (baked tools + RustFS sccache)"
-           else
-             echo "on_infra=false" >> "$GITHUB_OUTPUT"
-             echo "runner: GitHub-hosted (install tools + Swatinem cache + GHA sccache)"
-           fi
+           echo "on_infra=false" >> "$GITHUB_OUTPUT"
+           echo "runner: GitHub-hosted"
 
       - name: Resolve build targets
         id: resolve
@@ -140,10 +133,11 @@ runs:
            fi
            sudo apt-get update
            sudo apt-get install -y build-essential
-      # audiopus_sys builds bundled libopus via CMake (Ninja generator for MSVC
-      # cross); baked into the omp-kata image and GitHub-hosted images, so this
-      # only self-heals runners that predate the bake.
-      - uses: ./.github/actions/ensure-cmake
+      # GitHub-hosted images provide CMake; fail early if that image contract
+      # changes instead of referencing the upstream-deleted local helper.
+      - name: Verify CMake
+        shell: bash
+        run: cmake --version
       - name: Prepend rustup toolchain bin to PATH (GitHub-hosted)
         if: steps.detect.outputs.on_infra == 'false'
         shell: bash

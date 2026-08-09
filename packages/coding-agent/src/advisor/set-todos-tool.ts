@@ -1,5 +1,5 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import { type } from "arktype";
 import setTodosDescription from "../prompts/tools/advisor-set-todos.md" with { type: "text" };
 import type { ToolSession } from "../tools";
 import { type TodoPhase, type TodoStatus, USER_TODO_EDIT_CUSTOM_TYPE } from "../tools/todo";

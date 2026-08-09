@@ -21,10 +21,10 @@
 		"fmt": "biome format --write ."
 	},
 	"dependencies": {
+		"@oh-my-pi/omptype": "catalog:",
 		"@oh-my-pi/pi-agent-core": "workspace:*",
 		"@oh-my-pi/pi-ai": "workspace:*",
-		"@oh-my-pi/pi-utils": "workspace:*",
-		"zod": "catalog:"
+		"@oh-my-pi/pi-utils": "workspace:*"
 	},
 	"devDependencies": {
 		"@oh-my-pi/pi-coding-agent": "workspace:*",

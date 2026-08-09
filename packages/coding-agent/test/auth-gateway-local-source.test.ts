@@ -13,6 +13,7 @@ import type { AuthGatewayBootOptions, AuthGatewayServerHandle } from "@oh-my-pi/
 import * as authGatewayServer from "@oh-my-pi/pi-ai/auth-gateway";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
+import { resolveOllamaModelCacheProviderId } from "@oh-my-pi/pi-catalog/provider-models";
 import * as authGatewayCli from "@oh-my-pi/pi-coding-agent/cli/auth-gateway-cli";
 import { runAuthGatewayCommand } from "@oh-my-pi/pi-coding-agent/cli/auth-gateway-cli";
 import AuthGateway from "@oh-my-pi/pi-coding-agent/commands/auth-gateway";
@@ -403,7 +404,7 @@ describe("auth-gateway serve credential source selection", () => {
 		await Settings.init({ inMemory: true, overrides: { disabledProviders: ["ollama"] } });
 		configuredBrokerEnv();
 		writeModelCache(
-			"ollama",
+			resolveOllamaModelCacheProviderId("ollama"),
 			Date.now(),
 			[
 				buildModel({

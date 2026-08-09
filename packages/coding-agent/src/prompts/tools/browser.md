@@ -13,12 +13,13 @@ Drives real Chromium tab; full puppeteer access via JS.
   - `app.path` → spawn absolute binary (Electron/CDP). No stealth patches — NEVER tamper with a real desktop app.
   - `app.cdp_url` → connect to existing CDP endpoint (e.g. `http://127.0.0.1:9222`).
   - `app.target` (with `path`/`cdp_url`) — substring on url+title picks BrowserWindow.
+  - `app.relay: true` → drive the user's own Chrome tabs through the OMPx browser relay (auto-started; requires the OMPx Browser Relay extension). `app.target` picks a tab by URL/title substring; without it the visible tab is adopted without stealing focus.
 - `tab` helpers; drop to raw puppeteer `page` for anything uncovered:
   - `tab.goto(url, { waitUntil? })` — navigate. A hung load fails ~1s before the cell budget with a named, catchable error and the pending navigation is stopped; for slow pages raise `timeout` or use `waitUntil: "domcontentloaded"`.
   - `tab.observe({ includeAll?, viewportOnly? })` — accessibility snapshot: `{ url, title, viewport, scroll, elements: [{ id, role, name, value, states, … }] }`. Ids stable until navigation or a re-render invalidates them; re-observe before acting on a changed page.
   - `tab.ariaSnapshot(selector?, { depth?, boxes? })` — Playwright-format ARIA-tree YAML (nested roles + accessible names + `/url`/`/placeholder`), scoped to `selector` or the whole document. Every node carries a `[ref=eN]` id; `[cursor=pointer]` flags clickables. Captures dense, hierarchical structure/text that `observe()`'s flat list flattens away. Refs renumber from e1 each call and stay valid until navigation, a re-render, or the next `ariaSnapshot()`.
   - `tab.ref("e5")` — `[ref=eN]` from the last ariaSnapshot → element handle with the common action methods (`.click()`, `.type()`, `.fill()`, `.hover()`, `.evaluate()`, …); the primary way to act on a ref. Snapshot refs also work in selector slots: `tab.click("e5")` and `tab.click("aria-ref=e5")` are equivalent.
-  - `tab.id(n)` — id from last observe → element handle with the same action methods (`.click()`, `.type()`, `.fill()`, …).
+  - `tab.id(n)` — id from last observe → element handle with the same action methods (`.click()`, `.type()`, `.fill()`, …). Handles are not selectors: `tab.click`/`type`/`fill`/`waitFor*` take string selectors only.
   - `tab.click(selector)` / `tab.type(selector, text)` / `tab.fill(selector, value)` / `tab.press(key, { selector? })` / `tab.scroll(dx, dy)`.
   - `tab.waitFor(selector, { timeout? })` / `tab.waitForSelector(selector, { timeout?, visible?, hidden? })` — wait until attached (optionally visible/hidden); returns an action-method handle.
   - `tab.drag(from, to)` — endpoints: selector (center-to-center) or `{ x, y }` viewport point (canvases, sliders).

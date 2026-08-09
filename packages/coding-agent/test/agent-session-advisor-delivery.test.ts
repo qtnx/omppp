@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool, type AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Message, TextContent } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -11,7 +12,6 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 
 const ADVISOR_NOTE = "Both tools must settle before this concern is considered.";
 const SKIPPED_TOOL_RESULT = "Skipped due to queued user message";

@@ -1046,8 +1046,28 @@ install_binary() {
         curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$BINARY_URL" -o "$TMP_BINARY"
     fi
     verify_release_checksum "$BINARY" "$TMP_BINARY" "$LATEST" "$TMP_CHECKSUMS"
+    chmod +x "$TMP_BINARY"
+
+    # The musl release can download successfully yet fail at startup when its
+    # dynamic libstdc++/libgcc dependencies are absent. Verify before replacing
+    # an existing installation, and explain the required runtime packages.
+    if ! SMOKE_OUTPUT="$("$TMP_BINARY" --version 2>&1)"; then
+        echo ""
+        echo "✗ ompx was downloaded but cannot start:"
+        echo "$SMOKE_OUTPUT" | sed 's/^/    /'
+        if [ "$PLATFORM" = "linux-musl" ]; then
+            echo ""
+            echo "The musl build links libstdc++/libgcc dynamically. Install them, then re-run 'ompx':"
+            if command -v apk >/dev/null 2>&1; then
+                echo "    apk add libstdc++ libgcc"
+            else
+                echo "    (install the libstdc++ and libgcc runtime packages for your distro)"
+            fi
+        fi
+        exit 1
+    fi
+
     mv "$TMP_BINARY" "${INSTALL_DIR}/ompx"
-    chmod +x "${INSTALL_DIR}/ompx"
     install_standard_config
     run_config_update "${INSTALL_DIR}/ompx"
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"

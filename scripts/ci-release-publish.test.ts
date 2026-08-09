@@ -3,12 +3,70 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $ } from "bun";
-import { inspectPackedTarball, isVersionAlreadyPublished, prepareNativeCorePackage } from "./ci-release-publish.ts";
+import {
+	inspectPackedTarball,
+	isVersionAlreadyPublished,
+	packages,
+	prepareNativeCorePackage,
+	rewriteManifest,
+} from "./ci-release-publish.ts";
 
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
 	await Promise.all(temporaryDirectories.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true })));
+});
+
+describe("published manifest topology", () => {
+	it("repoints omptype runtime entries to dist/js with a bun source condition", async () => {
+		const pkg = packages.find(entry => entry.dir === "packages/omptype");
+		if (!pkg) throw new Error("omptype missing from publish set");
+		expect(pkg.publishJs).toBe(true);
+
+		const manifest = await rewriteManifest(pkg, false);
+		expect(manifest.main).toBe("./dist/js/index.js");
+		expect(manifest.types).toBe("./dist/types/index.d.ts");
+		expect(manifest.files).toContain("dist/js");
+		expect(manifest.files).toContain("dist/types");
+		// `src` must stay packed — the `bun` condition resolves into it.
+		expect(manifest.files).toContain("src");
+		expect(manifest.exports).toEqual({
+			".": {
+				types: "./dist/types/index.d.ts",
+				bun: "./src/index.ts",
+				default: "./dist/js/index.js",
+			},
+			"./*": {
+				types: "./dist/types/*.d.ts",
+				bun: "./src/*.ts",
+				default: "./dist/js/*.js",
+			},
+			"./*.js": {
+				types: "./dist/types/*.d.ts",
+				bun: "./src/*.ts",
+				default: "./dist/js/*.js",
+			},
+		});
+	});
+
+	it("keeps source-runtime packages on src with only types repointed", async () => {
+		const pkg = packages.find(entry => entry.dir === "packages/utils");
+		if (!pkg) throw new Error("utils missing from publish set");
+
+		const manifest = await rewriteManifest(pkg, false);
+		expect(manifest.main).toBe("./src/index.ts");
+		expect(manifest.exports).toEqual({
+			".": {
+				types: "./dist/types/index.d.ts",
+				import: "./src/index.ts",
+			},
+			"./*": {
+				types: "./dist/types/*.d.ts",
+				import: "./src/*.ts",
+			},
+			"./*.js": "./src/*.ts",
+		});
+	});
 });
 
 describe("release publish", () => {
@@ -41,7 +99,7 @@ describe("release publish", () => {
 		expect(isVersionAlreadyPublished("cannot publish over the previously published version")).toBe(false);
 	});
 
-	it("ships every file required by the lazy desktop export in the native core", async () => {
+	it("ships every file required by lazy native exports in the native core", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-native-core-publish-test-"));
 		temporaryDirectories.push(root);
 		await Bun.write(

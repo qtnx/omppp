@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { buildLaunchArgs } from "../launch";
+import { buildHeadlessLaunchArgs } from "../launch";
 
-describe("buildLaunchArgs", () => {
+describe("buildHeadlessLaunchArgs", () => {
 	it("includes Vulkan GPU and unsafe SwiftShader flags when gpu is true", () => {
-		const args = buildLaunchArgs({ width: 1234, height: 567 }, true);
+		const args = buildHeadlessLaunchArgs({ width: 1234, height: 567 }, true);
 
 		expect(args).toContain("--no-sandbox");
 		expect(args).toContain("--window-size=1234,567");
@@ -14,7 +14,7 @@ describe("buildLaunchArgs", () => {
 	});
 
 	it("keeps unsafe SwiftShader fallback without Vulkan GPU flags when gpu is false", () => {
-		const args = buildLaunchArgs({ width: 800, height: 600 }, false);
+		const args = buildHeadlessLaunchArgs({ width: 800, height: 600 }, false);
 
 		expect(args).toContain("--no-sandbox");
 		expect(args).toContain("--window-size=800,600");

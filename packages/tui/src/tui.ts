@@ -1670,7 +1670,10 @@ export class TUI extends Container {
 
 	#querySixelSupport(): void {
 		if (TERMINAL.imageProtocol) return;
-		if (process.platform !== "win32") return;
+		// win32 native or WSL under Windows Terminal — both are ConPTY-hosted and
+		// reach the same WT graphics negotiation. WSL reports process.platform
+		// "linux", so a bare win32 check silently skips the probe there (#6009).
+		if (!isConPTYHosted()) return;
 		if (!Bun.env.WT_SESSION) return;
 		if (!process.stdin.isTTY || !process.stdout.isTTY) return;
 
@@ -1875,7 +1878,9 @@ export class TUI extends Container {
 			this.terminal.write(targetRow <= viewportBottom ? "\r" : "\r\n");
 		}
 
-		this.terminal.showCursor();
+		// Force: the parent shell needs the cursor back regardless of what the
+		// terminal-level dedupe believes was last written.
+		this.terminal.showCursor(true);
 		this.#forgetHardwareCursorState();
 		this.terminal.stop();
 	}

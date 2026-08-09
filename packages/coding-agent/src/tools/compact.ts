@@ -1,8 +1,8 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import compactDescription from "../prompts/tools/compact.md" with { type: "text" };
@@ -13,12 +13,18 @@ import { Ellipsis, formatErrorMessage, replaceTabs, TRUNCATE_LENGTHS, truncateTo
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
-const compactSchema = z.object({
-	reason: z.string().min(1).max(500).describe("why compaction is appropriate now — the boundary just reached"),
-	focus: z.string().min(1).max(2000).optional().describe("what the compaction summary must preserve or emphasize"),
+const compactSchema = type({
+	reason: type("string")
+		.atLeastLength(1)
+		.atMostLength(500)
+		.describe("why compaction is appropriate now — the boundary just reached"),
+	"focus?": type("string")
+		.atLeastLength(1)
+		.atMostLength(2000)
+		.describe("what the compaction summary must preserve or emphasize"),
 });
 
-type CompactParams = z.infer<typeof compactSchema>;
+type CompactParams = typeof compactSchema.infer;
 
 export interface CompactToolDetails {
 	reason: string;

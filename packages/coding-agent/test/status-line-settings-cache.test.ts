@@ -13,6 +13,7 @@ import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } f
 
 let settingsState: SettingsTestState | undefined;
 let projectDir = "";
+const components: StatusLineComponent[] = [];
 
 beforeEach(async () => {
 	settingsState = beginSettingsTest();
@@ -23,6 +24,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	for (const component of components.splice(0)) component.dispose();
 	restoreSettingsTestState(settingsState);
 	settingsState = undefined;
 	if (projectDir) {
@@ -71,6 +73,7 @@ function makeSession(sessionName = "Cache Session") {
 
 function makeComponent(statusLineSettings: StatusLineSettings): StatusLineComponent {
 	const component = new StatusLineComponent(makeSession());
+	components.push(component);
 	component.updateSettings(statusLineSettings);
 	return component;
 }

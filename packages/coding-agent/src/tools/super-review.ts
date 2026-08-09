@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import {
 	type AgentTool,
 	type AgentToolResult,
@@ -11,7 +12,6 @@ import { type Api, Effort, type ImageContent, type Model, type TextContent } fro
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { prompt } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
-import { type } from "arktype";
 import { extractTextContent } from "../commit/utils";
 import { formatModelString, getModelMatchPreferences, resolveModelFromString } from "../config/model-resolver";
 import superReviewImageMaterialPrompt from "../prompts/system/super-review-image-material.md" with { type: "text" };

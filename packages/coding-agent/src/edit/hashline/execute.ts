@@ -13,11 +13,14 @@
 import {
 	type BlockResolution,
 	buildCompactDiffPreview,
+	commitClipboard,
+	forkClipboard,
 	MismatchError as HashlineMismatchError,
 	Patch,
 	Patcher,
 	type PatchSectionResult,
 	type PreparedSection,
+	startClipboardBatch,
 } from "@oh-my-pi/hashline";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
@@ -26,6 +29,7 @@ import { withFileWriteLocks } from "../../tools/file-write-lock";
 import { outputMeta } from "../../tools/output-meta";
 import { ToolError } from "../../tools/tool-errors";
 import { generateDiffString } from "../diff";
+import { getEditClipboard } from "../edit-clipboard";
 import { getFileSnapshotStore } from "../file-snapshot-store";
 import type { EditToolDetails, EditToolPerFileResult, LspBatchRequest } from "../renderer";
 import { pruneOversizedEditSnapshots } from "../snapshot-details";
@@ -45,7 +49,7 @@ export interface ExecuteHashlineSingleOptions {
 
 function noChangeDiagnostic(path: string): string {
 	// The patch parsed and applied cleanly but produced no change — the
-	// `|literal` body rows matched the file content at the targeted lines
+	// `+TEXT` body rows matched the file content at the targeted lines
 	// byte-for-byte. The model usually misreads this as "wrong anchor, try
 	// again with a bigger payload" and starts duplicating content; the
 	// message below names the cause directly so the next turn can re-read
@@ -89,6 +93,19 @@ function assertUniqueCanonicalPaths(prepared: readonly PreparedSection[]): void 
 	}
 }
 
+/**
+ * The preflight `prepare` is what runs tag-based path recovery (a bare or
+ * mistyped filename rebound onto the file its snapshot tag names) and records
+ * the warning for it. The in-lock re-prepare starts from the ALREADY recovered
+ * section, so recovery does not fire again and its warning would never reach
+ * the rendered result. Carry across any preflight warning the committed result
+ * does not already carry.
+ */
+function withPreflightWarnings(result: PatchSectionResult, preflight: PreparedSection): PatchSectionResult {
+	const missing = preflight.parseWarnings.filter(warning => !result.warnings.includes(warning));
+	return missing.length === 0 ? result : { ...result, warnings: [...missing, ...result.warnings] };
+}
+
 function narrowBatchRequest(outer: LspBatchRequest | undefined, isLast: boolean): LspBatchRequest | undefined {
 	if (!outer) return undefined;
 	return { id: outer.id, flush: isLast && outer.flush };
@@ -99,13 +116,25 @@ interface RenderedSection {
 	perFileResult: EditToolPerFileResult;
 }
 
+const BLOCK_OP_LABELS: Record<BlockResolution["op"], string> = {
+	replace: "PUT N*:",
+	insert_after: "PUT >N*:",
+	cut: "CUT N*",
+	paste_after: "PUT >N*",
+};
+
 function formatBlockResolution(resolution: BlockResolution): string {
-	const op = resolution.op === "delete" ? "DEL.BLK" : resolution.op === "insert_after" ? "INS.BLK.POST" : "SWAP.BLK";
+	const op = BLOCK_OP_LABELS[resolution.op].replace("N", String(resolution.anchorLine));
 	const lines = resolution.end - resolution.start + 1;
 	const span =
 		resolution.start === resolution.end ? `line ${resolution.start}` : `lines ${resolution.start}-${resolution.end}`;
-	const suffix = resolution.op === "insert_after" ? `; body lands after line ${resolution.end}` : "";
-	return `${op} ${resolution.anchorLine} → resolved ${span} (${lines} line${lines === 1 ? "" : "s"})${suffix}`;
+	const suffix =
+		resolution.op === "insert_after"
+			? `; body lands after line ${resolution.end}`
+			: resolution.op === "paste_after"
+				? `; clipboard lands after line ${resolution.end}`
+				: "";
+	return `${op} → resolved ${span} (${lines} line${lines === 1 ? "" : "s"})${suffix}`;
 }
 
 function renderSection(
@@ -214,23 +243,32 @@ export async function executeHashlineSingle(
 	const enforceSeenLines = options.session.settings.get("edit.enforceSeenLines");
 	const patcher = new Patcher({ fs, snapshots, blockResolver: nativeBlockResolver, enforceSeenLines });
 
+	// Named registers persist across edit calls; the anonymous register is
+	// batch-local. Each batch starts without anonymous state and publishes
+	// named registers only after writes land.
+	const sessionClipboard = getEditClipboard(options.session);
+	const clipboard = startClipboardBatch(sessionClipboard);
+
 	// Single-section fast path: prepare, commit, render.
 	const inputHash = hashPatchInput(options.input);
 	if (patch.sections.length === 1) {
-		const preflight = await patcher.prepare(patch.sections[0]);
+		const preflight = await patcher.prepare(patch.sections[0], forkClipboard(clipboard));
 		const lockPaths =
 			preflight.fileOp?.kind === "move"
 				? [preflight.canonicalPath, fs.resolveAbsolute(preflight.fileOp.dest)]
 				: [preflight.canonicalPath];
 		return withFileWriteLocks(lockPaths, options.signal, async () => {
 			fs.setBatchRequest(narrowBatchRequest(options.batchRequest, true));
-			const prepared = await patcher.prepare(patch.sections[0]);
-			const sectionResult = await patcher.commit(prepared);
+			const prepared = await patcher.prepare(preflight.section, clipboard);
+			const sectionResult = withPreflightWarnings(await patcher.commit(prepared), preflight);
+			commitClipboard(clipboard, sessionClipboard);
 			if (sectionResult.op === "noop") {
 				const { count, escalate } = recordNoopEdit(options.session, sectionResult.canonicalPath, inputHash);
 				if (escalate) {
 					throw new ToolError(noChangeLoopDiagnostic(sectionResult.path, count));
 				}
+				// Return before the reset below: a no-op must leave the consecutive
+				// counter intact so the Nth identical no-op still escalates.
 				return renderSection(sectionResult, undefined, prepared.section.path).toolResult;
 			}
 			resetNoopEdit(options.session, sectionResult.canonicalPath);
@@ -240,9 +278,16 @@ export async function executeHashlineSingle(
 	}
 
 	// Multi-section: prepare every section up front so we fail fast before
-	// any write hits the filesystem.
+	// any write hits the filesystem. One batch-local register spans the batch,
+	// so `CUT` in one section feeds a register-backed `PUT` in a later one.
 	const prepared: PreparedSection[] = [];
-	for (const section of patch.sections) prepared.push(await patcher.prepare(section));
+	// A separate register tracks actual landed sections. Each reprepare occurs
+	// under its lock; publish only after its write succeeds so a later failure
+	// preserves exactly the committed prefix.
+	let landedClipboard = startClipboardBatch(sessionClipboard);
+	for (const section of patch.sections) {
+		prepared.push(await patcher.prepare(section, clipboard));
+	}
 	assertUniqueCanonicalPaths(prepared);
 	for (const entry of prepared) {
 		if (entry.isNoop) {
@@ -263,11 +308,17 @@ export async function executeHashlineSingle(
 			preflight.fileOp?.kind === "move"
 				? [preflight.canonicalPath, fs.resolveAbsolute(preflight.fileOp.dest)]
 				: [preflight.canonicalPath];
+		const sectionClipboard = forkClipboard(landedClipboard);
 		const { sectionResult, sourcePath } = await withFileWriteLocks(lockPaths, options.signal, async () => {
 			fs.setBatchRequest(narrowBatchRequest(options.batchRequest, isLast));
-			const current = await patcher.prepare(preflight.section);
-			return { sectionResult: await patcher.commit(current), sourcePath: current.section.path };
+			const current = await patcher.prepare(preflight.section, sectionClipboard);
+			return {
+				sectionResult: withPreflightWarnings(await patcher.commit(current), preflight),
+				sourcePath: current.section.path,
+			};
 		});
+		commitClipboard(sectionClipboard, sessionClipboard);
+		landedClipboard = sectionClipboard;
 		if (sectionResult.op === "noop") {
 			const { count, escalate } = recordNoopEdit(options.session, sectionResult.canonicalPath, inputHash);
 			throw escalate
@@ -277,7 +328,6 @@ export async function executeHashlineSingle(
 		resetNoopEdit(options.session, sectionResult.canonicalPath);
 		rendered.push(renderSection(sectionResult, fs.consumeDiagnostics(sectionResult.path), sourcePath));
 	}
-
 	return {
 		content: [
 			{

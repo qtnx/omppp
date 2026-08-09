@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import type { AdvisorConsultResult } from "../src/advisor/runtime";
 import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";

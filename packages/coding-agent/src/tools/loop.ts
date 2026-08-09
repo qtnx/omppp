@@ -1,6 +1,6 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
 import loopDescription from "../prompts/tools/loop.md" with { type: "text" };
 import type { ToolSession } from ".";
 import type { OutputMeta } from "./output-meta";
@@ -10,20 +10,21 @@ import { toolResult } from "./tool-result";
 const INTERVAL_DURATION_RE = /^(\d+(?:\.\d+)?)([smh])$/;
 const MIN_INTERVAL_MS = 10_000;
 
-const loopSchema = z.object({
-	prompt: z
-		.string()
-		.min(1)
-		.max(4000)
+const loopSchema = type({
+	prompt: type("string")
+		.atLeastLength(1)
+		.atMostLength(4000)
 		.describe("Self-contained instruction delivered on every iteration as a follow-up turn"),
-	interval: z
-		.string()
-		.min(1)
+	interval: type("string")
+		.atLeastLength(1)
 		.describe('Cadence between iterations after the first: "10s", "5m", "1h", or bare seconds (min 10s)'),
-	count: z.number().int().min(1).max(100).describe("Total iterations including the immediate first one (max 100)"),
+	count: type("number.integer")
+		.atLeast(1)
+		.atMost(100)
+		.describe("Total iterations including the immediate first one (max 100)"),
 });
 
-type LoopParams = z.infer<typeof loopSchema>;
+type LoopParams = typeof loopSchema.infer;
 
 export interface LoopToolDetails {
 	id: string;

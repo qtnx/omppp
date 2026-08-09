@@ -132,6 +132,7 @@ const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
 	"irc_message",
 	"notice",
 	"thinking_level_changed",
+	"model_changed",
 	"goal_updated",
 	"mode_changed",
 ]);
@@ -616,6 +617,23 @@ export class RpcClient {
 	 */
 	async getState(): Promise<RpcSessionState> {
 		const response = await this.#send({ type: "get_state" });
+		const state = this.#getData<RpcSessionState>(response);
+		return {
+			...state,
+			fastModeEnabled: state.fastModeEnabled === true,
+			fastModeActive: state.fastModeActive === true,
+			tokensPerSecond:
+				typeof state.tokensPerSecond === "number" && Number.isFinite(state.tokensPerSecond)
+					? state.tokensPerSecond
+					: null,
+		};
+	}
+
+	/**
+	 * Enable or disable fast mode for the active model family.
+	 */
+	async setFastMode(enabled: boolean): Promise<{ enabled: boolean; active: boolean }> {
+		const response = await this.#send({ type: "set_fast_mode", enabled });
 		return this.#getData(response);
 	}
 

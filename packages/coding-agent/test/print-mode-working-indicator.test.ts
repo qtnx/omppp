@@ -36,6 +36,7 @@ interface DelayedSession {
 	promptStarted: Promise<void>;
 	resolvePrompt: () => void;
 	getPlanModeAtPrompt: () => PlanModeState | undefined;
+	getTextOutputCommitted: () => boolean;
 	getModeChanges: () => Array<{ mode: string; data?: Record<string, unknown> }>;
 	getPlanProposalHandler: () => PlanProposalHandler | undefined;
 	getCurrentPlanMode: () => PlanModeState | undefined;
@@ -57,6 +58,7 @@ function createDelayedSession(
 	const modeChanges: Array<{ mode: string; data?: Record<string, unknown> }> = [];
 	let planProposalHandler: PlanProposalHandler | undefined;
 	let subscriber: ((event: AgentSessionEvent) => void) | undefined;
+	let textOutputCommitted = true;
 	let abortCalls = 0;
 
 	const session = {
@@ -108,6 +110,9 @@ function createDelayedSession(
 		abort: async () => {
 			abortCalls++;
 		},
+		setTextOutputCommitted: (committed: boolean) => {
+			textOutputCommitted = committed;
+		},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			subscriber = listener;
 			return () => {};
@@ -136,6 +141,7 @@ function createDelayedSession(
 		getPlanModeAtPrompt: () => planModeAtPrompt,
 		getModeChanges: () => modeChanges,
 		getPlanProposalHandler: () => planProposalHandler,
+		getTextOutputCommitted: () => textOutputCommitted,
 		getCurrentPlanMode: () => planModeState,
 		emit: event => subscriber?.(event),
 		getAbortCalls: () => abortCalls,
@@ -229,12 +235,14 @@ describe("print mode working indicator", () => {
 		try {
 			expect(stderrOutput.join("")).toContain("Working");
 			expect(stdoutOutput.join("")).toBe("");
+			expect(delayed.getTextOutputCommitted()).toBe(false);
 		} finally {
 			delayed.resolvePrompt();
 			await run;
 		}
 
 		expect(stdoutOutput.join("")).toBe("final answer\n");
+		expect(delayed.getTextOutputCommitted()).toBe(true);
 	});
 
 	it("does not write the text-mode working indicator in JSON mode while the prompt is pending", async () => {
@@ -244,6 +252,7 @@ describe("print mode working indicator", () => {
 		await delayed.promptStarted;
 		try {
 			expect(stderrOutput.join("")).toBe("");
+			expect(delayed.getTextOutputCommitted()).toBe(true);
 		} finally {
 			delayed.resolvePrompt();
 			await run;
@@ -354,6 +363,7 @@ describe("print mode working indicator", () => {
 				messages.push(message);
 				return true;
 			},
+			setTextOutputCommitted: () => {},
 			prepareForHeadlessAdvisorDrain: () => {},
 			waitForAdvisorCatchup: async (timeoutMs: number) => {
 				catchupTimeoutMs = timeoutMs;

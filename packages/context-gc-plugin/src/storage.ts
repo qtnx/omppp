@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import {
 	CONTEXT_GC_DB_VERSION,
@@ -190,8 +191,8 @@ export class ContextGcStore {
 
 	upsertRecord(input: UpsertRecordInput): ContextRecord {
 		this.#assertOpen();
-		contextKindSchema.parse(input.kind);
-		const status = contextStatusSchema.parse(input.status ?? "candidate");
+		contextKindSchema.assert(input.kind);
+		const status = contextStatusSchema.assert(input.status ?? "candidate");
 		const now = nowIso();
 		const id = input.id ?? crypto.randomUUID();
 		const createdAt = input.createdAt ?? now;
@@ -275,7 +276,7 @@ export class ContextGcStore {
 
 	listRecords(filter: ListRecordsFilter = {}): ContextRecord[] {
 		this.#assertOpen();
-		if (filter.status) contextStatusSchema.parse(filter.status);
+		if (filter.status) contextStatusSchema.assert(filter.status);
 		const clauses: string[] = [];
 		const params: Record<string, number | string> = {
 			limit: clampLimit(filter.limit),
@@ -346,7 +347,7 @@ export class ContextGcStore {
 
 	setStatus(id: string, status: ContextStatus, summary?: string): ContextRecord {
 		this.#assertOpen();
-		const parsedStatus = contextStatusSchema.parse(status);
+		const parsedStatus = contextStatusSchema.assert(status);
 		const updatedAt = nowIso();
 		this.#db
 			.query(`
@@ -633,8 +634,8 @@ function recordFromRow(row: RecordRow): ContextRecord {
 		id: row.id,
 		sessionId: row.session_id,
 		sessionFile: row.session_file,
-		status: contextStatusSchema.parse(row.status),
-		kind: contextKindSchema.parse(row.kind),
+		status: contextStatusSchema.assert(row.status),
+		kind: contextKindSchema.assert(row.kind),
 		source: parseSource(row.source_json),
 		payloadHash: row.payload_hash,
 		artifactId: row.artifact_id,
@@ -658,8 +659,8 @@ function parseSource(value: string): ContextSource {
 
 function normalizeLegacyKind(value: string): ContextKind {
 	const normalized = value.replaceAll("-", "_");
-	const parsed = contextKindSchema.safeParse(normalized);
-	return parsed.success ? parsed.data : "custom_tool_output";
+	const parsed = contextKindSchema(normalized);
+	return parsed instanceof type.errors ? "custom_tool_output" : parsed;
 }
 
 function normalizeLegacyStatus(value: string, policy: string | null | undefined): ContextStatus {

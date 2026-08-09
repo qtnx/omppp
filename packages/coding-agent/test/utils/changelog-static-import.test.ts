@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { VERSION } from "@oh-my-pi/pi-utils";
+import type { BunPlugin } from "bun";
 import { resolveBundledChangelogPath } from "../../src/utils/changelog";
 
 interface HeapProbeResult {
@@ -32,6 +33,25 @@ async function runProbe(command: string[], cwd?: string): Promise<BundleProbeRes
 	]);
 	expect(exitCode, stderr).toBe(0);
 	return JSON.parse(stdout) as BundleProbeResult;
+}
+
+/**
+ * Swap `@oh-my-pi/pi-utils` and the changelog module's `../config` import for a
+ * dependency-free stub. Both pull the native addon loader into the bundle graph, and
+ * that loader resolves `pi_natives.<platform>.node` relative to the emitted artifact,
+ * so any probe written outside the repo fails to start. The subject under test is
+ * emitted-asset resolution, not native loading.
+ */
+function changelogUtilsStubPlugin(): BunPlugin {
+	return {
+		name: "changelog-utils-stub",
+		setup(build) {
+			build.onResolve({ filter: /^@oh-my-pi\/pi-utils$/ }, () => ({ path: utilsStubPath }));
+			build.onResolve({ filter: /^\.\.\/config$/ }, args =>
+				args.importer.endsWith("/utils/changelog.ts") ? { path: utilsStubPath } : undefined,
+			);
+		},
+	};
 }
 
 describe("bundled changelog asset path resolution", () => {
@@ -77,23 +97,14 @@ describe("changelog static import resources", () => {
 			await fs.mkdir(unrelatedCwd);
 			const sourceResult = await runProbe([process.execPath, bundleProbePath, missingPackageChangelogPath]);
 
-			const buildProc = Bun.spawn(
-				[
-					process.execPath,
-					"build",
-					bundleProbePath,
-					"--target=bun",
-					"--external=omp-legacy-pi-modules",
-					`--outdir=${bundleDir}`,
-				],
-				{ stderr: "pipe", stdout: "pipe" },
-			);
-			const [buildStdout, buildStderr, buildExitCode] = await Promise.all([
-				new Response(buildProc.stdout).text(),
-				new Response(buildProc.stderr).text(),
-				buildProc.exited,
-			]);
-			expect(buildExitCode, buildStdout + buildStderr).toBe(0);
+			const buildOutput = await Bun.build({
+				entrypoints: [bundleProbePath],
+				outdir: bundleDir,
+				target: "bun",
+				external: ["omp-legacy-pi-modules"],
+				plugins: [changelogUtilsStubPlugin()],
+			});
+			expect(buildOutput.success, buildOutput.logs.map(log => log.message).join("\n")).toBe(true);
 
 			const outputs = await fs.readdir(bundleDir);
 			expect(outputs.some(output => output.endsWith(".md"))).toBe(true);
@@ -124,17 +135,7 @@ describe("changelog static import resources", () => {
 				entrypoints: [bundleProbePath],
 				root: repoRoot,
 				external: ["omp-legacy-pi-modules"],
-				plugins: [
-					{
-						name: "changelog-utils-stub",
-						setup(build) {
-							build.onResolve({ filter: /^@oh-my-pi\/pi-utils$/ }, () => ({ path: utilsStubPath }));
-							build.onResolve({ filter: /^\.\.\/config$/ }, args =>
-								args.importer.endsWith("/utils/changelog.ts") ? { path: utilsStubPath } : undefined,
-							);
-						},
-					},
-				],
+				plugins: [changelogUtilsStubPlugin()],
 				compile: {
 					outfile: binaryPath,
 					autoloadBunfig: false,

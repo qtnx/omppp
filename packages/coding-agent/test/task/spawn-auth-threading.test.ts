@@ -55,6 +55,7 @@ function createYieldingAgentSession(): AgentSession {
 			});
 		},
 		waitForIdle: async () => {},
+		setIrcWakeTurnObserver: () => {},
 		getLastAssistantMessage: () => undefined,
 		abort: async () => {},
 		dispose: async () => {},

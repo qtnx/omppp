@@ -151,7 +151,10 @@ describe("SelectorController workflow transcript opening", () => {
 			sessionFile: "/tmp/workflow-agent-provisional.jsonl",
 		});
 
-		new SelectorController(ctx).showWorkflowHub(workflows, { getSessions: () => [] } as never);
+		new SelectorController(ctx).showWorkflowHub(workflows, {
+			getSessions: () => [],
+			getSession: () => undefined,
+		} as never);
 		const hub = slot.children[0];
 		if (!(hub instanceof WorkflowHubOverlayComponent)) {
 			throw new Error("Workflow Hub was not mounted in the editor slot");
@@ -216,7 +219,7 @@ describe("SelectorController workflow transcript opening", () => {
 		});
 		const controller = new SelectorController(ctx);
 
-		controller.showWorkflowHub(workflows, { getSessions: () => [] } as never);
+		controller.showWorkflowHub(workflows, { getSessions: () => [], getSession: () => undefined } as never);
 		const firstHub = slot.children[0];
 		if (!(firstHub instanceof WorkflowHubOverlayComponent)) {
 			throw new Error("Workflow Hub was not mounted in the editor slot");
@@ -228,7 +231,7 @@ describe("SelectorController workflow transcript opening", () => {
 
 			firstHub.handleInput("\u001B");
 
-			controller.showWorkflowHub(workflows, { getSessions: () => [] } as never);
+			controller.showWorkflowHub(workflows, { getSessions: () => [], getSession: () => undefined } as never);
 			const reopenedHub = slot.children[0];
 			if (!(reopenedHub instanceof WorkflowHubOverlayComponent)) {
 				throw new Error("Workflow Hub was not remounted in the editor slot");
@@ -283,7 +286,10 @@ describe("SelectorController workflow transcript opening", () => {
 			sessionFile: "/tmp/workflow-agent-cold-revive.jsonl",
 		});
 
-		new SelectorController(ctx).showWorkflowHub(workflows, { getSessions: () => [] } as never);
+		new SelectorController(ctx).showWorkflowHub(workflows, {
+			getSessions: () => [],
+			getSession: () => undefined,
+		} as never);
 		const hub = slot.children[0];
 		if (!(hub instanceof WorkflowHubOverlayComponent)) {
 			throw new Error("Workflow Hub was not mounted in the editor slot");

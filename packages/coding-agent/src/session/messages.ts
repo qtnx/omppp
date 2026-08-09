@@ -21,6 +21,7 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
+import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 
@@ -45,6 +46,7 @@ const COMPACTION_SUMMARY_CONTEXT_PREFIX =
 	renderCompactionSummaryContext(COMPACTION_SUMMARY_CONTEXT_SENTINEL).split(COMPACTION_SUMMARY_CONTEXT_SENTINEL)[0] ??
 	"";
 export const BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE = "background-tan-dispatch";
+export const PREWALK_PLAN_MESSAGE_TYPE = "prewalk-plan";
 
 /**
  * Logs provider-error turns so their actual cause is available outside the
@@ -618,8 +620,18 @@ export function normalizeCustomMessagePayload<T = unknown>(
 	};
 }
 
-function isSteeringUserMessage(message: AgentMessage | undefined): message is UserMessage & { steering: true } {
-	return message?.role === "user" && message.steering === true;
+type SteeringUserMessage =
+	| (UserMessage & { steering: true })
+	| (CustomMessage & {
+			customType: typeof COLLAB_PROMPT_MESSAGE_TYPE;
+			attribution: "user";
+	  });
+
+function isSteeringUserMessage(message: AgentMessage | undefined): message is SteeringUserMessage {
+	if (message?.role === "user") return message.steering === true;
+	return (
+		message?.role === "custom" && message.customType === COLLAB_PROMPT_MESSAGE_TYPE && message.attribution === "user"
+	);
 }
 
 function userMessageWithoutSteering(message: UserMessage): UserMessage {
@@ -659,17 +671,26 @@ function getArrayContentImages(content: (TextContent | ImageContent)[]): ImageCo
 	return images ?? [];
 }
 
-function wrapSteeringUserMessage(message: UserMessage): UserMessage {
+function wrapSteeringUserMessage(message: SteeringUserMessage): UserMessage {
+	const userMessage: UserMessage =
+		message.role === "user"
+			? userMessageWithoutSteering(message)
+			: {
+					role: "user",
+					content: message.content,
+					attribution: "user",
+					timestamp: message.timestamp,
+				};
 	if (typeof message.content === "string") {
-		if (message.content.length === 0) return message;
-		return { ...userMessageWithoutSteering(message), content: renderSteeringEnvelope(message.content) };
+		if (message.content.length === 0) return message.role === "user" ? message : userMessage;
+		return { ...userMessage, content: renderSteeringEnvelope(message.content) };
 	}
 
 	const text = getArrayContentText(message.content);
-	if (text.length === 0) return message;
+	if (text.length === 0) return message.role === "user" ? message : userMessage;
 	const content: (TextContent | ImageContent)[] = [{ type: "text", text: renderSteeringEnvelope(text) }];
 	content.push(...getArrayContentImages(message.content));
-	return { ...userMessageWithoutSteering(message), content };
+	return { ...userMessage, content };
 }
 
 export function wrapSteeringForModel(messages: AgentMessage[]): AgentMessage[] {
@@ -1341,6 +1362,10 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 		}
 		case "custom": {
 			if (!isCustomMessageContent(m.content)) return [];
+			if (isSteeringUserMessage(m)) {
+				const converted = convertMessageToLlm(wrapSteeringUserMessage(m));
+				return converted ? [converted] : [];
+			}
 			if (isUserInvokedSkillPrompt(m)) {
 				return [
 					{
@@ -1365,7 +1390,7 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 		}
 		case "assistant": {
 			// A user-interrupted turn keeps its trailing thinking run on the
-			// persisted/displayed message so reload and Ctrl+L rebuilds still
+			// persisted/displayed message so reload and display-reset rebuilds still
 			// show it. That run is incomplete/unsigned and gets rejected on
 			// resend, so strip it here — LLM path only — when the hidden
 			// interrupted-thinking continuity message follows.

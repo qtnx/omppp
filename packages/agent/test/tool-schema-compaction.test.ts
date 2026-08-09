@@ -45,7 +45,7 @@ describe("tool schema compaction", () => {
 			execute: async () => ({ content: [] }),
 		} as unknown as AgentTool;
 
-		const normalized = normalizeTools([tool], false);
+		const normalized = normalizeTools([tool], { injectIntent: false });
 		const parameters = normalized?.[0]?.parameters as Record<string, unknown>;
 
 		expect(Buffer.byteLength(JSON.stringify(parameters), "utf8")).toBeLessThanOrEqual(4_000);

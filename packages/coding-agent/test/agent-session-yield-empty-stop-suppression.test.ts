@@ -9,8 +9,8 @@
  */
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import { z } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -21,8 +21,8 @@ import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
-const yieldToolSchema = z.object({ result: z.unknown() });
-const recordToolSchema = z.object({ value: z.string() });
+const yieldToolSchema = type({ result: type("unknown") });
+const recordToolSchema = type({ value: type("string") });
 
 type Harness = { session: AgentSession; authStorage: AuthStorage; tempDir: TempDir };
 const activeHarnesses: Harness[] = [];
@@ -210,6 +210,19 @@ describe("AgentSession yield empty-stop suppression", () => {
 		expect(mock.calls).toHaveLength(1);
 		expect(reminderMessages(session.agent.state.messages)).toHaveLength(0);
 
+		const observerEvents: string[] = [];
+		const observerSettled = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "agent_end") observerEvents.push(`agent_end:${mock.calls.length}`);
+		});
+		session.setIrcWakeTurnObserver(() => {
+			observerEvents.push("started");
+			return () => {
+				observerEvents.push(`finished:${mock.calls.length}`);
+				observerSettled.resolve();
+			};
+		});
+
 		const outcome = await session.deliverIrcMessage({
 			id: "irc-empty-stop-after-yield",
 			from: "peer",
@@ -219,9 +232,11 @@ describe("AgentSession yield empty-stop suppression", () => {
 		} as IrcMessage);
 		expect(outcome).toBe("woken");
 		await session.waitForIdle();
+		await observerSettled.promise;
 
 		expect(mock.calls).toHaveLength(3);
 		expect(reminderMessages(session.agent.state.messages)).toHaveLength(1);
 		expect(assistantText(session.agent.state.messages)).toContain("recovered after IRC retry");
+		expect(observerEvents).toEqual(["started", "agent_end:3", "finished:3"]);
 	});
 });

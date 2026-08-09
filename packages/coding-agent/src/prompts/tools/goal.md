@@ -3,7 +3,7 @@ Legacy compatibility tool for the active goal-mode objective.
 Prefer get_goal, create_goal, and update_goal when they are available. Use this tool only when the legacy single-tool surface is the only goal tool exposed.
 
 Use a single `op` field:
-- `create` starts a goal. Requires `objective`; optional `token_budget` must be positive. Use only when no goal exists and no goal is paused.
+- `create` starts a goal and enables goal mode. Requires `objective`; optional `token_budget` must be positive. Use only when no goal exists and no goal is paused.
 - `get` returns the current goal (active or paused) and remaining token budget.
 - `resume` re-activates a paused goal so work can continue.
 - `complete` marks the goal complete after you have verified every deliverable against current evidence.

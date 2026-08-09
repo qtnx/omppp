@@ -189,7 +189,7 @@ function Configure-BashShell {
             Write-Host "    shellPath: 'C:\path\to\bash.exe'" -ForegroundColor Cyan
         }
     } catch {
-        Write-Host "⚠ Could not configure bash shell: $_" -ForegroundColor Yellow
+        Write-Host "[WARN] Could not configure bash shell: $_" -ForegroundColor Yellow
     }
 }
 
@@ -279,6 +279,20 @@ function Install-Bun {
     throw "Bun $MinimumBunVersion or newer is required for source installs. Install Bun from https://bun.sh/docs/installation, then rerun this installer."
 }
 
+function Get-InstalledOmpxShim {
+    # Global Bun/npm-style installs expose a Windows .cmd shim. Resolve that
+    # concrete file before Start-Process so config migration works in Windows
+    # PowerShell as well as PowerShell 7.
+    foreach ($name in @("ompx.cmd", "ompx.exe", "ompx")) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($command -and $command.Path) {
+            return $command.Path
+        }
+    }
+
+    throw "Could not find the installed ompx command on PATH"
+}
+
 function Invoke-ConfigUpdate {
     param([string]$ExecutablePath)
 
@@ -348,7 +362,7 @@ function Install-ViaBun {
     }
 
     Install-StandardConfig
-    Invoke-ConfigUpdate "ompx"
+    Invoke-ConfigUpdate (Get-InstalledOmpxShim)
     Write-Host ""
     Write-Host "✓ Installed OMPx via bun" -ForegroundColor Green
 

@@ -1102,7 +1102,8 @@ describe("native Herdr agent state extension", () => {
 		const managedPath = path.join(tempDir, "herdr-omp-agent-state.ts");
 		await Bun.write(
 			managedPath,
-			`export default function(pi) {
+			`export const sentinel = "${HERDR_MANAGED_FALLBACK_SENTINEL}";
+export default function(pi) {
 	if (process.env.OMP_NATIVE_HERDR_AGENT_STATE !== "1") {
 		pi.setLabel("managed fallback active");
 	}

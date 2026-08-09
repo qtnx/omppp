@@ -105,6 +105,7 @@ function createSessionHarness(lastAssistantMessage?: AssistantMessage): SessionH
 		abort: async () => {
 			idle.resolve();
 		},
+		setIrcWakeTurnObserver: () => {},
 		dispose: async () => {
 			disposed = true;
 		},

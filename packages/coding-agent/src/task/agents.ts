@@ -21,6 +21,7 @@ import qaMd from "../prompts/agents/qa.md" with { type: "text" };
 import quickTaskMd from "../prompts/agents/quick_task.md" with { type: "text" };
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
+import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
 import testerMd from "../prompts/agents/tester.md" with { type: "text" };
 import uiUxReviewerMd from "../prompts/agents/ui_ux_reviewer.md" with { type: "text" };
@@ -67,6 +68,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "browser_qa.md", template: browserQaMd },
 	{ fileName: "reviewer.md", template: reviewerMd },
 	{ fileName: "qa.md", template: qaMd },
+	{ fileName: "security-reviewer.md", template: securityReviewerMd },
 	{ fileName: "librarian.md", template: librarianMd },
 	{ fileName: "oracle.md", template: oracleMd },
 	{ fileName: "tester.md", template: testerMd },
@@ -150,7 +152,7 @@ export class AgentParsingError extends Error {
 		this.name = "AgentParsingError";
 	}
 
-	toString(): string {
+	override toString(): string {
 		const details: string[] = [this.message];
 		if (this.source !== undefined) {
 			details.push(`Source: ${JSON.stringify(this.source)}`);

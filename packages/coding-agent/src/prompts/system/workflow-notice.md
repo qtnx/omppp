@@ -4,7 +4,7 @@ The user's message above contains the **workflow** keyword. For a concrete task 
 Use this only when fan-out improves coverage, confidence, or scale. For trivial lookup, single edit, or a question only about workflows, answer directly.
 
 <when>
-Worth it when the task benefits from decomposition + parallel coverage, independent/adversarial cross-checking, or scale one context cannot hold. Scout inline FIRST (identify files, conflicts, failures, call sites, or review dimensions), then fan out over the discovered work-list.
+Worth it when the task benefits from decomposition + parallel coverage, independent/adversarial cross-checking, or scale one context cannot hold. For a quick lookup or single edit, just do it directly — don't spin up agents.{{#if scoutAvailable}} Scout inline FIRST{{else}} Explore inline FIRST{{/if}} (identify files, conflicts, failures, call sites, or review dimensions), then fan out over the discovered work-list.
 
 Common shapes:
 - **Understand** — parallel readers over subsystems → structured map.
@@ -15,7 +15,7 @@ Common shapes:
 </when>
 
 <workflow-use>
-- Scout inline first: identify files, conflicts, failures, or review dimensions.
+- {{#if scoutAvailable}}Scout{{else}}Explore{{/if}} inline first: identify files, conflicts, failures, or review dimensions.
 - Then call `workflow` with inline `script` and any dynamic values in `args`.
 - Script MUST start with pure-literal `export const meta = { name, description, phases }`.
 - Use `phase()`, `log()`, `agent()`, `parallel()`, and `pipeline()` inside the script.

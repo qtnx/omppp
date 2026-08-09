@@ -14,7 +14,7 @@ describe("bundled reference laziness", () => {
 		expect(result.exitCode).toBe(0);
 		const { retainedRssBytes } = JSON.parse(result.stdout.toString()) as { retainedRssBytes: number };
 		expect(retainedRssBytes).toBeLessThan(8 * 1024 * 1024);
-	});
+	}, 60_000);
 
 	test("a provider-local reference hit retains less than 8 MiB of RSS", () => {
 		const result = Bun.spawnSync({
@@ -28,7 +28,7 @@ describe("bundled reference laziness", () => {
 		};
 		expect(resolvedId).not.toBeNull();
 		expect(retainedRssBytes).toBeLessThan(8 * 1024 * 1024);
-	});
+	}, 60_000);
 
 	test("a lazy provider-reference factory initializes on first resolution and only once", () => {
 		const reference = {

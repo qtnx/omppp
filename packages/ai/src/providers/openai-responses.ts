@@ -610,12 +610,11 @@ const streamOpenAIResponsesOnce = (
 							strictRetryAvailable &&
 							!requestSignal.aborted &&
 							(compiledGrammarTooLarge ||
-								shouldRetryWithoutStrictTools(
-									error,
-									capturedErrorResponse,
-									activeStrictToolsApplied,
-									context.tools,
-								));
+								shouldRetryWithoutStrictTools(error, capturedErrorResponse, {
+									model,
+									strictToolsApplied: activeStrictToolsApplied,
+									tools: context.tools,
+								}));
 						if (canRetryWithoutStrictTools) {
 							strictRetryAvailable = false;
 							forceDisableStrictTools = true;
@@ -1211,7 +1210,18 @@ export function buildParams(
 						);
 			const toolChoice = mapOpenAIResponsesToolChoiceForTools(options.toolChoice, survivingTools, model);
 			if (toolChoice !== undefined && params.tools.length > 0) {
-				params.tool_choice = toolChoice;
+				if (
+					typeof toolChoice === "object" &&
+					toolChoice.type === "function" &&
+					!model.compat.supportsNamedToolChoice
+				) {
+					// String-only hosts cannot receive the named object. Restrict the
+					// catalogue first so "required" still forces the requested tool.
+					params.tools = params.tools.filter(tool => tool.type === "function" && tool.name === toolChoice.name);
+					params.tool_choice = "required";
+				} else {
+					params.tool_choice = toolChoice;
+				}
 			}
 		}
 	}

@@ -11,11 +11,11 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { isPromise } from "node:util/types";
-import winston from "winston";
-import DailyRotateFile from "winston-daily-rotate-file";
 import { getLogsDir } from "./dirs";
+import { RotatingFileSink } from "./logger/rotating-file";
 import { drainModuleLoadEvents } from "./timing-buffer";
 /** Severity names accepted by the centralized logger. */
 export type LogLevel = "error" | "warn" | "info" | "debug";
@@ -143,82 +143,106 @@ function jsonReplacer(_key: string, value: unknown): unknown {
 	return value;
 }
 
-/** Custom format that includes pid and flattens metadata; built on first use. */
-let logFormat: winston.Logform.Format | undefined;
-
-function getLogFormat(): winston.Logform.Format {
-	logFormat ??= winston.format.combine(
-		winston.format.timestamp({ format: "YYYY-MM-DDTHH:mm:ss.SSSZ" }),
-		winston.format.printf(({ timestamp, level, message, ...meta }) => {
-			const entry: Record<string, unknown> = {
-				timestamp,
-				level,
-				pid: process.pid,
-				message,
-			};
-			// Flatten metadata into entry
-			for (const [key, value] of Object.entries(meta)) {
-				if (key !== "level" && key !== "timestamp" && key !== "message") {
-					entry[key] = value;
-				}
-			}
-			return JSON.stringify(entry, jsonReplacer);
-		}),
-	);
-	return logFormat;
+interface NormalizedLogInfo extends Record<string, unknown> {
+	level: LogLevel;
+	message: unknown;
 }
 
-/** Build a rotating file transport with process-local rotation and shared retention. */
-function makeFileTransport(dir?: string): winston.transport {
+function padTimestampPart(value: number, width = 2): string {
+	return String(value).padStart(width, "0");
+}
+
+function formatLocalTimestamp(date: Date): string {
+	const offsetMinutes = -date.getTimezoneOffset();
+	const absoluteOffset = Math.abs(offsetMinutes);
+	const offsetSign = offsetMinutes >= 0 ? "+" : "-";
+	return (
+		`${padTimestampPart(date.getFullYear(), 4)}-${padTimestampPart(date.getMonth() + 1)}-${padTimestampPart(date.getDate())}` +
+		`T${padTimestampPart(date.getHours())}:${padTimestampPart(date.getMinutes())}:${padTimestampPart(date.getSeconds())}` +
+		`.${padTimestampPart(date.getMilliseconds(), 3)}${offsetSign}${padTimestampPart(Math.floor(absoluteOffset / 60))}` +
+		`:${padTimestampPart(absoluteOffset % 60)}`
+	);
+}
+
+const FORMAT_TOKEN_PATTERN = /%[scdjifoO%]/;
+
+function normalizeLogInfo(
+	level: LogLevel,
+	message: string,
+	context: Record<string, unknown> | undefined,
+): NormalizedLogInfo {
+	const metadata =
+		!FORMAT_TOKEN_PATTERN.test(message) && context !== null && typeof context === "object" ? context : undefined;
+	const info = Object.assign({}, metadata, { level, message }) as NormalizedLogInfo;
+	if (metadata?.message) info.message = `${message} ${metadata.message}`;
+	if (metadata?.stack) info.stack = metadata.stack;
+	if (metadata?.cause) info.cause = metadata.cause;
+	return info;
+}
+
+function formatLogInfo(info: NormalizedLogInfo): string {
+	const timestamp = formatLocalTimestamp(new Date());
+	info.timestamp = timestamp;
+	const entry: Record<string, unknown> = {
+		timestamp,
+		level: info.level,
+		pid: process.pid,
+		message: info.message,
+	};
+	for (const [key, value] of Object.entries(info)) {
+		if (key !== "level" && key !== "timestamp" && key !== "message") entry[key] = value;
+	}
+	return JSON.stringify(entry, jsonReplacer) as string;
+}
+
+/** Build a rotating file sink with process-local rotation and shared retention. */
+function makeFileTransport(dir?: string): RotatingFileSink {
 	const logsDir = ensureDir(dir ?? getLogsDir());
 	pruneStaleProcessLogs(logsDir);
-	return new DailyRotateFile({
-		dirname: logsDir,
-		filename: `omp.%DATE%.${process.pid}.log`,
-		datePattern: "YYYY-MM-DD",
-		maxSize: "10m",
+	return new RotatingFileSink({
+		directory: logsDir,
+		filenamePrefix: "omp",
+		filenameSuffix: String(process.pid),
+		maxBytes: 10 * 1024 * 1024,
 		maxFiles: 5,
-		zippedArchive: false,
 		auditFile: path.join(logsDir, `.omp.${process.pid}-audit.json`),
 	});
 }
 
-function makeConsoleTransport(): winston.transport {
-	return new winston.transports.Console({ format: getLogFormat() });
-}
-
 /**
- * Desired transport configuration, applied when the winston logger is built.
+ * Desired transport configuration, applied when local logging is initialized.
  * Default: file ON (TUI-safe), console OFF.
  */
 let transportOpts: { console?: boolean; file?: boolean | string } = { file: true };
 
-/** The winston logger instance, created lazily on first log emission. */
-let winstonLogger: winston.Logger | undefined;
-
-function buildTransports(opts: { console?: boolean; file?: boolean | string }): winston.transport[] {
-	const transports: winston.transport[] = [];
-	if (opts.file) transports.push(makeFileTransport(typeof opts.file === "string" ? opts.file : undefined));
-	if (opts.console) transports.push(makeConsoleTransport());
-	return transports;
+interface LocalTransports {
+	readonly file: RotatingFileSink | undefined;
+	readonly console: boolean;
 }
 
-function getWinstonLogger(): winston.Logger {
-	if (!winstonLogger) {
-		const transports = buildTransports(transportOpts);
-		winstonLogger = winston.createLogger({
-			level: "debug",
-			format: getLogFormat(),
-			transports,
-			// A transport-less winston logger console.warns "Attempt to write logs
-			// with no transports" on every emit; mark it silent instead so disabling
-			// all transports is a clean no-op.
-			silent: transports.length === 0,
-			// Don't exit on error - logging failures shouldn't crash the app
-			exitOnError: false,
-		});
-	}
-	return winstonLogger;
+/** Local transports, constructed lazily on first log emission. */
+let activeTransports: LocalTransports | undefined;
+
+function buildTransports(opts: { console?: boolean; file?: boolean | string }): LocalTransports {
+	return {
+		file: opts.file ? makeFileTransport(typeof opts.file === "string" ? opts.file : undefined) : undefined,
+		console: opts.console === true,
+	};
+}
+
+function getLocalTransports(): LocalTransports {
+	activeTransports ??= buildTransports(transportOpts);
+	return activeTransports;
+}
+
+function emitLocally(level: LogLevel, message: string, context: Record<string, unknown> | undefined): void {
+	const transports = getLocalTransports();
+	const info = normalizeLogInfo(level, message, context);
+	if (!transports.file && !transports.console) return;
+
+	const line = formatLogInfo(info);
+	if (transports.file) transports.file.write(line);
+	if (transports.console) fs.writeSync(1, `${formatLogInfo(info)}${os.EOL}`);
 }
 
 /**
@@ -228,12 +252,11 @@ function getWinstonLogger(): winston.Logger {
  */
 export function setTransports(opts: { console?: boolean; file?: boolean | string }): void {
 	transportOpts = opts;
-	if (!winstonLogger) return; // applied lazily when the logger is first built
-	winstonLogger.clear();
-	const transports = buildTransports(opts);
-	for (const transport of transports) winstonLogger.add(transport);
-	// Keep the logger silent when nothing is attached so winston doesn't warn on emit.
-	winstonLogger.silent = transports.length === 0;
+	if (!activeTransports) return; // applied lazily when local logging is first initialized
+	const previousTransports = activeTransports;
+	activeTransports = { file: undefined, console: false };
+	previousTransports.file?.close();
+	activeTransports = buildTransports(opts);
 }
 
 /**
@@ -243,7 +266,7 @@ export function setTransports(opts: { console?: boolean; file?: boolean | string
  */
 export function error(message: string, context?: Record<string, unknown>): void {
 	try {
-		getWinstonLogger().error(message, context);
+		emitLocally("error", message, context);
 	} catch {
 		// Silently ignore logging failures
 	}
@@ -257,7 +280,7 @@ export function error(message: string, context?: Record<string, unknown>): void 
  */
 export function warn(message: string, context?: Record<string, unknown>): void {
 	try {
-		getWinstonLogger().warn(message, context);
+		emitLocally("warn", message, context);
 	} catch {
 		// Silently ignore logging failures
 	}
@@ -271,7 +294,7 @@ export function warn(message: string, context?: Record<string, unknown>): void {
  */
 export function info(message: string, context?: Record<string, unknown>): void {
 	try {
-		getWinstonLogger().info(message, context);
+		emitLocally("info", message, context);
 	} catch {
 		// Silently ignore logging failures
 	}
@@ -285,7 +308,7 @@ export function info(message: string, context?: Record<string, unknown>): void {
  */
 export function debug(message: string, context?: Record<string, unknown>): void {
 	try {
-		getWinstonLogger().debug(message, context);
+		emitLocally("debug", message, context);
 	} catch {
 		// Silently ignore logging failures
 	}

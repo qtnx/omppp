@@ -5,14 +5,52 @@ on:
       branches: [main]
       tags:
          - "v*"
-      # Vouch bookkeeping commits (mitchellh/vouch writes VOUCHED.td back to
-      # main on !vouch/!denounce/!unvouch) only edit the vouch list and need no
-      # build. Skip CI when a main push changes nothing but the vouch file; a
-      # push that also touches anything else still runs the full matrix.
-      paths-ignore:
-         - .github/VOUCHED.td
+      # Match upstream's source-of-truth CI surface while preserving the fork's
+      # vouch-only skip. Path filters do not apply to tag pushes, so releases
+      # remain triggered by the v* tag rule above.
+      paths:
+         - "packages/**"
+         - "crates/**"
+         - "scripts/**"
+         - "bazel/**"
+         - "MODULE.bazel"
+         - "MODULE.bazel.lock"
+         - "BUILD.bazel"
+         - ".bazelrc"
+         - ".bazelignore"
+         - ".bazelversion"
+         - "Cargo.toml"
+         - "Cargo.lock"
+         - "rust-toolchain.toml"
+         - "rustfmt.toml"
+         - "bun.lock"
+         - "bunfig.toml"
+         - "package.json"
+         - "patches/**"
+         - ".github/**"
+         - "!.github/VOUCHED.td"
    pull_request:
       branches: [main]
+      paths:
+         - "packages/**"
+         - "crates/**"
+         - "scripts/**"
+         - "bazel/**"
+         - "MODULE.bazel"
+         - "MODULE.bazel.lock"
+         - "BUILD.bazel"
+         - ".bazelrc"
+         - ".bazelignore"
+         - ".bazelversion"
+         - "Cargo.toml"
+         - "Cargo.lock"
+         - "rust-toolchain.toml"
+         - "rustfmt.toml"
+         - "bun.lock"
+         - "bunfig.toml"
+         - "package.json"
+         - "patches/**"
+         - ".github/**"
    workflow_dispatch:
       inputs:
          skip_npm:
@@ -317,7 +355,11 @@ jobs:
               run-id: ${{ steps.source.outputs.artifact-run-id }}
               github-token: ${{ secrets.GITHUB_TOKEN }}
          - name: Test workspace packages and repo scripts (TS)
-           run: bun run ci:test:ts:workspace
+           env:
+              OMP_TEST_CONCURRENCY: "4"
+           run: |
+              bun run ci:test:ts:workspace
+              bun test scripts/release.test.ts
 
    test_coding_agent_singleton:
       name: Test coding-agent singleton/global-state (TS)
@@ -380,6 +422,8 @@ jobs:
               run-id: ${{ steps.source.outputs.artifact-run-id }}
               github-token: ${{ secrets.GITHUB_TOKEN }}
          - name: Test native/TUI/browser-ish packages (TS)
+           env:
+              OMP_TEST_CONCURRENCY: "4"
            run: bun run ci:test:ts:native
 
    test_coding_agent_ui:
@@ -411,6 +455,8 @@ jobs:
               run-id: ${{ steps.source.outputs.artifact-run-id }}
               github-token: ${{ secrets.GITHUB_TOKEN }}
          - name: Test coding-agent UI/TUI bucket
+           env:
+              OMP_TEST_CONCURRENCY: "2"
            run: bun run ci:test:coding-agent:ui
 
    test_coding_agent_runtime:
@@ -443,6 +489,8 @@ jobs:
          - name: Test coding-agent runtime bucket
            # Runtime/session tests import native-backed barrels too; keep this
            # separate for concurrency, not as a native-free guardrail.
+           env:
+              OMP_TEST_CONCURRENCY: "4"
            run: bun run ci:test:coding-agent:runtime
 
    test_coding_agent_native:
@@ -474,6 +522,9 @@ jobs:
               run-id: ${{ steps.source.outputs.artifact-run-id }}
               github-token: ${{ secrets.GITHUB_TOKEN }}
          - name: Test coding-agent native/unit bucket
+           env:
+              OMP_TEST_CONCURRENCY: "4"
+              OMP_TEST_CHUNK_TIMEOUT: "1200"
            run: bun run ci:test:coding-agent:native
 
    test_smoke:
@@ -510,58 +561,34 @@ jobs:
    install_methods:
       name: Install method smoke tests
       runs-on: ubuntu-22.04
-      needs: [release_metadata]
-      if: ${{ needs.release_metadata.outputs.is-companion != 'true' }}
+      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
       steps:
          - uses: actions/checkout@v4
-         - uses: ./.github/actions/ensure-rust-toolchain
-           with:
-              toolchain: nightly-2026-04-29
-         - uses: ./.github/actions/ensure-cmake
-         - name: Detect runner environment
-           id: detect
-           shell: bash
-           run: |
-              # $SCCACHE_BUCKET is injected only on self-hosted pods; its
-              # presence selects baked sccache + shared S3. GitHub-hosted runners
-              # (PRs) need sccache-action to export the GHA cache URL/token into the
-              # step env — a bare binary install leaves SCCACHE_GHA_ENABLED set with
-              # no cache URL, so sccache server startup fails ("cache url for ghac
-              # not found"). Mirrors the build-native action's sccache wiring.
-              if [ -n "${SCCACHE_BUCKET:-}" ]; then
-                echo "on_infra=true" >> "$GITHUB_OUTPUT"
-              else
-                echo "on_infra=false" >> "$GITHUB_OUTPUT"
-              fi
-         - name: Ensure baked sccache (self-hosted)
-           if: steps.detect.outputs.on_infra == 'true'
-           uses: ./.github/actions/ensure-sccache
-           with:
-              version: "0.15.0"
-         - name: Setup sccache (GitHub-hosted)
-           if: steps.detect.outputs.on_infra == 'false'
-           uses: mozilla-actions/sccache-action@v0.0.10
-         - name: Enable sccache for cargo
-           # Conditional backend: self-hosted runners inject a shared S3
-           # (RustFS) sccache via pod env; GitHub-hosted runners keep the GHA
-           # cache. CARGO_INCREMENTAL=0 keeps sccache from silently no-oping.
-           shell: bash
-           run: |
-              {
-                echo "RUSTC_WRAPPER=sccache"
-                echo "CARGO_INCREMENTAL=0"
-              } >> "$GITHUB_ENV"
-              if [ -n "${SCCACHE_BUCKET:-}" ]; then
-                echo "sccache backend: shared S3 ($SCCACHE_BUCKET @ $SCCACHE_ENDPOINT)"
-              else
-                echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-                echo "sccache backend: GitHub Actions cache"
-              fi
          - uses: ./.github/actions/setup-system-deps
          - uses: ./.github/actions/bun-install
+         - name: Resolve Linux x64 native artifact run
+           id: source
+           shell: bash
+           run: |
+              if [ "${{ needs.native_linux_x64.result }}" = "success" ]; then
+                echo "artifact-run-id=${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+              else
+                echo "artifact-run-id=${{ needs.native_artifact_lookup.outputs.linux-x64-run-id }}" >> "$GITHUB_OUTPUT"
+              fi
+         - name: Download native addons
+           uses: actions/download-artifact@v4
+           with:
+              pattern: pi-natives-linux-x64-*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              path: packages/natives/native
+              merge-multiple: true
+              run-id: ${{ steps.source.outputs.artifact-run-id }}
+              github-token: ${{ secrets.GITHUB_TOKEN }}
          - name: Installer security regression tests
            run: bun test scripts/install-security.test.ts
          - name: Install method smoke tests
+           env:
+              OMP_INSTALL_TEST_SKIP_NATIVE_BUILD: "1"
            run: bun run ci:test:install-methods
 
    security:

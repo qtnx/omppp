@@ -35,9 +35,13 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			openrouterRoutingPreset && openrouterRoutingPreset !== "default" ? openrouterRoutingPreset : undefined;
 		const antigravityEndpointMode = settings.get("providers.antigravityEndpoint");
 		const textVerbosity =
-			model.api === "openai-codex-responses" || model.api === "openai-responses"
-				? settings.get("textVerbosity")
-				: undefined;
+			model.api === "openai-codex-responses"
+				? settings.isConfigured("textVerbosity")
+					? settings.get("textVerbosity")
+					: undefined
+				: model.api === "openai-responses"
+					? settings.get("textVerbosity")
+					: undefined;
 		const resolvedThinkingDisplay = resolveThinkingDisplay(settings);
 		// A caller that set either thinking field owns the display decision as a unit: pi-ai lets
 		// `thinkingDisplay` win over `hideThinkingSummary`, so injecting a settings display here would
@@ -70,6 +74,7 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 				: resolvedThinkingDisplay === "omitted",
 			streamFirstEventTimeoutMs: streamOptions?.streamFirstEventTimeoutMs ?? streamFirstEventTimeoutMs,
 			streamIdleTimeoutMs: streamOptions?.streamIdleTimeoutMs ?? streamIdleTimeoutMs,
+			maxRetryDelayMs: streamOptions?.maxRetryDelayMs ?? settings.get("retry.maxDelayMs"),
 			maxInFlightRequests: validateProviderMaxInFlightRequests(
 				streamOptions?.maxInFlightRequests ?? settings.get("providers.maxInFlightRequests"),
 			),

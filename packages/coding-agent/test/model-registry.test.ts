@@ -703,7 +703,7 @@ describe("ModelRegistry", () => {
 			});
 			const fetchMock: FetchImpl = async input => {
 				const url = String(input);
-				if (url === "https://models.dev/api.json") return Response.json({});
+				if (url === "https://catalog.stencil.so/models.json.zstd") return Response.json({});
 				if (url === "https://proxy.example/v1/models") {
 					return Response.json({
 						data: [{ id: "claude-sonnet-5", display_name: "Claude Sonnet 5" }],
@@ -1175,6 +1175,7 @@ describe("ModelRegistry", () => {
 		};
 		let thinkingCustom: ModelRegistry;
 		let thinkingOverride: ModelRegistry;
+		let deepseekOverride: ModelRegistry;
 		beforeAll(() => {
 			thinkingCustom = readonlyRegistry({
 				providers: {
@@ -1189,6 +1190,21 @@ describe("ModelRegistry", () => {
 						modelOverrides: {
 							"anthropic/claude-sonnet-4": {
 								thinking: { mode: "budget", efforts: [Effort.Low, Effort.Medium] },
+							},
+						},
+					},
+				},
+			});
+			deepseekOverride = readonlyRegistry({
+				providers: {
+					openrouter: {
+						modelOverrides: {
+							"deepseek/deepseek-v4-flash-0731": {
+								thinking: {
+									mode: "effort",
+									efforts: [Effort.Max, Effort.High, Effort.Low],
+									defaultLevel: Effort.High,
+								},
 							},
 						},
 					},
@@ -1210,6 +1226,17 @@ describe("ModelRegistry", () => {
 			expect(model?.thinking).toEqual({
 				mode: "budget",
 				efforts: [Effort.Low, Effort.Medium],
+			});
+		});
+
+		test("model overrides preserve explicit OpenRouter DeepSeek thinking metadata", () => {
+			const model = getModelsForProvider(deepseekOverride, "openrouter").find(
+				m => m.id === "deepseek/deepseek-v4-flash-0731",
+			);
+			expect(model?.thinking).toEqual({
+				mode: "effort",
+				efforts: [Effort.Max, Effort.High, Effort.Low],
+				defaultLevel: Effort.High,
 			});
 		});
 	});
@@ -1960,6 +1987,7 @@ describe("ModelRegistry", () => {
 		let vertexStale: ModelRegistry;
 		let litellmStaleNamespaceCache: ModelRegistry;
 		let litellmCurrentNamespaceCache: ModelRegistry;
+		let openaiModelsListStaleNamespaceCache: ModelRegistry;
 		const vertexProjectModel = () =>
 			buildModel({
 				id: "zai-org/glm-4.7-maas",
@@ -2225,7 +2253,7 @@ describe("ModelRegistry", () => {
 				{
 					seedCache: dbPath =>
 						writeModelCache(
-							"cached-compact-proxy:openai-models-list-context-v2",
+							"cached-compact-proxy:openai-models-list-context-v3",
 							Date.now(),
 							[
 								buildModel({
@@ -2295,6 +2323,45 @@ describe("ModelRegistry", () => {
 						dbPath,
 					),
 			});
+			openaiModelsListStaleNamespaceCache = readonlyRegistry(
+				{
+					providers: {
+						"stale-openai-proxy": {
+							baseUrl: "https://stale-proxy.example.com/v1",
+							apiKey: "TEST_KEY",
+							api: "openai-completions",
+							discovery: { type: "openai-models-list" },
+							models: [],
+						},
+					},
+				},
+				{
+					// Row under the retired pre-modality namespace; the context-v3
+					// bump must orphan it instead of serving the stale text-only row.
+					seedCache: dbPath =>
+						writeModelCache(
+							"stale-openai-proxy:openai-models-list-context-v2",
+							Date.now(),
+							[
+								buildModel({
+									id: "stale-vlm",
+									name: "Stale VLM",
+									api: "openai-completions",
+									provider: "stale-openai-proxy",
+									baseUrl: "https://stale-proxy.example.com/v1",
+									reasoning: false,
+									input: ["text"],
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+									contextWindow: 128_000,
+									maxTokens: 16_384,
+								}),
+							],
+							true,
+							"",
+							dbPath,
+						),
+				},
+			);
 		});
 
 		test("legacy cached discovery sentinels are ignored after nullable limit cutover", () => {
@@ -2378,6 +2445,13 @@ describe("ModelRegistry", () => {
 			const model = litellmCurrentNamespaceCache.find("litellm-proxy", "minimax/minimax-m3");
 			expect(model?.name).toBe("MiniMax-M3");
 			expect(model?.provider).toBe("litellm-proxy");
+		});
+
+		test("ignores openai-models-list rows cached under the retired context-v2 namespace", () => {
+			// PR #7584 added server-advertised input-modality parsing; warm v2 rows
+			// pinned vision-capable ids at text-only and must not load.
+			expect(openaiModelsListStaleNamespaceCache.find("stale-openai-proxy", "stale-vlm")).toBeUndefined();
+			expect(getModelsForProvider(openaiModelsListStaleNamespaceCache, "stale-openai-proxy")).toHaveLength(0);
 		});
 
 		test("replaces bundled google-vertex models with authoritative Vertex project discovery", () => {

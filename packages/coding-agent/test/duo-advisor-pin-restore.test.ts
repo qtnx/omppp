@@ -121,7 +121,7 @@ describe("AgentSession duo advisor pin restore", () => {
 
 	function createSessionManager(): SessionManager {
 		tempDir = TempDir.createSync("@pi-duo-advisor-pin-");
-		return SessionManager.inMemory(tempDir.path());
+		return SessionManager.create(tempDir.path(), tempDir.path());
 	}
 
 	function appendSnapshot(sessionManager: SessionManager, snapshot: DuoSnapshotDetails): void {
@@ -143,8 +143,9 @@ describe("AgentSession duo advisor pin restore", () => {
 	}
 
 	it("persists the duo advisor pin and restores it on the next session", async () => {
-		const sessionManager = createSessionManager();
+		let sessionManager = createSessionManager();
 		appendSnapshot(sessionManager, activeSnapshot("planning"));
+		await sessionManager.ensureOnDisk();
 
 		const first = createSession({ sessionManager, initialModel: plannerModel });
 		const persisted = latestDuoSnapshot(sessionManager);
@@ -152,8 +153,11 @@ describe("AgentSession duo advisor pin restore", () => {
 		expect(persisted?.duoOwnsAdvisor).toBe(true);
 		expect(advisorModelId(first)).toBe(plannerId);
 
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected persisted session file");
 		await first.dispose();
 		sessions = sessions.filter(session => session !== first);
+		sessionManager = await SessionManager.open(sessionFile);
 
 		const restored = createSession({ sessionManager, initialModel: plannerModel });
 		expect(advisorModelId(restored)).toBe(plannerId);
