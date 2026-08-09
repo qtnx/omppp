@@ -274,12 +274,15 @@ export type TaskEffort = (typeof TASK_EFFORTS)[number];
 
 /**
  * Maps a coarse task effort onto the model's supported thinking range:
- * `lo` = lowest supported level, `hi` = highest (whatever the model tops out
- * at — high, xhigh, or max), `med` = the middle (lower of the two middles for
- * an even-sized range). Without a model, maps over the full canonical range.
- * Returns `undefined` when the model has no controllable effort surface, so
- * callers fall back to their default selector (e.g. `auto`). Throws when the
- * configured ceiling is below the model's lowest supported effort.
+ * `lo` = lowest supported level, `med` = the middle (lower of the two middles
+ * for an even-sized range), `hi` = the highest level a coarse selector may
+ * reach. {@link Effort.Max} is reserved for an explicit human selection (same
+ * rule {@link resolveProvisionalAutoLevel} applies to `auto`), so on a model
+ * that tops out at `max` a spawn-time `hi` resolves to the level below it.
+ * Without a model, maps over the full canonical range. Returns `undefined`
+ * when the model has no controllable effort surface, so callers fall back to
+ * their default selector (e.g. `auto`). Throws when the configured ceiling is
+ * below the model's lowest supported effort.
  */
 export function resolveTaskEffortLevel(
 	model: Model | undefined,
@@ -296,9 +299,14 @@ export function resolveTaskEffortLevel(
 		case "med":
 			resolved = supported[(supported.length - 1) >> 1];
 			break;
-		case "hi":
-			resolved = supported[supported.length - 1];
+		case "hi": {
+			// `max` is reserved for an explicit human selection, so a coarse `hi`
+			// stops one level below it. The `task.maxEffort` ceiling below still
+			// applies to whatever this resolves to.
+			const top = supported[supported.length - 1];
+			resolved = top !== Effort.Max ? top : (supported[supported.length - 2] ?? top);
 			break;
+		}
 	}
 	if (maxEffort === undefined) return resolved;
 	const maxIndex = THINKING_EFFORTS.indexOf(maxEffort);

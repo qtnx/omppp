@@ -581,4 +581,22 @@ describe("structured subagent primitive", () => {
 		expect(await fs.stat(artifactsDir ?? "")).toBeDefined();
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
+	it("marks only settings-sourced agent model selectors as human configuration", async () => {
+		const configuredSession = session();
+		configuredSession.settings.set("task.agentModelOverrides", {
+			worker: "openai-codex/gpt-5.6-terra:high",
+		});
+		mockDiscovery();
+
+		const configuredPolicy = await resolveEffectiveSubagentPolicy(request({ session: configuredSession }));
+		const callerModelPolicy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: configuredSession,
+				model: "openai-codex/gpt-5.6-terra:high",
+			}),
+		);
+
+		expect(configuredPolicy.modelOverrideFromUserConfig).toBe(true);
+		expect(callerModelPolicy.modelOverrideFromUserConfig).toBe(false);
+	});
 });

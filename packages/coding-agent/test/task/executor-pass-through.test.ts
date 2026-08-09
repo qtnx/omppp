@@ -299,7 +299,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(spy).not.toHaveBeenCalled();
 	});
 
-	it("preserves the model's full effort range by default", async () => {
+	it("does not clamp a coarse spawn effort when task.maxEffort is unset", async () => {
 		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
 		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
 		const settings = Settings.isolated();
@@ -317,7 +317,11 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		});
 
 		expect(result.exitCode).toBe(0);
-		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Max);
+		// No `task.maxEffort` is configured, so the ceiling must not clamp: `hi`
+		// reaches the top level a coarse selector may reach. `max` stays reserved
+		// for an explicit human selection (see executor-effort-precedence.test.ts),
+		// so on a model that tops out at `max` that top is `xhigh`.
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.XHigh);
 	});
 
 	it("resolves an explicit task-role effort suffix over the agent-definition default", async () => {

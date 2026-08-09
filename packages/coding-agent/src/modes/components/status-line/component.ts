@@ -1128,7 +1128,10 @@ export class StatusLineComponent implements Component {
 						this.#cachedPrFetchedAt = Date.now();
 					}
 				} catch (error) {
-					if (error instanceof Error && error.message === "Settings not initialized. Call Settings.init() first.") {
+					if (
+						error instanceof Error &&
+						error.message === "Settings not initialized. Call Settings.init() first."
+					) {
 						error.stack = `${error.stack}\n${lookupLaunchStack}`;
 					}
 					throw error;

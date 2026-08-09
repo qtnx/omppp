@@ -458,8 +458,15 @@ export interface ExecutorOptions {
 	 */
 	parentActiveModelPattern?: string;
 	thinkingLevel?: ConfiguredThinkingLevel;
-	/** Caller-requested coarse effort (`lo`/`med`/`hi`); maps onto the resolved model's supported thinking range and wins over {@link thinkingLevel}. */
+	/** Caller-requested coarse effort (`lo`/`med`/`hi`); maps onto the resolved model's supported thinking range and wins over {@link thinkingLevel}. Loses to an explicit `:level` carried by a {@link modelSelectorFromUserConfig} selector. */
 	effort?: TaskEffort;
+	/**
+	 * {@link modelOverride} came from human configuration (`task.agentModelOverrides`)
+	 * rather than from the spawning model's own per-spawn `model` argument. An
+	 * explicit `:level` on such a selector is a deliberate config choice, so it
+	 * outranks the caller's coarse {@link effort} hint.
+	 */
+	modelSelectorFromUserConfig?: boolean;
 	/** Schema used to validate the final structured completion. */
 	outputSchema?: unknown;
 	/** Enforcement policy for {@link outputSchema}; defaults to legacy permissive behavior. */
@@ -3312,11 +3319,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// supported range, then respects the operator-configured ceiling.
 			// Undefined (no effort, or no controllable effort surface) falls
 			// through to the normal selectors below.
+			// A human-configured selector (`task.agentModelOverrides`) that pins an
+			// explicit `:level` wins over the coarse hint — otherwise every
+			// `effort: "hi"` spawn silently overrode the user's configured level.
 			// The ceiling outlives initial resolution: it rides into the session so
 			// retry-fallback recovery can never clamp effort back up past it.
-			const spawnEffortCeiling = options.effort !== undefined ? settings.get("task.maxEffort") : undefined;
+			const configuredLevelWins = options.modelSelectorFromUserConfig === true && explicitThinkingLevel;
+			const spawnEffortCeiling =
+				options.effort !== undefined && !configuredLevelWins ? settings.get("task.maxEffort") : undefined;
 			const effortLevel =
-				options.effort !== undefined
+				options.effort !== undefined && !configuredLevelWins
 					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
 					: undefined;
 			if (model) {
@@ -3326,9 +3338,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						? formatModelSelectorValue(formatModelStringWithRouting(model), displayLevel)
 						: formatModelStringWithRouting(model);
 			}
-			// Precedence: caller `effort` > explicit `:level` suffix on the resolved
-			// model pattern > agent-definition default (e.g. task's `auto`) >
-			// pattern-derived level.
+			// Precedence: explicit `:level` from user config > caller `effort` >
+			// explicit `:level` suffix on the resolved model pattern >
+			// agent-definition default (e.g. task's `auto`) > pattern-derived level.
 			const effectiveThinkingLevel =
 				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? resolvedThinkingLevel));
 			resolvedAt = performance.now();
