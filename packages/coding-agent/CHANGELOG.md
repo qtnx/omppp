@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a `providers.xaiImageModel` setting (Settings › Providers › Services › "xAI Image Model") that picks the Grok Imagine model `generate_image` uses when it resolves to the xAI provider: `grok-imagine-image` (default, standard tier) or `grok-imagine-image-quality` — the API id of xAI's Imagine Image 2.0 / Quality Mode. Previously the model was hardcoded to `grok-imagine-image`, so the quality tier was unreachable. Note there is no `grok-imagine-image-2` model id; that string 404s against `api.x.ai`.
+
 ## [1.7.0] - 2026-08-09
 
 ### Added
