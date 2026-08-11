@@ -33,7 +33,7 @@ export type HerdrEntrypointState =
 	| "linked"
 	/** Nothing occupies `<dir>/omp`. */
 	| "missing"
-	/** Something else already owns `<dir>/omp`. */
+	/** Something else already owns `<dir>/omp`, or the link dangles. */
 	| "conflict";
 
 export interface HerdrEntrypointStatus {
@@ -102,7 +102,13 @@ async function describe(options: HerdrEntrypointOptions): Promise<HerdrEntrypoin
 		existingTarget = await fs.realpath(linkPath);
 	} catch (error) {
 		if (!isEnoent(error)) throw error;
-		return { target, linkPath, state: "missing", shadowedBy };
+		// A dangling link still occupies the path, so `fs.symlink` would fail
+		// with EEXIST. Report it as a conflict instead of "missing" so `--force`
+		// can repoint it — this is exactly the shape left behind when the ompx
+		// binary moves to a different directory.
+		const danglingTarget = await fs.readlink(linkPath).catch(() => undefined);
+		if (danglingTarget === undefined) return { target, linkPath, state: "missing", shadowedBy };
+		return { target, linkPath, state: "conflict", existingTarget: danglingTarget, shadowedBy };
 	}
 	const linked = existingTarget === (await fs.realpath(target).catch(() => target));
 	return { target, linkPath, state: linked ? "linked" : "conflict", existingTarget, shadowedBy };
