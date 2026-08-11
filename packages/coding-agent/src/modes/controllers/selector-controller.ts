@@ -74,6 +74,7 @@ import {
 	setExcludedSearchProviders,
 	setImageProviderOrder,
 	setSearchProviderOrder,
+	setXaiImageModel,
 	type ToolSession,
 } from "../../tools";
 import { AskTool, type AskToolDetails, type AskToolInput } from "../../tools/ask";
@@ -696,6 +697,9 @@ export class SelectorController {
 				if (Array.isArray(value)) {
 					setImageProviderOrder(value.filter((entry): entry is string => typeof entry === "string"));
 				}
+				break;
+			case "providers.xaiImageModel":
+				setXaiImageModel(value);
 				break;
 
 			// MCP update injection - live subscribe/unsubscribe

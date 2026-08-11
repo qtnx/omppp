@@ -27,7 +27,12 @@ import {
 	TINY_TITLE_MODEL_OPTIONS,
 	TINY_TITLE_MODEL_VALUES,
 } from "../tiny/models";
-import { IMAGE_PROVIDER_CHOICES, type ImageProvider } from "../tools/image-providers";
+import {
+	DEFAULT_XAI_IMAGE_MODEL,
+	IMAGE_PROVIDER_CHOICES,
+	type ImageProvider,
+	XAI_IMAGE_MODEL_CHOICES,
+} from "../tools/image-providers";
 import {
 	DEFAULT_TTS_LOCAL_MODEL_KEY,
 	DEFAULT_TTS_VOICE,
@@ -5964,6 +5969,19 @@ export const SETTINGS_SCHEMA = {
 				"Prioritized providers for image generation; unlisted providers fall back to a connected Codex subscription, then the active session provider, then the built-in order",
 			options: IMAGE_PROVIDER_CHOICES,
 			ordered: true,
+		},
+	},
+	"providers.xaiImageModel": {
+		type: "enum",
+		values: ["grok-imagine-image", "grok-imagine-image-quality"] as const,
+		default: DEFAULT_XAI_IMAGE_MODEL,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "xAI Image Model",
+			description:
+				"Grok Imagine model used when image generation resolves to the xAI provider. Quality is the API id of xAI's Imagine Image 2.0 (Quality Mode) and costs more per image.",
+			options: XAI_IMAGE_MODEL_CHOICES,
 		},
 	},
 	"providers.fireworksTier": {
