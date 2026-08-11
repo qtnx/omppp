@@ -1,6 +1,6 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import handoffDescription from "../prompts/tools/duo-handoff.md" with { type: "text" };
 import { ToolError } from "../tools/tool-errors";
 import type { DuoHandoffResult } from "./controller";

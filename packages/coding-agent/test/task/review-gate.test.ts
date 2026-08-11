@@ -163,6 +163,7 @@ function createScriptedSession(script: RoleScript): AgentSession {
 			});
 		},
 		waitForIdle: async () => {},
+		setIrcWakeTurnObserver: () => {},
 		getLastAssistantMessage: () => state.messages[state.messages.length - 1],
 		abort: async () => {},
 		dispose: async () => {},

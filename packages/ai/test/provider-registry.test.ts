@@ -51,6 +51,7 @@ describe("provider registry auth surface", () => {
 		Bun.env.TNX_API_KEY = "tnx-env";
 		expect(getEnvApiKey("tnx")).toBe("tnx-env");
 		// Legacy search-tool key preserved (not a registry provider def).
+		// Exa is derived from the provider registry's `envKeys` definition.
 		expect(getEnvApiKey("exa")).toBe("exa-env");
 	});
 
@@ -68,6 +69,7 @@ describe("provider registry auth surface", () => {
 		const ids = getOAuthProviders().map(provider => provider.id);
 		expect(ids).toContain("zenmux");
 		expect(ids).toContain("kagi");
+		expect(ids).toContain("exa");
 		expect(ids).toContain("umans");
 		expect(ids).toContain("llama.cpp");
 		// openai has no interactive login flow.

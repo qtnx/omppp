@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -8,7 +9,6 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import { getKanbanModelApi } from "../kanban";
 import type { ToolSession } from "../tools";
 import type { OutputMeta } from "../tools/output-meta";

@@ -34,7 +34,7 @@ type TelegramBotClientOptions = {
 type ErrorOptions = Omit<TelegramApiFailure, "name">;
 
 export class TelegramApiError extends Error implements TelegramApiFailure {
-	readonly name = "TelegramApiError" as const;
+	override readonly name = "TelegramApiError" as const;
 	readonly method: TelegramMethod;
 	readonly httpStatus?: number;
 	readonly errorCode?: number;

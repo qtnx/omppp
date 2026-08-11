@@ -47,7 +47,7 @@ export class WorkflowHubOverlayComponent extends Container {
 		this.#ageTimer.unref?.();
 	}
 
-	dispose(): void {
+	override dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		clearInterval(this.#ageTimer);

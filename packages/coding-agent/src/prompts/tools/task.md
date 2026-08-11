@@ -17,28 +17,30 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 {{#when MAX_CONCURRENCY ">" 0}}
 - **Concurrency cap:** At most {{pluralize MAX_CONCURRENCY "subagent" "subagents"}} run at once in this session — anything beyond that just queues, so a {{#if batchEnabled}}`tasks[]` batch{{else}}set of parallel `task` calls{{/if}} larger than {{MAX_CONCURRENCY}} only delays results. Keep the fan-out at or under the cap.
 {{/when}}
-- **Agent typing:** Choose each item's `agent` type first. Read-only research MUST use `scout`, which is optimized for rapid discovery. Use `explore` for broader codebase research and the default worker only when no listed specialist fits.
-- **Sequence only when necessary:** The only reason to run A before B is if B strictly requires A's output to function (e.g., a core API contract or schema migration). {{#if ircEnabled}}If the missing piece is small, run them in parallel and have B ask A via `irc`!{{/if}}
-{{#if ircEnabled}}- **Steering delivery:** Parent-to-subagent IRC is delivered immediately as steering; subagents blocked in `job poll` / `irc wait` do not need to poll separately for it.{{/if}}
+- **Agent typing:** Choose each item's `agent` type first. Read-only research MUST use {{#if scoutAvailable}}`scout`, which is optimized for rapid discovery{{else}}an available read-only agent{{/if}}. Use `explore` for broader codebase research and the default worker only when no listed specialist fits.
+- **Sequence only when necessary:** Run A before B only when B strictly requires A's output;{{#if ircEnabled}} if the missing piece is small, run them in parallel and have B ask A via `irc`.{{/if}}
+{{#if ircEnabled}}- **Steering delivery:** Parent-to-subagent IRC is delivered immediately as steering; subagents blocked in `job poll` / `irc wait` do not need to poll separately.{{/if}}
 - **Role matching:** Assign each subagent a specific `role` (e.g. "Security Reviewer", "DB Migrator"). Do not spawn generic workers.
-- **No overhead:** Each assignment MUST instruct its agent to skip formatters, linters, and project-wide test suites. You will run those once at the end.
-- **Brief so they never re-scout:** Every assignment carries the exact `file:line`/`file:symbol` anchors and the decisive code pasted inline, so the owner's FIRST action is an edit, not a search. An owner rediscovering what you already know is a defect in your brief, not diligence.
-- **Fast exit:** State explicitly that the owner yields the moment Acceptance passes — no extra polish, no unrequested gates, no broadened scope.
-- **One-pass agents:** Prefer agents that investigate **and** edit in a single pass; only spin a read-only discovery step (e.g. `scout`) when the affected files are genuinely unknown.
+- **No overhead:** Each assignment MUST instruct its agent to skip formatters, linters, and project-wide test suites. You run those once at the end.
+- **Brief so they never re-discover:** Every assignment carries the exact `file:line`/`file:symbol` anchors and decisive code inline, so the owner's FIRST action is an edit, not a search.
+- **Fast exit:** State explicitly that the owner yields the moment Acceptance passes — no extra polish, unrequested gates, or broadened scope.
+- **One-pass agents:** Prefer agents that investigate AND edit in one pass;{{#if scoutAvailable}} spin a read-only `scout` only{{else}} use an available read-only agent only{{/if}} when the affected files are genuinely unknown.
+- **Overlap is safe:** Concurrent edits to the same files auto-resolve{{#if ircEnabled}}; agents coordinate directly over IRC when needed{{/if}}. NEVER shrink or serialize a batch to avoid file overlap. Every task MUST skip project-wide validation (build/lint/tests), and cross-task contracts MUST be stated in the {{#if batchEnabled}}batch `context`{{else}}task{{/if}} before dispatch.
 
 # Inputs
-- `agent` (optional): The base agent type to use (e.g., `scout`, `plan`, `reviewer`). Defaults to `{{defaultAgent}}`{{#if defaultAgentIsGeneric}} (the general-purpose worker){{/if}} — omit it for the default worker instead of passing `agent: "{{defaultAgent}}"`.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
+- `agent` (optional): The base agent type to use (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`plan`, `reviewer`). Defaults to `{{defaultAgent}}`{{#if defaultAgentIsGeneric}} (the general-purpose worker){{/if}} — omit it for the default worker instead of passing `agent: "{{defaultAgent}}"`.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
 {{#if batchEnabled}}
 - `context`: Shared project state, constraints, and contracts. Applies to the entire batch; do not duplicate this background into individual tasks. REQUIRED, session-specific only.
 - `tasks[]`: Array of subagents to spawn.
   - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
-  - `agent`: The agent type running this item (e.g. `scout`, `reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
+  - `agent`: The agent type running this item (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
   - `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
   - `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
-  - `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
+{{#if effortEnabled}}  - `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
+{{/if}}
   - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
   - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
-  - `max_runtime_seconds`: You MUST choose an appropriate cap for each implementation/research spawn. Recommended: `quick_task` 300, `explore`/`scout` 600, `task` 900, `heavy_task` 2400. The cap is a ceiling, not a target — a well-briefed owner finishes far inside it. Omit to use configured fallback; `0` means unlimited.
+  - `max_runtime_seconds`: You MUST choose an appropriate cap for each implementation/research spawn. Recommended: `quick_task` 300, `explore`{{#if scoutAvailable}}/`scout`{{/if}} 600, `task` 900, `heavy_task` 2400. The cap is a ceiling, not a target — a well-briefed owner finishes far inside it. Omit to use configured fallback; `0` means unlimited.
   - `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
   - Legacy runtime aliases: `assignment`, `id`, `description`, and `role` remain accepted for compatibility.
 {{#if isolationEnabled}}
@@ -50,13 +52,14 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 {{/if}}
 {{else}}
 - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
-- `agent`: The agent type to spawn (e.g. `scout`, `reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
+- `agent`: The agent type to spawn (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
 - `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
 - `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
-- `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
+{{#if effortEnabled}}- `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
+{{/if}}
 - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
 - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
-- `max_runtime_seconds`: You MUST choose an appropriate cap for implementation/research work. Recommended: `quick_task` 300, `explore`/`scout` 600, `task` 900, `heavy_task` 2400. The cap is a ceiling, not a target — a well-briefed owner finishes far inside it. Omit to use configured fallback; `0` means unlimited.
+- `max_runtime_seconds`: You MUST choose an appropriate cap for implementation/research work. Recommended: `quick_task` 300, `explore`{{#if scoutAvailable}}/`scout`{{/if}} 600, `task` 900, `heavy_task` 2400. The cap is a ceiling, not a target — a well-briefed owner finishes far inside it. Omit to use configured fallback; `0` means unlimited.
 - `self_review`: boolean, default false. `true` runs the automatic reviewer+fixer pass for this spawn.
 - Legacy runtime aliases: `assignment`, `id`, `description`, and `role` remain accepted for compatibility.
 {{#if isolationEnabled}}
@@ -105,7 +108,7 @@ The `assignment` field MUST follow this format:
 - Forbidden: other owners' files, generated files, lockfiles, and unrelated cleanup.
 - Non-goals: task-specific exclusions; batch exclusions stay in `context`.
 
-# Pointers (no re-scouting)
+# Pointers (no rediscovery)
 - Exact anchors: `path:line` or `path:symbol` for every edit site, plus the `file:symbol` pattern to mirror.
 - Paste the decisive code inline — the current shape, and the intended shape when you already know it.
 - Name what NOT to read. The owner reads the listed files plus their direct dependencies, nothing else.
@@ -202,7 +205,7 @@ RIGHT:
 Agent spawning is currently disabled.
 {{else}}
 Prefer delegating implementation here. Decompose the work into the smallest independent units, dispatch each to the most fitting agent, and run disjoint units in parallel. Specialist routing comes before generic implementer tiers:
-- Read-only scouting / fast codebase discovery → `scout`; broader exploratory research → `explore`.
+- Read-only codebase research / fast discovery → {{#if scoutAvailable}}`scout`; broader exploratory research → `explore`.{{else}}an available read-only specialist; broader exploratory research → `explore`.{{/if}}
 - Architecture / work breakdown → `plan`.
 - UI/UX/frontend/design/visual tasks → `designer` as the stable default design lead.
 - Frontend/UI implementation or build tasks → `frontend_ui`.

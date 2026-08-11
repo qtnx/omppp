@@ -193,6 +193,7 @@ function createAgentSessionHarness(
 		getBranch: () => branchEntries,
 		getEntries: () => branchEntries,
 		getSessionFile: () => undefined,
+		getCredentialPins: () => [],
 		appendMessage: (message: AgentMessage) => {
 			branchEntries.push({
 				type: "message",

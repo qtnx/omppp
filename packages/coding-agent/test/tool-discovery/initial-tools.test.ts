@@ -30,6 +30,7 @@ const allToolsSettings = Settings.isolated({
 	"checkpoint.enabled": true,
 	"todo.enabled": true,
 	"memory.backend": "mnemopi",
+	"security.enabled": true,
 	"autolearn.enabled": true,
 	"learning.enabled": true,
 	"tools.discoveryMode": "all",

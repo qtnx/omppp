@@ -5,7 +5,8 @@
  * {@link Effort}, clamped into the active model's supported range (never below
  * {@link Effort.Low}). Two backends, selected by `providers.autoThinkingModel`:
  *
- * - `online` (default): a smol model classifies into `low|medium|high|xhigh|max`.
+ * - `online` (default): a smol model classifies into `low|medium|high|xhigh`,
+ *   plus `max` when the target model exposes that tier.
  * - a local key: an on-device memory model classifies into the coarser
  *   `trivial|moderate|hard|maximum` scheme (4-class is more reliable than a
  *   full ordinal scale on sub-2B models), mapped to `low|high|xhigh|max`.
@@ -14,6 +15,7 @@
  * the caller falls back to a concrete level and continues the turn.
  */
 import { type AssistantMessage, completeSimple, Effort, type Model } from "@oh-my-pi/pi-ai";
+import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { prompt } from "@oh-my-pi/pi-utils";
 
 import type { ModelRegistry } from "../config/model-registry";
@@ -30,7 +32,31 @@ import {
 } from "../tiny/models";
 import { tinyModelClient } from "../tiny/title-client";
 
-const DIFFICULTY_SYSTEM_PROMPT = prompt.render(difficultySystemPrompt);
+/**
+ * Rendered classifier prompts, keyed by whether `max` is offered as a label.
+ * Two variants only, so both are memoized on first use.
+ */
+const DIFFICULTY_SYSTEM_PROMPTS: Partial<Record<"max" | "xhigh", string>> = {};
+
+/**
+ * Highest effort this turn's classification may resolve to: the configured
+ * ceiling, further limited by what the target model actually exposes. The
+ * default keeps `auto` one tier below the top, so only an explicit
+ * `ultrathink` reaches {@link Effort.Max}.
+ */
+function autoEffortCeiling(deps: ClassifyDifficultyDeps): Effort {
+	if (deps.settings.get("providers.autoThinkingMaxEffort") !== Effort.Max) return Effort.XHigh;
+	return getSupportedEfforts(deps.model).includes(Effort.Max) ? Effort.Max : Effort.XHigh;
+}
+
+function difficultySystemPromptFor(ceiling: Effort): string {
+	const key = ceiling === Effort.Max ? "max" : "xhigh";
+	const cached = DIFFICULTY_SYSTEM_PROMPTS[key];
+	if (cached !== undefined) return cached;
+	const rendered = prompt.render(difficultySystemPrompt, { allowMax: key === "max" });
+	DIFFICULTY_SYSTEM_PROMPTS[key] = rendered;
+	return rendered;
+}
 
 /** Local classifiers occasionally need more room for chat-template boilerplate. */
 const LOCAL_ANSWER_MAX_TOKENS = 16;
@@ -64,14 +90,18 @@ export async function classifyDifficulty(
 ): Promise<Effort | undefined> {
 	const backend = deps.settings.get("providers.autoThinkingModel");
 	const input = preprocessTinyMessage(promptText);
-	const effort =
-		backend === ONLINE_AUTO_THINKING_MODEL_KEY
-			? await classifyOnline(input, deps)
-			: await classifyLocal(input, backend, deps);
-	return clampAutoThinkingEffort(deps.model, effort);
+	const online = backend === ONLINE_AUTO_THINKING_MODEL_KEY;
+	// The 3-bucket local classifier cannot select `max`, so its ceiling stays at
+	// XHigh whatever the setting says — otherwise a sparse ladder would snap its
+	// `hard` bucket up to a tier it never chose.
+	const ceiling = online ? autoEffortCeiling(deps) : Effort.XHigh;
+	const effort = online ? await classifyOnline(input, deps, ceiling) : await classifyLocal(input, backend, deps);
+	// The ceiling goes into the clamp itself: capping the request alone is not
+	// enough, because a sparse ladder snaps an excluded request back up.
+	return clampAutoThinkingEffort(deps.model, effort, ceiling);
 }
 
-async function classifyOnline(input: string, deps: ClassifyDifficultyDeps): Promise<Effort> {
+async function classifyOnline(input: string, deps: ClassifyDifficultyDeps, ceiling: Effort): Promise<Effort> {
 	const resolved = resolveRoleSelection(["tiny", "smol"], deps.settings, deps.registry.getAvailable());
 	const model = resolved?.model;
 	if (!model) {
@@ -88,7 +118,7 @@ async function classifyOnline(input: string, deps: ClassifyDifficultyDeps): Prom
 	const response = await completeSimple(
 		model,
 		{
-			systemPrompt: [DIFFICULTY_SYSTEM_PROMPT],
+			systemPrompt: [difficultySystemPromptFor(ceiling)],
 			messages: [{ role: "user", content: input, timestamp: Date.now() }],
 		},
 		{

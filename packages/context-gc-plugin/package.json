@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/context-gc-plugin",
-	"version": "1.6.9",
+	"version": "1.7.0",
 	"description": "Durable context unloading extension for omp",
 	"homepage": "https://omp.sh",
 	"author": "Can Boluk",
@@ -21,10 +21,10 @@
 		"fmt": "biome format --write ."
 	},
 	"dependencies": {
+		"@oh-my-pi/omptype": "catalog:",
 		"@oh-my-pi/pi-agent-core": "workspace:*",
 		"@oh-my-pi/pi-ai": "workspace:*",
-		"@oh-my-pi/pi-utils": "workspace:*",
-		"zod": "catalog:"
+		"@oh-my-pi/pi-utils": "workspace:*"
 	},
 	"devDependencies": {
 		"@oh-my-pi/pi-coding-agent": "workspace:*",

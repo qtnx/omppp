@@ -1,6 +1,6 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { isEnoent } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import readAdvisorStateDescription from "../prompts/tools/advisor-read-state.md" with { type: "text" };
 import updateAdvisorStateDescription from "../prompts/tools/advisor-update-state.md" with { type: "text" };

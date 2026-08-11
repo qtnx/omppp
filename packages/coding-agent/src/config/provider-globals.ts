@@ -1,10 +1,11 @@
-import { setImageProviderOrder } from "../tools/image-gen";
+import { setImageProviderOrder, setXaiImageModel } from "../tools/image-gen";
 import * as webSearch from "../web/search";
 
 interface ProviderGlobalSettings {
 	get(path: "providers.webSearchOrder"): unknown;
 	get(path: "providers.webSearchExclude"): unknown;
 	get(path: "providers.imageOrder"): unknown;
+	get(path: "providers.xaiImageModel"): unknown;
 }
 
 export function applyProviderGlobalsFromSettings(settings: ProviderGlobalSettings): void {
@@ -22,4 +23,6 @@ export function applyProviderGlobalsFromSettings(settings: ProviderGlobalSetting
 	if (Array.isArray(orderedImageProviders)) {
 		setImageProviderOrder(orderedImageProviders.filter((entry): entry is string => typeof entry === "string"));
 	}
+
+	setXaiImageModel(settings.get("providers.xaiImageModel"));
 }

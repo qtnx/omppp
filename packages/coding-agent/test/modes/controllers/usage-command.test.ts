@@ -64,6 +64,7 @@ describe("CommandController /usage", () => {
 			session: createUsageSessionDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
+			presentCommandOutput: present,
 			showWarning: vi.fn(),
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;
@@ -103,6 +104,7 @@ describe("CommandController /usage", () => {
 			session: createUsageSessionDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
+			presentCommandOutput: present,
 			showWarning: vi.fn(),
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;
@@ -152,6 +154,7 @@ describe("CommandController /usage", () => {
 			session: createUsageSessionDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
+			presentCommandOutput: present,
 			showWarning: vi.fn(),
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;
@@ -195,6 +198,7 @@ describe("CommandController /usage", () => {
 			},
 			ui: { terminal: { columns: 100 } },
 			present,
+			presentCommandOutput: present,
 			showWarning: vi.fn(),
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;
@@ -226,6 +230,7 @@ describe("CommandController /usage", () => {
 			},
 			ui: { terminal: { columns: 100 } },
 			present: vi.fn(),
+			presentCommandOutput: vi.fn(),
 			showWarning: vi.fn(),
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;
@@ -258,6 +263,7 @@ describe("CommandController /usage", () => {
 			session: createUsageSessionDouble(),
 			ui: { terminal: { columns: 100 } },
 			present: vi.fn((component: unknown) => presented.push(component)),
+			presentCommandOutput: vi.fn((component: unknown) => presented.push(component)),
 			showWarning: vi.fn(),
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;
@@ -295,6 +301,7 @@ describe("CommandController /usage", () => {
 				removeChild,
 			},
 			present: vi.fn((component: unknown) => presented.push(component)),
+			presentCommandOutput: vi.fn((component: unknown) => presented.push(component)),
 			showWarning: vi.fn(),
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;
@@ -333,6 +340,10 @@ describe("CommandController /usage", () => {
 			ui: { terminal: { columns: 100 }, requestRender: vi.fn() },
 			chatContainer: transcript,
 			present: vi.fn((component: Component) => {
+				usagePanel = component;
+				transcript.addChild(component);
+			}),
+			presentCommandOutput: vi.fn((component: Component) => {
 				usagePanel = component;
 				transcript.addChild(component);
 			}),

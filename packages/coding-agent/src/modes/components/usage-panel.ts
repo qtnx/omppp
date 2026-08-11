@@ -28,7 +28,7 @@ export class UsagePanel extends Container {
 		return rows;
 	}
 
-	setNativeScrollbackCommittedRows(rows: number): void {
+	override setNativeScrollbackCommittedRows(rows: number): void {
 		const previousCommittedRows = this.#committedRows;
 		this.#committedRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
 		if (this.#lastRenderedRows.length === 0 || this.#committedRows <= previousCommittedRows) return;

@@ -61,7 +61,7 @@ OMP_NATIVE_HERDR_AGENT_STATE=0
 
 ### `omp`-named entrypoint
 
-Herdr's `omp` kind validates the pane's **foreground process name**, not the agent label reported over the socket. `process.title` cannot satisfy it: Bun's setter changes only the JS-visible value, leaving `/proc/<pid>/comm` and the cmdline as `ompx` (verified — `bun -e 'process.title="omp"'` leaves `comm=bun`). What the kernel does honour is the name the binary was exec'd through, so ompx ships an opt-in `omp`-named symlink beside the installed executable:
+Herdr's `omp` kind validates the pane's **foreground process name** (`argv[0]` / cmdline — see the `process-info` output below), not the agent label reported over the socket. `process.title` cannot satisfy it: Bun's setter changes only the JS-visible value, leaving `/proc/<pid>/comm` and the cmdline as `ompx` (verified — `bun -e 'process.title="omp"'` leaves `comm=bun`). What the kernel does honour is the name the binary was exec'd through, so ompx ships an opt-in `omp`-named symlink beside the installed executable:
 
 ```sh
 ompx herdr status      # show the entrypoint state, plus any shadowing shell alias
@@ -72,6 +72,8 @@ ompx herdr uninstall   # remove it again (only when it points at ompx)
 It is opt-in because the `omp` name is shared with upstream `omp`; `install` refuses to clobber an unrelated binary unless `--force` is passed.
 
 A shell `alias omp=ompx` **defeats this**: an interactive shell expands the alias before the PATH lookup, so `herdr agent start --kind omp` launches `ompx` again and `comm` reverts to `ompx`. `ompx herdr status` scans `~/.zshrc`, `~/.bashrc`, `~/.bash_profile` and `~/.profile` and warns when it finds one. Remove the alias and let the entrypoint resolve.
+
+**Updates do not need a reinstall.** The link resolves by path, and every update route replaces the file it points at rather than the link itself: `scripts/install.sh` does `mv <tmp> $INSTALL_DIR/ompx`, and `ompx update` resolves its swap target with `$which("ompx")` (`src/cli/update-cli.ts:resolveOmpPath`), so `omp update` still rewrites `ompx`. The link only goes stale when the binary lands in a *different* directory — switching `PI_INSTALL_DIR`, or moving from the binary install to `--source` (`bun install -g` puts `ompx` in the bun global bin). The installer repoints an existing link for exactly that case; recover manually with `ompx herdr install --force`.
 
 Verified on herdr 0.7.5 with the entrypoint in place:
 

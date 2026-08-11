@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import * as core from "@oh-my-pi/pi-agent-core";
 import {
 	type Api,
@@ -9,6 +10,7 @@ import {
 	AuthStorage,
 	type Context,
 	type completeSimple,
+	Effort,
 	type ImageContent,
 	type Model,
 	type SimpleStreamOptions,
@@ -24,7 +26,6 @@ import { InspectImageTool } from "@oh-my-pi/pi-coding-agent/tools/inspect-image"
 import { inspectImageToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/inspect-image-renderer";
 import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
 import { removeSyncWithRetries, sanitizeText } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -46,6 +47,13 @@ const textOnlyModel: Model<"openai-responses"> = {
 	...visionModel,
 	id: "gpt-4.1",
 	input: ["text"],
+};
+
+const reasoningVisionModel: Model<"openai-responses"> = {
+	...visionModel,
+	id: "gpt-5-vision",
+	reasoning: true,
+	thinking: { mode: "effort", efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High] },
 };
 
 interface CreateSessionOptions {
@@ -306,6 +314,32 @@ describe("InspectImageTool", () => {
 			expect(await resolveRequestApiKey(options)).toBe("vision-gateway-token-without-upstream");
 			expect(span.oneshotKind).toBe("inspect_image");
 		});
+	});
+
+	it("passes the vision role's configured thinking effort into the oneshot", async () => {
+		const imagePath = path.join(testDir, "screen.png");
+		fs.writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+
+		const settings = Settings.isolated();
+		settings.setModelRole("vision", `${reasoningVisionModel.provider}/${reasoningVisionModel.id}:high`);
+
+		const stub = createCompleteSimpleSuccessStub("Red");
+		const tool = new InspectImageTool(
+			createSession(testDir, reasoningVisionModel, "test-key", settings, {
+				configureVisionRole: false,
+				availableModels: [reasoningVisionModel],
+			}),
+			stub.fn,
+		);
+
+		await tool.execute("call-effort", {
+			path: imagePath,
+			question: "What dominant color is this image? One word only.",
+		});
+
+		expect(stub.calls).toHaveLength(1);
+		const options = stub.calls[0]?.[2] as { reasoning?: string } | undefined;
+		expect(options?.reasoning).toBe("high");
 	});
 
 	it("resolves pasted image labels from current attachments without using cwd", async () => {

@@ -1,11 +1,11 @@
-import * as z from "zod/v4";
+import { type } from "@oh-my-pi/omptype";
 
 export const CONTEXT_GC_CUSTOM_TYPE = "context-gc";
 /** Custom type used for projected (unloaded) file-mention/execution placeholders. */
 export const CONTEXT_GC_PROJECTED_TYPE = "context-gc-projected";
 export const CONTEXT_GC_DB_VERSION = 2;
 
-export const contextKindSchema = z.enum([
+export const contextKindSchema = type.enumerated(
 	"tool_result",
 	"file_read",
 	"file_mention",
@@ -16,14 +16,14 @@ export const contextKindSchema = z.enum([
 	"browser_output",
 	"mcp_output",
 	"custom_tool_output",
-]);
+);
 
-export const contextStatusSchema = z.enum(["candidate", "unloaded", "pinned"]);
-export const contextPolicySchema = z.enum(["candidate", "conservative", "pinned"]);
+export const contextStatusSchema = type.enumerated("candidate", "unloaded", "pinned");
+export const contextPolicySchema = type.enumerated("candidate", "conservative", "pinned");
 
-export type ContextKind = z.infer<typeof contextKindSchema>;
-export type ContextStatus = z.infer<typeof contextStatusSchema>;
-export type ContextPolicy = z.infer<typeof contextPolicySchema>;
+export type ContextKind = typeof contextKindSchema.infer;
+export type ContextStatus = typeof contextStatusSchema.infer;
+export type ContextPolicy = typeof contextPolicySchema.infer;
 
 export type ContextGcReportAction = "stats" | "global" | "tree" | "debug";
 export type ContextGcReportGroupBy = "status" | "kind" | "source";
@@ -101,27 +101,27 @@ export interface ContextGcDelta {
 	createdAt: string;
 }
 
-export const inventoryInputSchema = z.object({
-	status: contextStatusSchema.optional(),
-	includePinned: z.boolean().optional(),
-	limit: z.number().int().min(1).max(200).optional(),
+export const inventoryInputSchema = type({
+	"status?": contextStatusSchema,
+	"includePinned?": type("boolean"),
+	"limit?": type("number.integer").atLeast(1).atMost(200),
 });
 
-export const unloadInputSchema = z.object({
-	ids: z.array(z.string().min(1)).min(1),
-	summary: z.string().min(12).max(4000),
-	reason: z.string().min(3).max(1000),
+export const unloadInputSchema = type({
+	ids: type("string").atLeastLength(1).array().atLeastLength(1),
+	summary: type("string").atLeastLength(12).atMostLength(4000),
+	reason: type("string").atLeastLength(3).atMostLength(1000),
 });
 
-export const recallInputSchema = z.object({
-	id: z.string().min(1),
-	mode: z.enum(["summary", "range", "search", "raw"]).optional(),
-	selector: z.string().max(200).optional(),
-	maxBytes: z.number().int().min(1024).max(200000).optional(),
+export const recallInputSchema = type({
+	id: type("string").atLeastLength(1),
+	"mode?": type("'summary' | 'range' | 'search' | 'raw'"),
+	"selector?": type("string").atMostLength(200),
+	"maxBytes?": type("number.integer").atLeast(1024).atMost(200000),
 });
 
-export const pinInputSchema = z.object({
-	ids: z.array(z.string().min(1)).min(1),
-	pinned: z.boolean().default(true),
-	reason: z.string().min(3).max(1000),
+export const pinInputSchema = type({
+	ids: type("string").atLeastLength(1).array().atLeastLength(1),
+	pinned: type("boolean").default(true),
+	reason: type("string").atLeastLength(3).atMostLength(1000),
 });

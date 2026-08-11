@@ -1,29 +1,29 @@
+import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ExtensionContext,
 	ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
-import * as z from "zod/v4";
 import type { ActiveSnapshot } from "../active-context";
 import { renderContextGcReportForStore } from "../report";
 import { type ContextGcReportGroupBy, type ContextStatus, contextStatusSchema } from "../schema";
 import type { ContextGcStore } from "../storage";
 
-const reportBaseSchema = z.object({
-	status: contextStatusSchema.optional(),
-	limit: z.number().int().min(1).max(200).optional(),
+const reportBaseSchema = type({
+	"status?": contextStatusSchema,
+	"limit?": type("number.integer").atLeast(1).atMost(200),
 });
 
-const contextStatsInputSchema = z.object({});
-const contextGlobalStatsInputSchema = z.object({});
+const contextStatsInputSchema = type({});
+const contextGlobalStatsInputSchema = type({});
 
-const contextTreeInputSchema = reportBaseSchema.extend({
-	groupBy: z.enum(["status", "kind", "source"]).optional(),
+const contextTreeInputSchema = type.merge(reportBaseSchema, {
+	"groupBy?": type("'status' | 'kind' | 'source'"),
 });
 
-const contextDebugInputSchema = reportBaseSchema.extend({
-	includeRecords: z.boolean().optional(),
+const contextDebugInputSchema = type.merge(reportBaseSchema, {
+	"includeRecords?": type("boolean"),
 });
 
 type ContextStatsInput = Record<string, never>;

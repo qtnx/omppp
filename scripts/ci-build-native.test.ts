@@ -1,36 +1,79 @@
 import { describe, expect, it } from "bun:test";
-import * as path from "node:path";
-import { $ } from "bun";
+import { resolveNativeTargets } from "./ci-build-native";
 
-const repoRoot = path.join(import.meta.dir, "..");
+describe("ci native target resolution", () => {
+	const mappings = [
+		{
+			name: "linux x64 baseline",
+			env: { TARGET_PLATFORM: "linux", TARGET_ARCH: "x64", TARGET_VARIANTS: "baseline" },
+			targets: ["linux-x64-baseline"],
+		},
+		{
+			name: "linux x64 modern",
+			env: { TARGET_PLATFORM: "linux", TARGET_ARCH: "x64", TARGET_VARIANTS: "modern" },
+			targets: ["linux-x64-modern"],
+		},
+		{
+			name: "linux arm64",
+			env: { TARGET_PLATFORM: "linux", TARGET_ARCH: "arm64", TARGET_VARIANTS: "" },
+			targets: ["linux-arm64"],
+		},
+		{
+			name: "linux musl x64 baseline",
+			env: {
+				TARGET_PLATFORM: "linux",
+				TARGET_ARCH: "x64",
+				TARGET_VARIANTS: "baseline",
+				LIBC: "musl",
+			},
+			targets: ["linux-musl-x64-baseline"],
+		},
+		{
+			name: "linux musl arm64",
+			env: { TARGET_PLATFORM: "linux", TARGET_ARCH: "arm64", TARGET_VARIANTS: "", LIBC: "musl" },
+			targets: ["linux-musl-arm64"],
+		},
+		{
+			name: "darwin x64 baseline",
+			env: { TARGET_PLATFORM: "darwin", TARGET_ARCH: "x64", TARGET_VARIANTS: "baseline" },
+			targets: ["darwin-x64-baseline"],
+		},
+		{
+			name: "darwin arm64",
+			env: { TARGET_PLATFORM: "darwin", TARGET_ARCH: "arm64", TARGET_VARIANTS: "" },
+			targets: ["darwin-arm64"],
+		},
+		{
+			name: "win32 x64 baseline",
+			env: { TARGET_PLATFORM: "win32", TARGET_ARCH: "x64", TARGET_VARIANTS: "baseline" },
+			targets: ["win32-x64-baseline"],
+		},
+	] as const;
 
-async function runCiNativeDryRun(env: Record<string, string | undefined> = {}): Promise<string> {
-	const result = await $`bun scripts/ci-build-native.ts --dry-run`
-		.cwd(repoRoot)
-		.quiet()
-		.env({
-			...process.env,
-			PCRE2_SYS_STATIC: "0",
-			RUSTFLAGS: "",
-			TARGET_VARIANT: "",
-			TARGET_VARIANTS: "",
-			...env,
-		})
-		.nothrow();
-	expect(result.exitCode).toBe(0);
-	return result.text();
-}
+	for (const { name, env, targets } of mappings) {
+		it(`resolves ${name}`, () => {
+			expect(resolveNativeTargets(env)).toEqual(targets);
+		});
+	}
 
-describe("ci native build environment", () => {
-	it("prints static PCRE2 env for the default native build dry run", async () => {
-		await expect(runCiNativeDryRun()).resolves.toBe(
-			"DRY RUN bun --cwd=packages/natives run build [default] PCRE2_SYS_STATIC=1\n",
-		);
+	it("resolves disjoint x64 variants together", () => {
+		expect(
+			resolveNativeTargets({
+				TARGET_PLATFORM: "linux",
+				TARGET_ARCH: "x64",
+				TARGET_VARIANTS: "baseline modern",
+			}),
+		).toEqual(["linux-x64-baseline", "linux-x64-modern"]);
 	});
 
-	it("prints static PCRE2 env without dropping x64 variant settings", async () => {
-		await expect(runCiNativeDryRun({ TARGET_VARIANTS: "baseline" })).resolves.toBe(
-			'DRY RUN bun --cwd=packages/natives run build [baseline] PCRE2_SYS_STATIC=1 TARGET_VARIANT=baseline RUSTFLAGS="-C target-cpu=x86-64-v2"\n',
-		);
+	it("rejects an unmappable platform and architecture pair with the received environment", () => {
+		expect(() =>
+			resolveNativeTargets({
+				CROSS_TARGET: "aarch64-pc-windows-msvc",
+				TARGET_PLATFORM: "win32",
+				TARGET_ARCH: "arm64",
+				TARGET_VARIANTS: "baseline",
+			}),
+		).toThrow(/Cannot map CI native target.*TARGET_PLATFORM.*win32.*TARGET_ARCH.*arm64/s);
 	});
 });

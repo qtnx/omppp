@@ -1,5 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { type ApiKey, type FetchImpl, getEnvApiKey, type Model, withAuth } from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import {
@@ -20,20 +21,25 @@ import {
 	Snowflake,
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import packageJson from "../../package.json" with { type: "json" };
 import { isAuthenticated, type ModelRegistry } from "../config/model-registry";
 import { settings } from "../config/settings";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import { ohMyPiXAIUserAgent, resolveXAIHttpCredentials } from "../lib/xai-http";
 import imageGenDescription from "../prompts/tools/image-gen.md" with { type: "text" };
-import { AUTO_IMAGE_PROVIDER_ORDER, type ImageProvider, isImageProviderId } from "./image-providers";
+import {
+	AUTO_IMAGE_PROVIDER_ORDER,
+	DEFAULT_XAI_IMAGE_MODEL,
+	type ImageProvider,
+	isImageProviderId,
+	isXaiImageModel,
+	type XaiImageModel,
+} from "./image-providers";
 import { resolveReadPath } from "./path-utils";
 
 const DEFAULT_MODEL = "gemini-3-pro-image-preview";
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-3-pro-image-preview";
 const DEFAULT_ANTIGRAVITY_MODEL = "gemini-3-pro-image";
-const DEFAULT_XAI_IMAGE_MODEL = "grok-imagine-image";
 const IMAGE_TIMEOUT = 3 * 60 * 1000; // 3 minutes
 const MAX_IMAGE_SIZE = 35 * 1024 * 1024;
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -449,6 +455,14 @@ export function isImageProviderPreference(value: unknown): value is ImageProvide
 /** Set the configured image-provider priority from settings; invalid IDs are dropped. */
 export function setImageProviderOrder(providers: readonly string[]): void {
 	configuredImageProviderOrder = providers.filter(isImageProviderId);
+}
+
+/** Configured xAI image model set via `providers.xaiImageModel`. */
+let configuredXaiImageModel: XaiImageModel = DEFAULT_XAI_IMAGE_MODEL;
+
+/** Set the xAI image model from settings; an unknown id falls back to the default tier. */
+export function setXaiImageModel(model: unknown): void {
+	configuredXaiImageModel = isXaiImageModel(model) ? model : DEFAULT_XAI_IMAGE_MODEL;
 }
 
 /**
@@ -1144,7 +1158,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 								: provider === "openrouter"
 									? DEFAULT_OPENROUTER_MODEL
 									: provider === "xai"
-										? DEFAULT_XAI_IMAGE_MODEL
+										? configuredXaiImageModel
 										: DEFAULT_MODEL;
 					const resolvedModel = provider === "openrouter" ? resolveOpenRouterModel(model) : model;
 					if (

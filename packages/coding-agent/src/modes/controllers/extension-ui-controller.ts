@@ -88,7 +88,7 @@ export class ExtensionUiController {
 		const uiContext: ExtensionUIContext = {
 			timeoutStartsOnPresentation: true,
 			select: (title, options, dialogOptions) => this.showCollabAwareSelector(title, options, dialogOptions),
-			confirm: (title, message, _dialogOptions) => this.showHookConfirm(title, message),
+			confirm: (title, message, dialogOptions) => this.showHookConfirm(title, message, dialogOptions),
 			input: (title, placeholder, dialogOptions) => this.showHookInput(title, placeholder, dialogOptions),
 			askDialog: (questions, dialogOptions) => this.showAskDialog(questions, dialogOptions),
 			notify: (message, type) => this.showHookNotify(message, type),
@@ -130,7 +130,7 @@ export class ExtensionUiController {
 		};
 		this.ctx.setToolUIContext(uiContext, true);
 		this.#toolUIContext = uiContext;
-		this.ctx.session.setUsageFallbackConfirmer?.(confirmation => {
+		this.ctx.session.setUsageFallbackConfirmer?.((confirmation, signal) => {
 			const reserve =
 				confirmation.remainingPercent === undefined
 					? "inside the configured reserve margin"
@@ -138,6 +138,7 @@ export class ExtensionUiController {
 			return this.showHookConfirm(
 				"Coding-plan reserve reached",
 				`${confirmation.from} has ${reserve}. Switch to ${confirmation.to}? Choose No to keep using the current plan.`,
+				{ signal },
 			);
 		});
 
@@ -167,7 +168,7 @@ export class ExtensionUiController {
 				this.ctx.sessionManager.appendLabelChange(targetId, label);
 			},
 			getActiveTools: () => this.ctx.session.getEnabledToolNames(),
-			getAllTools: () => this.ctx.session.getAllToolNames(),
+			getAllTools: () => this.ctx.session.getAllToolInfos(),
 			setActiveTools: toolNames => this.ctx.session.setActiveToolsByName(toolNames),
 			setModel: async model => {
 				const key = await this.ctx.session.modelRegistry.getApiKey(model);
@@ -251,7 +252,7 @@ export class ExtensionUiController {
 				// Update UI
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
-				this.ctx.editor.setText(result.selectedText);
+				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
 				this.ctx.showStatus("Branched to new session");
 
 				return { cancelled: false };
@@ -266,7 +267,7 @@ export class ExtensionUiController {
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
-					this.ctx.editor.setText(result.editorText);
+					this.ctx.editor.setDraft(result.editorText, result.editorImages);
 				}
 				this.ctx.showStatus("Navigated to selected point");
 
@@ -403,7 +404,7 @@ export class ExtensionUiController {
 				this.ctx.sessionManager.appendLabelChange(targetId, label);
 			},
 			getActiveTools: () => this.ctx.session.getEnabledToolNames(),
-			getAllTools: () => this.ctx.session.getAllToolNames(),
+			getAllTools: () => this.ctx.session.getAllToolInfos(),
 			setActiveTools: toolNames => this.ctx.session.setActiveToolsByName(toolNames),
 			setModel: async model => {
 				const key = await this.ctx.session.modelRegistry.getApiKey(model);
@@ -484,7 +485,7 @@ export class ExtensionUiController {
 				// Update UI
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
-				this.ctx.editor.setText(result.selectedText);
+				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
 				this.ctx.showStatus("Branched to new session");
 
 				return { cancelled: false };
@@ -499,7 +500,7 @@ export class ExtensionUiController {
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
-					this.ctx.editor.setText(result.editorText);
+					this.ctx.editor.setDraft(result.editorText, result.editorImages);
 				}
 				this.ctx.showStatus("Navigated to selected point");
 
@@ -551,7 +552,8 @@ export class ExtensionUiController {
 							() => this.ctx.session.model,
 						),
 						isIdle: () => !this.ctx.session.isStreaming,
-						getAsyncJobSnapshot: options => this.ctx.session.getAsyncJobSnapshot(options),
+						getAsyncJobSnapshot: (options?: { recentLimit?: number }) =>
+							this.ctx.session.getAsyncJobSnapshot(options),
 						getGoalModeState: () => this.ctx.session.getGoalModeState(),
 						hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 						hasPendingAgentWork: () => this.ctx.session.hasPendingAgentWork(),
@@ -970,8 +972,8 @@ export class ExtensionUiController {
 	/**
 	 * Show a confirmation dialog for hooks.
 	 */
-	async showHookConfirm(title: string, message: string): Promise<boolean> {
-		const result = await this.showHookSelector(`${title}\n${message}`, ["Yes", "No"]);
+	async showHookConfirm(title: string, message: string, dialogOptions?: ExtensionUIDialogOptions): Promise<boolean> {
+		const result = await this.showHookSelector(`${title}\n${message}`, ["Yes", "No"], dialogOptions);
 		return result === "Yes";
 	}
 

@@ -2,8 +2,13 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { submitInteractiveInput } from "@oh-my-pi/pi-coding-agent/main";
+import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { buildSessionOptions, readPipedInput, submitInteractiveInput } from "@oh-my-pi/pi-coding-agent/main";
 import type { SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { discoverTitleSystemPromptFile } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import { applySystemPromptOverlay } from "@oh-my-pi/pi-coding-agent/system-prompt-overrides";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -12,6 +17,7 @@ const cleanupDirs: string[] = [];
 
 afterEach(async () => {
 	await Promise.all(cleanupDirs.splice(0).map(dir => removeWithRetries(dir)));
+	vi.restoreAllMocks();
 });
 
 function createInput(overrides: Partial<SubmittedUserInput> = {}): SubmittedUserInput {
@@ -34,6 +40,54 @@ describe("discoverTitleSystemPromptFile", () => {
 		await fs.writeFile(promptPath, "custom title prompt");
 
 		expect(discoverTitleSystemPromptFile(projectDir)).toBe(promptPath);
+	});
+});
+
+describe("readPipedInput", () => {
+	it("reads redirected stdin when Bun reports isTTY as undefined", async () => {
+		const originalIsTTY = process.stdin.isTTY;
+		const readText = vi.spyOn(Bun.stdin, "text").mockResolvedValue("piped prompt\n");
+		Object.defineProperty(process.stdin, "isTTY", { value: undefined, configurable: true });
+
+		try {
+			expect(await readPipedInput()).toBe("piped prompt\n");
+			expect(readText).toHaveBeenCalledTimes(1);
+		} finally {
+			Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
+		}
+	});
+});
+
+describe("buildSessionOptions system prompt inputs", () => {
+	it("routes CLI prompt content through template-aware session options", async () => {
+		const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-system-prompt-input-"));
+		cleanupDirs.push(projectDir);
+		const authStorage = await AuthStorage.create(path.join(projectDir, "auth.db"));
+		try {
+			const options = await buildSessionOptions(
+				parseArgs([
+					"--cwd",
+					projectDir,
+					"--system-prompt",
+					"project system prompt",
+					"--append-system-prompt",
+					"append prompt",
+				]),
+				[],
+				SessionManager.inMemory(projectDir),
+				new ModelRegistry(authStorage, path.join(projectDir, "models.yml")),
+				Settings.isolated(),
+			);
+
+			if (typeof options.systemPrompt !== "function") throw new Error("Expected CLI system prompt resolver");
+			expect(await options.systemPrompt(["default system prompt", "default append prompt"])).toEqual([
+				"project system prompt",
+				"append prompt",
+				"default append prompt",
+			]);
+		} finally {
+			authStorage.close();
+		}
 	});
 });
 

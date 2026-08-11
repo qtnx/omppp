@@ -13,11 +13,7 @@ import {
 	withAuth,
 	withOAuthAccess,
 } from "@oh-my-pi/pi-ai";
-import { applyCodexResponsesLiteShape } from "@oh-my-pi/pi-ai/providers/openai-codex/request-transformer";
-import {
-	createOpenAICodexCompatibilityMetadata,
-	resolveCodexResponsesUrl,
-} from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import { resolveCodexResponsesUrl } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import {
 	CODEX_BASE_URL,
@@ -114,7 +110,28 @@ function getDefaultModelCandidates(): CodexModelCandidate[] {
 	return fallbackModel ? [{ modelId: fallbackModel.id, catalogModel: fallbackModel }] : [{ modelId: FALLBACK_MODEL }];
 }
 
+/**
+ * Raised when Codex produced an answer without invoking the hosted `web_search`
+ * tool. GPT-5.6 Responses-Lite models receive `tool_choice: "auto"` (the forced
+ * hosted choice is invalid under the lite shape — see #5771 / #5772), so the
+ * model may skip searching and return a plain completion. A search command must
+ * not present that as a successful, search-backed result (#6988); this advances
+ * the candidate chain to a model that will search, or surfaces a clear failure
+ * when the model was explicitly configured.
+ */
+class CodexNoWebSearchError extends SearchProviderError {
+	constructor() {
+		super(
+			"codex",
+			"Codex returned a completion without running web search (no web_search_call event); refusing to treat a non-search answer as a search result",
+			502,
+		);
+		this.name = "CodexNoWebSearchError";
+	}
+}
+
 function shouldRetryWithNextDefaultModel(error: unknown): boolean {
+	if (error instanceof CodexNoWebSearchError) return true;
 	if (!(error instanceof SearchProviderError)) return false;
 	if (error.provider !== "codex" || error.status !== 400) return false;
 	return /model is not supported|requested model is not supported|not supported when using codex with a chatgpt account/i.test(
@@ -124,6 +141,7 @@ function shouldRetryWithNextDefaultModel(error: unknown): boolean {
 
 export interface CodexSearchParams {
 	signal?: AbortSignal;
+	timeoutMs?: number;
 	fetch?: FetchImpl;
 	query: string;
 	system_prompt?: string;
@@ -387,6 +405,30 @@ function buildCodexHeaders(
 }
 
 /**
+ * Extracts a backend error `{code, message}` from a Codex SSE event, tolerating
+ * the envelope shapes the ChatGPT Codex backend emits: top-level `{code,message}`,
+ * a nested `error` object, and a `response.error` object (as in `response.failed`).
+ * Without this the nested shapes collapse to `Codex error (): Unknown error`,
+ * discarding the backend diagnostic — e.g. a regional/model-snapshot rejection (#7200).
+ */
+function extractCodexSseError(rawEvent: Record<string, unknown>): { code: string; message: string } {
+	const candidates: unknown[] = [
+		rawEvent,
+		rawEvent.error,
+		(rawEvent.response as { error?: unknown } | undefined)?.error,
+	];
+	let code = "";
+	let message = "";
+	for (const candidate of candidates) {
+		if (!candidate || typeof candidate !== "object") continue;
+		const record = candidate as Record<string, unknown>;
+		if (!code && typeof record.code === "string" && record.code) code = record.code;
+		if (!message && typeof record.message === "string" && record.message) message = record.message;
+	}
+	return { code, message };
+}
+
+/**
  * Calls the Codex Responses API with web search tool enabled.
  * The caller provides the exact model id to send; retry / fallback policy
  * lives one layer up in `searchCodex()` so we can distinguish explicit user
@@ -397,10 +439,10 @@ async function callCodexSearch(
 	query: string,
 	options: {
 		signal?: AbortSignal;
+		timeoutMs?: number;
 		systemPrompt?: string;
 		searchContextSize?: "low" | "medium" | "high";
 		model: CodexModelCandidate;
-		sessionId?: string;
 		fetch?: FetchImpl;
 		transport: CodexSearchTransport;
 	},
@@ -408,7 +450,6 @@ async function callCodexSearch(
 	const headers = buildCodexHeaders(auth.accessToken, auth.accountId, options.transport.headers);
 
 	const requestedModel = options.model.modelId;
-	const usesResponsesLite = options.model.catalogModel?.useResponsesLite === true;
 
 	const body: Record<string, unknown> = {
 		model: requestedModel,
@@ -430,28 +471,13 @@ async function callCodexSearch(
 		tool_choice: { type: "web_search" },
 		instructions: options.systemPrompt ?? DEFAULT_INSTRUCTIONS,
 	};
-	if (usesResponsesLite) {
-		const metadata = createOpenAICodexCompatibilityMetadata({
-			sessionId: options.sessionId,
-			requestKind: "turn",
-			startNewTurn: true,
-		});
-		for (const name in metadata.headers) {
-			const value = metadata.headers[name];
-			if (value !== undefined) headers.set(name, value);
-		}
-		headers.set(OPENAI_HEADERS.RESPONSES_LITE, "true");
-		body.client_metadata = metadata.clientMetadata;
-		body.reasoning = { context: "all_turns" };
-		applyCodexResponsesLiteShape(body);
-	}
 
 	const fetchImpl = options.fetch ?? fetch;
 	const response = await fetchImpl(options.transport.url, {
 		method: "POST",
 		headers,
 		body: JSON.stringify(body),
-		signal: withHardTimeout(options.signal),
+		signal: withHardTimeout(options.signal, options.timeoutMs),
 	});
 
 	if (!response.ok) {
@@ -472,10 +498,17 @@ async function callCodexSearch(
 	let model = requestedModel;
 	let requestId = "";
 	let usage: { inputTokens: number; outputTokens: number; totalTokens: number } | undefined;
+	// A search command must reject a completion that did not invoke the hosted
+	// tool rather than returning an answer from the model's own knowledge (#6988).
+	let webSearchInvoked = false;
 
 	for await (const rawEvent of readSseJson<Record<string, unknown>>(response.body, options.signal)) {
 		const eventType = typeof rawEvent.type === "string" ? rawEvent.type : "";
 		if (!eventType) continue;
+
+		if (eventType.startsWith("response.web_search_call")) {
+			webSearchInvoked = true;
+		}
 
 		if (eventType === "response.output_text.delta") {
 			const delta = typeof rawEvent.delta === "string" ? rawEvent.delta : "";
@@ -485,6 +518,7 @@ async function callCodexSearch(
 		} else if (eventType === "response.output_item.done") {
 			const item = rawEvent.item as CodexResponseItem | undefined;
 			if (!item) continue;
+			if (item.type === "web_search_call") webSearchInvoked = true;
 
 			// Handle text message content and extract sources from annotations
 			if (item.type === "message" && item.content) {
@@ -528,14 +562,19 @@ async function callCodexSearch(
 				}
 			}
 		} else if (eventType === "error") {
-			const code = (rawEvent as { code?: string }).code ?? "";
-			const message = (rawEvent as { message?: string }).message ?? "Unknown error";
-			throw new SearchProviderError("codex", `Codex error (${code}): ${message}`, 500);
+			const { code, message } = extractCodexSseError(rawEvent);
+			throw new SearchProviderError("codex", `Codex error (${code}): ${message || "Unknown error"}`, 500);
 		} else if (eventType === "response.failed") {
-			const resp = (rawEvent as { response?: { error?: { message?: string } } }).response;
-			const errorMessage = resp?.error?.message ?? "Request failed";
-			throw new SearchProviderError("codex", `Codex request failed: ${errorMessage}`, 500);
+			const { code, message } = extractCodexSseError(rawEvent);
+			const detail = code
+				? `Codex request failed (${code}): ${message || "Request failed"}`
+				: `Codex request failed: ${message || "Request failed"}`;
+			throw new SearchProviderError("codex", detail, 500);
 		}
+	}
+
+	if (!webSearchInvoked) {
+		throw new CodexNoWebSearchError();
 	}
 
 	const finalAnswer = answerParts.join("\n\n").trim();
@@ -586,10 +625,10 @@ async function runCodexSearchCandidates(options: {
 		try {
 			return await callCodexSearch(options.auth, options.query, {
 				signal: options.params.signal,
+				timeoutMs: options.params.timeoutMs,
 				systemPrompt: options.params.systemPrompt,
 				searchContextSize: "high",
 				model: candidate,
-				sessionId: options.params.sessionId,
 				fetch: options.params.fetch,
 				transport: options.transport,
 			});

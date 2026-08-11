@@ -804,18 +804,23 @@ describe("session lifecycle commands", () => {
 
 	it("/move: reports moved path via sessionManager.getCwd() and calls notifyTitleChanged", async () => {
 		const { output, fakeSessionManager, runtime } = createRuntime();
+		const originalProjectDir = getProjectDir();
 		let notified = false;
 		runtime.notifyTitleChanged = async () => {
 			notified = true;
 		};
 		const moveTarget = os.tmpdir();
 		const expectedMovedTo = path.resolve(moveTarget);
-		const result = await executeAcpBuiltinSlashCommand(`/move ${moveTarget}`, runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(fakeSessionManager._flushed).toBe(true);
-		expect(fakeSessionManager._movedTo).toBe(expectedMovedTo);
-		expect(output[0]).toContain(expectedMovedTo);
-		expect(notified).toBe(true);
+		try {
+			const result = await executeAcpBuiltinSlashCommand(`/move ${moveTarget}`, runtime);
+			expect(result).toEqual({ consumed: true });
+			expect(fakeSessionManager._flushed).toBe(true);
+			expect(fakeSessionManager._movedTo).toBe(expectedMovedTo);
+			expect(output[0]).toContain(expectedMovedTo);
+			expect(notified).toBe(true);
+		} finally {
+			setProjectDir(originalProjectDir);
+		}
 	});
 
 	it("/move: accepts a workspace root tag", async () => {
@@ -1066,6 +1071,28 @@ describe("wave 3 commands", () => {
 		const result = await executeAcpBuiltinSlashCommand("/memory unknownverb", runtime);
 		expect(result).toEqual({ consumed: true });
 		expect(output[0]).toContain("Usage: /memory");
+	});
+
+	it("/memory stats: tells the user memory is off instead of naming a nonexistent 'off backend'", async () => {
+		const { output, runtime } = createRuntime();
+		const result = await executeAcpBuiltinSlashCommand("/memory stats", runtime);
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toBe("Memory backend is off — there is nothing to show.");
+	});
+
+	it("/memory diagnose: tells the user memory is off instead of naming a nonexistent 'off backend'", async () => {
+		const { output, runtime } = createRuntime();
+		const result = await executeAcpBuiltinSlashCommand("/memory diagnose", runtime);
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toBe("Memory backend is off — there is nothing to show.");
+	});
+
+	it("/memory stats: still names the backend when a real backend simply has no stats hook", async () => {
+		const { output, runtime } = createRuntime();
+		runtime.settings.set("memory.backend" as never, "local" as never);
+		const result = await executeAcpBuiltinSlashCommand("/memory stats", runtime);
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toBe("Memory stats is not available for the local backend.");
 	});
 
 	// /todo start fuzzy match

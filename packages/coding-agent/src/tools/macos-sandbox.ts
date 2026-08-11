@@ -1,7 +1,7 @@
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
 import macosSandboxDescription from "../prompts/tools/macos-sandbox.md" with { type: "text" };
 import type { MacOSSandboxRelaunchResult } from "../task/omp-command";
 import {
@@ -12,19 +12,14 @@ import {
 import type { ToolSession } from "./index";
 import { toPathList } from "./path-utils";
 
-const macosSandboxSchema = z
-	.object({
-		path: z
-			.string()
-			.min(1)
-			.describe("trusted file or directory paths to allow; use a semicolon-delimited string for multiple paths"),
-		remember: z
-			.boolean()
-			.default(false)
-			.describe("persist these paths to the global sandbox.allowedPaths config after user approval")
-			.optional(),
-	})
-	.describe("request a macOS sandbox relaunch with extra allowed files or directories");
+const macosSandboxSchema = type({
+	path: type("string")
+		.atLeastLength(1)
+		.describe("trusted file or directory paths to allow; use a semicolon-delimited string for multiple paths"),
+	remember: type("boolean")
+		.default(false)
+		.describe("persist these paths to the global sandbox.allowedPaths config after user approval"),
+}).describe("request a macOS sandbox relaunch with extra allowed files or directories");
 
 export interface MacOSSandboxToolDetails {
 	paths: string[];
@@ -34,7 +29,7 @@ export interface MacOSSandboxToolDetails {
 	persisted?: boolean;
 }
 
-type MacOSSandboxParams = z.infer<typeof macosSandboxSchema>;
+type MacOSSandboxParams = typeof macosSandboxSchema.infer;
 type MacOSSandboxCompatParams = Partial<MacOSSandboxParams> & { paths?: string[] };
 
 function macosSandboxPathList(params: MacOSSandboxCompatParams): string[] {

@@ -1,8 +1,8 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import shakeDescription from "../prompts/tools/shake.md" with { type: "text" };
@@ -14,12 +14,15 @@ import { Ellipsis, formatErrorMessage, replaceTabs, TRUNCATE_LENGTHS, truncateTo
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
-const shakeSchema = z.object({
-	mode: z.enum(["elide", "images"]).optional().describe("shake mode to run; defaults to elide"),
-	reason: z.string().min(1).max(500).describe("why shake is appropriate now — the phase or task transition"),
+const shakeSchema = type({
+	"mode?": type("'elide' | 'images'").describe("shake mode to run; defaults to elide"),
+	reason: type("string")
+		.atLeastLength(1)
+		.atMostLength(500)
+		.describe("why shake is appropriate now — the phase or task transition"),
 });
 
-type ShakeParams = z.infer<typeof shakeSchema>;
+type ShakeParams = typeof shakeSchema.infer;
 
 export interface ShakeToolDetails {
 	mode: ShakeMode;

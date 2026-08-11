@@ -13,6 +13,7 @@ import {
 	getRunningSubagentBadgeRegistry,
 } from "@oh-my-pi/pi-coding-agent/modes/running-subagent-badge";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
@@ -105,12 +106,14 @@ function makeGuestContext(counts: number[]): InteractiveModeContext {
 }
 
 beforeEach(() => {
+	AgentLifecycleManager.resetGlobalForTests();
 	AgentRegistry.resetGlobalForTests();
 	installInMemoryRelay();
 });
 
 afterEach(() => {
 	uninstallInMemoryRelay();
+	AgentLifecycleManager.resetGlobalForTests();
 	AgentRegistry.resetGlobalForTests();
 });
 

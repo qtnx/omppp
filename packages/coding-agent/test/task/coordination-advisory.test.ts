@@ -5,9 +5,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import subagentSystemPromptTemplate from "../../src/prompts/system/subagent-system-prompt.md" with { type: "text" };
 
 // Contract: a multi-sibling spawn with spawn capacity and IRC available draws
-// a proactive coordinate-via-irc suggestion, and the subagent COOP prompt
-// actively tells peers to coordinate before overlapping edits.
-
+// a proactive coordinate-via-irc suggestion.
 const item = (): TaskItem => ({ task: "do the thing" });
 
 describe("buildCoordinationAdvisory", () => {
@@ -41,7 +39,6 @@ describe("subagent COOP irc guidance", () => {
 		expect(out).toContain("same-file edits serialize safely");
 	});
 });
-
 // Contract: TaskTool.execute composes the specialization nudge with the
 // coordination suggestion, gating the latter to the async path (sync siblings
 // have already finished). composeSpawnAdvisory is the seam that decision flows
@@ -58,7 +55,21 @@ describe("composeSpawnAdvisory", () => {
 			willRunAsync: true,
 		});
 		expect(advisory).toContain("generic");
-		expect(advisory).toContain('`agent: "explore"`');
+		expect(advisory).toContain('`agent: "scout"`');
+		expect(advisory).toContain("Coordinate:");
+	});
+
+	it("drops the scout example from the specialization tip when scout is unavailable", () => {
+		const advisory = composeSpawnAdvisory({
+			agents: ["task", "task"],
+			items: [worker(), worker()],
+			depthCapacity: true,
+			ircEnabled: true,
+			willRunAsync: true,
+			scoutAvailable: false,
+		});
+		expect(advisory).toContain("generic");
+		expect(advisory).not.toContain("scout");
 		expect(advisory).toContain("Coordinate:");
 	});
 
