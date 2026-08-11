@@ -2067,6 +2067,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session ? session.trackEvalExecution(execution, abortController) : execution,
 			hasPendingAgentAsides: () => session?.hasPendingDeliverableAsides() ?? false,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
+			getKanbanSessionId: () => session?.sessionId ?? null,
 			requestMacOSSandboxRelaunch: paths => {
 				const sessionFile = sessionManager.getSessionFile();
 				return sessionFile

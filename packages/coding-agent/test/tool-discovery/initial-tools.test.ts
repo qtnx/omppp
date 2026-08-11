@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { KanbanTool } from "@oh-my-pi/pi-coding-agent/kanban/tool";
 import type { BuiltinToolLoadMode, ToolLoopManager, ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	AskTool,
@@ -65,6 +66,9 @@ async function getToolMetadata(): Promise<Map<string, { loadMode?: string; summa
 		new SshTool(toolSession, [], new Map(), ""),
 		new JobTool(toolSession),
 		new IrcTool(toolSession),
+		// `kanban` only builds while the session owns a live board, so `createTools`
+		// cannot produce it here; construct it directly to check its loading fields.
+		new KanbanTool(toolSession),
 	]) {
 		metadata.set(tool.name, { loadMode: tool.loadMode, summary: tool.summary });
 	}

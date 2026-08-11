@@ -34,6 +34,7 @@ import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/
 const MAX_WIDGET_LINES = 10;
 const ASK_OTHER_OPTION = "Other (type your own)";
 const ASK_CHAT_OPTION = "Chat about this";
+
 const ASK_NEXT_OPTION = "Next →";
 
 interface CollabDialogWinner {

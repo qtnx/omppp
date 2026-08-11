@@ -1,5 +1,6 @@
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { settings } from "../config/settings";
+import { isKanbanBoardRunning, startKanbanBoard, stopKanbanBoard } from "../kanban";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import {
@@ -135,6 +136,31 @@ async function handleSessionPinCommand(
 		return;
 	}
 	await output(`Pinned ${account.label} to this session for ${providerName}.`);
+}
+
+/**
+ * `/kanban` body: start the board and report every URL it answers on, stop it,
+ * or just report status. Tailnet URLs appear only on a Tailscale host.
+ */
+async function runKanbanCommand(args: string, session: AgentSession): Promise<string> {
+	const arg = args.trim().toLowerCase();
+	if (arg === "off") {
+		if (!isKanbanBoardRunning(session.sessionId)) return "Kanban board is not running.";
+		await stopKanbanBoard(session);
+		return "Kanban board stopped.";
+	}
+	if (arg === "status") {
+		return isKanbanBoardRunning(session.sessionId)
+			? "Kanban board is running. Run /kanban to show its links."
+			: "Kanban board is stopped. Run /kanban to start it.";
+	}
+	if (arg.length > 0) return "Usage: /kanban [off|status]";
+	const registration = await startKanbanBoard(session);
+	if (!registration) return "Kanban board could not start: this session is shutting down.";
+	const lines = [`Kanban board: ${registration.boardUrl}`];
+	for (const url of registration.tailnetUrls) lines.push(`Tailnet:      ${url}`);
+	lines.push("Stop it with /kanban off.");
+	return lines.join("\n");
 }
 
 export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -411,6 +437,26 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: (_command, runtime) => {
 			runtime.ctx.handleToolsCommand();
 			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "kanban",
+		description: "Start this session's Kanban board and show its links, or stop it",
+		acpDescription: "Start or stop the session Kanban board",
+		allowArgs: true,
+		subcommands: [
+			{ name: "off", description: "Stop the board for this session" },
+			{ name: "status", description: "Show whether the board is running" },
+		],
+		getTuiAutocompleteDescription: runtime =>
+			isKanbanBoardRunning(runtime.ctx.session.sessionId) ? "Kanban: running" : "Kanban: stopped",
+		handle: async (command, runtime) => {
+			await runtime.output(await runKanbanCommand(command.args, runtime.session));
+			return commandConsumed();
+		},
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			runtime.ctx.showStatus(await runKanbanCommand(command.args, runtime.ctx.session));
 		},
 	},
 	{

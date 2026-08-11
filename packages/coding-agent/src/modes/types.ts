@@ -16,6 +16,7 @@ import type {
 } from "../extensibility/extensions";
 import type { CompactOptions } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
+import type { KanbanForkedAgent, KanbanForkRequest } from "../kanban/runtime";
 import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
 import type { AgentSession } from "../session/agent-session";
@@ -433,6 +434,7 @@ export interface InteractiveModeContext {
 	handleQueueCommand(message: string): Promise<void>;
 	handleBtwCommand(question: string): Promise<void>;
 	handleTanCommand(work: string): Promise<void>;
+	handleKanbanBoardAgent(request: KanbanForkRequest): Promise<KanbanForkedAgent | null>;
 	hasActiveBtw(): boolean;
 	handleBtwEscape(): boolean;
 	handleBtwBranchKey(): Promise<boolean>;

@@ -19,6 +19,7 @@ import type { GoalModeState, GoalRuntime } from "../goals";
 import { CreateGoalTool, GetGoalTool, GoalTool, UpdateGoalTool } from "../goals/tools/goal-tool";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
+import { KanbanTool } from "../kanban/tool";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
@@ -343,6 +344,12 @@ export interface ToolSession {
 	trackEvalExecution?<T>(execution: Promise<T>, abortController: AbortController): Promise<T>;
 	/** Get session ID */
 	getSessionId?: () => string | null;
+	/**
+	 * Session id the Kanban runtime registers boards under (`AgentSession.sessionId`).
+	 * Diverges from {@link getSessionId} whenever a provider session id is active,
+	 * so board lookups MUST use this one.
+	 */
+	getKanbanSessionId?: () => string | null;
 	/** Get Hindsight runtime state for this agent session. */
 	getHindsightSessionState?: () => HindsightSessionState | undefined;
 	/** Get Mnemopi runtime state for this agent session. */
@@ -683,6 +690,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	glob: s => new GlobTool(s, { rootPathAlias: true }),
 	grep: s => new GrepTool(s),
 	lsp: LspTool.createIf,
+	kanban: KanbanTool.createIf,
 	inspect_image: s => new InspectImageTool(s),
 	browser: s => new BrowserTool(s),
 	computer: s => new ComputerTool(s),

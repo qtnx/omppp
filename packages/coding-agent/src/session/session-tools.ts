@@ -12,6 +12,7 @@ import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/ext
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
 import { type LocalProtocolOptions, XD_URL_PREFIX } from "../internal-urls";
+import { KanbanTool } from "../kanban/tool";
 import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
 import { MEMORY_BACKEND_TOOL_NAMES } from "../memory-backend/tool-names";
@@ -29,7 +30,7 @@ import {
 	type DiscoverableToolSearchIndex,
 	resolveEffectiveToolDiscoveryMode,
 } from "../tool-discovery/tool-index";
-import type { ToolSession } from "../tools";
+import type { Tool, ToolSession } from "../tools";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { computerExposureMode } from "../tools/computer/exposure";
 import { ConsultTool } from "../tools/consult";
@@ -427,6 +428,11 @@ export class SessionTools {
 	/** Drops the active per-turn override; later rebuilds fall back to the base prompt. */
 	clearTurnSystemPromptOverride(): void {
 		this.#turnSystemPromptOverride = undefined;
+	}
+
+	/** Re-runs the overlay after its inputs changed, without touching the base. */
+	reapplySystemPromptOverlay(): void {
+		this.#host.agent.setSystemPrompt(this.#applySystemPromptOverlay(this.#baseSystemPrompt));
 	}
 
 	/** Skills currently rendered into the system prompt. */
@@ -1288,6 +1294,29 @@ export class SessionTools {
 			next.push(refreshed.name);
 		}
 		await this.applyActiveToolsByName(next);
+		this.#discoverableToolSearchIndex = undefined;
+	}
+
+	/** Reconciles the session-scoped Kanban tool after board runtime availability changes. */
+	async refreshKanbanTool(): Promise<void> {
+		const toolSession = this.#toolSession;
+		if (!toolSession) return;
+
+		const kanbanTool = KanbanTool.createIf(toolSession);
+		if (kanbanTool) {
+			const wrappedKanbanTool = this.#wrapRuntimeTool(kanbanTool as Tool);
+			this.#toolRegistry.set(wrappedKanbanTool.name, wrappedKanbanTool);
+			this.#builtInToolNames.add(wrappedKanbanTool.name);
+		} else {
+			this.#toolRegistry.delete("kanban");
+			this.#builtInToolNames.delete("kanban");
+		}
+
+		const nextToolNames = this.getEnabledToolNames().filter(
+			name => name !== "kanban" && this.#toolRegistry.has(name),
+		);
+		if (kanbanTool && this.#isRequestedToolAllowed(kanbanTool.name)) nextToolNames.push(kanbanTool.name);
+		await this.applyActiveToolsByName(nextToolNames);
 		this.#discoverableToolSearchIndex = undefined;
 	}
 

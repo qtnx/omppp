@@ -153,6 +153,7 @@ import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
+import { unregisterKanbanSession } from "../kanban";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
@@ -505,6 +506,10 @@ export class AgentSession {
 	#cancelFatalRecoveryHint?: () => void;
 	#exitRecorded = false;
 	#unsubscribeAppendOnly?: () => void;
+	#kanbanUnregister?: Promise<void>;
+	readonly #kanbanDurableListeners = new Set<(eventIds: readonly string[]) => void>();
+	/** Kanban board briefing rendered into the system prompt while a board runs. */
+	#kanbanBriefing: string | null = null;
 	#unsubscribeModelRoles?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
@@ -1671,11 +1676,14 @@ export class AgentSession {
 			goalModeEnabled: () => this.#goalModeState?.enabled === true,
 		};
 		this.#duoOrchestrator = new SessionDuoOrchestrator(duoHost, restoredDuoSnapshot);
-		this.#tools.setSystemPromptOverlay(baseSystemPrompt =>
-			this.#duoOrchestrator.orchestratorModeState?.enabled
+		this.#tools.setSystemPromptOverlay(baseSystemPrompt => {
+			const withOrchestrator = this.#duoOrchestrator.orchestratorModeState?.enabled
 				? buildSystemPromptWithOrchestratorOverlay(baseSystemPrompt)
-				: baseSystemPrompt,
-		);
+				: baseSystemPrompt;
+			// The board briefing belongs in the system prompt, not in history: a
+			// compaction would otherwise erase the workflow the agent must follow.
+			return this.#kanbanBriefing ? [...withOrchestrator, this.#kanbanBriefing] : withOrchestrator;
+		});
 		void this.#duoOrchestrator.initialize();
 
 		const maintenanceHost: SessionMaintenanceHost = {
@@ -2198,6 +2206,53 @@ export class AgentSession {
 	 */
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void {
 		this.#emit({ type: "notice", level, message, source });
+	}
+
+	/**
+	 * Publishes (or clears) the Kanban board briefing as a system-prompt section.
+	 * A chat message would be dropped by compaction; the system prompt survives,
+	 * so the board's workflow rules stay in force for the whole session.
+	 */
+	setKanbanBriefing(section: string | null): void {
+		if (this.#kanbanBriefing === section) return;
+		this.#kanbanBriefing = section;
+		this.#tools.reapplySystemPromptOverlay();
+	}
+
+	onKanbanEventsDurable(listener: (eventIds: readonly string[]) => void): () => void {
+		this.#kanbanDurableListeners.add(listener);
+		return () => this.#kanbanDurableListeners.delete(listener);
+	}
+
+	hasDurableKanbanEvent(eventId: string): boolean {
+		for (const entry of this.sessionManager.getBranch()) {
+			if (entry.type !== "message" || entry.message.role !== "custom") continue;
+			if (entry.message.customType !== "kanban-event" || !isRecord(entry.message.details)) continue;
+			const eventIds = entry.message.details.eventIds;
+			if (Array.isArray(eventIds) && eventIds.includes(eventId)) return true;
+		}
+		return false;
+	}
+
+	#kanbanEventIds(message: AgentMessage): string[] {
+		if (message.role !== "custom" || message.customType !== "kanban-event" || !isRecord(message.details)) return [];
+		const eventIds = message.details.eventIds;
+		if (!Array.isArray(eventIds)) return [];
+		return [
+			...new Set(eventIds.filter((eventId): eventId is string => typeof eventId === "string" && eventId.length > 0)),
+		];
+	}
+
+	#notifyKanbanEventsDurable(eventIds: readonly string[]): void {
+		for (const listener of this.#kanbanDurableListeners) {
+			try {
+				listener(eventIds);
+			} catch (error) {
+				logger.warn("Failed to acknowledge durable Kanban events", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
 	}
 
 	#recordToolExecutionStart(event: Extract<AgentEvent, { type: "tool_execution_start" }>): void {
@@ -2860,6 +2915,12 @@ export class AgentSession {
 				await messageEndPersistence.persist(persistMessageEnd);
 			} else {
 				persistMessageEnd();
+			}
+			const durableKanbanEventIds = this.#kanbanEventIds(event.message);
+			if (durableKanbanEventIds.length > 0 && this.sessionManager.getSessionFile()) {
+				await this.sessionManager.ensureOnDisk();
+				await this.sessionManager.flush();
+				this.#notifyKanbanEventsDurable(durableKanbanEventIds);
 			}
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
@@ -4075,6 +4136,11 @@ export class AgentSession {
 		// into a session already tearing down and queue a followUp mid-dispose.
 		this.#loopManager?.cancelAll();
 		this.#isDisposed = true;
+		this.#kanbanUnregister ??= unregisterKanbanSession(this).catch(error => {
+			logger.warn("Failed to unregister Kanban session during dispose", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
 		this.#queuedMessageDrainBlocked = false;
 		this.#usagePreflightReadyForNextModelCall = false;
 		this.#detachUsageBeforeQueueDequeue?.();
@@ -4186,6 +4252,7 @@ export class AgentSession {
 
 	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
 		this.beginDispose();
+		await this.#kanbanUnregister;
 		this.#recordSessionExit(options.reason ?? "dispose");
 		this.#cancelExitRecorder?.();
 		this.#cancelExitRecorder = undefined;
@@ -4812,6 +4879,11 @@ export class AgentSession {
 	/** Rebuild the capability-derived SSH tool and reconcile its active selection. */
 	refreshSshTool(options?: { activateIfAvailable?: boolean }): Promise<void> {
 		return this.#tools.refreshSshTool(options);
+	}
+
+	/** Reconciles the discoverable Kanban tool with the live board runtime. */
+	refreshKanbanTool(): Promise<void> {
+		return this.#tools.refreshKanbanTool();
 	}
 
 	/** Selects enabled tools, ignoring names absent from the registry. */
