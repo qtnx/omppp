@@ -5,9 +5,11 @@
 ### Added
 
 - Added a `providers.xaiImageModel` setting (Settings › Providers › Services › "xAI Image Model") that picks the Grok Imagine model `generate_image` uses when it resolves to the xAI provider: `grok-imagine-image` (default, standard tier) or `grok-imagine-image-quality` — the API id of xAI's Imagine Image 2.0 / Quality Mode. Previously the model was hardcoded to `grok-imagine-image`, so the quality tier was unreachable. Note there is no `grok-imagine-image-2` model id; that string 404s against `api.x.ai`.
+- Added a `modelRoles.super_review` role for the `super_review` tool. Unset, it walks `anthropic/claude-fable-5:high` → `tnx/super` → `openai-codex/gpt-5.6-sol:high` and picks the first available authenticated model. Override with `modelRoles.super_review` (comma-separated selectors work) in config or the model hub.
 
 ### Fixed
 
+- Fixed `super_review` failing to connect: it no longer hardcodes `tnx/super` through the dead `http://codemc:4000` auth gateway. The one-turn call now uses the resolved provider endpoint and the registry API key.
 - The herdr `omp` entrypoint survives reinstalls that move the binary: `scripts/install.sh` now repoints an existing `omp` link at the freshly installed `ompx`, and a dangling link is reported as a `conflict` (repointable with `ompx herdr install --force`) instead of `missing`, which used to fail with `EEXIST`. The installer never creates the link — the `omp` name belongs to upstream oh-my-pi, so claiming it stays opt-in via `ompx herdr install` — and it leaves an unrelated `omp` alone. Skip it entirely with `OMPX_INSTALL_SKIP_HERDR_ENTRYPOINT=1`.
 
 ## [1.7.0] - 2026-08-09
