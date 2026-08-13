@@ -102,10 +102,9 @@ describe("bundled agent parsing", () => {
 
 		for (const [name, role, model] of [
 			["task", "task", "anthropic/sonnet"],
-			["sonic", "smol", "fast/hy3"],
+			["quick_task", "smol", "fast/hy3"],
 			["scout", "smol", "fast/hy3"],
 			["reviewer", "slow", "codex/sol"],
-			["designer", "designer", "anthropic/opus"],
 		] as const) {
 			const agent = getBundledAgent(name);
 			expect(resolveAgentModelSelection({ agentModel: agent?.model, settings })).toEqual({

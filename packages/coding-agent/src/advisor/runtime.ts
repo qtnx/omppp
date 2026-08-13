@@ -324,7 +324,8 @@ interface DeliveredMessage {
 
 function fingerprintMessage(message: AgentMessage): bigint | undefined {
 	try {
-		const serialized = JSON.stringify(message);
+		const { timestamp: _timestamp, usage: _usage, ...stable } = message as AgentMessage & { usage?: unknown };
+		const serialized = JSON.stringify(stable);
 		return serialized === undefined ? undefined : Bun.hash.wyhash(serialized);
 	} catch {
 		return undefined;
@@ -808,7 +809,10 @@ export class AdvisorRuntime {
 		} catch {}
 	}
 
-	#resetAdvisorContext(clearBacklog: boolean, wakeWaiters: boolean): void {
+	#resetAdvisorContext(clearBacklog: boolean, wakeWaiters: boolean, reason?: string): void {
+		if (reason) {
+			logger.debug("advisor context reset", { reason });
+		}
 		this.#lastCount = 0;
 		this.#clearPending("reset");
 		this.#consecutiveFailures = 0;
@@ -960,14 +964,7 @@ export class AdvisorRuntime {
 		if (!this.#quotaExhausted && !this.#halted) void this.#drain();
 	}
 
-	/**
-	 * Re-prime the advisor after a history rewrite (compaction, session
-	 * switch/resume, branch). Clears the advisor's own (non-persisted) context
-	 * and rewinds the cursor to 0 so the NEXT turn replays the full current —
-	 * post-compaction — transcript, giving the advisor fresh context instead of
-	 * leaving it blind to everything before the rewrite.
-	 */
-	reset(): void {
+	reset(reason?: string): void {
 		this.#iterationAbort?.abort("advisor reset");
 		this.#epoch++;
 		this.#sessionTransitionPaused = false;
@@ -978,7 +975,7 @@ export class AdvisorRuntime {
 		this.#consecutiveQuarantines = 0;
 		this.#refusalModelsTried.clear();
 		this.#failureNotified = false;
-		this.#resetAdvisorContext(true, true);
+		this.#resetAdvisorContext(true, true, reason);
 		if (this.#inFlightConsult) {
 			this.#inFlightConsult.resolve(this.#clearedResult(this.#inFlightConsult.attempts));
 			this.#inFlightConsult = undefined;
@@ -1050,21 +1047,34 @@ export class AdvisorRuntime {
 		const all = messages ?? this.#latestMessages ?? this.host.snapshotMessages();
 		const transcriptShrank = all.length < this.#lastCount;
 		let prefixChanged = transcriptShrank;
+		let prefixChangeIndex = -1;
+		const differingFields: string[] = [];
 		for (let index = 0; !prefixChanged && index < this.#lastCount; index++) {
 			const delivered = this.#deliveredPrefix[index];
 			const current = all[index];
 			if (delivered === undefined || current === undefined) {
 				prefixChanged = true;
+				prefixChangeIndex = index;
 				break;
 			}
 			if (delivered.message !== current && delivered.fingerprint !== fingerprintMessage(current)) {
 				prefixChanged = true;
+				prefixChangeIndex = index;
+				const previous = delivered.message as unknown as Record<string, unknown>;
+				const next = current as unknown as Record<string, unknown>;
+				for (const key of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+					if (key === "timestamp" || key === "usage") continue;
+					if (previous[key] !== next[key]) differingFields.push(key);
+				}
 			} else {
 				delivered.message = current;
 			}
 		}
 		if (prefixChanged) {
-			this.#resetAdvisorContext(true, true);
+			if (prefixChangeIndex >= 0) {
+				logger.debug("advisor delivered prefix changed", { index: prefixChangeIndex, differingFields });
+			}
+			this.#resetAdvisorContext(true, true, "delivered-prefix-changed");
 			// A compaction may temporarily expose only a truncated prefix. Wait
 			// for its explicit reset/reprime instead of sending stale history.
 			if (transcriptShrank) return null;
@@ -1649,7 +1659,7 @@ export class AdvisorRuntime {
 						if (this.#consecutiveQuarantines >= MAX_QUARANTINE_RETRIES) {
 							this.#notifyFailureOnce(err);
 							this.#consecutiveQuarantines = 0;
-							this.#resetAdvisorContext(true, true);
+							this.#resetAdvisorContext(true, true, "quarantine-retry-exhausted");
 							if (consult && !consult.terminated) {
 								consult.resolve({
 									status: "provider_error",
@@ -1661,7 +1671,7 @@ export class AdvisorRuntime {
 							continue;
 						}
 						const rePrime = this.#pending.length > 0 ? this.#latestMessages : undefined;
-						this.#resetAdvisorContext(true, !rePrime);
+						this.#resetAdvisorContext(true, !rePrime, "quarantine-recovery");
 						if (rePrime) this.onTurnEnd(rePrime);
 						if (consult && !consult.terminated) this.#pending.push(consult);
 						continue;

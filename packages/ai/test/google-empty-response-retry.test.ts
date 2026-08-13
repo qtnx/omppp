@@ -143,6 +143,7 @@ describe("Google empty-response retry (public + Vertex path)", () => {
 
 		const stream = streamGoogle(genaiModel, context, {
 			apiKey: "k",
+			useInteractionsApi: false,
 			fetch: fetchMock,
 			acceptEmptyResponse: true,
 		});

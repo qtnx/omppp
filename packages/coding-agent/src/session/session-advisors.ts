@@ -1226,7 +1226,11 @@ export class SessionAdvisors {
 					requestModel.api === "google-gemini-cli" ||
 					requestModel.api === "google-vertex"
 				) {
-					return baseAdvisorStreamFn(requestModel, context, { ...options, acceptEmptyResponse: true });
+					return baseAdvisorStreamFn(requestModel, context, {
+						...options,
+						acceptEmptyResponse: true,
+						useInteractionsApi: false,
+					});
 				}
 				return baseAdvisorStreamFn(requestModel, context, options);
 			};

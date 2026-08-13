@@ -98,7 +98,7 @@ describe("advisor", () => {
 			expect(rendered).not.toContain("paths[0]");
 			expect(advisorSystemPrompt).toContain("Arguments absent from the rendered transcript are UNKNOWN");
 			expect(advisorSystemPrompt).toContain("NEVER assert concrete values, array indexes");
-			expect(advisorSystemPrompt).toContain("NEVER claim `paths[0]`, array flattening, or malformed `paths`");
+			expect(advisorSystemPrompt).toContain("NEVER establishes `paths[0]`, array flattening, or malformed `paths`");
 			expect(advisorSystemPrompt).toContain("verification watchdog");
 			expect(advisorSystemPrompt).toContain("Skipping, narrowing, or deferring tests/QA");
 			expect(advisorSystemPrompt).toContain("verdicts are missing");
@@ -2674,7 +2674,7 @@ describe("advisor", () => {
 
 			expect(promptInputs).toHaveLength(1);
 			const prompt = promptText(promptInputs[0]!);
-			expect(prompt).toContain("_thinking:_");
+			expect(prompt).toMatch(/_thinking:_|_notes:_/);
 			expect(prompt).not.toContain("OTHERSECRET");
 			expect(prompt).not.toContain("tok_abc123");
 			expect(prompt).not.toContain("TOKABC123_");

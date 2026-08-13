@@ -4778,7 +4778,11 @@ export class AgentSession {
 
 	/** Names of tools currently exposed at the top level. */
 	getActiveToolNames(): string[] {
-		return this.#tools.getActiveToolNames();
+		const names = this.#tools.getActiveToolNames();
+		for (const name of this.#liveDuoToolNames()) {
+			if (!names.includes(name)) names.push(name);
+		}
+		return names;
 	}
 
 	/** Enabled top-level and discoverable tool names. */
@@ -9926,7 +9930,9 @@ export class AgentSession {
 	 * @returns true when the advisor is actively running after the call.
 	 */
 	setAdvisorEnabled(enabled: boolean): boolean {
-		return this.#advisors.setAdvisorEnabled(enabled);
+		const active = this.#advisors.setAdvisorEnabled(enabled);
+		void this.#applyActiveToolsByName(this.getActiveToolNames());
+		return active;
 	}
 
 	/**
@@ -9935,7 +9941,9 @@ export class AgentSession {
 	 * @returns true when the advisor is actively running after the call.
 	 */
 	toggleAdvisorEnabled(): boolean {
-		return this.#advisors.toggleAdvisorEnabled();
+		const active = this.#advisors.toggleAdvisorEnabled();
+		void this.#applyActiveToolsByName(this.getActiveToolNames());
+		return active;
 	}
 
 	/**

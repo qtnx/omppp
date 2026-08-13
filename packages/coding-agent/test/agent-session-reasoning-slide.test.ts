@@ -114,7 +114,7 @@ describe("AgentSession reasoning slide", () => {
 		});
 
 		const calls: Array<{ model: string; hasNudge: boolean }> = [];
-		const nudgeMarker = "complete plan in your NEXT reply";
+		const nudgeMarker = "write complete plan";
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: {
@@ -133,6 +133,7 @@ describe("AgentSession reasoning slide", () => {
 					if (typeof content === "string") return content.includes(nudgeMarker);
 					return content.some(block => block.type === "text" && block.text.includes(nudgeMarker));
 				});
+
 				calls.push({ model: `${model.provider}/${model.id}`, hasNudge });
 				return mock.stream(model, context, options);
 			},
@@ -456,7 +457,7 @@ describe("AgentSession reasoning slide", () => {
 		const mock = createMockModel({
 			responses: [step("t1"), step("t2"), { content: ["done"] }],
 		});
-		const checklistMarker = "grep for every other call site";
+		const checklistMarker = "grep every other call site";
 		const calls: Array<{ model: string; hasChecklist: boolean }> = [];
 		const agent = new Agent({
 			getApiKey: () => "test-key",

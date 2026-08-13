@@ -157,7 +157,6 @@ describe("AgentSession concurrent prompt guard", () => {
 		const sessionManager = SessionManager.inMemory();
 		const settings = Settings.isolated();
 		const authStorage = await AuthStorage.create(path.join(tempDir, "testauth-abort-busy-retry.db"));
-		authStorages.push(authStorage);
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models-abort-busy-retry.yml"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const waitGate = Promise.withResolvers<void>();

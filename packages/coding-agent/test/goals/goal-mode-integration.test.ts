@@ -351,8 +351,8 @@ describe("InteractiveMode goal mode integration", () => {
 		const waiter = await armInputWaiter(harness.mode);
 		const setupStarted = Promise.withResolvers<void>();
 		const continueSetup = Promise.withResolvers<void>();
-		const setActiveTools = harness.session.setActiveToolsByName.bind(harness.session);
-		vi.spyOn(harness.session, "setActiveToolsByName").mockImplementationOnce(async toolNames => {
+		const setActiveTools = harness.session.setActiveToolsByNamePreservingMCPSelection.bind(harness.session);
+		vi.spyOn(harness.session, "setActiveToolsByNamePreservingMCPSelection").mockImplementationOnce(async toolNames => {
 			setupStarted.resolve();
 			await continueSetup.promise;
 			await setActiveTools(toolNames);

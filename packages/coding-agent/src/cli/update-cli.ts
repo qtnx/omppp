@@ -447,39 +447,6 @@ async function resolveUpdateTarget(options: { allowPackageManagers: boolean }): 
 	throw new Error(`Could not resolve ${APP_NAME} binary path in PATH`);
 }
 
-/**
- * Get the latest release info from the npm registry.
- * Uses npm instead of GitHub API to avoid unauthenticated rate limiting.
- */
-async function getLatestRelease(): Promise<ReleaseInfo> {
-	let response: Response;
-	try {
-		response = await fetch(`${NPM_REGISTRY}${PACKAGE}/latest`, {
-			signal: withTimeoutSignal(RELEASE_METADATA_TIMEOUT_MS),
-		});
-	} catch (err) {
-		if (isTimeoutError(err)) {
-			throw new Error("Timed out fetching release info after 30s", { cause: err });
-		}
-		throw err;
-	}
-	if (!response.ok) {
-		throw new Error(`Failed to fetch release info: ${response.statusText}`);
-	}
-
-	const data: unknown = await response.json();
-	if (!isRecord(data) || typeof data.version !== "string") {
-		throw new Error("Malformed npm registry response: missing version");
-	}
-	const version = data.version;
-
-	return {
-		tag: `v${version}`,
-		version,
-		dist: resolveReleaseDist(data),
-	};
-}
-
 interface BunInstallCachePruneResult {
 	scannedPackages: number;
 	removedEntries: number;
@@ -723,17 +690,6 @@ export function getBinaryNameForTest(platform: NodeJS.Platform, arch: NodeJS.Arc
  */
 function resolveOmpPath(): string | undefined {
 	return $which(APP_NAME) ?? undefined;
-}
-
-function resolveOmpxTarget(): string {
-	const ompxPath = resolveOmpPath();
-	if (!ompxPath) {
-		throw new Error(
-			`Could not resolve ${APP_NAME} binary path in PATH; reinstall with: ` +
-				"curl -fsSL https://raw.githubusercontent.com/qtnx/omppp/main/scripts/install.sh | sh",
-		);
-	}
-	return ompxPath;
 }
 
 /**

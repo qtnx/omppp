@@ -784,6 +784,7 @@ export class SessionTools {
 		const includeBuiltin = this.#effectiveDiscoveryMode === "all";
 		const tools = Array.from(this.#toolRegistry.values()).filter(tool => {
 			if (active.has(tool.name)) return false;
+			if ((tool as AgentTool & { defaultInactive?: boolean }).defaultInactive === true) return false;
 			const isMcp = isMCPToolName(tool.name);
 			const allowed = this.#isRequestedToolAllowed(tool.name) || (isMcp && !this.#hasExplicitlyRequestedMCPTools);
 			return allowed && (isMcp ? includeMcp : includeBuiltin && tool.loadMode === "discoverable");
@@ -1080,6 +1081,21 @@ export class SessionTools {
 				this.#host.settings.get("tools.approvalMode") === "yolo")
 		);
 	}
+	/**
+	 * Inactive extension tools opted out with `defaultInactive` are registered so
+	 * extensions can activate them later, but are not agent capabilities yet.
+	 * Keep them out of prompt catalogues and discovery summaries until enabled.
+	 */
+	#promptToolRegistryFor(enabledToolNames: Iterable<string>): Map<string, AgentTool> {
+		const enabled = new Set(enabledToolNames);
+		return new Map(
+			Array.from(this.#toolRegistry, ([name, tool]) => {
+				const defaultInactive = (tool as AgentTool & { defaultInactive?: boolean }).defaultInactive === true;
+				return !defaultInactive || enabled.has(name) ? [[name, tool] as const] : [];
+			}).flat(),
+		);
+	}
+
 
 	/** Applies an enabled tool set and reconciles its `xd://` partition. */
 	applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
@@ -1092,6 +1108,12 @@ export class SessionTools {
 	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
 		signal?.throwIfAborted();
 		const previousActiveToolNames = this.getEnabledToolNames();
+		// A newly enabled extension can be mounted under xd:// and therefore leave
+		// the active top-level names unchanged. Its registration must still rebuild
+		// the prompt: the extension's systemPrompt hook is the transactional
+		// boundary that either publishes the capability or rolls the registration
+		// back and reports the failure.
+		forcePromptRefresh ||= toolNames.some(name => !previousActiveToolNames.includes(name));
 		toolNames = normalizeToolNames([...toolNames, ...(this.#getPinnedRuntimeToolNames?.() ?? [])]);
 		let builtInWriteAvailable = this.#builtInToolNames.has("write");
 		if (toolNames.includes("write") && !builtInWriteAvailable) {
@@ -1163,7 +1185,7 @@ export class SessionTools {
 				if (forcePromptRefresh || signature !== this.#lastAppliedToolSignature) {
 					const built = await untilAborted(
 						signal,
-						this.#rebuildSystemPrompt(validToolNames, this.#toolRegistry, {
+						this.#rebuildSystemPrompt(validToolNames, this.#promptToolRegistryFor(toolNames), {
 							xdevTools: promptXdev ? xdevEntries(promptXdev) : [],
 							xdevDocs: promptXdev
 								? xdevDocsAll(
@@ -1823,7 +1845,7 @@ export class SessionTools {
 		const activeToolNames = this.getActiveToolNames();
 		this.#setActiveToolNames?.(activeToolNames);
 		const previousBaseSystemPrompt = this.#baseSystemPrompt;
-		const built = await this.#rebuildSystemPrompt(activeToolNames, this.#toolRegistry);
+		const built = await this.#rebuildSystemPrompt(activeToolNames, this.#promptToolRegistryFor(activeToolNames));
 		if (this.#host.isDisposed()) return;
 		this.#baseSystemPrompt = built.systemPrompt;
 		this.#basePromptXdevNames = new Set(built.xdevCatalogNames);
@@ -2038,43 +2060,45 @@ export class SessionTools {
 			const availableMcpToolNames = new Set(
 				reconciledTools.filter(tool => this.#isRequestedToolAllowed(tool.name)).map(tool => tool.name),
 			);
+			const priorSelection = new Set(
+				[...this.#selectedMCPToolNames].filter(name => availableMcpToolNames.has(name)),
+			);
+			// Explicit non-discovery allowlists are applied directly to the agent
+			// and therefore may not have populated #selectedMCPToolNames yet.
+			// Keep manager tools that were active across the catalog replacement.
+			const priorActiveManagerSelection = new Set(
+				[...previousEnabledMCPToolNames].filter(
+					name => previousMcpManagerToolNames.has(name) && availableMcpToolNames.has(name),
+				),
+			);
+			const defaultMcpToolNames = this.#defaultMCPToolNames(reconciledTools).filter(name =>
+				availableMcpToolNames.has(name),
+			);
+			// A manager refresh replaces the catalog, not the user's selection.
+			// Newly connected tools become discoverable; they are activated only by
+			// an explicit selection, configured default, or the caller's activateAll
+			// contract (ACP/direct non-discovery sessions).
 			const nextSelection = this.#hasExplicitMCPToolSelection
-				? new Set([...this.#selectedMCPToolNames].filter(name => availableMcpToolNames.has(name)))
-				: new Set(this.#selectedMCPToolNames);
-			const activateAll = options?.activateAll ?? (!this.#mcpDiscoveryEnabled && previouslyAllEnabled);
-			const defaultMcpToolNames = this.#defaultMCPToolNames(reconciledTools);
+				? new Set([...priorSelection, ...priorActiveManagerSelection])
+				: new Set([...priorSelection, ...priorActiveManagerSelection, ...defaultMcpToolNames]);
+			const activateAll =
+				options?.activateAll ??
+				((!this.#mcpDiscoveryEnabled && previouslyAllEnabled) || (previousMcpTools.size === 0 && !this.#mcpEnabled));
 			const retainedActiveExtensionToolNames = [...previousEnabledMCPToolNames].filter(
 				name => this.#extensionMcpTools.has(name) && this.#toolRegistry.has(name),
 			);
 			const nextMCPToolNames = activateAll
 				? [...availableMcpToolNames]
-				: this.#mcpDiscoveryEnabled
-					? reconciledTools
-							.filter(
-								tool =>
-									availableMcpToolNames.has(tool.name) &&
-									(nextSelection.has(tool.name) ||
-										this.#mcpManagerToolNames.has(tool.name) ||
-										(!this.#hasExplicitMCPToolSelection && defaultMcpToolNames.includes(tool.name))),
-							)
-							.map(tool => tool.name)
-					: [...this.#mcpManagerToolNames];
+				: reconciledTools
+						.filter(tool => availableMcpToolNames.has(tool.name) && nextSelection.has(tool.name))
+						.map(tool => tool.name);
 			const nextActive = [
-				...new Set([
-					...this.#getActiveNonMCPToolNames(),
-					...nextMCPToolNames,
-					...retainedActiveExtensionToolNames,
-				]),
+				...new Set([...this.#getActiveNonMCPToolNames(), ...nextMCPToolNames, ...retainedActiveExtensionToolNames]),
 			];
 			const nextHasExplicitSelection =
-				this.#hasExplicitMCPToolSelection ||
-				activateAll ||
-				(!this.#hasExplicitMCPToolSelection && defaultMcpToolNames.length > 0);
+				this.#hasExplicitMCPToolSelection || activateAll || defaultMcpToolNames.length > 0;
 			const previousHasExplicitSelection = this.#hasExplicitMCPToolSelection;
-			const committedSelection =
-				activateAll || (!this.#hasExplicitMCPToolSelection && defaultMcpToolNames.length > 0)
-					? new Set(nextMCPToolNames)
-					: nextSelection;
+			const committedSelection = activateAll ? new Set(nextMCPToolNames) : nextSelection;
 			try {
 				await this.#applyActiveToolsByName(nextActive);
 				if (this.#host.isDisposed()) {

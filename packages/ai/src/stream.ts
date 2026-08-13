@@ -1789,6 +1789,7 @@ function mapOptionsForApi<TApi extends Api>(
 					thinking: resolveGoogleThinkingOff(model),
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
 					cachedContent: options?.cachedContent,
+					useInteractionsApi: options?.useInteractionsApi,
 				});
 			}
 
@@ -1808,6 +1809,7 @@ function mapOptionsForApi<TApi extends Api>(
 					hideThinkingSummary: options?.hideThinkingSummary,
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
 					cachedContent: options?.cachedContent,
+					useInteractionsApi: options?.useInteractionsApi,
 				});
 			}
 
@@ -1820,6 +1822,7 @@ function mapOptionsForApi<TApi extends Api>(
 				hideThinkingSummary: options?.hideThinkingSummary,
 				toolChoice: mapGoogleToolChoice(options?.toolChoice),
 				cachedContent: options?.cachedContent,
+				useInteractionsApi: options?.useInteractionsApi,
 			});
 		}
 

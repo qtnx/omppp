@@ -92,7 +92,7 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		settings.setModelRole("advisor", `${planner.provider}/${planner.id}`);
 
 		const registryToolNames = options.registryToolNames ?? [
-			...ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES.filter(name => name !== "consult"),
+			...ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES,
 			"duo_handoff",
 			"duo_escalate",
 		];
@@ -211,7 +211,7 @@ describe("AgentSession live duo/advisor tool availability", () => {
 
 	it("registers and activates consult when an initially disabled advisor is started later", () => {
 		const session = createHarness({ duoMode: "off", advisorEnabled: false, activeToolNames: ["read"] });
-		expect(session.getToolByName("consult")).toBeUndefined();
+		expect(session.getToolByName("consult")?.name).toBe("consult");
 		expect(session.getActiveToolNames()).not.toContain("consult");
 
 		expect(session.setAdvisorEnabled(true)).toBe(true);

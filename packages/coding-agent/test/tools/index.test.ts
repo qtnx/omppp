@@ -339,7 +339,6 @@ describe("createTools", () => {
 		expect(names).toContain("search_tool_bm25");
 	});
 
-
 	it("allows checkpoint/rewind in subagent when explicitly requested and enabled", async () => {
 		const names = (
 			await createTools(

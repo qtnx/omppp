@@ -174,7 +174,6 @@ export function LivePanel({ client, snapshot }: LivePanelProps): ReactNode {
 
 	return (
 		<section className="lv-panel" aria-label="Voice call">
-			{/* biome-ignore lint/a11y/useMediaCaption: realtime assistant audio has no caption track. */}
 			<audio ref={audioRef} autoPlay playsInline />
 			<div className="lv-row">
 				{peer ? (

@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentTranscriptViewer } from "@oh-my-pi/pi-coding-agent/modes/components/agent-transcript-viewer";
 import type { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
 import { WorkflowHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/workflow-hub";
@@ -12,6 +13,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { WorkflowRunRegistry } from "@oh-my-pi/pi-coding-agent/workflow/run-registry";
 
 beforeAll(async () => {
+	await Settings.init({ inMemory: true });
 	await initTheme();
 });
 

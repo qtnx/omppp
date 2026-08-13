@@ -62,12 +62,10 @@ test("keeps Gemini 3.6 advisor context and accepts a silent review", async () =>
 			systemInstruction: {
 				parts: [{ text: expect.any(String) }],
 			},
-			tools: [
-				{
-					functionDeclarations: [{ name: "advise" }],
-				},
-			],
 		});
+		const body = bodies[0] as { tools?: Array<{ functionDeclarations?: Array<{ name?: string }> }> };
+		const declared = body.tools?.[0]?.functionDeclarations?.map(entry => entry.name) ?? [];
+		expect(declared).toContain("advise");
 	} finally {
 		await session.dispose();
 		auth.close();
