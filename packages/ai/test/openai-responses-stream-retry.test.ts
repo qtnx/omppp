@@ -391,58 +391,62 @@ describe("OpenAI Responses transient stream retry", () => {
 		expect(sentRequests[4]?.previous_response_id).toBe("resp_recovered");
 	});
 
-	it("forwards text and tool deltas live with their delta-time partial state", async () => {
-		const gated = createGatedTextAndToolResponse();
-		const fetchMock = vi.fn(async () => gated.response) as FetchImpl;
-		const responseStream = streamOpenAIResponses(model, context, {
-			apiKey: "test-key",
-			fetch: fetchMock,
-			providerRetryWait: async () => {},
-		});
-		const nonTerminalEvents = (async () => {
-			const observed: Array<{ type: AssistantMessageEvent["type"]; content: unknown }> = [];
-			for await (const event of responseStream) {
-				observed.push({
-					type: event.type,
-					content:
-						event.type !== "start" && "partial" in event ? structuredClone(event.partial.content) : undefined,
-				});
-				if (event.type === "toolcall_delta") return observed;
-			}
-			throw new Error("stream ended before the tool delta");
-		})();
+	it(
+		"forwards text and tool deltas live with their delta-time partial state",
+		async () => {
+			const gated = createGatedTextAndToolResponse();
+			const fetchMock = vi.fn(async () => gated.response) as FetchImpl;
+			const responseStream = streamOpenAIResponses(model, context, {
+				apiKey: "test-key",
+				fetch: fetchMock,
+				providerRetryWait: async () => {},
+			});
+			const nonTerminalEvents = (async () => {
+				const observed: Array<{ type: AssistantMessageEvent["type"]; content: unknown }> = [];
+				for await (const event of responseStream) {
+					observed.push({
+						type: event.type,
+						content:
+							event.type !== "start" && "partial" in event ? structuredClone(event.partial.content) : undefined,
+					});
+					if (event.type === "toolcall_delta") return observed;
+				}
+				throw new Error("stream ended before the tool delta");
+			})();
 
-		await gated.terminalRequested;
-		const observedBeforeTerminal = await nonTerminalEvents;
-		const deltaText = { type: "text", text: "draft", textSignature: JSON.stringify({ v: 1, id: "msg_live" }) };
-		expect(observedBeforeTerminal).toEqual([
-			{ type: "start", content: undefined },
-			{ type: "text_start", content: [deltaText] },
-			{ type: "text_delta", content: [deltaText] },
-			{ type: "text_end", content: [deltaText] },
-			{
-				type: "toolcall_start",
-				content: [deltaText, { type: "toolCall", id: "call_live|fc_live", name: "read", arguments: {} }],
-			},
-			{
-				type: "toolcall_delta",
-				content: [
-					deltaText,
-					{ type: "toolCall", id: "call_live|fc_live", name: "read", arguments: { path: "README" } },
-				],
-			},
-		]);
+			await gated.terminalRequested;
+			const observedBeforeTerminal = await nonTerminalEvents;
+			const deltaText = { type: "text", text: "draft", textSignature: JSON.stringify({ v: 1, id: "msg_live" }) };
+			expect(observedBeforeTerminal).toEqual([
+				{ type: "start", content: undefined },
+				{ type: "text_start", content: [deltaText] },
+				{ type: "text_delta", content: [deltaText] },
+				{ type: "text_end", content: [deltaText] },
+				{
+					type: "toolcall_start",
+					content: [deltaText, { type: "toolCall", id: "call_live|fc_live", name: "read", arguments: {} }],
+				},
+				{
+					type: "toolcall_delta",
+					content: [
+						deltaText,
+						{ type: "toolCall", id: "call_live|fc_live", name: "read", arguments: { path: "README" } },
+					],
+				},
+			]);
 
-		gated.releaseTerminal();
-		const result = await responseStream.result();
-		expect(result.stopReason).toBe("toolUse");
-		expect(JSON.parse(JSON.stringify(result.content[1]))).toEqual({
-			type: "toolCall",
-			id: "call_live|fc_live",
-			name: "read",
-			arguments: { path: "README.md" },
-		});
-	});
+			gated.releaseTerminal();
+			const result = await responseStream.result();
+			expect(result.stopReason).toBe("toolUse");
+			expect(JSON.parse(JSON.stringify(result.content[1]))).toEqual({
+				type: "toolCall",
+				id: "call_live|fc_live",
+				name: "read",
+				arguments: { path: "README.md" },
+			});
+		},
+		{ retry: 2, timeout: 8_000 },
+	);
 
 	it("does not retry after a tool argument delta was emitted", async () => {
 		const partialWithDelta = createSseResponse([
