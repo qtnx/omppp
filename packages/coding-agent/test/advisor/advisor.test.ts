@@ -998,7 +998,7 @@ describe("advisor", () => {
 			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
 			return {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (opts?.respond) state.messages.push(...opts.respond(input));
 				},
 				abort: () => {},
@@ -1185,7 +1185,7 @@ describe("advisor", () => {
 			let promptCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					if (promptCalls === 1) await firstPromptPromise;
 					else finishSecondPrompt();
@@ -1640,7 +1640,7 @@ describe("advisor", () => {
 			const { promise: hold } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					markStarted();
 					await hold;
 				},
@@ -1673,7 +1673,7 @@ describe("advisor", () => {
 			let maintainCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					startPrompt();
 				},
 				abort: () => {},
@@ -1724,7 +1724,7 @@ describe("advisor", () => {
 			let maintainCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					startPrompt();
 				},
 				abort: () => {},
@@ -1793,7 +1793,7 @@ describe("advisor", () => {
 			};
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (promptInputs.length === 1) startPrompt();
 				},
 				abort: () => {},
@@ -1823,7 +1823,7 @@ describe("advisor", () => {
 			let maintainCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					startPrompt();
 				},
 				abort: () => {},
@@ -1936,7 +1936,7 @@ describe("advisor", () => {
 			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					startPrompt();
 				},
 				abort: () => {},
@@ -1965,7 +1965,7 @@ describe("advisor", () => {
 			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					startPrompt();
 				},
 				abort: () => {},
@@ -1994,7 +1994,7 @@ describe("advisor", () => {
 			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					startPrompt();
 				},
 				abort: () => {},
@@ -2023,7 +2023,7 @@ describe("advisor", () => {
 			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					startPrompt();
 				},
 				abort: () => {},
@@ -2833,7 +2833,7 @@ describe("advisor", () => {
 			let promptCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					if (promptCalls === 1) finishFirst();
 					else finishSecond();
@@ -2896,7 +2896,7 @@ describe("advisor", () => {
 			let promptCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					state.error = promptCalls === 1 ? "transient provider 500" : undefined;
 				},
@@ -3008,7 +3008,7 @@ describe("advisor", () => {
 			let promptCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					if (promptCalls === 2) finishSecond();
 				},
@@ -3048,7 +3048,7 @@ describe("advisor", () => {
 			let abortCount = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					if (promptCalls === 1) finishFirst();
 					else if (promptCalls === 2) finishSecond();
@@ -3099,7 +3099,7 @@ describe("advisor", () => {
 			let resetCount = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					if (promptCalls === 1) finishFirst();
 					else finishSecond();
@@ -3144,7 +3144,7 @@ describe("advisor", () => {
 			let resetCount = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 				},
 				abort: () => {},
 				reset: () => {
@@ -3239,7 +3239,7 @@ describe("advisor", () => {
 			let resetCount = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					state.error = promptCalls === 1 ? overflowMessage : undefined;
 				},
@@ -3391,7 +3391,7 @@ describe("advisor", () => {
 			let promptCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					state.error = promptCalls === 1 ? overflowMessage : undefined;
 				},
@@ -3436,13 +3436,13 @@ describe("advisor", () => {
 			let resetCount = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					if (promptCalls !== 1) {
 						state.error = undefined;
 						return;
 					}
-					state.messages.push({ role: "user", content: input, timestamp: 2 } as AgentMessage);
+					state.messages.push({ role: "user", content: promptText(input), timestamp: 2 } as AgentMessage);
 					const failure: AssistantMessage = {
 						role: "assistant",
 						content: [],
@@ -3507,7 +3507,7 @@ describe("advisor", () => {
 			let promptCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					state.error = promptCalls === 2 ? overflowMessage : undefined;
 				},
@@ -3561,7 +3561,7 @@ describe("advisor", () => {
 			let failingAttempts = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (!promptText(input).includes("first-overflow")) {
 						state.error = undefined;
 						return;
@@ -3624,7 +3624,7 @@ describe("advisor", () => {
 			const { promise: promptFinish, resolve: finishPrompt } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					startPrompt();
 					await promptFinish;
 				},
@@ -3718,7 +3718,7 @@ describe("advisor", () => {
 			let fail = true;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (fail) {
 						fail = false;
 						throw new Error("fail");
@@ -3747,7 +3747,7 @@ describe("advisor", () => {
 			const promptInputs: Array<string | AgentMessage[]> = [];
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					throw new Error("fail");
 				},
 				abort: () => {},
@@ -3776,7 +3776,7 @@ describe("advisor", () => {
 			let shouldFail = true;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (shouldFail) {
 						throw new Error("404 No endpoints available matching your guardrail restrictions and data policy.");
 					}
@@ -3839,7 +3839,7 @@ describe("advisor", () => {
 			const failures: unknown[] = [];
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					throw new Error(
 						"Codex error event: The 'gpt-5.3-codex-spark' model is not supported when using Codex with a ChatGPT account. (code=invalid_request_error)",
 					);
@@ -3886,7 +3886,7 @@ describe("advisor", () => {
 			let shouldFail = true;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (shouldFail) throw new Error("socket hang up");
 				},
 				abort: () => {},
@@ -3973,7 +3973,7 @@ describe("advisor", () => {
 			const promptInputs: Array<string | AgentMessage[]> = [];
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 				},
 				abort: () => {},
 				reset: () => {},
@@ -4045,7 +4045,7 @@ describe("advisor", () => {
 				const promptInputs: Array<string | AgentMessage[]> = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
-						promptInputs.push(input);
+						promptInputs.push(promptText(input));
 					},
 					abort: () => {},
 					reset: () => {},
@@ -4071,7 +4071,7 @@ describe("advisor", () => {
 				const promptInputs: Array<string | AgentMessage[]> = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
-						promptInputs.push(input);
+						promptInputs.push(promptText(input));
 					},
 					abort: () => {},
 					reset: () => {},
@@ -4118,7 +4118,7 @@ describe("advisor", () => {
 				const promptInputs: Array<string | AgentMessage[]> = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
-						promptInputs.push(input);
+						promptInputs.push(promptText(input));
 					},
 					abort: () => {},
 					reset: () => {},
@@ -4153,7 +4153,7 @@ describe("advisor", () => {
 				const promptInputs: Array<string | AgentMessage[]> = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
-						promptInputs.push(input);
+						promptInputs.push(promptText(input));
 					},
 					abort: () => {},
 					reset: () => {},
@@ -4182,7 +4182,7 @@ describe("advisor", () => {
 				const promptInputs: Array<string | AgentMessage[]> = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
-						promptInputs.push(input);
+						promptInputs.push(promptText(input));
 					},
 					abort: () => {},
 					reset: () => {},
@@ -4231,7 +4231,7 @@ describe("advisor", () => {
 			let shouldFail = true;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					state.error = shouldFail
 						? "404 No endpoints available matching your guardrail restrictions and data policy."
 						: undefined;
@@ -4288,7 +4288,7 @@ describe("advisor", () => {
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					promptCalls++;
-					state.messages.push({ role: "user", content: input, timestamp: promptCalls * 2 - 1 } as AgentMessage);
+					state.messages.push({ role: "user", content: promptText(input), timestamp: promptCalls * 2 - 1 } as AgentMessage);
 					state.messages.push({
 						role: "assistant",
 						content: [],
@@ -4348,7 +4348,7 @@ describe("advisor", () => {
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					promptCalls++;
-					state.messages.push({ role: "user", content: input, timestamp: promptCalls * 2 - 1 } as AgentMessage);
+					state.messages.push({ role: "user", content: promptText(input), timestamp: promptCalls * 2 - 1 } as AgentMessage);
 					state.messages.push({
 						role: "assistant",
 						content: [],
@@ -4409,7 +4409,7 @@ describe("advisor", () => {
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					promptCalls++;
-					state.messages.push({ role: "user", content: input, timestamp: promptCalls * 2 - 1 } as AgentMessage);
+					state.messages.push({ role: "user", content: promptText(input), timestamp: promptCalls * 2 - 1 } as AgentMessage);
 					// A real model turn that CHOSE silence: it reasoned, spent
 					// output/reasoning tokens, and emitted no `advise` call. This is
 					// the documented verifier behavior, not a provider malfunction.
@@ -4476,7 +4476,7 @@ describe("advisor", () => {
 			let promptCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					if (promptCalls === 1) {
 						state.error = "Refusal (reasoning_extraction): reasoning may not be echoed";
@@ -4543,7 +4543,7 @@ describe("advisor", () => {
 			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					state.error = "Refusal (reasoning_extraction): reasoning may not be echoed";
 					state.messages.push({
 						role: "assistant",
@@ -4601,7 +4601,7 @@ describe("advisor", () => {
 			let modelRefuses = true;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (modelRefuses) {
 						state.error = "Refusal (cyber): blocked under Anthropic's Usage Policy";
 						state.messages.push({
@@ -4673,7 +4673,7 @@ describe("advisor", () => {
 			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					state.error = "Refusal (cyber): blocked under Anthropic's Usage Policy";
 					state.messages.push({
 						role: "assistant",
@@ -4748,7 +4748,7 @@ describe("advisor", () => {
 			let identity = "anthropic/claude-fable-5";
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					state.error = "Refusal (cyber): blocked under Anthropic's Usage Policy";
 					state.messages.push({
 						role: "assistant",
@@ -4815,7 +4815,7 @@ describe("advisor", () => {
 			let identity = "model/a";
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					state.error = "Refusal (cyber): blocked under Anthropic's Usage Policy";
 					state.messages.push({
 						role: "assistant",
@@ -4877,7 +4877,7 @@ describe("advisor", () => {
 			let promptCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					if (promptCalls === 1) {
 						state.error = "Refusal: reasoning may not be echoed";
@@ -4946,7 +4946,7 @@ describe("advisor", () => {
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					promptCalls++;
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					events.push(`prompt:${promptCalls}`);
 					state.error = promptCalls === 1 ? "provider failed" : undefined;
 				},
@@ -4989,7 +4989,7 @@ describe("advisor", () => {
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					promptCalls++;
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					events.push(`prompt:${promptCalls}`);
 					state.error = `provider failed ${promptCalls}`;
 				},
@@ -5048,7 +5048,7 @@ describe("advisor", () => {
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					promptCalls++;
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					events.push(`prompt:${promptCalls}`);
 					state.error = promptCalls === 1 ? "provider failed" : undefined;
 				},
@@ -5091,8 +5091,8 @@ describe("advisor", () => {
 			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
-					state.messages.push({ role: "user", content: input, timestamp: 1 } as AgentMessage);
+					promptInputs.push(promptText(input));
+					state.messages.push({ role: "user", content: promptText(input), timestamp: 1 } as AgentMessage);
 					const failure: AssistantMessage = {
 						role: "assistant",
 						content: [],
@@ -5168,7 +5168,7 @@ describe("advisor", () => {
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					lengthsBeforePrompt.push(state.messages.length);
-					state.messages.push({ role: "user", content: input, timestamp: Date.now() } as AgentMessage);
+					state.messages.push({ role: "user", content: promptText(input), timestamp: Date.now() } as AgentMessage);
 					if (shouldFail) {
 						state.messages.push({
 							role: "assistant",
@@ -5241,9 +5241,9 @@ describe("advisor", () => {
 			let resetCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					lengthsBeforePrompt.push(state.messages.length);
-					state.messages.push({ role: "user", content: input, timestamp: Date.now() } as AgentMessage);
+					state.messages.push({ role: "user", content: promptText(input), timestamp: Date.now() } as AgentMessage);
 					if (promptInputs.length === 1) {
 						state.messages.push({
 							role: "assistant",
@@ -5307,7 +5307,7 @@ describe("advisor", () => {
 			let promptCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					if (promptCalls === 1) {
 						startFirstPrompt();
@@ -5348,7 +5348,7 @@ describe("advisor", () => {
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					promptCalls++;
-					state.messages.push({ role: "user", content: input, timestamp: Date.now() } as AgentMessage);
+					state.messages.push({ role: "user", content: promptText(input), timestamp: Date.now() } as AgentMessage);
 					if (shouldQuarantine) {
 						state.messages.push({
 							role: "assistant",
@@ -5418,7 +5418,7 @@ describe("advisor", () => {
 			let promptCalls = 0;
 			const agent: AdvisorAgent = {
 				prompt: input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					promptCalls++;
 					if (promptCalls === 1) {
 						const { promise, reject } = Promise.withResolvers<void>();
@@ -5474,7 +5474,7 @@ describe("advisor", () => {
 			let rejectInFlight: ((reason?: unknown) => void) | undefined;
 			const agent: AdvisorAgent = {
 				prompt: input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (promptInputs.length > 1) return Promise.resolve();
 					const gate = Promise.withResolvers<void>();
 					rejectInFlight = gate.reject;
@@ -5511,7 +5511,7 @@ describe("advisor", () => {
 			let runtime: AdvisorRuntime;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					prompted.resolve();
 				},
 				abort: () => {},
@@ -5698,8 +5698,9 @@ describe("advisor", () => {
 			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
 			return {
 				prompt: async input => {
-					promptInputs.push(input);
-					state.messages.push(...respond(input));
+					const text = promptText(input);
+					promptInputs.push(text);
+					state.messages.push(...respond(text));
 				},
 				abort: () => {},
 				reset: () => {
@@ -5786,7 +5787,7 @@ describe("advisor", () => {
 			const { promise: started, resolve: markStarted } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					markStarted();
 				},
 				abort: () => {},
@@ -5816,7 +5817,7 @@ describe("advisor", () => {
 			const { promise: releasePrompt, resolve: finishPrompt } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					markStarted();
 					await releasePrompt;
 				},
@@ -5910,7 +5911,7 @@ describe("advisor", () => {
 			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (fail) {
 						fail = false;
 						throw new Error("transient");
@@ -5941,7 +5942,7 @@ describe("advisor", () => {
 			const promptInputs: string[] = [];
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					throw new Error("down");
 				},
 				abort: () => {},
@@ -5968,7 +5969,7 @@ describe("advisor", () => {
 			const { promise: hold } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					markStarted();
 					await hold;
 				},
@@ -6055,7 +6056,7 @@ describe("advisor", () => {
 			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (promptInputs.length === 1) {
 						controller.abort();
 						throw new Error("flaky");
@@ -6133,7 +6134,7 @@ describe("advisor", () => {
 			const controller = new AbortController();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 				},
 				abort: () => {},
 				reset: () => {},
@@ -6161,7 +6162,7 @@ describe("advisor", () => {
 			const promptInputs: string[] = [];
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					throw new Error("usage_limit_reached");
 				},
 				abort: () => {},
@@ -6206,7 +6207,7 @@ describe("advisor", () => {
 			const { promise: hold } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					markStarted();
 					await hold;
 				},
@@ -6281,7 +6282,7 @@ describe("advisor", () => {
 		function makeAgent(promptInputs: string[]): AdvisorAgent {
 			return {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 				},
 				abort: () => {},
 				reset: () => {},
@@ -6325,7 +6326,7 @@ describe("advisor", () => {
 		function makeAgent(promptInputs: string[]): AdvisorAgent {
 			return {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 				},
 				abort: () => {},
 				reset: () => {},
@@ -6916,7 +6917,7 @@ describe("advisor", () => {
 			let failureNotified = false;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					throw new Error("resource_exhausted");
 				},
 				abort: () => {},
@@ -6958,7 +6959,7 @@ describe("advisor", () => {
 			const failures: unknown[] = [];
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					throw new Error("overloaded: server is at capacity");
 				},
 				abort: () => {},
@@ -6989,7 +6990,7 @@ describe("advisor", () => {
 			let shouldFail = true;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (shouldFail) throw new Error("insufficient_quota: rate limit exceeded");
 				},
 				abort: () => {},
@@ -7064,7 +7065,7 @@ describe("advisor", () => {
 			let firstCall = true;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (firstCall) {
 						firstCall = false;
 						throw new Error("insufficient_quota: you have exceeded your rate limit");
@@ -7104,11 +7105,11 @@ describe("advisor", () => {
 			let callCount = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					callCount++;
 					if (callCount === 1) throw new Error("insufficient_quota");
 					if (callCount === 2) {
-						state.messages.push({ role: "user", content: input, timestamp: Date.now() } as AgentMessage);
+						state.messages.push({ role: "user", content: promptText(input), timestamp: Date.now() } as AgentMessage);
 					}
 				},
 				abort: () => {},
@@ -7139,7 +7140,7 @@ describe("advisor", () => {
 			const promptInputs: Array<string | AgentMessage[]> = [];
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					throw new Error("insufficient_quota: you have exceeded your rate limit");
 				},
 				abort: () => {},
@@ -7172,7 +7173,7 @@ describe("advisor", () => {
 			const promptInputs: Array<string | AgentMessage[]> = [];
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (promptText(input).includes("stale-turn")) {
 						throw new Error("insufficient_quota: you have exceeded your rate limit");
 					}
@@ -7261,7 +7262,7 @@ describe("advisor", () => {
 			let callCount = 0;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					callCount++;
 					if (callCount === 1) {
 						throw new Error("insufficient_quota: you have exceeded your rate limit");
@@ -7314,7 +7315,7 @@ describe("advisor", () => {
 			let firstCall = true;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (firstCall) {
 						firstCall = false;
 						throw new Error("insufficient_quota: you have exceeded your rate limit");
@@ -7359,7 +7360,7 @@ describe("advisor", () => {
 			const promptInputs: Array<string | AgentMessage[]> = [];
 			const agent: AdvisorAgent = {
 				prompt: async input => {
-					promptInputs.push(input);
+					promptInputs.push(promptText(input));
 					if (promptInputs.length <= 2) {
 						throw new Error("429 Too Many Requests: quota exceeded");
 					}

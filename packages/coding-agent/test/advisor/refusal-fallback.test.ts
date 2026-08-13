@@ -39,7 +39,7 @@ interface FakeAdvisorAgent extends AdvisorAgent {
 function makeAgent(options: {
 	primary: Model;
 	onPrompt: (
-		input: string,
+		input: string | AgentMessage[],
 		currentModel: Model,
 		state: { messages: AgentMessage[]; error?: string },
 	) => Promise<void> | void;
