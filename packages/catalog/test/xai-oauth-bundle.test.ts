@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import MODELS_JSON from "@oh-my-pi/pi-catalog/models.json" with { type: "json" };
-import { buildXaiOAuthStaticSeed } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
-import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
+import {
+	buildXaiOAuthStaticSeed,
+	xaiOAuthModelManagerOptions,
+} from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
+import type { FetchImpl, ModelSpec } from "@oh-my-pi/pi-catalog/types";
 
 // Pins the invariant: bundled `models.json` carries every entry the runtime
 // curated catalog (XAI_OAUTH_CURATED_MODELS, surfaced via
@@ -16,6 +21,38 @@ describe("xai-oauth bundled catalog (regression)", () => {
 	const bundled =
 		(MODELS_JSON as unknown as Record<string, Record<string, ModelSpec<"openai-responses">>>)["xai-oauth"] ?? {};
 	const seed = buildXaiOAuthStaticSeed();
+
+	it("curates a dynamically discovered grok-4.6 ahead of uncurated models", async () => {
+		const fetchMock: FetchImpl = async () =>
+			new Response(
+				JSON.stringify({
+					data: [
+						{ id: "grok-future-unlisted", object: "model" },
+						{ id: "grok-4.6", object: "model" },
+					],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+
+		const discovered = await xaiOAuthModelManagerOptions({
+			apiKey: "xai-oauth-test-token",
+			fetch: fetchMock,
+		}).fetchDynamicModels?.();
+
+		expect(discovered?.[0]).toMatchObject({
+			id: "grok-4.6",
+			name: "Grok 4.6",
+			contextWindow: 500_000,
+			maxTokens: 500_000,
+			reasoning: true,
+			input: ["text", "image"],
+			compat: {
+				supportsReasoningEffort: true,
+				omitReasoningEffort: false,
+			},
+		});
+		expect(discovered?.find(model => model.id === "grok-future-unlisted")?.compat?.omitReasoningEffort).toBe(true);
+	});
 
 	it("bundles every curated id", () => {
 		const seededIds = seed.map(model => model.id).sort();
@@ -40,6 +77,40 @@ describe("xai-oauth bundled catalog (regression)", () => {
 			expect(bundledEntry.compat?.supportsReasoningEffort).toBe(seededModel.compat?.supportsReasoningEffort);
 		});
 	}
+
+	it("pins Grok 4.5 and 4.6 OAuth metadata and reasoning contracts", () => {
+		const grok45 = seed.find(model => model.id === "grok-4.5");
+		const grok46 = seed.find(model => model.id === "grok-4.6");
+		if (!grok45 || !grok46) {
+			throw new Error("Grok 4.5 and 4.6 must be in the xAI OAuth curated seed");
+		}
+
+		expect(seed[0]?.id).toBe("grok-4.6");
+		expect(grok46).toMatchObject({
+			name: "Grok 4.6",
+			contextWindow: 500_000,
+			maxTokens: 500_000,
+			reasoning: true,
+			input: ["text", "image"],
+		});
+
+		const built45 = buildModel(grok45);
+		const built46 = buildModel(grok46);
+		expect(built45.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Low, Effort.Medium, Effort.High],
+			defaultLevel: Effort.High,
+			requiresEffort: true,
+		});
+		expect(built46.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			defaultLevel: Effort.High,
+			requiresEffort: true,
+		});
+		expect(bundled["grok-4.5"]?.thinking).toEqual(built45.thinking);
+		expect(bundled["grok-4.6"]?.thinking).toEqual(built46.thinking);
+	});
 
 	// Absolute contract for the user-specified SuperGrok addition. The parity
 	// loop above can't catch a value typo (e.g. 2_000_000) or a flipped

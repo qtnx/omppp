@@ -76,11 +76,11 @@ export interface ThinkingConfig {
 	 */
 	suppressWhenOff?: boolean;
 	/**
-	 * Reasoning is mandatory upstream: the endpoint rejects disabled or
-	 * omitted thinking (e.g. OpenRouter Gemini 3.x — "Reasoning is mandatory
-	 * for this endpoint and cannot be disabled"). Request mapping clamps
-	 * thinking-off to the lowest supported effort unless `suppressWhenOff`
-	 * provides an explicit wire off-path.
+	 * Reasoning is mandatory upstream and cannot be disabled. Request mapping
+	 * applies `defaultLevel` when reasoning is omitted, falls back to the lowest
+	 * supported effort when no default exists, and clamps explicit thinking-off
+	 * requests to that same lowest effort unless `suppressWhenOff` provides an
+	 * explicit wire off-path.
 	 */
 	requiresEffort?: boolean;
 }

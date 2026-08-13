@@ -9,7 +9,7 @@ import type {
 	AgentToolContext,
 	AgentToolResult,
 	AgentToolUpdateCallback,
-	ToolTier,
+	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { isEnoent, isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
@@ -502,7 +502,7 @@ function parseSqliteWriteTarget(subPath: string, queryString: string): { table: 
  */
 export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails> {
 	readonly name = "write";
-	readonly approval = (args: unknown): ToolTier => {
+	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const rawPath = (args as Partial<WriteParams>).path;
 		if (typeof rawPath !== "string") return "write";
 		// Unwrap a hashline `[path#TAG]` wrapper first (parity with execute) so a
@@ -525,7 +525,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (typeof rawContent !== "string") return "exec";
 			try {
 				const validated = validateXdevDeviceArgs(inst, rawContent, "write-xdev-approval");
-				return resolveToolTier(inst, validated);
+				return { tier: resolveToolTier(inst, validated), policyKey: xdevTarget.name! };
 			} catch {
 				return "exec";
 			}
@@ -661,7 +661,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const entries = new Map<string, ArchiveMemberContent>();
 		if (archiveExists) {
 			try {
-				const existing = await readArchiveEntries({ bytes: await Bun.file(finalPath).bytes(), format });
+				const existing = await readArchiveEntries({ path: finalPath, format });
 				for (const [entryPath, data] of existing) {
 					entries.set(entryPath, data);
 				}

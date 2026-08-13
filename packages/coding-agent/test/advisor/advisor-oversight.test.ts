@@ -16,6 +16,20 @@ import type { ToolSession } from "../../src/tools";
 import { getLatestTodoPhasesFromEntries, type TodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "../../src/tools/todo";
 import { ToolError } from "../../src/tools/tool-errors";
 
+function promptText(input: string | AgentMessage[]): string {
+	if (typeof input === "string") return input;
+	return input
+		.map(message => {
+			const content = (message as { content?: unknown }).content;
+			if (typeof content === "string") return content;
+			if (Array.isArray(content)) {
+				return content.map(block => (block as { text?: string }).text ?? "").join("\n");
+			}
+			return String(message);
+		})
+		.join("\n");
+}
+
 const tempDirs: string[] = [];
 
 afterEach(async () => {
@@ -34,7 +48,7 @@ function createAdvisorAgent(promptInputs: string[]): AdvisorAgent {
 	const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
 	return {
 		prompt: async input => {
-			promptInputs.push(input);
+			promptInputs.push(promptText(input));
 		},
 		abort: () => {},
 		reset: () => {},

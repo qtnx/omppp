@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
 import type { LoadExtensionsResult } from "../../src/extensibility/extensions/types";
@@ -308,6 +309,10 @@ async function initUnbornStatsRepo(): Promise<string> {
 	return repo;
 }
 
+const configuredModels = getBundledModels("openai-codex").filter(model =>
+	["codex-auto-review", "gpt-5.5"].includes(model.id),
+);
+if (configuredModels.length !== 2) throw new Error("Expected bundled reviewer test models");
 function createSession(overrides: Partial<Record<string, unknown>> = {}, cwd = "/tmp"): ToolSession {
 	const authStorage = {
 		onCredentialDisabled: () => () => {},
@@ -315,7 +320,7 @@ function createSession(overrides: Partial<Record<string, unknown>> = {}, cwd = "
 	const modelRegistry = {
 		authStorage,
 		refresh: async () => {},
-		getAvailable: () => [],
+		getAvailable: () => configuredModels,
 		syncExtensionSources: () => {},
 		clearSourceRegistrations: () => {},
 		refreshRuntimeProviders: async () => {},

@@ -1,4 +1,4 @@
-import { VERSION } from "@oh-my-pi/pi-utils";
+import { USER_AGENT } from "@oh-my-pi/pi-utils";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import {
 	fetchOpenAICompatibleModels,
@@ -111,7 +111,7 @@ const catalogSession: {
 	hasPayload: boolean;
 } = { inflight: null, payload: undefined, etag: null, hasPayload: false };
 
-const CATALOG_USER_AGENT = `omp/${VERSION} (+https://omp.sh)`;
+const CATALOG_USER_AGENT = USER_AGENT;
 
 /**
  * Fetches the models.dev catalog via catalog.stencil.so, which serves a
@@ -1203,7 +1203,8 @@ interface XAICuratedModel {
 }
 
 // Source of truth for the xai-oauth chat picker. Top of list = headline.
-// Context windows from hermes-agent/agent/model_metadata.py:205-220
+// Grok 4.6 metadata: https://docs.x.ai/developers/models/grok-4.6.
+// Other context windows from hermes-agent/agent/model_metadata.py:205-220
 // ("Values sourced from models.dev (2026-04)"). grok-build is xAI's
 // coding-fine-tuned chat model; 512K context per user spec (2026-05-17).
 //
@@ -1212,6 +1213,7 @@ interface XAICuratedModel {
 // omit/include/history replay defaults live in catalog compat so every
 // OpenAI-family endpoint consumes the same constraint.
 export const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
+	{ id: "grok-4.6", contextWindow: 500_000, name: "Grok 4.6", input: ["text", "image"] },
 	{
 		id: "grok-build",
 		contextWindow: 512_000,
@@ -1808,6 +1810,7 @@ const FIREWORKS_FAST_VARIANT_SPECS: ReadonlyArray<{
 	{ base: "kimi-k2.7-code", name: "Kimi K2.7 Code Fast", cost: { input: 1.9, output: 8, cacheRead: 0.38 } },
 	{ base: "kimi-k2.6", name: "Kimi K2.6 Fast", cost: { input: 2, output: 8, cacheRead: 0.3 } },
 	{ base: "glm-5.1", name: "GLM-5.1 Fast", cost: { input: 2.8, output: 8.8, cacheRead: 0.52 } },
+	{ base: "glm-5.2", name: "GLM-5.2 Fast", cost: { input: 2.1, output: 6.6, cacheRead: 0.21 } },
 ];
 
 /**
@@ -3545,10 +3548,13 @@ export function basetenModelManagerOptions(
 			const features = Array.isArray(raw.supported_features) ? raw.supported_features : [];
 			const modalities = Array.isArray(raw.input_modalities) ? raw.input_modalities : [];
 
-			const isBasetenNativeReasoning =
+			// Baseten's reasoning router accepts only the high/max
+			// effort tiers for its GLM-5.2 and gpt-oss routes.
+			const isEffortReasoning =
 				defaults.id === "openai/gpt-oss-120b" ||
-				defaults.id === "deepseek-ai/DeepSeek-V4-Pro" ||
-				defaults.id === "zai-org/GLM-5.2";
+				defaults.id === "zai-org/GLM-5.2" ||
+				defaults.id === "zai-org/GLM-5.2-Fast";
+			const isBasetenNativeReasoning = isEffortReasoning || defaults.id === "deepseek-ai/DeepSeek-V4-Pro";
 			const reasoning =
 				isBasetenNativeReasoning && (features.includes("reasoning") || features.includes("reasoning_effort"));
 			const supportsTools = features.includes("tools") ? undefined : false;
@@ -3566,10 +3572,6 @@ export function basetenModelManagerOptions(
 			const maxTokens = toPositiveNumber(raw.max_completion_tokens, reference?.maxTokens ?? defaults.maxTokens);
 
 			const baseModel = mapWithBundledReference(entry, defaults, reference);
-
-			// Baseten's reasoning router accepts only the high/max
-			// effort tiers for its GLM-5.2 and gpt-oss routes.
-			const isEffortReasoning = defaults.id === "openai/gpt-oss-120b" || defaults.id === "zai-org/GLM-5.2";
 			const thinking = isEffortReasoning
 				? {
 						mode: "effort" as const,
@@ -3647,6 +3649,40 @@ export const META_MUSE_STATIC_MODELS: readonly ModelSpec<"openai-responses">[] =
 		reasoning: true,
 		input: ["text", "image"],
 		cost: META_MUSE_SPARK_COST,
+		contextWindow: 1_048_576,
+		maxTokens: 131_072,
+		thinking: META_MUSE_SPARK_THINKING,
+		compat: {
+			supportsReasoningEffort: true,
+			includeEncryptedReasoning: true,
+		},
+	},
+	{
+		id: "muse-spark-1.2",
+		name: "Muse Spark 1.2",
+		api: "openai-responses",
+		provider: "meta",
+		baseUrl: META_MODEL_API_BASE_URL,
+		reasoning: true,
+		input: ["text", "image"],
+		cost: META_MUSE_SPARK_COST,
+		contextWindow: 1_048_576,
+		maxTokens: 131_072,
+		thinking: META_MUSE_SPARK_THINKING,
+		compat: {
+			supportsReasoningEffort: true,
+			includeEncryptedReasoning: true,
+		},
+	},
+	{
+		id: "muse-spark-1.2-contributor",
+		name: "Muse Spark 1.2 Contributor (Data Used for Training)",
+		api: "openai-responses",
+		provider: "meta",
+		baseUrl: META_MODEL_API_BASE_URL,
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
 		contextWindow: 1_048_576,
 		maxTokens: 131_072,
 		thinking: META_MUSE_SPARK_THINKING,

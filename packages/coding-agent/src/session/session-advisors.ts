@@ -650,8 +650,8 @@ export class SessionAdvisors {
 	}
 
 	/** Re-primes advisor transcript views after an in-conversation history rewrite. */
-	resetAllRuntimes(): void {
-		this.#resetAllAdvisorRuntimes();
+	resetAllRuntimes(reason?: string): void {
+		this.#resetAllAdvisorRuntimes(reason);
 	}
 
 	/** Preserve advisor context while aligning cursors after automatic primary-history pruning. */
@@ -788,7 +788,7 @@ export class SessionAdvisors {
 		for (const a of this.#advisors) {
 			a.agentUnsubscribe?.();
 			a.agentUnsubscribe = undefined;
-			a.runtime.reset();
+			a.runtime.reset("conversation-boundary");
 			a.adviseTool.resetDeliveredNotes();
 			a.emissionGuard.reset();
 			this.#attachAdvisorRecorderFeed(a);
@@ -1214,14 +1214,26 @@ export class SessionAdvisors {
 				mcpResources: this.#advisorMcpResources,
 			});
 			const baseAdvisorStreamFn = this.#advisorStreamFn ?? streamSimple;
-			const advisorStreamFn: StreamFn = (requestModel, context, options) =>
-				baseAdvisorStreamFn(
-					requestModel,
-					context,
-					requestModel.api === "openai-codex-responses"
-						? { ...options, codexSseMaxAttempts: ADVISOR_CODEX_SSE_MAX_ATTEMPTS }
-						: options,
-				);
+			const advisorStreamFn: StreamFn = (requestModel, context, options) => {
+				if (requestModel.api === "openai-codex-responses") {
+					return baseAdvisorStreamFn(requestModel, context, {
+						...options,
+						codexSseMaxAttempts: ADVISOR_CODEX_SSE_MAX_ATTEMPTS,
+					});
+				}
+				if (
+					requestModel.api === "google-generative-ai" ||
+					requestModel.api === "google-gemini-cli" ||
+					requestModel.api === "google-vertex"
+				) {
+					return baseAdvisorStreamFn(requestModel, context, {
+						...options,
+						acceptEmptyResponse: true,
+						useInteractionsApi: false,
+					});
+				}
+				return baseAdvisorStreamFn(requestModel, context, options);
+			};
 			const advisorAgent = new Agent({
 				initialState: {
 					systemPrompt,
@@ -1261,8 +1273,11 @@ export class SessionAdvisors {
 					let quarantined: string | undefined;
 					try {
 						quarantinedAdvisorOutput = undefined;
-						currentAdvisorInput = input;
-						await advisorAgent.prompt(input, images);
+						currentAdvisorInput = Array.isArray(input)
+							? formatSessionHistoryMarkdown(input, { watchedRoles: true })
+							: input;
+						if (Array.isArray(input)) await advisorAgent.prompt(input);
+						else await advisorAgent.prompt(input, images);
 						quarantined = quarantinedAdvisorOutput;
 					} finally {
 						quarantinedAdvisorOutput = undefined;
@@ -1525,8 +1540,8 @@ export class SessionAdvisors {
 	}
 
 	/** Re-prime every advisor's transcript view after an in-conversation history rewrite. */
-	#resetAllAdvisorRuntimes(): void {
-		for (const a of this.#advisors) a.runtime.reset();
+	#resetAllAdvisorRuntimes(reason?: string): void {
+		for (const a of this.#advisors) a.runtime.reset(reason);
 	}
 
 	#stopAdvisorRuntime(): void {

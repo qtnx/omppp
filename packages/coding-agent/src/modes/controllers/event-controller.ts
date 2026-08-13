@@ -76,6 +76,12 @@ function exposesRawPartialJson(toolName: string, rawInput: boolean, tool: unknow
 type AgentSessionEventHandlers = {
 	[E in AgentSessionEventKind]: (event: Extract<AgentSessionEvent, { type: E }>) => Promise<void>;
 };
+interface ApprovalPreviewGate {
+	promise: Promise<void>;
+	resolve(): void;
+	reject(reason?: unknown): void;
+	started: boolean;
+}
 
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
@@ -94,6 +100,8 @@ export class EventController {
 	/** Tool calls whose approval prompt drove the title into `attention`; cleared
 	 *  at their tool_execution_end so the title returns to `working`. */
 	#approvalAttentionToolCallIds = new Set<string>();
+	#approvalPreviewGates = new Map<string, ApprovalPreviewGate>();
+	#detachToolApprovalPreviewWaiter: (() => void) | undefined;
 	#readToolCallArgs = new Map<string, Record<string, unknown>>();
 	#readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#toolTimelineComponents = new Map<string, Component>();
@@ -212,6 +220,9 @@ export class EventController {
 		// vocalizer falls back to mechanical cleanup when unset. Tolerates
 		// partial contexts (tests, minimal embeddings) by wiring null.
 		const session = ctx.session;
+		this.#detachToolApprovalPreviewWaiter = session?.extensionRunner?.setToolApprovalPreviewWaiter(toolCallId =>
+			this.#waitForToolApprovalPreview(toolCallId),
+		);
 		vocalizer.setEnhancer(
 			session?.modelRegistry && session.agent && session.settings
 				? new SpeechEnhancer({
@@ -290,6 +301,9 @@ export class EventController {
 	}
 
 	dispose(): void {
+		this.#detachToolApprovalPreviewWaiter?.();
+		this.#detachToolApprovalPreviewWaiter = undefined;
+		this.#clearApprovalPreviewGates();
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -313,6 +327,36 @@ export class EventController {
 		this.#lastReadGroup?.finalize();
 		this.#lastReadGroup = undefined;
 	}
+	#approvalPreviewGate(toolCallId: string): ApprovalPreviewGate {
+		let gate = this.#approvalPreviewGates.get(toolCallId);
+		if (!gate) {
+			const deferred = Promise.withResolvers<void>();
+			gate = { ...deferred, started: false };
+			this.#approvalPreviewGates.set(toolCallId, gate);
+		}
+		return gate;
+	}
+
+	async #waitForToolApprovalPreview(toolCallId: string): Promise<void> {
+		await this.#approvalPreviewGate(toolCallId).promise;
+	}
+
+	#startToolApprovalPreview(toolCallId: string): void {
+		const gate = this.#approvalPreviewGate(toolCallId);
+		if (gate.started) return;
+		gate.started = true;
+		const component = this.ctx.pendingTools.get(toolCallId);
+		const ready = component instanceof ToolExecutionComponent ? component.whenPreviewSettled() : Promise.resolve();
+		void ready.then(() => {
+			this.ctx.ui.requestRender();
+			gate.resolve();
+		}, gate.reject);
+	}
+
+	#clearApprovalPreviewGates(): void {
+		for (const gate of this.#approvalPreviewGates.values()) gate.resolve();
+		this.#approvalPreviewGates.clear();
+	}
 
 	#getReadGroup(): ReadToolGroupComponent {
 		if (!this.#lastReadGroup) {
@@ -320,7 +364,6 @@ export class EventController {
 				showContentPreview: this.ctx.settings.get("read.toolResultPreview"),
 			});
 			group.setExpanded(this.ctx.toolOutputExpanded);
-			group.setToolActivityVisible(!this.ctx.hideToolActivity);
 			this.ctx.chatContainer.addChild(group);
 			this.#lastReadGroup = group;
 		}
@@ -753,6 +796,7 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		this.#clearApprovalPreviewGates();
 		this.#toolTimelineComponents.clear();
 		this.#streamedToolCallIdByIndex.clear();
 		this.#retractedToolCallIds.clear();
@@ -1172,7 +1216,6 @@ export class EventController {
 						content.id,
 					);
 					component.setExpanded(this.ctx.toolOutputExpanded);
-					component.setToolActivityVisible(!this.ctx.hideToolActivity);
 					this.ctx.chatContainer.addChild(component);
 					this.ctx.pendingTools.set(content.id, component);
 					this.#toolTimelineComponents.set(content.id, component);
@@ -1401,6 +1444,7 @@ export class EventController {
 					this.ctx.pendingTools.set(event.toolCallId, group);
 					this.#toolTimelineComponents.set(event.toolCallId, group);
 				}
+				this.#startToolApprovalPreview(event.toolCallId);
 				this.ctx.ui.requestRender();
 				return;
 			}
@@ -1424,8 +1468,8 @@ export class EventController {
 				this.ctx.sessionManager.getCwd(),
 				event.toolCallId,
 			);
+			component.setArgsComplete(event.toolCallId);
 			component.setExpanded(this.ctx.toolOutputExpanded);
-			component.setToolActivityVisible(!this.ctx.hideToolActivity);
 			this.ctx.chatContainer.addChild(component);
 			this.ctx.pendingTools.set(event.toolCallId, component);
 			this.#toolTimelineComponents.set(event.toolCallId, component);
@@ -1451,6 +1495,7 @@ export class EventController {
 				this.ctx.ui.requestRender();
 			}
 		}
+		this.#startToolApprovalPreview(event.toolCallId);
 	}
 
 	/**
@@ -1664,8 +1709,8 @@ export class EventController {
 			// This text can be a provider error copied verbatim off the wire (the
 			// Cursor todo bridge forwards the server's string), so it may carry
 			// ANSI escapes, other C0/C1 controls, tabs, newlines, or a line far
-			// wider than the terminal. `showWarning` renders through a plain
-			// `Text`, which strips none of that — an escape reaches the terminal
+			// wider than the terminal. `showWarning` renders through a plain `Text`,
+			// which strips none of that — an escape reaches the terminal
 			// and can repaint outside the row. `sanitizeText` drops the control
 			// sequences (and returns the same reference when there are none),
 			// then `previewLine` collapses the remaining whitespace and bounds
@@ -1677,6 +1722,7 @@ export class EventController {
 			const detail = textContent ? previewLine(sanitizeText(textContent), TRUNCATE_LENGTHS.LINE) : "";
 			this.ctx.showWarning(
 				`Todo update failed${detail ? `: ${detail}` : ". Progress may be stale until todo succeeds."}`,
+				{ hideWithToolActivity: true },
 			);
 		}
 		// Plan approval rides a `write` to xd://propose: the dispatch metadata on
@@ -2138,7 +2184,6 @@ export class EventController {
 		const component = new TodoReminderComponent(event.todos, event.attempt, event.maxAttempts);
 		this.ctx.present(component);
 	}
-
 	async #handleTodoAutoClear(_event: Extract<AgentSessionEvent, { type: "todo_auto_clear" }>): Promise<void> {
 		await this.ctx.reloadTodos();
 	}

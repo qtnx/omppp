@@ -115,6 +115,7 @@ import type { CustomTool, CustomToolContext, CustomToolSessionEvent } from "./ex
 import {
 	discoverAndLoadExtensions,
 	discoverExtensionPaths,
+	EXTENSION_HANDLER_TIMEOUT_MS,
 	type ExtensionContext,
 	type ExtensionFactory,
 	ExtensionRunner,
@@ -123,6 +124,7 @@ import {
 	type LoadExtensionsResult,
 	loadExtensionFromFactory,
 	loadExtensions,
+	type RegisteredTool,
 	type ToolDefinition,
 	wrapRegisteredTools,
 } from "./extensibility/extensions";
@@ -146,6 +148,7 @@ import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-e
 import {
 	deduplicateMCPToolsByName,
 	discoverAndLoadMCPTools,
+	getMCPToolOriginKey,
 	type MCPLoadResult,
 	MCPManager,
 	MCPToolCache,
@@ -275,6 +278,7 @@ import {
 	renderSearchToolBm25Description,
 	resolveMountedXdevExecutable,
 	SearchToolBm25Tool,
+	supportsExternalThinking,
 	type Tool,
 	type ToolSession,
 	WebSearchTool,
@@ -2258,6 +2262,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			| ((liveSession: AgentSession, activation: DeferredMCPActivation) => void)
 			| undefined;
 		const customTools: CustomTool[] = [];
+		const initialMcpManagerTools: CustomTool[] = [];
 		const startupQuiet = settings.get("startup.quiet");
 		const onMCPStatus = (event: McpConnectionStatusEvent) => {
 			if (!options.hasUI || startupQuiet) return;
@@ -2360,10 +2365,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					logger.error("MCP tool load failed", { path, error });
 				}
 
-				if (mcpResult.tools.length > 0) {
-					// MCP tools are LoadedCustomTool, extract the tool property
-					customTools.push(...mcpResult.tools.map(loaded => loaded.tool));
-				}
+				// MCP tools are LoadedCustomTool, extract the tool property while
+				// retaining their origins for initial registry ownership.
+				const loadedMcpTools = mcpResult.tools.map(loaded => loaded.tool);
+				customTools.push(...loadedMcpTools);
+				initialMcpManagerTools.push(...loadedMcpTools);
 			}
 		}
 
@@ -3136,6 +3142,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			autoApprove: options.autoApprove ?? false,
 		});
 		const toolContextStore = new ToolContextStore(getSessionContext);
+		const setSessionActiveToolNames = (names: Iterable<string>): void => {
+			const snapshot = Array.from(names);
+			setActiveToolNames(snapshot);
+			toolContextStore.setToolNames(snapshot);
+		};
 		// Native built-in implementations backing same-tool `ctx.invokeTool`, so a tool that
 		// re-registers a built-in (e.g. wrapping `write`) can delegate to the original — reaching the
 		// unwrapped native execute, which inherits the caller's already-granted approval rather than
@@ -3146,10 +3157,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const nativeToolsByName = new Map<string, Tool>(toolSession.xdev?.tools ?? undefined);
 
 		const registeredTools = restrictToolNames ? [] : extensionRunner.getAllRegisteredTools();
+		const initialRegisteredTools = new WeakSet(registeredTools);
 		const sdkCustomTools =
 			restrictToolNames && options.allowRestrictedCustomTools !== true
 				? []
 				: (options.customTools?.filter(tool => !isLegacyBuiltinToolDefinition(tool)) ?? []);
+		const sdkCustomToolNames = new Set(sdkCustomTools.map(tool => tool.name));
 		const allCustomTools = [
 			...registeredTools,
 			...sdkCustomTools.map(tool => {
@@ -3164,6 +3177,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const wrappedExtensionTools: Tool[] = deduplicateMCPToolsByName(
 			wrapRegisteredTools(allCustomTools, extensionRunner).map(wrapToolWithMetaNotice),
 		);
+		const initialMcpManagerToolNames = new Set<string>();
+		for (const tool of wrappedExtensionTools) {
+			const originKey = getMCPToolOriginKey(tool);
+			const matchesManagerOrigin =
+				originKey !== undefined &&
+				initialMcpManagerTools.some(
+					managerTool => managerTool.name === tool.name && getMCPToolOriginKey(managerTool) === originKey,
+				);
+			if (matchesManagerOrigin) initialMcpManagerToolNames.add(tool.name);
+		}
 
 		// All built-in tools are active (conditional tools like git/ask return null from factory if disabled)
 		const builtInRegistryToolNames = toolSession.xdev?.builtInNames ?? new Set(toolRegistry.keys());
@@ -3204,6 +3227,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			for (const name of collectPendingMCPToolNames(options.toolNames)) {
 				if (!toolRegistry.has(name)) {
 					toolRegistry.set(name, createPendingMCPTool(name));
+					initialMcpManagerToolNames.add(name);
 				}
 			}
 		}
@@ -3876,7 +3900,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			initialToolNames = topLevelToolNames;
 		}
 
-		setActiveToolNames(initialToolNames);
+		setSessionActiveToolNames(initialToolNames);
 		const { systemPrompt } = await logger.time(
 			"buildSystemPrompt",
 			rebuildSystemPrompt,
@@ -4125,7 +4149,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					}
 				}
 				try {
-					const response = settingsAwareStreamFn(streamModel, context, streamOptions);
+					const externalThinking =
+						settings.get("externalThinking") &&
+						agent.state.tools.some(tool => tool.name === "think") &&
+						supportsExternalThinking(streamModel);
+					const response = settingsAwareStreamFn(streamModel, context, {
+						...streamOptions,
+						forceReasoningOff: externalThinking || streamOptions?.forceReasoningOff,
+					});
 					void Promise.resolve(response)
 						.then(stream => stream.result())
 						.finally(releaseCredentialUse)
@@ -4307,6 +4338,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			createComputerTool: restrictToolNames
 				? undefined
 				: async () => (await BUILTIN_TOOLS.computer(toolSession)) ?? null,
+			createThinkTool: async () => (await HIDDEN_TOOLS.think(toolSession)) ?? null,
 			createInspectImageTool: restrictToolNames
 				? undefined
 				: async () => (await BUILTIN_TOOLS.inspect_image(toolSession)) ?? null,
@@ -4315,6 +4347,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					? () => createVibeTools(toolSession)
 					: undefined,
 			builtInToolNames: builtInRegistryToolNames,
+			mcpManagerToolNames: initialMcpManagerToolNames,
 			transformContext,
 			contextGcDbPath,
 			transformProviderContext,
@@ -4331,7 +4364,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getXdevToolEntries: () => (toolSession.xdev ? xdevEntries(toolSession.xdev) : []),
 			xdev: toolSession.xdev,
 			presentationPinnedToolNames: explicitlyRequestedToolNameSet,
-			setActiveToolNames,
+			setActiveToolNames: setSessionActiveToolNames,
 			ensureWriteRegistered,
 			getMcpServerInstructions: mcpManager
 				? () => {
@@ -4383,12 +4416,120 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			titleSystemPrompt: options.titleSystemPrompt,
 		});
 		hasSession = true;
+		// Extension factories normally register tools before session construction,
+		// but Pi-compatible extensions may discover them asynchronously from a
+		// session_start handler. Install those late registrations into the live
+		// registry and serialize activation so no update can overwrite a sibling.
+		const scheduledToolRegistrations = new WeakMap<RegisteredTool, Promise<void>>();
+		const scheduleToolRegistration = (registered: RegisteredTool, signal?: AbortSignal): Promise<void> => {
+			const scheduled = scheduledToolRegistrations.get(registered);
+			if (scheduled) return scheduled;
+			const activationSignal = signal ?? AbortSignal.timeout(EXTENSION_HANDLER_TIMEOUT_MS);
+
+			const [wrapped] = wrapRegisteredTools([registered], extensionRunner);
+			if (!wrapped) return Promise.resolve();
+			const name = registered.definition.name;
+			const liveTool = new ExtensionToolWrapper(wrapToolWithMetaNotice(wrapped), extensionRunner);
+			// Capture ordinary extension precedence while the listener observes this exact registration.
+			// A later same-name registration may replace the extension map before serialized activation runs.
+			const isEffectiveRegistrant = extensionRunner.getRegisteredTool(name) === registered;
+			const activation = session.runToolRegistryMutation(async () => {
+				activationSignal.throwIfAborted();
+				const existingTool = toolRegistry.get(name);
+				const previousExtensionMcpTool = session.getExtensionMCPTool(name);
+				const wasMcpManagerTool = session.hasMCPManagerTool(name);
+				if (existingTool) {
+					// RPC host tools and SDK custom tools retain their startup precedence when an
+					// extension registers the same name later.
+					if (session.hasRpcHostTool(name) || sdkCustomToolNames.has(name)) return;
+					// Put the replacement first so same-origin MCP re-registration keeps it. Distinct MCP origins still
+					// use the stable winner; ordinary tool collisions retain the extension runner's last-wins precedence.
+					const competingTools = deduplicateMCPToolsByName([liveTool, existingTool]);
+					if (competingTools.length === 1) {
+						if (competingTools[0] !== liveTool) return;
+					} else if (!isEffectiveRegistrant) {
+						return;
+					}
+				} else if (!isEffectiveRegistrant) {
+					return;
+				}
+
+				const enabled = session.getEnabledToolNames();
+				const alreadyEnabled = enabled.includes(name);
+				const explicitlyRequested = explicitlyRequestedToolNameSet?.has(name) === true;
+				const mounted = session.getMountedXdevToolNames();
+				const wasBuiltIn = builtInRegistryToolNames.has(name);
+				toolRegistry.set(name, liveTool);
+				builtInRegistryToolNames.delete(name);
+				session.setToolBuiltIn(name, false);
+				session.setExtensionMCPTool(name, liveTool);
+				try {
+					if (registered.definition.defaultInactive && !explicitlyRequested) {
+						if (!alreadyEnabled) return;
+						await session.setActiveToolPresentation(
+							enabled.filter(enabledName => enabledName !== name),
+							mounted.filter(mountedName => mountedName !== name),
+							existingTool !== undefined,
+							activationSignal,
+						);
+						return;
+					}
+					// Re-registration refreshes the implementation, but it must not reverse an
+					// explicit setActiveTools() decision that disabled the previous definition.
+					if (existingTool && !alreadyEnabled) return;
+					const shouldMount =
+						!explicitlyRequested &&
+						toolSession.xdev !== undefined &&
+						builtInRegistryToolNames.has("read") &&
+						builtInRegistryToolNames.has("write") &&
+						enabled.includes("read") &&
+						enabled.includes("write") &&
+						isMountableUnderXdev(liveTool);
+					const nextMounted = shouldMount
+						? mounted.includes(name)
+							? mounted
+							: [...mounted, name]
+						: mounted.filter(mountedName => mountedName !== name);
+					await session.setActiveToolPresentation(
+						alreadyEnabled ? enabled : [...enabled, name],
+						nextMounted,
+						true,
+						activationSignal,
+					);
+				} catch (error) {
+					if (existingTool) {
+						toolRegistry.set(name, existingTool);
+					} else {
+						toolRegistry.delete(name);
+					}
+					if (wasBuiltIn) builtInRegistryToolNames.add(name);
+					session.setToolBuiltIn(name, wasBuiltIn);
+					session.setExtensionMCPTool(name, previousExtensionMcpTool);
+					session.setMCPManagerTool(name, wasMcpManagerTool);
+					throw error;
+				}
+			}, activationSignal);
+			scheduledToolRegistrations.set(registered, activation);
+			return activation;
+		};
+		if (!restrictToolNames) {
+			const unsubscribeToolRegistrations = extensionRunner.onToolRegistered(scheduleToolRegistration);
+			disposeCallbacks.add(unsubscribeToolRegistrations);
+
+			// Close the construction race: a background registration can land after
+			// the initial snapshot but before the live listener above is attached.
+			for (const registered of extensionRunner.getAllRegisteredTools()) {
+				if (!initialRegisteredTools.has(registered)) {
+					await scheduleToolRegistration(registered);
+				}
+			}
+		}
 		session.yieldQueue.register<McpNotificationEntry>("mcp-notification", {
 			build: buildMcpNotificationBatchMessage,
 		});
 		session.yieldQueue.register<DeferredDiagnosticsEntry>(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, {
-			isStale: entry => entry.isStale(),
 			build: buildLateDiagnosticsBatchMessage,
+			isStale: entry => entry.isStale(),
 		});
 		session.yieldQueue.register<BrowserAnnotationEntry>(BROWSER_ANNOTATION_MESSAGE_TYPE, {
 			build: buildBrowserAnnotationBatchMessage,

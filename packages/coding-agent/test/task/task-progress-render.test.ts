@@ -390,7 +390,8 @@ describe("task progress rendering", () => {
 		for (const id of ["DoneOne", "DoneTwo", "DoneThree"]) {
 			expect(collapsed).not.toContain(id);
 		}
-		expect(collapsed).toContain("… 3 more agents (3 done)");
+		expect(collapsed).toContain("… 3 more agents · total: 7");
+		expect(collapsed).toContain("3 done");
 		// The summary line sits above the visible rows (live edge at the bottom).
 		expect(collapsed.indexOf("more agents")).toBeLessThan(collapsed.indexOf("LiveOne"));
 

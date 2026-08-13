@@ -1,14 +1,14 @@
 {{#if budgetStop}}
 <system-reminder>
-This run crossed its request budget and the in-flight turn was stopped. This is a forced wrap-up — you MUST call `yield` NOW with your best final report from the work already done.
+Request budget crossed; in-flight turn stopped → forced wrap-up. MUST call `yield` NOW with best final report from completed work.
 
-- Consolidate everything of value you have gathered so far; name remaining gaps explicitly as incomplete instead of investigating further.
-- Do NOT call any other tool and do NOT resume the assignment.
-- Terminal `yield` only: omit `type` and put the report in `result.data`, or use `type: string` to finalize from your last assistant turn.
+- Consolidate all gathered value; mark remaining gaps incomplete, do not investigate further.
+- Do NOT call another tool or resume assignment.
+- Terminal `yield` only: omit `type`, report in `result.data`; or `type: string` to finalize from last assistant turn.
 </system-reminder>
 {{else}}
 <system-reminder>
-Your last turn ended without a tool call, so the session went idle. This is reminder {{retryCount}} of {{maxRetries}}.
+Last turn had no tool call → session idle. Reminder {{retryCount}} of {{maxRetries}}.
 
 Every turn MUST end with a tool call. Pick the first that applies:
 1. **Resume the work** — if the assignment is not finished and you are not recording an incremental section, call the next tool you would have called (edit, write, bash, grep, glob, search, etc.). NEVER yield. NEVER treat this reminder as a forced stop.
@@ -16,8 +16,8 @@ Every turn MUST end with a tool call. Pick the first that applies:
 3. **Yield with success** — only if the assignment is genuinely complete: call terminal `yield`. Omit `type` for the single final structured result in `result.data`; use `type: string` to finalize from the last assistant turn when data is omitted.
 4. **Yield with error** — only if you hit a real, concrete blocker you can name (missing file, unavailable API, contradictory spec). Describe what you tried and the exact blocker. NEVER fabricate a "forced immediate-yield" or "system reminder required termination" reason — this reminder is not a blocker.
 
-Default to option 1 unless the work is actually done, actually blocked, or ready for an incremental section.
+Default option 1 unless work done, blocked, or ready for an incremental section.
 
-You NEVER end this turn with text only.
+NEVER end this turn with text only.
 </system-reminder>
 {{/if}}
