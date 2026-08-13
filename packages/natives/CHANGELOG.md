@@ -5,7 +5,7 @@
 ### Changed
 
 - GitHub-hosted native jobs install host cargo, sccache, and zig only when they still run clippy or the Rust test suite. Darwin addon builds restore the `release-darwin-*` bazel disk cache seeded by `bazel-cache-warm`, so macos-15-intel is not a 40–50 minute cold graph. Other platforms keep a per-target natives-* scope.
-- Native CI jobs and the darwin bazel warmer now time out after 15 minutes so a cold macos-15-intel graph cannot hold a release for 40–50 minutes.
+- Native CI jobs and the darwin bazel warmer now time out after 15 minutes so a cold macos-15-intel graph cannot hold a release. Win32 xwin stays at 25 minutes because the first CRT/SDK fetch is ~1 GiB.
 
 
 ### Fixed

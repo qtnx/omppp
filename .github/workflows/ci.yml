@@ -293,7 +293,6 @@ jobs:
                - { os: ubuntu-22.04, platform: linux, arch: arm64, target: aarch64-unknown-linux-gnu }
                - { os: ubuntu-22.04, platform: linux, libc: musl, arch: x64, target: x86_64-unknown-linux-musl, variant: baseline }
                - { os: ubuntu-22.04, platform: linux, libc: musl, arch: arm64, target: aarch64-unknown-linux-musl }
-               - { os: ubuntu-22.04, platform: win32, arch: x64, target: x86_64-pc-windows-msvc, variant: baseline }
       runs-on: ${{ matrix.os }}
       steps:
          - uses: actions/checkout@v4
@@ -306,6 +305,26 @@ jobs:
               variant: ${{ matrix.variant }}
               target: ${{ matrix.target }}
               glibc: ${{ matrix.platform == 'linux' && matrix.libc != 'musl' && env.GLIBC_FLOOR || '' }}
+              save_cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+   # xwin CRT/SDK first fetch is ~1 GiB and regularly exceeds the 15-minute
+   # linux/darwin cap. Cache hits finish faster; the timeout is only the
+   # cold-graph ceiling.
+   native_cross_platform_win32:
+      name: "Native: win32  x64"
+      needs: [release_metadata, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '')) }}
+      timeout-minutes: 25
+      runs-on: ubuntu-22.04
+      steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/build-native
+           with:
+              hash: ${{ needs.native_artifact_lookup.outputs.source-hash }}
+              platform: win32
+              arch: x64
+              variant: baseline
+              target: x86_64-pc-windows-msvc
               save_cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
    native_cross_platform_macos:
@@ -613,7 +632,8 @@ jobs:
       name: "Release binary: ${{ matrix.target_id }}"
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
          needs.native_linux_x64.result == 'success' && needs.native_cross_platform_kata.result ==
-         'success' && needs.native_cross_platform_macos.result == 'success' &&
+         'success' && needs.native_cross_platform_win32.result == 'success' &&
+         needs.native_cross_platform_macos.result == 'success' &&
          needs.test_workspace.result == 'success' &&
          needs.test_coding_agent_singleton.result == 'success' &&
          needs.test_ts_native.result == 'success' &&
@@ -623,7 +643,7 @@ jobs:
          needs.test_smoke.result == 'success' && needs.check.result == 'success' &&
          needs.install_methods.result == 'success' &&
          needs.security.result == 'success' }}
-      needs: [release_metadata, check, native_linux_x64, native_cross_platform_kata, native_cross_platform_macos, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods, security, native_artifact_lookup]
+      needs: [release_metadata, check, native_linux_x64, native_cross_platform_kata, native_cross_platform_win32, native_cross_platform_macos, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods, security, native_artifact_lookup]
       strategy:
          fail-fast: false
          matrix:
