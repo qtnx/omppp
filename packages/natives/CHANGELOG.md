@@ -4,7 +4,7 @@
 
 ### Changed
 
-- GitHub-hosted native jobs install host cargo, sccache, and zig only when they still run clippy or the Rust test suite. Bazel addon builds restore the disk cache so release version bumps are not cold graphs.
+- GitHub-hosted native jobs install host cargo, sccache, and zig only when they still run clippy or the Rust test suite. Darwin addon builds restore the `release-darwin-*` bazel disk cache seeded by `bazel-cache-warm`, so macos-15-intel is not a 40–50 minute cold graph. Other platforms keep a per-target natives-* scope.
 
 ### Fixed
 

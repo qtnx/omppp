@@ -42,9 +42,7 @@ const SCCACHE_WRAPPER_KEYS = ["RUSTC_WRAPPER", "CMAKE_C_COMPILER_LAUNCHER", "CMA
  * host cargo path makes crate-universe lockfile generation call sccache,
  * which hard-fails when the GHA cache backend cannot resolve DNS.
  */
-export function withoutSccacheWrappers(
-	env: Record<string, string | undefined>,
-): Record<string, string | undefined> {
+export function withoutSccacheWrappers(env: Record<string, string | undefined>): Record<string, string | undefined> {
 	const next = { ...env };
 	for (const key of SCCACHE_WRAPPER_KEYS) {
 		if (next[key] === "sccache") delete next[key];

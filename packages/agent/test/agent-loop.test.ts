@@ -1715,7 +1715,7 @@ describe("agentLoop with AgentMessage", () => {
 				typeof message.content === "string" &&
 				message.content === advisorLikeMessage.content,
 		);
-		const toolResultIndex = nextContext.findIndex(message => message === toolResult);
+		const toolResultIndex = nextContext.indexOf(toolResult);
 		expect(advisorIndex).toBeGreaterThan(toolResultIndex);
 	}, 1_000);
 

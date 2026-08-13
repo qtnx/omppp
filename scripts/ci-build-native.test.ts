@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { resolveNativeTargets, withPortableNativeBuildEnv } from "./ci-build-native";
 import { withoutSccacheWrappers } from "./bazel-natives";
+import { resolveNativeTargets, withPortableNativeBuildEnv } from "./ci-build-native";
 
 describe("ci native target resolution", () => {
 	const mappings = [

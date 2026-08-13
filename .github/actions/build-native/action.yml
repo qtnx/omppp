@@ -371,7 +371,10 @@ runs:
       - id: bazel-cache
         uses: ./.github/actions/bazel-cache
         with:
-           scope: natives-${{ inputs.platform }}-${{ inputs.libc || 'default' }}-${{ inputs.arch }}-${{ inputs.variant || 'default' }}
+           # macos-15-intel / macos-14 must share the warmer's release-darwin-*
+           # scopes. A natives-darwin-* key is a guaranteed cold graph (~40-50m
+           # on macos-15-intel). Other platforms keep a per-target natives-* scope.
+           scope: ${{ inputs.platform == 'darwin' && format('release-darwin-{0}', inputs.arch) || format('natives-{0}-{1}-{2}-{3}', inputs.platform, inputs.libc || 'default', inputs.arch, inputs.variant || 'default') }}
       - name: Build native addon(s)
         shell: bash
         env:
