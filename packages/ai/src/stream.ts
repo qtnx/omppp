@@ -1458,9 +1458,10 @@ function resolveGoogleThinkingOff<TApi extends Api>(model: Model<TApi>): NonNull
 const castApi = <TApi extends Api>(api: OptionsForApi<TApi>): OptionsForApi<Api> => api as OptionsForApi<Api>;
 
 /**
- * Mandatory-reasoning endpoints (`thinking.requiresEffort`) reject disabled
- * or omitted thinking ("Reasoning is mandatory for this endpoint and cannot
- * be disabled") — clamp to the lowest supported effort instead.
+ * Mandatory-reasoning models (`thinking.requiresEffort`) cannot honor
+ * thinking-off requests. Omitted reasoning uses the model's declared default
+ * when available, while explicit off requests and models without a default
+ * clamp to the lowest supported effort.
  * `suppressWhenOff` models handle off provider-side via explicit wire
  * suppression. Collapsed pairs interplay: pair derivation strips member
  * flags (off routes to a bare SKU that CAN disable), while identity backfill
@@ -1471,17 +1472,20 @@ function normalizeMandatoryReasoningOptions<TApi extends Api>(
 	model: Model<TApi>,
 	options?: SimpleStreamOptions,
 ): SimpleStreamOptions | undefined {
+	const explicitlyDisabled = options?.disableReasoning === true || options?.forceReasoningOff === true;
+	const defaultLevel = model.thinking?.defaultLevel;
 	if (
 		!model.reasoning ||
 		!model.thinking?.requiresEffort ||
 		model.thinking.suppressWhenOff ||
-		(options?.reasoning !== undefined && !options.disableReasoning && !options.forceReasoningOff)
+		(options?.reasoning !== undefined && !explicitlyDisabled)
 	) {
 		return options;
 	}
 	const floor = minimumSupportedEffort(model);
-	if (floor === undefined) return options;
-	return { ...options, reasoning: floor, disableReasoning: undefined, forceReasoningOff: undefined };
+	const effort = explicitlyDisabled ? floor : (defaultLevel ?? floor);
+	if (effort === undefined) return options;
+	return { ...options, reasoning: effort, disableReasoning: undefined, forceReasoningOff: undefined };
 }
 
 export function resolveAnthropicThinkingDisplayOption(

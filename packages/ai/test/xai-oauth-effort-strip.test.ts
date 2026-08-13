@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildParams } from "@oh-my-pi/pi-ai/providers/openai-responses";
-import type { Context } from "@oh-my-pi/pi-ai/types";
+import { streamSimple } from "@oh-my-pi/pi-ai/stream";
+import type { Context, Model } from "@oh-my-pi/pi-ai/types";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -49,6 +50,26 @@ const singleUserContext: Context = {
 	messages: [{ role: "user", content: "hello", timestamp: 0 }],
 };
 
+interface ResponsesPayload {
+	reasoning?: { effort?: string };
+}
+
+function createAbortedSignal(): AbortSignal {
+	const controller = new AbortController();
+	controller.abort();
+	return controller.signal;
+}
+
+function captureSimpleResponsesPayload(model: Model<"openai-responses">): Promise<ResponsesPayload> {
+	const { promise, resolve } = Promise.withResolvers<ResponsesPayload>();
+	streamSimple(model, singleUserContext, {
+		apiKey: "test-key",
+		signal: createAbortedSignal(),
+		onPayload: payload => resolve(payload as ResponsesPayload),
+	});
+	return promise;
+}
+
 describe("xAI OAuth Responses reasoning payload (regression)", () => {
 	test("xai-oauth/grok-4.5 leaves reasoning unset when no reasoning was requested", () => {
 		const grok45 = getBundledModel<"openai-responses">("xai-oauth", "grok-4.5");
@@ -57,6 +78,17 @@ describe("xAI OAuth Responses reasoning payload (regression)", () => {
 		const { params } = buildParams(grok45, singleUserContext, undefined, undefined);
 
 		expect(params.reasoning).toBeUndefined();
+	});
+
+	test("streamSimple applies the documented high default for Grok 4.5 and 4.6", async () => {
+		for (const modelId of ["grok-4.5", "grok-4.6"] as const) {
+			const model = getBundledModel<"openai-responses">("xai-oauth", modelId);
+			if (!model) throw new Error(`xai-oauth/${modelId} must be in bundled models.json`);
+
+			const payload = await captureSimpleResponsesPayload(model);
+
+			expect(payload.reasoning).toEqual({ effort: "high" });
+		}
 	});
 
 	test("xai-oauth/grok-4.5 omits unsupported reasoning summary", () => {

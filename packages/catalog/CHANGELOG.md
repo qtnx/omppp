@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed xAI OAuth support for `grok-4.6` with its 500K context window, text-and-image input, and reasoning-effort controls. `grok-4.5` and `grok-4.6` now expose only their documented effort ladders, default to `high`, and cannot disable reasoning ([#8369](https://github.com/can1357/oh-my-pi/pull/8369) by [@dendritic](https://github.com/dendritic)).
+- Fixed xAI OAuth support for `grok-4.6` with its 500K context window, text-and-image input, and reasoning-effort controls. `grok-4.5` and `grok-4.6` now expose only their documented effort ladders, default to `high`, apply that default when reasoning is omitted, and cannot disable reasoning ([#8369](https://github.com/can1357/oh-my-pi/pull/8369) by [@dendritic](https://github.com/dendritic)).
 
 ## [17.2.15] - 2026-08-12
 
