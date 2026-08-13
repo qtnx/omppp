@@ -1559,10 +1559,11 @@ function orderResultsForDisplay(results: readonly SingleResult[]): SingleResult[
 }
 
 /**
- * Summary line for progress rows folded away by the collapsed cap: per-status
- * counts plus the expand hint, e.g. `… 21 more agents (18 pending · 3 done)`.
+ * Summary line for progress rows folded away by the collapsed cap. The hidden
+ * count explains the visible-row cap while status counts cover the complete
+ * batch, so folded failures and the true fanout size stay visible.
  */
-function formatHiddenProgressLine(hidden: readonly AgentProgress[], theme: Theme): string {
+function formatHiddenProgressLine(hiddenCount: number, progress: readonly AgentProgress[], theme: Theme): string {
 	const counts: Record<AgentProgress["status"], number> = {
 		pending: 0,
 		running: 0,
@@ -1570,19 +1571,19 @@ function formatHiddenProgressLine(hidden: readonly AgentProgress[], theme: Theme
 		failed: 0,
 		aborted: 0,
 	};
-	for (const p of hidden) counts[p.status]++;
+	for (const item of progress) counts[item.status]++;
 	const parts: string[] = [];
 	if (counts.completed > 0) parts.push(theme.fg("dim", `${counts.completed} done`));
 	if (counts.running > 0) parts.push(theme.fg("dim", `${counts.running} running`));
 	if (counts.pending > 0) parts.push(theme.fg("dim", `${counts.pending} pending`));
 	if (counts.failed > 0) parts.push(theme.fg("error", `${counts.failed} failed`));
 	if (counts.aborted > 0) parts.push(theme.fg("error", `${counts.aborted} aborted`));
-	const breakdown =
-		parts.length > 0
-			? `${theme.fg("dim", " (")}${parts.join(theme.fg("dim", theme.sep.dot))}${theme.fg("dim", ")")}`
-			: "";
+	const breakdown = parts.join(theme.fg("dim", theme.sep.dot));
 	const hint = formatExpandHint(theme, false, true);
-	return `${theme.fg("dim", formatMoreItems(hidden.length, "agent"))}${breakdown}${hint ? ` ${hint}` : ""}`;
+	return `${theme.fg("dim", formatMoreItems(hiddenCount, "agent"))}${theme.fg(
+		"dim",
+		` · total: ${progress.length}`,
+	)}${breakdown ? ` ${breakdown}` : ""}${hint ? ` ${hint}` : ""}`;
 }
 
 /**
@@ -1712,7 +1713,7 @@ export function renderResult(
 			// stands in for everything above it.
 			const visible = expanded ? ordered : ordered.slice(Math.max(0, ordered.length - COLLAPSED_AGENT_LIMIT));
 			if (visible.length < ordered.length) {
-				lines.push(formatHiddenProgressLine(ordered.slice(0, ordered.length - visible.length), theme));
+				lines.push(formatHiddenProgressLine(ordered.length - visible.length, ordered, theme));
 			}
 			for (const progress of visible) {
 				lines.push(
@@ -1937,7 +1938,7 @@ function renderNestedTaskTree(
 			});
 			if (hiddenCount > 0) {
 				const { prefix } = nestedMarkers(true, theme);
-				lines.push(`${prefix} ${theme.fg("dim", formatMoreItems(hiddenCount, "agent"))}`);
+				lines.push(`${prefix} ${formatHiddenProgressLine(hiddenCount, ordered, theme)}`);
 			}
 		}
 		seen.delete(details);
