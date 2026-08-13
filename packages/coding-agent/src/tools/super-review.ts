@@ -35,6 +35,7 @@ import { formatPathRelativeToCwd, parseLineRanges } from "./path-utils";
 import { ToolError } from "./tool-errors";
 
 const SUPER_REVIEW_ROLE = formatModelRoleAlias("super_review");
+const SUPER_REVIEW_MAX_TOKENS = 8_192;
 const MAX_FILE_BYTES = 2_000_000;
 
 function sessionIdOf(session: ToolSession): string | undefined {
@@ -335,6 +336,7 @@ async function runSuperReview(
 		{
 			apiKey: registry.resolver(model, sessionIdOf(session)),
 			signal,
+			maxTokens: SUPER_REVIEW_MAX_TOKENS,
 			reasoning,
 			toolChoice: undefined,
 		},

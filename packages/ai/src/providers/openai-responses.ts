@@ -34,6 +34,7 @@ import {
 	iterateWithIdleTimeout,
 } from "../utils/idle-iterator";
 import { OpenAIHttpError, postOpenAIStream } from "../utils/openai-http";
+import { withOpenRouterAffordableMaxTokensRetry } from "../utils/openrouter-affordable-max-tokens";
 import { notifyProviderResponse } from "../utils/provider-response";
 import { callWithCopilotModelRetry } from "../utils/retry";
 import {
@@ -922,10 +923,14 @@ const streamOpenAIResponsesOnce = (
  * Public entry: wrap the single-attempt Responses streamer with bounded
  * empty-completion retries — a `response.completed` carrying no content/usage
  * would otherwise stall the agent loop. Shared with the OpenAI-completions and
- * Anthropic providers via `withEmptyCompletionRetry`.
+ * Anthropic providers via `withEmptyCompletionRetry`. OpenRouter 402s that
+ * reserve more output than remaining credit can cover are retried once with
+ * the advertised affordable cap before the empty-completion wrapper sees them.
  */
 export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (model, context, options) =>
-	withEmptyCompletionRetry(model, context, options, streamOpenAIResponsesOnce);
+	withEmptyCompletionRetry(model, context, options, (retryModel, retryContext, retryOptions) =>
+		withOpenRouterAffordableMaxTokensRetry(retryModel, retryContext, retryOptions, streamOpenAIResponsesOnce),
+	);
 
 function isOfficialOpenAIResponsesEndpoint(model: Model<"openai-responses">): boolean {
 	if (model.provider !== "openai") return false;
