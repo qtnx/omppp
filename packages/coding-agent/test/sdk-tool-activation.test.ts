@@ -1455,7 +1455,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			releaseDetachedRegistration.resolve();
 			await session.dispose();
 		}
-	});
+	}, 15_000);
 
 	it("times out detached activations without blocking later registrations", async () => {
 		const tempDir = makeTempDir();

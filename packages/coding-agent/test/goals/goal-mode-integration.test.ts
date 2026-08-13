@@ -352,11 +352,13 @@ describe("InteractiveMode goal mode integration", () => {
 		const setupStarted = Promise.withResolvers<void>();
 		const continueSetup = Promise.withResolvers<void>();
 		const setActiveTools = harness.session.setActiveToolsByNamePreservingMCPSelection.bind(harness.session);
-		vi.spyOn(harness.session, "setActiveToolsByNamePreservingMCPSelection").mockImplementationOnce(async toolNames => {
-			setupStarted.resolve();
-			await continueSetup.promise;
-			await setActiveTools(toolNames);
-		});
+		vi.spyOn(harness.session, "setActiveToolsByNamePreservingMCPSelection").mockImplementationOnce(
+			async toolNames => {
+				setupStarted.resolve();
+				await continueSetup.promise;
+				await setActiveTools(toolNames);
+			},
+		);
 
 		const command = executeBuiltinSlashCommand("/plan [Image #1, 10x10] plan this", {
 			ctx: harness.mode,
