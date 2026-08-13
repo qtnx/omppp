@@ -189,6 +189,7 @@ describe("SuperReviewTool", () => {
 		const [model, context, options, span] = instrumentedCallAt(completeSpy, 0);
 		expect(`${model.provider}/${model.id}`).toBe("tnx/super");
 		expect(span.oneshotKind).toBe("super_review");
+		expect(options.maxTokens).toBe(8192);
 		expect(options.toolChoice).toBeUndefined();
 		expect(context.tools ?? []).toEqual([]);
 		const outbound = promptPayload(context);

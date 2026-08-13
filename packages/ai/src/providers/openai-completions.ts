@@ -41,6 +41,7 @@ import {
 	iterateWithTerminalGrace,
 } from "../utils/idle-iterator";
 import { OpenAIHttpError, postOpenAIStream } from "../utils/openai-http";
+import { withOpenRouterAffordableMaxTokensRetry } from "../utils/openrouter-affordable-max-tokens";
 import { notifyProviderResponse } from "../utils/provider-response";
 import { callWithCopilotModelRetry } from "../utils/retry";
 import {
@@ -1388,10 +1389,14 @@ const streamOpenAICompletionsOnce = (
  * Public entry: wrap the single-attempt streamer with bounded empty-completion
  * retries — flaky gateways occasionally 200 with `delta: {}` + `finish_reason:
  * "stop"` and no usage, which would otherwise stall the agent loop. Shared with
- * the Anthropic provider via `withEmptyCompletionRetry`.
+ * the Anthropic provider via `withEmptyCompletionRetry`. OpenRouter 402s that
+ * reserve more output than remaining credit can cover are retried once with
+ * the advertised affordable cap before the empty-completion wrapper sees them.
  */
 export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (model, context, options) =>
-	withEmptyCompletionRetry(model, context, options, streamOpenAICompletionsOnce);
+	withEmptyCompletionRetry(model, context, options, (retryModel, retryContext, retryOptions) =>
+		withOpenRouterAffordableMaxTokensRetry(retryModel, retryContext, retryOptions, streamOpenAICompletionsOnce),
+	);
 
 function createRequestSetup(
 	model: Model<"openai-completions">,

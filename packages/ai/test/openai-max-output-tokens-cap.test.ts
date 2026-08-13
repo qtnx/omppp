@@ -233,4 +233,29 @@ describe("OpenAI-family output-token cap", () => {
 		const body = await captureCompletionsBody(kimiOpenRouterModel(131_072));
 		expect(body.max_completion_tokens ?? body.max_tokens).toBe(OPENAI_MAX_OUTPUT_TOKENS);
 	});
+
+	it("retries an OpenRouter afford 402 with the advertised remaining budget", async () => {
+		const bodies: Record<string, unknown>[] = [];
+		const fetchMock: FetchImpl = async (_input, init) => {
+			bodies.push(JSON.parse(typeof init?.body === "string" ? init.body : "{}") as Record<string, unknown>);
+			if (bodies.length === 1) {
+				return new Response(
+					JSON.stringify({
+						error: {
+							message:
+								"This request requires more credits, or fewer max_tokens. You requested up to 65536 tokens, but can only afford 28945.",
+						},
+					}),
+					{ status: 402, headers: { "content-type": "application/json" } },
+				);
+			}
+			return completionsSse();
+		};
+		const result = await streamSimple(glmCompletionsModel(65_536), ctx, { apiKey: "k", fetch: fetchMock }).result();
+		expect(bodies).toHaveLength(2);
+		expect(bodies[0]?.max_tokens).toBeUndefined();
+		expect(bodies[0]?.max_completion_tokens).toBeUndefined();
+		expect(bodies[1]?.max_completion_tokens ?? bodies[1]?.max_tokens).toBe(28_945);
+		expect(result.stopReason).toBe("stop");
+	});
 });

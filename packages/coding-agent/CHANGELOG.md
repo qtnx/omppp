@@ -10,6 +10,7 @@
 ### Fixed
 
 - Fixed `super_review` failing to connect: it no longer hardcodes `tnx/super` through the dead `http://codemc:4000` auth gateway. The one-turn call now uses the resolved provider endpoint and the registry API key.
+- `super_review` now sends an explicit 8192-token output cap on the hardcoded `tnx/super` one-turn call, so OpenRouter-backed aliases no longer reserve the advertised 65536-token ceiling and 402 when remaining credit cannot cover that reservation.
 - The herdr `omp` entrypoint survives reinstalls that move the binary: `scripts/install.sh` now repoints an existing `omp` link at the freshly installed `ompx`, and a dangling link is reported as a `conflict` (repointable with `ompx herdr install --force`) instead of `missing`, which used to fail with `EEXIST`. The installer never creates the link — the `omp` name belongs to upstream oh-my-pi, so claiming it stays opt-in via `ompx herdr install` — and it leaves an unrelated `omp` alone. Skip it entirely with `OMPX_INSTALL_SKIP_HERDR_ENTRYPOINT=1`.
 
 ## [1.7.0] - 2026-08-09

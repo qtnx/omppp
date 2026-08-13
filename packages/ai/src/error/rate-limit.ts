@@ -69,6 +69,22 @@ const CN_TRANSIENT_CAP_PATTERN =
 // of rotating through the opaque-429 fallback.
 const CN_THROTTLE_PATTERN = /速率(?:限制|过快)|频率(?:过高|过快)|过于频繁|稍后[重再]试/;
 
+const OPENROUTER_AFFORDABLE_MAX_TOKENS_PATTERN = /can only afford\s+(\d+)/i;
+
+/**
+ * OpenRouter 402s a request whose reserved `max_tokens` exceeds remaining
+ * credit: "You requested up to 65536 tokens, but can only afford 28945."
+ * That is a request-size problem, not an exhausted credential — parse the
+ * remaining budget so the same key can retry with a smaller explicit cap.
+ */
+export function parseOpenRouterAffordableMaxTokens(message: string | undefined): number | undefined {
+	if (!message) return undefined;
+	const match = OPENROUTER_AFFORDABLE_MAX_TOKENS_PATTERN.exec(message);
+	if (!match) return undefined;
+	const value = Number.parseInt(match[1] ?? "", 10);
+	return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 /**
  * Classify a rate-limit error message into a reason category.
  * Priority order: explicit details in a resource-exhausted error > QUOTA
@@ -251,9 +267,13 @@ export function isUsageLimitOutcome(
 	message: string | undefined,
 	retryAfterMs?: number,
 ): boolean {
+	// OpenRouter's "can only afford N" 402 is a request-size problem: the
+	// reserved max_tokens exceeds remaining credit. Retrying with a smaller
+	// explicit cap on the same credential succeeds; rotating accounts does not.
+	if (parseOpenRouterAffordableMaxTokens(message) !== undefined) return false;
 	// Concurrency caps are shed-and-backoff, not credential-rotatable — but only
 	// for quota-worded 429 / other statuses. HTTP 402 is categorically an
-	// account-billing cap, so a 402 whose body happens to mention concurrency is
+	// account-billing cap, so a 402 whose body merely mentions concurrency is
 	// still an exhausted billing cap and must rotate; gate the exclusion on the
 	// status not being that categorical billing cap.
 	const isBillingCapStatus = status === 402;

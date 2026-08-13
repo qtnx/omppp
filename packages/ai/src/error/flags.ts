@@ -12,6 +12,7 @@ import {
 	isOpaqueStatusBody,
 	isUsageLimitStatus,
 	matchesUsageLimitText,
+	parseOpenRouterAffordableMaxTokens,
 	parseRateLimitReason,
 } from "./rate-limit";
 
@@ -363,6 +364,7 @@ function classifyText(errorMessage: string | undefined, errorStatus: number | un
 		const concurrencyExcluded = reason === "CONCURRENT_LIMIT" && !isBillingCapStatus;
 		if (
 			!concurrencyExcluded &&
+			parseOpenRouterAffordableMaxTokens(cleanMessage) === undefined &&
 			(matchesUsageLimitText(cleanMessage) ||
 				((statusClean === 403 || statusClean === undefined) && isAccountScopedCapText(cleanMessage)) ||
 				(isLimitStatus &&

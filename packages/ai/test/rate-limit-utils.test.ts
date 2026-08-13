@@ -8,12 +8,29 @@ import {
 	isOpaqueStatusBody,
 	isUsageLimitOutcome,
 	isUsageLimitStatus,
+	parseOpenRouterAffordableMaxTokens,
 	parseRateLimitReason,
 	ROTATION_RETRY_AFTER_THRESHOLD_MS,
 } from "@oh-my-pi/pi-ai/error/rate-limit";
 
 const ANTHROPIC_LOW_CREDIT_MESSAGE =
 	"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.";
+
+const OPENROUTER_AFFORD_402 =
+	"402 This request requires more credits, or fewer max_tokens. You requested up to 65536 tokens, but can only afford 28945. To increase, visit https://openrouter.ai/settings/credits and add more credits";
+
+describe("parseOpenRouterAffordableMaxTokens", () => {
+	it("extracts the affordable output budget from the OpenRouter 402 credit reserve error", () => {
+		expect(parseOpenRouterAffordableMaxTokens(OPENROUTER_AFFORD_402)).toBe(28_945);
+	});
+
+	it("rejects missing, zero, and non-numeric afford amounts", () => {
+		expect(parseOpenRouterAffordableMaxTokens(undefined)).toBeUndefined();
+		expect(parseOpenRouterAffordableMaxTokens("402 This request requires more credits")).toBeUndefined();
+		expect(parseOpenRouterAffordableMaxTokens("can only afford 0 tokens")).toBeUndefined();
+		expect(parseOpenRouterAffordableMaxTokens("can only afford abc")).toBeUndefined();
+	});
+});
 
 describe("parseRateLimitReason", () => {
 	it("classifies Google Quota exceeded as QUOTA_EXHAUSTED", () => {
@@ -516,6 +533,12 @@ describe("isUsageLimitOutcome", () => {
 		expect(isUsageLimitOutcome(402, "HTTP 402")).toBe(true);
 		expect(isUsageLimitOutcome(402, "A subscription is required for this endpoint")).toBe(false);
 		expect(isUsageLimit(new ProviderHttpError("HTTP 402", 402))).toBe(true);
+	});
+
+	it("does not rotate on OpenRouter 402s that only ask for fewer max_tokens", () => {
+		expect(parseOpenRouterAffordableMaxTokens(OPENROUTER_AFFORD_402)).toBe(28_945);
+		expect(isUsageLimitOutcome(402, OPENROUTER_AFFORD_402)).toBe(false);
+		expect(isUsageLimit(new ProviderHttpError(OPENROUTER_AFFORD_402, 402))).toBe(false);
 	});
 
 	it("does not rotate on auth/invalid-request statuses with unrelated bodies", () => {
