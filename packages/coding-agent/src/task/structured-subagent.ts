@@ -8,7 +8,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
-import { resolveAgentModelSelection, resolveConfiguredModelPatterns } from "../config/model-resolver";
+import {
+	resolveAgentModelPatterns,
+	resolveAgentModelSelection,
+	resolveConfiguredModelPatterns,
+} from "../config/model-resolver";
 import type { Skill } from "../extensibility/skills";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
@@ -803,13 +807,9 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 				const explicitModel = role === "review" ? gateConfig.reviewerModel : undefined;
 				const gateSettingsOverride = request.session.settings.get("task.agentModelOverrides")[gateAgent.name];
 				const configuredReviewerModel =
-					role === "review"
-						? resolveConfiguredModelPatterns(gateSettingsOverride, request.session.settings)
-						: [];
+					role === "review" ? resolveConfiguredModelPatterns(gateSettingsOverride, request.session.settings) : [];
 				const reviewerModel =
-					role === "review" && configuredReviewerModel.length > 0
-						? gateSettingsOverride
-						: explicitModel;
+					role === "review" && configuredReviewerModel.length > 0 ? gateSettingsOverride : explicitModel;
 				const gateModelOverride = resolveAgentModelPatterns({
 					settingsOverride: reviewerModel ?? gateSettingsOverride,
 					agentModel: explicitModel ?? gateAgent.model,
@@ -817,8 +817,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 					activeModelPattern: policy.parentActiveModelPattern,
 					fallbackModelPattern: request.session.getModelString?.(),
 				});
-				const gateModelOverrideFromUserConfig =
-					role === "review" ? configuredReviewerModel.length > 0 : false;
+				const gateModelOverrideFromUserConfig = role === "review" ? configuredReviewerModel.length > 0 : false;
 				const gatePolicy: EffectiveSubagentPolicy = {
 					...policy,
 					agentName: gateAgent.name,

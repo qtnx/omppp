@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
 import type { LoadExtensionsResult } from "../../src/extensibility/extensions/types";
@@ -308,6 +309,10 @@ async function initUnbornStatsRepo(): Promise<string> {
 	return repo;
 }
 
+const configuredModels = getBundledModels("openai-codex").filter(model =>
+	["codex-auto-review", "gpt-5.5"].includes(model.id),
+);
+if (configuredModels.length !== 2) throw new Error("Expected bundled reviewer test models");
 function createSession(overrides: Partial<Record<string, unknown>> = {}, cwd = "/tmp"): ToolSession {
 	const authStorage = {
 		onCredentialDisabled: () => () => {},
@@ -315,7 +320,7 @@ function createSession(overrides: Partial<Record<string, unknown>> = {}, cwd = "
 	const modelRegistry = {
 		authStorage,
 		refresh: async () => {},
-		getAvailable: () => [],
+		getAvailable: () => configuredModels,
 		syncExtensionSources: () => {},
 		clearSourceRegistrations: () => {},
 		refreshRuntimeProviders: async () => {},
@@ -726,7 +731,10 @@ describe("task review gate", () => {
 			},
 		]);
 		mockIsolation();
-		const { calls } = mockSessionQueue([{ role: "implementer" }, { role: "reviewer", verdict: correctVerdict() }]);
+		const { trace, calls } = mockSessionQueue([
+			{ role: "implementer" },
+			{ role: "reviewer", verdict: correctVerdict() },
+		]);
 
 		const tool = await TaskTool.create(
 			createSession({
@@ -741,10 +749,23 @@ describe("task review gate", () => {
 			isolated: true,
 		});
 
-		expect({
-			model: calls()[1]?.model?.id,
-			modelPattern: calls()[1]?.modelPattern,
-		}).toEqual({ model: "codex-auto-review", modelPattern: undefined });
+		expect({ trace, result: firstResult(result) }).toMatchObject({
+			trace: [
+				{ agentName: "heavy_task", role: "implementer" },
+				{ agentName: REVIEWER_AGENT, role: "reviewer" },
+			],
+			result: { exitCode: 0 },
+		});
+		expect(
+			calls().map(options => ({
+				agent: options.agentDisplayName,
+				model: options.model?.id,
+				modelPattern: options.modelPattern,
+			})),
+		).toEqual([
+			{ agent: "heavy_task", model: "gpt-5.5", modelPattern: undefined },
+			{ agent: REVIEWER_AGENT, model: "codex-auto-review", modelPattern: undefined },
+		]);
 		expect(firstResult(result).exitCode).toBe(0);
 	});
 

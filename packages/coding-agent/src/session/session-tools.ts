@@ -1107,12 +1107,10 @@ export class SessionTools {
 	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
 		signal?.throwIfAborted();
 		const previousActiveToolNames = this.getEnabledToolNames();
-		// A newly enabled extension can be mounted under xd:// and therefore leave
-		// the active top-level names unchanged. Its registration must still rebuild
-		// the prompt: the extension's systemPrompt hook is the transactional
-		// boundary that either publishes the capability or rolls the registration
-		// back and reports the failure.
-		forcePromptRefresh ||= toolNames.some(name => !previousActiveToolNames.includes(name));
+		// Late extension registration passes `forcePromptRefresh` explicitly so a
+		// newly mounted xd:// tool still rebuilds. Do not infer it from name
+		// membership: ordinary non-MCP xd:// inventory changes must keep the
+		// provider cache prefix byte-stable (see `#computeAppliedToolSignature`).
 		toolNames = normalizeToolNames([...toolNames, ...(this.#getPinnedRuntimeToolNames?.() ?? [])]);
 		let builtInWriteAvailable = this.#builtInToolNames.has("write");
 		if (toolNames.includes("write") && !builtInWriteAvailable) {
@@ -1120,8 +1118,9 @@ export class SessionTools {
 			builtInWriteAvailable = writeRegistration ? (await untilAborted(signal, writeRegistration)) === true : false;
 			if (builtInWriteAvailable) this.#builtInToolNames.add("write");
 		}
+		const liveToolsByName = new Map(this.#host.agent.state.tools.map(tool => [tool.name, tool]));
 		const selectedTools = toolNames.flatMap(name => {
-			const tool = this.#toolRegistry.get(name);
+			const tool = this.#toolRegistry.get(name) ?? liveToolsByName.get(name);
 			return tool ? [{ name, tool }] : [];
 		});
 		const xdevReadAvailable = this.#builtInToolNames.has("read") && selectedTools.some(({ name }) => name === "read");
