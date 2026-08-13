@@ -13,6 +13,7 @@ import * as path from "node:path";
 import { YAML } from "bun";
 
 const WORKFLOW_PATH = path.resolve(import.meta.dir, "..", ".github", "workflows", "ci.yml");
+const BUN_INSTALL_ACTION_PATH = path.resolve(import.meta.dir, "..", ".github", "actions", "bun-install", "action.yml");
 
 type Value = string | boolean | null;
 
@@ -240,6 +241,10 @@ class GhaEval {
 }
 
 const workflowYaml = await Bun.file(WORKFLOW_PATH).text();
+const bunInstallActionYaml = await Bun.file(BUN_INSTALL_ACTION_PATH).text();
+const buildNativeActionYaml = await Bun.file(
+	path.resolve(import.meta.dir, "..", ".github", "actions", "build-native", "action.yml"),
+).text();
 const sourceHashPlaceholder = "$" + "{{ steps.compute.outputs.source-hash }}";
 const repositoryPlaceholder = "$" + "{{ github.repository }}";
 // The block sits at indent 0 immediately under the top-level `concurrency:`
@@ -395,6 +400,98 @@ exit 1
 	}
 }
 
+const nativeArtifactNames = [
+	"pi-natives-linux-x64-baseline-htesthash",
+	"pi-natives-linux-x64-modern-htesthash",
+	"pi-natives-linux-arm64-htesthash",
+	"pi-natives-linux-musl-x64-baseline-htesthash",
+	"pi-natives-linux-musl-arm64-htesthash",
+	"pi-natives-darwin-x64-baseline-htesthash",
+	"pi-natives-darwin-arm64-htesthash",
+	"pi-natives-win32-x64-baseline-htesthash",
+];
+
+async function nativeLookupWithCandidates(
+	runList: string,
+	artifacts: Record<string, string>,
+	ancestorShas: readonly string[],
+): Promise<{ args: string; output: string }> {
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omppp-ci-lookup-"));
+	try {
+		const gh = path.join(tempDir, "gh");
+		const git = path.join(tempDir, "git");
+		const argsPath = path.join(tempDir, "gh-run-args");
+		const outputPath = path.join(tempDir, "github-output");
+		await Bun.write(
+			gh,
+			`#!/usr/bin/env bash
+if [ "$1" = "run" ]; then
+\tprintf '%s\\n' "$@" > "$GH_ARGS"
+\tprintf '%b' "$GH_RUN_LIST"
+\texit 0
+fi
+if [ "$1" = "api" ]; then
+\trun_id="\${2#*/runs/}"
+\trun_id="\${run_id%%/*}"
+	case "$run_id" in
+${Object.entries(artifacts)
+	.map(([runId, names]) => `		${runId}) printf '%b' "${names.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$")}" ;;`)
+	.join("\n")}
+		*) exit 1 ;;
+	esac
+	exit 0
+fi
+exit 1
+`,
+		);
+		await Bun.write(
+			git,
+			`#!/usr/bin/env bash
+if [ "$1" = "rev-parse" ] && [ "$2" = "--is-shallow-repository" ]; then
+	echo false
+	exit 0
+fi
+if [ "$1" = "fetch" ]; then
+	exit 0
+fi
+if [ "$1" = "merge-base" ] && [ "$2" = "--is-ancestor" ]; then
+	case "$3" in
+${ancestorShas.map(sha => `		"${sha}") exit 0 ;;`).join("\n")}
+		*) exit 1 ;;
+	esac
+fi
+exit 1
+`,
+		);
+		await fs.chmod(gh, 0o755);
+		await fs.chmod(git, 0o755);
+		const script = nativeArtifactLookupScript()
+			.replace(sourceHashPlaceholder, "testhash")
+			.replace(repositoryPlaceholder, "owner/repo")
+			.replaceAll("gh ", '"$GH_BIN" ')
+			.replaceAll("git ", '"$GIT_BIN" ');
+		const proc = Bun.spawn(["bash", "-c", script], {
+			env: {
+				...Bun.env,
+				GH_ARGS: argsPath,
+				GH_BIN: gh,
+				GH_RUN_LIST: runList,
+				GIT_BIN: git,
+				GITHUB_OUTPUT: outputPath,
+				PATH: `${tempDir}:${Bun.env.PATH ?? ""}`,
+			},
+		});
+		const exitCode = await proc.exited;
+		if (exitCode !== 0) throw new Error(`native lookup script exited ${exitCode}`);
+		return {
+			args: await Bun.file(argsPath).text(),
+			output: await Bun.file(outputPath).text(),
+		};
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+}
+
 describe("ci.yml workflow scheduling", () => {
 	it("release companion main push skips duplicated workload and keeps normal branch cancellation", () => {
 		const ctx = baseCtx({ event: { head_commit: { message: `${RELEASE_SUBJECT}\n\nbody` } } });
@@ -511,9 +608,155 @@ describe("ci.yml workflow scheduling", () => {
 		expect(evaluateJobIf("release_binary", { ...invalidTagCtx, needs: completedNeeds(false, false) })).toBe(false);
 	});
 
-	it("searches successful trusted push runs across main and release tags for native reuse", async () => {
+	it("searches completed trusted push runs across main and release tags for native reuse", async () => {
 		const args = await nativeLookupRunListArgs();
+		expect(args).toContain("--status=completed");
 		expect(args).toContain("--event=push");
 		expect(args).not.toContain("--branch=main");
+	});
+
+
+	it("reuses each exact artifact only from a main-ancestor completed push run", async () => {
+		const allArtifacts = `${nativeArtifactNames.join("\n")}\n`;
+		const result = await nativeLookupWithCandidates(
+			["200\tuntrusted-sha", "300\ttrusted-incomplete", "100\ttrusted-complete", ""].join("\n"),
+			{
+				"100": allArtifacts,
+				"200": allArtifacts,
+				"300": `${nativeArtifactNames.slice(0, -1).join("\n")}\n`,
+			},
+			["trusted-complete", "trusted-incomplete"],
+		);
+		expect(result.args).toContain("--status=completed");
+		expect(result.args).toContain("--event=push");
+		expect(result.output).toContain("darwin-x64-baseline-run-id=300");
+		expect(result.output).toContain("win32-x64-baseline-run-id=100");
+		expect(result.output).not.toContain("=200");
+	});
+	it("keeps a conditional build and current-run staging path for every native artifact job", () => {
+		const parsed = YAML.parse(workflowYaml);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("ci.yml root is not a mapping");
+		}
+		const jobs = (parsed as Record<string, unknown>).jobs;
+		if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) {
+			throw new Error("ci.yml jobs is not a mapping");
+		}
+
+		for (const name of [
+			"native_linux_x64",
+			"native_linux_x64_modern",
+			"native_cross_platform_kata",
+			"native_cross_platform_win32",
+			"native_cross_platform_macos",
+		]) {
+			const job = (jobs as Record<string, unknown>)[name];
+			if (!job || typeof job !== "object" || Array.isArray(job)) {
+				throw new Error(`${name} is not a mapping`);
+			}
+			const steps = (job as Record<string, unknown>).steps;
+			if (!Array.isArray(steps)) throw new Error(`${name}.steps is not an array`);
+
+			const build = steps.find(step => {
+				if (!step || typeof step !== "object" || Array.isArray(step)) return false;
+				return (step as Record<string, unknown>).uses === "./.github/actions/build-native";
+			});
+			if (!build || typeof build !== "object" || Array.isArray(build)) {
+				throw new Error(`${name} does not retain build-native`);
+			}
+			expect((build as Record<string, unknown>).if).toMatch(/run-id.*==\s*''/);
+
+			const priorDownload = steps.find(step => {
+				if (!step || typeof step !== "object" || Array.isArray(step)) return false;
+				const fields = step as Record<string, unknown>;
+				const withInputs = fields.with;
+				return (
+					typeof fields.uses === "string" &&
+					fields.uses.includes("download-artifact") &&
+					!!withInputs &&
+					typeof withInputs === "object" &&
+					!Array.isArray(withInputs) &&
+					typeof (withInputs as Record<string, unknown>)["run-id"] === "string"
+				);
+			});
+			if (!priorDownload || typeof priorDownload !== "object" || Array.isArray(priorDownload)) {
+				throw new Error(`${name} does not download a prior-run artifact`);
+			}
+			expect((priorDownload as Record<string, unknown>).if).toMatch(/run-id.*!=\s*''/);
+
+			const currentUpload = steps.find(step => {
+				if (!step || typeof step !== "object" || Array.isArray(step)) return false;
+				const fields = step as Record<string, unknown>;
+				return typeof fields.uses === "string" && fields.uses.includes("upload-artifact");
+			});
+			if (!currentUpload || typeof currentUpload !== "object" || Array.isArray(currentUpload)) {
+				throw new Error(`${name} does not re-upload the staged artifact`);
+			}
+			expect((currentUpload as Record<string, unknown>).if).toMatch(/run-id.*!=\s*''/);
+		}
+	});
+});
+
+describe("native artifact build dependencies", () => {
+	it("keeps dependency installation opt-in while artifact-only builds disable it", () => {
+		const bunInstall = YAML.parse(bunInstallActionYaml);
+		const buildNative = YAML.parse(buildNativeActionYaml);
+		if (!bunInstall || typeof bunInstall !== "object" || Array.isArray(bunInstall)) {
+			throw new Error("bun-install action root is not a mapping");
+		}
+		if (!buildNative || typeof buildNative !== "object" || Array.isArray(buildNative)) {
+			throw new Error("build-native action root is not a mapping");
+		}
+
+		const inputs = (bunInstall as Record<string, unknown>).inputs;
+		if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) {
+			throw new Error("bun-install inputs is not a mapping");
+		}
+		const installDependencies = (inputs as Record<string, unknown>).install_dependencies;
+		if (!installDependencies || typeof installDependencies !== "object" || Array.isArray(installDependencies)) {
+			throw new Error("bun-install install_dependencies input is not a mapping");
+		}
+		expect((installDependencies as Record<string, unknown>).default).toBe("true");
+
+		const nativeRuns = (buildNative as Record<string, unknown>).runs;
+		if (!nativeRuns || typeof nativeRuns !== "object" || Array.isArray(nativeRuns)) {
+			throw new Error("build-native runs is not a mapping");
+		}
+		const nativeSteps = (nativeRuns as Record<string, unknown>).steps;
+		if (!Array.isArray(nativeSteps)) throw new Error("build-native steps is not an array");
+		const bunStep = nativeSteps.find(step => {
+			if (!step || typeof step !== "object" || Array.isArray(step)) return false;
+			return (step as Record<string, unknown>).uses === "./.github/actions/bun-install";
+		});
+		if (!bunStep || typeof bunStep !== "object" || Array.isArray(bunStep)) {
+			throw new Error("build-native does not invoke bun-install");
+		}
+		const bunWith = (bunStep as Record<string, unknown>).with;
+		if (!bunWith || typeof bunWith !== "object" || Array.isArray(bunWith)) {
+			throw new Error("build-native bun-install step has no inputs");
+		}
+		expect((bunWith as Record<string, unknown>).install_dependencies).toBe("${{ steps.cargo.outputs.needed }}");
+
+		const bunRuns = (bunInstall as Record<string, unknown>).runs;
+		if (!bunRuns || typeof bunRuns !== "object" || Array.isArray(bunRuns)) {
+			throw new Error("bun-install runs is not a mapping");
+		}
+		const bunSteps = (bunRuns as Record<string, unknown>).steps;
+		if (!Array.isArray(bunSteps)) throw new Error("bun-install steps is not an array");
+		for (const name of [
+			"Restore bun store (GitHub cache)",
+			"Prepare mounted bun store",
+			"Install dependencies",
+			"Save bun store (GitHub cache)",
+		]) {
+			const step = bunSteps.find(candidate => {
+				if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+				return (candidate as Record<string, unknown>).name === name;
+			});
+			if (!step || typeof step !== "object" || Array.isArray(step)) {
+				throw new Error(`bun-install has no ${name} step`);
+			}
+			expect((step as Record<string, unknown>).if).toContain("inputs.install_dependencies == 'true'");
+		}
 	});
 });

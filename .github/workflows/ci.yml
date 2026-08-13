@@ -128,18 +128,10 @@ jobs:
               } >> "$GITHUB_OUTPUT"
 
    # Compute a stable hash of every input that affects the native cdylib output,
-   # then look for successful trusted push runs that already uploaded matching
-   # artifacts. CI only receives push events for main and `v*` tags, so retaining
-   # `--event=push` excludes PR artifacts while allowing a release-tag build to
-   # warm the next main run. Two independent outputs:
-   #   * `linux-x64-run-id` — set when the linux x64 canary
-   #     (`pi-natives-linux-x64-modern-h<hash>`) is present on a prior push run,
-   #     so native-dependent TS test jobs and `native_linux_x64` can reuse it.
-   #   * `cross-platform-run-id` — set when ALL cross-platform native artifacts
-   #     also have non-expired artifacts on that same run, so
-   #     `native_cross_platform` can skip a cold rebuild on main after a release.
-   # Non-release native jobs are skipped when their canary hits; the canary
-   # retention window (see build-native action) is the effective TTL.
+   # then look for a trusted completed push run that already uploaded the full
+   # matching artifact set. A failed or cancelled workflow may still have
+   # completed native jobs, so candidates are filtered by event and ancestry
+   # rather than overall workflow conclusion.
    native_artifact_lookup:
       name: Look up cached native artifacts
       runs-on: ubuntu-22.04
@@ -149,6 +141,14 @@ jobs:
          source-hash: ${{ steps.compute.outputs.source-hash }}
          linux-x64-run-id: ${{ steps.find.outputs.linux-x64-run-id }}
          cross-platform-run-id: ${{ steps.find.outputs.cross-platform-run-id }}
+         linux-x64-baseline-run-id: ${{ steps.find.outputs.linux-x64-baseline-run-id }}
+         linux-x64-modern-run-id: ${{ steps.find.outputs.linux-x64-modern-run-id }}
+         linux-arm64-run-id: ${{ steps.find.outputs.linux-arm64-run-id }}
+         linux-musl-x64-baseline-run-id: ${{ steps.find.outputs.linux-musl-x64-baseline-run-id }}
+         linux-musl-arm64-run-id: ${{ steps.find.outputs.linux-musl-arm64-run-id }}
+         darwin-x64-baseline-run-id: ${{ steps.find.outputs.darwin-x64-baseline-run-id }}
+         darwin-arm64-run-id: ${{ steps.find.outputs.darwin-arm64-run-id }}
+         win32-x64-baseline-run-id: ${{ steps.find.outputs.win32-x64-baseline-run-id }}
       steps:
          - uses: actions/checkout@v4
          - name: Compute native source hash
@@ -171,13 +171,11 @@ jobs:
               GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
            shell: bash
            run: |
+              set -euo pipefail
               hash="${{ steps.compute.outputs.source-hash }}"
-              # Canary for native_linux_x64: TS tests download the baseline
-              # artifact. Modern is a separate job and must not gate tests.
-              linux_canary="pi-natives-linux-x64-baseline-h${hash}"
-              # Required set for cross-platform reuse — names must match the
-              # `actions/upload-artifact` `name:` template in build-native action.
-              cross_platform_required=(
+              required=(
+                "pi-natives-linux-x64-baseline-h${hash}"
+                "pi-natives-linux-x64-modern-h${hash}"
                 "pi-natives-linux-arm64-h${hash}"
                 "pi-natives-linux-musl-x64-baseline-h${hash}"
                 "pi-natives-linux-musl-arm64-h${hash}"
@@ -185,53 +183,67 @@ jobs:
                 "pi-natives-darwin-arm64-h${hash}"
                 "pi-natives-win32-x64-baseline-h${hash}"
               )
-              linux_x64_run_id=""
-              cross_platform_run_id=""
-              for candidate in $(gh run list \
-                  --workflow=ci.yml --status=success --event=push \
-                  --limit=20 --json databaseId --jq='.[].databaseId'); do
-                names=$(gh api "/repos/${{ github.repository }}/actions/runs/$candidate/artifacts?per_page=100" \
-                    --jq '.artifacts[] | select(.expired == false) | .name')
-                if [ -z "$linux_x64_run_id" ] && echo "$names" | grep -qFx "$linux_canary"; then
-                  linux_x64_run_id="$candidate"
-                fi
-                if [ -z "$cross_platform_run_id" ]; then
-                  all_found=true
-                  # Cross-platform reuse requires the linux canary AND every
-                  # cross-platform artifact, since release_binary downloads them
-                  # from the same run.
-                  if ! echo "$names" | grep -qFx "$linux_canary"; then
-                    all_found=false
-                  else
-                    for req in "${cross_platform_required[@]}"; do
-                      if ! echo "$names" | grep -qFx "$req"; then
-                        all_found=false
-                        break
-                      fi
-                    done
-                  fi
-                  if $all_found; then
-                    cross_platform_run_id="$candidate"
-                  fi
-                fi
-                if [ -n "$linux_x64_run_id" ] && [ -n "$cross_platform_run_id" ]; then
-                  break
-                fi
+              declare -A artifact_run_ids=()
+              for artifact in "${required[@]}"; do
+                artifact_run_ids["$artifact"]=""
               done
-              if [ -n "$linux_x64_run_id" ]; then
-                echo "Reusing Linux x64 native artifacts from run $linux_x64_run_id"
+              # Resolve each exact artifact independently. A failed overall CI run
+              # may still contain successful native jobs, and different trusted
+              # runs may carry different members of the same source-hash set.
+              # `cross-platform-run-id` remains a same-run completeness canary
+              # used only to skip redundant native jobs on ordinary main pushes.
+              cross_platform_run_id=""
+
+              # An artifact is trusted only when its completed push run's exact
+              # head SHA is reachable from the current origin/main history.
+              if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+                git fetch --no-tags --unshallow origin \
+                  +refs/heads/main:refs/remotes/origin/main
               else
-                echo "No cached Linux x64 native artifacts for hash $hash; native_linux_x64 will rebuild."
+                git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
               fi
+
+              while IFS=$'\t' read -r candidate head_sha; do
+                if [ -z "$candidate" ] || [ -z "$head_sha" ]; then
+                  continue
+                fi
+                if ! git merge-base --is-ancestor "$head_sha" origin/main; then
+                  echo "Skipping untrusted run $candidate: $head_sha is not an origin/main ancestor."
+                  continue
+                fi
+                names=$(gh api "/repos/${{ github.repository }}/actions/runs/$candidate/artifacts?per_page=100" \
+                  --jq '.artifacts[] | select(.expired == false) | .name')
+                all_found=true
+                for artifact in "${required[@]}"; do
+                  if echo "$names" | grep -qFx "$artifact"; then
+                    if [ -z "${artifact_run_ids[$artifact]}" ]; then
+                      artifact_run_ids["$artifact"]="$candidate"
+                    fi
+                  else
+                    all_found=false
+                  fi
+                done
+                if $all_found && [ -z "$cross_platform_run_id" ]; then
+                  cross_platform_run_id="$candidate"
+                fi
+              done < <(gh run list \
+                --workflow=ci.yml --status=completed --event=push --limit=100 \
+                --json databaseId,headSha --jq '.[] | [.databaseId, .headSha] | @tsv')
+
+              for artifact in "${required[@]}"; do
+                artifact_key="${artifact#pi-natives-}"
+                artifact_key="${artifact_key%-h${hash}}"
+                echo "${artifact_key}-run-id=${artifact_run_ids[$artifact]}" >> "$GITHUB_OUTPUT"
+              done
+              echo "linux-x64-run-id=${artifact_run_ids[pi-natives-linux-x64-baseline-h${hash}]}" >> "$GITHUB_OUTPUT"
+              echo "cross-platform-run-id=$cross_platform_run_id" >> "$GITHUB_OUTPUT"
+              echo "Native artifact run IDs:"
+              for artifact in "${required[@]}"; do
+                echo "  $artifact: ${artifact_run_ids[$artifact]:-rebuild}"
+              done
               if [ -n "$cross_platform_run_id" ]; then
-                echo "Reusing cross-platform native artifacts from run $cross_platform_run_id"
-              else
-                echo "No cached cross-platform native artifacts for hash $hash; native_cross_platform will rebuild on main."
+                echo "Reusing the existing cross-platform cache warm run $cross_platform_run_id."
               fi
-              {
-                echo "linux-x64-run-id=$linux_x64_run_id"
-                echo "cross-platform-run-id=$cross_platform_run_id"
-              } >> "$GITHUB_OUTPUT"
 
    # Fast lint, type check, and browser bundle build (no Rust, no native build needed)
    check:
@@ -258,7 +270,23 @@ jobs:
       timeout-minutes: 15
       steps:
          - uses: actions/checkout@v4
+         - name: Download trusted Linux x64 baseline native artifact
+           if: ${{ needs.native_artifact_lookup.outputs.linux-x64-baseline-run-id != '' }}
+           uses: actions/download-artifact@v4
+           with:
+              name: pi-natives-linux-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              path: packages/natives/native
+              run-id: ${{ needs.native_artifact_lookup.outputs.linux-x64-baseline-run-id }}
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+         - name: Stage Linux x64 baseline native artifact for this run
+           if: ${{ needs.native_artifact_lookup.outputs.linux-x64-baseline-run-id != '' }}
+           uses: actions/upload-artifact@v4
+           with:
+              name: pi-natives-linux-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              path: packages/natives/native/pi_natives.linux-x64*.node
+              if-no-files-found: error
          - uses: ./.github/actions/build-native
+           if: ${{ needs.native_artifact_lookup.outputs.linux-x64-baseline-run-id == '' }}
            with:
               hash: ${{ needs.native_artifact_lookup.outputs.source-hash }}
               platform: linux
@@ -277,7 +305,23 @@ jobs:
       timeout-minutes: 25
       steps:
          - uses: actions/checkout@v4
+         - name: Download trusted Linux x64 modern native artifact
+           if: ${{ needs.native_artifact_lookup.outputs.linux-x64-modern-run-id != '' }}
+           uses: actions/download-artifact@v4
+           with:
+              name: pi-natives-linux-x64-modern-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              path: packages/natives/native
+              run-id: ${{ needs.native_artifact_lookup.outputs.linux-x64-modern-run-id }}
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+         - name: Stage Linux x64 modern native artifact for this run
+           if: ${{ needs.native_artifact_lookup.outputs.linux-x64-modern-run-id != '' }}
+           uses: actions/upload-artifact@v4
+           with:
+              name: pi-natives-linux-x64-modern-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              path: packages/natives/native/pi_natives.linux-x64*.node
+              if-no-files-found: error
          - uses: ./.github/actions/build-native
+           if: ${{ needs.native_artifact_lookup.outputs.linux-x64-modern-run-id == '' }}
            with:
               hash: ${{ needs.native_artifact_lookup.outputs.source-hash }}
               platform: linux
@@ -306,7 +350,23 @@ jobs:
       runs-on: ${{ matrix.os }}
       steps:
          - uses: actions/checkout@v4
+         - name: Download trusted cross-platform native artifact
+           if: ${{ (matrix.libc != 'musl' && matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.linux-arm64-run-id != '') || (matrix.libc == 'musl' && matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.linux-musl-x64-baseline-run-id != '') || (matrix.libc == 'musl' && matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.linux-musl-arm64-run-id != '') }}
+           uses: actions/download-artifact@v4
+           with:
+              name: pi-natives-${{ matrix.platform }}-${{ matrix.libc && format('{0}-', matrix.libc) || '' }}${{ matrix.arch }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              path: packages/natives/native
+              run-id: ${{ matrix.libc != 'musl' && matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.linux-arm64-run-id || matrix.libc == 'musl' && matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.linux-musl-x64-baseline-run-id || needs.native_artifact_lookup.outputs.linux-musl-arm64-run-id }}
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+         - name: Stage cross-platform native artifact for this run
+           if: ${{ (matrix.libc != 'musl' && matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.linux-arm64-run-id != '') || (matrix.libc == 'musl' && matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.linux-musl-x64-baseline-run-id != '') || (matrix.libc == 'musl' && matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.linux-musl-arm64-run-id != '') }}
+           uses: actions/upload-artifact@v4
+           with:
+              name: pi-natives-${{ matrix.platform }}-${{ matrix.libc && format('{0}-', matrix.libc) || '' }}${{ matrix.arch }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              path: packages/natives/native/pi_natives.${{ matrix.platform }}-${{ matrix.arch }}*.node
+              if-no-files-found: error
          - uses: ./.github/actions/build-native
+           if: ${{ (matrix.libc != 'musl' && matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.linux-arm64-run-id == '') || (matrix.libc == 'musl' && matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.linux-musl-x64-baseline-run-id == '') || (matrix.libc == 'musl' && matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.linux-musl-arm64-run-id == '') }}
            with:
               hash: ${{ needs.native_artifact_lookup.outputs.source-hash }}
               platform: ${{ matrix.platform }}
@@ -328,7 +388,23 @@ jobs:
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
+         - name: Download trusted Windows native artifact
+           if: ${{ needs.native_artifact_lookup.outputs.win32-x64-baseline-run-id != '' }}
+           uses: actions/download-artifact@v4
+           with:
+              name: pi-natives-win32-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              path: packages/natives/native
+              run-id: ${{ needs.native_artifact_lookup.outputs.win32-x64-baseline-run-id }}
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+         - name: Stage Windows native artifact for this run
+           if: ${{ needs.native_artifact_lookup.outputs.win32-x64-baseline-run-id != '' }}
+           uses: actions/upload-artifact@v4
+           with:
+              name: pi-natives-win32-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              path: packages/natives/native/pi_natives.win32-x64*.node
+              if-no-files-found: error
          - uses: ./.github/actions/build-native
+           if: ${{ needs.native_artifact_lookup.outputs.win32-x64-baseline-run-id == '' }}
            with:
               hash: ${{ needs.native_artifact_lookup.outputs.source-hash }}
               platform: win32
@@ -351,7 +427,23 @@ jobs:
       runs-on: ${{ matrix.os }}
       steps:
          - uses: actions/checkout@v4
+         - name: Download trusted macOS native artifact
+           if: ${{ (matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.darwin-x64-baseline-run-id != '') || (matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.darwin-arm64-run-id != '') }}
+           uses: actions/download-artifact@v4
+           with:
+              name: pi-natives-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              path: packages/natives/native
+              run-id: ${{ matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.darwin-x64-baseline-run-id || needs.native_artifact_lookup.outputs.darwin-arm64-run-id }}
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+         - name: Stage macOS native artifact for this run
+           if: ${{ (matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.darwin-x64-baseline-run-id != '') || (matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.darwin-arm64-run-id != '') }}
+           uses: actions/upload-artifact@v4
+           with:
+              name: pi-natives-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              path: packages/natives/native/pi_natives.${{ matrix.platform }}-${{ matrix.arch }}*.node
+              if-no-files-found: error
          - uses: ./.github/actions/build-native
+           if: ${{ (matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.darwin-x64-baseline-run-id == '') || (matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.darwin-arm64-run-id == '') }}
            with:
               hash: ${{ needs.native_artifact_lookup.outputs.source-hash }}
               platform: ${{ matrix.platform }}

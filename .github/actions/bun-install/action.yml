@@ -6,6 +6,12 @@ description: >
    (e.g. GitHub-hosted). Self-hosted omp-kata runners use the mounted Bun store
    PVC; GitHub-hosted runners use the stock actions/cache backend.
 
+inputs:
+   install_dependencies:
+      description: Whether to restore/prep the Bun store and install workspace dependencies
+      required: false
+      default: "true"
+
 runs:
    using: composite
    steps:
@@ -51,7 +57,7 @@ runs:
       # dispatches) produce the shared entry every PR can see.
       - name: Restore bun store (GitHub cache)
         id: bun-cache
-        if: steps.env.outputs.cache == 'gha'
+        if: steps.env.outputs.cache == 'gha' && inputs.install_dependencies == 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
            path: ~/.bun/install/cache
@@ -64,11 +70,12 @@ runs:
 
       # On-infra (omp-kata): the pod mounts a shared PVC at bun's store path.
       - name: Prepare mounted bun store
-        if: steps.env.outputs.cache == 'mounted'
+        if: steps.env.outputs.cache == 'mounted' && inputs.install_dependencies == 'true'
         shell: bash
         run: mkdir -p "${BUN_INSTALL_CACHE_DIR:-${HOME}/.bun/install/cache}"
 
       - name: Install dependencies
+        if: inputs.install_dependencies == 'true'
         shell: bash
         run: |
            # The shared bun store (mounted PVC on omp-kata, actions/cache
@@ -91,7 +98,7 @@ runs:
       # Producer half of the split cache: only non-PR runs save, so the store
       # exists once per lockfile generation instead of once per PR ref.
       - name: Save bun store (GitHub cache)
-        if: steps.env.outputs.cache == 'gha' && github.event_name != 'pull_request' && steps.bun-cache.outputs.cache-hit != 'true'
+        if: inputs.install_dependencies == 'true' && steps.env.outputs.cache == 'gha' && github.event_name != 'pull_request' && steps.bun-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
            path: ~/.bun/install/cache
