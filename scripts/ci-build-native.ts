@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import * as path from "node:path";
-import { ADDON_OUTPUTS, AGGREGATE_TARGETS } from "./bazel-natives";
+import { ADDON_OUTPUTS, AGGREGATE_TARGETS, withoutSccacheWrappers } from "./bazel-natives";
 
 const repoRoot = path.join(import.meta.dir, "..");
 const isDryRun = process.argv.includes("--dry-run");
@@ -15,11 +15,11 @@ export interface NativeBuildEnvironment {
 	LIBC?: string;
 }
 
-/** Adds release-portability env required by native addon builds. */
+/** Adds release-portability env and drops host sccache wrappers Bazel cannot use. */
 export function withPortableNativeBuildEnv(
 	env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-	return { ...env, PCRE2_SYS_STATIC: "1" };
+	return withoutSccacheWrappers({ ...env, PCRE2_SYS_STATIC: "1" });
 }
 
 function cannotMapNativeTarget(env: NativeBuildEnvironment, reason: string): never {

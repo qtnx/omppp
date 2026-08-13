@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { resolveNativeTargets } from "./ci-build-native";
+import { resolveNativeTargets, withPortableNativeBuildEnv } from "./ci-build-native";
+import { withoutSccacheWrappers } from "./bazel-natives";
 
 describe("ci native target resolution", () => {
 	const mappings = [
@@ -75,5 +76,32 @@ describe("ci native target resolution", () => {
 				TARGET_VARIANTS: "baseline",
 			}),
 		).toThrow(/Cannot map CI native target.*TARGET_PLATFORM.*win32.*TARGET_ARCH.*arm64/s);
+	});
+
+	it("drops host sccache wrappers so bazel lockfile generation cannot inherit them", () => {
+		expect(
+			withPortableNativeBuildEnv({
+				RUSTC_WRAPPER: "sccache",
+				CMAKE_C_COMPILER_LAUNCHER: "sccache",
+				CMAKE_CXX_COMPILER_LAUNCHER: "sccache",
+				PATH: "/usr/bin",
+			}),
+		).toEqual({
+			PATH: "/usr/bin",
+			PCRE2_SYS_STATIC: "1",
+		});
+	});
+
+	it("keeps a non-sccache rustc wrapper and unrelated env", () => {
+		expect(
+			withoutSccacheWrappers({
+				RUSTC_WRAPPER: "sccache",
+				CMAKE_C_COMPILER_LAUNCHER: "ccache",
+				PATH: "/usr/bin",
+			}),
+		).toEqual({
+			CMAKE_C_COMPILER_LAUNCHER: "ccache",
+			PATH: "/usr/bin",
+		});
 	});
 });

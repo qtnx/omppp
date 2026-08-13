@@ -35,6 +35,23 @@ import { detectHostAvx2Support } from "./host-detect";
 
 const repoRoot = path.join(import.meta.dir, "..");
 
+const SCCACHE_WRAPPER_KEYS = ["RUSTC_WRAPPER", "CMAKE_C_COMPILER_LAUNCHER", "CMAKE_CXX_COMPILER_LAUNCHER"] as const;
+
+/**
+ * Bazel fetches its own rustc. Inheriting `RUSTC_WRAPPER=sccache` from the
+ * host cargo path makes crate-universe lockfile generation call sccache,
+ * which hard-fails when the GHA cache backend cannot resolve DNS.
+ */
+export function withoutSccacheWrappers(
+	env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+	const next = { ...env };
+	for (const key of SCCACHE_WRAPPER_KEYS) {
+		if (next[key] === "sccache") delete next[key];
+	}
+	return next;
+}
+
 /** //:natives-<name> → canonical addon filename (mirrors _ADDONS in BUILD.bazel). */
 export const ADDON_OUTPUTS: Record<string, string> = {
 	"linux-x64-baseline": "pi_natives.linux-x64-baseline.node",
@@ -189,7 +206,12 @@ async function runBazel(
 	args: string[],
 	stdout: "inherit" | "pipe",
 ): Promise<{ exitCode: number; stdout: string; stderrTail: string }> {
-	const proc = Bun.spawn([bin, ...args], { cwd: repoRoot, stdout, stderr: "pipe" });
+	const proc = Bun.spawn([bin, ...args], {
+		cwd: repoRoot,
+		env: withoutSccacheWrappers(process.env),
+		stdout,
+		stderr: "pipe",
+	});
 	const decoder = new TextDecoder();
 	let tail = "";
 	const pumpStderr = (async () => {

@@ -1,12 +1,11 @@
 name: Build native addon
 description: >
    Build the pi_natives cdylib for one platform/arch/variant and upload it as a
-   hash-tagged artifact. Self-detects the runner via $SCCACHE_BUCKET (injected
-   only on the self-hosted omp-kata pods): on-infra it uses the image's baked
-   toolchains + the RustFS-backed sccache; on GitHub-hosted runners it installs
-   the toolchains and uses Swatinem target/ cache + the GitHub Actions sccache
-   backend. PRs run on GitHub-hosted runners, so the on-infra path only ever
-   serves trusted push/main + release builds.
+   hash-tagged artifact. Addon compilation is Bazel-hermetic (rules_rust + zig
+   cc). Host cargo/sccache/zig are installed only when this job still runs
+   clippy or the Rust test suite. GitHub-hosted Bazel builds restore the
+   actions/cache disk cache via bazel-cache so release version bumps are not
+   cold graphs.
 
 inputs:
    hash:
@@ -106,23 +105,39 @@ runs:
            } >> "$GITHUB_OUTPUT"
            echo "Resolved cross_target='$cross_target' bare_target='$bare_target'"
 
+      # Host cargo is leftover from the napi pipeline. Bazel fetches rustc/zig
+      # itself; installing those plus sccache on every native job is both slow
+      # and how a GHA-cache DNS blip fails crate-universe lockfile generation
+      # (`RUSTC_WRAPPER=sccache`). Keep cargo only for the one matrix entry
+      # that still runs `check:rs` / `test:rs`.
+      - name: Decide host cargo toolchain
+        id: cargo
+        shell: bash
+        run: |
+           if [ "${{ inputs.skip_validation }}" != "true" ] && [ "${{ inputs.rust_checks }}" = "true" ]; then
+             echo "needed=true" >> "$GITHUB_OUTPUT"
+           else
+             echo "needed=false" >> "$GITHUB_OUTPUT"
+           fi
+           echo "host cargo toolchain needed: $( [ "${{ inputs.skip_validation }}" != "true" ] && [ "${{ inputs.rust_checks }}" = "true" ] && echo true || echo false )"
+
       # --- Rust toolchain -----------------------------------------------------
       - name: Ensure baked Rust toolchain (omp-kata)
-        if: steps.detect.outputs.on_infra == 'true'
+        if: steps.detect.outputs.on_infra == 'true' && steps.cargo.outputs.needed == 'true'
         uses: ./.github/actions/ensure-rust-toolchain
         with:
            toolchain: nightly-2026-04-29
            components: ${{ inputs.rust_checks == 'true' && 'clippy,rustfmt' || '' }}
            target: ${{ steps.resolve.outputs.bare_target }}
       - name: Install Rust toolchain (GitHub-hosted)
-        if: steps.detect.outputs.on_infra == 'false'
+        if: steps.detect.outputs.on_infra == 'false' && steps.cargo.outputs.needed == 'true'
         uses: dtolnay/rust-toolchain@nightly
         with:
            toolchain: nightly-2026-04-29
            components: ${{ inputs.rust_checks == 'true' && 'clippy, rustfmt' || '' }}
            targets: ${{ steps.resolve.outputs.bare_target }}
       - name: Install Linux build prerequisites (GitHub-hosted)
-        if: steps.detect.outputs.on_infra == 'false' && runner.os == 'Linux'
+        if: steps.detect.outputs.on_infra == 'false' && runner.os == 'Linux' && steps.cargo.outputs.needed == 'true'
         shell: bash
         run: |
            # GitHub-hosted Ubuntu images sometimes expose broken Microsoft apt
@@ -136,10 +151,11 @@ runs:
       # GitHub-hosted images provide CMake; fail early if that image contract
       # changes instead of referencing the upstream-deleted local helper.
       - name: Verify CMake
+        if: steps.cargo.outputs.needed == 'true'
         shell: bash
         run: cmake --version
       - name: Prepend rustup toolchain bin to PATH (GitHub-hosted)
-        if: steps.detect.outputs.on_infra == 'false'
+        if: steps.detect.outputs.on_infra == 'false' && steps.cargo.outputs.needed == 'true'
         shell: bash
         run: |
            # Homebrew on macOS runners ships rustup-init with shadow proxies for
@@ -152,7 +168,7 @@ runs:
 
       # --- Rust flags (shared) ------------------------------------------------
       - name: Configure native Rust flags
-        if: inputs.target == '' || inputs.arch == 'x64'
+        if: steps.cargo.outputs.needed == 'true' && (inputs.target == '' || inputs.arch == 'x64')
         shell: bash
         env:
            TARGET_ARCH: ${{ inputs.arch }}
@@ -199,7 +215,7 @@ runs:
       # mounted Cargo registry, RustFS sccache, and the RustFS target/ snapshot
       # (see "Restore target/ cache" below), so Swatinem stays GitHub-only.
       - name: Cache Rust target/ (GitHub-hosted)
-        if: steps.detect.outputs.on_infra == 'false'
+        if: steps.detect.outputs.on_infra == 'false' && steps.cargo.outputs.needed == 'true'
         uses: Swatinem/rust-cache@v2
         with:
            shared-key: native-${{ inputs.platform }}-${{ inputs.libc || 'default' }}-${{ inputs.arch }}-${{ inputs.variant || 'default' }}-h${{ inputs.hash }}
@@ -209,14 +225,15 @@ runs:
 
       # --- sccache ------------------------------------------------------------
       - name: Ensure baked sccache (omp-kata)
-        if: steps.detect.outputs.on_infra == 'true'
+        if: steps.detect.outputs.on_infra == 'true' && steps.cargo.outputs.needed == 'true'
         uses: ./.github/actions/ensure-sccache
         with:
            version: "0.15.0"
       - name: Setup sccache (GitHub-hosted)
-        if: steps.detect.outputs.on_infra == 'false'
+        if: steps.detect.outputs.on_infra == 'false' && steps.cargo.outputs.needed == 'true'
         uses: mozilla-actions/sccache-action@v0.0.10
       - name: Enable sccache for cargo
+        if: steps.cargo.outputs.needed == 'true'
         # CARGO_INCREMENTAL=0 is required: sccache silently skips caching when
         # incremental is enabled, turning the wrapper into a no-op. The backend is
         # conditional: omp-kata reads the shared S3 (RustFS) config from the
@@ -248,13 +265,13 @@ runs:
 
       # --- cargo-nextest (native test runner; non-cross builds only) ----------
       - name: Ensure baked cargo-nextest (omp-kata)
-        if: steps.detect.outputs.on_infra == 'true' && inputs.target == ''
+        if: steps.detect.outputs.on_infra == 'true' && inputs.target == '' && steps.cargo.outputs.needed == 'true'
         uses: ./.github/actions/ensure-cargo-tool
         with:
            binary: cargo-nextest
            crate: cargo-nextest
       - name: Install cargo-nextest (GitHub-hosted)
-        if: steps.detect.outputs.on_infra == 'false' && inputs.target == ''
+        if: steps.detect.outputs.on_infra == 'false' && inputs.target == '' && steps.cargo.outputs.needed == 'true'
         uses: taiki-e/install-action@v2
         with:
            tool: nextest
@@ -269,28 +286,28 @@ runs:
       # Cross builds only run on push/main + release (omp-kata), so the
       # GitHub-hosted cross branches exist for portability and never fire here.
       - name: Ensure baked zig (omp-kata, non-MSVC cross)
-        if: steps.detect.outputs.on_infra == 'true' && steps.resolve.outputs.cross_target != '' && !endsWith(steps.resolve.outputs.cross_target, '-msvc')
+        if: steps.detect.outputs.on_infra == 'true' && steps.cargo.outputs.needed == 'true' && steps.resolve.outputs.cross_target != '' && !endsWith(steps.resolve.outputs.cross_target, '-msvc')
         uses: ./.github/actions/ensure-zig
         with:
            version: "0.16.0"
       - name: Setup zig (GitHub-hosted, non-MSVC cross)
-        if: steps.detect.outputs.on_infra == 'false' && steps.resolve.outputs.cross_target != '' && !endsWith(steps.resolve.outputs.cross_target, '-msvc')
+        if: steps.detect.outputs.on_infra == 'false' && steps.cargo.outputs.needed == 'true' && steps.resolve.outputs.cross_target != '' && !endsWith(steps.resolve.outputs.cross_target, '-msvc')
         uses: mlugg/setup-zig@v2
         with:
            version: 0.16.0
       - name: Ensure baked cargo-zigbuild (omp-kata, non-MSVC cross)
-        if: steps.detect.outputs.on_infra == 'true' && steps.resolve.outputs.cross_target != '' && !endsWith(steps.resolve.outputs.cross_target, '-msvc')
+        if: steps.detect.outputs.on_infra == 'true' && steps.cargo.outputs.needed == 'true' && steps.resolve.outputs.cross_target != '' && !endsWith(steps.resolve.outputs.cross_target, '-msvc')
         uses: ./.github/actions/ensure-cargo-tool
         with:
            binary: cargo-zigbuild
            crate: cargo-zigbuild
       - name: Install cargo-zigbuild (GitHub-hosted, non-MSVC cross)
-        if: steps.detect.outputs.on_infra == 'false' && steps.resolve.outputs.cross_target != '' && !endsWith(steps.resolve.outputs.cross_target, '-msvc')
+        if: steps.detect.outputs.on_infra == 'false' && steps.cargo.outputs.needed == 'true' && steps.resolve.outputs.cross_target != '' && !endsWith(steps.resolve.outputs.cross_target, '-msvc')
         uses: taiki-e/install-action@v2
         with:
            tool: cargo-zigbuild
       - name: Install LLVM tooling (GitHub-hosted, MSVC cross)
-        if: steps.detect.outputs.on_infra == 'false' && endsWith(steps.resolve.outputs.cross_target, '-msvc')
+        if: steps.detect.outputs.on_infra == 'false' && steps.cargo.outputs.needed == 'true' && endsWith(steps.resolve.outputs.cross_target, '-msvc')
         shell: bash
         run: |
            # GitHub-hosted Ubuntu images sometimes expose broken Microsoft apt
@@ -302,24 +319,24 @@ runs:
            sudo apt-get update
            sudo apt-get install -y clang lld llvm
       - name: Ensure baked cargo-xwin (omp-kata, MSVC cross)
-        if: steps.detect.outputs.on_infra == 'true' && endsWith(steps.resolve.outputs.cross_target, '-msvc')
+        if: steps.detect.outputs.on_infra == 'true' && steps.cargo.outputs.needed == 'true' && endsWith(steps.resolve.outputs.cross_target, '-msvc')
         uses: ./.github/actions/ensure-cargo-tool
         with:
            binary: cargo-xwin
            crate: cargo-xwin
       - name: Install cargo-xwin (GitHub-hosted, MSVC cross)
-        if: steps.detect.outputs.on_infra == 'false' && endsWith(steps.resolve.outputs.cross_target, '-msvc')
+        if: steps.detect.outputs.on_infra == 'false' && steps.cargo.outputs.needed == 'true' && endsWith(steps.resolve.outputs.cross_target, '-msvc')
         uses: taiki-e/install-action@v2
         with:
            tool: cargo-xwin
       - name: Cache cargo-xwin Windows SDK
-        if: endsWith(steps.resolve.outputs.cross_target, '-msvc')
+        if: steps.cargo.outputs.needed == 'true' && endsWith(steps.resolve.outputs.cross_target, '-msvc')
         uses: actions/cache@v4
         with:
            path: ~/.cache/cargo-xwin
            key: cargo-xwin-${{ runner.os }}-v1
       - name: Accept xwin license
-        if: endsWith(steps.resolve.outputs.cross_target, '-msvc')
+        if: steps.cargo.outputs.needed == 'true' && endsWith(steps.resolve.outputs.cross_target, '-msvc')
         shell: bash
         run: echo "XWIN_ACCEPT_LICENSE=1" >> "$GITHUB_ENV"
 
@@ -331,7 +348,7 @@ runs:
       # overwritten on each save so storage stays bounded at one snapshot per
       # key. GitHub-hosted runners get the same effect from Swatinem above.
       - name: Restore target/ cache (omp-kata)
-        if: steps.detect.outputs.on_infra == 'true'
+        if: steps.detect.outputs.on_infra == 'true' && steps.cargo.outputs.needed == 'true'
         shell: bash
         env:
            TARGET_CACHE_KEY: native-${{ inputs.platform }}-${{ inputs.libc || 'default' }}-${{ inputs.arch }}-${{ inputs.variant || 'default' }}
@@ -345,21 +362,39 @@ runs:
       - name: Test workspace (Rust)
         # macOS has no `#[cfg(target_os = "macos")]` tests in the workspace, and
         # Windows-only tests are no longer exercised in CI (win32-x64 cross-builds
-        # on Linux). Skipping the duplicate Linux runs on macOS saves ~10 min of
-        # parallel runner time.
-        if: inputs.target == '' && inputs.platform != 'darwin' && inputs.skip_validation != 'true'
+        # on Linux). Run the suite once on the rust_checks matrix entry — repeating
+        # it on linux-x64 modern paid another rustup+sccache+nextest tax for the
+        # same cargo tests.
+        if: inputs.rust_checks == 'true' && inputs.target == '' && inputs.platform != 'darwin' && inputs.skip_validation != 'true'
         shell: bash
         run: bun run test:rs
+      - id: bazel-cache
+        uses: ./.github/actions/bazel-cache
+        with:
+           scope: natives-${{ inputs.platform }}-${{ inputs.libc || 'default' }}-${{ inputs.arch }}-${{ inputs.variant || 'default' }}
       - name: Build native addon(s)
         shell: bash
         env:
+           OMP_BAZEL_RC: ${{ steps.bazel-cache.outputs.rc }}
            CROSS_TARGET: ${{ steps.resolve.outputs.cross_target }}
            TARGET_PLATFORM: ${{ inputs.platform }}
            TARGET_ARCH: ${{ inputs.arch }}
            LIBC: ${{ inputs.libc }}
            TARGET_VARIANTS: ${{ inputs.variant }}
-        run: bun run ci:build:native
+        run: |
+           set -euo pipefail
+           if [ "$(ulimit -Sn)" != unlimited ] && [ "$(ulimit -Sn)" -lt 65536 ]; then ulimit -Sn 65536 || true; fi
+           bun run ci:build:native
+      - name: Save bazel disk cache
+        if: steps.bazel-cache.outputs.save-needed == 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+           path: |
+              ~/.cache/omp-bazel-disk
+              ~/.cache/omp-bazel-repo
+           key: ${{ steps.bazel-cache.outputs.cache-key }}
       - name: sccache stats
+        if: steps.cargo.outputs.needed == 'true'
         shell: bash
         run: sccache --show-stats || true
       - name: Upload native addon(s)

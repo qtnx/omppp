@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- GitHub-hosted native jobs install host cargo, sccache, and zig only when they still run clippy or the Rust test suite. Bazel addon builds restore the disk cache so release version bumps are not cold graphs.
+
+### Fixed
+
+- Bazel native builds no longer inherit `RUSTC_WRAPPER=sccache`. A GitHub Actions cache DNS blip can no longer fail crate-universe lockfile generation.
+
+
 ## [17.2.12] - 2026-08-08
 
 ### Changed

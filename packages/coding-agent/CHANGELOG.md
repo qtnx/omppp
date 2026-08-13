@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Native CI no longer hard-fails a release rebuild when sccache cannot reach the GitHub Actions cache backend. Bazel addon builds strip that wrapper and skip unused host cargo/sccache setup.
+
+
 ## [1.7.1] - 2026-08-13
 
 ### Added
