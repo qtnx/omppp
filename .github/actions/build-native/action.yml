@@ -277,6 +277,8 @@ runs:
            tool: nextest
 
       - uses: ./.github/actions/bun-install
+        with:
+           install_dependencies: ${{ steps.cargo.outputs.needed }}
 
       # --- Cross-compile toolchains -------------------------------------------
       # Non-MSVC targets (e.g. aarch64-unknown-linux-gnu) build with
