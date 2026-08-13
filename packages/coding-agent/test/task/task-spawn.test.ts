@@ -502,6 +502,48 @@ describe("task spawn routing", () => {
 		expect(secondJob.status).toBe("completed");
 	});
 
+	it("registers, starts, and completes every item in a 20-task async batch", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [taskAgent],
+			projectAgentsDir: null,
+		});
+		const taskNames = Array.from({ length: 20 }, (_, index) => `Fanout${String(index + 1).padStart(2, "0")}`);
+		const started = new Set<string>();
+		const gates = new Map<string, Deferred>();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			const id = options.id ?? "?";
+			started.add(id);
+			const gate = deferred();
+			gates.set(id, gate);
+			await gate.promise;
+			return makeResult(id);
+		});
+
+		const manager = createManager();
+		const tool = await TaskTool.create(
+			createSession({ manager, settings: { "task.batch": true, "task.maxConcurrency": 32 } }),
+		);
+		const result = await tool.execute("tc-fanout-20", {
+			context: "Run every assigned task.",
+			tasks: taskNames.map(name => ({ agent: "task", name, task: `Complete ${name}.` })),
+		} as TaskParams);
+		const progress = result.details?.progress;
+		if (!progress) throw new Error("Expected async batch progress details.");
+
+		expect(progress).toHaveLength(20);
+		expect(progress.map(item => item.id).sort()).toEqual([...taskNames].sort());
+		const jobs = progress.map(item => manager.getJob(item.id));
+		expect(jobs).toHaveLength(20);
+		expect(jobs.every(Boolean)).toBe(true);
+
+		await pollUntil(() => started.size === 20);
+		expect([...started].sort()).toEqual([...taskNames].sort());
+
+		for (const name of taskNames) gates.get(name)!.resolve();
+		await Promise.all(jobs.map(job => job!.promise));
+		expect(jobs.map(job => job!.status)).toEqual(Array(20).fill("completed"));
+	});
+
 	it("settles a cancelled spawn while it is queued behind the semaphore", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 			agents: [taskAgent],

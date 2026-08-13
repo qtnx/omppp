@@ -125,6 +125,34 @@ function renderProgressText(progress: AgentProgress, expanded: boolean, uiTheme:
 	return strip(component.render(120));
 }
 
+function renderBatchProgressText(progress: AgentProgress[], expanded: boolean, uiTheme: Theme): string {
+	const details: TaskToolDetails = {
+		projectAgentsDir: null,
+		results: [],
+		totalDurationMs: 1,
+		progress,
+	};
+	const component = renderResult(
+		{ content: [{ type: "text", text: `Running ${progress.length} agents...` }], details },
+		{ expanded, isPartial: true },
+		uiTheme,
+	);
+	return strip(component.render(120));
+}
+
+function makeProgressBatch(
+	count: number,
+	statusForIndex: (index: number) => AgentProgress["status"] = () => "running",
+): AgentProgress[] {
+	return Array.from({ length: count }, (_, index) => ({
+		...makeProgress([]),
+		index,
+		id: `Agent${String(index + 1).padStart(2, "0")}`,
+		task: `batch child ${index + 1}`,
+		status: statusForIndex(index),
+	}));
+}
+
 describe("task live progress rendering", () => {
 	let uiTheme: Theme;
 
@@ -289,6 +317,40 @@ describe("task live progress rendering", () => {
 			expect(text).toContain(`Nested${index}`);
 		}
 		expect(text).not.toContain("more agents");
+	});
+
+	it("reports total live batch status while retaining four collapsed rows", () => {
+		const progress = makeProgressBatch(20);
+		const collapsed = renderBatchProgressText(progress, false, uiTheme);
+
+		for (let index = 1; index <= 16; index++) {
+			expect(collapsed).not.toContain(`Agent${String(index).padStart(2, "0")}`);
+		}
+		for (let index = 17; index <= 20; index++) {
+			expect(collapsed).toContain(`Agent${String(index).padStart(2, "0")}`);
+		}
+		expect(collapsed).toContain("16 more agents");
+		expect(collapsed).toContain("total: 20");
+		expect(collapsed).toContain("20 running");
+
+		const expanded = renderBatchProgressText(progress, true, uiTheme);
+		for (let index = 1; index <= 20; index++) {
+			expect(expanded).toContain(`Agent${String(index).padStart(2, "0")}`);
+		}
+		expect(expanded).not.toContain("more agents");
+	});
+
+	it("keeps folded failed and aborted progress in the aggregate status summary", () => {
+		const progress = makeProgressBatch(20, index => (index === 0 ? "failed" : index === 1 ? "aborted" : "running"));
+		const text = renderBatchProgressText(progress, false, uiTheme);
+
+		expect(text).not.toContain("Agent01");
+		expect(text).not.toContain("Agent02");
+		expect(text).toContain("16 more agents");
+		expect(text).toContain("total: 20");
+		expect(text).toContain("18 running");
+		expect(text).toContain("1 failed");
+		expect(text).toContain("1 aborted");
 	});
 
 	it("caps collapsed finalized nested task results and keeps the failed child visible", () => {
