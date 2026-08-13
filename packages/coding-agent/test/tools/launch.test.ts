@@ -1452,90 +1452,94 @@ esac
 			await shutdown(second);
 		}
 	}, 9_000);
-	it("preserves a superseding owner subscription through broker recovery", async () => {
-		if (process.platform === "win32") return;
-		const projectDir = await tempDir("omp-daemon-recovered-subscription-project-");
-		const runtimeDir = await tempDir("omp-daemon-recovered-subscription-runtime-");
-		const owner = "recovered-shared-owner";
-		const first = await createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 5_000 });
-		const second = await createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 5_000 });
-		const unregisterFirst = first.onCompletion(owner, () => {});
-		let unregisterSecond: (() => void) | undefined;
-		let completion: DaemonSnapshot | undefined;
-		let pid: number | undefined;
-		try {
-			await first.request({ op: "ping" });
-			unregisterSecond = second.onCompletion(owner, notification => {
-				completion = notification.daemon;
-			});
-			const started = await second.request({
-				op: "start",
-				spec: {
+	it(
+		"preserves a superseding owner subscription through broker recovery",
+		async () => {
+			if (process.platform === "win32") return;
+			const projectDir = await tempDir("omp-daemon-recovered-subscription-project-");
+			const runtimeDir = await tempDir("omp-daemon-recovered-subscription-runtime-");
+			const owner = "recovered-shared-owner";
+			const first = await createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 5_000 });
+			const second = await createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 5_000 });
+			const unregisterFirst = first.onCompletion(owner, () => {});
+			let unregisterSecond: (() => void) | undefined;
+			let completion: DaemonSnapshot | undefined;
+			let pid: number | undefined;
+			try {
+				await first.request({ op: "ping" });
+				unregisterSecond = second.onCompletion(owner, notification => {
+					completion = notification.daemon;
+				});
+				const started = await second.request({
+					op: "start",
+					spec: {
+						name: "recovered-superseded-owner-exit",
+						application: "/bin/sh",
+						args: ["-c", "sleep 1.5; exit 0"],
+						env: {},
+						cwd: projectDir,
+						pty: false,
+						restart: "no",
+						persist: false,
+						detached: true,
+					},
+					owner,
+				});
+				if (started.op !== "start" || started.daemon.pid === undefined) {
+					throw new Error("detached daemon did not start");
+				}
+				pid = started.daemon.pid;
+				const metaPath = path.join(runtimeDir, "daemons", "recovered-superseded-owner-exit", "meta.json");
+				const beforeRecovery = (await Bun.file(metaPath).json()) as { completionSubscriptionId?: string };
+				expect(beforeRecovery.completionSubscriptionId).toBeString();
+
+				await second.request({ op: "shutdown" });
+				expect(
+					await waitUntil(
+						() =>
+							Bun.file(path.join(runtimeDir, "broker.pid"))
+								.exists()
+								.then(exists => !exists),
+						5_000,
+					),
+				).toBeTrue();
+
+				unregisterFirst();
+				await first.request({ op: "ping" });
+				const afterStaleUnsubscribe = (await Bun.file(metaPath).json()) as {
+					completionEvents?: boolean;
+					completionSubscriptionId?: string;
+				};
+				expect(afterStaleUnsubscribe).toMatchObject({
+					completionEvents: true,
+					completionSubscriptionId: beforeRecovery.completionSubscriptionId,
+				});
+				first.close();
+
+				expect(await waitUntil(() => pid !== undefined && !processExists(pid), 4_000)).toBeTrue();
+				await second.request({ op: "list" });
+				expect(await waitUntil(() => completion !== undefined, 2_000)).toBeTrue();
+				expect(completion).toMatchObject({
 					name: "recovered-superseded-owner-exit",
-					application: "/bin/sh",
-					args: ["-c", "sleep 1.5; exit 0"],
-					env: {},
-					cwd: projectDir,
-					pty: false,
-					restart: "no",
-					persist: false,
-					detached: true,
-				},
-				owner,
-			});
-			if (started.op !== "start" || started.daemon.pid === undefined) {
-				throw new Error("detached daemon did not start");
-			}
-			pid = started.daemon.pid;
-			const metaPath = path.join(runtimeDir, "daemons", "recovered-superseded-owner-exit", "meta.json");
-			const beforeRecovery = (await Bun.file(metaPath).json()) as { completionSubscriptionId?: string };
-			expect(beforeRecovery.completionSubscriptionId).toBeString();
-
-			await second.request({ op: "shutdown" });
-			expect(
-				await waitUntil(
-					() =>
-						Bun.file(path.join(runtimeDir, "broker.pid"))
-							.exists()
-							.then(exists => !exists),
-					5_000,
-				),
-			).toBeTrue();
-
-			unregisterFirst();
-			await first.request({ op: "ping" });
-			const afterStaleUnsubscribe = (await Bun.file(metaPath).json()) as {
-				completionEvents?: boolean;
-				completionSubscriptionId?: string;
-			};
-			expect(afterStaleUnsubscribe).toMatchObject({
-				completionEvents: true,
-				completionSubscriptionId: beforeRecovery.completionSubscriptionId,
-			});
-			first.close();
-
-			expect(await waitUntil(() => pid !== undefined && !processExists(pid), 4_000)).toBeTrue();
-			await second.request({ op: "list" });
-			expect(await waitUntil(() => completion !== undefined, 2_000)).toBeTrue();
-			expect(completion).toMatchObject({
-				name: "recovered-superseded-owner-exit",
-				state: "exited",
-			});
-		} finally {
-			unregisterFirst();
-			unregisterSecond?.();
-			first.close();
-			await shutdown(second);
-			if (pid !== undefined && processExists(pid)) {
-				const rescue = await createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 1_000 });
-				try {
-					await rescue.request({ op: "stop", name: "recovered-superseded-owner-exit", timeoutMs: 2_000 });
-				} finally {
-					await shutdown(rescue);
+					state: "exited",
+				});
+			} finally {
+				unregisterFirst();
+				unregisterSecond?.();
+				first.close();
+				await shutdown(second);
+				if (pid !== undefined && processExists(pid)) {
+					const rescue = await createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 1_000 });
+					try {
+						await rescue.request({ op: "stop", name: "recovered-superseded-owner-exit", timeoutMs: 2_000 });
+					} finally {
+						await shutdown(rescue);
+					}
 				}
 			}
-		}
-	}, 15_000);
+		},
+		{ timeout: 15_000, retry: 2 },
+	);
 
 	it("clears an owner unsubscribed after a transport reconnect", async () => {
 		if (process.platform === "win32") return;

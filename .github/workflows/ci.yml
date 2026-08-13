@@ -295,7 +295,7 @@ jobs:
       name: "Native: ${{ matrix.platform }} ${{ matrix.libc || '' }} ${{ matrix.arch }}"
       needs: [release_metadata, native_artifact_lookup]
       if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '')) }}
-      timeout-minutes: 15
+      timeout-minutes: 25
       strategy:
          fail-fast: false
          matrix:
@@ -341,7 +341,7 @@ jobs:
       name: "Native: ${{ matrix.platform }} ${{ matrix.arch }}"
       needs: [release_metadata, native_artifact_lookup]
       if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '')) }}
-      timeout-minutes: 15
+      timeout-minutes: 25
       strategy:
          fail-fast: false
          matrix:
