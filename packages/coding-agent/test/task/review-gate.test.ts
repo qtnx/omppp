@@ -694,6 +694,59 @@ describe("task review gate", () => {
 		expect(firstResult(result).exitCode).toBe(0);
 	});
 
+	it("prefers the configured reviewer agent model over the native review gate default", async () => {
+		mockDiscoveredAgents([
+			{
+				name: "heavy_task",
+				description: "Heavy high-accuracy implementer",
+				systemPrompt: "Implement heavy delegated work.",
+				source: "bundled",
+				model: ["pi/task", "pi/slow"],
+				reviewGate: {
+					enabled: true,
+					reviewerAgent: REVIEWER_AGENT,
+					reviewerModel: ["openai-codex/gpt-5.5:xhigh"],
+					fixerAgent: FIXER_AGENT,
+					maxFixIterations: 2,
+					failOnPriorities: [0, 1],
+					requireCorrectVerdict: true,
+				},
+			} as unknown as AgentDefinition,
+			{
+				name: REVIEWER_AGENT,
+				description: "Reviewer agent",
+				systemPrompt: "Review the patch.",
+				source: "bundled",
+			},
+			{
+				name: FIXER_AGENT,
+				description: "Fixer agent",
+				systemPrompt: "Address reviewer findings.",
+				source: "bundled",
+			},
+		]);
+		mockIsolation();
+		mockSessionQueue([{ role: "implementer" }, { role: "reviewer", verdict: correctVerdict() }]);
+		const runSpy = vi.spyOn(executorModule, "runSubprocess");
+
+		const tool = await TaskTool.create(
+			createSession({
+				"task.agentModelOverrides": {
+					[REVIEWER_AGENT]: "openai-codex/codex-auto-review",
+				},
+			}),
+		);
+		const result = await tool.execute("call-configured-reviewer-model", {
+			...TASK_PARAMS,
+			agent: "heavy_task",
+			isolated: true,
+		});
+
+		expect(runSpy.mock.calls[1]?.[0].modelOverride).toEqual(["openai-codex/codex-auto-review"]);
+		expect(runSpy.mock.calls[1]?.[0].modelSelectorFromUserConfig).toBe(true);
+		expect(firstResult(result).exitCode).toBe(0);
+	});
+
 	it("skips review for quick_task without self_review even when the global reviewGate setting is on", async () => {
 		mockDiscoveredAgents([
 			{

@@ -807,8 +807,10 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			) => {
 				const explicitModel = role === "review" ? gateConfig.reviewerModel : undefined;
 				const gateSettingsOverride = request.session.settings.get("task.agentModelOverrides")[gateAgent.name];
+				const configuredGateModel = resolveConfiguredModelPatterns(gateSettingsOverride, request.session.settings);
 				const gateModelOverride = resolveAgentModelPatterns({
-					settingsOverride: explicitModel ?? gateSettingsOverride,
+					settingsOverride:
+						configuredGateModel.length > 0 ? gateSettingsOverride : (explicitModel ?? gateSettingsOverride),
 					agentModel: explicitModel ?? gateAgent.model,
 					settings: request.session.settings,
 					activeModelPattern: policy.parentActiveModelPattern,
@@ -820,9 +822,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 					agent: gateAgent,
 					effectiveAgent: gateAgent,
 					modelOverride: gateModelOverride,
-					modelOverrideFromUserConfig:
-						explicitModel === undefined &&
-						resolveConfiguredModelPatterns(gateSettingsOverride, request.session.settings).length > 0,
+					modelOverrideFromUserConfig: configuredGateModel.length > 0,
 					schema:
 						gateAgent.output === undefined
 							? { schema: undefined, source: "none", mode: "permissive", outputSchemaOverridesAgent: false }
