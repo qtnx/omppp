@@ -4493,7 +4493,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					await session.setActiveToolPresentation(
 						alreadyEnabled ? enabled : [...enabled, name],
 						nextMounted,
-						existingTool !== undefined,
+						true,
 						activationSignal,
 					);
 				} catch (error) {

@@ -1096,7 +1096,6 @@ export class SessionTools {
 		);
 	}
 
-
 	/** Applies an enabled tool set and reconciles its `xd://` partition. */
 	applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
 		return this.runToolRegistryMutation(
@@ -2083,7 +2082,8 @@ export class SessionTools {
 				: new Set([...priorSelection, ...priorActiveManagerSelection, ...defaultMcpToolNames]);
 			const activateAll =
 				options?.activateAll ??
-				((!this.#mcpDiscoveryEnabled && previouslyAllEnabled) || (previousMcpTools.size === 0 && !this.#mcpEnabled));
+				((!this.#mcpDiscoveryEnabled && previouslyAllEnabled) ||
+					(previousMcpTools.size === 0 && !this.#mcpEnabled));
 			const retainedActiveExtensionToolNames = [...previousEnabledMCPToolNames].filter(
 				name => this.#extensionMcpTools.has(name) && this.#toolRegistry.has(name),
 			);

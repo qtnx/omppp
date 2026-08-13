@@ -1408,15 +1408,17 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		try {
 			await initializeExtensions(session, {
 				reportSendError: vi.fn(),
-				reportRuntimeError: error => {
-					if (error.error === "expected detached registration failure") {
-						registrationFailure.resolve({ event: error.event, error: error.error });
-					}
-				},
+				reportRuntimeError: vi.fn(),
+			});
+			const runner = session.extensionRunner;
+			if (!runner) throw new Error("expected extension runner");
+			runner.onError(error => {
+				if (error.error === "expected detached registration failure") {
+					registrationFailure.resolve({ event: error.event, error: error.error });
+				}
 			});
 			rejectDetachedPrompt = true;
 			releaseDetachedRegistration.resolve();
-
 			expect(await registrationFailure.promise).toEqual({
 				event: "tool_registration",
 				error: "expected detached registration failure",
