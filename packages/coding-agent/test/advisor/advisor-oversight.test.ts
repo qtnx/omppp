@@ -16,7 +16,6 @@ import type { ToolSession } from "../../src/tools";
 import { getLatestTodoPhasesFromEntries, type TodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "../../src/tools/todo";
 import { ToolError } from "../../src/tools/tool-errors";
 
-
 function promptText(input: string | AgentMessage[]): string {
 	if (typeof input === "string") return input;
 	return input

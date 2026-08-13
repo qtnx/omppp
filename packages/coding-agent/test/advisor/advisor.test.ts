@@ -4288,7 +4288,11 @@ describe("advisor", () => {
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					promptCalls++;
-					state.messages.push({ role: "user", content: promptText(input), timestamp: promptCalls * 2 - 1 } as AgentMessage);
+					state.messages.push({
+						role: "user",
+						content: promptText(input),
+						timestamp: promptCalls * 2 - 1,
+					} as AgentMessage);
 					state.messages.push({
 						role: "assistant",
 						content: [],
@@ -4348,7 +4352,11 @@ describe("advisor", () => {
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					promptCalls++;
-					state.messages.push({ role: "user", content: promptText(input), timestamp: promptCalls * 2 - 1 } as AgentMessage);
+					state.messages.push({
+						role: "user",
+						content: promptText(input),
+						timestamp: promptCalls * 2 - 1,
+					} as AgentMessage);
 					state.messages.push({
 						role: "assistant",
 						content: [],
@@ -4409,7 +4417,11 @@ describe("advisor", () => {
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					promptCalls++;
-					state.messages.push({ role: "user", content: promptText(input), timestamp: promptCalls * 2 - 1 } as AgentMessage);
+					state.messages.push({
+						role: "user",
+						content: promptText(input),
+						timestamp: promptCalls * 2 - 1,
+					} as AgentMessage);
 					// A real model turn that CHOSE silence: it reasoned, spent
 					// output/reasoning tokens, and emitted no `advise` call. This is
 					// the documented verifier behavior, not a provider malfunction.
@@ -7109,7 +7121,11 @@ describe("advisor", () => {
 					callCount++;
 					if (callCount === 1) throw new Error("insufficient_quota");
 					if (callCount === 2) {
-						state.messages.push({ role: "user", content: promptText(input), timestamp: Date.now() } as AgentMessage);
+						state.messages.push({
+							role: "user",
+							content: promptText(input),
+							timestamp: Date.now(),
+						} as AgentMessage);
 					}
 				},
 				abort: () => {},
