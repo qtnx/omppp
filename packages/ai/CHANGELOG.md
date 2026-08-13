@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-08-13
+
 ### Fixed
 
 - Fixed mandatory-reasoning models applying `thinking.defaultLevel` when reasoning is omitted, instead of always clamping to the lowest supported effort ([#8369](https://github.com/can1357/oh-my-pi/pull/8369) by [@dendritic](https://github.com/dendritic)).

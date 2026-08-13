@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.7.0] - 2026-08-09
-
-### Added
-
-- Added a local audible cue when a live voice call connects, with the outbound microphone isolated during playback.
-
 ## [17.2.10] - 2026-08-06
 
 ### Changed
@@ -232,6 +226,12 @@
 ### Security
 
 - Hardened transcript Markdown rendering by escaping embedded HTML and allowing only safe link schemes
+
+## [1.7.0] - 2026-08-09
+
+### Added
+
+- Added a local audible cue when a live voice call connects, with the outbound microphone isolated during playback.
 
 ## [1.6.7] - 2026-07-28
 

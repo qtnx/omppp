@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-08-13
+
 ### Added
 
 - Added a `providers.xaiImageModel` setting (Settings › Providers › Services › "xAI Image Model") that picks the Grok Imagine model `generate_image` uses when it resolves to the xAI provider: `grok-imagine-image` (default, standard tier) or `grok-imagine-image-quality` — the API id of xAI's Imagine Image 2.0 / Quality Mode. Previously the model was hardcoded to `grok-imagine-image`, so the quality tier was unreachable. Note there is no `grok-imagine-image-2` model id; that string 404s against `api.x.ai`.
@@ -11,62 +13,8 @@
 
 - Fixed `super_review` failing to connect: it no longer hardcodes `tnx/super` through the dead `http://codemc:4000` auth gateway. The one-turn call now uses the resolved provider endpoint and the registry API key.
 - The herdr `omp` entrypoint survives reinstalls that move the binary: `scripts/install.sh` now repoints an existing `omp` link at the freshly installed `ompx`, and a dangling link is reported as a `conflict` (repointable with `ompx herdr install --force`) instead of `missing`, which used to fail with `EEXIST`. The installer never creates the link — the `omp` name belongs to upstream oh-my-pi, so claiming it stays opt-in via `ompx herdr install` — and it leaves an unrelated `omp` alone. Skip it entirely with `OMPX_INSTALL_SKIP_HERDR_ENTRYPOINT=1`.
-
-## [1.7.0] - 2026-08-09
-
-### Added
-
-- Herdr integration: a per-session control socket (`~/.omp/run/control/<sessionId>.sock`) plus an `ompx prompt` command that delivers a prompt into a running session from outside its TTY. The text is submitted as one user message with the exact bytes — multi-line, unicode, backticks and a leading `/` all survive, with no keystroke synthesis or autocomplete interference. Target a session with `--pane`, `--session`, `--cwd` or `--socket`; `ompx prompt --list` shows live sessions. Opt out with `HERDR_CONTROL_SOCKET=0`.
-- `ompx herdr install` creates the `omp`-named entrypoint herdr's built-in `omp` agent kind needs, so `herdr agent prompt` and `herdr agent send-keys` can drive an `ompx` pane (herdr matches the pane's foreground process name, which is `ompx` on this fork). `ompx herdr status` also warns about a shell `alias omp=…` that would shadow it; `ompx herdr uninstall` removes it. See `docs/herdr-ompx-integration.md`.
-- Herdr pane coordination metadata: the running session reports the current task title, model, token spend, cost and context usage as pane tokens with a TTL, plus its session id and transcript path (`herdr.metadata.enabled`, default on).
-- Herdr notifications on a settled turn and when the agent needs review, behind `herdr.notify.done`, `herdr.notify.blocked`, `herdr.notify.sound` and `herdr.notify.minWorkMs` (all off/conservative by default).
-- Peer-agent notifications between Herdr panes, off until a session opts in with `/herdr-notify on`. Opting in publishes a `0600` descriptor under `~/.omp/run/notify` and nothing else: delivery reuses the session's existing control socket (unix, mode `0600`), so there is no port, no token, and nothing to configure. Finished peers arrive as follow-up messages that never interrupt a running turn; `/herdr-notify off|status` withdraws or inspects the opt-in.
-- Added `ompx herdr watch`, a single per-machine bridge that subscribes to Herdr's event socket and forwards agents settling to `done` or `idle` after `working` to every opted-in session, with `--detach`, `--status`, and `--stop`.
-- Added a project-scoped Kanban board, started with `/kanban`, stored in `<project>/.omp/kanban.db`. Every session in the same directory shares one board and one URL; each session gets a stable short name that tasks are assigned to, and board events reach the assigned session (or every session when unassigned). `/kanban off` stops it; `/kanban status` reports whether it runs.
-- Added tailnet reachability to the Kanban board: on a Tailscale host the board also answers on the host's tailnet addresses, so phones and other tailnet devices can open it, while every request is still restricted to loopback or tailnet peers with a `Host`-matched origin.
-- Added a session-scoped `kanban` tool that mounts once the board is running, letting the model read the board and create, update, move, delete, and comment on tasks; model-authored changes stream to open boards without echoing back into the model's own session.
-- Added markdown task descriptions with pasted, dropped, or picked image attachments stored alongside the board; `kanban get` returns those images to the model so it can read screenshots directly.
-- Added an opt-in board notification that fires when the agent changes the board and the tab is not focused.
-- Added vim-style keyboard control to the Kanban board: `h`/`j`/`k`/`l` move focus between cards and columns, `gg`/`G` jump to a column's first or last card, `o` opens the focused task, `c` creates one in the focused column, `?` toggles a shortcut panel, and `h`/`j`/`k`/`l` also steer a lifted card. `Ctrl`/`Cmd`+`Enter` submits the task form and posts a comment.
-- Added an unread indicator and a comment count to Kanban cards. A card is unread when its `updatedAt`/comment-count pair differs from the one last seen in this browser; opening the task clears it, and a board's first visit starts fully read.
-- Added a label picker to the Kanban task form: chips for every label already on the board, a field for new ones that rejects case-insensitive duplicates, and a per-label colour derived from the name so the same label always looks the same on every card.
-- Added in-app toasts, an optional chime, and an unread badge on the tab title and favicon when the board changes from another session; the tab's own changes stay silent.
-- Added short task ids to the Kanban board. Every task carries a per-board number rendered as `T-1`, `T-2`, allocated from a monotonic counter so deleting the newest task never reissues its number, and existing boards backfill by creation order on first open.
-- Added background board agents: a task landing in `backlog` or `ready` now forks an agent carrying the session's context instead of interrupting the main stream, at most three at a time with the rest queued in arrival order. Comments reach the agent already carrying that task; every other event still reaches the session that owns it.
-- Added task names to the Kanban activity history; each entry opens its task.
-
-### Changed
-
-- Kanban card dragging now runs on dnd-kit. Cards drag from anywhere on the card, a click that never travels still opens the task, touch keeps column scrolling until a 250ms hold, and keyboard lifting keeps `h`/`j`/`k`/`l` alongside the arrows. The hand-rolled layer hit-tested the DOM and re-rendered the whole board on every pointer move; that work is gone.
-- Kanban task titles are now optional. An omitted title is stored empty, renders as "Untitled task", and the session receiving the `task.created` event generates a real title and updates it.
-- Kanban task details now show Details permanently with a two-tab Comments/Activity strip below it, the comment composer above the thread, and newest comments first. Comment bodies render markdown with highlighted code.
-- The Kanban status dropdown in task details now applies immediately, moving the card to the end of its new column instead of telling the reader to drag the card.
-- Opening a Kanban task with a description now starts on the rendered preview instead of the raw markdown editor.
-- Kanban cards with unseen activity are now tinted and carry an accent edge, mixed against the active theme's own background so it reads on light and dark.
-- Kanban tasks landing in `done` or `cancelled` no longer notify any agent, and a `cancelled` task releases the background agent working on it.
-
-### Fixed
-
-- Fixed advisor memory growth caused by automatic tool-output pruning replaying the full primary transcript and by transcript recording reloading the entire advisor journal before appending. Pruning-only rewrites now rebase the cursor, while recorder startup reads only the final JSONL entry.
-- Fixed the Kanban notification toggle offering to enable notifications outside a secure context, where the browser silently refuses them — the board is commonly opened over plain http on a tailnet address.
-- Fixed Kanban board shortcuts doing nothing until a card was focused: the keymap was bound to the board section, so a fresh page load left every key dead. It now listens on the document, stays inert while a dialog is open, and adopts the first card when nothing is focused.
-- Fixed an agent leaving `assignee` empty after taking a Kanban task: a `kanban` tool move into `in_progress` now stamps the calling session's board name when the task is unassigned, without ever overwriting someone else's claim or affecting drags from the board UI.
-
-## [1.6.9] - 2026-07-29
-
-### Fixed
-
 - Fixed blocking advisor consultations collapsing paused, disposed, aborted, timed-out, queue-cleared, rate-limited, empty-response, and provider-error outcomes into a misleading timeout. Consults now report the exact cause and provider attempt history, expose the existing bounded retry cycle, return immediately when a rate-limited request is requeued, and stop retrying after cancellation.
-- Added a session-scoped `/telegram on|off|status` bridge for steering or queueing messages from one allowlisted private Telegram chat and receiving final assistant responses. Configure `OMP_TELEGRAM_BOT_TOKEN` and `OMP_TELEGRAM_ALLOWED_CHAT_ID`; the bridge uses bounded long polling, refuses active webhooks, and fails closed on unauthorized chats, unsafe retries, queue overflow, and lifecycle races.
 
-### Changed
-
-- Unified subprocess lifecycle management for mnemopi, speech, tiny-model, and TTS workers
-
-### Fixed
-
-- Fixed advisor memory growth caused by automatic tool-output pruning replaying the full primary transcript and by transcript recording reloading the entire advisor journal before appending. Pruning-only rewrites now rebase the cursor, while recorder startup reads only the final JSONL entry.
-- Subagent spawns no longer escalate past the thinking level configured for the agent: a `task.agentModelOverrides` selector that pins an explicit level (e.g. `task: openai-codex/gpt-5.6-terra:high`) now outranks the spawning model's coarse `effort` hint, and a coarse `effort: "hi"` tops out one level below `max` (`max` stays reserved for an explicit human selection, matching `auto`). Previously every `effort: "hi"` spawn ran at `max` regardless of the configured level.
 ## [17.2.15] - 2026-08-12
 
 ### Added
@@ -12496,11 +12444,58 @@
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
 
+## [1.7.0] - 2026-08-09
+
+### Added
+
+- Herdr integration: a per-session control socket (`~/.omp/run/control/<sessionId>.sock`) plus an `ompx prompt` command that delivers a prompt into a running session from outside its TTY. The text is submitted as one user message with the exact bytes — multi-line, unicode, backticks and a leading `/` all survive, with no keystroke synthesis or autocomplete interference. Target a session with `--pane`, `--session`, `--cwd` or `--socket`; `ompx prompt --list` shows live sessions. Opt out with `HERDR_CONTROL_SOCKET=0`.
+- `ompx herdr install` creates the `omp`-named entrypoint herdr's built-in `omp` agent kind needs, so `herdr agent prompt` and `herdr agent send-keys` can drive an `ompx` pane (herdr matches the pane's foreground process name, which is `ompx` on this fork). `ompx herdr status` also warns about a shell `alias omp=…` that would shadow it; `ompx herdr uninstall` removes it. See `docs/herdr-ompx-integration.md`.
+- Herdr pane coordination metadata: the running session reports the current task title, model, token spend, cost and context usage as pane tokens with a TTL, plus its session id and transcript path (`herdr.metadata.enabled`, default on).
+- Herdr notifications on a settled turn and when the agent needs review, behind `herdr.notify.done`, `herdr.notify.blocked`, `herdr.notify.sound` and `herdr.notify.minWorkMs` (all off/conservative by default).
+- Peer-agent notifications between Herdr panes, off until a session opts in with `/herdr-notify on`. Opting in publishes a `0600` descriptor under `~/.omp/run/notify` and nothing else: delivery reuses the session's existing control socket (unix, mode `0600`), so there is no port, no token, and nothing to configure. Finished peers arrive as follow-up messages that never interrupt a running turn; `/herdr-notify off|status` withdraws or inspects the opt-in.
+- Added `ompx herdr watch`, a single per-machine bridge that subscribes to Herdr's event socket and forwards agents settling to `done` or `idle` after `working` to every opted-in session, with `--detach`, `--status`, and `--stop`.
+- Added a project-scoped Kanban board, started with `/kanban`, stored in `<project>/.omp/kanban.db`. Every session in the same directory shares one board and one URL; each session gets a stable short name that tasks are assigned to, and board events reach the assigned session (or every session when unassigned). `/kanban off` stops it; `/kanban status` reports whether it runs.
+- Added tailnet reachability to the Kanban board: on a Tailscale host the board also answers on the host's tailnet addresses, so phones and other tailnet devices can open it, while every request is still restricted to loopback or tailnet peers with a `Host`-matched origin.
+- Added a session-scoped `kanban` tool that mounts once the board is running, letting the model read the board and create, update, move, delete, and comment on tasks; model-authored changes stream to open boards without echoing back into the model's own session.
+- Added markdown task descriptions with pasted, dropped, or picked image attachments stored alongside the board; `kanban get` returns those images to the model so it can read screenshots directly.
+- Added an opt-in board notification that fires when the agent changes the board and the tab is not focused.
+- Added vim-style keyboard control to the Kanban board: `h`/`j`/`k`/`l` move focus between cards and columns, `gg`/`G` jump to a column's first or last card, `o` opens the focused task, `c` creates one in the focused column, `?` toggles a shortcut panel, and `h`/`j`/`k`/`l` also steer a lifted card. `Ctrl`/`Cmd`+`Enter` submits the task form and posts a comment.
+- Added an unread indicator and a comment count to Kanban cards. A card is unread when its `updatedAt`/comment-count pair differs from the one last seen in this browser; opening the task clears it, and a board's first visit starts fully read.
+- Added a label picker to the Kanban task form: chips for every label already on the board, a field for new ones that rejects case-insensitive duplicates, and a per-label colour derived from the name so the same label always looks the same on every card.
+- Added in-app toasts, an optional chime, and an unread badge on the tab title and favicon when the board changes from another session; the tab's own changes stay silent.
+- Added short task ids to the Kanban board. Every task carries a per-board number rendered as `T-1`, `T-2`, allocated from a monotonic counter so deleting the newest task never reissues its number, and existing boards backfill by creation order on first open.
+- Added background board agents: a task landing in `backlog` or `ready` now forks an agent carrying the session's context instead of interrupting the main stream, at most three at a time with the rest queued in arrival order. Comments reach the agent already carrying that task; every other event still reaches the session that owns it.
+- Added task names to the Kanban activity history; each entry opens its task.
+
+### Changed
+
+- Kanban card dragging now runs on dnd-kit. Cards drag from anywhere on the card, a click that never travels still opens the task, touch keeps column scrolling until a 250ms hold, and keyboard lifting keeps `h`/`j`/`k`/`l` alongside the arrows. The hand-rolled layer hit-tested the DOM and re-rendered the whole board on every pointer move; that work is gone.
+- Kanban task titles are now optional. An omitted title is stored empty, renders as "Untitled task", and the session receiving the `task.created` event generates a real title and updates it.
+- Kanban task details now show Details permanently with a two-tab Comments/Activity strip below it, the comment composer above the thread, and newest comments first. Comment bodies render markdown with highlighted code.
+- The Kanban status dropdown in task details now applies immediately, moving the card to the end of its new column instead of telling the reader to drag the card.
+- Opening a Kanban task with a description now starts on the rendered preview instead of the raw markdown editor.
+- Kanban cards with unseen activity are now tinted and carry an accent edge, mixed against the active theme's own background so it reads on light and dark.
+- Kanban tasks landing in `done` or `cancelled` no longer notify any agent, and a `cancelled` task releases the background agent working on it.
+
+### Fixed
+
+- Fixed advisor memory growth caused by automatic tool-output pruning replaying the full primary transcript and by transcript recording reloading the entire advisor journal before appending. Pruning-only rewrites now rebase the cursor, while recorder startup reads only the final JSONL entry.
+- Fixed the Kanban notification toggle offering to enable notifications outside a secure context, where the browser silently refuses them — the board is commonly opened over plain http on a tailnet address.
+- Fixed Kanban board shortcuts doing nothing until a card was focused: the keymap was bound to the board section, so a fresh page load left every key dead. It now listens on the document, stays inert while a dialog is open, and adopts the first card when nothing is focused.
+- Fixed an agent leaving `assignee` empty after taking a Kanban task: a `kanban` tool move into `in_progress` now stamps the calling session's board name when the task is unassigned, without ever overwriting someone else's claim or affecting drags from the board UI.
+
 ## [1.6.9] - 2026-07-29
 
 ### Fixed
 
 - Fixed blocking advisor consultations collapsing paused, disposed, aborted, timed-out, queue-cleared, rate-limited, empty-response, and provider-error outcomes into a misleading timeout. Consults now report the exact cause and provider attempt history, expose the existing bounded retry cycle, return immediately when a rate-limited request is requeued, and stop retrying after cancellation.
+- Added a session-scoped `/telegram on|off|status` bridge for steering or queueing messages from one allowlisted private Telegram chat and receiving final assistant responses. Configure `OMP_TELEGRAM_BOT_TOKEN` and `OMP_TELEGRAM_ALLOWED_CHAT_ID`; the bridge uses bounded long polling, refuses active webhooks, and fails closed on unauthorized chats, unsafe retries, queue overflow, and lifecycle races.
+- Fixed advisor memory growth caused by automatic tool-output pruning replaying the full primary transcript and by transcript recording reloading the entire advisor journal before appending. Pruning-only rewrites now rebase the cursor, while recorder startup reads only the final JSONL entry.
+- Subagent spawns no longer escalate past the thinking level configured for the agent: a `task.agentModelOverrides` selector that pins an explicit level (e.g. `task: openai-codex/gpt-5.6-terra:high`) now outranks the spawning model's coarse `effort` hint, and a coarse `effort: "hi"` tops out one level below `max` (`max` stays reserved for an explicit human selection, matching `auto`). Previously every `effort: "hi"` spawn ran at `max` regardless of the configured level.
+
+### Changed
+
+- Unified subprocess lifecycle management for mnemopi, speech, tiny-model, and TTS workers
 
 ## [1.6.8] - 2026-07-28
 
