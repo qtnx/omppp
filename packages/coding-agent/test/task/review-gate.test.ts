@@ -741,7 +741,10 @@ describe("task review gate", () => {
 			isolated: true,
 		});
 
-		expect(calls()[1]?.modelPattern).toEqual(["openai-codex/codex-auto-review"]);
+		expect({
+			model: calls()[1]?.model?.id,
+			modelPattern: calls()[1]?.modelPattern,
+		}).toEqual({ model: "codex-auto-review", modelPattern: undefined });
 		expect(firstResult(result).exitCode).toBe(0);
 	});
 
