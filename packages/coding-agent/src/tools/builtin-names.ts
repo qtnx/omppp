@@ -58,6 +58,7 @@ export const HIDDEN_TOOL_NAMES = [
 	"get_goal",
 	"create_goal",
 	"update_goal",
+	"think",
 ] as const;
 
 export type HiddenToolName = (typeof HIDDEN_TOOL_NAMES)[number];

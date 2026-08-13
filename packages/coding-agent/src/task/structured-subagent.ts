@@ -8,12 +8,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
-import {
-	resolveAgentModelPatterns,
-	resolveAgentModelSource,
-	resolveConfiguredModelPatterns,
-	resolveExplicitModelRole,
-} from "../config/model-resolver";
+import { resolveAgentModelSelection, resolveConfiguredModelPatterns } from "../config/model-resolver";
 import type { Skill } from "../extensibility/skills";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
@@ -376,10 +371,10 @@ export async function resolveEffectiveSubagentPolicy(
 		activeModelPattern: parentActiveModelPattern,
 		fallbackModelPattern: request.session.getModelString?.(),
 	};
-	// Keep role identity from the same effective non-empty source that supplies
-	// model selection: caller request, settings override, then agent definition.
-	const modelRole = resolveExplicitModelRole(resolveAgentModelSource(modelResolution), request.session.settings);
-	const modelOverride = resolveAgentModelPatterns(modelResolution);
+	// Role identity and patterns come from one call so they cannot be derived
+	// from different sources: the expansion below discards the alias, and the
+	// child's inherited retry-fallback chain is keyed off the role.
+	const { patterns: modelOverride, role: modelRole } = resolveAgentModelSelection(modelResolution);
 	// A `task.agentModelOverrides` entry is the human's choice, so its explicit
 	// `:level` outranks the spawning model's coarse `effort`. A per-spawn
 	// `model` comes from the same caller as `effort`, so it does not.

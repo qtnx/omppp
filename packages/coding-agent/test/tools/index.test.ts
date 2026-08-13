@@ -339,18 +339,7 @@ describe("createTools", () => {
 		expect(names).toContain("search_tool_bm25");
 	});
 
-	it("HIDDEN_TOOLS contains review tools and goal", () => {
-		expect(Object.keys(HIDDEN_TOOLS).sort()).toEqual([
-			"create_goal",
-			"get_goal",
-			"goal",
-			"report_finding",
-			"report_tool_issue",
-			"resolve",
-			"update_goal",
-			"yield",
-		]);
-	});
+
 	it("allows checkpoint/rewind in subagent when explicitly requested and enabled", async () => {
 		const names = (
 			await createTools(
@@ -460,5 +449,19 @@ describe("createTools", () => {
 		).map(t => t.name);
 		expect(names).toContain("checkpoint");
 		expect(names).toContain("rewind");
+	});
+
+	it("HIDDEN_TOOLS contains all hidden built-ins including think", () => {
+		expect(Object.keys(HIDDEN_TOOLS).sort()).toEqual([
+			"create_goal",
+			"get_goal",
+			"goal",
+			"report_finding",
+			"report_tool_issue",
+			"resolve",
+			"think",
+			"update_goal",
+			"yield",
+		]);
 	});
 });

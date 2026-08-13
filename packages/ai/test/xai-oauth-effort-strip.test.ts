@@ -67,4 +67,15 @@ describe("xAI OAuth Responses reasoning payload (regression)", () => {
 
 		expect(params.reasoning).toEqual({ effort: "high" });
 	});
+
+	test("xai-oauth/grok-4.6 clamps minimal to low and sends xhigh verbatim", () => {
+		const grok46 = getBundledModel<"openai-responses">("xai-oauth", "grok-4.6");
+		if (!grok46) throw new Error("xai-oauth/grok-4.6 must be in bundled models.json");
+
+		const minimal = buildParams(grok46, singleUserContext, { reasoning: Effort.Minimal }, undefined);
+		const xhigh = buildParams(grok46, singleUserContext, { reasoning: Effort.XHigh }, undefined);
+
+		expect(minimal.params.reasoning).toEqual({ effort: "low" });
+		expect(xhigh.params.reasoning).toEqual({ effort: "xhigh" });
+	});
 });

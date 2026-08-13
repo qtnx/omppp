@@ -8,6 +8,7 @@ import type { KeybindingsManager } from "../config/keybindings";
 import type { Settings } from "../config/settings";
 import type {
 	AutocompleteProviderFactory,
+	ExtensionCustomOptions,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
@@ -115,6 +116,7 @@ export interface InteractiveModeContext {
 	omfgContainer: Container;
 	errorBannerContainer: Container;
 	modelCycleContainer: Container;
+	deferredCommandContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
 	hookWidgetContainerAbove: Container;
@@ -283,7 +285,7 @@ export interface InteractiveModeContext {
 	showPinnedError(message: string): void;
 	clearPinnedError(): void;
 	clearCrashReportBanner(): void;
-	showWarning(message: string): void;
+	showWarning(message: string, options?: { hideWithToolActivity?: boolean }): void;
 	showNewVersionNotification(newVersion: string): void;
 	clearEditor(): void;
 	updatePendingMessagesDisplay(): void;
@@ -461,10 +463,16 @@ export interface InteractiveModeContext {
 	openExternalEditor(): void;
 	registerExtensionShortcuts(): void;
 	handleOrchestratorModeCommand(initialPrompt?: string): Promise<void>;
-	handlePlanModeCommand(initialPrompt?: string): Promise<void>;
-	handleVibeModeCommand(initialPrompt?: string): Promise<void>;
-	handleGoalModeCommand(rest?: string): Promise<void>;
-	handleGuidedGoalCommand(rest?: string): Promise<void>;
+	handlePlanModeCommand(
+		initialPrompt?: string,
+		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
+	): Promise<boolean>;
+	handleVibeModeCommand(
+		initialPrompt?: string,
+		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
+	): Promise<boolean>;
+	handleGoalModeCommand(rest?: string, input?: Pick<SubmittedUserInput, "images" | "imageLinks">): Promise<boolean>;
+	handleGuidedGoalCommand(rest?: string, input?: Pick<SubmittedUserInput, "images" | "imageLinks">): Promise<boolean>;
 	handleLoopCommand(args?: string): Promise<string | undefined>;
 	setLoopPrompt(prompt: string): void;
 	disableLoopMode(): void;
@@ -511,7 +519,7 @@ export interface InteractiveModeContext {
 			keybindings: KeybindingsManager,
 			done: (result: T) => void,
 		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
-		options?: { overlay?: boolean },
+		options?: ExtensionCustomOptions,
 	): Promise<T>;
 	showExtensionError(extensionPath: string, error: string): void;
 	showToolError(toolName: string, error: string): void;

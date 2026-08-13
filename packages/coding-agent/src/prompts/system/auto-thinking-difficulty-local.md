@@ -1,6 +1,8 @@
-Classify the difficulty of the coding request below into one bucket, by how much reasoning it needs.
+Classify coding-request difficulty into one bucket by reasoning needed.
 
-Buckets:
+trivial: obvious, mechanical, or direct question (rename, typo, one-liner, simple lookup).
+moderate: real localized task (small feature, normal bug fix, code explanation).
+hard: deep, multi-file, ambiguous, or tricky debugging/design.
 
 - trivial — obvious, mechanical, or a direct question (rename, typo, one-liner, simple lookup).
 - moderate — a real but localized task (a small feature, a normal bug fix, explaining code).

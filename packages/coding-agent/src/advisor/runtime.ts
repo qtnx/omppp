@@ -27,7 +27,7 @@ import {
  * this field after every prompt to detect a failed turn.
  */
 export interface AdvisorAgent {
-	prompt(input: string, images?: ImageContent[]): Promise<void>;
+	prompt(input: string | AgentMessage[], images?: ImageContent[]): Promise<void>;
 	abort(reason?: unknown): void;
 	reset(): void;
 	readonly model?: Model;

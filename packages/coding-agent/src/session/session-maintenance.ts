@@ -282,7 +282,7 @@ export interface SessionMaintenanceHost {
 	resetCodexProviderAfterCompaction(compaction: CodexCompactionContext): void;
 	resetPlanReference(): void;
 	syncTodoPhasesFromBranch(): void;
-	resetAdvisorRuntimes(): void;
+	resetAdvisorRuntimes(reason?: string): void;
 	rebaseAdvisorRuntimes(): void;
 	rebaseAfterCompaction(): void;
 	recordAnchoredHistoryRewrite(tokensRemoved: number): void;
@@ -550,7 +550,7 @@ export class SessionMaintenance {
 		await this.#host.sessionManager.rewriteEntries();
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
-		this.#host.resetAdvisorRuntimes();
+		this.#host.resetAdvisorRuntimes("drop-images");
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		return { removed };
 	}
@@ -638,7 +638,7 @@ export class SessionMaintenance {
 		await this.#host.sessionManager.rewriteEntries();
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
-		this.#host.resetAdvisorRuntimes();
+		this.#host.resetAdvisorRuntimes("shake");
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 
 		return {
@@ -991,7 +991,7 @@ export class SessionMaintenance {
 			// plan reference. Clear the sent-flag so #buildPlanReferenceMessage re-reads
 			// the plan from disk and re-injects it on the next turn (issue #1246).
 			this.#host.resetPlanReference();
-			this.#host.resetAdvisorRuntimes();
+			this.#host.resetAdvisorRuntimes("compact");
 			this.#host.syncTodoPhasesFromBranch();
 			if (codexCompaction) {
 				this.#host.resetCodexProviderAfterCompaction(codexCompaction);
@@ -2249,7 +2249,7 @@ export class SessionMaintenance {
 		// and advisor cursors / todo phases were derived from the replaced
 		// history.
 		this.#host.resetPlanReference();
-		this.#host.resetAdvisorRuntimes();
+		this.#host.resetAdvisorRuntimes("compaction-rescue");
 		this.#host.syncTodoPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		// Extensions must see the entry that is now active, not (only) the one
@@ -2955,7 +2955,7 @@ export class SessionMaintenance {
 			// plan reference. Clear the sent-flag so #buildPlanReferenceMessage re-reads
 			// the plan from disk and re-injects it on the next turn (issue #1246).
 			this.#host.resetPlanReference();
-			this.#host.resetAdvisorRuntimes();
+			this.#host.resetAdvisorRuntimes("auto-compaction");
 			this.#host.syncTodoPhasesFromBranch();
 			if (codexCompaction) {
 				this.#host.resetCodexProviderAfterCompaction(codexCompaction);
