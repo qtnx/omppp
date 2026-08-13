@@ -172,10 +172,9 @@ jobs:
            shell: bash
            run: |
               hash="${{ steps.compute.outputs.source-hash }}"
-              # Canary for native_linux_x64: presence of the modern artifact
-              # implies the baseline sibling is also there (they upload from the
-              # same job).
-              linux_canary="pi-natives-linux-x64-modern-h${hash}"
+              # Canary for native_linux_x64: TS tests download the baseline
+              # artifact. Modern is a separate job and must not gate tests.
+              linux_canary="pi-natives-linux-x64-baseline-h${hash}"
               # Required set for cross-platform reuse — names must match the
               # `actions/upload-artifact` `name:` template in build-native action.
               cross_platform_required=(
@@ -248,23 +247,15 @@ jobs:
          - name: Build collab web
            run: bun run collab:web:build
 
-   # Linux x64 baseline + modern: required by `test`, so it runs on every PR
-   # unless native_artifact_lookup found a cached run. Release runs always
-   # rebuild for fresh artifacts but skip clippy + Rust tests (skip_validation):
-   # the bump commit only changes version strings over content that already
-   # passed validation on its main-push run.
+   # Linux x64 baseline is what TS tests and the default shipped addon need.
+   # Modern is a separate AVX2 artifact; a cache miss there must not cancel
+   # tests or make download-artifact look for a file that was never uploaded.
    native_linux_x64:
-      name: "Native: Linux x64 (${{ matrix.variant }})"
+      name: "Native: Linux x64 (baseline)"
       needs: [release_metadata, native_artifact_lookup]
       if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || needs.native_artifact_lookup.outputs.linux-x64-run-id == '') }}
       runs-on: ubuntu-22.04
       timeout-minutes: 15
-      strategy:
-         fail-fast: false
-         matrix:
-            include:
-               - { variant: baseline, rust_checks: true }
-               - { variant: modern }
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/build-native
@@ -272,11 +263,30 @@ jobs:
               hash: ${{ needs.native_artifact_lookup.outputs.source-hash }}
               platform: linux
               arch: x64
-              variant: ${{ matrix.variant }}
+              variant: baseline
               glibc: ${{ env.GLIBC_FLOOR }}
-              rust_checks: ${{ matrix.rust_checks && 'true' || 'false' }}
+              rust_checks: "true"
               skip_validation: ${{ needs.release_metadata.outputs.is-release }}
               save_cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+   native_linux_x64_modern:
+      name: "Native: Linux x64 (modern)"
+      needs: [release_metadata, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || needs.native_artifact_lookup.outputs.linux-x64-run-id == '') }}
+      runs-on: ubuntu-22.04
+      timeout-minutes: 25
+      steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/build-native
+           with:
+              hash: ${{ needs.native_artifact_lookup.outputs.source-hash }}
+              platform: linux
+              arch: x64
+              variant: modern
+              glibc: ${{ env.GLIBC_FLOOR }}
+              skip_validation: ${{ needs.release_metadata.outputs.is-release }}
+              save_cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
 
    # Pre-warm the cross-platform native build cache on `main`, in addition to
    # building the artifacts that ship in releases. Skipped on main when
@@ -371,7 +381,7 @@ jobs:
          - name: Download native addons
            uses: actions/download-artifact@v4
            with:
-              pattern: pi-natives-linux-x64-*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              pattern: pi-natives-linux-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
               merge-multiple: true
               run-id: ${{ steps.source.outputs.artifact-run-id }}
@@ -405,7 +415,7 @@ jobs:
          - name: Download native addons
            uses: actions/download-artifact@v4
            with:
-              pattern: pi-natives-linux-x64-*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              pattern: pi-natives-linux-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
               merge-multiple: true
               run-id: ${{ steps.source.outputs.artifact-run-id }}
@@ -438,7 +448,7 @@ jobs:
          - name: Download native addons
            uses: actions/download-artifact@v4
            with:
-              pattern: pi-natives-linux-x64-*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              pattern: pi-natives-linux-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
               merge-multiple: true
               run-id: ${{ steps.source.outputs.artifact-run-id }}
@@ -471,7 +481,7 @@ jobs:
          - name: Download native addons
            uses: actions/download-artifact@v4
            with:
-              pattern: pi-natives-linux-x64-*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              pattern: pi-natives-linux-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
               merge-multiple: true
               run-id: ${{ steps.source.outputs.artifact-run-id }}
@@ -503,7 +513,7 @@ jobs:
          - name: Download native addons
            uses: actions/download-artifact@v4
            with:
-              pattern: pi-natives-linux-x64-*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              pattern: pi-natives-linux-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
               merge-multiple: true
               run-id: ${{ steps.source.outputs.artifact-run-id }}
@@ -538,7 +548,7 @@ jobs:
          - name: Download native addons
            uses: actions/download-artifact@v4
            with:
-              pattern: pi-natives-linux-x64-*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              pattern: pi-natives-linux-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
               merge-multiple: true
               run-id: ${{ steps.source.outputs.artifact-run-id }}
@@ -572,7 +582,7 @@ jobs:
          - name: Download native addons
            uses: actions/download-artifact@v4
            with:
-              pattern: pi-natives-linux-x64-*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              pattern: pi-natives-linux-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
               merge-multiple: true
               run-id: ${{ steps.source.outputs.artifact-run-id }}
@@ -601,7 +611,7 @@ jobs:
          - name: Download native addons
            uses: actions/download-artifact@v4
            with:
-              pattern: pi-natives-linux-x64-*-h${{ needs.native_artifact_lookup.outputs.source-hash }}
+              pattern: pi-natives-linux-x64-baseline-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
               merge-multiple: true
               run-id: ${{ steps.source.outputs.artifact-run-id }}
@@ -631,7 +641,8 @@ jobs:
    release_binary:
       name: "Release binary: ${{ matrix.target_id }}"
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
-         needs.native_linux_x64.result == 'success' && needs.native_cross_platform_kata.result ==
+         needs.native_linux_x64.result == 'success' && needs.native_linux_x64_modern.result ==
+         'success' && needs.native_cross_platform_kata.result ==
          'success' && needs.native_cross_platform_win32.result == 'success' &&
          needs.native_cross_platform_macos.result == 'success' &&
          needs.test_workspace.result == 'success' &&
@@ -643,7 +654,7 @@ jobs:
          needs.test_smoke.result == 'success' && needs.check.result == 'success' &&
          needs.install_methods.result == 'success' &&
          needs.security.result == 'success' }}
-      needs: [release_metadata, check, native_linux_x64, native_cross_platform_kata, native_cross_platform_win32, native_cross_platform_macos, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods, security, native_artifact_lookup]
+      needs: [release_metadata, check, native_linux_x64, native_linux_x64_modern, native_cross_platform_kata, native_cross_platform_win32, native_cross_platform_macos, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods, security, native_artifact_lookup]
       strategy:
          fail-fast: false
          matrix:
