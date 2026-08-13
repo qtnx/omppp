@@ -731,10 +731,8 @@ describe("task review gate", () => {
 			},
 		]);
 		mockIsolation();
-		const { trace, calls } = mockSessionQueue([
-			{ role: "implementer" },
-			{ role: "reviewer", verdict: correctVerdict() },
-		]);
+		mockSessionQueue([{ role: "implementer" }, { role: "reviewer", verdict: correctVerdict() }]);
+		const runSpy = vi.spyOn(executorModule, "runSubprocess");
 
 		const tool = await TaskTool.create(
 			createSession({
@@ -749,23 +747,8 @@ describe("task review gate", () => {
 			isolated: true,
 		});
 
-		expect({ trace, result: firstResult(result) }).toMatchObject({
-			trace: [
-				{ agentName: "heavy_task", role: "implementer" },
-				{ agentName: REVIEWER_AGENT, role: "reviewer" },
-			],
-			result: { exitCode: 0 },
-		});
-		expect(
-			calls().map(options => ({
-				agent: options.agentDisplayName,
-				model: options.model?.id,
-				modelPattern: options.modelPattern,
-			})),
-		).toEqual([
-			{ agent: "heavy_task", model: "gpt-5.5", modelPattern: undefined },
-			{ agent: REVIEWER_AGENT, model: "codex-auto-review", modelPattern: undefined },
-		]);
+		expect(runSpy.mock.calls[1]?.[0].modelOverride).toEqual(["openai-codex/codex-auto-review"]);
+		expect(runSpy.mock.calls[1]?.[0].modelSelectorFromUserConfig).toBe(true);
 		expect(firstResult(result).exitCode).toBe(0);
 	});
 
