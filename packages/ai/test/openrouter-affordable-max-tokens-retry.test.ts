@@ -8,7 +8,10 @@
 import { describe, expect, it } from "bun:test";
 import type { AssistantMessage, AssistantMessageEvent, Context, Usage } from "@oh-my-pi/pi-ai/types";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
-import { withOpenRouterAffordableMaxTokensRetry } from "@oh-my-pi/pi-ai/utils/openrouter-affordable-max-tokens";
+import {
+	type OpenRouterAffordableMaxTokensOptions,
+	withOpenRouterAffordableMaxTokensRetry,
+} from "@oh-my-pi/pi-ai/utils/openrouter-affordable-max-tokens";
 
 const CTX = {} as Context;
 const AFFORD_402 =
@@ -75,10 +78,15 @@ async function drain(stream: AssistantMessageEventStream): Promise<AssistantMess
 describe("withOpenRouterAffordableMaxTokensRetry", () => {
 	it("retries a 402 afford error once with the advertised remaining budget", async () => {
 		const attempts: Array<{ maxTokens?: number; maxTokensExplicit?: boolean }> = [];
-		const stream = withOpenRouterAffordableMaxTokensRetry({}, CTX, {}, (_model, _ctx, options) => {
-			attempts.push({ maxTokens: options?.maxTokens, maxTokensExplicit: options?.maxTokensExplicit });
-			return attempts.length === 1 ? errorAttempt(AFFORD_402) : contentAttempt();
-		});
+		const stream = withOpenRouterAffordableMaxTokensRetry(
+			{},
+			CTX,
+			undefined,
+			(_model, _ctx, options?: OpenRouterAffordableMaxTokensOptions) => {
+				attempts.push({ maxTokens: options?.maxTokens, maxTokensExplicit: options?.maxTokensExplicit });
+				return attempts.length === 1 ? errorAttempt(AFFORD_402) : contentAttempt();
+			},
+		);
 
 		const events = await drain(stream);
 		const result = await stream.result();
