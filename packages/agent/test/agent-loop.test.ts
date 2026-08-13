@@ -1707,8 +1707,9 @@ describe("agentLoop with AgentMessage", () => {
 		const toolResult = nextContext.find(
 			(message): message is ToolResultMessage => message.role === "toolResult" && message.toolCallId === "tool-1",
 		);
-		expect(toolResult?.isError).toBe(false);
-		expect(toolResult?.content.flatMap(part => (part.type === "text" ? [part.text] : []))).toEqual(["ok:once"]);
+		if (!toolResult) throw new Error("expected tool result for tool-1");
+		expect(toolResult.isError).toBe(false);
+		expect(toolResult.content.flatMap(part => (part.type === "text" ? [part.text] : []))).toEqual(["ok:once"]);
 		const advisorIndex = nextContext.findIndex(
 			message =>
 				message.role === "user" &&
