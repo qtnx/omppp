@@ -1655,6 +1655,69 @@ describe("agentLoop with AgentMessage", () => {
 		);
 		expect(advisorIndex).toBeGreaterThan(lastToolResultIndex);
 	});
+	it("does not spin when a non-interrupting steer is queued before tool watcher subscription", async () => {
+		const toolSchema = type({ value: "string" });
+		const executed: string[] = [];
+		const advisorLikeMessage = {
+			...createUserMessage("<advisor>Inspect the tool result before continuing.</advisor>"),
+			steering: true,
+		};
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			concurrency: "exclusive",
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				const { promise, resolve } = Promise.withResolvers<void>();
+				setImmediate(resolve);
+				await promise;
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "once" } }] },
+				{ content: ["done"] },
+			],
+		});
+
+		let agent: Agent;
+		let steered = false;
+		agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			streamFn: mock.stream,
+			beforeToolCall: async () => {
+				if (!steered) {
+					steered = true;
+					agent.steer(advisorLikeMessage, { interruptToolExecution: false });
+				}
+			},
+		});
+
+		await agent.prompt("start");
+
+		expect(executed).toEqual(["once"]);
+		const nextContext = mock.calls[1]?.context.messages;
+		if (!nextContext) throw new Error("expected a second model context after tool execution");
+		const toolResult = nextContext.find(
+			(message): message is ToolResultMessage => message.role === "toolResult" && message.toolCallId === "tool-1",
+		);
+		expect(toolResult?.isError).toBe(false);
+		expect(toolResult?.content.flatMap(part => (part.type === "text" ? [part.text] : []))).toEqual(["ok:once"]);
+		const advisorIndex = nextContext.findIndex(
+			message =>
+				message.role === "user" &&
+				typeof message.content === "string" &&
+				message.content === advisorLikeMessage.content,
+		);
+		const toolResultIndex = nextContext.findIndex(message => message === toolResult);
+		expect(advisorIndex).toBeGreaterThan(toolResultIndex);
+	}, 1_000);
 
 	it("delivers a leading advisor steer with its interrupting user companion in one-at-a-time mode", async () => {
 		const toolSchema = type({ value: "string" });
