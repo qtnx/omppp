@@ -60,7 +60,12 @@ const DEFAULT_REASONING_EFFORTS_WITH_XHIGH: readonly Effort[] = [
 ];
 const GEMINI_3_PRO_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High];
 const GEMINI_3_FLASH_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
-const GPT_5_2_PLUS_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
+const LOW_MEDIUM_HIGH_XHIGH_REASONING_EFFORTS: readonly Effort[] = [
+	Effort.Low,
+	Effort.Medium,
+	Effort.High,
+	Effort.XHigh,
+];
 const GPT_5_1_CODEX_MINI_EFFORTS: readonly Effort[] = [Effort.Medium, Effort.High];
 const LOW_MEDIUM_HIGH_REASONING_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High];
 /** Wire-exact `low`/`high`/`max` scale used by Kimi K3 and DeepSeek V4 Flash (direct API and aggregators). */
@@ -177,8 +182,9 @@ function fillThinkingWireDefaults<TApi extends Api>(
 		thinking.supportsDisplay === undefined &&
 		(spec.api === "anthropic-messages" || spec.api === "bedrock-converse-stream") &&
 		supportsAdaptiveThinkingDisplay(spec.id);
-	const needsRequiresEffort = thinking.requiresEffort === undefined && impliesMandatoryReasoning(parsed, spec.id);
-	const needsDefaultLevel = thinking.defaultLevel === undefined && isKimiK3ModelId(spec.id);
+	const needsRequiresEffort = thinking.requiresEffort === undefined && impliesMandatoryReasoning(parsed, spec);
+	const inferredDefaultLevel = inferDefaultEffort(spec);
+	const needsDefaultLevel = thinking.defaultLevel === undefined && inferredDefaultLevel !== undefined;
 	if (!effortsChanged && !shouldReplaceEffortMap && !needsDisplay && !needsRequiresEffort && !needsDefaultLevel) {
 		return thinking;
 	}
@@ -197,7 +203,7 @@ function fillThinkingWireDefaults<TApi extends Api>(
 		filled.supportsDisplay = true;
 	}
 	if (needsDefaultLevel) {
-		filled.defaultLevel = Effort.Max;
+		filled.defaultLevel = inferredDefaultLevel;
 	}
 	if (needsRequiresEffort) {
 		filled.requiresEffort = true;
@@ -216,8 +222,9 @@ export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: 
 		mode: inferThinkingControlMode(spec, parsed),
 		efforts,
 	};
-	if (isKimiK3ModelId(spec.id)) {
-		config.defaultLevel = Effort.Max;
+	const defaultLevel = inferDefaultEffort(spec);
+	if (defaultLevel !== undefined) {
+		config.defaultLevel = defaultLevel;
 	}
 	const effortMap = inferEffortMap(spec, compat, config.mode, config.efforts);
 	if (effortMap !== undefined) {
@@ -229,7 +236,7 @@ export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: 
 	) {
 		config.supportsDisplay = true;
 	}
-	if (impliesMandatoryReasoning(parsed, spec.id)) {
+	if (impliesMandatoryReasoning(parsed, spec)) {
 		config.requiresEffort = true;
 	}
 	return config;
@@ -308,10 +315,36 @@ function isGpt56PlusWireEffortModel<TApi extends Api>(spec: ModelSpec<TApi>): bo
 	return parsed !== null && semverGte(parsed.version, "5.6");
 }
 
+/**
+ * OAuth reasoning policy versions documented by xAI. Keep this provider-scoped:
+ * other Grok gateways may expose different effort vocabularies.
+ * See https://docs.x.ai/developers/model-capabilities/text/reasoning.
+ */
+function xaiOAuthGrokThinkingVersion<TApi extends Api>(spec: ModelSpec<TApi>): "4.5" | "4.6" | undefined {
+	if (spec.provider !== "xai-oauth") return undefined;
+	const id = bareModelId(spec.id).toLowerCase();
+	if (id.startsWith("grok-4.6")) return "4.6";
+	if (id.startsWith("grok-4.5")) return "4.5";
+	return undefined;
+}
+
+function inferDefaultEffort<TApi extends Api>(spec: ModelSpec<TApi>): Effort | undefined {
+	if (isKimiK3ModelId(spec.id)) return Effort.Max;
+	if (xaiOAuthGrokThinkingVersion(spec) !== undefined) return Effort.High;
+	return undefined;
+}
+
 function getModelDefinedEfforts<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
 ): readonly Effort[] | undefined {
+	const xaiOAuthGrokVersion = xaiOAuthGrokThinkingVersion(spec);
+	if (xaiOAuthGrokVersion === "4.6") {
+		return LOW_MEDIUM_HIGH_XHIGH_REASONING_EFFORTS;
+	}
+	if (xaiOAuthGrokVersion === "4.5") {
+		return LOW_MEDIUM_HIGH_REASONING_EFFORTS;
+	}
 	if (isGlm52ReasoningEffortModelId(spec.id)) {
 		// GLM-5.2's reasoning_effort dialect is host-specific (verified against
 		// live endpoints):
@@ -532,7 +565,7 @@ function inferOpenAISupportedEfforts(model: OpenAIModel): readonly Effort[] {
 		return FIVE_TIER_EFFORTS_LOW_TO_MAX;
 	}
 	if (semverGte(model.version, "5.2")) {
-		return GPT_5_2_PLUS_EFFORTS;
+		return LOW_MEDIUM_HIGH_XHIGH_REASONING_EFFORTS;
 	}
 	return DEFAULT_REASONING_EFFORTS;
 }
@@ -552,21 +585,23 @@ const OPENAI_O_SERIES_RE = /^o[134](?:$|[-:.])/i;
  * lowest effort, never off:
  * - Gemini 3.x exposes levels only; Gemini 2.5 Pro floors thinkingBudget at
  *   128 and rejects 0 (2.5 Flash/Flash-Lite keep the off switch).
+ * - xAI OAuth Grok 4.5/4.6 default to high reasoning and cannot disable it.
  * - OpenAI o-series and MiniMax M2 are reasoning-first architectures.
  * - Thinking-variant SKUs (`*-thinking`, `*-reasoner`, `*-reasoning`) ARE the
  *   thinking checkpoint; live bare twins pair-collapse away
  *   (variant-collapse) and the collapsed entry owns off — this floor protects
  *   the orphans.
  */
-function impliesMandatoryReasoning(parsed: ParsedModel, modelId: string): boolean {
+function impliesMandatoryReasoning<TApi extends Api>(parsed: ParsedModel, spec: ModelSpec<TApi>): boolean {
+	if (xaiOAuthGrokThinkingVersion(spec) !== undefined) return true;
 	if (parsed.family === "gemini") {
 		if (semverGte(parsed.version, "3.0")) return true;
 		if (parsed.kind === "pro" && semverGte(parsed.version, "2.5")) return true;
 	}
-	if (isKimiK3ModelId(modelId)) return true;
-	if (isMinimaxM2FamilyModelId(modelId)) return true;
-	if (OPENAI_O_SERIES_RE.test(bareModelId(modelId))) return true;
-	return findThinkingVariantToken(modelId) !== undefined;
+	if (isKimiK3ModelId(spec.id)) return true;
+	if (isMinimaxM2FamilyModelId(spec.id)) return true;
+	if (OPENAI_O_SERIES_RE.test(bareModelId(spec.id))) return true;
+	return findThinkingVariantToken(spec.id) !== undefined;
 }
 
 function inferAnthropicSupportedEfforts<TApi extends Api>(
