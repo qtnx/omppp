@@ -1145,7 +1145,7 @@ export class Agent {
 	 * tool watcher never survives the tool batch that owns it.
 	 */
 	#waitForSteeringMessages(signal?: AbortSignal): Promise<void> {
-		if (this.#steeringQueue.length > 0 || signal?.aborted) return Promise.resolve();
+		if (this.hasInterruptingSteeringMessages() || signal?.aborted) return Promise.resolve();
 		const { promise, resolve } = Promise.withResolvers<void>();
 		const onAbort = (): void => resolve();
 		this.#steeringWaiters.add(resolve);
