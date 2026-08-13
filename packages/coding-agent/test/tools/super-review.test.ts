@@ -29,21 +29,34 @@ function makeModel(provider: string, id: string, extra: Partial<Model<Api>> = {}
 }
 
 const SUPER_MODEL = makeModel("tnx", "super");
+const FABLE_MODEL = makeModel("anthropic", "claude-fable-5", { api: "anthropic-messages" });
+const SOL_MODEL = makeModel("openai-codex", "gpt-5.6-sol");
 
 interface SessionOptions {
 	cwd?: string;
 	apiKey?: string | null;
+	apiKeys?: Record<string, string | null>;
 	sessionId?: string;
 	model?: Model<Api>;
+	models?: Model<Api>[];
+	superReviewRole?: string;
 }
 
 function makeSession(options: SessionOptions = {}): ToolSession {
 	const settings = Settings.isolated({ "async.enabled": false, "task.isolation.mode": "none" });
-	const model = options.model ?? SUPER_MODEL;
+	if (options.superReviewRole) settings.setModelRole("super_review", options.superReviewRole);
+	const models = options.models ?? [options.model ?? SUPER_MODEL];
+	const resolveKey = (model?: Model<Api>): string | null => {
+		if (model) {
+			const specific = options.apiKeys?.[`${model.provider}/${model.id}`];
+			if (specific !== undefined) return specific;
+		}
+		return options.apiKey === undefined ? "test-key" : options.apiKey;
+	};
 	const modelRegistry = {
-		getAvailable: () => [model],
-		getApiKey: async () => (options.apiKey === undefined ? "test-key" : options.apiKey),
-		resolver: () => async () => (options.apiKey === undefined ? "test-key" : options.apiKey),
+		getAvailable: () => models,
+		getApiKey: async (model: Model<Api>) => resolveKey(model),
+		resolver: (model: Model<Api>) => async () => resolveKey(model),
 	} as unknown as ModelRegistry;
 	return {
 		settings,
@@ -110,20 +123,6 @@ async function resolveRequestApiKey(options: SimpleStreamOptions): Promise<strin
 	if (typeof resolver !== "function")
 		throw new Error("expected instrumentedCompleteSimple apiKey option to be a resolver");
 	return await resolver({ lastChance: false, error: undefined });
-}
-
-async function withGatewayToken<T>(token: string, run: () => Promise<T>): Promise<T> {
-	const previous = Bun.env.OMP_AUTH_GATEWAY_TOKEN;
-	Bun.env.OMP_AUTH_GATEWAY_TOKEN = token;
-	try {
-		return await run();
-	} finally {
-		if (previous === undefined) {
-			delete Bun.env.OMP_AUTH_GATEWAY_TOKEN;
-		} else {
-			Bun.env.OMP_AUTH_GATEWAY_TOKEN = previous;
-		}
-	}
 }
 
 function resultText(result: AgentToolResult<unknown>): string {
@@ -198,48 +197,105 @@ describe("SuperReviewTool", () => {
 		expect(outbound).toContain("plan");
 	});
 
-	it("routes the tnx/super one-turn call through the auth gateway model and bearer", async () => {
-		await withGatewayToken("gateway-token", async () => {
-			const completeSpy = vi
-				.spyOn(core, "instrumentedCompleteSimple")
-				.mockResolvedValue(assistantWithText("Gateway review complete."));
-			const tool = new SuperReviewTool(makeSession({ apiKey: "local-upstream-key" }));
+	it("keeps the resolved provider endpoint and uses the registry key instead of the auth gateway", async () => {
+		const completeSpy = vi
+			.spyOn(core, "instrumentedCompleteSimple")
+			.mockResolvedValue(assistantWithText("Native review complete."));
+		const tool = new SuperReviewTool(makeSession({ apiKey: "local-upstream-key" }));
 
-			const result = await tool.execute("tc-gateway", {
-				review_type: "plan",
-				question: "Should this use the tool gateway?",
-				content: "Route built-in one-turn model calls through codemc.",
-			});
-
-			expect(resultText(result)).toBe("Gateway review complete.");
-			expect(completeSpy).toHaveBeenCalledTimes(1);
-			const [model, , options] = instrumentedCallAt(completeSpy, 0);
-			expect(`${model.provider}/${model.id}`).toBe("tnx/super");
-			expect(model.baseUrl).toBe("http://codemc:4000/v1");
-			expect(await resolveRequestApiKey(options)).toBe("gateway-token");
+		const result = await tool.execute("tc-native", {
+			review_type: "plan",
+			question: "Should this use the native provider?",
+			content: "Do not rewrite tnx/super through the dead auth gateway.",
 		});
+
+		expect(resultText(result)).toBe("Native review complete.");
+		expect(completeSpy).toHaveBeenCalledTimes(1);
+		const [model, , options] = instrumentedCallAt(completeSpy, 0);
+		expect(`${model.provider}/${model.id}`).toBe("tnx/super");
+		expect(model.baseUrl).toBe("https://example.test/v1");
+		expect(await resolveRequestApiKey(options)).toBe("local-upstream-key");
 	});
 
-	it("does not require a local upstream key before calling the super_review gateway model", async () => {
-		await withGatewayToken("gateway-token-without-upstream", async () => {
-			const completeSpy = vi
-				.spyOn(core, "instrumentedCompleteSimple")
-				.mockResolvedValue(assistantWithText("Gateway review without upstream key."));
-			const tool = new SuperReviewTool(makeSession({ apiKey: null }));
+	it("prefers anthropic/claude-fable-5 from the default chain when it is available and authenticated", async () => {
+		const completeSpy = vi
+			.spyOn(core, "instrumentedCompleteSimple")
+			.mockResolvedValue(assistantWithText("Fable review complete."));
+		const tool = new SuperReviewTool(
+			makeSession({
+				models: [FABLE_MODEL, SUPER_MODEL, SOL_MODEL],
+			}),
+		);
 
-			const result = await tool.execute("tc-gateway-no-upstream", {
-				review_type: "critical_action",
-				question: "Can super_review run with only the OMP gateway token?",
-				content: "The local registry has no upstream provider key.",
-			});
-
-			expect(resultText(result)).toBe("Gateway review without upstream key.");
-			expect(completeSpy).toHaveBeenCalledTimes(1);
-			const [model, , options] = instrumentedCallAt(completeSpy, 0);
-			expect(`${model.provider}/${model.id}`).toBe("tnx/super");
-			expect(model.baseUrl).toBe("http://codemc:4000/v1");
-			expect(await resolveRequestApiKey(options)).toBe("gateway-token-without-upstream");
+		const result = await tool.execute("tc-default-fable", {
+			review_type: "plan",
+			question: "Which default model should run?",
+			content: "All three fallback models are available.",
 		});
+
+		expect(resultText(result)).toBe("Fable review complete.");
+		const [model] = instrumentedCallAt(completeSpy, 0);
+		expect(`${model.provider}/${model.id}`).toBe("anthropic/claude-fable-5");
+	});
+
+	it("uses the configured modelRoles.super_review override instead of the default chain", async () => {
+		const completeSpy = vi
+			.spyOn(core, "instrumentedCompleteSimple")
+			.mockResolvedValue(assistantWithText("Override review complete."));
+		const tool = new SuperReviewTool(
+			makeSession({
+				models: [FABLE_MODEL, SUPER_MODEL, SOL_MODEL],
+				superReviewRole: "openai-codex/gpt-5.6-sol:high",
+			}),
+		);
+
+		const result = await tool.execute("tc-override", {
+			review_type: "plan",
+			question: "Should the override win?",
+			content: "modelRoles.super_review points at gpt-5.6-sol.",
+		});
+
+		expect(resultText(result)).toBe("Override review complete.");
+		const [model] = instrumentedCallAt(completeSpy, 0);
+		expect(`${model.provider}/${model.id}`).toBe("openai-codex/gpt-5.6-sol");
+	});
+
+	it("falls back through the default super_review chain to the first authenticated available model", async () => {
+		const completeSpy = vi
+			.spyOn(core, "instrumentedCompleteSimple")
+			.mockResolvedValue(assistantWithText("Fallback review complete."));
+		const tool = new SuperReviewTool(
+			makeSession({
+				models: [FABLE_MODEL, SUPER_MODEL, SOL_MODEL],
+				apiKeys: {
+					"anthropic/claude-fable-5": null,
+					"tnx/super": "tnx-key",
+					"openai-codex/gpt-5.6-sol": "sol-key",
+				},
+			}),
+		);
+
+		const result = await tool.execute("tc-fallback", {
+			review_type: "architecture",
+			question: "Which fallback should run?",
+			content: "Fable is unauthenticated; tnx/super should win.",
+		});
+
+		expect(resultText(result)).toBe("Fallback review complete.");
+		const [model, , options] = instrumentedCallAt(completeSpy, 0);
+		expect(`${model.provider}/${model.id}`).toBe("tnx/super");
+		expect(await resolveRequestApiKey(options)).toBe("tnx-key");
+	});
+
+	it("throws when no configured or default super_review candidate is available", async () => {
+		const tool = new SuperReviewTool(makeSession({ models: [makeModel("openai", "gpt-4o")] }));
+
+		await expect(
+			tool.execute("tc-missing", {
+				review_type: "other",
+				question: "Can this run without a review model?",
+			}),
+		).rejects.toThrow(/could not resolve a model/);
 	});
 
 	it("includes an explicit workspace file under an untrusted boundary and reports attachment metadata", async () => {
