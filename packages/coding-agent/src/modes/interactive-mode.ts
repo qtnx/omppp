@@ -4058,7 +4058,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (this.orchestratorModeEnabled || this.session.getOrchestratorModeState()?.enabled) {
 			this.showWarning("Exit orchestrator mode first.");
-			return;
+			return false;
 		}
 		await this.#enterVibeMode();
 		if (!initialPrompt) return false;

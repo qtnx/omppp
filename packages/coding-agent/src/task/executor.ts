@@ -2419,6 +2419,13 @@ function createSubagentRunTelemetry(args: {
 		toolMs: Math.round(runTiming.toolMs),
 	};
 	const monitorAbortReason = args.monitor.abortKind();
+	const telemetryAbortReason =
+		monitorAbortReason === "signal" ||
+		monitorAbortReason === "terminate" ||
+		monitorAbortReason === "timeout" ||
+		monitorAbortReason === "budget"
+			? monitorAbortReason
+			: undefined;
 	return {
 		version: 1,
 		runId: Bun.randomUUIDv7(),
@@ -2429,7 +2436,7 @@ function createSubagentRunTelemetry(args: {
 		startedAt: args.startTime,
 		completedAt: args.completedAt,
 		status: args.terminalState.terminalStatus,
-		...(args.terminalState.wasAborted && monitorAbortReason ? { abortReason: monitorAbortReason } : {}),
+		...(args.terminalState.wasAborted && telemetryAbortReason ? { abortReason: telemetryAbortReason } : {}),
 		...(progress.resolvedModel ? { model: progress.resolvedModel } : {}),
 		requests: progress.requests,
 		toolCalls: runTiming.toolCalls,

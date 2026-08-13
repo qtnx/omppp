@@ -303,6 +303,71 @@ export function parseUpdateArgs(args: string[]): { force: boolean; check: boolea
 	};
 }
 
+async function getBunGlobalBinDir(): Promise<string | undefined> {
+	if (!$which("bun")) return undefined;
+	try {
+		const result = await $`bun pm bin -g`.quiet().nothrow();
+		if (result.exitCode !== 0) return undefined;
+		const output = result.text().trim();
+		return output.length > 0 ? output : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function getNpmGlobalBinDir(): Promise<string | undefined> {
+	if (!$which("npm")) return undefined;
+	try {
+		const result = await $`npm prefix -g`.quiet().nothrow();
+		if (result.exitCode !== 0) return undefined;
+		const prefix = result.text().trim();
+		if (prefix.length === 0) return undefined;
+		return process.platform === "win32" ? prefix : path.join(prefix, "bin");
+	} catch {
+		return undefined;
+	}
+}
+
+async function getHomebrewFormulaPrefix(): Promise<string | undefined> {
+	if (!$which("brew")) return undefined;
+	for (const formula of [HOMEBREW_FORMULA, APP_NAME]) {
+		try {
+			const result = await $`brew --prefix ${formula}`.quiet().nothrow();
+			if (result.exitCode !== 0) continue;
+			const output = result.text().trim();
+			if (output.length > 0) return output;
+		} catch {}
+	}
+	return undefined;
+}
+
+async function getMiseBinDirs(): Promise<string[]> {
+	if (!$which("mise")) return [];
+	try {
+		const result = await $`mise bin-paths ${MISE_TOOL}`.quiet().nothrow();
+		if (result.exitCode !== 0) return [];
+		return result
+			.text()
+			.split(/\r?\n/)
+			.map(line => line.trim())
+			.filter(line => line.length > 0);
+	} catch {
+		return [];
+	}
+}
+
+function getMiseDataDir(): string {
+	const override = process.env.MISE_DATA_DIR;
+	if (override && override.length > 0) return override;
+	if (process.platform === "win32") {
+		const localAppData = process.env.LOCALAPPDATA;
+		if (localAppData && localAppData.length > 0) return path.join(localAppData, "mise");
+	}
+	const xdgDataHome = process.env.XDG_DATA_HOME;
+	if (xdgDataHome && xdgDataHome.length > 0) return path.join(xdgDataHome, "mise");
+	return path.join(os.homedir(), ".local", "share", "mise");
+}
+
 function normalizePathForComparison(filePath: string): string {
 	const normalized = path.normalize(filePath);
 	if (process.platform === "win32") return normalized.toLowerCase();
@@ -680,6 +745,62 @@ function getBinaryNameForPlatform(platform: NodeJS.Platform, arch: NodeJS.Archit
 
 export function getBinaryNameForTest(platform: NodeJS.Platform, arch: NodeJS.Architecture): string {
 	return getBinaryNameForPlatform(platform, arch);
+}
+
+function getBinaryName(): string {
+	return getBinaryNameForPlatform(process.platform, process.arch);
+}
+
+async function updateViaBun(expectedVersion: string): Promise<void> {
+	console.log(chalk.dim("Updating via bun..."));
+	const args = buildBunInstallArgs(expectedVersion);
+	const result = await $`bun ${args}`.nothrow();
+	if (result.exitCode !== 0) {
+		throw new Error(`bun install failed with exit code ${result.exitCode}`);
+	}
+	printVerifiedVersion(expectedVersion);
+}
+
+async function updateViaNpm(expectedVersion: string): Promise<void> {
+	console.log(chalk.dim("Updating via npm..."));
+	const args = buildNpmInstallArgs(expectedVersion);
+	const result = await $`npm ${args}`.nothrow();
+	if (result.exitCode !== 0) {
+		throw new Error(`npm install failed with exit code ${result.exitCode}`);
+	}
+	printVerifiedVersion(expectedVersion);
+}
+
+async function updateViaHomebrew(expectedVersion: string, force: boolean): Promise<void> {
+	console.log(chalk.dim("Updating Homebrew formulae..."));
+	const update = await $`brew update`.nothrow();
+	if (update.exitCode !== 0) {
+		throw new Error(`brew update failed with exit code ${update.exitCode}`);
+	}
+	console.log(chalk.dim("Updating via Homebrew..."));
+	const args = buildHomebrewUpdateArgs(force);
+	const result = await $`brew ${args}`.nothrow();
+	if (result.exitCode !== 0) {
+		throw new Error(`brew ${args[0]} failed with exit code ${result.exitCode}`);
+	}
+	printVerifiedVersion(expectedVersion);
+}
+
+async function updateViaMise(expectedVersion: string, force: boolean): Promise<void> {
+	console.log(chalk.dim("Updating via mise..."));
+	const args = buildMiseUpgradeArgs();
+	const result = await $`mise ${args}`.nothrow();
+	if (result.exitCode !== 0) {
+		throw new Error(`mise upgrade failed with exit code ${result.exitCode}`);
+	}
+	if (force) {
+		const forceArgs = buildMiseForceInstallArgs(expectedVersion);
+		const forceResult = await $`mise ${forceArgs}`.nothrow();
+		if (forceResult.exitCode !== 0) {
+			throw new Error(`mise install --force failed with exit code ${forceResult.exitCode}`);
+		}
+	}
+	printVerifiedVersion(expectedVersion);
 }
 
 /**

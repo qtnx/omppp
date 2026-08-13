@@ -21,7 +21,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 // the delegate-via-tasks / phased-todo guidance. The post-compaction auto-continuation
 // turn must carry the gated reminders again (reminder-only — never a forced tool_choice).
 
-const TASK_DELEGATION_MARKER = "Task delegation enabled";
+const TASK_DELEGATION_MARKER = "delegation is enabled";
 
 type ObservedPromptCall = {
 	callIndex: number;
