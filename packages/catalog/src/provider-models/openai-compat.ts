@@ -1194,6 +1194,12 @@ interface XAICuratedModel {
 	 */
 	supportsReasoningEffort?: boolean;
 	/**
+	 * Whether the model supports replaying encrypted native reasoning items.
+	 * When true, Responses requests ask xAI to return encrypted reasoning and
+	 * preserve those items in later turns. Defaults false for legacy models.
+	 */
+	supportsEncryptedReasoningReplay?: boolean;
+	/**
 	 * Input modalities this model accepts. Defaults to `["text"]` when absent.
 	 * Vision-capable Grok models MUST list `"image"` here so the curated layer
 	 * overrides `fetchOpenAICompatibleModels`' default of `["text"]` (which
@@ -1213,7 +1219,13 @@ interface XAICuratedModel {
 // omit/include/history replay defaults live in catalog compat so every
 // OpenAI-family endpoint consumes the same constraint.
 export const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
-	{ id: "grok-4.6", contextWindow: 500_000, name: "Grok 4.6", input: ["text", "image"] },
+	{
+		id: "grok-4.6",
+		contextWindow: 500_000,
+		name: "Grok 4.6",
+		input: ["text", "image"],
+		supportsEncryptedReasoningReplay: true,
+	},
 	{
 		id: "grok-build",
 		contextWindow: 512_000,
@@ -1306,11 +1318,12 @@ function mergeCuratedIntoModel(
 	curated: XAICuratedModel,
 ): ModelSpec<"openai-responses"> {
 	const effortCapable = curated.supportsReasoningEffort ?? isGrokReasoningEffortCapable(curated.id);
+	const supportsEncryptedReasoningReplay = curated.supportsEncryptedReasoningReplay ?? false;
 	const compat = {
 		...(base.compat ?? {}),
 		reasoningEffortMap: { ...XAI_REASONING_EFFORT_MAP, ...(base.compat?.reasoningEffortMap ?? {}) },
-		includeEncryptedReasoning: base.compat?.includeEncryptedReasoning ?? false,
-		filterReasoningHistory: base.compat?.filterReasoningHistory ?? true,
+		includeEncryptedReasoning: supportsEncryptedReasoningReplay,
+		filterReasoningHistory: !supportsEncryptedReasoningReplay,
 		supportsImageDetailOriginal: base.compat?.supportsImageDetailOriginal ?? false,
 		omitReasoningEffort: !effortCapable,
 		supportsReasoningEffort: effortCapable,

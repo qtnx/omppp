@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `xai-oauth/grok-4.6` Responses requests to ask for concise reasoning summaries, request encrypted reasoning content, and replay native reasoning items across tool turns.
+
 ## [1.7.1] - 2026-08-13
 
 ### Fixed

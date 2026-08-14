@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Marked `xai-oauth/grok-4.6` as supporting encrypted native-reasoning replay while preserving the legacy filtering policy for older Grok models.
 - Fixed live Codex discovery downgrading `openai-codex/gpt-5.6-sol` from its 372K input window to the legacy 272K default.
 
 ## [1.7.1] - 2026-08-13
