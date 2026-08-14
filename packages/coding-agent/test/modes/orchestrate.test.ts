@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import {
 	containsOrchestrate,
 	highlightOrchestrate,
-	ORCHESTRATE_NOTICE,
+	renderOrchestrateNotice,
 } from "@oh-my-pi/pi-coding-agent/modes/orchestrate";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { containsUltrathink, highlightUltrathink } from "@oh-my-pi/pi-coding-agent/modes/ultrathink";
@@ -85,11 +85,38 @@ describe("orchestrate keyword highlighting", () => {
 
 describe("orchestrate notice", () => {
 	it("is a self-contained system notice carrying the orchestration contract", () => {
-		expect(ORCHESTRATE_NOTICE.startsWith("<system-notice>")).toBe(true);
-		expect(ORCHESTRATE_NOTICE.endsWith("</system-notice>")).toBe(true);
-		expect(ORCHESTRATE_NOTICE).toContain("orchestrator");
+		const notice = renderOrchestrateNotice({
+			tools: ["read", "task", "edit", "write", "lsp", "bash", "todo"],
+		});
+		expect(notice.startsWith("<system-notice>")).toBe(true);
+		expect(notice.endsWith("</system-notice>")).toBe(true);
+		expect(notice).toContain("orchestrator");
 		// The contract must not retain the slash-command input placeholder.
-		expect(ORCHESTRATE_NOTICE).not.toContain("$@");
+		expect(notice).not.toContain("$@");
+	});
+
+	it("omits tool-budget mentions for tools absent from the session", () => {
+		const notice = renderOrchestrateNotice({ tools: ["read"] });
+		expect(notice).not.toContain("`task` for dispatch");
+		expect(notice).not.toContain("`edit`");
+		expect(notice).not.toContain("`write`");
+		expect(notice).not.toContain("`lsp diagnostics`");
+		expect(notice).not.toContain("via `bash`");
+		expect(notice).not.toContain("`todo` for tracking");
+	});
+
+	// OMPx keeps the orchestrate contract tool-agnostic instead of adopting
+	// upstream's Handlebars per-tool gating: the notice defers to "the active
+	// toolset" rather than naming edit/write, so it can never advertise a tool
+	// the session does not have.
+	it("never hard-codes edit/write tool names for any toolset", () => {
+		for (const tools of [["read"], ["read", "write"], ["read", "edit"], ["read", "edit", "write"]]) {
+			const notice = renderOrchestrateNotice({ tools });
+			expect(notice).not.toContain("with `edit`");
+			expect(notice).not.toContain("with `write`");
+			expect(notice).not.toContain("`edit`/`write`");
+			expect(notice).toContain("the active toolset permits");
+		}
 	});
 });
 

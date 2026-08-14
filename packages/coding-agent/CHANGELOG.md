@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Synced with upstream oh-my-pi v17.3.4. The OMPx divergences are preserved: fork version line, `ompx` branding and `qtnx/omppp` self-update source, the `quick_task`/`task`/`heavy_task` implementer tiers (upstream's `sonic` rename is not adopted), fork-only packages and features, and the fork-shaped CI. Upstream's native `pdfToMarkdown` pipeline replaces the mupdf-wasm PDF path, so the `mupdf` dependency and the `gen:mupdf` scripts are gone.
+- The orchestrate contract stays tool-agnostic instead of adopting upstream's Handlebars per-tool gating: it defers to "the active toolset" rather than naming `edit`/`write`, so it can never advertise a tool the session lacks.
 ## [1.7.2] - 2026-08-14
 ### Added
 
@@ -10,7 +14,105 @@
 
 ### Fixed
 
+- Plan mode no longer tells the agent to use `ask` or to dispatch scouts `via task` when those tools are absent from the session. The preference-gathering directive and the scout dispatch step are now gated on tool availability, matching the rest of the plan-mode prompt.
 - Native CI no longer hard-fails a release rebuild when sccache cannot reach the GitHub Actions cache backend. Bazel addon builds strip that wrapper and skip unused host cargo/sccache setup.
+
+
+## [1.7.1] - 2026-08-13
+
+### Added
+
+- Added a `providers.xaiImageModel` setting (Settings › Providers › Services › "xAI Image Model") that picks the Grok Imagine model `generate_image` uses when it resolves to the xAI provider: `grok-imagine-image` (default, standard tier) or `grok-imagine-image-quality` — the API id of xAI's Imagine Image 2.0 / Quality Mode. Previously the model was hardcoded to `grok-imagine-image`, so the quality tier was unreachable. Note there is no `grok-imagine-image-2` model id; that string 404s against `api.x.ai`.
+- Added a `modelRoles.super_review` role for the `super_review` tool. Unset, it walks `anthropic/claude-fable-5:high` → `tnx/super` → `openai-codex/gpt-5.6-sol:high` and picks the first available authenticated model. Override with `modelRoles.super_review` (comma-separated selectors work) in config or the model hub.
+
+### Fixed
+
+- Fixed `super_review` failing to connect: it no longer hardcodes `tnx/super` through the dead `http://codemc:4000` auth gateway. The one-turn call now uses the resolved provider endpoint and the registry API key.
+- `super_review` now sends an explicit 8192-token output cap on the hardcoded `tnx/super` one-turn call, so OpenRouter-backed aliases no longer reserve the advertised 65536-token ceiling and 402 when remaining credit cannot cover that reservation.
+- The herdr `omp` entrypoint survives reinstalls that move the binary: `scripts/install.sh` now repoints an existing `omp` link at the freshly installed `ompx`, and a dangling link is reported as a `conflict` (repointable with `ompx herdr install --force`) instead of `missing`, which used to fail with `EEXIST`. The installer never creates the link — the `omp` name belongs to upstream oh-my-pi, so claiming it stays opt-in via `ompx herdr install` — and it leaves an unrelated `omp` alone. Skip it entirely with `OMPX_INSTALL_SKIP_HERDR_ENTRYPOINT=1`.
+- Fixed blocking advisor consultations collapsing paused, disposed, aborted, timed-out, queue-cleared, rate-limited, empty-response, and provider-error outcomes into a misleading timeout. Consults now report the exact cause and provider attempt history, expose the existing bounded retry cycle, return immediately when a rate-limited request is requeued, and stop retrying after cancellation.
+## [17.3.4] - 2026-08-14
+
+### Changed
+
+- Replaced the MuPDF-WASM PDF document backend with `pdf-inspector` through `@oh-my-pi/pi-natives`, preserving cached text conversion and PDF line selectors while reporting pages that need OCR.
+- Restored `read <pdf>:` and `read <pdf>:<image>.png` page rendering by automatically capturing PDF pages through the headless Chromium browser tool.
+
+### Fixed
+
+- Fixed Streamable HTTP MCP sessions being invalidated by opening the optional GET SSE stream before sending `notifications/initialized`, which prevented Figma Dev Mode MCP from connecting ([#8514](https://github.com/can1357/oh-my-pi/issues/8514)).
+- Fixed the `/hotkeys` table describing Ctrl+D (`app.exit`) as "Exit (when editor is empty)" when it actually exits unconditionally and saves the current prompt as a resumable draft ([#8530](https://github.com/can1357/oh-my-pi/issues/8530)).
+- Fixed Ctrl+G external editors failing to launch on Windows because Bun re-quoted the embedded `cmd.exe /c` command line ([#8544](https://github.com/can1357/oh-my-pi/issues/8544)).
+
+## [17.3.3] - 2026-08-14
+
+### Fixed
+
+- Automatically continued Gemini turns that stopped after thinking without final output, using a bounded final-answer reminder instead of exhausting generic retries.
+- Retried Gemini `MALFORMED_FUNCTION_CALL` failures when every emitted tool call was proven unexecuted, while preserving real tool-result and visible-output replay guards.
+- Kept current terminal retry errors in one pinned banner with attempt context while surfacing local continuation failures instead of stale provider errors.
+
+## [17.3.2] - 2026-08-13
+
+### Fixed
+
+- Fixed the parent TUI stalling after a subagent submits its result until terminal focus or resize wakes the event loop ([#8462](https://github.com/can1357/oh-my-pi/issues/8462)).
+- Fixed `omp update` misclassifying foreign npm/bun bin aliases while preserving package-manager ownership for globally linked checkouts ([#8468](https://github.com/can1357/oh-my-pi/issues/8468)).
+- Fixed `read` hashline headers collapsing nested in-workspace paths to the bare basename, which let a same-basename file at the session cwd capture a verbatim follow-up `edit` and deterministically reject it with `hash is not from this session`. Headers now retain the workspace-relative path (e.g. `[src/settings.json#0063]`) ([#8482](https://github.com/can1357/oh-my-pi/issues/8482)).
+
+## [17.3.1] - 2026-08-13
+
+### Fixed
+
+- Fixed Claude Code user discovery ignoring CLAUDE_CONFIG_DIR for configuration, plugins, MCP servers, and imported sessions.
+- Fixed the status-line git branch display freezing after switching branches.
+- Fixed Pi extension contexts omitting the runtime mode, which caused TUI guards to silently disable extension UI.
+- Fixed extension-registered tool names being rejected by the --tools flag before extension discovery, which prevented least-privilege sessions from allowlisting plugin tools.
+- Fixed omp plugin install failing with cloning errors for legacy Pi extensions whose tool schemas use legacy-typebox builders.
+- Fixed omp update aborting with chmod ENOENT when concurrent update runs overlapped by using unique download temporary paths.
+- Fixed the browser tool executable probe launching the user's installed GUI Chromium on Windows: the `--version` version probe from ecb22957 was Linux-scoped but ran for every platform candidate, so on Windows it could hand off to a running `chrome.exe`, open a normal browser window, then reject the candidate and fall back to cached Chrome for Testing. The probe is now confined to Linux ([#8445](https://github.com/can1357/oh-my-pi/issues/8445)).
+
+## [17.3.0] - 2026-08-13
+
+### Breaking Changes
+
+- Removed the global `advisor.subagents` setting. Subagent advisors are now configured per agent via frontmatter or `task.agentAdvisor`. Existing configurations of `advisor.subagents: true` will automatically migrate to `task.agentAdvisor: { task: "on" }`.
+
+### Added
+
+- Added Astral `ty` as a built-in fallback Python LSP server (`ty server`), ordered behind `pyright`, `basedpyright`, and `pylsp`.
+- Added first-party Nix support, including reproducible source builds for Linux and macOS, a pinned development shell, NixOS and Home Manager modules, and offline Bun dependency support.
+- Added support for per-agent advisors configured via the `advisor` frontmatter field or the `task.agentAdvisor` settings, allowing different agents to be advised by different models.
+- Redesigned the `/agents` interface as a fullscreen hub featuring a scope sidebar, type-to-filter search, a pinned detail pane, mouse support, and interactive property chips for configuring agent settings.
+- Prepared for the upcoming npm package rename by updating `omp update` and startup version checks to follow the `omp.rename` pointer in the published manifest.
+
+### Changed
+
+- Updated `/usage`, `omp usage`, and the status line to display authoritative OpenCode Go quota usage directly from the official endpoint, replacing estimated costs with actual usage across three time windows (5h, 7d, and monthly).
+- Documented the source-available local protocol relay and clarified that production collaboration relay binaries are not currently published.
+- Enabled bounded Anthropic prompt-cache refreshes for the main agent loop while isolating advisor and side-channel requests from the shared refresh timer.
+
+### Fixed
+
+- Fixed multiple Language Server Protocol (LSP) issues, including concurrent sessions sharing backend overlays, stale document overlays after workspace edits, incorrect transactional edit advertisements, unhandled snippet placeholders in rust-analyzer, and failing to restore overwritten targets during failed file renames.
+- Fixed LSP `diagnostics` incorrectly reporting success when all language servers failed.
+- Fixed Hindsight memory scoping splitting repositories across multiple scopes on case-sensitive filesystems by lowercasing the project label.
+- Fixed the CLI crashing at startup with a raw `AuthBrokerError` when the configured auth broker is unreachable, replacing it with an actionable error message.
+- Fixed various resource and process leaks, including idle launch brokers staying alive indefinitely, stale MCP connections leaving child processes open, and undrained stdout in DAP `runInTerminal` requests.
+- Fixed custom STB-backed vision providers failing to decode WebP images by automatically detecting image formats from bytes and normalizing WebP blocks.
+- Fixed command-backed provider API keys (`!command`) staying pinned to cached values after receiving an HTTP 401 error.
+- Fixed the `/agents` Control Center failing to open when model overrides are configured as YAML arrays.
+- Fixed session-title generation regressions by restoring plain-sentence phrasing and name-fidelity instructions.
+- Fixed agent-facing prompts and system instructions mentioning tools that are absent from the current session catalog.
+- Fixed manual `/shake` discarding all tool results; it now retains a small recent tail of results to preserve active working context.
+- Fixed `omp install` failing validation for extensions importing legacy `is<Tool>ToolResult` event guards.
+- Fixed profile aliases generated by standalone binaries invoking Bun's embedded virtual script instead of the installed `omp` command.
+- Fixed `/skill:<name>` tokens in `/plan` or `/vibe` inline prompts being treated as literal text instead of executing the skill.
+- Fixed long streaming `write` previews stalling the TUI by optimizing file scanning and splitting.
+- Fixed the Windows console disappearing when running commands like `/stats`.
+- Fixed retry-fallback selection switching to a fallback model with a context window too small to hold the current session context.
+- Fixed OpenCode discovery ignoring `opencode.jsonc` files and rejecting comments in `opencode.json`.
+- Fixed WSL2 startup hanging forever when the Windows interop pipe is wedged: the WSL host-home discovery probes (`cmd.exe`, `wslpath`) now run under a 500ms hard timeout and fall back to the Linux `$HOME`/`~/.omp` candidates ([#8402](https://github.com/can1357/oh-my-pi/issues/8402)).
 
 ## [17.2.15] - 2026-08-12
 

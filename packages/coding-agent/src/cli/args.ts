@@ -7,7 +7,7 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { DEFAULT_LINUX_PODMAN_IMAGE } from "../config/sandbox-defaults";
 import type { ServiceTierOpenAISettingValue } from "../config/service-tier";
 import { CLI_THINKING_LEVELS, type ConfiguredThinkingLevel, parseCliThinkingLevel } from "../thinking";
-import { BUILTIN_TOOL_NAMES, HIDDEN_TOOL_NAMES, normalizeToolNames } from "../tools/builtin-names";
+import { normalizeToolNames } from "../tools/builtin-names";
 import {
 	OPTIONAL_FLAGS,
 	OPTIONAL_VALUE_FLAGS,
@@ -116,7 +116,6 @@ export interface Args {
 const PARSE_DEPS: ParseDeps = {
 	logger,
 	parseThinking: parseCliThinkingLevel,
-	builtinToolNames: [...BUILTIN_TOOL_NAMES, ...HIDDEN_TOOL_NAMES],
 	normalizeToolNames,
 	thinkingEfforts: CLI_THINKING_LEVELS,
 };
@@ -156,6 +155,7 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 	// reparse in `runRootCommand` parses it a second time). Mutating the input
 	// would corrupt that later parse, so never touch the caller's array.
 	const args = [...inputArgs];
+	const parseDeps = PARSE_DEPS;
 	const result: Args = {
 		messages: [],
 		fileArgs: [],
@@ -222,7 +222,7 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			if (i + 1 < args.length && args[i + 1] !== PROFILE_BOOTSTRAP_BOUNDARY_ARG) {
 				const consumed = consumeBuiltInStringValue(arg, args, i + 1);
 				i = consumed.index;
-				STRING_SETTERS[arg](result, consumed.value, PARSE_DEPS);
+				STRING_SETTERS[arg](result, consumed.value, parseDeps);
 				if (arg === "--add-dir") {
 					result.addDirs = [...(result.addDirs ?? []), consumed.value];
 				}
@@ -362,6 +362,17 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 	}
 
 	return result;
+}
+
+/** Reject requested tool names absent from the fully discovered session registry. */
+export function validateToolNames(requested: readonly string[] | undefined, known: readonly string[]): void {
+	if (!requested) return;
+	const knownNames = new Set(known);
+	const unknown = requested.filter(name => !knownNames.has(name));
+	if (unknown.length === 0) return;
+	throw new CliUsageError(
+		`Unknown tool${unknown.length === 1 ? "" : "s"} in --tools: ${unknown.join(", ")}. Valid tools: ${known.join(", ")}.`,
+	);
 }
 
 /**

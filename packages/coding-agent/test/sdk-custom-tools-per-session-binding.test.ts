@@ -16,11 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	type CustomToolAPI,
-	loadCustomTools,
-	type ToolPathWithSource,
-} from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
+import { type CustomToolAPI, loadCustomTools } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 describe("loadCustomTools per-session binding (#2190 review fix)", () => {
@@ -51,30 +47,7 @@ describe("loadCustomTools per-session binding (#2190 review fix)", () => {
 		await removeWithRetries(tmp);
 	});
 
-	it("binds each load to the cwd passed to loadCustomTools", async () => {
-		const paths: ToolPathWithSource[] = [{ path: toolPath }];
-		const parentResult = await loadCustomTools(paths, "/tmp/parent-cwd", []);
-		const subagentResult = await loadCustomTools(paths, "/tmp/subagent-cwd", []);
-
-		expect(parentResult.errors).toEqual([]);
-		expect(subagentResult.errors).toEqual([]);
-		expect(parentResult.tools).toHaveLength(1);
-		expect(subagentResult.tools).toHaveLength(1);
-
-		const parentTool = parentResult.tools[0];
-		const subagentTool = subagentResult.tools[0];
-		if (!parentTool || !subagentTool) throw new Error("Expected one tool per result");
-		const parentApi = (parentTool.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
-		const subagentApi = (subagentTool.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
-
-		expect(parentApi.cwd).toBe("/tmp/parent-cwd");
-		expect(subagentApi.cwd).toBe("/tmp/subagent-cwd");
-		expect(subagentApi).not.toBe(parentApi);
-		// Different tool instances — a session must never see the other's tool.
-		expect(subagentResult.tools[0]?.tool).not.toBe(parentResult.tools[0]?.tool);
-	});
-
-	it("routes pushPendingAction to the loader's own callback, not a shared one", async () => {
+	it("binds each load to its own cwd and pending-action callback", async () => {
 		const parentLog: string[] = [];
 		const subagentLog: string[] = [];
 
@@ -90,6 +63,15 @@ describe("loadCustomTools per-session binding (#2190 review fix)", () => {
 		if (!parentTool || !subagentTool) throw new Error("Expected one tool per result");
 		const parentApi = (parentTool.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
 		const subagentApi = (subagentTool.tool as unknown as { __boundApi: CustomToolAPI }).__boundApi;
+
+		expect(parentResult.errors).toEqual([]);
+		expect(subagentResult.errors).toEqual([]);
+		expect(parentResult.tools).toHaveLength(1);
+		expect(subagentResult.tools).toHaveLength(1);
+		expect(parentApi.cwd).toBe("/tmp/parent-cwd");
+		expect(subagentApi.cwd).toBe("/tmp/subagent-cwd");
+		expect(subagentApi).not.toBe(parentApi);
+		expect(subagentResult.tools[0]?.tool).not.toBe(parentResult.tools[0]?.tool);
 
 		// Cast: the test fixture exposes the runtime API verbatim.
 		parentApi.pushPendingAction({

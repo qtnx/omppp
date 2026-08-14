@@ -232,7 +232,9 @@ describe("AgentSession goal/orchestrator coexistence", () => {
 	});
 
 	it("does not auto-enter orchestrator from the public prompt seam while the goal is paused", async () => {
-		const { session, mode } = await createHarness(["read"]);
+		// `task` must be active: upstream only renders the orchestrate notice when the
+		// dispatch tool the notice points at actually exists.
+		const { session, mode } = await createHarness(["read", "task"]);
 		await enterGoal(mode, "Stay paused");
 		await pauseGoal(mode);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
@@ -242,7 +244,7 @@ describe("AgentSession goal/orchestrator coexistence", () => {
 		expect(session.getOrchestratorModeState()?.enabled).not.toBe(true);
 		expect(session.getGoalModeState()?.enabled).toBe(false);
 		expect(session.getGoalModeState()?.goal.status).toBe("paused");
-		expectActiveTools(session, ["read"]);
+		expectActiveTools(session, ["read", "task"]);
 		expect(customTypesFromPrompt(promptSpy)).toContain("orchestrate-notice");
 	});
 

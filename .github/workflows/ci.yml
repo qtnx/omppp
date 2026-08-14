@@ -267,7 +267,9 @@ jobs:
       needs: [release_metadata, native_artifact_lookup]
       if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || needs.native_artifact_lookup.outputs.linux-x64-run-id == '') }}
       runs-on: ubuntu-22.04
-      timeout-minutes: 30
+      # The upstream v17.3.4 sync adds the `pdf-inspector` crate, so a
+      # cold-sccache baseline build no longer fits in 30m (modern needs ~19m).
+      timeout-minutes: 50
       steps:
          - uses: actions/checkout@v4
          - name: Download trusted Linux x64 baseline native artifact
@@ -302,7 +304,8 @@ jobs:
       needs: [release_metadata, native_artifact_lookup]
       if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || needs.native_artifact_lookup.outputs.linux-x64-run-id == '') }}
       runs-on: ubuntu-22.04
-      timeout-minutes: 25
+      # Same `pdf-inspector` cost as the baseline job; 25m left no headroom.
+      timeout-minutes: 40
       steps:
          - uses: actions/checkout@v4
          - name: Download trusted Linux x64 modern native artifact
@@ -648,7 +651,7 @@ jobs:
          - name: Test coding-agent native/unit bucket
            env:
               OMP_TEST_CONCURRENCY: "4"
-              OMP_TEST_CHUNK_TIMEOUT: "1200"
+
            run: bun run ci:test:coding-agent:native
 
    test_smoke:

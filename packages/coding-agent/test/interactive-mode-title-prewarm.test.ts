@@ -1,15 +1,15 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
-import * as path from "node:path";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { tinyTitleClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 async function waitForImmediate(): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
@@ -23,6 +23,7 @@ async function waitForImmediate(): Promise<void> {
 // submit handler paints the pending row before kicking off titling.
 describe("InteractiveMode tiny-title prewarm", () => {
 	let authStorage: AuthStorage;
+	let modelRegistry: ModelRegistry;
 	let mode: InteractiveMode;
 	let session: AgentSession;
 	let tempDir: TempDir;
@@ -32,6 +33,9 @@ describe("InteractiveMode tiny-title prewarm", () => {
 
 	beforeAll(() => {
 		initTheme();
+		tempDir = TempDir.createSync("@pi-interactive-mode-title-prewarm-");
+		authStorage = createInMemoryAuthStorage();
+		modelRegistry = new ModelRegistry(authStorage);
 	});
 
 	beforeEach(async () => {
@@ -49,10 +53,7 @@ describe("InteractiveMode tiny-title prewarm", () => {
 		delete Bun.env.PI_NO_TITLE;
 
 		resetSettingsForTest();
-		tempDir = TempDir.createSync("@pi-interactive-mode-title-prewarm-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
-		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) {
 			throw new Error("Expected claude-sonnet-4-5 to exist in registry");
@@ -81,11 +82,14 @@ describe("InteractiveMode tiny-title prewarm", () => {
 		mode?.stop();
 		vi.restoreAllMocks();
 		await session?.dispose();
-		authStorage?.close();
-		tempDir?.removeSync();
 		resetSettingsForTest();
 		if (previousNoTitle === undefined) delete Bun.env.PI_NO_TITLE;
 		else Bun.env.PI_NO_TITLE = previousNoTitle;
+	});
+
+	afterAll(() => {
+		authStorage.close();
+		tempDir.removeSync();
 	});
 
 	it("prewarms the configured local worker on startup for an unnamed session", async () => {

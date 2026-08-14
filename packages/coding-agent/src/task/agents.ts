@@ -42,6 +42,7 @@ interface AgentFrontmatter {
 	resourceProfile?: "minimal";
 	reviewGate?: AgentReviewGatePolicy;
 	prewalk?: boolean | string;
+	advisor?: boolean | string;
 }
 
 interface EmbeddedAgentDef {
