@@ -6,6 +6,7 @@
 ### Added
 
 - Added `/loop list`, `/loop stop <id>`, `/loop cancel <id>`, and all-loop cancellation so loops scheduled by the agent can be inspected and stopped without leaving interactive loop mode.
+- Integrated CodeGraph as a managed built-in: OMPx now installs or upgrades the CodeGraph executable, initializes or syncs each top-level workspace in the background, exposes `codegraph_init`, `codegraph_index`, and default-active `codegraph_explore` tools, and guides the model to use indexed source and call paths before falling back to file-by-file exploration.
 
 ### Fixed
 
