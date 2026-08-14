@@ -956,7 +956,9 @@ function isGpt56PlusResponsesModel(model: Model<"openai-responses">): boolean {
 function isXaiOAuthGrok46Model(model: Model<"openai-responses">): boolean {
 	return (
 		model.provider === "xai-oauth" &&
-		bareModelId(model.requestModelId ?? model.id).toLowerCase().startsWith("grok-4.6")
+		bareModelId(model.requestModelId ?? model.id)
+			.toLowerCase()
+			.startsWith("grok-4.6")
 	);
 }
 

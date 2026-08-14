@@ -73,7 +73,6 @@ function captureSimpleResponsesPayload(model: Model<"openai-responses">): Promis
 	return promise;
 }
 
-
 describe("xAI OAuth Responses reasoning payload (regression)", () => {
 	test("xai-oauth/grok-4.5 leaves reasoning unset when no reasoning was requested", () => {
 		const grok45 = getBundledModel<"openai-responses">("xai-oauth", "grok-4.5");
