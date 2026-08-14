@@ -141,7 +141,7 @@ describe("Codex model discovery", () => {
 		expect(legacy?.contextWindow).toBe(272_000);
 	});
 
-	it("honors context_window when upstream actively reports it for GPT-5.6 SKUs", async () => {
+	it("pins GPT-5.6 SKUs to 372K when upstream reports the legacy 272K window (#5705)", async () => {
 		const fetchFn: typeof fetch = Object.assign(
 			async () =>
 				new Response(
@@ -178,7 +178,7 @@ describe("Codex model discovery", () => {
 		});
 
 		const sol = result?.models.find(model => model.id === "gpt-5.6-sol");
-		expect(sol?.contextWindow).toBe(272_000);
+		expect(sol?.contextWindow).toBe(372_000);
 		const legacy = result?.models.find(model => model.id === "gpt-5.5");
 		expect(legacy?.contextWindow).toBe(272_000);
 	});

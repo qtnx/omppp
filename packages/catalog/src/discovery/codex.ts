@@ -8,11 +8,10 @@ const DEFAULT_MODEL_LIST_PATHS = ["/codex/models", "/models"] as const;
 const DEFAULT_CONTEXT_WINDOW = 272_000;
 const DEFAULT_MAX_TOKENS = 128_000;
 /**
- * GPT-5.6 luna/sol/terra hard context capacity. Codex discovery omits
- * `context_window` for these SKUs, so the generic {@link DEFAULT_CONTEXT_WINDOW}
- * (272000) would understate the real window — OpenAI's Codex model registry
- * declares context_window = max_context_window = 372000 (#5705). Used as the
- * fallback only when upstream reports no value.
+ * GPT-5.6 luna/sol/terra hard context capacity. OpenAI's Codex model
+ * registry declares context_window = max_context_window = 372000 (#5705),
+ * while live discovery may omit the field or report the legacy 272000
+ * default. Pin these SKUs to the registry capacity.
  */
 const GPT_5_6_CONTEXT_WINDOW = 372_000;
 const CODEX_REMOTE_COMPACTION = {
@@ -223,14 +222,11 @@ function normalizeCodexModelEntry(entry: unknown, baseUrl: string): NormalizedCo
 	}
 
 	const name = toNonEmptyString(payload.display_name) ?? slug;
-	// Codex discovery omits `context_window` for GPT-5.6 luna/sol/terra; the
-	// generic 272000 fallback understates their real 372000 window (#5705).
 	const parsed = parseKnownModel(slug);
-	const fallbackContextWindow =
+	const contextWindow =
 		parsed.family === "openai" && semverEqual(parsed.version, "5.6")
 			? GPT_5_6_CONTEXT_WINDOW
-			: DEFAULT_CONTEXT_WINDOW;
-	const contextWindow = toPositiveInt(payload.context_window) ?? fallbackContextWindow;
+			: (toPositiveInt(payload.context_window) ?? DEFAULT_CONTEXT_WINDOW);
 	const maxTokens = Math.min(DEFAULT_MAX_TOKENS, contextWindow);
 	const reasoning = supportsReasoning(payload.default_reasoning_level, payload.supported_reasoning_levels);
 	const input = normalizeInputModalities(payload.input_modalities);
