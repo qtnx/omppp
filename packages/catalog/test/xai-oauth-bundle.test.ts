@@ -49,6 +49,8 @@ describe("xai-oauth bundled catalog (regression)", () => {
 			compat: {
 				supportsReasoningEffort: true,
 				omitReasoningEffort: false,
+				includeEncryptedReasoning: true,
+				filterReasoningHistory: false,
 			},
 		});
 		expect(discovered?.find(model => model.id === "grok-future-unlisted")?.compat?.omitReasoningEffort).toBe(true);
@@ -75,6 +77,8 @@ describe("xai-oauth bundled catalog (regression)", () => {
 			// vision capability silently (Codex PR #1127 review).
 			expect(bundledEntry.input).toEqual(seededModel.input);
 			expect(bundledEntry.compat?.supportsReasoningEffort).toBe(seededModel.compat?.supportsReasoningEffort);
+			expect(bundledEntry.compat?.includeEncryptedReasoning).toBe(seededModel.compat?.includeEncryptedReasoning);
+			expect(bundledEntry.compat?.filterReasoningHistory).toBe(seededModel.compat?.filterReasoningHistory);
 		});
 	}
 
@@ -92,6 +96,10 @@ describe("xai-oauth bundled catalog (regression)", () => {
 			maxTokens: 500_000,
 			reasoning: true,
 			input: ["text", "image"],
+			compat: {
+				includeEncryptedReasoning: true,
+				filterReasoningHistory: false,
+			},
 		});
 
 		const built45 = buildModel(grok45);

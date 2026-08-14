@@ -75,6 +75,7 @@ import { createAutoresearchExtension } from "./autoresearch";
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
+import { CodeGraphManager } from "./codegraph/manager";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
@@ -163,6 +164,7 @@ import { formatPreviewFeedback } from "./product-preview/feedback";
 import type { PreviewFeedback } from "./product-preview/types";
 import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with { type: "text" };
 import browserAnnotationTemplate from "./prompts/tools/browser-annotation.md" with { type: "text" };
+import codegraphReadyTemplate from "./prompts/tools/codegraph-ready.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
@@ -4419,6 +4421,61 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorMcpResources: cursorMcpResources,
 			titleSystemPrompt: options.titleSystemPrompt,
 		});
+		if (taskDepth === 0 && !options.parentTaskPrefix && !restrictToolNames && settings.get("codegraph.enabled")) {
+			void CodeGraphManager.forProject(sessionManager.getCwd())
+				.then(codeGraphManager => {
+					if (session.isDisposed) return;
+					let guidanceQueued = false;
+					const queueCodeGraphGuidance = () => {
+						if (guidanceQueued || session.isDisposed) return;
+						guidanceQueued = true;
+						const message: CustomMessage = {
+							role: "custom",
+							customType: "codegraph-ready",
+							content: prompt.render(codegraphReadyTemplate),
+							display: false,
+							attribution: "agent",
+							timestamp: Date.now(),
+						};
+						void session
+							.sendCustomMessage(message, { deliverAs: "nextTurn", triggerTurn: false })
+							.catch(error => {
+								logger.warn("CodeGraph readiness guidance delivery failed.", {
+									cwd: sessionManager.getCwd(),
+									error: error instanceof Error ? error.message : String(error),
+								});
+							});
+					};
+					const unsubscribeCodeGraphReady = codeGraphManager.onReady(queueCodeGraphGuidance);
+					disposeCallbacks.add(unsubscribeCodeGraphReady);
+					codeGraphManager.start();
+					void codeGraphManager
+						.ensureReady()
+						.then(state => {
+							if (state.status === "ready") {
+								queueCodeGraphGuidance();
+								return;
+							}
+							if (session.isDisposed) return;
+							logger.warn("CodeGraph startup is unavailable.", {
+								projectRoot: state.projectRoot,
+								error: state.error,
+							});
+						})
+						.catch(error => {
+							logger.warn("CodeGraph startup readiness check failed.", {
+								cwd: sessionManager.getCwd(),
+								error: error instanceof Error ? error.message : String(error),
+							});
+						});
+				})
+				.catch(error => {
+					logger.warn("CodeGraph startup setup failed.", {
+						cwd: sessionManager.getCwd(),
+						error: error instanceof Error ? error.message : String(error),
+					});
+				});
+		}
 		hasSession = true;
 		// Extension factories normally register tools before session construction,
 		// but Pi-compatible extensions may discover them asynchronously from a

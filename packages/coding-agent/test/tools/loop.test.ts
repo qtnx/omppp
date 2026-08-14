@@ -140,6 +140,7 @@ describe("LoopTool execute", () => {
 		expect(text).toMatch(/Loop \S+ scheduled: "recheck CI" every 10m, 5 iterations/);
 		expect(text).toContain("Iteration 1/5 queued");
 		expect(text).toContain("follow-up");
+		expect(text).toContain("/loop stop l1");
 	});
 
 	test("pre-aborted calls reject without scheduling a loop", async () => {

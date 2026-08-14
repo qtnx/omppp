@@ -341,4 +341,43 @@ describe("InteractiveMode loop auto-submit", () => {
 		mode.disableLoopMode();
 		expect(setLoopModeStatus).toHaveBeenLastCalledWith(undefined);
 	});
+
+	it("lists and stops session agent loops without changing interactive loop mode", async () => {
+		vi.useFakeTimers();
+		const pendingFollowUp = Promise.withResolvers<void>();
+		const followUp = vi.spyOn(session, "followUp").mockReturnValue(pendingFollowUp.promise);
+		const manager = session.getLoopManager();
+		if (!manager) throw new Error("Expected loop manager");
+
+		await mode.handleLoopCommand("1ms");
+		const showStatus = vi.spyOn(mode, "showStatus");
+		const showError = vi.spyOn(mode, "showError");
+		const first = manager.schedule({ prompt: "check status", intervalMs: 1_000, count: 2 });
+
+		await mode.handleLoopCommand("list");
+		expect(showStatus).toHaveBeenLastCalledWith(
+			expect.stringContaining(`${first.id} running 1/2 every 1 second check status`),
+		);
+		expect(mode.loopModeEnabled).toBe(true);
+
+		await mode.handleLoopCommand(`stop ${first.id}`);
+		expect(manager.list()).toEqual([]);
+		expect(mode.loopModeEnabled).toBe(true);
+
+		const sibling = manager.schedule({ prompt: "keep running", intervalMs: 1_000, count: 2 });
+		await mode.handleLoopCommand("stop missing");
+		await mode.handleLoopCommand("list extra");
+		expect(showError).toHaveBeenCalledWith("No active agent loop with ID missing.");
+		expect(showError).toHaveBeenCalledWith("Usage: /loop list");
+		expect(manager.list()).toEqual([expect.objectContaining({ id: sibling.id })]);
+		expect(mode.loopModeEnabled).toBe(true);
+
+		await mode.handleLoopCommand("cancel all");
+		expect(showStatus).toHaveBeenLastCalledWith("Stopped 1 agent loop.");
+		expect(manager.list()).toEqual([]);
+		await flushMicrotasks();
+		vi.advanceTimersByTime(1_000);
+		await flushMicrotasks();
+		expect(followUp).toHaveBeenCalledTimes(2);
+	});
 });

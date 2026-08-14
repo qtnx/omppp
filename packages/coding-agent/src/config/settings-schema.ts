@@ -152,7 +152,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	],
 	context: ["General", "Compaction", "Memory", "Rules (TTSR)", "Experimental"],
 	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight"],
-	files: ["Editing", "Reading", "Read Summaries", "LSP"],
+	files: ["Editing", "Reading", "Read Summaries", "LSP", "CodeGraph"],
 	shell: ["Bash", "Eval & Runtimes"],
 	tools: [
 		"Available Tools",
@@ -3971,6 +3971,18 @@ export const SETTINGS_SCHEMA = {
 			group: "LSP",
 			label: "LSP",
 			description: "Enable the lsp tool for code intelligence (definitions, references, diagnostics, rename)",
+		},
+	},
+
+	// CodeGraph
+	"codegraph.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "files",
+			group: "CodeGraph",
+			label: "CodeGraph",
+			description: "Enable CodeGraph tools and background workspace indexing",
 		},
 	},
 

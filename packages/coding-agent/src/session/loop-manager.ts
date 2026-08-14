@@ -10,6 +10,17 @@ export interface LoopHandle {
 	readonly id: string;
 }
 
+export type LoopState = "running" | "waiting";
+
+export interface LoopSnapshot {
+	readonly id: string;
+	readonly prompt: string;
+	readonly intervalMs: number;
+	readonly count: number;
+	readonly iteration: number;
+	readonly state: LoopState;
+}
+
 interface LoopEntry {
 	id: string;
 	prompt: string;
@@ -63,11 +74,33 @@ export class LoopManager {
 
 	/** Idempotent: clears every timer and seals every loop. In-flight followUp
 	 *  promises may still settle but MUST NOT schedule further iterations. */
-	cancelAll(): void {
+	cancelAll(): number {
+		const count = this.#loops.size;
 		for (const entry of this.#loops.values()) {
 			this.#cancelEntry(entry);
 		}
 		this.#loops.clear();
+		return count;
+	}
+
+	list(): LoopSnapshot[] {
+		return [...this.#loops.values()].map(entry => ({
+			id: entry.id,
+			prompt: entry.prompt,
+			intervalMs: entry.intervalMs,
+			count: entry.count,
+			iteration: entry.iteration,
+			state: entry.timer === undefined ? "running" : "waiting",
+		}));
+	}
+
+	cancel(id: string): boolean {
+		const entry = this.#loops.get(id);
+		if (entry === undefined) return false;
+
+		this.#cancelEntry(entry);
+		this.#loops.delete(id);
+		return true;
 	}
 
 	#cancelEntry(entry: LoopEntry): void {
@@ -106,6 +139,7 @@ export class LoopManager {
 				}, entry.intervalMs);
 			},
 			(err: unknown) => {
+				if (entry.cancelled) return;
 				logger.warn("Loop followUp rejected; cancelling loop", {
 					id: entry.id,
 					error: err instanceof Error ? err.message : String(err),

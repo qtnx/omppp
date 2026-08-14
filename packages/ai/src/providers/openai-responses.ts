@@ -953,6 +953,15 @@ function isGpt56PlusResponsesModel(model: Model<"openai-responses">): boolean {
 	return parsed !== null && semverGte(parsed.version, "5.6");
 }
 
+function isXaiOAuthGrok46Model(model: Model<"openai-responses">): boolean {
+	return (
+		model.provider === "xai-oauth" &&
+		bareModelId(model.requestModelId ?? model.id)
+			.toLowerCase()
+			.startsWith("grok-4.6")
+	);
+}
+
 function isResponsesPromptCacheableContentBlock(block: unknown): block is ResponseInputContent {
 	if (typeof block !== "object" || block === null || !("type" in block)) return false;
 	return block.type === "input_text" || block.type === "input_image" || block.type === "input_file";
@@ -1295,11 +1304,15 @@ export function buildParams(
 		omitReasoningEffort: options?.omitReasoningEffort,
 	});
 	const reasoningSummary =
-		model.provider === "xai-oauth"
-			? options?.reasoning === undefined
+		model.provider !== "xai-oauth"
+			? options?.reasoningSummary
+			: options?.reasoning === undefined
 				? undefined
-				: null
-			: options?.reasoningSummary;
+				: isXaiOAuthGrok46Model(model)
+					? options.reasoningSummary === undefined
+						? "concise"
+						: options.reasoningSummary
+					: null;
 	applyResponsesCompatPolicy(params, reasoningPolicy, {
 		reasoningSummary,
 		forceReasoningOff: options?.forceReasoningOff,

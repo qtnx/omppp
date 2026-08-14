@@ -106861,8 +106861,8 @@
 				"reasoningEffortMap": {
 					"minimal": "low"
 				},
-				"includeEncryptedReasoning": false,
-				"filterReasoningHistory": true,
+				"includeEncryptedReasoning": true,
+				"filterReasoningHistory": false,
 				"supportsImageDetailOriginal": false,
 				"omitReasoningEffort": false,
 				"supportsReasoningEffort": true
