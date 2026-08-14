@@ -2,16 +2,16 @@
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-08-14
+
 ### Changed
 
 - GitHub-hosted native jobs install host cargo, sccache, and zig only when they still run clippy or the Rust test suite. Darwin addon builds restore the `release-darwin-*` bazel disk cache seeded by `bazel-cache-warm`, so macos-15-intel is not a 40–50 minute cold graph. Other platforms keep a per-target natives-* scope.
 - Native linux/darwin/win32 jobs time out after 25 minutes. Linux x64 baseline stays at 15 because that is the only artifact TS tests wait on.
 
-
 ### Fixed
 
 - Bazel native builds no longer inherit `RUSTC_WRAPPER=sccache`. A GitHub Actions cache DNS blip can no longer fail crate-universe lockfile generation.
-
 
 ## [17.2.12] - 2026-08-08
 

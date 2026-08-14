@@ -2,16 +2,12 @@
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-08-14
+
 ### Fixed
 
 - Marked `xai-oauth/grok-4.6` as supporting encrypted native-reasoning replay while preserving the legacy filtering policy for older Grok models.
 - Fixed live Codex discovery downgrading `openai-codex/gpt-5.6-sol` from its 372K input window to the legacy 272K default.
-
-## [1.7.1] - 2026-08-13
-
-### Fixed
-
-- Fixed xAI OAuth support for `grok-4.6` with its 500K context window, text-and-image input, and reasoning-effort controls. `grok-4.5` and `grok-4.6` now expose only their documented effort ladders, default to `high`, apply that default when reasoning is omitted, and cannot disable reasoning ([#8369](https://github.com/can1357/oh-my-pi/pull/8369) by [@dendritic](https://github.com/dendritic)).
 
 ## [17.2.15] - 2026-08-12
 
@@ -1029,6 +1025,12 @@
 ### Removed
 
 - Removed the runtime enrichment layer: `enrichModelThinking` (and its non-enumerable memo-slot cache), `refreshModelThinking`, `modelOmitsReasoningEffort`, and the `model-thinking` re-exports of generator-only policies. Thinking metadata is resolved exactly once inside `buildModel`; runtime helpers (`getSupportedEfforts`, `clampThinkingLevelForModel`, `requireSupportedEffort`, the effort mappers) are pure field reads.
+
+## [1.7.1] - 2026-08-13
+
+### Fixed
+
+- Fixed xAI OAuth support for `grok-4.6` with its 500K context window, text-and-image input, and reasoning-effort controls. `grok-4.5` and `grok-4.6` now expose only their documented effort ladders, default to `high`, apply that default when reasoning is omitted, and cannot disable reasoning ([#8369](https://github.com/can1357/oh-my-pi/pull/8369) by [@dendritic](https://github.com/dendritic)).
 
 ## [1.6.4] - 2026-07-19
 
