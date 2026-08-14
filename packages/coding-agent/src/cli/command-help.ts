@@ -94,7 +94,7 @@ export const sayHelp = {
 } satisfies CommandMetadata;
 
 export const secretsHelp = {
-	description: "Manage the encrypted secret vault",
+	description: "Manage the encrypted secret vault (list, reveal, copy, add, remove)",
 } satisfies CommandMetadata;
 
 export const searchHelp = { description: "Test web search providers" } satisfies CommandMetadata;

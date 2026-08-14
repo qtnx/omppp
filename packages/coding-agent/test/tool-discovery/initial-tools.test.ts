@@ -12,6 +12,7 @@ import {
 	GithubTool,
 	IrcTool,
 	JobTool,
+	SecretsTool,
 	SshTool,
 } from "@oh-my-pi/pi-coding-agent/tools";
 
@@ -69,6 +70,8 @@ async function getToolMetadata(): Promise<Map<string, { loadMode?: string; summa
 		// `kanban` only builds while the session owns a live board, so `createTools`
 		// cannot produce it here; construct it directly to check its loading fields.
 		new KanbanTool(toolSession),
+		// `secrets` is conditional on an open vault, so construct it directly.
+		new SecretsTool(toolSession),
 	]) {
 		metadata.set(tool.name, { loadMode: tool.loadMode, summary: tool.summary });
 	}
