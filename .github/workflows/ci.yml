@@ -342,7 +342,9 @@ jobs:
       name: "Native: ${{ matrix.platform }} ${{ matrix.libc || '' }} ${{ matrix.arch }}"
       needs: [release_metadata, native_artifact_lookup]
       if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '')) }}
-      timeout-minutes: 25
+      # Cold-cache builds land at 19-20m of the old 25m cap; `pdf-inspector`
+      # (added by the v17.3.4 sync) leaves no headroom.
+      timeout-minutes: 40
       strategy:
          fail-fast: false
          matrix:
@@ -387,7 +389,8 @@ jobs:
       name: "Native: win32  x64"
       needs: [release_metadata, native_artifact_lookup]
       if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '')) }}
-      timeout-minutes: 25
+      # Same cold-cache headroom as the other cross-platform native jobs.
+      timeout-minutes: 40
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
@@ -420,7 +423,10 @@ jobs:
       name: "Native: ${{ matrix.platform }} ${{ matrix.arch }}"
       needs: [release_metadata, native_artifact_lookup]
       if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '')) }}
-      timeout-minutes: 25
+      # `macos-15-intel` has been hitting the 25m ceiling on main (cancelled at
+      # ~25.5m on the last two pushes) while arm64 finishes in ~21m; the
+      # `pdf-inspector` crate added by the v17.3.4 sync widens that gap.
+      timeout-minutes: 45
       strategy:
          fail-fast: false
          matrix:
