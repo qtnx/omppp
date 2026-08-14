@@ -206,9 +206,11 @@ import {
 	DEFAULT_LOOP_INTERVAL_MS,
 	describeLoopConfig,
 	describeLoopRuntime,
+	formatAgentLoopList,
 	hasLoopIterationRemaining,
 	type LoopRuntime,
 	parseLoopLimitArgs,
+	parseLoopManagementArgs,
 } from "./loop-limit";
 import { OAuthManualInputManager } from "./oauth-manual-input";
 import { countRunningSubagentBadgeAgents, getRunningSubagentBadgeRegistry } from "./running-subagent-badge";
@@ -2050,6 +2052,36 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async handleLoopCommand(args = ""): Promise<string | undefined> {
+		const management = parseLoopManagementArgs(args);
+		if (management.kind === "error") {
+			this.showError(management.message);
+			return undefined;
+		}
+		if (management.kind === "management") {
+			const manager = this.session.getLoopManager();
+			if (!manager) {
+				this.showError("Agent loop manager is unavailable.");
+				return undefined;
+			}
+			if (management.action === "list") {
+				this.showStatus(formatAgentLoopList(manager.list()));
+				return undefined;
+			}
+
+			const target = management.target;
+			if (target.toLowerCase() === "all") {
+				const cancelled = manager.cancelAll();
+				this.showStatus(`Stopped ${cancelled} agent loop${cancelled === 1 ? "" : "s"}.`);
+				return undefined;
+			}
+			if (!manager.cancel(target)) {
+				this.showError(`No active agent loop with ID ${target}.`);
+				return undefined;
+			}
+			this.showStatus(`Stopped agent loop ${target}.`);
+			return undefined;
+		}
+
 		if (this.loopModeEnabled) {
 			this.disableLoopMode();
 			return undefined;

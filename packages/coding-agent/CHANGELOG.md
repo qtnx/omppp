@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ## [1.7.2] - 2026-08-14
+### Added
+
+- Added `/loop list`, `/loop stop <id>`, `/loop cancel <id>`, and all-loop cancellation so loops scheduled by the agent can be inspected and stopped without leaving interactive loop mode.
 
 ### Fixed
 
