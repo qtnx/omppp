@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
+import { afterEach, describe, expect, it, type Mock, spyOn, vi } from "bun:test";
 import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
@@ -11,16 +11,20 @@ import {
 	downloadVerifiedBinary,
 	getBinaryNameForTest,
 	installScriptUrl,
+	isMuslLinuxForTest,
 	parseReportedVersion,
 	parseUpdateArgs,
 	pruneBunInstallCache,
 	replaceBinaryForUpdate,
 	resolveBunGlobalNodeModulesDirFromLocations,
 	resolveReleaseBinaryAsset,
+	resolveReleaseDist,
 	resolveUpdateMethodForTest,
+	shouldForceBinaryUpdate,
 	sweepStaleBackups,
 	updateViaBinaryAt,
 	updateViaInstallScript,
+	updateViaShimTakeover,
 } from "@oh-my-pi/pi-coding-agent/cli/update-cli";
 import Update from "@oh-my-pi/pi-coding-agent/commands/update";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -40,7 +44,7 @@ afterEach(async () => {
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
 });
 const TEST_CONFIG: CliConfig = {
-	bin: "omp",
+	bin: "ompx",
 	version: "0.0.0-test",
 	commands: new Map(),
 };
@@ -75,15 +79,36 @@ describe("parseUpdateArgs", () => {
 	});
 });
 
+describe("update-cli libc detection", () => {
+	it("does not mistake an installed musl loader for a glibc host", () => {
+		expect(
+			isMuslLinuxForTest({
+				platform: "linux",
+				alpineRelease: false,
+				lddOutput: "ldd (Ubuntu GLIBC 2.39-0ubuntu8.7) 2.39",
+			}),
+		).toBe(false);
+	});
+
+	it("recognizes a musl host from ldd output", () => {
+		expect(
+			isMuslLinuxForTest({
+				platform: "linux",
+				alpineRelease: false,
+				lddOutput: "musl libc (x86_64)",
+			}),
+		).toBe(true);
+	});
+});
 describe("update-cli install target detection", () => {
-	it("uses bun update when prioritized omp is inside bun global bin", () => {
-		const method = resolveUpdateMethodForTest("/Users/test/.bun/bin/omp", "/Users/test/.bun/bin");
+	it("uses bun update when prioritized ompx is inside bun global bin", () => {
+		const method = resolveUpdateMethodForTest("/Users/test/.bun/bin/ompx", "/Users/test/.bun/bin");
 
 		expect(method).toBe("bun");
 	});
 
-	it("uses npm update when prioritized omp is inside an npm global bin", () => {
-		const method = resolveUpdateMethodForTest("/Users/test/.npm-global/bin/omp", undefined, {
+	it("uses npm update when prioritized ompx is inside an npm global bin", () => {
+		const method = resolveUpdateMethodForTest("/Users/test/.npm-global/bin/ompx", undefined, {
 			npmBinDir: "/Users/test/.npm-global/bin",
 		});
 
@@ -91,7 +116,7 @@ describe("update-cli install target detection", () => {
 	});
 
 	it("uses npm update for Windows npm command shims even when no package-manager bin dirs were detected", () => {
-		const method = resolveUpdateMethodForTest("C:\\Users\\test\\AppData\\Roaming\\npm\\omp.cmd", undefined);
+		const method = resolveUpdateMethodForTest("C:\\Users\\test\\AppData\\Roaming\\npm\\ompx.cmd", undefined);
 
 		expect(method).toBe("npm");
 	});
@@ -101,7 +126,7 @@ describe("update-cli install target detection", () => {
 		// (~/.local), directory containment alone misclassified the standalone
 		// binary as npm-managed, so `npm install -g` failed with EEXIST refusing
 		// to overwrite the existing executable.
-		const method = resolveUpdateMethodForTest("/home/u/.local/bin/omp", undefined, {
+		const method = resolveUpdateMethodForTest("/home/u/.local/bin/ompx", undefined, {
 			npmBinDir: "/home/u/.local/bin",
 			ompIsRegularFile: true,
 		});
@@ -110,7 +135,7 @@ describe("update-cli install target detection", () => {
 	});
 
 	it("uses binary update when a plain file in the bun global bin dir is the standalone binary", () => {
-		const method = resolveUpdateMethodForTest("/home/u/.local/bin/omp", "/home/u/.local/bin", {
+		const method = resolveUpdateMethodForTest("/home/u/.local/bin/ompx", "/home/u/.local/bin", {
 			ompIsRegularFile: true,
 		});
 
@@ -127,7 +152,7 @@ describe("update-cli install target detection", () => {
 		if (!platformDescriptor) throw new Error("process.platform descriptor missing");
 		Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
 		try {
-			const method = resolveUpdateMethodForTest("C:/Users/test/.bun/bin/omp.exe", "C:/Users/test/.bun/bin", {
+			const method = resolveUpdateMethodForTest("C:/Users/test/.bun/bin/ompx.exe", "C:/Users/test/.bun/bin", {
 				ompIsRegularFile: true,
 			});
 
@@ -138,7 +163,7 @@ describe("update-cli install target detection", () => {
 	});
 
 	it("still uses npm update when the npm global bin entry is a package-manager symlink, not a plain file", () => {
-		const method = resolveUpdateMethodForTest("/home/u/.local/bin/omp", undefined, {
+		const method = resolveUpdateMethodForTest("/home/u/.local/bin/ompx", undefined, {
 			npmBinDir: "/home/u/.local/bin",
 			ompIsRegularFile: false,
 		});
@@ -146,48 +171,48 @@ describe("update-cli install target detection", () => {
 		expect(method).toBe("npm");
 	});
 
-	it("uses binary update when prioritized omp is outside bun global bin", () => {
-		const method = resolveUpdateMethodForTest("/Users/test/.local/bin/omp", "/Users/test/.bun/bin");
+	it("uses binary update when prioritized ompx is outside bun global bin", () => {
+		const method = resolveUpdateMethodForTest("/Users/test/.local/bin/ompx", "/Users/test/.bun/bin");
 
 		expect(method).toBe("binary");
 	});
 
 	it("uses binary update when bun global bin cannot be resolved", () => {
-		const method = resolveUpdateMethodForTest("/Users/test/.local/bin/omp", undefined);
+		const method = resolveUpdateMethodForTest("/Users/test/.local/bin/ompx", undefined);
 
 		expect(method).toBe("binary");
 	});
 
-	it("uses Homebrew update when prioritized omp resolves into the Homebrew formula", async () => {
+	it("uses Homebrew update when prioritized ompx resolves into the Homebrew formula", async () => {
 		const dir = await makeTempDir();
-		const prefix = path.join(dir, "opt", "omp");
+		const prefix = path.join(dir, "opt", "ompx");
 		const linkedBin = path.join(dir, "bin");
 		await fs.mkdir(path.join(prefix, "bin"), { recursive: true });
 		await fs.mkdir(linkedBin, { recursive: true });
-		await Bun.write(path.join(prefix, "bin", "omp"), "binary");
-		await fs.symlink(path.join(prefix, "bin", "omp"), path.join(linkedBin, "omp"));
+		await Bun.write(path.join(prefix, "bin", "ompx"), "binary");
+		await fs.symlink(path.join(prefix, "bin", "ompx"), path.join(linkedBin, "ompx"));
 
-		const method = resolveUpdateMethodForTest(path.join(linkedBin, "omp"), "/Users/test/.bun/bin", {
+		const method = resolveUpdateMethodForTest(path.join(linkedBin, "ompx"), "/Users/test/.bun/bin", {
 			homebrewPrefix: prefix,
 		});
 
 		expect(method).toBe("brew");
 	});
 
-	it("uses mise update when prioritized omp is in an active mise bin path", () => {
+	it("uses mise update when prioritized ompx is in an active mise bin path", () => {
 		const method = resolveUpdateMethodForTest(
-			"/Users/test/.local/share/mise/installs/github-can1357-oh-my-pi/latest/bin/omp",
+			"/Users/test/.local/share/mise/installs/github-qtnx-omppp/latest/bin/ompx",
 			undefined,
 			{
-				miseBinDirs: ["/Users/test/.local/share/mise/installs/github-can1357-oh-my-pi/latest/bin"],
+				miseBinDirs: ["/Users/test/.local/share/mise/installs/github-qtnx-omppp/latest/bin"],
 			},
 		);
 
 		expect(method).toBe("mise");
 	});
 
-	it("uses mise update when prioritized omp is a mise shim", () => {
-		const method = resolveUpdateMethodForTest("/Users/test/.local/share/mise/shims/omp", undefined, {
+	it("uses mise update when prioritized ompx is a mise shim", () => {
+		const method = resolveUpdateMethodForTest("/Users/test/.local/share/mise/shims/ompx", undefined, {
 			miseDataDir: "/Users/test/.local/share/mise",
 		});
 
@@ -220,12 +245,12 @@ describe("parseReportedVersion", () => {
 	// The previous parser required an "ompx/" slash and never matched the real
 	// output, so every downloaded update failed verification and got rolled back.
 	it("parses the bare `X.Y.Z` that `ompx --version` emits", () => {
-		expect(parseReportedVersion("15.10.5\n")).toBe("15.10.5");
+		expect(parseReportedVersion("1.7.0\n")).toBe("1.7.0");
 	});
 
 	it("tolerates optional `ompx/` or `v` prefixes", () => {
-		expect(parseReportedVersion("ompx/15.10.5")).toBe("15.10.5");
-		expect(parseReportedVersion("v15.10.5\n")).toBe("15.10.5");
+		expect(parseReportedVersion("ompx/1.7.0")).toBe("1.7.0");
+		expect(parseReportedVersion("v1.7.0\n")).toBe("1.7.0");
 	});
 
 	it("returns undefined when the binary printed no version", () => {
@@ -328,11 +353,35 @@ describe("update-cli bun cache pruning", () => {
 		expect(await Bun.file(path.join(dir, "pkg", "1.0.0@@@1")).exists()).toBe(true);
 		expect(await Bun.file(path.join(dir, "pkg@1.0.0@@@1", "package.json")).exists()).toBe(true);
 	});
+
+	it("compares numeric version segments without precision loss", async () => {
+		const dir = await makeTempDir();
+		const older = "1.0.99999999999999999999";
+		const newer = "1.0.100000000000000000000";
+		await Bun.write(path.join(dir, "pkg", `${older}@@@1`), "");
+		await Bun.write(path.join(dir, "pkg", `${newer}@@@1`), "");
+		await Bun.write(
+			path.join(dir, `pkg@${older}@@@1`, "package.json"),
+			JSON.stringify({ name: "pkg", version: older }),
+		);
+		await Bun.write(
+			path.join(dir, `pkg@${newer}@@@1`, "package.json"),
+			JSON.stringify({ name: "pkg", version: newer }),
+		);
+
+		const result = await pruneBunInstallCache(dir, new Set(["pkg"]));
+
+		expect(result).toEqual({ scannedPackages: 1, removedEntries: 2 });
+		expect(await Bun.file(path.join(dir, "pkg", `${older}@@@1`)).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, `pkg@${older}@@@1`, "package.json")).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, "pkg", `${newer}@@@1`)).exists()).toBe(true);
+		expect(await Bun.file(path.join(dir, `pkg@${newer}@@@1`, "package.json")).exists()).toBe(true);
+	});
 });
 
 describe("update-cli release binary integrity", () => {
 	const tag = "v17.1.2";
-	const binaryName = "omp-linux-x64";
+	const binaryName = "ompx-linux-x64";
 	// OMPx self-updates from the fork's releases; keep the fixture URL on `qtnx/omppp`.
 	const url = `https://github.com/qtnx/omppp/releases/download/${tag}/${binaryName}`;
 	const content = "verified binary";
@@ -387,7 +436,7 @@ describe("update-cli release binary integrity", () => {
 		).toThrow(`has 2 assets named ${binaryName}`);
 		expect(() =>
 			resolveReleaseBinaryAsset(
-				releaseAsset({ browser_download_url: "https://example.com/omp-linux-x64" }),
+				releaseAsset({ browser_download_url: "https://example.com/ompx-linux-x64" }),
 				tag,
 				binaryName,
 			),
@@ -438,6 +487,31 @@ describe("update-cli release binary integrity", () => {
 		expect(await Bun.file(targetPath).exists()).toBe(false);
 	});
 
+	it("wraps a timeout during body streaming with a friendly message", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, binaryName);
+		const body = new ReadableStream<Uint8Array>(
+			{
+				pull(controller) {
+					controller.enqueue(new Uint8Array(1));
+					controller.error(new DOMException("The operation timed out.", "TimeoutError"));
+				},
+			},
+			{ highWaterMark: 0 },
+		);
+
+		await expect(
+			downloadVerifiedBinary({
+				url,
+				targetPath,
+				expectedSize: Buffer.byteLength(content),
+				expectedDigest: digest,
+				fetchImpl: async () => new Response(body),
+			}),
+		).rejects.toThrow("Timed out downloading release binary after 15 minutes");
+		expect(await Bun.file(targetPath).exists()).toBe(false);
+	});
+
 	it("removes downloads whose size or digest does not match", async () => {
 		const dir = await makeTempDir();
 		const targetPath = path.join(dir, binaryName);
@@ -469,8 +543,8 @@ describe("update-cli release binary integrity", () => {
 	it("rejects an altered version-reporting executable before replacing the installed binary", async () => {
 		const dir = await makeTempDir();
 		const targetPath = path.join(dir, binaryName);
-		const installed = "#!/bin/sh\necho omp/17.0.8\n";
-		const altered = "#!/bin/sh\necho omp/17.1.2\n";
+		const installed = "#!/bin/sh\necho 1.7.0\n";
+		const altered = "#!/bin/sh\necho 1.7.1\n";
 		const expectedDigest = `sha256:${createHash("sha256")
 			.update("x".repeat(Buffer.byteLength(altered)))
 			.digest("hex")}`;
@@ -715,5 +789,185 @@ describe("update-cli stale backup sweep", () => {
 		expect(await Bun.file(`${targetPath}.1800000000000.99.bak`).exists()).toBe(false);
 		expect(await Bun.file(path.join(dir, "notes.bak")).exists()).toBe(true);
 		expect(await Bun.file(`${targetPath}.config.bak`).exists()).toBe(true);
+	});
+});
+
+describe("update-cli binary-only release gating", () => {
+	it("honors an explicit ompx.dist field from the registry manifest", () => {
+		expect(resolveReleaseDist({ ompx: { dist: "binary" } })).toBe("binary");
+		expect(resolveReleaseDist({ ompx: { dist: "npm" } })).toBe("npm");
+	});
+
+	it("treats unknown dist values as binary-only", () => {
+		expect(resolveReleaseDist({ ompx: { dist: "cargo" } })).toBe("binary");
+	});
+
+	it("returns undefined when the manifest carries no dist field", () => {
+		expect(resolveReleaseDist({ version: "1.2.3" })).toBeUndefined();
+		expect(resolveReleaseDist({ ompx: {} })).toBeUndefined();
+		expect(resolveReleaseDist(undefined)).toBeUndefined();
+	});
+
+	it("forces binary updates when dist is binary regardless of version", () => {
+		expect(shouldForceBinaryUpdate({ version: "1.2.3", dist: "binary" }, "1.2.2")).toBe(true);
+	});
+
+	it("allows package-manager updates across majors when dist is explicitly npm", () => {
+		expect(shouldForceBinaryUpdate({ version: "2.0.0", dist: "npm" }, "1.9.0")).toBe(false);
+	});
+
+	it("forces binary updates on a major bump without a dist field", () => {
+		expect(shouldForceBinaryUpdate({ version: "2.0.0" }, "1.9.0")).toBe(true);
+		expect(shouldForceBinaryUpdate({ version: "2.0.0-rc.1" }, "1.9.0")).toBe(true);
+	});
+
+	it("keeps package-manager updates within the same major and on downgrades", () => {
+		expect(shouldForceBinaryUpdate({ version: "1.10.0" }, "1.9.0")).toBe(false);
+		expect(shouldForceBinaryUpdate({ version: "1.0.0" }, "2.0.0")).toBe(false);
+	});
+});
+
+describe("update-cli script-shim takeover", () => {
+	const version = "1.7.0";
+	const binaryName = "ompx-windows-x64.exe";
+	const url = `https://github.com/qtnx/omppp/releases/download/v${version}/${binaryName}`;
+
+	function makeFetch(content: string): (input: string | URL | Request) => Promise<Response> {
+		const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
+		return async (input: string | URL | Request): Promise<Response> => {
+			const requestUrl = String(input);
+			if (requestUrl.startsWith("https://api.github.com/")) {
+				return new Response(
+					JSON.stringify({
+						tag_name: `v${version}`,
+						draft: false,
+						prerelease: false,
+						assets: [
+							{
+								name: binaryName,
+								state: "uploaded",
+								size: Buffer.byteLength(content),
+								digest,
+								browser_download_url: url,
+							},
+						],
+					}),
+				);
+			}
+			if (requestUrl === url) return new Response(content);
+			throw new Error(`Unexpected request: ${requestUrl}`);
+		};
+	}
+
+	const shims: Record<string, string> = {
+		ompx: "#!/bin/sh\nnode ompx.js\n",
+		"ompx.cmd": "@node ompx.js %*\n",
+		"ompx.ps1": "node ompx.js @args\n",
+	};
+
+	async function writeShims(dir: string): Promise<void> {
+		for (const name in shims) {
+			await Bun.write(path.join(dir, name), shims[name]);
+		}
+	}
+
+	it("installs ompx.exe beside the shims and retires them", async () => {
+		const dir = await makeTempDir();
+		await writeShims(dir);
+		// Real executable, no injected verifier: the takeover must verify the
+		// exe by explicit path — $which cached the shim path before it was
+		// renamed away, so a PATH re-resolution would fail here.
+		const exe = `#!/bin/sh\necho ${version}\n`;
+
+		await updateViaShimTakeover(path.join(dir, "ompx.cmd"), version, {
+			binaryName,
+			fetchImpl: makeFetch(exe),
+			githubToken: "test-token",
+		});
+
+		expect(await Bun.file(path.join(dir, "ompx.exe")).text()).toBe(exe);
+		for (const name in shims) {
+			expect(await Bun.file(path.join(dir, name)).exists()).toBe(false);
+		}
+		const residue = (await fs.readdir(dir)).filter(name => name.endsWith(".bak") || name.endsWith(".new"));
+		expect(residue).toEqual([]);
+	});
+
+	it("restores the shims and removes the exe when the exe reports the wrong version", async () => {
+		const dir = await makeTempDir();
+		await writeShims(dir);
+		// Executable runs but reports the previous version -> full rollback.
+		const exe = "#!/bin/sh\necho 1.6.9\n";
+
+		await expect(
+			updateViaShimTakeover(path.join(dir, "ompx.cmd"), version, {
+				binaryName,
+				fetchImpl: makeFetch(exe),
+				githubToken: "test-token",
+			}),
+		).rejects.toThrow(/still reports 1\.6\.9 \(expected 1\.7\.0\); restored previous ompx launcher/);
+
+		expect(await Bun.file(path.join(dir, "ompx.exe")).exists()).toBe(false);
+		for (const name in shims) {
+			expect(await Bun.file(path.join(dir, name)).text()).toBe(shims[name]);
+		}
+		const residue = (await fs.readdir(dir)).filter(name => name.endsWith(".bak") || name.endsWith(".new"));
+		expect(residue).toEqual([]);
+	});
+
+	function renameLockingPs1(): Mock<typeof nodeFs.promises.rename> {
+		const realRename = nodeFs.promises.rename;
+		return spyOn(nodeFs.promises, "rename").mockImplementation(async (from, to) => {
+			if (path.basename(String(from)) === "ompx.ps1") {
+				throw Object.assign(new Error("EPERM: file is locked"), { code: "EPERM" });
+			}
+			return await realRename(from, to);
+		});
+	}
+
+	it("rewrites an immovable precedence-winning shim as a forwarder to the exe", async () => {
+		const dir = await makeTempDir();
+		await writeShims(dir);
+		const exe = `#!/bin/sh\necho ${version}\n`;
+		const renameSpy = renameLockingPs1();
+		try {
+			await updateViaShimTakeover(path.join(dir, "ompx.cmd"), version, {
+				binaryName,
+				fetchImpl: makeFetch(exe),
+				githubToken: "test-token",
+			});
+		} finally {
+			renameSpy.mockRestore();
+		}
+
+		expect(await Bun.file(path.join(dir, "ompx.exe")).text()).toBe(exe);
+		expect(await Bun.file(path.join(dir, "ompx")).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, "ompx.cmd")).exists()).toBe(false);
+		// PowerShell resolves .ps1 before .exe: the locked shim must now exec
+		// the new binary instead of keeping its old body.
+		expect(await Bun.file(path.join(dir, "ompx.ps1")).text()).toContain('& "$PSScriptRoot\\ompx.exe" @args');
+	});
+
+	it("restores a forwarded shim's original body when verification fails", async () => {
+		const dir = await makeTempDir();
+		await writeShims(dir);
+		const exe = "#!/bin/sh\necho 1.6.9\n";
+		const renameSpy = renameLockingPs1();
+		try {
+			await expect(
+				updateViaShimTakeover(path.join(dir, "ompx.cmd"), version, {
+					binaryName,
+					fetchImpl: makeFetch(exe),
+					githubToken: "test-token",
+				}),
+			).rejects.toThrow("restored previous ompx launcher");
+		} finally {
+			renameSpy.mockRestore();
+		}
+
+		expect(await Bun.file(path.join(dir, "ompx.exe")).exists()).toBe(false);
+		for (const name in shims) {
+			expect(await Bun.file(path.join(dir, name)).text()).toBe(shims[name]);
+		}
 	});
 });

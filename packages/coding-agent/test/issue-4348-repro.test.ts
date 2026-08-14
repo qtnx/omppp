@@ -76,6 +76,7 @@ function makeRenderCtx(transcript: SessionContext): { ctx: InteractiveModeContex
 		viewSession: {
 			buildTranscriptSessionContext: () => transcript,
 			getToolByName: () => undefined,
+			hasBuiltInTool: () => true,
 			extensionRunner: undefined,
 			sessionManager: {
 				getEntries: vi.fn(() => []),
@@ -119,7 +120,7 @@ function cursorTurn(): AgentMessage[] {
 				type: "toolCall",
 				id: "tc-bash",
 				name: "bash",
-				arguments: { command: "ls -1", cwd: undefined, timeout: undefined },
+				arguments: { command: "ls -1" },
 			},
 		],
 		api: "cursor-agent",

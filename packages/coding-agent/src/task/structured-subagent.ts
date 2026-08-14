@@ -8,7 +8,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
-import { resolveAgentModelPatterns } from "../config/model-resolver";
+import {
+	resolveAgentModelPatterns,
+	resolveAgentModelSelection,
+	resolveConfiguredModelPatterns,
+} from "../config/model-resolver";
 import type { Skill } from "../extensibility/skills";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
@@ -20,6 +24,7 @@ import type { TaskEffort } from "../thinking";
 import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../tools/hub";
 import { buildOutputValidator } from "../tools/output-schema-validator";
+import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess } from "./executor";
 import {
@@ -128,7 +133,15 @@ export interface EffectiveSubagentPolicy {
 	agent: AgentDefinition;
 	effectiveAgent: AgentDefinition;
 	modelOverride?: string | string[];
+	/** Explicit pre-expansion model role alias selected for this run. */
+	modelRole?: string;
 	parentActiveModelPattern?: string;
+	/**
+	 * {@link modelOverride} came from `task.agentModelOverrides` (human config)
+	 * rather than the caller's per-spawn `model`. Lets the executor rank an
+	 * explicit `:level` in that selector above the caller's coarse `effort`.
+	 */
+	modelOverrideFromUserConfig?: boolean;
 	schema: StructuredSubagentSchemaResolution;
 	/** Resolved only for an explicit self-review request. */
 	reviewGate?: ReviewGateConfig;
@@ -352,14 +365,26 @@ export async function resolveEffectiveSubagentPolicy(
 		}
 	}
 	const agentModelOverrides = request.session.settings.get("task.agentModelOverrides");
+	const settingsModelOverride = agentModelOverrides[agentName];
 	const parentActiveModelPattern = request.session.getActiveModelString?.();
-	const modelOverride = resolveAgentModelPatterns({
-		settingsOverride: request.model ?? agentModelOverrides[agentName],
+	const modelResolution = {
+		requestModel: request.model,
+		settingsOverride: settingsModelOverride,
 		agentModel: effectiveAgent.model,
 		settings: request.session.settings,
 		activeModelPattern: parentActiveModelPattern,
 		fallbackModelPattern: request.session.getModelString?.(),
-	});
+	};
+	// Role identity and patterns come from one call so they cannot be derived
+	// from different sources: the expansion below discards the alias, and the
+	// child's inherited retry-fallback chain is keyed off the role.
+	const { patterns: modelOverride, role: modelRole } = resolveAgentModelSelection(modelResolution);
+	// A `task.agentModelOverrides` entry is the human's choice, so its explicit
+	// `:level` outranks the spawning model's coarse `effort`. A per-spawn
+	// `model` comes from the same caller as `effort`, so it does not.
+	const modelOverrideFromUserConfig =
+		request.model === undefined &&
+		resolveConfiguredModelPatterns(settingsModelOverride, request.session.settings).length > 0;
 	const isolationMode = request.session.settings.get("task.isolation.mode");
 	const isIsolated = request.isolation?.requested === true;
 	if (isIsolated && isolationMode === "none") {
@@ -374,7 +399,9 @@ export async function resolveEffectiveSubagentPolicy(
 		agent,
 		effectiveAgent,
 		modelOverride,
+		modelRole,
 		parentActiveModelPattern,
+		modelOverrideFromUserConfig,
 		schema,
 		reviewGate,
 		planMode,
@@ -502,14 +529,16 @@ function buildExecutorOptions(
 		getArtifactsDir: session.getArtifactsDir ?? (() => null),
 		getSessionId: session.getSessionId ?? (() => null),
 	};
-	const allowsMCP = !policy.planMode && !usesRestrictedResourceProfile(policy.effectiveAgent);
-	const enableMCP = allowsMCP && (session.enableMCP ?? true);
+	const restrictToolNames = policy.planMode || session.restrictToolNames === true;
+	const allowsMCP = !restrictToolNames && !usesRestrictedResourceProfile(policy.effectiveAgent);
+	const enableMCP = !restrictToolNames && allowsMCP && (session.enableMCP ?? true);
 	const baseContextFiles = session.contextFiles?.filter(
 		file => path.basename(file.path).toLowerCase() !== "agents.md",
 	);
 	return {
 		cwd: session.cwd,
 		additionalDirectories: session.additionalDirectories,
+		getApiKey: session.getApiKey,
 		agent: policy.effectiveAgent,
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),
@@ -524,7 +553,9 @@ function buildExecutorOptions(
 		invokedAt: request.invokedAt,
 		acquiredAt: request.acquiredAt,
 		modelOverride: policy.modelOverride,
+		modelRole: policy.modelRole,
 		parentActiveModelPattern: policy.parentActiveModelPattern,
+		modelSelectorFromUserConfig: policy.modelOverrideFromUserConfig,
 		thinkingLevel: policy.effectiveAgent.thinkingLevel,
 		effort: request.effort,
 		...(policy.schema.source === "none"
@@ -541,7 +572,7 @@ function buildExecutorOptions(
 		enableLsp: policy.enableLsp,
 		enableIrc: policy.enableIrc,
 		maxRuntimeMs: request.maxRuntimeMs,
-		restrictToolNames: policy.planMode,
+		restrictToolNames,
 		keepAlive: request.keepAlive,
 		signal: request.signal,
 		eventBus: session.eventBus,
@@ -557,8 +588,8 @@ function buildExecutorOptions(
 		workspaceTree: session.workspaceTree,
 		promptTemplates: session.promptTemplates,
 		rules: session.rules,
-		preloadedExtensionPaths: policy.planMode ? [] : session.extensionPaths,
-		preloadedCustomToolPaths: policy.planMode ? [] : session.customToolPaths,
+		preloadedExtensionPaths: restrictToolNames ? [] : session.extensionPaths,
+		preloadedCustomToolPaths: restrictToolNames ? [] : session.customToolPaths,
 		localProtocolOptions,
 		parentArtifactManager: session.getArtifactManager?.() ?? undefined,
 		parentHindsightSessionState: session.getHindsightSessionState?.(),
@@ -606,6 +637,7 @@ function buildFailureResult(
 			tokens: 0,
 			requests: 0,
 			modelOverride: policy.modelOverride,
+			modelRole: policy.modelRole,
 			error: message,
 		};
 	};
@@ -683,6 +715,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 	let mergeSummary = "";
 	let requiresRecoveryArtifacts = false;
 	let completedSuccessfully = false;
+	let deferredCleanup: Promise<void> | undefined;
 	try {
 		const id = await reserveStructuredSubagentId(request.session, {
 			...request.identity,
@@ -690,6 +723,9 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		});
 		const contextSnapshot = await writeContextSnapshot(request.session, policy, lease);
 		const baseOptions = buildExecutorOptions(request, policy, lease, id, contextSnapshot);
+		baseOptions.onCleanupDeferred = completion => {
+			deferredCleanup = completion;
+		};
 		baseOptions.planReference = await loadPlanReference(request, policy);
 		let latestProgress: AgentProgress | undefined;
 		const forwardImplementerProgress = baseOptions.onProgress;
@@ -769,9 +805,11 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 				gateRequest: { promptText: string; iteration: number },
 			) => {
 				const explicitModel = role === "review" ? gateConfig.reviewerModel : undefined;
+				const gateSettingsOverride = request.session.settings.get("task.agentModelOverrides")[gateAgent.name];
+				const configuredGateModel = resolveConfiguredModelPatterns(gateSettingsOverride, request.session.settings);
 				const gateModelOverride = resolveAgentModelPatterns({
 					settingsOverride:
-						explicitModel ?? request.session.settings.get("task.agentModelOverrides")[gateAgent.name],
+						configuredGateModel.length > 0 ? gateSettingsOverride : (explicitModel ?? gateSettingsOverride),
 					agentModel: explicitModel ?? gateAgent.model,
 					settings: request.session.settings,
 					activeModelPattern: policy.parentActiveModelPattern,
@@ -783,6 +821,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 					agent: gateAgent,
 					effectiveAgent: gateAgent,
 					modelOverride: gateModelOverride,
+					modelOverrideFromUserConfig: configuredGateModel.length > 0,
 					schema:
 						gateAgent.output === undefined
 							? { schema: undefined, source: "none", mode: "permissive", outputSchemaOverridesAgent: false }
@@ -962,8 +1001,18 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			(policy.isIsolated && (!policy.applyChanges || changesApplied === false || requiresRecoveryArtifacts));
 		const shouldCleanup = lease.temporary && !shouldRetainArtifacts;
 		if (shouldCleanup) {
-			await fs.rm(lease.artifactsDir, { recursive: true, force: true });
-			lease.unregister?.();
+			const cleanupArtifacts = async (): Promise<void> => {
+				await fs.rm(lease.artifactsDir, { recursive: true, force: true });
+				lease.unregister?.();
+			};
+			if (deferredCleanup) {
+				trackLateCleanup(deferredCleanup.then(cleanupArtifacts), {
+					resource: "artifacts",
+					artifactsDir: lease.artifactsDir,
+				});
+			} else {
+				await cleanupArtifacts();
+			}
 		}
 	}
 }

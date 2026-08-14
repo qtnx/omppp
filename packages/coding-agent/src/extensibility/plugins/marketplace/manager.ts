@@ -408,7 +408,7 @@ export class MarketplaceManager {
 	/**
 	 * Resolve plugin version from multiple sources:
 	 * 1. Catalog entry version (if set)
-	 * 2. Plugin manifest (.claude-plugin/plugin.json or package.json)
+	 * 2. Plugin manifest (.claude-plugin/plugin.json, Agent Plugins root plugin.json, or package.json)
 	 * 3. Git SHA from source (truncated to 7 chars)
 	 * 4. Fallback "0.0.0"
 	 */
@@ -419,6 +419,7 @@ export class MarketplaceManager {
 		// 2. Plugin manifest
 		for (const manifestPath of [
 			path.join(sourcePath, ".claude-plugin", "plugin.json"),
+			path.join(sourcePath, "plugin.json"),
 			path.join(sourcePath, "package.json"),
 		]) {
 			try {
@@ -439,14 +440,14 @@ export class MarketplaceManager {
 		return "0.0.0";
 	}
 
-	async uninstallPlugin(pluginId: string, scope?: "user" | "project"): Promise<void> {
+	/** Validates and removes a marketplace plugin, or only validates when `dryRun` is set. */
+	async uninstallPlugin(pluginId: string, scope?: "user" | "project", options?: { dryRun?: boolean }): Promise<void> {
 		const parsed = parsePluginId(pluginId);
 		if (!parsed) {
 			throw new Error(`Invalid plugin ID format: "${pluginId}". Expected "name@marketplace".`);
 		}
 
 		const { userEntries, projectEntries, userReg, projectReg } = await this.#findInBothRegistries(pluginId);
-
 		const inUser = userEntries && userEntries.length > 0;
 		const inProject = projectEntries && projectEntries.length > 0;
 
@@ -479,6 +480,10 @@ export class MarketplaceManager {
 		const targetReg = targetScope === "project" ? projectReg : userReg;
 		const registryPath = this.#registryPath(targetScope);
 		const packageNames = await this.#resolveInstalledPackageNames(targetEntries, parsed.name);
+
+		if (options?.dryRun) {
+			return;
+		}
 
 		const updatedReg = removeInstalledPlugin(targetReg, pluginId);
 		await writeInstalledPluginsRegistry(registryPath, updatedReg);

@@ -1,5 +1,5 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import { type } from "arktype";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import updateBriefDescription from "../prompts/tools/advisor-update-brief.md" with { type: "text" };
 import type { ToolSession } from "../tools";

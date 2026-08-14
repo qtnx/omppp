@@ -75,7 +75,9 @@ describe("MCP tool ownership with prefix-colliding server names", () => {
 		expect(names()).toHaveLength(MANY_TOOL_COUNT * 2);
 
 		const payloads: string[][] = [];
-		manager.setOnToolsChanged(tools => payloads.push(tools.map(t => t.name)));
+		manager.setOnToolsChanged(tools => {
+			payloads.push(tools.map(t => t.name));
+		});
 
 		// Same code path a reconnect takes: replace the named server's tools.
 		await manager.refreshServerTools(SHORT_SERVER);
@@ -96,7 +98,9 @@ describe("MCP tool ownership with prefix-colliding server names", () => {
 		await manager.connectServers({ [SHORT_SERVER]: fixtureConfig(), [COLON_SERVER]: fixtureConfig() }, {});
 		await toolsReady;
 		const payloads: string[][] = [];
-		manager.setOnToolsChanged(tools => payloads.push(tools.map(t => t.name)));
+		manager.setOnToolsChanged(tools => {
+			payloads.push(tools.map(t => t.name));
+		});
 
 		await manager.disconnectServer(COLON_SERVER);
 

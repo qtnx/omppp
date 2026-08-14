@@ -1,3 +1,4 @@
+import { type } from "@oh-my-pi/omptype";
 import {
 	type AgentTool,
 	type AgentToolContext,
@@ -6,7 +7,6 @@ import {
 	ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import effortDescription from "../prompts/tools/advisor-set-executor-effort.md" with { type: "text" };
 import { ToolError } from "../tools/tool-errors";
 

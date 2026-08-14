@@ -1,12 +1,12 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { type } from "arktype";
 import secretsDescription from "../prompts/tools/secrets.md" with { type: "text" };
 import type { VaultSecretMeta } from "../secrets/vault";
 import type { ToolSession } from ".";
 import { ToolError } from "./tool-errors";
 
 const secretsSchema = type({
-	op: type('"list"').describe("list stored secret names and masks"),
+	op: type("'list'").describe("list stored secret names and masks"),
 });
 
 export type SecretsParams = typeof secretsSchema.infer;

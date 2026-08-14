@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import { type Api, Effort, type Model, z } from "@oh-my-pi/pi-ai";
+import { type Api, Effort, type Model } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -82,7 +83,7 @@ describe("AgentSession reasoning slide", () => {
 		const target = modelOrThrow("claude-sonnet-4-6");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
-		const recordToolSchema = z.object({});
+		const recordToolSchema = type({});
 		const recordTool: AgentTool<typeof recordToolSchema, undefined> = {
 			name: "record",
 			label: "Record",
@@ -113,7 +114,7 @@ describe("AgentSession reasoning slide", () => {
 		});
 
 		const calls: Array<{ model: string; hasNudge: boolean }> = [];
-		const nudgeMarker = "complete plan in your NEXT reply";
+		const nudgeMarker = "write complete plan";
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: {
@@ -132,6 +133,7 @@ describe("AgentSession reasoning slide", () => {
 					if (typeof content === "string") return content.includes(nudgeMarker);
 					return content.some(block => block.type === "text" && block.text.includes(nudgeMarker));
 				});
+
 				calls.push({ model: `${model.provider}/${model.id}`, hasNudge });
 				return mock.stream(model, context, options);
 			},
@@ -168,7 +170,7 @@ describe("AgentSession reasoning slide", () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
-		const recordToolSchema = z.object({});
+		const recordToolSchema = type({});
 		const recordTool: AgentTool<typeof recordToolSchema, undefined> = {
 			name: "record",
 			label: "Record",
@@ -237,7 +239,7 @@ describe("AgentSession reasoning slide", () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
-		const recordToolSchema = z.object({});
+		const recordToolSchema = type({});
 		const recordTool: AgentTool<typeof recordToolSchema, undefined> = {
 			name: "record",
 			label: "Record",
@@ -290,7 +292,7 @@ describe("AgentSession reasoning slide", () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
-		const readSchema = z.object({});
+		const readSchema = type({});
 		const lookTool: AgentTool<typeof readSchema, undefined> = {
 			name: "record",
 			label: "Record",
@@ -300,7 +302,7 @@ describe("AgentSession reasoning slide", () => {
 				return { content: [{ type: "text", text: "ok" }], details: undefined };
 			},
 		};
-		const bashSchema = z.object({});
+		const bashSchema = type({});
 		const bashTool: AgentTool<typeof bashSchema, undefined> = {
 			name: "bash",
 			label: "Bash",
@@ -310,7 +312,7 @@ describe("AgentSession reasoning slide", () => {
 				return { content: [{ type: "text", text: "ran" }], details: undefined };
 			},
 		};
-		const writeSchema = z.object({});
+		const writeSchema = type({});
 		const writeTool: AgentTool<typeof writeSchema, undefined> = {
 			name: "write",
 			label: "Write",
@@ -374,7 +376,7 @@ describe("AgentSession reasoning slide", () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
-		const recordToolSchema = z.object({});
+		const recordToolSchema = type({});
 		const recordTool: AgentTool<typeof recordToolSchema, undefined> = {
 			name: "record",
 			label: "Record",
@@ -438,7 +440,7 @@ describe("AgentSession reasoning slide", () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
-		const recordToolSchema = z.object({});
+		const recordToolSchema = type({});
 		const recordTool: AgentTool<typeof recordToolSchema, undefined> = {
 			name: "record",
 			label: "Record",
@@ -455,7 +457,7 @@ describe("AgentSession reasoning slide", () => {
 		const mock = createMockModel({
 			responses: [step("t1"), step("t2"), { content: ["done"] }],
 		});
-		const checklistMarker = "grep for every other call site";
+		const checklistMarker = "grep every other call site";
 		const calls: Array<{ model: string; hasChecklist: boolean }> = [];
 		const agent = new Agent({
 			getApiKey: () => "test-key",

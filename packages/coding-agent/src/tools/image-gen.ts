@@ -1,6 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { type ApiKey, type FetchImpl, getEnvApiKey, type Model, withAuth } from "@oh-my-pi/pi-ai";
+import { type } from "@oh-my-pi/omptype";
+import { type ApiKey, type FetchImpl, getEnvApiKey, getOpenRouterHeaders, type Model, withAuth } from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import {
 	CODEX_BASE_URL,
@@ -18,22 +19,27 @@ import {
 	ptree,
 	readSseJson,
 	Snowflake,
+	USER_AGENT,
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
-import packageJson from "../../package.json" with { type: "json" };
 import { isAuthenticated, type ModelRegistry } from "../config/model-registry";
 import { settings } from "../config/settings";
 import type { CustomTool } from "../extensibility/custom-tools/types";
-import { ohMyPiXAIUserAgent, resolveXAIHttpCredentials } from "../lib/xai-http";
+import { resolveXAIHttpCredentials } from "../lib/xai-http";
 import imageGenDescription from "../prompts/tools/image-gen.md" with { type: "text" };
-import { AUTO_IMAGE_PROVIDER_ORDER, type ImageProvider, isImageProviderId } from "./image-providers";
+import {
+	AUTO_IMAGE_PROVIDER_ORDER,
+	DEFAULT_XAI_IMAGE_MODEL,
+	type ImageProvider,
+	isImageProviderId,
+	isXaiImageModel,
+	type XaiImageModel,
+} from "./image-providers";
 import { resolveReadPath } from "./path-utils";
 
 const DEFAULT_MODEL = "gemini-3-pro-image-preview";
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-3-pro-image-preview";
 const DEFAULT_ANTIGRAVITY_MODEL = "gemini-3-pro-image";
-const DEFAULT_XAI_IMAGE_MODEL = "grok-imagine-image";
 const IMAGE_TIMEOUT = 3 * 60 * 1000; // 3 minutes
 const MAX_IMAGE_SIZE = 35 * 1024 * 1024;
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -451,6 +457,14 @@ export function setImageProviderOrder(providers: readonly string[]): void {
 	configuredImageProviderOrder = providers.filter(isImageProviderId);
 }
 
+/** Configured xAI image model set via `providers.xaiImageModel`. */
+let configuredXaiImageModel: XaiImageModel = DEFAULT_XAI_IMAGE_MODEL;
+
+/** Set the xAI image model from settings; an unknown id falls back to the default tier. */
+export function setXaiImageModel(model: unknown): void {
+	configuredXaiImageModel = isXaiImageModel(model) ? model : DEFAULT_XAI_IMAGE_MODEL;
+}
+
 /**
  * Retained SDK compatibility entrypoint. It translates a legacy single
  * provider choice into the authoritative ordered preference state.
@@ -576,6 +590,13 @@ function resolveDefaultCodexImageModel(modelRegistry: ModelRegistry): Model | un
  * Codex subscription credentials require a connected account claim. API keys
  * under the provider cannot use the ChatGPT image backend, so leave them for
  * the remaining providers instead of treating them as usable credentials.
+ *
+ * Resolution is deliberately independent of the session's model: the only
+ * model-derived preference is that a session ALREADY chatting with a Codex
+ * hosted-image model keeps generating through that exact model (same account,
+ * same base URL). Every other session — Anthropic, Gemini, xAI, OpenRouter,
+ * local — resolves the default Codex image model instead of being denied the
+ * provider.
  */
 async function findCodexSubscriptionImageCredentials(
 	modelRegistry: ModelRegistry | undefined,
@@ -583,12 +604,12 @@ async function findCodexSubscriptionImageCredentials(
 	sessionId?: string,
 ): Promise<ImageApiKey | null> {
 	if (!modelRegistry) return null;
-	if (isOpenAIHostedImageModel(activeModel) && getOpenAIHostedImageProvider(activeModel) === "openai-codex") {
-		return null;
-	}
 	const token = await modelRegistry.getApiKeyForProvider("openai-codex", sessionId);
 	if (!token || !getCodexAccountId(token)) return null;
-	const model = resolveDefaultCodexImageModel(modelRegistry);
+	const model =
+		isOpenAIHostedImageModel(activeModel) && getOpenAIHostedImageProvider(activeModel) === "openai-codex"
+			? activeModel
+			: resolveDefaultCodexImageModel(modelRegistry);
 	if (!model) return null;
 	const apiKey = await modelRegistry.getApiKey(model, sessionId);
 	if (!isAuthenticated(apiKey) || !getCodexAccountId(apiKey)) return null;
@@ -598,8 +619,9 @@ async function findCodexSubscriptionImageCredentials(
 function activeImageProvider(model: Model | undefined): Exclude<ImageProviderPreference, "auto"> | null {
 	switch (model?.provider) {
 		case "openai":
-		case "openai-codex":
 			return "openai";
+		case "openai-codex":
+			return "openai-codex";
 		case "google-antigravity":
 			return "antigravity";
 		case "xai":
@@ -623,10 +645,14 @@ function imageProviderOrder(activeModel: Model | undefined, requested?: ImagePro
 		providers.push(provider);
 	};
 
-	// Per-request provider wins, then the configured priority list, then the
-	// active session's provider, then the built-in auto order.
+	// Per-request provider wins, then the configured priority list, then a
+	// connected Codex subscription, then the active session's provider, then the
+	// built-in auto order. Codex outranks the session provider on purpose: it is
+	// key-free and model-agnostic, so the model a session happens to chat with
+	// must never shadow it (an Anthropic/Gemini session still generates images).
 	if (requested !== undefined && requested !== "auto") add(requested);
 	for (const provider of configuredImageProviderOrder) add(provider);
+	add("openai-codex");
 	add(activeImageProvider(activeModel));
 	for (const provider of AUTO_IMAGE_PROVIDER_ORDER) add(provider);
 	return providers;
@@ -895,7 +921,7 @@ function buildOpenAIImageHeaders(model: Model, apiKey: string, sessionId: string
 		}
 		headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
 		headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
-		headers.set("User-Agent", `pi/${packageJson.version} (${os.platform()} ${os.release()}; ${os.arch()})`);
+		headers.set("User-Agent", USER_AGENT);
 		if (sessionId) {
 			headers.set(OPENAI_HEADERS.CONVERSATION_ID, sessionId);
 			headers.set(OPENAI_HEADERS.SESSION_ID, sessionId);
@@ -1132,7 +1158,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 								: provider === "openrouter"
 									? DEFAULT_OPENROUTER_MODEL
 									: provider === "xai"
-										? DEFAULT_XAI_IMAGE_MODEL
+										? configuredXaiImageModel
 										: DEFAULT_MODEL;
 					const resolvedModel = provider === "openrouter" ? resolveOpenRouterModel(model) : model;
 					if (
@@ -1387,7 +1413,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 									headers: {
 										Authorization: `Bearer ${key}`,
 										"Content-Type": "application/json",
-										"User-Agent": ohMyPiXAIUserAgent(),
+										"User-Agent": USER_AGENT,
 									},
 									body: JSON.stringify(xaiBody),
 									signal: requestSignal,
@@ -1477,9 +1503,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 									headers: {
 										"Content-Type": "application/json",
 										Authorization: `Bearer ${key}`,
-										"HTTP-Referer": "https://omp.sh/",
-										"X-OpenRouter-Title": "Oh-My-Pi",
-										"X-OpenRouter-Categories": "cli-agent",
+										...getOpenRouterHeaders(),
 									},
 									body: JSON.stringify(requestBody),
 									signal: requestSignal,

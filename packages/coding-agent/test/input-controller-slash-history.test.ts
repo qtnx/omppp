@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { isQueuedMessageList, splitQueuedMessages } from "@oh-my-pi/pi-coding-agent/modes/queue-input";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
@@ -29,6 +28,7 @@ function makeCtx(isStreaming = false) {
 	const handleMCPCommand = vi.fn(async () => {});
 	const followUp = vi.fn(async (_text: string, _images?: ImageContent[]) => {});
 	const steer = vi.fn(async (_text: string, _images?: ImageContent[]) => {});
+	const prompt = vi.fn(async () => false);
 	const onInputCallback = vi.fn();
 	let text = "";
 	const editor = {
@@ -57,6 +57,7 @@ function makeCtx(isStreaming = false) {
 		extensionRunner: undefined;
 		followUp: typeof followUp;
 		steer: typeof steer;
+		prompt: typeof prompt;
 		secretVault?: SecretsCommandVault;
 		registerRuntimeSecrets: (entries: SecretEntry[]) => void;
 	} = {
@@ -66,13 +67,13 @@ function makeCtx(isStreaming = false) {
 		extensionRunner: undefined,
 		followUp,
 		steer,
+		prompt,
 		registerRuntimeSecrets: entries => registeredSecrets.push(...entries),
 	};
 	const ctx = {
 		editor,
 		session,
-		sessionManager: { getCwd: () => "/tmp/input-controller-slash-history" },
-		settings: Settings.isolated(),
+		sessionManager: { getCwd: () => "/test" },
 		focusedAgentId: undefined,
 		collabGuest: undefined,
 		handleHotkeysCommand: vi.fn(),
@@ -104,7 +105,7 @@ function makeCtx(isStreaming = false) {
 		onInputCallback,
 		handleMCPCommand,
 		showStatus: ctx.showStatus,
-		registeredSecrets,
+		prompt,
 	};
 }
 
@@ -147,9 +148,10 @@ describe("input controller — slash command history (#3148)", () => {
 		expect(addToHistory).not.toHaveBeenCalled();
 	});
 
-	it("handles /secrets add locally without queuing its plaintext argument", async () => {
-		const { addToHistory, ctx, editor, followUp, onInputCallback, session, showStatus, steer } = makeCtx();
+	it("stores /secrets add without retaining the plaintext or forwarding it to the model", async () => {
+		const { ctx, editor, session, addToHistory, followUp, steer, onInputCallback, prompt, showStatus } = makeCtx();
 		const rawValue = "super-secret-value-1234";
+		const set = vi.fn(async () => "API_TOKEN");
 		session.secretVault = {
 			list: () => [
 				{
@@ -157,21 +159,45 @@ describe("input controller — slash command history (#3148)", () => {
 					mask: "su…1234",
 					length: rawValue.length,
 					source: "user",
-					createdAt: "2026-07-31T00:00:00.000Z",
+					createdAt: "2026-01-01T00:00:00.000Z",
 				},
 			],
-			set: async name => name,
+			set,
 			remove: async () => false,
 		};
 		controllerFor(ctx);
 
 		await editor.onSubmit?.(`/secrets add API_TOKEN ${rawValue}`);
 
+		expect(set).toHaveBeenCalledWith("API_TOKEN", rawValue, "user");
 		expect(showStatus).toHaveBeenCalledWith("Stored API_TOKEN: su…1234");
+		expect(addToHistory).not.toHaveBeenCalled();
 		expect(onInputCallback).not.toHaveBeenCalled();
 		expect(steer).not.toHaveBeenCalled();
 		expect(followUp).not.toHaveBeenCalled();
-		expect(addToHistory).not.toHaveBeenCalled();
+		expect(prompt).not.toHaveBeenCalled();
+	});
+
+	it("executes extension commands without rendering them as user prompts or retaining image drafts", async () => {
+		const { ctx, editor, addToHistory, onInputCallback, prompt } = makeCtx();
+		Object.defineProperty(ctx.session, "extensionRunner", {
+			value: {
+				getCommand: (name: string) => (name === "id" ? { name } : undefined),
+				hasHandlers: () => false,
+			},
+		});
+		const image: ImageContent = { type: "image", data: "image-data", mimeType: "image/png" };
+		editor.pendingImages = [image];
+		editor.pendingImageLinks = ["file:///draft.png"];
+		controllerFor(ctx);
+
+		await editor.onSubmit?.("/id");
+
+		expect(prompt).toHaveBeenCalledWith("/id", { images: [image] });
+		expect(addToHistory).toHaveBeenCalledWith("/id");
+		expect(onInputCallback).not.toHaveBeenCalled();
+		expect(editor.pendingImages).toEqual([]);
+		expect(editor.pendingImageLinks).toEqual([]);
 	});
 
 	it("routes /queue through the yield-only follow-up queue while streaming", async () => {

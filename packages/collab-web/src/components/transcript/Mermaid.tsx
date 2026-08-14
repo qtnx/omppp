@@ -61,13 +61,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: str
 
 	if (svg) {
 		return (
-			<figure
-				className="tr-mermaid"
-				role="img"
-				aria-label="Diagram"
-				// biome-ignore lint/security/noDangerouslySetInnerHtml: mermaid renders sanitized SVG under securityLevel "strict".
-				dangerouslySetInnerHTML={{ __html: svg }}
-			/>
+			<figure className="tr-mermaid" role="img" aria-label="Diagram" dangerouslySetInnerHTML={{ __html: svg }} />
 		);
 	}
 	return (

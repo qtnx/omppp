@@ -929,6 +929,51 @@ install_superpowers_skill() {
     fi
 }
 
+# Refresh the herdr `omp` entrypoint, but only when the user already opted in.
+#
+# `ompx herdr install` creates `<dir>/omp -> <dir>/ompx` so herdr's built-in
+# `omp` agent kind matches the pane's foreground process name (`herdr agent
+# prompt` refuses a pane whose process is named `ompx`). A symlink resolves by
+# path, so it survives an in-place binary swap; it only goes stale when ompx
+# lands in a different directory, which is what this repoints.
+#
+# It never creates the link: the `omp` name belongs to upstream oh-my-pi, and
+# claiming it unasked would hijack a real installation.
+refresh_herdr_entrypoint() {
+    if [ "${OMPX_INSTALL_SKIP_HERDR_ENTRYPOINT:-}" = "1" ]; then
+        return
+    fi
+
+    ompx_cmd=""
+    if [ -x "${INSTALL_DIR}/ompx" ]; then
+        ompx_cmd="${INSTALL_DIR}/ompx"
+    elif command -v ompx >/dev/null 2>&1; then
+        ompx_cmd="$(command -v ompx)"
+    fi
+
+    if [ -z "$ompx_cmd" ]; then
+        return
+    fi
+
+    link_path="$(dirname "$ompx_cmd")/omp"
+    if [ ! -L "$link_path" ]; then
+        return
+    fi
+
+    # Only touch a link that points at an ompx binary, or one left dangling by a
+    # move. Anything else is someone else's `omp`.
+    link_dest="$(readlink "$link_path" 2>/dev/null || echo "")"
+    if [ -e "$link_path" ] && [ "$(basename "$link_dest")" != "ompx" ]; then
+        return
+    fi
+
+    if "$ompx_cmd" herdr install --force >/dev/null 2>&1; then
+        echo "✓ Refreshed herdr 'omp' entrypoint at ${link_path}"
+    else
+        echo "Warning: could not refresh the herdr 'omp' entrypoint at ${link_path}; run 'ompx herdr install --force'." >&2
+    fi
+}
+
 
 # Install via bun
 install_via_bun() {
@@ -975,6 +1020,7 @@ install_via_bun() {
     migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
+    refresh_herdr_entrypoint
     echo ""
     echo "✓ Installed OMPx via bun"
     echo "Run 'ompx' to get started!"
@@ -1046,14 +1092,35 @@ install_binary() {
         curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$BINARY_URL" -o "$TMP_BINARY"
     fi
     verify_release_checksum "$BINARY" "$TMP_BINARY" "$LATEST" "$TMP_CHECKSUMS"
+    chmod +x "$TMP_BINARY"
+
+    # The musl release can download successfully yet fail at startup when its
+    # dynamic libstdc++/libgcc dependencies are absent. Verify before replacing
+    # an existing installation, and explain the required runtime packages.
+    if ! SMOKE_OUTPUT="$("$TMP_BINARY" --version 2>&1)"; then
+        echo ""
+        echo "✗ ompx was downloaded but cannot start:"
+        echo "$SMOKE_OUTPUT" | sed 's/^/    /'
+        if [ "$PLATFORM" = "linux-musl" ]; then
+            echo ""
+            echo "The musl build links libstdc++/libgcc dynamically. Install them, then re-run 'ompx':"
+            if command -v apk >/dev/null 2>&1; then
+                echo "    apk add libstdc++ libgcc"
+            else
+                echo "    (install the libstdc++ and libgcc runtime packages for your distro)"
+            fi
+        fi
+        exit 1
+    fi
+
     mv "$TMP_BINARY" "${INSTALL_DIR}/ompx"
-    chmod +x "${INSTALL_DIR}/ompx"
     install_standard_config
     run_config_update "${INSTALL_DIR}/ompx"
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
+    refresh_herdr_entrypoint
     echo ""
     echo "✓ Installed OMPx to ${INSTALL_DIR}/ompx"
 

@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import {
 	type AgentTool,
 	type AgentToolResult,
@@ -11,21 +12,36 @@ import { type Api, Effort, type ImageContent, type Model, type TextContent } fro
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { prompt } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
-import { type } from "arktype";
 import { extractTextContent } from "../commit/utils";
-import { formatModelString, getModelMatchPreferences, resolveModelFromString } from "../config/model-resolver";
+import {
+	formatModelString,
+	resolveConfiguredModelPatterns,
+	resolveModelOverrideWithAuthFallback,
+} from "../config/model-resolver";
+import { formatModelRoleAlias } from "../config/model-roles";
 import superReviewImageMaterialPrompt from "../prompts/system/super-review-image-material.md" with { type: "text" };
 import superReviewSnapcompactNote from "../prompts/system/super-review-snapcompact-note.md" with { type: "text" };
 import superReviewSystemPrompt from "../prompts/system/super-review-system.md" with { type: "text" };
 import superReviewUserPrompt from "../prompts/system/super-review-user.md" with { type: "text" };
 import superReviewDescription from "../prompts/tools/super-review.md" with { type: "text" };
+import {
+	type ConfiguredThinkingLevel,
+	concreteThinkingLevel,
+	resolveThinkingLevelForModel,
+	toReasoningEffort,
+} from "../thinking";
 import type { ToolSession } from ".";
-import { resolveAuthGatewayBearer, routeToolOneTurnThroughAuthGateway } from "./one-turn-auth-gateway";
 import { formatPathRelativeToCwd, parseLineRanges } from "./path-utils";
 import { ToolError } from "./tool-errors";
 
-const SUPER_REVIEW_MODEL = "tnx/super";
+const SUPER_REVIEW_ROLE = formatModelRoleAlias("super_review");
+const SUPER_REVIEW_MAX_TOKENS = 8_192;
 const MAX_FILE_BYTES = 2_000_000;
+
+function sessionIdOf(session: ToolSession): string | undefined {
+	return session.getSessionId?.() ?? undefined;
+}
+
 const MAX_TOTAL_BYTES = 4_000_000;
 const MIN_SNAPCOMPACT_TOKENS = 3000;
 const SNAPCOMPACT_SAVINGS_MARGIN = 0.9;
@@ -196,16 +212,39 @@ async function prepareAttachments(
 	return attachments;
 }
 
-function resolveSuperModel(session: ToolSession): Model<Api> {
+async function resolveSuperReviewRequest(session: ToolSession): Promise<{
+	model: Model<Api>;
+	reasoning: Effort | undefined;
+}> {
 	const registry = session.modelRegistry;
 	if (!registry) throw new ToolError("super_review requires a model registry.");
-	const available = registry.getAvailable();
-	const model = resolveModelFromString(SUPER_REVIEW_MODEL, available, getModelMatchPreferences(session.settings));
-	if (!model) throw new ToolError(`super_review could not resolve required model ${SUPER_REVIEW_MODEL}.`);
-	return model;
+	const patterns = resolveConfiguredModelPatterns(SUPER_REVIEW_ROLE, session.settings);
+	if (patterns.length === 0) {
+		throw new ToolError(
+			"super_review could not resolve a model. Configure modelRoles.super_review or keep the default fallback chain.",
+		);
+	}
+	const resolved = await resolveModelOverrideWithAuthFallback(
+		patterns,
+		undefined,
+		registry,
+		session.settings,
+		sessionIdOf(session),
+	);
+	if (!resolved.model) {
+		throw new ToolError(
+			`super_review could not resolve a model from ${patterns.join(", ")}. Override modelRoles.super_review.`,
+		);
+	}
+	return { model: resolved.model, reasoning: reasoningForSelection(resolved.model, resolved.thinkingLevel) };
 }
 
-function reasoningForModel(model: Model<Api>): Effort | undefined {
+function reasoningForSelection(
+	model: Model<Api>,
+	thinkingLevel: ConfiguredThinkingLevel | undefined,
+): Effort | undefined {
+	const configured = toReasoningEffort(resolveThinkingLevelForModel(model, concreteThinkingLevel(thinkingLevel)));
+	if (configured !== undefined) return configured;
 	if (!model.reasoning) return undefined;
 	const efforts = getSupportedEfforts(model);
 	if (efforts.length === 0) return undefined;
@@ -275,7 +314,7 @@ async function runSuperReview(
 	session: ToolSession,
 	signal?: AbortSignal,
 ): Promise<{ text: string; details: SuperReviewDetails }> {
-	const model = routeToolOneTurnThroughAuthGateway(resolveSuperModel(session));
+	const { model, reasoning } = await resolveSuperReviewRequest(session);
 	const registry = session.modelRegistry;
 	if (!registry) throw new ToolError("super_review requires a model registry.");
 
@@ -295,9 +334,10 @@ async function runSuperReview(
 			tools: undefined,
 		},
 		{
-			apiKey: resolveAuthGatewayBearer(),
+			apiKey: registry.resolver(model, sessionIdOf(session)),
 			signal,
-			reasoning: reasoningForModel(model),
+			maxTokens: SUPER_REVIEW_MAX_TOKENS,
+			reasoning,
 			toolChoice: undefined,
 		},
 		{ telemetry, oneshotKind: "super_review" },
@@ -322,7 +362,7 @@ async function runSuperReview(
 export class SuperReviewTool implements AgentTool<typeof superReviewSchema, SuperReviewDetails> {
 	readonly name = "super_review";
 	readonly label = "Super Review";
-	readonly summary = "Run one high-intelligence review call on tnx/super";
+	readonly summary = "Run one high-intelligence review call on the configured super_review model chain";
 	readonly description = prompt.render(superReviewDescription);
 	readonly parameters = superReviewSchema;
 	readonly loadMode = "essential";

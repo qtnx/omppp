@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as http2 from "node:http2";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { streamCursor } from "@oh-my-pi/pi-ai/providers/cursor";
-import type { Context, Model } from "@oh-my-pi/pi-ai/types";
+import type { Context, CursorToolResultHandler, Model, ToolResultMessage } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import {
 	AgentServerMessageSchema,
@@ -10,7 +10,11 @@ import {
 	InteractionUpdateSchema,
 	ReadArgsSchema,
 	TextDeltaUpdateSchema,
+	ToolCallSchema,
+	ToolCallStartedUpdateSchema,
 	TurnEndedUpdateSchema,
+	UpdateTodosArgsSchema,
+	UpdateTodosToolCallSchema,
 } from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
 
 const CONNECT_END_STREAM_FLAG = 0b00000010;
@@ -23,7 +27,8 @@ type Scenario =
 	| { kind: "hang-after-turn" }
 	| { kind: "exec-in-final-chunk"; responseFinished: PromiseWithResolvers<void> }
 	| { kind: "exec-then-transport-error"; responseFinished: PromiseWithResolvers<void> }
-	| { kind: "exec-then-hang" };
+	| { kind: "exec-then-hang" }
+	| { kind: "todo-start-then-death" };
 
 let server: http2.Http2Server | undefined;
 const sessions = new Set<http2.Http2Session>();
@@ -104,6 +109,36 @@ function execAndTurnEndedFrame(): Buffer {
 	return Buffer.concat([execRequestFrame(), turnEndedFrame()]);
 }
 
+/**
+ * A native `update_todos` call announcement. Cursor runs these server-side, so
+ * the block is stamped resolved at start and only its `toolCallCompleted`
+ * frame pairs a result — nothing downstream synthesizes one.
+ */
+function todoStartFrame(): Buffer {
+	const message = create(AgentServerMessageSchema, {
+		message: {
+			case: "interactionUpdate",
+			value: create(InteractionUpdateSchema, {
+				message: {
+					case: "toolCallStarted",
+					value: create(ToolCallStartedUpdateSchema, {
+						callId: "todo-envelope",
+						toolCall: create(ToolCallSchema, {
+							tool: {
+								case: "updateTodosToolCall",
+								value: create(UpdateTodosToolCallSchema, {
+									args: create(UpdateTodosArgsSchema, { todos: [] }),
+								}),
+							},
+						}),
+					}),
+				},
+			}),
+		},
+	});
+	return frameConnectMessage(toBinary(AgentServerMessageSchema, message));
+}
+
 async function startServer(): Promise<string> {
 	server = http2.createServer();
 	server.on("session", session => {
@@ -146,6 +181,16 @@ async function startServer(): Promise<string> {
 
 		if (scenario.kind === "end-before-turn") {
 			stream.write(textDeltaFrame("partial"));
+			stream.end();
+			return;
+		}
+
+		if (scenario.kind === "todo-start-then-death") {
+			// The server announces a native todo call, then the stream dies
+			// without `turnEnded` and without the call's completion frame. This
+			// is the real interrupted-call shape: `settleH2` rejects, so the
+			// success-path flush never runs.
+			stream.write(todoStartFrame());
 			stream.end();
 			return;
 		}
@@ -226,8 +271,15 @@ const context: Context = {
 	messages: [{ role: "user", content: "terminal lifecycle", timestamp: 1 }],
 };
 
-async function collectStream(model: Model<"cursor-agent">, options?: { signal?: AbortSignal }) {
-	const stream = streamCursor(model, context, { apiKey: "test-token", signal: options?.signal });
+async function collectStream(
+	model: Model<"cursor-agent">,
+	options?: { signal?: AbortSignal; onToolResult?: CursorToolResultHandler },
+) {
+	const stream = streamCursor(model, context, {
+		apiKey: "test-token",
+		signal: options?.signal,
+		onToolResult: options?.onToolResult,
+	});
 	const eventTypes: string[] = [];
 	for await (const event of stream) {
 		eventTypes.push(event.type);
@@ -301,6 +353,37 @@ describe("Cursor terminal lifecycle after turnEnded", () => {
 		expect(eventTypes).not.toContain("done");
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toContain("Cursor stream ended before turnEnded");
+	});
+
+	it("pairs and closes a server-owned call the dying stream left open", async () => {
+		// The failure this guards: a native todo block is stamped resolved at
+		// start, so `agent-loop.ts` synthesizes no placeholder for it and only
+		// its completion frame pairs a result. When the transport dies first the
+		// call went unpaired and its card stayed animating — and
+		// `buildSessionContext` strips a dangling call, so the interaction
+		// vanished from every rebuilt transcript.
+		//
+		// This must run against the real terminal-error path: `settleH2` rejects
+		// on a stream that ends before `turnEnded`, so the success path's flush
+		// is never reached.
+		scenario = { kind: "todo-start-then-death" };
+		const baseUrl = await startServer();
+		const paired: ToolResultMessage[] = [];
+		const { eventTypes, result } = await collectStream(makeModel(baseUrl), {
+			onToolResult: toolResult => void paired.push(toolResult),
+		});
+
+		expect(eventTypes.at(-1)).toBe("error");
+		expect(result.stopReason).toBe("error");
+
+		const call = result.content.find(block => block.type === "toolCall");
+		if (!call) throw new Error("expected the announced todo call in the output");
+		// Closed, so no live card is left animating.
+		expect(eventTypes).toContain("toolcall_end");
+		// Paired, so replay keeps the interaction.
+		expect(paired).toHaveLength(1);
+		expect(paired[0].toolCallId).toBe(call.id);
+		expect(paired[0].isError).toBe(true);
 	});
 
 	it("aborts without emitting done when the signal fires", async () => {

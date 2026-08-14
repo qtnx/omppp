@@ -61,7 +61,7 @@ describe("musl release artifacts", () => {
 		await fs.mkdir(binDir);
 		await writeExecutable(binDir, "uname", '#!/bin/sh\n[ "$1" = "-s" ] && echo Linux || echo x86_64\n');
 		await writeExecutable(binDir, "ldd", "#!/bin/sh\necho 'musl libc (x86_64)'\n");
-		const binaryContent = "binary";
+		const binaryContent = "#!/bin/sh\nexit 0\n";
 		const binaryChecksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		await writeExecutable(
 			binDir,
@@ -90,6 +90,6 @@ esac
 
 		expect(result.exitCode, result.stderr).toBe(0);
 		expect(result.stdout).toContain("Downloading ompx-linux-musl-x64...");
-		expect(await Bun.file(path.join(installDir, "ompx")).text()).toBe("binary");
+		expect(await Bun.file(path.join(installDir, "ompx")).text()).toBe(binaryContent);
 	});
 });

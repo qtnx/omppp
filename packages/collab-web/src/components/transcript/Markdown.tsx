@@ -1,4 +1,4 @@
-import { Marked, type Token, type Tokens } from "marked";
+import { Marked, type Token, type Tokens } from "@oh-my-pi/pi-utils/marked";
 import type { ReactNode } from "react";
 import { memo, useMemo } from "react";
 import { MermaidDiagram } from "./Mermaid";

@@ -1,5 +1,5 @@
 /** Type definitions for the workflow orchestration subsystem. */
-import * as z from "zod/v4";
+import { type } from "@oh-my-pi/omptype";
 import type { AgentProgress, AgentSource } from "../task/types";
 
 /** EventBus channel for live workflow progress frames. */
@@ -30,14 +30,14 @@ export interface WorkflowAgentOpts {
 	agentType?: string;
 }
 
-export const workflowSchema = z.object({
-	script: z.string().optional().describe("Inline JavaScript workflow script."),
-	scriptPath: z.string().optional().describe("Path to a persisted workflow script (overrides `script`)."),
-	name: z.string().optional().describe("Name of a saved/bundled workflow to run."),
-	args: z.unknown().optional().describe("Value exposed to the script as the `args` global."),
-	resumeFromRunId: z.string().optional().describe("Resume from a previous run id (same session)."),
+export const workflowSchema = type({
+	"script?": type("string").describe("Inline JavaScript workflow script."),
+	"scriptPath?": type("string").describe("Path to a persisted workflow script (overrides `script`)."),
+	"name?": type("string").describe("Name of a saved/bundled workflow to run."),
+	"args?": type("unknown").describe("Value exposed to the script as the `args` global."),
+	"resumeFromRunId?": type("string").describe("Resume from a previous run id (same session)."),
 });
-export type WorkflowParams = z.infer<typeof workflowSchema>;
+export type WorkflowParams = typeof workflowSchema.infer;
 
 export type WorkflowAgentState = "start" | "done" | "error" | "cached";
 

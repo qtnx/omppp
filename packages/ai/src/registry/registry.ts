@@ -1,4 +1,5 @@
 import type { KnownProvider } from "@oh-my-pi/pi-catalog";
+import { aiandProvider } from "./aiand";
 import { aimlApiProvider } from "./aimlapi";
 import { alibabaCodingPlanProvider } from "./alibaba-coding-plan";
 import { alibabaTokenPlanProvider } from "./alibaba-token-plan";
@@ -6,17 +7,20 @@ import { amazonBedrockProvider } from "./amazon-bedrock";
 import { anthropicProvider } from "./anthropic";
 import { azureProvider } from "./azure";
 import { basetenProvider } from "./baseten";
+import { bedrockMantleProvider } from "./bedrock-mantle";
 import { cerebrasProvider } from "./cerebras";
 import { cloudflareAiGatewayProvider } from "./cloudflare-ai-gateway";
 import { coreWeaveProvider } from "./coreweave";
 import { cursorProvider } from "./cursor";
 import { deepseekProvider } from "./deepseek";
 import { devinProvider } from "./devin";
+import { exaProvider } from "./exa";
 import { firepassProvider } from "./firepass";
 import { fireworksProvider } from "./fireworks";
 import { githubCopilotProvider } from "./github-copilot";
 import { gitlabDuoProvider } from "./gitlab-duo";
 import { gitLabDuoWorkflowProvider } from "./gitlab-duo-workflow";
+import { gmiCloudProvider } from "./gmi-cloud";
 import { googleProvider } from "./google";
 import { googleAntigravityProvider } from "./google-antigravity";
 import { googleGeminiCliProvider } from "./google-gemini-cli";
@@ -51,6 +55,8 @@ import { perplexityProvider } from "./perplexity";
 import { qianfanProvider } from "./qianfan";
 import { qwenPortalProvider } from "./qwen-portal";
 import { sakanaProvider } from "./sakana";
+import { siliconflowProvider } from "./siliconflow";
+import { siliconflowCnProvider } from "./siliconflow-cn";
 import { syntheticProvider } from "./synthetic";
 import { tavilyProvider } from "./tavily";
 import { tnxProvider } from "./tnx";
@@ -92,11 +98,13 @@ const ALL = [
 	googleAntigravityProvider,
 	googleGeminiCliProvider,
 	openaiCodexDeviceProvider,
+	xaiProvider,
 	xaiOauthProvider,
 	gitlabDuoProvider,
 	gitLabDuoWorkflowProvider,
 	alibabaCodingPlanProvider,
 	alibabaTokenPlanProvider,
+	aiandProvider,
 	aimlApiProvider,
 	zhipuCodingPlanProvider,
 	umansProvider,
@@ -123,6 +131,8 @@ const ALL = [
 	perplexityProvider,
 	qianfanProvider,
 	veniceProvider,
+	siliconflowProvider,
+	siliconflowCnProvider,
 	syntheticProvider,
 	nanogptProvider,
 	waferServerlessProvider,
@@ -137,6 +147,7 @@ const ALL = [
 	opencodeGoProvider,
 	tavilyProvider,
 	kagiProvider,
+	exaProvider,
 	parallelProvider,
 	ollamaProvider,
 	ollamaCloudProvider,
@@ -146,11 +157,12 @@ const ALL = [
 	openaiProvider,
 	googleProvider,
 	googleVertexProvider,
-	xaiProvider,
 	groqProvider,
 	mistralProvider,
 	minimaxProvider,
 	amazonBedrockProvider,
+	bedrockMantleProvider,
+	gmiCloudProvider,
 ];
 
 export type RegistryDef = (typeof ALL)[number];

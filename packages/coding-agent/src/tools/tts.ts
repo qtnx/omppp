@@ -3,13 +3,14 @@
 // backend (Kokoro-82M via kokoro-js on the shared ONNX worker) is layered on behind
 // the `providers.tts` switch.
 
+import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { type ApiKey, withAuth } from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
-import { type } from "arktype";
+import { USER_AGENT } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
 import type { CustomTool, CustomToolContext } from "../extensibility/custom-tools/types";
-import { ohMyPiXAIUserAgent, resolveXAIHttpCredentials } from "../lib/xai-http";
+import { resolveXAIHttpCredentials } from "../lib/xai-http";
 import { DEFAULT_TTS_LOCAL_MODEL_KEY, DEFAULT_TTS_VOICE, isTtsLocalModelKey, KOKORO_VOICES } from "../tts/models";
 import { ttsClient } from "../tts/tts-client";
 import { encodeWav } from "../tts/wav";
@@ -150,7 +151,7 @@ async function synthesizeXai(
 					headers: {
 						Authorization: `Bearer ${key}`,
 						"Content-Type": "application/json",
-						"User-Agent": ohMyPiXAIUserAgent(),
+						"User-Agent": USER_AGENT,
 					},
 					body: JSON.stringify(payload),
 					signal: combinedSignal,

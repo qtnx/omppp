@@ -31,11 +31,12 @@
  *   billing (32px × 1.2, 10k-patch budget at `detail: "original"`) is
  *   area-proportional, so resolution cannot improve chars/$ — 1568 stays.
  *   `detail: "high"` would downgrade (2,500-patch cap); `original` is sent.
- * - **Unknown providers** default to the Anthropic shape. `providerImageBudget`
- *   still caps per-request images per provider so inline imaging cannot flood a
- *   request with attachments, but the old OpenRouter-specific 8-image cap is
- *   gone; routers now use the same permissive budget as direct Anthropic/Claude
- *   lines unless configured otherwise upstream.
+ * - **Unknown providers** default to `8on22-bw` with Anthropic-style
+ *   visual-token area billing. `providerImageBudget` still caps per-request
+ *   images per provider so inline imaging cannot flood a request with
+ *   attachments, but the old OpenRouter-specific 8-image cap is gone; routers
+ *   now use the same permissive budget as direct Anthropic/Claude lines unless
+ *   configured otherwise upstream.
  *
  * The whole pass is local and deterministic — no LLM call, no API key, no
  * latency beyond rendering. Rasterization and PNG encoding happen in native
@@ -45,6 +46,7 @@
  */
 
 import type { Api, ImageContent, Message, TextContent } from "@oh-my-pi/pi-ai";
+import { isFableOrMythos, parseAnthropicModel, semverGte } from "@oh-my-pi/pi-catalog/identity";
 import { renderSnapcompactPng, snapcompactSupportedChars } from "@oh-my-pi/pi-natives";
 import { formatGroupedPaths, prompt } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
@@ -201,10 +203,13 @@ export function isShapeVariantName(value: unknown): value is ShapeVariantName {
 }
 
 /** Provider families with distinct image billing. */
-type BillingFamily = "anthropic" | "google" | "openai";
+type BillingFamily = "anthropic" | "google" | "openai" | "unknown";
 
 function billingFamily(api?: Api): BillingFamily {
 	switch (api) {
+		case "anthropic-messages":
+		case "bedrock-converse-stream":
+			return "anthropic";
 		case "openai-completions":
 		case "openai-responses":
 		case "openai-codex-responses":
@@ -215,9 +220,8 @@ function billingFamily(api?: Api): BillingFamily {
 		case "google-vertex":
 			return "google";
 		default:
-			// anthropic-messages, bedrock-converse-stream, and anything unknown
-			// share Anthropic's pixel-area pricing as the safe ceiling.
-			return "anthropic";
+			// Unknown APIs share Anthropic's pixel-area pricing as the safe ceiling.
+			return "unknown";
 	}
 }
 
@@ -305,6 +309,7 @@ const FAMILY_VARIANT: Record<BillingFamily, ShapeVariantName> = {
 	anthropic: "11on16-bw",
 	google: "8on22-bw",
 	openai: "8on22-bw",
+	unknown: "8on22-bw",
 };
 
 /** Denser companion variant per family for the foveated archive middle: same
@@ -315,12 +320,14 @@ const FAMILY_VARIANT_LOW: Record<BillingFamily, ShapeVariantName> = {
 	anthropic: "8on16-bw",
 	google: "8on16-bw",
 	openai: "8on16-bw",
+	unknown: "8on16-bw",
 };
 
 const FAMILY_SHAPE: Record<BillingFamily, Shape> = {
 	anthropic: SHAPES.anthropic,
 	google: SHAPES.google,
 	openai: SHAPES.openai,
+	unknown: priceShape(SHAPE_VARIANTS["8on22-bw"], "unknown"),
 };
 
 /** One model line's ideal format: variant plus an optional frame-size
@@ -330,17 +337,17 @@ export interface IdealShape {
 	frameSize?: number;
 }
 
-/** Eval-winning format per model line, matched against the model id. The
- *  wire API only identifies the gateway — a Claude served through Vertex or
- *  OpenRouter still reads best with its own shape. Patterns cover the model
- *  lines the mono evals measured; everything else falls back to the API
- *  family's winner at the standard 1568px frame. First match wins. */
+/** Eval-winning format per model line. The wire API only identifies the
+ *  gateway — a Claude served through Vertex or OpenRouter still reads best
+ *  with its own shape. Classified Anthropic models use the shared catalog
+ *  identity parser; remaining model lines use first-match regex rules and fall
+ *  back to the API family's winner at the standard 1568px frame. */
+const HIGH_RES_ANTHROPIC_VARIANT = { variant: "11on16-bw", frameSize: 1932 } as const satisfies IdealShape;
 const MODEL_VARIANTS: readonly (readonly [RegExp, IdealShape])[] = [
-	// Opus 4.7+ and Fable/Mythos read high-res natively (2576px edge under a
-	// 4,784 visual-token cap → 1932px square sweet spot): same recall and
-	// cost as 1568, a third fewer frames.
-	[/claude.*(fable|mythos)/i, { variant: "11on16-bw", frameSize: 1932 }],
-	[/claude-?opus-?4[.-][7-9]/i, { variant: "11on16-bw", frameSize: 1932 }],
+	// Versionless Fable/Mythos aliases (e.g. `claude-fable-latest`) never parse
+	// a numeric version, so keep them on the high-res tier by name — every
+	// Fable/Mythos line reads it natively.
+	[/claude.*(fable|mythos)/i, HIGH_RES_ANTHROPIC_VARIANT],
 	// Older Claude lines downscale past 1568px — keep the safe size.
 	[/claude/i, { variant: "11on16-bw" }],
 	// Gemini 3.x bills a fixed 1,120-token budget per image regardless of
@@ -348,15 +355,29 @@ const MODEL_VARIANTS: readonly (readonly [RegExp, IdealShape])[] = [
 	[/gemini/i, { variant: "8on22-bw", frameSize: 2048 }],
 	// gpt-5.5 patch billing is area-proportional; 1568 is already optimal.
 	[/gpt|codex/i, { variant: "8on22-bw" }],
-	// kimi's image processor downscales past 1792px (64×64 28px patches);
-	// 1568 wins on chars/$ and reads at f1 .973 (≤8 frames per request).
-	[/kimi/i, { variant: "8on16-bw" }],
+	// kimi-k3 chunked bench: `8on22-bw` scored f1 .915 @ $0.66 vs .813 on `8on16-bw` ($0.70);
+	// 1568 wins on chars/$ (image processor downscales past 1792px).
+	[/kimi/i, { variant: "8on22-bw" }],
 	// glm-4.6v .780 mono via direct vendor routing.
 	[/glm/i, { variant: "8on16-bw" }],
 ];
 
 /** Eval-ideal format for a model id, or undefined when unmeasured. */
 export function idealShapeVariant(modelId: string): IdealShape | undefined {
+	// The catalog parser is case-sensitive; the regex rules below are not.
+	// Normalize so mixed-case gateway ids keep matching the Anthropic tier.
+	const anthropic = parseAnthropicModel(modelId.toLowerCase());
+	if (
+		anthropic &&
+		(isFableOrMythos(anthropic.kind) || (anthropic.kind === "opus" && semverGte(anthropic.version, "4.7")))
+	) {
+		// Opus 4.7+ and Fable/Mythos read high-res natively: same recall and
+		// cost as 1568, a third fewer frames. 1932 is the largest *square* not
+		// downscaled under Anthropic's 4,784 visual-token cap ((1932/28)² =
+		// 69² = 4,761 ≤ 4,784 28px patches), and staying below 2000px clears
+		// the stricter ≤2000px limit for requests with more than 20 images.
+		return HIGH_RES_ANTHROPIC_VARIANT;
+	}
 	return MODEL_VARIANTS.find(([pattern]) => pattern.test(modelId))?.[1];
 }
 

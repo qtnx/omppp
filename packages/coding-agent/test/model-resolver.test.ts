@@ -12,9 +12,11 @@ import {
 	parseModelString,
 	pickDefaultAvailableModel,
 	resolveAgentModelPatterns,
+	resolveAgentModelSelection,
 	resolveAgentPrewalkPattern,
 	resolveAllowedModels,
 	resolveCliModel,
+	resolveExplicitModelRole,
 	resolveModelFromString,
 	resolveModelOverride,
 	resolveModelRoleValue,
@@ -966,6 +968,45 @@ describe("resolveAgentPrewalkPattern", () => {
 	});
 });
 describe("resolveAgentModelPatterns", () => {
+	test("pairs the first non-empty source's role with its patterns, skipping aliases with no patterns", () => {
+		const settings = Settings.isolated({
+			modelRoles: {
+				empty: "",
+				override: "openai/gpt-4o",
+				definition: "anthropic/claude-sonnet-4-5",
+			},
+		});
+
+		expect(
+			resolveAgentModelSelection({
+				requestModel: "",
+				settingsOverride: "@override",
+				agentModel: ["@definition"],
+				settings,
+			}),
+		).toEqual({ patterns: ["openai/gpt-4o"], role: "override" });
+
+		expect(
+			resolveAgentModelSelection({
+				requestModel: "@empty",
+				settingsOverride: ",,",
+				agentModel: ["@definition"],
+				settings,
+			}),
+		).toEqual({ patterns: ["anthropic/claude-sonnet-4-5"], role: "definition" });
+
+		// An explicit selector carries no role identity, so the child must not
+		// capture the routing of a role that happens to name the same model.
+		expect(
+			resolveAgentModelSelection({
+				requestModel: "openai/gpt-4o",
+				settingsOverride: "@override",
+				agentModel: ["@definition"],
+				settings,
+			}),
+		).toEqual({ patterns: ["openai/gpt-4o"], role: undefined });
+	});
+
 	test("falls back to the active session model when @task is unset", () => {
 		const settings = Settings.isolated({
 			modelRoles: { default: "anthropic/claude-sonnet-4-5" },
@@ -1834,6 +1875,29 @@ describe("resolveModelFromString", () => {
 		const result = resolveModelFromString("example/runtime:auto", mockAutoSuffixModels);
 		expect(result?.provider).toBe("example");
 		expect(result?.id).toBe("runtime:auto");
+	});
+});
+
+describe("resolveExplicitModelRole", () => {
+	test("extracts built-in, custom, legacy, default, and thinking-suffixed aliases before expansion", () => {
+		const settings = Settings.isolated({
+			modelRoles: {
+				reviewer: "openai/gpt-4o",
+			},
+		});
+
+		expect(resolveExplicitModelRole("@task", settings)).toBe("task");
+		expect(resolveExplicitModelRole("pi/reviewer:high", settings)).toBe("reviewer");
+		expect(resolveExplicitModelRole("@reviewer:xhigh", settings)).toBe("reviewer");
+		expect(resolveExplicitModelRole("*:low", settings)).toBe("default");
+	});
+
+	test("does not infer a role from an explicit model selector", () => {
+		const settings = Settings.isolated({ modelRoles: { reviewer: "openai/gpt-4o" } });
+		expect(resolveExplicitModelRole("openai/gpt-4o", settings)).toBeUndefined();
+		expect(resolveExplicitModelRole("openai/gpt-4o:high", settings)).toBeUndefined();
+		expect(resolveExplicitModelRole("openai/gpt-4o:max", settings)).toBeUndefined();
+		expect(resolveExplicitModelRole(["openai/gpt-4o", "@reviewer:high"], settings)).toBe("reviewer");
 	});
 });
 

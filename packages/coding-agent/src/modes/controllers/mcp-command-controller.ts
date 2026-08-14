@@ -48,7 +48,13 @@ import {
 	searchSmitheryRegistry,
 	toConfigName,
 } from "../../mcp/smithery-registry";
-import type { MCPAuthChallenge, MCPAuthConfig, MCPServerConfig, MCPServerConnection } from "../../mcp/types";
+import type {
+	MCPAuthChallenge,
+	MCPAuthConfig,
+	MCPConfigFile,
+	MCPServerConfig,
+	MCPServerConnection,
+} from "../../mcp/types";
 import { shortenPath } from "../../tools/render-utils";
 import { urlHyperlinkAlways } from "../../tui";
 import { copyToClipboard } from "../../utils/clipboard";
@@ -81,6 +87,66 @@ function raceAbortSignal<T>(promise: Promise<T>, signal: AbortSignal, createErro
 	return Promise.race([promise, aborted.promise]).finally(() => {
 		signal.removeEventListener("abort", onAbort);
 	});
+}
+
+type ActiveMCPOAuthFlow = {
+	cancel: (reason: string) => void;
+	completion: Promise<void>;
+	complete: () => void;
+};
+
+type MCPOAuthFlowCoordinator = {
+	active?: ActiveMCPOAuthFlow;
+	transition: Promise<void>;
+};
+
+const mcpOAuthFlowCoordinators = new WeakMap<object, MCPOAuthFlowCoordinator>();
+const MCP_OAUTH_SUPERSEDED_REASON = "MCP OAuth flow superseded by a new login";
+
+/**
+ * Serialize MCP OAuth ownership across slash-command controller instances.
+ * Interactive mode creates a new controller for every command, while the
+ * manual-input manager remains stable for the session and is therefore the
+ * lifecycle key.
+ */
+async function claimMCPOAuthFlow(owner: object, cancel: (reason: string) => void): Promise<{ release: () => void }> {
+	let coordinator = mcpOAuthFlowCoordinators.get(owner);
+	if (!coordinator) {
+		coordinator = { transition: Promise.resolve() };
+		mcpOAuthFlowCoordinators.set(owner, coordinator);
+	}
+
+	const precedingTransition = coordinator.transition;
+	const transition = Promise.withResolvers<void>();
+	coordinator.transition = transition.promise;
+	await precedingTransition;
+
+	try {
+		const active = coordinator.active;
+		if (active) {
+			active.cancel(MCP_OAUTH_SUPERSEDED_REASON);
+			await active.completion;
+		}
+
+		const completion = Promise.withResolvers<void>();
+		const flow: ActiveMCPOAuthFlow = {
+			cancel,
+			completion: completion.promise,
+			complete: () => completion.resolve(),
+		};
+		coordinator.active = flow;
+		let released = false;
+		return {
+			release: () => {
+				if (released) return;
+				released = true;
+				if (coordinator.active === flow) coordinator.active = undefined;
+				flow.complete();
+			},
+		};
+	} finally {
+		transition.resolve();
+	}
 }
 
 /**
@@ -245,6 +311,64 @@ type MCPSearchParsed = {
 	semantic: boolean;
 	error?: string;
 };
+
+/**
+ * Collect the de-duplicated union of every MCP server name we know about:
+ * user config, project config, and any runtime-discovered servers not
+ * already present in either config (`ctx.mcpManager.getAllServerNames()`
+ * covers connections, pending connections, and discovered-but-not-yet-
+ * connected sources).
+ *
+ * `includeDisabledOnly` controls names found only in
+ * `userConfig.disabledServers`, while `includeDisabledConfigured` controls
+ * config entries whose `enabled` flag is false. Both default to true because
+ * callers such as `/mcp list` need the complete union. Autocomplete callers
+ * must disable the categories their target operation cannot accept.
+ *
+ * This is the single source of truth for "every known server name": both
+ * `MCPCommandController#handleList()` and the `/mcp` slash-command argument
+ * completer (server-name autocomplete for `enable`/`disable`/`test`/etc.)
+ * call this instead of re-deriving the union themselves.
+ *
+ * `preloaded` lets a caller that already read both config files (e.g.
+ * `#handleList()`) pass them in and skip the redundant re-read.
+ */
+export async function collectMcpServerNames(
+	ctx: InteractiveModeContext,
+	preloaded?: { userConfig: MCPConfigFile; projectConfig: MCPConfigFile },
+	includeDisabledOnly = true,
+	includeDisabledConfigured = true,
+): Promise<string[]> {
+	let userConfig: MCPConfigFile;
+	let projectConfig: MCPConfigFile;
+	if (preloaded) {
+		({ userConfig, projectConfig } = preloaded);
+	} else {
+		const cwd = getProjectDir();
+		[userConfig, projectConfig] = await Promise.all([
+			readMCPConfigFile(getMCPConfigPath("user", cwd)),
+			readMCPConfigFile(getMCPConfigPath("project", cwd)),
+		]);
+	}
+
+	const names = new Set<string>(includeDisabledOnly ? (userConfig.disabledServers ?? []) : []);
+	const addConfiguredNames = (config: MCPConfigFile): void => {
+		const servers = config.mcpServers;
+		if (!servers) return;
+		for (const name in servers) {
+			const server = servers[name];
+			if (server && (includeDisabledConfigured || server.enabled !== false)) names.add(name);
+		}
+	};
+	addConfiguredNames(userConfig);
+	addConfiguredNames(projectConfig);
+	if (ctx.mcpManager) {
+		for (const name of ctx.mcpManager.getAllServerNames()) {
+			names.add(name);
+		}
+	}
+	return [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+}
 
 export class MCPCommandController {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -718,28 +842,23 @@ export class MCPCommandController {
 		const resolvedClientSecret = clientSecret.trim() || undefined;
 
 		const manualInput = this.ctx.oauthManualInput;
-		if (manualInput.hasPending()) {
-			const pendingProvider = manualInput.pendingProviderId ?? "another provider";
-			throw new Error(
-				`OAuth login already in progress for ${pendingProvider}. Complete or cancel it before starting MCP OAuth.`,
-			);
-		}
 		let manualInputClaim: { promise: Promise<string>; clear: (reason?: string) => void } | undefined;
 		const oauthTimeout = new AbortController();
-		// User Esc and external aborts route through here; the timeout path sets
-		// its own reason and leaves this flag false so the catch can distinguish
-		// "user cancelled" (status) from "deadline elapsed" (error).
-		let userCancelled = false;
-		const requestUserCancel = (reason: string): void => {
-			userCancelled = true;
+		// Esc, external aborts, and a replacement MCP flow route through here;
+		// the timeout path sets its own reason and leaves this flag false so the
+		// catch can distinguish cancellation (status) from deadline failure.
+		let cancellationRequested = false;
+		const requestCancellation = (reason: string): void => {
+			cancellationRequested = true;
 			if (!oauthTimeout.signal.aborted) oauthTimeout.abort(reason);
 		};
+		const flowClaim = await claimMCPOAuthFlow(manualInput, requestCancellation);
 		const originalOnEscape = this.ctx.editor.onEscape;
-		this.ctx.editor.onEscape = () => requestUserCancel(MCP_OAUTH_USER_CANCEL_REASON);
+		this.ctx.editor.onEscape = () => requestCancellation(MCP_OAUTH_USER_CANCEL_REASON);
 		const externalSignal = opts?.abortSignal;
 		const onExternalAbort = (): void => {
 			const reason = externalSignal?.reason;
-			requestUserCancel(typeof reason === "string" ? reason : MCP_OAUTH_USER_CANCEL_REASON);
+			requestCancellation(typeof reason === "string" ? reason : MCP_OAUTH_USER_CANCEL_REASON);
 		};
 		if (externalSignal?.aborted) {
 			onExternalAbort();
@@ -747,6 +866,12 @@ export class MCPCommandController {
 			externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
 		}
 		try {
+			if (manualInput.hasPending()) {
+				const pendingProvider = manualInput.pendingProviderId ?? "another provider";
+				throw new Error(
+					`OAuth login already in progress for ${pendingProvider}. Complete or cancel it before starting MCP OAuth.`,
+				);
+			}
 			// Create OAuth flow
 			const flow = new MCPOAuthFlow(
 				{
@@ -823,7 +948,7 @@ export class MCPCommandController {
 
 			const createAbortError = (): Error => {
 				const reason = String(oauthTimeout.signal.reason ?? "MCP OAuth flow aborted");
-				return userCancelled ? new MCPOAuthCancelledError() : new Error(reason);
+				return cancellationRequested ? new MCPOAuthCancelledError() : new Error(reason);
 			};
 			if (oauthTimeout.signal.aborted) throw createAbortError();
 
@@ -870,11 +995,10 @@ export class MCPCommandController {
 				resource: flow.resource,
 			};
 		} catch (error) {
-			// User-initiated cancel (Esc or external signal) → neutral status, not
-			// a failure. Check the flag we set in `requestUserCancel`, not the
-			// abort reason: the timeout path also aborts but with a different
-			// reason, and we want it to surface as a timeout error below.
-			if (userCancelled) {
+			// Esc, an external abort, or a newer MCP flow are neutral
+			// cancellations. The timeout path also aborts the controller but does
+			// not set this flag, so it remains a surfaced error.
+			if (cancellationRequested) {
 				throw new MCPOAuthCancelledError();
 			}
 
@@ -896,6 +1020,7 @@ export class MCPCommandController {
 			this.ctx.editor.onEscape = originalOnEscape;
 			externalSignal?.removeEventListener("abort", onExternalAbort);
 			manualInputClaim?.clear("Manual MCP OAuth input cleared");
+			flowClaim.release();
 		}
 	}
 
@@ -1164,7 +1289,7 @@ export class MCPCommandController {
 			await addMCPServer(filePath, name, config);
 
 			// Reload MCP manager
-			await this.#reloadMCP();
+			await this.reloadServers();
 			const state =
 				config.enabled === false
 					? "disconnected"
@@ -1271,10 +1396,11 @@ export class MCPCommandController {
 
 			// Collect runtime-discovered servers not in config files
 			const configServerNames = new Set([...userServers, ...projectServers]);
-			const disabledServerNames = new Set(await readDisabledServers(userPath));
+			const disabledServerNames = new Set(userConfig.disabledServers ?? []);
 			const discoveredServers: { name: string; source: SourceMeta }[] = [];
 			if (this.ctx.mcpManager) {
-				for (const name of this.ctx.mcpManager.getAllServerNames()) {
+				const allServerNames = await collectMcpServerNames(this.ctx, { userConfig, projectConfig });
+				for (const name of allServerNames) {
 					if (configServerNames.has(name)) continue;
 					if (disabledServerNames.has(name)) continue;
 					const source = this.ctx.mcpManager.getSource(name);
@@ -1421,7 +1547,7 @@ export class MCPCommandController {
 			await removeMCPServer(filePath, name);
 
 			// Reload MCP manager
-			await this.#reloadMCP();
+			await this.reloadServers();
 
 			this.#showMessage(["", theme.fg("success", `- Removed server "${name}" from ${scope} config`), ""].join("\n"));
 		} catch (error) {
@@ -1671,7 +1797,7 @@ export class MCPCommandController {
 					);
 					return;
 				}
-				await this.#reloadMCP();
+				await this.reloadServers();
 				this.#showMessage(
 					["", theme.fg("success", `- Cleared auth for "${name}" (${found.scope} config)`), ""].join("\n"),
 				);
@@ -1680,7 +1806,7 @@ export class MCPCommandController {
 
 			const updated = this.#stripOAuthAuth(found.config);
 			await updateMCPServer(found.filePath, name, updated);
-			await this.#reloadMCP();
+			await this.reloadServers();
 
 			this.#showMessage(
 				["", theme.fg("success", `- Cleared auth for "${name}" (${found.scope} config)`), ""].join("\n"),
@@ -1728,16 +1854,22 @@ export class MCPCommandController {
 			const oauth = await this.#resolveOAuthEndpointsFromServer(runtimeBaseConfig, options.authChallenge);
 			const serverUrl =
 				runtimeBaseConfig.type === "http" || runtimeBaseConfig.type === "sse" ? runtimeBaseConfig.url : undefined;
-			// A user-supplied client secret may live in either block (the wizard
-			// writes it to auth.clientSecret); DCR secrets are embedded in the
-			// stored credential and never echoed back into config files.
-			const configuredClientId = found.config.oauth?.clientId ?? currentAuth?.clientId;
+			// Client credentials drive the token exchange, so they must come from the
+			// env-expanded runtime config; `found.config`/`currentAuth` may still hold
+			// `${...}` placeholders (the wizard writes the secret to auth.clientSecret).
+			// DCR secrets are embedded in the stored credential and never echoed back
+			// into config files.
+			const runtimeAuth = currentAuth ? expandEnvVarsDeep(currentAuth) : undefined;
+			const configuredClientId = runtimeBaseConfig.oauth?.clientId ?? runtimeAuth?.clientId;
 			const existingCredential = lookupMcpOAuthCredentialForServer(authStorage, currentAuth, serverUrl)?.credential;
 			const flowClientId = oauth.clientId ?? configuredClientId ?? existingCredential?.clientId ?? "";
 			const storedClientSecret =
 				existingCredential?.clientId === flowClientId ? existingCredential.clientSecret : undefined;
+			const flowClientSecret =
+				runtimeBaseConfig.oauth?.clientSecret ?? runtimeAuth?.clientSecret ?? storedClientSecret ?? "";
+			// Persisted separately below: keep the raw `${...}` placeholder in the file
+			// rather than writing the resolved secret back to (possibly shared) config.
 			const userClientSecret = found.config.oauth?.clientSecret ?? currentAuth?.clientSecret;
-			const flowClientSecret = userClientSecret ?? storedClientSecret ?? "";
 
 			if (!options.silent) {
 				this.#showMessage(["", theme.fg("muted", `Reauthorizing "${name}"...`), ""].join("\n"));
@@ -1791,7 +1923,7 @@ export class MCPCommandController {
 				await updateMCPServer(found.filePath, name, updatedConfig);
 			}
 			if (options.reload !== false) {
-				await this.#reloadMCP();
+				await this.reloadServers();
 				const state = await this.#waitForServerConnectionWithAnimation(name);
 
 				const lines = [
@@ -1826,7 +1958,7 @@ export class MCPCommandController {
 	async #handleReload(): Promise<void> {
 		try {
 			this.#showMessage(["", theme.fg("muted", "Reloading MCP servers and runtime tools..."), ""].join("\n"));
-			await this.#reloadMCP();
+			await this.reloadServers();
 			const connectedCount = this.ctx.mcpManager?.getConnectedServers().length ?? 0;
 			this.#showMessage(
 				[
@@ -1914,18 +2046,35 @@ export class MCPCommandController {
 	}
 
 	/**
-	 * Reload MCP manager with new configs
+	 * Reconnect every configured MCP server and rebind the session's MCP tools.
+	 *
+	 * Disconnects all live connections, rediscovers `.mcp.json` configs, and
+	 * calls `session.refreshMCPTools(...)` so config edits take effect without a
+	 * restart. Public because `/reload-plugins` reuses it alongside `/mcp reload`
+	 * and the config-mutation flows in this controller.
+	 *
+	 * Discovery options are derived from settings so the reload honors the same
+	 * opt-outs as startup — notably `mcp.enableProjectConfig: false`, which must
+	 * keep project `.mcp.json` servers from being started on reload.
 	 */
-	async #reloadMCP(): Promise<void> {
+	async reloadServers(): Promise<void> {
 		if (!this.ctx.mcpManager) {
 			return;
 		}
 
 		// Disconnect all existing servers
 		await this.ctx.mcpManager.disconnectAll();
+		// Prompt enrichment is asynchronous. Clear commands before rediscovery so
+		// removed/disabled servers cannot leave stale `/server:prompt` entries;
+		// newly loaded prompts repopulate them through the manager callback.
+		this.ctx.session.setMCPPromptCommands([]);
 
-		// Rediscover and connect
-		const result = await this.ctx.mcpManager.discoverAndConnect();
+		// Rediscover and connect, mirroring startup's discovery filters.
+		const result = await this.ctx.mcpManager.discoverAndConnect({
+			enableProjectConfig: this.ctx.settings.get("mcp.enableProjectConfig") ?? true,
+			filterExa: true,
+			filterBrowser: this.ctx.settings.get("browser.enabled") ?? false,
+		});
 		await this.ctx.session.refreshMCPTools(this.ctx.mcpManager.getTools());
 
 		this.#showMCPConnectionErrors(result.errors);

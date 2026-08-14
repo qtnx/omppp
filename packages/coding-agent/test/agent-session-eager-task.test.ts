@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { TextContent } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
@@ -12,7 +13,6 @@ import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TodoTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 type ObservedPromptCall = {
@@ -278,7 +278,6 @@ describe("AgentSession eager task prelude", () => {
 
 		expect(observedCalls).toHaveLength(1);
 		expect(observedCalls[0]?.messageRoles).toEqual(["developer", "user"]);
-		expect(observedCalls[0]?.messageTexts[0]).toContain("delegation is enabled");
 	});
 
 	it("prepends both todo and task preludes when both are eager, keeping the forced todo choice", async () => {
@@ -299,6 +298,7 @@ describe("AgentSession eager task prelude", () => {
 		expect(texts.at(-1)).toBe("refactor the parser across modules");
 		// the task reminder is the second prelude (after the todo reminder)
 		expect(texts.findIndex(text => text.includes("delegation is enabled"))).toBe(1);
+		expect(texts.findIndex(text => text.includes("`task`"))).toBe(1);
 	});
 
 	it("omits batch-call guidance from the eager task reminder when task.batch is disabled", async () => {

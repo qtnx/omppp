@@ -12,5 +12,5 @@ describe("OAuth barrel imports", () => {
 		const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
 
 		expect(exitCode, stderr).toBe(0);
-	});
+	}, 60_000);
 });

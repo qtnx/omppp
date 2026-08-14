@@ -1,3 +1,4 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { instrumentedCompleteSimple, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
 import {
@@ -9,12 +10,18 @@ import {
 	type ToolExample,
 } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import { extractTextContent } from "../commit/utils";
 
-import { expandRoleAlias, getModelMatchPreferences, resolveModelFromString } from "../config/model-resolver";
+import {
+	expandRoleAlias,
+	extractExplicitThinkingSelector,
+	getModelMatchPreferences,
+	resolveModelFromString,
+	resolveModelRoleValue,
+} from "../config/model-resolver";
 import inspectImageDescription from "../prompts/tools/inspect-image.md" with { type: "text" };
 import inspectImageSystemPromptTemplate from "../prompts/tools/inspect-image-system.md" with { type: "text" };
+import { concreteThinkingLevel, resolveThinkingLevelForModel, toReasoningEffort } from "../thinking";
 import {
 	ImageInputTooLargeError,
 	type LoadedImageInput,
@@ -162,13 +169,23 @@ export class InspectImageTool implements AgentTool<typeof inspectImageSchema, In
 			const expanded = expandRoleAlias(pattern, this.session.settings);
 			return resolveModelFromString(expanded, availableModels, matchPreferences);
 		};
+		const visionThinking = resolveModelRoleValue("@vision", availableModels, {
+			settings: this.session.settings,
+			matchPreferences,
+		}).thinkingLevel;
 
 		const activeModelPattern = this.session.getActiveModelString?.() ?? this.session.getModelString?.();
-		const model =
-			resolvePattern("@vision") ??
-			resolvePattern("@default") ??
-			resolvePattern(activeModelPattern) ??
-			availableModels[0];
+		let model: Model<Api> | undefined;
+		let selectedPattern: string | undefined;
+		for (const pattern of ["@vision", "@default", activeModelPattern]) {
+			const resolved = resolvePattern(pattern);
+			if (resolved) {
+				model = resolved;
+				selectedPattern = pattern;
+				break;
+			}
+		}
+		model ??= availableModels[0];
 		if (!model) {
 			throw new ToolError("Unable to resolve a model for inspect_image.");
 		}
@@ -228,6 +245,22 @@ export class InspectImageTool implements AgentTool<typeof inspectImageSchema, In
 			return `inspect_image request timed out after ${seconds}s. Increase inspect_image.timeoutMs (currently ${timeoutMs}ms; 0 disables) or check the vision model provider.`;
 		};
 
+		// Honor the thinking effort configured on the resolved model role
+		// (e.g. `modelRoles.vision: <model>:high`). Without it the oneshot sent a
+		// suppressed/zero thinking budget, which thinking-only models (Gemini 3.x)
+		// reject with HTTP 400 ("Budget 0 is invalid. This model only works in
+		// thinking mode.").
+		const configuredThinking =
+			selectedPattern === "@vision"
+				? concreteThinkingLevel(visionThinking)
+				: concreteThinkingLevel(
+						extractExplicitThinkingSelector(selectedPattern, this.session.settings, {
+							isLiteralModelId: (provider, id) =>
+								availableModels.some(candidate => candidate.provider === provider && candidate.id === id),
+						}),
+					);
+		const reasoning = toReasoningEffort(resolveThinkingLevelForModel(model, configuredThinking));
+
 		let response: AssistantMessage;
 		try {
 			response = await instrumentedCompleteSimple(
@@ -248,6 +281,7 @@ export class InspectImageTool implements AgentTool<typeof inspectImageSchema, In
 				{
 					apiKey: resolveAuthGatewayBearer(),
 					signal: effectiveSignal,
+					reasoning,
 				},
 				{ telemetry, oneshotKind: "inspect_image", completeImpl: this.completeImageRequest },
 			);

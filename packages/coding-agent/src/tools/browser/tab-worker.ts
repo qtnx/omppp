@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { postmortem, Snowflake, untilAborted, withTimeout } from "@oh-my-pi/pi-utils";
-import type { HTMLElement } from "linkedom";
+import type { HTMLElement } from "@oh-my-pi/pi-utils/dom";
 import type {
 	Browser,
 	CDPSession,
@@ -11,7 +11,6 @@ import type {
 	ElementHandle,
 	ElementScreenshotOptions,
 	HTTPResponse,
-	ImageFormat,
 	KeyInput,
 	Page,
 	SerializedAXNode,
@@ -21,6 +20,19 @@ import { JsRuntime, type RuntimeHooks } from "../../eval/js/shared/runtime";
 import { resizeImage } from "../../utils/image-resize";
 import { resolveToCwd } from "../path-utils";
 import { formatScreenshot } from "../render-utils";
+import {
+	bindRunFacade,
+	CELL_BUDGET_SLACK_MS,
+	installBrowserWorkerRejectionGuard,
+	isBrowserRunOwnedRejection,
+	markBrowserRunRejection,
+	markHandled,
+	observeBrowserRunPromise,
+	resolvePredicateTimeout,
+	type WaitPredicateOptions,
+	waitForRun,
+	withBrowserPromiseCombinatorTracking,
+} from "../run-scope";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tool-errors";
 import { disableAnnotationMode, enableAnnotationMode } from "./annotate";
 import {
@@ -38,14 +50,7 @@ import {
 	loadPuppeteerInWorker,
 } from "./launch";
 import { extractReadableFromHtml, type ReadableFormat } from "./readable";
-import {
-	bindBrowserRunFacade,
-	CELL_BUDGET_SLACK_MS,
-	markHandled,
-	resolvePredicateTimeout,
-	type WaitPredicateOptions,
-	waitForBrowserRun,
-} from "./run-cancellation";
+
 import { cloneSafe, RunOutput } from "./run-output";
 import type {
 	Observation,
@@ -74,6 +79,7 @@ declare global {
 	var innerHeight: number;
 	var document: {
 		elementFromPoint(x: number, y: number): Element | null;
+		readonly visibilityState: "visible" | "hidden";
 	};
 }
 
@@ -218,7 +224,6 @@ export function resolveWaitTimeout(cellTimeoutMs: number, explicit?: number): nu
 interface ScreenshotOptions {
 	selector?: string;
 	fullPage?: boolean;
-	save?: string;
 	silent?: boolean;
 }
 
@@ -234,7 +239,7 @@ interface TabApi {
 	): Promise<void>;
 	observe(opts?: { includeAll?: boolean; viewportOnly?: boolean }): Promise<Observation>;
 	ariaSnapshot(selector?: string, opts?: AriaSnapshotOptions): Promise<string>;
-	screenshot(opts?: ScreenshotOptions): Promise<ScreenshotResult>;
+	screenshot(opts?: ScreenshotOptions): Promise<string>;
 	extract(format?: ReadableFormat): Promise<string>;
 	click(selector: string): Promise<void>;
 	type(selector: string, text: string): Promise<void>;
@@ -703,6 +708,9 @@ interface ActiveRun {
 	output: RunOutput;
 	screenshots: ScreenshotResult[];
 	pendingTools: Map<string, { resolve(value: unknown): void; reject(error: Error): void }>;
+	rejectionOwner: object;
+	floatingRejections: unknown[];
+	floatingFailure: { promise: Promise<never>; reject(reason?: unknown): void };
 	/** Helper invocations currently awaiting the page/network, keyed by op id. */
 	inflight: Map<number, InflightOp>;
 	opCounter: number;
@@ -714,17 +722,20 @@ export function describeScreenshot(opts?: ScreenshotOptions): string {
 	if (opts?.fullPage) return "tab.screenshot({ fullPage: true })";
 	return "tab.screenshot()";
 }
-
-/** Map an explicit save path's extension to a puppeteer capture format (default png). */
-export function imageFormatForPath(filePath: string): ImageFormat {
-	switch (path.extname(filePath).toLowerCase()) {
-		case ".webp":
-			return "webp";
-		case ".jpg":
-		case ".jpeg":
-			return "jpeg";
-		default:
-			return "png";
+export async function preparePageForScreenshot(
+	page: Pick<Page, "bringToFront" | "evaluate">,
+	signal: AbortSignal | undefined,
+	activate: boolean,
+): Promise<void> {
+	if (activate) {
+		await untilAborted(signal, () => page.bringToFront()).catch(() => undefined);
+		return;
+	}
+	const visible = await untilAborted(signal, () => page.evaluate(() => document.visibilityState === "visible")).catch(
+		() => false,
+	);
+	if (!visible) {
+		throw new ToolError("The attached browser tab is not visible; switch to it before taking a screenshot");
 	}
 }
 
@@ -747,16 +758,75 @@ export class WorkerCore {
 	#active: ActiveRun | null = null;
 	#runtime: JsRuntime | null = null;
 	#unsub: () => void;
+	#isolated: boolean;
+	#uninstallRejectionGuard: () => void;
 	#mode?: WorkerInitPayload["mode"];
+	#activateForScreenshot = true;
 	#dialogPolicy?: DialogPolicy;
 	#dialogHandler?: (dialog: Dialog) => void;
 	#openDialog?: OpenDialogInfo;
 
-	constructor(transport: Transport) {
+	constructor(transport: Transport, isolated: boolean) {
 		this.#transport = transport;
+		this.#isolated = isolated;
 		this.#unsub = this.#transport.onMessage(msg => {
 			void this.#handleMessage(msg as WorkerInbound);
 		});
+		this.#uninstallRejectionGuard = this.#installRejectionGuard();
+	}
+
+	#installRejectionGuard(): () => void {
+		if (!this.#isolated) {
+			return postmortem.interceptUnhandledRejections(reason => this.#consumeUnhandledRejection(reason));
+		}
+		return installBrowserWorkerRejectionGuard(reason => this.#consumeUnhandledRejection(reason));
+	}
+
+	#consumeUnhandledRejection(reason: unknown): boolean {
+		const active = this.#active;
+		if (!active) return false;
+		if (!isBrowserRunOwnedRejection(reason, active.rejectionOwner, `browser-run-${active.id}.js`)) return false;
+		this.#recordFloatingRejection(active, reason);
+		return true;
+	}
+
+	#recordFloatingRejection(active: ActiveRun, reason: unknown): void {
+		if (postmortem.isExpectedCleanupError(reason)) return;
+		if (this.#active !== active) {
+			this.#log("warn", "Unhandled rejection after browser run ended", {
+				runId: active.id,
+				error: reason instanceof Error ? reason.message : String(reason),
+			});
+			return;
+		}
+		const isFirst = active.floatingRejections.length === 0;
+		active.floatingRejections.push(reason);
+		if (isFirst) active.floatingFailure.reject(this.#floatingRejectionError(reason));
+	}
+
+	#floatingRejectionError(reason: unknown): Error {
+		const message = reason instanceof Error ? reason.message : String(reason);
+		const error = new Error(`Unhandled rejection (missing await?): ${message}`, { cause: reason });
+		if (reason instanceof Error) error.name = reason.name;
+		return error;
+	}
+
+	#foldFloatingRejections(active: ActiveRun, failure: { error: unknown } | undefined): { error: unknown } | undefined {
+		const rejections = active.floatingRejections;
+		if (rejections.length === 0) return failure;
+		let reported = rejections;
+		if (!failure) {
+			failure = { error: this.#floatingRejectionError(rejections[0]) };
+			reported = rejections.slice(1);
+		} else if (failure.error instanceof Error && failure.error.cause === rejections[0]) {
+			reported = rejections.slice(1);
+		}
+		for (const reason of reported) {
+			this.#log("warn", "Additional unhandled browser-run rejection", {
+				error: reason instanceof Error ? reason.message : String(reason),
+			});
+		}
+		return failure;
 	}
 
 	nextElementId(): number {
@@ -799,6 +869,7 @@ export class WorkerCore {
 	async #init(payload: WorkerInitPayload): Promise<void> {
 		try {
 			this.#mode = payload.mode;
+			this.#activateForScreenshot = payload.mode === "headless" || payload.activateForScreenshot !== false;
 			const puppeteer = await loadPuppeteerInWorker(payload.safeDir);
 			this.#browser = await puppeteer.connect({
 				browserWSEndpoint: payload.browserWSEndpoint,
@@ -827,8 +898,16 @@ export class WorkerCore {
 				const page = await target.page();
 				if (!page) throw new ToolError(`Target ${payload.targetId} is no longer available on the attached browser`);
 				this.#page = page;
+				await this.#claimRelayTarget(page);
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
+				if (payload.url) {
+					await this.#page.goto(payload.url, {
+						// Same default as the headless arm: dev servers with HMR/WS never reach networkidle.
+						waitUntil: payload.waitUntil ?? "load",
+						timeout: payload.timeoutMs,
+					});
+				}
 			}
 			this.#targetId = await targetIdForPage(this.#page);
 			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
@@ -844,6 +923,26 @@ export class WorkerCore {
 			return target;
 		}
 		throw new ToolError(`Target ${targetId} is no longer available on the attached browser`);
+	}
+
+	/**
+	 * Tell the omp browser relay this worker drives the adopted page, so the
+	 * relay adds it to the per-window "omp" tab group. Best-effort: plain CDP
+	 * backends (real Chrome, cmux) reject the relay-private method.
+	 */
+	async #claimRelayTarget(page: Page): Promise<void> {
+		let session: CDPSession | undefined;
+		try {
+			session = await page.createCDPSession();
+			// Puppeteer's protocol map cannot express the relay-private method; the
+			// send signature is otherwise identical.
+			const raw = session as unknown as { send(method: string): Promise<unknown> };
+			await raw.send("OMP.claimTarget");
+		} catch {
+			// Not the omp relay; nothing to claim.
+		} finally {
+			await session?.detach().catch(() => undefined);
+		}
 	}
 
 	/**
@@ -972,6 +1071,7 @@ export class WorkerCore {
 		const signal = AbortSignal.any([timeoutSignal, ac.signal, runAc.signal]);
 		const output = new RunOutput();
 		const screenshots: ScreenshotResult[] = [];
+		const floatingFailure = Promise.withResolvers<never>();
 		const active: ActiveRun = {
 			id: msg.id,
 			ac,
@@ -979,6 +1079,9 @@ export class WorkerCore {
 			output,
 			screenshots,
 			pendingTools: new Map(),
+			rejectionOwner: {},
+			floatingRejections: [],
+			floatingFailure,
 			inflight: new Map(),
 			opCounter: 0,
 		};
@@ -994,10 +1097,11 @@ export class WorkerCore {
 			const tabApi = this.#createTabApi(msg.name, msg.timeoutMs, signal, msg.session, output, screenshots, active);
 			const runtime = this.#ensureRuntime(msg.session);
 			runtime.setCwd(msg.session.cwd);
+			const onFloatingRejection = (reason: unknown): void => this.#recordFloatingRejection(active, reason);
 			runtime.setRunScope({
-				page: bindBrowserRunFacade(runPage.page, signal),
-				browser: bindBrowserRunFacade(browser, signal),
-				tab: bindBrowserRunFacade(tabApi, signal),
+				page: bindRunFacade(runPage.page, signal, active.rejectionOwner, onFloatingRejection),
+				browser: bindRunFacade(browser, signal, active.rejectionOwner, onFloatingRejection),
+				tab: bindRunFacade(tabApi, signal, active.rejectionOwner, onFloatingRejection),
 				assert: (cond: unknown, text?: string): void => {
 					if (!cond) throw new ToolError(text ?? "Assertion failed");
 				},
@@ -1009,10 +1113,12 @@ export class WorkerCore {
 						typeof msOrPredicate === "number"
 							? undefined
 							: { timeout: resolvePredicateTimeout(msg.timeoutMs, opts?.timeout), interval: opts?.interval };
-					return markHandled(
+					return observeBrowserRunPromise(
 						this.#runOp(active, label, signal, Number.POSITIVE_INFINITY, sig =>
-							waitForBrowserRun(msOrPredicate, sig, resolved),
+							waitForRun(msOrPredicate, sig, resolved),
 						),
+						active.rejectionOwner,
+						onFloatingRejection,
 					);
 				},
 			});
@@ -1050,10 +1156,19 @@ export class WorkerCore {
 			try {
 				const hooks = this.#hooksForActiveRun();
 				if (!hooks) throw new ToolError("Browser runtime started without an active run");
-				returnValue = await Promise.race([
-					runtime.run(msg.code, `browser-run-${msg.id}.js`, hooks, { runId: msg.id, cwd: msg.session.cwd }),
-					cancelRejection,
-				]);
+				returnValue = await withBrowserPromiseCombinatorTracking(
+					active.rejectionOwner,
+					onFloatingRejection,
+					async () =>
+						await Promise.race([
+							runtime.run(msg.code, `browser-run-${msg.id}.js`, hooks, {
+								runId: msg.id,
+								cwd: msg.session.cwd,
+							}),
+							cancelRejection,
+							floatingFailure.promise,
+						]),
+				);
 				completed = true;
 			} finally {
 				signal.removeEventListener("abort", onCancel);
@@ -1062,11 +1177,13 @@ export class WorkerCore {
 			failure = { error };
 		} finally {
 			runAc.abort(postmortem.markExpectedCleanupError(new ToolAbortError("Browser run ended")));
+			await Bun.sleep(0);
 			try {
 				await runPage?.cleanup();
 			} catch (error) {
 				failure = { error };
 			}
+			failure = this.#foldFloatingRejections(active, failure);
 			if (this.#active?.id === msg.id) this.#active = null;
 		}
 		if (failure) {
@@ -1181,9 +1298,12 @@ export class WorkerCore {
 				(opTimeout?.aborted || (err instanceof Error && err.name === "TimeoutError"))
 			) {
 				const hint = selector ? await this.#selectorTimeoutHint(selector) : "";
-				throw new ToolError(`${label} timed out after ${perOpTimeoutMs}ms${hint}`);
+				throw markBrowserRunRejection(
+					new ToolError(`${label} timed out after ${perOpTimeoutMs}ms${hint}`),
+					active.rejectionOwner,
+				);
 			}
-			throw err;
+			throw markBrowserRunRejection(err, active.rejectionOwner);
 		} finally {
 			earlyAc.abort();
 			active.inflight.delete(opId);
@@ -1563,22 +1683,22 @@ export class WorkerCore {
 		screenshots: ScreenshotResult[],
 		signal: AbortSignal | undefined,
 		opts: ScreenshotOptions = {},
-	): Promise<ScreenshotResult> {
+	): Promise<string> {
 		const page = this.#requirePage();
 		// Multiple tabs can share one Chromium (sibling headless tabs on a shared
 		// endpoint, cdp/app attach). CDP `Page.captureScreenshot` reads the
-		// compositor surface, which follows the *active* target — a backgrounded
+		// compositor surface, which follows the *active* target: a backgrounded
 		// page can stall waiting for a fresh frame (the 20s screenshot timeouts)
 		// or hand back a sibling tab's pixels. Activate first; best-effort so an
 		// already-active or freshly-closed target never fails the capture.
-		await untilAborted(signal, () => page.bringToFront()).catch(() => undefined);
+		//
+		// For a user-driven browser, redundant activation would steal window focus.
+		// The supervisor disables it only after adopting the visible tab; if the user
+		// later switches away, reject capture rather than risk sibling-tab pixels.
+		await preparePageForScreenshot(page, signal, this.#activateForScreenshot);
 		const fullPage = opts.selector ? false : (opts.fullPage ?? false);
-		// An explicit save path picks the full-res capture format: puppeteer encodes
-		// png/jpeg/webp natively, so `save: "shot.webp"` gets real WebP bytes instead
-		// of PNG bytes hiding behind a .webp name. Unknown/missing extensions stay PNG.
-		const explicitPath = opts.save ? resolveToCwd(opts.save, session.cwd) : undefined;
-		const captureType = explicitPath ? imageFormatForPath(explicitPath) : "png";
-		const captureMime = `image/${captureType}` as const;
+		const captureType = "png";
+		const captureMime = "image/png" as const;
 		let buffer: Buffer;
 		if (opts.selector) {
 			const handle =
@@ -1612,20 +1732,16 @@ export class WorkerCore {
 			{ type: "image", data: buffer.toBase64(), mimeType: captureMime },
 			{ maxWidth: 1024, maxHeight: 1024, maxBytes: 150 * 1024, jpegQuality: 70, excludeWebP: session.excludeWebP },
 		);
-		const saveFullRes = !!(explicitPath || session.browserScreenshotDir);
+		const saveFullRes = !!session.browserScreenshotDir;
 		const savedBuffer = saveFullRes ? buffer : resized.buffer;
 		const savedMimeType = saveFullRes ? captureMime : resized.mimeType;
-		// Names must match the bytes we actually write: full-res follows the capture
-		// format, the resized buffer is whichever of PNG/JPEG/WebP encoded smallest.
 		const ext = savedMimeType === "image/webp" ? "webp" : savedMimeType === "image/jpeg" ? "jpg" : "png";
-		const dest =
-			explicitPath ??
-			(session.browserScreenshotDir
-				? path.join(
-						session.browserScreenshotDir,
-						`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
-					)
-				: path.join(os.tmpdir(), `omp-sshots-${Snowflake.next()}.${ext}`));
+		const dest = session.browserScreenshotDir
+			? path.join(
+					session.browserScreenshotDir,
+					`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
+				)
+			: path.join(os.tmpdir(), `omp-sshots-${Snowflake.next()}.${ext}`);
 		await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 		await Bun.write(dest, savedBuffer);
 		const info: ScreenshotResult = {
@@ -1647,7 +1763,7 @@ export class WorkerCore {
 			output.push({ type: "text", text: lines.join("\n") });
 			output.push({ type: "image", data: resized.data, mimeType: resized.mimeType });
 		}
-		return info;
+		return dest;
 	}
 
 	async #drag(from: DragTarget, to: DragTarget, signal: AbortSignal): Promise<void> {
@@ -1871,6 +1987,7 @@ export class WorkerCore {
 
 	async #close(): Promise<void> {
 		this.#unsub();
+		this.#uninstallRejectionGuard();
 		this.#clearElementCache();
 		const page = this.#page;
 		if (this.#dialogHandler && page && !page.isClosed()) page.off("dialog", this.#dialogHandler);

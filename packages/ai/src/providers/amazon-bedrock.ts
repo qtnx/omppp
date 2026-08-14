@@ -10,9 +10,10 @@
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { mapEffortToAnthropicAdaptiveEffort, requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
-import { $env, $flag, fetchWithRetry, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
+import { $flag, fetchWithRetry, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
+import { resolveAwsBearerToken } from "../registry/aws";
 import type {
 	Api,
 	AssistantMessage,
@@ -29,7 +30,8 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types";
-import { normalizeToolCallId, resolveCacheRetention } from "../utils";
+import { normalizeSystemPrompts, normalizeToolCallId, resolveCacheRetention } from "../utils";
+import { resolveAwsAmbientRegion } from "../utils/aws-profile";
 import {
 	clearStreamingPartialJson,
 	kStreamingBlockIndex,
@@ -44,6 +46,19 @@ import { invalidateAwsCredentialCache, resolveAwsCredentials } from "./aws-crede
 import { decodeEventStream } from "./aws-eventstream";
 import { signRequest } from "./aws-sigv4";
 import { transformMessages } from "./transform-messages";
+
+/**
+ * Headers SigV4 generates for itself. A caller cannot be allowed to supply these:
+ * `signRequest` would sign the caller's value but return its own, so the signature
+ * would not match what goes on the wire.
+ */
+const SIGNER_OWNED_HEADERS = new Set(["host", "x-amz-date", "x-amz-content-sha256", "x-amz-security-token"]);
+
+/** Headers the Bedrock request sets itself; a caller copy in any casing duplicates them. */
+// `content-length` included: the fetch layer recomputes it from the serialized
+// body, so a caller value would be signed but not sent, and AWS rejects the
+// mismatch.
+const BEDROCK_RESERVED_HEADERS = new Set(["content-type", "accept", "authorization", "content-length"]);
 
 export type BedrockThinkingDisplay = "summarized" | "omitted";
 
@@ -74,11 +89,9 @@ export interface BedrockOptions extends StreamOptions {
 	 */
 	thinkingDisplay?: BedrockThinkingDisplay;
 }
-const AUTHENTICATED_API_KEY_SENTINEL = "<authenticated>";
 
 function resolveBearerToken(options: BedrockOptions): string | undefined {
-	const apiKey = options.apiKey === AUTHENTICATED_API_KEY_SENTINEL ? undefined : options.apiKey;
-	return options.bearerToken || apiKey || $env.AWS_BEARER_TOKEN_BEDROCK;
+	return resolveAwsBearerToken(options.apiKey, options.bearerToken);
 }
 
 function inferRegionFromBedrockArn(modelId: string): string | undefined {
@@ -149,7 +162,7 @@ function regionServesGeo(region: string, geo: string): boolean {
 function resolveBedrockRegion(modelId: string, options: BedrockOptions): string {
 	const explicit = options.region || inferRegionFromBedrockArn(modelId);
 	if (explicit) return explicit;
-	const ambient = $env.AWS_REGION || $env.AWS_DEFAULT_REGION;
+	const ambient = resolveAwsAmbientRegion(options.profile);
 	const geo = inferenceProfileGeo(modelId);
 	if (geo) {
 		if (ambient && regionServesGeo(ambient, geo)) return ambient;
@@ -356,7 +369,32 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 
 			const bodyText = JSON.stringify(commandInput);
 			const body = new TextEncoder().encode(bodyText);
+			// Caller headers are merged BEFORE signing, so SigV4 covers them and they
+			// reach the wire. Bedrock built its header map from scratch and ignored
+			// `options.headers` entirely, so tracing/attribution headers set by a
+			// caller (or by a `before_provider_headers` extension) were silently
+			// dropped here while working on every other provider. Content-type and
+			// accept stay last: the eventstream framing is not the caller's to change.
+			//
+			// The signer's OWN headers are dropped first, and that is load-bearing:
+			// `signRequest` lets a caller value overwrite `host`/`x-amz-*` in the map
+			// it signs, but always RETURNS the generated ones, which `requestHeaders`
+			// below then puts on the wire. A caller supplying any of them would sign
+			// one set of values and send another, and Bedrock would reject every
+			// request with a signature mismatch.
+			// Lower-cased, and names the request sets itself are dropped. Keeping a
+			// caller `Content-Type` beside the fixed `content-type` leaves TWO object
+			// keys: SigV4 signs one value while fetch canonicalizes both into a single
+			// comma-joined wire header, so AWS validates different bytes than were
+			// signed and rejects the request.
+			const callerHeaders: Record<string, string> = {};
+			for (const [name, value] of Object.entries(options?.headers ?? {})) {
+				const field = name.toLowerCase();
+				if (SIGNER_OWNED_HEADERS.has(field) || BEDROCK_RESERVED_HEADERS.has(field)) continue;
+				callerHeaders[field] = value;
+			}
 			const baseHeaders: Record<string, string> = {
+				...callerHeaders,
 				"content-type": "application/json",
 				accept: "application/vnd.amazon.eventstream",
 			};
@@ -752,10 +790,10 @@ function supportsThinkingSignature(model: Model<"bedrock-converse-stream">): boo
 }
 
 function buildSystemPrompt(
-	systemPrompt: readonly string[] | undefined,
+	systemPrompt: readonly string[] | string | undefined,
 	promptCachePolicy: BedrockPromptCachePolicy,
 ): SystemContent[] | undefined {
-	const prompts = systemPrompt?.map(prompt => prompt.toWellFormed()).filter(prompt => prompt.length > 0) ?? [];
+	const prompts = normalizeSystemPrompts(systemPrompt);
 	if (prompts.length === 0) return undefined;
 
 	const blocks: SystemContent[] = prompts.map(prompt => ({ text: prompt }));

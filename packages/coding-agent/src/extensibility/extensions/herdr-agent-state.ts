@@ -2,6 +2,17 @@ import * as net from "node:net";
 import { isUsageLimit } from "@oh-my-pi/pi-ai/error/flags";
 import { isUnexpectedSocketCloseMessage, logger } from "@oh-my-pi/pi-utils";
 import { ASYNC_JOB_LIFECYCLE_CHANNEL } from "../../async";
+import { settings } from "../../config/settings";
+import { HerdrControlServer } from "../../herdr/control-server";
+import { type HerdrNotifySettings, readHerdrNotifySettings, showHerdrNotification } from "../../herdr/notify";
+import {
+	buildPaneAgentSessionRequest,
+	buildPaneMetadataRequest,
+	formatCostUsd,
+	formatTokenCount,
+	summarizeTitle,
+} from "../../herdr/pane-metadata";
+import { sendHerdrRequest } from "../../herdr/socket";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "../../task";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "./types";
 
@@ -14,6 +25,12 @@ const AGENT = "omp";
 const DEFAULT_IDLE_DEBOUNCE_MS = 250;
 const DEFAULT_RETRY_GRACE_MS = 2_500;
 const SOCKET_TIMEOUT_MS = 500;
+/** Display-only label: the functional agent kind stays `omp` (herdr's kind id), but a
+ *  70-workspace sidebar should say which fork is actually running. */
+const DISPLAY_AGENT = "ompx";
+/** Metadata expires a little over two refresh periods after the session dies. */
+const METADATA_TTL_MS = 120_000;
+const METADATA_REFRESH_MS = 45_000;
 
 const retryableErrorPattern =
 	/overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|retry your request|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|upstream.?request.?failed|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay|stream stall|no error details in response|HTTP2(?:StreamReset|RefusedStream|EnhanceYourCalm)/i;
@@ -231,6 +248,18 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		const activeSubagents = new Set<string>();
 		const activeAsyncJobs = new Set<string>();
 
+		// Coordination surface (control socket, pane metadata, notifications).
+		// Status above is sequenced and coalesced through `transport`, which the
+		// host injects in tests. These channels are display/control only, so they
+		// take their own one-shot connections: they must never delay a state
+		// report, reorder the state queue, or fail a turn.
+		let controlServer: HerdrControlServer | undefined;
+		let controlServerGeneration = 0;
+		let metadataSeq = Date.now() * 1000;
+		let currentTaskTitle: string | undefined;
+		let turnStartedAt: number | undefined;
+		let notifiedBlocked = false;
+
 		const nextReportSeq = (): number => {
 			reportSeq += 1;
 			return reportSeq;
@@ -281,6 +310,9 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			return { state: "idle" };
 		};
 
+		// `pane.report_agent` carries the session identity too: herdr surfaces
+		// `agent_session` on the *agent* view, so a supervisor watching a named
+		// agent can jump straight to this session's transcript.
 		const buildReportRequest = (
 			state: HerdrAgentState,
 			message: string | undefined,
@@ -297,6 +329,8 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 				message,
 				custom_status: customStatus,
 				seq,
+				agent_session_id: lastContext?.sessionManager.getSessionId(),
+				agent_session_path: lastContext?.sessionManager.getSessionFile(),
 			},
 		});
 
@@ -353,6 +387,152 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			lastMessage = next.message;
 			lastCustomStatus = next.customStatus;
 			queueState(next.state, next.message, next.customStatus);
+			if (next.state === "blocked") {
+				// One notification per blocked episode: `publishState` runs on every
+				// tool approval and review wait, and a fleet supervisor does not want
+				// one toast per wait inside the same stall.
+				if (!notifiedBlocked) {
+					notifiedBlocked = true;
+					notifyHerdr("blocked", next.customStatus ?? "needs review", next.message);
+				}
+			} else {
+				notifiedBlocked = false;
+			}
+		};
+
+		const notifyHerdr = (kind: "done" | "blocked", title: string, body?: string): void => {
+			if (closed) return;
+			let config: HerdrNotifySettings;
+			try {
+				config = readHerdrNotifySettings();
+			} catch {
+				return;
+			}
+			if (kind === "done" ? !config.done : !config.blocked) return;
+			void showHerdrNotification({ title, body, sound: config.sound, position: config.position }, env).then(
+				result => {
+					logger.debug("herdr-notify: dispatched", {
+						kind,
+						title,
+						sent: result.sent,
+						shown: result.shown,
+						reason: result.reason,
+					});
+				},
+			);
+		};
+
+		// Resolved once per session: a host that never initialized `settings`
+		// (tests, minimal runtimes) must not throw here, and must not open a
+		// socket per turn to a herdr that is not listening.
+		let metadataAllowed: boolean | undefined;
+		const canPublishMetadata = (): boolean => {
+			if (metadataAllowed === undefined) {
+				try {
+					metadataAllowed = settings.get("herdr.metadata.enabled") !== false;
+				} catch {
+					metadataAllowed = false;
+				}
+			}
+			return metadataAllowed;
+		};
+
+		const publishMetadata = (ctx?: ExtensionContext): void => {
+			if (closed || !canPublishMetadata()) return;
+			const context = ctx ?? lastContext;
+			const socketPath = env.HERDR_SOCKET_PATH;
+			if (!context || !socketPath) return;
+			const usage = context.sessionManager.getUsageStatistics();
+			const contextUsage = context.getContextUsage();
+			const tokens: Record<string, string | null> = {
+				model: context.model?.id ?? null,
+				tokens: formatTokenCount(usage.totalTokens),
+				cost: formatCostUsd(usage.cost),
+			};
+			if (contextUsage?.percent != null) tokens.ctx = `${Math.round(contextUsage.percent)}%`;
+			metadataSeq += 1;
+			void sendHerdrRequest(
+				socketPath,
+				buildPaneMetadataRequest({
+					paneId,
+					source,
+					seq: metadataSeq,
+					fields: {
+						agent: AGENT,
+						displayAgent: DISPLAY_AGENT,
+						title: currentTaskTitle,
+						tokens,
+						ttlMs: METADATA_TTL_MS,
+					},
+				}),
+			);
+		};
+
+		const publishSessionIdentity = (ctx: ExtensionContext): void => {
+			const socketPath = env.HERDR_SOCKET_PATH;
+			if (closed || !socketPath || !canPublishMetadata()) return;
+			metadataSeq += 1;
+			void sendHerdrRequest(
+				socketPath,
+				buildPaneAgentSessionRequest({
+					paneId,
+					source,
+					agent: AGENT,
+					seq: metadataSeq,
+					sessionId: ctx.sessionManager.getSessionId(),
+					sessionPath: ctx.sessionManager.getSessionFile(),
+				}),
+			);
+		};
+
+		const startControlServer = async (ctx: ExtensionContext, generation = controlServerGeneration): Promise<void> => {
+			// `HERDR_CONTROL_SOCKET=0` opts out of external prompt delivery (and keeps
+			// hosts that only fake the herdr env, such as tests, off the real run dir).
+			if (controlServer || closed || generation !== controlServerGeneration || env.HERDR_CONTROL_SOCKET === "0") {
+				return;
+			}
+			const server = new HerdrControlServer({
+				sessionId: ctx.sessionManager.getSessionId(),
+				cwd: ctx.cwd,
+				paneId,
+				tabId: env.HERDR_TAB_ID,
+				workspaceId: env.HERDR_WORKSPACE_ID,
+				// `sendUserMessage` is the same entry point the TUI editor uses, so the
+				// text lands as one user message with no slash parsing, no autocomplete
+				// and no keystroke translation — that is the whole point of the socket.
+				submit: (text, options) => {
+					const idle = (lastContext ?? ctx).isIdle();
+					pi.sendUserMessage(text, options.deliverAs ? { deliverAs: options.deliverAs } : undefined);
+					// An injected prompt never raises the interactive `input` event, so the
+					// pane title has to be taken here or a remote-driven agent shows none.
+					const title = summarizeTitle(text);
+					if (title) currentTaskTitle = title;
+					publishMetadata();
+					return { mode: options.deliverAs ?? (idle ? "turn" : "steer") };
+				},
+				isIdle: () => (lastContext ?? ctx).isIdle(),
+				status: () => ({
+					state: lastState ?? "idle",
+					model: (lastContext ?? ctx).model?.id,
+					title: currentTaskTitle,
+				}),
+			});
+			controlServer = server;
+			try {
+				await server.start();
+				if (closed || generation !== controlServerGeneration || controlServer !== server) await server.close();
+			} catch (error) {
+				if (controlServer === server) controlServer = undefined;
+				logger.warn("herdr-control: prompt socket unavailable", { error: String(error) });
+			}
+		};
+
+		const restartControlServer = async (ctx: ExtensionContext): Promise<void> => {
+			const previous = controlServer;
+			const generation = ++controlServerGeneration;
+			controlServer = undefined;
+			if (previous) await previous.close();
+			await startControlServer(ctx, generation);
 		};
 
 		const scheduleIdle = (ctx?: ExtensionContext): void => {
@@ -473,9 +653,15 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		pi.on("session_start", (_event, ctx) => {
 			runCompleted = false;
 			publishState(ctx);
+			void startControlServer(ctx);
+			publishSessionIdentity(ctx);
+			publishMetadata(ctx);
+			// Herdr expires metadata after `ttl_ms` so a killed session stops
+			// advertising a stale task; refresh well inside that window.
+			ctx.setInterval(() => publishMetadata(), METADATA_REFRESH_MS);
 		});
 
-		pi.on("session_switch", (_event, ctx) => {
+		pi.on("session_switch", async (_event, ctx) => {
 			// Run-scoped state: guaranteed re-established by start events on the next run.
 			// Subagent/async-job sets stay — jobs survive session switches and drain via
 			// their lifecycle events.
@@ -488,9 +674,13 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			clearFailureState();
 			clearIdleTimer();
 			publishState(ctx, { includePromptState: false });
+			currentTaskTitle = undefined;
+			await restartControlServer(ctx);
+			publishSessionIdentity(ctx);
+			publishMetadata(ctx);
 		});
 
-		pi.on("input", (_event, ctx) => {
+		pi.on("input", (event, ctx) => {
 			runCompleted = false;
 			// User responded: a stranded non-retryable failure no longer needs review.
 			// Keep retry holds and pending approval/ask waits — those are still live.
@@ -498,11 +688,15 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 				failureBlocked = false;
 				failureMessage = undefined;
 			}
+			const title = summarizeTitle(event.text);
+			if (title) currentTaskTitle = title;
+			publishMetadata(ctx);
 			scheduleIdle(ctx);
 		});
 
 		pi.on("before_agent_start", (_event, ctx) => {
 			runCompleted = false;
+			turnStartedAt = Date.now();
 			markWorkStarted(ctx, { clearFailure: true });
 		});
 
@@ -611,8 +805,22 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 				(assistant.stopReason === "stop" || assistant.stopReason === "toolUse" || assistant.stopReason === "length")
 			) {
 				runCompleted = true;
+				const elapsedMs = turnStartedAt === undefined ? 0 : Date.now() - turnStartedAt;
+				let minWorkMs = Number.POSITIVE_INFINITY;
+				try {
+					minWorkMs = readHerdrNotifySettings().minWorkMs;
+				} catch {
+					// Settings unavailable: treat as "never notify" rather than spam.
+				}
+				// Only work the user could not have watched to completion earns a toast;
+				// a two-second answer does not.
+				if (elapsedMs >= minWorkMs) {
+					notifyHerdr("done", currentTaskTitle ?? "Turn complete", `${Math.round(elapsedMs / 1000)}s`);
+				}
 			}
+			turnStartedAt = undefined;
 
+			publishMetadata(ctx);
 			completeMaybeIdle(ctx);
 		});
 
@@ -620,6 +828,9 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			closed = true;
 			clearPendingTimers();
 			queuedState = undefined;
+			const server = controlServer;
+			controlServer = undefined;
+			if (server) await server.close();
 			if (drainPromise) await drainPromise;
 			try {
 				await transport(buildReleaseRequest());

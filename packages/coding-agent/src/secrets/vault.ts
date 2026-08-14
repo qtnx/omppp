@@ -3,7 +3,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { loadOrCreateVaultKey, type VaultKey, type VaultKeyBackend, VaultKeyRetrievalError } from "./keychain";
-import { MIN_OBFUSCATE_SECRET_LEN, type SecretEntry } from "./obfuscator";
+import type { SecretEntry } from "./obfuscator";
+import { MIN_OBFUSCATE_SECRET_LEN } from "./placeholder";
 
 export type { VaultKeyBackend } from "./keychain";
 

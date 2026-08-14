@@ -1,8 +1,14 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { Message, UserMessage } from "@oh-my-pi/pi-ai";
-import { logger } from "@oh-my-pi/pi-utils";
+import { getBlobsDir, logger, stringifyJson } from "@oh-my-pi/pi-utils";
+import { BlobStore } from "../session/blob-store";
+import type { SessionMessageEntry } from "../session/session-entries";
+import { visitEntriesFromFileStream } from "../session/session-loader";
 import { SessionManager } from "../session/session-manager";
+import { prepareEntryForPersistence } from "../session/session-persistence";
+import { FileSessionStorage, type SessionStorageWriter } from "../session/session-storage";
 
 /**
  * Reserved transcript stem for advisor session files. Chosen so it cannot
@@ -13,6 +19,26 @@ export const ADVISOR_TRANSCRIPT_STEM = "__advisor";
 export const ADVISOR_TRANSCRIPT_FILENAME = `${ADVISOR_TRANSCRIPT_STEM}.jsonl`;
 
 const JSONL_SUFFIX = ".jsonl";
+const TRANSCRIPT_SCAN_CHUNK_BYTES = 64 * 1024;
+const TRANSCRIPT_ENTRY_PREFIX_BYTES = 4 * 1024;
+const transcriptPrefixDecoder = new TextDecoder("utf-8");
+
+function extractPersistedEntryId(prefix: string): string | null {
+	const idMarker = '"id":"';
+	const parentIdMarker = '"parentId":';
+	const idStart = prefix.indexOf(idMarker);
+	const parentIdStart = prefix.indexOf(parentIdMarker);
+	if (idStart < 0 || parentIdStart < idStart) return null;
+	const valueStart = idStart + idMarker.length;
+	const valueEnd = prefix.indexOf('"', valueStart);
+	if (valueEnd < 0) return null;
+	const id = prefix.slice(valueStart, valueEnd);
+	return id && !id.includes("\\") ? id : null;
+}
+
+function isPersistedMetadataPrefix(prefix: string): boolean {
+	return prefix.startsWith('{"type":"session",') || prefix.startsWith('{"type":"title",');
+}
 
 /**
  * Transcript filename for an advisor: `__advisor.jsonl` for the legacy/default
@@ -29,6 +55,60 @@ export function isAdvisorTranscriptName(name: string): boolean {
 		name === ADVISOR_TRANSCRIPT_FILENAME ||
 		(name.startsWith(`${ADVISOR_TRANSCRIPT_STEM}.`) && name.endsWith(JSONL_SUFFIX))
 	);
+}
+
+/**
+ * Sum the advisor spend already persisted next to a primary session transcript,
+ * keyed by advisor slug.
+ *
+ * The ledger a session keeps in memory only covers the current process, so a
+ * resumed session would report zero until the next advisor turn. The recorded
+ * transcripts are the durable copy of exactly the same finalized messages, so
+ * they are read back through the shared loader - no lock, no writer, and no
+ * second parser to keep in step with the session format.
+ *
+ * Only the session's own advisors count: subagent advisors write to
+ * `<session>/<SubId>/__advisor.jsonl`, and their spend belongs to the subagent,
+ * not to this roster. Hence the scan stays at the top level of the directory.
+ */
+export async function loadAdvisorTranscriptCosts(sessionFile: string | undefined): Promise<Map<string, number>> {
+	const costs = new Map<string, number>();
+	if (!sessionFile?.endsWith(JSONL_SUFFIX)) return costs;
+	const directory = sessionFile.slice(0, -JSONL_SUFFIX.length);
+	const dirents = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+	for (const dirent of dirents) {
+		if (!dirent.isFile() || !isAdvisorTranscriptName(dirent.name)) continue;
+		const slug =
+			dirent.name === ADVISOR_TRANSCRIPT_FILENAME
+				? ""
+				: dirent.name.slice(`${ADVISOR_TRANSCRIPT_STEM}.`.length, -JSONL_SUFFIX.length);
+		let total = 0;
+		let validHeader: boolean | undefined;
+		try {
+			await visitEntriesFromFileStream(path.join(directory, dirent.name), entry => {
+				const isObject = typeof entry === "object" && entry !== null;
+				if (validHeader === undefined) {
+					validHeader = isObject && entry.type === "session" && typeof entry.id === "string";
+					return;
+				}
+				// A syntactically valid but non-object entry (e.g. a bare `null`
+				// line) must cost only itself, not crash entry.type access and
+				// discard everything accumulated for this transcript.
+				if (!validHeader || !isObject || entry.type !== "message") return;
+				const message = entry.message;
+				if (!message || typeof message !== "object" || message.role !== "assistant") return;
+				// One malformed usage block must cost that entry only, not the
+				// whole transcript's total.
+				const total_ = message.usage?.cost?.total;
+				if (typeof total_ === "number" && Number.isFinite(total_)) total += total_;
+			});
+		} catch (err) {
+			logger.debug("advisor transcript cost read failed", { file: dirent.name, err: String(err) });
+			continue;
+		}
+		if (total > 0) costs.set(slug, total);
+	}
+	return costs;
 }
 
 /**
@@ -53,10 +133,13 @@ export function isAdvisorTranscriptName(name: string): boolean {
  * context resets/compacts independently, but every billed turn is appended here.
  */
 export class AdvisorTranscriptRecorder {
-	#manager: SessionManager | undefined;
+	#writer: SessionStorageWriter | undefined;
 	#file: string | undefined;
+	#lastEntryId: string | null = null;
 	#filename: string;
-	/** Serializes the async open/close against synchronous appends so records land in order. */
+	readonly #storage = new FileSessionStorage();
+	readonly #blobs = new BlobStore(getBlobsDir());
+	/** Serializes async setup/close against appends so records land in order. */
 	#queue: Promise<void>;
 
 	/**
@@ -108,38 +191,176 @@ export class AdvisorTranscriptRecorder {
 		if (!sessionFile?.endsWith(JSONL_SUFFIX)) return;
 		const file = path.join(sessionFile.slice(0, -JSONL_SUFFIX.length), this.#filename);
 		const cwd = this.resolveCwd();
-		this.#enqueue(async () => {
-			if (file !== this.#file) {
-				await this.#closeManager();
-				this.#manager = await SessionManager.open(file, undefined, undefined, {
-					initialCwd: cwd,
-					suppressBreadcrumb: true,
-				});
-				this.#file = file;
-			}
-			this.#manager?.appendMessage(persisted);
-		});
+		this.#enqueue(() => this.#append(file, cwd, persisted));
 	}
 
 	/** Flush pending writes (best-effort). */
 	flush(): Promise<void> {
 		return this.#enqueueResult(async () => {
-			if (this.#manager) await this.#manager.flush();
+			if (this.#writer) await this.#writer.flush();
 		});
 	}
 
 	/** Flush and close the writer, releasing the session file. */
 	close(): Promise<void> {
-		return this.#enqueueResult(() => this.#closeManager());
+		return this.#enqueueResult(() => this.#closeWriter());
 	}
 
-	async #closeManager(): Promise<void> {
-		const manager = this.#manager;
-		this.#manager = undefined;
+	async #append(file: string, cwd: string, message: Message): Promise<void> {
+		if (file !== this.#file) {
+			await this.#closeWriter();
+			const fileExists = await this.#storage.exists(file);
+			if (!fileExists || this.#storage.statSync(file).size === 0) {
+				const manager = await SessionManager.open(file, undefined, this.#storage, {
+					initialCwd: cwd,
+					suppressBreadcrumb: true,
+				});
+				try {
+					this.#lastEntryId = manager.appendMessage(message);
+					await manager.flush();
+				} finally {
+					await manager.close();
+				}
+				this.#writer = this.#storage.openWriter(file, { flags: "a" });
+				this.#file = file;
+				return;
+			}
+			this.#lastEntryId = await this.#prepareExistingTail(file);
+			this.#writer = this.#storage.openWriter(file, { flags: "a" });
+			this.#file = file;
+		}
+
+		const entry: SessionMessageEntry = {
+			type: "message",
+			id: Bun.randomUUIDv7(),
+			parentId: this.#lastEntryId,
+			timestamp: new Date().toISOString(),
+			message,
+		};
+		const line = `${stringifyJson(prepareEntryForPersistence(entry, this.#blobs)) ?? "null"}\n`;
+		const writer = this.#writer;
+		if (!writer) throw new Error("Advisor transcript writer is unavailable");
+		await writer.append(line);
+		this.#lastEntryId = entry.id;
+	}
+
+	async #prepareExistingTail(file: string): Promise<string | null> {
+		const expectedSize = this.#storage.statSync(file).size;
+		let lineEnd = await this.#trimTrailingLineBreaks(file, expectedSize);
+		let trailingCorruption = false;
+		let truncateTo: number | null = null;
+		while (lineEnd > 0) {
+			const lineStart = await this.#findLineStart(file, lineEnd);
+			const contentEnd = await this.#trimTrailingHorizontalWhitespace(file, lineStart, lineEnd);
+			const lineLength = contentEnd - lineStart;
+			const prefixLength = Math.min(TRANSCRIPT_ENTRY_PREFIX_BYTES, lineLength);
+			const prefixBytes = await this.#storage.readBytes(file, lineStart, prefixLength);
+			const finalByte =
+				contentEnd > lineStart ? await this.#storage.readBytes(file, contentEnd - 1, 1) : new Uint8Array();
+			let validRecord = false;
+			if (finalByte[0] === 125) {
+				const prefix = transcriptPrefixDecoder.decode(prefixBytes);
+				const id = extractPersistedEntryId(prefix);
+				if (id !== null) {
+					if (!trailingCorruption) return id;
+					const boundary = truncateTo ?? (await this.#lineTerminatorEnd(file, lineEnd, expectedSize));
+					return this.#truncateCorruptTail(file, expectedSize, boundary, id);
+				}
+				if (isPersistedMetadataPrefix(prefix)) {
+					validRecord = true;
+				} else if (prefixLength === lineLength) {
+					try {
+						JSON.parse(prefix);
+						validRecord = true;
+					} catch {
+						// A complete-looking but invalid record is still trailing corruption.
+					}
+				}
+			}
+			if (validRecord) {
+				if (trailingCorruption && truncateTo === null) {
+					truncateTo = await this.#lineTerminatorEnd(file, lineEnd, expectedSize);
+				}
+			} else {
+				trailingCorruption = true;
+			}
+			lineEnd = await this.#trimTrailingLineBreaks(file, lineStart);
+		}
+		if (trailingCorruption) {
+			if (truncateTo === null) throw new Error(`Advisor transcript has no valid JSONL records: ${file}`);
+			return this.#truncateCorruptTail(file, expectedSize, truncateTo, null);
+		}
+		return null;
+	}
+
+	async #lineTerminatorEnd(file: string, lineEnd: number, fileSize: number): Promise<number> {
+		const terminator = await this.#storage.readBytes(file, lineEnd, Math.min(2, fileSize - lineEnd));
+		let boundary = lineEnd;
+		for (const byte of terminator) {
+			if (byte !== 10 && byte !== 13) break;
+			boundary++;
+		}
+		return boundary;
+	}
+
+	async #truncateCorruptTail(
+		file: string,
+		expectedSize: number,
+		truncateTo: number,
+		lastEntryId: string | null,
+	): Promise<string | null> {
+		if (this.#storage.statSync(file).size !== expectedSize) return this.#prepareExistingTail(file);
+		await this.#storage.truncate(file, truncateTo);
+		return lastEntryId;
+	}
+
+	async #trimTrailingHorizontalWhitespace(file: string, start: number, end: number): Promise<number> {
+		let cursor = end;
+		while (cursor > start) {
+			const chunkStart = Math.max(start, cursor - TRANSCRIPT_SCAN_CHUNK_BYTES);
+			const chunk = await this.#storage.readBytes(file, chunkStart, cursor - chunkStart);
+			for (let index = chunk.length - 1; index >= 0; index--) {
+				if (chunk[index] !== 9 && chunk[index] !== 32) return chunkStart + index + 1;
+			}
+			cursor = chunkStart;
+		}
+		return start;
+	}
+
+	async #trimTrailingLineBreaks(file: string, end: number): Promise<number> {
+		let cursor = end;
+		while (cursor > 0) {
+			const start = Math.max(0, cursor - TRANSCRIPT_SCAN_CHUNK_BYTES);
+			const chunk = await this.#storage.readBytes(file, start, cursor - start);
+			for (let index = chunk.length - 1; index >= 0; index--) {
+				if (chunk[index] !== 10 && chunk[index] !== 13) return start + index + 1;
+			}
+			cursor = start;
+		}
+		return 0;
+	}
+
+	async #findLineStart(file: string, lineEnd: number): Promise<number> {
+		let cursor = lineEnd;
+		while (cursor > 0) {
+			const start = Math.max(0, cursor - TRANSCRIPT_SCAN_CHUNK_BYTES);
+			const chunk = await this.#storage.readBytes(file, start, cursor - start);
+			for (let index = chunk.length - 1; index >= 0; index--) {
+				if (chunk[index] === 10) return start + index + 1;
+			}
+			cursor = start;
+		}
+		return 0;
+	}
+
+	async #closeWriter(): Promise<void> {
+		const writer = this.#writer;
+		this.#writer = undefined;
 		this.#file = undefined;
-		if (!manager) return;
+		this.#lastEntryId = null;
+		if (!writer) return;
 		try {
-			await manager.close();
+			await writer.close();
 		} catch (err) {
 			logger.debug("advisor transcript close failed", { err: String(err) });
 		}

@@ -16,6 +16,7 @@ import {
 import { createIrcMessageCard } from "../../tools/hub";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
+import { ToolActivityContainer } from "../components/tool-activity";
 import { TranscriptBlock } from "../components/transcript-container";
 import { theme } from "../theme/theme";
 
@@ -27,7 +28,7 @@ type AssistantAgentMessage = Extract<AgentMessage, { role: "assistant" }>;
  * or a batch of them) as a transcript block of one "Background job completed"
  * row per job.
  */
-export function buildAsyncResultBlock(message: CustomOrHookMessage): TranscriptBlock {
+export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivityContainer {
 	const details = (
 		message as CustomMessage<{
 			jobId?: string;
@@ -63,7 +64,7 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): TranscriptB
 			.join(" ");
 		block.addChild(new Text(line, 1, 0));
 	}
-	return block;
+	return new ToolActivityContainer(block);
 }
 
 /**
@@ -211,13 +212,15 @@ function sanitizeRecoveredRetryNote(note: string): string {
 
 /**
  * Resolve the turn-ending assistant error presentation, if any.
- * Silent and user-interrupt aborts yield no label. Recovered auto-retry errors
- * collapse to a single non-error note; terminal errors keep the full red presentation.
+ * Silent and user-interrupt aborts yield no label. Recovered retry attempts
+ * render a compact note; attempts superseded by an exhausted budget are hidden
+ * while the final terminal error keeps its full presentation.
  */
 export function resolveAssistantErrorPresentation(
 	message: AssistantAgentMessage,
 	retryAttempt = 0,
 ): AssistantErrorPresentation {
+	if (message.retryRecovery?.status === "superseded") return { kind: "none" };
 	if (message.retryRecovery?.status === "recovered") {
 		return {
 			kind: "compact-recovered",

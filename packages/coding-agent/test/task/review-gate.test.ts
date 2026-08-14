@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
 import type { LoadExtensionsResult } from "../../src/extensibility/extensions/types";
@@ -163,6 +164,7 @@ function createScriptedSession(script: RoleScript): AgentSession {
 			});
 		},
 		waitForIdle: async () => {},
+		setIrcWakeTurnObserver: () => {},
 		getLastAssistantMessage: () => state.messages[state.messages.length - 1],
 		abort: async () => {},
 		dispose: async () => {},
@@ -307,6 +309,10 @@ async function initUnbornStatsRepo(): Promise<string> {
 	return repo;
 }
 
+const configuredModels = getBundledModels("openai-codex").filter(model =>
+	["codex-auto-review", "gpt-5.5"].includes(model.id),
+);
+if (configuredModels.length !== 2) throw new Error("Expected bundled reviewer test models");
 function createSession(overrides: Partial<Record<string, unknown>> = {}, cwd = "/tmp"): ToolSession {
 	const authStorage = {
 		onCredentialDisabled: () => () => {},
@@ -314,7 +320,7 @@ function createSession(overrides: Partial<Record<string, unknown>> = {}, cwd = "
 	const modelRegistry = {
 		authStorage,
 		refresh: async () => {},
-		getAvailable: () => [],
+		getAvailable: () => configuredModels,
 		syncExtensionSources: () => {},
 		clearSourceRegistrations: () => {},
 		refreshRuntimeProviders: async () => {},
@@ -690,6 +696,59 @@ describe("task review gate", () => {
 
 		expect(trace.map(t => t.role)).toEqual(["implementer", "reviewer"]);
 		expect(isolation.captureDeltaPatch).toHaveBeenCalledTimes(1);
+		expect(firstResult(result).exitCode).toBe(0);
+	});
+
+	it("prefers the configured reviewer agent model over the native review gate default", async () => {
+		mockDiscoveredAgents([
+			{
+				name: "heavy_task",
+				description: "Heavy high-accuracy implementer",
+				systemPrompt: "Implement heavy delegated work.",
+				source: "bundled",
+				model: ["pi/task", "pi/slow"],
+				reviewGate: {
+					enabled: true,
+					reviewerAgent: REVIEWER_AGENT,
+					reviewerModel: ["openai-codex/gpt-5.5:xhigh"],
+					fixerAgent: FIXER_AGENT,
+					maxFixIterations: 2,
+					failOnPriorities: [0, 1],
+					requireCorrectVerdict: true,
+				},
+			} as unknown as AgentDefinition,
+			{
+				name: REVIEWER_AGENT,
+				description: "Reviewer agent",
+				systemPrompt: "Review the patch.",
+				source: "bundled",
+			},
+			{
+				name: FIXER_AGENT,
+				description: "Fixer agent",
+				systemPrompt: "Address reviewer findings.",
+				source: "bundled",
+			},
+		]);
+		mockIsolation();
+		mockSessionQueue([{ role: "implementer" }, { role: "reviewer", verdict: correctVerdict() }]);
+		const runSpy = vi.spyOn(executorModule, "runSubprocess");
+
+		const tool = await TaskTool.create(
+			createSession({
+				"task.agentModelOverrides": {
+					[REVIEWER_AGENT]: "openai-codex/codex-auto-review",
+				},
+			}),
+		);
+		const result = await tool.execute("call-configured-reviewer-model", {
+			...TASK_PARAMS,
+			agent: "heavy_task",
+			isolated: true,
+		});
+
+		expect(runSpy.mock.calls[1]?.[0].modelOverride).toEqual(["openai-codex/codex-auto-review"]);
+		expect(runSpy.mock.calls[1]?.[0].modelSelectorFromUserConfig).toBe(true);
 		expect(firstResult(result).exitCode).toBe(0);
 	});
 

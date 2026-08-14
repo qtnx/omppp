@@ -8,8 +8,9 @@ import {
 	getImageGenToolsWithRegistry,
 	imageGenTool,
 	setImageProviderOrder,
+	setXaiImageModel,
 } from "@oh-my-pi/pi-coding-agent/tools/image-gen";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { removeWithRetries, USER_AGENT } from "@oh-my-pi/pi-utils";
 
 const originalOpenRouterKey = Bun.env.OPENROUTER_API_KEY;
 const generatedImagePaths: string[] = [];
@@ -22,6 +23,7 @@ afterEach(async () => {
 		Bun.env.OPENROUTER_API_KEY = originalOpenRouterKey;
 	}
 	setImageProviderOrder([]);
+	setXaiImageModel(undefined);
 });
 
 function createAntigravityXAIContext(model: Model | undefined, fetchMock: typeof fetch): CustomToolContext {
@@ -618,7 +620,7 @@ describe("imageGenTool", () => {
 
 		expect(requestUrl).toBe("https://api.x.ai/v1/images/generations");
 		expect(captured.authorization).toBe("Bearer test-xai-token");
-		expect(captured.userAgent).toBe("oh-my-pi/xai");
+		expect(captured.userAgent).toBe(USER_AGENT);
 		expect(requestBody).toMatchObject({
 			model: "grok-imagine-image",
 			prompt: "a cat.",
@@ -633,6 +635,46 @@ describe("imageGenTool", () => {
 		const savedPath = result.details?.imagePaths[0];
 		if (!savedPath) throw new Error("Expected generated image path");
 		expect(await Bun.file(savedPath).bytes()).toEqual(Buffer.from("fake-xai-image"));
+	});
+
+	it("sends the configured xAI quality model instead of the standard tier", async () => {
+		setXaiImageModel("grok-imagine-image-quality");
+		let requestBody: Record<string, unknown> | undefined;
+		const fetchMock: typeof fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+			requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return new Response(
+				JSON.stringify({ data: [{ b64_json: Buffer.from("fake-xai-quality-image").toString("base64") }] }),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as unknown as typeof fetch;
+
+		const ctx: CustomToolContext = {
+			fetch: fetchMock,
+			sessionManager: {
+				getCwd: () => "/tmp",
+				getSessionId: () => "test-session",
+			} as unknown as ReadonlySessionManager,
+			modelRegistry: {
+				getApiKeyForProvider: async (provider: string) => (provider === "xai-oauth" ? "test-xai-token" : undefined),
+				getProviderBaseUrl: () => undefined,
+				getAll: () => [],
+				authStorage: {
+					hasNonEnvCredential: (provider: string) => provider === "xai-oauth",
+					rotateSessionCredential: async () => false,
+				},
+				resolver: () => async () => "test-xai-token",
+			} as unknown as ModelRegistry,
+			model: undefined,
+			isIdle: () => true,
+			hasQueuedMessages: () => false,
+			abort: () => {},
+		};
+
+		const result = await imageGenTool.execute("call-xai-quality", { subject: "a cat" }, undefined, ctx);
+		generatedImagePaths.push(...(result.details?.imagePaths ?? []));
+
+		expect(requestBody).toMatchObject({ model: "grok-imagine-image-quality" });
+		expect(result.details?.model).toBe("grok-imagine-image-quality");
 	});
 
 	it("prefers the active xAI provider over unrelated credentialed providers", async () => {

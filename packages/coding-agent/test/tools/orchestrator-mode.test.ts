@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -12,7 +13,6 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { OrchestratorModeTool } from "@oh-my-pi/pi-coding-agent/tools/orchestrator-mode";
 import { ToolError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { type } from "arktype";
 
 type OrchestratorModeDetails = {
 	enabled: boolean;

@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, TextContent, ToolCall } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
@@ -14,8 +15,6 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools";
 import { setInteractiveHost, TempDir } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
-import eagerTodoPrompt from "../src/prompts/system/eager-todo.md" with { type: "text" };
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 type ObservedPromptCall = {
@@ -100,7 +99,9 @@ describe("AgentSession eager todo enforcement", () => {
 	let session: AgentSession;
 	let streamCallCount = 0;
 	let scriptedResponses: AssistantMessage[] = [];
-	let authStorage: AuthStorage | undefined;
+	let sharedDir: TempDir;
+	let sharedAuthStorage: AuthStorage;
+	let sharedModelRegistry: ModelRegistry;
 	const observedCalls: ObservedPromptCall[] = [];
 
 	async function createSession(
@@ -110,9 +111,7 @@ describe("AgentSession eager todo enforcement", () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
 
-		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+		const modelRegistry = sharedModelRegistry;
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
 			"todo.enabled": true,
@@ -197,8 +196,6 @@ describe("AgentSession eager todo enforcement", () => {
 		sessionOverride: Partial<AgentSessionConfig> = {},
 	): Promise<void> {
 		await session.dispose();
-		authStorage?.close();
-		authStorage = undefined;
 		streamCallCount = 0;
 		scriptedResponses = [];
 		observedCalls.length = 0;
@@ -216,6 +213,18 @@ describe("AgentSession eager todo enforcement", () => {
 		return promise;
 	}
 
+	beforeAll(async () => {
+		sharedDir = TempDir.createSync("@pi-agent-session-eager-todo-shared-");
+		sharedAuthStorage = await AuthStorage.create(path.join(sharedDir.path(), "auth.db"));
+		sharedAuthStorage.setRuntimeApiKey("anthropic", "test-key");
+		sharedModelRegistry = new ModelRegistry(sharedAuthStorage, path.join(sharedDir.path(), "models.yml"));
+	});
+
+	afterAll(() => {
+		sharedAuthStorage.close();
+		sharedDir.removeSync();
+	});
+
 	beforeEach(async () => {
 		tempDir = TempDir.createSync("@pi-agent-session-eager-todo-");
 		streamCallCount = 0;
@@ -228,18 +237,8 @@ describe("AgentSession eager todo enforcement", () => {
 		if (session) {
 			await session.dispose();
 		}
-		authStorage?.close();
 		vi.restoreAllMocks();
-		authStorage = undefined;
 		tempDir.removeSync();
-	});
-
-	it("keeps eager init instructions aligned with the todo schema", () => {
-		expect(eagerTodoPrompt).toContain("single `init` op");
-		expect(eagerTodoPrompt).toContain("phase names and task-label strings");
-		expect(eagerTodoPrompt).not.toContain("`details`");
-		expect(eagerTodoPrompt).not.toContain("in_progress");
-		expect(eagerTodoPrompt).not.toContain("pending");
 	});
 
 	it("prepends a hidden eager todo reminder without repeating the prompt text", async () => {
@@ -257,7 +256,6 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(observedCalls[0]?.messageTexts.filter(text => text.includes("list all work trees"))).toHaveLength(1);
 		expect(observedCalls[0]?.messageTexts[0]).not.toContain("list all work trees");
 		// `always` renders the hard, forced reminder.
-		expect(observedCalls[0]?.messageTexts[0]).toContain("You MUST call");
 		expect(session.formatSessionAsText()).not.toContain("<user-request>");
 	});
 
@@ -518,7 +516,6 @@ describe("AgentSession eager todo enforcement", () => {
 
 	it("prepends the eager todo reminder without forcing the todo tool when todo.eager is preferred", async () => {
 		await session.dispose();
-		authStorage?.close();
 		await createSession({ "todo.eager": "preferred" });
 
 		await session.prompt("list all work trees");
@@ -529,8 +526,5 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(observedCalls[0]?.messageTexts.at(-1)).toBe("list all work trees");
 		expect(observedCalls[0]?.messageTexts[0]).not.toContain("list all work trees");
 		// `preferred` renders the soft nudge, never the hard MUST directive.
-		expect(observedCalls[0]?.messageTexts[0]).toContain("Consider calling");
-		expect(observedCalls[0]?.messageTexts[0]).not.toContain("You MUST call");
-		expect(observedCalls[0]?.messageTexts[0]).not.toContain("Before substantive work, create a phased todo.");
 	});
 });

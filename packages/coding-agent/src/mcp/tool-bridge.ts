@@ -6,7 +6,7 @@
 import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { TSchema } from "@oh-my-pi/pi-ai";
 import { normalizeSchemaForMCP } from "@oh-my-pi/pi-ai/utils/schema";
-import { untilAborted } from "@oh-my-pi/pi-utils";
+import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { SourceMeta } from "../capability/types";
 import type {
@@ -355,6 +355,66 @@ export function createMCPToolName(serverName: string, toolName: string): string 
 	}
 
 	return `mcp__${sanitizedServerName}_${normalizedToolName}`;
+}
+
+export interface MCPToolOriginSource {
+	readonly name: string;
+	readonly mcpServerName?: unknown;
+	readonly mcpToolName?: unknown;
+}
+
+/** Stable identity for a tool's original MCP route, before its public name was normalized. */
+export function getMCPToolOriginKey(tool: MCPToolOriginSource): string | undefined {
+	if (typeof tool.mcpServerName !== "string" || typeof tool.mcpToolName !== "string") return undefined;
+	return `${tool.mcpServerName}\u0000${tool.mcpToolName}`;
+}
+
+/**
+ * Keeps one MCP tool per minted name and logs collisions between distinct MCP
+ * origins. The winner is chosen by a stable origin key (server name + original
+ * tool name), NOT array order: MCPManager re-appends a reconnecting server's
+ * tools, so insertion order is mutable across reconnects and first-wins would
+ * silently flip ownership of the minted name. Non-MCP tools pass through
+ * unchanged.
+ */
+export function deduplicateMCPToolsByName<T extends MCPToolOriginSource>(tools: readonly T[]): T[] {
+	const deduplicated: T[] = [];
+	const registered = new Map<string, { tool: T; originKey: string; index: number }>();
+
+	for (const tool of tools) {
+		const originKey = getMCPToolOriginKey(tool);
+		if (originKey === undefined) {
+			deduplicated.push(tool);
+			continue;
+		}
+		const existing = registered.get(tool.name);
+		if (!existing) {
+			registered.set(tool.name, { tool, originKey, index: deduplicated.length });
+			deduplicated.push(tool);
+			continue;
+		}
+
+		if (existing.originKey === originKey) continue;
+
+		// Deterministic winner regardless of encounter order across reconnects.
+		const keepExisting = existing.originKey < originKey;
+		const winner = keepExisting ? existing.tool : tool;
+		const loser = keepExisting ? tool : existing.tool;
+		if (!keepExisting) {
+			deduplicated[existing.index] = tool;
+			existing.tool = tool;
+			existing.originKey = originKey;
+		}
+		logger.warn("MCP tool name collision; keeping stable winner", {
+			name: tool.name,
+			keptServer: winner.mcpServerName,
+			keptTool: winner.mcpToolName,
+			ignoredServer: loser.mcpServerName,
+			ignoredTool: loser.mcpToolName,
+		});
+	}
+
+	return deduplicated;
 }
 
 /**

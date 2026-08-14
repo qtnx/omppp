@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import {
 	Agent,
 	type AgentTool,
@@ -17,7 +18,6 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { OutputMeta } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 
 function createModel(): Model<"openai-responses"> {
 	return buildModel({

@@ -11,7 +11,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { loadSlashCommands } from "@oh-my-pi/pi-coding-agent/extensibility/slash-commands";
 import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 import "@oh-my-pi/pi-coding-agent/discovery/claude-plugins";
 import { type MCPServer, mcpCapability } from "@oh-my-pi/pi-coding-agent/capability/mcp";
 import type { Skill } from "@oh-my-pi/pi-coding-agent/capability/skill";
@@ -60,29 +60,53 @@ describe("parseClaudePluginsRegistry", () => {
 	});
 });
 
+function restoreEnvValue(key: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[key];
+		delete Bun.env[key];
+		return;
+	}
+	process.env[key] = value;
+	Bun.env[key] = value;
+}
+
 describe("listClaudePluginRoots", () => {
 	let tempDir: string;
+	let testAgentDir: string;
 	let originalHome: string | undefined;
+	let originalAgentDirEnv: string | undefined;
+	let originalOmpProfileEnv: string | undefined;
+	let originalPiProfileEnv: string | undefined;
 
 	beforeEach(async () => {
 		clearClaudePluginRootsCache();
 		clearFsCache();
 		originalHome = process.env.HOME;
+		originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
+		originalOmpProfileEnv = process.env.OMP_PROFILE;
+		originalPiProfileEnv = process.env.PI_PROFILE;
 		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "claude-plugins-test-"));
+		testAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "claude-plugins-test-agent-"));
 		process.env.HOME = tempDir;
 		vi.spyOn(os, "homedir").mockReturnValue(tempDir);
+		// Point the agent dir at a temp dir so user-scope discovery (native MCP
+		// config, skills, etc.) cannot read the real ~/.omp/agent profile.
+		setAgentDir(testAgentDir);
 	});
 
 	afterEach(async () => {
 		clearClaudePluginRootsCache();
 		clearFsCache();
 		vi.restoreAllMocks();
-		if (originalHome === undefined) {
-			delete process.env.HOME;
-		} else {
-			process.env.HOME = originalHome;
-		}
+		// setAgentDir() clears the profile env vars and snapshots the agent dir,
+		// so restore every env var it can touch before rebuilding the resolver.
+		restoreEnvValue("HOME", originalHome);
+		restoreEnvValue("OMP_PROFILE", originalOmpProfileEnv);
+		restoreEnvValue("PI_PROFILE", originalPiProfileEnv);
+		restoreEnvValue("PI_CODING_AGENT_DIR", originalAgentDirEnv);
+		__resetDirsFromEnvForTests();
 		await removeWithRetries(tempDir);
+		await removeWithRetries(testAgentDir);
 	});
 
 	test("returns empty roots when no registry file exists", async () => {
@@ -551,7 +575,7 @@ describe("listClaudePluginRoots", () => {
 		expect(found?._source.path).toBe(path.join(pluginPath, ".claude-plugin", "plugin.json"));
 	});
 
-	test("still reads manifest MCP servers when plugin .mcp.json is invalid", async () => {
+	test("uses manifest MCP servers without parsing an invalid fallback .mcp.json", async () => {
 		const pluginsDir = path.join(tempDir, ".claude", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-mcp-invalid-file");
 		await fs.mkdir(pluginsDir, { recursive: true });
@@ -583,7 +607,7 @@ describe("listClaudePluginRoots", () => {
 		const result = await loadCapability<MCPServer>("mcps", { cwd: tempDir });
 		const found = result.all.find(server => server.name === "manifest-mcp-invalid-file:browser");
 
-		expect(result.warnings.some(warning => warning.includes("Invalid JSON"))).toBe(true);
+		expect(result.warnings.some(warning => warning.includes("Invalid JSON"))).toBe(false);
 		expect(found).toBeDefined();
 		expect(found?._source.path).toBe(path.join(pluginPath, ".claude-plugin", "plugin.json"));
 	});
@@ -645,6 +669,209 @@ describe("listClaudePluginRoots", () => {
 			if (originalUrl === undefined) delete process.env.OMP_PLUGIN_MCP_URL;
 			else process.env.OMP_PLUGIN_MCP_URL = originalUrl;
 		}
+	});
+
+	test("uses OMP then Claude manifest mcpServers paths before .mcp.json", async () => {
+		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const ompPluginPath = path.join(tempDir, "plugins", "omp-pointer");
+		const claudePluginPath = path.join(tempDir, "plugins", "claude-pointer");
+		await fs.mkdir(pluginsDir, { recursive: true });
+		await Promise.all([
+			fs.mkdir(path.join(ompPluginPath, ".omp-plugin"), { recursive: true }),
+			fs.mkdir(path.join(ompPluginPath, ".claude-plugin"), { recursive: true }),
+			fs.mkdir(path.join(claudePluginPath, ".claude-plugin"), { recursive: true }),
+		]);
+		await fs.writeFile(
+			path.join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({
+				version: 2,
+				plugins: {
+					"omp-pointer@market": [
+						{
+							scope: "user",
+							installPath: ompPluginPath,
+							version: "1.0.0",
+							installedAt: "2026-07-28T00:00:00Z",
+							lastUpdated: "2026-07-28T00:00:00Z",
+						},
+					],
+					"claude-pointer@market": [
+						{
+							scope: "user",
+							installPath: claudePluginPath,
+							version: "1.0.0",
+							installedAt: "2026-07-28T00:00:00Z",
+							lastUpdated: "2026-07-28T00:00:00Z",
+						},
+					],
+				},
+			}),
+		);
+		await Promise.all([
+			fs.writeFile(
+				path.join(ompPluginPath, ".omp-plugin", "plugin.json"),
+				JSON.stringify({ mcpServers: "./mcp-omp.json" }),
+			),
+			fs.writeFile(
+				path.join(ompPluginPath, ".claude-plugin", "plugin.json"),
+				JSON.stringify({ mcpServers: "./mcp-claude.json" }),
+			),
+			fs.writeFile(path.join(ompPluginPath, "mcp-omp.json"), JSON.stringify({ "from-omp": { command: "omp" } })),
+			fs.writeFile(
+				path.join(ompPluginPath, "mcp-claude.json"),
+				JSON.stringify({ "from-claude": { command: "claude" } }),
+			),
+			fs.writeFile(path.join(ompPluginPath, ".mcp.json"), JSON.stringify({ "from-root": { command: "root" } })),
+			fs.writeFile(
+				path.join(claudePluginPath, ".claude-plugin", "plugin.json"),
+				JSON.stringify({ mcpServers: "./mcp-claude.json" }),
+			),
+			fs.writeFile(
+				path.join(claudePluginPath, "mcp-claude.json"),
+				JSON.stringify({ "from-claude": { command: "claude" } }),
+			),
+			fs.writeFile(path.join(claudePluginPath, ".mcp.json"), JSON.stringify({ "from-root": { command: "root" } })),
+		]);
+
+		const result = await loadCapability<MCPServer>(mcpCapability.id, {
+			cwd: tempDir,
+			providers: ["claude-plugins"],
+		});
+
+		expect(result.warnings).toEqual([]);
+		expect(result.all.map(server => server.name).sort()).toEqual([
+			"claude-pointer:from-claude",
+			"omp-pointer:from-omp",
+		]);
+	});
+
+	test("loads inline manifest mcpServers object and roots relative stdio at plugin root", async () => {
+		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginPath = path.join(tempDir, "plugins", "inline-mcp");
+		await fs.mkdir(pluginsDir, { recursive: true });
+		await fs.mkdir(path.join(pluginPath, ".omp-plugin"), { recursive: true });
+		await fs.writeFile(
+			path.join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({
+				version: 2,
+				plugins: {
+					"inline-mcp@market": [
+						{
+							scope: "user",
+							installPath: pluginPath,
+							version: "1.0.0",
+							installedAt: "2026-07-28T00:00:00Z",
+							lastUpdated: "2026-07-28T00:00:00Z",
+						},
+					],
+				},
+			}),
+		);
+		// Inline object form: the manifest carries the server map directly, and no
+		// root .mcp.json exists, so the pre-fix fallback would register nothing.
+		await fs.writeFile(
+			path.join(pluginPath, ".omp-plugin", "plugin.json"),
+			JSON.stringify({ mcpServers: { local: { command: "./bin/server", args: ["run"] } } }),
+		);
+
+		const result = await loadCapability<MCPServer>(mcpCapability.id, {
+			cwd: tempDir,
+			providers: ["claude-plugins"],
+		});
+
+		expect(result.warnings).toEqual([]);
+		const server = result.all.find(item => item.name === "inline-mcp:local");
+		expect(server).toBeDefined();
+		expect(server?.command).toBe(path.join(pluginPath, "bin", "server"));
+		expect(server?.args).toEqual(["run"]);
+	});
+
+	test("warns when a manifest mcpServers pointer names a missing file", async () => {
+		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginPath = path.join(tempDir, "plugins", "broken-pointer");
+		await fs.mkdir(pluginsDir, { recursive: true });
+		await fs.mkdir(path.join(pluginPath, ".omp-plugin"), { recursive: true });
+		await fs.writeFile(
+			path.join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({
+				version: 2,
+				plugins: {
+					"broken-pointer@market": [
+						{
+							scope: "user",
+							installPath: pluginPath,
+							version: "1.0.0",
+							installedAt: "2026-07-28T00:00:00Z",
+							lastUpdated: "2026-07-28T00:00:00Z",
+						},
+					],
+				},
+			}),
+		);
+		// Pointer names a file the plugin never shipped: discovery must say so
+		// instead of silently registering nothing.
+		await fs.writeFile(
+			path.join(pluginPath, ".omp-plugin", "plugin.json"),
+			JSON.stringify({ mcpServers: "./mcp-omp.json" }),
+		);
+		await fs.writeFile(path.join(pluginPath, ".mcp.json"), JSON.stringify({ "from-root": { command: "root" } }));
+
+		const result = await loadCapability<MCPServer>(mcpCapability.id, {
+			cwd: tempDir,
+			providers: ["claude-plugins"],
+		});
+
+		expect(result.all.map(server => server.name)).toEqual([]);
+		expect(result.warnings).toEqual([
+			`[Claude Code Marketplace] [claude-plugins] Missing mcpServers file declared by broken-pointer@market: ${path.join(pluginPath, "mcp-omp.json")}`,
+		]);
+	});
+
+	test("deduplicates a plugin alias of a directly configured MCP connection", async () => {
+		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginPath = path.join(tempDir, "plugins", "context7");
+		const directConfigPath = path.join(tempDir, ".omp", "mcp.json");
+		const connection = {
+			type: "http",
+			url: "https://mcp.context7.example/mcp",
+			headers: { CONTEXT7_API_KEY: "ctx7sk-test-key" },
+		};
+		await fs.mkdir(pluginsDir, { recursive: true });
+		await fs.mkdir(pluginPath, { recursive: true });
+		await fs.mkdir(path.dirname(directConfigPath), { recursive: true });
+		await fs.writeFile(
+			path.join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({
+				version: 2,
+				plugins: {
+					"context7@claude-plugins-official": [
+						{
+							scope: "user",
+							installPath: pluginPath,
+							version: "1.0.0",
+							installedAt: "2026-06-01T00:00:00Z",
+							lastUpdated: "2026-06-01T00:00:00Z",
+						},
+					],
+				},
+			}),
+		);
+		await fs.writeFile(path.join(pluginPath, ".mcp.json"), JSON.stringify({ context7: connection }));
+		await fs.writeFile(
+			directConfigPath,
+			JSON.stringify({
+				mcpServers: { context7: connection },
+			}),
+		);
+
+		const result = await loadCapability<MCPServer>(mcpCapability.id, {
+			cwd: tempDir,
+			providers: ["native", "claude-plugins"],
+		});
+
+		expect(result.items.map(server => server.name)).toEqual(["context7"]);
+		expect(result.items[0]?._source.provider).toBe("native");
+		expect(result.all.find(server => server.name === "context7:context7")?._shadowed).toBe(true);
 	});
 
 	test("resolves relative path-like command and cwd against the plugin config directory", async () => {

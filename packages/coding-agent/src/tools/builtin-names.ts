@@ -16,6 +16,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"glob",
 	"grep",
 	"lsp",
+	"kanban",
 	"inspect_image",
 	"browser",
 	"computer",
@@ -24,6 +25,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"compact",
 	"shake",
 	"workflow",
+	"security_scan",
 	"task",
 	"hub",
 	"job",
@@ -57,6 +59,7 @@ export const HIDDEN_TOOL_NAMES = [
 	"get_goal",
 	"create_goal",
 	"update_goal",
+	"think",
 ] as const;
 
 export type HiddenToolName = (typeof HIDDEN_TOOL_NAMES)[number];

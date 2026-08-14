@@ -19,6 +19,7 @@ class FakeSecretVault implements SecretVaultLike {
 	calls: Array<{ name: string; value: string; source: VaultSecretSource }> = [];
 	readonly keyBackend: VaultKeyBackend = "file";
 	readonly keyMaterialToRedact: string = "fake-vault-key-material";
+	constructor(private readonly entries: SecretEntry[] = []) {}
 
 	list(): VaultSecretMeta[] {
 		return [];
@@ -42,7 +43,7 @@ class FakeSecretVault implements SecretVaultLike {
 	}
 
 	toSecretEntries(): SecretEntry[] {
-		return [];
+		return this.entries;
 	}
 }
 
@@ -215,5 +216,41 @@ describe("AgentSession prompt secret detection", () => {
 		session.registerRuntimeSecrets([vaultSecretEntry("PIN", "1234")]);
 
 		expect(session.obfuscator?.obfuscate("pin is 1234")).not.toContain("1234");
+	});
+
+	it("persists managed secrets in tool results as placeholders rather than plaintext", async () => {
+		const secret = "postmerge-secret-value-1234";
+		const vault = new FakeSecretVault([vaultSecretEntry("POSTMERGE_TOKEN", secret)]);
+		const session = createSession(true, vault);
+		session.registerRuntimeSecrets(vault.toSecretEntries());
+		sessions.push(session);
+		const toolResult = {
+			role: "toolResult" as const,
+			toolCallId: "tool-postmerge-secret",
+			toolName: "bash",
+			content: [{ type: "text" as const, text: `POSTMERGE_TOKEN=${secret}` }],
+			details: { environment: { POSTMERGE_TOKEN: secret } },
+			isError: false,
+			timestamp: 0,
+		};
+		const appendMessage = session.sessionManager.appendMessage.bind(session.sessionManager);
+		const { promise: persistedMessage, resolve } = Promise.withResolvers<void>();
+		session.sessionManager.appendMessage = message => {
+			const entryId = appendMessage(message);
+			if (message === toolResult) resolve();
+			return entryId;
+		};
+		session.agent.emitExternalEvent({ type: "message_end", message: toolResult });
+		await persistedMessage;
+
+		const persisted = session.sessionManager
+			.getEntries()
+			.find(entry => entry.type === "message" && entry.message.role === "toolResult");
+		if (persisted?.type !== "message" || persisted.message.role !== "toolResult") {
+			throw new Error("Expected persisted tool result");
+		}
+		const persistedJson = JSON.stringify(persisted.message);
+		expect(persistedJson).not.toContain(secret);
+		expect(persistedJson).toMatch(/\$\$POSTMERGETOKEN_[A-Z0-9]+:[A-Z]\$\$/);
 	});
 });

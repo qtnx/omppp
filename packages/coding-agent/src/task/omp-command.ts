@@ -5,15 +5,9 @@ import process from "node:process";
 
 import { YAML } from "bun";
 import "../cli/preload-env";
-import {
-	$env,
-	$which,
-	APP_NAME,
-	APP_STORAGE_NAME,
-	CONFIG_DIR_NAME,
-	getAgentDir,
-	getConfigRootDir,
-} from "@oh-my-pi/pi-utils";
+import { APP_NAME, APP_STORAGE_NAME, CONFIG_DIR_NAME, getAgentDir, getConfigRootDir } from "@oh-my-pi/pi-utils/dirs";
+import { $env } from "@oh-my-pi/pi-utils/env";
+import { $which } from "@oh-my-pi/pi-utils/which";
 import { INTERNAL_WORKER_ENTRY_ARGS } from "../cli/worker-selectors";
 import {
 	DEFAULT_LINUX_PODMAN_IMAGE,

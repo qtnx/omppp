@@ -98,6 +98,8 @@ describe("ToolExecutionComponent write repaint seam", () => {
 	});
 
 	it("removes stale pending tail rows from the terminal buffer when the first partial result arrives", async () => {
+		const originalHerdrEnv = Bun.env.HERDR_ENV;
+		delete Bun.env.HERDR_ENV;
 		const term = new VirtualTerminal(80, 8, 1_000);
 		const scheduler = new StressRenderScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -135,6 +137,8 @@ describe("ToolExecutionComponent write repaint seam", () => {
 		} finally {
 			tui.stop();
 			await term.flush();
+			if (originalHerdrEnv === undefined) delete Bun.env.HERDR_ENV;
+			else Bun.env.HERDR_ENV = originalHerdrEnv;
 		}
 	});
 });

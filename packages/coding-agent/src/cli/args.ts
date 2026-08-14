@@ -1,9 +1,11 @@
 /**
  * CLI argument parsing and help display
  */
-import { APP_DISPLAY_NAME, APP_NAME, APP_TAGLINE, CONFIG_DIR_NAME, logger } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import * as path from "node:path";
+import { $env, APP_DISPLAY_NAME, APP_NAME, APP_TAGLINE, CONFIG_DIR_NAME, logger } from "@oh-my-pi/pi-utils";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { DEFAULT_LINUX_PODMAN_IMAGE } from "../config/sandbox-defaults";
+import type { ServiceTierOpenAISettingValue } from "../config/service-tier";
 import { CLI_THINKING_LEVELS, type ConfiguredThinkingLevel, parseCliThinkingLevel } from "../thinking";
 import { BUILTIN_TOOL_NAMES, HIDDEN_TOOL_NAMES, normalizeToolNames } from "../tools/builtin-names";
 import {
@@ -43,10 +45,14 @@ export interface Args {
 	systemPrompt?: string;
 	appendSystemPrompt?: string;
 	thinking?: ConfiguredThinkingLevel;
+	serviceTier?: ServiceTierOpenAISettingValue;
 	hideThinking?: boolean;
 	advisor?: boolean;
+	externalThinking?: boolean;
 	continue?: boolean;
 	resume?: string | true;
+	fromClaude?: boolean;
+	fromCodex?: boolean;
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
@@ -66,6 +72,7 @@ export interface Args {
 	hooks?: string[];
 	noSandbox?: boolean;
 	extensions?: string[];
+	trustedExtensions?: string[];
 	noExtensions?: boolean;
 	pluginDirs?: string[];
 	print?: boolean;
@@ -114,7 +121,7 @@ const PARSE_DEPS: ParseDeps = {
 	thinkingEfforts: CLI_THINKING_LEVELS,
 };
 
-const WINDOWS_PATH_VALUE_FLAGS: ReadonlySet<string> = new Set(["--extension", "-e", "--hook"]);
+const WINDOWS_PATH_VALUE_FLAGS = new Set(["--extension", "-e", "--hook", "--trusted-extension"]);
 const WINDOWS_PATH_START_RE =
 	/^(?:[A-Za-z]:[\\/]|\\\\[?]\\(?:[A-Za-z]:[\\/]|UNC[\\/])|\\\\[^\\/]+[\\/][^\\/]+[\\/]|\/\/[?]\/(?:[A-Za-z]:\/|UNC\/)|\/\/[^/]+\/[^/]+\/)/;
 const WINDOWS_MODULE_PATH_SUFFIX_RE = /\.(?:[cm]?[jt]sx?)$/i;
@@ -154,11 +161,13 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 		fileArgs: [],
 		unknownFlags: new Map(),
 		unrecognizedFlags: [],
+		sessionDir: $env.PI_CODING_AGENT_SESSION_DIR || undefined,
 	};
 
 	// `--` ends option parsing (POSIX end-of-options). Everything after it is
 	// literal positional text, so flag-shaped messages are not parsed or rejected.
 	let sawSeparator = false;
+	let trustedFlagCount = 0;
 	for (let i = 0; i < args.length; i++) {
 		let arg = args[i];
 		if (sawSeparator) {
@@ -203,6 +212,7 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 				}
 			}
 		} else if (STRING_VALUE_FLAGS.has(arg)) {
+			if (arg === "--trusted-extension") trustedFlagCount++;
 			// Built-in string flags consume the next token even when it is flag-looking
 			// (`--system-prompt --profile foo` ⇒ the prompt is the literal "--profile").
 			// The one token they must never absorb is the profile bootstrap's internal
@@ -241,6 +251,10 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.alias = arg.slice("--alias=".length);
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
+		} else if (arg === "--from-claude") {
+			result.fromClaude = true;
+		} else if (arg === "--from-codex") {
+			result.fromCodex = true;
 		} else if (arg === "--no-session") {
 			result.noSession = true;
 		} else if (arg === "--no-tools") {
@@ -255,6 +269,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.hideThinking = true;
 		} else if (arg === "--advisor") {
 			result.advisor = true;
+		} else if (arg === "--external-thinking") {
+			result.externalThinking = true;
 		} else if (arg === "--prewalk") {
 			result.prewalk = true;
 		} else if (arg === "--no-prewalk") {
@@ -324,6 +340,24 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 		// through to a later iteration and become a positional message.
 		if (equalsValueIndex !== -1 && i === flagIndex) {
 			args.splice(equalsValueIndex, 1);
+		}
+	}
+
+	const swallowedTrustedFlag = [...(result.extensions ?? []), ...(result.hooks ?? [])].some(
+		value => value === "--trusted-extension" || value.startsWith("--trusted-extension="),
+	);
+	if ((result.trustedExtensions?.length ?? 0) !== trustedFlagCount || swallowedTrustedFlag) {
+		throw new CliUsageError("--trusted-extension requires a non-empty, non-flag value");
+	}
+	if (trustedFlagCount > 0 && ((result.extensions?.length ?? 0) > 0 || (result.hooks?.length ?? 0) > 0)) {
+		throw new CliUsageError("--trusted-extension cannot be combined with --extension, -e, or --hook");
+	}
+	for (const trustedPath of result.trustedExtensions ?? []) {
+		if (trustedPath.length === 0) {
+			throw new CliUsageError("--trusted-extension requires a non-empty, non-flag value");
+		}
+		if (!path.isAbsolute(trustedPath)) {
+			throw new CliUsageError(`--trusted-extension requires an absolute path: ${trustedPath}`);
 		}
 	}
 
@@ -439,7 +473,7 @@ ${chalk.bold("Available Tools (default-enabled unless noted):")}
   task          - Launch sub-agents for parallel tasks
   todo          - Manage todo/task lists
   web_search    - Search the web
-  super_review  - Run one high-intelligence review call on tnx/super
+  super_review  - Run one high-intelligence review call on the configured super_review model chain
   ask           - Ask user questions (interactive mode only)
 
 ${chalk.bold("Plugin Options:")}
@@ -456,7 +490,6 @@ ${chalk.bold("Useful Commands:")}
   ${APP_NAME} agents unpack           - Export bundled subagents to ~/.omp/agent/agents (default)
   ${APP_NAME} agents unpack --project - Export bundled subagents to ./.omp/agents`;
 }
-
 export function printHelp(): void {
 	process.stdout.write(
 		`${chalk.bold(APP_DISPLAY_NAME)} - ${APP_TAGLINE}\n` +

@@ -57,6 +57,13 @@ interface TaskRenderContext {
 	 * commit-eligible rows do not repaint after entering native scrollback.
 	 */
 	frozen?: boolean;
+	/**
+	 * Wall clock for time-derived rows (current-tool elapsed, retry countdown).
+	 * The component freezes it once the block settles or any of its rows enter
+	 * native scrollback, so identical-input rebuilds stay byte-identical with
+	 * committed history. Absent: render with the live clock.
+	 */
+	nowMs?: number;
 }
 type TaskRenderOptions = RenderResultOptions & { renderContext?: TaskRenderContext };
 
@@ -909,6 +916,7 @@ export function renderAgentProgress(
 	frozenOrOptions: boolean | RenderAgentProgressOptions = false,
 	seenNestedTasks?: WeakSet<object>,
 	nestedDepth = 0,
+	nowMs = Date.now(),
 	options?: RenderAgentProgressOptions,
 ): string[] {
 	const frozen = typeof frozenOrOptions === "boolean" ? frozenOrOptions : false;
@@ -994,7 +1002,7 @@ export function renderAgentProgress(
 				toolLine += `: ${theme.fg("dim", previewLine(sanitizeText(toolDetail), 40))}`;
 			}
 			if (progress.currentToolStartMs) {
-				const elapsed = Date.now() - progress.currentToolStartMs;
+				const elapsed = nowMs - progress.currentToolStartMs;
 				if (elapsed > 5000) {
 					toolLine += `${theme.sep.dot}${theme.fg("warning", formatDuration(elapsed))}`;
 				}
@@ -1016,7 +1024,7 @@ export function renderAgentProgress(
 	// long until the next attempt. Without this, the parent UI would just
 	// keep spinning while a child sleeps on a 3-hour provider rate-limit.
 	if (progress.retryState && progress.status === "running") {
-		const remainingMs = Math.max(0, progress.retryState.startedAtMs + progress.retryState.delayMs - Date.now());
+		const remainingMs = Math.max(0, progress.retryState.startedAtMs + progress.retryState.delayMs - nowMs);
 		const waitLabel = remainingMs > 0 ? `in ${formatDuration(remainingMs)}` : "now";
 		const summary =
 			`retrying ${progress.retryState.attempt}/${progress.retryState.maxAttempts} ${waitLabel}: ` +
@@ -1134,6 +1142,7 @@ export function renderAgentProgress(
 			frozen,
 			seenNestedTasks,
 			nestedDepth,
+			nowMs,
 		);
 		for (const line of nestedLines) {
 			lines.push(`${continuePrefix}${line}`);
@@ -1550,10 +1559,11 @@ function orderResultsForDisplay(results: readonly SingleResult[]): SingleResult[
 }
 
 /**
- * Summary line for progress rows folded away by the collapsed cap: per-status
- * counts plus the expand hint, e.g. `… 21 more agents (18 pending · 3 done)`.
+ * Summary line for progress rows folded away by the collapsed cap. The hidden
+ * count explains the visible-row cap while status counts cover the complete
+ * batch, so folded failures and the true fanout size stay visible.
  */
-function formatHiddenProgressLine(hidden: readonly AgentProgress[], theme: Theme): string {
+function formatHiddenProgressLine(hiddenCount: number, progress: readonly AgentProgress[], theme: Theme): string {
 	const counts: Record<AgentProgress["status"], number> = {
 		pending: 0,
 		running: 0,
@@ -1561,19 +1571,19 @@ function formatHiddenProgressLine(hidden: readonly AgentProgress[], theme: Theme
 		failed: 0,
 		aborted: 0,
 	};
-	for (const p of hidden) counts[p.status]++;
+	for (const item of progress) counts[item.status]++;
 	const parts: string[] = [];
 	if (counts.completed > 0) parts.push(theme.fg("dim", `${counts.completed} done`));
 	if (counts.running > 0) parts.push(theme.fg("dim", `${counts.running} running`));
 	if (counts.pending > 0) parts.push(theme.fg("dim", `${counts.pending} pending`));
 	if (counts.failed > 0) parts.push(theme.fg("error", `${counts.failed} failed`));
 	if (counts.aborted > 0) parts.push(theme.fg("error", `${counts.aborted} aborted`));
-	const breakdown =
-		parts.length > 0
-			? `${theme.fg("dim", " (")}${parts.join(theme.fg("dim", theme.sep.dot))}${theme.fg("dim", ")")}`
-			: "";
+	const breakdown = parts.join(theme.fg("dim", theme.sep.dot));
 	const hint = formatExpandHint(theme, false, true);
-	return `${theme.fg("dim", formatMoreItems(hidden.length, "agent"))}${breakdown}${hint ? ` ${hint}` : ""}`;
+	return `${theme.fg("dim", formatMoreItems(hiddenCount, "agent"))}${theme.fg(
+		"dim",
+		` · total: ${progress.length}`,
+	)}${breakdown ? ` ${breakdown}` : ""}${hint ? ` ${hint}` : ""}`;
 }
 
 /**
@@ -1688,6 +1698,7 @@ export function renderResult(
 	return framedBlock(theme, width => {
 		const { expanded, isPartial, spinnerFrame } = options;
 		const frozen = options.renderContext?.frozen === true;
+		const nowMs = options.renderContext?.nowMs ?? Date.now();
 		const lines: string[] = [];
 
 		// Result rows win once any exist; progress rows for spawns without a
@@ -1702,10 +1713,12 @@ export function renderResult(
 			// stands in for everything above it.
 			const visible = expanded ? ordered : ordered.slice(Math.max(0, ordered.length - COLLAPSED_AGENT_LIMIT));
 			if (visible.length < ordered.length) {
-				lines.push(formatHiddenProgressLine(ordered.slice(0, ordered.length - visible.length), theme));
+				lines.push(formatHiddenProgressLine(ordered.length - visible.length, ordered, theme));
 			}
 			for (const progress of visible) {
-				lines.push(...renderAgentProgress(progress, "", "  ", expanded, theme, spinnerFrame, frozen));
+				lines.push(
+					...renderAgentProgress(progress, "", "  ", expanded, theme, spinnerFrame, frozen, undefined, 0, nowMs),
+				);
 			}
 		} else if (details.results && details.results.length > 0) {
 			const ordered = orderResultsForDisplay(details.results);
@@ -1730,7 +1743,9 @@ export function renderResult(
 					)
 				: [];
 			for (const progress of supplementalProgress) {
-				lines.push(...renderAgentProgress(progress, "", "  ", expanded, theme, spinnerFrame, frozen));
+				lines.push(
+					...renderAgentProgress(progress, "", "  ", expanded, theme, spinnerFrame, frozen, undefined, 0, nowMs),
+				);
 			}
 
 			const summaryParts: string[] = [];
@@ -1870,6 +1885,7 @@ function renderNestedTaskTree(
 	frozen = false,
 	seen: WeakSet<object> = new WeakSet<object>(),
 	depth = 0,
+	nowMs = Date.now(),
 ): string[] {
 	const lines: string[] = [];
 	for (const details of detailsList) {
@@ -1916,12 +1932,13 @@ function renderNestedTaskTree(
 						frozen,
 						seen,
 						depth + 1,
+						nowMs,
 					),
 				);
 			});
 			if (hiddenCount > 0) {
 				const { prefix } = nestedMarkers(true, theme);
-				lines.push(`${prefix} ${theme.fg("dim", formatMoreItems(hiddenCount, "agent"))}`);
+				lines.push(`${prefix} ${formatHiddenProgressLine(hiddenCount, ordered, theme)}`);
 			}
 		}
 		seen.delete(details);

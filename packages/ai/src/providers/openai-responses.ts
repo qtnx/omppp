@@ -1,5 +1,6 @@
 import { scheduler } from "node:timers/promises";
 import { hostMatchesUrl } from "@oh-my-pi/pi-catalog/hosts";
+import { bareModelId, parseOpenAIModel, semverGte } from "@oh-my-pi/pi-catalog/identity";
 import { $flag, logger, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import { getEnvApiKey } from "../stream";
@@ -33,6 +34,7 @@ import {
 	iterateWithIdleTimeout,
 } from "../utils/idle-iterator";
 import { OpenAIHttpError, postOpenAIStream } from "../utils/openai-http";
+import { withOpenRouterAffordableMaxTokensRetry } from "../utils/openrouter-affordable-max-tokens";
 import { notifyProviderResponse } from "../utils/provider-response";
 import { callWithCopilotModelRetry } from "../utils/retry";
 import {
@@ -80,6 +82,7 @@ import {
 	createInitialResponsesAssistantMessage,
 	createOpenAIStrictToolsState,
 	disableStrictToolsForScope,
+	getJuiceValue,
 	getOpenAIPromptCacheKey,
 	getOpenAIResponsesRoutingSessionId,
 	getOpenAIStrictToolsScope,
@@ -298,14 +301,23 @@ interface OpenAIResponsesChainedParams {
  */
 function buildOpenAIResponsesChainedParams(
 	params: OpenAIResponsesSamplingParams,
+	trailingScaffoldingItems: number,
 	chain: OpenAIResponsesChainState,
 ): OpenAIResponsesChainedParams {
+	const historyParams =
+		trailingScaffoldingItems > 0 && Array.isArray(params.input)
+			? { ...params, input: params.input.slice(0, params.input.length - trailingScaffoldingItems) }
+			: params;
 	const deltaInput = chain.canAppend
-		? buildResponsesDeltaInput(chain.lastParams, chain.lastResponseItems, params)
+		? buildResponsesDeltaInput(chain.lastParams, chain.lastResponseItems, historyParams)
 		: null;
 	if (deltaInput && deltaInput.length > 0 && chain.lastResponseId) {
+		const scaffolding =
+			historyParams !== params && Array.isArray(params.input)
+				? params.input.slice(params.input.length - trailingScaffoldingItems)
+				: [];
 		return {
-			params: { ...params, previous_response_id: chain.lastResponseId, input: deltaInput },
+			params: { ...params, previous_response_id: chain.lastResponseId, input: [...deltaInput, ...scaffolding] },
 			previousResponseId: chain.lastResponseId,
 		};
 	}
@@ -462,8 +474,9 @@ const streamOpenAIResponsesOnce = (
 				false,
 				chainState?.canAppend ? chainState.lastParams?.input : undefined,
 			);
-			const params = builtParams.params;
+			const { params, trailingScaffoldingItems } = builtParams;
 			let activeParams = params;
+			let activeTrailingScaffoldingItems = trailingScaffoldingItems;
 			const resolvedBaseUrl = (baseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
 			const requestReasoningEffortFallbacks = new Map<string, OpenAIReasoningEffortFallback>();
 			const attemptedReasoningEffortFallbacks = new Set<string>();
@@ -490,7 +503,9 @@ const streamOpenAIResponsesOnce = (
 			}
 			applyReasoningEffortFallbackForRequest(params);
 			let chained: OpenAIResponsesChainedParams =
-				chainState && !chainState.disabled ? buildOpenAIResponsesChainedParams(params, chainState) : { params };
+				chainState && !chainState.disabled
+					? buildOpenAIResponsesChainedParams(params, trailingScaffoldingItems, chainState)
+					: { params };
 			sentPreviousResponseId = chained.previousResponseId;
 			const idleTimeoutMs =
 				options?.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs(model.compat.streamIdleTimeoutMs);
@@ -586,7 +601,9 @@ const streamOpenAIResponsesOnce = (
 						const reasoningEffortFallback =
 							activeReasoningEffortFallbackKey && activeRequestParams && !requestSignal.aborted
 								? resolveOpenAIReasoningEffortFallback(error, capturedErrorResponse, activeRequestParams, {
-										explicitDisable: options?.disableReasoning === true && options.reasoning === undefined,
+										explicitDisable:
+											options?.forceReasoningOff === true ||
+											(options?.disableReasoning === true && options.reasoning === undefined),
 									})
 								: undefined;
 						if (reasoningEffortFallback !== undefined && activeReasoningEffortFallbackKey) {
@@ -610,12 +627,11 @@ const streamOpenAIResponsesOnce = (
 							strictRetryAvailable &&
 							!requestSignal.aborted &&
 							(compiledGrammarTooLarge ||
-								shouldRetryWithoutStrictTools(
-									error,
-									capturedErrorResponse,
-									activeStrictToolsApplied,
-									context.tools,
-								));
+								shouldRetryWithoutStrictTools(error, capturedErrorResponse, {
+									model,
+									strictToolsApplied: activeStrictToolsApplied,
+									tools: context.tools,
+								}));
 						if (canRetryWithoutStrictTools) {
 							strictRetryAvailable = false;
 							forceDisableStrictTools = true;
@@ -633,7 +649,11 @@ const streamOpenAIResponsesOnce = (
 							if (chainState && !chainState.disabled) fallbackParams.store = true;
 							let fallbackChained: OpenAIResponsesChainedParams =
 								chainState && !chainState.disabled
-									? buildOpenAIResponsesChainedParams(fallbackParams, chainState)
+									? buildOpenAIResponsesChainedParams(
+											fallbackParams,
+											fallbackBuilt.trailingScaffoldingItems,
+											chainState,
+										)
 									: { params: fallbackParams };
 							sentPreviousResponseId = fallbackChained.previousResponseId;
 							fallbackChained = {
@@ -643,7 +663,7 @@ const streamOpenAIResponsesOnce = (
 							chained = fallbackChained;
 							activeRawRequestDump.body = chained.params;
 							activeParams = fallbackParams;
-							activeStrictToolsApplied = fallbackBuilt.strictToolsApplied;
+							activeTrailingScaffoldingItems = fallbackBuilt.trailingScaffoldingItems;
 							continue;
 						}
 						if (!chainState || !sentPreviousResponseId || requestSignal.aborted) {
@@ -689,6 +709,7 @@ const streamOpenAIResponsesOnce = (
 						chained = { params: retryParams };
 						activeRawRequestDump.body = retryParams;
 						activeParams = currentParams;
+						activeTrailingScaffoldingItems = currentBuilt.trailingScaffoldingItems;
 						activeStrictToolsApplied = currentBuilt.strictToolsApplied;
 					}
 				}
@@ -825,7 +846,17 @@ const streamOpenAIResponsesOnce = (
 			if (replayableResponseItems) {
 				if (providerSessionState) providerSessionState.nativeHistoryReplayWarmed = true;
 				if (chainState) {
-					chainState.lastParams = structuredCloneJSON(activeParams);
+					chainState.lastParams = structuredCloneJSON(
+						activeTrailingScaffoldingItems > 0 && Array.isArray(activeParams.input)
+							? {
+									...activeParams,
+									input: activeParams.input.slice(
+										0,
+										activeParams.input.length - activeTrailingScaffoldingItems,
+									),
+								}
+							: activeParams,
+					);
 					chainState.lastPromptCacheBreakpointPolicy = promptCacheBreakpointPolicy;
 					if (output.responseId) {
 						chainState.lastResponseId = output.responseId;
@@ -844,7 +875,14 @@ const streamOpenAIResponsesOnce = (
 				// baseline, but `lastParams` still records the successful wire controls
 				// without re-enabling `previous_response_id` chaining.
 				chainState.canAppend = false;
-				chainState.lastParams = structuredCloneJSON(activeParams);
+				chainState.lastParams = structuredCloneJSON(
+					activeTrailingScaffoldingItems > 0 && Array.isArray(activeParams.input)
+						? {
+								...activeParams,
+								input: activeParams.input.slice(0, activeParams.input.length - activeTrailingScaffoldingItems),
+							}
+						: activeParams,
+				);
 				chainState.lastPromptCacheBreakpointPolicy = promptCacheBreakpointPolicy;
 				chainState.lastResponseId = undefined;
 				chainState.lastResponseItems = undefined;
@@ -885,10 +923,14 @@ const streamOpenAIResponsesOnce = (
  * Public entry: wrap the single-attempt Responses streamer with bounded
  * empty-completion retries — a `response.completed` carrying no content/usage
  * would otherwise stall the agent loop. Shared with the OpenAI-completions and
- * Anthropic providers via `withEmptyCompletionRetry`.
+ * Anthropic providers via `withEmptyCompletionRetry`. OpenRouter 402s that
+ * reserve more output than remaining credit can cover are retried once with
+ * the advertised affordable cap before the empty-completion wrapper sees them.
  */
 export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (model, context, options) =>
-	withEmptyCompletionRetry(model, context, options, streamOpenAIResponsesOnce);
+	withEmptyCompletionRetry(model, context, options, (retryModel, retryContext, retryOptions) =>
+		withOpenRouterAffordableMaxTokensRetry(retryModel, retryContext, retryOptions, streamOpenAIResponsesOnce),
+	);
 
 function isOfficialOpenAIResponsesEndpoint(model: Model<"openai-responses">): boolean {
 	if (model.provider !== "openai") return false;
@@ -898,6 +940,26 @@ function isOfficialOpenAIResponsesEndpoint(model: Model<"openai-responses">): bo
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * GPT-5.6+ family check for Responses routes. The model id classifies the
+ * reasoning family regardless of the provider/host serving it — a cliproxy or
+ * other OpenAI-compatible gateway carrying `gpt-5.6-sol` gets the same
+ * scaffolding as the official endpoint.
+ */
+function isGpt56PlusResponsesModel(model: Model<"openai-responses">): boolean {
+	const parsed = parseOpenAIModel(bareModelId(model.requestModelId ?? model.id));
+	return parsed !== null && semverGte(parsed.version, "5.6");
+}
+
+function isXaiOAuthGrok46Model(model: Model<"openai-responses">): boolean {
+	return (
+		model.provider === "xai-oauth" &&
+		bareModelId(model.requestModelId ?? model.id)
+			.toLowerCase()
+			.startsWith("grok-4.6")
+	);
 }
 
 function isResponsesPromptCacheableContentBlock(block: unknown): block is ResponseInputContent {
@@ -1091,7 +1153,7 @@ export function buildParams(
 	strictToolsScope?: OpenAIStrictToolsScope,
 	disableStrictToolsOverride = false,
 	statefulCacheBaseline?: ResponseInput,
-): { params: OpenAIResponsesSamplingParams; strictToolsApplied: boolean } {
+): { params: OpenAIResponsesSamplingParams; trailingScaffoldingItems: number; strictToolsApplied: boolean } {
 	const policy = resolveOpenAICompatPolicy(model, {
 		endpoint: "responses",
 		reasoning: options?.reasoning,
@@ -1114,6 +1176,10 @@ export function buildParams(
 			filterReasoning: policy.reasoning.filterReasoningHistory,
 		},
 		includeThinkingSignatures: shouldReplayNativeHistory && !policy.reasoning.filterReasoningHistory,
+		requiresReasoningReplayForAllTurns:
+			policy.reasoning.enabled && policy.reasoning.requiresReasoningContentForAllAssistantTurns,
+		requiresReasoningReplayForToolCalls:
+			policy.reasoning.enabled && policy.reasoning.requiresReasoningContentForToolCalls,
 		repairOrphanOutputs: true,
 	});
 
@@ -1211,7 +1277,18 @@ export function buildParams(
 						);
 			const toolChoice = mapOpenAIResponsesToolChoiceForTools(options.toolChoice, survivingTools, model);
 			if (toolChoice !== undefined && params.tools.length > 0) {
-				params.tool_choice = toolChoice;
+				if (
+					typeof toolChoice === "object" &&
+					toolChoice.type === "function" &&
+					!model.compat.supportsNamedToolChoice
+				) {
+					// String-only hosts cannot receive the named object. Restrict the
+					// catalogue first so "required" still forces the requested tool.
+					params.tools = params.tools.filter(tool => tool.type === "function" && tool.name === toolChoice.name);
+					params.tool_choice = "required";
+				} else {
+					params.tool_choice = toolChoice;
+				}
 			}
 		}
 	}
@@ -1227,13 +1304,18 @@ export function buildParams(
 		omitReasoningEffort: options?.omitReasoningEffort,
 	});
 	const reasoningSummary =
-		model.provider === "xai-oauth"
-			? options?.reasoning === undefined
+		model.provider !== "xai-oauth"
+			? options?.reasoningSummary
+			: options?.reasoning === undefined
 				? undefined
-				: null
-			: options?.reasoningSummary;
+				: isXaiOAuthGrok46Model(model)
+					? options.reasoningSummary === undefined
+						? "concise"
+						: options.reasoningSummary
+					: null;
 	applyResponsesCompatPolicy(params, reasoningPolicy, {
 		reasoningSummary,
+		forceReasoningOff: options?.forceReasoningOff,
 		mapEffort: effort =>
 			model.compat.reasoningEffortMap?.[effort as NonNullable<OpenAIResponsesOptions["reasoning"]>] ??
 			model.thinking?.effortMap?.[effort as NonNullable<OpenAIResponsesOptions["reasoning"]>] ??
@@ -1243,7 +1325,7 @@ export function buildParams(
 	// mode survives every policy branch (disabled/omitted effort included) while
 	// keeping whatever effort/summary the policy produced — mode and effort are
 	// independent wire fields.
-	if (model.reasoningMode) {
+	if (model.reasoningMode && !options?.forceReasoningOff) {
 		params.reasoning = { ...params.reasoning, mode: model.reasoningMode };
 	}
 
@@ -1256,7 +1338,18 @@ export function buildParams(
 	applyOpenAIExtraBody(params, options?.extraBody);
 	applyOpenAIResponsesPromptCachePolicy(params, model, options, statefulCacheBaseline);
 
-	return { params, strictToolsApplied };
+	let trailingScaffoldingItems = 0;
+	if (options?.forceReasoningOff && isGpt56PlusResponsesModel(model)) {
+		const effort = options.reasoning ?? "medium";
+		const juice = getJuiceValue(effort);
+		messages.push({
+			role: "developer",
+			content: [{ type: "input_text", text: `# Juice: ${juice} !important` }],
+		});
+		trailingScaffoldingItems = 1;
+	}
+
+	return { params, trailingScaffoldingItems, strictToolsApplied };
 }
 
 /**

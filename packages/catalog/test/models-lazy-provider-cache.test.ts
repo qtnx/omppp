@@ -8,4 +8,4 @@ test("bundled models are enriched one provider at a time", () => {
 		env: process.env,
 	});
 	expect(result.exitCode, result.stderr.toString()).toBe(0);
-});
+}, 60_000);

@@ -8,6 +8,7 @@ packages/*/dist/
 packages/*/dist-chrome/
 packages/*/dist-firefox/
 target/
+.xwin-cache/
 *.tsbuildinfo
 *.node
 *.b64.js
@@ -29,6 +30,8 @@ target/
 bun/
 *.pile
 .tmp-*/
+# Bun compile temp artifacts, left in cwd if a `Bun.build({ compile })` run is killed mid-write
+*.bun-build
 .DS_Store
 
 # Logs & profiling
@@ -65,6 +68,7 @@ packages/natives/npm/
 packages/coding-agent/src/utils/mupdf-wasm.wasm
 /runs/
 python/omp-rpc/src/omp_rpc.egg-info/
+python/omp-rpc/build/
 # parallel-agent worktrees
 .wt/
 CPU*.md
@@ -84,3 +88,14 @@ packages/coding-agent/bench/boot-baseline.json
 
 # product-preview runtime state
 docs/product/.ompx-preview/
+.omp/kanban.db
+.omp/kanban.db-shm
+.omp/kanban.db-wal
+
+# Bazel
+/bazel-bin
+/bazel-out
+/bazel-testlogs
+/bazel-pi
+/bazel-oh-my-pi
+/.bazelrc.user

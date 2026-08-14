@@ -9,6 +9,7 @@ const packageDir = path.join(import.meta.dir, "..");
 const outDir = path.join(packageDir, "dist");
 const cliPath = path.join(outDir, "cli.js");
 const shebang = "#!/usr/bin/env bun\n";
+const legacyHtmlExportAssetPattern = /^(?:template-[^.]+\.(?:css|html|js)|tool-views\.generated-[^.]+\.js)$/;
 
 // Native / optional / platform-specific deps are loaded from installed files.
 // `omp-legacy-pi-modules` exists only in compiled binaries via the build plugin;
@@ -30,6 +31,7 @@ const ALWAYS_EXTERNAL = [
 // @ark/schema is patched, so it — and arktype, which pulls @ark/schema — stay
 // bundled).
 const RUNTIME_EXTERNAL = [
+	"puppeteer-core",
 	"@puppeteer/browsers",
 	"@babel/parser",
 	"@xterm/headless",
@@ -79,7 +81,8 @@ async function cleanBundleOutputs(): Promise<void> {
 					entry === "cli.js" ||
 					entry.endsWith(".node") ||
 					entry.endsWith(".js.map") ||
-					(entry.startsWith("CHANGELOG-") && entry.endsWith(".md")),
+					(entry.startsWith("CHANGELOG-") && entry.endsWith(".md")) ||
+					legacyHtmlExportAssetPattern.test(entry),
 			)
 			.map(entry => fs.rm(path.join(outDir, entry), { force: true })),
 	);

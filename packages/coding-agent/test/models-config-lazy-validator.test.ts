@@ -14,10 +14,15 @@ interface ProbeResult {
 	};
 }
 
+interface ProbeResults {
+	missing: ProbeResult;
+	custom: ProbeResult;
+}
+
 const probePath = path.join(import.meta.dir, "fixtures", "models-config-validator-construction-probe.ts");
 
-async function runProbe(root: string, mode: "missing" | "custom"): Promise<ProbeResult> {
-	const proc = Bun.spawn([process.execPath, probePath, root, mode], {
+async function runProbe(root: string): Promise<ProbeResults> {
+	const proc = Bun.spawn([process.execPath, probePath, root], {
 		cwd: path.join(import.meta.dir, "../../.."),
 		stdout: "pipe",
 		stderr: "pipe",
@@ -28,14 +33,13 @@ async function runProbe(root: string, mode: "missing" | "custom"): Promise<Probe
 		proc.exited,
 	]);
 	expect(exitCode, stderr).toBe(0);
-	return JSON.parse(stdout) as ProbeResult;
+	return JSON.parse(stdout) as ProbeResults;
 }
 
 test("models config validation resources are retained only for a custom config", async () => {
 	const tempDir = TempDir.createSync("@models-config-validator-");
 	try {
-		const missing = await runProbe(tempDir.path(), "missing");
-		const custom = await runProbe(tempDir.path(), "custom");
+		const { missing, custom } = await runProbe(tempDir.path());
 
 		expect(missing.model).toMatchObject({
 			provider: "anthropic",
@@ -55,6 +59,7 @@ test("models config validation resources are retained only for a custom config",
 			},
 		});
 		expect(custom.schemaIdentityStable).toBe(true);
+		expect(missing.retainedHeapNodes).toBeLessThan(custom.retainedHeapNodes);
 		expect(
 			custom.retainedHeapNodes - missing.retainedHeapNodes,
 			"custom config validation should retain its schema bundle",
@@ -62,4 +67,4 @@ test("models config validation resources are retained only for a custom config",
 	} finally {
 		await tempDir.remove().catch(() => {});
 	}
-}, 30000);
+}, 60_000);

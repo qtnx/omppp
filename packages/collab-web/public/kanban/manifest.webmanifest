@@ -1,0 +1,15 @@
+{
+	"name": "OMPx Session Kanban",
+	"short_name": "OMPx Kanban",
+	"description": "Local task board for an interactive OMPx session.",
+	"start_url": "/kanban/",
+	"scope": "/kanban/",
+	"display": "standalone",
+	"background_color": "#0f0b14",
+	"theme_color": "#0f0b14",
+	"icons": [
+		{ "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+		{ "src": "/favicon-192x192.png", "type": "image/png", "sizes": "192x192", "purpose": "any maskable" },
+		{ "src": "/favicon-512x512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }
+	]
+}

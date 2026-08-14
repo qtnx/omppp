@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { browserCallPipDeps, CallPip } from "../../lib/call-pip";
 import { browserCallPresenceDeps, CallPresence } from "../../lib/call-presence";
 import { type GuestClient, type GuestSnapshot, voiceLanguageOverride } from "../../lib/client";
-import { LivePeer } from "../../lib/live-peer";
+import { LivePeer, playConnectedCue } from "../../lib/live-peer";
 import { browserScreenWakeDeps, ScreenWakeGuard } from "../../lib/screen-wake";
 import "./live.css";
 
@@ -110,6 +110,7 @@ export function LivePanel({ client, snapshot }: LivePanelProps): ReactNode {
 			createPeerConnection: () => new RTCPeerConnection(),
 			createAudioContext: () => new AudioContext(),
 			audioElement: element,
+			playConnectedCue,
 			// `?lang=` wins; with no override the host picks the call's language.
 			sendOffer: sdp => client.sendLiveOffer(sdp, voiceLanguageOverride(window.location.search)),
 			onLevels: (input, output) => {
@@ -173,7 +174,6 @@ export function LivePanel({ client, snapshot }: LivePanelProps): ReactNode {
 
 	return (
 		<section className="lv-panel" aria-label="Voice call">
-			{/* biome-ignore lint/a11y/useMediaCaption: realtime assistant audio has no caption track. */}
 			<audio ref={audioRef} autoPlay playsInline />
 			<div className="lv-row">
 				{peer ? (
