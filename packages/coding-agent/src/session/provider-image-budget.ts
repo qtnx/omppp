@@ -46,14 +46,14 @@ function clampUserMessage(message: UserMessage, state: { remainingDrops: number 
 	if (!Array.isArray(message.content) || state.remainingDrops <= 0) return message;
 	const content = clampContent(message.content, state);
 	if (!content) return message;
-	return { ...message, content: content.length > 0 ? content : [IMAGE_OMISSION] };
+	return { ...message, content: content.length > 0 ? content : [IMAGE_OMISSION], providerPayload: undefined };
 }
 
 function clampDeveloperMessage(message: DeveloperMessage, state: { remainingDrops: number }): DeveloperMessage {
 	if (!Array.isArray(message.content) || state.remainingDrops <= 0) return message;
 	const content = clampContent(message.content, state);
 	if (!content) return message;
-	return { ...message, content: content.length > 0 ? content : [IMAGE_OMISSION] };
+	return { ...message, content: content.length > 0 ? content : [IMAGE_OMISSION], providerPayload: undefined };
 }
 
 function clampToolResultMessage(message: ToolResultMessage, state: { remainingDrops: number }): ToolResultMessage {

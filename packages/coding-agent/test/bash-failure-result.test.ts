@@ -1,9 +1,14 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool, formatMacOSSandboxDenialNotice } from "@oh-my-pi/pi-coding-agent/tools/bash";
+import { Shell } from "@oh-my-pi/pi-natives";
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 const previousActiveSandbox = Bun.env.PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED;
+
+afterEach(() => {
+	mock.restore();
+});
 
 function setPlatform(value: NodeJS.Platform): void {
 	Object.defineProperty(process, "platform", { value, configurable: true });
@@ -85,6 +90,12 @@ describe("BashTool execution results", () => {
 		expect(formatMacOSSandboxDenialNotice("Operation not permitted")).toBeUndefined();
 	});
 	it("returns a warning-state timeout result with one timeout notice", async () => {
+		// Keep the real native subprocess timeout path, but compress its backend
+		// deadline; BashTool must still report the user-facing one-second timeout.
+		const realRun = Shell.prototype.run;
+		spyOn(Shell.prototype, "run").mockImplementation(function (this: Shell, options, onChunk) {
+			return realRun.call(this, { ...options, timeoutMs: 20 }, onChunk);
+		});
 		const tool = new BashTool(makeSession());
 		const result = await tool.execute("call-timeout", { command: "sleep 3", timeout: 1 });
 
@@ -95,10 +106,16 @@ describe("BashTool execution results", () => {
 	});
 
 	it("preserves the executor cancellation notice without classifying it as a timeout", async () => {
+		const dispatched = Promise.withResolvers<void>();
+		const realRun = Shell.prototype.run;
+		spyOn(Shell.prototype, "run").mockImplementation(function (this: Shell, options, onChunk) {
+			dispatched.resolve();
+			return realRun.call(this, options, onChunk);
+		});
 		const tool = new BashTool(makeSession());
 		const controller = new AbortController();
 		const execution = tool.execute("call-cancel", { command: "sleep 3" }, controller.signal);
-		await Bun.sleep(20);
+		await dispatched.promise;
 		controller.abort();
 
 		const error = await execution.catch(error => error);

@@ -11,6 +11,7 @@
 import { $, Glob } from "bun";
 import { compareVersions } from "../packages/utils/src/version.ts";
 import { runChangelogFixer } from "./fix-changelogs";
+import { generateNixBunDeps, resolveNixBunDepsGenerator } from "./gen-nix-bun";
 
 const changelogGlob = new Glob("packages/*/CHANGELOG.md");
 const packageJsonGlob = new Glob("packages/*/package.json");
@@ -271,6 +272,8 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	const currentVersion = (
 		((await Bun.file("packages/coding-agent/package.json").json()) as { version?: string }).version ?? "0.0.0"
 	).trim();
+	const nixBunDepsGenerator = resolveNixBunDepsGenerator();
+	console.log(`  Nix dependency generator: ${nixBunDepsGenerator.kind}`);
 	let version = versionOrBump;
 	if (version === "major" || version === "minor" || version === "patch") {
 		version = bumpVersion(currentVersion, version);
@@ -369,6 +372,7 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	console.log("Regenerating lockfiles...");
 	await $`bun install --lockfile-only`;
 	await $`cargo update --workspace`;
+	await generateNixBunDeps(nixBunDepsGenerator);
 	console.log();
 
 	// 5. Update changelogs

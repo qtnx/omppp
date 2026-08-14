@@ -2132,6 +2132,26 @@ export class Settings {
 		) {
 			setupScalarPathsWithExplicitValues.add("dev.autoqaConsent");
 		}
+
+		// advisor.subagents (blanket advisor on every spawned subagent) → per-agent
+		// task.agentAdvisor, migrated to the bundled generic `task` agent. An
+		// explicit boolean maps to "on"/"off" IN THE SAME LAYER — migration runs
+		// per file, so a project-level `false` must keep overriding a global
+		// `true` after both layers migrate.
+		{
+			const advisorObj = isRecord(raw.advisor) ? raw.advisor : undefined;
+			const legacySubagents =
+				advisorObj && "subagents" in advisorObj ? advisorObj.subagents : raw["advisor.subagents"];
+			if (typeof legacySubagents === "boolean") {
+				const taskObj = isRecord(raw.task) ? raw.task : {};
+				const agentAdvisor = isRecord(taskObj.agentAdvisor) ? taskObj.agentAdvisor : {};
+				if (!("task" in agentAdvisor)) agentAdvisor.task = legacySubagents ? "on" : "off";
+				taskObj.agentAdvisor = agentAdvisor;
+				raw.task = taskObj;
+			}
+			if (advisorObj) delete advisorObj.subagents;
+			delete raw["advisor.subagents"];
+		}
 		migrateNestedLeafRename(
 			raw,
 			"todo",

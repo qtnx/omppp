@@ -1364,6 +1364,11 @@ export class AdvisorRuntime {
 						lateDeltas.push(this.#pending.shift() as PendingDelta);
 					}
 					if (lateDeltas.length === 0) break;
+					for (const item of lateDeltas) {
+						if (item.renderRevision === this.#renderRevision || item.rawMessages.length === 0) continue;
+						item.text = this.#formatRawDelta(item.rawMessages, item.wip) ?? item.text;
+						item.renderRevision = this.#renderRevision;
+					}
 					reprimeAfterCoalesce = true;
 					deltasText = [deltasText, ...lateDeltas.map(item => item.text)].filter(Boolean).join("\n\n");
 					rawMessages = rawMessages.concat(lateDeltas.flatMap(item => item.rawMessages));

@@ -7,6 +7,7 @@
  * - Convenience helpers: captureText / execText, AbortSignal, timeouts.
  */
 
+import { Process } from "@oh-my-pi/pi-natives";
 import { terminateProcess } from "@oh-my-pi/pi-natives/process";
 import type { Spawn, Subprocess } from "bun";
 
@@ -217,8 +218,12 @@ export class ChildProcess<In extends InMask = InMask> {
 		return this;
 	}
 
-	kill(reason?: Exception) {
-		void this.terminate(reason).catch(e => void e);
+	kill(reason?: Exception, gracefulMs?: number) {
+		if (reason && !this.#exitReasonPending) this.#exitReasonPending = reason;
+		if (!this.proc.killed)
+			void Process.fromPid(this.proc.pid)
+				?.terminate(gracefulMs === undefined ? undefined : { gracefulMs })
+				?.catch(e => void e);
 	}
 
 	/** Terminate the process tree and resolve only after native cleanup completes. */

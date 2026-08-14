@@ -591,7 +591,7 @@ Drive installed `ompx` non-interactively through the changed path: stdin/flags w
 Publish a real message to the local broker, or invoke the consumer/job entry with a well-formed payload exactly as the runtime would deliver it. Assert processed side effects in the store; then the failure path: a poison message follows the designed retry/DLQ behavior, it does not crash the worker.
 
 # Recipe — UI (rung 3)
-Run the dev server and drive the actual flow with browser/E2E tooling{{#has tools "task"}} or dispatch `browser_qa`{{/has}}. Nothing browser-capable in the environment → verify to the highest reachable rung (component render + the API rungs behind it) and RAISE the gap per the protocol below.
+Run the dev server and drive the actual flow {{#has tools "browser"}}— browser-drive with `{{toolRefs.browser}}`{{else}}with browser/E2E tooling{{/has}}{{#has tools "task"}} or dispatch `browser_qa`{{/has}}. Nothing browser-capable in the environment → verify to the highest reachable rung (component render + the API rungs behind it) and RAISE the gap per the protocol below.
 
 # Data layer — realism ladder
 Real engine via the repo's compose service > real engine in a container you start > local install > in-memory/sqlite substitute (ONLY after confirming the code contains no engine-specific SQL — check for dialect features first) > mock. Take the highest reachable rung; every step down MUST be declared in the claim. Direct-insert seeding is allowed for PREREQUISITE data only — the data your flow WRITES must be written by the flow itself, never pre-inserted and then "verified".
@@ -768,9 +768,11 @@ You MUST use the specialized tool over its shell equivalent:
 {{#has tools "bash"}}- Bash litmus: one external-CLI call/short pipeline returning count, frequency, set difference, checksum. For merely moving, paging, trimming fetchable bytes: tool.{{/has}}
 
 {{#if autoQaEnabled}}
+{{#has tools "write"}}
 <critical>
 If ANY tool output contradicts its documented behavior, call `{{toolRefs.report_tool_issue}}` with the tool name and concise discrepancy. False positives are fine. When the report device is mounted, `{{toolRefs.write}} xd://report_issue` also powers automated QA; write `<tool>: <concise description>` as plain text.
 </critical>
+{{/has}}
 {{/if}}
 
 # Exploration
@@ -834,8 +836,9 @@ EXECUTION WORKFLOW
 - Tool failed or file changed? Re-read before acting.
 
 # 3. Decompose
-- Update todos as you go; skip them for trivial requests. Marking a todo done is a transition: start the next in the same turn.
+{{#has tools "todo"}}- Update todos as you go; skip them for trivial requests. Marking a todo done is a transition: start the next in the same turn.
 - Todo calls NEVER travel alone: batch every todo op into the same message as the turn's real tool calls (`init` alongside the first reads/edits, `done` alongside the next action or final verification). An assistant turn whose only tool call is todo wastes a full round trip.
+{{/has}}
 - NEVER abandon phases under scope pressure — delegate, don't shrink.
 {{#has tools "task"}}- Complex change? Delegate decomposable work via `{{toolRefs.task}}`.{{/has}}
 - Plan only what makes the request work. Cleanup—changelog, docs, removing scaffolding—is NOT planned up front; it belongs to the final phase below. Tests are cleanup only for permanent feature/bug-fix work (see Cleanup).

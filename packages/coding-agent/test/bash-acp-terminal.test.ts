@@ -48,6 +48,24 @@ function makeSession(bridge: ClientBridge): ToolSession {
 	} as unknown as ToolSession;
 }
 
+// Keep the real promise/race behavior while compressing only ACP's deliberately
+// conservative wall-clock deadline and cleanup grace periods.
+function shortenAcpWaits(): void {
+	const realSetTimeout = globalThis.setTimeout;
+	spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number, ...args: unknown[]) =>
+		realSetTimeout(
+			handler,
+			typeof ms === "number" && ms >= 1000 ? 50 : ms,
+			...args,
+		)) as typeof globalThis.setTimeout);
+	const realSleep = Bun.sleep.bind(Bun);
+	spyOn(Bun, "sleep").mockImplementation((duration?: number | Date) => {
+		if (duration === 250) return realSleep(1);
+		if (typeof duration === "number" && duration >= 1000) return realSleep(5);
+		return realSleep(duration ?? 0);
+	});
+}
+
 afterEach(() => {
 	mock.restore();
 	restorePlatform();
@@ -185,6 +203,7 @@ describe("BashTool ACP terminal routing", () => {
 	});
 
 	it("resolves using the last polled output when final output retrieval fails", async () => {
+		shortenAcpWaits();
 		const pendingExit = Promise.withResolvers<{ exitCode: number | null; signal: string | null }>();
 		let currentOutputCalls = 0;
 		const handle: ClientBridgeTerminalHandle = {
@@ -243,6 +262,7 @@ describe("BashTool ACP terminal routing", () => {
 	});
 
 	it("kills and releases the client terminal when the caller aborts", async () => {
+		shortenAcpWaits();
 		const pendingExit = Promise.withResolvers<{ exitCode: number | null; signal: string | null }>();
 		const controller = new AbortController();
 
@@ -274,9 +294,9 @@ describe("BashTool ACP terminal routing", () => {
 	});
 
 	it("kills and releases the client terminal when the command times out", async () => {
-		// Real 1s timeout — no Bun.sleep/setTimeout mocking. Mocking the timer
-		// implementation couples the test to how the timeout is scheduled and
-		// starves the event loop when the implementation changes.
+		// The timeout and cleanup windows are compressed; the terminal promises,
+		// kill-before-output ordering, and hung-RPC behavior remain real.
+		shortenAcpWaits();
 		const pendingExit = Promise.withResolvers<{ exitCode: number | null; signal: string | null }>();
 		let killCalls = 0;
 		let currentOutputAfterKill = 0;
@@ -311,8 +331,9 @@ describe("BashTool ACP terminal routing", () => {
 	});
 
 	it("still times out when a poll-tick output read hangs", async () => {
-		// Real 1s timeout — deliberately exercises the wall-clock deadline against
-		// an RPC that never settles; fake timers cannot model a hung peer.
+		// A never-settling output RPC exercises the real race while the outer
+		// deadline is compressed to avoid paying a full second.
+		shortenAcpWaits();
 		const pendingExit = Promise.withResolvers<{ exitCode: number | null; signal: string | null }>();
 		const neverOutput = new Promise<{ output: string; truncated: boolean }>(() => {});
 
@@ -339,8 +360,9 @@ describe("BashTool ACP terminal routing", () => {
 	}, 8000);
 
 	it("returns even when terminal release hangs", async () => {
-		// Real-time grace bound: release() never settles; the tool must still
-		// resolve once the kill-grace window elapses.
+		// release() truly never settles; only the production grace sleep is
+		// compressed so this still proves cleanup is bounded.
+		shortenAcpWaits();
 		const stubText = "done\n";
 		const neverRelease = new Promise<void>(() => {});
 

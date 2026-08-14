@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseArgs } from "../src/cli/args";
+import { parseArgs, validateToolNames } from "../src/cli/args";
 import { OPTIONAL_VALUE_FLAGS, STRING_VALUE_FLAGS } from "../src/cli/flag-tables";
 import { CliUsageError } from "../src/cli/usage-error";
 
@@ -85,19 +85,29 @@ describe("--session-dir", () => {
 	});
 });
 
-describe("--tools legacy aliases", () => {
+describe("--tools validation", () => {
 	it("maps search and find to grep and glob", () => {
 		const result = parseArgs(["--tools", "search,find,grep"]);
 
 		expect((result as typeof result & { tools?: string[] }).tools).toEqual(["grep", "glob"]);
 	});
 
-	it("rejects unknown tool names instead of silently narrowing the toolset", () => {
-		// Unknown tool typos must fail rather than being silently dropped, which
-		// would narrow `--tools bash,definitely_not_a_tool` to just bash.
-		expect(() => parseArgs(["--tools", "bash,definitely_not_a_tool"])).toThrow(CliUsageError);
-		expect(() => parseArgs(["--tools", "bash,definitely_not_a_tool"])).toThrow(
-			/Unknown tool in --tools: definitely_not_a_tool/,
+	it("defers unknown-name validation until all session tools are discovered", () => {
+		expect(parseArgs(["--tools", "bash,intercom"]).tools).toEqual(["bash", "intercom"]);
+		expect(parseArgs(["--tools", "read,custom_tool"], new Map()).tools).toEqual(["read", "custom_tool"]);
+	});
+});
+
+describe("--tools discovered-registry validation", () => {
+	it("accepts extension and custom tools after they enter the session registry", () => {
+		expect(() =>
+			validateToolNames(["read", "intercom", "custom_tool"], ["read", "intercom", "custom_tool"]),
+		).not.toThrow();
+	});
+
+	it("rejects names absent from the final registry", () => {
+		expect(() => validateToolNames(["read", "missing"], ["read", "intercom", "custom_tool"])).toThrow(
+			/Unknown tool in --tools: missing/,
 		);
 	});
 });

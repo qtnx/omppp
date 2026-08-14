@@ -648,7 +648,7 @@ jobs:
          - name: Test coding-agent native/unit bucket
            env:
               OMP_TEST_CONCURRENCY: "4"
-              OMP_TEST_CHUNK_TIMEOUT: "1200"
+
            run: bun run ci:test:coding-agent:native
 
    test_smoke:
