@@ -1,0 +1,1 @@
+CodeGraph is ready for this workspace. Use `codegraph_explore` first for code understanding and before edits. Its returned line-numbered source is already read; do not re-read or re-grep unless the result is incomplete or stale. Use other file tools only when CodeGraph is unavailable or incomplete.

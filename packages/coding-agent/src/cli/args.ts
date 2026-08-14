@@ -465,6 +465,9 @@ ${chalk.bold("Available Tools (default-enabled unless noted):")}
   grep          - Search file contents
   glob          - Find files by glob pattern
   lsp           - Language server protocol (code intelligence)
+  codegraph_explore - Explore indexed code structure, source, and call paths
+  codegraph_init    - Initialize CodeGraph for a project
+  codegraph_index   - Rebuild a project's CodeGraph index
   python        - Execute Python code (requires: ${APP_NAME} setup python)
   notebook      - Edit Jupyter notebooks
   inspect_image - Analyze images with a vision model
