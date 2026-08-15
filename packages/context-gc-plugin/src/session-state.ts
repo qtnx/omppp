@@ -178,9 +178,14 @@ export function deriveBranchSummaries(deltas: readonly ContextGcDelta[]): Map<st
  */
 export function branchRecords(store: ContextGcStore, state: ContextGcSessionState): ContextRecord[] {
 	const control = deriveBranchControl(state.deltas.filter(delta => delta.sessionId === state.sessionId));
+	if (control.size === 0) return [];
+	const byId = new Map<string, ContextRecord>();
+	for (const record of store.getRecordsByIds([...control.keys()])) {
+		byId.set(record.id, record);
+	}
 	const records: ContextRecord[] = [];
 	for (const [id, ctrl] of control) {
-		const record = store.getRecord(id);
+		const record = byId.get(id);
 		if (record && record.sessionId === state.sessionId) {
 			records.push({ ...record, status: ctrl.status, summary: ctrl.summary ?? record.summary });
 		}

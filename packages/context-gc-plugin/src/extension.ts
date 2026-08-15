@@ -159,6 +159,19 @@ function preserveEntryId(next: ContextSource, previous: ContextSource | undefine
 	return { ...next, entryId: previous.entryId };
 }
 
+function sourcesEquivalent(left: ContextSource, right: ContextSource): boolean {
+	return (
+		left.entryId === right.entryId &&
+		left.customType === right.customType &&
+		left.toolCallId === right.toolCallId &&
+		left.toolName === right.toolName &&
+		left.path === right.path &&
+		left.uri === right.uri &&
+		left.command === right.command &&
+		left.skillName === right.skillName
+	);
+}
+
 async function persistPayload(
 	store: ContextGcStore,
 	ctx: ExtensionContext,
@@ -168,6 +181,20 @@ async function persistPayload(
 	const payload = store.putPayload(input.mediaType, input.stored, input.text);
 	const id = input.recordId?.(state.sessionId, payload.hash);
 	const existing = id ? store.getRecord(id) : null;
+	const source = preserveEntryId(input.source, existing?.source);
+	const tokenEstimate = estimateTokens(input.text);
+	if (
+		existing &&
+		existing.payloadHash === payload.hash &&
+		existing.kind === input.kind &&
+		existing.sessionId === state.sessionId &&
+		(existing.sessionFile ?? null) === (state.sessionFile ?? null) &&
+		(existing.sourceUri ?? null) === (input.sourceUri ?? null) &&
+		existing.tokenEstimate === tokenEstimate &&
+		sourcesEquivalent(existing.source, source)
+	) {
+		return { record: existing, created: false };
+	}
 	// Persist the lossless `stored` payload (structured JSON for image-bearing content, plain text
 	// otherwise) as the artifact, never the flattened `text` projection. The placeholder surfaces
 	// this artifact handle as the recall target, so a `[image:*]`-flattened artifact would silently
@@ -181,12 +208,12 @@ async function persistPayload(
 		// branch deltas remain the source of truth for visible status.
 		status: existing ? existing.status : statusForPolicy(input.policy),
 		kind: input.kind,
-		source: preserveEntryId(input.source, existing?.source),
+		source,
 		payloadHash: payload.hash,
 		artifactId,
 		sourceUri: input.sourceUri ?? null,
 		summary: existing ? existing.summary : input.summary,
-		tokenEstimate: estimateTokens(input.text),
+		tokenEstimate,
 	});
 	return { record, created: !existing };
 }

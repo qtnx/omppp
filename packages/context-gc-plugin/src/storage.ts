@@ -78,6 +78,13 @@ interface PayloadRow {
 	created_at: string;
 }
 
+interface PayloadMetaRow {
+	hash: string;
+	media_type: string;
+	byte_length: number;
+	created_at: string;
+}
+
 interface RecordRow {
 	id: string;
 	session_id: string;
@@ -134,18 +141,35 @@ export function getDefaultDbPath(): string {
 	return getContextGcDbPath(getAgentDir());
 }
 
+const liveStores = new Map<string, ContextGcStore>();
+
 export function openContextGcStore(options: OpenContextGcStoreOptions = {}): ContextGcStore {
-	return new ContextGcStore(options.dbPath ?? getDefaultDbPath());
+	const dbPath = path.resolve(options.dbPath ?? getDefaultDbPath());
+	const existing = liveStores.get(dbPath);
+	if (existing) {
+		existing.retain();
+		return existing;
+	}
+	const store = new ContextGcStore(dbPath);
+	liveStores.set(dbPath, store);
+	store.retain();
+	return store;
 }
 
 export class ContextGcStore {
 	#db: Database;
 	#closed = false;
+	#refs = 0;
 
 	constructor(readonly dbPath: string) {
 		fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 		this.#db = new Database(dbPath, { create: true, strict: true });
 		this.#migrate();
+	}
+
+	retain(): this {
+		this.#refs += 1;
+		return this;
 	}
 
 	/**
@@ -154,14 +178,29 @@ export class ContextGcStore {
 	 * used for summaries/search/range and for projection-hash matching; it defaults to `text`
 	 * for text-only payloads. The payload is keyed by the hash of the stored bytes so structured
 	 * payloads with identical text projections cannot alias each other.
+	 *
+	 * A hash hit returns the caller-supplied bytes and the stored metadata without reading the
+	 * TEXT columns back — re-inventory of an already-persisted blob must not copy megabytes
+	 * onto the event loop.
 	 */
 	putPayload(mediaType: string, text: string, textProjection?: string): ContextPayload {
 		this.#assertOpen();
 		const projection = textProjection ?? text;
 		const hash = hashPayload(text);
+		const existing = this.#payloadMeta(hash);
+		if (existing) {
+			return {
+				hash,
+				mediaType: existing.media_type,
+				byteLength: existing.byte_length,
+				text,
+				textProjection: projection,
+				createdAt: existing.created_at,
+			};
+		}
+
 		const createdAt = nowIso();
 		const byteLength = Buffer.byteLength(text, "utf8");
-
 		this.#db
 			.query(`
 				INSERT INTO context_gc_payloads (hash, media_type, byte_length, text, text_projection, created_at)
@@ -170,11 +209,14 @@ export class ContextGcStore {
 			`)
 			.run({ hash, mediaType, byteLength, text, textProjection: projection, createdAt });
 
-		const payload = this.getPayload(hash);
-		if (!payload) {
-			throw new Error(`Context GC payload was not persisted: ${hash}`);
-		}
-		return payload;
+		return {
+			hash,
+			mediaType,
+			byteLength,
+			text,
+			textProjection: projection,
+			createdAt,
+		};
 	}
 
 	getPayload(hash: string): ContextPayload | null {
@@ -187,6 +229,37 @@ export class ContextGcStore {
 			`)
 			.get({ hash });
 		return row ? payloadFromRow(row) : null;
+	}
+
+	getRecordsByIds(ids: readonly string[]): ContextRecord[] {
+		this.#assertOpen();
+		if (ids.length === 0) return [];
+		const unique: string[] = [];
+		const seen = new Set<string>();
+		for (const id of ids) {
+			if (seen.has(id)) continue;
+			seen.add(id);
+			unique.push(id);
+		}
+		const records: ContextRecord[] = [];
+		const chunkSize = 400;
+		for (let offset = 0; offset < unique.length; offset += chunkSize) {
+			const chunk = unique.slice(offset, offset + chunkSize);
+			const placeholders = chunk.map((_, index) => `$id${index}`).join(", ");
+			const params: Record<string, string> = {};
+			for (let index = 0; index < chunk.length; index++) {
+				params[`id${index}`] = chunk[index]!;
+			}
+			const rows = this.#db
+				.query<RecordRow, Record<string, string>>(`
+					SELECT *
+					FROM context_gc_records
+					WHERE id IN (${placeholders})
+				`)
+				.all(params);
+			for (const row of rows) records.push(recordFromRow(row));
+		}
+		return records;
 	}
 
 	upsertRecord(input: UpsertRecordInput): ContextRecord {
@@ -386,8 +459,23 @@ export class ContextGcStore {
 
 	close(): void {
 		if (this.#closed) return;
+		this.#refs = Math.max(0, this.#refs - 1);
+		if (this.#refs > 0) return;
 		this.#db.close();
 		this.#closed = true;
+		liveStores.delete(path.resolve(this.dbPath));
+	}
+
+	#payloadMeta(hash: string): PayloadMetaRow | null {
+		return (
+			this.#db
+				.query<PayloadMetaRow, { hash: string }>(`
+					SELECT hash, media_type, byte_length, created_at
+					FROM context_gc_payloads
+					WHERE hash = $hash
+				`)
+				.get({ hash }) ?? null
+		);
 	}
 
 	#migrate(): void {

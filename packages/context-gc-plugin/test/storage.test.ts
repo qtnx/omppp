@@ -330,6 +330,64 @@ describe("ContextGcStore", () => {
 		expect(databaseAggregate.tokens).toBe(23);
 		expect(databaseAggregate.recallCount).toBe(7);
 	});
+
+	it("reuses one live connection per db path until the last close", () => {
+		const dbPath = makeDbPath();
+		store = openContextGcStore({ dbPath });
+		const shared = openContextGcStore({ dbPath });
+		expect(shared).toBe(store);
+
+		const payload = store.putPayload("text/plain;charset=utf-8", "shared-connection");
+		store.close();
+		expect(shared.getPayload(payload.hash)?.text).toBe("shared-connection");
+
+		shared.close();
+		store = openContextGcStore({ dbPath });
+		expect(store.getPayload(payload.hash)?.text).toBe("shared-connection");
+	});
+
+	it("returns caller bytes for an existing payload without duplicating the row", () => {
+		const dbPath = makeDbPath();
+		store = openContextGcStore({ dbPath });
+		const text = "already stored payload";
+		const first = store.putPayload("text/plain;charset=utf-8", text);
+		const second = store.putPayload("text/plain;charset=utf-8", text, "projection-unused-on-hit");
+
+		expect(second.hash).toBe(first.hash);
+		expect(second.text).toBe(text);
+		expect(second.byteLength).toBe(first.byteLength);
+		expect(countPayloadRows(dbPath)).toBe(1);
+		expect(store.getPayload(first.hash)?.text).toBe(text);
+	});
+
+	it("loads many records in one lookup without dropping unknown ids", () => {
+		store = openContextGcStore({ dbPath: makeDbPath() });
+		const payload = store.putPayload("text/plain;charset=utf-8", "batch");
+		store.upsertRecord({
+			id: "batch-a",
+			sessionId: "session-batch",
+			kind: "tool_result",
+			status: "candidate",
+			source: {},
+			payloadHash: payload.hash,
+			summary: "a",
+			tokenEstimate: 1,
+		});
+		store.upsertRecord({
+			id: "batch-b",
+			sessionId: "session-batch",
+			kind: "file_read",
+			status: "unloaded",
+			source: {},
+			payloadHash: payload.hash,
+			summary: "b",
+			tokenEstimate: 2,
+		});
+
+		const records = store.getRecordsByIds(["missing", "batch-b", "batch-a", "batch-b"]);
+		expect(records.map(record => record.id).sort()).toEqual(["batch-a", "batch-b"]);
+		expect(store.getRecordsByIds([])).toEqual([]);
+	});
 });
 
 function makeDbPath(): string {
