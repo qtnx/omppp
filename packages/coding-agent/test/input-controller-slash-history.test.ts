@@ -3,6 +3,19 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { isQueuedMessageList, splitQueuedMessages } from "@oh-my-pi/pi-coding-agent/modes/queue-input";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import type { SecretEntry } from "@oh-my-pi/pi-coding-agent/secrets/obfuscator";
+
+type SecretsCommandVault = {
+	list(): Array<{
+		name: string;
+		mask: string;
+		length: number;
+		source: "user";
+		createdAt: string;
+	}>;
+	set(name: string, value: string, source: "user"): Promise<string>;
+	remove(name: string): Promise<boolean>;
+};
 
 // Drives the real editor submit handler through the builtin slash dispatch
 // path. Before #3148 only a handful of commands recorded their text (each
@@ -36,17 +49,31 @@ function makeCtx(isStreaming = false) {
 			this.pendingImageLinks = [];
 		},
 	};
+	const registeredSecrets: SecretEntry[] = [];
+	const session: {
+		isStreaming: boolean;
+		isCompacting: boolean;
+		queuedMessageCount: number;
+		extensionRunner: undefined;
+		followUp: typeof followUp;
+		steer: typeof steer;
+		prompt: typeof prompt;
+		secretVault?: SecretsCommandVault;
+		registerRuntimeSecrets: (entries: SecretEntry[]) => void;
+	} = {
+		isStreaming,
+		isCompacting: false,
+		queuedMessageCount: 0,
+		extensionRunner: undefined,
+		followUp,
+		steer,
+		prompt,
+		registerRuntimeSecrets: entries => registeredSecrets.push(...entries),
+	};
 	const ctx = {
 		editor,
-		session: {
-			isStreaming,
-			isCompacting: false,
-			queuedMessageCount: 0,
-			extensionRunner: undefined,
-			followUp,
-			steer,
-			prompt,
-		},
+		session,
+		sessionManager: { getCwd: () => "/test" },
 		focusedAgentId: undefined,
 		collabGuest: undefined,
 		handleHotkeysCommand: vi.fn(),
@@ -70,6 +97,7 @@ function makeCtx(isStreaming = false) {
 	} as unknown as InteractiveModeContext;
 	return {
 		ctx,
+		session,
 		editor,
 		addToHistory,
 		followUp,
@@ -118,6 +146,36 @@ describe("input controller — slash command history (#3148)", () => {
 		expect(handleMCPCommand).toHaveBeenCalledWith("/mcp add srv --url http://x --token sk-secret123");
 		// ...but the secret-bearing text is kept out of recallable history.
 		expect(addToHistory).not.toHaveBeenCalled();
+	});
+
+	it("stores /secrets add without retaining the plaintext or forwarding it to the model", async () => {
+		const { ctx, editor, session, addToHistory, followUp, steer, onInputCallback, prompt, showStatus } = makeCtx();
+		const rawValue = "super-secret-value-1234";
+		const set = vi.fn(async () => "API_TOKEN");
+		session.secretVault = {
+			list: () => [
+				{
+					name: "API_TOKEN",
+					mask: "su…1234",
+					length: rawValue.length,
+					source: "user",
+					createdAt: "2026-01-01T00:00:00.000Z",
+				},
+			],
+			set,
+			remove: async () => false,
+		};
+		controllerFor(ctx);
+
+		await editor.onSubmit?.(`/secrets add API_TOKEN ${rawValue}`);
+
+		expect(set).toHaveBeenCalledWith("API_TOKEN", rawValue, "user");
+		expect(showStatus).toHaveBeenCalledWith("Stored API_TOKEN: su…1234");
+		expect(addToHistory).not.toHaveBeenCalled();
+		expect(onInputCallback).not.toHaveBeenCalled();
+		expect(steer).not.toHaveBeenCalled();
+		expect(followUp).not.toHaveBeenCalled();
+		expect(prompt).not.toHaveBeenCalled();
 	});
 
 	it("executes extension commands without rendering them as user prompts or retaining image drafts", async () => {

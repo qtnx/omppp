@@ -8,6 +8,10 @@ import { type SecretEntry, SecretObfuscator } from "./obfuscator";
 import { sanitizeSecretFriendlyName, secretEntriesNeedPlaceholderKey } from "./placeholder";
 import { compileSecretRegex } from "./regex";
 import { regexHasUnresolvableShortMatchFallback } from "./replacement";
+import type { SecretVaultLike } from "./vault";
+
+export * from "./detect";
+export * from "./vault";
 
 const PLACEHOLDER_KEY_RE = /^[A-Za-z0-9_-]{43}$/;
 const cachedPlaceholderKeys = new Map<string, string>();
@@ -248,13 +252,19 @@ export async function buildSecretObfuscator(
 	cwd: string,
 	agentDir: string,
 	keyDir?: string,
+	vault?: SecretVaultLike,
 ): Promise<SecretObfuscator | undefined> {
 	const fileEntries = await logger.time("loadSecrets", loadSecrets, cwd, agentDir);
 	const envEntries = collectEnvSecrets();
-	// Built-in credential-pattern entries come last so user-configured entries
-	// (plain literals, custom regexes) take precedence in the scan order.
-	const allEntries = [...envEntries, ...fileEntries, ...builtinCredentialSecretEntries()];
-	const needsPlaceholderKey = secretEntriesNeedPlaceholderKey([...envEntries, ...fileEntries]);
+	const vaultEntries = vault?.toSecretEntries() ?? [];
+	const configuredEntries = [...envEntries, ...fileEntries, ...vaultEntries];
+	const keyMaterialEntries: SecretEntry[] = vault?.keyMaterialToRedact
+		? [{ type: "plain", content: vault.keyMaterialToRedact, mode: "replace" }]
+		: [];
+	// Built-in credential-pattern entries come last so user-configured and
+	// managed vault entries take precedence in the scan order.
+	const allEntries = [...configuredEntries, ...keyMaterialEntries, ...builtinCredentialSecretEntries()];
+	const needsPlaceholderKey = secretEntriesNeedPlaceholderKey(configuredEntries);
 	const placeholderKey = needsPlaceholderKey
 		? await getSecretPlaceholderKey(keyDir)
 		: await getExistingSecretPlaceholderKey(keyDir);

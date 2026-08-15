@@ -15,6 +15,7 @@ import { formatDuration } from "./helpers/format";
 import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import { describeRedeemOutcome, type ResetUsageAccount, toResetUsageAccounts } from "./helpers/reset-usage";
+import { handleSecretsCommand } from "./helpers/secrets";
 import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session-pin";
 import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
 import { handleTodoAcp } from "./helpers/todo";
@@ -164,6 +165,19 @@ async function runKanbanCommand(args: string, session: AgentSession): Promise<st
 }
 
 export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
+	{
+		name: "secrets",
+		description: "List or manage stored secrets",
+		acpDescription: "Manage stored secrets",
+		acpInputHint: "[list|add|remove]",
+		subcommands: [
+			{ name: "list", description: "List names, masks, and metadata" },
+			{ name: "add", description: "Store a secret", usage: "<NAME> <VALUE>" },
+			{ name: "remove", description: "Remove a stored secret", usage: "<NAME>" },
+		],
+		allowArgs: true,
+		handle: handleSecretsCommand,
+	},
 	{
 		name: "todo",
 		description: "View or modify the agent's todo list",

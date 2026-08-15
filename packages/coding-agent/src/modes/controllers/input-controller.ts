@@ -48,6 +48,7 @@ import { resizeImage } from "../../utils/image-resize";
  *   code) — all can contain OAuth code=/state= params.
  * - /join <link> carries a 32-byte room key and optional write token.
  * - /mcp add --token <token> carries a bearer token.
+ * - /secrets add <NAME> <VALUE> carries the plaintext value.
  *
  * The command name is extracted the same way as parseSlashCommand() — splitting
  * on the earliest whitespace or colon — so /login:?code=... is correctly matched.
@@ -69,6 +70,10 @@ export function shouldSkipHistory(slashText: string): boolean {
 	if (name === "mcp") {
 		const args = body.slice(sep + 1).trim();
 		return args.startsWith("add") && /--token\s/.test(args);
+	}
+	if (name === "secrets") {
+		const args = body.slice(sep + 1).trim();
+		return args.startsWith("add");
 	}
 	return false;
 }

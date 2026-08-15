@@ -11,9 +11,9 @@ import { collectJsonRegexSecretValues, mapJsonStrings } from "./placeholder-scan
 /**
  * Restore secret placeholders for local display. Only message kinds the model
  * itself authored from obfuscated context carry placeholders — assistant
- * content and the LLM-written branch/compaction summaries. User, developer, and
- * tool-result messages are persisted with their literal text, so operator-authored
- * placeholder-shaped text must survive untouched; those roles are never walked.
+ * content and the LLM-written branch/compaction summaries. User and developer
+ * messages keep their authored text, while tool results remain placeholdered
+ * so plaintext produced by tools never re-enters the transcript.
  */
 export function deobfuscateSessionContext(
 	sessionContext: SessionContext,
@@ -234,6 +234,11 @@ function collectMessageRegexSecretValues(obfuscator: SecretObfuscator, messages:
 		for (const block of target.content) {
 			if (block.type === "text") addText(block.text);
 		}
+		if (target.role === "toolResult" && target.details !== undefined) {
+			for (const value of collectJsonRegexSecretValues(obfuscator, target.details as JsonValue)) {
+				values.add(value);
+			}
+		}
 	}
 	return values;
 }
@@ -262,6 +267,18 @@ export function obfuscateMessages(obfuscator: SecretObfuscator, messages: Messag
 			return { ...message, content };
 		}
 		const target = message as UserFacingMessage;
+		if (target.role === "toolResult") {
+			const content = obfuscateTextBlocks(obfuscator, target.content, sharedRegexSecretValues);
+			const details =
+				target.details === undefined
+					? undefined
+					: mapJsonStrings(target.details as JsonValue, text =>
+							obfuscator.obfuscate(text, sharedRegexSecretValues),
+						);
+			if (content === target.content && details === target.details) return message;
+			changed = true;
+			return { ...target, content, details };
+		}
 		if (typeof target.content === "string") {
 			const content = obfuscator.obfuscate(target.content, sharedRegexSecretValues);
 			if (content === target.content) return message;

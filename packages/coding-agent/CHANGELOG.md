@@ -119,6 +119,9 @@
 
 ### Added
 
+- Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
+- Added an encrypted secret vault with OS-keychain-backed keys, prompt auto-detection, masked `/secrets` management, a secrets tool, and opt-in bash environment injection.
+- Added an `ompx secrets` command (`list`, `get [--reveal]`, `copy`, `add [--stdin]`, `remove`) so the vault owner can read or copy a stored value from their own shell; the agent-facing tool and slash command stay mask-only.
 - Added `--external-thinking` CLI flag to force external thinking tool activation.
 - Added `omp compress` command, which uses an isolated, two-tool agent loop to rewrite single or multiple text files (supporting glob patterns and concurrent processing) into dense prompt registers.
 - Expanded tool discovery in `omp cleanse` to support `staticcheck` and `golangci-lint` (Go); `mypy`, `pylint`, `flake8`, `ty`, and `basedpyright` (Python); `oxlint`, `deno lint`, `stylelint`, and `vue-tsc` (JS/TS); and `actionlint` (GitHub Workflows).

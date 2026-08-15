@@ -93,6 +93,10 @@ export const sayHelp = {
 	description: "Synthesize text with the local TTS engine and play it through the speakers",
 } satisfies CommandMetadata;
 
+export const secretsHelp = {
+	description: "Manage the encrypted secret vault (list, reveal, copy, add, remove)",
+} satisfies CommandMetadata;
+
 export const searchHelp = { description: "Test web search providers" } satisfies CommandMetadata;
 
 export const shareHelp = {

@@ -1,3 +1,4 @@
+import { logger } from "@oh-my-pi/pi-utils";
 import {
 	buildHashBase,
 	buildKeyedReplacementRun,
@@ -231,6 +232,37 @@ export class SecretObfuscator {
 
 	hasSecrets(): boolean {
 		return this.#hasAny;
+	}
+
+	/**
+	 * Register plain secrets discovered after construction.
+	 *
+	 * Pre-existing friendly labels are not re-validated against values added later.
+	 * Callers must not add a value that a previously registered label can expose.
+	 */
+	addPlainEntries(entries: SecretEntry[]): void {
+		for (const entry of entries) {
+			if (entry.type !== "plain") {
+				logger.warn("SecretObfuscator.addPlainEntries only supports plain entries; skipping regex entry", {
+					pattern: entry.content,
+				});
+				continue;
+			}
+			this.#configuredSecretValues.add(entry.content);
+			const mode = entry.mode ?? "obfuscate";
+			if (mode === "obfuscate") {
+				if (entry.content.length < MIN_OBFUSCATE_SECRET_LEN) continue;
+				const index = this.#nextIndex++;
+				const placeholder = this.#createPlaceholder(entry.content, entry.friendlyName);
+				this.#plainMappings.set(entry.content, index);
+				this.#obfuscateMappings.set(index, { secret: entry.content, placeholder });
+				this.#generatedPlaceholders.add(placeholder);
+				this.#hasAny = true;
+				continue;
+			}
+			this.#replaceMappings.set(entry.content, entry.replacement ?? this.#generateSecretReplacement(entry.content));
+			this.#hasAny = true;
+		}
 	}
 
 	/** Obfuscate all secrets in text. Bidirectional placeholders for obfuscate mode, one-way for replace. */

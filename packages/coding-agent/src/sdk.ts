@@ -175,6 +175,7 @@ import {
 	obfuscateMessages,
 	obfuscateProviderContext,
 	type SecretObfuscator,
+	SecretVault,
 } from "./secrets";
 import {
 	AgentSession,
@@ -1737,11 +1738,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// key is resolved lazily per request via ModelRegistry.resolver.
 	const hasModelAuth = (candidate: Model): boolean => modelRegistry.hasConfiguredAuth(candidate);
 
-	// Load and create secret obfuscator early so resumed session state and prompt warnings
-	// reflect actual loaded secrets, not just the setting toggle.
-	const obfuscator: SecretObfuscator | undefined = settings.get("secrets.enabled")
-		? await buildSecretObfuscator(cwd, agentDir, options.agentDir)
-		: undefined;
+	// Load the encrypted vault and compose it with every existing secret source
+	// before restored session context can reach the provider.
+	let secretVault: SecretVault | undefined;
+	let obfuscator: SecretObfuscator | undefined;
+	if (settings.get("secrets.enabled")) {
+		secretVault = await SecretVault.open(agentDir);
+		obfuscator = await buildSecretObfuscator(cwd, agentDir, options.agentDir, secretVault);
+	}
 	const secretsEnabled = obfuscator?.hasSecrets() === true;
 
 	// An abnormal process exit after a non-terminal message tail is durable
@@ -4309,6 +4313,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			sessionManager,
 			initialAdvisorCosts,
 			settings,
+			secretVault,
 			autoApprove: options.autoApprove,
 			scoutAllowedBySpawnPolicy: isScoutSpawnable(undefined, options.spawns ?? "*"),
 			evalKernelOwnerId,

@@ -5884,6 +5884,27 @@ export const SETTINGS_SCHEMA = {
 			description: "Obfuscate configured secrets and redact credential-shaped tokens before sending to AI providers",
 		},
 	},
+	"secrets.autoDetect": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "providers",
+			group: "Privacy",
+			label: "Auto-detect Prompt Secrets",
+			description: "Detect credential-shaped tokens and secret tags in prompts before sending to AI providers",
+		},
+	},
+	"secrets.injectEnv": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "providers",
+			group: "Privacy",
+			label: "Inject Vault Secrets into Bash",
+			description:
+				"Export saved vault secrets as environment variables for bash commands without displaying their values",
+		},
+	},
 
 	// Provider selection
 	"providers.ollama-cloud.maxConcurrency": {

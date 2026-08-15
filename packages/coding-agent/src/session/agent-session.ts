@@ -183,13 +183,16 @@ import rewindReportTemplate from "../prompts/system/rewind-report.md" with { typ
 import sandboxRelaunchContinuePrompt from "../prompts/system/sandbox-relaunch-continue.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
+import { detectSecretsInText, kindToName } from "../secrets/detect";
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
 	deobfuscateToolArguments,
+	obfuscateMessages,
 	obfuscateProviderContext,
 } from "../secrets/message-transform";
-import type { SecretObfuscator } from "../secrets/obfuscator";
+import { type SecretEntry, SecretObfuscator } from "../secrets/obfuscator";
+import { maskSecretValue, normalizeSecretName, type SecretVaultLike, vaultSecretEntry } from "../secrets/vault";
 import { discoverAgents } from "../task/discovery";
 import { type MacOSSandboxRelaunchResult, requestMacOSSandboxRelaunch } from "../task/omp-command";
 import {
@@ -715,6 +718,7 @@ export class AgentSession {
 	#qaGateReminderSent = false;
 	#duoSwitchInProgress = false;
 	#obfuscator: SecretObfuscator | undefined;
+	#secretVault: SecretVaultLike | undefined;
 	/** Session-start value of `inlineToolDescriptors`; drives handoff tool pruning. */
 	#pruneToolDescriptions = false;
 	#checkpointState: CheckpointState | undefined = undefined;
@@ -1364,6 +1368,8 @@ export class AgentSession {
 		});
 		this.#convertToLlm = config.convertToLlm ?? convertToLlm;
 		this.getXdevToolEntries = config.getXdevToolEntries ?? (() => []);
+		this.#obfuscator = config.obfuscator;
+		this.#secretVault = config.secretVault;
 		const sessionToolsHost: SessionToolsHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1385,6 +1391,7 @@ export class AgentSession {
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			notifyCommandMetadataChanged: () => this.#notifyCommandMetadataChanged(),
 			localProtocolOptions: () => this.#localProtocolOptions(),
+			secretVault: this.secretVault,
 			getInspectImageModeOverride: () => this.#inspectImageModeOverride,
 			setInspectImageModeOverride: mode => {
 				this.#inspectImageModeOverride = mode;
@@ -1437,7 +1444,6 @@ export class AgentSession {
 			promptGeneration: () => this.#promptGeneration,
 		};
 		this.#ttsr = new TtsrCoordinator(ttsrHost, config.ttsrManager);
-		this.#obfuscator = config.obfuscator;
 		const providerBoundaryHost: SessionProviderBoundaryHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -2024,6 +2030,11 @@ export class AgentSession {
 	/** Secret obfuscator, when secrets are configured; /share redaction reuses it. */
 	get obfuscator(): SecretObfuscator | undefined {
 		return this.#obfuscator;
+	}
+
+	/** Secret vault, when named secrets are enabled. */
+	get secretVault(): SecretVaultLike | undefined {
+		return this.#secretVault;
 	}
 
 	/** Whether a TTSR abort is pending (stream was aborted to inject rules) */
@@ -2804,6 +2815,17 @@ export class AgentSession {
 	}
 
 	#processAgentEvent = async (event: AgentEvent): Promise<void> => {
+		// Tool output can echo a secret injected through the process environment.
+		// Rewrite the live message synchronously, before event fan-out, persistence,
+		// or the next model turn can observe it. Mutating the original object also
+		// replaces the copy already appended to Agent state.
+		if (event.type === "message_end" && event.message.role === "toolResult" && this.#obfuscator?.hasSecrets()) {
+			const [redacted] = obfuscateMessages(this.#obfuscator, [event.message]);
+			if (redacted?.role === "toolResult" && redacted !== event.message) {
+				event.message.content = redacted.content;
+				event.message.details = redacted.details;
+			}
+		}
 		// A fresh run supersedes the previously settled (and pruned) refusal
 		// turn: state-based lookups take over again.
 		if (event.type === "agent_start") {
@@ -5887,6 +5909,66 @@ export class AgentSession {
 	}
 
 	/**
+	 * Registers a managed secret value with the live obfuscator so it can never
+	 * reach the provider verbatim — via a tool result echoing the injected env
+	 * var, a later user message, or session context.
+	 *
+	 * Creates the obfuscator when the session started without one (empty vault,
+	 * no env/file secrets): otherwise the first stored secret would be silently
+	 * unregistered. The fallback instance uses a per-process placeholder key —
+	 * placeholders do not survive a restart, but redaction, the security
+	 * property, applies immediately.
+	 */
+	registerRuntimeSecrets(entries: SecretEntry[]): void {
+		if (entries.length === 0) return;
+		if (this.#obfuscator) {
+			this.#obfuscator.addPlainEntries(entries);
+			return;
+		}
+		this.#obfuscator = new SecretObfuscator(entries);
+	}
+
+	/**
+	 * Applies the prompt-secret policy to any user-authored text before it can
+	 * reach the model. Every non-synthetic entry point (`prompt`, `steer`,
+	 * `followUp`) MUST route through this — a bypassed entry point sends
+	 * credentials to the provider verbatim.
+	 */
+	async #applyPromptSecretPolicy(text: string, synthetic: boolean | undefined): Promise<string> {
+		if (
+			synthetic ||
+			!this.#secretVault ||
+			!this.settings.get("secrets.enabled") ||
+			!this.settings.get("secrets.autoDetect")
+		) {
+			return text;
+		}
+		return await this.#detectAndStorePromptSecrets(text);
+	}
+
+	/**
+	 * Stores detected prompt secrets and replaces their spans before the prompt
+	 * enters either the streaming queue or the normal message path.
+	 */
+	async #detectAndStorePromptSecrets(text: string): Promise<string> {
+		const detected = detectSecretsInText(text);
+		if (detected.length === 0 || !this.#secretVault) return text;
+
+		let transformed = text;
+		const entries: SecretEntry[] = [];
+		for (const span of [...detected].reverse()) {
+			const name = normalizeSecretName(span.name ?? kindToName(span.kind));
+			const finalName = await this.#secretVault.set(name, span.value, span.name ? "tag" : "detected");
+			const mask = maskSecretValue(span.value).replaceAll("$", "•");
+			const replacement = `[secret ${finalName} (${mask}) — exported as env var ${finalName} in bash]`;
+			transformed = transformed.slice(0, span.start) + replacement + transformed.slice(span.end);
+			entries.push(vaultSecretEntry(finalName, span.value));
+		}
+		this.registerRuntimeSecrets(entries);
+		return transformed;
+	}
+
+	/**
 	 * Send a prompt to the agent.
 	 * - Handles extension commands (registered via pi.registerCommand) immediately, even during streaming
 	 * - Expands file-based prompt templates by default
@@ -5902,6 +5984,7 @@ export class AgentSession {
 	 * steer/follow-up. Callers that render a UI or manage turn lifecycle (e.g.
 	 * the ACP agent) use this to know whether to expect an `agent_end` event.
 	 */
+
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 
@@ -5929,7 +6012,8 @@ export class AgentSession {
 		}
 
 		// Expand file-based prompt templates if requested
-		const expandedText = expandPromptTemplates ? expandPromptTemplate(text, [...this.#promptTemplates]) : text;
+		const templated = expandPromptTemplates ? expandPromptTemplate(text, [...this.#promptTemplates]) : text;
+		const expandedText = await this.#applyPromptSecretPolicy(templated, options?.synthetic);
 
 		if (!options?.synthetic && !this.isStreaming) {
 			await this.#maybeAutoEnterOrchestratorMode(expandedText);
@@ -6561,7 +6645,10 @@ export class AgentSession {
 			this.#throwIfExtensionCommand(text);
 		}
 
-		const expandedText = expandPromptTemplate(text, [...this.#promptTemplates]);
+		const templated = expandPromptTemplate(text, [...this.#promptTemplates]);
+		// User-authored steering reaches the model like any prompt — apply the
+		// same vault replacement before it is queued or held.
+		const expandedText = await this.#applyPromptSecretPolicy(templated, false);
 		if (!(await this.#runUsageAwarePreflight())) return;
 		if (this.#subagentWaitDepth > 0) {
 			this.#heldSteering.push({ text: expandedText, images });
@@ -6584,8 +6671,10 @@ export class AgentSession {
 			this.#throwIfExtensionCommand(text);
 		}
 
-		const expandedText =
+		const templated =
 			options?.expandPromptTemplates === false ? text : expandPromptTemplate(text, [...this.#promptTemplates]);
+		const expandedText = await this.#applyPromptSecretPolicy(templated, options?.synthetic);
+
 		if (!options?.synthetic) {
 			await this.#queueUserMessage(expandedText, images, "followUp", options?.signal);
 			return;
