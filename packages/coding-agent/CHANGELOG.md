@@ -6,6 +6,10 @@
 
 - Synced with upstream oh-my-pi v17.3.4. The OMPx divergences are preserved: fork version line, `ompx` branding and `qtnx/omppp` self-update source, the `quick_task`/`task`/`heavy_task` implementer tiers (upstream's `sonic` rename is not adopted), fork-only packages and features, and the fork-shaped CI. Upstream's native `pdfToMarkdown` pipeline replaces the mupdf-wasm PDF path, so the `mupdf` dependency and the `gen:mupdf` scripts are gone.
 - The orchestrate contract stays tool-agnostic instead of adopting upstream's Handlebars per-tool gating: it defers to "the active toolset" rather than naming `edit`/`write`, so it can never advertise a tool the session lacks.
+### Added
+
+- Added a `codegraph.autoIndex` setting (default on) so background CodeGraph init/index at session startup can be disabled independently of the master `codegraph.enabled` toggle; both live under Settings → Files → CodeGraph and in config files.
+
 ## [1.7.2] - 2026-08-14
 ### Added
 
