@@ -16,6 +16,7 @@
 
 - Plan mode no longer tells the agent to use `ask` or to dispatch scouts `via task` when those tools are absent from the session. The preference-gathering directive and the scout dispatch step are now gated on tool availability, matching the rest of the plan-mode prompt.
 - Native CI no longer hard-fails a release rebuild when sccache cannot reach the GitHub Actions cache backend. Bazel addon builds strip that wrapper and skip unused host cargo/sccache setup.
+- `super_review` now advances through its configured authenticated model chain when a provider fails at runtime, instead of stopping after the first model's 402, timeout, or upstream error; exhausted chains report every attempted model and failure.
 
 
 ## [1.7.1] - 2026-08-13
