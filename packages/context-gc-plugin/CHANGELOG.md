@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Context GC now keeps one live SQLite connection per database path, skips re-reading stored payload blobs on hash hits, and loads branch records in a single lookup so inventory and footer usage estimates no longer reopen or scan the multi-gigabyte store on every call.
+
+
 ## [1.6.0] - 2026-07-12
 
 ### Changed

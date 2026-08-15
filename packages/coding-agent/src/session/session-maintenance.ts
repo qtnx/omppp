@@ -335,6 +335,12 @@ export class SessionMaintenance {
 	#midTurnDeadEndPendingPrePrompt = false;
 	#skipPostTurnMaintenanceAssistantTimestamp: number | undefined;
 	readonly #host: SessionMaintenanceHost;
+	#effectiveTokensCache:
+		| {
+				key: string;
+				value: number;
+		  }
+		| undefined;
 
 	get #model(): Model | undefined {
 		return this.#host.model();
@@ -374,15 +380,23 @@ export class SessionMaintenance {
 					break;
 				}
 			}
+			const messages = this.#host.messages();
+			const last = messages.at(-1);
+			const cacheKey = `${baseTokens}|${recordIds.join(",")}|${messages.length}|${last?.timestamp ?? 0}|${last?.role ?? ""}`;
+			if (this.#effectiveTokensCache?.key === cacheKey) {
+				return this.#effectiveTokensCache.value;
+			}
 			const effectiveTokens = estimateContextGcEffectiveTokens({
 				dbPath: this.#host.contextGcDbPath() ?? getContextGcDbPath(this.#host.settings.getAgentDir()),
 				cwd: this.#host.sessionManager.getCwd(),
 				sessionManager: this.#host.sessionManager,
-				messages: this.#host.messages(),
+				messages,
 				baseTokens,
 				recordIds,
 			});
-			return effectiveTokens ?? baseTokens;
+			const value = effectiveTokens ?? baseTokens;
+			this.#effectiveTokensCache = { key: cacheKey, value };
+			return value;
 		} catch (error) {
 			logger.debug("Context GC effective token estimate failed", {
 				error: error instanceof Error ? error.message : String(error),
