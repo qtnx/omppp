@@ -231,6 +231,7 @@ task:
     qa: openai-codex/gpt-5.6-sol:high
     quick_task: openai-codex/gpt-5.6-luna:high
     reviewer: openai-codex/codex-auto-review
+    scout: tnx/scout
     task: openai-codex/gpt-5.6-terra:medium
     tester: openai-codex/gpt-5.6-sol:medium
     ui_ux_reviewer: tnx/designer
@@ -271,6 +272,9 @@ retry:
       - anthropic/claude-haiku-4-5
     heavy_task:
       - anthropic/claude-opus-5:high
+    scout:
+      - openai-codex/gpt-5.3-codex-spark
+      - anthropic/claude-haiku-4-5
 '@ | Set-Content -Path $ConfigFile -Encoding UTF8
     Write-Host "✓ Seeded OMPx standard config at $ConfigFile" -ForegroundColor Green
 }

@@ -318,6 +318,8 @@ migrate_ui_agent_overrides_config() {
                 have_ui_ux_reviewer = 1
             } else if (key == "ux_copywriter") {
                 have_ux_copywriter = 1
+            } else if (key == "scout") {
+                have_scout = 1
             }
         }
         function normalized_ui_value(key, value) {
@@ -326,6 +328,9 @@ migrate_ui_agent_overrides_config() {
             }
             if (key == "designer" && value == "anthropic/claude-opus-4-8:xhigh") {
                 return "tnx/designer"
+            }
+            if (key == "scout" && (value == "pi/smol" || value == "@smol")) {
+                return "tnx/scout"
             }
             return value
         }
@@ -342,6 +347,9 @@ migrate_ui_agent_overrides_config() {
             if (!have_ux_copywriter) {
                 print override_indent "ux_copywriter: tnx/designer"
             }
+            if (!have_scout) {
+                print override_indent "scout: tnx/scout"
+            }
         }
         function child_indent(indent_len) {
             return sprintf("%*s", indent_len + 2, "")
@@ -352,6 +360,7 @@ migrate_ui_agent_overrides_config() {
             print child "  frontend_ui: tnx/designer"
             print child "  ui_ux_reviewer: tnx/designer"
             print child "  ux_copywriter: tnx/designer"
+            print child "  scout: tnx/scout"
         }
         function emit_inline_override(entry, key, value, colon) {
             entry = trim(entry)
@@ -392,6 +401,7 @@ migrate_ui_agent_overrides_config() {
             have_frontend_ui = 0
             have_ui_ux_reviewer = 0
             have_ux_copywriter = 0
+            have_scout = 0
             parent_indent_len = 0
             task_indent_len = 0
         }
@@ -456,6 +466,11 @@ migrate_ui_agent_overrides_config() {
                     have_ux_copywriter = 1
                     if ($0 ~ /^[[:space:]]*ux_copywriter:[[:space:]]*pi\/designer[[:space:]]*(#.*)?$/) {
                         sub(/pi\/designer/, "tnx/designer")
+                    }
+                } else if ($0 ~ /^[[:space:]]*scout:[[:space:]]*/) {
+                    have_scout = 1
+                    if ($0 ~ /^[[:space:]]*scout:[[:space:]]*(pi\/smol|@smol)[[:space:]]*(#.*)?$/) {
+                        sub(/(pi\/smol|@smol)/, "tnx/scout")
                     }
                 }
 
@@ -683,10 +698,15 @@ migrate_heavy_task_fallback_chain() {
             match(line, /^[[:space:]]*/)
             return RLENGTH
         }
-        function insert_heavy_task_fallback() {
+        function insert_missing_fallback_chains() {
             if (seen_child && !have_heavy_task) {
                 print key_indent "heavy_task:"
                 print key_indent "  - anthropic/claude-opus-5:high"
+            }
+            if (seen_child && !have_scout) {
+                print key_indent "scout:"
+                print key_indent "  - openai-codex/gpt-5.3-codex-spark"
+                print key_indent "  - anthropic/claude-haiku-4-5"
             }
         }
         BEGIN {
@@ -697,6 +717,7 @@ migrate_heavy_task_fallback_chain() {
             key_indent = ""
             seen_child = 0
             have_heavy_task = 0
+            have_scout = 0
         }
         {
             if (in_chains) {
@@ -709,11 +730,13 @@ migrate_heavy_task_fallback_chain() {
                     seen_child = 1
                     if ($0 ~ /^[[:space:]]*heavy_task:[[:space:]]*($|#)/) {
                         have_heavy_task = 1
+                    } else if ($0 ~ /^[[:space:]]*scout:[[:space:]]*($|#)/) {
+                        have_scout = 1
                     }
                     print
                     next
                 }
-                insert_heavy_task_fallback()
+                insert_missing_fallback_chains()
                 in_chains = 0
                 in_retry = 0
             }
@@ -732,6 +755,7 @@ migrate_heavy_task_fallback_chain() {
                     key_indent = substr($0, 1, current_indent) "  "
                     seen_child = 0
                     have_heavy_task = 0
+                    have_scout = 0
                     print
                     next
                 } else {
@@ -748,13 +772,13 @@ migrate_heavy_task_fallback_chain() {
         }
         END {
             if (in_chains) {
-                insert_heavy_task_fallback()
+                insert_missing_fallback_chains()
             }
         }
     ' "$config_file" > "$tmp_config"
     mv "$tmp_config" "$config_file"
     chmod 600 "$config_file" 2>/dev/null || true
-    echo "✓ Ensured heavy_task fallback chain at ${config_file}"
+    echo "✓ Ensured heavy_task and scout fallback chains at ${config_file}"
 }
 
 migrate_opus_model_config() {
@@ -859,6 +883,7 @@ task:
     qa: openai-codex/gpt-5.6-sol:high
     quick_task: openai-codex/gpt-5.6-luna:high
     reviewer: openai-codex/codex-auto-review
+    scout: tnx/scout
     task: openai-codex/gpt-5.6-terra:medium
     tester: openai-codex/gpt-5.6-sol:medium
     ui_ux_reviewer: tnx/designer
@@ -899,6 +924,9 @@ retry:
       - anthropic/claude-haiku-4-5
     heavy_task:
       - anthropic/claude-opus-5:high
+    scout:
+      - openai-codex/gpt-5.3-codex-spark
+      - anthropic/claude-haiku-4-5
 EOF_CONFIG
     chmod 600 "$config_file" 2>/dev/null || true
     echo "✓ Seeded OMPx standard config at ${config_file}"

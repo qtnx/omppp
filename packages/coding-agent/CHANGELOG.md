@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Installer config migration now defaults the `scout` agent to `tnx/scout` and, when retry fallback chains already exist, adds the same `smol` fallback chain (`openai-codex/gpt-5.3-codex-spark` then `anthropic/claude-haiku-4-5`) unless a `scout` chain is already set. Custom scout models and existing scout fallbacks are left alone.
+
 ## [1.7.3] - 2026-08-15
 
 ### Added

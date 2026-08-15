@@ -449,6 +449,7 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 						frontend_ui: "tnx/designer",
 						ui_ux_reviewer: "tnx/designer",
 						ux_copywriter: "tnx/designer",
+						scout: "tnx/scout",
 					},
 				},
 			});
@@ -477,6 +478,7 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 						frontend_ui: "tnx/designer",
 						ui_ux_reviewer: "tnx/designer",
 						ux_copywriter: "tnx/designer",
+						scout: "tnx/scout",
 					},
 				},
 			});
@@ -506,6 +508,7 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 				frontend_ui: "tnx/designer",
 				ui_ux_reviewer: "tnx/designer",
 				ux_copywriter: "tnx/designer",
+				scout: "tnx/scout",
 				qa: "custom/qa",
 			});
 		} finally {
@@ -531,6 +534,7 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 				frontend_ui: "tnx/designer",
 				ui_ux_reviewer: "tnx/designer",
 				ux_copywriter: "tnx/designer",
+				scout: "tnx/scout",
 				qa: "custom/qa",
 			});
 		} finally {
@@ -554,6 +558,7 @@ printf "%s\\n" "$*" >> "$OMPX_SUPERPOWERS_LOG"
 				frontend_ui: "tnx/designer",
 				ui_ux_reviewer: "tnx/designer",
 				ux_copywriter: "tnx/designer",
+				scout: "tnx/scout",
 				qa: "custom/qa",
 			});
 		} finally {
@@ -611,6 +616,7 @@ task:
 				oracle: "openai-codex/gpt-5.6-sol:high",
 				qa: "openai-codex/gpt-5.6-sol:high",
 				reviewer: "openai-codex/codex-auto-review",
+				scout: "tnx/scout",
 				quick_task: "openai-codex/gpt-5.6-luna:high",
 				task: "openai-codex/gpt-5.6-terra:medium",
 				tester: "openai-codex/gpt-5.6-sol:medium",
@@ -670,6 +676,49 @@ task:
 		});
 	}
 
+	it("migrates shell installer scout override and fallback chain idempotently", async () => {
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const configPath = shellConfigPath(root);
+		try {
+			await Bun.write(
+				configPath,
+				`task:
+  agentModelOverrides:
+    scout: pi/smol
+    qa: custom/qa
+retry:
+  fallbackChains:
+    task:
+      - openai-codex/gpt-5.6-terra:medium
+    scout:
+      - leftover/old-scout
+`,
+			);
+
+			const firstResult = await runShellInstaller(root, installDir);
+			expect(firstResult.exitCode).toBe(0);
+			const firstConfig = YAML.parse(await Bun.file(configPath).text()) as {
+				task: { agentModelOverrides: Record<string, string> };
+				retry: { fallbackChains: Record<string, string[]> };
+			};
+
+			expect(firstConfig.task.agentModelOverrides.scout).toBe("tnx/scout");
+			expect(firstConfig.task.agentModelOverrides.qa).toBe("custom/qa");
+			expect(firstConfig.retry.fallbackChains.scout).toEqual(["leftover/old-scout"]);
+			expect(firstConfig.retry.fallbackChains.task).toEqual(["openai-codex/gpt-5.6-terra:medium"]);
+			expect(firstConfig.retry.fallbackChains.heavy_task).toEqual(["anthropic/claude-opus-5:high"]);
+
+			const secondResult = await runShellInstaller(root, installDir);
+			expect(secondResult.exitCode).toBe(0);
+			expect(YAML.parse(await Bun.file(configPath).text())).toEqual(firstConfig);
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+
 	it("adds shell installer heavy_task fallback chain to existing retry chains idempotently", async () => {
 		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
@@ -706,8 +755,11 @@ providers:
 			};
 
 			expect(firstConfig.retry.fallbackChains.heavy_task).toEqual(["anthropic/claude-opus-5:high"]);
+			expect(firstConfig.retry.fallbackChains.scout).toEqual([
+				"openai-codex/gpt-5.3-codex-spark",
+				"anthropic/claude-haiku-4-5",
+			]);
 			expect(firstConfig.retry.fallbackChains.task).toEqual(["openai-codex/gpt-5.6-terra:medium"]);
-			expect(firstConfig.retry.fallbackChains.smol).toEqual(["cerebras/gpt-oss-120b"]);
 			expect(firstConfig.retry.otherRetryKey).toBe("keepme");
 
 			const secondResult = await runShellInstaller(root, installDir);
@@ -742,7 +794,7 @@ providers:
 			};
 
 			expect(config.retry).toBeUndefined();
-			expect(config.retry?.fallbackChains?.heavy_task).toBeUndefined();
+			expect(config.retry?.fallbackChains?.scout).toBeUndefined();
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}
@@ -826,7 +878,10 @@ retry:
 				"anthropic/claude-opus-5",
 				"openai-codex/gpt-5.6-terra:medium",
 			]);
-			expect(firstConfig.retry.fallbackChains.heavy_task).toEqual(["anthropic/claude-opus-5:high"]);
+			expect(firstConfig.retry.fallbackChains.scout).toEqual([
+				"openai-codex/gpt-5.3-codex-spark",
+				"anthropic/claude-haiku-4-5",
+			]);
 
 			const secondResult = await runShellInstaller(root, installDir);
 			expect(secondResult.exitCode).toBe(0);
@@ -926,6 +981,7 @@ printf "called\\n" > "$marker_file"
 						frontend_ui: "tnx/designer",
 						ui_ux_reviewer: "tnx/designer",
 						ux_copywriter: "tnx/designer",
+						scout: "tnx/scout",
 					},
 				},
 			});
