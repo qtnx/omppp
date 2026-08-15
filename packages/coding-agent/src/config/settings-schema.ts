@@ -3985,6 +3985,16 @@ export const SETTINGS_SCHEMA = {
 			description: "Enable CodeGraph tools and background workspace indexing",
 		},
 	},
+	"codegraph.autoIndex": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "files",
+			group: "CodeGraph",
+			label: "Auto Index",
+			description: "Automatically initialize or sync the CodeGraph index when a session starts",
+		},
+	},
 
 	"lsp.lazy": {
 		type: "boolean",

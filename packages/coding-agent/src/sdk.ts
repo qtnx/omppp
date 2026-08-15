@@ -4426,7 +4426,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorMcpResources: cursorMcpResources,
 			titleSystemPrompt: options.titleSystemPrompt,
 		});
-		if (taskDepth === 0 && !options.parentTaskPrefix && !restrictToolNames && settings.get("codegraph.enabled")) {
+		if (
+			taskDepth === 0 &&
+			!options.parentTaskPrefix &&
+			!restrictToolNames &&
+			settings.get("codegraph.enabled") &&
+			settings.get("codegraph.autoIndex")
+		) {
 			void CodeGraphManager.forProject(sessionManager.getCwd())
 				.then(codeGraphManager => {
 					if (session.isDisposed) return;

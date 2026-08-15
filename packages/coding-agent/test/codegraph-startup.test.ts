@@ -205,17 +205,22 @@ describe("CodeGraph startup", () => {
 		]);
 	});
 
-	it("does not auto-start in subagent, restricted, or disabled sessions", async () => {
+	it("does not auto-start in subagent, restricted, disabled, or auto-index-off sessions", async () => {
 		const cases = [
-			{ name: "subagent", extra: { taskDepth: 1 }, enabled: true },
-			{ name: "restricted", extra: { restrictToolNames: true }, enabled: true },
-			{ name: "disabled", extra: {}, enabled: false },
+			{ name: "subagent", extra: { taskDepth: 1 }, settings: { "codegraph.enabled": true } },
+			{ name: "restricted", extra: { restrictToolNames: true }, settings: { "codegraph.enabled": true } },
+			{ name: "disabled", extra: {}, settings: { "codegraph.enabled": false } },
+			{
+				name: "auto-index-off",
+				extra: {},
+				settings: { "codegraph.enabled": true, "codegraph.autoIndex": false },
+			},
 		] as const;
 
 		for (const testCase of cases) {
 			const cwd = path.join(root, testCase.name);
 			fs.mkdirSync(cwd);
-			await createSession(cwd, Settings.isolated({ "codegraph.enabled": testCase.enabled }), testCase.extra);
+			await createSession(cwd, Settings.isolated(testCase.settings), testCase.extra);
 		}
 		await Promise.resolve();
 		await Promise.resolve();
