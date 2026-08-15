@@ -17,7 +17,7 @@
  *     (which converts to `developer`) would send an invalid provider tail, so the
  *     follow-up stays queued for the next explicit resume rather than auto-running.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolCall } from "@oh-my-pi/pi-ai";
@@ -73,7 +73,7 @@ describe("AgentSession advisor auto-resume suppression", () => {
 	let session: AgentSession;
 	const authStorages: AuthStorage[] = [];
 
-	beforeEach(() => {
+	beforeAll(() => {
 		tempDir = TempDir.createSync("@pi-advisor-suppress-");
 	});
 
@@ -84,9 +84,11 @@ describe("AgentSession advisor auto-resume suppression", () => {
 			await session?.dispose();
 		} finally {
 			for (const authStorage of authStorages.splice(0)) authStorage.close();
-			await Bun.sleep(0);
-			await tempDir?.remove();
 		}
+	});
+
+	afterAll(async () => {
+		await tempDir?.remove();
 	});
 
 	/**
@@ -114,7 +116,7 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		});
 		const sessionManager = SessionManager.inMemory();
 		const settings = Settings.isolated({ "compaction.enabled": false });
-		const authStorage = await AuthStorage.create(tempDir.join(`auth-${Snowflake.next()}.db`));
+		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
@@ -205,7 +207,7 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		const sessionManager = SessionManager.inMemory();
 		const settings = Settings.isolated({ "compaction.enabled": false, "retry.enabled": false });
 		settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
-		const authStorage = await AuthStorage.create(tempDir.join(`auth-${Snowflake.next()}.db`));
+		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
@@ -675,7 +677,7 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		});
 		const sessionManager = SessionManager.inMemory();
 		const settings = Settings.isolated({ "compaction.enabled": false });
-		const authStorage = await AuthStorage.create(tempDir.join(`auth-${Snowflake.next()}.db`));
+		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));

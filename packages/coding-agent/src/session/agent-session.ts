@@ -37,6 +37,7 @@ import {
 	type AsideMessage,
 	type BeforeToolCallContext,
 	type BeforeToolCallResult,
+	EventLoopKeepalive,
 	resolveTelemetry,
 	type StreamFn,
 	TERMINAL_TOOL_RESULT_ABORT_REASON,
@@ -157,7 +158,7 @@ import { unregisterKanbanSession } from "../kanban";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
-import { containsOrchestrate, ORCHESTRATE_NOTICE } from "../modes/orchestrate";
+import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestrate";
 import { theme } from "../modes/theme/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
 import { containsUltrathink, ULTRATHINK_NOTICE } from "../modes/ultrathink";
@@ -479,6 +480,37 @@ type SetSessionNameWithTrigger = (
 
 const kPersistedSessionEntryId = Symbol("persistedSessionEntryId");
 type PersistedAssistantMessage = AssistantMessage & { [kPersistedSessionEntryId]?: string };
+
+/**
+ * Clone one top-level notification field without ever returning an object owned
+ * by the live session. Most values take the lossless structured-clone path. If
+ * a third-party metadata object contains functions or other unsupported values,
+ * JSON sanitization drops those values; a cyclic/non-JSON value finally degrades
+ * to a descriptive string rather than retaining a shared mutable reference.
+ */
+function cloneMessageEndNotificationField(value: unknown): unknown {
+	try {
+		return structuredClone(value);
+	} catch {}
+	try {
+		const json = JSON.stringify(value);
+		if (json !== undefined) return JSON.parse(json) as unknown;
+	} catch {}
+	return String(value);
+}
+
+/** Build a detached, notification-only snapshot of an AgentMessage. */
+function cloneMessageEndNotification(message: AgentMessage): AgentMessage {
+	const snapshot: Record<PropertyKey, unknown> = {};
+	for (const key of Reflect.ownKeys(message)) {
+		const descriptor = Object.getOwnPropertyDescriptor(message, key);
+		if (!descriptor?.enumerable) continue;
+		snapshot[key] = cloneMessageEndNotificationField(Reflect.get(message, key));
+	}
+	return snapshot as unknown as AgentMessage;
+}
+
+const INTERRUPTED_THINKING_MIN_CHARS = 60;
 
 export class AgentSession {
 	readonly agent: Agent;
@@ -1148,6 +1180,7 @@ export class AgentSession {
 			modelRegistry: this.#modelRegistry,
 			configWarnings: this.configWarnings,
 			model: () => this.model,
+			contextFitsModel: (model, excludedMessage) => this.#maintenance.contextFitsModel(model, excludedMessage),
 			textOutputCommitted: () => this.#textOutputCommitted,
 			thinkingLevel: () => this.thinkingLevel,
 			configuredThinkingLevel: () => this.configuredThinkingLevel(),
@@ -1291,15 +1324,28 @@ export class AgentSession {
 				}
 			},
 			scheduleIdleFlush: run => {
-				this.#schedulePostPromptTask(
-					async () => {
-						await run();
-					},
-					{
-						delayMs: 1,
-						onSkip: () => this.yieldQueue.cancelIdleFlushScheduling(),
-					},
-				);
+				const keepalive = new EventLoopKeepalive();
+				try {
+					this.#schedulePostPromptTask(
+						async () => {
+							try {
+								await run();
+							} finally {
+								keepalive[Symbol.dispose]();
+							}
+						},
+						{
+							delayMs: 1,
+							onSkip: () => {
+								keepalive[Symbol.dispose]();
+								this.yieldQueue.cancelIdleFlushScheduling();
+							},
+						},
+					);
+				} catch (error) {
+					keepalive[Symbol.dispose]();
+					throw error;
+				}
 			},
 		});
 		this.yieldQueue.register<LaunchCompletionEntry>(LAUNCH_COMPLETION_MESSAGE_TYPE, {
@@ -1542,12 +1588,12 @@ export class AgentSession {
 			onPayload: this.#onPayload,
 			onResponse: this.#onResponse,
 			onSseEvent: this.#onSseEvent,
-			agentKind: () => this.#agentKind,
 			isDisposed: () => this.#isDisposed,
 			abortInProgress: () => this.#abortInProgress,
 			allowAgentInitiatedTurns: () => this.#allowAcpAgentInitiatedTurns,
 			planModeState: () => this.#planModeState,
 			clientBridge: () => this.#clientBridge,
+			agentKind: () => this.#agentKind,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			advisorRuntimeStarted: () => {
 				void this.#tools.ensureConsultToolAvailable().catch(error => {
@@ -1570,7 +1616,8 @@ export class AgentSession {
 				this.#maintenance.resolveContextPromotionTarget(model, contextWindow, signal),
 			resolveCompactionModelCandidates: (model, availableModels) =>
 				this.#maintenance.resolveCompactionModelCandidates(model, availableModels),
-			resolveRetryFallbackRole: (selector, model) => this.#recovery.resolveRetryFallbackRole(selector, model),
+			resolveRetryFallbackRole: (selector, model, roleHint) =>
+				this.#recovery.resolveRetryFallbackRole(selector, model, roleHint),
 			findRetryFallbackCandidates: (role, selector, model) =>
 				this.#recovery.findRetryFallbackCandidates(role, selector, model),
 			isRetryFallbackSelectorSuppressed: selector => this.#recovery.isRetryFallbackSelectorSuppressed(selector),
@@ -2674,20 +2721,42 @@ export class AgentSession {
 		}
 	}
 
+	#persistMessageEnd(message: AgentMessage): void {
+		const alreadyPersisted = this.#prePersistedPromptMessages.delete(message);
+		if (message.role === "hookMessage" || message.role === "custom") {
+			// Prewalk's plan nudge is a one-run steering instruction. Persisting it would
+			// resurrect the consumed prompt on resume, fork, or any context rebuild.
+			if (!alreadyPersisted && !isPrewalkPlanNudge(message)) {
+				this.sessionManager.appendCustomMessageEntry(
+					message.customType,
+					message.content,
+					message.display,
+					message.details,
+					message.attribution ?? "agent",
+				);
+			}
+			if (message.role === "custom" && message.customType === "ttsr-injection") {
+				this.#ttsr.markInjectedFromDetails(message.details);
+			}
+			return;
+		}
+		if (!alreadyPersisted) this.#persistSessionMessageIfMissing(message);
+	}
+
 	/**
-	 * On a user-interrupted (`Esc`) abort, copy the trailing thinking run into a
-	 * hidden `display: false` continuity message for the next turn WITHOUT
-	 * mutating the assistant message. The original thinking stays on the message
-	 * so live render, reload, and display-reset rebuilds keep showing it; `convertToLlm`
-	 * strips the run from the provider request (incomplete/unsigned thinking is
-	 * rejected on resend) when this continuity message follows the assistant turn.
+	 * On a user-interrupted (`Esc`) abort, copy a meaningful trailing thinking
+	 * run into hidden continuity context for the next turn. Short fragments are
+	 * omitted; `convertToLlm` still strips their incomplete thinking from replay.
+	 *
+	 * The original thinking stays on the assistant message so live render, reload,
+	 * and display-reset rebuilds keep showing it.
 	 */
 	#demoteInterruptedThinkingOnUserInterrupt(
 		message: AssistantMessage,
 	): CustomMessage<InterruptedThinkingDetails> | undefined {
 		if (message.stopReason !== "aborted" || !isUserInterruptAbort(message)) return undefined;
 		const demoted = demoteInterruptedThinking(message);
-		if (!demoted) return undefined;
+		if (!demoted || demoted.reasoning.length < INTERRUPTED_THINKING_MIN_CHARS) return undefined;
 		const interruptedAt = Date.now();
 		return {
 			role: "custom",
@@ -2857,7 +2926,17 @@ export class AgentSession {
 			try {
 				await this.#emitSessionEvent(displayEvent);
 			} catch (error) {
-				messageEndPersistence?.release();
+				if (event.type === "message_end") {
+					const persistMessageEnd = () => this.#persistMessageEnd(event.message);
+					try {
+						if (messageEndPersistence) await messageEndPersistence.persist(persistMessageEnd);
+						else persistMessageEnd();
+					} catch (persistenceError) {
+						logger.warn("Failed to persist message after session event emission failed", {
+							error: String(persistenceError),
+						});
+					}
+				}
 				throw error;
 			}
 		}
@@ -2915,28 +2994,7 @@ export class AgentSession {
 
 		// Handle session persistence
 		if (event.type === "message_end") {
-			const alreadyPersisted = this.#prePersistedPromptMessages.delete(event.message);
-			const persistMessageEnd = () => {
-				// Check if this is a hook/custom message
-				if (event.message.role === "hookMessage" || event.message.role === "custom") {
-					// Prewalk's plan nudge is a one-run steering instruction. Persisting it would
-					// resurrect the consumed prompt on resume, fork, or any context rebuild.
-					if (!alreadyPersisted && !isPrewalkPlanNudge(event.message)) {
-						this.sessionManager.appendCustomMessageEntry(
-							event.message.customType,
-							event.message.content,
-							event.message.display,
-							event.message.details,
-							event.message.attribution ?? "agent",
-						);
-					}
-					if (event.message.role === "custom" && event.message.customType === "ttsr-injection") {
-						this.#ttsr.markInjectedFromDetails(event.message.details);
-					}
-				} else if (!alreadyPersisted) {
-					this.#persistSessionMessageIfMissing(event.message);
-				}
-			};
+			const persistMessageEnd = () => this.#persistMessageEnd(event.message);
 			if (messageEndPersistence) {
 				await messageEndPersistence.persist(persistMessageEnd);
 			} else {
@@ -3218,10 +3276,17 @@ export class AgentSession {
 			// tool_result and corrupts message history. The handler also
 			// schedules its own retry, so a real empty stop never needs the
 			// active-goal threshold pre-empt below.
-			if (await this.#recovery.handleEmptyAssistantStop(msg)) {
+			const emptyOutputRecovery = await this.#recovery.handleEmptyAssistantStop(msg);
+			if (emptyOutputRecovery === "continue") {
 				maintenanceRoute("empty-stop-handled");
 				await emitAgentEndNotification({ willContinue: true });
 				return;
+			}
+			if (emptyOutputRecovery === "terminal") {
+				// The cap already closed retry state and made provider-empty errors
+				// non-retryable. Continue through terminal maintenance so session_stop
+				// hooks and queued follow-up handling retain their normal contract.
+				maintenanceRoute("empty-stop-retry-cap");
 			}
 
 			// Record quota exhaustion before deciding whether this failed turn may be
@@ -3881,9 +3946,16 @@ export class AgentSession {
 			};
 			await this.#extensionRunner.emit(extensionEvent);
 		} else if (event.type === "message_end") {
+			// `message_end` is a notification, not a context-rewrite hook. Detach its
+			// payload from agent-owned history so an async observer that mutates the
+			// event after an `await` cannot race mid-run maintenance and enlarge (or
+			// otherwise rewrite) the next provider request after its threshold check.
+			// Explicit `tool_result` / `context` hooks remain the supported mutation
+			// surfaces. Third-party metadata that is not structured-cloneable is
+			// sanitized field-by-field without retaining nested live references.
 			const extensionEvent: MessageEndEvent = {
 				type: "message_end",
-				message: event.message,
+				message: cloneMessageEndNotification(event.message),
 			};
 			await this.#extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_start") {
@@ -3945,6 +4017,19 @@ export class AgentSession {
 				attempt: event.attempt,
 				finalError: event.finalError,
 				retryErrors: event.retryErrors,
+			});
+		} else if (event.type === "retry_fallback_applied") {
+			await this.#extensionRunner.emit({
+				type: "retry_fallback_applied",
+				from: event.from,
+				to: event.to,
+				role: event.role,
+			});
+		} else if (event.type === "retry_fallback_succeeded") {
+			await this.#extensionRunner.emit({
+				type: "retry_fallback_succeeded",
+				model: event.model,
+				role: event.role,
 			});
 		} else if (event.type === "ttsr_triggered") {
 			await this.#extensionRunner.emit({ type: "ttsr_triggered", rules: event.rules });
@@ -5630,12 +5715,15 @@ export class AgentSession {
 				: sessionPlanUrl;
 
 		const planExists = fs.existsSync(resolvedPlanPath);
+		const activeToolNames = this.getActiveToolNames();
 		const content = prompt.render(planModeActivePrompt, {
 			planFilePath: displayPlanPath,
 			planExists,
 			askToolName: "ask",
 			writeToolName: "write",
 			editToolName: "edit",
+			askAvailable: activeToolNames.includes("ask"),
+			taskAvailable: activeToolNames.includes("task"),
 			isHashlineEditMode: this.#resolveActiveEditMode() === "hashline",
 			reentry: state.reentry ?? false,
 			iterative: state.workflow === "iterative",
@@ -5787,14 +5875,19 @@ export class AgentSession {
 			containsOrchestrate(text) &&
 			!this.getOrchestratorModeState()?.enabled
 		) {
-			keywordNotices.push({
-				role: "custom",
-				customType: "orchestrate-notice",
-				content: ORCHESTRATE_NOTICE,
-				display: false,
-				attribution: "user",
-				timestamp,
-			});
+			const activeToolNames = this.getActiveToolNames();
+			// The contract is entirely about `task` subagent dispatch; without the
+			// task tool the notice would demand an unavailable capability.
+			if (activeToolNames.includes("task")) {
+				keywordNotices.push({
+					role: "custom",
+					customType: "orchestrate-notice",
+					content: renderOrchestrateNotice({ tools: activeToolNames }),
+					display: false,
+					attribution: "user",
+					timestamp,
+				});
+			}
 		}
 		if (this.#magicKeywordEnabled("workflow") && containsWorkflow(text)) {
 			const activeToolNames = this.getActiveToolNames();
@@ -6405,6 +6498,7 @@ export class AgentSession {
 
 		return {
 			ui: noOpUIContext,
+			mode: "print",
 			hasUI: false,
 			cwd: this.sessionManager.getCwd(),
 			sessionManager: this.sessionManager,
@@ -10065,9 +10159,10 @@ export class AgentSession {
 
 	/**
 	 * Whether a live advisor agent is attached to this session. True only when
-	 * `advisor.enabled` is set AND a model resolved for the `advisor` role AND
-	 * the advisor applies to this agent kind — i.e. the actual runtime exists,
-	 * not merely the setting. Drives the status-line badge and `/dump advisor`.
+	 * `advisor.enabled` is set for this session (subagents opt in per agent via
+	 * frontmatter `advisor` / `task.agentAdvisor`) AND a model resolved for the
+	 * `advisor` role — i.e. the actual runtime exists, not merely the setting.
+	 * Drives the status-line badge and `/dump advisor`.
 	 */
 	isAdvisorActive(): boolean {
 		return this.#advisors.isAdvisorActive();

@@ -13,11 +13,8 @@ import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { prompt } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { extractTextContent } from "../commit/utils";
-import {
-	formatModelString,
-	resolveConfiguredModelPatterns,
-	resolveModelOverrideWithAuthFallback,
-} from "../config/model-resolver";
+import { isAuthenticated, kNoAuth } from "../config/model-registry";
+import { formatModelString, resolveConfiguredModelPatterns, resolveModelOverride } from "../config/model-resolver";
 import { formatModelRoleAlias } from "../config/model-roles";
 import superReviewImageMaterialPrompt from "../prompts/system/super-review-image-material.md" with { type: "text" };
 import superReviewSnapcompactNote from "../prompts/system/super-review-snapcompact-note.md" with { type: "text" };
@@ -212,10 +209,12 @@ async function prepareAttachments(
 	return attachments;
 }
 
-async function resolveSuperReviewRequest(session: ToolSession): Promise<{
+interface SuperReviewRequest {
 	model: Model<Api>;
 	reasoning: Effort | undefined;
-}> {
+}
+
+async function resolveSuperReviewRequests(session: ToolSession): Promise<SuperReviewRequest[]> {
 	const registry = session.modelRegistry;
 	if (!registry) throw new ToolError("super_review requires a model registry.");
 	const patterns = resolveConfiguredModelPatterns(SUPER_REVIEW_ROLE, session.settings);
@@ -224,19 +223,31 @@ async function resolveSuperReviewRequest(session: ToolSession): Promise<{
 			"super_review could not resolve a model. Configure modelRoles.super_review or keep the default fallback chain.",
 		);
 	}
-	const resolved = await resolveModelOverrideWithAuthFallback(
-		patterns,
-		undefined,
-		registry,
-		session.settings,
-		sessionIdOf(session),
-	);
-	if (!resolved.model) {
-		throw new ToolError(
-			`super_review could not resolve a model from ${patterns.join(", ")}. Override modelRoles.super_review.`,
-		);
+
+	const requests: SuperReviewRequest[] = [];
+	const seen = new Set<string>();
+	let firstResolved: SuperReviewRequest | undefined;
+	for (const pattern of patterns) {
+		const resolved = resolveModelOverride([pattern], registry, session.settings);
+		if (!resolved.model) continue;
+		const modelKey = formatModelString(resolved.model);
+		if (seen.has(modelKey)) continue;
+		seen.add(modelKey);
+
+		const request = {
+			model: resolved.model,
+			reasoning: reasoningForSelection(resolved.model, resolved.thinkingLevel),
+		};
+		firstResolved ??= request;
+		const apiKey = await registry.getApiKey(resolved.model, sessionIdOf(session));
+		if (apiKey === kNoAuth || isAuthenticated(apiKey)) requests.push(request);
 	}
-	return { model: resolved.model, reasoning: reasoningForSelection(resolved.model, resolved.thinkingLevel) };
+
+	if (requests.length > 0) return requests;
+	if (firstResolved) return [firstResolved];
+	throw new ToolError(
+		`super_review could not resolve a model from ${patterns.join(", ")}. Override modelRoles.super_review.`,
+	);
 }
 
 function reasoningForSelection(
@@ -314,49 +325,61 @@ async function runSuperReview(
 	session: ToolSession,
 	signal?: AbortSignal,
 ): Promise<{ text: string; details: SuperReviewDetails }> {
-	const { model, reasoning } = await resolveSuperReviewRequest(session);
+	const requests = await resolveSuperReviewRequests(session);
 	const registry = session.modelRegistry;
 	if (!registry) throw new ToolError("super_review requires a model registry.");
 
 	const attachments = await prepareAttachments(session, params.files);
 	const telemetry = resolveTelemetry(session.getTelemetry?.(), session.getSessionId?.() ?? undefined);
-	const response = await instrumentedCompleteSimple(
-		model,
-		{
-			systemPrompt: [prompt.render(superReviewSystemPrompt)],
-			messages: [
-				{
-					role: "user",
-					content: await renderReviewContent(params, attachments, model),
-					timestamp: Date.now(),
-				},
-			],
-			tools: undefined,
-		},
-		{
-			apiKey: registry.resolver(model, sessionIdOf(session)),
-			signal,
-			maxTokens: SUPER_REVIEW_MAX_TOKENS,
-			reasoning,
-			toolChoice: undefined,
-		},
-		{ telemetry, oneshotKind: "super_review" },
+	const failures: Array<{ model: string; message: string }> = [];
+	for (const { model, reasoning } of requests) {
+		const response = await instrumentedCompleteSimple(
+			model,
+			{
+				systemPrompt: [prompt.render(superReviewSystemPrompt)],
+				messages: [
+					{
+						role: "user",
+						content: await renderReviewContent(params, attachments, model),
+						timestamp: Date.now(),
+					},
+				],
+				tools: undefined,
+			},
+			{
+				apiKey: registry.resolver(model, sessionIdOf(session)),
+				signal,
+				maxTokens: SUPER_REVIEW_MAX_TOKENS,
+				reasoning,
+				toolChoice: undefined,
+			},
+			{ telemetry, oneshotKind: "super_review" },
+		);
+
+		if (response.stopReason === "aborted") throw new ToolError("super_review request aborted.");
+		const modelName = formatModelString(model);
+		if (response.stopReason === "error") {
+			failures.push({ model: modelName, message: response.errorMessage ?? "super_review request failed." });
+			continue;
+		}
+
+		const text = extractTextContent(response);
+		if (!text) throw new ToolError("super_review returned no text output.");
+		return {
+			text,
+			details: {
+				model: modelName,
+				reviewType: params.review_type,
+				structured: false,
+				attachments: attachments.map(({ content: _content, ...attachment }) => attachment),
+			},
+		};
+	}
+
+	if (failures.length === 1) throw new ToolError(failures[0]?.message ?? "super_review request failed.");
+	throw new ToolError(
+		`super_review failed across configured model chain: ${failures.map(failure => `${failure.model}: ${failure.message}`).join("; ")}`,
 	);
-
-	if (response.stopReason === "error") throw new ToolError(response.errorMessage ?? "super_review request failed.");
-	if (response.stopReason === "aborted") throw new ToolError("super_review request aborted.");
-
-	const text = extractTextContent(response);
-	if (!text) throw new ToolError("super_review returned no text output.");
-	return {
-		text,
-		details: {
-			model: formatModelString(model),
-			reviewType: params.review_type,
-			structured: false,
-			attachments: attachments.map(({ content: _content, ...attachment }) => attachment),
-		},
-	};
 }
 
 export class SuperReviewTool implements AgentTool<typeof superReviewSchema, SuperReviewDetails> {

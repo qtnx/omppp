@@ -1,3 +1,7 @@
+import type { LoopSnapshot } from "../session/loop-manager";
+import { previewLine, TRUNCATE_LENGTHS } from "../tools/render-utils";
+import { sanitizeStatusText } from "./shared";
+
 export type LoopConfig = {
 	intervalMs: number;
 	iterations?: number;
@@ -48,6 +52,44 @@ export interface ParsedLoopArgs {
 	limit?: LoopConfig;
 	/** Inline loop prompt: text after the parsed time / iteration, or the whole argument when no time was supplied. */
 	prompt?: string;
+}
+
+export type ParsedLoopManagementArgs =
+	| { kind: "non-management" }
+	| { kind: "management"; action: "list" }
+	| { kind: "management"; action: "stop" | "cancel"; target: string }
+	| { kind: "error"; message: string };
+
+/**
+ * Parse management forms reserved from inline loop prompts. Other arguments
+ * intentionally remain available to the existing loop-limit parser.
+ */
+export function parseLoopManagementArgs(args: string): ParsedLoopManagementArgs {
+	const parts = args.trim().split(/\s+/);
+	if (!args.trim()) return { kind: "non-management" };
+
+	const action = parts[0].toLowerCase();
+	switch (action) {
+		case "list":
+			return parts.length === 1 ? { kind: "management", action } : { kind: "error", message: "Usage: /loop list" };
+		case "stop":
+		case "cancel":
+			return parts.length === 2
+				? { kind: "management", action, target: parts[1] }
+				: { kind: "error", message: `Usage: /loop ${action} <id|all>` };
+		default:
+			return { kind: "non-management" };
+	}
+}
+
+export function formatAgentLoopList(loops: readonly LoopSnapshot[]): string {
+	if (loops.length === 0) return "No agent loops are active.";
+	return loops
+		.map(
+			loop =>
+				`${loop.id} ${loop.state} ${loop.iteration}/${loop.count} every ${formatDuration(loop.intervalMs)} ${previewLine(sanitizeStatusText(loop.prompt), TRUNCATE_LENGTHS.CONTENT)}`,
+		)
+		.join("\n");
 }
 
 export function parseLoopArgs(args: string): LoopConfig | string {
@@ -231,7 +273,7 @@ export function isLoopDurationExpired(): false {
 	return false;
 }
 
-function formatDuration(durationMs: number): string {
+export function formatDuration(durationMs: number): string {
 	if (durationMs % 3_600_000 === 0) {
 		const hours = durationMs / 3_600_000;
 		return `${hours} ${hours === 1 ? "hour" : "hours"}`;

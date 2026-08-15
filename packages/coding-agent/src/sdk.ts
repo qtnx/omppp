@@ -75,6 +75,7 @@ import { createAutoresearchExtension } from "./autoresearch";
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
+import { CodeGraphManager } from "./codegraph/manager";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
@@ -163,6 +164,7 @@ import { formatPreviewFeedback } from "./product-preview/feedback";
 import type { PreviewFeedback } from "./product-preview/types";
 import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with { type: "text" };
 import browserAnnotationTemplate from "./prompts/tools/browser-annotation.md" with { type: "text" };
+import codegraphReadyTemplate from "./prompts/tools/codegraph-ready.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
@@ -299,6 +301,7 @@ import { USER_TODO_EDIT_CUSTOM_TYPE } from "./tools/todo";
 import { ttsTool } from "./tools/tts";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
+import { normalizeProviderContextImagesForModel } from "./utils/image-loading";
 import { buildNamedToolChoice } from "./utils/tool-choice";
 import { VibeSessionRegistry } from "./vibe/runtime";
 import { hydrateWorkspaceRoots, type WorkspaceRoot } from "./workspace-roots";
@@ -1961,7 +1964,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// Only the first top-level session in a process owns an AsyncJobManager.
 	// Subagents inherit the parent's manager via `AsyncJobManager.instance()`
 	// (set below), and any additional top-level session spun up in-process
-	// (e.g. the agent-creation architect in `agent-dashboard.ts`) must share
+	// (e.g. the agent-creation architect in `agents-hub.ts`) must share
 	// the live singleton — otherwise its dispose path would clobber the
 	// owning session's manager and break the `task`/`bash` async paths
 	// (issue #1923). The `instance()` guard means later sessions also skip
@@ -3951,8 +3954,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return wrapSteeringForModel(withContext);
 		};
 		// Per-request provider-context transforms. Obfuscate FIRST so secrets are
-		// redacted from text before snapcompact rasterizes it into PNG frames, then
-		// clamp images to the active provider budget before the request is sent.
+		// redacted from text before snapcompact rasterizes it into PNG frames. Clamp
+		// to the provider budget before normalizing decoder-incompatible images so
+		// dropped historical images never pay a transcode cost.
 		const snapcompactSystemPromptMode = settings.get("snapcompact.systemPrompt");
 		const snapcompactInline =
 			snapcompactSystemPromptMode !== "none" || settings.get("snapcompact.toolResults")
@@ -3990,7 +3994,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					transformed = result.context;
 				}
 			}
-			return clampProviderContextImages(transformed, transformModel);
+			transformed = clampProviderContextImages(transformed, transformModel);
+			return await normalizeProviderContextImagesForModel(transformed, transformModel);
 		};
 		const onPayload = async (payload: unknown, model?: Model) => {
 			return await extensionRunner.emitBeforeProviderRequest(payload, model);
@@ -4159,6 +4164,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						supportsExternalThinking(streamModel);
 					const response = settingsAwareStreamFn(streamModel, context, {
 						...streamOptions,
+						anthropicCacheRefresh: true,
 						forceReasoningOff: externalThinking || streamOptions?.forceReasoningOff,
 					});
 					void Promise.resolve(response)
@@ -4420,6 +4426,61 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorMcpResources: cursorMcpResources,
 			titleSystemPrompt: options.titleSystemPrompt,
 		});
+		if (taskDepth === 0 && !options.parentTaskPrefix && !restrictToolNames && settings.get("codegraph.enabled")) {
+			void CodeGraphManager.forProject(sessionManager.getCwd())
+				.then(codeGraphManager => {
+					if (session.isDisposed) return;
+					let guidanceQueued = false;
+					const queueCodeGraphGuidance = () => {
+						if (guidanceQueued || session.isDisposed) return;
+						guidanceQueued = true;
+						const message: CustomMessage = {
+							role: "custom",
+							customType: "codegraph-ready",
+							content: prompt.render(codegraphReadyTemplate),
+							display: false,
+							attribution: "agent",
+							timestamp: Date.now(),
+						};
+						void session
+							.sendCustomMessage(message, { deliverAs: "nextTurn", triggerTurn: false })
+							.catch(error => {
+								logger.warn("CodeGraph readiness guidance delivery failed.", {
+									cwd: sessionManager.getCwd(),
+									error: error instanceof Error ? error.message : String(error),
+								});
+							});
+					};
+					const unsubscribeCodeGraphReady = codeGraphManager.onReady(queueCodeGraphGuidance);
+					disposeCallbacks.add(unsubscribeCodeGraphReady);
+					codeGraphManager.start();
+					void codeGraphManager
+						.ensureReady()
+						.then(state => {
+							if (state.status === "ready") {
+								queueCodeGraphGuidance();
+								return;
+							}
+							if (session.isDisposed) return;
+							logger.warn("CodeGraph startup is unavailable.", {
+								projectRoot: state.projectRoot,
+								error: state.error,
+							});
+						})
+						.catch(error => {
+							logger.warn("CodeGraph startup readiness check failed.", {
+								cwd: sessionManager.getCwd(),
+								error: error instanceof Error ? error.message : String(error),
+							});
+						});
+				})
+				.catch(error => {
+					logger.warn("CodeGraph startup setup failed.", {
+						cwd: sessionManager.getCwd(),
+						error: error instanceof Error ? error.message : String(error),
+					});
+				});
+		}
 		hasSession = true;
 		// Extension factories normally register tools before session construction,
 		// but Pi-compatible extensions may discover them asynchronously from a
@@ -4754,8 +4815,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					convertToLlm: convertToLlmFinal,
 					transformContext: async messages => wrapSteeringForModel(messages),
 					transformProviderContext: async (context, transformModel) => {
-						const transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
-						return clampProviderContextImages(transformed, transformModel);
+						let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
+						transformed = clampProviderContextImages(transformed, transformModel);
+						return await normalizeProviderContextImagesForModel(transformed, transformModel);
 					},
 					thinkingBudgets: agent.thinkingBudgets,
 					temperature: agent.temperature,

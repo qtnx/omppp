@@ -115,7 +115,7 @@ export class LoopTool implements AgentTool<typeof loopSchema, LoopToolDetails> {
 
 		return toolResult<LoopToolDetails>(details)
 			.text(
-				`Loop ${handle.id} scheduled: "${params.prompt}" every ${params.interval}, ${params.count} iterations. Iteration 1/${params.count} queued. Iterations arrive as follow-up messages; the loop stops after ${params.count} iterations or when the session ends.`,
+				`Loop ${handle.id} scheduled: "${params.prompt}" every ${params.interval}, ${params.count} iterations. Iteration 1/${params.count} queued. Iterations arrive as follow-up messages; the loop stops after ${params.count} iterations or when the session ends. Use /loop list to see active agent loops or /loop stop ${handle.id} to cancel this one.`,
 			)
 			.done();
 	}

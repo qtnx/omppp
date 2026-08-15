@@ -74,6 +74,7 @@ function assistantWithText(text: string): AssistantMessage {
 function assistant(options: {
 	content: AssistantMessage["content"];
 	stopReason?: AssistantMessage["stopReason"];
+	errorMessage?: string;
 }): AssistantMessage {
 	return {
 		role: "assistant",
@@ -90,6 +91,7 @@ function assistant(options: {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: options.stopReason ?? "stop",
+		errorMessage: options.errorMessage,
 		timestamp: Date.now(),
 	};
 }
@@ -286,6 +288,70 @@ describe("SuperReviewTool", () => {
 		const [model, , options] = instrumentedCallAt(completeSpy, 0);
 		expect(`${model.provider}/${model.id}`).toBe("tnx/super");
 		expect(await resolveRequestApiKey(options)).toBe("tnx-key");
+	});
+
+	it("retries the authenticated default chain after a runtime provider error and reports the successful model", async () => {
+		const completeSpy = vi
+			.spyOn(core, "instrumentedCompleteSimple")
+			.mockResolvedValueOnce(
+				assistant({
+					content: [],
+					stopReason: "error",
+					errorMessage: "Provider returned HTTP 402 after reducing the output cap",
+				}),
+			)
+			.mockResolvedValueOnce(assistantWithText("TNX review complete."));
+		const tool = new SuperReviewTool(
+			makeSession({
+				models: [FABLE_MODEL, SUPER_MODEL, SOL_MODEL],
+			}),
+		);
+
+		const result = await tool.execute("tc-runtime-fallback", {
+			review_type: "plan",
+			question: "Does runtime provider failure retry the configured chain?",
+			content: "The first provider rejects the request after output-cap reduction.",
+		});
+
+		expect(resultText(result)).toBe("TNX review complete.");
+		expect(resultVisiblePayload(result)).toContain('"model":"tnx/super"');
+		expect(completeSpy).toHaveBeenCalledTimes(2);
+		for (const index of [0, 1]) {
+			const [model, , options] = instrumentedCallAt(completeSpy, index);
+			expect(`${model.provider}/${model.id}`).toBe(index === 0 ? "anthropic/claude-fable-5" : "tnx/super");
+			expect(options.maxTokens).toBe(8192);
+		}
+	});
+
+	it("reports every authenticated default-chain provider failure after runtime exhaustion", async () => {
+		const failures = ["Provider HTTP 402", "TNX provider timeout", "Codex upstream unavailable"] as const;
+		const completeSpy = vi.spyOn(core, "instrumentedCompleteSimple").mockImplementation(async () => {
+			const errorMessage = failures[completeSpy.mock.calls.length - 1];
+			return assistant({ content: [], stopReason: "error", errorMessage });
+		});
+		const tool = new SuperReviewTool(
+			makeSession({
+				models: [FABLE_MODEL, SUPER_MODEL, SOL_MODEL],
+			}),
+		);
+
+		await expect(
+			tool.execute("tc-runtime-exhaustion", {
+				review_type: "critical_action",
+				question: "Does chain exhaustion report each provider failure?",
+				content: "Each authenticated candidate returns a distinct error.",
+			}),
+		).rejects.toThrow(
+			/anthropic\/claude-fable-5: Provider HTTP 402; tnx\/super: TNX provider timeout; openai-codex\/gpt-5\.6-sol: Codex upstream unavailable/,
+		);
+
+		expect(completeSpy).toHaveBeenCalledTimes(3);
+		expect(
+			[0, 1, 2].map(index => {
+				const [model] = instrumentedCallAt(completeSpy, index);
+				return `${model.provider}/${model.id}`;
+			}),
+		).toEqual(["anthropic/claude-fable-5", "tnx/super", "openai-codex/gpt-5.6-sol"]);
 	});
 
 	it("throws when no configured or default super_review candidate is available", async () => {

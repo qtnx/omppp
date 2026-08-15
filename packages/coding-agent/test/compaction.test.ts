@@ -214,7 +214,6 @@ describe("getLastAssistantUsage", () => {
 		];
 
 		const usage = getLastAssistantUsage(entries);
-		expect(usage).not.toBeNull();
 		expect(usage!.input).toBe(200);
 	});
 
@@ -232,7 +231,6 @@ describe("getLastAssistantUsage", () => {
 		];
 
 		const usage = getLastAssistantUsage(entries);
-		expect(usage).not.toBeNull();
 		expect(usage!.input).toBe(100);
 	});
 
@@ -530,7 +528,6 @@ describe("remote compaction setting", () => {
 			remoteEnabled: false,
 			remoteEndpoint: "https://compaction.example.test/summarize",
 		});
-		expect(preparation).toBeDefined();
 		if (!preparation) {
 			throw new Error("Expected compaction preparation");
 		}
@@ -712,7 +709,6 @@ describe("remote compaction setting", () => {
 			keepRecentTokens: 1000,
 			remoteEnabled: true,
 		});
-		expect(preparation).toBeDefined();
 		if (!preparation) {
 			throw new Error("Expected compaction preparation");
 		}
@@ -1514,7 +1510,6 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("LLM summarization", () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 
 		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
-		expect(preparation).toBeDefined();
 
 		const compactionResult = await compact(preparation!, model, e2eApiKey("ANTHROPIC_API_KEY")!);
 

@@ -47,7 +47,6 @@ import { CliUsageError } from "./usage-error";
 export interface ParseDeps {
 	logger: { warn: (message: string, meta?: Record<string, unknown>) => void };
 	parseThinking: (value: string | null | undefined) => ConfiguredThinkingLevel | undefined;
-	builtinToolNames: readonly string[];
 	normalizeToolNames: (values: Iterable<string>) => string[];
 	thinkingEfforts: readonly string[];
 }
@@ -189,15 +188,8 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 				.map(s => s.trim())
 				.filter(Boolean),
 		);
-		// An unknown name silently narrowing the toolset is worse than a failed
-		// launch. Keep the fork-only sandbox tool valid while rejecting typos.
-		const validToolNames = new Set<string>([...deps.builtinToolNames, "sandbox"]);
-		const unknown = names.filter(name => !validToolNames.has(name));
-		if (unknown.length > 0) {
-			throw new CliUsageError(
-				`Unknown tool${unknown.length === 1 ? "" : "s"} in --tools: ${unknown.join(", ")}. Valid tools: ${[...validToolNames].join(", ")}.`,
-			);
-		}
+		// Validation runs after session tool discovery. At this point extension,
+		// custom, plugin-manifest, and MCP tools are not all known yet.
 		result.tools = names;
 	},
 	"--thinking": (result, value, deps) => {

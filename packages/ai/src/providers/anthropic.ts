@@ -82,6 +82,7 @@ import {
 	type ContentBlockParam,
 	type FallbackParam,
 	isAnthropicWebSearchHistoryBlock,
+	type MessageCreateParams,
 	type MessageCreateParamsStreaming,
 	type MessageParam,
 	type RawMessageStreamEvent,
@@ -487,17 +488,11 @@ function dropAnthropicStrictTools(params: MessageCreateParamsStreaming): void {
 function getCacheControl(
 	model: Model<"anthropic-messages">,
 	cacheRetention: CacheRetention | undefined,
-	isOAuthToken: boolean,
 ): { retention: CacheRetention; cacheControl?: AnthropicCacheControl } {
-	// OAuth mirrors Claude Code and always defaults to 1h retention. API-key
-	// requests also default to 1h where the endpoint supports it (canonical
-	// Anthropic API, `compat.supportsLongCacheRetention`): agent sessions
-	// routinely idle past 5 minutes waiting on background jobs, and a 5m
-	// breakpoint cold-misses the entire prefix on resume. PI_CACHE_RETENTION
-	// still overrides the API-key default in either direction.
-	const retention = isOAuthToken
-		? (cacheRetention ?? "long")
-		: resolveCacheRetention(cacheRetention, model.compat.supportsLongCacheRetention ? "long" : "short");
+	// Five-minute writes are the cheapest cache population strategy. Longer
+	// retention remains an explicit PI_CACHE_RETENTION/request override; idle
+	// sessions keep the short entry warm with bounded read-only refreshes.
+	const retention = resolveCacheRetention(cacheRetention, "short");
 	if (retention === "none") {
 		return { retention };
 	}
@@ -1662,6 +1657,31 @@ export function applyAnthropicUsageExtras(usage: Usage, source: AnthropicUsageLi
 	}
 }
 
+function parseAnthropicWireUsage(value: unknown): AnthropicWireUsage | undefined {
+	if (!isRecord(value)) return undefined;
+	const cacheCreation = isRecord(value.cache_creation)
+		? {
+				...(typeof value.cache_creation.ephemeral_5m_input_tokens === "number"
+					? { ephemeral_5m_input_tokens: value.cache_creation.ephemeral_5m_input_tokens }
+					: {}),
+				...(typeof value.cache_creation.ephemeral_1h_input_tokens === "number"
+					? { ephemeral_1h_input_tokens: value.cache_creation.ephemeral_1h_input_tokens }
+					: {}),
+			}
+		: undefined;
+	return {
+		...(typeof value.input_tokens === "number" ? { input_tokens: value.input_tokens } : {}),
+		...(typeof value.output_tokens === "number" ? { output_tokens: value.output_tokens } : {}),
+		...(typeof value.cache_read_input_tokens === "number"
+			? { cache_read_input_tokens: value.cache_read_input_tokens }
+			: {}),
+		...(typeof value.cache_creation_input_tokens === "number"
+			? { cache_creation_input_tokens: value.cache_creation_input_tokens }
+			: {}),
+		...(cacheCreation === undefined ? {} : { cache_creation: cacheCreation }),
+	};
+}
+
 function parseAnthropicFallbackWireBlock(value: unknown): AnthropicFallbackContent | undefined {
 	if (!isRecord(value) || value.type !== "fallback") return undefined;
 	const from = isRecord(value.from) && typeof value.from.model === "string" ? value.from.model : undefined;
@@ -1866,6 +1886,7 @@ const streamAnthropicOnce = (
 				});
 			}
 
+			const zeroOutputCacheRefresh = options?.anthropicCacheRefreshRequest === true;
 			let client: AnthropicMessagesClientLike;
 			let isOAuthToken: boolean;
 
@@ -1936,7 +1957,7 @@ const streamAnthropicOnce = (
 				// requests must not deviate from CC's header fingerprint.
 				if (
 					!(options?.isOAuth ?? isAnthropicOAuthToken(apiKey)) &&
-					getCacheControl(model, options?.cacheRetention, false).cacheControl?.ttl === "1h" &&
+					getCacheControl(model, options?.cacheRetention).cacheControl?.ttl === "1h" &&
 					!extraBetas.includes(extendedCacheTtlBeta)
 				) {
 					extraBetas.push(extendedCacheTtlBeta);
@@ -1967,7 +1988,7 @@ const streamAnthropicOnce = (
 					model,
 					apiKey,
 					extraBetas,
-					stream: true,
+					stream: !zeroOutputCacheRefresh,
 					interleavedThinking: options?.interleavedThinking ?? true,
 					headers: options?.headers,
 					dynamicHeaders: copilotDynamicHeaders?.headers,
@@ -2014,6 +2035,60 @@ const streamAnthropicOnce = (
 				return nextParams;
 			};
 			let params = await prepareParams();
+			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(model.compat.streamIdleTimeoutMs);
+			const firstEventTimeoutMs = options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs);
+			const requestTimeoutMs =
+				firstEventTimeoutMs !== undefined && firstEventTimeoutMs > 0 ? firstEventTimeoutMs : undefined;
+
+			if (zeroOutputCacheRefresh) {
+				const refreshParams: MessageCreateParams = { ...params, max_tokens: 0, stream: false };
+				rawRequestDump = {
+					provider: model.provider,
+					api: output.api,
+					model: model.id,
+					method: "POST",
+					url: `${baseUrl}/v1/messages${isOAuthToken ? "?beta=true" : ""}`,
+					body: refreshParams,
+				};
+				const { requestSignal } = activeAbortTracker;
+				const requestOptions = {
+					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
+					maxRetries: 0,
+				};
+				const request: unknown =
+					isOAuthToken && client.beta
+						? client.beta.messages.create(refreshParams, requestOptions)
+						: client.messages.create(refreshParams, requestOptions);
+				if (!hasAnthropicRawResponseRequest(request)) {
+					throw new AIError.AnthropicStreamEnvelopeError(
+						"Anthropic cache refresh request did not expose a raw response",
+					);
+				}
+				const response = await request.asResponse();
+				await notifyProviderResponse(options, response, model, response.headers.get("request-id"));
+				const body: unknown = await response.json();
+				if (!isRecord(body)) {
+					throw new AIError.AnthropicStreamEnvelopeError("Anthropic cache refresh returned a malformed response");
+				}
+				const wireUsage = parseAnthropicWireUsage(body.usage);
+				if (!wireUsage) {
+					throw new AIError.AnthropicStreamEnvelopeError("Anthropic cache refresh response omitted usage");
+				}
+				if (typeof body.id === "string") output.responseId = body.id;
+				output.usage.input = wireUsage.input_tokens ?? 0;
+				output.usage.output = wireUsage.output_tokens ?? 0;
+				output.usage.cacheRead = wireUsage.cache_read_input_tokens ?? 0;
+				output.usage.cacheWrite = wireUsage.cache_creation_input_tokens ?? 0;
+				applyAnthropicUsageExtras(output.usage, wireUsage);
+				output.usage.totalTokens =
+					output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
+				calculateCost(model, output.usage);
+				output.duration = performance.now() - startTime;
+				stream.push({ type: "start", partial: output });
+				stream.push({ type: "done", reason: "stop", message: output });
+				stream.end();
+				return;
+			}
 
 			// Opt-in flag: the response parser only honors `fallback` content
 			// blocks and `usage.iterations` when the current request opted into
@@ -2028,10 +2103,6 @@ const streamAnthropicOnce = (
 				| (AnthropicServerToolContent & { [kStreamingPartialJson]?: string })
 				| (ToolCall & { [kStreamingPartialJson]: string; [kStreamingLastParseLen]?: number })
 			) & { [kStreamingBlockIndex]: number };
-			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(model.compat.streamIdleTimeoutMs);
-			const firstEventTimeoutMs = options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs);
-			const requestTimeoutMs =
-				firstEventTimeoutMs !== undefined && firstEventTimeoutMs > 0 ? firstEventTimeoutMs : undefined;
 			const blocks = output.content as Block[];
 			const finalizeStreamBlock = (block: Block, contentIndex: number): void => {
 				if (block.type === "text") {
@@ -2825,22 +2896,12 @@ type SystemBlockOptions = {
 	firstUserMessageText?: string;
 	cacheControl?: AnthropicCacheControl;
 };
-
 /**
  * Place system-block cache breakpoints that survive volatile project context.
  *
- * omp normally appends its project footer (cwd, date, workspace tree) after the
- * stable system prefix. When cwd is outside a single direct child repository,
- * an active-repo context block follows that footer. Caching up to the last three
- * eligible blocks therefore covers both layouts:
- *
- * - stable prefix, project footer
- * - stable prefix, project footer, active-repo context
- *
- * A footer change can then fall back to the stable-prefix entry instead of
- * re-writing the entire system cache (issue #7324).
- *
- * @returns breakpoints placed, capped by `maxBreakpoints`.
+ * The last three eligible system blocks cover the stable prefix plus its
+ * project-footer variants. OAuth cloak blocks stay uncached because their
+ * billing fingerprint and identity are request-specific.
  */
 function cacheSystemPrefixBreakpoints(
 	blocks: AnthropicSystemBlock[],
@@ -2858,11 +2919,7 @@ function cacheSystemPrefixBreakpoints(
 	return placed;
 }
 
-/**
- * First system-block index that may carry a cache breakpoint. Skips the OAuth
- * cloak blocks that must stay uncached: the CC billing header (block 0, a
- * per-request fingerprint) and the Claude Code identity instruction (block 1).
- */
+/** Skip OAuth cloak blocks that cannot be cached across requests. */
 function firstCacheableSystemIndex(blocks: readonly AnthropicSystemBlock[]): number {
 	let index = 0;
 	if (blocks[index]?.text?.startsWith(CLAUDE_BILLING_HEADER_PREFIX)) index++;
@@ -3169,26 +3226,19 @@ function ensureMaxTokensForThinking(params: MessageCreateParamsStreaming, maxAll
 type CacheControlBlock = {
 	cache_control?: AnthropicCacheControl | null;
 };
+const MAX_CACHE_BREAKPOINTS = 4;
 
-function applyCacheControlToLastTextBlock(
-	blocks: Array<ContentBlockParam & CacheControlBlock>,
-	cacheControl: AnthropicCacheControl,
-): boolean {
-	if (blocks.length === 0) return false;
-	for (let i = blocks.length - 1; i >= 0; i--) {
-		if (blocks[i].type === "text") {
-			if (blocks[i].cache_control != null) return false;
-			blocks[i] = { ...blocks[i], cache_control: cloneAnthropicCacheControl(cacheControl) };
-			return true;
+function applyCacheControlToLastBlock(blocks: ContentBlockParam[], cacheControl: AnthropicCacheControl): boolean {
+	for (let index = blocks.length - 1; index >= 0; index--) {
+		const block = blocks[index];
+		// Anthropic rejects cache_control on generated reasoning and fallback
+		// boundary blocks. Preserve the requested trailing boundary on every
+		// ordinary content block, including tool use and tool results.
+		if (block.type === "thinking" || block.type === "redacted_thinking" || block.type === "fallback") {
+			continue;
 		}
-	}
-	// No text block — fall back to the last block that accepts cache_control;
-	// thinking/redacted_thinking blocks reject the field with a 400.
-	for (let i = blocks.length - 1; i >= 0; i--) {
-		const type = blocks[i].type;
-		if (type === "thinking" || type === "redacted_thinking") continue;
-		if (blocks[i].cache_control != null) return false;
-		blocks[i] = { ...blocks[i], cache_control: cloneAnthropicCacheControl(cacheControl) };
+		if ("cache_control" in block && block.cache_control != null) return false;
+		blocks[index] = { ...block, cache_control: cloneAnthropicCacheControl(cacheControl) };
 		return true;
 	}
 	return false;
@@ -3197,11 +3247,9 @@ function applyCacheControlToLastTextBlock(
 function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?: AnthropicCacheControl): void {
 	if (!cacheControl) return;
 
-	const MAX_CACHE_BREAKPOINTS = 4;
 	let cacheBreakpointsUsed = countCacheControlBreakpoints(params);
 	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
 	let isCCLayout = false;
-
 	if (params.system && Array.isArray(params.system) && params.system.length > 0) {
 		isCCLayout = params.system[0]?.text?.startsWith(CLAUDE_BILLING_HEADER_PREFIX) === true;
 		const maxSystemBreakpoints = Math.min(3, MAX_CACHE_BREAKPOINTS - cacheBreakpointsUsed);
@@ -3212,7 +3260,6 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 			isCCLayout ? firstCacheableSystemIndex(params.system as AnthropicSystemBlock[]) : 0,
 		);
 	}
-
 	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
 
 	// `convertAnthropicMessages` appends this neutral pad after a trailing
@@ -3228,24 +3275,17 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 	const messageEnd = hasTrailingAssistantPad ? trailingIndex - 1 : trailingIndex;
 	const messageWindowSize = isCCLayout ? 1 : 2;
 	const start = Math.max(0, messageEnd - messageWindowSize + 1);
-	for (let i = messageEnd; i >= start; i--) {
+	for (let index = messageEnd; index >= start; index--) {
 		if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) break;
-		const message = params.messages[i];
+		const message = params.messages[index];
 		if (!message) continue;
 		if (typeof message.content === "string") {
 			message.content = [
 				{ type: "text", text: message.content, cache_control: cloneAnthropicCacheControl(cacheControl) },
 			];
 			cacheBreakpointsUsed++;
-		} else if (Array.isArray(message.content) && message.content.length > 0) {
-			if (
-				applyCacheControlToLastTextBlock(
-					message.content as Array<ContentBlockParam & CacheControlBlock>,
-					cacheControl,
-				)
-			) {
-				cacheBreakpointsUsed++;
-			}
+		} else if (Array.isArray(message.content) && applyCacheControlToLastBlock(message.content, cacheControl)) {
+			cacheBreakpointsUsed++;
 		}
 	}
 }
@@ -3401,7 +3441,6 @@ function shouldUseCoworkRedactThinkingBeta(
 	const parsed = parseAnthropicModel(model.id);
 	return parsed !== null && isFableOrMythos(parsed.kind);
 }
-
 function usesAdaptiveThinkingTagOnly(model: Model<"anthropic-messages">): boolean {
 	const thinking = model.thinking;
 	if (thinking?.mode !== "anthropic-adaptive") return false;
@@ -3484,7 +3523,7 @@ function buildParams(
 		forceDemoteUnsignedThinking && model.compat.replayUnsignedThinking
 			? { ...model, compat: { ...model.compat, replayUnsignedThinking: false } }
 			: model;
-	const { cacheControl } = getCacheControl(model, options?.cacheRetention, isOAuthToken);
+	const { cacheControl } = getCacheControl(model, options?.cacheRetention);
 
 	// Pre-compute system blocks so they occupy the right slot in the serialized body.
 	const shouldInjectClaudeCodeInstruction = isOAuthToken && !model.id.startsWith("claude-3-5-haiku");
@@ -3494,6 +3533,7 @@ function buildParams(
 	const systemBlocks = buildAnthropicSystemBlocks(context.systemPrompt, {
 		includeClaudeCodeInstruction: shouldInjectClaudeCodeInstruction,
 		firstUserMessageText,
+		cacheControl,
 	});
 
 	// Pre-compute tools.
@@ -3623,7 +3663,7 @@ function buildParams(
 		...(systemBlocks && { system: systemBlocks }),
 		...(tools !== undefined && { tools }),
 		...(metadata && { metadata }),
-		max_tokens: Math.min(maxOutputTokens, options?.maxTokens || modelMaxTokens),
+		max_tokens: Math.min(maxOutputTokens, options?.maxTokens ?? modelMaxTokens),
 		...(thinking && { thinking }),
 		...(contextManagement && { context_management: contextManagement }),
 		...(outputConfig && { output_config: outputConfig }),
@@ -3688,7 +3728,7 @@ function buildParams(
 	disableThinkingIfToolChoiceForced(params, model);
 	ensureMaxTokensForThinking(params, maxOutputTokens);
 	applyPromptCaching(params, cacheControl);
-	enforceCacheControlLimit(params, 4);
+	enforceCacheControlLimit(params, MAX_CACHE_BREAKPOINTS);
 	normalizeCacheControlTtlOrdering(params);
 
 	return params;

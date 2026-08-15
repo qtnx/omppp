@@ -21,7 +21,7 @@ Example:
 - Iteration 1 fires immediately (no full-interval wait); iterations 2..N fire every `interval`.
 - Each iteration is a fresh follow-up turn with header `[loop <id> · <i>/<count>] <prompt>`.
 - Stops after `count` iterations or when the session ends/resets (all loops cancelled).
-- Min interval 10s; max count 100; prompts starting with `/` are rejected (follow-up cannot run extension commands).
+- Use `/loop list` to inspect active agent loops; `/loop stop <id>` cancels one (`/loop cancel <id>` is an alias), and `/loop stop all` cancels every active agent loop (`/loop cancel all` is an alias).
 
 ## Anti-patterns
 
@@ -37,7 +37,7 @@ RIGHT: use `loop` only when each tick needs model judgment on fresh state.
 <critical>
 - Iteration 1 is immediate; do not "warm up" with a separate call.
 - Prompt must be self-contained — each tick is a new follow-up turn.
-- Cancel is automatic on session end/reset; there is no mid-session cancel tool.
+- Use `/loop list` to inspect active agent loops; `/loop stop <id>` cancels one, and `/loop stop all` cancels every active agent loop. `/loop cancel` is an alias for `/loop stop`.
 - Never use intervals under 10s or prompts that start with `/`.
 - Prefer `job` for fire-and-forget background work without per-tick judgment.
 </critical>

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { connectToServer } from "@oh-my-pi/pi-coding-agent/mcp/client";
 import { HttpTransport } from "@oh-my-pi/pi-coding-agent/mcp/transports/http";
 
 const encoder = new TextEncoder();
@@ -48,6 +49,58 @@ async function withPendingGuard<T>(promise: Promise<T>, label: string): Promise<
 		}),
 	]);
 }
+
+describe("MCP Streamable HTTP initialization", () => {
+	it("sends initialized before opening the optional GET SSE stream", async () => {
+		const requests: string[] = [];
+		let initialized = false;
+		let sessionValid = true;
+		server = Bun.serve({
+			port: 0,
+			async fetch(req) {
+				if (req.method === "GET") {
+					requests.push("GET");
+					if (initialized) return new Response(null, { status: 405 });
+					sessionValid = false;
+					return new Response("session is not initialized", { status: 400 });
+				}
+				if (req.method === "DELETE") return new Response(null, { status: 204 });
+
+				const body = (await req.json()) as { id?: string | number; method: string };
+				requests.push(body.method);
+				if (body.method === "initialize") {
+					const response = {
+						jsonrpc: "2.0",
+						id: body.id,
+						result: {
+							protocolVersion: "2025-11-25",
+							capabilities: {},
+							serverInfo: { name: "session-order", version: "1.0.0" },
+						},
+					};
+					return new Response(`event: message\ndata: ${JSON.stringify(response)}\n\n`, {
+						headers: {
+							"Content-Type": "text/event-stream",
+							"Mcp-Session-Id": "session-order",
+						},
+					});
+				}
+				if (!sessionValid) return new Response("session terminated", { status: 409 });
+				initialized = true;
+				return new Response(null, { status: 202 });
+			},
+		});
+
+		const connection = await connectToServer("session-order", {
+			type: "http",
+			url: `http://127.0.0.1:${server.port}/mcp`,
+			timeout: GUARD_TIMEOUT_MS,
+		});
+
+		expect(requests).toEqual(["initialize", "notifications/initialized", "GET"]);
+		await connection.transport.close();
+	});
+});
 
 describe("MCP Streamable HTTP transport timeouts", () => {
 	it("keeps the request timeout active until a JSON response body is fully read", async () => {
@@ -257,59 +310,65 @@ describe("MCP Streamable HTTP POST response resumption", () => {
 		expect(observed.lastEventId).toBe("stream-1");
 	});
 
-	it(
-		"resumes after an abrupt stream drop once an event ID exists",
-		async () => {
-			// Bun.serve cannot produce a genuine mid-body transport failure in-process
-			// (stream errors surface as clean EOF client-side), so speak raw HTTP: a
-			// chunked response without the terminal chunk, closed mid-body, makes the
-			// client's body read throw.
-			const observed = { posts: 0, lastEventId: null as string | null };
-			const sseChunk = (payload: string): string =>
-				`HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n${payload.length.toString(16)}\r\n${payload}\r\n`;
-			const listener = Bun.listen({
-				hostname: "127.0.0.1",
-				port: 0,
-				socket: {
-					data(socket, data) {
-						const request = new TextDecoder().decode(data);
-						if (request.startsWith("POST")) {
-							observed.posts++;
-							// Priming event, then close without the terminal 0-chunk.
-							socket.write(sseChunk("id: stream-1\nretry: 10\ndata:\n\n"));
-							socket.end();
-							return;
-						}
-						if (!request.startsWith("GET")) return;
-						observed.lastEventId = /^Last-Event-ID:\s*(.+)$/im.exec(request)?.[1]?.trim() ?? null;
-						socket.write(
-							`${sseChunk(
-								'id: stream-2\ndata: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"resumed","inputSchema":{"type":"object"}}]}}\n\n',
-							)}0\r\n\r\n`,
-						);
-						socket.end();
-					},
+	it("resumes after the response stream closes once an event ID exists", async () => {
+		// A close-delimited SSE response models the physical stream ending before
+		// the JSON-RPC result arrives. The event ID makes that stream resumable.
+		const observed = { posts: 0, lastEventId: null as string | null };
+		const requests = new WeakMap<object, string>();
+		const responded = new WeakSet<object>();
+		const decoder = new TextDecoder();
+		const sseResponse = (payload: string): string =>
+			`HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n${payload}`;
+		const listener = Bun.listen({
+			hostname: "127.0.0.1",
+			port: 0,
+			socket: {
+				data(socket, data) {
+					if (responded.has(socket)) return;
+					const request = `${requests.get(socket) ?? ""}${decoder.decode(data, { stream: true })}`;
+					requests.set(socket, request);
+					const headersEnd = request.indexOf("\r\n\r\n");
+					if (headersEnd < 0) return;
+					const body = request.slice(headersEnd + 4);
+					const chunked = /^Transfer-Encoding:\s*chunked$/im.test(request.slice(0, headersEnd));
+					if (chunked && !body.endsWith("\r\n0\r\n\r\n")) return;
+					const contentLength = Number(/^Content-Length:\s*(\d+)$/im.exec(request)?.[1] ?? "0");
+					if (!chunked && body.length < contentLength) return;
+					responded.add(socket);
+					if (request.startsWith("POST")) {
+						observed.posts++;
+						// Priming event, then close before delivering a JSON-RPC result.
+						socket.end(sseResponse("id: stream-1\nretry: 10\ndata:\n\n"));
+						return;
+					}
+					if (!request.startsWith("GET")) return;
+					observed.lastEventId = /^Last-Event-ID:\s*(.+)$/im.exec(request)?.[1]?.trim() ?? null;
+					socket.end(
+						sseResponse(
+							'id: stream-2\ndata: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"resumed","inputSchema":{"type":"object"}}]}}\n\n',
+						),
+					);
 				},
+			},
+		});
+		try {
+			const transport = new HttpTransport({
+				type: "http",
+				url: `http://127.0.0.1:${listener.port}/mcp`,
+				timeout: GUARD_TIMEOUT_MS,
 			});
-			try {
-				const transport = new HttpTransport({
-					type: "http",
-					url: `http://127.0.0.1:${listener.port}/mcp`,
-					timeout: GUARD_TIMEOUT_MS,
-				});
-				await transport.connect();
+			await transport.connect();
 
-				await expect(withPendingGuard(transport.request<ToolList>("tools/list"), "request")).resolves.toEqual({
-					tools: [{ name: "resumed", inputSchema: { type: "object" } }],
-				});
-				expect(observed.posts).toBe(1);
-				expect(observed.lastEventId).toBe("stream-1");
-			} finally {
-				listener.stop(true);
-			}
-		},
-		{ retry: 2 },
-	);
+			const result = await withPendingGuard(transport.request<ToolList>("tools/list"), "request");
+			expect(result).toEqual({
+				tools: [{ name: "resumed", inputSchema: { type: "object" } }],
+			});
+			expect(observed.posts).toBe(1);
+			expect(observed.lastEventId).toBe("stream-1");
+		} finally {
+			listener.stop(true);
+		}
+	});
 });
 
 describe("MCP Streamable HTTP GET listener resumption", () => {

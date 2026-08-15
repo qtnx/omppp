@@ -4,9 +4,11 @@ import {
 	consumeLoopLimitIteration,
 	createLoopLimitRuntime,
 	createLoopRuntime,
+	formatAgentLoopList,
 	MAX_LOOP_INTERVAL_MS,
 	parseLoopArgs,
 	parseLoopLimitArgs,
+	parseLoopManagementArgs,
 } from "@oh-my-pi/pi-coding-agent/modes/loop-limit";
 import type { BuiltinSlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
@@ -128,6 +130,50 @@ describe("loop limit parsing", () => {
 		expect(parseLoopLimitArgs("10fortnights")).toBe(
 			"Loop sleep time unit must be milliseconds, seconds, minutes, or hours.",
 		);
+	});
+});
+
+describe("agent loop management arguments", () => {
+	test("reserves exact list, stop, and cancel forms from inline loop prompts", () => {
+		expect(parseLoopManagementArgs("list")).toEqual({ kind: "management", action: "list" });
+		expect(parseLoopManagementArgs("stop l1")).toEqual({ kind: "management", action: "stop", target: "l1" });
+		expect(parseLoopManagementArgs("cancel all")).toEqual({ kind: "management", action: "cancel", target: "all" });
+		expect(parseLoopManagementArgs("keep going")).toEqual({ kind: "non-management" });
+	});
+
+	test("rejects malformed reserved management forms", () => {
+		expect(parseLoopManagementArgs("list extra")).toEqual({ kind: "error", message: "Usage: /loop list" });
+		expect(parseLoopManagementArgs("stop")).toEqual({ kind: "error", message: "Usage: /loop stop <id|all>" });
+		expect(parseLoopManagementArgs("cancel l1 extra")).toEqual({
+			kind: "error",
+			message: "Usage: /loop cancel <id|all>",
+		});
+	});
+
+	test("formats active agent-loop snapshots for status output", () => {
+		expect(formatAgentLoopList([])).toBe("No agent loops are active.");
+		expect(
+			formatAgentLoopList([
+				{ id: "l1", prompt: "continue", intervalMs: 2_000, count: 3, iteration: 1, state: "running" },
+			]),
+		).toContain("l1 running 1/3 every 2 seconds continue");
+
+		const metadata = "l2 running 2/3 every 2 seconds ";
+		const output = formatAgentLoopList([
+			{
+				id: "l2",
+				prompt: `\u001b[31mimportant\u001b[0m\tstatus\n${"x".repeat(100)}`,
+				intervalMs: 2_000,
+				count: 3,
+				iteration: 2,
+				state: "running",
+			},
+		]);
+
+		expect(output).toStartWith(`${metadata}important status `);
+		expect(output).toEndWith("…");
+		expect(output).toHaveLength(metadata.length + 80);
+		expect(output).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
 	});
 });
 

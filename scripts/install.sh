@@ -929,6 +929,37 @@ install_superpowers_skill() {
     fi
 }
 
+install_or_update_codegraph() {
+    if [ "${OMPX_INSTALL_SKIP_CODEGRAPH:-}" = "1" ]; then
+        return
+    fi
+
+    if codegraph_cmd="$(command -v codegraph 2>/dev/null)"; then
+        echo "Updating CodeGraph..."
+        if "$codegraph_cmd" upgrade; then
+            echo "✓ Installed/updated CodeGraph"
+        else
+            echo "Failed to update CodeGraph; run 'codegraph upgrade' manually." >&2
+        fi
+        return
+    fi
+
+    codegraph_install_url="${OMPX_CODEGRAPH_INSTALL_URL:-https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh}"
+    codegraph_installer="$(mktemp "${TMPDIR:-/tmp}/codegraph-install.XXXXXX")" || {
+        echo "Failed to create a temporary CodeGraph installer; run 'curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh' manually." >&2
+        return
+    }
+
+    echo "Installing CodeGraph..."
+    if curl -fsSL --connect-timeout 10 --max-time 60 "$codegraph_install_url" -o "$codegraph_installer" && sh "$codegraph_installer"; then
+        echo "✓ Installed/updated CodeGraph"
+    else
+        echo "Failed to install CodeGraph; run 'curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh' manually." >&2
+    fi
+    rm -f "$codegraph_installer"
+}
+
+
 # Refresh the herdr `omp` entrypoint, but only when the user already opted in.
 #
 # `ompx herdr install` creates `<dir>/omp -> <dir>/ompx` so herdr's built-in
@@ -1020,6 +1051,7 @@ install_via_bun() {
     migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
+    install_or_update_codegraph
     refresh_herdr_entrypoint
     echo ""
     echo "✓ Installed OMPx via bun"
@@ -1120,6 +1152,7 @@ install_binary() {
     migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
+    install_or_update_codegraph
     refresh_herdr_entrypoint
     echo ""
     echo "✓ Installed OMPx to ${INSTALL_DIR}/ompx"

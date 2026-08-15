@@ -1,3 +1,5 @@
+import { extractRetryHint } from "@oh-my-pi/pi-utils";
+
 /**
  * Rate limit reason classification and backoff calculation utilities.
  * Ported from opencode-antigravity-auth plugin for consistency.
@@ -7,6 +9,7 @@ import { getHeadersFromError, getRetryAfterMsFromHeaders, type HeadersLike } fro
 
 export type RateLimitReason =
 	| "QUOTA_EXHAUSTED"
+	| "INSUFFICIENT_G1_CREDITS_BALANCE"
 	| "RATE_LIMIT_EXCEEDED"
 	| "CONCURRENT_LIMIT"
 	| "MODEL_CAPACITY_EXHAUSTED"
@@ -85,6 +88,66 @@ export function parseOpenRouterAffordableMaxTokens(message: string | undefined):
 	return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+const GOOGLE_RPC_ERROR_INFO_TYPE = "type.googleapis.com/google.rpc.ErrorInfo";
+const LONG_RATE_LIMIT_DELAY_MS = 5 * 60 * 1000;
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function parseJsonBody(errorMessage: string): Record<string, unknown> | undefined {
+	const start = errorMessage.indexOf("{");
+	const end = errorMessage.lastIndexOf("}");
+	if (start < 0 || end < start) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(errorMessage.slice(start, end + 1));
+		return asRecord(parsed);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Classify structured Google RESOURCE_EXHAUSTED bodies before consulting text.
+ * Cloud Code Assist prefixes the JSON with its HTTP error label, so accept an
+ * embedded top-level object as well as a raw JSON body.
+ */
+function parseGoogleRpcRateLimitReason(errorMessage: string): RateLimitReason | undefined {
+	const body = parseJsonBody(errorMessage);
+	const error = asRecord(body?.error);
+	if (typeof error?.status !== "string" || error.status.trim().toUpperCase() !== "RESOURCE_EXHAUSTED") {
+		return undefined;
+	}
+	if (!Array.isArray(error.details)) return undefined;
+
+	for (const value of error.details) {
+		const detail = asRecord(value);
+		if (detail?.["@type"] !== GOOGLE_RPC_ERROR_INFO_TYPE || typeof detail.reason !== "string") continue;
+		const reason = detail.reason.trim().toUpperCase();
+		switch (reason) {
+			case "QUOTA_EXHAUSTED":
+				return "QUOTA_EXHAUSTED";
+			case "INSUFFICIENT_G1_CREDITS_BALANCE":
+				// Keep Google's specific credit-balance reason available to logs
+				// and callers while treating it as credential-rotatable below.
+				return "INSUFFICIENT_G1_CREDITS_BALANCE";
+			case "RATE_LIMIT_EXCEEDED": {
+				const retryDelayMs = extractRetryHint(undefined, errorMessage);
+				return retryDelayMs !== undefined && retryDelayMs >= LONG_RATE_LIMIT_DELAY_MS
+					? "QUOTA_EXHAUSTED"
+					: "RATE_LIMIT_EXCEEDED";
+			}
+		}
+	}
+	return undefined;
+}
+
+function isQuotaExhaustedReason(reason: RateLimitReason): boolean {
+	return reason === "QUOTA_EXHAUSTED" || reason === "INSUFFICIENT_G1_CREDITS_BALANCE";
+}
+
 /**
  * Classify a rate-limit error message into a reason category.
  * Priority order: explicit details in a resource-exhausted error > QUOTA
@@ -95,6 +158,8 @@ export function parseOpenRouterAffordableMaxTokens(message: string | undefined):
  * Explicit details such as "quota exceeded" retain their normal classification.
  */
 export function parseRateLimitReason(errorMessage: string): RateLimitReason {
+	const structuredReason = parseGoogleRpcRateLimitReason(errorMessage);
+	if (structuredReason !== undefined) return structuredReason;
 	const lowerWithStatus = errorMessage.toLowerCase();
 	const lower = lowerWithStatus.replace(RESOURCE_EXHAUSTED_PATTERN, "");
 	const hasResourceExhaustedStatus = lower !== lowerWithStatus;
@@ -174,6 +239,7 @@ export function parseRateLimitReason(errorMessage: string): RateLimitReason {
  */
 export function calculateRateLimitBackoffMs(reason: RateLimitReason): number {
 	switch (reason) {
+		case "INSUFFICIENT_G1_CREDITS_BALANCE":
 		case "QUOTA_EXHAUSTED":
 			return QUOTA_EXHAUSTED_BACKOFF_MS;
 		case "RATE_LIMIT_EXCEEDED":
@@ -271,6 +337,8 @@ export function isUsageLimitOutcome(
 	// reserved max_tokens exceeds remaining credit. Retrying with a smaller
 	// explicit cap on the same credential succeeds; rotating accounts does not.
 	if (parseOpenRouterAffordableMaxTokens(message) !== undefined) return false;
+	const structuredReason = message ? parseGoogleRpcRateLimitReason(message) : undefined;
+	if (structuredReason !== undefined) return isQuotaExhaustedReason(structuredReason);
 	// Concurrency caps are shed-and-backoff, not credential-rotatable — but only
 	// for quota-worded 429 / other statuses. HTTP 402 is categorically an
 	// account-billing cap, so a 402 whose body merely mentions concurrency is
@@ -291,7 +359,7 @@ export function isUsageLimitOutcome(
 	const reason = parseRateLimitReason(message);
 	// For the categorical 402 billing cap a concurrency-worded body is still an
 	// exhausted cap (rotate); for 429 / other only QUOTA_EXHAUSTED rotates.
-	if (reason === "QUOTA_EXHAUSTED" || (isBillingCapStatus && reason === "CONCURRENT_LIMIT")) return true;
+	if (isQuotaExhaustedReason(reason) || (isBillingCapStatus && reason === "CONCURRENT_LIMIT")) return true;
 	const retryAfter = retryAfterMs ?? extractRotationRetryAfterMs(undefined, message);
 	return retryAfter !== undefined && retryAfter >= ROTATION_RETRY_AFTER_THRESHOLD_MS;
 }
@@ -330,6 +398,8 @@ export function isOpaqueStatusBody(message: string): boolean {
  * {@link isUsageLimitOutcome} uses it for the account-rotation decision.
  */
 export function matchesUsageLimitText(errorMessage: string): boolean {
+	const structuredReason = parseGoogleRpcRateLimitReason(errorMessage);
+	if (structuredReason !== undefined) return isQuotaExhaustedReason(structuredReason);
 	return (
 		USAGE_LIMIT_PATTERN.test(errorMessage) ||
 		(CN_QUOTA_EXHAUSTED_PATTERN.test(errorMessage) && !CN_TRANSIENT_CAP_PATTERN.test(errorMessage)) ||

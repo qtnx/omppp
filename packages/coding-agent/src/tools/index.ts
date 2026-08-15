@@ -5,6 +5,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { AdvisorConsultResult } from "../advisor";
 import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
+import { CodeGraphExploreTool, CodeGraphIndexTool, CodeGraphInitTool } from "../codegraph/tools";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import type { DuoExecutionScope, DuoHandoffResult, DuoStatus } from "../duo";
@@ -104,6 +105,7 @@ import { WriteTool } from "./write";
 import { isMountableUnderXdev, type XdevState } from "./xdev";
 import { YieldTool } from "./yield";
 
+export * from "../codegraph";
 export * from "../edit";
 export * from "../goals";
 export * from "../lsp";
@@ -624,6 +626,7 @@ export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = [
 	"secrets",
 	"browser",
 	"super_review",
+	"codegraph_explore",
 ] as const;
 
 /**
@@ -698,6 +701,9 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	glob: s => new GlobTool(s, { rootPathAlias: true }),
 	grep: s => new GrepTool(s),
 	lsp: LspTool.createIf,
+	codegraph_init: s => new CodeGraphInitTool(s),
+	codegraph_index: s => new CodeGraphIndexTool(s),
+	codegraph_explore: s => new CodeGraphExploreTool(s),
 	kanban: KanbanTool.createIf,
 	inspect_image: s => new InspectImageTool(s),
 	browser: s => new BrowserTool(s),
@@ -915,6 +921,8 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		}
 		if (isCodexGoalHiddenToolName(name)) return goalEnabled;
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
+		if (name === "codegraph_init" || name === "codegraph_index" || name === "codegraph_explore")
+			return session.settings.get("codegraph.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "launch") return session.settings.get("launch.enabled");
 		if (name === "eval") return allowEval;

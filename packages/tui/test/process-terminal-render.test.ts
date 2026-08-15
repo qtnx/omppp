@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { postmortem } from "@oh-my-pi/pi-utils";
 import {
 	createProcessTerminalRenderHarness,
@@ -14,11 +14,26 @@ const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform")
 describe("ProcessTerminal geometry reflow through the renderer", () => {
 	let harness: ProcessTerminalRenderHarness | undefined;
 
+	// Herdr/Warp resizes take the in-place path, which skips the reflow this
+	// suite asserts. Neutralize the ambient terminal identity per test.
+	const savedTerminalEnv: Record<string, string | undefined> = {};
+	beforeEach(() => {
+		for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE", "HERDR_ENV"]) {
+			savedTerminalEnv[key] = Bun.env[key];
+			delete Bun.env[key];
+		}
+	});
+
 	afterEach(() => {
 		harness?.dispose();
 		harness = undefined;
 		if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
 		vi.restoreAllMocks();
+		for (const key in savedTerminalEnv) {
+			const value = savedTerminalEnv[key];
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
 	});
 
 	it("reflows to the OS width on resize when in-band resize is inactive", async () => {

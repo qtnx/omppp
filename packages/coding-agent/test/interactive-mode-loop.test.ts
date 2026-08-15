@@ -30,7 +30,11 @@ describe("InteractiveMode loop auto-submit", () => {
 	let mode: InteractiveMode;
 	let session: AgentSession;
 	let tempDir: TempDir;
+	let pendingInput: Promise<SubmittedUserInput> | undefined;
 
+	// Per-test session/mode: the prompt-file cases below assert first-capture and
+	// reuse behavior, which is only observable from a clean loop-prompt state.
+	// Upstream's shared beforeAll harness leaked `loopPromptFilePath` between them.
 	beforeAll(() => {
 		initTheme();
 	});
@@ -39,6 +43,7 @@ describe("InteractiveMode loop auto-submit", () => {
 		resetSettingsForTest();
 		tempDir = TempDir.createSync("@pi-loop-auto-submit-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
+		settings.set("loop.mode", "prompt");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
@@ -51,19 +56,29 @@ describe("InteractiveMode loop auto-submit", () => {
 			modelRegistry,
 		});
 		mode = new InteractiveMode(session, "test");
+		mode.ui.requestRender = vi.fn();
 		vi.spyOn(mode, "addMessageToChat").mockReturnValue([]);
 		vi.spyOn(mode, "ensureLoadingAnimation").mockImplementation(() => {});
-		mode.ui.requestRender = vi.fn();
 	});
 
 	afterEach(async () => {
-		mode?.disableLoopMode("Loop mode disabled.");
-		mode?.stop();
+		mode.disableLoopMode("Loop mode disabled.");
+		mode.cancelPendingSubmission();
+		if (mode.onInputCallback) {
+			mode.onInputCallback({ text: "", cancelled: true, started: false });
+		}
+		await pendingInput;
+		pendingInput = undefined;
+		mode.vibeModeEnabled = false;
+		Reflect.deleteProperty(session, "isCompacting");
+		Reflect.deleteProperty(session, "isStreaming");
+		Reflect.deleteProperty(session, "hasPostPromptWork");
 		vi.useRealTimers();
 		vi.restoreAllMocks();
-		await session?.dispose();
-		authStorage?.close();
-		tempDir?.removeSync();
+		mode.stop();
+		await session.dispose();
+		authStorage.close();
+		tempDir.removeSync();
 		resetSettingsForTest();
 	});
 
@@ -109,7 +124,8 @@ describe("InteractiveMode loop auto-submit", () => {
 		await mode.handleLoopCommand("2s");
 		mode.loopPrompt = "repeat this";
 		const resolved: SubmittedUserInput[] = [];
-		void mode.getUserInput().then(input => resolved.push(input));
+		pendingInput = mode.getUserInput();
+		void pendingInput.then(input => resolved.push(input));
 
 		vi.advanceTimersByTime(2_000);
 		await flushMicrotasks();
@@ -141,7 +157,8 @@ describe("InteractiveMode loop auto-submit", () => {
 		mode.loopModeEnabled = true;
 		mode.loopPrompt = "repeat after compact";
 		const resolved: SubmittedUserInput[] = [];
-		void mode.getUserInput().then(input => resolved.push(input));
+		pendingInput = mode.getUserInput();
+		void pendingInput.then(input => resolved.push(input));
 
 		vi.advanceTimersByTime(800);
 		await flushMicrotasks();
@@ -167,7 +184,8 @@ describe("InteractiveMode loop auto-submit", () => {
 		mode.loopModeEnabled = true;
 		mode.loopPrompt = "deliver this";
 		const resolved: SubmittedUserInput[] = [];
-		void mode.getUserInput().then(input => resolved.push(input));
+		pendingInput = mode.getUserInput();
+		void pendingInput.then(input => resolved.push(input));
 
 		// Loop timer fires while an idle-flush / delivery turn is still pending.
 		vi.advanceTimersByTime(800);
@@ -191,7 +209,8 @@ describe("InteractiveMode loop auto-submit", () => {
 		mode.loopPrompt = "do not resubmit";
 		const showStatus = vi.spyOn(mode, "showStatus");
 		const resolved: SubmittedUserInput[] = [];
-		void mode.getUserInput().then(input => resolved.push(input));
+		pendingInput = mode.getUserInput();
+		void pendingInput.then(input => resolved.push(input));
 
 		vi.advanceTimersByTime(800);
 		await flushMicrotasks();
@@ -321,5 +340,44 @@ describe("InteractiveMode loop auto-submit", () => {
 
 		mode.disableLoopMode();
 		expect(setLoopModeStatus).toHaveBeenLastCalledWith(undefined);
+	});
+
+	it("lists and stops session agent loops without changing interactive loop mode", async () => {
+		vi.useFakeTimers();
+		const pendingFollowUp = Promise.withResolvers<void>();
+		const followUp = vi.spyOn(session, "followUp").mockReturnValue(pendingFollowUp.promise);
+		const manager = session.getLoopManager();
+		if (!manager) throw new Error("Expected loop manager");
+
+		await mode.handleLoopCommand("1ms");
+		const showStatus = vi.spyOn(mode, "showStatus");
+		const showError = vi.spyOn(mode, "showError");
+		const first = manager.schedule({ prompt: "check status", intervalMs: 1_000, count: 2 });
+
+		await mode.handleLoopCommand("list");
+		expect(showStatus).toHaveBeenLastCalledWith(
+			expect.stringContaining(`${first.id} running 1/2 every 1 second check status`),
+		);
+		expect(mode.loopModeEnabled).toBe(true);
+
+		await mode.handleLoopCommand(`stop ${first.id}`);
+		expect(manager.list()).toEqual([]);
+		expect(mode.loopModeEnabled).toBe(true);
+
+		const sibling = manager.schedule({ prompt: "keep running", intervalMs: 1_000, count: 2 });
+		await mode.handleLoopCommand("stop missing");
+		await mode.handleLoopCommand("list extra");
+		expect(showError).toHaveBeenCalledWith("No active agent loop with ID missing.");
+		expect(showError).toHaveBeenCalledWith("Usage: /loop list");
+		expect(manager.list()).toEqual([expect.objectContaining({ id: sibling.id })]);
+		expect(mode.loopModeEnabled).toBe(true);
+
+		await mode.handleLoopCommand("cancel all");
+		expect(showStatus).toHaveBeenLastCalledWith("Stopped 1 agent loop.");
+		expect(manager.list()).toEqual([]);
+		await flushMicrotasks();
+		vi.advanceTimersByTime(1_000);
+		await flushMicrotasks();
+		expect(followUp).toHaveBeenCalledTimes(2);
 	});
 });

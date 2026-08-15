@@ -147,6 +147,7 @@ async function runShellInstaller(
 			PATH: `${path.join(root, "bin")}:${process.env.PATH ?? ""}`,
 			PI_INSTALL_DIR: installDir,
 			HOME: homeDir,
+			OMPX_INSTALL_SKIP_CODEGRAPH: "1",
 			...extraEnv,
 		},
 		stdout: "pipe",
@@ -158,6 +159,50 @@ async function runShellInstaller(
 		proc.exited,
 	]);
 	return { exitCode, output: `${stdout}${stderr}` };
+}
+
+async function writeCodeGraphInstallerTools(root: string): Promise<{ shellLogPath: string; curlLogPath: string }> {
+	const binDir = path.join(root, "bin");
+	const shellLogPath = path.join(root, "codegraph-shell.log");
+	const curlLogPath = path.join(root, "codegraph-curl.log");
+	await writeExecutable(
+		path.join(binDir, "curl"),
+		`#!/bin/sh
+out=""
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+printf '%s\\n' "$url" >> "$OMPX_CODEGRAPH_CURL_LOG"
+if [ "\${OMPX_CODEGRAPH_TEST_CURL_FAIL:-}" = "1" ]; then exit 22; fi
+case "$url" in
+  https://example.test/codegraph-install.sh)
+    content='#!/bin/sh
+printf "installed\\n" >> "$OMPX_CODEGRAPH_INSTALL_LOG"
+'
+    ;;
+  *) exit 22 ;;
+esac
+printf '%s' "$content" > "$out"
+`,
+	);
+	await writeExecutable(
+		path.join(binDir, "sh"),
+		`#!/bin/sh
+case "$1" in
+  */codegraph-install.*)
+    printf '%s\\n' "$1" >> "$OMPX_CODEGRAPH_SHELL_LOG"
+    if [ "\${OMPX_CODEGRAPH_TEST_SH_FAIL:-}" = "1" ]; then exit 23; fi
+    ;;
+esac
+exec /bin/sh "$@"
+`,
+	);
+	return { shellLogPath, curlLogPath };
 }
 
 async function runPowerShellInstaller(
@@ -932,6 +977,127 @@ printf "called\\n" > "$marker_file"
 			expect(await Bun.file(installedPath).text()).toBe("previous binary");
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+	it("skips CodeGraph installation when requested", async () => {
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const codegraphLog = path.join(root, "codegraph.log");
+		try {
+			await writeExecutable(
+				path.join(root, "bin", "codegraph"),
+				`#!/bin/sh
+printf '%s\\n' "$*" >> "$OMPX_CODEGRAPH_LOG"
+`,
+			);
+			const result = await runShellInstaller(root, installDir, ["--binary"], {
+				OMPX_CODEGRAPH_LOG: codegraphLog,
+				OMPX_INSTALL_SKIP_SUPERPOWERS: "1",
+			});
+
+			expect(result.exitCode).toBe(0);
+			expect(await Bun.file(codegraphLog).exists()).toBe(false);
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("upgrades an existing CodeGraph binary after binary installation", async () => {
+		const binaryContent = RUNNABLE_RELEASE_BINARY;
+		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
+		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
+		const codegraphLog = path.join(root, "codegraph.log");
+		try {
+			await writeExecutable(
+				path.join(root, "bin", "codegraph"),
+				`#!/bin/sh
+printf '%s\\n' "$*" >> "$OMPX_CODEGRAPH_LOG"
+`,
+			);
+			const result = await runShellInstaller(root, installDir, ["--binary"], {
+				OMPX_CODEGRAPH_LOG: codegraphLog,
+				OMPX_INSTALL_SKIP_CODEGRAPH: "0",
+				OMPX_INSTALL_SKIP_SUPERPOWERS: "1",
+			});
+
+			expect(result.exitCode).toBe(0);
+			expect(result.output).toContain("Installed/updated CodeGraph");
+			expect(await Bun.file(codegraphLog).text()).toBe("upgrade\n");
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("downloads and executes CodeGraph installation after source installation", async () => {
+		const { root, installDir } = await createFakeInstallerTools("", "");
+		const installLog = path.join(root, "codegraph-install.log");
+		try {
+			const { shellLogPath, curlLogPath } = await writeCodeGraphInstallerTools(root);
+			await writeExecutable(
+				path.join(root, "bin", "bun"),
+				`#!/bin/sh
+if [ "$1" = "--version" ]; then printf '1.3.14\\n'; fi
+`,
+			);
+			const result = await runShellInstaller(root, installDir, ["--source"], {
+				OMPX_CODEGRAPH_CURL_LOG: curlLogPath,
+				OMPX_CODEGRAPH_INSTALL_LOG: installLog,
+				OMPX_CODEGRAPH_INSTALL_URL: "https://example.test/codegraph-install.sh",
+				OMPX_CODEGRAPH_SHELL_LOG: shellLogPath,
+				OMPX_INSTALL_SKIP_CODEGRAPH: "0",
+				OMPX_INSTALL_SKIP_SUPERPOWERS: "1",
+				PATH: `${path.join(root, "bin")}:/usr/bin:/bin`,
+			});
+
+			const temporaryInstaller = (await Bun.file(shellLogPath).text()).trim();
+			expect(result.exitCode).toBe(0);
+			expect(result.output).toContain("Installed/updated CodeGraph");
+			expect(await Bun.file(curlLogPath).text()).toBe("https://example.test/codegraph-install.sh\n");
+			expect(await Bun.file(installLog).text()).toBe("installed\n");
+			expect(await Bun.file(temporaryInstaller).exists()).toBe(false);
+		} finally {
+			await fs.promises.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps OMPx installation successful when CodeGraph download or execution fails", async () => {
+		for (const failure of ["download", "execution"] as const) {
+			const { root, installDir } = await createFakeInstallerTools("", "");
+			try {
+				const { curlLogPath, shellLogPath } = await writeCodeGraphInstallerTools(root);
+				await writeExecutable(
+					path.join(root, "bin", "bun"),
+					`#!/bin/sh
+if [ "$1" = "--version" ]; then printf '1.3.14\\n'; fi
+`,
+				);
+				const result = await runShellInstaller(root, installDir, ["--source"], {
+					OMPX_CODEGRAPH_CURL_LOG: curlLogPath,
+					OMPX_CODEGRAPH_INSTALL_URL: "https://example.test/codegraph-install.sh",
+					OMPX_CODEGRAPH_SHELL_LOG: shellLogPath,
+					OMPX_CODEGRAPH_TEST_CURL_FAIL: failure === "download" ? "1" : "0",
+					OMPX_CODEGRAPH_TEST_SH_FAIL: failure === "execution" ? "1" : "0",
+					OMPX_INSTALL_SKIP_CODEGRAPH: "0",
+					OMPX_INSTALL_SKIP_SUPERPOWERS: "1",
+					PATH: `${path.join(root, "bin")}:/usr/bin:/bin`,
+				});
+
+				expect(result.exitCode).toBe(0);
+				expect(result.output).toContain("Failed to install CodeGraph");
+				expect(result.output).toContain(
+					"curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh",
+				);
+				expect(await Bun.file(curlLogPath).text()).toBe("https://example.test/codegraph-install.sh\n");
+				if (failure === "download") {
+					expect(await Bun.file(shellLogPath).exists()).toBe(false);
+				} else {
+					const temporaryInstaller = (await Bun.file(shellLogPath).text()).trim();
+					expect(await Bun.file(temporaryInstaller).exists()).toBe(false);
+				}
+			} finally {
+				await fs.promises.rm(root, { recursive: true, force: true });
+			}
 		}
 	});
 });
