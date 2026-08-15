@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-08-15
+
 ### Added
 
 - Adopted upstream's new model coverage from v17.3.4 (Daybreak Blue/Red, GPT-5.6 Cyber, Gemini 3.7 Flash, Grok 4.6 via Cursor, and the other newly published ids) alongside the fork's own entries; the fork's `providerOutputClamp` compat field and the pro-alias wire ladder (`OPENAI_PRO_REASONING_EFFORT_MAP`) are kept, so `*-pro` selectors still shift up on the five-level Responses scale.
