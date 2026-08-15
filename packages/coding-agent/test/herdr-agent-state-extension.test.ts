@@ -101,6 +101,7 @@ async function createHarness(
 	options: {
 		idleDebounceMs?: number;
 		retryGraceMs?: number;
+		hasUI?: boolean;
 		transport?: (request: CapturedRequest) => Promise<void>;
 	} = {},
 ) {
@@ -172,6 +173,9 @@ async function createHarness(
 			shutdown: () => {},
 			getSystemPrompt: () => [],
 		},
+		undefined,
+		options.hasUI === false ? undefined : ({} as never),
+		options.hasUI === false ? "print" : "tui",
 	);
 	return {
 		eventBus,
@@ -211,13 +215,11 @@ describe("native Herdr agent state extension", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("publishes idle immediately on registration before any event", async () => {
+	it("does not report until a UI session starts", async () => {
 		const harness = await createHarness();
 		await flushTimers();
 
-		expect(harness.requests).toHaveLength(1);
-		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(harness.requests).toHaveLength(0);
 		expect(process.env[HERDR_NATIVE_AGENT_STATE_ENV]).toBe("1");
 
 		await harness.runner.emit({ type: "session_start" });
@@ -226,6 +228,17 @@ describe("native Herdr agent state extension", () => {
 		expect(harness.requests).toHaveLength(1);
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
 		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+	});
+
+	it("does not report or release from a headless inherited Herdr env", async () => {
+		const harness = await createHarness({ hasUI: false });
+		await flushTimers();
+		await harness.runner.emit({ type: "session_start" });
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "session_shutdown" });
+		await flushTimers();
+
+		expect(harness.requests).toHaveLength(0);
 	});
 
 	it("reports working with a running visual status until tools drain", async () => {
@@ -502,7 +515,7 @@ describe("native Herdr agent state extension", () => {
 		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
 	});
 
-	it("reports successful run completion as done and clears done on input", async () => {
+	it("reports successful run completion as done and flips to working on the next prompt", async () => {
 		const harness = await createHarness();
 
 		await harness.runner.emit({ type: "agent_start" });
@@ -515,8 +528,8 @@ describe("native Herdr agent state extension", () => {
 		await harness.runner.emitInput("next", undefined, "interactive");
 		await flushTimers();
 
-		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(harness.requests.at(-1)?.params.state).toBe("working");
+		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
 
 		await harness.runner.emit({ type: "agent_start" });
 		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("stop")] });
@@ -918,9 +931,10 @@ describe("native Herdr agent state extension", () => {
 		}
 	});
 
-	it("reports and clears blocked state, then releases Herdr authority on shutdown", async () => {
+	it("reports and clears blocked state without releasing Herdr on shutdown", async () => {
 		const harness = await createHarness();
 
+		await harness.runner.emit({ type: "session_start" });
 		harness.eventBus.emit("herdr:blocked", { active: true, label: "approval required" });
 		await flushTimers();
 
@@ -933,17 +947,11 @@ describe("native Herdr agent state extension", () => {
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
 
+		const requestCount = harness.requests.length;
 		await harness.runner.emit({ type: "session_shutdown" });
 
-		expect(harness.requests.at(-1)).toMatchObject({
-			method: "pane.release_agent",
-			params: {
-				pane_id: "w1:p1",
-				agent: "omp",
-			},
-		});
-		expect(harness.requests.at(-1)?.params.source).toMatch(/^herdr:omp:/);
-		expect(typeof harness.requests.at(-1)?.params.seq).toBe("number");
+		expect(harness.requests).toHaveLength(requestCount);
+		expect(harness.requests.some(request => request.method === "pane.release_agent")).toBe(false);
 	});
 
 	it("ignores post-shutdown lifecycle events and best-effort release failures", async () => {
