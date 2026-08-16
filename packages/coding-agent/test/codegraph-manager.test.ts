@@ -64,6 +64,7 @@ describe("CodeGraphManager", () => {
 		process.env.CG_STATE_FILE = stateFile;
 		delete process.env.CG_INIT_MODE;
 		delete process.env.CG_EXPLORE_DELAY;
+		expect(Bun.spawnSync(["git", "init", "-q", workDir]).exitCode).toBe(0);
 		CodeGraphManager.disposeAll();
 	});
 
@@ -78,18 +79,27 @@ describe("CodeGraphManager", () => {
 		fs.rmSync(workDir, { recursive: true, force: true });
 	});
 
+	it("does not create a manager outside a git repository", async () => {
+		const loose = fs.mkdtempSync(path.join(os.tmpdir(), "omp-codegraph-nongit-"));
+		try {
+			expect(await CodeGraphManager.forProject(loose)).toBeNull();
+		} finally {
+			fs.rmSync(loose, { recursive: true, force: true });
+		}
+	});
+
 	it("canonicalizes a nested directory to its Git worktree root", async () => {
 		const nested = path.join(workDir, "nested");
 		fs.mkdirSync(nested);
-		expect(Bun.spawnSync(["git", "init", "-q", workDir]).exitCode).toBe(0);
 
 		const manager = await CodeGraphManager.forProject(nested);
 
-		expect(manager.projectRoot).toBe(workDir);
+		expect(manager?.projectRoot).toBe(workDir);
 	});
 
 	it("shares concurrent readiness and leaves a fresh index ignored", async () => {
 		const manager = await CodeGraphManager.forProject(workDir);
+		if (!manager) throw new Error("expected CodeGraph manager in a git repository");
 
 		const [first, second] = await Promise.all([manager.ensureReady(), manager.ensureReady()]);
 
@@ -107,6 +117,7 @@ describe("CodeGraphManager", () => {
 		fs.mkdirSync(path.join(workDir, ".codegraph"));
 		fs.writeFileSync(path.join(workDir, ".codegraph", ".gitignore"), "*\n!.gitignore\n");
 		const manager = await CodeGraphManager.forProject(workDir);
+		if (!manager) throw new Error("expected CodeGraph manager in a git repository");
 
 		expect((await manager.ensureReady()).status).toBe("ready");
 		expect(fs.readFileSync(logFile, "utf8").split("\n").filter(Boolean)).toEqual([
@@ -119,6 +130,7 @@ describe("CodeGraphManager", () => {
 	it("accepts an init race loser after its status recheck", async () => {
 		process.env.CG_INIT_MODE = "loser";
 		const manager = await CodeGraphManager.forProject(workDir);
+		if (!manager) throw new Error("expected CodeGraph manager in a git repository");
 
 		expect((await manager.ensureReady()).status).toBe("ready");
 		expect(fs.readFileSync(logFile, "utf8").split("\n").filter(Boolean)).toEqual([
@@ -135,6 +147,7 @@ describe("CodeGraphManager", () => {
 		process.env.PATH = ["/usr/bin", "/bin"].join(path.delimiter);
 		CodeGraphManager.disposeAll();
 		const manager = await CodeGraphManager.forProject(workDir);
+		if (!manager) throw new Error("expected CodeGraph manager in a git repository");
 
 		expect((await manager.ensureReady()).status).toBe("ready");
 	});
@@ -143,6 +156,7 @@ describe("CodeGraphManager", () => {
 		process.env.PATH = path.join(workDir, "empty-bin");
 		CodeGraphManager.disposeAll();
 		const manager = await CodeGraphManager.forProject(workDir);
+		if (!manager) throw new Error("expected CodeGraph manager in a git repository");
 
 		expect(() => manager.start()).not.toThrow();
 		expect((await manager.ensureReady()).status).toBe("unavailable");
@@ -152,6 +166,7 @@ describe("CodeGraphManager", () => {
 	it("runs explore with locked argv and passes its output through", async () => {
 		fs.writeFileSync(stateFile, "ready");
 		const manager = await CodeGraphManager.forProject(workDir);
+		if (!manager) throw new Error("expected CodeGraph manager in a git repository");
 
 		const result = await manager.explore("find manager", { projectPath: "/tmp/target", maxFiles: 3 });
 
@@ -176,6 +191,7 @@ describe("CodeGraphManager", () => {
 		fs.writeFileSync(stateFile, "ready");
 		process.env.CG_EXPLORE_DELAY = "5";
 		const manager = await CodeGraphManager.forProject(workDir);
+		if (!manager) throw new Error("expected CodeGraph manager in a git repository");
 		const controller = new AbortController();
 		const pending = manager.explore("slow", { signal: controller.signal });
 		await Bun.sleep(20);

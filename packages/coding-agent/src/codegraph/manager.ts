@@ -26,27 +26,30 @@ export interface CodeGraphExploreOptions {
 const CODEGRAPH_COMMAND = "codegraph";
 const COMMAND_NOT_FOUND_EXIT_CODE = 127;
 const managers = new Map<string, CodeGraphManager>();
+export const CODEGRAPH_REQUIRES_GIT = "CodeGraph only runs in Git repositories. Initialize a git checkout first.";
+
+async function resolveGitToplevel(cwd: string): Promise<string | null> {
+	const absoluteCwd = path.resolve(cwd);
+	try {
+		const child = Bun.spawn(["git", "-C", absoluteCwd, "rev-parse", "--show-toplevel"], {
+			cwd: absoluteCwd,
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+			windowsHide: true,
+		});
+		const [stdout, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+		if (exitCode === 0 && stdout.trim()) return stdout.trim();
+	} catch {
+		// Missing git binary or a spawn failure is treated as "not a git project".
+	}
+	return null;
+}
 
 export class CodeGraphManager {
-	static async forProject(cwd: string): Promise<CodeGraphManager> {
-		const absoluteCwd = path.resolve(cwd);
-		let projectRoot = absoluteCwd;
-		try {
-			const child = Bun.spawn(["git", "-C", absoluteCwd, "rev-parse", "--show-toplevel"], {
-				cwd: absoluteCwd,
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-				windowsHide: true,
-			});
-			const [stdout, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-			if (exitCode === 0 && stdout.trim()) projectRoot = stdout.trim();
-		} catch (error) {
-			logger.warn("CodeGraph could not resolve repository root; using current directory.", {
-				cwd: absoluteCwd,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+	static async forProject(cwd: string): Promise<CodeGraphManager | null> {
+		const projectRoot = await resolveGitToplevel(cwd);
+		if (!projectRoot) return null;
 
 		const existing = managers.get(projectRoot);
 		if (existing) return existing;

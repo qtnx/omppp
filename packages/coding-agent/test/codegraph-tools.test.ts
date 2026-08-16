@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CodeGraphManager } from "@oh-my-pi/pi-coding-agent/codegraph/manager";
+import { CODEGRAPH_REQUIRES_GIT, CodeGraphManager } from "@oh-my-pi/pi-coding-agent/codegraph/manager";
 import { CodeGraphExploreTool } from "@oh-my-pi/pi-coding-agent/codegraph/tools";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
@@ -68,6 +68,7 @@ describe("CodeGraph built-in tools", () => {
 	});
 
 	it("registers explore as default-active and gates all CodeGraph tools", async () => {
+		expect(Bun.spawnSync(["git", "init", "-q", workDir]).exitCode).toBe(0);
 		expect(computeEssentialBuiltinNames(Settings.isolated())).toContain("codegraph_explore");
 		const explore = await BUILTIN_TOOLS.codegraph_explore(makeSession(workDir));
 		const init = await BUILTIN_TOOLS.codegraph_init(makeSession(workDir));
@@ -91,7 +92,14 @@ describe("CodeGraph built-in tools", () => {
 		expect(tools.map(tool => tool.name)).not.toContain("codegraph_explore");
 	});
 
+	it("refuses execute outside a git repository", async () => {
+		await expect(
+			new CodeGraphExploreTool(makeSession(workDir)).execute("codegraph-nongit", { query: "CodeGraphManager" }),
+		).rejects.toThrow(CODEGRAPH_REQUIRES_GIT);
+	});
+
 	it("runs the locked explore command and preserves line-numbered source", async () => {
+		expect(Bun.spawnSync(["git", "init", "-q", workDir]).exitCode).toBe(0);
 		const result = await new CodeGraphExploreTool(makeSession(workDir)).execute("codegraph-test", {
 			query: "CodeGraphManager",
 			maxFiles: 2,
@@ -108,8 +116,8 @@ describe("CodeGraph built-in tools", () => {
 	});
 
 	it("reports an unavailable CodeGraph executable as an actionable tool failure", async () => {
+		expect(Bun.spawnSync(["git", "init", "-q", workDir]).exitCode).toBe(0);
 		process.env.PATH = path.join(workDir, "empty-bin");
-		CodeGraphManager.disposeAll();
 
 		await expect(
 			new CodeGraphExploreTool(makeSession(workDir)).execute("codegraph-missing", { query: "CodeGraphManager" }),

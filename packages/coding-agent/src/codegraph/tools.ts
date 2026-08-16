@@ -7,7 +7,7 @@ import codegraphInitDescription from "../prompts/tools/codegraph-init.md" with {
 import type { ToolSession } from "../tools";
 import { resolveToCwd } from "../tools/path-utils";
 import { ToolError } from "../tools/tool-errors";
-import { type CodeGraphCommandResult, CodeGraphManager } from "./manager";
+import { CODEGRAPH_REQUIRES_GIT, type CodeGraphCommandResult, CodeGraphManager } from "./manager";
 
 const MAX_FILES = 100;
 
@@ -40,6 +40,12 @@ export interface CodeGraphToolDetails {
 
 function resolveProjectPath(session: ToolSession, requestedPath: string | undefined): string {
 	return resolveToCwd(requestedPath ?? session.cwd, session.cwd);
+}
+
+async function managerFor(projectPath: string): Promise<CodeGraphManager> {
+	const manager = await CodeGraphManager.forProject(projectPath);
+	if (!manager) throw new ToolError(CODEGRAPH_REQUIRES_GIT);
+	return manager;
 }
 
 function commandFailure(result: CodeGraphCommandResult): ToolError {
@@ -79,7 +85,7 @@ export class CodeGraphInitTool implements AgentTool<typeof codegraphInitSchema, 
 		params: CodeGraphInitParams,
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<CodeGraphToolDetails>> {
-		const manager = await CodeGraphManager.forProject(resolveProjectPath(this.session, params.path));
+		const manager = await managerFor(resolveProjectPath(this.session, params.path));
 		return resultFor(await manager.init(signal));
 	}
 }
@@ -101,7 +107,7 @@ export class CodeGraphIndexTool implements AgentTool<typeof codegraphIndexSchema
 		params: CodeGraphIndexParams,
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<CodeGraphToolDetails>> {
-		const manager = await CodeGraphManager.forProject(resolveProjectPath(this.session, params.path));
+		const manager = await managerFor(resolveProjectPath(this.session, params.path));
 		return resultFor(await manager.index(signal));
 	}
 }
@@ -124,7 +130,7 @@ export class CodeGraphExploreTool implements AgentTool<typeof codegraphExploreSc
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<CodeGraphToolDetails>> {
 		const projectPath = params.projectPath ? resolveProjectPath(this.session, params.projectPath) : undefined;
-		const manager = await CodeGraphManager.forProject(projectPath ?? this.session.cwd);
+		const manager = await managerFor(projectPath ?? this.session.cwd);
 		const maxFiles = params.maxFiles === undefined ? undefined : Math.min(params.maxFiles, MAX_FILES);
 		try {
 			return resultFor(await manager.explore(params.query, { projectPath, maxFiles, signal }));
