@@ -6,6 +6,10 @@
 
 - Installer config migration now defaults the `scout` agent to `tnx/scout` and, when retry fallback chains already exist, adds the same `smol` fallback chain (`openai-codex/gpt-5.3-codex-spark` then `anthropic/claude-haiku-4-5`) unless a `scout` chain is already set. Custom scout models and existing scout fallbacks are left alone.
 
+### Fixed
+
+- Herdr pane status no longer gets stomped to `unknown` by headless children that inherit `HERDR_ENV` (tests, print/RPC, workers). The native reporter now waits for a UI session before publishing, never sends `pane.release_agent` (Herdr 0.8.0 ends ownership on process exit; official OMP v8 never released), and flips the pane to `working` as soon as a normal prompt is submitted instead of scheduling idle until `before_agent_start`.
+
 ## [1.7.3] - 2026-08-15
 
 ### Added

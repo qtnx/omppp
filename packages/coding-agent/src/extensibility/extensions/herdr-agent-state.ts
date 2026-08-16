@@ -45,7 +45,7 @@ function isRetryableErrorMessage(errorMessage: string): boolean {
 }
 
 type HerdrAgentState = "working" | "blocked" | "idle";
-type HerdrMethod = "pane.report_agent" | "pane.release_agent";
+type HerdrMethod = "pane.report_agent";
 
 type HerdrRequest = {
 	id: string;
@@ -242,6 +242,8 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		let drainPromise: Promise<void> | undefined;
 		let lastContext: ExtensionContext | undefined;
 		let runCompleted = false;
+		let uiSession = false;
+		let promptPending = false;
 		const reviewWaits = new Map<string, string | undefined>();
 		let closed = false;
 		const activeTools = new Set<string>();
@@ -290,11 +292,23 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		const hasTrackedWork = (): boolean =>
 			agentActive ||
 			turnActive ||
+			promptPending ||
 			compactionDepth > 0 ||
 			retryHoldActive ||
 			activeTools.size > 0 ||
 			activeSubagents.size > 0 ||
 			activeAsyncJobs.size > 0;
+
+		// Official Herdr OMP v8 only reports from a UI session. Headless children
+		// (bun test, print/RPC, workers) inherit HERDR_ENV/HERDR_PANE_ID from the
+		// pane and would otherwise publish idle then pane.release_agent onto the
+		// same pane, which Herdr 0.8.0 rolls up as unknown.
+		const activate = (ctx?: ExtensionContext): boolean => {
+			if (uiSession) return true;
+			if (ctx?.hasUI !== true) return false;
+			uiSession = true;
+			return true;
+		};
 
 		const desiredState = (ctx?: ExtensionContext, options: { includePromptState?: boolean } = {}): DesiredState => {
 			if (blockedCount > 0) return { state: "blocked", customStatus: "need review", message: blockedMessage };
@@ -333,20 +347,6 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 				agent_session_path: lastContext?.sessionManager.getSessionFile(),
 			},
 		});
-
-		const buildReleaseRequest = (): HerdrRequest => {
-			const seq = nextReportSeq();
-			return {
-				id: `${source}:release:${Date.now()}:${seq}`,
-				method: "pane.release_agent",
-				params: {
-					pane_id: paneId,
-					source,
-					agent: AGENT,
-					seq,
-				},
-			};
-		};
 
 		const drainStateQueue = async (): Promise<void> => {
 			try {
@@ -605,6 +605,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		};
 
 		pi.events.on("herdr:blocked", data => {
+			if (!uiSession) return;
 			const payload = blockedPayload(data);
 			if (!payload) return;
 			if (!payload.active) {
@@ -621,6 +622,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		});
 
 		pi.events.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
+			if (!uiSession) return;
 			const id = payloadId(data);
 			const status = payloadStatus(data);
 			if (!id || !status) return;
@@ -636,6 +638,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		});
 
 		pi.events.on(ASYNC_JOB_LIFECYCLE_CHANNEL, data => {
+			if (!uiSession) return;
 			const id = payloadId(data);
 			const status = payloadStatus(data);
 			if (!id || !status) return;
@@ -651,6 +654,8 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		});
 
 		pi.on("session_start", (_event, ctx) => {
+			if (!activate(ctx)) return;
+			promptPending = false;
 			runCompleted = false;
 			publishState(ctx);
 			void startControlServer(ctx);
@@ -662,11 +667,13 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		});
 
 		pi.on("session_switch", async (_event, ctx) => {
+			if (!activate(ctx)) return;
 			// Run-scoped state: guaranteed re-established by start events on the next run.
 			// Subagent/async-job sets stay — jobs survive session switches and drain via
 			// their lifecycle events.
 			agentActive = false;
 			turnActive = false;
+			promptPending = false;
 			compactionDepth = 0;
 			activeTools.clear();
 			runCompleted = false;
@@ -681,6 +688,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		});
 
 		pi.on("input", (event, ctx) => {
+			if (!activate(ctx)) return;
 			runCompleted = false;
 			// User responded: a stranded non-retryable failure no longer needs review.
 			// Keep retry holds and pending approval/ask waits — those are still live.
@@ -691,27 +699,43 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			const title = summarizeTitle(event.text);
 			if (title) currentTaskTitle = title;
 			publishMetadata(ctx);
-			scheduleIdle(ctx);
+			// Slash commands (e.g. /model) are not a turn. A normal prompt must flip
+			// Herdr to working immediately — waiting for before_agent_start flashes
+			// idle, and Herdr 0.8.0 has no omp screen-manifest fallback.
+			if (event.text.trimStart().startsWith("/")) {
+				promptPending = false;
+				scheduleIdle(ctx);
+				return;
+			}
+			promptPending = true;
+			markWorkStarted(ctx);
 		});
 
 		pi.on("before_agent_start", (_event, ctx) => {
+			if (!activate(ctx)) return;
 			runCompleted = false;
+			promptPending = true;
 			turnStartedAt = Date.now();
 			markWorkStarted(ctx, { clearFailure: true });
 		});
 
 		pi.on("agent_start", (_event, ctx) => {
+			if (!activate(ctx)) return;
 			runCompleted = false;
+			promptPending = false;
 			agentActive = true;
 			markWorkStarted(ctx, { clearFailure: true });
 		});
 
 		pi.on("turn_start", (_event, ctx) => {
+			if (!activate(ctx)) return;
+			promptPending = false;
 			turnActive = true;
 			markWorkStarted(ctx, { clearFailure: true });
 		});
 
 		pi.on("tool_execution_start", (event, ctx) => {
+			if (!activate(ctx)) return;
 			activeTools.add(event.toolCallId);
 			if (event.toolName === "ask") {
 				reviewWaits.set(event.toolCallId, event.intent);
@@ -720,28 +744,33 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		});
 
 		pi.on("tool_execution_end", (event, ctx) => {
+			if (!activate(ctx)) return;
 			activeTools.delete(event.toolCallId);
 			reviewWaits.delete(event.toolCallId);
 			completeMaybeIdle(ctx);
 		});
 
 		pi.on("tool_approval_requested", (event, ctx) => {
+			if (!activate(ctx)) return;
 			reviewWaits.set(event.toolCallId, event.reason ?? `approval: ${event.toolName}`);
 			clearIdleTimer();
 			publishState(ctx);
 		});
 
 		pi.on("tool_approval_resolved", (event, ctx) => {
+			if (!activate(ctx)) return;
 			reviewWaits.delete(event.toolCallId);
 			completeMaybeIdle(ctx);
 		});
 
 		pi.on("auto_compaction_start", (_event, ctx) => {
+			if (!activate(ctx)) return;
 			compactionDepth += 1;
 			markWorkStarted(ctx);
 		});
 
 		pi.on("auto_compaction_end", (event, ctx) => {
+			if (!activate(ctx)) return;
 			compactionDepth = Math.max(0, compactionDepth - 1);
 			if (event.willRetry) {
 				holdForRetry("compaction retry did not start");
@@ -751,6 +780,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		});
 
 		pi.on("auto_retry_start", (_event, ctx) => {
+			if (!activate(ctx)) return;
 			clearPendingTimers();
 			retryHoldActive = true;
 			failureBlocked = false;
@@ -759,6 +789,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		});
 
 		pi.on("auto_retry_end", (event, ctx) => {
+			if (!activate(ctx)) return;
 			clearRetryTimer();
 			retryHoldActive = false;
 			if (!event.success && event.finalError) {
@@ -773,11 +804,14 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		});
 
 		pi.on("turn_end", (_event, ctx) => {
+			if (!activate(ctx)) return;
 			turnActive = false;
 			completeMaybeIdle(ctx);
 		});
 
 		pi.on("agent_end", (event, ctx) => {
+			if (!activate(ctx)) return;
+			promptPending = false;
 			const reviewWaitToolCallIds = Array.from(reviewWaits.keys());
 			reviewWaits.clear();
 			for (const toolCallId of reviewWaitToolCallIds) {
@@ -832,15 +866,12 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			controlServer = undefined;
 			if (server) await server.close();
 			if (drainPromise) await drainPromise;
-			try {
-				await transport(buildReleaseRequest());
-			} catch {
-				// Herdr release is best-effort like state reports; shutdown must not fail.
-			}
+			// Do not pane.release_agent. Herdr 0.8.0 ends ownership on process
+			// exit; official OMP v8 never releases. A release from a child that
+			// inherited this pane's HERDR_* env rolled the sidebar up as unknown.
 		});
 
 		markNativeHerdrAgentStateEnabled(env);
-		logger.debug("herdr-agent-state: native reporter active", { paneId });
-		publishState(undefined, { includePromptState: false });
+		logger.debug("herdr-agent-state: native reporter registered", { paneId });
 	};
 }
