@@ -5,6 +5,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { AdvisorConsultResult } from "../advisor";
 import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
+import { isGitProjectSync } from "../codegraph/manager";
 import { CodeGraphExploreTool, CodeGraphIndexTool, CodeGraphInitTool } from "../codegraph/tools";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
@@ -922,7 +923,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (isCodexGoalHiddenToolName(name)) return goalEnabled;
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "codegraph_init" || name === "codegraph_index" || name === "codegraph_explore")
-			return session.settings.get("codegraph.enabled");
+			return session.settings.get("codegraph.enabled") && isGitProjectSync(session.cwd);
 		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "launch") return session.settings.get("launch.enabled");
 		if (name === "eval") return allowEval;

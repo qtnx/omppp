@@ -205,6 +205,19 @@ describe("CodeGraph startup", () => {
 		]);
 	});
 
+	it("does not auto-start when the workspace is not a git repository", async () => {
+		Object.defineProperty(CodeGraphManager, "forProject", {
+			configurable: true,
+			value: async () => null,
+		});
+		const cwd = path.join(root, "non-git");
+		fs.mkdirSync(cwd);
+		await createSession(cwd, Settings.isolated({ "codegraph.enabled": true }));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(await Promise.race([seam.started.then(() => true), Promise.resolve(false)])).toBe(false);
+	});
+
 	it("does not auto-start in subagent, restricted, disabled, or auto-index-off sessions", async () => {
 		const cases = [
 			{ name: "subagent", extra: { taskDepth: 1 }, settings: { "codegraph.enabled": true } },

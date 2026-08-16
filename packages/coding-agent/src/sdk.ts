@@ -4435,7 +4435,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		) {
 			void CodeGraphManager.forProject(sessionManager.getCwd())
 				.then(codeGraphManager => {
-					if (session.isDisposed) return;
+					if (!codeGraphManager || session.isDisposed) return;
 					let guidanceQueued = false;
 					const queueCodeGraphGuidance = () => {
 						if (guidanceQueued || session.isDisposed) return;
