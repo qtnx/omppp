@@ -718,7 +718,6 @@ retry:
 		}
 	});
 
-
 	it("adds shell installer heavy_task fallback chain to existing retry chains idempotently", async () => {
 		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");

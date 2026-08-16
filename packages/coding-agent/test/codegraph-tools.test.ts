@@ -92,12 +92,7 @@ describe("CodeGraph built-in tools", () => {
 		expect(tools.map(tool => tool.name)).not.toContain("codegraph_explore");
 	});
 
-	it("hides CodeGraph tools and refuses execute outside a git repository", async () => {
-		const tools = await createTools(makeSession(workDir), ["codegraph_init", "codegraph_index", "codegraph_explore"]);
-		expect(tools.map(tool => tool.name)).not.toContain("codegraph_init");
-		expect(tools.map(tool => tool.name)).not.toContain("codegraph_index");
-		expect(tools.map(tool => tool.name)).not.toContain("codegraph_explore");
-
+	it("refuses execute outside a git repository", async () => {
 		await expect(
 			new CodeGraphExploreTool(makeSession(workDir)).execute("codegraph-nongit", { query: "CodeGraphManager" }),
 		).rejects.toThrow(CODEGRAPH_REQUIRES_GIT);

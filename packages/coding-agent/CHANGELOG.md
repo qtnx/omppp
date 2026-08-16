@@ -5,7 +5,7 @@
 ### Changed
 
 - Installer config migration now defaults the `scout` agent to `tnx/scout` and, when retry fallback chains already exist, adds the same `smol` fallback chain (`openai-codex/gpt-5.3-codex-spark` then `anthropic/claude-haiku-4-5`) unless a `scout` chain is already set. Custom scout models and existing scout fallbacks are left alone.
-- CodeGraph now runs only inside Git checkouts. Non-git directories skip background init/index, hide the CodeGraph tools, and refuse `codegraph_*` execute with a clear error.
+- CodeGraph now runs only inside Git checkouts. Non-git directories skip background init/index, and `codegraph_*` execute refuses with a clear error.
 
 ## [1.7.3] - 2026-08-15
 

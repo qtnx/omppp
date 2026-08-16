@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { $which } from "@oh-my-pi/pi-utils/which";
@@ -28,21 +27,6 @@ const CODEGRAPH_COMMAND = "codegraph";
 const COMMAND_NOT_FOUND_EXIT_CODE = 127;
 const managers = new Map<string, CodeGraphManager>();
 export const CODEGRAPH_REQUIRES_GIT = "CodeGraph only runs in Git repositories. Initialize a git checkout first.";
-
-export function isGitProjectSync(cwd: string): boolean {
-	let current = path.resolve(cwd);
-	while (true) {
-		try {
-			const gitEntry = fs.statSync(path.join(current, ".git"));
-			if (gitEntry.isDirectory() || gitEntry.isFile()) return true;
-		} catch {
-			// Keep walking toward the filesystem root.
-		}
-		const parent = path.dirname(current);
-		if (parent === current) return false;
-		current = parent;
-	}
-}
 
 async function resolveGitToplevel(cwd: string): Promise<string | null> {
 	const absoluteCwd = path.resolve(cwd);
