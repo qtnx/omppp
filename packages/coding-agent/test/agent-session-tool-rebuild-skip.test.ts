@@ -106,7 +106,6 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 
 	interface NewSessionOptions {
 		getMcpServerInstructions?: () => Map<string, string> | undefined;
-		getLocalCalendarDate?: () => string;
 		xdev?: XdevState;
 		lazyWrite?: boolean;
 		/** Scripted mock model responses; enables driving `session.prompt()`. */
@@ -192,7 +191,6 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 				return { systemPrompt: [`${base}\nxd:// catalog: ${catalog.join(",")}`], xdevCatalogNames: catalog };
 			},
 			getMcpServerInstructions: options.getMcpServerInstructions,
-			getLocalCalendarDate: options.getLocalCalendarDate,
 			xdev: options.xdev,
 		});
 		sessions.push(session);
@@ -889,39 +887,7 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		await session.refreshMCPTools([dynamicTool]);
 		expect(rebuildCount).toBe(baseline + 1);
 	});
-	it("rebuilds when the local calendar date rolls over between tool-stable MCP refreshes", async () => {
-		// `buildSystemPrompt` injects today's local date into the prompt body. The
-		// signature reads the same date provider so a session spanning local midnight
-		// must rebuild after an MCP reconnect with an otherwise identical tool set.
-		let currentDate = "2026-06-30";
-		let rebuildCount = 0;
-		const { session } = newSession(
-			async toolNames => {
-				rebuildCount++;
-				return `tools:${toolNames.join(",")}`;
-			},
-			{ getLocalCalendarDate: () => currentDate },
-		);
-		const tool = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search");
 
-		// First refresh: no signature yet, must rebuild.
-		await session.refreshMCPTools([tool]);
-		expect(rebuildCount).toBe(1);
-
-		// Same tools, same local day: signature matches, skip.
-		await session.refreshMCPTools([tool]);
-		expect(rebuildCount).toBe(1);
-
-		currentDate = "2026-07-01";
-
-		// Same tools, new local calendar day: date segment changed, must rebuild.
-		await session.refreshMCPTools([tool]);
-		expect(rebuildCount).toBe(2);
-
-		// Same tools, same new local day: skip again.
-		await session.refreshMCPTools([tool]);
-		expect(rebuildCount).toBe(2);
-	});
 	it("does not rebuild when MCP server instructions change only beyond the 4000-char truncation boundary", async () => {
 		// `rebuildSystemPrompt` (sdk.ts) truncates each server instruction to 4000 chars
 		// before embedding it. The `getMcpServerInstructions` callback must therefore
@@ -1335,19 +1301,17 @@ These tools became available:
 
 	it("rolls back MCP catalog replacement when prompt rebuild fails", async () => {
 		let failRebuild = false;
-		let date = "2026-07-16";
 		const xdevState = createTestXdevState();
 		const { session } = newSession(
 			async toolNames => {
 				if (failRebuild) throw new Error("rebuild failed");
 				return `tools:${toolNames.join(",")}`;
 			},
-			{ xdev: xdevState, getLocalCalendarDate: () => date },
+			{ xdev: xdevState },
 		);
 		const oldTool = createMcpCustomTool("mcp__nucleus_old", "nucleus", "old", "Old tool");
 		const newTool = createMcpCustomTool("mcp__nucleus_new", "nucleus", "new", "New tool");
 		await session.refreshMCPTools([oldTool]);
-		date = "2026-07-17";
 		failRebuild = true;
 
 		await expect(session.refreshMCPTools([newTool])).rejects.toThrow("rebuild failed");
@@ -1496,30 +1460,49 @@ These tools became available:
 
 	it("rolls back RPC catalog replacement when prompt rebuild fails", async () => {
 		let failRebuild = false;
-		let date = "2026-07-16";
 		const xdevState = createTestXdevState();
 		const { session } = newSession(
 			async toolNames => {
 				if (failRebuild) throw new Error("rebuild failed");
 				return `tools:${toolNames.join(",")}`;
 			},
-			{ xdev: xdevState, getLocalCalendarDate: () => date },
+			{ xdev: xdevState },
 		);
-		const oldTool = { ...createBasicTool("rpc_old", "RPC Old"), loadMode: "discoverable" as const };
-		const newTool = { ...createBasicTool("rpc_new", "RPC New"), loadMode: "discoverable" as const };
+		// Non-discoverable RPC tools stay active top-level, so replacing the catalog
+		// (old → new) changes the rebuild signature on its own — the replacement
+		// itself must trigger the failing rebuild that gets rolled back.
+		const oldTool = createBasicTool("rpc_old", "RPC Old");
+		const newTool = createBasicTool("rpc_new", "RPC New");
 		await session.refreshRpcHostTools([oldTool]);
-		date = "2026-07-17";
 		failRebuild = true;
 
 		await expect(session.refreshRpcHostTools([newTool])).rejects.toThrow("rebuild failed");
 		expect(session.getToolByName(oldTool.name)).toBeDefined();
 		expect(session.getToolByName(newTool.name)).toBeUndefined();
-		expect(session.getMountedXdevToolNames()).toContain(oldTool.name);
+		expect(session.getActiveToolNames()).toContain(oldTool.name);
+		expect(session.getActiveToolNames()).not.toContain(newTool.name);
 
 		failRebuild = false;
 		await session.refreshRpcHostTools([newTool]);
 		expect(session.getToolByName(oldTool.name)).toBeUndefined();
 		expect(session.getToolByName(newTool.name)).toBeDefined();
-		expect(session.getMountedXdevToolNames()).toContain(newTool.name);
+		expect(session.getActiveToolNames()).toContain(newTool.name);
+	});
+
+	it("keeps mixed-case plugin devices mounted when MCP tools refresh", async () => {
+		const xdevState = createTestXdevState();
+		const { session, toolRegistry } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
+			xdev: xdevState,
+		});
+		const pluginTool = { ...createBasicTool("CaseAdd", "Case Add"), loadMode: "discoverable" as const };
+		toolRegistry.set(pluginTool.name, pluginTool);
+		xdevState.mountedNames.add(pluginTool.name);
+
+		await session.refreshMCPTools([
+			createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus"),
+		]);
+
+		expect(session.getMountedXdevToolNames()).toContain("CaseAdd");
+		expect(session.getToolByName("CaseAdd")).toBeDefined();
 	});
 });

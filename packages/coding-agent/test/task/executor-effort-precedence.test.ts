@@ -23,6 +23,7 @@ function yieldEmittingSession(): AgentSession {
 		getEnabledToolNames: () => ["read", "yield"],
 		getAllToolNames: () => ["read", "yield"],
 		setActiveToolsByName: async () => {},
+		subscribeRunState: () => () => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
 			return () => {
@@ -108,7 +109,7 @@ describe("runSubprocess effort precedence", () => {
 			.mockResolvedValue(createSessionResult(yieldEmittingSession()));
 
 		const result = await runSubprocess(options);
-		expect(result.exitCode).toBe(0);
+		if (result.exitCode !== 0) throw new Error(result.error ?? result.stderr);
 		return spy.mock.calls[0]?.[0];
 	}
 

@@ -4,9 +4,9 @@ import { type } from "@oh-my-pi/omptype";
 import {
 	type AgentTool,
 	type AgentToolResult,
-	countTokens,
 	instrumentedCompleteSimple,
 	resolveTelemetry,
+	Tokenizer,
 } from "@oh-my-pi/pi-agent-core";
 import { type Api, Effort, type ImageContent, type Model, type TextContent } from "@oh-my-pi/pi-ai";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
@@ -293,7 +293,7 @@ function attachmentPromptMetadata(attachments: PreparedAttachment[]): PreparedAt
 }
 
 function passesSnapcompactGate(text: string, model: Model<Api>, shape: snapcompact.Shape): boolean {
-	const textTokens = countTokens(text);
+	const textTokens = new Tokenizer(model).countTokens(text);
 	if (textTokens < MIN_SNAPCOMPACT_TOKENS) return false;
 	const frameCount = snapcompact.frames(text, { shape });
 	if (frameCount <= 0) return false;

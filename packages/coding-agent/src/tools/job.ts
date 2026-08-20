@@ -3,7 +3,7 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { formatNumber, isRecord, prompt } from "@oh-my-pi/pi-utils";
-import type { AsyncJob, AsyncJobManager } from "../async";
+import type { AsyncJob, AsyncJobManager, AsyncJobType } from "../async";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../modes/theme/shimmer";
 import type { Theme } from "../modes/theme/theme";
@@ -50,7 +50,7 @@ const STALL_THRESHOLD_DEFAULT_MS = 10 * 60_000;
 
 interface JobSnapshot {
 	id: string;
-	type: "bash" | "task" | "workflow";
+	type: AsyncJobType;
 	status: "running" | "completed" | "failed" | "cancelled";
 	label: string;
 	durationMs: number;

@@ -104,14 +104,9 @@ describe("SessionManager signature persistence", () => {
 		const frameData = Buffer.alloc(450_000, 7).toString("base64");
 
 		const firstKeptEntryId = session.appendMessage({ role: "user", content: "after archive", timestamp: 1 });
-		session.appendCompaction(
-			"Archived history",
-			"Archived 1 snapcompact frame",
-			firstKeptEntryId,
-			1000,
-			undefined,
-			false,
-			{
+		session.appendCompaction("Archived history", "Archived 1 snapcompact frame", firstKeptEntryId, 1000, {
+			fromExtension: false,
+			preserveData: {
 				snapcompact: {
 					frames: [
 						{
@@ -130,7 +125,7 @@ describe("SessionManager signature persistence", () => {
 					truncatedChars: 0,
 				},
 			},
-		);
+		});
 		await session.ensureOnDisk();
 		await session.flush();
 
@@ -332,16 +327,16 @@ describe("SessionManager signature persistence", () => {
 		await reloaded.close();
 	}, 15_000);
 
-	it("preserves oversized Anthropic web-search results byte-for-byte across reload", async () => {
+	it("preserves oversized Anthropic server-tool results byte-for-byte across reload", async () => {
 		using tempDir = TempDir.createSync("@pi-session-anthropic-server-tool-persistence-");
 		const session = SessionManager.create(tempDir.path(), tempDir.path());
-		const encryptedContent = `ENCRYPTED_WEB_SEARCH_RESULT_${"W".repeat(600_000)}`;
+		const oversizedPayload = "W".repeat(600_000);
 		const serverToolContent: AssistantMessage["content"] = [
 			{
 				type: "anthropicServerTool",
 				block: {
 					type: "server_tool_use",
-					id: "srvtoolu_search",
+					id: "srvtoolu_web_search",
 					name: "web_search",
 					input: { query: "current UTC date" },
 				},
@@ -350,8 +345,28 @@ describe("SessionManager signature persistence", () => {
 				type: "anthropicServerTool",
 				block: {
 					type: "web_search_tool_result",
-					tool_use_id: "srvtoolu_search",
-					content: [{ type: "web_search_result", encrypted_content: encryptedContent }],
+					tool_use_id: "srvtoolu_web_search",
+					content: [{ type: "web_search_result", encrypted_content: `ENCRYPTED_WEB_SEARCH_${oversizedPayload}` }],
+				},
+			},
+			{
+				type: "anthropicServerTool",
+				block: {
+					type: "server_tool_use",
+					id: "srvtoolu_tool_search",
+					name: "tool_search_tool_bm25",
+					input: { query: "read" },
+				},
+			},
+			{
+				type: "anthropicServerTool",
+				block: {
+					type: "tool_search_tool_result",
+					tool_use_id: "srvtoolu_tool_search",
+					content: {
+						type: "tool_search_tool_search_result",
+						tool_references: [{ type: "tool_reference", tool_name: `READ_TOOL_${oversizedPayload}` }],
+					},
 				},
 			},
 		];

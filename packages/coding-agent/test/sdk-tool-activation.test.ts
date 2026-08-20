@@ -270,7 +270,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			await session.setModel(fable);
 			expect(session.getToolByName("think")).toBeDefined();
 			expect(session.getActiveToolNames()).toContain("think");
-			expect(session.systemPrompt.join("\n")).toContain("private scratchpad; not shown to user");
+			expect(session.systemPrompt.join("\n")).toContain("other tools become callable when it completes");
 
 			await session.setModel(responses);
 			expect(session.getActiveToolNames()).toContain("think");
@@ -281,7 +281,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 			await session.setModel(unsupported);
 			expect(session.getActiveToolNames()).not.toContain("think");
-			expect(session.systemPrompt.join("\n")).not.toContain("private scratchpad; not shown to user");
+			expect(session.systemPrompt.join("\n")).not.toContain("other tools become callable when it completes");
 		} finally {
 			await session.dispose();
 		}

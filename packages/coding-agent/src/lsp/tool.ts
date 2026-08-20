@@ -21,6 +21,7 @@ import {
 	ensureFileOpen,
 	getActiveClients,
 	getOrCreateClient,
+	isRustAnalyzerClient,
 	type LspServerStatus,
 	refreshFile,
 	sendNotification,
@@ -1075,10 +1076,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		try {
 			const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);
 			const targetFile = resolvedFile;
-			const isRustAnalyzerServer =
-				serverName === "rust-analyzer" ||
-				path.basename(serverConfig.command) === "rust-analyzer" ||
-				(serverConfig.resolvedCommand ? path.basename(serverConfig.resolvedCommand) === "rust-analyzer" : false);
+			const isRustAnalyzerServer = isRustAnalyzerClient(client) || serverName === "rust-analyzer";
 			const needsProjectIndex =
 				targetFile !== null && PROJECT_INDEXED_ACTIONS.has(action) && isProjectAwareLspServer(serverConfig);
 			const rustWorkspaceWait =

@@ -38,7 +38,8 @@ function toErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-export type AsyncJobType = "bash" | "task" | "workflow";
+/** Kind of work a managed job runs; drives job-row badges and delivery labels. */
+export type AsyncJobType = "bash" | "task" | "workflow" | "eval";
 
 export interface AsyncJob {
 	id: string;

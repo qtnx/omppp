@@ -499,6 +499,70 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		expect(lines.map(line => Bun.stripANSI(line)).join("\n")).toContain("ctrl+o");
 	});
 
+	test("hidden todo snapshot does not clip settled rows from a later streaming response", async () => {
+		const rows = 8;
+		stubStdoutRows(rows);
+		const term = new VirtualTerminal(60, rows);
+		Object.defineProperty(term, "isNativeViewportAtBottom", { configurable: true, value: () => undefined });
+		const scheduler = makeDrainableScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.setScrollbackRebuild(false);
+		const transcript = new TranscriptContainer();
+		transcript.setToolActivityVisible(false);
+		transcript.addChild(new StaticBlock(["user: run the plan"]));
+
+		const todo = new ToolExecutionComponent("todo", { op: "init" }, {}, undefined, tui, process.cwd());
+		todo.updateResult(
+			{
+				content: [{ type: "text", text: "" }],
+				details: {
+					phases: [
+						{
+							name: "Workflow",
+							tasks: [{ content: "Stream the response", status: "in_progress" }],
+						},
+					],
+					storage: "session",
+				},
+			},
+			false,
+		);
+		transcript.addChild(todo);
+
+		const assistant = new AssistantMessageComponent(undefined, true);
+		transcript.addChild(assistant);
+		tui.addChild(transcript);
+		tui.addChild(new Footer(4));
+
+		const text = Array.from(
+			{ length: 30 },
+			(_, index) => `stream-row-${index} with stable content that must remain in terminal history.`,
+		).join("\n\n");
+
+		try {
+			tui.start();
+			scheduler.flush();
+			await term.flush();
+
+			for (const partialText of streamingPrefixes(text, 300)) {
+				assistant.updateContent(makeAssistantMessage([{ type: "text", text: partialText }]), {
+					transient: true,
+				});
+				tui.requestRender();
+				scheduler.flush();
+				await term.flush();
+			}
+
+			const midStreamRows = plainScrollBuffer(term);
+			expect(midStreamRows.some(row => row.includes("stream-row-0 "))).toBe(true);
+		} finally {
+			todo.seal();
+			assistant.dispose();
+			tui.stop();
+			await term.flush();
+		}
+	});
+
 	test("streams live assistant thinking and answer rows into native scrollback before finalize", async () => {
 		const rows = 8;
 		stubStdoutRows(rows);

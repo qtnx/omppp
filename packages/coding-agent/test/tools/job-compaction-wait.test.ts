@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, spyOn, test, vi } from "bun:test";
-import type { Agent, AgentMessage, SessionEntry } from "@oh-my-pi/pi-agent-core";
+import { type Agent, type AgentMessage, type SessionEntry, Tokenizer } from "@oh-my-pi/pi-agent-core";
 import * as compaction from "@oh-my-pi/pi-agent-core/compaction";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { AsyncJobManager } from "../../src/async";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import type { Settings } from "../../src/config/settings";
+import type { CompactionSettings as CodingCompactionSettings } from "../../src/config/settings-schema";
 import { AgentSession } from "../../src/session/agent-session";
 import type { SessionManager } from "../../src/session/session-manager";
 import type { ToolSession } from "../../src/tools";
@@ -23,9 +24,10 @@ const model = buildModel({
 	maxTokens: 8192,
 });
 
-const compactionSettings: compaction.CompactionSettings = {
+const compactionSettings: compaction.CompactionSettings & Pick<CodingCompactionSettings, "methodOrder"> = {
 	enabled: true,
 	strategy: "context-full",
+	methodOrder: ["remote", "soft"],
 	thresholdPercent: 80,
 	thresholdTokens: 80_000,
 	reserveTokens: 15_000,
@@ -105,6 +107,7 @@ function createPreparedCompaction(): compaction.CompactionPreparation {
 
 function createAgentSession(manager: AsyncJobManager): AgentSession {
 	const agent = createNoopProxy({
+		tokenizer: new Tokenizer(model),
 		state: {
 			messages: [{ role: "user", content: "hello".repeat(100), timestamp: Date.now() } as AgentMessage],
 			systemPrompt: [],

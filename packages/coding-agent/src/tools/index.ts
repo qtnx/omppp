@@ -126,6 +126,7 @@ export * from "./debug";
 export * from "./essential-tools";
 export * from "./eval";
 export * from "./eval-backends";
+export * from "./file-write-fallback";
 export * from "./gh";
 export * from "./glob";
 export * from "./grep";
@@ -947,7 +948,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				session.settings.get("checkpoint.enabled") &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
-		if (name === "compact") return session.settings.get("compaction.strategy") !== "off";
+		if (name === "compact") return session.settings.getGroup("compaction").methodOrder.length > 0;
 		if (name === "irc") return isIrcEnabled(session.settings, session.taskDepth ?? 0);
 		if (name === "hub") {
 			// A restricted child only receives host messaging when its explicit

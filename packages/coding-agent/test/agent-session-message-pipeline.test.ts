@@ -440,13 +440,14 @@ describe("AgentSession message pipeline", () => {
 				});
 				return stream;
 			},
+			convertToLlm,
 		});
 		const session = new AgentSession({
 			agent,
 			sessionManager,
 			settings: Settings.isolated({
 				"compaction.keepRecentTokens": 1,
-				"compaction.strategy": "context-full",
+				"compaction.methodOrder": ["soft"],
 				"contextPromotion.enabled": false,
 			}),
 			modelRegistry: {
@@ -459,8 +460,8 @@ describe("AgentSession message pipeline", () => {
 		session.subscribe(event => events.push(event));
 
 		await session.prompt("new request");
-
 		expect(compactSpy).toHaveBeenCalledTimes(1);
+
 		expect(events).toContainEqual(expect.objectContaining({ type: "auto_compaction_start", reason: "threshold" }));
 	});
 
@@ -896,7 +897,10 @@ describe("AgentSession message pipeline", () => {
 
 			expect(contexts).toHaveLength(1);
 			const userMessage = contexts[0]!.messages.find(message => message.role === "user");
+			// The date/cwd reminder rides on the first user turn (#7404); the contract
+			// here is that the undecodable WebP is replaced by the placeholder text.
 			expect(userMessage?.content).toEqual([
+				{ type: "text", text: expect.stringContaining("<system-reminder>") },
 				{ type: "text", text: "inspect this" },
 				{ type: "text", text: "[image omitted: WebP could not be decoded for this model]" },
 			]);

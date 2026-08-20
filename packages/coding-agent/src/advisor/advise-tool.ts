@@ -100,9 +100,10 @@ export function isAdvisorInterruptImmuneTurnActive(opts: {
  * - After a deliberate user interrupt (`autoResumeSuppressed`), an interrupting
  *   note is preserved as a visible card while the agent is idle or tearing the
  *   interrupted turn down (`aborting`), so it cannot auto-resume the stopped run.
- *   During an active user-driven resume, it is delivered live.
- * - During the post-interrupt immune-turn window, remaining `concern`/`blocker`
- *   notes are downgraded to passive asides, including while the primary streams.
+ *   During an active user-driven resume, it is delivered at the next tool boundary.
+ * - During the post-interrupt immune-turn window, `concern` notes — and every
+ *   streaming note — are downgraded to passive asides. An idle `blocker` still
+ *   steers a corrective turn because it represents unexercised or broken work.
  * - Otherwise, while the primary agent's core loop is streaming,
  *   `concern`/`blocker` notes become boundary steering: they dequeue after the
  *   current tool batch without aborting or skipping its remaining calls.
@@ -123,7 +124,7 @@ export function resolveAdvisorDeliveryChannel(opts: {
 	if (opts.autoResumeSuppressed && (opts.aborting || !opts.streaming)) return "preserve";
 	if (opts.terminalAnswerNoQueuedWork && opts.severity !== "blocker" && !opts.streaming && !opts.aborting)
 		return "preserve";
-	if (opts.interruptImmuneTurnActive) return "aside";
+	if (opts.interruptImmuneTurnActive && (opts.streaming || opts.severity !== "blocker")) return "aside";
 	if (opts.streaming) return "boundary";
 	return "steer";
 }

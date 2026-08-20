@@ -48,7 +48,7 @@ export class CompactTool implements AgentTool<typeof compactSchema, CompactToolD
 	}
 
 	static createIf(session: ToolSession): CompactTool | null {
-		if (session.settings.get("compaction.strategy") === "off") return null;
+		if (session.settings.getGroup("compaction").methodOrder.length === 0) return null;
 		if (session.requestCompaction === undefined) return null;
 		return new CompactTool(session);
 	}

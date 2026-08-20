@@ -11,6 +11,7 @@
   ninja,
   pipewire,
   pkg-config,
+  removeReferencesTo,
   rustPlatform,
   rustToolchain,
   source,
@@ -85,6 +86,7 @@ stdenv.mkDerivation {
     cmake
     ninja
     pkg-config
+    removeReferencesTo
     rustPlatform.bindgenHook
     rustPlatform.cargoSetupHook
     rustToolchain
@@ -185,6 +187,15 @@ stdenv.mkDerivation {
 
     runHook postInstall
   '';
+
+  # Bun serializes the build interpreter path into the bundled entrypoint's
+  # inert shebang. Remove its hash before Nix scans output references; this
+  # runs before Darwin's binary-signing fixup hook.
+  preFixup = ''
+    remove-references-to -t ${bun} "$out/bin/omp"
+  '';
+
+  disallowedReferences = [ bun ];
 
   doInstallCheck = true;
   installCheckPhase = ''

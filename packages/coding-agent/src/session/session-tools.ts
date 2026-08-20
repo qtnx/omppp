@@ -1961,10 +1961,10 @@ export class SessionTools {
 	 * For everything else, callers must explicitly call {@link refreshBaseSystemPrompt}
 	 * after side-effecting changes; see the memory hooks and {@link syncAfterModelChange}.
 	 *
-	 * The current calendar date IS covered (appended as a segment) because
-	 * `buildSystemPrompt` injects it into the prompt body (`Today is '{{date}}'`).
-	 * Without this, a session spanning midnight with only tool-stable MCP
-	 * reconnects would keep yesterday's date indefinitely.
+	 * The calendar date is deliberately NOT part of the signature: the date/cwd
+	 * reminder rides on the first user turn at request time (`date-cwd-reminder`),
+	 * so a session spanning midnight must NOT rebuild a prompt that no longer
+	 * embeds the date — the reminder picks up the new day on its own.
 	 */
 	#computeAppliedToolSignature(
 		toolNames: string[],
@@ -2000,8 +2000,7 @@ export class SessionTools {
 		// the provider cache prefix byte-stable. Mounted MCP routes are the narrow
 		// exception above, bounded to the exact projection rendered in the global
 		// route guidance so churn wholly behind its fallback does not rebuild.
-		const date = this.#getLocalCalendarDate();
-		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}\u0008${mountedMCPRouteSegment}|${date}`;
+		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}\u0008${mountedMCPRouteSegment}`;
 	}
 
 	/**

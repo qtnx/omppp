@@ -25,6 +25,7 @@ import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
+import { deleteFileWithFallback, writeFileWithFallback } from "../../tools/file-write-fallback";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { isInternalUrlPath } from "../../tools/path-utils";
 import { enforcePlanModeWrite, resolvePlanPath, targetsLocalSandbox } from "../../tools/plan-mode-guard";
@@ -158,7 +159,7 @@ export class HashlineFilesystem extends Filesystem {
 		enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
 		const absolutePath = this.resolveAbsolute(relativePath);
 		try {
-			await fs.rm(absolutePath);
+			await deleteFileWithFallback(absolutePath);
 		} catch (error) {
 			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
 			throw error;
@@ -180,8 +181,10 @@ export class HashlineFilesystem extends Filesystem {
 		const toAbsolute = this.resolveAbsolute(toRelative);
 		if (content !== undefined) {
 			const finalContent = await serializeEditFileText(toAbsolute, toRelative, content);
-			await Bun.write(toAbsolute, finalContent);
-			await fs.rm(fromAbsolute);
+			// The one `edit` write that does not pass through the writethrough routes
+			// through fallback seams, while retaining notebook-aware serialization.
+			await writeFileWithFallback(toAbsolute, finalContent);
+			await deleteFileWithFallback(fromAbsolute);
 		} else {
 			await fs.rename(fromAbsolute, toAbsolute);
 		}

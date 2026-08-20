@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [17.3.8] - 2026-08-19
+
+### Added
+
+- Exported `BINARY_SNIFF_BYTES`, the header window `isProbablyBinary` sniffs, so a caller holding the whole file in memory can classify the identical prefix through `isProbablyBinaryHeader` instead of reopening the file.
+
+## [17.3.5] - 2026-08-16
+
+### Fixed
+
+- Fixed the Markdown renderer incorrectly breaking into a raw code block when a 4-space-indented line (such as a box-drawing tree child under a └── branch) directly followed paragraph text; it now correctly stays part of the paragraph, matching standard Markdown behavior.
+
 ## [17.3.2] - 2026-08-13
 
 ### Fixed

@@ -492,7 +492,10 @@ jobs:
               OMP_TEST_CONCURRENCY: "4"
            run: |
               bun run ci:test:ts:workspace
-              bun test scripts/release.test.ts
+              # Not `test:scripts`: scripts/musl-release.test.ts fails on main
+              # (its install.sh smoke-check executes a fake binary), so running
+              # the whole group here would red this job on an unrelated break.
+              bun test scripts/ci-test-ts.test.ts scripts/release.test.ts
 
    test_coding_agent_singleton:
       name: Test coding-agent singleton/global-state (TS)
@@ -739,6 +742,38 @@ jobs:
             --lockfile=./bun.lock
             --lockfile=./Cargo.lock
 
+   # Aggregates every release validation job so publishing waits for the
+   # complete fork test matrix, security scan, and generated-config check.
+   release_gate:
+      name: Release validation gate
+      if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
+         needs.native_linux_x64.result == 'success' &&
+         needs.native_linux_x64_modern.result == 'success' &&
+         needs.native_cross_platform_kata.result == 'success' &&
+         needs.native_cross_platform_win32.result == 'success' &&
+         needs.native_cross_platform_macos.result == 'success' &&
+         needs.test_workspace.result == 'success' &&
+         needs.test_coding_agent_singleton.result == 'success' &&
+         needs.test_ts_native.result == 'success' &&
+         needs.test_coding_agent_ui.result == 'success' &&
+         needs.test_coding_agent_runtime.result == 'success' &&
+         needs.test_coding_agent_native.result == 'success' &&
+         needs.test_smoke.result == 'success' &&
+         needs.check.result == 'success' &&
+         needs.install_methods.result == 'success' &&
+         needs.security.result == 'success' }}
+      needs: [release_metadata, check, native_linux_x64, native_linux_x64_modern, native_cross_platform_kata, native_cross_platform_win32, native_cross_platform_macos, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods, security, native_artifact_lookup]
+      runs-on: ubuntu-22.04
+      steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/bun-install
+         # Generated-config drift gate: bazel/clippy.bazelrc is maintained by
+         # scripts/release.ts (like the lockfiles); a stale file only blocks
+         # publishing, never ordinary CI.
+         - name: Check generated clippy config
+           run: bun scripts/gen-clippy-bazelrc.ts --check
+         - run: echo "release validation green"
+
    release_binary:
       name: "Release binary: ${{ matrix.target_id }}"
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
@@ -929,8 +964,9 @@ jobs:
    release_github:
       name: Publish GitHub release
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
+         needs.release_gate.result == 'success' &&
          needs.release_binary.result == 'success' }}
-      needs: [release_metadata, release_binary]
+      needs: [release_metadata, release_gate, release_binary]
       runs-on: ubuntu-22.04
       permissions:
          contents: write

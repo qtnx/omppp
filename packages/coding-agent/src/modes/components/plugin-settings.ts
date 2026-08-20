@@ -9,6 +9,7 @@
  *     - Config value editor
  */
 import {
+	type Component,
 	Container,
 	Input,
 	matchesKey,
@@ -33,7 +34,7 @@ import {
 import type { InstalledPlugin, PluginSettingSchema } from "../../extensibility/plugins/types";
 import { getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
 import { shortenPath } from "../../tools/render-utils";
-import { DynamicBorder } from "./dynamic-border";
+import { OverlayPanel } from "./overlay-box";
 
 /**
  * Forwards a keystroke to `input`, but cancels via `onCancel` when the user presses Escape.
@@ -101,22 +102,18 @@ function findEntryByValue(entries: ReadonlyArray<PluginListEntry>, value: string
  * enable/disable status, scope tag, and shadow indicator. Selecting an entry
  * fans out to the kind-specific detail callback.
  */
-export class PluginListComponent extends Container {
+export class PluginListComponent extends OverlayPanel {
 	readonly #selectList: SelectList;
 
 	constructor(
 		private readonly entries: ReadonlyArray<PluginListEntry>,
 		callbacks: PluginListCallbacks,
 	) {
-		super();
-
-		// Title
-		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold(theme.fg("accent", "  Plugins")), 0, 0));
+		super("Plugins");
 		this.addChild(new Spacer(1));
 
 		if (entries.length === 0) {
-			this.addChild(new Text(theme.fg("muted", "  No plugins installed"), 0, 0));
+			this.addChild(new Text(theme.fg("muted", "No plugins installed"), 0, 0));
 			this.addChild(new Spacer(1));
 			this.addChild(
 				new Text(theme.fg("dim", `  Install npm plugins:        ${APP_NAME} plugin install <package>`), 0, 0),
@@ -129,7 +126,6 @@ export class PluginListComponent extends Container {
 				),
 			);
 			this.addChild(new Spacer(1));
-			this.addChild(new DynamicBorder());
 
 			// Empty list still handles Escape so the user can leave the panel.
 			this.#selectList = new SelectList([], 1, getSelectListTheme());
@@ -158,8 +154,7 @@ export class PluginListComponent extends Container {
 
 		this.addChild(this.#selectList);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to configure · Esc to go back"), 0, 0));
-		this.addChild(new DynamicBorder());
+		this.addChild(new Text(theme.fg("dim", "Enter to configure · Esc to go back"), 0, 0));
 	}
 
 	#renderItem(entry: PluginListEntry): SelectItem {
@@ -226,7 +221,7 @@ export interface PluginDetailCallbacks {
  * - Feature toggles
  * - Config settings
  */
-export class PluginDetailComponent extends Container {
+export class PluginDetailComponent extends OverlayPanel {
 	#settingsList!: SettingsList;
 
 	constructor(
@@ -234,7 +229,7 @@ export class PluginDetailComponent extends Container {
 		private readonly manager: PluginManager,
 		private readonly callbacks: PluginDetailCallbacks,
 	) {
-		super();
+		super(plugin.name);
 
 		void this.#rebuild();
 	}
@@ -245,11 +240,9 @@ export class PluginDetailComponent extends Container {
 		const plugin = this.plugin;
 		const manifest = plugin.manifest;
 
-		// Header
-		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold(theme.fg("accent", `  ${plugin.name}`)), 0, 0));
+		this.title = plugin.name;
 		if (manifest.description) {
-			this.addChild(new Text(theme.fg("muted", `  ${manifest.description}`), 0, 0));
+			this.addChild(new Text(theme.fg("muted", manifest.description), 0, 0));
 		}
 		this.addChild(new Spacer(1));
 
@@ -377,8 +370,7 @@ export class PluginDetailComponent extends Container {
 
 		this.addChild(this.#settingsList);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to edit · Esc to go back"), 0, 0));
-		this.addChild(new DynamicBorder());
+		this.addChild(new Text(theme.fg("dim", "Enter to edit · Esc to go back"), 0, 0));
 	}
 
 	handleInput(data: string): void {
@@ -401,25 +393,23 @@ export interface MarketplacePluginDetailCallbacks {
  * features or settings, so the panel exposes a single enable/disable toggle
  * plus the read-only metadata from the installed-plugins registry.
  */
-export class MarketplacePluginDetailComponent extends Container {
+export class MarketplacePluginDetailComponent extends OverlayPanel {
 	#settingsList: SettingsList;
 
 	constructor(
 		private plugin: InstalledPluginSummary,
 		private readonly callbacks: MarketplacePluginDetailCallbacks,
 	) {
-		super();
+		super(plugin.id);
 
 		const entry = plugin.entries[0];
 		const enabled = marketplaceEnabled(plugin);
 
-		// Header
-		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold(theme.fg("accent", `  ${plugin.id}`)), 0, 0));
+		this.title = plugin.id;
 
 		const subtitleParts = [`[${plugin.scope}]`];
 		if (plugin.shadowedBy) subtitleParts.push(`${theme.status.shadowed} shadowed by ${plugin.shadowedBy}`);
-		this.addChild(new Text(theme.fg("muted", `  ${subtitleParts.join(" ")}`), 0, 0));
+		this.addChild(new Text(theme.fg("muted", subtitleParts.join(" ")), 0, 0));
 		this.addChild(new Spacer(1));
 
 		const items: SettingItem[] = [
@@ -454,24 +444,23 @@ export class MarketplacePluginDetailComponent extends Container {
 
 		// Read-only metadata. SettingsList rejects items without `values`/`submenu`,
 		// so we render the metadata as plain text rows beneath the toggle.
-		this.addChild(new Text(theme.fg("dim", `  version       ${entry?.version ?? "(unknown)"}`), 0, 0));
-		this.addChild(new Text(theme.fg("dim", `  scope         ${plugin.scope}`), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `version       ${entry?.version ?? "(unknown)"}`), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `scope         ${plugin.scope}`), 0, 0));
 		this.addChild(
 			new Text(
-				theme.fg("dim", `  install path  ${entry?.installPath ? shortenPath(entry.installPath) : "(unknown)"}`),
+				theme.fg("dim", `install path  ${entry?.installPath ? shortenPath(entry.installPath) : "(unknown)"}`),
 				0,
 				0,
 			),
 		);
-		this.addChild(new Text(theme.fg("dim", `  installed at  ${entry?.installedAt ?? "(unknown)"}`), 0, 0));
-		this.addChild(new Text(theme.fg("dim", `  last updated  ${entry?.lastUpdated ?? "(unknown)"}`), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `installed at  ${entry?.installedAt ?? "(unknown)"}`), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `last updated  ${entry?.lastUpdated ?? "(unknown)"}`), 0, 0));
 		if (entry?.gitCommitSha) {
-			this.addChild(new Text(theme.fg("dim", `  git sha       ${entry.gitCommitSha}`), 0, 0));
+			this.addChild(new Text(theme.fg("dim", `git sha       ${entry.gitCommitSha}`), 0, 0));
 		}
 
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to toggle · Esc to go back"), 0, 0));
-		this.addChild(new DynamicBorder());
+		this.addChild(new Text(theme.fg("dim", "Enter to toggle · Esc to go back"), 0, 0));
 	}
 
 	handleInput(data: string): void {
@@ -486,7 +475,7 @@ export class MarketplacePluginDetailComponent extends Container {
 /**
  * Submenu for enum config values.
  */
-class ConfigEnumSubmenu extends Container {
+class ConfigEnumSubmenu extends OverlayPanel {
 	#selectList: SelectList;
 
 	constructor(
@@ -497,9 +486,7 @@ class ConfigEnumSubmenu extends Container {
 		onSelect: (value: string) => void,
 		onCancel: () => void,
 	) {
-		super();
-
-		this.addChild(new Text(theme.bold(theme.fg("accent", key)), 0, 0));
+		super(key);
 		if (description) {
 			this.addChild(new Spacer(1));
 			this.addChild(new Text(theme.fg("muted", description), 0, 0));
@@ -519,7 +506,7 @@ class ConfigEnumSubmenu extends Container {
 
 		this.addChild(this.#selectList);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to cancel"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", "Enter to select · Esc to cancel"), 0, 0));
 	}
 
 	handleInput(data: string): void {
@@ -530,7 +517,7 @@ class ConfigEnumSubmenu extends Container {
 /**
  * Submenu for string/number config values with text input.
  */
-class ConfigInputSubmenu extends Container {
+class ConfigInputSubmenu extends OverlayPanel {
 	#input: Input;
 
 	constructor(
@@ -540,9 +527,7 @@ class ConfigInputSubmenu extends Container {
 		private readonly onSubmit: (value: string) => void,
 		private readonly onCancel: () => void,
 	) {
-		super();
-
-		this.addChild(new Text(theme.bold(theme.fg("accent", key)), 0, 0));
+		super(key);
 		if (schema.description) {
 			this.addChild(new Spacer(1));
 			this.addChild(new Text(theme.fg("muted", schema.description), 0, 0));
@@ -577,7 +562,7 @@ class ConfigInputSubmenu extends Container {
 
 		this.addChild(this.#input);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to save · Esc to cancel"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", "Enter to save · Esc to cancel"), 0, 0));
 	}
 
 	handleInput(data: string): void {
@@ -606,7 +591,7 @@ interface InputHandler {
 export class PluginSettingsComponent extends Container {
 	#cwd: string;
 	#manager: PluginManager;
-	#viewComponent: (Container & InputHandler) | null = null;
+	#viewComponent: (Component & InputHandler) | null = null;
 	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: state tracking for view management
 	#currentView: "list" | "npm-detail" | "marketplace-detail" = "list";
 	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: state tracking for view management

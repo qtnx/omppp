@@ -7,7 +7,7 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import type { AsyncJob, AsyncJobManager } from "../../async";
+import type { AsyncJob, AsyncJobManager, AsyncJobType } from "../../async";
 import { settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
@@ -87,6 +87,12 @@ export function visibleJobs(manager: AsyncJobManager, ids: string[], ownerId: st
  * that activity instead of implying the system is quiet. Existence is
  * already public via the peer roster, so listing ids here leaks nothing new;
  * job *control* stays owner-scoped.
+ *
+ * Reporting deliberately uses the claimed `status`, not the session-corroborated
+ * `registry.isRunning` used by the wait-sustaining gates: a ref that claims
+ * `running` with no live turn is exactly the stale entry an operator must see
+ * here to cancel it (#8634). Hiding it would match the badge count to nothing
+ * and remove the only discovery path for the id.
  */
 export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[] {
 	const registry = session.agentRegistry;
@@ -113,6 +119,7 @@ export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySna
 			...(ref.parentId ? { parentId: ref.parentId } : {}),
 			...(ref.activity ? { activity: ref.activity } : {}),
 			ageMs: Math.max(0, now - ref.createdAt),
+			live: registry.isRunning(ref),
 		});
 	}
 	return out;
@@ -124,15 +131,21 @@ function describeAgents(agents: AgentActivitySnapshot[]): string[] {
 	for (const agent of agents) {
 		const parent = agent.parentId ? ` (spawned by \`${agent.parentId}\`)` : "";
 		const activity = agent.activity ? ` — ${agent.activity}` : "";
-		lines.push(`- \`${agent.id}\`${parent} — up ${formatDuration(agent.ageMs)}${activity}`);
+		const stale = agent.live ? "" : " — no turn in flight (stale registration?)";
+		lines.push(`- \`${agent.id}\`${parent} — up ${formatDuration(agent.ageMs)}${activity}${stale}`);
 	}
 	lines.push("", "These agents have no job entry; message them via `hub` send, transcripts at `history://<id>`.");
+	if (agents.some(agent => !agent.live)) {
+		lines.push(
+			"An agent with no turn in flight cannot answer a message and never satisfies a bare `wait`; clear it with `hub` cancel.",
+		);
+	}
 	return lines;
 }
 
 interface TrackedJobLike {
 	id: string;
-	type: AsyncJob["type"];
+	type: AsyncJobType;
 	status: string;
 	label: string;
 	startTime: number;
@@ -690,8 +703,12 @@ export function jobsRenderResult(
 								maxCollapsed: COLLAPSED_LIST_LIMIT,
 								itemType: "agent",
 								renderItem: agent => {
-									const icon = formatStatusIcon("running", uiTheme, options.spinnerFrame);
-									const badge = formatBadge("agent", "accent", uiTheme);
+									const icon = agent.live
+										? formatStatusIcon("running", uiTheme, options.spinnerFrame)
+										: formatStatusIcon("warning", uiTheme);
+									const badge = agent.live
+										? formatBadge("agent", "accent", uiTheme)
+										: formatBadge("agent · no turn", "warning", uiTheme);
 									const gist = agent.activity
 										? ` ${uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(agent.activity), LABEL_MAX_WIDTH, Ellipsis.Unicode))}`
 										: "";

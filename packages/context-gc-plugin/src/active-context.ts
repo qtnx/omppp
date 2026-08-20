@@ -1,11 +1,11 @@
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
+import { type AgentMessage, Tokenizer } from "@oh-my-pi/pi-agent-core";
 import { payloadForMessage } from "./extract";
 import type { ContextRecord } from "./schema";
 import type { ContextGcSessionState } from "./session-state";
 import { estimateTokens as estimateTextTokens } from "./summary";
 
 const MAX_ISSUE_COUNT = 1_000;
+const tokenizer = new Tokenizer();
 
 export interface ActiveContextIssueCounts {
 	legacy_record: number;
@@ -150,7 +150,7 @@ export function buildContextGcPlaceholder(record: Pick<ContextRecord, "id" | "su
 }
 
 function estimateActiveMessageTokens(message: AgentMessage): number {
-	return Math.max(estimateTokens(message), estimateTextTokens(payloadForMessage(message).text));
+	return Math.max(tokenizer.countMessage(message), estimateTextTokens(payloadForMessage(message).text));
 }
 
 export function analyzeActiveContext(

@@ -52,7 +52,7 @@ describe("agent-requested compaction", () => {
 		tempDir = TempDir.createSync("@pi-agent-compact-request-");
 		sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
 		events = [];
-		session = createSession({ "compaction.keepRecentTokens": 1 });
+		session = createSession({ "compaction.keepRecentTokens": 1, "compaction.methodOrder": ["remote", "soft"] });
 		session.subscribe(event => events.push(event));
 	});
 

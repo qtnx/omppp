@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { BrowserTool } from "@oh-my-pi/pi-coding-agent/tools/browser";
 import {
+	findFreeCdpPort,
 	pickElectronTarget,
+	probeCdpStatus,
 	shouldPreserveConnectedBrowserFocus,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/attach";
 import {
@@ -9,12 +14,22 @@ import {
 	normalizeConnectedCdpUrl,
 	releaseBrowser,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
-import { acquireTab, releaseTab } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
+import { acquireTab } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { Browser, Page, Target } from "puppeteer-core";
 import { chromiumAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
 let sharedHeadless: BrowserHandle | undefined;
+
+function makeSession(): ToolSession {
+	return {
+		cwd: process.cwd(),
+		hasUI: false,
+		getSessionFile: () => null,
+		getSessionSpawns: () => "*",
+		settings: Settings.isolated({ "browser.headless": true }),
+	};
+}
 
 interface FakePageOptions {
 	url: string;
@@ -121,32 +136,34 @@ describe("pickElectronTarget", () => {
 
 	// Launches real headless Chromium; skipped where Chrome's system libraries are absent.
 	test.skipIf(!CHROMIUM_AVAILABLE)(
-		"navigates a fresh attached tab to the requested URL",
+		"navigates a fresh attached tab and releases its handle without closing the target",
 		async () => {
 			const launched = sharedHeadless;
 			if (!launched || !("browser" in launched)) throw new Error("Expected a shared Puppeteer browser");
 			const endpoint = new URL(launched.browser.wsEndpoint());
-			let attached: BrowserHandle | undefined;
+			const tool = new BrowserTool(makeSession());
 			let opened = false;
 			const tabName = `attach-navigation-${process.pid}-${Math.random().toString(36).slice(2)}`;
 			const requested = "data:text/html,<title>attached-navigation-target</title>";
+			const targetPage = (await launched.browser.pages())[0];
+			if (!targetPage) throw new Error("Expected the launched browser to expose a page target");
 
 			try {
-				attached = await acquireBrowser(
-					{ kind: "connected", cdpUrl: `http://${endpoint.host}` },
-					{ cwd: process.cwd() },
-				);
-				const { tab } = await acquireTab(tabName, attached, {
+				await tool.execute("open", {
+					action: "open",
+					name: tabName,
 					url: requested,
-					waitUntil: "domcontentloaded",
-					timeoutMs: 10_000,
+					app: { cdp_url: `http://${endpoint.host}` },
 				});
 				opened = true;
 
-				expect(tab.info.url).toBe(requested);
+				const closeResult = await tool.execute("close", { action: "close", name: tabName });
+				opened = false;
+				expect(closeResult.content).toEqual([{ type: "text", text: `Released managed tab "${tabName}"` }]);
+				expect(targetPage.isClosed()).toBe(false);
+				expect(targetPage.url()).toBe(requested);
 			} finally {
-				if (opened) await releaseTab(tabName, { kill: false });
-				else if (attached) await releaseBrowser(attached, { kill: false });
+				if (opened) await tool.execute("close", { action: "close", name: tabName });
 			}
 		},
 		30_000,
@@ -190,4 +207,57 @@ describe("pickElectronTarget", () => {
 		},
 		30_000,
 	);
+});
+
+describe("probeCdpStatus", () => {
+	// Regression for #8567: a local proxy (Clash, corporate) 502s internal
+	// loopback addresses, so a bare fetch()/node:http probe misreports a healthy
+	// CDP daemon as dead. The raw-TCP probe must ignore HTTP_PROXY entirely.
+	test("returns the loopback status even when HTTP_PROXY 502s the request", async () => {
+		const cdp = Bun.serve({ port: 0, fetch: () => new Response("{}", { status: 200 }) });
+		const proxy = Bun.serve({ port: 0, fetch: () => new Response("Bad Gateway", { status: 502 }) });
+		const saved = { HTTP_PROXY: process.env.HTTP_PROXY, http_proxy: process.env.http_proxy };
+		process.env.HTTP_PROXY = `http://127.0.0.1:${proxy.port}`;
+		process.env.http_proxy = `http://127.0.0.1:${proxy.port}`;
+		try {
+			const status = await probeCdpStatus(`http://127.0.0.1:${cdp.port}/json/version`, { timeoutMs: 1500 });
+			expect(status).toBe(200);
+		} finally {
+			process.env.HTTP_PROXY = saved.HTTP_PROXY;
+			process.env.http_proxy = saved.http_proxy;
+			if (saved.HTTP_PROXY === undefined) delete process.env.HTTP_PROXY;
+			if (saved.http_proxy === undefined) delete process.env.http_proxy;
+			await cdp.stop(true);
+			await proxy.stop(true);
+		}
+	});
+
+	test("surfaces a non-2xx status from a live endpoint", async () => {
+		const server = Bun.serve({ port: 0, fetch: () => new Response("nope", { status: 503 }) });
+		try {
+			const status = await probeCdpStatus(`http://127.0.0.1:${server.port}/json/version`, { timeoutMs: 1500 });
+			expect(status).toBe(503);
+		} finally {
+			await server.stop(true);
+		}
+	});
+
+	test("returns null when the endpoint is unreachable", async () => {
+		const port = await findFreeCdpPort();
+		const status = await probeCdpStatus(`http://127.0.0.1:${port}/json/version`, { timeoutMs: 500 });
+		expect(status).toBeNull();
+	});
+
+	test("returns null when the request is already aborted", async () => {
+		const server = Bun.serve({ port: 0, fetch: () => new Response("{}", { status: 200 }) });
+		try {
+			const status = await probeCdpStatus(`http://127.0.0.1:${server.port}/json/version`, {
+				timeoutMs: 1500,
+				signal: AbortSignal.abort(),
+			});
+			expect(status).toBeNull();
+		} finally {
+			await server.stop(true);
+		}
+	});
 });

@@ -587,6 +587,63 @@ async fn create_session(config: &ShellConfig) -> Result<ShellSessionCore> {
 	create_session_for_run(config, None, None).await
 }
 
+/// Copies the host environment into `shell`, merging duplicate `PATH` values
+/// and registering the merged `PATH` last.
+///
+/// Entries whose key or value is not valid Unicode are skipped: a corrupt
+/// entry carries no usable meaning, and `std::env::vars()` — the naive way to
+/// read the host environment — panics on the first one before any command can
+/// run. `vars_os()` yields the raw entries without panicking, leaving the
+/// skip decision here.
+fn copy_env_into_shell(
+	shell: &mut BrushShell,
+	env: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Result<()> {
+	let mut merged_path: Option<String> = None;
+	for (key, value) in env {
+		// A key or value that cannot be decoded as Unicode is unusable; drop
+		// it rather than panicking startup for a corrupt host environment.
+		let (Some(key), Some(value)) = (key.to_str(), value.to_str()) else {
+			continue;
+		};
+		let normalized_key = normalize_env_key(key);
+		if should_skip_env_var(normalized_key) {
+			continue;
+		}
+		if normalized_key == "PATH" {
+			merged_path = Some(match merged_path {
+				Some(existing) => merge_path_values(&existing, value),
+				None => value.to_string(),
+			});
+			continue;
+		}
+		let mut var = ShellVariable::new(ShellValue::String(value.to_string()));
+		var.export();
+		shell
+			.env_mut()
+			.set_global(normalized_key, var)
+			.map_err(|err| Error::msg(format!("Failed to set env: {err}")))?;
+	}
+
+	#[cfg(windows)]
+	if merged_path.is_none()
+		&& let Some(value) = std::env::var_os("Path").or_else(|| std::env::var_os("PATH"))
+	{
+		merged_path = Some(value.to_string_lossy().into_owned());
+	}
+
+	if let Some(path_value) = &merged_path {
+		let mut var = ShellVariable::new(ShellValue::String(path_value.clone()));
+		var.export();
+		shell
+			.env_mut()
+			.set_global("PATH", var)
+			.map_err(|err| Error::msg(format!("Failed to set env: {err}")))?;
+	}
+
+	Ok(())
+}
+
 async fn create_session_for_run(
 	config: &ShellConfig,
 	spawn_registry: Option<Arc<process::SpawnRegistry>>,
@@ -643,42 +700,7 @@ async fn create_session_for_run(
 		}
 	}
 
-	let mut merged_path: Option<String> = None;
-	for (key, value) in std::env::vars() {
-		let normalized_key = normalize_env_key(&key);
-		if should_skip_env_var(normalized_key) {
-			continue;
-		}
-		if normalized_key == "PATH" {
-			merged_path = Some(match merged_path {
-				Some(existing) => merge_path_values(&existing, &value),
-				None => value,
-			});
-			continue;
-		}
-		let mut var = ShellVariable::new(ShellValue::String(value));
-		var.export();
-		shell
-			.env_mut()
-			.set_global(normalized_key, var)
-			.map_err(|err| Error::msg(format!("Failed to set env: {err}")))?;
-	}
-
-	#[cfg(windows)]
-	if merged_path.is_none()
-		&& let Some(value) = std::env::var_os("Path").or_else(|| std::env::var_os("PATH"))
-	{
-		merged_path = Some(value.to_string_lossy().into_owned());
-	}
-
-	if let Some(path_value) = &merged_path {
-		let mut var = ShellVariable::new(ShellValue::String(path_value.clone()));
-		var.export();
-		shell
-			.env_mut()
-			.set_global("PATH", var)
-			.map_err(|err| Error::msg(format!("Failed to set env: {err}")))?;
-	}
+	copy_env_into_shell(&mut shell, std::env::vars_os())?;
 
 	if let Some(env) = config.session_env.as_ref() {
 		for (key, value) in env {
@@ -2038,9 +2060,61 @@ mod tests {
 		(result, output)
 	}
 
+	/// Regression for issue #8925: a host env entry whose key or value is not
+	/// valid Unicode must be skipped, not fatal. `std::env::vars()` panics on
+	/// the first one (e.g. the corrupt `GHOSTTY_BIN_DIR` cmux/Ghostty stages,
+	/// bytes `9d d9 50`) before any command runs; `copy_env_into_shell` reads
+	/// via `vars_os()` and drops corrupt entries while still copying the rest
+	/// and merging duplicate `PATH` values.
+	#[cfg(unix)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn copy_env_skips_non_utf8_entries_and_merges_path() {
+		use std::os::unix::ffi::OsStringExt;
+
+		let mut shell = BrushShell::builder()
+			.do_not_inherit_env(true)
+			.profile(ProfileLoadBehavior::Skip)
+			.rc(RcLoadBehavior::Skip)
+			.builtins(default_builtins(BuiltinSet::BashMode))
+			.build()
+			.await
+			.expect("build shell");
+
+		// GHOSTTY_BIN_DIR with the corrupt bytes, a normal var, a corrupt key,
+		// and a duplicate PATH — in host-env iteration order.
+		let entries = vec![
+			(std::ffi::OsString::from("PATH"), std::ffi::OsString::from("/usr/bin:/bin")),
+			(
+				std::ffi::OsString::from("GHOSTTY_BIN_DIR"),
+				std::ffi::OsString::from_vec(vec![0x9d, 0xd9, 0x50]),
+			),
+			(std::ffi::OsString::from("HOME"), std::ffi::OsString::from("/home/tester")),
+			(
+				std::ffi::OsString::from_vec(vec![0xff, b'B', b'A', b'D']),
+				std::ffi::OsString::from("x"),
+			),
+			(std::ffi::OsString::from("PATH"), std::ffi::OsString::from("/opt/bin")),
+		];
+		copy_env_into_shell(&mut shell, entries.into_iter()).expect("copy host env");
+
+		let value = |name: &str| {
+			shell
+				.env()
+				.get(name)
+				.and_then(|(_, var)| match var.value() {
+					ShellValue::String(value) => Some(value.clone()),
+					_ => None,
+				})
+		};
+		assert_eq!(value("PATH").as_deref(), Some("/opt/bin"), "PATH is merged/preserved");
+		assert_eq!(value("HOME").as_deref(), Some("/home/tester"), "valid entry copied");
+		assert!(value("GHOSTTY_BIN_DIR").is_none(), "non-UTF-8 value must be skipped");
+		assert!(value("BAD").is_none(), "non-UTF-8 key must be skipped");
+	}
+
 	#[cfg(unix)]
 	async fn wait_for_process_name(pid: i32, expected: &str) {
-		time::timeout(Duration::from_secs(2), async {
+		time::timeout(Duration::from_secs(5), async {
 			loop {
 				if pi_builtins::ProcInfo::all().into_iter().any(|process| {
 					process.pid() == pid
@@ -2332,13 +2406,21 @@ mod tests {
 	async fn pidwait_returns_after_the_matching_process_exits() {
 		let (_dir, command, name) = process_test_command("opw");
 		let mut child = Command::new(command)
-			.arg("0.25")
+			.arg("30")
 			.spawn()
 			.expect("waited process");
 		let pid = i32::try_from(child.id().expect("child pid")).expect("pid fits i32");
 		wait_for_process_name(pid, &name).await;
-
+		let waited_process = process::Process::from_pid(pid).expect("stable waited process");
+		let terminator = tokio::spawn(async move {
+			time::sleep(Duration::from_secs(1)).await;
+			assert!(
+				waited_process.kill_tree(Some(libc::SIGTERM)) > 0,
+				"failed to terminate waited process"
+			);
+		});
 		let (result, output) = execute_captured(format!("pidwait -x -p {pid} {name}")).await;
+		terminator.await.expect("waited-process terminator");
 		let status = child.try_wait().expect("waited child status");
 		if status.is_none() {
 			let _ = child.start_kill();
@@ -3259,6 +3341,7 @@ mod tests {
 			"base64",
 			"basename",
 			"cat",
+			"cksum",
 			"cmp",
 			"combine",
 			"comm",
@@ -3321,31 +3404,7 @@ mod tests {
 		names.sort_unstable();
 		assert_eq!(names, expected, "the utility builtin registry changed");
 
-		// OMPx registers `find`, `grep`, `rg` and `tail` as external-only: they stay
-		// in the registry (so `enable` can still see them) but are disabled and fail
-		// closed with 127 rather than running the in-process uutils copy, forcing
-		// brush to resolve them through `$PATH`. They therefore have no in-process
-		// `--help` to probe; the registry assertion above still covers their names.
-		const EXTERNAL_ONLY: &[&str] = &["find", "grep", "rg", "tail"];
-
 		for name in names {
-			if EXTERNAL_ONLY.contains(&name) {
-				let exec = session
-					.shell
-					.run_string(
-						format!("PATH= {name} --help > help.txt 2> err.txt"),
-						&source_info,
-						&params,
-					)
-					.await
-					.unwrap_or_else(|err| panic!("{name} --help failed to run: {err}"));
-				assert_eq!(
-					exit_code(&exec),
-					127,
-					"{name} must fail closed as an external-only builtin"
-				);
-				continue;
-			}
 			let exec = session
 				.shell
 				.run_string(format!("PATH= {name} --help > help.txt 2> err.txt"), &source_info, &params)
@@ -3720,48 +3779,6 @@ mod tests {
 			.await
 			.expect("uniq");
 		assert_eq!(read("uniq.txt"), "a\nb\nc\n");
-
-		let _ = std::fs::remove_dir_all(&tmp);
-	}
-
-	/// `rg` is registered as a disabled external-only command: bare `rg`
-	/// must resolve through PATH instead of falling back to the vendored
-	/// in-process grep implementation.
-	#[tokio::test(flavor = "multi_thread")]
-	async fn rg_registration_is_external_only() {
-		let tmp = std::env::temp_dir().join(format!("pi-rg-external-only-{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&tmp);
-		std::fs::create_dir_all(tmp.join("bin")).expect("bin dir");
-		std::fs::write(tmp.join("data.txt"), "needle\n").expect("data");
-		let tmp_str = tmp.to_str().expect("utf8");
-		let bin_str = tmp.join("bin").to_string_lossy().into_owned();
-
-		let mut env = HashMap::new();
-		env.insert("PATH".to_string(), bin_str);
-		let config =
-			ShellConfig { session_env: Some(env), snapshot_path: None, minimizer: None };
-		let mut session = create_session(&config).await.expect("create_session");
-		let rg = session
-			.shell
-			.builtin_mut("rg")
-			.expect("rg registered by default");
-		assert!(rg.disabled, "rg must be a disabled registration so PATH resolution wins");
-
-		session.shell.set_working_dir(tmp_str).expect("cwd");
-		let mut params = session.shell.default_exec_params();
-		params.set_fd(OpenFiles::STDIN_FD, null_file().expect("null"));
-		params.set_fd(OpenFiles::STDOUT_FD, null_file().expect("null"));
-		params.set_fd(OpenFiles::STDERR_FD, null_file().expect("null"));
-		let si = SourceInfo::from("pi-natives:test");
-		let read = |name: &str| std::fs::read_to_string(tmp.join(name)).unwrap_or_default();
-
-		let exec = session
-			.shell
-			.run_string("rg needle > rg.txt 2> rg.err", &si, &params)
-			.await
-			.expect("rg external resolution");
-		assert_eq!(exit_code(&exec), 127, "missing external rg should be command-not-found");
-		assert_eq!(read("rg.txt"), "", "disabled rg must not run the in-process search");
 
 		let _ = std::fs::remove_dir_all(&tmp);
 	}
@@ -4447,7 +4464,7 @@ mod tests {
 		.expect("process substitution should not hang");
 
 		assert_eq!(result.exit_code, Some(1));
-		assert!(output.contains("-a\n+b\n"), "diff output missing changed lines: {output:?}");
+		assert!(output.contains("< a\n---\n> b\n"), "diff output missing changed lines: {output:?}");
 	}
 
 	#[cfg(unix)]

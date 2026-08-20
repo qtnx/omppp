@@ -45,6 +45,8 @@ function createCtx(pr: TestPr): SegmentContext {
 		contextTokens: 0,
 		contextWindow: 0,
 		autoCompactEnabled: false,
+		compactionSpeculation: "idle",
+		speculationBlinkOn: false,
 		subagentCount: 0,
 		activeMs: 0,
 		git: {

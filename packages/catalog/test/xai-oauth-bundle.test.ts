@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import MODELS_JSON from "@oh-my-pi/pi-catalog/models.json" with { type: "json" };
+import { CATALOG_PROVIDERS, DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
 import {
 	buildXaiOAuthStaticSeed,
 	xaiOAuthModelManagerOptions,
@@ -56,6 +57,13 @@ describe("xai-oauth bundled catalog (regression)", () => {
 		expect(discovered?.find(model => model.id === "grok-future-unlisted")?.compat?.omitReasoningEffort).toBe(true);
 	});
 
+	it("defaults SuperGrok selection to grok-4.6", () => {
+		const entry = CATALOG_PROVIDERS.find(provider => provider.id === "xai-oauth");
+		expect(entry?.defaultModel).toBe("grok-4.6");
+		expect(DEFAULT_MODEL_PER_PROVIDER["xai-oauth"]).toBe("grok-4.6");
+		expect(bundled["grok-4.6"], "xai-oauth/grok-4.6 must be bundled for the default").toBeDefined();
+	});
+
 	it("bundles every curated id", () => {
 		const seededIds = seed.map(model => model.id).sort();
 		const bundledIds = Object.keys(bundled).sort();
@@ -106,20 +114,21 @@ describe("xai-oauth bundled catalog (regression)", () => {
 		const built46 = buildModel(grok46);
 		expect(built45.thinking).toEqual({
 			mode: "effort",
-			efforts: [Effort.Low, Effort.Medium, Effort.High],
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High],
 			defaultLevel: Effort.High,
 			requiresEffort: true,
+			effortMap: { [Effort.Minimal]: "low" },
 		});
 		expect(built46.thinking).toEqual({
 			mode: "effort",
-			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 			defaultLevel: Effort.High,
 			requiresEffort: true,
+			effortMap: { [Effort.Minimal]: "low" },
 		});
 		expect(bundled["grok-4.5"]?.thinking).toEqual(built45.thinking);
 		expect(bundled["grok-4.6"]?.thinking).toEqual(built46.thinking);
 	});
-
 	// Absolute contract for the user-specified SuperGrok addition. The parity
 	// loop above can't catch a value typo (e.g. 2_000_000) or a flipped
 	// reasoning flag — both sides regenerate from the same seed together — so

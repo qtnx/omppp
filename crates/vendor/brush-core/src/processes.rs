@@ -98,6 +98,14 @@ impl ChildProcess {
 		let mut sigtstp = sys::signal::tstp_signal_listener()?;
 		#[allow(unused_mut, reason = "only mutated on some platforms")]
 		let mut sigchld = sys::signal::chld_signal_listener()?;
+		// A short-lived child can stop after spawn but before these signal
+		// listeners are installed. SIGCHLD is edge-triggered, so that transition
+		// will never wake the select below; poll once after registration to close
+		// the lost-wakeup window.
+		if sys::signal::poll_for_stopped_children()? {
+			return Ok(ProcessWaitResult::Stopped);
+		}
+
 
 		let cancelled = async {
 			match &cancel_token {
