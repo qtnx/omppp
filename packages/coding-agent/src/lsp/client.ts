@@ -62,13 +62,32 @@ export function setIdleTimeout(ms: number | null | undefined): void {
 	}
 }
 
+/**
+ * Whether a client may be reaped by the idle checker.
+ *
+ * A client with in-flight requests is *busy*, never idle. `lastActivity` is
+ * stamped when a request is written, not while it is outstanding, so a single
+ * request that runs longer than the idle timeout used to look like silence:
+ * the checker tore the client down mid-flight and `shutdownClientInstance`
+ * rejected the caller's still-pending promise with "LSP client shutdown"
+ * (issue #8390). Requests that settle refresh `lastActivity`, so a client
+ * becomes eligible again only after the final one lands and the full idle
+ * window then elapses.
+ *
+ * Exported for tests; the idle checker is the only production caller.
+ */
+export function isIdleClient(client: LspClient, now: number, timeoutMs: number): boolean {
+	if (client.pendingRequests.size > 0) return false;
+	return now - client.lastActivity > timeoutMs;
+}
+
 function startIdleChecker(): void {
 	if (idleCheckInterval) return;
 	idleCheckInterval = setInterval(() => {
 		if (!idleTimeoutMs) return;
 		const now = Date.now();
 		for (const [key, client] of Array.from(clients.entries())) {
-			if (now - client.lastActivity > idleTimeoutMs) {
+			if (isIdleClient(client, now, idleTimeoutMs)) {
 				void shutdownClient(key);
 			}
 		}
@@ -746,7 +765,13 @@ function commandBasename(command: string): string {
 	return separator === -1 ? command : command.slice(separator + 1);
 }
 
-function isRustAnalyzerClient(client: LspClient): boolean {
+/**
+ * True when this client speaks the rust-analyzer protocol, detected by the
+ * command basename (`rust-analyzer[.exe]`) of the configured or resolved
+ * binary. Callers use it to gate rust-analyzer-only requests such as
+ * `rust-analyzer/reloadWorkspace` (see {@link reloadServer}).
+ */
+export function isRustAnalyzerClient(client: LspClient): boolean {
 	return (
 		commandBasename(client.config.command) === "rust-analyzer" ||
 		(client.config.resolvedCommand ? commandBasename(client.config.resolvedCommand) === "rust-analyzer" : false)
@@ -1456,15 +1481,22 @@ export async function sendRequest(
 		}
 	}
 
-	// Register pending request with timeout wrapper
+	// Register pending request with timeout wrapper.
+	// Settling stamps `lastActivity`: the idle window must be measured from when
+	// the exchange finished, not from when it started. Without this a request
+	// that outlives the timeout would leave the client instantly reapable the
+	// moment it lands, so the next idle sweep would kill a server that had just
+	// answered (issue #8390).
 	client.pendingRequests.set(id, {
 		resolve: result => {
 			if (timeout) clearTimeout(timeout);
+			client.lastActivity = Date.now();
 			cleanup();
 			resolve(result);
 		},
 		reject: err => {
 			if (timeout) clearTimeout(timeout);
+			client.lastActivity = Date.now();
 			cleanup();
 			reject(err);
 		},

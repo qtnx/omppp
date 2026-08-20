@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
@@ -284,6 +284,33 @@ function textResult(result: AgentToolResult<LspToolDetails>): string {
 		.map(block => block.text)
 		.join("\n");
 }
+
+/**
+ * `loadConfig` walks the user config directories (~/.omp/agent, ~/.pi/agent,
+ * ~/.claude), which resolve from os.homedir(). A developer with a real
+ * lsp.json there flips loadConfig off its auto-detect path onto the override
+ * path, where their rootMarkers replace the packaged ones — so these tests
+ * would assert against that machine's config instead of the defaults. Point
+ * HOME at an empty directory so every case sees a pristine environment.
+ */
+let lspHomeOverride: string | undefined;
+let lspOriginalHome: string | undefined;
+
+beforeEach(() => {
+	lspOriginalHome = process.env.HOME;
+	lspHomeOverride = fs.mkdtempSync(path.join(os.tmpdir(), "omp-lsp-test-home-"));
+	process.env.HOME = lspHomeOverride;
+	// Bun's os.homedir() reads the passwd entry rather than $HOME, so the env
+	// var alone does not redirect the config walk.
+	vi.spyOn(os, "homedir").mockReturnValue(lspHomeOverride);
+});
+
+afterEach(() => {
+	if (lspOriginalHome === undefined) delete process.env.HOME;
+	else process.env.HOME = lspOriginalHome;
+	if (lspHomeOverride) fs.rmSync(lspHomeOverride, { recursive: true, force: true });
+	lspHomeOverride = undefined;
+});
 
 describe("lsp regressions", () => {
 	afterEach(() => {
@@ -3507,9 +3534,9 @@ describe("lsp regressions", () => {
 			const loadConfigSpy = vi
 				.spyOn(lspConfig, "loadConfig")
 				.mockImplementation(() => configs.shift() ?? configs[0]);
-			const client = { proc: { kill: vi.fn() } } as unknown as LspClient;
+			const client = { proc: { kill: vi.fn() }, config: server } as unknown as LspClient;
 			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
-			vi.spyOn(lspClient, "sendRequest").mockResolvedValue(null);
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
 
 			const tool = new LspTool(makeLspSession(tempDir.path()));
 			const initial = await tool.execute("reload-redetect-status", { action: "status" });
@@ -3644,8 +3671,8 @@ describe("lsp regressions", () => {
 
 	describe("reload cancellation and truthful teardown (#6369)", () => {
 		// A JSON-RPC error response the client maps to isMethodNotFoundError, so a
-		// non-rust server falls through from `rust-analyzer/reloadWorkspace` to the
-		// generic `workspace/didChangeConfiguration` reload.
+		// rust-analyzer server whose reloadWorkspace is unsupported falls through
+		// to the generic `workspace/didChangeConfiguration` reload.
 		const methodNotFound = (id: RpcMessage["id"]): RpcMessage => ({
 			jsonrpc: "2.0",
 			id,
@@ -3666,7 +3693,7 @@ describe("lsp regressions", () => {
 					// rust-analyzer/reloadWorkspace is left pending: only the caller
 					// signal decides its fate.
 				});
-				const config: ServerConfig = { command: "fake-reload-cancel-req", fileTypes: [".ts"], rootMarkers: [] };
+				const config: ServerConfig = { command: "rust-analyzer", fileTypes: [".ts"], rootMarkers: [] };
 				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { fake: config }, idleTimeoutMs: undefined });
 
 				const tool = new LspTool(makeLspSession(tempDir.path()));
@@ -3703,7 +3730,7 @@ describe("lsp regressions", () => {
 						srv.exit(0);
 					}
 				});
-				const config: ServerConfig = { command: "fake-reload-cancel-fb", fileTypes: [".ts"], rootMarkers: [] };
+				const config: ServerConfig = { command: "rust-analyzer", fileTypes: [".ts"], rootMarkers: [] };
 				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { fake: config }, idleTimeoutMs: undefined });
 
 				const tool = new LspTool(makeLspSession(tempDir.path()));
@@ -3724,6 +3751,7 @@ describe("lsp regressions", () => {
 					if (message.method === "initialize") {
 						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
 					} else if (message.method === "rust-analyzer/reloadWorkspace") {
+						expect(message.params).toBeUndefined();
 						srv.send(methodNotFound(message.id));
 					} else if (message.method === "shutdown") {
 						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
@@ -3731,7 +3759,7 @@ describe("lsp regressions", () => {
 						srv.exit(0);
 					}
 				});
-				const config: ServerConfig = { command: "fake-reload-fallback", fileTypes: [".ts"], rootMarkers: [] };
+				const config: ServerConfig = { command: "rust-analyzer", fileTypes: [".ts"], rootMarkers: [] };
 				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { fake: config }, idleTimeoutMs: undefined });
 
 				const tool = new LspTool(makeLspSession(tempDir.path()));
@@ -3762,13 +3790,50 @@ describe("lsp regressions", () => {
 						srv.exit(0);
 					}
 				});
-				const config: ServerConfig = { command: "fake-reload-fallback-code", fileTypes: [".ts"], rootMarkers: [] };
+				const config: ServerConfig = { command: "rust-analyzer", fileTypes: [".ts"], rootMarkers: [] };
 				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { fake: config }, idleTimeoutMs: undefined });
 
 				const tool = new LspTool(makeLspSession(tempDir.path()));
 				const result = await tool.execute("reload-fallback-code", { action: "reload", file: "*" });
 
 				expect(textResult(result)).toContain("Reloaded fake");
+				expect(server.killed).toBe(false);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("does not send rust-analyzer/reloadWorkspace to a non-rust server that crashes on it (#8571)", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-reload-non-rust-");
+			try {
+				let sawRustReload = false;
+				const server = installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "rust-analyzer/reloadWorkspace") {
+						// Roslyn crashes the whole process instead of replying -32601
+						// (dotnet/roslyn#84890); the gate must never let us send this.
+						sawRustReload = true;
+						srv.exit(82);
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+				});
+				const config: ServerConfig = { command: "roslyn-language-server", fileTypes: [".cs"], rootMarkers: [] };
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+					servers: { csharp: config },
+					idleTimeoutMs: undefined,
+				});
+
+				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const result = await tool.execute("reload-non-rust", { action: "reload", file: "*" });
+
+				expect(sawRustReload).toBe(false);
+				expect(textResult(result)).toContain("Reloaded csharp");
 				expect(server.killed).toBe(false);
 			} finally {
 				vi.restoreAllMocks();

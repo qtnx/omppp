@@ -11,7 +11,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import taskSummaryTemplate from "../src/prompts/tools/task-summary.md" with { type: "text" };
 import { hubToolRenderer } from "../src/tools/hub";
 
-function renderLines(resultText: string): string {
+function renderLines(resultText: string, jobType: "task" | "eval" = "task"): string {
 	const result = {
 		content: [{ type: "text", text: "" }],
 		details: {
@@ -19,7 +19,7 @@ function renderLines(resultText: string): string {
 			jobs: [
 				{
 					id: "SpawnProbe",
-					type: "task" as const,
+					type: jobType,
 					status: "completed" as const,
 					label: "SpawnProbe",
 					durationMs: 8_700,
@@ -101,6 +101,11 @@ describe("job renderer task-result preview", () => {
 	it("passes non-envelope result text through unchanged", () => {
 		const output = renderLines("42 pass, 0 fail (18.4s)");
 		expect(output).toContain("42 pass, 0 fail (18.4s)");
+	});
+	it("renders eval jobs with their type badge", () => {
+		const output = Bun.stripANSI(renderLines("42 pass, 0 fail", "eval"));
+		expect(output).toContain("eval");
+		expect(output).toContain("42 pass, 0 fail");
 	});
 
 	it("drops the id column when the label repeats it", () => {
@@ -240,7 +245,7 @@ describe("job renderer task-result preview", () => {
 				details: {
 					op: "jobs" as const,
 					jobs: [],
-					agents: [{ id: "Worker", parentId: "Main", activity: "grepping the tree", ageMs: 65_000 }],
+					agents: [{ id: "Worker", parentId: "Main", activity: "grepping the tree", ageMs: 65_000, live: true }],
 				},
 			};
 			const component = hubToolRenderer.renderResult(
@@ -258,7 +263,7 @@ describe("job renderer task-result preview", () => {
 		it("keeps a sealed bare-poll result visible when it carries an agent roster", () => {
 			const result = {
 				content: [{ type: "text" as const, text: "No running background jobs to wait for." }],
-				details: { op: "wait" as const, jobs: [], agents: [{ id: "Worker", ageMs: 1_000 }] },
+				details: { op: "wait" as const, jobs: [], agents: [{ id: "Worker", ageMs: 1_000, live: false }] },
 			};
 			const component = hubToolRenderer.renderResult(
 				result,
@@ -268,6 +273,9 @@ describe("job renderer task-result preview", () => {
 			);
 			const output = Bun.stripANSI((component.render(120) as readonly string[]).join("\n"));
 			expect(output).toContain("Worker");
+			// A ref claiming `running` with no turn in flight is flagged, not shown
+			// as live work.
+			expect(output).toContain("no turn");
 		});
 	});
 });

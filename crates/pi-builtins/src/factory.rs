@@ -6,23 +6,6 @@ use brush_core::builtins::{self, builtin, decl_builtin, raw_arg_builtin, simple_
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-/// Keeps a utility registration disabled so command lookup resolves it through
-/// `$PATH`. If `enable` force-enables it, fail closed instead of running the
-/// in-process utility implementation.
-fn external_only<SE: brush_core::ShellExtensions>(
-	mut registration: builtins::Registration<SE>,
-) -> builtins::Registration<SE> {
-	fn execute<SE: brush_core::ShellExtensions>(
-		_context: brush_core::commands::ExecutionContext<'_, SE>,
-		_args: Vec<brush_core::commands::CommandArg>,
-	) -> builtins::BoxFuture<'_, Result<brush_core::results::ExecutionResult, brush_core::Error>> {
-		Box::pin(async { Ok(brush_core::results::ExecutionResult::new(127)) })
-	}
-
-	registration.execute_func = execute::<SE>;
-	registration.disabled = true;
-	registration
-}
 
 /// Identifies well-known sets of builtins.
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -222,6 +205,8 @@ pub fn utility_builtins<SE: brush_core::ShellExtensions>()
 	m.push(("basename", basename::basename_builtin::<SE>()));
 	#[cfg(feature = "util.cat")]
 	m.push(("cat", cat::cat_builtin::<SE>()));
+	#[cfg(feature = "util.cksum")]
+	m.push(("cksum", cksum::cksum_builtin::<SE>()));
 	#[cfg(feature = "util.cmp")]
 	m.push(("cmp", cmp::cmp_builtin::<SE>()));
 	#[cfg(feature = "util.comm")]
@@ -241,11 +226,11 @@ pub fn utility_builtins<SE: brush_core::ShellExtensions>()
 	#[cfg(feature = "util.fd")]
 	m.push(("fd", fd::fd_builtin::<SE>()));
 	#[cfg(feature = "util.find")]
-	m.push(("find", external_only(find::find_builtin::<SE>())));
+	m.push(("find", find::find_builtin::<SE>()));
 	#[cfg(feature = "util.grep")]
-	m.push(("grep", external_only(grep::grep_builtin::<SE>())));
+	m.push(("grep", grep::grep_builtin::<SE>()));
 	#[cfg(feature = "util.rg")]
-	m.push(("rg", external_only(rg::rg_builtin::<SE>())));
+	m.push(("rg", rg::rg_builtin::<SE>()));
 	#[cfg(feature = "util.head")]
 	m.push(("head", head::head_builtin::<SE>()));
 	#[cfg(feature = "util.hostname")]
@@ -303,7 +288,7 @@ pub fn utility_builtins<SE: brush_core::ShellExtensions>()
 	#[cfg(feature = "util.tac")]
 	m.push(("tac", tac::tac_builtin::<SE>()));
 	#[cfg(feature = "util.tail")]
-	m.push(("tail", external_only(tail::tail_builtin::<SE>())));
+	m.push(("tail", tail::tail_builtin::<SE>()));
 	#[cfg(feature = "util.tee")]
 	m.push(("tee", tee::tee_builtin::<SE>()));
 	#[cfg(feature = "util.touch")]

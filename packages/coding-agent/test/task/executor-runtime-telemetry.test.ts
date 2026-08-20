@@ -87,6 +87,7 @@ function createSessionHarness(lastAssistantMessage?: AssistantMessage): SessionH
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
 		setActiveToolsByName: async () => {},
+		subscribeRunState: () => () => {},
 		subscribe: listener => {
 			listeners.push(listener);
 			attached.resolve();
@@ -99,6 +100,9 @@ function createSessionHarness(lastAssistantMessage?: AssistantMessage): SessionH
 		waitForIdle: () => idle.promise,
 		getLastAssistantMessage: () => lastAssistantMessage,
 		hasPendingAgentWork: () => pending,
+		hasPendingAsyncWork: () => false,
+		getAsyncJobSnapshot: () => null,
+		settleAsyncWork: async () => {},
 		sendUserMessage: async content => {
 			notices.push(typeof content === "string" ? content : JSON.stringify(content));
 		},

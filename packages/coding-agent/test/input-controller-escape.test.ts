@@ -110,6 +110,8 @@ function createContext(): {
 	const hasActiveOmfg = vi.fn(() => false);
 	const dismissUsagePanel = vi.fn(() => false);
 	const hasActiveUsagePanel = vi.fn(() => false);
+	const handleCleanseEscape = vi.fn(() => true);
+	const hasActiveCleanse = vi.fn(() => false);
 	const updatePendingMessagesDisplay = vi.fn();
 	const prompt = vi.fn();
 	const startPendingSubmission = vi.fn(
@@ -226,6 +228,8 @@ function createContext(): {
 		hasActiveOmfg,
 		dismissUsagePanel,
 		hasActiveUsagePanel,
+		handleCleanseEscape,
+		hasActiveCleanse,
 		showTreeSelector: vi.fn(),
 		showUserMessageSelector: vi.fn(),
 		showSessionSelector: vi.fn(),

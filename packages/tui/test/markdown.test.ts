@@ -302,6 +302,27 @@ Average Latency: 1,240 ms
 			expect(plainLines.filter(line => line.includes("+"))).toHaveLength(0);
 		});
 
+		it("keeps a four-space-indented tree child inside its paragraph", () => {
+			const markdown = new Markdown(
+				`Two verified cases:
+
+├── **case 1** — first branch
+│   └── each family has its own counter
+└── **case 3: unnumbered limits**
+    └── limits that carry **only a label** are dropped from the list`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			// The attached indented line is a lazy paragraph continuation, never an
+			// indented code block: no fence border rows, no literal bold markers.
+			expect(plainLines.filter(line => line.includes("```"))).toHaveLength(0);
+			expect(plainLines.some(line => line.includes("only a label"))).toBe(true);
+			expect(plainLines.some(line => line.includes("**"))).toBe(false);
+		});
+
 		it("keeps an unfinished code block with a rule and heading literal when no table follows", () => {
 			const markdown = new Markdown(
 				`The process printed this

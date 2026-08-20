@@ -84,14 +84,14 @@ describe("editToolRenderer", () => {
 			const collapsed = renderPreview(makeDiff(20), false);
 			expect(collapsed).toContain("tail-line-20");
 			expect(collapsed).not.toContain("head-line-1");
-			expect(collapsed).toContain("more lines above");
+			expect(collapsed).toContain("content above");
 			expect(collapsed).toContain("(preview)");
 
 			// Within the viewport window, expanded shows the whole diff.
 			const expanded = renderPreview(makeDiff(20), true);
 			expect(expanded).toContain("head-line-1");
 			expect(expanded).toContain("tail-line-20");
-			expect(expanded).not.toContain("more lines above");
+			expect(expanded).not.toContain("content above");
 			expect(expanded).not.toContain("(preview)");
 
 			// Beyond it, expanded stays a viewport-sized tail window: an unbounded
@@ -100,7 +100,7 @@ describe("editToolRenderer", () => {
 			const expandedTall = renderPreview(makeDiff(40), true);
 			expect(expandedTall).toContain("tail-line-40");
 			expect(expandedTall).not.toContain("head-line-1");
-			expect(expandedTall).toContain("more lines above");
+			expect(expandedTall).toContain("content above");
 		} finally {
 			if (originalRowsDescriptor) {
 				Object.defineProperty(process.stdout, "rows", originalRowsDescriptor);
@@ -108,6 +108,52 @@ describe("editToolRenderer", () => {
 				Reflect.deleteProperty(process.stdout, "rows");
 			}
 		}
+	});
+
+	it("does not report a leading blank line as hidden content", async () => {
+		const uiTheme = await getUiTheme();
+		const rendered = Bun.stripANSI(
+			editToolRenderer
+				.renderCall(
+					{ file_path: "/tmp/leading-blank.ts", previewDiff: "\n+1|first-added\n+2|second-added" },
+					{ expanded: false, isPartial: true, spinnerFrame: 0, renderContext: { editMode: "replace" } },
+					uiTheme,
+				)
+				.render(200)
+				.join("\n"),
+		);
+
+		expect(rendered).toContain("first-added");
+		expect(rendered).toContain("second-added");
+		expect(rendered).not.toContain("content above");
+	});
+
+	it("uses a count-free marker for a discarded streaming prefix", async () => {
+		const uiTheme = await getUiTheme();
+		const diff = [
+			"@@ -1,10000 +1,12 @@",
+			...Array.from({ length: 10_000 }, (_, index) => `-hidden-line-${index + 1}`),
+			...Array.from({ length: 12 }, (_, index) => `+visible-tail-${index + 1}`),
+			"",
+			"",
+		].join("\n");
+
+		const rendered = Bun.stripANSI(
+			editToolRenderer
+				.renderCall(
+					{ file_path: "/tmp/large-preview.ts", previewDiff: diff },
+					{ expanded: false, isPartial: true, spinnerFrame: 0, renderContext: { editMode: "replace" } },
+					uiTheme,
+				)
+				.render(200)
+				.join("\n"),
+		);
+
+		expect(rendered).toContain("content above");
+		expect(rendered).toContain("visible-tail-12");
+		expect(rendered).not.toContain("hidden-line-10000");
+		expect(rendered).not.toContain("more hunks");
+		expect(rendered).not.toContain("more lines above");
 	});
 
 	it("uses hashline input headers for streaming call path without apply_patch errors", async () => {
@@ -255,6 +301,19 @@ describe("editToolRenderer", () => {
 	it("caches completed diff rendering across stable frame renders", async () => {
 		const uiTheme = await getUiTheme();
 		let renderDiffCalls = 0;
+		let statsColorCalls = 0;
+		const countingTheme = new Proxy(uiTheme, {
+			get(target, property) {
+				if (property === "fg") {
+					return (color: Parameters<themeModule.Theme["fg"]>[0], text: string): string => {
+						if (color === "toolDiffAdded" && text === "+1") statsColorCalls++;
+						return target.fg(color, text);
+					};
+				}
+				const value = Reflect.get(target, property, target) as unknown;
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
 		const options = {
 			expanded: false,
 			isPartial: false,
@@ -275,17 +334,19 @@ describe("editToolRenderer", () => {
 				},
 			},
 			options,
-			uiTheme,
+			countingTheme,
 			{ file_path: "src/example.ts" },
 		);
 
 		component.render(160);
 		component.render(120);
 		expect(renderDiffCalls).toBe(1);
+		expect(statsColorCalls).toBe(1);
 
 		options.expanded = true;
 		component.render(120);
 		expect(renderDiffCalls).toBe(2);
+		expect(statsColorCalls).toBe(1);
 	});
 
 	it("computes the hashline preview diff once a single-line edit finishes streaming", async () => {
@@ -419,6 +480,27 @@ describe("editToolRenderer", () => {
 		// below the header (no blank line, no lone lang-icon metadata row).
 		expect(lines[1]).toContain("115│ ctx");
 		expect(lines.filter(line => line.includes("+2/-1"))).toHaveLength(1);
+	});
+
+	it("bounds a completed diff that contains one oversized change hunk", async () => {
+		const uiTheme = await getUiTheme();
+		const diff = Array.from({ length: 1_000 }, (_, i) => `+${i + 1}│line ${i}`).join("\n");
+		const component = editToolRenderer.renderResult(
+			{
+				content: [{ type: "text", text: "Updated demo.ts" }],
+				details: { diff, op: "update" },
+			},
+			{ expanded: false, isPartial: false, renderContext: { editMode: "hashline" } },
+			uiTheme,
+			{ file_path: "demo.ts" },
+		);
+
+		const lines = component.render(160).map(line => Bun.stripANSI(line));
+		const rendered = lines.join("\n");
+		expect(lines.filter(line => line.includes("│line "))).toHaveLength(40);
+		expect(rendered).toContain("+40│line 39");
+		expect(rendered).not.toContain("+41│line 40");
+		expect(rendered).toContain("960 more lines");
 	});
 
 	it("renders completed edit gutters without inherited frame padding", async () => {

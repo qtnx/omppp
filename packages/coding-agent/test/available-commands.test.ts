@@ -60,6 +60,7 @@ describe("buildAvailableSlashCommands", () => {
 		});
 		expect(telegramCommands[0]?.handle).toBeUndefined();
 		expect(telegramCommands[0]?.handleTui).toBeDefined();
+		expect(byName["extended-context"].description).toBe("Toggle extended context");
 		expect(byName["ext:hello"].description).toBe("Extension hello");
 		expect(byName["custom:hello"].description).toBe("Custom hello");
 		expect(byName["server:prompt"].description).toBe("MCP prompt");

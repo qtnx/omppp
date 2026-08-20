@@ -1158,7 +1158,7 @@ describe("ModelRegistry runtime discovery", () => {
 		const plain = registry.find("llama.cpp", "llama-3.1-8b");
 		expect(plain?.reasoning).toBe(false);
 		expect(plain?.api).toBe("openai-responses");
-		expect(plain?.baseUrl).toBe("http://127.0.0.1:8080");
+		expect(plain?.baseUrl).toBe("http://127.0.0.1:8080/v1");
 		expect((plain?.compat as DialectFields | undefined)?.reasoningDisableMode).not.toBe("qwen-template-false");
 	});
 

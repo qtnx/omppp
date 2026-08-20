@@ -108,7 +108,8 @@ describe("AgentSession auto_compaction_progress", () => {
 		const settings = Settings.isolated({
 			"compaction.enabled": true,
 			"compaction.autoContinue": false,
-			"compaction.strategy": "context-full",
+			"compaction.thresholdPercent": 80,
+			"compaction.methodOrder": ["soft"],
 			"todo.enabled": false,
 			"todo.reminders": false,
 		});
@@ -199,7 +200,6 @@ describe("AgentSession auto_compaction_progress", () => {
 		await session.prompt("refactor the parser across modules");
 		emitHighUsageTurn(session, contextWindow);
 		await waitForEnd;
-
 		const startIdx = events.findIndex(e => e.type === "auto_compaction_start");
 		const endIdx = events.findIndex(e => e.type === "auto_compaction_end");
 		const progress = events.filter(e => e.type === "auto_compaction_progress");

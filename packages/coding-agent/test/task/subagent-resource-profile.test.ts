@@ -69,6 +69,7 @@ function createYieldingSession(onCustomMessage?: (message: CapturedCustomMessage
 		sendCustomMessage: async (message: CapturedCustomMessage) => {
 			onCustomMessage?.(message);
 		},
+		subscribeRunState: () => () => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
 			return () => {

@@ -566,6 +566,11 @@ export async function loadFilesFromDir<T>(
 			gitignore: true,
 			hidden: false,
 			fileType: FileType.File,
+			// Thread the caller's non-recursive intent explicitly: the native glob
+			// defaults `recursive` to true and rewrites `*.{ts,js}` -> `**/*.{ts,js}`,
+			// which would walk the entire subtree (e.g. a venv's site-packages under
+			// ~/.codex/tools) and import arbitrary frontend assets as tools (#8552).
+			recursive,
 		});
 		matches = result.matches;
 	} catch {
@@ -947,6 +952,40 @@ async function canonicalClaudeProjectPath(projectPath: string): Promise<string |
 	}
 }
 
+/**
+ * Claude Code `enabledPlugins` overrides, merged across the same settings
+ * layers Claude Code itself consults: `<claude-config>/settings.json`, then
+ * `<dir>/.claude/settings.json` and `<dir>/.claude/settings.local.json` for
+ * each project directory (later layers win, `.local` wins within a layer).
+ *
+ * Returns `pluginId -> boolean` for the ids the user toggled explicitly, and
+ * the list of settings files that contributed (for cache keying).
+ */
+async function readClaudeEnabledPlugins(
+	claudeConfigDir: string,
+	projectDirs: string[],
+): Promise<{ enabled: Map<string, boolean>; sources: string[] }> {
+	const enabled = new Map<string, boolean>();
+	const sources: string[] = [];
+	const candidates = [path.join(claudeConfigDir, "settings.json")];
+	for (const dir of projectDirs) {
+		candidates.push(path.join(dir, ".claude", "settings.json"), path.join(dir, ".claude", "settings.local.json"));
+	}
+	for (const file of candidates) {
+		const content = await readFile(file);
+		if (!content) continue;
+		const data = tryParseJson<{ enabledPlugins?: unknown }>(content);
+		if (!data || typeof data !== "object") continue;
+		const map = data.enabledPlugins;
+		if (!map || typeof map !== "object" || Array.isArray(map)) continue;
+		sources.push(file);
+		for (const [pluginId, value] of Object.entries(map as Record<string, unknown>)) {
+			if (typeof value === "boolean") enabled.set(pluginId, value);
+		}
+	}
+	return { enabled, sources };
+}
+
 const pluginRootsCache = new Map<string, { roots: ClaudePluginRoot[]; warnings: string[] }>();
 
 interface ClaudePluginSettingsSnapshot {
@@ -1097,6 +1136,9 @@ export async function listClaudePluginRoots(
 	const activeClaudeProjectPath = projectRoot ? await canonicalClaudeProjectPath(projectRoot) : null;
 	const settingsSnapshot = await loadClaudePluginSettings(home, cwd, projectRoot);
 	const registryPath = path.join(claudeConfigDir, "plugins", "installed_plugins.json");
+	const canonicalCwd = cwd ? await canonicalClaudeProjectPath(cwd) : null;
+	const settingsDirs = [...new Set([activeClaudeProjectPath, canonicalCwd].filter((d): d is string => !!d))];
+	const enabledOverrides = await readClaudeEnabledPlugins(claudeConfigDir, settingsDirs);
 	const [content, ompContent, projectContent] = await Promise.all([
 		readFreshOptionalFile(registryPath),
 		readFreshOptionalFile(ompRegistryPath),
@@ -1104,7 +1146,7 @@ export async function listClaudePluginRoots(
 	]);
 	const cacheKey = pluginRootsSignature(
 		[
-			`${claudeConfigDir}:${ompRegistryPath}:${resolvedProjectPath ?? ""}:${activeClaudeProjectPath ?? ""}`,
+			`${claudeConfigDir}:${ompRegistryPath}:${resolvedProjectPath ?? ""}:${activeClaudeProjectPath ?? ""}:${canonicalCwd ?? ""}:${enabledOverrides.sources.join("|")}`,
 			fileSignature(registryPath, content),
 			fileSignature(ompRegistryPath, ompContent),
 			resolvedProjectPath ? fileSignature(resolvedProjectPath, projectContent) : "project:missing",
@@ -1133,7 +1175,18 @@ export async function listClaudePluginRoots(
 				// Process all valid entries, not just the first one.
 				// This handles plugins with multiple installs (different scopes/versions).
 				for (const entry of entries) {
-					if (entry.scope === "local") {
+					if (!entry.installPath || typeof entry.installPath !== "string") {
+						warnings.push(`Plugin ${pluginId} entry has no installPath`);
+						continue;
+					}
+					if (entry.enabled === false) continue;
+					// Claude Code's own on/off switch: `enabledPlugins` in settings.json /
+					// settings.local.json. `false` hides the plugin here even though it is
+					// installed; `true` opts a local-scope install into this project even
+					// when its recorded projectPath is a different directory.
+					const override = enabledOverrides.enabled.get(pluginId);
+					if (override === false) continue;
+					if (entry.scope === "local" && override !== true) {
 						if (!entry.projectPath || !activeClaudeProjectPath) continue;
 						let entryProjectPath = canonicalClaudeProjectPaths.get(entry.projectPath);
 						if (entryProjectPath === undefined) {

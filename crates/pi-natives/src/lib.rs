@@ -39,12 +39,14 @@ pub mod grep;
 pub mod highlight;
 pub mod html;
 pub mod iofs;
+pub mod js;
 pub mod keys;
 pub mod live;
 /// PDF inspection and Markdown conversion.
 pub mod pdf;
 pub mod sixel;
 pub mod snapcompact;
+pub mod utok;
 pub use pi_ast::language;
 
 pub mod power;

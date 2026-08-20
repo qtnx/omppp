@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type } from "@oh-my-pi/omptype";
-import type { AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
+import { type AgentMessage, type AgentTelemetryConfig, Tokenizer } from "@oh-my-pi/pi-agent-core";
 import { type Api, type AssistantMessage, Effort, type ImageContent, type Model } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
@@ -3124,8 +3124,11 @@ describe("advisor", () => {
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
 				enqueueAdvice: () => {},
-				maintainContext: async tokens => {
-					expect(tokens).toBeGreaterThan(0);
+				maintainContext: async incoming => {
+					// The host receives the pending update itself and sizes it with its
+					// own model's tokenizer, so it must arrive as a non-empty message.
+					expect(incoming.role).toBe("user");
+					expect(promptText([incoming]).length).toBeGreaterThan(0);
 					return shouldResetContext;
 				},
 			};
@@ -3362,8 +3365,8 @@ describe("advisor", () => {
 				{
 					snapshotMessages: () => messages,
 					enqueueAdvice: () => {},
-					maintainContext: async incomingTokens => {
-						maintenanceTokens.push(incomingTokens);
+					maintainContext: async incoming => {
+						maintenanceTokens.push(new Tokenizer().countMessage(incoming));
 						if (maintenanceTokens.length === 4) fourthMaintenance.resolve();
 						return false;
 					},
@@ -5899,7 +5902,7 @@ describe("advisor", () => {
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
 				enqueueAdvice: () => {},
-				maintainContext: async (_incomingTokens, signal) => {
+				maintainContext: async (_incoming, signal) => {
 					maintenanceSignals.push(signal);
 					return false;
 				},
@@ -6830,7 +6833,7 @@ describe("advisor", () => {
 			).toBe("steer");
 		});
 
-		it("routes interrupting notes to the aside queue during immune turns without overriding preservation", () => {
+		it("downgrades concern to aside during immune turns, but still steers a blocker (#5628)", () => {
 			expect(
 				resolveAdvisorDeliveryChannel({
 					severity: "concern",
@@ -6840,6 +6843,15 @@ describe("advisor", () => {
 					interruptImmuneTurnActive: true,
 				}),
 			).toBe("aside");
+			expect(
+				resolveAdvisorDeliveryChannel({
+					severity: "blocker",
+					autoResumeSuppressed: false,
+					streaming: false,
+					aborting: false,
+					interruptImmuneTurnActive: true,
+				}),
+			).toBe("steer");
 			expect(
 				resolveAdvisorDeliveryChannel({
 					severity: "blocker",

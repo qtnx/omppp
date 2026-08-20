@@ -1,5 +1,4 @@
-import { type AgentMessage, countTokens } from "@oh-my-pi/pi-agent-core";
-import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
+import { type AgentMessage, Tokenizer } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Effort, ImageContent, Model, TextContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { raceWithSignal } from "@oh-my-pi/pi-ai/utils/abort";
@@ -58,9 +57,12 @@ export interface AdvisorRuntimeHost {
 	 * when the advisor must clear its own context before sending the current
 	 * incremental update. The cursor stays at the current primary position: this
 	 * recovery path must never replay the full primary transcript.
+	 *
+	 * Takes the pending update as a message rather than a token count: sizing it
+	 * needs the advisor model's tokenizer, which the host owns.
 	 * Optional: hosts that omit it get no proactive maintenance.
 	 */
-	maintainContext?(incomingTokens: number, signal: AbortSignal): Promise<boolean>;
+	maintainContext?(incoming: AgentMessage, signal: AbortSignal): Promise<boolean>;
 	/**
 	 * Called immediately before each `agent.prompt(batch)` cycle. Lets the host
 	 * clear per-update advisor state and apply the in-progress delivery policy.
@@ -371,7 +373,7 @@ function splitAdvisorImageMaterial(batch: string): { imageMaterial: string; pres
 }
 
 function passesFableAdvisorImageGate(text: string, model: Model, shape: snapcompact.Shape): boolean {
-	const textTokens = countTokens(text);
+	const textTokens = new Tokenizer(model).countTokens(text);
 	if (textTokens < MIN_FABLE_ADVISOR_IMAGE_TOKENS) return false;
 	const frameCount = snapcompact.frames(text, { shape });
 	if (frameCount <= 0) return false;
@@ -395,7 +397,7 @@ async function prepareFableAdvisorPromptPayload(batch: string, model: Model): Pr
 		return {
 			text,
 			images: frames,
-			estimatedTokens: countTokens(text) + frames.length * shape.frameTokenEstimate,
+			estimatedTokens: new Tokenizer(model).countTokens(text) + frames.length * shape.frameTokenEstimate,
 		};
 	} catch (err) {
 		logger.debug("advisor Fable message imaging failed; falling back to text", { err: String(err) });
@@ -1315,7 +1317,7 @@ export class AdvisorRuntime {
 
 				let candidatePrepared: { source: string; payload: AdvisorPromptPayload } | undefined;
 				let shouldReprime = false;
-				let reprimeAfterCoalesce = false;
+				let coalesced = false;
 				let batchInvalidated = false;
 				for (let round = 0; round < MAX_COALESCE_ROUNDS; round++) {
 					let candidateBatch = buildBatch(deltasText);
@@ -1339,16 +1341,16 @@ export class AdvisorRuntime {
 							break;
 						}
 					}
-					const incomingTokens =
-						candidatePrepared?.payload.estimatedTokens ??
-						estimateTokens({
-							role: "user",
-							content: candidatePrepared?.payload.text ?? "",
-							timestamp: Date.now(),
-						});
 					if (this.host.maintainContext) {
 						try {
-							shouldReprime = await this.host.maintainContext(incomingTokens, iterationAbort.signal);
+							shouldReprime = await this.host.maintainContext(
+								{
+									role: "user",
+									content: candidatePrepared?.payload.text ?? "",
+									timestamp: Date.now(),
+								},
+								iterationAbort.signal,
+							);
 						} catch (err) {
 							logger.debug("advisor context maintenance failed", { err: String(err) });
 						}
@@ -1357,8 +1359,14 @@ export class AdvisorRuntime {
 						batchInvalidated = true;
 						break;
 					}
-					if (shouldReprime || round === MAX_COALESCE_ROUNDS - 1 || consult || batchAlreadyUsedFallback) break;
-
+					if (
+						shouldReprime ||
+						round === MAX_COALESCE_ROUNDS - 1 ||
+						consult ||
+						batchAlreadyUsedFallback ||
+						recoveringOverflow
+					)
+						break;
 					const lateDeltas: PendingDelta[] = [];
 					while (this.#pending[0]?.kind === "delta") {
 						lateDeltas.push(this.#pending.shift() as PendingDelta);
@@ -1369,7 +1377,7 @@ export class AdvisorRuntime {
 						item.text = this.#formatRawDelta(item.rawMessages, item.wip) ?? item.text;
 						item.renderRevision = this.#renderRevision;
 					}
-					reprimeAfterCoalesce = true;
+					coalesced = true;
 					deltasText = [deltasText, ...lateDeltas.map(item => item.text)].filter(Boolean).join("\n\n");
 					rawMessages = rawMessages.concat(lateDeltas.flatMap(item => item.rawMessages));
 					turnsCovered += lateDeltas.reduce((sum, item) => sum + item.turns, 0);
@@ -1383,19 +1391,30 @@ export class AdvisorRuntime {
 
 				let deltaPart: string;
 				let finalTurns: number;
-				if (shouldReprime && !reprimeAfterCoalesce) {
+				if (shouldReprime) {
+					// If maintenance requested a reset after at least one coalescing
+					// round, deltas that arrived during the reset-triggering await are
+					// part of this bounded batch. Consume only the leading deltas:
+					// a consult is an ordering boundary and everything after it belongs
+					// to the next drain iteration.
+					if (coalesced) {
+						const queuedDuringMaintenance: PendingDelta[] = [];
+						while (this.#pending[0]?.kind === "delta") {
+							queuedDuringMaintenance.push(this.#pending.shift() as PendingDelta);
+						}
+						if (queuedDuringMaintenance.length > 0) {
+							rawMessages = rawMessages.concat(queuedDuringMaintenance.flatMap(item => item.rawMessages));
+							turnsCovered += queuedDuringMaintenance.reduce((sum, item) => sum + item.turns, 0);
+							wip = queuedDuringMaintenance.at(-1)!.wip;
+						}
+					}
+					// Reset only the advisor conversation. The primary cursor, pending
+					// queue, backlog, waiters, and epoch stay intact. Re-render this
+					// collected raw batch against the cleared advisor-context dedupe
+					// state so active plan/goal rules are restored exactly once.
 					this.#clearAdvisorContextAtCurrentCursor();
 					deltaPart = this.#formatRawDelta(rawMessages, wip) ?? deltasText;
 					finalTurns = turnsCovered;
-				} else if (shouldReprime) {
-					const remaining = this.#pending;
-					const newTurns = remaining.reduce((sum, item) => sum + item.turns, 0);
-					const survivingConsults = remaining.filter((item): item is PendingConsult => item.kind === "consult");
-					this.#pending = [];
-					this.#resetAdvisorContext(false, false);
-					this.#pending = survivingConsults;
-					deltaPart = this.#renderDelta(this.#latestMessages, wip) ?? "";
-					finalTurns = turnsCovered + newTurns;
 				} else {
 					deltaPart = deltasText;
 					finalTurns = turnsCovered;

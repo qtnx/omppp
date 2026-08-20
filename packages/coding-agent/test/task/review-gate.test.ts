@@ -102,6 +102,7 @@ function createScriptedSession(script: RoleScript): AgentSession {
 		getActiveToolNames: () => ["yield", "report_finding"],
 		getEnabledToolNames: () => ["yield", "report_finding"],
 		setActiveToolsByName: async () => {},
+		subscribeRunState: () => () => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
 			return () => {
@@ -309,9 +310,7 @@ async function initUnbornStatsRepo(): Promise<string> {
 	return repo;
 }
 
-const configuredModels = getBundledModels("openai-codex").filter(model =>
-	["codex-auto-review", "gpt-5.5"].includes(model.id),
-);
+const configuredModels = getBundledModels("openai-codex").filter(model => ["gpt-5.4", "gpt-5.5"].includes(model.id));
 if (configuredModels.length !== 2) throw new Error("Expected bundled reviewer test models");
 function createSession(overrides: Partial<Record<string, unknown>> = {}, cwd = "/tmp"): ToolSession {
 	const authStorage = {
@@ -737,7 +736,7 @@ describe("task review gate", () => {
 		const tool = await TaskTool.create(
 			createSession({
 				"task.agentModelOverrides": {
-					[REVIEWER_AGENT]: "openai-codex/codex-auto-review",
+					[REVIEWER_AGENT]: "openai-codex/gpt-5.4",
 				},
 			}),
 		);
@@ -747,7 +746,7 @@ describe("task review gate", () => {
 			isolated: true,
 		});
 
-		expect(runSpy.mock.calls[1]?.[0].modelOverride).toEqual(["openai-codex/codex-auto-review"]);
+		expect(runSpy.mock.calls[1]?.[0].modelOverride).toEqual(["openai-codex/gpt-5.4"]);
 		expect(runSpy.mock.calls[1]?.[0].modelSelectorFromUserConfig).toBe(true);
 		expect(firstResult(result).exitCode).toBe(0);
 	});

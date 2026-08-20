@@ -16,9 +16,11 @@ import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import { getGitLabDuoModels } from "@oh-my-pi/pi-ai/providers/gitlab-duo";
 import { getProviderDefinition } from "@oh-my-pi/pi-ai/registry";
 import { $env, isEnoent } from "@oh-my-pi/pi-utils";
+import { buildModel } from "../src/build";
 import { ANTIGRAVITY_PRIMARY_ENDPOINT, fetchAntigravityDiscoveryModels } from "../src/discovery/antigravity";
 import { buildGitLabDuoWorkflowFallbackModel } from "../src/discovery/gitlab-duo-workflow";
 import { createModelManager } from "../src/model-manager";
+import { resolveOpenAIDaybreakStandardCost } from "../src/openai-pricing";
 import { toModelSpec } from "../src/provider-models/bundled-references";
 import {
 	allowsUnauthenticatedCatalogDiscovery,
@@ -50,7 +52,7 @@ import {
 	stripFireworksDeepSeekThinkingToggle,
 } from "../src/provider-models/openai-compat";
 import { type OpenAICodexAccount, openaiCodexModelManagerOptions } from "../src/provider-models/special";
-import type { Api, ModelSpec } from "../src/types";
+import type { Api, Model, ModelSpec } from "../src/types";
 import { cleanModelName } from "../src/utils";
 import { collapseEffortVariantsAcrossProviders } from "../src/variant-collapse";
 import {
@@ -166,7 +168,7 @@ async function fetchProviderModelsFromCatalog(
 			return { models: [], succeeded: true };
 		}
 		console.log(`Fetched ${models.length} models from ${descriptor.catalogDiscovery.label} model manager`);
-		// The manager returns built models; models.json stores specs (sparse compat).
+		// Keep discovery rows as specs until policies finish; the final bundle is fully materialized below.
 		return { models: models.map(model => toModelSpec(model)), succeeded: true };
 	} catch (error) {
 		console.error(`Failed to fetch ${descriptor.catalogDiscovery.label} models:`, error);
@@ -296,7 +298,7 @@ function applyCodexPricingFallback(models: readonly ModelSpec[]): ModelSpec[] {
 			return model;
 		}
 
-		const openAICost = openAIModels.get(model.id);
+		const openAICost = openAIModels.get(model.id) ?? resolveOpenAIDaybreakStandardCost(model.id);
 		if (!openAICost) {
 			return model;
 		}
@@ -567,6 +569,24 @@ async function generateModels() {
 	// Mythos 5). Deduped behind upstream entries; metadata is pinned in
 	// applyAnthropicCatalogPolicy.
 	allModels.push(...ANTHROPIC_CURATED_FALLBACK_MODELS);
+	// Seed GLM-5.3 on the z.AI provider. GLM-5.3 is live on the Anthropic and
+	// coding endpoints but not yet advertised in `/v1/models` (which still tops
+	// out at glm-5.2), so endpoint discovery misses it. The zai provider is not
+	// authoritative, so the seed survives regeneration; thinking metadata
+	// (low/high/max uniform ladder, mandatory reasoning, defaultLevel=max) is
+	// derived by rebakeModelThinking from the identity classifiers.
+	allModels.push({
+		id: "glm-5.3",
+		name: "GLM-5.3",
+		api: "anthropic-messages",
+		provider: "zai",
+		baseUrl: "https://api.z.ai/api/anthropic",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 },
+		contextWindow: 1_000_000,
+		maxTokens: 131_072,
+	} as ModelSpec<"anthropic-messages">);
 	// Seed Meta's documented Muse models so fresh installs remain usable when
 	// models.dev is unavailable and catalog generation has no live API key.
 	if (!authoritativeCatalogProviders.has("meta")) {
@@ -652,8 +672,9 @@ async function generateModels() {
 	// Previous-snapshot entries may carry an older ThinkingConfig vocabulary;
 	// applyGeneratedModelPolicies re-bakes `thinking` for every model, so the
 	// inbound shape is irrelevant beyond identity/pricing/compat fields.
-	for (const models of Object.values(prevModelsJson as unknown as Record<string, Record<string, ModelSpec>>)) {
-		for (const model of Object.values(models)) {
+	for (const models of Object.values(prevModelsJson as unknown as Record<string, Record<string, Model<Api>>>)) {
+		for (const bundledModel of Object.values(models)) {
+			const model = toModelSpec(bundledModel);
 			if (
 				!fetchedKeys.has(`${model.provider}/${model.id}`) &&
 				!DISCOVERY_ONLY_PROVIDERS.has(model.provider) &&
@@ -739,9 +760,12 @@ async function generateModels() {
 		);
 	};
 
-	const MODELS: Record<string, Record<string, ModelSpec>> = sortObj(providers);
-	for (const key in MODELS) {
-		MODELS[key] = sortObj(MODELS[key]);
+	const modelSpecs: Record<string, Record<string, ModelSpec>> = sortObj(providers);
+	const MODELS: Record<string, Record<string, Model<Api>>> = {};
+	for (const [provider, models] of Object.entries(modelSpecs)) {
+		MODELS[provider] = Object.fromEntries(
+			Object.entries(sortObj(models)).map(([id, model]) => [id, buildModel(model)]),
+		);
 	}
 
 	// Generate JSON file

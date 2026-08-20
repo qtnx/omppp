@@ -40,7 +40,7 @@ import type { OpenAICompletionsOptions } from "./providers/openai-completions";
 import { completePiNative, streamPiNative } from "./providers/pi-native-client";
 // Heavy provider stream functions are imported lazily via register-builtins,
 // which wraps each provider module in a dynamic import. This keeps the
-// AWS SDK, google-auth-library, @google/genai, @bufbuild/protobuf, and
+// AWS SDK, google-auth-library, @google/genai, and
 // other provider SDKs out of the CLI startup parse graph. The
 // gitlab-duo / kimi / synthetic providers stay eager because their modules
 // export routing predicates (isGitLabDuoModel, isKimiModel, isSyntheticModel)
@@ -1046,45 +1046,47 @@ function streamDispatch<TApi extends Api>(
 	}
 }
 
-/** Thinking-loop re-samples spent before {@link resolveWithThinkingLoopCook} cooks. */
-const THINKING_LOOP_MAX_ABORTS = 3;
+/** Maximum guarded attempts for a detected thinking loop. */
+const THINKING_LOOP_MAX_ATTEMPTS = 3;
 const THINKING_LOOP_RETRY_BASE_DELAY_MS = 500;
 const THINKING_LOOP_RETRY_MAX_DELAY_MS = 8_000;
 
+function isRetryableThinkingLoop(message: AssistantMessage): boolean {
+	return (
+		message.stopReason === "error" &&
+		message.content.length === 0 &&
+		AIError.is(message.errorId, AIError.Flag.ThinkingLoop)
+	);
+}
+
 /**
- * Resolve a completion, re-sampling a thinking-loop stall up to
- * {@link THINKING_LOOP_MAX_ABORTS} times before letting it cook. The loop guard
- * raises an empty `stopReason: "error"` stall on each guarded attempt; this
- * result-path consumer re-dispatches a fresh request per stall and, once the abort
- * budget is spent, runs one final pass with the guard disabled so a stubborn loop
- * returns the model's raw output instead of a fatal stall. Non-stall results —
- * including genuine errors — return immediately; a caller abort during backoff
- * propagates so cancellation surfaces as an abort, never a stale stall result.
+ * Resolve a completion, re-sampling a thinking-loop stall for at most
+ * {@link THINKING_LOOP_MAX_ATTEMPTS} guarded attempts. The loop guard raises an
+ * empty `stopReason: "error"` stall; after the budget is spent that error is
+ * returned unchanged. Detection is never disabled as a fallback, because an
+ * unguarded retry can consume the remaining output budget and persist runaway
+ * content. Non-stall results, including genuine errors, return immediately. A
+ * caller abort during backoff propagates so cancellation surfaces as an abort,
+ * never a stale stall result.
  */
-async function resolveWithThinkingLoopCook(
+async function resolveWithThinkingLoopRetries(
 	signal: AbortSignal | undefined,
 	dispatch: () => AssistantMessageEventStream,
-	cook: () => AssistantMessageEventStream,
 ): Promise<AssistantMessage> {
 	let message = await dispatch().result();
-	let thinkingLoopRetry = AIError.is(message.errorId, AIError.Flag.ThinkingLoop);
-	for (let attempt = 0; thinkingLoopRetry && attempt < THINKING_LOOP_MAX_ABORTS - 1; attempt += 1) {
+	let thinkingLoopRetry = isRetryableThinkingLoop(message);
+	for (let attempt = 1; thinkingLoopRetry && attempt < THINKING_LOOP_MAX_ATTEMPTS; attempt += 1) {
 		// A caller abort surfaces as a thrown abort (never the stall, which would
 		// misclassify as a 502): throwIfAborted before backoff, and scheduler.wait
 		// rejects if the abort lands mid-delay.
 		signal?.throwIfAborted();
-		const delay = Math.min(THINKING_LOOP_RETRY_BASE_DELAY_MS * 2 ** attempt, THINKING_LOOP_RETRY_MAX_DELAY_MS);
+		const delay = Math.min(THINKING_LOOP_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), THINKING_LOOP_RETRY_MAX_DELAY_MS);
 		await scheduler.wait(delay, { signal });
 		message = await dispatch().result();
-		thinkingLoopRetry =
-			message.stopReason === "error" &&
-			message.content.length === 0 &&
-			AIError.is(message.errorId, AIError.Flag.ThinkingLoop);
+		thinkingLoopRetry = isRetryableThinkingLoop(message);
 	}
-	if (!thinkingLoopRetry) return message;
-	signal?.throwIfAborted();
-	// Abort budget spent and still looping: let it cook with the guard disabled.
-	return cook().result();
+	if (thinkingLoopRetry) signal?.throwIfAborted();
+	return message;
 }
 
 export async function complete<TApi extends Api>(
@@ -1092,11 +1094,7 @@ export async function complete<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): Promise<AssistantMessage> {
-	return resolveWithThinkingLoopCook(
-		options?.signal,
-		() => stream(model, context, options),
-		() => stream(model, context, { ...options, loopGuard: { ...options?.loopGuard, enabled: false } }),
-	);
+	return resolveWithThinkingLoopRetries(options?.signal, () => stream(model, context, options));
 }
 
 type AuthRetryFailure = {
@@ -1111,12 +1109,18 @@ function extractStatusFromAssistantError(message: AssistantMessage): number | un
 	return AIError.status({ message: message.errorMessage });
 }
 
-function isRetryableUpstreamError(error: unknown, status: number | undefined, message: string | undefined): boolean {
+function isRetryableUpstreamError(
+	model: Model<Api>,
+	error: unknown,
+	status: number | undefined,
+	message: string | undefined,
+): boolean {
 	// 401 means the credential is bad; 403 is its valid-token twin (access
 	// denied by plan, model policy, or org restriction — a sibling account may
 	// not share it). Explicit account-scoped policy errors such as Codex
-	// `cyber_policy` are likewise rotatable: another account may carry the
-	// required approval. Usage-limit phrasing (Codex's
+	// `cyber_policy` are likewise rotatable. The exact ChatGPT-account model
+	// denial is rotatable only when its provider and requested model match.
+	// Usage-limit phrasing (Codex's
 	// "You have hit your ChatGPT usage limit", Anthropic's "usage_limit_reached",
 	// Google's "resource_exhausted", OpenAI's "insufficient_quota") and 429s
 	// without transient rate-limit wording mean this account is parked but a
@@ -1126,6 +1130,7 @@ function isRetryableUpstreamError(error: unknown, status: number | undefined, me
 	// credential block. Transient 429s ("Too many requests", per-minute caps)
 	// classify as RATE_LIMIT_EXCEEDED in `parseRateLimitReason` and stay in the
 	// provider's own backoff layer instead of burning siblings.
+	if (AIError.isCodexChatGPTAccountPolicyError(error, model.provider, model.id)) return true;
 	if (AIError.isAccountPolicyError(error)) return true;
 	if (AIError.isUsageLimit(error)) return true;
 	if (isInvalidatedOAuthTokenError(error)) return true;
@@ -1141,6 +1146,17 @@ function createAssistantAuthError(message: AssistantMessage): Error {
 			? new AIError.ProviderResponseError(text, { kind: "runtime" })
 			: new ProviderHttpError(text, status);
 	return typeof message.errorId === "number" ? AIError.attach(error, message.errorId) : error;
+}
+
+function contextualizeAuthRetryError(model: Model<Api>, error: unknown): unknown {
+	if (
+		!error ||
+		typeof error !== "object" ||
+		!AIError.isCodexChatGPTAccountPolicyError(error, model.provider, model.id)
+	) {
+		return error;
+	}
+	return AIError.attach(error, AIError.create(AIError.Flag.AccountPolicy | AIError.Flag.ContentBlocked));
 }
 
 function emitBufferedEvents(stream: AssistantMessageEventStream, events: AssistantMessageEvent[]): void {
@@ -1464,7 +1480,8 @@ function streamSimpleRequest<TApi extends Api>(
 			};
 
 			try {
-				const inner = streamSimpleRequest(model, context, { ...requestOptions, apiKey });
+				const attemptOptions = { ...requestOptions, apiKey };
+				const inner = streamSimpleRequest(model, context, attemptOptions);
 				for await (const event of inner) {
 					if (!emittedReplayUnsafeEvent && event.type === "start") {
 						bufferedEvents.push(event);
@@ -1474,12 +1491,17 @@ function streamSimpleRequest<TApi extends Api>(
 						!emittedReplayUnsafeEvent &&
 						event.type === "error" &&
 						isRetryableUpstreamError(
+							model,
 							event.error,
 							extractStatusFromAssistantError(event.error),
 							event.error.errorMessage,
 						)
 					) {
-						return { error: createAssistantAuthError(event.error), bufferedEvents, terminalEvent: event };
+						return {
+							error: contextualizeAuthRetryError(model, createAssistantAuthError(event.error)),
+							bufferedEvents,
+							terminalEvent: event,
+						};
 					}
 					flushBuffered();
 					emittedReplayUnsafeEvent = true;
@@ -1492,12 +1514,13 @@ function streamSimpleRequest<TApi extends Api>(
 				if (
 					!emittedReplayUnsafeEvent &&
 					isRetryableUpstreamError(
+						model,
 						error,
 						AIError.status(error),
 						error instanceof Error ? error.message : undefined,
 					)
 				) {
-					return { error, bufferedEvents };
+					return { error: contextualizeAuthRetryError(model, error), bufferedEvents };
 				}
 				flushBuffered();
 				outer.fail(error);
@@ -1602,23 +1625,27 @@ function streamSimpleRequest<TApi extends Api>(
 
 	// GitLab Duo - wraps Anthropic/OpenAI behind GitLab AI Gateway direct access tokens
 	if (isGitLabDuoModel(model)) {
-		return withProviderInFlightLimit(model, requestOptions, () =>
-			streamGitLabDuo(model, context, {
-				...requestOptions,
-				apiKey,
-			}),
+		return withThinkingLoopGuard(model, requestOptions, opts =>
+			withProviderInFlightLimit(model, opts, () =>
+				streamGitLabDuo(model, context, {
+					...opts,
+					apiKey,
+				}),
+			),
 		);
 	}
 
 	// GitLab Duo Workflow - IDE workflow protocol + WebSocket action bridge
 	if (model.api === "gitlab-duo-agent") {
 		// Does not route through withProviderInFlightLimit, so heal explicitly.
-		return healLeakedThinking(
-			model,
-			streamGitLabDuoWorkflow(model as Model<"gitlab-duo-agent">, context, {
-				...requestOptions,
-				apiKey,
-			}),
+		return withThinkingLoopGuard(model, requestOptions, opts =>
+			healLeakedThinking(
+				model,
+				streamGitLabDuoWorkflow(model as Model<"gitlab-duo-agent">, context, {
+					...opts,
+					apiKey,
+				}),
+			),
 		);
 	}
 
@@ -1630,24 +1657,28 @@ function streamSimpleRequest<TApi extends Api>(
 		// thinking, so clamp disabled requests to the lowest supported effort
 		// (mirrors the mapOptionsForApi path every other provider takes).
 		const kimiOptions = normalizeMandatoryReasoningOptions(model, requestOptions);
-		return withProviderInFlightLimit(model, kimiOptions, () =>
-			streamKimi(model as Model<"openai-completions">, context, {
-				...kimiOptions,
-				apiKey,
-				format: kimiOptions?.kimiApiFormat,
-			}),
+		return withThinkingLoopGuard(model, kimiOptions, opts =>
+			withProviderInFlightLimit(model, opts, () =>
+				streamKimi(model as Model<"openai-completions">, context, {
+					...opts,
+					apiKey,
+					format: opts?.kimiApiFormat,
+				}),
+			),
 		);
 	}
 
 	// Synthetic - route to dedicated handler that wraps OpenAI or Anthropic API
 	if (isSyntheticModel(model)) {
-		// Pass raw SimpleStreamOptions - streamSynthetic handles mapping internally
-		return withProviderInFlightLimit(model, requestOptions, () =>
-			streamSynthetic(model as Model<"openai-completions">, context, {
-				...requestOptions,
-				apiKey,
-				format: requestOptions?.syntheticApiFormat ?? "openai", // Default to OpenAI format
-			}),
+		// Pass raw SimpleStreamOptions - streamSynthetic handles mapping internally.
+		return withThinkingLoopGuard(model, requestOptions, opts =>
+			withProviderInFlightLimit(model, opts, () =>
+				streamSynthetic(model as Model<"openai-completions">, context, {
+					...opts,
+					apiKey,
+					format: opts?.syntheticApiFormat ?? "openai",
+				}),
+			),
 		);
 	}
 	const providerOptions = mapOptionsForApi(model, requestOptions, apiKey);
@@ -1671,11 +1702,7 @@ export async function completeSimple<TApi extends Api>(
 		);
 	}
 
-	return resolveWithThinkingLoopCook(
-		options?.signal,
-		() => streamSimple(model, context, options),
-		() => streamSimple(model, context, { ...options, loopGuard: { ...options?.loopGuard, enabled: false } }),
-	);
+	return resolveWithThinkingLoopRetries(options?.signal, () => streamSimple(model, context, options));
 }
 
 const MIN_OUTPUT_TOKENS = 1024;
@@ -1869,8 +1896,17 @@ function normalizeMandatoryReasoningOptions<TApi extends Api>(
 		return options;
 	}
 	const floor = minimumSupportedEffort(model);
-	const effort = explicitlyDisabled ? floor : (defaultLevel ?? floor);
-	if (effort === undefined) return options;
+	if (floor === undefined) return options;
+	const dropsThinkingWhenReasoningEffort =
+		model.compat !== undefined &&
+		"dropThinkingWhenReasoningEffort" in model.compat &&
+		model.compat.dropThinkingWhenReasoningEffort === true;
+	// GLM-5.3's OpenAI-compatible endpoints advertise `defaultLevel: max` for
+	// the UI, but omitted wire effort must still start at the lowest tier. The
+	// compat policy's drop-thinking marker identifies this mandatory low/high/max
+	// dialect without changing defaults for models that rely on their declared
+	// level (for example Grok).
+	const effort = explicitlyDisabled || dropsThinkingWhenReasoningEffort ? floor : (defaultLevel ?? floor);
 	return { ...options, reasoning: effort, disableReasoning: undefined, forceReasoningOff: undefined };
 }
 
@@ -2195,7 +2231,7 @@ function mapOptionsForApi<TApi extends Api>(
 					serviceTier: options?.serviceTier,
 					thinking: {
 						enabled: true,
-						level: mapEffortToGoogleThinkingLevel(effort),
+						level: mapEffortToGoogleThinkingLevel(effort, googleModel),
 					},
 					hideThinkingSummary: options?.hideThinkingSummary,
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
@@ -2230,7 +2266,7 @@ function mapOptionsForApi<TApi extends Api>(
 						requestModelId: resolveWireModelId(model, effort),
 						thinking: {
 							enabled: true,
-							level: mapEffortToGoogleThinkingLevel(effort),
+							level: mapEffortToGoogleThinkingLevel(effort, model),
 						},
 						hideThinkingSummary: options?.hideThinkingSummary,
 						toolChoice,
@@ -2302,7 +2338,7 @@ function mapOptionsForApi<TApi extends Api>(
 					serviceTier: options?.serviceTier,
 					thinking: {
 						enabled: true,
-						level: mapEffortToGoogleThinkingLevel(effort),
+						level: mapEffortToGoogleThinkingLevel(effort, model),
 					},
 					hideThinkingSummary: options?.hideThinkingSummary,
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),

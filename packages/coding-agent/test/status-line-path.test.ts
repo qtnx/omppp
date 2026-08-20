@@ -8,9 +8,17 @@ import {
 	renderSegment,
 } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { getProjectDir, removeSyncWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
+import { getProjectDir, pathIsWithin, removeSyncWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
 
 const originalProjectDir = getProjectDir();
+const SCRATCH_ROOT_PREFIXES: readonly string[] = [
+	os.tmpdir(),
+	path.join(os.homedir(), "tmp"),
+	"/tmp",
+	"/var/tmp",
+	"/private/tmp",
+	"/private/var/tmp",
+];
 beforeAll(async () => {
 	await initTheme();
 });
@@ -55,6 +63,8 @@ function createPathContext(): SegmentContext {
 		contextTokens: 0,
 		contextWindow: 0,
 		autoCompactEnabled: false,
+		compactionSpeculation: "idle",
+		speculationBlinkOn: true,
 		subagentCount: 0,
 		activeMs: 0,
 		activeRepo: null,
@@ -82,6 +92,9 @@ function expectContentToContainPath(content: string, expected: string): void {
 	expect(content).toContain(expected);
 }
 
+// Keep the checkout-location guard for tests that exercise a non-scratch home.
+const CHECKOUT_IS_SCRATCH = SCRATCH_ROOT_PREFIXES.some(root => pathIsWithin(root, originalProjectDir));
+
 function createHermeticPathRoots(): { home: string; projectsRoot: string; scratchRoot: string; cleanupRoot: string } {
 	const cleanupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-roots-"));
 	const home = path.join(cleanupRoot, "home");
@@ -95,7 +108,7 @@ function createHermeticPathRoots(): { home: string; projectsRoot: string; scratc
 }
 
 describe("status line path segment", () => {
-	it("strips the Projects root for symlink-equivalent aliases", () => {
+	it.skipIf(CHECKOUT_IS_SCRATCH)("strips the Projects root for symlink-equivalent aliases", () => {
 		if (process.platform === "win32") return;
 
 		const { home, projectsRoot, cleanupRoot } = createHermeticPathRoots();

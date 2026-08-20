@@ -120,8 +120,8 @@ describe("AgentSession auto_compaction_progress e2e", () => {
 		const settings = Settings.isolated({
 			"compaction.enabled": true,
 			"compaction.autoContinue": false,
-			"compaction.strategy": "context-full",
-			"compaction.remoteEnabled": true,
+			"compaction.methodOrder": ["remote", "soft"],
+			"compaction.thresholdPercent": 80,
 			"compaction.remoteStreamingV2Enabled": true,
 			"todo.enabled": false,
 			"todo.reminders": false,
@@ -222,7 +222,7 @@ describe("AgentSession auto_compaction_progress e2e", () => {
 		expect(progress.length).toBeGreaterThanOrEqual(1);
 
 		for (const p of progress) {
-			expect(p.action).toBe("context-full");
+			expect(p.action).toBe("remote");
 			expect(p.events).toBeGreaterThan(0);
 			expect(p.bytes).toBeGreaterThan(0);
 			const idx = events.indexOf(p);
