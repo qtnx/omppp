@@ -2088,6 +2088,30 @@ export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 
 	// Conversation flow
+	messageDelivery: {
+		type: "enum",
+		values: ["steer", "queue"] as const,
+		default: "queue",
+		ui: {
+			tab: "interaction",
+			group: "Input",
+			label: "Message Delivery",
+			description: "Deliver typed messages by interrupting the current turn (Steer) or after it completes (Queue)",
+			options: [
+				{
+					value: "steer",
+					label: "Steer",
+					description: "Interrupt the current turn with guidance for the model",
+				},
+				{
+					value: "queue",
+					label: "Queue",
+					description: "Deliver the message as a follow-up after the current turn",
+				},
+			],
+		},
+	},
+
 	steeringMode: {
 		type: "enum",
 		values: ["all", "one-at-a-time"] as const,

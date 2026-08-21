@@ -20,7 +20,7 @@ export interface KanbanCustomMessagePayload {
 }
 
 export interface KanbanPromptOptions {
-	streamingBehavior: "steer";
+	streamingBehavior: "followUp";
 	queueOnly: true;
 }
 
@@ -388,7 +388,7 @@ export class KanbanSessionDelivery {
 					details: { eventIds: [event.id], cursors: [event.cursor] },
 					attribution: "user",
 				},
-				{ streamingBehavior: "steer", queueOnly: true },
+				{ streamingBehavior: "followUp", queueOnly: true },
 			);
 			return;
 		}

@@ -251,7 +251,7 @@ describe("Kanban session delivery", () => {
 		expect(sessionB.urgentMessages).toHaveLength(2);
 	});
 
-	it("sanitizes streamed events and steers blocked task updates", async () => {
+	it("sanitizes streamed events and queues blocked task updates", async () => {
 		const harness = await createHarness();
 		const session = new FakeSession("session-a");
 		await harness.runtime.registerSession(session);
@@ -320,7 +320,7 @@ describe("Kanban session delivery", () => {
 		expect(session.urgentMessages).toHaveLength(2);
 		expect(session.urgentMessages.at(-1)).toMatchObject({
 			message: { role: "custom", customType: "kanban-event", attribution: "user" },
-			options: { queueOnly: true, streamingBehavior: "steer" },
+			options: { queueOnly: true, streamingBehavior: "followUp" },
 		});
 	});
 

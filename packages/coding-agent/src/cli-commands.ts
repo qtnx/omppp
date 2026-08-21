@@ -133,6 +133,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.liveAgentHelp,
 	},
 	{
+		name: "linear",
+		load: () => import("./commands/linear").then(m => m.default),
+		help: commandHelp.linearHelp,
+	},
+	{
 		name: "models",
 		load: () => import("./commands/models").then(m => m.default),
 		help: commandHelp.modelsHelp,
