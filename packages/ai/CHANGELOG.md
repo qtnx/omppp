@@ -2,22 +2,12 @@
 
 ## [Unreleased]
 
+## [1.7.4] - 2026-08-21
+
 ### Fixed
 
 - Restored 1-hour prompt-cache retention by default for official Anthropic OAuth requests, preventing long sessions from repeatedly rebilling uncached context after upstream updates.
 
-## [1.7.3] - 2026-08-15
-
-### Fixed
-
-- Restored two fork features that the upstream v17.3.4 merge silently dropped: the observed request-cost history (`usage_cost_history` schema, `AuthStorage.recordUsageCost`, and the store read/write APIs used for providers without an upstream usage endpoint), and the Anthropic prompt-cache breakpoint budget (named breakpoint cap, cacheable system-prefix placement, and the message-window bound) whose callsites had vanished from `buildParams`.
-- OpenRouter 402s that say the reserved `max_tokens` exceeds remaining credit (`can only afford N`) now retry the same request once with an explicit `maxTokens = N` instead of failing the turn or rotating credentials. Omitting the catalog default is still required so provider routing is not filtered.
-
-## [1.7.1] - 2026-08-13
-
-### Fixed
-
-- Fixed mandatory-reasoning models applying `thinking.defaultLevel` when reasoning is omitted, instead of always clamping to the lowest supported effort ([#8369](https://github.com/can1357/oh-my-pi/pull/8369) by [@dendritic](https://github.com/dendritic)).
 ## [17.4.0] - 2026-08-20
 
 ### Added
@@ -135,11 +125,6 @@
 ### Removed
 
 - Removed legacy local request-cost estimation machinery and database schemas previously used for OpenCode Go estimates.
-## [1.7.2] - 2026-08-14
-
-### Fixed
-
-- Fixed `xai-oauth/grok-4.6` Responses requests to ask for concise reasoning summaries, request encrypted reasoning content, and replay native reasoning items across tool turns.
 
 ## [17.2.15] - 2026-08-12
 
@@ -4809,6 +4794,25 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.7.3] - 2026-08-15
+
+### Fixed
+
+- Restored two fork features that the upstream v17.3.4 merge silently dropped: the observed request-cost history (`usage_cost_history` schema, `AuthStorage.recordUsageCost`, and the store read/write APIs used for providers without an upstream usage endpoint), and the Anthropic prompt-cache breakpoint budget (named breakpoint cap, cacheable system-prefix placement, and the message-window bound) whose callsites had vanished from `buildParams`.
+- OpenRouter 402s that say the reserved `max_tokens` exceeds remaining credit (`can only afford N`) now retry the same request once with an explicit `maxTokens = N` instead of failing the turn or rotating credentials. Omitting the catalog default is still required so provider routing is not filtered.
+
+## [1.7.2] - 2026-08-14
+
+### Fixed
+
+- Fixed `xai-oauth/grok-4.6` Responses requests to ask for concise reasoning summaries, request encrypted reasoning content, and replay native reasoning items across tool turns.
+
+## [1.7.1] - 2026-08-13
+
+### Fixed
+
+- Fixed mandatory-reasoning models applying `thinking.defaultLevel` when reasoning is omitted, instead of always clamping to the lowest supported effort ([#8369](https://github.com/can1357/oh-my-pi/pull/8369) by [@dendritic](https://github.com/dendritic)).
 
 ## [1.7.1] - 2026-08-13
 

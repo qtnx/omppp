@@ -2,17 +2,6 @@
 
 ## [Unreleased]
 
-## [1.7.3] - 2026-08-15
-
-### Added
-
-- Adopted upstream's new model coverage from v17.3.4 (Daybreak Blue/Red, GPT-5.6 Cyber, Gemini 3.7 Flash, Grok 4.6 via Cursor, and the other newly published ids) alongside the fork's own entries; the fork's `providerOutputClamp` compat field and the pro-alias wire ladder (`OPENAI_PRO_REASONING_EFFORT_MAP`) are kept, so `*-pro` selectors still shift up on the five-level Responses scale.
-
-## [1.7.1] - 2026-08-13
-
-### Fixed
-
-- Fixed xAI OAuth support for `grok-4.6` with its 500K context window, text-and-image input, and reasoning-effort controls. `grok-4.5` and `grok-4.6` now expose only their documented effort ladders, default to `high`, apply that default when reasoning is omitted, and cannot disable reasoning ([#8369](https://github.com/can1357/oh-my-pi/pull/8369) by [@dendritic](https://github.com/dendritic)).
 ## [17.4.0] - 2026-08-20
 
 ### Added
@@ -137,12 +126,6 @@
 - Bounded OpenAI-compatible model discovery with a default request timeout so a stalled provider `/models` endpoint can no longer hang startup indefinitely in `resolveModelDiscoveryFallback` ([#8315](https://github.com/can1357/oh-my-pi/issues/8315)).
 - Fixed Codex-discovered `gpt-daybreak-*` aliases being treated as unknown models, restoring the GPT-5.6 `low`/`medium`/`high`/`xhigh`/`max` effort ladder and its 372K fallback only when the Codex registry omits `context_window`.
 - Fixed first-party OpenAI GPT-5.6 aliases to preserve wire-level `off` through generated pro aliases and to price requests above 272K input at each SKU's documented long-context rates.
-## [1.7.2] - 2026-08-14
-
-### Fixed
-
-- Marked `xai-oauth/grok-4.6` as supporting encrypted native-reasoning replay while preserving the legacy filtering policy for older Grok models.
-- Fixed live Codex discovery downgrading `openai-codex/gpt-5.6-sol` from its 372K input window to the legacy 272K default.
 
 ## [17.2.15] - 2026-08-12
 
@@ -1160,6 +1143,25 @@
 ### Removed
 
 - Removed the runtime enrichment layer: `enrichModelThinking` (and its non-enumerable memo-slot cache), `refreshModelThinking`, `modelOmitsReasoningEffort`, and the `model-thinking` re-exports of generator-only policies. Thinking metadata is resolved exactly once inside `buildModel`; runtime helpers (`getSupportedEfforts`, `clampThinkingLevelForModel`, `requireSupportedEffort`, the effort mappers) are pure field reads.
+
+## [1.7.3] - 2026-08-15
+
+### Added
+
+- Adopted upstream's new model coverage from v17.3.4 (Daybreak Blue/Red, GPT-5.6 Cyber, Gemini 3.7 Flash, Grok 4.6 via Cursor, and the other newly published ids) alongside the fork's own entries; the fork's `providerOutputClamp` compat field and the pro-alias wire ladder (`OPENAI_PRO_REASONING_EFFORT_MAP`) are kept, so `*-pro` selectors still shift up on the five-level Responses scale.
+
+## [1.7.2] - 2026-08-14
+
+### Fixed
+
+- Marked `xai-oauth/grok-4.6` as supporting encrypted native-reasoning replay while preserving the legacy filtering policy for older Grok models.
+- Fixed live Codex discovery downgrading `openai-codex/gpt-5.6-sol` from its 372K input window to the legacy 272K default.
+
+## [1.7.1] - 2026-08-13
+
+### Fixed
+
+- Fixed xAI OAuth support for `grok-4.6` with its 500K context window, text-and-image input, and reasoning-effort controls. `grok-4.5` and `grok-4.6` now expose only their documented effort ladders, default to `high`, apply that default when reasoning is omitted, and cannot disable reasoning ([#8369](https://github.com/can1357/oh-my-pi/pull/8369) by [@dendritic](https://github.com/dendritic)).
 
 ## [1.7.1] - 2026-08-13
 

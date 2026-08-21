@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.7.4] - 2026-08-21
+
 ### Added
 
 - Added native Linear MCP synchronization: `/linear on <status...>` imports issues assigned to the current user and their comments into the existing Kanban worker lifecycle, while `/linear add` and `ompx linear add` configure Linear's official MCP server. The installer remains opt-in through `--linear`.
@@ -16,47 +18,6 @@
 
 - Herdr pane status no longer gets stomped to `unknown` by headless children that inherit `HERDR_ENV` (tests, print/RPC, workers). The native reporter now waits for a UI session before publishing, never sends `pane.release_agent` (Herdr 0.8.0 ends ownership on process exit; official OMP v8 never released), and flips the pane to `working` as soon as a normal prompt is submitted instead of scheduling idle until `before_agent_start`.
 
-## [1.7.3] - 2026-08-15
-
-### Added
-
-- Added a `codegraph.autoIndex` setting (default on) so background CodeGraph init/index at session startup can be disabled independently of the master `codegraph.enabled` toggle; both live under Settings → Files → CodeGraph and in config files.
-- Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
-- Added an encrypted secret vault with OS-keychain-backed keys, prompt auto-detection, masked `/secrets` management, a secrets tool, and opt-in bash environment injection.
-- Added an `ompx secrets` command (`list`, `get [--reveal]`, `copy`, `add [--stdin]`, `remove`) so the vault owner can read or copy a stored value from their own shell; the agent-facing tool and slash command stay mask-only.
-
-### Changed
-
-- Synced with upstream oh-my-pi v17.3.4. The OMPx divergences are preserved: fork version line, `ompx` branding and `qtnx/omppp` self-update source, the `quick_task`/`task`/`heavy_task` implementer tiers (upstream's `sonic` rename is not adopted), fork-only packages and features, and the fork-shaped CI. Upstream's native `pdfToMarkdown` pipeline replaces the mupdf-wasm PDF path, so the `mupdf` dependency and the `gen:mupdf` scripts are gone.
-- The orchestrate contract stays tool-agnostic instead of adopting upstream's Handlebars per-tool gating: it defers to "the active toolset" rather than naming `edit`/`write`, so it can never advertise a tool the session lacks.
-- Footer and status-line context usage no longer reopen the Context GC database on every render: effective-token estimates are memoized until the branch, message list, or base token count changes.
-
-## [1.7.2] - 2026-08-14
-### Added
-
-- Added `/loop list`, `/loop stop <id>`, `/loop cancel <id>`, and all-loop cancellation so loops scheduled by the agent can be inspected and stopped without leaving interactive loop mode.
-- Integrated CodeGraph as a managed built-in: OMPx now installs or upgrades the CodeGraph executable, initializes or syncs each top-level workspace in the background, exposes `codegraph_init`, `codegraph_index`, and default-active `codegraph_explore` tools, and guides the model to use indexed source and call paths before falling back to file-by-file exploration.
-
-### Fixed
-
-- Plan mode no longer tells the agent to use `ask` or to dispatch scouts `via task` when those tools are absent from the session. The preference-gathering directive and the scout dispatch step are now gated on tool availability, matching the rest of the plan-mode prompt.
-- Native CI no longer hard-fails a release rebuild when sccache cannot reach the GitHub Actions cache backend. Bazel addon builds strip that wrapper and skip unused host cargo/sccache setup.
-- `super_review` now advances through its configured authenticated model chain when a provider fails at runtime, instead of stopping after the first model's 402, timeout, or upstream error; exhausted chains report every attempted model and failure.
-
-
-## [1.7.1] - 2026-08-13
-
-### Added
-
-- Added a `providers.xaiImageModel` setting (Settings › Providers › Services › "xAI Image Model") that picks the Grok Imagine model `generate_image` uses when it resolves to the xAI provider: `grok-imagine-image` (default, standard tier) or `grok-imagine-image-quality` — the API id of xAI's Imagine Image 2.0 / Quality Mode. Previously the model was hardcoded to `grok-imagine-image`, so the quality tier was unreachable. Note there is no `grok-imagine-image-2` model id; that string 404s against `api.x.ai`.
-- Added a `modelRoles.super_review` role for the `super_review` tool. Unset, it walks `anthropic/claude-fable-5:high` → `tnx/super` → `openai-codex/gpt-5.6-sol:high` and picks the first available authenticated model. Override with `modelRoles.super_review` (comma-separated selectors work) in config or the model hub.
-
-### Fixed
-
-- Fixed `super_review` failing to connect: it no longer hardcodes `tnx/super` through the dead `http://codemc:4000` auth gateway. The one-turn call now uses the resolved provider endpoint and the registry API key.
-- `super_review` now sends an explicit 8192-token output cap on the hardcoded `tnx/super` one-turn call, so OpenRouter-backed aliases no longer reserve the advertised 65536-token ceiling and 402 when remaining credit cannot cover that reservation.
-- The herdr `omp` entrypoint survives reinstalls that move the binary: `scripts/install.sh` now repoints an existing `omp` link at the freshly installed `ompx`, and a dangling link is reported as a `conflict` (repointable with `ompx herdr install --force`) instead of `missing`, which used to fail with `EEXIST`. The installer never creates the link — the `omp` name belongs to upstream oh-my-pi, so claiming it stays opt-in via `ompx herdr install` — and it leaves an unrelated `omp` alone. Skip it entirely with `OMPX_INSTALL_SKIP_HERDR_ENTRYPOINT=1`.
-- Fixed blocking advisor consultations collapsing paused, disposed, aborted, timed-out, queue-cleared, rate-limited, empty-response, and provider-error outcomes into a misleading timeout. Consults now report the exact cause and provider attempt history, expose the existing bounded retry cycle, return immediately when a rate-limited request is requeued, and stop retrying after cancellation.
 ## [17.4.0] - 2026-08-20
 
 ### Added
@@ -12757,6 +12718,48 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.7.3] - 2026-08-15
+
+### Added
+
+- Added a `codegraph.autoIndex` setting (default on) so background CodeGraph init/index at session startup can be disabled independently of the master `codegraph.enabled` toggle; both live under Settings → Files → CodeGraph and in config files.
+- Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
+- Added an encrypted secret vault with OS-keychain-backed keys, prompt auto-detection, masked `/secrets` management, a secrets tool, and opt-in bash environment injection.
+- Added an `ompx secrets` command (`list`, `get [--reveal]`, `copy`, `add [--stdin]`, `remove`) so the vault owner can read or copy a stored value from their own shell; the agent-facing tool and slash command stay mask-only.
+
+### Changed
+
+- Synced with upstream oh-my-pi v17.3.4. The OMPx divergences are preserved: fork version line, `ompx` branding and `qtnx/omppp` self-update source, the `quick_task`/`task`/`heavy_task` implementer tiers (upstream's `sonic` rename is not adopted), fork-only packages and features, and the fork-shaped CI. Upstream's native `pdfToMarkdown` pipeline replaces the mupdf-wasm PDF path, so the `mupdf` dependency and the `gen:mupdf` scripts are gone.
+- The orchestrate contract stays tool-agnostic instead of adopting upstream's Handlebars per-tool gating: it defers to "the active toolset" rather than naming `edit`/`write`, so it can never advertise a tool the session lacks.
+- Footer and status-line context usage no longer reopen the Context GC database on every render: effective-token estimates are memoized until the branch, message list, or base token count changes.
+
+## [1.7.2] - 2026-08-14
+
+### Added
+
+- Added `/loop list`, `/loop stop <id>`, `/loop cancel <id>`, and all-loop cancellation so loops scheduled by the agent can be inspected and stopped without leaving interactive loop mode.
+- Integrated CodeGraph as a managed built-in: OMPx now installs or upgrades the CodeGraph executable, initializes or syncs each top-level workspace in the background, exposes `codegraph_init`, `codegraph_index`, and default-active `codegraph_explore` tools, and guides the model to use indexed source and call paths before falling back to file-by-file exploration.
+
+### Fixed
+
+- Plan mode no longer tells the agent to use `ask` or to dispatch scouts `via task` when those tools are absent from the session. The preference-gathering directive and the scout dispatch step are now gated on tool availability, matching the rest of the plan-mode prompt.
+- Native CI no longer hard-fails a release rebuild when sccache cannot reach the GitHub Actions cache backend. Bazel addon builds strip that wrapper and skip unused host cargo/sccache setup.
+- `super_review` now advances through its configured authenticated model chain when a provider fails at runtime, instead of stopping after the first model's 402, timeout, or upstream error; exhausted chains report every attempted model and failure.
+
+## [1.7.1] - 2026-08-13
+
+### Added
+
+- Added a `providers.xaiImageModel` setting (Settings › Providers › Services › "xAI Image Model") that picks the Grok Imagine model `generate_image` uses when it resolves to the xAI provider: `grok-imagine-image` (default, standard tier) or `grok-imagine-image-quality` — the API id of xAI's Imagine Image 2.0 / Quality Mode. Previously the model was hardcoded to `grok-imagine-image`, so the quality tier was unreachable. Note there is no `grok-imagine-image-2` model id; that string 404s against `api.x.ai`.
+- Added a `modelRoles.super_review` role for the `super_review` tool. Unset, it walks `anthropic/claude-fable-5:high` → `tnx/super` → `openai-codex/gpt-5.6-sol:high` and picks the first available authenticated model. Override with `modelRoles.super_review` (comma-separated selectors work) in config or the model hub.
+
+### Fixed
+
+- Fixed `super_review` failing to connect: it no longer hardcodes `tnx/super` through the dead `http://codemc:4000` auth gateway. The one-turn call now uses the resolved provider endpoint and the registry API key.
+- `super_review` now sends an explicit 8192-token output cap on the hardcoded `tnx/super` one-turn call, so OpenRouter-backed aliases no longer reserve the advertised 65536-token ceiling and 402 when remaining credit cannot cover that reservation.
+- The herdr `omp` entrypoint survives reinstalls that move the binary: `scripts/install.sh` now repoints an existing `omp` link at the freshly installed `ompx`, and a dangling link is reported as a `conflict` (repointable with `ompx herdr install --force`) instead of `missing`, which used to fail with `EEXIST`. The installer never creates the link — the `omp` name belongs to upstream oh-my-pi, so claiming it stays opt-in via `ompx herdr install` — and it leaves an unrelated `omp` alone. Skip it entirely with `OMPX_INSTALL_SKIP_HERDR_ENTRYPOINT=1`.
+- Fixed blocking advisor consultations collapsing paused, disposed, aborted, timed-out, queue-cleared, rate-limited, empty-response, and provider-error outcomes into a misleading timeout. Consults now report the exact cause and provider attempt history, expose the existing bounded retry cycle, return immediately when a rate-limited request is requeued, and stop retrying after cancellation.
 
 ## [1.7.1] - 2026-08-13
 
