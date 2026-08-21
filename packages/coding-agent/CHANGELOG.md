@@ -10,7 +10,7 @@
 
 - Installer config migration now defaults the `scout` agent to `tnx/scout` and, when retry fallback chains already exist, adds the same `smol` fallback chain (`openai-codex/gpt-5.3-codex-spark` then `anthropic/claude-haiku-4-5`) unless a `scout` chain is already set. Custom scout models and existing scout fallbacks are left alone.
 - CodeGraph now runs only inside Git checkouts. Non-git directories skip background init/index, and `codegraph_*` execute refuses with a clear error.
-- Added a Message Delivery setting that switches ordinary in-flight input between the existing Steer and Queue/follow-up paths; Steer remains the default.
+- Added a Message Delivery setting that switches ordinary in-flight input between the existing Steer and Queue/follow-up paths; Queue is the default so messages are handled after the current turn.
 
 ### Fixed
 

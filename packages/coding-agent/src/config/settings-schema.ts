@@ -2091,7 +2091,7 @@ export const SETTINGS_SCHEMA = {
 	messageDelivery: {
 		type: "enum",
 		values: ["steer", "queue"] as const,
-		default: "steer",
+		default: "queue",
 		ui: {
 			tab: "interaction",
 			group: "Input",
