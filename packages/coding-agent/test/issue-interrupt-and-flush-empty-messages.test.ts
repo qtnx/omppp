@@ -76,7 +76,7 @@ describe("empty submit with queued messages", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
-	it("queues an image-only steer while streaming", async () => {
+	it("queues an image-only follow-up while streaming", async () => {
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 		const { ctx, abort, prompt, updatePendingMessagesDisplay, requestRender } = createContext({
 			queuedMessageCount: 0,
@@ -88,14 +88,14 @@ describe("empty submit with queued messages", () => {
 		await ctx.editor.onSubmit?.("");
 
 		expect(abort).not.toHaveBeenCalled();
-		expect(prompt).toHaveBeenCalledWith("", { streamingBehavior: "steer", images: [image] });
+		expect(prompt).toHaveBeenCalledWith("", { streamingBehavior: "followUp", images: [image] });
 		expect(ctx.editor.pendingImages).toEqual([]);
 		expect(ctx.editor.pendingImageLinks).toEqual([]);
 		expect(updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
-	it("restores an image-only steer when streaming dispatch rejects", async () => {
+	it("restores an image-only follow-up when streaming dispatch rejects", async () => {
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 		const { ctx, abort, prompt, showError, updatePendingMessagesDisplay, requestRender } = createContext({
 			queuedMessageCount: 0,
@@ -120,7 +120,7 @@ describe("empty submit with queued messages", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
-	it("queues an image-only steer instead of aborting when messages are already queued", async () => {
+	it("queues an image-only follow-up instead of aborting when messages are already queued", async () => {
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 		const { ctx, abort, prompt } = createContext({ queuedMessageCount: 1, pendingImages: [image] });
 		const controller = new InputController(ctx);
@@ -129,6 +129,6 @@ describe("empty submit with queued messages", () => {
 		await ctx.editor.onSubmit?.("");
 
 		expect(abort).not.toHaveBeenCalled();
-		expect(prompt).toHaveBeenCalledWith("", { streamingBehavior: "steer", images: [image] });
+		expect(prompt).toHaveBeenCalledWith("", { streamingBehavior: "followUp", images: [image] });
 	});
 });
