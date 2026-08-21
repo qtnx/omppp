@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import {
-	getKanbanModelApi,
-	setKanbanBoardForker,
-	startKanbanBoard,
-	stopKanbanBoard,
-} from "../src/kanban";
+import { getKanbanModelApi, setKanbanBoardForker, startKanbanBoard, stopKanbanBoard } from "../src/kanban";
+import type {
+	KanbanCustomMessagePayload,
+	KanbanForkedAgent,
+	KanbanForkRequest,
+	KanbanPromptOptions,
+	KanbanSessionPort,
+} from "../src/kanban/runtime";
 import {
 	getLinearIntegrationStatus,
 	startLinearIntegration,
@@ -13,13 +15,6 @@ import {
 } from "../src/linear/runtime";
 import { MCPManager } from "../src/mcp/manager";
 import type { MCPServerConnection, MCPToolDefinition } from "../src/mcp/types";
-import type {
-	KanbanCustomMessagePayload,
-	KanbanForkedAgent,
-	KanbanForkRequest,
-	KanbanPromptOptions,
-	KanbanSessionPort,
-} from "../src/kanban/runtime";
 import { YieldQueue } from "../src/session/yield-queue";
 
 class TestSession implements KanbanSessionPort {
@@ -94,7 +89,8 @@ function installLinearMcp(
 				const args = (params?.arguments ?? {}) as Record<string, unknown>;
 				fixture.calls.push({ name, args });
 				if (name === "list_issues") return { content: [{ type: "text", text: JSON.stringify(fixture.issues) }] };
-				if (name === "list_comments") return { content: [{ type: "text", text: JSON.stringify(fixture.comments) }] };
+				if (name === "list_comments")
+					return { content: [{ type: "text", text: JSON.stringify(fixture.comments) }] };
 				throw new Error(`Unexpected MCP tool ${name}`);
 			},
 		},
@@ -181,7 +177,9 @@ describe("Linear Kanban sync", () => {
 		const session = await startSession(`linear-sync-noop-${crypto.randomUUID()}`);
 		await startLinearIntegration(session, ["Todo"]);
 		const api = getKanbanModelApi(session.sessionId)!;
-		const task = api.store.getBoard(api.boardId).tasks.find(candidate => candidate.labels.includes(`linear:${issueId}`))!;
+		const task = api.store
+			.getBoard(api.boardId)
+			.tasks.find(candidate => candidate.labels.includes(`linear:${issueId}`))!;
 		const before = task.version;
 		const initialForks = session.forks.filter(work => work.includes(title));
 		expect(initialForks).toHaveLength(1);
@@ -195,9 +193,27 @@ describe("Linear Kanban sync", () => {
 		const issueIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()] as const;
 		const fixture: LinearFixture = {
 			issues: [
-				{ id: issueIds[0], identifier: "ENG-P1", title: `Urgent ${issueIds[0]}`, priority: 1, updatedAt: "2026-08-21T12:00:00.000Z" },
-				{ id: issueIds[1], identifier: "ENG-P4", title: `Low ${issueIds[1]}`, priority: 4, updatedAt: "2026-08-21T12:00:00.000Z" },
-				{ id: issueIds[2], identifier: "ENG-PS", title: `String ${issueIds[2]}`, priority: "urgent", updatedAt: "2026-08-21T12:00:00.000Z" },
+				{
+					id: issueIds[0],
+					identifier: "ENG-P1",
+					title: `Urgent ${issueIds[0]}`,
+					priority: 1,
+					updatedAt: "2026-08-21T12:00:00.000Z",
+				},
+				{
+					id: issueIds[1],
+					identifier: "ENG-P4",
+					title: `Low ${issueIds[1]}`,
+					priority: 4,
+					updatedAt: "2026-08-21T12:00:00.000Z",
+				},
+				{
+					id: issueIds[2],
+					identifier: "ENG-PS",
+					title: `String ${issueIds[2]}`,
+					priority: "urgent",
+					updatedAt: "2026-08-21T12:00:00.000Z",
+				},
 			],
 			comments: [],
 			calls: [],
@@ -215,7 +231,14 @@ describe("Linear Kanban sync", () => {
 	it("connects the configured Linear MCP server once when the session has no connection", async () => {
 		const issueId = crypto.randomUUID();
 		const fixture: LinearFixture = {
-			issues: [{ id: issueId, identifier: "ENG-CONNECT", title: `Connect ${issueId}`, updatedAt: "2026-08-21T12:00:00.000Z" }],
+			issues: [
+				{
+					id: issueId,
+					identifier: "ENG-CONNECT",
+					title: `Connect ${issueId}`,
+					updatedAt: "2026-08-21T12:00:00.000Z",
+				},
+			],
 			comments: [],
 			calls: [],
 		};
@@ -251,7 +274,9 @@ describe("Linear Kanban sync", () => {
 			installLinearMcp(fixture);
 			const session = await startSession(`linear-sync-stop-${crypto.randomUUID()}`);
 			await startLinearIntegration(session, ["Todo"]);
-			const poll = setIntervalSpy.mock.calls.findLast(([, interval]) => interval === 30_000)?.[0] as (() => void) | undefined;
+			const poll = setIntervalSpy.mock.calls.findLast(([, interval]) => interval === 30_000)?.[0] as
+				| (() => void)
+				| undefined;
 			expect(poll).toBeDefined();
 			const callsBeforeStop = fixture.calls.length;
 			expect(await stopLinearIntegration(session.sessionId)).toBe(true);

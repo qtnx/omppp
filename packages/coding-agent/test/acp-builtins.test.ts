@@ -25,11 +25,11 @@ import {
 	setAgentDir,
 	setProjectDir,
 } from "@oh-my-pi/pi-utils";
-import { ensureLinearMcpConfig } from "../src/linear/config";
-import * as kanban from "../src/kanban";
-import * as linearRuntime from "../src/linear/runtime";
 import { CONTEXT_GC_CUSTOM_TYPE, type ContextGcDelta, type ContextStatus } from "../../context-gc-plugin/src/schema";
 import { type ContextGcStore, openContextGcStore } from "../../context-gc-plugin/src/storage";
+import * as kanban from "../src/kanban";
+import { ensureLinearMcpConfig } from "../src/linear/config";
+import * as linearRuntime from "../src/linear/runtime";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
@@ -405,7 +405,7 @@ describe("ACP builtin slash commands", () => {
 			comments: 5,
 		});
 		try {
-			expect(await executeAcpBuiltinSlashCommand("/linear on \"In Progress\", Todo", runtime)).toEqual({
+			expect(await executeAcpBuiltinSlashCommand('/linear on "In Progress", Todo', runtime)).toEqual({
 				consumed: true,
 			});
 			expect(startBoard).toHaveBeenCalledTimes(1);

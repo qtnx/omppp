@@ -25,10 +25,7 @@ function isExactLinearConfig(config: MCPServerConfig | undefined): boolean {
  * @returns `true` when this call added the server, `false` when it was already
  * configured exactly as required.
  */
-export async function ensureLinearMcpConfig(
-	cwd: string,
-	scope: LinearMcpConfigScope = "user",
-): Promise<boolean> {
+export async function ensureLinearMcpConfig(cwd: string, scope: LinearMcpConfigScope = "user"): Promise<boolean> {
 	const filePath = getMCPConfigPath(scope, cwd);
 	const existing = await readMCPConfigFile(filePath);
 	const configured = existing.mcpServers?.[LINEAR_SERVER_NAME];

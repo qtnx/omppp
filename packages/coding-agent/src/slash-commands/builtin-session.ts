@@ -280,7 +280,10 @@ async function runLinearCommand(args: string, session: AgentSession, cwd: string
 	}
 }
 
-async function handleLinearCommand(command: ParsedSlashCommand, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+async function handleLinearCommand(
+	command: ParsedSlashCommand,
+	runtime: SlashCommandRuntime,
+): Promise<SlashCommandResult> {
 	await runtime.output(await runLinearCommand(command.args, runtime.session, runtime.cwd));
 	return commandConsumed();
 }

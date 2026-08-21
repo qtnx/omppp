@@ -2,7 +2,7 @@ import { getKanbanModelApi } from "../kanban";
 import type { KanbanSessionPort } from "../kanban/runtime";
 import type { KanbanStore } from "../kanban/store";
 import type { KanbanActivity, KanbanTask } from "../kanban/types";
-import { McpLinearSource, type LinearComment, type LinearIssue } from "./mcp-source";
+import { type LinearComment, type LinearIssue, McpLinearSource } from "./mcp-source";
 
 const POLL_INTERVAL_MS = 30_000;
 const LINEAR_LABEL = "linear";
@@ -120,12 +120,10 @@ async function syncOnce(integration: LinearIntegration): Promise<LinearSyncResul
 	if (!api) throw new Error("Kanban board is not running for this session");
 	await integration.source.ensureAvailable();
 	const tasks = new Map(
-		api.store
-			.getBoard(api.boardId)
-			.tasks.flatMap(task => {
-				const label = task.labels.find(candidate => candidate.startsWith("linear:"));
-				return label ? [[label.slice("linear:".length), task] as const] : [];
-			}),
+		api.store.getBoard(api.boardId).tasks.flatMap(task => {
+			const label = task.labels.find(candidate => candidate.startsWith("linear:"));
+			return label ? [[label.slice("linear:".length), task] as const] : [];
+		}),
 	);
 	const seenIssues = new Set<string>();
 	const result: LinearSyncResult = { imported: 0, updated: 0, comments: 0 };
@@ -146,10 +144,10 @@ async function syncOnce(integration: LinearIntegration): Promise<LinearSyncResul
 						title: taskTitle(issue),
 						status: "backlog",
 						priority: issue.priority,
-							description: taskDescription(issue),
-							assignee: api.sessionName,
-							labels: taskLabels(issue),
-						},
+						description: taskDescription(issue),
+						assignee: api.sessionName,
+						labels: taskLabels(issue),
+					},
 					linearOperation("issue", issue.id),
 				);
 				const task = mutation.data;
@@ -157,7 +155,9 @@ async function syncOnce(integration: LinearIntegration): Promise<LinearSyncResul
 				result.comments += initialActivities.length;
 				api.publish(mutation.activity);
 				for (const activity of initialActivities) api.publish(activity);
-				const readyCount = api.store.getBoard(api.boardId).tasks.filter(candidate => candidate.status === "ready").length;
+				const readyCount = api.store
+					.getBoard(api.boardId)
+					.tasks.filter(candidate => candidate.status === "ready").length;
 				const moved = api.store.moveTask(
 					api.boardId,
 					task.id,
@@ -265,7 +265,9 @@ function hasNewerRemoteUpdate(task: KanbanTask, issue: LinearIssue): boolean {
 	const updatedLabel = task.labels.find(label => label.startsWith(LINEAR_UPDATED_PREFIX));
 	if (!updatedLabel) return true;
 	try {
-		return Date.parse(issue.updatedAt) > Date.parse(decodeURIComponent(updatedLabel.slice(LINEAR_UPDATED_PREFIX.length)));
+		return (
+			Date.parse(issue.updatedAt) > Date.parse(decodeURIComponent(updatedLabel.slice(LINEAR_UPDATED_PREFIX.length)))
+		);
 	} catch {
 		return true;
 	}
@@ -290,5 +292,6 @@ async function stopIntegration(integration: LinearIntegration): Promise<void> {
 	integration.running = false;
 	clearInterval(integration.timer ?? undefined);
 	integration.timer = null;
-	if (integrations.get(integration.session.sessionId) === integration) integrations.delete(integration.session.sessionId);
+	if (integrations.get(integration.session.sessionId) === integration)
+		integrations.delete(integration.session.sessionId);
 }

@@ -12,8 +12,8 @@ import {
 	sessionBoardName,
 } from "./runtime";
 
-export { sessionBoardName } from "./runtime";
 export * from "../linear/runtime";
+export { sessionBoardName } from "./runtime";
 
 export type KanbanBoardForker = (request: KanbanForkRequest) => Promise<KanbanForkedAgent | null>;
 let runtime: KanbanRuntime | null = null;

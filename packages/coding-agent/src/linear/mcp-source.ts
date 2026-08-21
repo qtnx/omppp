@@ -1,8 +1,8 @@
+import type { KanbanPriority } from "../kanban/types";
 import { callTool, listTools } from "../mcp/client";
-import { LINEAR_SERVER_CONFIG } from "./config";
 import { MCPManager } from "../mcp/manager";
 import type { MCPServerConnection, MCPToolCallResult, MCPToolDefinition } from "../mcp/types";
-import type { KanbanPriority } from "../kanban/types";
+import { LINEAR_SERVER_CONFIG } from "./config";
 
 export interface LinearIssue {
 	id: string;
@@ -52,7 +52,10 @@ export class McpLinearSource {
 	async listIssues(status: string): Promise<LinearIssue[]> {
 		const { connection, tools } = await this.#connectionAndTools();
 		const tool = resolveTool(tools, "list_issues");
-		const rows = rowsFromResult(await callTool(connection, tool.name, { assignee: "me", state: status, limit: 250 }), "issues");
+		const rows = rowsFromResult(
+			await callTool(connection, tool.name, { assignee: "me", state: status, limit: 250 }),
+			"issues",
+		);
 		return rows.map((row, index) => parseIssue(row, index));
 	}
 
@@ -109,7 +112,9 @@ function rowsFromResult(result: MCPToolCallResult, field: "issues" | "comments")
 
 function readMcpText(result: MCPToolCallResult): string {
 	const text = result.content
-		.filter((content): content is Extract<(typeof result.content)[number], { type: "text" }> => content.type === "text")
+		.filter(
+			(content): content is Extract<(typeof result.content)[number], { type: "text" }> => content.type === "text",
+		)
 		.map(content => content.text)
 		.join("\n");
 	if (text.length === 0) throw new LinearMcpError("Linear MCP response has no text content");
@@ -161,14 +166,16 @@ function parsePriority(value: unknown, index: number): KanbanPriority {
 
 function requiredString(record: Record<string, unknown>, field: string, subject: string): string {
 	const value = record[field];
-	if (typeof value !== "string" || value.length === 0) throw new LinearMcpError(`Linear MCP ${subject} is malformed: ${field} is required`);
+	if (typeof value !== "string" || value.length === 0)
+		throw new LinearMcpError(`Linear MCP ${subject} is malformed: ${field} is required`);
 	return value;
 }
 
 function optionalString(record: Record<string, unknown>, field: string, subject: string): string | null {
 	const value = record[field];
 	if (value === undefined || value === null) return null;
-	if (typeof value !== "string") throw new LinearMcpError(`Linear MCP ${subject} is malformed: ${field} must be a string`);
+	if (typeof value !== "string")
+		throw new LinearMcpError(`Linear MCP ${subject} is malformed: ${field} must be a string`);
 	return value;
 }
 

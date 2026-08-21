@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -16,6 +17,7 @@ function createContext(options?: {
 	const requestRender = vi.fn();
 	const showError = vi.fn();
 	const ctx = {
+		settings: Settings.isolated(),
 		editor: {
 			imageLinks: undefined as (string | undefined)[] | undefined,
 			setText(text: string) {
