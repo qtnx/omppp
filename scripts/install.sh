@@ -12,6 +12,7 @@ set -e
 #   --binary       Always install prebuilt binary (default)
 #   --ref <ref>    Install specific tag/commit/branch
 #   -r <ref>       Shorthand for --ref
+#   --linear       Add the official Linear MCP server after installing (default: skip)
 
 REPO="qtnx/omppp"
 PACKAGE="@oh-my-pi/pi-coding-agent"
@@ -23,6 +24,7 @@ RELEASE_DOWNLOAD_BASE_URL="${PI_RELEASE_DOWNLOAD_BASE_URL:-https://github.com/${
 # Parse arguments
 MODE=""
 REF=""
+INSTALL_LINEAR=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --source)
@@ -31,6 +33,10 @@ while [ $# -gt 0 ]; do
             ;;
         --binary)
             MODE="binary"
+            shift
+            ;;
+        --linear)
+            INSTALL_LINEAR=1
             shift
             ;;
         --ref)
@@ -843,6 +849,42 @@ run_config_update() {
     fi
 }
 
+install_linear_mcp() {
+    if [ "$INSTALL_LINEAR" != "1" ]; then
+        return
+    fi
+
+    linear_command="$1"
+    if [ -z "$linear_command" ]; then
+        echo "Warning: OMPx command is unavailable; run 'ompx linear add' manually." >&2
+        return 0
+    fi
+
+    case "$linear_command" in
+        */*)
+            if [ ! -x "$linear_command" ]; then
+                echo "Warning: OMPx command is unavailable at ${linear_command}; run 'ompx linear add' manually." >&2
+                return 0
+            fi
+            linear_command_path="$linear_command"
+            ;;
+        *)
+            if linear_command_path="$(command -v "$linear_command" 2>/dev/null)"; then
+                :
+            else
+                echo "Warning: OMPx command is unavailable: ${linear_command}; run 'ompx linear add' manually." >&2
+                return 0
+            fi
+            ;;
+    esac
+
+    if "$linear_command_path" linear add; then
+        echo "✓ Added the official Linear MCP server"
+    else
+        echo "Warning: Linear MCP setup failed; run '${linear_command_path} linear add' manually." >&2
+    fi
+}
+
 install_standard_config() {
     if [ "${OMPX_INSTALL_SKIP_STANDARD_CONFIG:-}" = "1" ]; then
         return
@@ -1075,6 +1117,7 @@ install_via_bun() {
     fi
     install_standard_config
     run_config_update "ompx"
+    install_linear_mcp "ompx"
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
@@ -1176,6 +1219,7 @@ install_binary() {
     mv "$TMP_BINARY" "${INSTALL_DIR}/ompx"
     install_standard_config
     run_config_update "${INSTALL_DIR}/ompx"
+    install_linear_mcp "${INSTALL_DIR}/ompx"
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"

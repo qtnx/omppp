@@ -38,6 +38,8 @@ export interface KanbanModelApi {
 	readonly sessionName: string;
 	readonly store: KanbanStore;
 	publish(activity: KanbanActivity | null | undefined): void;
+	/** Deliver an externally authored activity through the durable board outbox. */
+	ingest(activity: KanbanActivity | null | undefined): Promise<void>;
 }
 
 /** How often each process re-announces itself and looks for peers' writes. */
@@ -151,6 +153,12 @@ export class KanbanRuntime {
 				this.#syncCursor = Math.max(this.#syncCursor, activity.cursor);
 				server.broadcast(activity);
 				store.markDelivered(boardId, activity.id);
+			},
+			ingest: async activity => {
+				if (!activity) return;
+				this.#syncCursor = Math.max(this.#syncCursor, activity.cursor);
+				server.broadcast(activity);
+				await this.#routeActivity(activity);
 			},
 		};
 	}

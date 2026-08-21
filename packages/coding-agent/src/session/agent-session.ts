@@ -153,7 +153,7 @@ import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
-import { unregisterKanbanSession } from "../kanban";
+import { stopLinearIntegration, unregisterKanbanSession } from "../kanban";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
@@ -4364,6 +4364,11 @@ export class AgentSession {
 		// into a session already tearing down and queue a followUp mid-dispose.
 		this.#loopManager?.cancelAll();
 		this.#isDisposed = true;
+		void stopLinearIntegration(this.sessionId).catch(error => {
+			logger.warn("Failed to stop Linear integration during dispose", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
 		this.#kanbanUnregister ??= unregisterKanbanSession(this).catch(error => {
 			logger.warn("Failed to unregister Kanban session during dispose", {
 				error: error instanceof Error ? error.message : String(error),

@@ -69,6 +69,9 @@ export const joinHelp = { description: "Join a shared collab session (same as /j
 export const liveHelp = {
 	description: "Run live voice on this machine against a remote ompx session over SSH",
 } satisfies CommandMetadata;
+export const linearHelp = {
+	description: "Configure and control Linear synchronization",
+} satisfies CommandMetadata;
 
 export const liveAgentHelp = {
 	description: "Bridge stdio to a live session's unix socket (used by `ompx live --attach`)",

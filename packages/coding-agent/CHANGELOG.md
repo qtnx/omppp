@@ -2,10 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added native Linear MCP synchronization: `/linear on <status...>` imports issues assigned to the current user and their comments into the existing Kanban worker lifecycle, while `/linear add` and `ompx linear add` configure Linear's official MCP server. The installer remains opt-in through `--linear`.
+
 ### Changed
 
 - Installer config migration now defaults the `scout` agent to `tnx/scout` and, when retry fallback chains already exist, adds the same `smol` fallback chain (`openai-codex/gpt-5.3-codex-spark` then `anthropic/claude-haiku-4-5`) unless a `scout` chain is already set. Custom scout models and existing scout fallbacks are left alone.
 - CodeGraph now runs only inside Git checkouts. Non-git directories skip background init/index, and `codegraph_*` execute refuses with a clear error.
+- Added a Message Delivery setting that switches ordinary in-flight input between the existing Steer and Queue/follow-up paths; Steer remains the default.
 
 ### Fixed
 

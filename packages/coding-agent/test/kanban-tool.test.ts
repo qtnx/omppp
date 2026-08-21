@@ -56,6 +56,7 @@ async function createHarness(): Promise<{
 		publish(activity) {
 			published.push(activity);
 		},
+		async ingest() {},
 	};
 
 	vi.spyOn(kanban, "getKanbanModelApi").mockReturnValue(api);
@@ -324,6 +325,7 @@ describe("KanbanTool", () => {
 			sessionName: "swift-otter",
 			store,
 			publish() {},
+			async ingest() {},
 		};
 		vi.spyOn(kanban, "getKanbanModelApi").mockImplementation(sessionId => {
 			observedLookupIds.push(sessionId);
@@ -367,6 +369,7 @@ describe("KanbanTool", () => {
 			sessionName: "swift-otter",
 			store,
 			publish() {},
+			async ingest() {},
 		};
 		vi.spyOn(kanban, "getKanbanModelApi").mockImplementation(sessionId => {
 			observedLookupIds.push(sessionId);

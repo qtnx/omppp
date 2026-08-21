@@ -1,6 +1,13 @@
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { settings } from "../config/settings";
 import { isKanbanBoardRunning, startKanbanBoard, stopKanbanBoard } from "../kanban";
+import { ensureLinearMcpConfig } from "../linear/config";
+import {
+	getLinearIntegrationStatus,
+	startLinearIntegration,
+	stopLinearIntegration,
+	syncLinearIntegration,
+} from "../linear/runtime";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import {
@@ -20,7 +27,7 @@ import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session
 import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
 import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
-import type { SlashCommandRuntime, SlashCommandSpec } from "./types";
+import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime, SlashCommandSpec } from "./types";
 
 async function handleUsageResetCommand(
 	arg: string,
@@ -162,6 +169,120 @@ async function runKanbanCommand(args: string, session: AgentSession): Promise<st
 	for (const url of registration.tailnetUrls) lines.push(`Tailnet:      ${url}`);
 	lines.push("Stop it with /kanban off.");
 	return lines.join("\n");
+}
+
+const LINEAR_USAGE = "Usage: /linear add | on <status...> | sync | status | off";
+
+function parseLinearStatuses(input: string): string[] | undefined {
+	const statuses: string[] = [];
+	let token = "";
+	let quote: "'" | '"' | undefined;
+	for (const char of input.trim()) {
+		if (quote) {
+			if (char === quote) {
+				quote = undefined;
+			} else {
+				token += char;
+			}
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			quote = char;
+			continue;
+		}
+		if (char === "," || /\s/.test(char)) {
+			const value = token.trim();
+			if (value) statuses.push(value);
+			token = "";
+			continue;
+		}
+		token += char;
+	}
+	if (quote) return undefined;
+	const value = token.trim();
+	if (value) statuses.push(value);
+	return statuses.length > 0 ? [...new Set(statuses)] : undefined;
+}
+
+function linearError(error: unknown): string {
+	const message = errorMessage(error);
+	const normalized = message.toLowerCase();
+	if (normalized.includes("not configured") || normalized.includes("missing linear")) {
+		return `${message} Run /linear add or ompx linear add.`;
+	}
+	if (
+		normalized.includes("auth") ||
+		normalized.includes("oauth") ||
+		normalized.includes("credential") ||
+		normalized.includes("disconnect") ||
+		normalized.includes("unauthor") ||
+		normalized.includes("401") ||
+		normalized.includes("403")
+	) {
+		return `${message} Run /mcp reauth linear.`;
+	}
+	return message;
+}
+
+async function syncLinearCommand(session: AgentSession): Promise<string> {
+	const result = await syncLinearIntegration(session.sessionId);
+	return `Linear sync complete: imported ${result.imported}, updated ${result.updated}, comments ${result.comments}.`;
+}
+
+async function runLinearCommand(args: string, session: AgentSession, cwd: string): Promise<string> {
+	const trimmed = args.trim();
+	const [subcommand = "", ...restParts] = trimmed.split(/\s+/);
+	const rest = restParts.join(" ").trim();
+	try {
+		if (subcommand === "add") {
+			if (rest) return LINEAR_USAGE;
+			const added = await ensureLinearMcpConfig(cwd);
+			return added
+				? "Linear MCP server added. OAuth will occur when you connect with /linear on."
+				: "Linear MCP server is already configured. OAuth will occur when you connect with /linear on.";
+		}
+		if (subcommand === "on") {
+			const statuses = parseLinearStatuses(rest);
+			if (!statuses) return LINEAR_USAGE;
+			const registration = await startKanbanBoard(session);
+			if (!registration) return "Linear integration could not start: this session is shutting down.";
+			const result = await startLinearIntegration(session, statuses);
+			return `Linear sync enabled for ${result.statuses.join(", ")} (imported ${result.imported}).`;
+		}
+		if (subcommand === "sync") {
+			if (rest) return LINEAR_USAGE;
+			return await syncLinearCommand(session);
+		}
+		if (subcommand === "status") {
+			if (rest) return LINEAR_USAGE;
+			const status = getLinearIntegrationStatus(session.sessionId);
+			if (!status) return "Linear integration is stopped. Run /linear on <status...>.";
+			return [
+				`Linear integration is ${status.running ? "running" : "stopped"}.`,
+				`Statuses: ${status.statuses.join(", ") || "(none)"}`,
+				`Last sync: ${status.lastSyncAt ?? "never"}`,
+				`Last error: ${status.lastError ?? "none"}`,
+			].join("\n");
+		}
+		if (subcommand === "off") {
+			if (rest) return LINEAR_USAGE;
+			const stopped = await stopLinearIntegration(session.sessionId);
+			return stopped ? "Linear sync stopped. Kanban board is still running." : "Linear sync is not running.";
+		}
+		if (!trimmed) {
+			const status = getLinearIntegrationStatus(session.sessionId);
+			if (!status?.running) return LINEAR_USAGE;
+			return await syncLinearCommand(session);
+		}
+		return LINEAR_USAGE;
+	} catch (error) {
+		return `Linear command failed: ${linearError(error)}`;
+	}
+}
+
+async function handleLinearCommand(command: ParsedSlashCommand, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+	await runtime.output(await runLinearCommand(command.args, runtime.session, runtime.cwd));
+	return commandConsumed();
 }
 
 export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -471,6 +592,31 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.setText("");
 			runtime.ctx.showStatus(await runKanbanCommand(command.args, runtime.ctx.session));
+		},
+	},
+	{
+		name: "linear",
+		description: "Configure and control Linear issue synchronization",
+		acpDescription: "Configure and control Linear sync",
+		acpInputHint: "add | on <status...> | sync | status | off",
+		allowArgs: true,
+		subcommands: [
+			{ name: "add", description: "Configure the official Linear MCP server" },
+			{ name: "on", description: "Start sync for statuses", usage: "<status...>" },
+			{ name: "sync", description: "Force a Linear sync" },
+			{ name: "status", description: "Show Linear sync status" },
+			{ name: "off", description: "Stop Linear sync only" },
+		],
+		getTuiAutocompleteDescription: runtime => {
+			const status = getLinearIntegrationStatus(runtime.ctx.session.sessionId);
+			return status?.running ? "Linear: running" : "Linear: stopped";
+		},
+		handle: handleLinearCommand,
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			runtime.ctx.showStatus(
+				await runLinearCommand(command.args, runtime.ctx.session, runtime.ctx.sessionManager.getCwd()),
+			);
 		},
 	},
 	{

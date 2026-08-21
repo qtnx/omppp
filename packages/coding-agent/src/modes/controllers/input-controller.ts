@@ -916,7 +916,8 @@ export class InputController {
 			// Queue input during compaction
 			if (this.ctx.session.isCompacting) {
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
-				this.ctx.queueCompactionMessage(text, "steer", images);
+				const streamingBehavior = this.ctx.settings.get("messageDelivery") === "queue" ? "followUp" : "steer";
+				this.ctx.queueCompactionMessage(text, streamingBehavior, images);
 				return;
 			}
 			// Extension commands are local actions. Execute them before the normal
@@ -933,27 +934,28 @@ export class InputController {
 				return;
 			}
 
-			// If streaming, use prompt() with steer behavior
+			// If streaming, use prompt() with the configured message delivery behavior.
 			// This handles extension commands (execute immediately), prompt template expansion, and queueing
 			if (this.ctx.session.isStreaming) {
 				this.ctx.editor.addToHistory(text);
 				this.ctx.editor.setText("");
 				this.ctx.editor.imageLinks = undefined;
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
+				const streamingBehavior = this.ctx.settings.get("messageDelivery") === "queue" ? "followUp" : "steer";
 				this.ctx.editor.pendingImages = [];
 				this.ctx.editor.pendingImageLinks = [];
 				// Record the signature so the queued message's eventual delivery
 				// (a user-role `message_start` event) leaves any draft the user has
-				// typed since queuing intact. Same protection as #783, applied to
-				// the streaming/queue path.
+				// typed since queuing intact. Same protection as #783, applied
+				// to the streaming/queue path.
 				try {
 					await this.ctx.withLocalSubmission(
 						text,
-						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+						() => this.ctx.session.prompt(text, { streamingBehavior, images }),
 						{ imageCount: images?.length ?? 0 },
 					);
 				} catch (error) {
-					// Don't lose the queued steer draft: restore text and images so
+					// Don't lose the queued draft: restore text and images so
 					// the user can retry after dispatch validation/queue failures.
 					this.ctx.editor.setText(text);
 					if (images && images.length > 0) {

@@ -17,7 +17,17 @@ import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-c
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 import type { MacOSSandboxRelaunchResult } from "@oh-my-pi/pi-coding-agent/task/omp-command";
 import type { WorkspaceRoot } from "@oh-my-pi/pi-coding-agent/workspace-roots";
-import { getAgentDir, getProjectDir, removeWithRetries, setAgentDir, setProjectDir } from "@oh-my-pi/pi-utils";
+import {
+	getAgentDir,
+	getMCPConfigPath,
+	getProjectDir,
+	removeWithRetries,
+	setAgentDir,
+	setProjectDir,
+} from "@oh-my-pi/pi-utils";
+import { ensureLinearMcpConfig } from "../src/linear/config";
+import * as kanban from "../src/kanban";
+import * as linearRuntime from "../src/linear/runtime";
 import { CONTEXT_GC_CUSTOM_TYPE, type ContextGcDelta, type ContextStatus } from "../../context-gc-plugin/src/schema";
 import { type ContextGcStore, openContextGcStore } from "../../context-gc-plugin/src/storage";
 
@@ -336,6 +346,7 @@ async function withContextGcFixture(
 			{ type: "custom", customType: CONTEXT_GC_CUSTOM_TYPE, data: candidate },
 			{ type: "custom", customType: CONTEXT_GC_CUSTOM_TYPE, data: unloaded },
 		];
+
 		await run({ output, runtime, fakeSessionManager });
 	} finally {
 		store.close();
@@ -345,6 +356,82 @@ async function withContextGcFixture(
 }
 
 describe("ACP builtin slash commands", () => {
+	it("configures the Linear MCP server idempotently and rejects conflicts", async () => {
+		const previousAgentDir = getAgentDir();
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "linear-config-"));
+		const agentDir = path.join(root, "agent");
+		const cwd = path.join(root, "project");
+		await fs.mkdir(cwd, { recursive: true });
+		setAgentDir(agentDir);
+		try {
+			expect(await ensureLinearMcpConfig(cwd)).toBe(true);
+			const configPath = getMCPConfigPath("user", cwd);
+			const firstConfig = await Bun.file(configPath).text();
+			expect(await ensureLinearMcpConfig(cwd)).toBe(false);
+			expect(await Bun.file(configPath).text()).toBe(firstConfig);
+			const config = JSON.parse(await Bun.file(configPath).text()) as {
+				mcpServers: Record<string, unknown>;
+			};
+			config.mcpServers.linear = { type: "http", url: "https://linear.example.invalid/mcp" };
+			await Bun.write(configPath, JSON.stringify(config));
+			await expect(ensureLinearMcpConfig(cwd)).rejects.toThrow("already configured differently");
+		} finally {
+			setAgentDir(previousAgentDir);
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("parses Linear status names and dispatches status/off through the runtime", async () => {
+		const { output, runtime } = createRuntime();
+		const startBoard = spyOn(kanban, "startKanbanBoard").mockResolvedValue({
+			boardUrl: "http://127.0.0.1:1",
+			tailnetUrls: [],
+			name: "test-session",
+		});
+		const startLinear = spyOn(linearRuntime, "startLinearIntegration").mockResolvedValue({
+			statuses: ["In Progress", "Todo"],
+			imported: 2,
+		});
+		const getStatus = spyOn(linearRuntime, "getLinearIntegrationStatus").mockReturnValue({
+			running: true,
+			statuses: ["In Progress", "Todo"],
+			lastSyncAt: "2026-08-21T00:00:00.000Z",
+			lastError: null,
+		});
+		const stopLinear = spyOn(linearRuntime, "stopLinearIntegration").mockResolvedValue(true);
+		const syncLinear = spyOn(linearRuntime, "syncLinearIntegration").mockResolvedValue({
+			imported: 3,
+			updated: 4,
+			comments: 5,
+		});
+		try {
+			expect(await executeAcpBuiltinSlashCommand("/linear on \"In Progress\", Todo", runtime)).toEqual({
+				consumed: true,
+			});
+			expect(startBoard).toHaveBeenCalledTimes(1);
+			expect(startLinear).toHaveBeenCalledWith(runtime.session, ["In Progress", "Todo"]);
+			expect(await executeAcpBuiltinSlashCommand("/linear sync", runtime)).toEqual({ consumed: true });
+			expect(syncLinear).toHaveBeenCalledWith(runtime.session.sessionId);
+			expect(output.at(-1)).toBe("Linear sync complete: imported 3, updated 4, comments 5.");
+
+			expect(await executeAcpBuiltinSlashCommand("/linear status", runtime)).toEqual({ consumed: true });
+			expect(output.at(-1)).toContain("Linear integration is running.");
+			expect(await executeAcpBuiltinSlashCommand("/linear off", runtime)).toEqual({ consumed: true });
+			expect(stopLinear).toHaveBeenCalledWith(runtime.session.sessionId);
+			expect(output.at(-1)).toContain("Linear sync stopped.");
+		} finally {
+			startBoard.mockRestore();
+			startLinear.mockRestore();
+			getStatus.mockRestore();
+			syncLinear.mockRestore();
+		}
+	});
+
+	it("shows exact Linear usage for a bare command before sync is enabled", async () => {
+		const { output, runtime } = createRuntime();
+		expect(await executeAcpBuiltinSlashCommand("/linear", runtime)).toEqual({ consumed: true });
+		expect(output).toEqual(["Usage: /linear add | on <status...> | sync | status | off"]);
+	});
 	it("consumes fast status without returning prompt text", async () => {
 		const { output, runtime } = createRuntime();
 
