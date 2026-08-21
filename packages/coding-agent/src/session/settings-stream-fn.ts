@@ -51,7 +51,7 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			streamOptions?.thinkingDisplay !== undefined || streamOptions?.hideThinkingSummary !== undefined;
 		// "auto" leaves the option unset so provider defaults and the
 		// PI_CACHE_RETENTION env override keep working; anything else is an
-		// explicit per-request retention (long restores 1h Anthropic TTLs and
+		// explicit per-request retention (long requests 1h where supported and
 		// implicitly disables the short-entry keep-alive refresh loop).
 		const cacheRetentionSetting = settings.get("providers.cacheRetention");
 		const cacheRetention = cacheRetentionSetting === "auto" ? undefined : cacheRetentionSetting;

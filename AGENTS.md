@@ -36,6 +36,7 @@ This is the **OMPx fork** of `can1357/oh-my-pi`. The decisions below intentional
 - **Branding/self-update stays OMPx.** Keep the `ompx` CLI rebrand and self-update from `qtnx/omppp`; do NOT revert to upstream `omp` branding or update source.
 - **Fork-only packages & features must survive merges:** `context-gc-plugin`, `delegation-reminder-plugin`, `system-context-reminder-plugin`, safe orchestrator mode, duo/advisor runtime, the `workflow` tool, Herdr agent-state, the macOS sandbox suite, the browser annotate suite, and the agent `compact` tool.
 - **CI structure stays fork-shaped:** GitHub-hosted runners, the release security gate, and the OSV scanner. Port upstream's new/renamed test paths without discarding these.
+- **Anthropic cache policy stays fork-shaped:** Under Auto, official native Anthropic OAuth with long-cache support defaults to `1h`; API-key, custom-gateway, Foundry, and non-Anthropic routes default to `short`; preserve precedence `explicit request > PI_CACHE_RETENTION > route default`. When Anthropic caching/auth/base-URL code changes, preserve and run `packages/ai/test/anthropic-alignment.test.ts`.
 
 ## GitHub
 
