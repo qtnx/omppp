@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored 1-hour prompt-cache retention by default for official Anthropic OAuth requests, preventing long sessions from repeatedly rebilling uncached context after upstream updates.
+
 ## [1.7.3] - 2026-08-15
 
 ### Fixed

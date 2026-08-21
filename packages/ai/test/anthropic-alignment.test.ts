@@ -75,6 +75,8 @@ function createAbortedSignal(): AbortSignal {
 
 type CaptureAnthropicOptions = {
 	isOAuth?: boolean;
+	apiKey?: string;
+	cacheRetention?: "short" | "long" | "none";
 	metadata?: { user_id?: string; account_uuid?: string; accountId?: string; account_id?: string };
 	thinkingEnabled?: boolean;
 	reasoning?: Effort;
@@ -88,16 +90,32 @@ type CaptureAnthropicOptions = {
 	headers?: Record<string, string>;
 };
 
-function captureAnthropicPayload(
-	model: Model<"anthropic-messages">,
-	context: Context,
-	options?: CaptureAnthropicOptions,
-): Promise<unknown> {
-	const { promise, resolve } = Promise.withResolvers<unknown>();
-	streamAnthropic(model, context, {
-		apiKey: "sk-ant-oat-test",
-		isOAuth: options?.isOAuth ?? true,
-		signal: createAbortedSignal(),
+type CapturedAnthropicRequest = {
+	body: {
+		system?: Array<{ text?: string; cache_control?: unknown }>;
+		messages?: Array<{ content?: Array<{ cache_control?: unknown }> | string }>;
+	};
+	headers: Headers;
+	url: string;
+};
+
+function cacheControls(request: CapturedAnthropicRequest): unknown[] {
+	return [
+		...(request.body.system?.flatMap(block => (block.cache_control === undefined ? [] : [block.cache_control])) ??
+			[]),
+		...(request.body.messages?.flatMap(message =>
+			Array.isArray(message.content)
+				? message.content.flatMap(block => (block.cache_control === undefined ? [] : [block.cache_control]))
+				: [],
+		) ?? []),
+	];
+}
+
+function streamOptions(options?: CaptureAnthropicOptions) {
+	return {
+		apiKey: options?.apiKey ?? "sk-ant-oat-test",
+		...(options?.isOAuth === undefined ? {} : { isOAuth: options.isOAuth }),
+		...(options?.cacheRetention === undefined ? {} : { cacheRetention: options.cacheRetention }),
 		metadata: options?.metadata,
 		thinkingEnabled: options?.thinkingEnabled,
 		reasoning: options?.reasoning,
@@ -109,9 +127,42 @@ function captureAnthropicPayload(
 		thinkingDisplay: options?.thinkingDisplay,
 		sessionId: options?.sessionId,
 		headers: options?.headers,
+	};
+}
+
+function captureAnthropicPayload(
+	model: Model<"anthropic-messages">,
+	context: Context,
+	options?: CaptureAnthropicOptions,
+): Promise<unknown> {
+	const { promise, resolve } = Promise.withResolvers<unknown>();
+	streamAnthropic(model, context, {
+		...streamOptions(options),
+		signal: createAbortedSignal(),
 		onPayload: payload => resolve(payload),
 	});
 	return promise;
+}
+
+async function captureAnthropicRequest(
+	model: Model<"anthropic-messages">,
+	context: Context,
+	options?: CaptureAnthropicOptions,
+): Promise<CapturedAnthropicRequest> {
+	const body = (await captureAnthropicPayload(model, context, options)) as CapturedAnthropicRequest["body"];
+	const clientOptions = buildAnthropicClientOptions({
+		model,
+		apiKey: options?.apiKey ?? "sk-ant-oat-test",
+		...(options?.isOAuth === undefined ? {} : { isOAuth: options.isOAuth }),
+		stream: true,
+		interleavedThinking: true,
+		headers: options?.headers,
+	});
+	return {
+		body,
+		headers: new Headers(clientOptions.defaultHeaders),
+		url: clientOptions.baseURL ?? "https://api.anthropic.com",
+	};
 }
 
 function captureSimpleAnthropicPayload(
@@ -325,25 +376,153 @@ describe("Anthropic request fingerprint alignment", () => {
 		});
 	});
 
-	it("places a short breakpoint only on the trailing message in a one-message OAuth request", async () => {
-		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
+	it("uses 1h breakpoints for inferred OAuth on the official Anthropic API", async () => {
+		const request = await captureAnthropicRequest(ANTHROPIC_MODEL, {
 			systemPrompt: ["Stay concise."],
 			messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
-		})) as {
-			system?: Array<{ text?: string; cache_control?: unknown }>;
-			messages?: Array<{ content?: Array<{ cache_control?: unknown }> | string }>;
-		};
-
-		expect(payload.system?.[0]?.text).toStartWith("x-anthropic-billing-header:");
-		expect(payload.system?.[0]?.cache_control).toBeUndefined();
-		expect(payload.system?.[1]?.text).toBe(claudeCodeSystemInstruction);
-		expect(payload.system?.[1]?.cache_control).toBeUndefined();
-		expect(payload.system?.[2]?.cache_control).toEqual({ type: "ephemeral" });
-		const content = payload.messages?.[0]?.content;
-		expect(Array.isArray(content)).toBe(true);
-		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toEqual({
-			type: "ephemeral",
 		});
+
+		expect(request.url).toBe("https://api.anthropic.com");
+		expect(cacheControls(request)).toEqual([
+			{ type: "ephemeral", ttl: "1h" },
+			{ type: "ephemeral", ttl: "1h" },
+		]);
+		expect(request.headers.get("anthropic-beta")).not.toContain("extended-cache-ttl-2025-04-11");
+	});
+
+	const cacheContext: Context = {
+		systemPrompt: ["Stay concise."],
+		messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+	};
+
+	const shortCacheCases: Array<{
+		name: string;
+		model: Model<"anthropic-messages">;
+		options?: CaptureAnthropicOptions;
+		env?: Record<string, string | undefined>;
+	}> = [
+		{
+			name: "uses short cache markers for inferred API-key authentication",
+			model: ANTHROPIC_MODEL,
+			options: { apiKey: "sk-ant-api-test" },
+		},
+		{
+			name: "lets explicit non-OAuth override an OAuth-shaped key",
+			model: ANTHROPIC_MODEL,
+			options: { isOAuth: false },
+		},
+		{
+			name: "uses short cache markers for an Anthropic custom endpoint",
+			model: buildModel({
+				...ANTHROPIC_MODEL_SPEC,
+				baseUrl: "https://anthropic-gateway.example.test",
+			}),
+		},
+		{
+			name: "uses short cache markers for a non-Anthropic provider on the official URL",
+			model: buildModel({
+				...ANTHROPIC_MODEL_SPEC,
+				provider: "umans",
+			}),
+		},
+		{
+			name: "uses short cache markers through the Foundry route",
+			model: ANTHROPIC_MODEL,
+			env: {
+				CLAUDE_CODE_USE_FOUNDRY: "1",
+				FOUNDRY_BASE_URL: "https://foundry.example.test",
+			},
+		},
+		{
+			name: "uses short cache markers through the Anthropic gateway route",
+			model: ANTHROPIC_MODEL,
+			env: { ANTHROPIC_BASE_URL: "https://gateway.example.test" },
+		},
+		{
+			name: "honors an explicit short cache retention for official OAuth",
+			model: ANTHROPIC_MODEL,
+			options: { cacheRetention: "short" },
+		},
+		{
+			name: "honors PI_CACHE_RETENTION=short for official OAuth",
+			model: ANTHROPIC_MODEL,
+			env: { PI_CACHE_RETENTION: "short" },
+		},
+	];
+
+	for (const testCase of shortCacheCases) {
+		it(testCase.name, async () => {
+			await withEnv(
+				{
+					CLAUDE_CODE_USE_FOUNDRY: undefined,
+					FOUNDRY_BASE_URL: undefined,
+					ANTHROPIC_BASE_URL: undefined,
+					PI_CACHE_RETENTION: undefined,
+					...testCase.env,
+				},
+				async () => {
+					const request = await captureAnthropicRequest(testCase.model, cacheContext, testCase.options);
+					expect(cacheControls(request)).toEqual([{ type: "ephemeral" }, { type: "ephemeral" }]);
+					expect(request.headers.get("anthropic-beta") ?? "").not.toContain("extended-cache-ttl-2025-04-11");
+				},
+			);
+		});
+	}
+
+	it("keeps OAuth-looking Umans credentials out of Claude Code system shaping", async () => {
+		const request = await captureAnthropicRequest(UMANS_ANTHROPIC_MODEL, cacheContext, {
+			apiKey: "sk-ant-oat-umans-test",
+		});
+
+		expect(cacheControls(request)).toEqual([{ type: "ephemeral" }, { type: "ephemeral" }]);
+		expect(request.body.system?.[0]?.text ?? "").not.toStartWith("x-anthropic-billing-header:");
+		expect(request.body.system?.some(block => block.text === claudeCodeSystemInstruction)).toBe(false);
+	});
+
+	it("adds the API-key long-cache beta only for explicit long retention", async () => {
+		const request = await captureAnthropicRequest(ANTHROPIC_MODEL, cacheContext, {
+			apiKey: "sk-ant-api-test",
+			cacheRetention: "long",
+		});
+		expect(cacheControls(request)).toEqual([
+			{ type: "ephemeral", ttl: "1h" },
+			{ type: "ephemeral", ttl: "1h" },
+		]);
+	});
+
+	it("honors PI_CACHE_RETENTION=long for API-key requests", async () => {
+		await withEnv({ PI_CACHE_RETENTION: "long" }, async () => {
+			const request = await captureAnthropicRequest(ANTHROPIC_MODEL, cacheContext, { apiKey: "sk-ant-api-test" });
+			expect(cacheControls(request)).toEqual([
+				{ type: "ephemeral", ttl: "1h" },
+				{ type: "ephemeral", ttl: "1h" },
+			]);
+		});
+	});
+
+	it("lets a request cacheRetention override PI_CACHE_RETENTION", async () => {
+		await withEnv({ PI_CACHE_RETENTION: "short" }, async () => {
+			const request = await captureAnthropicRequest(ANTHROPIC_MODEL, cacheContext, { cacheRetention: "long" });
+			expect(cacheControls(request)).toEqual([
+				{ type: "ephemeral", ttl: "1h" },
+				{ type: "ephemeral", ttl: "1h" },
+			]);
+		});
+	});
+
+	it("removes cache markers when retention is none", async () => {
+		const request = await captureAnthropicRequest(ANTHROPIC_MODEL, cacheContext, { cacheRetention: "none" });
+		expect(cacheControls(request)).toEqual([]);
+	});
+
+	it("never emits 1h markers for models without long-cache compatibility", async () => {
+		const unsupportedLongModel = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
+			compat: { supportsLongCacheRetention: false },
+		});
+		const request = await captureAnthropicRequest(unsupportedLongModel, cacheContext, { cacheRetention: "long" });
+		expect(cacheControls(request)).toEqual([{ type: "ephemeral" }, { type: "ephemeral" }]);
+		expect(request.headers.get("anthropic-beta") ?? "").not.toContain("extended-cache-ttl-2025-04-11");
 	});
 
 	it("never caches OAuth cloak blocks when no caller system prompt exists", async () => {
@@ -362,6 +541,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		const content = payload.messages?.[0]?.content;
 		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toEqual({
 			type: "ephemeral",
+			ttl: "1h",
 		});
 	});
 
@@ -402,7 +582,7 @@ describe("Anthropic request fingerprint alignment", () => {
 			messages?: Array<{ content?: Array<{ type?: string; cache_control?: unknown }> | string }>;
 		};
 
-		expect(payload.system?.[2]?.cache_control).toEqual({ type: "ephemeral" });
+		expect(payload.system?.[2]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		const messages = payload.messages ?? [];
 		expect(messages[0]?.content).toBe("Use the tool");
 		const assistantContent = messages.at(-2)?.content;
@@ -412,6 +592,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(Array.isArray(lastContent) ? lastContent.at(-1)?.type : undefined).toBe("tool_result");
 		expect(Array.isArray(lastContent) ? lastContent.at(-1)?.cache_control : undefined).toEqual({
 			type: "ephemeral",
+			ttl: "1h",
 		});
 	});
 
@@ -695,6 +876,15 @@ describe("Anthropic request fingerprint alignment", () => {
 			fetch: long.fetchMock,
 		}).result();
 		expect(long.beta()).toContain("extended-cache-ttl-2025-04-11");
+
+		const envLong = captureBeta();
+		await withEnv({ PI_CACHE_RETENTION: "long" }, async () => {
+			await streamAnthropic(ANTHROPIC_MODEL, cacheContext, {
+				apiKey: "sk-ant-api-test",
+				fetch: envLong.fetchMock,
+			}).result();
+		});
+		expect(envLong.beta()).toContain("extended-cache-ttl-2025-04-11");
 
 		const proxy = captureBeta();
 		await streamAnthropic(UMANS_ANTHROPIC_MODEL, cacheContext, {

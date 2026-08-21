@@ -488,11 +488,17 @@ function dropAnthropicStrictTools(params: MessageCreateParamsStreaming): void {
 function getCacheControl(
 	model: Model<"anthropic-messages">,
 	cacheRetention: CacheRetention | undefined,
+	isOAuth: boolean,
+	baseUrl: string,
 ): { retention: CacheRetention; cacheControl?: AnthropicCacheControl } {
-	// Five-minute writes are the cheapest cache population strategy. Longer
-	// retention remains an explicit PI_CACHE_RETENTION/request override; idle
-	// sessions keep the short entry warm with bounded read-only refreshes.
-	const retention = resolveCacheRetention(cacheRetention, "short");
+	const fallback =
+		isOAuth &&
+		model.provider === "anthropic" &&
+		isOfficialAnthropicApiUrl(baseUrl) &&
+		model.compat.supportsLongCacheRetention
+			? "long"
+			: "short";
+	const retention = resolveCacheRetention(cacheRetention, fallback);
 	if (retention === "none") {
 		return { retention };
 	}
@@ -1887,12 +1893,15 @@ const streamAnthropicOnce = (
 			}
 
 			const zeroOutputCacheRefresh = options?.anthropicCacheRefreshRequest === true;
+			// Preserve the caller/token classification for pre-client header choices.
+			// The client builder then normalizes it for transports that must not use
+			// Claude Code body shaping; injected clients are always non-OAuth.
+			const requestedIsOAuth = options?.isOAuth ?? isAnthropicOAuthToken(apiKey);
 			let client: AnthropicMessagesClientLike;
-			let isOAuthToken: boolean;
+			let isOAuthToken = false;
 
 			if (options?.client) {
 				client = options.client;
-				isOAuthToken = false;
 			} else {
 				const extraBetas = normalizeExtraBetas(options?.betas);
 				const wantsAnthropicPriority = model.provider === "anthropic" && options?.serviceTier === "priority";
@@ -1956,8 +1965,8 @@ const streamAnthropicOnce = (
 				// already carry it in the Claude Code beta list, and utility
 				// requests must not deviate from CC's header fingerprint.
 				if (
-					!(options?.isOAuth ?? isAnthropicOAuthToken(apiKey)) &&
-					getCacheControl(model, options?.cacheRetention).cacheControl?.ttl === "1h" &&
+					!requestedIsOAuth &&
+					getCacheControl(model, options?.cacheRetention, requestedIsOAuth, baseUrl).cacheControl?.ttl === "1h" &&
 					!extraBetas.includes(extendedCacheTtlBeta)
 				) {
 					extraBetas.push(extendedCacheTtlBeta);
@@ -1992,7 +2001,7 @@ const streamAnthropicOnce = (
 					interleavedThinking: options?.interleavedThinking ?? true,
 					headers: options?.headers,
 					dynamicHeaders: copilotDynamicHeaders?.headers,
-					isOAuth: options?.isOAuth,
+					isOAuth: requestedIsOAuth,
 					hasTools: !!context.tools?.length,
 					thinkingEnabled: options?.thinkingEnabled,
 					thinkingDisplay: options?.thinkingDisplay,
@@ -2011,6 +2020,7 @@ const streamAnthropicOnce = (
 					useUmansGatewayWebSearch: umansGatewayWebSearchHeader !== undefined,
 					forceDemoteUnsignedThinking,
 					supportsEagerToolInputStreaming,
+					baseUrl,
 					fallbacks,
 				});
 				if (disableStrictTools) {
@@ -3508,6 +3518,7 @@ type AnthropicParamBuildOptions = {
 	useUmansGatewayWebSearch: boolean;
 	forceDemoteUnsignedThinking: boolean;
 	supportsEagerToolInputStreaming: boolean;
+	baseUrl: string;
 	/** Sanitized server-side fallback entries; defaults to `options?.fallbacks` when omitted. */
 	fallbacks?: AnthropicOptions["fallbacks"];
 };
@@ -3524,6 +3535,7 @@ function buildParams(
 		useUmansGatewayWebSearch,
 		forceDemoteUnsignedThinking,
 		supportsEagerToolInputStreaming,
+		baseUrl,
 		fallbacks = options?.fallbacks,
 	} = buildOptions;
 	// A session-scoped auto-demote (learned from a live signing 400) clones the
@@ -3534,7 +3546,7 @@ function buildParams(
 		forceDemoteUnsignedThinking && model.compat.replayUnsignedThinking
 			? { ...model, compat: { ...model.compat, replayUnsignedThinking: false } }
 			: model;
-	const { cacheControl } = getCacheControl(model, options?.cacheRetention);
+	const { cacheControl } = getCacheControl(model, options?.cacheRetention, isOAuthToken, baseUrl);
 
 	// Pre-compute system blocks so they occupy the right slot in the serialized body.
 	const shouldInjectClaudeCodeInstruction = isOAuthToken && !model.id.startsWith("claude-3-5-haiku");

@@ -6471,13 +6471,13 @@ export const SETTINGS_SCHEMA = {
 					value: "auto",
 					label: "Auto",
 					description:
-						"Provider default — Anthropic uses 5m entries kept warm by idle keep-alive refreshes; PI_CACHE_RETENTION still applies",
+						"Provider default — official Anthropic OAuth uses 1h entries; other supported routes use their provider defaults; PI_CACHE_RETENTION still applies",
 				},
 				{
 					value: "short",
 					label: "Short (5m)",
 					description:
-						"Cheapest cache writes; Anthropic keeps the entry warm with bounded keep-alive refreshes while idle",
+						"Explicit 5m cache entries; Anthropic keeps the entry warm with bounded keep-alive refreshes while idle",
 				},
 				{
 					value: "long",
