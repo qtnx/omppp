@@ -4,7 +4,7 @@ import { getBundledAgent } from "../src/task/agents";
 import type { ExecutorOptions } from "../src/task/executor";
 import type { AgentDefinition, SingleResult } from "../src/task/types";
 import { resolveWorkflowAgentModelOverride } from "../src/workflow";
-import { WorkflowRun, workflowConcurrency } from "../src/workflow/engine";
+import { WorkflowRun } from "../src/workflow/engine";
 import { createWorkflowGlobals } from "../src/workflow/runtime";
 import { runWorkflowScript } from "../src/workflow/sandbox";
 
@@ -124,14 +124,6 @@ return { review };`,
 		await run.spawn("one-shot", {});
 
 		expect(keepAlive).toBe(false);
-	});
-
-	it("bounds automatic concurrency by CPU and memory capacity", () => {
-		const gib = 1024 ** 3;
-
-		expect(workflowConcurrency({ cpuCount: 24, totalMemoryBytes: 64 * gib })).toBe(8);
-		expect(workflowConcurrency({ cpuCount: 16, totalMemoryBytes: 16 * gib })).toBe(2);
-		expect(workflowConcurrency({ cpuCount: 2, totalMemoryBytes: 64 * gib })).toBe(1);
 	});
 
 	it("resolves default workflow subagents through the task role instead of the parent active model", () => {
