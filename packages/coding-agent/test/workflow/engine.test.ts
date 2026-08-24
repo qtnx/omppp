@@ -33,10 +33,12 @@ function makeRun(opts: {
 }
 
 describe("workflowConcurrency", () => {
-	it("is clamped to [2,16]", () => {
-		const c = workflowConcurrency();
-		expect(c).toBeGreaterThanOrEqual(2);
-		expect(c).toBeLessThanOrEqual(16);
+	it("bounds automatic concurrency by CPU and memory capacity", () => {
+		const gib = 1024 ** 3;
+
+		expect(workflowConcurrency({ cpuCount: 24, totalMemoryBytes: 64 * gib })).toBe(8);
+		expect(workflowConcurrency({ cpuCount: 16, totalMemoryBytes: 16 * gib })).toBe(2);
+		expect(workflowConcurrency({ cpuCount: 2, totalMemoryBytes: 64 * gib })).toBe(1);
 	});
 });
 
