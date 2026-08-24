@@ -5667,7 +5667,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tasks",
 			group: "Subagents",
 			label: "Workflow Max Concurrency",
-			description: "Concurrent agent() cap per workflow. 0 = auto (min(16, cores-2)).",
+			description: "Concurrent agent() cap per workflow. 0 = host-aware auto (up to 8, lowered for CPU and memory).",
 			options: [
 				{ value: "0", label: "Auto" },
 				{ value: "2", label: "2" },

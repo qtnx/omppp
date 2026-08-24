@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { Settings } from "../src/config/settings";
 import { getBundledAgent } from "../src/task/agents";
+import type { ExecutorOptions } from "../src/task/executor";
 import type { AgentDefinition, SingleResult } from "../src/task/types";
 import { resolveWorkflowAgentModelOverride } from "../src/workflow";
-import { WorkflowRun } from "../src/workflow/engine";
+import { WorkflowRun, workflowConcurrency } from "../src/workflow/engine";
 import { createWorkflowGlobals } from "../src/workflow/runtime";
 import { runWorkflowScript } from "../src/workflow/sandbox";
 
@@ -35,7 +36,7 @@ function result(output: string, overrides: Partial<SingleResult> = {}): SingleRe
 	};
 }
 
-function makeRun(runSubprocess: (opts: { task: string; modelOverride?: string | string[] }) => Promise<SingleResult>) {
+function makeRun(runSubprocess: (opts: ExecutorOptions) => Promise<SingleResult>) {
 	return new WorkflowRun({
 		runId: "run",
 		cwd: "/tmp/workflow",
@@ -111,6 +112,26 @@ return { review };`,
 		await run.waitForIdle();
 
 		expect(completed).toBe(true);
+	});
+
+	it("runs workflow agents as one-shot sessions", async () => {
+		let keepAlive: boolean | undefined;
+		const run = makeRun(async opts => {
+			keepAlive = opts.keepAlive;
+			return result("done");
+		});
+
+		await run.spawn("one-shot", {});
+
+		expect(keepAlive).toBe(false);
+	});
+
+	it("bounds automatic concurrency by CPU and memory capacity", () => {
+		const gib = 1024 ** 3;
+
+		expect(workflowConcurrency({ cpuCount: 24, totalMemoryBytes: 64 * gib })).toBe(8);
+		expect(workflowConcurrency({ cpuCount: 16, totalMemoryBytes: 16 * gib })).toBe(2);
+		expect(workflowConcurrency({ cpuCount: 2, totalMemoryBytes: 64 * gib })).toBe(1);
 	});
 
 	it("resolves default workflow subagents through the task role instead of the parent active model", () => {

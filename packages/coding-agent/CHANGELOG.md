@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow fan-out now disposes completed agents immediately and uses a host-aware automatic concurrency cap to prevent memory exhaustion and swap thrashing.
+
 ## [1.7.4] - 2026-08-21
 
 ### Added

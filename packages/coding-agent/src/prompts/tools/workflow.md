@@ -27,6 +27,6 @@ Begin with a PURE LITERAL `export const meta = { name, description }` (optional 
 
 ## Constraints
 
-- Concurrent `agent()` calls are capped at `min(16, cores-2)`; excess queue. Lifetime agent count is capped at 1000.
+- Concurrent `agent()` calls use a host-aware auto cap: at most 8, with lower limits on CPU- or memory-constrained machines; excess calls queue. Lifetime agent count is capped at 1000.
 - `Date.now()`, `new Date()` (no args), and `Math.random()` are unavailable (they break resume). Pass timestamps/seeds via `args`.
 - The script's top-level `return` value (if any) becomes the workflow's result.

@@ -21,9 +21,21 @@ type AgentFrameUpdate = Omit<
 	"kind" | "runId" | "index" | "label" | "phaseTitle" | "agentId" | "sessionFile"
 >;
 
-/** Concurrent agent() cap per workflow: min(16, cores-2), floored at 2. */
-export function workflowConcurrency(): number {
-	return Math.min(16, Math.max(2, os.cpus().length - 2));
+const MAX_AUTO_CONCURRENCY = 8;
+const WORKFLOW_MEMORY_RESERVE_BYTES = 8 * 1024 ** 3;
+const ESTIMATED_AGENT_MEMORY_BYTES = 4 * 1024 ** 3;
+
+/** Bound automatic workflow concurrency by both CPU and host memory. */
+export function workflowConcurrency(
+	resources: { cpuCount: number; totalMemoryBytes: number } = {
+		cpuCount: os.cpus().length,
+		totalMemoryBytes: os.totalmem(),
+	},
+): number {
+	const cpuLimit = Math.max(1, resources.cpuCount - 2);
+	const agentMemoryBudget = Math.max(0, resources.totalMemoryBytes - WORKFLOW_MEMORY_RESERVE_BYTES);
+	const memoryLimit = Math.max(1, Math.floor(agentMemoryBudget / ESTIMATED_AGENT_MEMORY_BYTES));
+	return Math.min(MAX_AUTO_CONCURRENCY, cpuLimit, memoryLimit);
 }
 
 export interface WorkflowRunBudget {
@@ -243,6 +255,7 @@ export class WorkflowRun {
 				modelOverride: opts.model,
 				outputSchema: opts.schema,
 				signal: this.signal,
+				keepAlive: false,
 				onProgress: progress => {
 					const cloned = structuredClone(progress);
 					latestProgress = cloned;
