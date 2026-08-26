@@ -329,7 +329,7 @@ describe("CommandController /usage", () => {
 		expect(controller.dismissUsagePanel()).toBe(false);
 	});
 
-	it("retracts only the uncommitted usage suffix inside a real transcript", async () => {
+	it("preserves a usage block after the frame provider commits it", async () => {
 		const transcript = new TranscriptContainer();
 		const before = new Text("before history", 0, 0);
 		const after = new Text("after history", 0, 0);
@@ -359,18 +359,17 @@ describe("CommandController /usage", () => {
 		const beforeAfterIndex = beforeDismiss.findIndex(line => line.trimEnd() === "after history");
 		expect(beforeAfterIndex).toBeGreaterThan(3);
 		const committedRows = beforeAfterIndex - 2;
-		const committedPrefix = beforeDismiss.slice(0, committedRows);
 
-		transcript.setNativeScrollbackCommittedRows(committedRows);
+		const batch = transcript.peekFinalizedBatch(120, beforeDismiss.length - committedRows);
+		if (!batch) throw new Error("Expected finalized transcript batch");
+		transcript.acknowledgeFinalizedBatch(batch.id);
 		expect(transcript.isBlockUncommitted(usagePanel)).toBe(false);
 		expect(transcript.isBlockUncommitted(after)).toBe(true);
 		expect(controller.dismissUsagePanel()).toBe(true);
 		const afterDismiss = transcript.render(120);
 		const afterAfterIndex = afterDismiss.findIndex(line => line.trimEnd() === "after history");
 
-		expect(afterDismiss.slice(0, committedRows)).toEqual(committedPrefix);
-		expect(afterAfterIndex).toBeGreaterThanOrEqual(committedRows);
-		expect(afterAfterIndex).toBeLessThan(beforeAfterIndex);
-		expect(afterDismiss.slice(afterAfterIndex)).toEqual(beforeDismiss.slice(beforeAfterIndex));
+		expect(afterDismiss).toEqual(beforeDismiss);
+		expect(afterAfterIndex).toBe(beforeAfterIndex);
 	});
 });

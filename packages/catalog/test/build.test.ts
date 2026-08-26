@@ -120,6 +120,39 @@ describe("buildModel", () => {
 		expect(model.compat.strictResponsesPairing).toBe(false);
 		expect(model.compat.openRouterRouting).toEqual({ only: ["anthropic"], order: ["anthropic"] });
 	});
+	it("materializes glyph-tokenization eligibility for Anthropic-compatible wire models", () => {
+		const anthropic = buildModel({
+			id: "claude-opus-4-8",
+			name: "Some Model",
+			api: "anthropic-messages",
+			provider: "anthropic-compatible",
+			baseUrl: "https://api.example.com/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 8_192,
+		});
+
+		expect(anthropic.requiresGlyphTokenization).toBe(true);
+		expect(buildModel(completionsSpec()).requiresGlyphTokenization).toBe(false);
+		expect(buildModel({ ...completionsSpec(), id: "claude-opus-4-8" }).requiresGlyphTokenization).toBe(true);
+		expect(
+			buildModel({
+				id: "other-model",
+				name: "Other Model",
+				api: "anthropic-messages",
+				provider: "anthropic-compatible",
+				baseUrl: "https://api.example.com/v1",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 8_192,
+			}).requiresGlyphTokenization,
+		).toBe(false);
+		expect(getBundledModel("anthropic", "claude-opus-4-8").requiresGlyphTokenization).toBe(true);
+	});
 
 	it("loads bundled OpenRouter models with resolved compat", () => {
 		const model = getBundledModel<"openrouter">("openrouter", "anthropic/claude-sonnet-4");
@@ -445,6 +478,32 @@ describe("openai-completions wire-quirk compat detection", () => {
 			).supportsForcedToolChoice,
 		).toBe(true);
 	});
+	it("downgrades forced tool choice for OpenCode gateways on Responses API", () => {
+		expect(
+			buildOpenAIResponsesCompat({
+				id: "muse-spark-1.2-contributor",
+				provider: "opencode-go",
+				name: "Muse Spark",
+				baseUrl: "https://opencode.ai/zen/go/v1",
+			}).supportsForcedToolChoice,
+		).toBe(false);
+		expect(
+			buildOpenAIResponsesCompat({
+				id: "muse-spark-1.2",
+				provider: "opencode-zen",
+				name: "Muse Spark",
+				baseUrl: "https://opencode.ai/zen/v1",
+			}).supportsForcedToolChoice,
+		).toBe(false);
+		expect(
+			buildOpenAIResponsesCompat({
+				id: "gpt-5",
+				provider: "openai",
+				name: "GPT-5",
+				baseUrl: "https://api.openai.com/v1",
+			}).supportsForcedToolChoice,
+		).toBe(true);
+	});
 
 	it("requires a synthetic assistant bridge after tool results only for Mistral hosts", () => {
 		// Mistral/Devstral reject a user message directly after a tool result; the chat
@@ -730,7 +789,7 @@ describe("OpenRouter model discovery", () => {
 		}
 	});
 
-	it("maps OpenRouter's advertised reasoning effort ladder and default", async () => {
+	it("maps OpenRouter's advertised reasoning effort ladder, default, and mandatory state", async () => {
 		const options = openrouterModelManagerOptions({
 			fetch: async () =>
 				Response.json({
@@ -742,6 +801,7 @@ describe("OpenRouter model discovery", () => {
 							reasoning: {
 								supported_efforts: ["max", "high", "low"],
 								default_effort: "high",
+								mandatory: true,
 							},
 						},
 					],
@@ -755,6 +815,7 @@ describe("OpenRouter model discovery", () => {
 			mode: "effort",
 			efforts: [Effort.Low, Effort.High, Effort.Max],
 			defaultLevel: Effort.High,
+			requiresEffort: true,
 		});
 	});
 

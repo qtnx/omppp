@@ -47,6 +47,7 @@ import type { SyncWorkerRequest, SyncWorkerResponse } from "./sync-worker";
 import type {
 	BehaviorDashboardStats,
 	DashboardStats,
+	FolderStats,
 	MessageStats,
 	ProviderDashboardStats,
 	RequestDetails,
@@ -492,6 +493,13 @@ export async function getCostDashboardStats(range?: string | null): Promise<Pick
 		costSeries: getCostTimeSeries(costSeriesDays, cutoff),
 	};
 }
+
+export async function getFolderStats(range?: string | null): Promise<FolderStats[]> {
+	await initDb();
+	const { cutoff } = getTimeRangeConfig(range);
+	return getStatsByFolder(cutoff ?? undefined);
+}
+
 export async function getRecentRequests(limit?: number): Promise<MessageStats[]> {
 	await initDb();
 	return dbGetRecentRequests(limit);

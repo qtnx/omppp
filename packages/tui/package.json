@@ -4,7 +4,7 @@
   "version": "1.7.4",
   "description": "Terminal User Interface library with differential rendering for efficient text-based applications",
   "homepage": "https://omp.sh",
-  "author": "Can Boluk",
+  "author": "Stencil Labs, Inc.",
   "contributors": [
     "Mario Zechner"
   ],
@@ -42,7 +42,7 @@
   },
   "devDependencies": {
     "chalk": "catalog:",
-    "ghostty-web": "catalog:"
+    "kitty-vt-wasm": "catalog:"
   },
   "engines": {
     "bun": ">=1.3.14"

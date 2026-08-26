@@ -306,7 +306,7 @@ async function runWatch(options: WatchCommandOptions): Promise<void> {
 }
 
 export default class Herdr extends Command {
-	static description = "Manage the Herdr integration (install the `omp` entrypoint herdr control needs)";
+	static description = "Manage the Herdr integration (install the `ompx` entrypoint herdr control needs)";
 
 	static args = {
 		action: Args.string({ description: "Action to perform", required: false, options: [...ACTIONS] }),

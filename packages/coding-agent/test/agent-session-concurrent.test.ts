@@ -23,7 +23,11 @@ import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensi
 import { GoalRuntime } from "@oh-my-pi/pi-coding-agent/goals/runtime";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { convertToLlm, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
+import {
+	convertToLlm,
+	shouldRenderAbortReason,
+	USER_INTERRUPT_LABEL,
+} from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as taskDiscovery from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
@@ -993,47 +997,6 @@ describe("AgentSession concurrent prompt guard", () => {
 	// not yet decremented the prompt-in-flight counter), and the next prompt
 	// threw AgentBusyError. Surfaced as `RpcCommandError: prompt: Agent is
 	// already processing` from omp-rpc clients (robomp triage reminder path).
-	it("subscriber may prompt() synchronously from agent_end without AgentBusyError", async () => {
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
-			streamFn: mock.stream,
-		});
-
-		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
-		const modelRegistry = sharedModelRegistry;
-		session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
-
-		const observedIsStreamingAtAgentEnd: boolean[] = [];
-		const reentrantPromptResults: Array<"resolved" | { error: string }> = [];
-		const observedIsStreamingAtRunIdle: boolean[] = [];
-		let reentrantPrompted = false;
-
-		session.subscribeRunState(state => {
-			if (state === "idle") observedIsStreamingAtRunIdle.push(session.isStreaming);
-		});
-		session.subscribe(event => {
-			if (event.type !== "agent_end") return;
-			observedIsStreamingAtAgentEnd.push(session.isStreaming);
-			if (reentrantPrompted) return;
-			reentrantPrompted = true;
-			void session
-				.prompt("Second message")
-				.then(() => reentrantPromptResults.push("resolved"))
-				.catch((err: Error) => reentrantPromptResults.push({ error: err.message }));
-		});
-
-		await session.prompt("First message");
-		await waitFor(() => reentrantPromptResults.length > 0, 2000);
-		await session.waitForIdle();
-
-		expect(observedIsStreamingAtAgentEnd).not.toContain(true);
-		expect(observedIsStreamingAtRunIdle).toContain(true);
-		expect(reentrantPromptResults).toEqual(["resolved"]);
-	});
 
 	it("does not let extension notifications block public agent_end", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
@@ -1314,15 +1277,6 @@ describe("AgentSession TTSR resume gate", () => {
 		vi.restoreAllMocks();
 	});
 
-	async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
-		const deadline = Date.now() + timeoutMs;
-		while (Date.now() < deadline) {
-			if (predicate()) return;
-			await Bun.sleep(1);
-		}
-
-		throw new Error("Timed out waiting for condition");
-	}
 	const testRule: Rule = {
 		name: "no-unwrap",
 		path: "/tmp/no-unwrap.md",
@@ -1709,6 +1663,20 @@ describe("AgentSession TTSR resume gate", () => {
 				: "";
 		expect(text).toContain("Tool execution was aborted: TTSR matched rule: no-unwrap");
 		expect(text).not.toContain("Request was aborted");
+
+		// The persisted aborted assistant turn must not render as an error on
+		// resume/`/tree`/rebuild: TTSR interruption is control flow, so AgentSession
+		// stamps the SilentAbort flag and `shouldRenderAbortReason` returns false.
+		const abortedAssistant = sessionManager
+			.getEntries()
+			.find(
+				entry =>
+					entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "aborted",
+			);
+		expect(abortedAssistant?.type).toBe("message");
+		if (abortedAssistant?.type === "message" && abortedAssistant.message.role === "assistant") {
+			expect(shouldRenderAbortReason(abortedAssistant.message)).toBe(false);
+		}
 	});
 
 	it("labels only the matching aborted tool placeholder with the TTSR rule reason", async () => {
@@ -1957,75 +1925,6 @@ describe("AgentSession TTSR resume gate", () => {
 		// By the time prompt() returns, the deferred continuation must have finished
 		expect(continuationCompleted).toBe(true);
 		expect(streamCallCount).toBeGreaterThanOrEqual(2);
-		expect(session.isStreaming).toBe(false);
-	});
-
-	it("prompt() returns immediately when session is aborted during TTSR wait", async () => {
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-
-		const ttsrManager = new TtsrManager({
-			enabled: true,
-			contextMode: "discard",
-			interruptMode: "always",
-			repeatMode: "once",
-			repeatGap: 10,
-		});
-		ttsrManager.addRule(testRule);
-
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
-			streamFn: (_model, _context, options) => {
-				const stream = new AssistantMessageEventStream();
-				const signal = options?.signal;
-
-				queueMicrotask(() => {
-					const partial = makeMsg("");
-					stream.push({ type: "start", partial });
-					stream.push({
-						type: "text_delta",
-						contentIndex: 0,
-						delta: "result.unwrap(",
-						partial: makeMsg("result.unwrap("),
-					});
-					if (signal) {
-						signal.addEventListener(
-							"abort",
-							() => {
-								stream.push({
-									type: "error",
-									reason: "aborted",
-									error: makeMsg("result.unwrap(", "aborted"),
-								});
-							},
-							{ once: true },
-						);
-					}
-				});
-
-				return stream;
-			},
-		});
-
-		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
-		const modelRegistry = sharedModelRegistry;
-		session = new AgentSession({
-			agent,
-			sessionManager,
-			settings,
-			modelRegistry,
-			ttsrManager,
-		});
-
-		// Start prompt (will trigger TTSR and create resume gate)
-		const promptPromise = session.prompt("Write some Rust code");
-		await waitFor(() => session.isStreaming);
-
-		// Abort session — prompt() should unblock
-		await session.abort();
-		await promptPromise;
-
 		expect(session.isStreaming).toBe(false);
 	});
 

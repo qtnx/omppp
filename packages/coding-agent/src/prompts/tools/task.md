@@ -17,7 +17,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 {{#when MAX_CONCURRENCY ">" 0}}
 - **Concurrency cap:** At most {{pluralize MAX_CONCURRENCY "subagent" "subagents"}} run at once in this session — anything beyond that just queues, so a {{#if batchEnabled}}`tasks[]` batch{{else}}set of parallel `task` calls{{/if}} larger than {{MAX_CONCURRENCY}} only delays results. Keep the fan-out at or under the cap.
 {{/when}}
-- **Agent typing:** Choose each item's `agent` type first. Read-only research MUST use {{#if scoutAvailable}}`scout`, which is optimized for rapid discovery{{else}}an available read-only agent{{/if}}. Use `explore` for broader codebase research and the default worker only when no listed specialist fits.
+- **Agent typing:** Choose each item's `agent` type first. Read-only research MUST use {{#if scoutAvailable}}`scout`, which is optimized for rapid discovery{{else}}an available read-only agent{{/if}}. Use `explore` for broader codebase research. Use the spawn-policy default only when it fits the work; otherwise name the matching specialist.
 - **Sequence only when necessary:** Run A before B only when B strictly requires A's output;{{#if ircEnabled}} if the missing piece is small, run them in parallel and have B ask A via `irc`.{{/if}}
 {{#if ircEnabled}}- **Steering delivery:** Parent-to-subagent IRC is delivered immediately as steering; subagents blocked in `job poll` / `irc wait` do not need to poll separately.{{/if}}
 - **Role matching:** Assign each subagent a specific `role` (e.g. "Security Reviewer", "DB Migrator"). Do not spawn generic workers.
@@ -28,12 +28,12 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 - **Overlap is safe:** Concurrent edits to the same files auto-resolve{{#if ircEnabled}}; agents coordinate directly over IRC when needed{{/if}}. NEVER shrink or serialize a batch to avoid file overlap. Every task MUST skip project-wide validation (build/lint/tests), and cross-task contracts MUST be stated in the {{#if batchEnabled}}batch `context`{{else}}task{{/if}} before dispatch.
 
 # Inputs
-- `agent` (optional): The base agent type to use (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`plan`, `reviewer`). Defaults to `{{defaultAgent}}`{{#if defaultAgentIsGeneric}} (the general-purpose worker){{/if}} — omit it for the default worker instead of passing `agent: "{{defaultAgent}}"`.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
+- `agent` (optional): The base agent type to use (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`plan`, `reviewer`). {{#if defaultAgentIsGeneric}}Defaults to the general-purpose worker (`{{defaultAgent}}`); omit `agent` instead of passing that name explicitly.{{else}}The spawn-policy default (`{{defaultAgent}}`) applies when omitted. Omit `agent` when the spawn-policy default is the best fit.{{/if}}{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
 {{#if batchEnabled}}
 - `context`: Shared project state, constraints, and contracts. Applies to the entire batch; do not duplicate this background into individual tasks. REQUIRED, session-specific only.
 - `tasks[]`: Array of subagents to spawn.
   - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
-  - `agent`: The agent type running this item (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
+  - `agent`: The agent type running this item (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`reviewer`). {{#if defaultAgentIsGeneric}}Omitting it uses the general-purpose worker (`{{defaultAgent}}`); NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{else}}Omitting it uses the spawn-policy default (`{{defaultAgent}}`); omit it only when that specialist is the best fit.{{/if}}{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
   - `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
   - `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
 {{#if effortEnabled}}  - `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
@@ -52,7 +52,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 {{/if}}
 {{else}}
 - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
-- `agent`: The agent type to spawn (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`reviewer`). Omitting it gives you the general-purpose worker (`{{defaultAgent}}`) — NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
+- `agent`: The agent type to spawn (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`reviewer`). {{#if defaultAgentIsGeneric}}Omitting it uses the general-purpose worker (`{{defaultAgent}}`); NEVER pass that name explicitly. Only omit it after checking the agent list below and finding no specialist that fits.{{else}}Omitting it uses the spawn-policy default (`{{defaultAgent}}`); omit it only when that specialist is the best fit.{{/if}}{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
 - `task`: Complete, self-contained instructions following assignment-fmt. One-liners or missing Acceptance/Done sections are PROHIBITED.
 - `model`: Explicit non-empty model selector or non-empty fallback chain for this spawn. A `:reasoning` suffix is preserved. Overrides agent-specific model settings.
 {{#if effortEnabled}}- `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`

@@ -953,7 +953,6 @@ fn write_proc_match_help(
 	if mode == ProcMatchMode::Kill {
 		writeln!(output, "  -q value, --queue value  send an integer with sigqueue")?;
 	}
-	#[cfg(target_os = "macos")]
 	if mode == ProcMatchMode::Grep {
 		writeln!(output, "  -q  suppress output")?;
 	}

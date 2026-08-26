@@ -25,6 +25,7 @@ import { $env, $which, APP_NAME, compareVersions, isEnoent, VERSION } from "@oh-
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { $ } from "bun";
+import { settings } from "../config/settings";
 import { theme } from "../modes/theme/theme";
 import {
 	isTimeoutError,
@@ -75,6 +76,7 @@ export function installScriptUrl(tag: string): string {
 
 /** Distribution channel advertised by a release's published npm manifest. */
 export type ReleaseDist = "npm" | "binary";
+export type UpdateChannel = "stable" | "canary";
 
 /** npm package names a release installs: the agent package and its natives companion. */
 export interface ReleasePackages {
@@ -183,11 +185,17 @@ export function shouldForceBinaryUpdate(
 
 /**
  * Select and validate the binary asset from GitHub release metadata.
+ *
+ * Draft releases are always rejected. Prereleases are rejected unless
+ * `options.allowPrerelease` is set, which the canary channel passes: canary
+ * GitHub releases are published as prereleases, and the exact-tag match below
+ * still pins the download to the specific requested version.
  */
 export function resolveReleaseBinaryAsset(
 	release: unknown,
 	expectedTag: string,
 	binaryName: string,
+	options: { allowPrerelease?: boolean } = {},
 ): ReleaseBinaryAsset {
 	if (!isRecord(release)) {
 		throw new Error("Invalid GitHub release metadata");
@@ -195,8 +203,11 @@ export function resolveReleaseBinaryAsset(
 	if (release.tag_name !== expectedTag) {
 		throw new Error(`GitHub release tag mismatch: expected ${expectedTag}`);
 	}
-	if (release.draft !== false || release.prerelease !== false) {
-		throw new Error(`GitHub release ${expectedTag} is not a published stable release`);
+	if (release.draft !== false) {
+		throw new Error(`GitHub release ${expectedTag} is a draft, not a published release`);
+	}
+	if (release.prerelease !== false && !options.allowPrerelease) {
+		throw new Error(`GitHub release ${expectedTag} is a prerelease; only canary updates install prerelease assets`);
 	}
 	if (!Array.isArray(release.assets)) {
 		throw new Error(`GitHub release ${expectedTag} has no asset list`);
@@ -239,6 +250,7 @@ async function getReleaseBinaryAsset(
 	binaryName: string,
 	fetchImpl: Fetch = fetch,
 	githubToken: string | undefined = $env.GITHUB_TOKEN || $env.GH_TOKEN,
+	allowPrerelease = false,
 ): Promise<ReleaseBinaryAsset> {
 	const tag = `v${expectedVersion}`;
 	const headers: Record<string, string> = {
@@ -269,7 +281,7 @@ async function getReleaseBinaryAsset(
 		throw new Error(`Failed to fetch GitHub release metadata: ${response.statusText}`);
 	}
 
-	return resolveReleaseBinaryAsset(await response.json(), tag, binaryName);
+	return resolveReleaseBinaryAsset(await response.json(), tag, binaryName, { allowPrerelease });
 }
 
 export interface VerifiedBinaryDownloadOptions {
@@ -362,15 +374,22 @@ export interface BinaryReplacementOptions {
  * Parse update subcommand arguments.
  * Returns undefined if not an update command.
  */
-export function parseUpdateArgs(args: string[]): { force: boolean; check: boolean; plugins: boolean } | undefined {
+export function parseUpdateArgs(
+	args: string[],
+): { force: boolean; check: boolean; plugins: boolean; channel?: UpdateChannel } | undefined {
 	if (args.length === 0 || args[0] !== "update") {
 		return undefined;
 	}
+
+	const canary = args.includes("--canary");
+	const stable = args.includes("--stable");
+	if (canary && stable) throw new Error("--canary and --stable are mutually exclusive");
 
 	return {
 		force: args.includes("--force") || args.includes("-f"),
 		check: args.includes("--check") || args.includes("-c"),
 		plugins: args.includes("--plugins") || args.includes("-l"),
+		channel: canary ? "canary" : stable ? "stable" : undefined,
 	};
 }
 
@@ -460,7 +479,22 @@ function isSymlinkPath(p: string): boolean {
 		return false;
 	}
 }
+/** Windows script shims (npm's launchers) that a native executable cannot overwrite. */
+function isWindowsScriptLauncherPath(launcherPath: string): boolean {
+	const extension = path.extname(launcherPath).toLowerCase();
+	return extension === ".cmd" || extension === ".ps1" || extension === ".bat";
+}
 
+/**
+ * Path of bun's Windows launcher metadata sidecar for `launcherPath`.
+ *
+ * `bun install -g` writes a `<name>.bunx` / `<name>.exe` pair: the `.exe` is a
+ * generic shim and the `.bunx` names the package entrypoint it launches.
+ */
+function bunShimMarkerPath(launcherPath: string): string {
+	const base = path.basename(launcherPath, path.extname(launcherPath));
+	return path.join(path.dirname(launcherPath), `${base}.bunx`);
+}
 function isPathInDirectoryLexical(filePath: string, directoryPath: string): boolean {
 	const normalizedPath = normalizePathForComparison(path.resolve(filePath));
 	const normalizedDirectory = normalizePathForComparison(path.resolve(directoryPath));
@@ -530,6 +564,13 @@ interface UpdateMethodResolutionOptions {
 	 */
 	ompLinkTarget?: string;
 	/**
+	 * Whether bun's launcher metadata (`<name>.bunx`) sits beside the resolved
+	 * launcher. Bun writes that sidecar next to every `.exe` shim it installs, so
+	 * its presence is what makes a regular-file launcher in bun's bin dir
+	 * bun-managed rather than a standalone binary that took the launcher over.
+	 */
+	bunShimMarker?: boolean;
+	/**
 	 * Whether package-manager routing (bun/npm) is permitted. Binary-only
 	 * releases pass `false`: a manager launcher then resolves to `"binary"` and
 	 * is taken over in place rather than reinstalled through its manager. Defaults
@@ -554,6 +595,7 @@ function resolveUpdateMethod(
 	const {
 		allowPackageManagers = true,
 		bunGlobalDir,
+		bunShimMarker = false,
 		homebrewPrefix,
 		miseBinDirs = [],
 		miseDataDir,
@@ -562,8 +604,7 @@ function resolveUpdateMethod(
 		ompLinkTarget,
 	} = options;
 	const launcherExtension = path.extname(ompPath).toLowerCase();
-	const isWindowsScriptLauncher =
-		launcherExtension === ".cmd" || launcherExtension === ".ps1" || launcherExtension === ".bat";
+	const isWindowsScriptLauncher = isWindowsScriptLauncherPath(ompPath);
 	if (isPathInDirectory(ompPath, NIX_STORE_DIR)) return "nix";
 	if (homebrewPrefix && isPathInDirectory(ompPath, path.join(homebrewPrefix, "bin"))) return "brew";
 	if (miseBinDirs.some(dir => isPathInDirectory(ompPath, dir))) return "mise";
@@ -574,10 +615,16 @@ function resolveUpdateMethod(
 	// installer's default (~/.local/bin), classifying by directory alone routes
 	// a binary install through npm/bun, whose reinstall then collides with the
 	// existing file (npm EEXIST). Fall through to binary replacement instead.
-	// Windows is excluded: there package managers write regular-file shims
-	// (bun's .exe launcher, npm's .cmd/.ps1), so a regular file is NOT evidence
-	// of a standalone install and the override would hijack managed installs.
-	const isStandaloneRegularFile = ompIsRegularFile && process.platform !== "win32";
+	// On Windows every launcher is a regular file, so ownership keys off the
+	// manager's own artifacts instead: npm's script shims (`omp`, `omp.cmd`,
+	// `omp.ps1`) and bun's `omp.bunx` sidecar. A bare `.exe` with neither is the
+	// standalone binary a binary-only release installed over the launcher —
+	// routing that back through bun reinstalls a package which no longer owns
+	// the launcher, and bun silently tolerates failing to overwrite the running
+	// `.exe` (EBUSY), so the install would stay pinned to the old version.
+	const isWindowsManagedLauncher =
+		process.platform === "win32" && (isWindowsScriptLauncher || launcherExtension === "" || bunShimMarker);
+	const isStandaloneRegularFile = ompIsRegularFile && !isWindowsManagedLauncher;
 	const bunNodeModulesDir = resolveBunGlobalNodeModulesDirFromLocations({
 		globalDir: bunGlobalDir,
 		globalBinDir: bunBinDir,
@@ -623,6 +670,7 @@ export function resolveUpdateTargetFromPath(
 	let ompIsSymlink = false;
 	let ompLinkTarget: string | undefined;
 	let ompRealpath: string | undefined;
+	const bunShimMarker = process.platform === "win32" && fs.existsSync(bunShimMarkerPath(ompPath));
 	try {
 		const stat = fs.lstatSync(ompPath);
 		ompIsRegularFile = stat.isFile() && !stat.isSymbolicLink();
@@ -637,6 +685,7 @@ export function resolveUpdateTargetFromPath(
 
 	const method = resolveUpdateMethod(ompPath, bunBinDir, {
 		...options,
+		bunShimMarker,
 		ompIsRegularFile,
 		ompLinkTarget,
 	});
@@ -656,6 +705,7 @@ export function resolveUpdateTargetFromPath(
 			resolveUpdateMethod(ompPath, bunBinDir, {
 				...options,
 				allowPackageManagers: true,
+				bunShimMarker,
 				ompIsRegularFile,
 				ompLinkTarget,
 			}) !== "binary";
@@ -714,10 +764,11 @@ const MAX_RENAME_HOPS = 3;
 async function fetchLatestManifest(
 	pkg: string,
 	timeoutMs: number,
+	channel: UpdateChannel,
 ): Promise<{ version: string; manifest: Record<string, unknown> }> {
 	let response: Response;
 	try {
-		response = await fetch(`${NPM_REGISTRY}${pkg}/latest`, {
+		response = await fetch(`${NPM_REGISTRY}${pkg}/${channel === "canary" ? "canary" : "latest"}`, {
 			signal: withTimeoutSignal(timeoutMs),
 		});
 	} catch (err) {
@@ -730,6 +781,9 @@ async function fetchLatestManifest(
 		throw err;
 	}
 	if (!response.ok) {
+		if (response.status === 404 && channel === "canary") {
+			throw new Error(`No canary release has been published for ${pkg} yet. Try \`${APP_NAME} update --stable\`.`);
+		}
 		throw new Error(`Failed to fetch release info for ${pkg}: ${response.statusText}`);
 	}
 
@@ -747,18 +801,21 @@ async function fetchLatestManifest(
  * in the chain. Uses npm instead of GitHub API to avoid unauthenticated rate
  * limiting.
  */
-export async function getLatestRelease(options: { timeoutMs?: number } = {}): Promise<ReleaseInfo> {
+export async function getLatestRelease(
+	options: { timeoutMs?: number; channel?: UpdateChannel } = {},
+): Promise<ReleaseInfo> {
 	const timeoutMs = options.timeoutMs ?? RELEASE_METADATA_TIMEOUT_MS;
+	const channel = options.channel ?? "stable";
 	const packages: ReleasePackages = { ...CURRENT_PACKAGES };
 	const visited = new Set([packages.pkg]);
-	let latest = await fetchLatestManifest(packages.pkg, timeoutMs);
+	let latest = await fetchLatestManifest(packages.pkg, timeoutMs, channel);
 	for (let hop = 0; hop < MAX_RENAME_HOPS; hop++) {
 		const rename = resolveReleaseRename(latest.manifest);
 		if (!rename || visited.has(rename.pkg)) break;
 		visited.add(rename.pkg);
 		packages.pkg = rename.pkg;
 		if (rename.natives) packages.natives = rename.natives;
-		latest = await fetchLatestManifest(packages.pkg, timeoutMs);
+		latest = await fetchLatestManifest(packages.pkg, timeoutMs, channel);
 	}
 
 	return {
@@ -1080,12 +1137,10 @@ function resolveOmpPath(): string | undefined {
 }
 
 /**
- * Extract the `X.Y.Z` version from `ompx --version` output.
- *
- * The binary prints the bare semver, so the match must not require a prefix.
+ * Extract the semver from `ompx --version` output (bare or launcher-prefixed), preserving prerelease suffixes.
  */
 export function parseReportedVersion(output: string): string | undefined {
-	return output.match(/(\d+\.\d+\.\d+)/)?.[1];
+	return output.match(/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/)?.[1];
 }
 
 /**
@@ -1112,7 +1167,8 @@ async function verifyInstalledVersion(expectedVersion: string): Promise<Installe
 }
 
 function printVerifiedVersion(expectedVersion: string): void {
-	console.log(chalk.green(`\n${theme.status.success} Updated to ${expectedVersion}`));
+	const icon = theme?.status?.success ?? "✔";
+	console.log(chalk.green(`\n${icon} Updated to ${expectedVersion}`));
 }
 
 function formatVerificationFailure(result: InstalledVersionVerification, expectedVersion: string): string {
@@ -1128,14 +1184,18 @@ function formatVerificationFailure(result: InstalledVersionVerification, expecte
  * Package-manager updates can succeed while leaving an older launcher first on
  * PATH; surfacing the reinstall hint is more useful than failing the update.
  */
-async function printVerification(expectedVersion: string): Promise<void> {
-	const result = await verifyInstalledVersion(expectedVersion);
+function printVerificationResult(result: InstalledVersionVerification, expectedVersion: string): void {
 	if (result.ok) {
 		printVerifiedVersion(expectedVersion);
 		return;
 	}
 	console.log(chalk.yellow(`\nWarning: ${formatVerificationFailure(result, expectedVersion)}`));
 	console.log(chalk.yellow(`You may need to reinstall: ${installerHint()}`));
+}
+
+/** Verify the PATH-resolved launcher and print the outcome. */
+async function printVerification(expectedVersion: string): Promise<void> {
+	printVerificationResult(await verifyInstalledVersion(expectedVersion), expectedVersion);
 }
 
 async function unlinkIfExists(filePath: string): Promise<void> {
@@ -1224,8 +1284,16 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 		// never has to overwrite — or unlink — a possibly-locked leftover from an
 		// earlier run. Renaming the running executable itself is permitted on
 		// Windows; only deleting its still-mapped image is not.
-		await fs.promises.rename(options.targetPath, options.backupPath);
-		backupReady = true;
+		// A missing target is tolerated: repairing a launcher that a failed
+		// package-manager reinstall removed installs the binary at a vacant
+		// path. There is then nothing to restore, so a verification failure
+		// leaves the new binary in place rather than the previous nothing.
+		try {
+			await fs.promises.rename(options.targetPath, options.backupPath);
+			backupReady = true;
+		} catch (err) {
+			if (!isEnoent(err)) throw err;
+		}
 		await fs.promises.rename(options.tempPath, options.targetPath);
 
 		const verification = await options.verifyInstalledVersion(options.expectedVersion);
@@ -1422,9 +1490,14 @@ export async function migrateRenamedInstall(release: ReleaseInfo, steps: RenameM
 
 /**
  * Update via package manager.
+ *
+ * Returns the PATH-resolved launcher check so the caller can repair a launcher
+ * the manager left unusable, or `undefined` when a rename migration already
+ * verified and reported its own result.
  */
-async function updateViaBun(release: ReleaseInfo): Promise<void> {
+async function updateViaBun(release: ReleaseInfo): Promise<InstalledVersionVerification | undefined> {
 	console.log(chalk.dim("Updating via bun..."));
+	let verification: InstalledVersionVerification | undefined;
 	if (release.packages.pkg !== PACKAGE) {
 		await migrateRenamedInstall(release, packageManagerMigrationSteps("bun", release));
 	} else {
@@ -1433,7 +1506,7 @@ async function updateViaBun(release: ReleaseInfo): Promise<void> {
 		if (result.exitCode !== 0) {
 			throw new Error(`bun install failed with exit code ${result.exitCode}`);
 		}
-		await printVerification(release.version);
+		verification = await verifyInstalledVersion(release.version);
 	}
 	try {
 		const pruneResult = await pruneBunCacheAfterGlobalInstall();
@@ -1443,13 +1516,14 @@ async function updateViaBun(release: ReleaseInfo): Promise<void> {
 	} catch (err) {
 		console.log(chalk.yellow(`Warning: could not prune stale Bun cache entries: ${err}`));
 	}
+	return verification;
 }
 
-async function updateViaNpm(release: ReleaseInfo): Promise<void> {
+async function updateViaNpm(release: ReleaseInfo): Promise<InstalledVersionVerification | undefined> {
 	console.log(chalk.dim("Updating via npm..."));
 	if (release.packages.pkg !== PACKAGE) {
 		await migrateRenamedInstall(release, packageManagerMigrationSteps("npm", release));
-		return;
+		return undefined;
 	}
 	const args = buildNpmInstallArgs(release.version, currentNativeTag(), release.packages);
 	const result = await $`npm ${args}`.nothrow();
@@ -1457,7 +1531,107 @@ async function updateViaNpm(release: ReleaseInfo): Promise<void> {
 		throw new Error(`npm install failed with exit code ${result.exitCode}`);
 	}
 
-	await printVerification(release.version);
+	return await verifyInstalledVersion(release.version);
+}
+/** Injectable steps for {@link updateViaManager}; mirrors {@link RenameMigrationSteps}. */
+export interface ManagerUpdateSteps {
+	/** Manager name used in progress and recovery messages. */
+	manager: string;
+	/**
+	 * Run the manager's global install. Resolves to the PATH-resolved launcher
+	 * check, or `undefined` when a rename migration already verified and
+	 * reported its own result.
+	 */
+	install(): Promise<InstalledVersionVerification | undefined>;
+	/** Re-check the PATH-resolved launcher after the install threw. */
+	verify(): Promise<InstalledVersionVerification>;
+	/** Take `launcherPath` over with the standalone release binary. */
+	repair(launcherPath: string): Promise<void>;
+}
+
+/** Production {@link ManagerUpdateSteps}: a bun/npm global install plus an in-place binary takeover. */
+function packageManagerUpdateSteps(
+	manager: "bun" | "npm",
+	release: ReleaseInfo,
+	allowPrerelease: boolean,
+): ManagerUpdateSteps {
+	return {
+		manager,
+		install: () => (manager === "bun" ? updateViaBun(release) : updateViaNpm(release)),
+		verify: () => verifyInstalledVersion(release.version),
+		repair: async launcherPath => {
+			// npm's script shims outrank `.exe` in PowerShell and Git Bash, so
+			// they must be retired rather than merely shadowed.
+			if (isWindowsScriptLauncherPath(launcherPath)) {
+				await updateViaShimTakeover(launcherPath, release.version, { allowPrerelease });
+			} else {
+				await updateViaBinaryAt(launcherPath, release.version, { allowPrerelease });
+			}
+		},
+	};
+}
+
+/**
+ * Run a package-manager self-update, repairing the launcher when the manager
+ * succeeds without updating it or leaves no working launcher behind.
+ *
+ * A global reinstall has to replace files the running process still holds open.
+ * On Windows that is unavoidable — the launcher image, the loaded native addon,
+ * and the package tree being executed are all locked. Bun writes the new
+ * `.bunx` metadata before ignoring EBUSY from the launcher replacement, while
+ * npm can retire its shims before an install fails.
+ *
+ * A successful install whose PATH launcher still reports an older version
+ * means the manager no longer controls that launcher, so it is taken over with
+ * the standalone binary. A newer launcher may have been installed by a
+ * concurrent update and is left untouched. If the install itself failed, a
+ * launcher that still reports a version is preserved and the manager error is
+ * surfaced; only a missing or unusable launcher is repaired.
+ */
+export async function updateViaManager(
+	release: ReleaseInfo,
+	launcherPath: string | undefined,
+	steps: ManagerUpdateSteps,
+): Promise<void> {
+	let installError: unknown;
+	let verification: InstalledVersionVerification | undefined;
+	try {
+		verification = await steps.install();
+		// A rename migration verifies and reports on its own.
+		if (!verification) return;
+	} catch (err) {
+		installError = err;
+	}
+	const result = verification ?? (await steps.verify());
+	const launcherIsBroken = result.path === undefined || result.actual === undefined;
+	const launcherIsOlder =
+		installError === undefined && result.actual !== undefined && compareVersions(result.actual, release.version) < 0;
+	const launcherNeedsRepair = !result.ok && (launcherIsBroken || launcherIsOlder);
+	if (!launcherNeedsRepair) {
+		if (installError) throw installError;
+		printVerificationResult(result, release.version);
+		return;
+	}
+	if (!launcherPath) {
+		throw installError ?? new Error(formatVerificationFailure(result, release.version));
+	}
+	console.log(
+		chalk.yellow(
+			`\n${steps.manager} did not install a working ${APP_NAME} ${release.version} launcher (${formatVerificationFailure(result, release.version)}); installing the standalone binary at ${launcherPath}.`,
+		),
+	);
+	try {
+		await steps.repair(launcherPath);
+	} catch (err) {
+		throw new Error(`${steps.manager} update did not produce a working launcher and binary repair failed: ${err}`, {
+			cause: installError ?? err,
+		});
+	}
+	console.log(
+		chalk.yellow(
+			`This install is no longer managed by ${steps.manager}. Removing the old global package may delete this launcher; if it does, reinstall with: ${installerHint()}`,
+		),
+	);
 }
 
 async function updateViaHomebrew(expectedVersion: string, force: boolean): Promise<void> {
@@ -1511,6 +1685,7 @@ export async function updateViaBinaryAt(
 		binaryName?: string;
 		fetchImpl?: Fetch;
 		githubToken?: string;
+		allowPrerelease?: boolean;
 		verifyInstalledVersion?: typeof verifyInstalledVersion;
 	} = {},
 ): Promise<void> {
@@ -1527,7 +1702,13 @@ export async function updateViaBinaryAt(
 	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
 	const tempPath = `${targetPath}.${attempt}.new`;
 	const backupPath = `${targetPath}.${attempt}.bak`;
-	const asset = await getReleaseBinaryAsset(expectedVersion, binaryName, options.fetchImpl, options.githubToken);
+	const asset = await getReleaseBinaryAsset(
+		expectedVersion,
+		binaryName,
+		options.fetchImpl,
+		options.githubToken,
+		options.allowPrerelease,
+	);
 	console.log(chalk.dim(`Downloading ${binaryName}…`));
 	await downloadVerifiedBinary({
 		url: asset.url,
@@ -1551,6 +1732,16 @@ export async function updateViaBinaryAt(
 			expectedVersion,
 			verifyInstalledVersion: options.verifyInstalledVersion ?? verifyInstalledVersion,
 		});
+		// The launcher is no longer bun-managed: drop bun's metadata sidecar so
+		// the next update classifies this install as a standalone binary instead
+		// of reinstalling a package that can no longer own the launcher (bun
+		// tolerates failing to overwrite the running `.exe`, so that reinstall
+		// would leave the install pinned to the old version). Done after the
+		// verified swap, so a rollback still restores a working bun shim, and
+		// best effort: a leftover sidecar only costs one misrouted classification.
+		try {
+			await unlinkIfExists(bunShimMarkerPath(targetPath));
+		} catch {}
 		// Reclaim backups from earlier updates whose owning process has since exited.
 		await sweepStaleUpdateArtifacts(targetPath);
 	});
@@ -1674,6 +1865,7 @@ export async function updateViaShimTakeover(
 		binaryName?: string;
 		fetchImpl?: Fetch;
 		githubToken?: string;
+		allowPrerelease?: boolean;
 		verifyBinary?: typeof verifyBinaryAtPath;
 	} = {},
 ): Promise<void> {
@@ -1682,7 +1874,13 @@ export async function updateViaShimTakeover(
 	const exePath = path.join(launcherDir, `${APP_NAME}.exe`);
 	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
 	const tempPath = `${exePath}.${attempt}.new`;
-	const asset = await getReleaseBinaryAsset(expectedVersion, binaryName, options.fetchImpl, options.githubToken);
+	const asset = await getReleaseBinaryAsset(
+		expectedVersion,
+		binaryName,
+		options.fetchImpl,
+		options.githubToken,
+		options.allowPrerelease,
+	);
 	console.log(chalk.dim(`Downloading ${binaryName}…`));
 	await downloadVerifiedBinary({
 		url: asset.url,
@@ -1782,11 +1980,37 @@ function installerHint(): string {
 		: "curl -fsSL https://omp.sh/install | sh -s -- --binary";
 }
 
+/** Persisted channel, or undefined when settings are unavailable (SDK/test embedding without `Settings.init()`). */
+function readPersistedChannel(): UpdateChannel | undefined {
+	try {
+		return settings.get("update.channel");
+	} catch {
+		return undefined;
+	}
+}
+
+/** Persist an explicit channel switch; tolerated as a no-op when settings are unavailable. */
+function persistChannel(channel: UpdateChannel): void {
+	try {
+		settings.set("update.channel", channel);
+	} catch {
+		// Outside a CLI host the explicit flag still applied for this run.
+	}
+}
+
 /**
  * Run the update command.
  */
-export async function runUpdateCommand(opts: { force: boolean; check: boolean }): Promise<void> {
+export async function runUpdateCommand(opts: {
+	force: boolean;
+	check: boolean;
+	channel?: UpdateChannel;
+}): Promise<void> {
 	console.log(chalk.dim(`Current version: ${VERSION}`));
+	const persistedChannel = readPersistedChannel() ?? "stable";
+	const channel = opts.channel ?? persistedChannel;
+	const isChannelSwitch = opts.channel !== undefined && opts.channel !== persistedChannel;
+	if (channel === "canary") console.log(chalk.dim("Current channel: canary"));
 
 	// Check for updates
 	let release: ReleaseInfo;
@@ -1799,12 +2023,19 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 
 	const comparison = Bun.semver.order(release.version, VERSION);
 
-	if (comparison <= 0 && !opts.force) {
-		console.log(chalk.green(`${theme.status.success} Already up to date`));
+	if (comparison <= 0 && !opts.force && !isChannelSwitch) {
+		const icon = theme?.status?.success ?? "✔";
+		console.log(chalk.green(`${icon} Already up to date`));
 		return;
 	}
 
-	if (comparison > 0) {
+	if (isChannelSwitch) {
+		console.log(
+			chalk.yellow(
+				`Switching to ${channel} ${release.version}${comparison <= 0 ? ` (downgrade from ${VERSION})` : ""}`,
+			),
+		);
+	} else if (comparison > 0) {
 		console.log(chalk.cyan(`New version available: ${release.version}`));
 	} else {
 		console.log(chalk.yellow(`Forcing reinstall of ${release.version}`));
@@ -1823,10 +2054,16 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 	// installs use the fork's pinned install script and retain binary fallback.
 	try {
 		const forceBinary = shouldForceBinaryUpdate(release);
+		const allowPrerelease = channel === "canary";
 		const target = await resolveUpdateTarget({ allowPackageManagers: !forceBinary });
+		if (channel === "canary" && (target.method === "nix" || target.method === "brew" || target.method === "mise")) {
+			console.log(chalk.yellow("Canary updates are only supported for bun, npm, or binary installs."));
+			return;
+		}
 		if (target.method === "nix") {
 			console.log(chalk.yellow("This installation is managed by Nix and cannot update itself."));
 			console.log(chalk.dim("Update the flake input or profile that provides omp, then rebuild."));
+			return;
 		} else if (target.method === "brew") {
 			await updateViaHomebrew(release.version, opts.force);
 		} else if (target.method === "mise") {
@@ -1835,16 +2072,18 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 			if (forceBinary) {
 				if (!target.path) throw new Error(`Could not resolve ${APP_NAME} launcher path in PATH`);
 				console.log(chalk.dim("This release ships as a standalone binary; replacing the script launcher."));
-				await updateViaShimTakeover(target.path, release.version);
+				await updateViaShimTakeover(target.path, release.version, { allowPrerelease });
 				console.log(
 					chalk.yellow(
 						`This install is no longer managed by ${target.method}. Removing the old global package may delete this launcher; if it does, reinstall with: ${installerHint()}`,
 					),
 				);
-			} else if (target.method === "bun") {
-				await updateViaBun(release);
 			} else {
-				await updateViaNpm(release);
+				await updateViaManager(
+					release,
+					target.path,
+					packageManagerUpdateSteps(target.method, release, allowPrerelease),
+				);
 			}
 		} else {
 			if (process.platform !== "win32" && !forceBinary) {
@@ -1861,7 +2100,7 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 			if (forceBinary && target.replacesSymlink) {
 				console.log(chalk.dim("Replacing the package-manager launcher with the standalone binary."));
 			}
-			await updateViaBinaryAt(target.path, release.version);
+			await updateViaBinaryAt(target.path, release.version, { allowPrerelease });
 			if (forceBinary && target.replacesSymlink) {
 				console.log(
 					chalk.yellow(
@@ -1870,6 +2109,7 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 				);
 			}
 		}
+		if (opts.channel) persistChannel(channel);
 	} catch (err) {
 		console.error(chalk.red(`Update failed: ${err}`));
 		process.exit(1);
@@ -1889,11 +2129,14 @@ ${chalk.bold("Options:")}
   -c, --check     Check for updates without installing
   -f, --force     Force reinstall even if up to date
   -l, --plugins   Update installed plugins
+  --canary        Switch to the canary channel and update
+  --stable        Switch back to the stable channel
 
 ${chalk.bold("Examples:")}
   ${APP_NAME} update              Update to latest version
   ${APP_NAME} update --check      Check if updates are available
   ${APP_NAME} update --force      Force reinstall
   ${APP_NAME} update -l           Update installed plugins
+  ${APP_NAME} update --canary    Switch to the canary channel and update
 `);
 }

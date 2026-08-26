@@ -16,6 +16,7 @@ import {
 	isGrokReasoningEffortCapable,
 	isKimiK3ModelId,
 	isKimiModelId,
+	isMuseSparkModelId,
 	isQwen38PlusTemplateEffortModelId,
 	isReasoningGlmModelId,
 } from "../identity/family";
@@ -541,12 +542,15 @@ const OPENAI_NON_RESPONSES_PREFIXES = [
 	"gpt-realtime",
 ] as const;
 
-function isLikelyOpenAIResponsesModelId(id: string, references: Map<string, ModelSpec<"openai-responses">>): boolean {
+function isLikelyOpenAIResponsesModelId(
+	id: string,
+	references?: ReadonlyMap<string, ModelSpec<"openai-responses">>,
+): boolean {
 	const trimmed = id.trim();
 	if (!trimmed) {
 		return false;
 	}
-	if (references.has(trimmed)) {
+	if (references?.has(trimmed)) {
 		return true;
 	}
 	const normalized = trimmed.toLowerCase();
@@ -1008,7 +1012,19 @@ function isGeneratedOpenAIProReasoningAlias(model: ModelSpec<Api>): boolean {
  * upstream model that occupies an alias id wins and suppresses projection.
  */
 export function projectOpenAIProReasoningAliases(models: readonly ModelSpec<Api>[]): ModelSpec<Api>[] {
-	const kept = models.filter(model => !isGeneratedOpenAIProReasoningAlias(model));
+	const priced = models.map(model => {
+		if ((model.provider === "openai" || model.provider === "openai-codex") && model.id === "gpt-5.6-sol") {
+			return {
+				...model,
+				cost: {
+					...OPENAI_GPT_56_SOL_STANDARD_COST,
+					longContext: OPENAI_GPT_56_LONG_CONTEXT_COSTS.sol,
+				},
+			};
+		}
+		return model;
+	});
+	const kept = priced.filter(model => !isGeneratedOpenAIProReasoningAlias(model));
 	const ids = new Set(kept.map(model => `${model.provider}/${model.id}`));
 	const out = [...kept];
 	for (const model of kept) {
@@ -1298,6 +1314,181 @@ export function novitaModelManagerOptions(
 }
 
 // ---------------------------------------------------------------------------
+// 5.6 DeepInfra
+// ---------------------------------------------------------------------------
+
+export const DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai";
+/**
+ * `filter=with_meta` attaches per-model `metadata` (limits, pricing, tags);
+ * `sort_by=omp` asks DeepInfra to return models in omp-priority order
+ * (earlier = better). The mapper does not stamp `priority` yet — see
+ * `mapDeepinfraModel` — but the params are sent so discovery picks the
+ * ordering up as soon as the server honors it.
+ */
+const DEEPINFRA_MODELS_QUERY = "?filter=with_meta&sort_by=omp";
+const DEEPINFRA_EFFORTS = [Effort.Low, Effort.Medium, Effort.High] as const;
+
+/** DeepInfra OpenAI-compatible discovery configuration. */
+export interface DeepinfraModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+}
+
+interface DeepinfraModelEntry {
+	id?: unknown;
+	metadata?: unknown;
+}
+
+function deepinfraTags(metadata: Record<string, unknown>): readonly string[] {
+	const tags = metadata.tags;
+	return Array.isArray(tags) ? tags.filter((tag): tag is string => typeof tag === "string") : [];
+}
+
+/**
+ * Map one DeepInfra catalog entry to a chat model spec. Non-`chat` entries
+ * (`tts`, `stt`, `embed`, `image-gen`, `video-gen`) are dropped — those
+ * surfaces are served by dedicated tool backends, not the chat catalog.
+ * DeepInfra reports token prices in USD per 1M tokens — omp's `ModelCost`
+ * unit, used verbatim. A bundled reference (when the generated catalog has
+ * one) is spread first so compat/tooling metadata can contribute, but the
+ * live metadata always wins for limits, pricing, and modalities.
+ */
+function mapDeepinfraModel(
+	entry: DeepinfraModelEntry,
+	baseUrl: string,
+	reference: ModelSpec<"openai-completions"> | undefined,
+): ModelSpec<"openai-completions"> | null {
+	const id = typeof entry.id === "string" ? entry.id.trim() : "";
+	if (!id) {
+		return null;
+	}
+	const metadata = isRecord(entry.metadata) ? entry.metadata : {};
+	const tags = deepinfraTags(metadata);
+	if (!tags.includes("chat")) {
+		return null;
+	}
+	const pricing = isRecord(metadata.pricing) ? metadata.pricing : {};
+	// `reasoning_effort` marks models whose effort dial is advertised. The
+	// parameter itself is validated and accepted platform-wide on DeepInfra
+	// (verified: 200 on effort-tagged, reasoning-only, and plain-chat models;
+	// 422 only for out-of-enum values), so a bundled reference's effort ladder
+	// surviving the `...reference` spread after a tag disappears is harmless —
+	// the host ignores the dial rather than rejecting the request.
+	const thinking: ThinkingConfig | undefined = tags.includes("reasoning_effort")
+		? { mode: "effort", efforts: [...DEEPINFRA_EFFORTS] }
+		: undefined;
+	const contextWindow = toPositiveNumber(metadata.context_length, reference?.contextWindow ?? null);
+	// `metadata.max_tokens` mirrors `context_length` on every live row today —
+	// it is the total token ceiling, not an output cap (the catalog exposes no
+	// output-specific field). Stamping it into `maxTokens` would advertise
+	// `output === context` for every model and default oversized `max_tokens`
+	// onto models with smaller real output limits. Trust it only when it is
+	// strictly below the context window (i.e. the API starts publishing a real
+	// output cap); otherwise keep the bundled reference's cap (stencil.so fill
+	// during generation) or leave the limit unknown so requests defer to the
+	// server-side cap.
+	const liveMaxTokens = toPositiveNumber(metadata.max_tokens, 0);
+	const hasLiveOutputCap = contextWindow !== null && liveMaxTokens > 0 && liveMaxTokens < contextWindow;
+	// A same-id reference carries the canonical deployment's output cap, which
+	// can exceed the (smaller) window DeepInfra serves — e.g. a 500K cap against
+	// a 256K context. An output cap above the context ceiling is meaningless, so
+	// keep the fallback inside the window.
+	const referenceMaxTokens = reference?.maxTokens ?? null;
+	const maxTokens = hasLiveOutputCap
+		? liveMaxTokens
+		: referenceMaxTokens !== null && contextWindow !== null
+			? Math.min(referenceMaxTokens, contextWindow)
+			: referenceMaxTokens;
+	return {
+		...reference,
+		id,
+		name: reference?.name ?? id,
+		api: "openai-completions",
+		provider: "deepinfra",
+		baseUrl,
+		reasoning: tags.includes("reasoning") || tags.includes("reasoning_effort"),
+		...(thinking ? { thinking } : {}),
+		input: tags.includes("vision") || tags.includes("vlm") ? ["text", "image"] : ["text"],
+		cost: {
+			input: toPositiveNumber(pricing.input_tokens, 0),
+			output: toPositiveNumber(pricing.output_tokens, 0),
+			cacheRead: toPositiveNumber(pricing.cache_read_tokens, 0),
+			cacheWrite: 0,
+		},
+		contextWindow,
+		maxTokens,
+	};
+}
+
+/**
+ * Bespoke fetch instead of `fetchOpenAICompatibleModels`: the shared helper
+ * cannot carry the `filter`/`sort_by` query params and re-sorts results by id,
+ * which would destroy DeepInfra's priority ordering once the server honors
+ * `sort_by=omp`. Response order is preserved (dedupe keeps the first, i.e.
+ * highest-priority, occurrence).
+ */
+async function fetchDeepinfraModels(options: {
+	baseUrl: string;
+	apiKey?: string;
+	fetch?: FetchImpl;
+	references: Map<string, ModelSpec<"openai-completions">>;
+}): Promise<ModelSpec<"openai-completions">[] | null> {
+	const headers: Record<string, string> = { Accept: "application/json" };
+	if (options.apiKey) {
+		headers.Authorization = `Bearer ${options.apiKey}`;
+	}
+	const fetchImpl = discoveryFetch(options.fetch);
+	let payload: unknown;
+	try {
+		const response = await withCatalogDiscoveryTimeout(DEFAULT_OPENAI_COMPATIBLE_DISCOVERY_TIMEOUT_MS, signal =>
+			fetchImpl(`${options.baseUrl}/models${DEEPINFRA_MODELS_QUERY}`, { method: "GET", headers, signal }),
+		);
+		if (!response.ok) {
+			return null;
+		}
+		payload = await response.json();
+	} catch {
+		return null;
+	}
+	if (!isRecord(payload) || !Array.isArray(payload.data)) {
+		return null;
+	}
+	const models: ModelSpec<"openai-completions">[] = [];
+	const seen = new Set<string>();
+	for (const entry of payload.data) {
+		if (!isRecord(entry)) {
+			continue;
+		}
+		const reference = typeof entry.id === "string" ? options.references.get(entry.id) : undefined;
+		const mapped = mapDeepinfraModel(entry as DeepinfraModelEntry, options.baseUrl, reference);
+		if (mapped && !seen.has(mapped.id)) {
+			seen.add(mapped.id);
+			models.push(mapped);
+		}
+	}
+	return models;
+}
+
+/**
+ * Builds DeepInfra's model-discovery manager. The catalog endpoint is public,
+ * so discovery (and keyless `gen:models` generation) works without an API key;
+ * model availability at runtime is still gated on credentials by the registry.
+ */
+export function deepinfraModelManagerOptions(
+	config?: DeepinfraModelManagerConfig,
+): ModelManagerOptions<"openai-completions"> {
+	const apiKey = config?.apiKey;
+	const baseUrl = (config?.baseUrl ?? DEEPINFRA_BASE_URL).replace(/\/$/, "");
+	const references = createBundledReferenceMap<"openai-completions">("deepinfra");
+	return {
+		providerId: "deepinfra",
+		dynamicModelsAuthoritative: true,
+		fetchDynamicModels: () => fetchDeepinfraModels({ baseUrl, apiKey, fetch: config?.fetch, references }),
+	};
+}
+
+// ---------------------------------------------------------------------------
 // 6. xAI
 // ---------------------------------------------------------------------------
 
@@ -1305,6 +1496,69 @@ export interface XaiModelManagerConfig {
 	apiKey?: string;
 	baseUrl?: string;
 	fetch?: FetchImpl;
+}
+
+// xAI bills the whole request at 2x the base rates once the prompt reaches
+// 200K tokens, for every current Grok SKU that carries the two-tier card
+// (grok-4.3/4.5/4.6, every grok-4.20 variant, grok-build-0.1). Source:
+// docs.x.ai/developers/models. Computing the tier from the base keeps it in
+// lockstep with stencil.so price updates instead of a hand-maintained table.
+const XAI_LONG_CONTEXT_THRESHOLD = 200_000;
+const XAI_LONG_CONTEXT_MULTIPLIER = 2;
+
+// SuperGrok surfaces a few models under IDs that differ from their public
+// `xai` catalog equivalent, so the exact-ID price fallback misses them. Map
+// the OAuth ID to the paid ID it mirrors.
+const XAI_OAUTH_PRICE_ALIASES: Record<string, string> = {
+	"grok-4.20-multi-agent-0309": "grok-4.20-multi-agent-beta-latest",
+};
+
+function xaiHasLongContextTier(modelId: string): boolean {
+	return (
+		modelId === "grok-4.3" ||
+		modelId === "grok-4.5" ||
+		modelId === "grok-4.6" ||
+		modelId === "grok-build-0.1" ||
+		modelId.startsWith("grok-4.20")
+	);
+}
+
+function hasTokenPrice(cost: ModelSpec["cost"]): boolean {
+	return cost.input !== 0 || cost.output !== 0 || cost.cacheRead !== 0 || cost.cacheWrite !== 0;
+}
+
+function withXaiLongContextTier(model: ModelSpec): ModelSpec {
+	if (!xaiHasLongContextTier(model.id) || !hasTokenPrice(model.cost)) return model;
+	const longContext: LongContextTokenCost = {
+		inputThreshold: XAI_LONG_CONTEXT_THRESHOLD,
+		inputThresholdInclusive: true,
+		input: model.cost.input * XAI_LONG_CONTEXT_MULTIPLIER,
+		output: model.cost.output * XAI_LONG_CONTEXT_MULTIPLIER,
+		cacheRead: model.cost.cacheRead * XAI_LONG_CONTEXT_MULTIPLIER,
+		cacheWrite: model.cost.cacheWrite * XAI_LONG_CONTEXT_MULTIPLIER,
+	};
+	return { ...model, cost: { ...model.cost, longContext } };
+}
+
+/**
+ * Applies xAI's long-context rate card and mirrors exact public-model prices
+ * onto matching SuperGrok catalog rows.
+ */
+export function applyXaiCatalogPricing(models: readonly ModelSpec[]): ModelSpec[] {
+	const pricedModels = models.map(model => (model.provider === "xai" ? withXaiLongContextTier(model) : model));
+	const publicCosts = new Map(
+		pricedModels
+			.filter(model => model.provider === "xai" && hasTokenPrice(model.cost))
+			.map(model => [model.id, model.cost]),
+	);
+
+	return pricedModels.map(model => {
+		if (model.provider !== "xai-oauth" || hasTokenPrice(model.cost) || model.id === "grok-composer-2.5-fast")
+			return model;
+		const alias = XAI_OAUTH_PRICE_ALIASES[model.id];
+		const publicCost = publicCosts.get(model.id) ?? (alias ? publicCosts.get(alias) : undefined);
+		return publicCost ? { ...model, cost: { ...publicCost } } : model;
+	});
 }
 
 export function xaiModelManagerOptions(config?: XaiModelManagerConfig): ModelManagerOptions<"openai-responses"> {
@@ -1511,6 +1765,8 @@ function mergeCuratedIntoModel(
 	} else {
 		delete compat.reasoningEffortMap;
 	}
+	const cost =
+		curated.id === "grok-composer-2.5-fast" ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : base.cost;
 	return {
 		...base,
 		contextWindow: curated.contextWindow,
@@ -1518,6 +1774,7 @@ function mergeCuratedIntoModel(
 		name: curated.name ?? base.name,
 		reasoning: curated.reasoning ?? true,
 		input: curated.input ?? base.input,
+		cost,
 		compat,
 	};
 }
@@ -2600,6 +2857,16 @@ function openCodeModelManagerOptions(
 		];
 		return hints.includes("openai-responses") ? "openai-responses" : undefined;
 	};
+	const resolveApi = (id: string, defaultApi: Api): Api => {
+		const base = openCodeBaseModelId(id);
+		return (
+			apiOverrides[id] ??
+			(base ? apiOverrides[base] : undefined) ??
+			references.get(id)?.api ??
+			fallbackApi(id, base) ??
+			defaultApi
+		);
+	};
 	return {
 		providerId,
 		cacheProviderId: resolveModelCacheProviderId(providerId, { apiKey, baseUrl: discoveryBaseUrl }),
@@ -2610,6 +2877,18 @@ function openCodeModelManagerOptions(
 		// completions after the pin shipped). Sibling-catalog drift is bounded
 		// by the 2h cache TTL instead.
 		dropCachedModelIdsOnStaticMismatch: Object.keys(apiOverrides),
+		modelsDev: {
+			fetch: () => fetchWellKnownModels(config?.fetch),
+			map: payload => {
+				if (!isRecord(payload)) return [];
+				return mapModelsDevToModels(payload, OPENCODE_MODELS_DEV_DESCRIPTORS)
+					.filter(model => model.provider === providerId)
+					.map(model => {
+						const api = resolveApi(model.id, "openai-completions");
+						return { ...model, api, baseUrl: openCodeBaseUrlForApi(api, basePath) };
+					});
+			},
+		},
 		...(apiKey && {
 			fetchDynamicModels: () =>
 				fetchOpenAICompatibleModels<Api>({
@@ -2620,17 +2899,30 @@ function openCodeModelManagerOptions(
 					mapModel: (entry, defaults) => {
 						const reference = references.get(defaults.id);
 						const name = toModelName(entry.name, reference?.name ?? defaults.name);
-						const base = openCodeBaseModelId(defaults.id);
-						// Pins win over bundled references (stale bundled routes
-						// must not stick), and a base-id pin covers its billing
-						// variants; the responses fallback covers gateway-first ids.
-						const api =
-							apiOverrides[defaults.id] ??
-							(base ? apiOverrides[base] : undefined) ??
-							reference?.api ??
-							fallbackApi(defaults.id, base) ??
-							defaults.api;
+						// Pins and bundled routing hints win over the metadata-only
+						// stencil fallback; the fallback never selects a transport.
+						const api = resolveApi(defaults.id, defaults.api);
 						const baseUrl = openCodeBaseUrlForApi(api, basePath);
+						if (isMuseSparkModelId(defaults.id)) {
+							// Gateway lists these as bare ids with no capability
+							// metadata and no local bundled row, so the generic
+							// defaults would hide the effort dial
+							// (`reasoning: false`). Keep the pinned/fallback route
+							// and restore the documented thinking surface.
+							return {
+								...(reference ?? defaults),
+								id: defaults.id,
+								name,
+								api,
+								provider: providerId,
+								baseUrl,
+								reasoning: true,
+								input: reference?.input ?? ["text", "image"],
+								thinking: reference?.thinking ?? META_MUSE_SPARK_THINKING,
+								contextWindow: toPositiveNumber(entry.context_length, reference?.contextWindow ?? 1_048_576),
+								maxTokens: toPositiveNumber(entry.max_completion_tokens, reference?.maxTokens ?? 131_072),
+							};
+						}
 						if (!reference) {
 							return { ...defaults, name, api, baseUrl };
 						}
@@ -2747,6 +3039,7 @@ function mapOpenRouterThinking(entry: OpenAICompatibleModelRecord): ThinkingConf
 		mode: "effort",
 		efforts,
 		...(defaultLevel !== undefined && efforts.includes(defaultLevel) ? { defaultLevel } : {}),
+		...(reasoning.mandatory === true ? { requiresEffort: true } : {}),
 	};
 }
 
@@ -3306,6 +3599,12 @@ export function vercelAiGatewayModelManagerOptions(
 				): ModelSpec<"anthropic-messages"> => {
 					const pricing = entry.pricing as Record<string, unknown> | undefined;
 					const tags = Array.isArray(entry.tags) ? (entry.tags as string[]) : [];
+					const reportedMaxTokens = typeof entry.max_tokens === "number" ? entry.max_tokens : defaults.maxTokens;
+					const modelId = typeof entry.id === "string" ? entry.id : defaults.id;
+					const maxTokens =
+						modelId === "meta/muse-spark-1.2-contributor" && typeof reportedMaxTokens === "number"
+							? Math.min(reportedMaxTokens, 131_072)
+							: reportedMaxTokens;
 
 					return {
 						...defaults,
@@ -3320,7 +3619,7 @@ export function vercelAiGatewayModelManagerOptions(
 						},
 						contextWindow:
 							typeof entry.context_window === "number" ? entry.context_window : defaults.contextWindow,
-						maxTokens: typeof entry.max_tokens === "number" ? entry.max_tokens : defaults.maxTokens,
+						maxTokens,
 					};
 				},
 				fetch: config?.fetch,
@@ -4520,6 +4819,133 @@ export function aiandModelManagerOptions(config?: AiandModelManagerConfig): Mode
 }
 
 // ---------------------------------------------------------------------------
+// 16.7 Yolo-Auto (yolo-auto.com)
+// ---------------------------------------------------------------------------
+
+const YOLO_AUTO_BASE_URL = "https://yolo-auto.com/v1";
+
+/**
+ * Documented Yolo-Auto catalog (yolo-auto.com/docs, 2026-08) bundled so the
+ * provider is usable when generation and first boot have no live key. The
+ * flat-rate `/v1/models` response is authoritative once discovery runs.
+ * The compat block mirrors the provider's documented wire surface: the API
+ * speaks the generic chat template with `reasoning_effort` support and rejects
+ * the `developer` role and `store` param.
+ */
+export const YOLO_AUTO_STATIC_MODELS: readonly ModelSpec<"openai-completions">[] = [
+	{
+		id: "deepseek-flash-v4",
+		name: "DeepSeek Flash V4",
+		api: "openai-completions",
+		provider: "yolo-auto",
+		baseUrl: YOLO_AUTO_BASE_URL,
+		reasoning: true,
+		input: ["text", "image"],
+		thinking: {
+			mode: "effort",
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+			effortMap: {
+				[Effort.Minimal]: "low",
+				[Effort.Low]: "low",
+				[Effort.Medium]: "high",
+				[Effort.High]: "high",
+				[Effort.XHigh]: "max",
+				[Effort.Max]: "max",
+			},
+		},
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 131_072,
+		maxTokens: null,
+		compat: {
+			supportsDeveloperRole: false,
+			supportsStore: false,
+			supportsReasoningEffort: true,
+			thinkingFormat: "chat-template",
+		},
+	},
+];
+
+export interface YoloAutoModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+}
+
+/**
+ * Map a discovered entry onto its reference, then re-apply Yolo-Auto's
+ * provider-wide wire constraints. A model that only exists in another
+ * provider's bundle (e.g. `gpt-4o` served via the global reference index)
+ * would otherwise inherit that provider's token pricing and `store`-capable
+ * surface, which the flat-rate Yolo endpoint neither charges nor accepts.
+ */
+function mapYoloAutoModel(
+	entry: OpenAICompatibleModelRecord,
+	defaults: ModelSpec<"openai-completions">,
+	reference: ModelSpec<"openai-completions"> | undefined,
+): ModelSpec<"openai-completions"> {
+	const model = mapWithBundledReference(entry, defaults, reference);
+	return {
+		...model,
+		// Flat-rate and no-store are provider-wide: they must win whether the
+		// reference came from the yolo bundle, the global index, or nowhere.
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		compat: {
+			...model.compat,
+			supportsStore: false,
+			supportsDeveloperRole: false,
+		},
+	};
+}
+/**
+ * Yolo-Auto model manager: OpenAI-compatible chat completions at the
+ * flat-rate `deepseek-flash-v4` endpoint. Live `/v1/models` discovery replaces the
+ * bundled seed once a key is stored or present in `YOLO_AUTO_API_KEY`. Models
+ * the provider adds later inherit metadata (reasoning, thinking, context)
+ * from the global bundled reference index, so new ids work without a per-id
+ * code change.
+ */
+export function yoloAutoModelManagerOptions(
+	config?: YoloAutoModelManagerConfig,
+): ModelManagerOptions<"openai-completions"> {
+	// Curated static models take precedence over the previously generated
+	// bundle so later corrections to the curated metadata are honored; bundle
+	// rows keep ids that earlier credentialed runs discovered, and the global
+	// index covers everything else.
+	const references = new Map<string, ModelSpec<"openai-completions">>();
+	const bundled = createBundledReferenceMap<"openai-completions">("yolo-auto");
+	for (const model of bundled.values()) {
+		references.set(model.id, model);
+	}
+	for (const model of YOLO_AUTO_STATIC_MODELS) {
+		const previous = references.get(model.id);
+		references.set(model.id, {
+			...previous,
+			...model,
+			// Generation-filled fields the curated seed leaves null: keep the
+			// canonical values baked by the previous regen (max-output cap,
+			// derived thinking) instead of dropping them.
+			maxTokens: model.maxTokens ?? previous?.maxTokens ?? null,
+			thinking: model.thinking ?? previous?.thinking,
+		});
+	}
+	const resolveReference = createReferenceResolver(() => references);
+	return {
+		...createOpenAICompatibleModelManagerOptions({
+			api: "openai-completions",
+			providerId: "yolo-auto",
+			defaultBaseUrl: YOLO_AUTO_BASE_URL,
+			config,
+			requireApiKey: true,
+			mapModel: (entry, defaults, reference) =>
+				mapYoloAutoModel(entry, defaults, resolveReference(defaults.id) ?? reference),
+			dynamicModelsAuthoritative: true,
+		}),
+	};
+}
+
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // 17. Qwen Portal
 // ---------------------------------------------------------------------------
 
@@ -4698,11 +5124,14 @@ export interface FetchLiteLLMRichModelsOptions<TApi extends Api> {
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	referenceResolver?: (modelId: string) => ModelSpec<TApi> | undefined;
+	resolveApi?: (entry: Record<string, unknown>, modelId: string) => TApi;
 }
 
 type LiteLLMRichModelEntry = Record<string, unknown>;
+type LiteLLMApiRoute = "openai" | "other" | "unknown";
 type LiteLLMRichEndpointModel<TApi extends Api> = {
 	model: ModelSpec<TApi>;
+	apiRoute: LiteLLMApiRoute;
 	supportsVision: unknown;
 	supportsReasoning: unknown;
 	hasContextWindow: boolean;
@@ -4783,14 +5212,15 @@ function toLiteLLMDisplayName(modelName: string | undefined, referenceName: stri
 	return referenceName ? stripLiteLLMResellerUsageSuffix(referenceName) : id;
 }
 
-function mapLiteLLMOpenAICompatibleModel<TApi extends Api>(
+function mapLiteLLMOpenAICompatibleModel(
 	entry: OpenAICompatibleModelRecord,
-	defaults: ModelSpec<TApi>,
-	reference: ModelSpec<TApi> | undefined,
-): ModelSpec<TApi> {
+	defaults: ModelSpec<Api>,
+	reference: ModelSpec<Api> | undefined,
+): ModelSpec<Api> {
 	const model = mapWithBundledReference(entry, defaults, reference);
 	return {
 		...model,
+		api: resolveLiteLLMApi(undefined, model.id),
 		name: stripLiteLLMResellerUsageSuffix(model.name),
 	};
 }
@@ -4875,6 +5305,55 @@ function getSupportedOpenAIParams(entry: LiteLLMRichModelEntry): string[] | unde
 		return undefined;
 	}
 	return value.flatMap(item => (typeof item === "string" ? [item] : []));
+}
+
+function getLiteLLMProviders(entry: LiteLLMRichModelEntry): string[] | undefined {
+	if (!Array.isArray(entry.providers)) {
+		return undefined;
+	}
+	const providers = entry.providers.flatMap(provider => {
+		const normalized = toNonEmptyString(provider)?.toLowerCase();
+		return normalized ? [normalized] : [];
+	});
+	return providers.length > 0 ? providers : undefined;
+}
+
+function classifyLiteLLMApiRoute(entry: LiteLLMRichModelEntry | undefined, id: string): LiteLLMApiRoute {
+	if (entry) {
+		const providers = getLiteLLMProviders(entry);
+		if (providers) {
+			return providers.every(provider => provider === "openai") ? "openai" : "other";
+		}
+
+		const params = getLiteLLMParams(entry);
+		const configuredProvider = toNonEmptyString(params?.custom_llm_provider)?.toLowerCase();
+		if (configuredProvider) {
+			return configuredProvider === "openai" ? "openai" : "other";
+		}
+
+		const backendModel = toNonEmptyString(params?.model);
+		const backendSeparator = backendModel?.indexOf("/") ?? -1;
+		if (backendModel && backendSeparator > 0) {
+			return backendModel.slice(0, backendSeparator).toLowerCase() === "openai" ? "openai" : "other";
+		}
+
+		const baseModel = toNonEmptyString(getLiteLLMMetadataValue(entry, "base_model"));
+		const baseSeparator = baseModel?.indexOf("/") ?? -1;
+		if (baseModel && baseSeparator > 0) {
+			return baseModel.slice(0, baseSeparator).toLowerCase() === "openai" ? "openai" : "other";
+		}
+	}
+
+	const modelId = id.toLowerCase().startsWith("openai/") ? id.slice("openai/".length) : id;
+	return isLikelyOpenAIResponsesModelId(modelId) ? "openai" : "unknown";
+}
+
+export function resolveLiteLLMApi(
+	entry: Record<string, unknown> | undefined,
+	id: string,
+	fallbackApi: Api = "openai-completions",
+): Api {
+	return classifyLiteLLMApiRoute(entry, id) === "openai" ? "openai-responses" : fallbackApi;
 }
 
 function isLiteLLMUnusableSentinelPlaceholder(entry: LiteLLMRichModelEntry): boolean {
@@ -4969,7 +5448,7 @@ function mapLiteLLMRichEntry<TApi extends Api>(
 	return {
 		id,
 		name: toLiteLLMDisplayName(modelName, reference?.name, id),
-		api: options.api,
+		api: options.resolveApi?.(entry, id) ?? options.api,
 		provider: options.provider,
 		baseUrl: runtimeBaseUrl,
 		contextWindow,
@@ -4986,6 +5465,34 @@ function mapLiteLLMRichEntry<TApi extends Api>(
 		...(supportsTools !== undefined ? { supportsTools } : {}),
 		compat: compat as ModelSpec<TApi>["compat"],
 	};
+}
+
+function mergeLiteLLMRichEndpointModels<TApi extends Api>(
+	existing: LiteLLMRichEndpointModel<TApi>,
+	next: LiteLLMRichEndpointModel<TApi>,
+): LiteLLMRichEndpointModel<TApi> {
+	const apiRoute =
+		existing.apiRoute === "other" || next.apiRoute === "other"
+			? "other"
+			: existing.apiRoute === "openai" || next.apiRoute === "openai"
+				? "openai"
+				: "unknown";
+	const api = next.apiRoute === apiRoute ? next.model.api : existing.model.api;
+	const model: ModelSpec<TApi> = {
+		...existing.model,
+		api,
+		name: next.model.name === next.model.id ? existing.model.name : next.model.name,
+		contextWindow: next.hasContextWindow ? next.model.contextWindow : existing.model.contextWindow,
+		maxTokens: next.hasMaxTokens ? next.model.maxTokens : existing.model.maxTokens,
+		input: next.supportsVision === true || next.supportsVision === false ? next.model.input : existing.model.input,
+		reasoning: typeof next.supportsReasoning === "boolean" ? next.model.reasoning : existing.model.reasoning,
+		cost: next.hasCost ? next.model.cost : existing.model.cost,
+		compat: next.hasSupportedOpenAIParams ? next.model.compat : existing.model.compat,
+	};
+	if (next.hasToolMetadata) {
+		model.supportsTools = next.model.supportsTools;
+	}
+	return { ...next, apiRoute, model };
 }
 
 async function fetchLiteLLMRichEndpoint<TApi extends Api>(
@@ -5027,7 +5534,6 @@ async function fetchLiteLLMRichEndpoint<TApi extends Api>(
 		return null;
 	}
 	const deduped = new Map<string, LiteLLMRichEndpointModel<TApi>>();
-	let incompleteVisionMetadata = false;
 	for (const entry of entries) {
 		const model = mapLiteLLMRichEntry(entry, options, runtimeBaseUrl);
 		if (model) {
@@ -5035,11 +5541,9 @@ async function fetchLiteLLMRichEndpoint<TApi extends Api>(
 			const supportsReasoning = getLiteLLMMetadataValue(entry, "supports_reasoning");
 			const supportsFunctionCalling = getLiteLLMMetadataValue(entry, "supports_function_calling");
 			const supportedOpenAIParams = getSupportedOpenAIParams(entry);
-			if (supportsVision !== true && supportsVision !== false) {
-				incompleteVisionMetadata = true;
-			}
-			deduped.set(model.id, {
+			const next: LiteLLMRichEndpointModel<TApi> = {
 				model,
+				apiRoute: classifyLiteLLMApiRoute(entry, model.id),
 				supportsVision,
 				supportsReasoning,
 				hasContextWindow: toPositiveNumber(getLiteLLMMetadataValue(entry, "max_input_tokens"), null) !== null,
@@ -5050,19 +5554,22 @@ async function fetchLiteLLMRichEndpoint<TApi extends Api>(
 					supportedOpenAIParams !== undefined,
 				hasSupportedOpenAIParams: supportedOpenAIParams !== undefined,
 				hasCost: getLiteLLMCost(entry) !== undefined,
-			});
+			};
+			const existing = deduped.get(model.id);
+			deduped.set(model.id, existing ? mergeLiteLLMRichEndpointModels(existing, next) : next);
 		}
 	}
 	if (deduped.size === 0) {
 		return null;
 	}
+	const models = Array.from(deduped.values()).sort((left, right) => left.model.id.localeCompare(right.model.id));
 	return {
-		models: Array.from(deduped.values()).sort((left, right) => left.model.id.localeCompare(right.model.id)),
-		incompleteVisionMetadata,
+		models,
+		incompleteVisionMetadata: models.some(entry => entry.supportsVision !== true && entry.supportsVision !== false),
 	};
 }
 
-export async function fetchLiteLLMRichModels<TApi extends Api>(
+async function fetchLiteLLMRichModelsInternal<TApi extends Api>(
 	options: FetchLiteLLMRichModelsOptions<TApi>,
 ): Promise<ModelSpec<TApi>[] | null> {
 	const managementBaseUrl = normalizeLiteLLMManagementBaseUrl(options.baseUrl);
@@ -5102,32 +5609,19 @@ export async function fetchLiteLLMRichModels<TApi extends Api>(
 					}
 					continue;
 				}
-				const model: ModelSpec<TApi> = {
-					...existing.model,
-					name: next.model.name === next.model.id ? existing.model.name : next.model.name,
-					contextWindow: next.hasContextWindow ? next.model.contextWindow : existing.model.contextWindow,
-					maxTokens: next.hasMaxTokens ? next.model.maxTokens : existing.model.maxTokens,
-					input:
-						next.supportsVision === true || next.supportsVision === false
-							? next.model.input
-							: existing.model.input,
-					reasoning: typeof next.supportsReasoning === "boolean" ? next.model.reasoning : existing.model.reasoning,
-					cost: next.hasCost ? next.model.cost : existing.model.cost,
-					compat: next.hasSupportedOpenAIParams ? next.model.compat : existing.model.compat,
-				};
-				if (next.hasToolMetadata) {
-					model.supportsTools = next.model.supportsTools;
-				}
-				deduped.set(next.model.id, { ...next, model });
+				deduped.set(next.model.id, mergeLiteLLMRichEndpointModels(existing, next));
 			}
-			let hasIncompleteVisionMetadata = false;
+			let needsMoreMetadata = false;
 			for (const entry of deduped.values()) {
-				if (entry.supportsVision !== true && entry.supportsVision !== false) {
-					hasIncompleteVisionMetadata = true;
+				if (
+					(entry.supportsVision !== true && entry.supportsVision !== false) ||
+					(options.resolveApi !== undefined && entry.apiRoute === "unknown")
+				) {
+					needsMoreMetadata = true;
 					break;
 				}
 			}
-			if (!hasIncompleteVisionMetadata) {
+			if (!needsMoreMetadata) {
 				break;
 			}
 		}
@@ -5147,40 +5641,45 @@ export async function fetchLiteLLMRichModels<TApi extends Api>(
 	return options.timeoutMs !== undefined ? withCatalogDiscoveryTimeout(options.timeoutMs, fetchModels) : fetchModels();
 }
 
-export function litellmModelManagerOptions(
-	config?: LiteLLMModelManagerConfig,
-): ModelManagerOptions<"openai-completions"> {
+export async function fetchLiteLLMRichModels<TApi extends Api>(
+	options: FetchLiteLLMRichModelsOptions<TApi>,
+): Promise<ModelSpec<TApi>[] | null> {
+	return fetchLiteLLMRichModelsInternal(options);
+}
+
+export function litellmModelManagerOptions(config?: LiteLLMModelManagerConfig): ModelManagerOptions<Api> {
 	const apiKey = config?.apiKey;
 	const baseUrl = config?.baseUrl ?? getDefaultModelDiscoveryBaseUrl("litellm")!;
 	return {
 		providerId: "litellm",
-		// rich-v5 invalidates rows cached before rich metadata pricing was mapped.
+		// rich-v6 invalidates rows cached before OpenAI models moved to Responses.
 		// Earlier versions added bundled reference fallback, continued discovery
 		// past incomplete `/model_group/info`, stripped reseller usage suffixes,
-		// and filtered placeholder-only `all-team-models` rows. Bump the version
-		// whenever the mappers below change, or warm authoritative caches keep
-		// serving pre-change rows for the full TTL.
+		// filtered placeholder-only `all-team-models` rows, and mapped rich pricing.
+		// Bump the version whenever the mappers below change, or warm authoritative
+		// caches keep serving pre-change rows for the full TTL.
 		cacheProviderId: resolveModelCacheProviderId("litellm", { baseUrl }),
 		// litellm is a local-only proxy and is never bundled in models.json (that
 		// would leak the machine's localhost catalog). Prefer the proxy's richer
 		// management metadata, then enrich ids against models.dev with the bundled
 		// catalog as a fallback before using /v1/models.
 		fetchDynamicModels: async () => {
-			const modelsDevReferences = await loadModelsDevReferences<"openai-completions">(config?.fetch);
+			const modelsDevReferences = await loadModelsDevReferences<Api>(config?.fetch);
 			const resolveReference = createReferenceResolver(modelsDevReferences);
-			const richModels = await fetchLiteLLMRichModels({
+			const richModels = await fetchLiteLLMRichModels<Api>({
 				api: "openai-completions",
 				provider: "litellm",
 				baseUrl,
 				apiKey,
 				fetch: config?.fetch,
 				referenceResolver: resolveReference,
+				resolveApi: resolveLiteLLMApi,
 				timeoutMs: 10_000,
 			});
 			if (richModels && richModels.length > 0) {
 				return richModels;
 			}
-			return fetchOpenAICompatibleModels({
+			return fetchOpenAICompatibleModels<Api>({
 				api: "openai-completions",
 				provider: "litellm",
 				baseUrl,
@@ -6227,6 +6726,29 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_GOOGLE_VERTEX: readonly ModelsDevProviderD
 	}),
 ];
 
+const OPENCODE_MODELS_DEV_DESCRIPTORS: readonly ModelsDevProviderDescriptor[] = [
+	openAiCompletionsDescriptor("opencode", "opencode-zen", "https://opencode.ai/zen/v1", {
+		filterModel: filterActiveToolCallModels,
+		resolveApi: (modelId, raw) =>
+			resolveApiByRules(
+				modelId,
+				raw,
+				OPENCODE_ZEN_API_RESOLUTION.rules,
+				OPENCODE_ZEN_API_RESOLUTION.defaultResolution,
+			),
+	}),
+	openAiCompletionsDescriptor("opencode-go", "opencode-go", "https://opencode.ai/zen/go/v1", {
+		filterModel: filterActiveToolCallModels,
+		resolveApi: (modelId, raw) =>
+			resolveApiByRules(
+				modelId,
+				raw,
+				OPENCODE_GO_API_RESOLUTION.rules,
+				OPENCODE_GO_API_RESOLUTION.defaultResolution,
+			),
+	}),
+];
+
 const MODELS_DEV_PROVIDER_DESCRIPTORS_SPECIALIZED: readonly ModelsDevProviderDescriptor[] = [
 	// --- Azure OpenAI ---
 	// OpenAI-family models hosted on Azure, served via the Responses API. baseUrl
@@ -6248,28 +6770,8 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_SPECIALIZED: readonly ModelsDevProviderDes
 	),
 	// --- Mistral ---
 	openAiCompletionsDescriptor("mistral", "mistral", "https://api.mistral.ai/v1"),
-	// --- OpenCode Zen ---
-	openAiCompletionsDescriptor("opencode", "opencode-zen", "https://opencode.ai/zen/v1", {
-		filterModel: filterActiveToolCallModels,
-		resolveApi: (modelId, raw) =>
-			resolveApiByRules(
-				modelId,
-				raw,
-				OPENCODE_ZEN_API_RESOLUTION.rules,
-				OPENCODE_ZEN_API_RESOLUTION.defaultResolution,
-			),
-	}),
-	// --- OpenCode Go ---
-	openAiCompletionsDescriptor("opencode-go", "opencode-go", "https://opencode.ai/zen/go/v1", {
-		filterModel: filterActiveToolCallModels,
-		resolveApi: (modelId, raw) =>
-			resolveApiByRules(
-				modelId,
-				raw,
-				OPENCODE_GO_API_RESOLUTION.rules,
-				OPENCODE_GO_API_RESOLUTION.defaultResolution,
-			),
-	}),
+	// --- OpenCode Zen / Go ---
+	...OPENCODE_MODELS_DEV_DESCRIPTORS,
 	// --- GitHub Copilot ---
 	openAiCompletionsDescriptor("github-copilot", "github-copilot", COPILOT_BASE_URL, {
 		defaultContextWindow: 128000,
