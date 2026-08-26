@@ -3,6 +3,7 @@ export * from "./brief-tool";
 export * from "./config";
 export * from "./done-verdict-tool";
 export * from "./emission-guard";
+export * from "./loop-guard";
 export * from "./runtime";
 export * from "./set-todos-tool";
 export * from "./state-tool";

@@ -7,7 +7,7 @@
  */
 
 /** Image generation backends, in settings/tool vocabulary. */
-export type ImageProvider = "antigravity" | "gemini" | "openai" | "openai-codex" | "openrouter" | "xai";
+export type ImageProvider = "antigravity" | "deepinfra" | "gemini" | "openai" | "openai-codex" | "openrouter" | "xai";
 
 /**
  * Auto-resolution fallback order used after the per-request provider and the
@@ -23,6 +23,7 @@ export const AUTO_IMAGE_PROVIDER_ORDER: readonly ImageProvider[] = [
 	"xai",
 	"openrouter",
 	"gemini",
+	"deepinfra",
 ];
 
 /** Settings choices for `providers.imageOrder` (labels shared with the retired single-preference enum). */
@@ -49,6 +50,7 @@ export const IMAGE_PROVIDER_CHOICES = [
 	},
 	{ value: "gemini", label: "Gemini", description: "Requires GEMINI_API_KEY" },
 	{ value: "openrouter", label: "OpenRouter", description: "Requires OPENROUTER_API_KEY" },
+	{ value: "deepinfra", label: "DeepInfra", description: "Requires DEEPINFRA_API_KEY" },
 ] as const satisfies ReadonlyArray<{ value: ImageProvider; label: string; description: string }>;
 
 /**

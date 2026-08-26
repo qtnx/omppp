@@ -320,7 +320,6 @@ describe("OmfgController", () => {
 		expect(harness.container.children).toHaveLength(0);
 		expect(controller.hasActiveRequest()).toBe(false);
 	});
-
 	it("guards empty complaints and missing models before model calls", async () => {
 		const runEphemeralTurn = vi.fn<RunEphemeralTurn>(async () => ({
 			replyText: "n/a",

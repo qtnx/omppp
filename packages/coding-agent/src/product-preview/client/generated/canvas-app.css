@@ -164,7 +164,7 @@
 
 .react-flow__edge.animated path {
   stroke-dasharray: 5;
-  animation: dashdraw .5s linear infinite;
+  animation: .5s linear infinite dashdraw;
 }
 
 .react-flow__edge.animated path.react-flow__edge-interaction {
@@ -217,7 +217,7 @@
 
 .react-flow__connection .animated {
   stroke-dasharray: 5;
-  animation: dashdraw .5s linear infinite;
+  animation: .5s linear infinite dashdraw;
 }
 
 svg.react-flow__connectionline {

@@ -81,7 +81,10 @@ function createSession(autoDetect: boolean, vault: FakeSecretVault): AgentSessio
 			"secrets.enabled": true,
 			"secrets.autoDetect": autoDetect,
 		}),
-		modelRegistry: { getApiKey: vi.fn(async () => "key") } as never,
+		modelRegistry: {
+			getApiKey: vi.fn(async () => "key"),
+			awaitBackgroundRefresh: async () => undefined,
+		} as never,
 		secretVault: vault,
 	});
 }

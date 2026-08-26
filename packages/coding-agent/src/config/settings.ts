@@ -22,13 +22,11 @@ import {
 	getAgentDir,
 	getLastChangelogVersionPath,
 	getProjectDir,
-	hasFsCode,
 	isEnoent,
 	logger,
 	MAIN_CONFIG_FILENAMES,
 	procmgr,
 	setWorktreesDir,
-	toError,
 } from "@oh-my-pi/pi-utils";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { JSONC, YAML } from "bun";
@@ -50,9 +48,11 @@ import {
 import { AgentStorage } from "../session/agent-storage";
 import { type CompactionMethod, DEFAULT_COMPACTION_METHOD_ORDER } from "../session/compaction-methods";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
+import { replaceFileAtomically } from "../utils/atomic-file";
 import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
 import { INSPECT_IMAGE_MODES } from "../utils/inspect-image-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
+import { stringifyYamlConfig } from "./config-file";
 import {
 	type BashInterceptorRule,
 	type GroupPrefix,
@@ -339,6 +339,50 @@ function valuesEqual(a: unknown, b: unknown): boolean {
 	}
 	return false;
 }
+/**
+ * Dotted-path prefixes that name settings groups (e.g. "tui" for "tui.*").
+ * A prefix may simultaneously be a schema leaf; those accept their declared
+ * value shape and are excluded from shadow detection.
+ */
+const SETTINGS_GROUP_ONLY_PREFIXES: Readonly<Record<string, true>> = (() => {
+	const prefixes: Record<string, true> = {};
+	for (const key of Object.keys(SETTINGS_SCHEMA)) {
+		for (let dot = key.indexOf("."); dot !== -1; dot = key.indexOf(".", dot + 1)) {
+			prefixes[key.slice(0, dot)] = true;
+		}
+	}
+	for (const key of Object.keys(SETTINGS_SCHEMA)) delete prefixes[key];
+	return prefixes;
+})();
+
+/**
+ * Drop entries from capability-provided project settings whose non-object
+ * value would shadow an entire settings group. `.claude/settings.json` is
+ * shared with other tools, and a foreign leaf like `"tui": "fullscreen"`
+ * deep-merges over omp's `tui` group, silently replacing every `tui.*`
+ * setting for sessions rooted in that project. Values at schema leaves,
+ * unknown keys, and well-formed nested objects pass through unchanged.
+ */
+export function dropSettingsGroupShadows(data: RawSettings, sourcePath: string, basePrefix = ""): RawSettings {
+	const result: RawSettings = {};
+	for (const key of Object.keys(data)) {
+		const value = data[key];
+		const path = basePrefix === "" ? key : `${basePrefix}.${key}`;
+		if (!Object.hasOwn(SETTINGS_GROUP_ONLY_PREFIXES, path)) {
+			result[key] = value;
+			continue;
+		}
+		if (typeof value !== "object" || value === null || Array.isArray(value)) {
+			logger.warn("Settings: ignoring project setting that would shadow a settings group", {
+				setting: path,
+				source: sourcePath,
+			});
+			continue;
+		}
+		result[key] = dropSettingsGroupShadows(value as RawSettings, sourcePath, path);
+	}
+	return result;
+}
 
 export function normalizeProviderMaxInFlightRequests(value: unknown): Record<string, number> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -582,6 +626,8 @@ export class Settings {
 
 	/** Paths modified during this session (for partial save) */
 	#modified = new Set<string>();
+	/** Paths explicitly changed through the public persisted settings API. */
+	#explicitModifiedPaths = new Set<string>();
 	/** Setup migration paths pending an explicit config update/flush report. */
 	#pendingSetupConfigMigrationPaths = new Set<string>();
 	/** Individual project model roles modified during this session */
@@ -770,6 +816,7 @@ export class Settings {
 			this.#reloadMutationValues.set(path, structuredClone(value));
 		}
 		this.#modified.add(path);
+		this.#explicitModifiedPaths.add(path);
 		this.#rebuildMerged();
 		const next = this.get(path);
 		this.#queueSave();
@@ -824,6 +871,17 @@ export class Settings {
 		}
 	}
 
+	/** Effective values of every setting that repartitions the Code Mode surface. */
+	#codeModeSignalSnapshot(): unknown[] {
+		return CODE_MODE_SIGNAL_PATHS.map(path => this.get(path));
+	}
+
+	/** Fires the Code Mode signal when a persisted-layer refresh changed the partition inputs. */
+	#fireCodeModeChangeIfNeeded(previous: unknown[]): void {
+		if (Bun.deepEquals(this.#codeModeSignalSnapshot(), previous)) return;
+		codeModeSignal.fire();
+	}
+
 	#fireEffectiveSettingChanged(path: SettingPath, value: unknown, prev: unknown): void {
 		if (Object.is(value, prev)) return;
 		if (path === "statusLine.sessionAccent") {
@@ -831,6 +889,9 @@ export class Settings {
 		}
 		if (path === "modelRoles") {
 			modelRolesSignal.fire();
+		}
+		if (CODE_MODE_SIGNAL_PATHS.includes(path)) {
+			codeModeSignal.fire();
 		}
 	}
 
@@ -884,6 +945,9 @@ export class Settings {
 	 */
 	async applyPendingMigrations(): Promise<ConfigMigrationApplyResult> {
 		const changedPaths = [...this.#pendingSetupConfigMigrationPaths].sort();
+		for (const changedPath of changedPaths) {
+			this.#modified.add(changedPath);
+		}
 		await this.flush();
 		this.#pendingSetupConfigMigrationPaths.clear();
 		for (const changedPath of changedPaths) {
@@ -948,16 +1012,17 @@ export class Settings {
 
 	async #reloadPersistedLayers(): Promise<void> {
 		for (;;) {
-			await this.flush();
-			const mutationGeneration = this.#persistedMutationGeneration;
 			const previousSignaledValues = {
 				modelRoles: this.get("modelRoles"),
 				sessionAccent: this.get("statusLine.sessionAccent"),
 			};
+			const previousCodeModeValues = this.#codeModeSignalSnapshot();
 			const previousHookValues = new Map<SettingPath, unknown>();
 			for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
 				previousHookValues.set(key, this.get(key));
 			}
+			await this.flush();
+			const mutationGeneration = this.#persistedMutationGeneration;
 
 			const [globalResult, projectResult, overlayResult] = await Promise.allSettled([
 				this.#readExistingMainYaml(false),
@@ -993,6 +1058,7 @@ export class Settings {
 					previousSignaledValues.sessionAccent,
 				);
 			}
+			this.#fireCodeModeChangeIfNeeded(previousCodeModeValues);
 			for (const [key, previous] of previousHookValues) {
 				const next = this.get(key);
 				if (!Bun.deepEquals(next, previous)) {
@@ -1021,12 +1087,14 @@ export class Settings {
 		await this.flush();
 		this.#restoreRuntimeModelRoleOverrides();
 		const prevModelRoles = this.get("modelRoles");
+		const prevCodeModeValues = this.#codeModeSignalSnapshot();
 		this.#cwd = normalized;
 		if (this.#persist) {
 			this.#project = await this.#loadProjectSettings();
 		}
 		this.#rebuildMerged();
 		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prevModelRoles);
+		this.#fireCodeModeChangeIfNeeded(prevCodeModeValues);
 		this.#fireAllHooks();
 	}
 
@@ -1515,7 +1583,8 @@ export class Settings {
 		}
 		// The fork's setup-config migration only applies to the persisted global
 		// config, and write-path re-reads opt out of recording modified paths.
-		const applySetupConfigMigration = this.#persist && filePath === this.#configPath;
+		const applySetupConfigMigration =
+			this.#persist && filePath === this.#configPath && options.trackSetupMigration !== false;
 		if (parsed === null || parsed === undefined) {
 			return {
 				kind: "loaded",
@@ -1681,7 +1750,7 @@ export class Settings {
 			for (const item of result.items as SettingsCapabilityItem[]) {
 				if (item.level === "project") {
 					projectSettingsPaths.push(path.normalize(item.path));
-					merged = this.#deepMerge(merged, item.data as RawSettings);
+					merged = this.#deepMerge(merged, dropSettingsGroupShadows(item.data as RawSettings, item.path));
 					if (Object.hasOwn(item.data, "shellPath")) shellPathSource = item.path;
 				}
 			}
@@ -1944,6 +2013,30 @@ export class Settings {
 			todoObj.eager = todoObj.eager ? "always" : "default";
 		}
 
+		// features.unexpectedStopDetection (boolean) -> enum none|mechanical|smart.
+		// `true` reproduced the previous small-model-classified behavior, which is
+		// now "smart"; `false` maps to "none" so explicitly disabled configs remain
+		// off rather than inheriting the new "mechanical" default.
+		// Handles nested and quoted-dotted sources, like inspect_image above.
+		const featuresObj = isRecord(raw.features) ? (raw.features as Record<string, unknown>) : undefined;
+		const legacyUnexpectedStop =
+			typeof featuresObj?.unexpectedStopDetection === "boolean"
+				? featuresObj.unexpectedStopDetection
+				: typeof raw["features.unexpectedStopDetection"] === "boolean"
+					? (raw["features.unexpectedStopDetection"] as boolean)
+					: undefined;
+		if (legacyUnexpectedStop !== undefined) {
+			if (!featuresObj) {
+				raw.features = {};
+			}
+			const target = raw.features as Record<string, unknown>;
+			const current = target.unexpectedStopDetection;
+			const currentIsMode = typeof current === "string" && ["none", "mechanical", "smart"].includes(current);
+			if (!currentIsMode) {
+				target.unexpectedStopDetection = legacyUnexpectedStop ? "smart" : "none";
+			}
+			delete raw["features.unexpectedStopDetection"];
+		}
 		// task.isolation.mode: legacy values from before the pi-iso PAL refactor.
 		// `worktree` was git worktree → now lives under `rcopy`. `fuse-overlay`
 		// and `fuse-projfs` are now the platform-named `overlayfs` / `projfs`
@@ -2338,6 +2431,35 @@ export class Settings {
 			if (advisorObj) delete advisorObj.subagents;
 			delete raw["advisor.subagents"];
 		}
+
+		// Early per-agent toggles were persisted as booleans even though the
+		// runtime record contract is "on"/"off"/model pattern. Normalize each
+		// layer before merging so project-level false still overrides global true.
+		{
+			const taskObj = isRecord(raw.task) ? raw.task : undefined;
+			if (taskObj) {
+				for (const key of ["agentPrewalk", "agentAdvisor"]) {
+					const overrides = isRecord(taskObj[key]) ? taskObj[key] : undefined;
+					if (!overrides) continue;
+					for (const agentName in overrides) {
+						const value = overrides[agentName];
+						if (typeof value === "boolean") overrides[agentName] = value ? "on" : "off";
+					}
+				}
+			}
+		}
+
+		// v17 renames that used to nest under a boolean parent path:
+		//   dev.autoqa.consent -> dev.autoqaConsent
+		//   todo.reminders.max -> todo.remindersMax
+		migrateNestedLeafRename(
+			raw,
+			"dev",
+			"autoqa",
+			"consent",
+			"autoqaConsent",
+			value => value === "unset" || value === "granted" || value === "denied",
+		);
 		migrateNestedLeafRename(
 			raw,
 			"todo",
@@ -2538,61 +2660,16 @@ export class Settings {
 			const handle = await fs.promises.open(tempPath, "wx", 0o600);
 			removeTemp = true;
 			try {
-				await handle.writeFile(YAML.stringify(settings, null, 2), "utf8");
+				await handle.writeFile(stringifyYamlConfig(settings), "utf8");
 				await handle.sync();
 			} finally {
 				await handle.close();
 			}
-			try {
-				await fs.promises.rename(tempPath, filePath);
-			} catch (error) {
-				if (!hasFsCode(error, "EPERM")) throw error;
-				await this.#replaceYamlAfterEperm(tempPath, filePath, error);
-			}
+			await replaceFileAtomically(tempPath, filePath);
 			removeTemp = false;
 		} finally {
 			if (removeTemp) {
 				await fs.promises.rm(tempPath, { force: true }).catch(() => {});
-			}
-		}
-	}
-	async #replaceYamlAfterEperm(tempPath: string, filePath: string, renameError: unknown): Promise<void> {
-		const backupPath = `${filePath}.${process.pid}.${randomUUID()}.bak`;
-		try {
-			await fs.promises.rename(filePath, backupPath);
-		} catch (error) {
-			if (isEnoent(error)) {
-				await fs.promises.rename(tempPath, filePath);
-				return;
-			}
-			throw renameError;
-		}
-
-		try {
-			await fs.promises.rename(tempPath, filePath);
-		} catch (replaceError) {
-			try {
-				await fs.promises.rename(backupPath, filePath);
-			} catch (rollbackError) {
-				throw new Error(
-					`Failed to replace settings file after EPERM (original: ${toError(renameError).message}; retry: ${
-						toError(replaceError).message
-					}; rollback: ${toError(rollbackError).message})`,
-					{ cause: toError(renameError) },
-				);
-			}
-			throw replaceError;
-		}
-
-		try {
-			await fs.promises.rm(backupPath);
-		} catch (error) {
-			if (!isEnoent(error)) {
-				logger.warn("Settings: failed to remove atomic-write backup", {
-					path: filePath,
-					backupPath,
-					error: toError(error).message,
-				});
 			}
 		}
 	}
@@ -2628,8 +2705,19 @@ export class Settings {
 		const configPath = this.#configPath;
 		const modifiedPaths = [...this.#modified];
 		const modifiedModelRoles = [...this.#modifiedGlobalModelRoles];
+		const explicitModifiedPaths = new Set(this.#explicitModifiedPaths);
+		const hasExplicitMutation = explicitModifiedPaths.size > 0 || modifiedModelRoles.length > 0;
+		const deferredMigrationPaths = hasExplicitMutation
+			? modifiedPaths.filter(
+					path => this.#pendingSetupConfigMigrationPaths.has(path) && !explicitModifiedPaths.has(path),
+				)
+			: [];
+		const pathsToPersist = hasExplicitMutation
+			? modifiedPaths.filter(path => !deferredMigrationPaths.includes(path))
+			: modifiedPaths;
 		const globalRolesAtStart = this.#modelRolesFromLayer(this.#global);
 		this.#modified.clear();
+		this.#explicitModifiedPaths.clear();
 		this.#modifiedGlobalModelRoles.clear();
 		try {
 			await this.#withYamlWriteLock(configPath, async writePath => {
@@ -2647,7 +2735,7 @@ export class Settings {
 					loaded ?? (this.#quarantinedYamlTargets.has(configPath) ? structuredClone(this.#global) : {});
 
 				// Apply only our modified whole-value paths
-				for (const modPath of modifiedPaths) {
+				for (const modPath of pathsToPersist) {
 					const segments = modPath.split(".");
 					const value = getByPath(this.#global, segments);
 					setByPath(current, segments, value);
@@ -2671,6 +2759,11 @@ export class Settings {
 				if (modifiedModelRoles.length > 0 || rolesToPreserve.size > 0) {
 					const currentRoles = getByPath(current, ["modelRoles"]);
 					const mergedRoles: Record<string, unknown> = isRecord(currentRoles) ? { ...currentRoles } : {};
+					if (modifiedModelRoles.length > 0 && this.#pendingSetupConfigMigrationPaths.has("modelRoles")) {
+						for (const [role, value] of Object.entries(globalRolesAtStart)) {
+							if (!Object.hasOwn(mergedRoles, role)) mergedRoles[role] = value;
+						}
+					}
 					for (const role of modifiedModelRoles) {
 						if (Object.hasOwn(globalRolesAtStart, role)) {
 							mergedRoles[role] = globalRolesAtStart[role];
@@ -2711,15 +2804,23 @@ export class Settings {
 			for (const p of modifiedPaths) {
 				this.#modified.add(p);
 			}
+			for (const p of explicitModifiedPaths) {
+				this.#explicitModifiedPaths.add(p);
+			}
 			for (const role of modifiedModelRoles) {
 				this.#modifiedGlobalModelRoles.add(role);
 			}
 			this.#rebuildMerged();
 			throw error;
 		}
+		for (const path of deferredMigrationPaths) {
+			this.#modified.add(path);
+		}
 
 		this.#rebuildMerged();
-		this.#fireChangedSettings(previous);
+		if (this.#reloadFromDiskPromise === undefined) {
+			this.#fireChangedSettings(previous);
+		}
 	}
 	#queueProjectSave(): void {
 		if (!this.#persist) return;
@@ -3007,6 +3108,24 @@ const modelRolesSignal = new SettingSignal("modelRoles");
 
 /** Subscribe to model role changes. Returns an unsubscribe function. */
 export const onModelRolesChanged: (cb: () => void) => () => void = modelRolesSignal.on.bind(modelRolesSignal);
+
+/** Fires when Code Mode activation or its direct keep-set changes at runtime. */
+const codeModeSignal = new SettingSignal("providers.openai-codex.codeMode");
+
+/**
+ * Settings whose effective value changes the Code Mode tool partition. `edit.mode`
+ * belongs here because it renames `EditTool` on the wire (`apply_patch` vs `edit`),
+ * which the namespace metadata is keyed by.
+ */
+const CODE_MODE_SIGNAL_PATHS: readonly SettingPath[] = [
+	"providers.openai-codex.codeMode",
+	"providers.openai-codex.codeModeDirectTools",
+	"eval.js",
+	"edit.mode",
+];
+
+/** Subscribe to Code Mode setting changes. Returns an unsubscribe function. */
+export const onCodeModeChanged = (cb: () => void) => codeModeSignal.on(cb);
 
 /** Fires when `extendedContext` changes at runtime. */
 const extendedContextSignal = new SettingSignal("extendedContext");

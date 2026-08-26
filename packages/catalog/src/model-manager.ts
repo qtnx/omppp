@@ -42,11 +42,11 @@ export interface ModelManagerOptions<TApi extends Api = Api, TModelsDevPayload =
 	/** Cached model ids whose presence forces refresh when the static or migration-policy fingerprint changes. */
 	dropCachedModelIdsOnStaticMismatch?: readonly string[];
 	/**
-	 * Trusted, provider-wide request headers (compile-time constants, never
-	 * credentials) that the cache may restore by value for any model whose live
-	 * headers matched them at write time. Lets header-bearing dynamic models
-	 * without a bundled static entry survive offline reads instead of being
-	 * dropped as unrestorable (e.g. GitHub Copilot's User-Agent + API version).
+	 * Trusted, provider-wide request headers that can be safely re-derived at
+	 * cache-read time. The cache never persists their values. Models whose live
+	 * headers matched this record at write time can survive offline reads without
+	 * a bundled static source, including configured discovery providers whose
+	 * bearer header comes from the current local config.
 	 */
 	restorableHeaderFallback?: Record<string, string>;
 	/** Optional dynamic endpoint fetcher. */
@@ -492,9 +492,17 @@ function mergeDynamicModel<TApi extends Api>(existingModel: Model<TApi>, dynamic
 	// dynamic discovery also pre-applies the correct image fallback for omitted
 	// `supports.vision`, so its explicit `false` must not be OR-upgraded by the
 	// canonical bundled model.
+	// DeepInfra's discovery is authoritative (`dynamicModelsAuthoritative`) and
+	// its `vision`/`vlm` tags are the catalog's whole truth for modality. Every
+	// row shares the single DeepInfra endpoint, so `endpointChanged` never fires
+	// there: without this carve-out a model that dropped those tags would keep
+	// the bundled reference's image support and the agent would go on sending
+	// images to a now text-only route.
 	const endpointChanged = existingModel.baseUrl !== dynamicModel.baseUrl;
 	const dynamicInputAuthoritative =
-		endpointChanged || (existingModel.provider === "github-copilot" && dynamicModel.provider === "github-copilot");
+		endpointChanged ||
+		(existingModel.provider === "github-copilot" && dynamicModel.provider === "github-copilot") ||
+		(existingModel.provider === "deepinfra" && dynamicModel.provider === "deepinfra");
 	const supportsImage = dynamicInputAuthoritative
 		? dynamicModel.input.includes("image")
 		: existingModel.input.includes("image") || dynamicModel.input.includes("image");

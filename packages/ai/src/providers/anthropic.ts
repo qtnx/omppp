@@ -56,7 +56,7 @@ import {
 	kStreamingLastParseLen,
 	kStreamingPartialJson,
 } from "../utils/block-symbols";
-import { withEmptyCompletionRetry } from "../utils/empty-completion-retry";
+import { withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { isFoundryEnabled } from "../utils/foundry";
 import { finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
@@ -925,7 +925,15 @@ async function resizeAnthropicManyImageContent(
 	let changed = false;
 	const next = await Promise.all(
 		content.map(async block => {
-			if (block.type !== "image") return block;
+			// Remotely referenced blocks never put base64 on the wire, so their size
+			// cannot violate the many-image request budget — and resizing would
+			// desync fallback bytes from the advertised remote image.
+			if (
+				block.type !== "image" ||
+				block.url ||
+				(block.providerFile?.provider === "anthropic" && block.providerFile.id)
+			)
+				return block;
 			let resized = anthropicManyImageResizeCache.get(block);
 			if (resized === undefined) {
 				resized = await limit(() => resizeAnthropicManyImageBlock(block));
@@ -982,19 +990,14 @@ async function prepareAnthropicManyImageContext(context: Context, supportsImages
 	return { ...context, messages };
 }
 
+type AnthropicImageSource =
+	| { type: "base64"; media_type: AnthropicImageMediaType; data: string }
+	| { type: "url"; url: string }
+	| { type: "file"; file_id: string };
+
 type AnthropicToolResultContent =
 	| string
-	| Array<
-			| { type: "text"; text: string }
-			| {
-					type: "image";
-					source: {
-						type: "base64";
-						media_type: AnthropicImageMediaType;
-						data: string;
-					};
-			  }
-	  >;
+	| Array<{ type: "text"; text: string } | { type: "image"; source: AnthropicImageSource }>;
 
 /**
  * Convert content blocks to Anthropic API format
@@ -1003,17 +1006,7 @@ function convertContentBlocks(
 	content: (TextContent | ImageContent)[],
 	supportsImages = true,
 ): AnthropicToolResultContent {
-	const blocks: Array<
-		| { type: "text"; text: string }
-		| {
-				type: "image";
-				source: {
-					type: "base64";
-					media_type: AnthropicImageMediaType;
-					data: string;
-				};
-		  }
-	> = [];
+	const blocks: Array<{ type: "text"; text: string } | { type: "image"; source: AnthropicImageSource }> = [];
 	let sawText = false;
 	let sawImage = false;
 
@@ -1031,25 +1024,26 @@ function convertContentBlocks(
 			continue;
 		}
 
-		if (!isImageContentAvailable(block)) {
+		if (block.providerFile?.provider !== "anthropic" && !block.url && !isImageContentAvailable(block)) {
 			blocks.push({ type: "text", text: UNAVAILABLE_IMAGE_PLACEHOLDER });
 			continue;
 		}
-		const mediaType = normalizeAnthropicImageMediaType(block.mimeType);
-		if (!mediaType) {
-			blocks.push({ type: "text", text: `[unsupported image: ${block.mimeType}]` });
-			continue;
+		let source: AnthropicImageSource;
+		if (block.providerFile?.provider === "anthropic" && block.providerFile.id) {
+			source = { type: "file", file_id: block.providerFile.id };
+		} else if (block.url) {
+			source = { type: "url", url: block.url };
+		} else {
+			const mediaType = normalizeAnthropicImageMediaType(block.mimeType);
+			if (!mediaType) {
+				blocks.push({ type: "text", text: `[unsupported image: ${block.mimeType}]` });
+				continue;
+			}
+			source = { type: "base64", media_type: mediaType, data: block.data };
 		}
 
 		sawImage = true;
-		blocks.push({
-			type: "image",
-			source: {
-				type: "base64",
-				media_type: mediaType,
-				data: block.data,
-			},
-		});
+		blocks.push({ type: "image", source });
 	}
 
 	if (!supportsImages) {
@@ -2668,6 +2662,8 @@ const streamAnthropicOnce = (
 						} else if (event.type === "message_stop") {
 							sawTerminalEnvelope = true;
 							sawMessageStop = true;
+							// The protocol is complete even if a broken keep-alive leaves the HTTP body open.
+							break;
 						}
 					}
 
@@ -2896,14 +2892,13 @@ const streamAnthropicOnce = (
 };
 
 /**
- * Public entry: wrap the single-attempt streamer with bounded empty-completion
- * retries (a benign terminal stop carrying no content/usage would otherwise
- * stall the agent loop). The inner attempt keeps its own provider-failure retry
- * loop; this layer only re-issues a fresh request on an empty success. Shared
- * with the OpenAI-completions provider via `withEmptyCompletionRetry`.
+ * Public entry: retry benign empty completions before they reach the agent
+ * loop. The inner attempt owns Anthropic provider-failure retries.
  */
 export const streamAnthropic: StreamFunction<"anthropic-messages"> = (model, context, options) =>
-	withEmptyCompletionRetry(model, context, options, streamAnthropicOnce);
+	withReplaySafeStreamRetry(model, context, options, streamAnthropicOnce, {
+		retryEmptyCompletion: true,
+	});
 
 export type AnthropicSystemBlock = {
 	type: "text";

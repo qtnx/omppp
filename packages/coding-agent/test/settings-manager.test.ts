@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { clearCustomApis } from "@oh-my-pi/pi-ai/api-registry";
@@ -8,6 +9,7 @@ import { __providerInFlightForTesting, streamSimple } from "@oh-my-pi/pi-ai/stre
 import type { Context } from "@oh-my-pi/pi-ai/types";
 import {
 	onAppendOnlyModeChanged,
+	onCodeModeChanged,
 	onModelRolesChanged,
 	onStatusLineSessionAccentChanged,
 	resetSettingsForTest,
@@ -160,6 +162,25 @@ describe("Settings", () => {
 			expect(await Bun.file(getConfigPath()).exists()).toBe(true);
 			expect(await Bun.file(yamlConfigPath).exists()).toBe(false);
 			expect((await readSettings()).setupVersion).toBe(1);
+		});
+
+		it("writes mapping headers without trailing whitespace and preserves multiline values", async () => {
+			const multiline = ["first line", "scalar line ending in colon: ", "third line "].join("\n");
+			const custom = {
+				"quoted:key": { nested: [{ value: multiline }] },
+				emptyObject: {},
+				emptyArray: [],
+				emptyString: "",
+			};
+			await writeSettings({ custom, theme: { dark: "anthracite" } });
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			settings.set("theme.dark", "titanium");
+			await settings.flush();
+
+			const content = await Bun.file(getConfigPath()).text();
+			expect(content).not.toMatch(/: +$/m);
+			expect(YAML.parse(content)).toEqual({ custom, theme: { dark: "titanium" } });
 		});
 	});
 
@@ -334,9 +355,9 @@ describe("Settings", () => {
 			await writeSettings({ setupVersion: 4 });
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			const canonicalConfigPath = await fs.promises.realpath(getConfigPath());
-			const rename = fs.promises.rename.bind(fs.promises);
+			const rename = fsp.rename.bind(fsp);
 			let injected = false;
-			vi.spyOn(fs.promises, "rename").mockImplementation(async (source, target) => {
+			vi.spyOn(fsp, "rename").mockImplementation(async (source, target) => {
 				if (!injected && String(source).endsWith(".tmp") && String(target) === canonicalConfigPath) {
 					injected = true;
 					throw new FsCodeError("EPERM", "injected Windows replacement failure");
@@ -509,6 +530,73 @@ describe("Settings", () => {
 				expect(signalCount).toBe(1);
 				expect(settings.getModelRole("default")).toBe("openai/updated");
 				expect(settings.getModelRole("runtime")).toBe("openai/runtime");
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("signals Code Mode partition inputs picked up from disk", async () => {
+			await writeSettings({ providers: { "openai-codex": { codeMode: "off" } }, eval: { js: true } });
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			let signalCount = 0;
+			const unsubscribe = onCodeModeChanged(() => {
+				signalCount++;
+			});
+
+			try {
+				await settings.reloadFromDisk();
+				expect(signalCount).toBe(0);
+
+				await writeSettings({ providers: { "openai-codex": { codeMode: "on" } }, eval: { js: true } });
+				await settings.reloadFromDisk();
+
+				expect(settings.get("providers.openai-codex.codeMode")).toBe("on");
+				expect(signalCount).toBe(1);
+
+				// A single reload that changes several partition inputs signals once.
+				await writeSettings({
+					providers: { "openai-codex": { codeMode: "on", codeModeDirectTools: ["bash"] } },
+					eval: { js: false },
+				});
+				await settings.reloadFromDisk();
+
+				expect(settings.get("eval.js")).toBe(false);
+				expect(settings.get("providers.openai-codex.codeModeDirectTools")).toEqual(["bash"]);
+				expect(signalCount).toBe(2);
+
+				// `edit.mode` renames the direct edit tool on the wire.
+				await writeSettings({
+					providers: { "openai-codex": { codeMode: "on", codeModeDirectTools: ["bash"] } },
+					eval: { js: false },
+					edit: { mode: "apply_patch" },
+				});
+				await settings.reloadFromDisk();
+
+				expect(settings.get("edit.mode")).toBe("apply_patch");
+				expect(signalCount).toBe(3);
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("signals Code Mode partition inputs supplied by the destination project", async () => {
+			await writeSettings({ providers: { "openai-codex": { codeMode: "off" } } });
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const otherProject = tempDir.join("code-mode-project");
+			await Bun.write(
+				path.join(getProjectAgentDir(otherProject), "config.yml"),
+				YAML.stringify({ providers: { "openai-codex": { codeMode: "on" } } }, null, 2),
+			);
+			let signalCount = 0;
+			const unsubscribe = onCodeModeChanged(() => {
+				signalCount++;
+			});
+
+			try {
+				await settings.reloadForCwd(otherProject);
+
+				expect(settings.get("providers.openai-codex.codeMode")).toBe("on");
+				expect(signalCount).toBe(1);
 			} finally {
 				unsubscribe();
 			}
@@ -1202,6 +1290,50 @@ describe("Settings", () => {
 			// (`false !== "default"`), so an un-coerced boolean `false` would read as ON.
 			expect(settings.get("task.eager" as SettingPath) as unknown).toBe("default");
 			expect(settings.get("todo.eager")).toBe("default");
+		});
+
+		it("migrates legacy features.unexpectedStopDetection=true to smart", async () => {
+			await writeSettings({ features: { unexpectedStopDetection: true } });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			// `true` reproduced the previous small-model-classified guard, now "smart".
+			expect(settings.get("features.unexpectedStopDetection")).toBe("smart");
+		});
+
+		it("maps legacy features.unexpectedStopDetection=false to none", async () => {
+			await writeSettings({ features: { unexpectedStopDetection: false } });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("features.unexpectedStopDetection")).toBe("none");
+		});
+
+		it("resolves unconfigured features.unexpectedStopDetection to the mechanical default", async () => {
+			await writeSettings({});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("features.unexpectedStopDetection")).toBe("mechanical");
+		});
+
+		it("normalizes a quoted-dotted legacy unexpected-stop boolean", async () => {
+			await Bun.write(getConfigPath(), '"features.unexpectedStopDetection": true\n');
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("features.unexpectedStopDetection")).toBe("smart");
+		});
+
+		it("keeps an explicit unexpected-stop mode over a legacy dotted boolean", async () => {
+			await Bun.write(
+				getConfigPath(),
+				'"features.unexpectedStopDetection": false\nfeatures:\n  unexpectedStopDetection: smart\n',
+			);
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("features.unexpectedStopDetection")).toBe("smart");
 		});
 
 		it("moves legacy lastChangelogVersion out of config.yml into the marker file", async () => {

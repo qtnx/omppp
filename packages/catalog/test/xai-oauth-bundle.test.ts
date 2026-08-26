@@ -148,7 +148,32 @@ describe("xai-oauth bundled catalog (regression)", () => {
 		// for the SuperGrok subscription), which the parity loop above never
 		// compares. (maxTokens is pinned by the maxTokens-equals-contextWindow
 		// test below.)
-		expect(bundled["grok-composer-2.5-fast"]?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+		expect(bundled["grok-composer-2.5-fast"]?.cost).toEqual({
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		});
+	});
+	// SuperGrok's `grok-4.20-multi-agent-0309` mirrors the paid catalog's
+	// `grok-4.20-multi-agent-beta-latest` under a different ID; the price
+	// fallback must bridge the alias so the bundle carries its public rate card
+	// (including the inclusive 200K tier) instead of the subscription zero.
+	it("prices the multi-agent SuperGrok alias from its public xAI equivalent", () => {
+		expect(bundled["grok-4.20-multi-agent-0309"]?.cost).toEqual({
+			input: 2,
+			output: 6,
+			cacheRead: 0.2,
+			cacheWrite: 0,
+			longContext: {
+				inputThreshold: 200_000,
+				inputThresholdInclusive: true,
+				input: 4,
+				output: 12,
+				cacheRead: 0.4,
+				cacheWrite: 0,
+			},
+		});
 	});
 
 	// The OAuth surface's /v1/models reports no per-request output limit, so the

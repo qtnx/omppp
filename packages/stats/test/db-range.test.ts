@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getDashboardStats, syncAllSessions } from "@oh-my-pi/omp-stats/aggregator";
+import { getDashboardStats, getFolderStats, syncAllSessions } from "@oh-my-pi/omp-stats/aggregator";
 import {
 	getStatsByModel,
 	initDb,
@@ -10,19 +10,26 @@ import {
 	insertReminderStats,
 } from "@oh-my-pi/omp-stats/db";
 import { parseSessionFile } from "@oh-my-pi/omp-stats/parser";
-import type { MessageStats } from "@oh-my-pi/omp-stats/types";
+import type { FolderStats, MessageStats } from "@oh-my-pi/omp-stats/types";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
+import { handleApi } from "../src/server";
 import { installStatsTestIsolation } from "./helpers/temp-agent";
 
 installStatsTestIsolation("@pi-stats-db-range-");
 
-function makeMessage(timestamp: number, entryId: string, model = "gpt-5.4", provider = "openai-codex"): MessageStats {
+function makeMessage(
+	timestamp: number,
+	entryId: string,
+	modelOrFolder = "gpt-5.4",
+	provider = "openai-codex",
+): MessageStats {
+	const isFolder = modelOrFolder.startsWith("/");
 	return {
 		sessionFile: "/tmp/session.jsonl",
 		entryId,
-		folder: "/tmp/project",
-		model,
-		provider,
+		folder: isFolder ? modelOrFolder : "/tmp/project",
+		model: isFolder ? "gpt-5.4" : modelOrFolder,
+		provider: isFolder ? "openai-codex" : provider,
 		api: "openai-codex-responses",
 		timestamp,
 		duration: 1000,
@@ -45,6 +52,11 @@ function makeMessage(timestamp: number, entryId: string, model = "gpt-5.4", prov
 		},
 		agentType: "main",
 	};
+}
+
+async function readFolderStats(response: Response): Promise<FolderStats[]> {
+	expect(response.status).toBe(200);
+	return response.json() as Promise<FolderStats[]>;
 }
 
 describe("getDashboardStats time range", () => {
@@ -490,5 +502,46 @@ describe("getDashboardStats time range", () => {
 		expect(model?.delegationReminderCount).toBe(1);
 		expect(model?.delegationReminderRate).toBe(1);
 		expect(model?.systemContextReminderRate).toBe(1);
+	});
+
+	it("filters dedicated folder stats by selected range", async () => {
+		await initDb();
+
+		const now = Date.now();
+		insertMessageStats([
+			makeMessage(now, "folder-within-24h", "/tmp/current-project"),
+			makeMessage(now - 48 * 60 * 60 * 1000, "folder-outside-24h", "/tmp/older-project"),
+		]);
+
+		const dayStats = await getFolderStats("24h");
+		expect(dayStats).toEqual([expect.objectContaining({ folder: "/tmp/current-project", totalRequests: 1 })]);
+
+		const allStats = await getFolderStats("all");
+		expect(allStats).toHaveLength(2);
+		expect(allStats).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ folder: "/tmp/current-project", totalRequests: 1 }),
+				expect.objectContaining({ folder: "/tmp/older-project", totalRequests: 1 }),
+			]),
+		);
+	});
+
+	it("returns range-filtered folder stats through the HTTP API", async () => {
+		const db = await initDb();
+
+		const now = Date.now();
+		insertMessageStats([
+			makeMessage(now, "api-folder-within-24h", "/tmp/current-project"),
+			makeMessage(now - 48 * 60 * 60 * 1000, "api-folder-outside-24h", "/tmp/older-project"),
+		]);
+
+		// The legacy dashboard path reads this in getStatsByAgentType; the folder query does not.
+		db.run("DROP INDEX idx_messages_timestamp_agent_type");
+		db.run("ALTER TABLE messages DROP COLUMN agent_type");
+
+		const folders = await readFolderStats(
+			await handleApi(new Request("http://stats.test/api/stats/folders?range=24h")),
+		);
+		expect(folders).toEqual([expect.objectContaining({ folder: "/tmp/current-project", totalRequests: 1 })]);
 	});
 });

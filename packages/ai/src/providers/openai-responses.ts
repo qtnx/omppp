@@ -25,7 +25,7 @@ import {
 	sanitizeOpenAIResponsesAssistantHistoryItemsForReplay,
 } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
-import { withEmptyCompletionRetry } from "../utils/empty-completion-retry";
+import { withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
 import {
@@ -191,7 +191,8 @@ function isOpenAIResponsesReplayUnsafeEvent(event: ResponseStreamEvent): boolean
 function isRetryableOpenAIResponsesStreamFailure(error: unknown): boolean {
 	return (
 		AIError.isTransientStreamParseError(error) ||
-		(error instanceof AIError.ProviderResponseError && error.kind === "incomplete-stream")
+		(error instanceof AIError.ProviderResponseError && error.kind === "incomplete-stream") ||
+		AIError.isProviderRetryableError(error)
 	);
 }
 
@@ -922,16 +923,21 @@ const streamOpenAIResponsesOnce = (
 };
 
 /**
- * Public entry: wrap the single-attempt Responses streamer with bounded
- * empty-completion retries — a `response.completed` carrying no content/usage
- * would otherwise stall the agent loop. Shared with the OpenAI-completions and
- * Anthropic providers via `withEmptyCompletionRetry`. OpenRouter 402s that
- * reserve more output than remaining credit can cover are retried once with
- * the advertised affordable cap before the empty-completion wrapper sees them.
+ * Public entry: retry benign empty completions before they reach the agent
+ * loop. Stateful Responses metadata remains stable because replay happens only
+ * before output commits; OpenRouter's affordable-cap retry is inside that
+ * replay-safe attempt.
  */
 export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (model, context, options) =>
-	withEmptyCompletionRetry(model, context, options, (retryModel, retryContext, retryOptions) =>
-		withOpenRouterAffordableMaxTokensRetry(retryModel, retryContext, retryOptions, streamOpenAIResponsesOnce),
+	withReplaySafeStreamRetry(
+		model,
+		context,
+		options,
+		(retryModel, retryContext, retryOptions) =>
+			withOpenRouterAffordableMaxTokensRetry(retryModel, retryContext, retryOptions, streamOpenAIResponsesOnce),
+		{
+			retryEmptyCompletion: true,
+		},
 	);
 
 function isOfficialOpenAIResponsesEndpoint(model: Model<"openai-responses">): boolean {

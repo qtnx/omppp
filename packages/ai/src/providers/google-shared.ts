@@ -53,6 +53,15 @@ export { normalizeSchemaForGoogle };
 
 type GoogleApiType = "google-generative-ai" | "google-gemini-cli" | "google-vertex";
 
+function convertGoogleImagePart(image: ImageContent): Part {
+	if (image.providerFile?.provider === "google" && image.providerFile.uri) {
+		return { fileData: { fileUri: image.providerFile.uri, mimeType: image.mimeType } };
+	}
+	return image.url
+		? { fileData: { fileUri: image.url, mimeType: image.mimeType } }
+		: { inlineData: { mimeType: image.mimeType, data: image.data } };
+}
+
 /**
  * Thinking level for Gemini 3 models. Mirrors Google's `ThinkingLevel` enum values.
  * Defined here (not in any specific provider) so all Google providers can reference it
@@ -226,15 +235,14 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 						parts.push({ text });
 					} else if (!supportsImages) {
 						omittedImages = true;
-					} else if (!isImageContentAvailable(item)) {
+					} else if (
+						!isImageContentAvailable(item) &&
+						!(item.providerFile?.provider === "google" && item.providerFile.uri) &&
+						!item.url
+					) {
 						unavailableImages = true;
 					} else {
-						parts.push({
-							inlineData: {
-								mimeType: item.mimeType,
-								data: item.data,
-							},
-						});
+						parts.push(convertGoogleImagePart(item));
 					}
 				}
 				if (omittedImages) {
@@ -315,7 +323,14 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			const textContent = msg.content.filter((c): c is TextContent => c.type === "text");
 			const textResult = textContent.map(c => c.text).join("\n");
 			const imageContent = msg.content.filter((c): c is ImageContent => c.type === "image");
-			const availableImageContent = supportsImages ? imageContent.filter(isImageContentAvailable) : [];
+			const availableImageContent = supportsImages
+				? imageContent.filter(
+						image =>
+							isImageContentAvailable(image) ||
+							(image.providerFile?.provider === "google" && image.providerFile.uri !== undefined) ||
+							image.url !== undefined,
+					)
+				: [];
 			const omittedImages = !supportsImages && imageContent.length > 0;
 			const unavailableImages = supportsImages && availableImageContent.length < imageContent.length;
 			const hasText = textResult.length > 0;
@@ -338,12 +353,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 				? [baseResponseValue, UNAVAILABLE_IMAGE_PLACEHOLDER].filter(Boolean).join("\n")
 				: baseResponseValue;
 
-			const imageParts: Part[] = availableImageContent.map(imageBlock => ({
-				inlineData: {
-					mimeType: imageBlock.mimeType,
-					data: imageBlock.data,
-				},
-			}));
+			const imageParts = availableImageContent.map(convertGoogleImagePart);
 
 			const includeId = supportsFunctionPartId(model);
 			const emittedName = emittedToolCallNames.get(msg.toolCallId);
