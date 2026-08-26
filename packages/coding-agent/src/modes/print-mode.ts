@@ -144,6 +144,10 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		!session.sessionManager.getEntries().some(entry => entry.type === "mode_change") &&
 		!planYolo;
 	if (planStartupIgnored) {
+		// Headless startup may reach this path after another bootstrap layer has
+		// already materialized the default plan state. Detection alone is not
+		// enough: leave no armed state for prompt preflight to observe.
+		session.setPlanModeState(undefined);
 		process.stderr.write(
 			"Note: plan.defaultOnStartup is ignored in print mode (no interactive surface to review the plan). Use --plan-yolo for a headless plan flow.\n",
 		);
