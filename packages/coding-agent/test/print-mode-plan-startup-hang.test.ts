@@ -30,6 +30,7 @@ describe("print mode + plan.defaultOnStartup (#8272)", () => {
 	let stdoutOutput: string[];
 
 	const holder: { session?: AgentSession } = {};
+	const diagnosticWrite = process.stderr.write.bind(process.stderr);
 
 	beforeEach(async () => {
 		tempDir = path.join(os.tmpdir(), `omp-8272-${Snowflake.next()}`);
@@ -101,7 +102,28 @@ describe("print mode + plan.defaultOnStartup (#8272)", () => {
 		// If the startup default re-armed plan mode, the mock would loop on
 		// `xd://propose` forever and this await would never resolve — the runner's
 		// own per-test timeout then fails it, exactly the #8272 symptom.
-		await runPrintMode(session, { mode: "text", initialMessage: "Reply with exactly: OK" });
+		// VERIFY-TEMP: real time is intentional; this probe observes the external CI hang without advancing production clocks.
+		const diagnosticTimer = setTimeout(() => {
+			const advisor = session.getAdvisorRuntimeForTest();
+			diagnosticWrite(
+				`VERIFY-TEMP print-plan stall ${JSON.stringify({
+					plan: session.getPlanModeState(),
+					isStreaming: session.isStreaming,
+					pendingAgentWork: session.hasPendingAgentWork(),
+					asyncJobs: session.getAsyncJobSnapshot(),
+					advisor: advisor ? { backlog: advisor.backlog } : null,
+					messages: session.agent.state.messages.map(message => ({
+						role: message.role,
+						stopReason: message.role === "assistant" ? message.stopReason : undefined,
+					})),
+				})}\n`,
+			);
+		}, 10_000);
+		try {
+			await runPrintMode(session, { mode: "text", initialMessage: "Reply with exactly: OK" });
+		} finally {
+			clearTimeout(diagnosticTimer);
+		}
 
 		expect(stdoutOutput.join("")).toContain("OK");
 		expect(session.getPlanModeState()).toBeUndefined();
