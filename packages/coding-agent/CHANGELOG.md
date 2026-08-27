@@ -18,6 +18,7 @@
 - Workflow fan-out now disposes completed agents immediately and uses a host-aware automatic concurrency cap to prevent memory exhaustion and swap thrashing.
 - GPT-5.6 and other models now keep one-slice work direct, reserve workflows for explicit parallel requests, and ignore complaint or negated `workflow`/`orchestrate` mentions.
 - GPT-5.6 Sol retry fallback now switches directly to Anthropic Claude Opus 5, including existing configurations upgraded by the installer.
+- Running-agent input now steers with Enter and queues with Ctrl+Enter, Ctrl+Q, or Tab; Tab keeps its normal editor behavior while idle.
 
 ## [1.7.4] - 2026-08-21
 
